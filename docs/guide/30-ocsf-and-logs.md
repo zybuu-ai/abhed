@@ -229,23 +229,28 @@ it feeds.
 | `record.ocsf.version` | `1.8.0` | `1.5.0`, `1.3.0` or `1.1.0` for an older reader |
 | `record.ocsf.max_mb` | `64` | rotate the file once it would pass this size |
 | `record.ocsf.keep` | `5` | how many rotated files (`events.ocsf.jsonl.1`, `.2`, …) are kept; the oldest goes |
-| `record.ocsf.path` | `<record dir>/<tenant>/ocsf/events.ocsf.jsonl` | **managed only**; its folder is then state the agent can neither read nor write, and may not be in a workspace |
+| `record.ocsf.path` | `<record dir>/<tenant>/ocsf/events.ocsf.jsonl`; `serve.ocsf.jsonl` for `abhed serve` | **managed only**; its folder is then state the agent can neither read nor write, and may not be in a workspace |
 | `record.ocsf.locked` | `false` | **managed only**: the managed file's `record.ocsf` is then the whole of it, and nothing any other file sets under it applies |
 
 Without a managed lock, a managed value still wins where the managed file
 sets it, and your own file or a trusted workspace's sets the rest. The
 default folder is inside the record's, which commands cannot reach.
 
-The file is written from each line as the record writes it, and a cursor
-beside it (`events.ocsf.jsonl.cursor`) keeps the last seq written of each
-session:
+On the command line the file is written from each line as the record
+writes it, and a cursor beside it (`events.ocsf.jsonl.cursor`) keeps, for
+each session, the last seq written and where that line ends in the
+session's file:
 
 - Turning it on starts it at each session's present end; the history before
   is `abhed logs -all -format ocsf`'s to write.
-- Lines recorded while no process had the file on (it was off, or Abhed was
-  not running, or a command that does not open it wrote them) are written
-  the next time a process with it on opens the record. A line that did not
-  fit the in-memory queue is read back from the record, in order.
+- Lines recorded while no process had the file on (it was off, Abhed was
+  not running or crashed, or a command that does not open it wrote them) are
+  written the next time a process with it on opens the record. They are
+  found by each session file's size against the cursor, not by the head the
+  record syncs at turn boundaries, so lines a crash left past the last head
+  are found too, and read from where the cursor left off, not from the
+  file's start. A line that did not fit the in-memory queue is read back the
+  same way, in order.
 - Several Abhed processes share the file under a lock; none writes a line
   another already did. A process that crashes between writing lines and
   moving the cursor writes them again next time: delivery is at least once,
@@ -254,9 +259,36 @@ session:
   warned about once and retried from the record; the record itself is never
   held up by the file.
 
-The file covers the command line's local record: `abhed`, `abhed -p`, `abhed
-acp` and `abhed rpc`. `abhed serve` keeps sessions in memory or in Postgres
-and writes no OCSF file; use its logs endpoint.
+This covers the command line's local record: `abhed`, `abhed -p`, `abhed
+acp` and `abhed rpc`.
+
+**`abhed serve`** writes its own file, `serve.ocsf.jsonl` unless
+`record.ocsf.path` names one, with the same keys and the same managed lock.
+It polls its store each second rather than being handed lines:
+
+- **The memory store**: the one process writes, with its cursor beside the
+  file. Its sessions, and so their lines, are gone when it exits.
+- **Postgres**: one server at a time writes. It holds a Postgres advisory
+  lock on a connection of its own, which the database lets go of when that
+  connection ends, and keeps its cursors in the `ocsf_cursors` table
+  (schema version 12; run `abhed migrate`). Every other server stands by and
+  tries for the lock each second; the one that takes it reads the cursors,
+  looks at every session once for lines past them, and goes on. So each
+  event is written by one server, in order, and a server that stopped
+  between writing and moving its cursor has its last lines written again
+  by the next (at least once; `metadata.uid` tells a repeat). Each poll
+  asks for the sessions with events written in the last ten minutes by the
+  database's clock and reads each from its cursor's seq by index; a session
+  is never read whole again.
+
+A lease and one file was chosen over a file per server writing what it
+appended: events carry no server, so the lines a server appended and then
+crashed before writing could not be found by the others, and two writers
+would each need every other's progress to avoid repeats. With the lease,
+the file is on the host of the server that holds it: put `record.ocsf.path`
+on storage the servers share for one file, or ship each host's file, which
+holds the stretches that host wrote. The lock holds one of the server's
+`storage.max_conns` connections.
 
 ## Over the API
 
@@ -282,8 +314,8 @@ resumes where it stopped. A bad `format` or `version` is `400`.
   proxy's decisions on connections, with a request's method and path only
   for plain HTTP or with `egress.inspect_tls`.
 - The control plane's sandbox record is mapped, not chained.
-- `abhed serve` writes no OCSF file, and its in-memory sessions are gone with
-  the process.
+- `abhed serve` on the memory store loses its sessions, and so their OCSF
+  lines not yet written, when it exits.
 - Sending events to a SIEM (syslog over TLS, Splunk HEC, Elastic, object
   storage with retention), and OpenTelemetry, are Enterprise features.
 - Windows event tracing is not read.

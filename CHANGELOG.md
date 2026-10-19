@@ -271,7 +271,11 @@ All notable changes to Abhed are recorded here. The format follows
   was off are written when it next starts, and processes sharing the file
   never write a line twice. `record.ocsf.path` and `record.ocsf.locked`
   (the managed `record.ocsf` is then the whole of it) are managed only; a
-  managed path's folder is state commands cannot reach.
+  managed path's folder is state commands cannot reach. `abhed serve` writes
+  its own file from its store: from Postgres, one server at a time holds an
+  advisory lock and keeps the cursors in the new `ocsf_cursors` table
+  (schema version 12, `abhed migrate`), so another takes over where it
+  stopped and no event is written by two.
 - `GET /v1/sessions/{id}/logs` streams a session's record as OCSF events or
   shorthand over SSE, on the events stream's sign-in, ownership check and
   seq cursor (`Last-Event-ID`, `?after=`), with `?version=` and `?type=`.
@@ -339,7 +343,12 @@ All notable changes to Abhed are recorded here. The format follows
   `Options`, `Event`, `Mapping`, `Types`, `MapAudit`, `Downgrade`, `Replay`,
   `ReplayJSON`, `Validate`, `CheckVersion`, `Shorthand`, `Version`,
   `Versions`, and the file sink `OpenSink`, `Sink` and `SinkOptions`.
-- `store/local`: `Options.OnAppend`, `LineHash` and `Store.SessionIDs`.
+- `store/local`: `Options.OnAppend`, `Sealed.End`, `LineHash`, and
+  `Store.SessionIDs`, `Store.LinesFrom` and `Store.Size`.
+- `store`: `Postgres.OCSFWriter` with `OCSFWriter`, `OCSFCursor` and
+  `ErrOCSFStandby`, and `Postgres.EventEnds`.
+- `ocsf`: `Cursor`, `CursorStore`, `ErrStandby`, `Line.Pos`, and
+  `SinkOptions.Cursors`, `Changed` and `Poll`.
 - `config`: `RecordConfig.OCSF`, `OCSFConfig` and `OCSFVersions`.
 
 ## [1.2.8] - 2026-10-14

@@ -647,7 +647,8 @@ alone leaves the isolation policy silently inert. This was found by
 `TestRowLevelSecurityIsolatesTenants`, which could read another tenant's rows
 until `FORCE` was added (`README.md`'s evidence-discipline section tells the
 same story). Every tenant table (`sessions`, `events`, `checkpoints`,
-`approvals`, the sandbox tables, `owner_changes` and `session_keys`) carries
+`approvals`, the sandbox tables, `owner_changes`, `session_keys` and
+`ocsf_cursors`) carries
 `ENABLE` and `FORCE` together, with a tenant policy on each.
 
 **Separate database roles, and the app refuses to run as the wrong one.**

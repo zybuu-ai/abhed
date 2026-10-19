@@ -1078,7 +1078,9 @@ rewritten, so the runtime role cannot make a live session's record
 unreadable. Every owner change is written to `owner_changes`, and every
 change to an account's groups or tenant to `account_changes`, by triggers
 that run as the tables' owner: the runtime role can read those tables but
-neither write nor skip a row. Keep the owner's credentials off the host that
+neither write nor skip a row. The OCSF file's cursors in `ocsf_cursors`
+(`record.ocsf` on `abhed serve`) are read, inserted and moved forward,
+never removed. Keep the owner's credentials off the host that
 runs the server; whoever holds them can alter the record (see
 [the Postgres record](12-records.md#the-postgres-record) for the chain and
 witness that show it). After an upgrade
