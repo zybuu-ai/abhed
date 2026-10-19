@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -99,6 +101,10 @@ type fenceSpec struct {
 	// Mounts, when set, is applied in the launcher's own user and mount
 	// namespace before anything else confines it.
 	Mounts *mountns.Plan `json:"mounts,omitempty"`
+	// Notify sends seccomp's refusals to Abhed to answer and record. Only in
+	// a PID namespace of the command's own, whose /proc does not show Abhed,
+	// so the command cannot reach the listener to answer its own refusals.
+	Notify bool `json:"notify,omitempty"`
 }
 
 // fenceReport is what the launcher applied, sent before it runs the command.
@@ -109,6 +115,10 @@ type fenceReport struct {
 	Landlock string `json:"landlock"`
 	Seccomp  string `json:"seccomp"`
 	Digest   string `json:"seccomp_sha256"`
+	// Notify is set when seccomp's refusals go to the listener sent with
+	// the report; listener is that descriptor here, -1 without one.
+	Notify   bool `json:"seccomp_notify,omitempty"`
+	listener int
 }
 
 // fenceHost is the session's cgroup and the limits each call gets.
@@ -448,7 +458,7 @@ func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *ser
 	}
 	data, err := json.Marshal(fenceSpec{Landlock: spec, Network: network, Socketcall: network && f.policy.FenceSocketcall, Leaf: leaf.Path(),
 		Qualified: f.report.Qualified, ProbePID: os.Getpid(), Mounts: plan,
-		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil, OwnNet: ownNet})
+		ProxyOnly: f.policy.Egress != nil, Egress: relay, PIDNS: plan != nil, OwnNet: ownNet, Notify: plan != nil})
 	if err != nil {
 		drop()
 		return refusedCmd("%v", err)
@@ -526,6 +536,14 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		sv.drop()
 		return
 	}
+	// Refusals are answered from here on, so a launcher's own refused call
+	// before the ack does not wait on it; the listener is closed when the
+	// supervisor is done, after which the kernel refuses with ENOSYS.
+	var refusals *refusalLog
+	if rep.listener >= 0 {
+		refusals = serveRefusals(rep.listener)
+		defer refusals.close()
+	}
 	leaf := sv.leaf
 	// In a PID namespace the launcher stays init until the command ends, so its
 	// exit status comes before the leaf's removal kills it.
@@ -568,7 +586,7 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		if err := sv.rec("process.launched", map[string]any{
 			"call_id": l.CallID, "source": sv.source, "pid": rep.PID, "tier": string(TierFence), "sandbox": f.id, "cgroup": rep.Cgroup,
 			"landlock_abi": rep.ABI, "landlock": rep.Landlock, "seccomp": rep.Seccomp, "seccomp_sha256": rep.Digest,
-			"network": f.policy.AllowNetwork, "mode": f.Mode(), "mounts": planText(sv.plan),
+			"network": f.policy.AllowNetwork, "mode": f.Mode(), "mounts": planText(sv.plan), "seccomp_notify": rep.Notify,
 		}); err != nil {
 			refuse()
 			return
@@ -582,6 +600,10 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 		return
 	}
 	waitExit(pidfd)
+	// What seccomp refused, as Abhed answered it, recorded with the limits.
+	if counts := refusals.stop(); len(counts) > 0 && sv.rec != nil {
+		_ = sv.rec(EvFenceDenied, map[string]any{"call_id": l.CallID, "sandbox": f.id, "source": "seccomp", "calls": counts})
+	}
 	// Limits are recorded before leftovers are ended, so the event comes before
 	// the call's result.
 	if ev, err := leaf.Events(); err == nil && sv.rec != nil {
@@ -598,6 +620,54 @@ func (f *Fence) supervise(ctx context.Context, sv supervision) {
 	_ = leaf.Remove(rctx)
 	// Once nothing of the command's is left running, no .abhed it made stays.
 	_ = f.checkPlanted(sv.rec, l.CallID, "after_command")
+}
+
+// refusalLog counts the calls seccomp sent to Abhed for one launch.
+type refusalLog struct {
+	fd     int
+	stopCh chan struct{}
+	done   chan struct{}
+	mu     sync.Mutex
+	counts map[string]int
+	once   sync.Once
+}
+
+// maxRefusalNames bounds the distinct calls one launch records.
+const maxRefusalNames = 64
+
+func serveRefusals(fd int) *refusalLog {
+	r := &refusalLog{fd: fd, stopCh: make(chan struct{}), done: make(chan struct{}), counts: map[string]int{}}
+	go func() {
+		defer close(r.done)
+		_ = seccomp.Serve(fd, r.stopCh, func(name string) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if _, ok := r.counts[name]; ok || len(r.counts) < maxRefusalNames {
+				r.counts[name]++
+			} else {
+				r.counts["other"]++
+			}
+		})
+	}()
+	return r
+}
+
+// stop ends the answering and returns the counts; a call refused after it
+// waits on the listener until the leaf's removal ends its process.
+func (r *refusalLog) stop() map[string]int {
+	if r == nil {
+		return nil
+	}
+	r.once.Do(func() { close(r.stopCh) })
+	<-r.done
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Clone(r.counts)
+}
+
+func (r *refusalLog) close() {
+	r.stop()
+	_ = unix.Close(r.fd)
 }
 
 // planText words a launch's mounts for its record.
@@ -627,18 +697,63 @@ func readReport(ctx context.Context, ch *os.File, abandoned <-chan struct{}) (fe
 			return rep, errors.New("the launcher did not report")
 		}
 		_ = ch.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
-		n, err := ch.Read(buf)
+		n, fds, err := recvReport(ch, buf)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			continue
 		}
 		if err != nil {
 			return rep, err
 		}
-		if err := json.Unmarshal(buf[:n], &rep); err != nil || rep.PID <= 1 {
+		rep.listener = -1
+		for i, fd := range fds {
+			if i == 0 {
+				rep.listener = fd
+			} else {
+				_ = unix.Close(fd)
+			}
+		}
+		if err := json.Unmarshal(buf[:n], &rep); err != nil || rep.PID <= 1 || rep.Notify != (rep.listener >= 0) {
+			if rep.listener >= 0 {
+				_ = unix.Close(rep.listener)
+			}
+			if err == nil {
+				err = errors.New("its seccomp listener and its report disagree")
+			}
 			return rep, fmt.Errorf("the launcher's report cannot be read: %w", err)
 		}
 		return rep, nil
 	}
+}
+
+// recvReport reads one message from the channel with any descriptors sent with it.
+func recvReport(ch *os.File, buf []byte) (int, []int, error) {
+	rc, err := ch.SyscallConn()
+	if err != nil {
+		return 0, nil, err
+	}
+	oob := make([]byte, unix.CmsgSpace(4*4))
+	var n, oobn int
+	var rerr error
+	if err := rc.Read(func(fd uintptr) bool {
+		n, oobn, _, _, rerr = unix.Recvmsg(int(fd), buf, oob, unix.MSG_CMSG_CLOEXEC) // #nosec G115 -- a descriptor
+		return !errors.Is(rerr, unix.EAGAIN)
+	}); err != nil {
+		return 0, nil, err
+	}
+	if rerr != nil {
+		return 0, nil, rerr
+	}
+	if n == 0 {
+		return 0, nil, io.EOF
+	}
+	var fds []int
+	msgs, _ := unix.ParseSocketControlMessage(oob[:oobn])
+	for _, m := range msgs {
+		if r, err := unix.ParseUnixRights(&m); err == nil {
+			fds = append(fds, r...)
+		}
+	}
+	return n, fds, nil
 }
 
 // waitExitFor is waitExit for at most d.
@@ -947,13 +1062,34 @@ func confineAndRun(s fenceSpec, argv []string, abhed, abhedGroup int) int {
 	// Only where Landlock scopes abstract unix sockets: a pathname one is
 	// still reachable through it, as the setting's documentation says.
 	pol.Socketcall = s.Network && s.Socketcall && socketcallOff(int(abi), os.Geteuid() == 0) == ""
-	if err := seccomp.Install(pol); err != nil {
-		return launchFail("%v", err)
+	listener := -1
+	if s.Notify && s.PIDNS {
+		fd, err := seccomp.InstallNotify(pol)
+		switch {
+		case err == nil:
+			listener, pol.Notify = fd, true
+		case !errors.Is(err, seccomp.ErrNotifyUnsupported):
+			return launchFail("%v", err)
+		}
+	}
+	if listener < 0 {
+		if err := seccomp.Install(pol); err != nil {
+			return launchFail("%v", err)
+		}
 	}
 	prog, _ := pol.Program(runtime.GOARCH)
 	rep, _ := json.Marshal(fenceReport{PID: os.Getpid(), Cgroup: s.Leaf, ABI: int(abi), Landlock: rs.Describe(),
-		Seccomp: seccomp.Profile, Digest: prog.Digest()})
-	if _, err := unix.Write(launcherFD, rep); err != nil {
+		Seccomp: seccomp.Profile, Digest: prog.Digest(), Notify: listener >= 0})
+	var rights []byte
+	if listener >= 0 {
+		rights = unix.UnixRights(listener)
+	}
+	err = unix.Sendmsg(launcherFD, rep, rights, nil, 0)
+	// The command never holds the listener: it could answer its own refusals.
+	if listener >= 0 {
+		_ = unix.Close(listener)
+	}
+	if err != nil {
 		return launchFail("reporting to Abhed: %v", err)
 	}
 	ack := make([]byte, 1)

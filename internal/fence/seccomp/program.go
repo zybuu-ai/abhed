@@ -41,6 +41,7 @@ const (
 const (
 	retKillProcess = 0x80000000
 	retErrno       = 0x00050000
+	retUserNotif   = 0x7fc00000
 	retAllow       = 0x7fff0000
 )
 
@@ -140,6 +141,8 @@ func retName(k uint32) string {
 		return "ALLOW"
 	case k == retKillProcess:
 		return "KILL_PROCESS"
+	case k == retUserNotif:
+		return "USER_NOTIF"
 	case k&0xffff0000 == retErrno:
 		switch k & 0xffff {
 		case errEPERM:
