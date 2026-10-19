@@ -559,8 +559,28 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			atLine[normText(cmd)] = true
 		}
 	}
+	// A write or an edit reports the file it changed: whether a path was
+	// changed is the record's to say (changedPath), not that report's.
+	pathLit := map[string]bool{}
+	for _, p := range f.paths {
+		pathLit[normText(p)] = true
+	}
+	var notFileTools []*obsRec
+	for _, o := range pool {
+		if o.tool != "write" && o.tool != "edit" {
+			notFileTools = append(notFileTools, o)
+		}
+	}
 	for _, lit := range f.literals {
-		if !atLine[lit] {
+		switch {
+		case atLine[lit]:
+		case pathLit[lit] && len(notFileTools) < len(pool):
+			fd := ix.literal(notFileTools, lit, false)
+			if fd.out != matched {
+				fd = finding{out: missing, why: fmt.Sprintf("%q is only in the report of a write or an edit, which shows no more than that the call ran", clipRunes(lit, 60))}
+			}
+			findings = append(findings, fd)
+		default:
 			findings = append(findings, ix.literal(pool, lit, cited))
 		}
 	}
@@ -569,7 +589,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	keyedOK := map[string]bool{}
 	for _, kf := range f.keyed {
-		if fd, ok := ix.keyed(pool, kf); ok {
+		if fd, ok := ix.keyed(pool, kf, cited); ok {
 			findings = append(findings, fd)
 			keyedOK[kf.n] = true
 		}
@@ -692,12 +712,15 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	return finding{out: missing, why: fmt.Sprintf("%q is not in %s", clipRunes(lit, 60), poolName(cited))}
 }
 
-// citedMiss is what the claim says that its cited, current output does not
-// hold: the record the agent pointed at says otherwise.
+// citedMiss is what the claim says that its cited output does not hold.
+// Absence is never a contradiction: output silent on a thing does not say
+// otherwise, so the claim is left unverified.
 func citedMiss(pool []*obsRec, what string) finding {
-	o := pool[len(pool)-1]
-	return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("%s is not in the cited #%d", what, o.seq),
-		conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: clipRunes(strings.TrimSpace(o.content), 160)}}
+	var seqs []int64
+	for _, o := range pool {
+		seqs = append(seqs, o.seq)
+	}
+	return finding{out: missing, why: fmt.Sprintf("%s is not in the cited %s", what, strings.Join(seqList(seqs), ", "))}
 }
 
 func (ix *recordIndex) number(pool []*obsRec, n string, cited bool) finding {
@@ -710,32 +733,43 @@ func (ix *recordIndex) number(pool []*obsRec, n string, cited bool) finding {
 	return finding{out: missing, why: "the number " + n + " is not in " + poolName(cited)}
 }
 
-// counted checks a number with the word it counts. Output that counts the
-// same thing with another number, and never with this one, contradicts it.
+// counted checks a number with the word it counts, and with what it says of
+// it ("added 3 tests", "12 tests passed"). Output that counts the same unit
+// with the same word and another number, in what the claim cites,
+// contradicts it; a count of the unit that says something else is no
+// evidence either way.
 func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding {
 	label := cf.n + " " + cf.unit
 	if cf.unit == "%" {
 		label = cf.n + "%"
 	}
-	var other *obsRec
-	var otherAt countAt
+	var other, elsewise *obsRec
+	var otherAt, elseAt countAt
 	for i := len(pool) - 1; i >= 0; i-- {
 		e := pool[i].evidence()
 		for _, at := range e.counts[cf.unit] {
-			if at.n == cf.n {
+			switch {
+			case at.n == cf.n && (len(cf.quals) == 0 || len(at.quals) == 0 || sharesQual(cf.quals, at.quals)):
 				return finding{out: matched, what: label + " in #" + itoa(pool[i].seq), seq: pool[i].seq, pooled: true}
-			}
-			if other == nil {
+			case at.n != cf.n && samePhrase(cf.quals, at.quals) && other == nil:
 				other, otherAt = pool[i], at
+			case elsewise == nil:
+				elsewise, elseAt = pool[i], at
 			}
 		}
 	}
-	// Another count of the same thing contradicts the claim only in the
-	// output the claim cites: uncited, it may count something else.
 	if other != nil && cited {
 		return finding{out: conflicted, seq: other.seq,
 			why:      fmt.Sprintf("it says %s; the cited #%d says %s", label, other.seq, otherAt.excerpt),
 			conflict: &Conflict{Seq: other.seq, CallID: other.callID, Excerpt: otherAt.excerpt}}
+	}
+	if other != nil {
+		return finding{out: missing, why: fmt.Sprintf("it says %s; #%d says %s", label, other.seq, otherAt.excerpt)}
+	}
+	// The output counts the unit, but not as the claim does: a bare number
+	// elsewhere in it is not the claim's.
+	if elsewise != nil {
+		return finding{out: missing, why: fmt.Sprintf("it says %s; #%d counts it otherwise: %s", label, elsewise.seq, elseAt.excerpt)}
 	}
 	// The output does not count that thing: the bare number decides.
 	return ix.number(pool, cf.n, cited)
@@ -743,7 +777,7 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 
 // keyed checks "port 8080" where the output labels the word, as "port: 8080"
 // does; ok is false when no result labels it, and the bare number decides.
-func (ix *recordIndex) keyed(pool []*obsRec, kf countFact) (finding, bool) {
+func (ix *recordIndex) keyed(pool []*obsRec, kf countFact, cited bool) (finding, bool) {
 	var other *obsRec
 	var otherAt countAt
 	for i := len(pool) - 1; i >= 0; i-- {
@@ -759,8 +793,12 @@ func (ix *recordIndex) keyed(pool []*obsRec, kf countFact) (finding, bool) {
 	if other == nil {
 		return finding{}, false
 	}
+	// Uncited, the other label may be another thing's (another server's port).
+	if !cited {
+		return finding{out: missing, why: fmt.Sprintf("it says %s %s; #%d says %s", kf.unit, kf.n, other.seq, otherAt.excerpt)}, true
+	}
 	return finding{out: conflicted, seq: other.seq,
-		why:      fmt.Sprintf("it says %s %s; #%d says %s", kf.unit, kf.n, other.seq, otherAt.excerpt),
+		why:      fmt.Sprintf("it says %s %s; the cited #%d says %s", kf.unit, kf.n, other.seq, otherAt.excerpt),
 		conflict: &Conflict{Seq: other.seq, CallID: other.callID, Excerpt: otherAt.excerpt}}, true
 }
 
@@ -789,7 +827,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 		}
 		lf := o.line
 		if !lf.shape || !lf.leadCd || lf.finalCwd == "" || filepath.Clean(o.cwd) != filepath.Clean(ix.workDir) ||
-			commandKind(lf.final) != testish {
+			commandKind(lf.final) != testish || !harmlessEnv(lf.finalAssigns) {
 			return nil, false
 		}
 		return runScope(lf.final, lf.finalCwd)
@@ -932,7 +970,7 @@ func (ix *recordIndex) negatedChange(pool []*obsRec, p string) finding {
 	want := ix.inWorkspace(p)
 	for _, o := range pool {
 		if (o.tool == "write" || o.tool == "edit") && !o.isError && o.path != "" && want != "" && filepath.Clean(o.path) == want {
-			return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("the cited #%d is a %s of %s", o.seq, o.tool, p),
+			return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("the cited #%d is %s of %s", o.seq, map[string]string{"write": "a write", "edit": "an edit"}[o.tool], p),
 				conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: tailLines(o.content)}}
 		}
 	}

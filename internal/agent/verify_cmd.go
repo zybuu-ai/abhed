@@ -25,6 +25,8 @@ type simpleCmd struct {
 	// included; wrapped says a runner or an assignment was taken off.
 	words, raw []string
 	wrapped    bool
+	// assigns are the names of the variables set for it, before it or by env.
+	assigns []string
 	// first: the line's first command, at its top, which runs whatever
 	// follows it.
 	first bool
@@ -62,6 +64,7 @@ type lineFacts struct {
 	leadCd       bool
 	finalCwd     string
 	finalWrapped bool
+	finalAssigns []string
 	// covers are the folders formatters rewrote.
 	covers []string
 	// writer: a shaped line of literal commands, each a cd, a reader or a
@@ -101,7 +104,7 @@ func readLine(line, cwd string) lineFacts {
 	if r.shape && len(lf.cmds) > 0 {
 		lf.shape = true
 		last := lf.cmds[len(lf.cmds)-1]
-		lf.final, lf.finalWrapped = last.words, last.wrapped
+		lf.final, lf.finalWrapped, lf.finalAssigns = last.words, last.wrapped, last.assigns
 		if !r.unresolved {
 			lf.finalCwd = r.cwd
 		}
@@ -272,7 +275,7 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 		r.add(simpleCmd{words: words, raw: raw, pure: !someRedirect, cd: true, writes: someRedirect, known: redirectKnown, targets: redirected})
 		return
 	}
-	c := simpleCmd{words: words, raw: raw, wrapped: wrapped}
+	c := simpleCmd{words: words, raw: raw, wrapped: wrapped, assigns: assignedNames(call, raw, words)}
 	if assigned {
 		c.writes = true
 		r.add(c)
@@ -531,6 +534,22 @@ func hasAssignment(before, after []string) bool {
 		}
 	}
 	return false
+}
+
+// assignedNames are the variables a command is given: before it, or in the
+// words a runner such as env took off.
+func assignedNames(call *syntax.CallExpr, raw, words []string) []string {
+	var names []string
+	for _, a := range call.Assigns {
+		names = append(names, a.Name.Value)
+	}
+	args := raw[len(call.Assigns):]
+	for _, w := range args[:len(args)-len(words)] {
+		if name, _, ok := strings.Cut(w, "="); ok && name != "" && !strings.HasPrefix(w, "-") {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // unwrap takes off what runs a command for it, so the command itself is
