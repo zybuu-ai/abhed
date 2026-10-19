@@ -1446,6 +1446,9 @@ func (s *Server) checkSoleOwner(user string) error {
 	return errNotSoleOwner
 }
 
+// errVerify refuses a session whose answers cannot be checked as configured.
+var errVerify = errors.New("answers cannot be checked as configured")
+
 // errBadClientID refuses a client id validClientID does not accept.
 var errBadClientID = errors.New("client_id is up to 64 letters, digits, - and _")
 
@@ -1585,6 +1588,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, errBadClientID):
 			WriteError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, errVerify):
+			s.log.Error("session refused: verify", "user", spec.User, "error", err)
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		case errors.Is(err, errNotSoleOwner):
 			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
@@ -1899,6 +1905,19 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
 	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
 
+	// A person reads the answer at the console or the IDE, so it is labelled
+	// unless configured otherwise; an unattended run checks only when asked.
+	// Answers that cannot be checked as configured refuse the session, as
+	// the command line and the SDK refuse to start, rather than run unchecked.
+	vcfg, err := toolset.VerifyFlag(s.opts.Config, spec.Verify)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
+	}
+	verifier, err := toolset.Verifier(vcfg, !spec.Unattended)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
+	}
+
 	workspace := s.opts.Workspace
 	var bound *sessionsandbox.Bound
 	if s.opts.SessionSandboxes != nil {
@@ -2057,15 +2076,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 			loop.Suggest.Hold = live.ownerGone.Load
 		}
 	}
-	// A person reads the answer at the console or the IDE, so it is labelled
-	// unless configured otherwise; an unattended run checks only when asked.
-	if vcfg, err := toolset.VerifyFlag(s.opts.Config, spec.Verify); err == nil {
-		if v, err := toolset.Verifier(vcfg, !spec.Unattended); err == nil {
-			v.Install(loop)
-		} else {
-			s.log.Warn("answers not checked", "session", sessionID, "error", err)
-		}
-	}
+	verifier.Install(loop)
 	live.Loop = loop
 	return live, loop, nil
 }
