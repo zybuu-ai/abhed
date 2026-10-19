@@ -312,7 +312,7 @@ func (l *Loop) beginAnswer() {
 // turn; otherwise reason is how the run ends.
 func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReason) {
 	v := l.Verify
-	if v == nil || l.depth > 0 || ctx.Err() != nil {
+	if v == nil || l.depth > 0 {
 		return false, TermCompleted
 	}
 	v.mu.Lock()
@@ -338,7 +338,8 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		source, text = "text", l.messages[n-1].Content
 		claims = textClaims(text)
 	}
-	if source == "" && v.Contract == nil {
+	// Stopped as it ended: the answer stands as given, unchecked.
+	if (source == "" && v.Contract == nil) || ctx.Err() != nil {
 		return false, TermCompleted // a structured result, or nothing said
 	}
 
