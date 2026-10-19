@@ -710,8 +710,10 @@ INSERT INTO schema_version (version) VALUES (12) ON CONFLICT DO NOTHING;
 -- row as JSON twice. abhed_events_chain does the same with static queries and
 -- one rendering of only the hashed columns: jsonb_build_object gives the
 -- same jsonb, and so the same text and hash, as the named columns of
--- to_jsonb(NEW). The GIN index on payload is dropped: no query used it, and
--- payloads are sealed, so it indexed ciphertext on every insert.
+-- to_jsonb(NEW). It also sets inserted_at, which a trigger of its own did, so
+-- each insert runs one PL/pgSQL trigger, not two. The GIN index on payload is
+-- dropped: no query used it, and payloads are sealed, so it indexed
+-- ciphertext on every insert.
 CREATE OR REPLACE FUNCTION abhed_events_chain() RETURNS trigger AS $$
 DECLARE
   last_pos  bigint;
@@ -720,6 +722,7 @@ BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended('events/' || NEW.session_id, 0));
   SELECT chain_pos, hash INTO last_pos, last_hash FROM events
     WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
+  NEW.inserted_at := now();
   NEW.chain_pos := COALESCE(last_pos, 0) + 1;
   NEW.prev_hash := COALESCE(last_hash, repeat('0', 64));
   NEW.hash := encode(sha256(convert_to(NEW.prev_hash || E'\n' || jsonb_build_object(
@@ -733,6 +736,7 @@ $$ LANGUAGE plpgsql SET timezone TO 'UTC';
 DROP TRIGGER IF EXISTS zz_events_chain ON events;
 CREATE TRIGGER zz_events_chain BEFORE INSERT ON events
   FOR EACH ROW EXECUTE FUNCTION abhed_events_chain();
+DROP TRIGGER IF EXISTS events_inserted_at ON events;
 DROP INDEX IF EXISTS events_payload_idx;
 
 INSERT INTO schema_version (version) VALUES (14) ON CONFLICT DO NOTHING;

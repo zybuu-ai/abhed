@@ -339,6 +339,12 @@ All notable changes to Abhed are recorded here. The format follows
   that an operation was not permitted under a sandbox: the credential path
   or Abhed's own state the output named, or `denied`
   ([Data model](docs/architecture/10-data-model.md)).
+- Postgres schema version 14 makes each event insert cheaper with the same
+  hash: the chain's trigger uses fixed queries and renders only the hashed
+  columns (about 120 down to 30 microseconds a row), sets `inserted_at`
+  itself instead of a second trigger, and the unused GIN index on the
+  sealed `payload` is dropped. Apply it with `abhed migrate`; a server on
+  an older schema still starts.
 - A `bash` note now also names a refusal of a credential file the sandbox
   denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
   `~/.netrc` or `~/.config/gh`), and of Abhed's own state.

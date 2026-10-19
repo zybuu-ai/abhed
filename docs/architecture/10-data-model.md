@@ -187,7 +187,6 @@ CREATE TABLE events (
 );
 CREATE INDEX ON events (session_id, seq);
 CREATE INDEX ON events (type, created_at);
-CREATE INDEX ON events USING GIN (payload);
 
 CREATE TABLE checkpoints (          -- backs /undo (§09)
   id         TEXT PRIMARY KEY,
