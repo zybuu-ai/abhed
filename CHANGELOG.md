@@ -201,8 +201,8 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 27 planted wrong claims none is shown as verified and 16 are
-  contradicted, all 19 true controls are verified, and no true or neutral
+  of 32 planted wrong claims none is shown as verified and 16 are
+  contradicted, all 25 true controls are verified, and no true or neutral
   claim is contradicted; the test holds those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only

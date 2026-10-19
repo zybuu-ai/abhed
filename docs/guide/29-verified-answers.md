@@ -94,9 +94,17 @@ counts (`12 tests`, `replicas: 3`). Then:
   that changed that file, matched on whole path segments (`a.go` is not
   `data.go`); a command counts only for the files it writes (a redirection,
   `tee`, the destination of `cp` or `mv`, `sed -i`, `rm`, `touch`, …), not for
-  one it reads. One that it ran a command needs that command as one of the
-  simple commands of a call, with any further arguments: `echo 'go test'` is
-  not `go test`. With none, the statement is contradicted.
+  one it reads, and a `cd` earlier on the line places what follows. It is
+  contradicted only when every change in the session names its files and none
+  is this one: after a command whose writes cannot be read from it (a script,
+  `git apply`, `patch`, a tool other than `write`, `edit`, `bash` and `ssh`),
+  it is unverified instead. One that it ran a command needs that command as
+  one of the simple commands of a call, with any further arguments:
+  `echo 'go test'` is not `go test`; the same program and subcommand with
+  other arguments leaves it unverified. With none, the statement is
+  contradicted. Runners and launchers (`env`, `time`, `sudo`, `timeout`,
+  `npx`, `uv run`, `poetry run`, `pnpm exec` and the like) are taken off
+  first, so `env sed -i` is a change and `timeout 300 go test` a test run.
 - **A subagent's work counts.** The parent's record names each subagent's
   session, and its own record is read too (up to three levels deep): its
   results are evidence and its calls are changes, placed at the parent's
@@ -285,16 +293,20 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 27 plant a wrong test count or result, replica count, port, version,
+session. 32 plant a wrong test count or result, replica count, port, version,
 host, path, disk figure, file change, command, `file:line` or citation, among
 them "tests pass" after only `ls tests` or `test -f go.mod` ran, a change
-claimed for `a.go` when `data.go` was edited or for a file only copied, and a
-command claimed from an `echo` of it; 19 controls say only what the session
-showed, a file written by a heredoc or `sed -i` and a command run with more
-arguments among them; 3 are general knowledge. Today none of the 27 planted
-claims is shown as verified (16 are contradicted, the rest unverified), all 19
-controls are verified, and none of the 22 true or neutral claims is
-contradicted. The test fails if a planted claim is shown as
+claimed for `a.go` when `data.go` was edited or for a file only copied, a
+command claimed from an `echo` of it, and a read relied on after `env sed -i`,
+`time sed -i`, `command cp`, `sort -o` or `make` changed things; 25 controls
+say only what the session showed, among them files written by a heredoc,
+`sed -i` after a `cd`, `gofmt -w` or `echo x>>f`, and tests run under
+`timeout`, `npx` or `uv run`; 6 are neutral: general knowledge, and true
+change claims after a script or `git apply` whose writes cannot be read, or a
+command quoted with its arguments in another order. Today none of the 32
+planted claims is shown as verified (16 are contradicted, the rest
+unverified), all 25 controls are verified, and none of the 31 true or neutral
+claims is contradicted. The test fails if a planted claim is shown as
 verified, if a true one is contradicted, or if either count falls below its
 floor; the floors only go up. The corpus is small and written by the people
 who wrote the checks, so it shows what the checks do on these shapes of
