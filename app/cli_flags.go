@@ -406,6 +406,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return providersCmd()
 	case "record":
 		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
+	case "logs":
+		return logsCmd(workspace, rest[1:], a.trust, os.Stdout, os.Stderr)
 	case "sessions":
 		return recordCmd(workspace, append([]string{"list"}, rest[1:]...), a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "hawkeye":
@@ -504,7 +506,7 @@ var permissionModes = map[string]string{
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"sandbox": true, "secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"sandbox": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true,
 }
 
