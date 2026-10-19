@@ -344,7 +344,7 @@ func TestStrictRevisesOnceThenCompletes(t *testing.T) {
 	l, store, ad, _ := verifyHarness(t, VerifyStrict, false, []scriptedTurn{
 		{calls: []model.ToolCall{call("bash", map[string]string{"command": "printf '12 tests passed\\n'"})}},
 		{text: "All 15 tests pass."},
-		{text: "12 tests passed."},
+		{text: "The output shows 12 tests."},
 	})
 	reason, _ := l.Run(context.Background(), "run the tests")
 	if reason != TermCompleted {
@@ -691,5 +691,34 @@ func TestVerifyUnderARunbook(t *testing.T) {
 	vs := answerVerdicts(r.store)
 	if len(vs) != 1 || vs[0].Verified != 1 || vs[0].Contract == nil || !vs[0].Contract.OK || vs[0].Outcome != ClaimVerified {
 		t.Fatalf("verdict %+v", vs)
+	}
+}
+
+// Commands are read by program and words, not by text they happen to hold.
+func TestReadingCommands(t *testing.T) {
+	for cmd, kind := range map[string]string{"go test ./...": "test", "cd api && npm run test:unit": "test", "ls tests": "",
+		"test -f go.mod": "", "ls build/": "", "make": "build", "sudo -E go build ./...": "build", "echo 'go test'": "",
+		"python3 -m pytest -q": "test", "FOO=1 cargo clippy": "build"} {
+		got := ""
+		for _, w := range simpleCommands(cmd) {
+			if k := commandKind(w); k != "" {
+				got = k
+			}
+		}
+		if got != kind {
+			t.Errorf("%q: kind %q, want %q", cmd, got, kind)
+		}
+	}
+	targets := writeTargets("cp login.go /tmp/b.go && sed -i 's/a/b/' cfg.yaml && echo x >> log.txt && tee out.txt < in.txt && git checkout -- main.go && cat a.go 2>/dev/null")
+	want := []string{"/tmp/b.go", "cfg.yaml", "log.txt", "out.txt", "main.go"}
+	if strings.Join(targets, ",") != strings.Join(want, ",") {
+		t.Errorf("write targets %q, want %q", targets, want)
+	}
+	if !pathIs("/w/internal/auth/login.go", "auth/login.go") || pathIs("/w/data.go", "a.go") || pathIs("/w/login.go.bak", "login.go") {
+		t.Error("paths match on whole segments")
+	}
+	if !runsCommand("cd api && go test ./... -count=1", "go test ./...") || runsCommand("echo 'go test'", "go test") ||
+		runsCommand("go testdata", "go test") {
+		t.Error("a claimed command matches whole simple commands")
 	}
 }

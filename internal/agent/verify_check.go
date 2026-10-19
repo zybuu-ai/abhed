@@ -675,15 +675,9 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 		if o.tool != "bash" || o.exit == nil || !o.usable() {
 			return false
 		}
-		cmd := strings.ToLower(o.command)
-		switch testish {
-		case "test":
-			return strings.Contains(cmd, "test") || strings.Contains(cmd, "spec") || strings.Contains(cmd, "check")
-		case "build":
-			return strings.Contains(cmd, "build") || strings.Contains(cmd, "make") || strings.Contains(cmd, "compile") ||
-				strings.Contains(cmd, "vet") || strings.Contains(cmd, "lint") || strings.Contains(cmd, "tsc")
-		}
-		return true
+		// Known by its program and subcommand, not by a word in it: `ls tests`
+		// runs no tests.
+		return commandRuns(o.command, testish)
 	}
 	// The latest command of the kind after the last change, anywhere in the
 	// record: if it failed, the record contradicts the claim.
@@ -733,12 +727,16 @@ func (ix *recordIndex) changedPath(p string) finding {
 		if m.person || m.failed {
 			continue
 		}
-		target := normText(m.path)
+		// A file tool's own path, or a file a command writes: a path it only
+		// reads (the source of a cp) is not a change to it.
+		targets := []string{m.path}
 		if m.path == "" {
-			target = normText(m.command)
+			targets = writeTargets(m.command)
 		}
-		if target != "" && (strings.HasSuffix(target, p) || strings.Contains(target, p)) {
-			return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+		for _, t := range targets {
+			if pathIs(t, p) {
+				return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+			}
 		}
 	}
 	if ix.subagents {
@@ -752,7 +750,7 @@ func (ix *recordIndex) changedPath(p string) finding {
 func (ix *recordIndex) ranCommand(cmd string) finding {
 	for _, o := range ix.obs {
 		// A command run on a host over ssh is one the agent ran too.
-		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && strings.Contains(normText(o.command), cmd) {
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && runsCommand(o.command, cmd) {
 			return finding{out: matched, what: fmt.Sprintf("`%s` ran at #%d", clipRunes(cmd, 40), o.seq), seq: o.seq}
 		}
 	}
@@ -949,7 +947,7 @@ func readOnlyProgram(prog, sub string, words []string) bool {
 		return sub == "test" || sub == "t" || (sub == "run" && len(words) > 2 && (strings.HasPrefix(words[2], "test") ||
 			strings.HasPrefix(words[2], "lint") || strings.HasPrefix(words[2], "build") || strings.HasPrefix(words[2], "check")))
 	case "make":
-		return sub == "test" || sub == "check" || sub == "lint" || sub == "build" || sub == "vet"
+		return sub == "" || sub == "all" || sub == "test" || sub == "check" || sub == "lint" || sub == "build" || sub == "vet"
 	case "python", "python3":
 		return len(words) > 2 && sub == "-m" && (words[2] == "pytest" || words[2] == "unittest" || words[2] == "mypy")
 	case "mvn", "gradle", "./gradlew":
