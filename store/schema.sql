@@ -613,3 +613,79 @@ CREATE TRIGGER session_keys_no_truncate BEFORE TRUNCATE ON session_keys
   FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
 
 INSERT INTO schema_version (version) VALUES (10) ON CONFLICT DO NOTHING;
+
+-- Schema version 11: rows from before the chain are marked once, as they were.
+--
+-- Since version 8 the trigger chains every row, so a row with no chain is
+-- either from before then or was written with the trigger off. This version
+-- counts, per chain, the rows that were already there when the chain began
+-- (each below the chain's first row), and keeps the count where the runtime
+-- role can only read it. Nothing is chained over them after the fact: a hash
+-- computed now would vouch for rows nobody checked when they were written.
+-- A check then fails any unchained row the count does not cover.
+CREATE TABLE IF NOT EXISTS chain_pre (
+  tbl       TEXT        NOT NULL,
+  key       TEXT        NOT NULL,
+  tenant_id TEXT        NOT NULL,
+  pre_rows  BIGINT      NOT NULL,
+  last_seq  BIGINT      NOT NULL,
+  marked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tbl, key)
+);
+DROP TRIGGER IF EXISTS chain_pre_no_update ON chain_pre;
+CREATE TRIGGER chain_pre_no_update BEFORE UPDATE ON chain_pre
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS chain_pre_no_delete ON chain_pre;
+CREATE TRIGGER chain_pre_no_delete BEFORE DELETE ON chain_pre
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_immutable();
+DROP TRIGGER IF EXISTS chain_pre_no_truncate ON chain_pre;
+CREATE TRIGGER chain_pre_no_truncate BEFORE TRUNCATE ON chain_pre
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_events_immutable();
+ALTER TABLE chain_pre ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chain_pre FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS chain_pre_tenant_isolation ON chain_pre;
+CREATE POLICY chain_pre_tenant_isolation ON chain_pre
+  USING (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+
+-- abhed_chain_mark_pre marks the unchained rows below each chain's first
+-- row, in every tenant, and leaves a mark already made as it is. Row security
+-- is lifted for the calling transaction only; only the tables' owner can.
+CREATE OR REPLACE FUNCTION abhed_chain_mark_pre() RETURNS void AS $$
+BEGIN
+  ALTER TABLE events NO FORCE ROW LEVEL SECURITY;
+  ALTER TABLE sandbox_audit NO FORCE ROW LEVEL SECURITY;
+  ALTER TABLE chain_pre NO FORCE ROW LEVEL SECURITY;
+  INSERT INTO chain_pre (tbl, key, tenant_id, pre_rows, last_seq)
+  SELECT 'events', e.session_id, min(e.tenant_id), count(*), max(e.seq)
+  FROM events e
+  WHERE e.chain_pos IS NULL
+    AND e.seq < COALESCE((SELECT min(c.seq) FROM events c WHERE c.session_id = e.session_id AND c.chain_pos IS NOT NULL),
+                         9223372036854775807)
+  GROUP BY e.session_id
+  ON CONFLICT DO NOTHING;
+  INSERT INTO chain_pre (tbl, key, tenant_id, pre_rows, last_seq)
+  SELECT 'sandbox_audit', a.tenant_id, a.tenant_id, count(*), max(a.seq)
+  FROM sandbox_audit a
+  WHERE a.chain_pos IS NULL
+    AND a.seq < COALESCE((SELECT min(c.seq) FROM sandbox_audit c WHERE c.tenant_id = a.tenant_id AND c.chain_pos IS NOT NULL),
+                         9223372036854775807)
+  GROUP BY a.tenant_id
+  ON CONFLICT DO NOTHING;
+  ALTER TABLE events FORCE ROW LEVEL SECURITY;
+  ALTER TABLE sandbox_audit FORCE ROW LEVEL SECURITY;
+  ALTER TABLE chain_pre FORCE ROW LEVEL SECURITY;
+END;
+$$ LANGUAGE plpgsql;
+REVOKE ALL ON FUNCTION abhed_chain_mark_pre() FROM PUBLIC;
+
+-- Once, the first time this version is applied: a later run would mark rows
+-- written with the trigger off since.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version = 11) THEN
+    PERFORM abhed_chain_mark_pre();
+  END IF;
+END $$;
+
+INSERT INTO schema_version (version) VALUES (11) ON CONFLICT DO NOTHING;

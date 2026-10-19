@@ -114,12 +114,13 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
         run: |
           set -euo pipefail
-          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox' > record.log 2>&1 || { cat record.log; exit 1; }
+          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox|TestOwnerTamper|TestPreChain|TestGoVerifier' > record.log 2>&1 || { cat record.log; exit 1; }
           for t in TestRuntimeRoleCannotAlterTheRecord TestRuntimeRoleCanDoItsJob TestOpenRefusesARoleThatCanAlterTheRecord TestTruncateIsRefused \
-                   TestSandboxStoreConformance TestSandboxesAreTenantScoped TestSandboxAuditIsAppendOnlyForTheRuntimeRole; do
+                   TestSandboxStoreConformance TestSandboxesAreTenantScoped TestSandboxAuditIsAppendOnlyForTheRuntimeRole \
+                   TestRuntimeRoleCannotMarkPreChainRows TestOwnerTamperIsDetected TestPreChainRowsAreMarkedNotChained TestGoVerifierAgreesWithTheTrigger; do
             grep -q -- "--- PASS: $t" record.log || { echo "$t did not run and pass:"; grep -- "$t" record.log || true; exit 1; }
           done
-          echo "all seven ran and passed"
+          echo "all eleven ran and passed"
 
       # A tag can be moved to other code, and the release jobs hold the signing
       # identity: every action is used by full commit, its version in a comment.
