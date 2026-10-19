@@ -1337,6 +1337,9 @@ type SandboxConfig struct {
 	// folder but the known credential paths, as before 1.2.8, in place of
 	// only the toolchain folders, the workspace and read_only_paths.
 	ReadableHome bool `json:"readable_home,omitempty"`
+	// Image is the container tier's image in place of ABHED_SANDBOX_IMAGE,
+	// such as one with the project's toolchains. Never from a workspace file.
+	Image string `json:"image,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
@@ -1891,6 +1894,9 @@ func (c Config) Validate() error {
 	case "", "shell", "lines":
 	default:
 		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
+	}
+	if img := c.Sandbox.Image; img != "" && (strings.HasPrefix(img, "-") || strings.ContainsAny(img, " \t\r\n\x00")) {
+		return fmt.Errorf("sandbox.image %q is not an image reference", img)
 	}
 	for lang, argv := range c.Sandbox.LanguageServers {
 		if !languageID.MatchString(lang) {

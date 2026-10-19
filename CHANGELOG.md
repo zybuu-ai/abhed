@@ -6,6 +6,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `sandbox.image` names the container tier's image, such as one with Go,
+  Node or Python, in place of `ABHED_SANDBOX_IMAGE`; a workspace file
+  cannot set it. `abhed doctor` (and Studio's checks) now warn when the
+  workspace looks like a Go, Node, Python or Rust project and the image
+  lacks its toolchain, and name an image that has it; nothing is pulled to
+  look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
 
 ## [1.2.8] - 2026-10-14
 

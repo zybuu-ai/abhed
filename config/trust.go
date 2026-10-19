@@ -279,7 +279,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	if st.Trusted {
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
-		servers := maps.Clone(cfg.Sandbox.LanguageServers)
+		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -289,6 +289,8 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		keepHA(cfg, path, data, ha, before, prior)
 		keepLanguageServers(cfg, path, data, servers, before, prior)
+		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
+			func() { cfg.Sandbox.Image = image })
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -680,6 +682,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
 	"sandbox.protect_git":           {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.language_servers":      {nil, "a language server is a process"},
+	"sandbox.image":                 {nil, "chooses the image commands run in"},
 	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
 	"fence":                         {nil, "tunes the fence tier's limits"},
 	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},

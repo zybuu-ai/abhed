@@ -161,6 +161,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `control_plane.interceptors` | ignored, trusted or not, as in the user's own file: only the managed configuration sets what admits sandbox calls |
 | `control_plane.ha` | ignored, trusted or not: only an operator's file (the user's own or the managed one) joins the server to replicas and names the relay's key, never a file that arrives with a repository |
 | `sandbox.language_servers` | ignored, trusted or not: only an operator's file (the user's own or the managed one) names the program the workbench editor starts as a file is opened |
+| `sandbox.image` | ignored, trusted or not: only an operator's file names the image the container tier runs commands in |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse

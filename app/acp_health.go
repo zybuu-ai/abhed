@@ -98,6 +98,11 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 		default:
 			add("sandbox", "Sandbox", "ok", "commands run under the "+string(sb.Tier())+" tier")
 		}
+		if c, ok := sb.(*sandbox.Container); ok {
+			if w := toolchainWarnings(c, workspace); len(w) > 0 {
+				add("toolchains", "Sandbox toolchains", "warn", strings.Join(w, "\n"))
+			}
+		}
 	}
 	switch {
 	case cfg.Storage.Driver == "postgres":

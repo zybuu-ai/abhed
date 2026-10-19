@@ -358,6 +358,48 @@ gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
 
+### The container tier's image
+
+The container tier runs each command in `docker.io/library/debian:bookworm-slim`
+unless told otherwise. It has a shell, coreutils and little else: no Go,
+Node, Python or Rust, so a project's build or tests fail there with
+`command not found`. This is what most Macs get, since the container tier is
+picked over the process tier when an engine is running. Name an image that
+has the toolchains the project needs:
+
+```json
+"sandbox": { "image": "docker.io/library/golang:1.26-bookworm" }
+```
+
+or, for one run, `ABHED_SANDBOX_IMAGE=docker.io/library/golang:1.26-bookworm abhed`.
+`sandbox.image` wins over the variable, so an image the managed file sets
+cannot be changed with it. A workspace file cannot set it, trusted or not:
+a repository does not choose what its commands run in.
+
+| Project | Image that has its toolchain |
+|---|---|
+| Go | `docker.io/library/golang:1.26-bookworm` |
+| Node | `docker.io/library/node:22-bookworm-slim` |
+| Python | `docker.io/library/python:3.12-slim-bookworm` |
+| Rust | `docker.io/library/rust:1-slim-bookworm` |
+
+A project that needs more than one toolchain needs an image of your own with
+all of them. Whatever the image, the tier runs it the same way: no network
+unless `allow_network` or the allowlist says so, a read-only root, every
+capability dropped, the workspace mounted and a throwaway `/tmp`. The image
+needs `/bin/sh`. Pull it once (`podman pull …`) before a session, since a
+command has no network to pull it with; pin it by digest where a tag must
+not move under you. The MCP servers the container and vm tiers confine run
+from the same image.
+
+`abhed doctor` looks at the workspace's top folder for `go.mod`/`go.work`,
+`package.json`, `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile`
+and `Cargo.toml`, and when the container tier's image lacks `go`, `node`,
+`python3` or `cargo`, says so on the `sandbox` line with the image to use.
+It knows the default image has none of them; any other it looks in only
+when the engine already has it, in a container with no network, and never
+pulls one to look.
+
 ### The fence tier (preview, Linux)
 
 ```json
