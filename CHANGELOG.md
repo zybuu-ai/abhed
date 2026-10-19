@@ -46,6 +46,14 @@ All notable changes to Abhed are recorded here. The format follows
 - `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
   or `stringData`, and withholds its values from the record; build such a
   Secret with `secret_from` from stored secrets and workspace files.
+- Postgres: schema version 11 adds the `chain_pre` table. Run `abhed migrate`
+  as the owner role before starting a server as the runtime role, which
+  refuses an older schema and says so; a `storage.single_role` server
+  applies it itself.
+- HawkEYE's `sandbox-denied` no longer fires on the words of a command's
+  output alone. A call whose output says an operation was not permitted,
+  with nothing in the record to show the sandbox refused it, is now
+  `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
 
 ### Security
 
@@ -70,6 +78,13 @@ All notable changes to Abhed are recorded here. The format follows
   starts and never writes anywhere, cut to 12 hex digits: two compare only
   while that Abhed runs, and unlike a plain sha256 it cannot be used to
   guess a short value offline.
+- `abhed record verify` on Postgres asked the database's own
+  `abhed_chain_verify` whether a chain held, which the tables' owner could
+  replace with one that passes any chain, and counted an event inserted
+  with the chain's trigger off as "from before the chain" rather than a
+  failure. Abhed now recomputes every hash itself from the rows, and fails
+  an event with no chain unless the migration counted it as there before
+  the chain began.
 
 ### Added
 
@@ -248,6 +263,32 @@ All notable changes to Abhed are recorded here. The format follows
   per host and cluster, with the decision, the exit code and the runbook
   step it was, in the text and HTML reports and the workbench
   ([HawkEYE](docs/guide/15-hawkeye.md)).
+- `abhed record export <session>` with `storage.driver: postgres` writes the
+  session's hash chain, each event as it was hashed, with the head the
+  database held; `abhed record verify` checks that file anywhere, with no
+  database, and fails an edited, removed, reordered, duplicated or cut line,
+  or a file that no longer holds a head given with `-head position:hash` or
+  held by `-witness` ([Records](docs/guide/12-records.md#the-postgres-record)).
+- Events written before the Postgres chain began (before 1.2.8) are
+  counted once, per session, in `chain_pre`, and reported as not covered;
+  nothing is chained over them.
+- A chain head API, `store/chain`: a chain's head (last position and hash)
+  and a check of a range of it, answered by the Postgres events (per
+  session), the sandbox audit (per tenant) and the local record, for heads
+  to be signed and anchored outside the store.
+- Soaks of the chained append path, Postgres and local, which fail on any
+  event a writer was told was written and the store does not hold. On a
+  Mac with Postgres 17 in a 4-CPU Podman VM and 32 sessions writing: 1,500
+  events a second held for two minutes (180,032 events), and 1,400 to 2,300
+  a second flat out with the VM's CPU the limit, none dropped; the local
+  record about 63,000 a second.
+- HawkEYE reads the sandbox's own events for `sandbox-denied`: the fence's
+  memory kills and process-limit refusals (`fence.limit`), git protection's
+  refusals, and bash's note, now recorded with the result as
+  `sandbox_note`. The detail names each and the event it is from. On a
+  labelled set of 30 calls its precision is 1.00 and its recall 0.81,
+  against 0.57 and 0.50 for the output's words alone
+  ([HawkEYE](docs/guide/15-hawkeye.md#findings)).
 
 ### Changed
 
@@ -255,6 +296,13 @@ All notable changes to Abhed are recorded here. The format follows
   one; `plan.decided` carries the `plan_hash` and runbook an accept bound,
   and on a server who answered (`by`)
   ([Data model](docs/architecture/10-data-model.md)).
+- An `observation` of `bash` carries `sandbox_note` when bash added a note
+  that an operation was not permitted under a sandbox: the credential path
+  or Abhed's own state the output named, or `denied`
+  ([Data model](docs/architecture/10-data-model.md)).
+- A `bash` note now also names a refusal of a credential file the sandbox
+  denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
+  `~/.netrc` or `~/.config/gh`), and of Abhed's own state.
 
 ### Fixed
 
@@ -306,6 +354,14 @@ All notable changes to Abhed are recorded here. The format follows
 - `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
   `DriftReport` and `RunDrift`.
 - `abhed -p`'s JSON result line gains `verdict` when answers are checked.
+- `store/chain`: `Head`, `Range`, `Source`, `Link`, `LinkHash`, `Genesis`,
+  `Walker` and `NewWalker`, and the export format's `Header`, `Writer`,
+  `NewWriter`, `ExportReport`, `VerifyExport`, `IsExport` and
+  `ExportVersion`.
+- `store`: `Postgres.EventChain`, `Postgres.AuditChain`,
+  `Postgres.ExportChain`, and `ChainReport.Reason` and `ChainReport.PreChain`.
+- `store/local`: `Store.Chain`.
+- `hawkeye`: `SandboxSignal`, `Call.Sandbox` and `Call.SandboxUnconfirmed`.
 
 ## [1.2.8] - 2026-10-14
 
