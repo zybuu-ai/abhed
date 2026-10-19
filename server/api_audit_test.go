@@ -113,6 +113,9 @@ func auditRig(t *testing.T, audit controlplane.AuditLog, m *metrics.Abhed, mount
 		o.CLILogin = auth.NewCLILogin(cli)
 		o.APIAudit, o.Metrics = audit, m
 		o.Mounts = append(o.Mounts, func(_ *Server, mux *http.ServeMux) {
+			mux.HandleFunc("POST /v1/edition/made", func(w http.ResponseWriter, _ *http.Request) {
+				WriteJSON(w, http.StatusCreated, map[string]string{"id": "thing_42", "name": "a name with spaces", "text": "secret words"})
+			})
 			mux.HandleFunc("POST /v1/edition/thing", func(w http.ResponseWriter, _ *http.Request) {
 				if mounted != nil {
 					*mounted = true
@@ -131,7 +134,7 @@ func auditRig(t *testing.T, audit controlplane.AuditLog, m *metrics.Abhed, mount
 func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	audit := controlplane.NewMemory()
 	r, ex := auditRig(t, audit, nil, nil)
-	routes := append(sourceRoutes(t, ex.Prefix()), "POST /v1/edition/thing")
+	routes := append(sourceRoutes(t, ex.Prefix()), "POST /v1/edition/thing", "POST /v1/edition/made")
 	public := r.srv.opts.Auth.PublicPaths
 	mutating := 0
 	for _, p := range routes {
@@ -151,6 +154,13 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 			rec := r.do(t, cpCall{method: method, path: fill(p), token: "admin", body: "{}"})
 			after, _ := audit.AuditFor(context.Background(), "")
 			evs := after[len(before):]
+			if batched[p] != "" {
+				if len(evs) != 1 || evs[0].Outcome != controlplane.OutcomeRequested || evs[0].Principal != "root" ||
+					evs[0].Action != APIAuditPrefix+p || evs[0].Detail["batch"] == "" {
+					t.Fatalf("a batched route wrote %+v, want its one requested event", evs)
+				}
+				return
+			}
 			if len(evs) != 2 {
 				t.Fatalf("%d audit events for %s (status %d), want 2: %+v", len(evs), p, rec.Code, evs)
 			}
@@ -184,9 +194,11 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	if mutating < 50 {
 		t.Fatalf("the table has %d mutating routes; the scan is missing some", mutating)
 	}
-	for p := range unaudited {
-		if !slices.Contains(routes, p) {
-			t.Errorf("unaudited names %s, which no code registers", p)
+	for _, list := range []map[string]string{unaudited, batched} {
+		for p, why := range list {
+			if !slices.Contains(routes, p) || why == "" {
+				t.Errorf("%s is listed with reason %q but no code registers it", p, why)
+			}
 		}
 	}
 }
@@ -270,5 +282,38 @@ func TestRoutedIsOffByDefault(t *testing.T) {
 	mux := http.NewServeMux()
 	if h := s.routed(mux); h != http.Handler(mux) {
 		t.Fatal("routed wrapped the mux with nothing to do")
+	}
+}
+
+// The outcome of a create names what it made, from the answer's id fields
+// alone; text in the answer, and an id field holding text, are left out.
+func TestAuditNamesWhatWasCreated(t *testing.T) {
+	audit := controlplane.NewMemory()
+	r, _ := auditRig(t, audit, nil, nil)
+	if rec := r.do(t, cpCall{method: "POST", path: "/v1/edition/made", token: "admin"}); rec.Code != http.StatusCreated {
+		t.Fatalf("status %d", rec.Code)
+	}
+	evs, _ := audit.AuditFor(context.Background(), "")
+	if len(evs) != 2 {
+		t.Fatalf("%d events", len(evs))
+	}
+	d := evs[1].Detail
+	if d["created.id"] != "thing_42" || d["created.name"] != "" || evs[0].Detail["created.id"] != "" {
+		t.Fatalf("detail %v / %v", evs[0].Detail, d)
+	}
+	for _, v := range d {
+		if strings.Contains(v, "secret") || strings.Contains(v, "spaces") {
+			t.Fatalf("the audit holds answer text: %v", d)
+		}
+	}
+	// A sandbox's id, from the real create.
+	if rec := r.do(t, cpCall{method: "POST", path: "/v1/sandboxes", token: "admin", body: `{"template":"default"}`}); rec.Code != http.StatusCreated {
+		t.Fatalf("create sandbox: %d %s", rec.Code, rec.Body)
+	} else {
+		sb := decodeSandbox(t, rec)
+		evs, _ = audit.AuditFor(context.Background(), "")
+		if got := evs[len(evs)-1].Detail["created.id"]; got != sb.ID {
+			t.Fatalf("created.id %q, want %s", got, sb.ID)
+		}
 	}
 }
