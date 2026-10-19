@@ -16,6 +16,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/filelock"
 )
 
+// sinkQueue is how many lines wait in memory before the rest are read back
+// from the record.
+var sinkQueue = 4096
+
 // SinkOptions configure a JSONL file of OCSF events.
 type SinkOptions struct {
 	// Path is the file; rotated copies are Path.1, Path.2 and so on.
@@ -85,7 +89,7 @@ func OpenSink(o SinkOptions) (*Sink, error) {
 	if err := os.MkdirAll(filepath.Dir(o.Path), 0o700); err != nil {
 		return nil, fmt.Errorf("ocsf: the sink's folder: %w", err)
 	}
-	s := &Sink{o: o, in: make(chan Line, 4096), wake: make(chan struct{}, 1), done: make(chan struct{}),
+	s := &Sink{o: o, in: make(chan Line, sinkQueue), wake: make(chan struct{}, 1), done: make(chan struct{}),
 		mapper: NewMapper(o.Map), behind: map[string]bool{}, primed: map[string]bool{}}
 	if err := s.start(); err != nil {
 		return nil, err
@@ -277,7 +281,6 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 	}
 	s.mu.Unlock()
 	var buf bytes.Buffer
-	moved := false
 	for _, l := range lines {
 		if l.Seq <= cur.Sessions[l.SessionID] {
 			continue
@@ -290,7 +293,6 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 		s.prime(l.SessionID, cur.Sessions[l.SessionID])
 		ev, ok, err := s.mapper.Map(l)
 		cur.Sessions[l.SessionID] = l.Seq
-		moved = true
 		if err != nil {
 			s.fail(fmt.Errorf("ocsf: map %s: %w", l, err))
 			continue
@@ -311,21 +313,21 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 			continue
 		}
 	}
-	if !moved {
+	// Lines that map to nothing, such as reply fragments, move no cursor on
+	// their own: read again after a restart, they are left out again.
+	if buf.Len() == 0 {
 		return
 	}
-	if buf.Len() > 0 {
-		if err := s.append(buf.Bytes()); err != nil {
-			// The cursor stays: the lines are written again next time.
-			s.fail(err)
-			s.mu.Lock()
-			for _, l := range lines {
-				s.behind[l.SessionID] = true
-			}
-			s.mu.Unlock()
-			s.poke()
-			return
+	if err := s.append(buf.Bytes()); err != nil {
+		// The cursor stays: the lines are written again from the record.
+		s.fail(err)
+		s.mu.Lock()
+		for _, l := range lines {
+			s.behind[l.SessionID] = true
 		}
+		s.mu.Unlock()
+		s.poke()
+		return
 	}
 	if err := s.writeCursor(cur); err != nil {
 		s.fail(err)

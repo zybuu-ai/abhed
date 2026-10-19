@@ -226,3 +226,32 @@ func TestSinkRotates(t *testing.T) {
 		t.Fatal("the sink did not write the version asked for")
 	}
 }
+
+// Lines the queue had no room for are read back from the record: the file
+// still holds each line once, in the record's order.
+func TestSinkCatchesUpWhatTheQueueDropped(t *testing.T) {
+	defer ocsf.SetSinkQueue(1)()
+	dir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	rec, sink := recordWithSink(t, dir, path)
+	r := newSession(t, rec, "s-1")
+	for i := 0; i < 300; i++ {
+		if _, err := r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	defer rec.Close()
+	got := readEvents(t, path)
+	sealed, _ := rec.SealedSince("s-1", 0)
+	if len(got) != len(sealed) {
+		t.Fatalf("the file has %d events, the record %d lines", len(got), len(sealed))
+	}
+	for i := range got {
+		if got[i].Seq != sealed[i].Seq {
+			t.Fatalf("event %d is seq %d, want %d", i, got[i].Seq, sealed[i].Seq)
+		}
+	}
+}
