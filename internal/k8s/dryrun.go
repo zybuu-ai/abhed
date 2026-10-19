@@ -20,8 +20,7 @@ import (
 // says what the write would do, the approval shows the difference from the
 // live object, and the request it checked is the one sent once approved.
 
-// dryRunTimeout bounds the dry run, which runs before the approval with no
-// call to stop it.
+// dryRunTimeout bounds the dry run, which runs before the approval.
 const dryRunTimeout = 30 * time.Second
 
 // plannedFor is how long a planned request waits for its approval.
@@ -108,6 +107,11 @@ func (m *Manager) takePlanned(sess *tools.Session, raw json.RawMessage) *request
 // cannot be planned, or whose dry run the cluster refuses, is refused before
 // anyone is asked, with the reason; nothing is applied.
 func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
+	return t.PrecheckContext(context.Background(), sess, raw)
+}
+
+// PrecheckContext is Precheck stopping with ctx: the turn's, in the loop.
+func (t ApplyTool) PrecheckContext(ctx context.Context, sess *tools.Session, raw json.RawMessage) error {
 	if t.M == nil {
 		return nil
 	}
@@ -125,7 +129,7 @@ func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 		t.M.keep(sess, raw, planned{preview: noDryRun})
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), dryRunTimeout)
+	ctx, cancel := context.WithTimeout(ctx, dryRunTimeout)
 	defer cancel()
 	req, err := t.plan(ctx, sess, c, a)
 	if err != nil {

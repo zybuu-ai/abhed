@@ -53,6 +53,24 @@ type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
 }
 
+// ContextPrechecker is a Prechecker whose check reaches elsewhere, such as a
+// cluster's dry run, and so stops with ctx, which ends with the turn.
+type ContextPrechecker interface {
+	PrecheckContext(ctx context.Context, sess *Session, args json.RawMessage) error
+}
+
+// Precheck runs t's check of a call, with ctx when it takes one; nil when t
+// makes none.
+func Precheck(ctx context.Context, t Tool, sess *Session, args json.RawMessage) error {
+	if pc, ok := t.(ContextPrechecker); ok {
+		return pc.PrecheckContext(ctx, sess, args)
+	}
+	if pc, ok := t.(Prechecker); ok {
+		return pc.Precheck(sess, args)
+	}
+	return nil
+}
+
 // ArgResolver fills in what a call leaves to the session, such as the one
 // cluster it logged in to, and puts what it names in the one form the tool
 // uses, so that policy, the approver and the record judge what the call will

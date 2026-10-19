@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -232,5 +233,28 @@ func TestSecretDiffShowsNoValues(t *testing.T) {
 		if strings.Contains(why, leak) {
 			t.Errorf("approval %q shows %q", why, leak)
 		}
+	}
+}
+
+// The dry run stops with the turn: a cluster that does not answer holds the
+// call only until its context ends.
+func TestDryRunStopsWithTheTurn(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := ApplyTool{M: mgr}.PrecheckContext(ctx, newSession(t),
+		json.RawMessage(`{"action":"restart","resource":"deployments","name":"web"}`))
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("dry run against a silent cluster: %v after %s", err, time.Since(start))
 	}
 }

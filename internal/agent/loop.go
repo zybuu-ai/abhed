@@ -1511,8 +1511,8 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// deny. An allowed write the tool would refuse (into .abhed in
 	// accept-edits) was recorded approved, then refused.
 	var doomed error
-	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision != policy.Deny {
-		doomed = pc.Precheck(l.Session, call.Args)
+	if decision.Decision != policy.Deny {
+		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {

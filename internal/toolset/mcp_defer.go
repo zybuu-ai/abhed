@@ -190,6 +190,10 @@ func (d *deferredTool) MutatesCall(args json.RawMessage) bool {
 	return false
 }
 
+func (d *deferredTool) PrecheckContext(ctx context.Context, sess *tools.Session, args json.RawMessage) error {
+	return tools.Precheck(ctx, d.Tool, sess, args)
+}
+
 func (d *deferredTool) Precheck(sess *tools.Session, args json.RawMessage) error {
 	if p, ok := d.Tool.(tools.Prechecker); ok {
 		return p.Precheck(sess, args)
