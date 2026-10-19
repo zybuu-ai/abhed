@@ -7,7 +7,11 @@
 // machine from an exported file, years after the session ran.
 package hawkeye
 
-import "time"
+import (
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+)
 
 // Report is everything HawkEYE derives from one session.
 type Report struct {
@@ -46,6 +50,15 @@ type Report struct {
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.
 	SubagentActions []SubagentAction `json:"subagent_actions,omitempty"`
+	// Answers are the checks on the session's answers, in order, as each
+	// answer.verdict recorded them.
+	Answers []Answer `json:"answers,omitempty"`
+}
+
+// Answer is one answer.verdict and where the record holds it.
+type Answer struct {
+	Seq int64 `json:"seq"`
+	agent.AnswerVerdict
 }
 
 type Totals struct {

@@ -1,6 +1,9 @@
 package hawkeye
 
-import "github.com/zybuu-ai/abhed/internal/ui"
+import (
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/ui"
+)
 
 // shown returns a copy of the report for a reader, with every record-derived
 // string made visible: bidi, zero-width and control characters cannot reorder
@@ -56,6 +59,29 @@ func shown(r Report) Report {
 		return a
 	})
 	r.Files = each(r.Files, func(f FileTouch) FileTouch { f.Path = v(f.Path); return f })
+	r.Answers = each(r.Answers, func(a Answer) Answer {
+		a.Source, a.Outcome, a.Revision = v(a.Source), v(a.Outcome), v(a.Revision)
+		a.Claims = each(a.Claims, func(c agent.ClaimVerdict) agent.ClaimVerdict {
+			c.Text, c.Kind, c.Verdict, c.Reason, c.Critic = v(c.Text), v(c.Kind), v(c.Verdict), v(c.Reason), v(c.Critic)
+			c.Cited, c.Checked = each(c.Cited, v), each(c.Checked, v)
+			if c.Conflict != nil {
+				k := *c.Conflict
+				k.CallID, k.Excerpt = v(k.CallID), v(k.Excerpt)
+				c.Conflict = &k
+			}
+			return c
+		})
+		if a.Contract != nil {
+			k := *a.Contract
+			k.Protected = each(k.Protected, v)
+			k.Require = each(k.Require, func(q agent.RequireResult) agent.RequireResult {
+				q.Command, q.Reason = v(q.Command), v(q.Reason)
+				return q
+			})
+			a.Contract = &k
+		}
+		return a
+	})
 	r.Findings = each(r.Findings, func(f Finding) Finding {
 		f.Code, f.Title, f.Detail = v(f.Code), v(f.Title), v(f.Detail)
 		return f

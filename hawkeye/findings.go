@@ -58,6 +58,23 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 		out = append(out, Finding{Severity: sev, Code: code, Title: title, Detail: detail, Seq: seq})
 	}
 
+	// An answer shown with a claim the record contradicts, or ended unverified.
+	for _, a := range r.Answers {
+		if a.Revision != "" {
+			continue // a revision followed; the next verdict is what was shown last
+		}
+		for _, c := range a.Claims {
+			if c.Verdict == agent.ClaimContradicted {
+				add(Warn, "contradicted-claim", "An answer made a claim the record contradicts",
+					fmt.Sprintf("%q — %s. It was shown struck through, not as fact.", clip(c.Text, 160), clip(c.Reason, 200)), a.Seq)
+			}
+		}
+		if a.Contract != nil && !a.Contract.OK {
+			add(Warn, "contract-unmet", "The completion contract was not met",
+				"The run could not end completed: a required command failed or a protected file changed.", a.Seq)
+		}
+	}
+
 	// The record first: everything else in the report stands on it.
 	if in := r.Integrity; len(in.Gaps) > 0 {
 		detail := fmt.Sprintf("The sequence skips at %v. An append-only store does not produce gaps, "+

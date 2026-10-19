@@ -1425,6 +1425,9 @@ type createRequest struct {
 	// Workbench opens a session with no prompt, idle until a message arrives,
 	// so the workbench has a sandbox to work in before anyone asks the agent.
 	Workbench bool `json:"workbench,omitempty"`
+	// Verify is how the session's answers are checked: off, label or strict.
+	// Unset takes verify.mode, and with that unset labels them for a person.
+	Verify string `json:"verify,omitempty"`
 }
 
 // errNotSoleOwner refuses a session on a shared server for another account.
@@ -1471,6 +1474,8 @@ type StartSpec struct {
 	Prompt   string
 	Mode     string
 	Provider string
+	// Verify is the session's verify mode; see createRequest.
+	Verify string
 	// ClientID is echoed on the first user.message; see createRequest.
 	ClientID string
 	User     string
@@ -1552,8 +1557,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, errBadClientID.Error())
 		return
 	}
+	// Refused before anything is made: a managed mode may only be made stricter.
+	if _, err := toolset.VerifyFlag(s.opts.Config, req.Verify); err != nil {
+		WriteError(w, http.StatusBadRequest, "verify: "+err.Error())
+		return
+	}
 	spec := StartSpec{
-		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
+		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID, Verify: req.Verify,
 		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()), admin: s.isAdminCtx(r.Context()),
 	}
 	start := s.StartSession
@@ -2033,6 +2043,15 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		if loop.Suggest != nil {
 			// A revoked owner gets no suggestion, even from a run still ending.
 			loop.Suggest.Hold = live.ownerGone.Load
+		}
+	}
+	// A person reads the answer at the console or the IDE, so it is labelled
+	// unless configured otherwise; an unattended run checks only when asked.
+	if vcfg, err := toolset.VerifyFlag(s.opts.Config, spec.Verify); err == nil {
+		if v, err := toolset.Verifier(vcfg, !spec.Unattended); err == nil {
+			v.Install(loop)
+		} else {
+			s.log.Warn("answers not checked", "session", sessionID, "error", err)
 		}
 	}
 	live.Loop = loop
