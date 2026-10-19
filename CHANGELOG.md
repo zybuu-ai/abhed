@@ -419,6 +419,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Postgres: an event appended while its session was being deleted could be
+  written into the deleted session, because the insert's check ran before it
+  waited for the session's chain lock. The chain trigger now refuses the row
+  once it holds the lock (schema version 15), and a delete takes the locks of
+  the whole session tree first, so an append either lands before the delete
+  or is refused after it. `store.Postgres.LockSessionTree`,
+  `DeleteSessionTx` and `Forget` let an edition check a session under those
+  locks and delete it in the same transaction. Run `abhed migrate`.
 - On a Mac, a Podman CLI that hung while Abhed asked it for its machine's
   socket was killed alone: a helper it had started kept running, and its
   open pipe held the query a second past its bound. The query now runs in

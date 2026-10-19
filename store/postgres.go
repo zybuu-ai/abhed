@@ -488,6 +488,10 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return fmt.Errorf("append event for unknown session %s: call CreateSession first", ev.SessionID)
 		}
+		// Deleted while this append waited for the session's lock.
+		if errors.As(err, &pgErr) && pgErr.Code == "ABD01" {
+			return fmt.Errorf("append event %s/%d: session %s: %w", ev.SessionID, ev.Seq, ev.SessionID, ErrSessionDeleted)
+		}
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	if tag.RowsAffected() == 0 {
@@ -1087,27 +1091,59 @@ func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Dur
 func (p *Postgres) DeleteSession(sessionID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// The session's subagents go with it: their records hold its work. They
-	// are marked the same way, so their rows stay for the audit too.
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	ids, err := p.LockSessionTree(ctx, tx, sessionID)
+	if err != nil {
+		return err
+	}
+	if err := p.DeleteSessionTx(ctx, tx, ids); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	}
+	p.Forget(ids)
+	return nil
+}
+
+// LockSessionTree takes, in tx, the append lock of the session and of each
+// of its subagents, in order, and returns their ids. Until tx ends no event
+// is added to any of them, and one waiting is refused once a delete in tx
+// commits. A caller can check the tree under the locks, then delete it with
+// DeleteSessionTx in the same tx.
+func (p *Postgres) LockSessionTree(ctx context.Context, tx pgx.Tx, root string) ([]string, error) {
 	rows, err := tx.Query(ctx, `
 		WITH RECURSIVE tree(id) AS (
 			SELECT id FROM sessions WHERE id = $1
 			UNION
 			SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
 		)
-		SELECT id FROM tree`, sessionID)
+		SELECT id FROM tree ORDER BY id`, root)
 	if err != nil {
-		return fmt.Errorf("delete session %s: %w", sessionID, err)
+		return nil, fmt.Errorf("lock session %s: %w", root, err)
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return fmt.Errorf("delete session %s: %w", sessionID, err)
+		return nil, fmt.Errorf("lock session %s: %w", root, err)
 	}
+	// The lock abhed_events_chain takes for each insert.
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('events/' || $1, 0))`, id); err != nil {
+			return nil, fmt.Errorf("lock session %s: %w", id, err)
+		}
+	}
+	return ids, nil
+}
+
+// DeleteSessionTx marks the sessions ids (a tree LockSessionTree gave)
+// deleted in tx, as DeleteSession does. Once tx commits, call Forget(ids).
+// The session's subagents go with it: their records hold its work. They are
+// marked the same way, so their rows stay for the audit too.
+func (p *Postgres) DeleteSessionTx(ctx context.Context, tx pgx.Tx, ids []string) error {
 	for _, q := range []string{
 		`UPDATE sessions SET deleted_at = now(), deleted_by = user_id WHERE id = ANY($1) AND deleted_at IS NULL`,
 		`UPDATE sessions SET prompt = '', title = '' WHERE id = ANY($1)`,
@@ -1115,16 +1151,18 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 		`DELETE FROM session_keys WHERE session_id = ANY($1)`,
 	} {
 		if _, err := tx.Exec(ctx, q, ids); err != nil {
-			return fmt.Errorf("delete session %s: %w", sessionID, err)
+			return fmt.Errorf("delete sessions %v: %w", ids, err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("delete session %s: %w", sessionID, err)
-	}
+	return nil
+}
+
+// Forget drops this process's copies of the deleted sessions' keys, after a
+// DeleteSessionTx has committed.
+func (p *Postgres) Forget(ids []string) {
 	for _, id := range ids {
 		p.keys.drop(id)
 	}
-	return nil
 }
 
 // SaveCheckpoint records a file's prior content, backing /undo.

@@ -745,6 +745,11 @@ DECLARE
   last_hash text;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended('events/' || NEW.session_id, 0));
+  -- Read after the lock (version 15): a delete that held it has committed, and
+  -- a row for its session is refused rather than written into an erased one.
+  IF EXISTS (SELECT 1 FROM sessions WHERE id = NEW.session_id AND deleted_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'session % is deleted', NEW.session_id USING ERRCODE = 'ABD01';
+  END IF;
   SELECT chain_pos, hash INTO last_pos, last_hash FROM events
     WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
   NEW.inserted_at := now();
@@ -766,3 +771,9 @@ DROP TRIGGER IF EXISTS events_inserted_at ON events;
 DROP INDEX IF EXISTS events_payload_idx;
 
 INSERT INTO schema_version (version) VALUES (14) ON CONFLICT DO NOTHING;
+
+-- Schema version 15: abhed_events_chain refuses a row for a deleted session
+-- once it holds the session's lock (SQLSTATE ABD01). A delete that takes the
+-- same locks for its session tree (DeleteSessionTx) cannot be followed by a
+-- row the insert's own check let through before the delete committed.
+INSERT INTO schema_version (version) VALUES (15) ON CONFLICT DO NOTHING;
