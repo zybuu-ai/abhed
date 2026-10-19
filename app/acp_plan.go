@@ -85,22 +85,24 @@ func (c *acpConn) decidePlan(ctx context.Context, s *acpSession, runErr error) s
 		_, err := loop.Recorder.Record(t, agent.ActorUser, agent.Trusted, payload)
 		return err
 	}
-	// Each change is on record before it takes effect.
-	if from := loop.Policy.Mode; from != to {
-		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
-			return keep("The mode change could not be recorded, so planning goes on: " + err.Error())
-		}
-		loop.Policy.Mode = to
-	}
+	// Each change is on record before it takes effect: the answer first, so
+	// one the record did not take changes nothing; then the mode.
 	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
 	if rb := plan.Runbook; rb != nil {
 		decided.PlanHash, decided.Runbook = rb.Hash, rb
 	}
 	if err := record(agent.EvPlanDecided, decided); err != nil {
-		loop.UnbindPlan()
+		loop.ReofferPlan(plan)
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "failed"})
 		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock(
-			"\nThe plan's answer could not be recorded, so no runbook is bound: " + err.Error() + "\n")})
+			"\nThe plan's answer could not be recorded, so nothing changed and the plan still waits: " + err.Error() + "\n")})
 		return ""
+	}
+	if from := loop.Policy.Mode; from != to {
+		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
+			return keep("The mode change could not be recorded, so planning goes on: " + err.Error())
+		}
+		loop.Policy.Mode = to
 	}
 	if err := loop.AcceptPlan(plan); err != nil {
 		return keep("The runbook was not bound: " + err.Error())

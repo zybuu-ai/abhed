@@ -144,3 +144,24 @@ func TestManagedMonitorSectionLocksItOn(t *testing.T) {
 		t.Fatalf("off under a managed section: %v", err)
 	}
 }
+
+// A managed false is not a lock: a person who turned the supervisor on
+// themselves may turn it off again.
+func TestManagedMonitorOffIsNoLock(t *testing.T) {
+	withManaged(t, `{"monitor":{"enabled":false}}`)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, `{"monitor":{"enabled":true}}`)
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true})
+	if err != nil || !cfg.Monitor.Enabled {
+		t.Fatalf("%v %+v", err, cfg.Monitor)
+	}
+	if c, err := cfg.Apply(Overrides{Supervisor: "off"}); err != nil || c.Monitor.Enabled {
+		t.Fatalf("off refused under a managed false: %v", err)
+	}
+	withManaged(t, `{"monitor":{"enabled":true}}`)
+	cfg, _ = LoadWith(t.TempDir(), LoadOptions{Quiet: true})
+	if _, err := cfg.Apply(Overrides{Supervisor: "off"}); !isManaged(err) {
+		t.Fatalf("off under a managed true: %v", err)
+	}
+}

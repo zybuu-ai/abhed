@@ -300,3 +300,36 @@ func TestStalledTransferEndsWithItsContext(t *testing.T) {
 		})
 	}
 }
+
+// A stopped transfer closes the connection it used: one the host dialled
+// since, for another call, stays open.
+func TestStalledTransferDropsOnlyItsOwnConnection(t *testing.T) {
+	_, reg := ioHost(t)
+	h, _ := reg.get("vm1")
+	used, err := h.connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h.Close()
+	fresh, err := h.connect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.drop(used)
+	h.mu.Lock()
+	kept := h.client
+	h.mu.Unlock()
+	if kept != fresh {
+		t.Fatal("dropping the stopped transfer's connection dropped the one dialled since")
+	}
+	if _, _, err := fresh.SendRequest("keepalive@abhed", true, nil); err != nil && strings.Contains(err.Error(), "closed") {
+		t.Fatalf("the fresh connection was closed: %v", err)
+	}
+	h.drop(fresh)
+	h.mu.Lock()
+	gone := h.client == nil
+	h.mu.Unlock()
+	if !gone {
+		t.Fatal("dropping the current connection left it in place")
+	}
+}

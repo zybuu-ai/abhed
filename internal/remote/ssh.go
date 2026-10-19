@@ -321,6 +321,20 @@ func (h *Host) Close() error {
 	return nil
 }
 
+// drop closes c, and forgets it when it is still h's connection, so the
+// next call dials again; another connection h holds now is left alone.
+func (h *Host) drop(c *ssh.Client) {
+	if c == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.client == c {
+		h.client = nil
+	}
+	h.mu.Unlock()
+	_ = c.Close()
+}
+
 func asExitError(err error, target **ssh.ExitError) bool {
 	e := &ssh.ExitError{}
 	if errors.As(err, &e) {

@@ -82,7 +82,8 @@ func monitorBelow(c *Config, below MonitorConfig, belowSet func(string) bool) {
 	m := &c.Monitor
 	// A managed monitor section that leaves enabled out keeps it on: an
 	// organisation that tunes the supervisor relies on it running.
-	if !c.ManagedSets("monitor.enabled") || below.Enabled && belowSet("monitor.enabled") {
+	c.monitorLocked = !c.ManagedSets("monitor.enabled") || m.Enabled
+	if c.monitorLocked || below.Enabled && belowSet("monitor.enabled") {
 		m.Enabled = true
 	}
 	if below.OnUnavailable == "deny" {
@@ -102,8 +103,8 @@ func monitorBelow(c *Config, below MonitorConfig, belowSet func(string) bool) {
 func (c Config) applySupervisor(v string) (Config, error) {
 	switch v {
 	case "off":
-		if c.ManagedSets("monitor") && c.Monitor.Enabled {
-			return c, refuse("monitor.enabled", v, "the managed configuration sets the supervisor, which keeps it on")
+		if c.monitorLocked {
+			return c, refuse("monitor.enabled", v, "the managed configuration keeps the supervisor on")
 		}
 		c.Monitor.Enabled = false
 	case "rules", "model":

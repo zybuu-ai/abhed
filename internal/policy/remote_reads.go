@@ -42,9 +42,21 @@ func ParseRemoteRead(p string) (Rule, error) {
 	if program := strings.Fields(s)[0]; strings.ContainsAny(program, "*?$") || isAssignment(program) {
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q must start with the program it runs, written out (such as \"df -h\")", p)
 	}
-	// After a runner, a shell or an interpreter a wildcard is any command at all.
-	if name := programName(s); strings.ContainsAny(s, "*?") && runsCommands(name) {
-		return Rule{}, fmt.Errorf("ssh.read_commands: %q puts a wildcard after %s, which runs any command; name the command exactly", p, name)
+	name := programName(s)
+	spec, known := knownReads[name]
+	words, _, _ := shellWords(s)
+	wildcard := strings.ContainsAny(s, "*?")
+	switch {
+	// A wildcard is accepted only for a program on the read-only list,
+	// called as that list says; any other is declared exactly.
+	case wildcard && !known:
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q has a wildcard, and %s is not on the list of programs a wildcard may name; declare the exact command instead", p, name)
+	case wildcard && !readCallOK(spec, words[1:], func(w string) bool { return strings.ContainsAny(w, "*?") }):
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s (see docs/ops/infrastructure.md#ssh); declare the exact command instead", p, name)
+	case !wildcard && known && !readCallOK(spec, words[1:], func(string) bool { return false }):
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q uses a form of %s that changes the host, so it is not a read", p, name)
+	case !wildcard && !known && runsCommands(name):
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q runs %s, which runs what it is given, so it is not a read", p, name)
 	}
 	if what, destructive := canon.Destructive(); destructive {
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read (%s)", p, what)
@@ -83,51 +95,34 @@ func (e *Engine) remoteReadRule(rr remoteRead) string {
 	if len(rr.allow) == 1 {
 		text = strings.TrimPrefix(rr.allow[0], rr.host+"/")
 	}
-	// Behind a runner, or with a find action that runs one, only an entry
-	// written exactly matches: a wildcard there could reach any command.
+	// An exact entry matches only its own text. A wildcard one matches a call
+	// to its program, on the read-only list, in a read form of it, with no
+	// runner in front.
 	forms, whole := strippedForms(text)
-	plain := whole && len(forms) == 1 && forms[0] == strings.Join(strings.Fields(text), " ") && !runsCommands(programName(text))
+	plain := whole && len(forms) == 1 && forms[0] == strings.Join(strings.Fields(text), " ")
 	for _, r := range e.RemoteReads {
-		if (plain || !strings.ContainsAny(r.glob, "*?")) && r.pattern.MatchString(text) {
+		if !r.pattern.MatchString(text) {
+			continue
+		}
+		if !strings.ContainsAny(r.glob, "*?") || plain && wildcardReadOK(text) {
 			return r.raw
 		}
 	}
 	return ""
 }
 
-// RemoteReadWarning says why an ssh.read_commands entry may let a change run
-// unasked: its wildcard follows a program that also writes or changes state
-// (systemctl stop, journalctl --vacuum-size, openssl -out). "" when none.
-func RemoteReadWarning(entry string) string {
-	s := strings.TrimSpace(entry)
-	if !strings.ContainsAny(s, "*?") {
-		return ""
+// wildcardReadOK reports a call a wildcard entry may approve: its program
+// on the read-only list, called in a form the list allows.
+func wildcardReadOK(text string) bool {
+	spec, known := knownReads[programName(text)]
+	if !known {
+		return false
 	}
-	fields := strings.Fields(s)
-	// systemctl with a reading verb written out stays a read, whatever follows.
-	if name := programName(s); name == "systemctl" && len(fields) > 1 && systemctlReads[fields[1]] {
-		return ""
+	words, dollar, glob := shellWords(text)
+	if len(words) == 0 || spec.strict && (dollar || glob) {
+		return false
 	}
-	if name := programName(s); changers[name] {
-		return "the wildcard after " + name + " also matches the forms that change things on the host " +
-			"(see the list not to declare in docs/ops/infrastructure.md); name the command exactly"
-	}
-	return ""
-}
-
-// systemctlReads are systemctl verbs that change nothing.
-var systemctlReads = map[string]bool{"status": true, "show": true, "cat": true, "list-units": true,
-	"list-unit-files": true, "list-timers": true, "is-active": true, "is-enabled": true, "is-failed": true}
-
-// changers are programs a read-looking pattern can turn into a change.
-var changers = map[string]bool{
-	"systemctl": true, "service": true, "journalctl": true, "find": true, "openssl": true, "git": true,
-	"tee": true, "dd": true, "cp": true, "mv": true, "ln": true, "install": true, "truncate": true, "touch": true,
-	"mkdir": true, "chmod": true, "chown": true, "chgrp": true, "crontab": true, "ip": true, "iptables": true,
-	"nft": true, "mount": true, "umount": true, "hostnamectl": true, "timedatectl": true, "loginctl": true,
-	"apt": true, "apt-get": true, "dnf": true, "yum": true, "rpm": true, "dpkg": true, "pip": true, "npm": true,
-	"curl": true, "wget": true, "sort": true, "uniq": true, "gzip": true, "gunzip": true, "unzip": true, "split": true,
-	"logrotate": true, "sysctl": true, "kill": true, "pkill": true, "killall": true, "nginx": true, "certbot": true,
+	return readCallOK(spec, words[1:], func(string) bool { return false })
 }
 
 // carriesStdinSecret reports an ssh call that names a stored secret for its stdin.
@@ -159,7 +154,9 @@ func programName(command string) string {
 // a shell, an interpreter, or a runner such as sudo, su or systemd-run.
 func runsCommands(name string) bool {
 	_, wrapper := wrapperWords[name]
-	return wrapper || commandRunners[name]
+	// The dynamic loader runs the program it is given: ld.so, ld-linux*.so.
+	loader := strings.HasPrefix(name, "ld") && strings.Contains(name, ".so")
+	return wrapper || loader || commandRunners[name]
 }
 
 // commandRunners are the programs beside wrapperWords that run what they
@@ -184,6 +181,11 @@ var commandRunners = map[string]bool{
 	"python": true, "perl": true, "ruby": true, "node": true, "nodejs": true, "deno": true, "bun": true, "php": true,
 	"lua": true, "luajit": true, "tclsh": true, "wish": true, "awk": true, "gawk": true, "mawk": true, "nawk": true,
 	"R": true, "Rscript": true, "osascript": true, "pwsh": true, "powershell": true, "make": true, "gdb-multiarch": true,
+	"java": true, "go": true, "cargo": true, "npm": true, "npx": true, "pnpm": true, "yarn": true, "pip": true,
+	// Clients with a command or option that runs a program or a shell.
+	"socat": true, "nc": true, "ncat": true, "netcat": true, "sqlite3": true, "psql": true, "mysql": true,
+	"mariadb": true, "redis-cli": true, "mongo": true, "mongosh": true, "ftp": true, "sftp": true, "scp": true,
+	"git": true, "find": true, "crontab": true, "nginx": true,
 }
 
 // RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read, or

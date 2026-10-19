@@ -122,6 +122,8 @@ type Config struct {
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+	// monitorLocked is set when the managed file keeps the supervisor on.
+	monitorLocked bool
 	// managedRules are the rules the managed file itself lists, by list and
 	// rule as ruleLayers keys them.
 	managedRules map[string]bool
@@ -1585,7 +1587,6 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	warnSetAside(w, cfg.SetAside)
 	warnNotYetInEffect(w, cfg)
 	warnNeverAllows(w, cfg.Permissions.Allow)
-	warnRemoteReads(w, cfg.SSH.ReadCommands)
 	warnRuleFindings(w, cfg.RuleFindings())
 	if !o.Quiet {
 		warnUntrusted(w, cfg.Workspace)

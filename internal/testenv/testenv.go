@@ -70,7 +70,10 @@ func (g *Guard) Hits() []string {
 
 // Isolate points the managed files at a folder that does not exist, the
 // default model endpoints at a stub that answers every call with an error
-// and notes it, and refuses a dial to a real local model service. Unless
+// and notes it, and refuses a dial to a real local model service made
+// through http.DefaultTransport. A client with a transport of its own, such
+// as egress's for Abhed's own requests, is not guarded; the stub endpoints
+// keep the defaults off a real service. Unless
 // this is a helper process of an isolated parent, it also gives the binary
 // an empty home and clears the variables in scrubbed. Close undoes nothing
 // a test relies on: it stops the stub and removes the home.

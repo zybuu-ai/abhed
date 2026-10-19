@@ -60,6 +60,7 @@ const (
 
 // sftpClient talks to one sftp subsystem; one request at a time.
 type sftpClient struct {
+	conn    *ssh.Client // the connection the session is on
 	session *ssh.Session
 	w       io.WriteCloser
 	r       io.Reader
@@ -118,7 +119,7 @@ func (h *Host) openSFTP(ctx context.Context, track func(*sftpClient) bool) (*sft
 		_ = session.Close()
 		return nil, fmt.Errorf("%s does not offer SFTP: %w", h.cfg.Name, err)
 	}
-	c := &sftpClient{session: session, w: w, r: r, ext: map[string]string{}}
+	c := &sftpClient{conn: client, session: session, w: w, r: r, ext: map[string]string{}}
 	if !track(c) {
 		_ = c.Close()
 		return nil, ctx.Err()
@@ -509,6 +510,7 @@ func (h *Host) get(ctx context.Context, open func() (*sftpClient, error), path s
 
 // sftpGrace is how long a transfer stopped by its context has to end once
 // its SFTP session is closed, before the connection to the host is closed too.
+// A variable so tests can shorten it; those tests must not run in parallel.
 var sftpGrace = 2 * time.Second
 
 // inFlight runs op until it ends or ctx does, whichever is first. When ctx
@@ -538,15 +540,19 @@ func (h *Host) inFlight(ctx context.Context, op func(open func() (*sftpClient, e
 	}
 	mu.Lock()
 	stopped = true
-	if live != nil {
+	used := live
+	if used != nil {
 		// The session only: closing its stdin would race a write in flight.
-		_ = live.session.Close()
+		_ = used.session.Close()
 	}
 	mu.Unlock()
 	select {
 	case <-done:
 	case <-time.After(sftpGrace):
-		_ = h.Close() // the next call dials again
+		// The connection this transfer used, not whichever h holds now.
+		if used != nil {
+			h.drop(used.conn)
+		}
 	}
 	return fmt.Errorf("transfer on %s stopped: %w", h.cfg.Name, ctx.Err())
 }
