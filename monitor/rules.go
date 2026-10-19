@@ -441,14 +441,6 @@ func effectiveTarget(cmd command, t string) (string, bool) {
 	}
 }
 
-// dirPhrase says where a command runs, for a rationale.
-func dirPhrase(cmd command) string {
-	if !cmd.dirKnown {
-		return "the check cannot be sure of"
-	}
-	return "outside the task's ground (" + orDot(cmd.dir) + ")"
-}
-
 // destroyerNames are programs that delete or overwrite; their name among a
 // wrapped command's words makes it look destructive.
 var destroyerNames = map[string]bool{"rm": true, "rmdir": true, "shred": true, "unlink": true, "srm": true,
@@ -494,7 +486,7 @@ func literalVar(cmd command, t string) (string, bool) {
 		name = name[1 : len(name)-1]
 	}
 	for _, r := range name {
-		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+		if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
 			return "", false // not a single plain variable reference
 		}
 	}

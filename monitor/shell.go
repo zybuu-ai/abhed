@@ -50,7 +50,7 @@ func parseScriptAt(src, start string) (script, bool) {
 	}
 	s := script{funcs: map[string]bool{}}
 	collect(src, f, &s)
-	dirs := chainDirs(src, f, start)
+	dirs := chainDirs(f, start)
 	for i := range s.cmds {
 		d, ok := dirs[s.cmds[i].call]
 		s.cmds[i].dir, s.cmds[i].dirKnown = start, false
@@ -120,7 +120,7 @@ type dirInfo struct {
 // shell builtin outside a short harmless set, a wrapper with an option, or a
 // write to a directory variable, the directory is unknown for every command
 // after it. Every command outside that first chain has an unknown directory.
-func chainDirs(src string, f *syntax.File, start string) map[*syntax.CallExpr]dirInfo {
+func chainDirs(f *syntax.File, start string) map[*syntax.CallExpr]dirInfo {
 	out := map[*syntax.CallExpr]dirInfo{}
 	if len(f.Stmts) == 0 {
 		return out
