@@ -164,14 +164,31 @@ func (w *OCSFWriter) LoadPos() (string, error) {
 	return pos, err
 }
 
-// SavePos keeps the place in commit order the writer has read to.
+// SavePos keeps the place in commit order the writer has read to. It only
+// moves forward: a writer that lost the sink to another and saves late
+// cannot take the place back, which would export rows a second time. The
+// comparison is made in the statement, in the scan's order (transaction,
+// time, session, seq), so two writers cannot interleave one.
 func (w *OCSFWriter) SavePos(pos string) error {
+	c, err := ParseCommitPos(pos)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)
+	if pos == "" {
+		_, err = w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)
+			VALUES ($1, $2, '', 0, '') ON CONFLICT (tenant_id, sink, session_id) DO NOTHING`, w.p.tenant, w.sink)
+		return err
+	}
+	_, err = w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)
 		VALUES ($1, $2, '', 0, $3)
-		ON CONFLICT (tenant_id, sink, session_id) DO UPDATE SET commit_pos = EXCLUDED.commit_pos, updated_at = now()`,
-		w.p.tenant, w.sink, pos)
+		ON CONFLICT (tenant_id, sink, session_id) DO UPDATE SET commit_pos = EXCLUDED.commit_pos, updated_at = now()
+		WHERE ocsf_cursors.commit_pos = ''
+		   OR (split_part(ocsf_cursors.commit_pos, '/', 1)::numeric, split_part(ocsf_cursors.commit_pos, '/', 2)::bigint,
+		       regexp_replace(ocsf_cursors.commit_pos, '^([^/]*/){3}', ''), split_part(ocsf_cursors.commit_pos, '/', 3)::bigint)
+		      < ($4::numeric, $5::bigint, $6::text, $7::bigint)`,
+		w.p.tenant, w.sink, pos, strconv.FormatUint(c.Tx, 10), c.At.UnixMicro(), c.Session, c.Seq)
 	return err
 }
 

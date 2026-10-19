@@ -735,7 +735,8 @@ INSERT INTO schema_version (version) VALUES (13) ON CONFLICT DO NOTHING;
 -- one rendering of only the hashed columns: jsonb_build_object gives the
 -- same jsonb, and so the same text and hash, as the named columns of
 -- to_jsonb(NEW). It also sets inserted_at, which a trigger of its own did, so
--- each insert runs one PL/pgSQL trigger, not two. The GIN index on payload is
+-- each insert runs one PL/pgSQL trigger, not two, and commit_tx, which the
+-- writer could otherwise set to keep its row out of the commit-ordered scan. The GIN index on payload is
 -- dropped: no query used it, and payloads are sealed, so it indexed
 -- ciphertext on every insert.
 CREATE OR REPLACE FUNCTION abhed_events_chain() RETURNS trigger AS $$
@@ -747,6 +748,7 @@ BEGIN
   SELECT chain_pos, hash INTO last_pos, last_hash FROM events
     WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
   NEW.inserted_at := now();
+  NEW.commit_tx := pg_current_xact_id();
   NEW.chain_pos := COALESCE(last_pos, 0) + 1;
   NEW.prev_hash := COALESCE(last_hash, repeat('0', 64));
   NEW.hash := encode(sha256(convert_to(NEW.prev_hash || E'\n' || jsonb_build_object(

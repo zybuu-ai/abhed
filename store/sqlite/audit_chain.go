@@ -65,7 +65,8 @@ type ChainReport struct {
 	// hold, and Reason why; zero and empty when every one does.
 	FirstBad int64
 	Reason   string
-	// Unchained counts rows written before the chain existed.
+	// Unchained counts rows written before the chain existed; one with no
+	// chain written after it began fails the check instead.
 	Unchained int64
 }
 
@@ -77,9 +78,11 @@ func (r ChainReport) OK() bool { return r.FirstBad == 0 && r.Reason == "" }
 // recompute the whole chain.
 func (s *Store) VerifyAuditChain(ctx context.Context) (ChainReport, error) {
 	var rep ChainReport
-	var chained int64
-	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE chain_pos IS NULL), count(*) FILTER (WHERE chain_pos IS NOT NULL)
-		FROM sandbox_audit`).Scan(&rep.Unchained, &chained); err != nil {
+	var chained, late int64
+	// A row with no chain after the chain's first was written with it bypassed.
+	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE chain_pos IS NULL), count(*) FILTER (WHERE chain_pos IS NOT NULL),
+		count(*) FILTER (WHERE chain_pos IS NULL AND seq > (SELECT min(seq) FROM sandbox_audit WHERE chain_pos IS NOT NULL))
+		FROM sandbox_audit`).Scan(&rep.Unchained, &chained, &late); err != nil {
 		return rep, fmt.Errorf("verify the audit chain: %w", err)
 	}
 	rg, err := s.verifyRange(ctx, 1, 0)
@@ -93,6 +96,10 @@ func (s *Store) VerifyAuditChain(ctx context.Context) (ChainReport, error) {
 	if rep.OK() && chained != rep.Rows {
 		rep.Reason = fmt.Sprintf("%d row(s) claim a chain position another holds", chained-rep.Rows)
 	}
+	if rep.OK() && late > 0 {
+		rep.Reason = fmt.Sprintf("%d row(s) carry no chain though written after it began", late)
+	}
+	rep.Unchained -= late
 	return rep, nil
 }
 

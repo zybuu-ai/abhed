@@ -630,6 +630,8 @@ type refusalLog struct {
 	mu     sync.Mutex
 	counts map[string]int
 	once   sync.Once
+	fdOnce sync.Once
+	failed bool // set by the serving goroutine before done closes
 }
 
 // maxRefusalNames bounds the distinct calls one launch records.
@@ -639,7 +641,14 @@ func serveRefusals(fd int) *refusalLog {
 	r := &refusalLog{fd: fd, stopCh: make(chan struct{}), done: make(chan struct{}), counts: map[string]int{}}
 	go func() {
 		defer close(r.done)
-		_ = seccomp.Serve(fd, r.stopCh, func(name string) {
+		// Serving failed: closing the listener at once makes the kernel refuse
+		// with ENOSYS, where a refusal would otherwise wait on no one.
+		defer func() {
+			if r.failed {
+				r.closeFD()
+			}
+		}()
+		r.failed = seccomp.Serve(fd, r.stopCh, func(name string) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			if _, ok := r.counts[name]; ok || len(r.counts) < maxRefusalNames {
@@ -647,9 +656,13 @@ func serveRefusals(fd int) *refusalLog {
 			} else {
 				r.counts["other"]++
 			}
-		})
+		}) != nil
 	}()
 	return r
+}
+
+func (r *refusalLog) closeFD() {
+	r.fdOnce.Do(func() { _ = unix.Close(r.fd) })
 }
 
 // stop ends the answering and returns the counts; a call refused after it
@@ -667,7 +680,7 @@ func (r *refusalLog) stop() map[string]int {
 
 func (r *refusalLog) close() {
 	r.stop()
-	_ = unix.Close(r.fd)
+	r.closeFD()
 }
 
 // planText words a launch's mounts for its record.

@@ -105,6 +105,25 @@ func TestOCSFCommitPos(t *testing.T) {
 	if end.Session != id || end.Seq != 3 {
 		t.Fatalf("the last committed event is %s/%d, want %s/3", end.Session, end.Seq, id)
 	}
+	// A writer that lost the sink and saves late cannot move the place back,
+	// whichever part of the position is behind; a later place still moves it.
+	old := p.OCSFWriter(w.sink)
+	for _, back := range []CommitPos{{Tx: end.Tx - 1, At: end.At, Session: end.Session, Seq: end.Seq},
+		{Tx: end.Tx, At: end.At, Session: end.Session, Seq: end.Seq - 1}, {}} {
+		if err := old.SavePos(back.String()); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := w.LoadPos(); got != end.String() {
+			t.Fatalf("saving %q moved the place back to %q", back.String(), got)
+		}
+	}
+	ahead := CommitPos{Tx: end.Tx, At: end.At, Session: end.Session, Seq: end.Seq + 1}
+	if err := old.SavePos(ahead.String()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := w.LoadPos(); got != ahead.String() {
+		t.Fatalf("a later place was not saved: %q", got)
+	}
 }
 
 // The tenant's audit rows come back with their chain links, the last one's
