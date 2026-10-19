@@ -34,6 +34,9 @@ type Spaces struct {
 	// Net gives it a network namespace of its own, with CAP_NET_ADMIN there
 	// to bring its loopback up before Drop.
 	Net bool
+	// Resolver adds CAP_NET_BIND_SERVICE there, to bind the resolver's port
+	// 53 before Drop; it needs Net.
+	Resolver bool
 }
 
 // AttrWith is Attr with the namespaces sp asks for too.
@@ -45,6 +48,9 @@ func AttrWith(a *syscall.SysProcAttr, sp Spaces) {
 	if sp.Net {
 		a.Cloneflags |= unix.CLONE_NEWNET
 		a.AmbientCaps = append(a.AmbientCaps, unix.CAP_NET_ADMIN)
+		if sp.Resolver {
+			a.AmbientCaps = append(a.AmbientCaps, unix.CAP_NET_BIND_SERVICE)
+		}
 	}
 }
 
@@ -74,6 +80,32 @@ func LoopbackUp() error {
 	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
 	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
 		return fmt.Errorf("bringing the loopback up: %w", err)
+	}
+	return nil
+}
+
+// BindFileOver binds the file src over dst, read-only, in this namespace
+// alone, after Apply has made its mounts private. dst is resolved first, so
+// a link such as /etc/resolv.conf has its target covered.
+func BindFileOver(src, dst string) error {
+	target, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return fmt.Errorf("binding over %s: %w", dst, err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(target, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("binding over %s: %s is not a file", dst, target)
+	}
+	if err := unix.Mount(src, target, "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("binding over %s: %w", dst, err)
+	}
+	var fs unix.Statfs_t
+	if err := unix.Statfs(target, &fs); err != nil {
+		return err
+	}
+	flags := uintptr(unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY) | locked(int64(fs.Flags)) //nolint:unconvert // #nosec G115 -- Flags is uint32 on s390x; widening only
+	if err := unix.Mount("", target, "", flags, ""); err != nil {
+		return fmt.Errorf("binding over %s read-only: %w", dst, err)
 	}
 	return nil
 }
