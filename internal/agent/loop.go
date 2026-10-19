@@ -2487,7 +2487,7 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	// An ask the supervisor has a concern with is its ask too, so no
 	// session-wide "always allow" answers it without the person.
 	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
-	if !out.Tightened && !(concern && before.Decision == policy.Ask) {
+	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
 		return before
 	}
 	why := out.Verdict.Code

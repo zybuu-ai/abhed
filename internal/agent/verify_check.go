@@ -220,7 +220,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			}
 			// A refused edit changed nothing; a failed command may have.
 			fileTool := o.Tool == "write" || o.Tool == "edit"
-			if mut && !(fileTool && o.IsError) || o.OutcomeUnknown {
+			if mut && (!fileTool || !o.IsError) || o.OutcomeUnknown {
 				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError}
 				if fileTool {
 					m.path = args.Path
@@ -272,12 +272,12 @@ func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 			continue
 		}
 		fileEdit := m.tool == "write" || m.tool == "edit"
-		switch {
-		case o.tool == "read":
+		switch o.tool {
+		case "read":
 			if !fileEdit || samePath(m.path, o.path) {
 				return m
 			}
-		case o.tool == "grep" || o.tool == "glob" || o.tool == "bash":
+		case "grep", "glob", "bash":
 			return m
 		default:
 			if !fileEdit {
@@ -699,7 +699,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 			why: fmt.Sprintf("the last such command since the last change, #%d `%s`, exited %d",
 				latest.seq, clipRunes(latest.command, 60), *latest.exit),
 			conflict: &Conflict{Seq: latest.seq, CallID: latest.callID,
-				Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content, 3))}}
+				Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content))}}
 	}
 	for i := len(pool) - 1; i >= 0; i-- {
 		o := pool[i]
@@ -717,7 +717,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 		for _, o := range pool {
 			if o.tool == "bash" && o.exit != nil && *o.exit != 0 {
 				return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("the cited command #%d exited %d", o.seq, *o.exit),
-					conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: fmt.Sprintf("exit %d: %s", *o.exit, tailLines(o.content, 3))}}
+					conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: fmt.Sprintf("exit %d: %s", *o.exit, tailLines(o.content))}}
 			}
 		}
 	}
@@ -837,7 +837,8 @@ func dedupe(ss []string) []string {
 	return out
 }
 
-func tailLines(s string, n int) string {
+func tailLines(s string) string {
+	const n = 3
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]

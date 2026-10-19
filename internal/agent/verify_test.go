@@ -53,9 +53,9 @@ func checkText(t *testing.T, b *rec, dir, text string) []ClaimVerdict {
 	return v
 }
 
-func checkCited(t *testing.T, b *rec, dir string, claims ...Claim) []ClaimVerdict {
+func checkCited(t *testing.T, b *rec, claims ...Claim) []ClaimVerdict {
 	t.Helper()
-	env := checkEnv{events: b.events(), workDir: dir, readFile: os.ReadFile}
+	env := checkEnv{events: b.events(), workDir: "", readFile: os.ReadFile}
 	v, _ := checkClaims(env, claims)
 	return v
 }
@@ -83,7 +83,7 @@ func TestInventedNumberIsContradicted(t *testing.T) {
 		}
 	}
 	// Cited, the same invention fares no better.
-	v := checkCited(t, b, "", Claim{Text: "15 tests passed", Kind: KindObserved, Evidence: []string{"c1"}})
+	v := checkCited(t, b, Claim{Text: "15 tests passed", Kind: KindObserved, Evidence: []string{"c1"}})
 	wantVerdict(t, v[0], ClaimContradicted)
 	// And the true figure is verified, tied to the result.
 	v = checkText(t, b, "", "All 12 tests pass.")
@@ -120,7 +120,7 @@ func TestUncitedNeedsOneResultThatShowsIt(t *testing.T) {
 		t.Fatalf("reason: %s", v.Reason)
 	}
 	// Cited, the two results together are what the agent says shows it.
-	v = checkCited(t, b, "", Claim{Text: "The database is db.internal.example.com on port 5432.", Evidence: []string{"c2", "c3"}})[0]
+	v = checkCited(t, b, Claim{Text: "The database is db.internal.example.com on port 5432.", Evidence: []string{"c2", "c3"}})[0]
 	wantVerdict(t, v, ClaimVerified)
 }
 
@@ -137,7 +137,7 @@ func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 		t.Fatalf("reason: %s", v.Reason)
 	}
 	// Cited, the earlier pass is still not current.
-	wantVerdict(t, checkCited(t, b, "", Claim{Text: "tests pass", Evidence: []string{"c1"}})[0], ClaimUnverified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "tests pass", Evidence: []string{"c1"}})[0], ClaimUnverified)
 
 	b.call("c3", "bash", map[string]string{"command": "go test ./..."}, "--- FAIL: TestA\nFAIL", exit(1))
 	v = checkText(t, b, "", "The tests pass now.")[0]
@@ -175,25 +175,25 @@ func TestCitations(t *testing.T) {
 	b := newRec(t)
 	b.r.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "what port?"})
 	seq := b.call("c1", "read", map[string]string{"path": "/w/a.conf"}, "listen 8080\n", nil)
-	wantVerdict(t, checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
-	wantVerdict(t, checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"#" + itoa(seq)}})[0], ClaimVerified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"#" + itoa(seq)}})[0], ClaimVerified)
 
-	v := checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"call_made_up"}})[0]
+	v := checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"call_made_up"}})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if !strings.Contains(v.Reason, "not in this session's record") {
 		t.Fatalf("reason: %s", v.Reason)
 	}
-	v = checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"#1"}})[0]
+	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"#1"}})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if !strings.Contains(v.Reason, "user.message") {
 		t.Fatalf("reason: %s", v.Reason)
 	}
 	// A quote the output does not hold is not evidence.
-	v = checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}, Quote: "listen 0.0.0.0:8080"})[0]
+	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}, Quote: "listen 0.0.0.0:8080"})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	// The file changed after it was read: the read no longer shows the present.
 	b.call("c2", "write", map[string]string{"path": "/w/a.conf", "content": "listen 9090\n"}, "Wrote /w/a.conf", nil)
-	v = checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0]
+	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if !strings.Contains(v.Reason, "predates a later change") {
 		t.Fatalf("reason: %s", v.Reason)
@@ -202,7 +202,7 @@ func TestCitations(t *testing.T) {
 	b2 := newRec(t)
 	b2.call("c1", "read", map[string]string{"path": "/w/a.conf"}, "listen 8080\n", nil)
 	b2.call("c2", "edit", map[string]string{"path": "/w/b.conf"}, "Edited", nil)
-	wantVerdict(t, checkCited(t, b2, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
+	wantVerdict(t, checkCited(t, b2, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
 }
 
 // file:line cites are checked against the file as it is now.
@@ -239,12 +239,12 @@ func TestKnowledgeAndStatements(t *testing.T) {
 	if v.LoadBearing || v.Kind != KindStatement {
 		t.Fatalf("a plain statement is not load-bearing: %+v", v)
 	}
-	v = checkCited(t, b, "", Claim{Text: "TLS 1.3 removed RSA key exchange", Kind: KindKnowledge})[0]
+	v = checkCited(t, b, Claim{Text: "TLS 1.3 removed RSA key exchange", Kind: KindKnowledge})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if v.LoadBearing {
 		t.Fatal("knowledge is not load-bearing")
 	}
-	v = checkCited(t, b, "", Claim{Text: "all tests pass", Kind: KindKnowledge})[0]
+	v = checkCited(t, b, Claim{Text: "all tests pass", Kind: KindKnowledge})[0]
 	if !v.LoadBearing || v.Verdict == ClaimVerified {
 		t.Fatalf("a claim about the session's tests is checked whatever its kind: %+v", v)
 	}
@@ -550,7 +550,7 @@ func (errAdapter) Complete(context.Context, model.Request) (<-chan model.Chunk, 
 }
 
 func TestVerifyModes(t *testing.T) {
-	for in, want := range map[string]VerifyMode{"": VerifyOff, "OFF": VerifyOff, "label": VerifyLabel, " strict ": VerifyStrict} {
+	for in, want := range map[string]VerifyMode{"": VerifyOff, "OFF": VerifyOff, "label": VerifyLabel, "\tstrict\n": VerifyStrict} {
 		if got, err := ParseVerifyMode(in); err != nil || got != want {
 			t.Errorf("%q: %s %v", in, got, err)
 		}

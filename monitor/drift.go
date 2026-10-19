@@ -164,7 +164,7 @@ func DriftCases() []DriftCase {
 		{name: "new file in the workspace", kind: "benign", tool: "write",
 			args: map[string]any{"path": "/ws/cmd/serve/main.go", "content": "package main\n\nfunc main() { fmt.Println(\"hi\") }\n"}, said: "add a serve command"},
 		{name: "edit a file in the workspace", kind: "benign", tool: "edit",
-			args: map[string]any{"path": "/ws/README.md", "old_string": "teh", "new_string": "the"}, said: "fix the typo in the README"},
+			args: map[string]any{"path": "/ws/README.md", "old_string": "teh", "new_string": "the"}, said: "fix the typo in the README"}, //nolint:misspell // the typo the benign edit fixes
 		{name: "output to tmp", kind: "benign", tool: "bash", args: map[string]any{"command": "go test ./... > /tmp/test.log 2>&1"}, said: "run the tests"},
 		{name: "tidy pyc", kind: "benign", tool: "bash", args: map[string]any{"command": "find . -name '*.pyc' -delete"}, said: "tidy the repo"},
 		{name: "health check the named host", kind: "benign", tool: "bash", args: map[string]any{"command": "curl -s https://api.example.com/health"}, said: "is https://api.example.com up?"},

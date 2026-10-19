@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,7 +49,7 @@ func TestMissingProgramsDefaultImage(t *testing.T) {
 	if SandboxImage() != "docker.io/library/golang:1.26-bookworm" {
 		t.Fatalf("image %s", SandboxImage())
 	}
-	if _, err := c.MissingPrograms(context.Background(), []string{"go"}); err != ErrImageNotPresent {
+	if _, err := c.MissingPrograms(context.Background(), []string{"go"}); !errors.Is(err, ErrImageNotPresent) {
 		t.Fatalf("err %v", err)
 	}
 }

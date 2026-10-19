@@ -132,7 +132,7 @@ func (l *Loop) critique(ctx context.Context, c *Critic, verdicts []ClaimVerdict,
 				seq := verdicts[i].Evidence[0]
 				ex := ""
 				if o := ix.bySeq[seq]; o != nil {
-					ex = tailLines(o.content, 3)
+					ex = tailLines(o.content)
 					verdicts[i].Conflict = &Conflict{Seq: seq, CallID: o.callID, Excerpt: ex}
 				}
 			}

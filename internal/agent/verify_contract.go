@@ -139,11 +139,11 @@ func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) Requir
 	case res.ExitCode == nil:
 		r.Reason = firstLine(clipRunes(res.Content, 200))
 	case *res.ExitCode != 0:
-		r.Reason = fmt.Sprintf("exited %d: %s", *res.ExitCode, tailLines(res.Content, 3))
+		r.Reason = fmt.Sprintf("exited %d: %s", *res.ExitCode, tailLines(res.Content))
 	default:
 		r.OK = !res.IsError
 		if !r.OK {
-			r.Reason = tailLines(res.Content, 3)
+			r.Reason = tailLines(res.Content)
 		}
 	}
 	return r

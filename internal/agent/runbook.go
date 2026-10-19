@@ -228,7 +228,7 @@ func stepArgs(tool string, s tools.RunbookStep) (json.RawMessage, error) {
 	args := map[string]any{}
 	if t := bytes.TrimSpace(s.Args); len(t) > 0 && string(t) != "null" {
 		if err := json.Unmarshal(t, &args); err != nil {
-			return nil, fmt.Errorf("args is not a JSON object: %v", err)
+			return nil, fmt.Errorf("args is not a JSON object: %w", err)
 		}
 	}
 	set := func(key, v string) error {
