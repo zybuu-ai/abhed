@@ -454,6 +454,7 @@ func (GetTool) Mutates() bool { return false }
 func (GetTool) Description() string {
 	return "Read from a Kubernetes cluster: list or describe resources, and fetch pod logs. " +
 		"Read-only — it cannot create, change or delete anything. " +
+		"With wait_seconds it waits for a Deployment's rollout to finish. " +
 		"Use resource plural names as kubectl does (pods, deployments, services, nodes, events)."
 }
 
@@ -468,7 +469,8 @@ func (GetTool) Schema() json.RawMessage {
     "context":{"type":"string","description":"Kubeconfig context naming the cluster. Omit for the current context."},
     "selector":{"type":"string","description":"Label selector, e.g. app=web."},
     "container":{"type":"string","description":"For logs: which container in the pod."},
-    "tail":{"type":"integer","description":"For logs: how many trailing lines. Default 200."}
+    "tail":{"type":"integer","description":"For logs: how many trailing lines. Default 200."},
+    "wait_seconds":{"type":"integer","description":"For one deployment named in name: wait up to this many seconds (at most 600) for its rollout to finish, instead of polling. Says whether it finished, failed or is still going."}
   },
   "required":["resource"]
 }`)
@@ -483,6 +485,8 @@ type getArgs struct {
 	Selector  string `json:"selector"`
 	Container string `json:"container"`
 	Tail      int    `json:"tail"`
+	// WaitSeconds waits for a Deployment's rollout.
+	WaitSeconds int `json:"wait_seconds"`
 }
 
 func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -500,6 +504,9 @@ func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessa
 
 	if a.Resource == "logs" {
 		return t.logs(ctx, c, a)
+	}
+	if a.WaitSeconds > 0 {
+		return t.wait(ctx, c, a)
 	}
 
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
@@ -567,22 +574,25 @@ func (ApplyTool) Mutates() bool { return true }
 
 func (ApplyTool) Description() string {
 	return "Change a Kubernetes cluster: apply a manifest, scale a workload, delete a resource, " +
-		"or restart a rollout. Every call requires human approval. " +
-		"Prefer k8s_get first to confirm what you are about to change."
+		"restart a rollout, or roll a Deployment back to an earlier revision. Every call is " +
+		"dry-run on the cluster first and requires human approval. " +
+		"Prefer k8s_get first to confirm what you are about to change, and k8s_get with " +
+		"wait_seconds after a restart or rollback to wait for the rollout."
 }
 
 func (ApplyTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "action":{"type":"string","enum":["apply","delete","scale","restart"],"description":"What to do."},
+    "action":{"type":"string","enum":["apply","delete","scale","restart","rollback"],"description":"What to do. rollback undoes a Deployment's rollout to an earlier revision, as kubectl rollout undo does."},
     "manifest":{"type":"string","description":"For apply: the resource as JSON or YAML-free JSON."},
     "resource":{"type":"string","description":"For delete/scale/restart: resource type, plural."},
     "name":{"type":"string","description":"For delete/scale/restart: the resource name."},
     "namespace":{"type":"string","description":"Namespace. Omit for the context's default."},
     "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster."},
-    "replicas":{"type":"integer","description":"For scale: the desired replica count."}
+    "replicas":{"type":"integer","description":"For scale: the desired replica count."},
+    "revision":{"type":"integer","description":"For rollback: the revision to return to. Omit for the one before the current."}
   },
   "required":["action"]
 }`)
@@ -597,6 +607,7 @@ type applyArgs struct {
 	Namespace string `json:"namespace"`
 	Context   string `json:"context"`
 	Replicas  *int   `json:"replicas"`
+	Revision  int    `json:"revision"`
 }
 
 // Target tells the person approving a write which cluster it changes, at
@@ -632,7 +643,7 @@ func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	}
 	data, err := c.send(ctx, req, false)
 	if err != nil {
-		return errf("%v", err)
+		return errf("%v%s", err, req.hint)
 	}
 	return tools.Result{Content: req.done(data)}
 }
@@ -646,6 +657,8 @@ type request struct {
 	live string
 	// done is what the model is told once the cluster has answered.
 	done func(data []byte) string
+	// hint follows the cluster's error when the request fails.
+	hint string
 }
 
 // send sends req, as a server-side dry run when dryRun is set.
@@ -675,8 +688,10 @@ func (t ApplyTool) plan(ctx context.Context, c *Cluster, a applyArgs) (*request,
 		return t.scale(c, a)
 	case "restart":
 		return t.restart(c, a)
+	case "rollback":
+		return t.rollback(ctx, c, a)
 	}
-	return nil, fmt.Errorf("unknown action %q (want apply, delete, scale or restart)", a.Action)
+	return nil, fmt.Errorf("unknown action %q (want apply, delete, scale, restart or rollback)", a.Action)
 }
 
 func (t ApplyTool) apply(c *Cluster, a applyArgs) (*request, error) {

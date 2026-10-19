@@ -22,6 +22,11 @@ All notable changes to Abhed are recorded here. The format follows
   request dry-run is the one sent once approved. A change the dry run
   refuses is refused before anyone is asked, with the cluster's reason.
   A kubeconfig `exec` helper now runs for that dry run, before the approval.
+- `k8s_apply` `rollback` puts a Deployment's previous revision (or a named
+  `revision`) back, as `kubectl rollout undo` does; it asks like any write
+  and is refused if the Deployment changed since it was approved.
+  `k8s_get` `wait_seconds` waits, up to 600 seconds, for a Deployment's
+  rollout to finish or fail, so the agent need not poll.
 
 ## [1.2.8] - 2026-10-14
 

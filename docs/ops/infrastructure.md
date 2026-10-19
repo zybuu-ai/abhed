@@ -29,8 +29,8 @@ Two tools, deliberately not one:
 
 | Tool | Approval | What it does |
 |---|---|---|
-| `k8s_get` | never prompts | list, describe, pod logs |
-| `k8s_apply` | **always prompts** | apply, delete, scale, restart |
+| `k8s_get` | never prompts | list, describe, pod logs, wait for a rollout |
+| `k8s_apply` | **always prompts** | apply, delete, scale, restart, rollback |
 
 Splitting them is what makes the safety real. Abhed's permission engine decides
 by tool name; a single tool with a `verb` argument would force it to parse an
@@ -63,6 +63,23 @@ a restart's timestamp included. A change the dry run refuses is refused
 before anyone is asked, with the cluster's reason, and nothing is applied:
 the model reads `the cluster's dry run of this change failed, so it was not
 applied: …`. A call a rule denies reaches no cluster, not even for a dry run.
+
+**Rollouts.** `k8s_apply` with `action: "rollback"`, `resource:
+"deployments"` and a `name` does what `kubectl rollout undo` does: it puts
+the pod template of the Deployment's previous revision back (or of
+`revision` when the call names one), read from the ReplicaSets the
+Deployment owns. It asks like any write, its dry run shows the template
+fields that change, and the patch first tests the Deployment's
+`resourceVersion`, so a Deployment changed since the approval is refused,
+not rolled back to a revision no one saw. A paused Deployment is refused.
+Rules read it as `cluster/namespace/rollback`: a rule on `restart` or
+`apply` does not cover it, and `k8s_apply(prod/*)` does.
+
+`k8s_get` with `resource: "deployments"`, a `name` and `wait_seconds`
+(at most 600) waits for that Deployment's rollout, reading it every two
+seconds, and says whether it finished, failed on its progress deadline, or
+was still going when the wait ended, with the replica counts, as
+`kubectl rollout status` does. It is a read and never prompts.
 
 `allow_writes` decides whether `k8s_apply` exists at all. Even with it on, there
 is no permission mode that auto-approves a cluster write: a mistaken delete in
