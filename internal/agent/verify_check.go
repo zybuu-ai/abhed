@@ -751,7 +751,8 @@ func (ix *recordIndex) changedPath(p string) finding {
 // ranCommand checks "I ran `cmd`" against the commands in the record.
 func (ix *recordIndex) ranCommand(cmd string) finding {
 	for _, o := range ix.obs {
-		if o.tool == "bash" && o.usable() && strings.Contains(normText(o.command), cmd) {
+		// A command run on a host over ssh is one the agent ran too.
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && strings.Contains(normText(o.command), cmd) {
 			return finding{out: matched, what: fmt.Sprintf("`%s` ran at #%d", clipRunes(cmd, 40), o.seq), seq: o.seq}
 		}
 	}

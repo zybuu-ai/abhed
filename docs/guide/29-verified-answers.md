@@ -233,6 +233,11 @@ declares it in configuration, which the agent cannot read or change: the
   policy that asks, stops it, and the contract fails rather than run it
   unasked. Only an ordinary default-mode ask is taken as answered by the
   operator's declaration, as an allow rule of theirs would be.
+  The commands are the operator's, not the agent's: the supervisor, which
+  reviews the agent's calls, does not review them, and in a session bound to
+  a [runbook](28-runbooks.md) they are not runbook steps. They neither use a
+  step nor are recorded as `plan.step`, and the runbook's rule that any other
+  change asks binds the agent's calls, not these.
 - **`protect`** are globs of files the run must not change: `*` stays in one
   folder, `**` crosses folders, and a pattern without a slash matches a name
   at any depth. The files are hashed (up to 5,000) when the run starts and

@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // rec builds a session record by hand, for the checker's unit tests.
@@ -658,4 +659,37 @@ func TestClaimsAboutASubagentsWork(t *testing.T) {
 	p.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: "p1", Tool: "edit", Content: "Edited"})
 	evs, _ = store.Events("sess1")
 	wantVerdict(t, check(true, "The suite passes: 7 tests passed."), ClaimUnverified)
+}
+
+// A runbook-driven run's answer is checked like any other, a remote command
+// it ran included; the contract's command, the operator's and not the
+// plan's, runs after the last step without consuming one or being recorded
+// as a plan step.
+func TestVerifyUnderARunbook(t *testing.T) {
+	r := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "systemctl reload nginx")}, []scriptedTurn{
+		{calls: []model.ToolCall{sshCall("a", "web1", "systemctl reload nginx")}},
+		{text: "I ran `systemctl reload nginx` on web1."},
+	})
+	r.l.Verify = &Verifier{Mode: VerifyLabel, Contract: &Contract{Require: []string{"test -d ."}}}
+	reason, err := r.l.Run(context.Background(), "go")
+	if err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if len(r.appr.reasons) != 0 {
+		t.Fatalf("asked %q: neither the step nor the contract should ask", r.appr.reasons)
+	}
+	evs, _ := r.store.Events("sess1")
+	steps := 0
+	for _, e := range evs {
+		if e.Type == EvPlanStep {
+			steps++
+		}
+	}
+	if _, done, ok := r.l.BoundRunbook(); !ok || !done[0] || steps != 1 {
+		t.Fatalf("runbook bound %v done %v, plan.step %d", ok, done, steps)
+	}
+	vs := answerVerdicts(r.store)
+	if len(vs) != 1 || vs[0].Verified != 1 || vs[0].Contract == nil || !vs[0].Contract.OK || vs[0].Outcome != ClaimVerified {
+		t.Fatalf("verdict %+v", vs)
+	}
 }
