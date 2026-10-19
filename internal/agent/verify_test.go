@@ -300,28 +300,40 @@ func answerVerdicts(store *MemStore) []AnswerVerdict {
 	return out
 }
 
-// Label mode checks the answer and labels it, with no model call of its own
-// and no change to how the run ends.
-func TestLabelModeAddsNoModelCall(t *testing.T) {
+// Label mode checks the answer and labels it, and ends the run as it would
+// have. It spends a model call only on a contradiction: the one revision.
+func TestLabelMode(t *testing.T) {
 	l, store, ad, _ := verifyHarness(t, VerifyLabel, false, []scriptedTurn{
 		{calls: []model.ToolCall{call("bash", map[string]string{"command": "printf '12 tests passed\\n'"})}},
-		{text: "All 15 tests pass. Go is a compiled language."},
+		{text: "The suite ran 12 tests. The cluster has 9 nodes. Go is a compiled language."},
 	})
 	reason, err := l.Run(context.Background(), "run the tests")
-	if err != nil || reason != TermCompleted {
-		t.Fatalf("label mode ends as the run would: %s %v", reason, err)
-	}
-	if len(ad.gotRequests) != 2 {
-		t.Fatalf("label mode made %d model calls, want 2", len(ad.gotRequests))
+	if err != nil || reason != TermCompleted || len(ad.gotRequests) != 2 {
+		t.Fatalf("an answer with nothing contradicted costs no call: %s %v %d", reason, err, len(ad.gotRequests))
 	}
 	vs := answerVerdicts(store)
-	if len(vs) != 1 || vs[0].Contradicted != 1 || vs[0].Unverified != 1 || vs[0].Source != "text" {
+	if len(vs) != 1 || vs[0].Verified != 1 || vs[0].Unverified != 2 || vs[0].Revision != "" {
 		t.Fatalf("verdict: %+v", vs)
 	}
-	if got := vs[0].Footer(); got != "0 verified · 1 unverified (general knowledge) · 1 contradicted" {
+	if got := vs[0].Footer(); got != "1 verified · 2 unverified (1 general knowledge) · 0 contradicted" {
 		t.Fatalf("footer: %s", got)
 	}
-	if l.LastVerdict() == nil {
+
+	// A contradiction gets the one revision; still contradicted, the run
+	// completes, with the claim labelled.
+	l, store, ad, _ = verifyHarness(t, VerifyLabel, false, []scriptedTurn{
+		{calls: []model.ToolCall{call("bash", map[string]string{"command": "printf '12 tests passed\\n'"})}},
+		{text: "All 15 tests pass."},
+		{text: "Yes: all 15 tests pass."},
+	})
+	if reason, _ := l.Run(context.Background(), "run the tests"); reason != TermCompleted || len(ad.gotRequests) != 3 {
+		t.Fatalf("label mode ends completed after one revision: %s %d", reason, len(ad.gotRequests))
+	}
+	vs = answerVerdicts(store)
+	if len(vs) != 2 || vs[0].Revision == "" || vs[1].Revision != "" || vs[1].Contradicted != 1 {
+		t.Fatalf("verdicts: %+v", vs)
+	}
+	if l.LastVerdict() == nil || l.LastVerdict().Contradicted != 1 {
 		t.Fatal("the loop keeps its last verdict")
 	}
 }
@@ -506,8 +518,7 @@ func TestCriticOnlyDowngrades(t *testing.T) {
 			l.Verify.Critic = &Critic{Adapter: critic}
 		}
 		l.Run(context.Background(), "how many?")
-		vs := answerVerdicts(store)
-		return vs[len(vs)-1]
+		return answerVerdicts(store)[0] // a contradiction is followed by a revision's verdict
 	}
 	// It says both are supported: the unverified one stays unverified.
 	v := run(`{"verdicts":[{"n":1,"verdict":"supported"},{"n":2,"verdict":"supported"}]}`, false)

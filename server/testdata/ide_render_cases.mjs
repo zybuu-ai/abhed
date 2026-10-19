@@ -107,6 +107,7 @@ render(ev(92, 'answer.verdict', 'system', {verified:1, unverified:1, contradicte
 const vd = __added[0], vt = text();
 check('the verdict is drawn: ' + JSON.stringify(vt), vd && vd.className.includes('verdict') && vt.includes('1 verified · 1 unverified (general knowledge) · 1 contradicted'));
 check('it opens when something is contradicted', vd && vd.open === true);
+check('a contradiction is bannered: ' + JSON.stringify(vt), vt.includes('✗ NOT FACT: 1 contradicted'));
 const struck = vd ? vd.querySelectorAll('.contradicted') : [];
 check('the contradicted claim is marked and its record shown', struck.length === 1 && struck[0].textContent.includes('✗') && struck[0].textContent.includes('record #9: 12 tests passed'));
 check('claim text is revealed, not obeyed', !vt.includes('\u202e'));

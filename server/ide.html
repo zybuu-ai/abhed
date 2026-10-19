@@ -325,6 +325,9 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .verdict .verified .mk{color:var(--ok)}.verdict .unverified .mk{color:var(--warn)}.verdict .contradicted .mk{color:var(--bad)}
 .verdict .contradicted .t{text-decoration:line-through}
 .verdict .t{overflow-wrap:anywhere}
+.verdict .vbanner{margin:4px 0;padding:5px 8px;border-radius:4px;background:var(--bad-bg);color:var(--bad);font-weight:700}
+.msg.agent.contradicted{box-shadow:inset 3px 0 0 var(--bad)}
+.msg .vflag{margin-top:6px;color:var(--bad);font:700 11.5px var(--sans)}
 .verdict .why{color:var(--muted);font:11px/1.45 var(--mono);overflow-wrap:anywhere}
 .verdict a.seq{color:var(--accent);cursor:pointer;text-decoration:underline}
 .call.hl,.evt.hl{outline:2px solid var(--accent);outline-offset:1px}
@@ -3087,9 +3090,17 @@ function drawVerdict(p){
   const bad = (p.contradicted || 0) > 0 || (contract && !contract.ok), unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
   const d = el('details', 'verdict' + (bad ? ' bad' : unk ? ' unk' : '')); d.open = bad || unk;
   const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  // The reply streamed before it was checked: a contradiction is flagged on
+  // the reply itself and at the top of the box, where it cannot be missed.
+  if((p.contradicted || 0) > 0){
+    const n = p.contradicted, what = n + (n === 1 ? ' statement in this reply is' : ' statements in this reply are') + ' contradicted by the session\'s record';
+    const msgs = tx().querySelectorAll('.msg.agent'), last = msgs[msgs.length - 1];
+    if(last){ last.classList.add('contradicted'); last.appendChild(el('div', 'vflag', '✗ NOT FACT: ' + what + (p.revision ? '; the agent is asked to correct it' : '; see the struck-through statements below'))); }
+  }
   d.appendChild(el('summary', '', (bad ? '✗ ' : unk ? '? ' : '✓ ') + (p.verified || 0) + ' verified · ' + (p.unverified || 0) + ' unverified' +
     (known ? (known === (p.unverified || 0) ? ' (general knowledge)' : ' (' + known + ' general knowledge)') : '') + ' · ' + (p.contradicted || 0) + ' contradicted' +
     (contract ? (contract.ok ? ' · contract met' : ' · contract not met') : '') + (p.revision ? ' · the agent is asked to revise once' : '')));
+  if((p.contradicted || 0) > 0) d.appendChild(el('div', 'vbanner', '✗ NOT FACT: ' + p.contradicted + ' contradicted by the session\'s record' + (p.revision ? ' · the agent is asked to correct it' : '')));
   for(const c of claims){
     const r = el('div', 'cl ' + (c.verdict || 'unverified')), b = el('div');
     r.appendChild(el('span', 'mk', c.verdict === 'verified' ? '✓' : c.verdict === 'contradicted' ? '✗' : '?'));

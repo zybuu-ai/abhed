@@ -133,10 +133,13 @@ All notable changes to Abhed are recorded here. The format follows
   The checks compare text, exit codes, the calls made and the files as they
   are now, with no model involved, so they hold with a weak model. The
   terminal, the workbench and console, and Abhed Studio label every answer
-  by default, at no extra model call; `-p`, `rpc` and the SDK check only when
+  by default; a contradicted statement gets the agent one revision turn (the
+  only model call label mode adds) and, if it stays, a `NOT FACT` banner above
+  the labels and on the workbench's reply. `-p`, `rpc` and the SDK check only when
   asked. `verify.mode` (`off`, `label`, `strict`), `-verify`, rpc's `start`,
   a session's `verify` and `Options.Verify` choose; a managed mode may only
-  be made stricter, and a workspace file may only raise it
+  be made stricter, and a workspace file may only raise it. Claims about a
+  subagent's work are checked in its own record
   ([Verified answers](docs/guide/29-verified-answers.md)).
 - `strict` mode gives the agent an `answer` tool to cite its evidence and,
   when a statement about its work is not verified, one recorded revision

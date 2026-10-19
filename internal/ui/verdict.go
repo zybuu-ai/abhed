@@ -33,7 +33,19 @@ func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 		return nil
 	}
 	var rows []string
-	if v.Revision != "" {
+	// The reply streamed before it was checked: a contradiction is said in a
+	// line no one can read past, before anything else.
+	if v.Contradicted > 0 {
+		what := fmt.Sprintf("%d statements in the reply above are", v.Contradicted)
+		if v.Contradicted == 1 {
+			what = "1 statement in the reply above is"
+		}
+		if v.Revision != "" {
+			rows = append(rows, "  "+s.Bold(s.Red("✗ NOT FACT: "+what+" contradicted by this session's record. The agent is asked to correct it.")))
+		} else {
+			rows = append(rows, "  "+s.Bold(s.Red("✗ NOT FACT: "+what+" contradicted by this session's record; struck through below.")))
+		}
+	} else if v.Revision != "" {
 		rows = append(rows, "  "+s.Yellow("↻ ")+s.Dim("Some of this could not be confirmed from the session's record; the agent is asked to revise it once."))
 	}
 	mark := s.Green("✓")

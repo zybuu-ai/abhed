@@ -1001,7 +1001,7 @@ labelled verified, unverified or contradicted. The whole of it is in
 
 | Key | Default | |
 |---|---|---|
-| `mode` | unset | `off`, `label` or `strict`. Unset is `label` in the terminal, the workbench and console, and Abhed Studio, and `off` for `-p`, `rpc`, unattended runs and the SDK. `-verify`, rpc's `start`, a session's `verify` and `Options.Verify` set it per run, and may only make a managed value stricter. A workspace file may only raise it, never below `label` |
+| `mode` | unset | `off`, `label` or `strict`. Unset is `label` in the terminal, the workbench and console, and Abhed Studio, and `off` for `-p`, `rpc`, unattended runs and the SDK. `label` adds a model call only when a statement is contradicted, for one revision turn. `-verify`, rpc's `start`, a session's `verify` and `Options.Verify` set it per run, and may only make a managed value stricter. A workspace file may only raise it, never below `label` |
 | `answer_tool` | on in `strict`, off otherwise | offers the agent the `answer` tool, which carries each claim's evidence. A workspace file may only turn it on |
 | `critic.enabled` | `false` | a model checks each verified claim against its evidence and may only downgrade it; it fails closed. One model call per answer with a verified claim |
 | `critic.model` | the session's | a configured provider to ask instead. Neither it nor `critic.enabled` is taken from a workspace file until it is trusted |

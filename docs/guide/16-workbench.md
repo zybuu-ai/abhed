@@ -104,7 +104,9 @@ that urges past a safeguard or towards something destructive.
 `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
 
-**Checked answers.** Under each reply, a box lists what checking it against
+**Checked answers.** A reply holding a statement the session's record
+contradicts is flagged on the reply itself (`✗ NOT FACT`, with a red edge),
+and the agent gets one turn to correct it. Under each reply, a box lists what checking it against
 the session's record found: each statement with a ✓ (verified), ? (unverified)
 or ✗ (contradicted, struck through, with the record entry against it). It
 opens by itself when a statement is contradicted or a statement about the work

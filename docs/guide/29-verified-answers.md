@@ -35,12 +35,12 @@ model as well as a strong one.
 | `mode` | What it does |
 |---|---|
 | `off` | nothing is checked |
-| `label` | each answer is checked and labelled; the run ends as it would have. No model call is added, no tool is added and the prompt is unchanged |
+| `label` | each answer is checked and labelled; the run ends as it would have. No tool is added and the prompt is unchanged. A model call is added only when a statement is contradicted: the agent then gets **one** revision turn to correct it |
 | `strict` | as `label`, and the agent is given the `answer` tool. When a statement about the session's work is not verified, the agent gets **one** revision turn with the findings; if it is still not verified, the run ends `unverified` |
 
 Unset, the surface chooses. The interactive terminal, the workbench and
 console, and Abhed Studio use `label`, because a person reads the answer there
-and labelling costs nothing. `abhed -p`, `abhed rpc`, unattended server runs
+and labelling costs nothing unless the answer contradicts the record. `abhed -p`, `abhed rpc`, unattended server runs
 and the SDK check nothing unless asked, so a script's output does not change
 under it.
 
@@ -90,8 +90,13 @@ counts (`12 tests`, `replicas: 3`). Then:
 - **"I changed X" and "I ran `Y`" are checked against the calls.** A statement
   that the agent edited, created or removed a file needs a call in the record
   that changed that file; one that it ran a command needs that command. With
-  none, the statement is contradicted (or unverified, when a subagent ran,
-  since its work is in its own record).
+  none, the statement is contradicted.
+- **A subagent's work counts.** The parent's record names each subagent's
+  session, and its own record is read too (up to three levels deep): its
+  results are evidence and its calls are changes, placed at the parent's
+  entry for its return, which is the `#seq` a verdict cites for them. Where
+  that record cannot be read, a claim about its work is unverified, never
+  contradicted.
 - **`file:line` cites are checked against the file now.** The file must exist
   and have that line, or the statement is contradicted; text it quotes must be
   on that line or the two either side.
@@ -128,22 +133,33 @@ that a file changed) is checked anyway. A model that ignores the tool and
 answers in text is checked as text. The tool adds no model call: it is how the
 last turn ends.
 
-## Strict mode and the revision turn
+## The revision turn
 
-When a statement about the session's work comes out unverified or contradicted
-in `strict` mode, the agent is sent one note, recorded in the `answer.verdict`
+When a statement comes out contradicted, in `label` or `strict` mode, or when
+a statement about the session's work comes out unverified in `strict` mode or
+under a contract, the agent is sent one note, recorded in the `answer.verdict`
 event, listing each one and why: "Check what you can with a tool, then give
 your answer again… say plainly what you could not verify." Its next answer is
 checked the same way. There is only one revision per run. "I could not verify
-X" is an answer the checks accept.
+X" is an answer the checks accept. In `label` mode the run then ends as it
+would have, with the second answer labelled; a statement still contradicted
+is flagged as below.
 
-A run still not verified ends with the terminal reason `unverified`, and
+In `strict` mode (or with a contract), a run still not verified ends with the terminal reason `unverified`, and
 `abhed -p` exits **8**, so CI fails closed. The answer is still printed, with
 its labels. The SDK returns an `*EndedError` whose `Reason` is `unverified`;
 `abhed rpc` answers the prompt with `type: "error"`, the answer and the verdict.
 
 ## Where you see it
 
+- **A contradiction is impossible to miss.** The reply streams as it is
+  written, before it can be checked, so when a statement in it is
+  contradicted the first line under it, above everything else, is a bold red
+  banner: `✗ NOT FACT: 1 statement in the reply above is contradicted by this
+  session's record; struck through below.` (or, when a revision follows, that
+  the agent is asked to correct it). The workbench puts the same flag on the
+  reply itself, with a red edge, and at the top of its box; Studio gets it as
+  the first line of the verdict's text.
 - **The terminal**: under the reply, a footer such as
   `✓ 3 verified · 1 unverified (general knowledge) · 0 contradicted`, then
   each contradicted statement struck through with the record against it, and
@@ -166,7 +182,9 @@ its labels. The SDK returns an `*EndedError` whose `Reason` is `unverified`;
 - **The SDK**: `Agent.Verdict()`.
 
 The labels follow the reply: in the terminal and the workbench the reply
-streams as it is written, and the checks run once it is complete.
+streams as it is written, and the checks run once it is complete. The reply's
+own text is not rewritten; the banner, the strikethrough in the list under it
+and, where one follows, the corrected answer are what mark it.
 
 ## The critic
 
@@ -246,10 +264,10 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
   the same words for another reason, and a correct statement put in other words
   ("twelve" for `12`) is unverified. Quote the output, or use the answer tool's
   `quote`, where it matters.
-- A subagent's results are in its own record and are not consulted; claims
-  about its work are unverified unless the parent saw the result.
+- A subagent's work is placed at its return, so a parent's change made while
+  a background subagent was still running may not make its output out of date.
 - Remote state (a cluster, a host over ssh) is only as current as the last
   command that read it; any later call that may change state outside a file
   makes that output out of date.
-- Labels do not stop a reply from streaming; strict mode's revision and exit
-  code are the gate.
+- Labels do not stop a reply from streaming; the banner follows it, and
+  strict mode's exit code is the gate for a script.

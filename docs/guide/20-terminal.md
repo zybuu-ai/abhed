@@ -134,7 +134,9 @@ transcript, so a change of mode or a compaction is never invisible:
   open, one line above the input says how far it has got
   (`◼ Todos 1/3 done · change the greeting`); Ctrl-T lists every item there,
   and `/todos` draws the list into the transcript.
-- **Checked answers.** Under each reply, one line says what checking it
+- **Checked answers.** A reply with a statement the record contradicts gets
+  a bold red `✗ NOT FACT` line first, and the agent one turn to correct it.
+  Under each reply, one line says what checking it
   against the session's record found
   (`✓ 3 verified · 1 unverified (general knowledge) · 0 contradicted`), then
   each contradicted statement struck through with the record against it, and

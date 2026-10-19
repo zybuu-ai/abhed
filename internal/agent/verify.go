@@ -35,7 +35,8 @@ const (
 	// VerifyOff checks nothing.
 	VerifyOff VerifyMode = "off"
 	// VerifyLabel checks each answer and labels its statements; the run ends
-	// as it would have. It makes no model call of its own.
+	// as it would have. It makes a model call only when a claim is
+	// contradicted: the agent's one revision turn.
 	VerifyLabel VerifyMode = "label"
 	// VerifyStrict also gives the agent one revision turn when a statement
 	// about the session's work is not verified, and ends the run unverified
@@ -382,7 +383,10 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		av.Outcome = ClaimUnverified
 	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
-	if gated && av.Outcome != ClaimVerified && !revised && l.turns < l.Config.MaxTurns && !l.Budget.Exhausted() {
+	// In label mode a contradicted claim also earns the one revision: it is
+	// the only case label mode spends a model call on.
+	revise := (gated && av.Outcome != ClaimVerified) || (v.Mode == VerifyLabel && av.Contradicted > 0)
+	if revise && !revised && l.turns < l.Config.MaxTurns && !l.Budget.Exhausted() {
 		av.Revision = revisionNote(av, v.AnswerTool)
 		v.mu.Lock()
 		v.revised = true

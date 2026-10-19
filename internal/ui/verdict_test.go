@@ -31,10 +31,13 @@ func TestVerdictIsDrawnAndAnswerCallHidden(t *testing.T) {
 	}}
 	r.Event(ev(agent.EvAnswerVerdict, v))
 	got := out.String()
-	for _, want := range []string{"1 verified · 1 unverified (general knowledge) · 1 contradicted", "✗ 2 All 15 tests pass.", "#7: 12 tests passed"} {
+	for _, want := range []string{"1 verified · 1 unverified (general knowledge) · 1 contradicted", "✗ 2 All 15 tests pass.", "#7: 12 tests passed", "✗ NOT FACT: 1 statement in the reply above is contradicted"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
 		}
+	}
+	if i, j := strings.Index(got, "NOT FACT"), strings.Index(got, "1 verified ·"); i < 0 || i > j {
+		t.Error("the contradiction banner comes first, above the footer")
 	}
 	if strings.Contains(got, "/evidence") {
 		t.Error("-p output has no /evidence to point at")
