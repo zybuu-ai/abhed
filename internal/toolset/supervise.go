@@ -21,7 +21,12 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 	if !m.Enabled {
 		return nil
 	}
-	var judge monitor.Monitor = monitor.Rules{LookPath: hostLookPath(reg), Declared: declared(cfg), Hosts: sshHosts(cfg)}
+	look := hostLookPath(reg)
+	var home string
+	if look != nil { // commands run on this machine's own files, so ~ is its home
+		home, _ = os.UserHomeDir()
+	}
+	var judge monitor.Monitor = monitor.Rules{LookPath: look, Declared: declared(cfg), Hosts: sshHosts(cfg), Home: home}
 	if m.Judge == "model" {
 		judge = monitor.Chain{judge, monitor.Model{Endpoint: m.Endpoint, Model: m.Model, APIKey: apiKey(m.APIKeyEnv)}}
 	}
