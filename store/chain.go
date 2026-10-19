@@ -195,7 +195,7 @@ func (p *Postgres) walk(ctx context.Context, t chainTable, key string, from, to 
 	}
 	q := fmt.Sprintf(`SELECT chain_pos, COALESCE(prev_hash, ''), COALESCE(hash, ''),
 		COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(to_jsonb(t)) e WHERE e.key = ANY($4::text[])), '{}'::jsonb)::text
-		FROM %s t WHERE %s = $1 AND chain_pos >= $2 AND chain_pos <= $3 ORDER BY chain_pos LIMIT $5`, t.name, t.key) // #nosec G201 -- names from chainTable
+		FROM %s t WHERE %s = $1 AND chain_pos >= $2 AND chain_pos <= $3 ORDER BY chain_pos, seq LIMIT $5`, t.name, t.key) // #nosec G201 -- names from chainTable
 	for lo := from; ; {
 		rows, err := tx.Query(ctx, q, key, lo, to, t.cols, chainPage)
 		if err != nil {
