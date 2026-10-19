@@ -112,7 +112,7 @@ var knownReads = func() map[string]readSpec {
 	m["ps"] = readSpec{opts: o("-e -A -a -d -N -f -F -l -H -w -ww -j -L -T -y -Z -M --forest --no-headers --headers "+
 		"-ef -eF -ely -elf -eLf -efH -eo -ejH -aux",
 		"-o --format -O -p --pid -q --quick-pid -u --user -U -C -G --group -g --sort -t --tty --ppid -s --sid --cols --columns --rows --width"),
-		operandSet: set("aux", "auxf", "auxww", "auxw", "axu", "ax", "axf", "faux", "aux", "axjf", "axo", "aux", "uax", "e", "f")}
+		operandSet: set("aux", "auxf", "auxww", "auxw", "axu", "ax", "axf", "faux", "aux", "axjf", "axo", "uax", "f")}
 	m["pgrep"] = readSpec{opts: o("-l --list-name -a --list-full -c --count -f --full -n --newest -o --oldest -v --inverse "+
 		"-x --exact -i --ignore-case -w --lightweight -fl -lf -fa -af -ia -ai",
 		"-u --euid -U --uid -g --pgroup -G --group -P --parent -s --session -t --terminal -d --delimiter")}

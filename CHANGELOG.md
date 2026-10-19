@@ -144,8 +144,10 @@ All notable changes to Abhed are recorded here. The format follows
   size or sum takes no option that would print another file's lines
   (`file -m`, `wc --files0-from`, `sha256sum -c`). Every listed program
   has such a form, the plainest included (`lspci` without `-O`, `-q` or
-  `-Q`; `getent` without `-s`), and a call with `$` outside single quotes,
-  or a glob that could expand into an option, is not a read. Any other wildcard entry is refused at load
+  `-Q`; `getent` without `-s`; `ps` without `e`), and a call with `$`
+  outside single quotes, a glob that could expand into an option, or a
+  backslash inside single quotes (which fish reads otherwise) is not a
+  read. Any other wildcard entry is refused at load
   with "declare the exact command instead". A matching `ssh` call, read as bash
   reads it, runs in plan mode and asks in no mode, so a plan can start by
   inspecting the fleet; a chain, pipe, substitution, redirection, a

@@ -475,9 +475,11 @@ nor is one with an unquoted `*`, `?` or `[` at the start of a word or in a
 word that starts with `-`, since the host's shell could expand it into an
 option: write the glob after a path (`/etc/nginx/*.conf`, `./*.log`). A value
 in single quotes may hold `$` and braces only for `dpkg-query -f` and
-`rpm --queryformat`, which take a format. A program marked **content
-reader** prints the files it is given, so a wildcard entry for it reads any
-file the remote account can.
+`rpm --queryformat`, which take a format. A call with a backslash inside
+single quotes is not a read: POSIX shells keep it as written and fish reads
+`\'` as a kept quote, so the words would depend on the remote login shell.
+A program marked **content reader** prints the files it is given, so a
+wildcard entry for it reads any file the remote account can.
 
 | Program | Read form a wildcard may cover |
 |---|---|
@@ -499,7 +501,7 @@ file the remote account can.
 | `whoami` | no options; no operand |
 | `groups` | no options |
 | `nproc` | options `--all`; values `--ignore`; no operand |
-| `ps` | options `--forest`, `--headers`, `--no-headers`, `-A`, `-F`, `-H`, `-L`, `-M`, `-N`, `-T`, `-Z`, `-a`, `-aux`, `-d`, `-eF`, `-eLf`, `-e`, `-efH`, `-ef`, `-ejH`, `-elf`, `-ely`, `-eo`, `-f`, `-j`, `-l`, `-w`, `-ww`, `-y`; values `--cols`, `--columns`, `--format`, `--group`, `--pid`, `--ppid`, `--quick-pid`, `--rows`, `--sid`, `--sort`, `--tty`, `--user`, `--width`, `-C`, `-G`, `-O`, `-U`, `-g`, `-o`, `-p`, `-q`, `-s`, `-t`, `-u`; operands only `aux`, `auxf`, `auxw`, `auxww`, `ax`, `axf`, `axjf`, `axo`, `axu`, `e`, `f`, `faux`, `uax` |
+| `ps` | options `--forest`, `--headers`, `--no-headers`, `-A`, `-F`, `-H`, `-L`, `-M`, `-N`, `-T`, `-Z`, `-a`, `-aux`, `-d`, `-eF`, `-eLf`, `-e`, `-efH`, `-ef`, `-ejH`, `-elf`, `-ely`, `-eo`, `-f`, `-j`, `-l`, `-w`, `-ww`, `-y`; values `--cols`, `--columns`, `--format`, `--group`, `--pid`, `--ppid`, `--quick-pid`, `--rows`, `--sid`, `--sort`, `--tty`, `--user`, `--width`, `-C`, `-G`, `-O`, `-U`, `-g`, `-o`, `-p`, `-q`, `-s`, `-t`, `-u`; operands only `aux`, `auxf`, `auxw`, `auxww`, `ax`, `axf`, `axjf`, `axo`, `axu`, `f`, `faux`, `uax` (not `e`, which prints each process's environment) |
 | `pgrep` | options `--count`, `--exact`, `--full`, `--ignore-case`, `--inverse`, `--lightweight`, `--list-full`, `--list-name`, `--newest`, `--oldest`, `-a`, `-af`, `-ai`, `-c`, `-f`, `-fa`, `-fl`, `-i`, `-ia`, `-l`, `-lf`, `-n`, `-o`, `-v`, `-w`, `-x`; values `--delimiter`, `--euid`, `--group`, `--parent`, `--pgroup`, `--session`, `--terminal`, `--uid`, `-G`, `-P`, `-U`, `-d`, `-g`, `-s`, `-t`, `-u` |
 | `netstat` | options `--all`, `--extend`, `--interfaces`, `--listening`, `--numeric`, `--program`, `--raw`, `--route`, `--statistics`, `--tcp`, `--timers`, `--udp`, `--unix`, `--wide`, `-4`, `-6`, `-W`, `-a`, `-an`, `-anp`, `-ant`, `-antp`, `-atn`, `-e`, `-i`, `-ia`, `-ie`, `-l`, `-lnp`, `-lntp`, `-ltn`, `-ltnp`, `-n`, `-nr`, `-o`, `-p`, `-r`, `-rn`, `-s`, `-st`, `-su`, `-t`, `-tln`, `-tlnp`, `-tulnp`, `-tulpn`, `-tunlp`, `-u`, `-w`, `-x`; no operand |
 | `lsblk` | options `--all`, `--bytes`, `--fs`, `--inverse`, `--json`, `--list`, `--nodeps`, `--noheadings`, `--output-all`, `--paths`, `--perms`, `--raw`, `--scsi`, `--topology`, `--zoned`, `-J`, `-O`, `-S`, `-a`, `-b`, `-d`, `-dn`, `-f`, `-fp`, `-l`, `-m`, `-n`, `-nd`, `-no`, `-p`, `-pf`, `-r`, `-s`, `-t`, `-z`; values `--exclude`, `--include`, `--output`, `--sort`, `-I`, `-e`, `-o`, `-x` |
