@@ -1347,6 +1347,9 @@ type SandboxConfig struct {
 	// folder but the known credential paths, as before 1.2.8, in place of
 	// only the toolchain folders, the workspace and read_only_paths.
 	ReadableHome bool `json:"readable_home,omitempty"`
+	// Image is the container tier's image in place of ABHED_SANDBOX_IMAGE,
+	// such as one with the project's toolchains. Never from a workspace file.
+	Image string `json:"image,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
@@ -1733,6 +1736,15 @@ type ToolsConfig struct {
 	// SyntaxCheck is what edit and write do with a change that would leave a
 	// file that parsed no longer parsing: "refuse" (the default), "report" or "off".
 	SyntaxCheck string `json:"syntax_check,omitempty"`
+	// BashCheckpoints is what is kept of the workspace before each bash
+	// command, so /undo and /rewind take its changes back: "on" (the
+	// default), "off", or "required", which refuses a command when the
+	// snapshot is not whole.
+	BashCheckpoints string `json:"bash_checkpoints,omitempty"`
+	// BashCheckpointMB bounds the content held for it (32 when zero), and
+	// BashCheckpointFiles the files looked at (20000 when zero).
+	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
+	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -1891,6 +1903,14 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
 	}
+	switch c.Tools.BashCheckpoints {
+	case "", "on", "off", "required":
+	default:
+		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
+		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")
+	}
 	switch c.Sandbox.MinTier {
 	case "none", "process", "container", "vm", "":
 	default:
@@ -1908,6 +1928,9 @@ func (c Config) Validate() error {
 	case "", "shell", "lines":
 	default:
 		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
+	}
+	if img := c.Sandbox.Image; img != "" && (strings.HasPrefix(img, "-") || strings.ContainsAny(img, " \t\r\n\x00")) {
+		return fmt.Errorf("sandbox.image %q is not an image reference", img)
 	}
 	for lang, argv := range c.Sandbox.LanguageServers {
 		if !languageID.MatchString(lang) {

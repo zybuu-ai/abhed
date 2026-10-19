@@ -131,6 +131,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
+| `tools.bash_checkpoints` | **applied** only when `required` |
+| `tools.bash_checkpoint_mb`, `tools.bash_checkpoint_files` | ignored: they set how much of the workspace is held in memory |
 | `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
@@ -167,6 +169,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `control_plane.interceptors` | ignored, trusted or not, as in the user's own file: only the managed configuration sets what admits sandbox calls |
 | `control_plane.ha` | ignored, trusted or not: only an operator's file (the user's own or the managed one) joins the server to replicas and names the relay's key, never a file that arrives with a repository |
 | `sandbox.language_servers` | ignored, trusted or not: only an operator's file (the user's own or the managed one) names the program the workbench editor starts as a file is opened |
+| `sandbox.image` | ignored, trusted or not: only an operator's file names the image the container tier runs commands in |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse

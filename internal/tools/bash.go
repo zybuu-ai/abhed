@@ -453,6 +453,11 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		defer detach.running.Store(false)
 	}
 
+	snap, err := s.beforeBash(ctx)
+	if err != nil {
+		endProc()
+		return errf("%v", err)
+	}
 	cmd, err := b.command(procCtx, s.Cwd, a)
 	if err != nil {
 		endProc()
@@ -468,10 +473,25 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	start := time.Now()
 	content, truncated, held, detached, err := output.run(cmd, bashOutputWait, started, move)
 	elapsed := time.Since(start)
+	// What it changed up to here; once moved to the background, nothing more.
+	snapNote := s.afterBash(snap)
 	if detached {
-		return b.moveToBackground(ctx, host, output, cmd, endProc, a, start)
+		res := b.moveToBackground(ctx, host, output, cmd, endProc, a, start)
+		if snapNote != "" {
+			res.Content = withNote(res.Content, snapNote)
+		}
+		return res
 	}
 	endProc()
+	res := b.finish(ctx, runCtx, s, a, content, truncated, held, err, elapsed, timeout)
+	if snapNote != "" {
+		res.Content = withNote(res.Content, snapNote)
+	}
+	return res
+}
+
+// finish turns a foreground command's end into its result.
+func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, content string, truncated, held bool, err error, elapsed, timeout time.Duration) Result {
 
 	// The run's own limit, not this call's: raising timeout_ms would not help.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {

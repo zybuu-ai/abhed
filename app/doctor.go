@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -115,6 +116,11 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
+		}
+		if c, ok := sb.(*sandbox.Container); ok {
+			for _, w := range toolchainWarnings(c, workspace) {
+				fmt.Printf("            ⚠ %s\n", w)
+			}
 		}
 		// MCP servers' containers a killed Abhed left, removed as a session
 		// would; only when one is set to run in a container.
@@ -790,4 +796,47 @@ func confinedStdioServers(cfg config.Config) bool {
 		}
 	}
 	return false
+}
+
+// toolchainWarnings name the toolchains the workspace looks like it needs
+// that the container tier's image lacks, and how to give it one that has them.
+func toolchainWarnings(c *sandbox.Container, workspace string) []string {
+	need := sandbox.ProjectToolchains(workspace)
+	if len(need) == 0 {
+		return nil
+	}
+	programs := make([]string, len(need))
+	for i, tc := range need {
+		programs[i] = tc.Program
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	img := sandbox.SandboxImage()
+	missing, err := c.MissingPrograms(ctx, programs)
+	if errors.Is(err, sandbox.ErrImageNotPresent) {
+		return []string{fmt.Sprintf("toolchains in the sandbox image %s not checked: %v", img, err)}
+	}
+	if err != nil || len(missing) == 0 {
+		return nil
+	}
+	var kinds, progs, images []string
+	for _, tc := range need {
+		if slices.Contains(missing, tc.Program) {
+			kinds, progs, images = append(kinds, tc.Name), append(progs, tc.Program), append(images, tc.Image)
+		}
+	}
+	suggest := "such as " + images[0]
+	if len(images) > 1 {
+		suggest = "an image of your own with all of them"
+	}
+	return []string{fmt.Sprintf("the workspace looks like a %s project, but the sandbox image %s has no %s, so its builds and tests fail under the %s tier; set sandbox.image or ABHED_SANDBOX_IMAGE to an image that has it, %s (docs/guide/02-configuration.md#the-container-tiers-image)",
+		andList(kinds), img, andList(progs), c.Tier(), suggest)}
+}
+
+// andList joins words as a sentence does: "a", "a and b", "a, b and c".
+func andList(words []string) string {
+	if len(words) <= 1 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }

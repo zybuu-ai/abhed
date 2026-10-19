@@ -134,6 +134,34 @@ func TestUndoAfterResume(t *testing.T) {
 	}
 }
 
+// What a bash command changed is checkpointed as an edit is: after an exit
+// and -c, /undo puts the file back and removes the one it made.
+func TestUndoTakesBackABashCommand(t *testing.T) {
+	g := newSessRig(t)
+	c := g.start("-mode", "bypass")
+	g.ask(c, "write a.txt=one")
+	g.ask(c, "bash printf two > a.txt; printf n > n.txt")
+	if a, _ := g.file("a.txt"); a != "two" {
+		t.Fatalf("a.txt = %q before /undo", a)
+	}
+	exit(c)
+
+	c = g.start("-c", "-mode", "bypass")
+	c.waitFor(func(out string) bool { return strings.Contains(out, "resumed") }, "the resume")
+	c.command("/undo", "removed") // a.txt is put back first, then n.txt removed
+	if a, _ := g.file("a.txt"); a != "one" {
+		t.Fatalf("a.txt = %q after /undo", a)
+	}
+	if _, ok := g.file("n.txt"); ok {
+		t.Fatal("the file the command made is still there")
+	}
+	exit(c)
+	evs := verified(t, g.record(), g.sessions()[0].ID)
+	if count(evs, agent.EvCheckpoint) != 3 || count(evs, agent.EvFileRestored) != 2 {
+		t.Fatalf("%d checkpoint.saved, %d file.restored", count(evs, agent.EvCheckpoint), count(evs, agent.EvFileRestored))
+	}
+}
+
 // A restore is the person's write, put to policy: a path a deny rule keeps
 // is not put back, and the refusal is recorded.
 func TestRewindRestoreRespectsDeny(t *testing.T) {

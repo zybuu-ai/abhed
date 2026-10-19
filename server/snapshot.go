@@ -127,7 +127,8 @@ func walkWorkspace(root string, visit func(rel string, info fs.FileInfo, read fu
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable entry is left out, not the end of the walk
 		}
-		if p != "." && skipInView(d.Name()) {
+		// A subagent's worktree is reviewed and taken on its own, not listed as the workspace's changes.
+		if p != "." && (skipInView(d.Name()) || d.IsDir() && strings.EqualFold(d.Name(), tools.WorktreesDir)) {
 			if d.IsDir() {
 				return fs.SkipDir
 			}

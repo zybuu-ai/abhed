@@ -70,8 +70,8 @@ So its program must run in that image: a `docker`-style server, or one
 installed for macOS, does not. Before the server starts, Abhed looks for its
 program in the image (with the server's mounts) and refuses a server whose
 program is not there, or is a macOS binary, naming the program; the session's
-warning, `/mcp` and `abhed doctor` give that reason. Set `ABHED_SANDBOX_IMAGE`
-to an image with its runtime, or `host_files` to run it on the host. A tier that cannot
+warning, `/mcp` and `abhed doctor` give that reason. Set `sandbox.image` or `ABHED_SANDBOX_IMAGE`
+to an image with its runtime ([the container tier's image](02-configuration.md#the-container-tiers-image)), or `host_files` to run it on the host. A tier that cannot
 confine a server refuses it with that reason, and `host_files` is the way
 out.
 

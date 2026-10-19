@@ -100,6 +100,30 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. Both ask unless an allow rule on `host:remote_path` covers
   them, the workspace file is judged as a read or write of it, and the
   approval and record keep the paths, size and sha256, never the content.
+- A subagent's worktree can be taken back by hunk: `/take` lists the
+  worktrees, `/take <id>` asks about each hunk, and the workbench's Changes
+  view shows them with tick boxes. What you accept is written into the
+  workspace as your own change, through the permission rules, git's
+  protection and checkpoints (so `/undo` takes it back); a hunk the
+  workspace changed meanwhile is reported as a conflict and left out, and
+  the worktree and its branch are removed only when you ask. Each take is
+  recorded as `worktree.taken`
+  ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
+- Changes made through `bash` are checkpointed: before each command the
+  workspace's files are noted and copied in memory, within limits, and each
+  file the command changed, removed or made is recorded as `checkpoint.saved`,
+  so `/undo` and `/rewind` (and Studio's undo and review) take them back. A
+  change the limits kept no copy of is named in the record and the command's
+  result, not put back; `tools.bash_checkpoints` is `on` (the default), `off`,
+  or `required`, which refuses a command whose snapshot is not whole, and
+  `tools.bash_checkpoint_mb` and `tools.bash_checkpoint_files` set the limits
+  ([Records](docs/guide/12-records.md#changes-made-through-bash)).
+- `sandbox.image` names the container tier's image, such as one with Go,
+  Node or Python, in place of `ABHED_SANDBOX_IMAGE`; a workspace file
+  cannot set it. `abhed doctor` (and Studio's checks) now warn when the
+  workspace looks like a Go, Node, Python or Rust project and the image
+  lacks its toolchain, and name an image that has it; nothing is pulled to
+  look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
 
 ### Fixed
 
@@ -118,6 +142,12 @@ All notable changes to Abhed are recorded here. The format follows
   NXDOMAIN. To let it, the seccomp filter (now profile `command/4`) allows
   UDP sockets in that mode alone, where the namespace holds only loopback
   and a datagram can reach nothing else.
+- The workbench's Changes view no longer lists the files in a subagent's
+  worktree (`.abhed-worktrees/`) as the workspace's own changes; they are
+  reviewed and taken on their own.
+- Studio's review no longer shows a file whose content was not kept before
+  the change (one that holds keys, or one a read rule denies) as a whole
+  file added from nothing.
 
 ## [1.2.8] - 2026-10-14
 

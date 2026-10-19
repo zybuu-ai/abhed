@@ -57,7 +57,8 @@ func newSessRig(t *testing.T) *sessRig {
 		n := len(g.bodies)
 		g.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
-		// "write path=content" as the latest prompt is a write call; anything
+		// "write path=content" as the latest prompt is a write call, "bash
+		// command" a bash call; anything
 		// else, or a tool's result, is answered with text.
 		var req struct {
 			Messages []struct {
@@ -68,6 +69,13 @@ func newSessRig(t *testing.T) *sessRig {
 		_ = json.Unmarshal(body, &req)
 		if k := len(req.Messages); k > 0 && req.Messages[k-1].Role == "user" {
 			text, _ := req.Messages[k-1].Content.(string)
+			if command, ok := strings.CutPrefix(text, "bash "); ok {
+				args, _ := json.Marshal(map[string]string{"command": command, "description": "run it"})
+				call, _ := json.Marshal(string(args))
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c%d\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":%s}}]}}]}\n\n", n, call)
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+				return
+			}
 			if spec, ok := strings.CutPrefix(text, "write "); ok {
 				path, content, _ := strings.Cut(spec, "=")
 				path = filepath.Join(g.ws, path) // the write tool takes absolute paths
