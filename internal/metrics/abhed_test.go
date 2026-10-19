@@ -260,3 +260,25 @@ func TestCallsAreForgotten(t *testing.T) {
 		t.Fatalf("%d calls held, over %d", len(m.calls), maxCalls)
 	}
 }
+
+func TestObserveWhileWriting(t *testing.T) {
+	m := New()
+	m.RunningSessions(func() int { return 2 })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			requested(m, "c", true)
+			outcome(m, "c", true, "ask", agent.ByReviewer)
+			m.Observe(ev(agent.EvObservation, agent.Observation{CallID: "c", DurationMS: 5}))
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		var b bytes.Buffer
+		_ = m.Registry.Write(&b)
+	}
+	<-done
+	if m.approvals.Value("approved", agent.ByReviewer, "bash") != 200 || m.runningSessions() != 2 {
+		t.Fatal("counts lost")
+	}
+}
