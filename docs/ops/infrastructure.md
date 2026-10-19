@@ -38,6 +38,17 @@ opaque string to tell `list pods` from `delete namespace`. As separate tools the
 read path is genuinely non-mutating, and every write goes through approval by
 construction rather than by correctly interpreting text.
 
+**A Secret's values never reach the model.** `k8s_get` of `secrets`, a
+single one or a list, and what the cluster answers a `k8s_apply` of a
+Secret, show each key of `data` and `stringData` with the value's length
+and sha256 in its place (`"tls.key": "[withheld: 1704 bytes, sha256 …]"`),
+for `data` of the decoded value. The `kubectl.kubernetes.io/last-applied-configuration`
+annotation, which holds the whole object, is withheld too, and a response to
+a `secrets` read that is not JSON is not shown at all. The same text is what
+the record and every screen get. The hash lets you check a value you hold
+against the cluster's; a short password can be guessed from it offline, so
+keep `k8s_get(*/*/secrets)` denied where that matters.
+
 `allow_writes` decides whether `k8s_apply` exists at all. Even with it on, there
 is no permission mode that auto-approves a cluster write: a mistaken delete in
 production is not recoverable the way a file edit is.

@@ -6,6 +6,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- `k8s_get` of a Secret returned its `data` to the model, and so to the
+  record and every screen: only metadata noise was stripped. A Secret's
+  values, in `data`, `stringData` and kubectl's last-applied annotation, are
+  now shown as each key with the value's length and sha256, for a single
+  Secret, a list, and what the cluster answers a `k8s_apply` of one.
 
 ## [1.2.8] - 2026-10-14
 

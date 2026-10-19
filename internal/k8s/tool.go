@@ -514,7 +514,7 @@ func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessa
 	if err != nil {
 		return errf("%v", err)
 	}
-	return tools.Result{Content: render(a.Resource, data)}
+	return tools.Result{Content: render(kubescope.Resource(a.Resource), data)}
 }
 
 func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
@@ -746,7 +746,7 @@ func render(resource string, data []byte) string {
 	}
 	if err := json.Unmarshal(data, &list); err != nil || list.Items == nil {
 		// A single object: strip the noisiest fields and return it.
-		return summarize(data)
+		return summarizeAs(data, resource == "secrets")
 	}
 	if len(list.Items) == 0 {
 		return "No " + resource + " found."
@@ -807,11 +807,21 @@ func statusOf(item map[string]any) string {
 }
 
 // summarize removes the fields that dominate a manifest's size and carry no
-// information a question depends on.
-func summarize(data []byte) string {
+// information a question depends on. A Secret's values are masked.
+func summarize(data []byte) string { return summarizeAs(data, false) }
+
+// summarizeAs is summarize, masking the object as a Secret's also when
+// secret is set, whatever kind it says it is.
+func summarizeAs(data []byte, secret bool) string {
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
+		if secret {
+			return "[withheld: a Secret's response that could not be read as JSON]"
+		}
 		return string(data)
+	}
+	if secret || isSecret(obj) {
+		maskSecret(obj)
 	}
 	if meta, ok := obj["metadata"].(map[string]any); ok {
 		for _, noise := range []string{"managedFields", "resourceVersion", "uid",
