@@ -544,6 +544,7 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		}
 		n++
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.noteSaid(text, true)
 		l.setPrompt(text)
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
@@ -744,6 +745,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	l.noteSaid(text, false)
 	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
@@ -1102,6 +1104,7 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
+	l.forgetSaid()
 	l.UnbindPlan() // a runbook binds the conversation that approved it, not one rebuilt from a record
 	if turns > l.turns {
 		l.turns = turns
@@ -1427,6 +1430,19 @@ func truncateKey(k string) string {
 // It replaces the call's arguments with their canonical encoding, so everything
 // after it, the tool included, reads the value policy judged.
 func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
+	ok, res, term := l.authorizeCall(ctx, c)
+	if !ok {
+		// What a tool readied for a call that will not run is let go now.
+		if t, found := l.Tools.Get(c.Name); found {
+			if u, isU := t.(tools.Unplanner); isU {
+				u.Unplan(l.Session, c.Args)
+			}
+		}
+	}
+	return ok, res, term
+}
+
+func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
 	tool, found := l.Tools.Get(call.Name)
 	if found && !l.offered(tool) {
@@ -1511,8 +1527,8 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// deny. An allowed write the tool would refuse (into .abhed in
 	// accept-edits) was recorded approved, then refused.
 	var doomed error
-	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision != policy.Deny {
-		doomed = pc.Precheck(l.Session, call.Args)
+	if decision.Decision != policy.Deny {
+		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {
@@ -2475,6 +2491,14 @@ func (l *Loop) noteReasoning(text string) {
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
 	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	if out.Skipped == monitor.SkippedBudget {
+		// Unreviewed, and said so: in the record and in the reason every
+		// approver, and a runbook step's label, shows.
+		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
+			After: string(before.Decision), Skipped: out.Skipped})
+		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
+		return before
+	}
 	if out.Skipped != "" {
 		return before
 	}
@@ -2487,7 +2511,7 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	// An ask the supervisor has a concern with is its ask too, so no
 	// session-wide "always allow" answers it without the person.
 	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
-	if !out.Tightened && !(concern && before.Decision == policy.Ask) {
+	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
 		return before
 	}
 	why := out.Verdict.Code

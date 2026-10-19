@@ -280,6 +280,14 @@ type SecretPaths interface {
 	SecretPaths() [][]string
 }
 
+// SecretWithholder is a tool whose arguments can carry a secret's value
+// somewhere other than a secret's name, such as a Secret in a manifest:
+// WithholdSecrets returns the arguments with any such value withheld, or
+// them unchanged.
+type SecretWithholder interface {
+	WithholdSecrets(args json.RawMessage) json.RawMessage
+}
+
 // SecretNames returns the secret names a call to t asks for.
 func SecretNames(t Tool, args json.RawMessage) []string {
 	sa, ok := t.(SecretArgs)
@@ -347,6 +355,9 @@ func walkPath(v any, path []string, f func(v any, set func(any))) {
 // otherwise have it judged, shown for approval and recorded, and the record is
 // append-only. Arguments with nothing to withhold come back unchanged.
 func WithholdSecretValues(t Tool, canon json.RawMessage) json.RawMessage {
+	if sw, ok := t.(SecretWithholder); ok {
+		canon = sw.WithholdSecrets(canon)
+	}
 	sa, ok := t.(SecretArgs)
 	sp, deep := t.(SecretPaths)
 	if !ok && !deep {

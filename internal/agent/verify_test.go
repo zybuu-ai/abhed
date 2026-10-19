@@ -53,9 +53,9 @@ func checkText(t *testing.T, b *rec, dir, text string) []ClaimVerdict {
 	return v
 }
 
-func checkCited(t *testing.T, b *rec, dir string, claims ...Claim) []ClaimVerdict {
+func checkCited(t *testing.T, b *rec, claims ...Claim) []ClaimVerdict {
 	t.Helper()
-	env := checkEnv{events: b.events(), workDir: dir, readFile: os.ReadFile}
+	env := checkEnv{events: b.events(), workDir: "", readFile: os.ReadFile}
 	v, _ := checkClaims(env, claims)
 	return v
 }
@@ -83,7 +83,7 @@ func TestInventedNumberIsContradicted(t *testing.T) {
 		}
 	}
 	// Cited, the same invention fares no better.
-	v := checkCited(t, b, "", Claim{Text: "15 tests passed", Kind: KindObserved, Evidence: []string{"c1"}})
+	v := checkCited(t, b, Claim{Text: "15 tests passed", Kind: KindObserved, Evidence: []string{"c1"}})
 	wantVerdict(t, v[0], ClaimContradicted)
 	// And the true figure is verified, tied to the result.
 	v = checkText(t, b, "", "All 12 tests pass.")
@@ -120,7 +120,7 @@ func TestUncitedNeedsOneResultThatShowsIt(t *testing.T) {
 		t.Fatalf("reason: %s", v.Reason)
 	}
 	// Cited, the two results together are what the agent says shows it.
-	v = checkCited(t, b, "", Claim{Text: "The database is db.internal.example.com on port 5432.", Evidence: []string{"c2", "c3"}})[0]
+	v = checkCited(t, b, Claim{Text: "The database is db.internal.example.com on port 5432.", Evidence: []string{"c2", "c3"}})[0]
 	wantVerdict(t, v, ClaimVerified)
 }
 
@@ -137,7 +137,7 @@ func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 		t.Fatalf("reason: %s", v.Reason)
 	}
 	// Cited, the earlier pass is still not current.
-	wantVerdict(t, checkCited(t, b, "", Claim{Text: "tests pass", Evidence: []string{"c1"}})[0], ClaimUnverified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "tests pass", Evidence: []string{"c1"}})[0], ClaimUnverified)
 
 	b.call("c3", "bash", map[string]string{"command": "go test ./..."}, "--- FAIL: TestA\nFAIL", exit(1))
 	v = checkText(t, b, "", "The tests pass now.")[0]
@@ -175,25 +175,25 @@ func TestCitations(t *testing.T) {
 	b := newRec(t)
 	b.r.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "what port?"})
 	seq := b.call("c1", "read", map[string]string{"path": "/w/a.conf"}, "listen 8080\n", nil)
-	wantVerdict(t, checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
-	wantVerdict(t, checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"#" + itoa(seq)}})[0], ClaimVerified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"#" + itoa(seq)}})[0], ClaimVerified)
 
-	v := checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"call_made_up"}})[0]
+	v := checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"call_made_up"}})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if !strings.Contains(v.Reason, "not in this session's record") {
 		t.Fatalf("reason: %s", v.Reason)
 	}
-	v = checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"#1"}})[0]
+	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"#1"}})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if !strings.Contains(v.Reason, "user.message") {
 		t.Fatalf("reason: %s", v.Reason)
 	}
 	// A quote the output does not hold is not evidence.
-	v = checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}, Quote: "listen 0.0.0.0:8080"})[0]
+	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}, Quote: "listen 0.0.0.0:8080"})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	// The file changed after it was read: the read no longer shows the present.
 	b.call("c2", "write", map[string]string{"path": "/w/a.conf", "content": "listen 9090\n"}, "Wrote /w/a.conf", nil)
-	v = checkCited(t, b, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0]
+	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if !strings.Contains(v.Reason, "predates a later change") {
 		t.Fatalf("reason: %s", v.Reason)
@@ -202,7 +202,7 @@ func TestCitations(t *testing.T) {
 	b2 := newRec(t)
 	b2.call("c1", "read", map[string]string{"path": "/w/a.conf"}, "listen 8080\n", nil)
 	b2.call("c2", "edit", map[string]string{"path": "/w/b.conf"}, "Edited", nil)
-	wantVerdict(t, checkCited(t, b2, "", Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
+	wantVerdict(t, checkCited(t, b2, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0], ClaimVerified)
 }
 
 // file:line cites are checked against the file as it is now.
@@ -239,12 +239,12 @@ func TestKnowledgeAndStatements(t *testing.T) {
 	if v.LoadBearing || v.Kind != KindStatement {
 		t.Fatalf("a plain statement is not load-bearing: %+v", v)
 	}
-	v = checkCited(t, b, "", Claim{Text: "TLS 1.3 removed RSA key exchange", Kind: KindKnowledge})[0]
+	v = checkCited(t, b, Claim{Text: "TLS 1.3 removed RSA key exchange", Kind: KindKnowledge})[0]
 	wantVerdict(t, v, ClaimUnverified)
 	if v.LoadBearing {
 		t.Fatal("knowledge is not load-bearing")
 	}
-	v = checkCited(t, b, "", Claim{Text: "all tests pass", Kind: KindKnowledge})[0]
+	v = checkCited(t, b, Claim{Text: "all tests pass", Kind: KindKnowledge})[0]
 	if !v.LoadBearing || v.Verdict == ClaimVerified {
 		t.Fatalf("a claim about the session's tests is checked whatever its kind: %+v", v)
 	}
@@ -344,7 +344,7 @@ func TestStrictRevisesOnceThenCompletes(t *testing.T) {
 	l, store, ad, _ := verifyHarness(t, VerifyStrict, false, []scriptedTurn{
 		{calls: []model.ToolCall{call("bash", map[string]string{"command": "printf '12 tests passed\\n'"})}},
 		{text: "All 15 tests pass."},
-		{text: "12 tests passed."},
+		{text: "The output shows 12 tests."},
 	})
 	reason, _ := l.Run(context.Background(), "run the tests")
 	if reason != TermCompleted {
@@ -550,7 +550,7 @@ func (errAdapter) Complete(context.Context, model.Request) (<-chan model.Chunk, 
 }
 
 func TestVerifyModes(t *testing.T) {
-	for in, want := range map[string]VerifyMode{"": VerifyOff, "OFF": VerifyOff, "label": VerifyLabel, " strict ": VerifyStrict} {
+	for in, want := range map[string]VerifyMode{"": VerifyOff, "OFF": VerifyOff, "label": VerifyLabel, "\tstrict\n": VerifyStrict} {
 		if got, err := ParseVerifyMode(in); err != nil || got != want {
 			t.Errorf("%q: %s %v", in, got, err)
 		}
@@ -564,8 +564,8 @@ func TestVerifyModes(t *testing.T) {
 }
 
 // A required command policy would not let run unasked is not run, and the
-// contract fails closed: a destructive one still needs a person, a deny rule
-// still binds, and plan mode runs nothing.
+// contract fails closed: a destructive one still needs a person, and a deny
+// rule still binds.
 func TestContractRespectsPolicy(t *testing.T) {
 	for name, set := range map[string]func(l *Loop){
 		"destructive": func(l *Loop) { l.Verify.Contract.Require = []string{"rm -rf build"} },
@@ -576,7 +576,6 @@ func TestContractRespectsPolicy(t *testing.T) {
 			}
 			l.Policy.Deny = append(l.Policy.Deny, r)
 		},
-		"plan mode": func(l *Loop) { l.Policy.Mode = policy.ModePlan },
 	} {
 		t.Run(name, func(t *testing.T) {
 			l, store, _, _ := verifyHarness(t, VerifyOff, false, []scriptedTurn{{text: "Done."}, {text: "Done."}})
@@ -691,5 +690,137 @@ func TestVerifyUnderARunbook(t *testing.T) {
 	vs := answerVerdicts(r.store)
 	if len(vs) != 1 || vs[0].Verified != 1 || vs[0].Contract == nil || !vs[0].Contract.OK || vs[0].Outcome != ClaimVerified {
 		t.Fatalf("verdict %+v", vs)
+	}
+}
+
+// Commands are read by program and words, not by text they happen to hold.
+func TestReadingCommands(t *testing.T) {
+	for cmd, kind := range map[string]string{"go test ./...": "test", "cd api && npm run test:unit": "test", "ls tests": "",
+		"test -f go.mod": "", "ls build/": "", "make": "build", "sudo -E go build ./...": "build", "echo 'go test'": "",
+		"python3 -m pytest -q": "test", "FOO=1 cargo clippy": "build"} {
+		got := ""
+		for _, w := range simpleCommands(cmd) {
+			if k := commandKind(w); k != "" {
+				got = k
+			}
+		}
+		if got != kind {
+			t.Errorf("%q: kind %q, want %q", cmd, got, kind)
+		}
+	}
+	targets := writeTargets("cp login.go /tmp/b.go && sed -i 's/a/b/' cfg.yaml && echo x >> log.txt && tee out.txt < in.txt && git checkout -- main.go && cat a.go 2>/dev/null")
+	want := []string{"/tmp/b.go", "cfg.yaml", "log.txt", "out.txt", "main.go"}
+	if strings.Join(targets, ",") != strings.Join(want, ",") {
+		t.Errorf("write targets %q, want %q", targets, want)
+	}
+	if !pathIs("/w/internal/auth/login.go", "auth/login.go") || pathIs("/w/data.go", "a.go") || pathIs("/w/login.go.bak", "login.go") {
+		t.Error("paths match on whole segments")
+	}
+	if !runsCommand("cd api && go test ./... -count=1", "go test ./...") || runsCommand("echo 'go test'", "go test") ||
+		runsCommand("go testdata", "go test") {
+		t.Error("a claimed command matches whole simple commands")
+	}
+}
+
+// The contract's own command is not a change: what was read before it stays
+// current, and a pass with nothing changed since is reused.
+func TestContractCommandIsNotAChange(t *testing.T) {
+	l, store, _, dir := verifyHarness(t, VerifyLabel, false, nil)
+	os.WriteFile(filepath.Join(dir, "ok.sh"), []byte("exit 0\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "a.conf"), []byte("port: 8080\n"), 0o644)
+	l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": filepath.Join(dir, "a.conf")})}},
+		{text: "It listens on port 8080."},
+		{text: "It listens on port 8080."},
+	}
+	l.Verify.Contract = &Contract{Require: []string{"sh ok.sh"}}
+	if reason, _ := l.Run(context.Background(), "which port?"); reason != TermCompleted {
+		t.Fatalf("got %s: %+v", reason, answerVerdicts(store))
+	}
+	if reason, _ := l.Run(context.Background(), "and again?"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	vs := answerVerdicts(store)
+	if len(vs) != 2 || vs[0].Verified != 1 || vs[1].Verified != 1 || !vs[1].Contract.Require[0].Reused {
+		t.Fatalf("verdicts %+v", vs)
+	}
+	// It ran with its approval on record, the operator's.
+	evs, _ := store.Events("sess1")
+	approved := 0
+	for _, e := range evs {
+		if e.Type == EvActionApproved && strings.Contains(string(e.Payload), `"by":"operator"`) {
+			approved++
+		}
+	}
+	if approved != 1 {
+		t.Fatalf("the contract's run has %d approvals on record, want 1", approved)
+	}
+}
+
+// A plan put to the person is not an answer: neither the checks nor the
+// contract run, and plan mode runs no contract for a text answer either.
+func TestNoContractOnAPlan(t *testing.T) {
+	for name, turn := range map[string]scriptedTurn{
+		"proposal": {calls: []model.ToolCall{{ID: "p1", Name: tools.ExitPlanName, Args: json.RawMessage(`{"plan":"1. read the config\n2. change the port"}`)}}},
+		"answer":   {text: "The plan: change the port in a.conf."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l, store, _, _ := verifyHarness(t, VerifyLabel, false, []scriptedTurn{turn})
+			l.Policy.Mode = policy.ModePlan
+			l.EnablePlanExit()
+			l.Verify.Contract = &Contract{Require: []string{"true"}}
+			if reason, _ := l.Run(context.Background(), "plan the change"); reason != TermCompleted {
+				t.Fatalf("got %s", reason)
+			}
+			evs, _ := store.Events("sess1")
+			for _, e := range evs {
+				if e.Type == EvActionRequested && strings.Contains(string(e.Payload), ContractVia) {
+					t.Fatal("the contract ran in plan mode")
+				}
+			}
+			if vs := answerVerdicts(store); name == "proposal" && len(vs) != 0 {
+				t.Fatalf("a plan proposal was checked as an answer: %+v", vs)
+			}
+		})
+	}
+}
+
+// Protect globs that match more files than are hashed leave the contract
+// unmet, said so, rather than check some silently.
+func TestContractProtectPartial(t *testing.T) {
+	old := maxProtected
+	maxProtected = 2
+	t.Cleanup(func() { maxProtected = old })
+	l, store, _, dir := verifyHarness(t, VerifyLabel, false, []scriptedTurn{{text: "Done."}, {text: "Done."}})
+	for _, n := range []string{"a_test.go", "b_test.go", "c_test.go"} {
+		os.WriteFile(filepath.Join(dir, n), []byte("package x\n"), 0o644)
+	}
+	l.Verify.Contract = &Contract{Protect: []string{"*_test.go"}}
+	if reason, _ := l.Run(context.Background(), "go"); reason != TermUnverified {
+		t.Fatalf("got %s", reason)
+	}
+	vs := answerVerdicts(store)
+	if c := vs[len(vs)-1].Contract; c == nil || c.OK || !c.ProtectPartial {
+		t.Fatalf("contract %+v", c)
+	}
+}
+
+// With the budget spent the critic is not called, and fails closed.
+func TestCriticRespectsTheBudget(t *testing.T) {
+	l, _, _, _ := verifyHarness(t, VerifyLabel, false, nil)
+	b := newRec(t)
+	b.call("c1", "read", map[string]string{"path": "/w/app.yaml"}, "replicas: 3\n", nil)
+	verdicts, ix := checkClaims(checkEnv{events: b.events()}, textClaims("There are 3 replicas."))
+	if verdicts[0].Verdict != ClaimVerified {
+		t.Fatalf("setup: %+v", verdicts[0])
+	}
+	critic := &scriptedAdapter{turns: []scriptedTurn{{text: `{"verdicts":[{"n":1,"verdict":"supported"}]}`}}}
+	l.Budget = NewBudget(1, 0, false)
+	l.Budget.Spend(1)
+	if got := l.critique(context.Background(), &Critic{Adapter: critic}, verdicts, ix); got != CriticUnavailable {
+		t.Fatalf("critic %q", got)
+	}
+	if len(critic.gotRequests) != 0 || verdicts[0].Verdict != ClaimUnverified {
+		t.Fatalf("called %d times, verdict %s", len(critic.gotRequests), verdicts[0].Verdict)
 	}
 }

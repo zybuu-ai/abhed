@@ -140,7 +140,7 @@ func loadRunbookFile(path, hash string) (*runbookSpec, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("%s: %v", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(doc.Runbook) == 0 {
 		return nil, errors.New(path + " has no runbook steps")

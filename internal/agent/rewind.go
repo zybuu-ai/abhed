@@ -119,6 +119,7 @@ func (l *Loop) ForkBefore(events []Event, seq int64) (int, int64, error) {
 	}
 	l.Session.ResetScoped()
 	l.messages = nil
+	l.forgetSaid()
 	return 0, 0, nil
 }
 

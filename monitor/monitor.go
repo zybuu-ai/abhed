@@ -109,6 +109,9 @@ type Func func(ctx context.Context, c Case) (Verdict, error)
 
 func (f Func) Judge(ctx context.Context, c Case) (Verdict, error) { return f(ctx, c) }
 
+// SkippedBudget is Outcome.Skipped for a call the turn budget kept from the judge.
+const SkippedBudget = "turn budget spent"
+
 // ErrUnavailable is what a Guard reports when the judge gave no usable answer.
 var ErrUnavailable = errors.New("monitor unavailable")
 
@@ -210,7 +213,7 @@ func (g *Guard) Review(ctx context.Context, c Case) Outcome {
 		}
 		g.mu.Unlock()
 		if over {
-			out.Skipped = "turn budget spent"
+			out.Skipped = SkippedBudget
 			return out
 		}
 	}

@@ -38,6 +38,9 @@ type ContractResult struct {
 	Require []RequireResult `json:"require,omitempty"`
 	// Protected names the protected files the run changed, added or removed.
 	Protected []string `json:"protected_changed,omitempty"`
+	// ProtectPartial marks protect globs matching more files than are
+	// hashed, so the contract could not check them all and is not met.
+	ProtectPartial bool `json:"protect_partial,omitempty"`
 }
 
 // RequireResult is one required command's outcome.
@@ -55,6 +58,10 @@ type RequireResult struct {
 // ContractVia marks the calls the harness makes for the contract.
 const ContractVia = "completion contract"
 
+// ByOperator marks a call the operator's own configuration approved, as a
+// completion contract's required command.
+const ByOperator = "operator"
+
 // runContract runs what the contract requires and compares the protected
 // files with the run's start.
 func (l *Loop) runContract(ctx context.Context) *ContractResult {
@@ -69,8 +76,15 @@ func (l *Loop) runContract(ctx context.Context) *ContractResult {
 		l.Verify.mu.Lock()
 		before := l.Verify.protect
 		l.Verify.mu.Unlock()
-		res.Protected = changedFiles(before, c.snapshot(l.Session))
-		if len(res.Protected) > 0 {
+		after, partial := c.snapshot(l.Session)
+		l.Verify.mu.Lock()
+		partial = partial || l.Verify.protectPartial
+		l.Verify.mu.Unlock()
+		res.Protected = changedFiles(before, after)
+		// Past the bound the rest went unhashed, so a change there would go
+		// unseen: the contract cannot say the files were left alone.
+		res.ProtectPartial = partial
+		if len(res.Protected) > 0 || partial {
 			res.OK = false
 		}
 	}
@@ -127,6 +141,15 @@ func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) Requir
 		r.Reason = "could not record it: " + err.Error()
 		return r
 	}
+	// Every call that runs has its approval on record: here the operator's,
+	// by the contract they declared.
+	if _, err := l.Recorder.Record(EvActionApproved, ActorSystem, Trusted, withRule(map[string]string{
+		"call_id": call.ID, "reason": "required by the operator's completion contract (" + d.Reason + ")",
+		"step": d.Step, "by": ByOperator,
+	}, d)); err != nil {
+		r.Reason = "could not record its approval: " + err.Error()
+		return r
+	}
 	res, _ := l.invoke(ctx, call)
 	l.failuresMu.Lock()
 	delete(l.repeatedFailures, call.Name+string(call.Args))
@@ -139,25 +162,26 @@ func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) Requir
 	case res.ExitCode == nil:
 		r.Reason = firstLine(clipRunes(res.Content, 200))
 	case *res.ExitCode != 0:
-		r.Reason = fmt.Sprintf("exited %d: %s", *res.ExitCode, tailLines(res.Content, 3))
+		r.Reason = fmt.Sprintf("exited %d: %s", *res.ExitCode, tailLines(res.Content))
 	default:
 		r.OK = !res.IsError
 		if !r.OK {
-			r.Reason = tailLines(res.Content, 3)
+			r.Reason = tailLines(res.Content)
 		}
 	}
 	return r
 }
 
 // maxProtected bounds the files hashed for protect, so a broad glob on a
-// large tree cannot stall the end of every run.
-const maxProtected = 5000
+// large tree cannot stall the end of every run. A var for the tests.
+var maxProtected = 5000
 
 // snapshot hashes the files the protect globs match under the session's root.
-func (c *Contract) snapshot(sess *tools.Session) map[string]string {
-	out := map[string]string{}
+// partial is set when more files match than maxProtected allows.
+func (c *Contract) snapshot(sess *tools.Session) (out map[string]string, partial bool) {
+	out = map[string]string{}
 	if sess == nil || sess.Root == "" {
-		return out
+		return out, false
 	}
 	var res []*regexp.Regexp
 	for _, g := range c.Protect {
@@ -177,7 +201,7 @@ func (c *Contract) snapshot(sess *tools.Session) map[string]string {
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() || len(out) >= maxProtected {
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, p)
@@ -187,13 +211,17 @@ func (c *Contract) snapshot(sess *tools.Session) map[string]string {
 		rel = filepath.ToSlash(rel)
 		for _, re := range res {
 			if re.MatchString(rel) {
+				if len(out) >= maxProtected {
+					partial = true
+					return filepath.SkipAll
+				}
 				out[rel] = hashFile(p)
 				break
 			}
 		}
 		return nil
 	})
-	return out
+	return out, partial
 }
 
 func hashFile(p string) string {

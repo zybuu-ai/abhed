@@ -743,6 +743,7 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	// The parent's judge reviews the child's calls too, with a turn budget of the child's own.
 	if parent != nil && parent.loop != nil && parent.loop.Monitor != nil {
 		sub.Monitor = parent.loop.Monitor.Child()
+		sub.sup.parent = parent.loop
 	}
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.

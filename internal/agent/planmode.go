@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -25,6 +26,8 @@ type planState struct {
 	bound   *boundPlan
 	// off is plan.runbooks false: no runbook is taken.
 	off bool
+	// since is when the pending plan was proposed.
+	since time.Time
 }
 
 // EnablePlanExit gives the loop the exit_plan tool, offered only in plan
@@ -54,6 +57,7 @@ func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.Runbook
 	}
 	l.plans.mu.Lock()
 	l.plans.pending = &p
+	l.plans.since = time.Now()
 	l.plans.offered = rb
 	// A new plan lets the old runbook go: what it bound is not what is proposed now.
 	l.plans.bound = nil
@@ -69,6 +73,13 @@ func (l *Loop) PendingPlan() (PlanProposed, bool) {
 		return PlanProposed{}, false
 	}
 	return *l.plans.pending, true
+}
+
+// PendingPlanSince is when the plan waiting for an answer was proposed.
+func (l *Loop) PendingPlanSince() time.Time {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	return l.plans.since
 }
 
 // TakePlan returns the plan the last run proposed, once.

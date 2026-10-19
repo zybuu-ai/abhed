@@ -121,24 +121,31 @@ func (k *given) str(key string) string {
 	return s
 }
 
-// named reports whether the user said the text, or a folder holding it.
+// named reports whether the person named the text: a path when they named
+// it or a folder holding it, never a path that only begins the same way; any
+// other name as a whole word, so prod is not named by production.
 func (k *given) named(s string) bool {
 	if s == "" {
 		return false
 	}
 	low := strings.ToLower(s)
-	if strings.Contains(k.said, low) || slices.Contains(k.declared, low) {
+	if slices.Contains(k.declared, low) {
 		return true
 	}
-	if strings.HasPrefix(s, "/") {
+	if strings.HasPrefix(low, "/") || strings.HasPrefix(low, "~") {
+		p := path.Clean(low)
 		for _, m := range userPaths.FindAllStringSubmatch(k.said, -1) {
-			p := strings.TrimRight(m[1], "/.,;:")
-			if len(p) > 1 && within(low, p) {
+			u := strings.TrimRight(m[1], ".,;:!?")
+			if strings.HasPrefix(u, "//") {
+				continue // a URL's host, not a path
+			}
+			if u = path.Clean(u); u != "/" && within(p, u) {
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	return mentions(k.said, low)
 }
 
 // observed reports whether an earlier observation or successful call showed
@@ -214,7 +221,7 @@ func within(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
-var userPaths = regexp.MustCompile(`(?:^|[\s"'(=:])(/[^\s"'()<>|;&` + "`" + `]+)`)
+var userPaths = regexp.MustCompile(`(?:^|[\s"'(=:,])((?:/|~)[^\s"'()<>|;&,` + "`" + `]*)`)
 
 // remit is the task as the person put it, short enough to quote back.
 func remit(c Case) string {
@@ -600,7 +607,7 @@ func (r Rules) hostChoice(k *given, c Case) *Verdict {
 		return nil
 	}
 	target := strings.ToLower(k.str("host"))
-	text := k.said + "\n" + strings.ToLower(c.Plan)
+	text := k.said // the approved plan is in it already
 	var chosen *DeclaredHost
 	var named []string
 	for i, h := range r.Hosts {
@@ -640,7 +647,10 @@ func mentions(text, n string) bool {
 			return false
 		}
 		start, end := i+j, i+j+len(n)
-		if (start == 0 || !hostRune(text[start-1])) && (end == len(text) || !hostRune(text[end])) {
+		// A dot ends a word only where no name goes on after it: web1. ends a
+		// sentence; web1.example is another name.
+		after := end == len(text) || !hostRune(text[end]) && (text[end] != '.' || end+1 == len(text) || !hostRune(text[end+1]))
+		if (start == 0 || !hostRune(text[start-1]) && text[start-1] != '.') && after {
 			return true
 		}
 		i = start + 1
@@ -757,6 +767,43 @@ func (r Rules) composition(k *given, c Case) *Verdict {
 			Advice:    "do not send credential contents anywhere; if the task needs the credential, ask the person to store it as a secret"}
 	}
 	return nil
+}
+
+// Untrusted reports a call whose output is text from outside, which names
+// hosts and paths someone else chose and so is no evidence for a target:
+// the web tools, an MCP server's tools, and a bash or ssh line that reaches
+// the network.
+func Untrusted(tool, args string) bool {
+	switch {
+	case tool == "web_fetch" || tool == "web_search" || strings.HasPrefix(tool, "mcp__"):
+		return true
+	case tool == "bash" || tool == "ssh":
+		var a struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(args), &a) != nil {
+			return true
+		}
+		s, ok := parseScript(a.Command)
+		if !ok {
+			return true
+		}
+		for _, cmd := range s.cmds {
+			prog, rest := cmd.program()
+			if netPrograms[prog] && prog != "ssh" && prog != "scp" && prog != "rsync" {
+				return true
+			}
+			if prog == "git" && len(rest) > 0 && (rest[0] == "clone" || rest[0] == "fetch" || rest[0] == "pull") {
+				return true
+			}
+			for _, w := range rest {
+				if urlHost.MatchString(w) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func egressCapable(c Case, k *given) bool {

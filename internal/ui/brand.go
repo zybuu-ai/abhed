@@ -44,6 +44,14 @@ var MarkLarge = func() string {
 	return strings.Join(lines, "\n")
 }()
 
+// supervisorRow names the supervisor's judge, or is the blank spacer row.
+func supervisorRow(s Style, label string) string {
+	if label == "" {
+		return ""
+	}
+	return s.Dim("supervisor: ") + label
+}
+
 // Glyph is the single-character form for prompts and log lines.
 const Glyph = "▲"
 
@@ -52,8 +60,10 @@ const Glyph = "▲"
 // Deliberately restrained: an engineer sees this on every invocation, and a
 // banner that entertains on the first run irritates on the hundredth. It earns
 // its space by carrying the four facts that change between runs — model,
-// workspace, sandbox tier, storage — not by being decorative.
-func Banner(s Style, version, model, workspace, sandbox, storage string) string {
+// workspace, sandbox tier, storage — not by being decorative. supervisor,
+// when set, has the spacer row of its own, so the sandbox row keeps its room
+// at 80 columns.
+func Banner(s Style, version, model, workspace, sandbox, storage, supervisor string) string {
 	var b strings.Builder
 
 	col := strings.Split(MarkLarge, "\n")
@@ -65,7 +75,7 @@ func Banner(s Style, version, model, workspace, sandbox, storage string) string 
 	rows := []string{
 		s.Bold("ABHED") + "  " + s.Dim(version),
 		s.Dim("deep agent harness · on-prem"),
-		"",
+		supervisorRow(s, supervisor),
 		s.Dim("model    ") + model,
 		s.Dim("work     ") + workspace,
 		s.Dim("sandbox  ") + sandbox,

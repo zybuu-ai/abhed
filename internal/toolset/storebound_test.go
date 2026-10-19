@@ -3,6 +3,7 @@ package toolset
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -30,7 +31,9 @@ func storeWith(t *testing.T, value string) *secrets.Store {
 func TestBindStoresRebindsEveryReader(t *testing.T) {
 	cfg := config.Default()
 	cfg.K8s.Enabled = true
+	cfg.K8s.AllowWrites = true
 	cfg.SSH.Enabled = true
+	cfg.SSH.Transfers = true
 	cfg.WebFetch.Enabled = true
 	cfg.WebSearch.Enabled = true
 	cfg.WebSearch.Provider = "duckduckgo"
@@ -50,6 +53,9 @@ func TestBindStoresRebindsEveryReader(t *testing.T) {
 		},
 		"k8s_login":   func(t tools.Tool) (string, error) { return t.(k8s.LoginTool).Secret("TOKEN") },
 		"ssh_connect": func(t tools.Tool) (string, error) { return t.(remote.ConnectTool).Secret("TOKEN") },
+		"ssh":         func(t tools.Tool) (string, error) { return t.(remote.Tool).Secret("TOKEN") },
+		"ssh_put":     func(t tools.Tool) (string, error) { return t.(remote.PutTool).Secret("TOKEN") },
+		"k8s_apply":   func(t tools.Tool) (string, error) { return t.(k8s.ApplyTool).Secret("TOKEN") },
 		"web_fetch": func(t tools.Tool) (string, error) {
 			r, err := t.(*webfetch.Tool).Secrets()
 			if err != nil {
@@ -82,6 +88,40 @@ func TestBindStoresRebindsEveryReader(t *testing.T) {
 		}
 		if got, err := read(tool); err != nil || got != want {
 			t.Errorf("%s reads %q (%v) after binding, want the bound store's value", name, got, err)
+		}
+	}
+	// Whatever reads a secret by name and holds a store reader is bound,
+	// including a tool added later that the list above does not name.
+	for _, name := range set.Registry.Names() {
+		tool, _ := set.Registry.Get(name)
+		_, named := tool.(tools.SecretArgs)
+		_, deep := tool.(tools.SecretPaths)
+		if !named && !deep {
+			continue
+		}
+		v := reflect.ValueOf(tool)
+		if v.Kind() == reflect.Pointer {
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct {
+			continue
+		}
+		f := v.FieldByName("Secret")
+		if !f.IsValid() || f.Kind() != reflect.Func || f.IsNil() {
+			continue
+		}
+		if _, ok := tool.(tools.StoreBound); !ok {
+			t.Errorf("%s reads secrets by name from the store it was built with and cannot be bound to a session's", name)
+			continue
+		}
+		b, _ := bound.Get(name)
+		bv := reflect.ValueOf(b)
+		if bv.Kind() == reflect.Pointer {
+			bv = bv.Elem()
+		}
+		out := bv.FieldByName("Secret").Call([]reflect.Value{reflect.ValueOf("TOKEN")})
+		if got, _ := out[0].Interface().(string); got != want {
+			t.Errorf("%s reads %q after binding, want the bound store's value", name, got)
 		}
 	}
 	if b, _ := bound.Get("bash"); !slices.Equal(b.(tools.Bash).SecretNames, []string{"TOKEN"}) {

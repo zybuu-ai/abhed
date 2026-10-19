@@ -218,9 +218,15 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			default:
 				mut = true
 			}
+			// The contract's own commands check the work; counted as changes,
+			// they would put everything before them out of date, their own
+			// earlier pass included.
+			if r.a.Via == ContractVia {
+				mut = false
+			}
 			// A refused edit changed nothing; a failed command may have.
 			fileTool := o.Tool == "write" || o.Tool == "edit"
-			if mut && !(fileTool && o.IsError) || o.OutcomeUnknown {
+			if mut && (!fileTool || !o.IsError) || o.OutcomeUnknown {
 				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError}
 				if fileTool {
 					m.path = args.Path
@@ -272,12 +278,12 @@ func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 			continue
 		}
 		fileEdit := m.tool == "write" || m.tool == "edit"
-		switch {
-		case o.tool == "read":
+		switch o.tool {
+		case "read":
 			if !fileEdit || samePath(m.path, o.path) {
 				return m
 			}
-		case o.tool == "grep" || o.tool == "glob" || o.tool == "bash":
+		case "grep", "glob", "bash":
 			return m
 		default:
 			if !fileEdit {
@@ -675,15 +681,9 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 		if o.tool != "bash" || o.exit == nil || !o.usable() {
 			return false
 		}
-		cmd := strings.ToLower(o.command)
-		switch testish {
-		case "test":
-			return strings.Contains(cmd, "test") || strings.Contains(cmd, "spec") || strings.Contains(cmd, "check")
-		case "build":
-			return strings.Contains(cmd, "build") || strings.Contains(cmd, "make") || strings.Contains(cmd, "compile") ||
-				strings.Contains(cmd, "vet") || strings.Contains(cmd, "lint") || strings.Contains(cmd, "tsc")
-		}
-		return true
+		// Known by its program and subcommand, not by a word in it: `ls tests`
+		// runs no tests.
+		return commandRuns(o.command, testish)
 	}
 	// The latest command of the kind after the last change, anywhere in the
 	// record: if it failed, the record contradicts the claim.
@@ -699,7 +699,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 			why: fmt.Sprintf("the last such command since the last change, #%d `%s`, exited %d",
 				latest.seq, clipRunes(latest.command, 60), *latest.exit),
 			conflict: &Conflict{Seq: latest.seq, CallID: latest.callID,
-				Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content, 3))}}
+				Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content))}}
 	}
 	for i := len(pool) - 1; i >= 0; i-- {
 		o := pool[i]
@@ -717,7 +717,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 		for _, o := range pool {
 			if o.tool == "bash" && o.exit != nil && *o.exit != 0 {
 				return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("the cited command #%d exited %d", o.seq, *o.exit),
-					conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: fmt.Sprintf("exit %d: %s", *o.exit, tailLines(o.content, 3))}}
+					conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: fmt.Sprintf("exit %d: %s", *o.exit, tailLines(o.content))}}
 			}
 		}
 	}
@@ -733,12 +733,16 @@ func (ix *recordIndex) changedPath(p string) finding {
 		if m.person || m.failed {
 			continue
 		}
-		target := normText(m.path)
+		// A file tool's own path, or a file a command writes: a path it only
+		// reads (the source of a cp) is not a change to it.
+		targets := []string{m.path}
 		if m.path == "" {
-			target = normText(m.command)
+			targets = writeTargets(m.command)
 		}
-		if target != "" && (strings.HasSuffix(target, p) || strings.Contains(target, p)) {
-			return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+		for _, t := range targets {
+			if pathIs(t, p) {
+				return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+			}
 		}
 	}
 	if ix.subagents {
@@ -752,7 +756,7 @@ func (ix *recordIndex) changedPath(p string) finding {
 func (ix *recordIndex) ranCommand(cmd string) finding {
 	for _, o := range ix.obs {
 		// A command run on a host over ssh is one the agent ran too.
-		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && strings.Contains(normText(o.command), cmd) {
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && runsCommand(o.command, cmd) {
 			return finding{out: matched, what: fmt.Sprintf("`%s` ran at #%d", clipRunes(cmd, 40), o.seq), seq: o.seq}
 		}
 	}
@@ -837,7 +841,8 @@ func dedupe(ss []string) []string {
 	return out
 }
 
-func tailLines(s string, n int) string {
+func tailLines(s string) string {
+	const n = 3
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
@@ -948,7 +953,7 @@ func readOnlyProgram(prog, sub string, words []string) bool {
 		return sub == "test" || sub == "t" || (sub == "run" && len(words) > 2 && (strings.HasPrefix(words[2], "test") ||
 			strings.HasPrefix(words[2], "lint") || strings.HasPrefix(words[2], "build") || strings.HasPrefix(words[2], "check")))
 	case "make":
-		return sub == "test" || sub == "check" || sub == "lint" || sub == "build" || sub == "vet"
+		return sub == "" || sub == "all" || sub == "test" || sub == "check" || sub == "lint" || sub == "build" || sub == "vet"
 	case "python", "python3":
 		return len(words) > 2 && sub == "-m" && (words[2] == "pytest" || words[2] == "unittest" || words[2] == "mypy")
 	case "mvn", "gradle", "./gradlew":

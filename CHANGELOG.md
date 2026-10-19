@@ -20,6 +20,32 @@ All notable changes to Abhed are recorded here. The format follows
   file may keep it on.
 - The reason of a call the supervisor refused starts `supervisor:` instead
   of `monitor:`.
+- Answers are checked and labelled by default in the terminal, the workbench
+  and console, and Abhed Studio. A reply with a statement the record
+  contradicts gets one more model call, the agent's revision turn, and an
+  ACP editor gets one more `agent_message_chunk` after each checked reply,
+  carrying the labels as text and the verdict in `_meta`. Set
+  `"verify": {"mode": "off"}` to turn it off; `-p`, rpc and the SDK check
+  nothing unless asked.
+- Commands run through `bash` are checkpointed by default: before each one
+  the workspace's files are noted and copied in memory, up to 20,000 files
+  and 32 MiB (2 MiB a file). Set `"tools": {"bash_checkpoints": "off"}` to
+  stop it, or lower `tools.bash_checkpoint_files` and
+  `tools.bash_checkpoint_mb`.
+- `ssh` rules read the remote command as bash's: an allow rule with a pattern
+  now approves one simple command, so a rule written for a chain (`ssh(web1/a
+  && b)`) or relying on what follows a pattern no longer matches; write one
+  rule per command. A destructive remote command always asks twice.
+- An accepted plan's runbook answers its own steps by default, and any other
+  change during it asks. Set `"plan": {"runbooks": false}` to have every call
+  judged by policy alone.
+- Sessions on `abhed serve` and in Studio started in plan mode now have
+  plan mode's `exit_plan`, and a proposed plan waits for the person's answer
+  (`POST /v1/sessions/{id}/plan`, or Studio's permission request) before
+  anything changes. A session not started in plan mode is unaffected.
+- `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
+  or `stringData`, and withholds its values from the record; build such a
+  Secret with `secret_from` from stored secrets and workspace files.
 
 ### Security
 
@@ -76,9 +102,9 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 31 drift cases the rules judge stops 29
-  of the 30 a mode let through (the other is the destructive step's), and it
-  asks about or refuses none of its 35 benign controls, `ssh` inspection of
+  or `go run ./cmd/abhed-drift`): of its 36 drift cases the rules judge stops 34
+  of the 35 a mode let through (the other is the destructive step's), and it
+  asks about or refuses none of its 37 benign controls, `ssh` inspection of
   declared hosts with `ssh.read_commands` among them.
 - `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
   asking, and the approval names what would change, field by field, from
@@ -95,11 +121,12 @@ All notable changes to Abhed are recorded here. The format follows
   rollout to finish or fail, so the agent need not poll.
 - `k8s_apply` `secret_from` builds a Secret, `Opaque` or
   `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
-  a TLS key never passes through the model: the approval and the record
-  name each source with its value's length, a fingerprint for a stored
-  secret and the sha256 for a workspace file, each stored secret
-  needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
-  the dry run before the approval carries placeholders.
+  a TLS key never passes through the model. The approval and the record
+  name each source with its value's length and a fingerprint (a workspace
+  file's sha256). Each stored secret needs its `secret(NAME)` rule and each
+  file is judged as a `read` of it. The dry run before the approval carries
+  placeholders, no value is kept while the call waits, and a value changed
+  after the approval is not sent.
 - `ssh` `stdin_secret` writes a stored secret, by NAME and under its
   `secret(NAME)` rule, to the remote command's stdin, so a password for
   `sudo -S` or a key written to a file never appears in the command line,
@@ -174,8 +201,8 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 21 planted wrong claims none is shown as verified and 10 are
-  contradicted, all 14 true controls are verified, and no true or neutral
+  of 27 planted wrong claims none is shown as verified and 16 are
+  contradicted, all 19 true controls are verified, and no true or neutral
   claim is contradicted; the test holds those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
@@ -196,7 +223,8 @@ All notable changes to Abhed are recorded here. The format follows
   apply; an ask rule of the managed configuration or of an edition's policy
   layer, and a command too tangled to read in full, still ask. Steps that
   cannot be undone are confirmed a second time, an edition's approval gate
-  decides a runbook as one answer, and a new plan, a rewind or a continued
+  decides a runbook as one answer, listed in the approval queue as
+  `plan:<hash>`, and a new plan, a rewind or a continued
   session lets the runbook go
   ([Runbooks](docs/guide/28-runbooks.md)).
 - The plan card lists a runbook's steps in the CLI, the workbench, the
@@ -224,6 +252,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- On a Mac, a Podman CLI that hung while Abhed asked it for its machine's
+  socket was killed alone: a helper it had started kept running, and its
+  open pipe held the query a second past its bound. The query now runs in
+  a process group of its own, which a timeout kills whole.
 - In the terminal UI the output of a `!` command was shown twice: under
   the call and again below it. It is now shown once, under the call, with
   up to 40 lines before the rest folds behind ctrl+o. Without the terminal
@@ -249,6 +281,15 @@ All notable changes to Abhed are recorded here. The format follows
   `session.ended` records, counts only the tools the model is offered in the
   current mode, so a tool of another mode no longer brings compaction early.
 
+
+### Go API
+
+- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Agent.Verdict` and the
+  types `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult` and
+  `RequireResult`.
+- `server`: `StartSpec.Verify`.
+- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`),
+  `VerifyRank`, `PlanConfig`, `MonitorConfig` and `ManagedAsk`.
 
 ## [1.2.8] - 2026-10-14
 

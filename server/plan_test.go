@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -224,8 +225,85 @@ func TestWorkbenchPlanThroughTheApprovalGate(t *testing.T) {
 		t.Fatalf("plan.decided %+v", decided)
 	}
 	for _, a := range gate.seen {
-		if a.Request != "plan:"+hash || a.Tool != "exit_plan" {
+		if a.Request != "plan:"+hash || a.Tool != "exit_plan" || !slices.Equal(a.StepTools, []string{"write"}) {
 			t.Fatalf("the gate was told %+v", a)
+		}
+	}
+}
+
+// The approval queue lists a waiting runbook as one request, plan:<hash>,
+// and POST /approve answers it through the gate as POST /plan does: the
+// owner's own approval is refused, a step with no undo must be confirmed,
+// one approver is held, and the second binds it, with the plan's message
+// queued for the owner's next run.
+func TestQueueAnswersARunbook(t *testing.T) {
+	gate := &fourEyes{approvers: map[string]bool{"bob": true, "carol": true}}
+	s, st, _ := planServerWith(t, func(o *Options) {
+		o.Config.Auth.Mode = "oidc"
+		o.Auth = &auth.Middleware{PublicPaths: PublicPaths(), Verifier: tokens{
+			"alice": {Subject: "alice", Tenant: "default"}, "bob": {Subject: "bob", Tenant: "default"},
+			"carol": {Subject: "carol", Tenant: "default"},
+		}}
+		o.ApprovalGate = gate
+	}, `[{"tool":"write","target":"WS/notes.txt","args":{"content":"x"}},{"tool":"bash","command":"rm -rf build"}]`)
+	send := func(token, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, req)
+		return w
+	}
+	id := sessionOf(t, send("alice", "/v1/sessions", `{"prompt":"plan it","mode":"plan"}`))
+	hash := proposedHash(t, turnsEnded(t, st, id, 1))
+
+	asks := s.PendingAsks(func(string, string) bool { return true })
+	if len(asks) != 1 || asks[0].Request != "plan:"+hash || asks[0].RequestID != "plan:"+hash || asks[0].Tool != "exit_plan" ||
+		asks[0].Owner != "alice" || !strings.Contains(string(asks[0].Args), `"2. bash rm -rf build (no undo:`) || !strings.Contains(string(asks[0].Args), "1. write ") || !strings.Contains(asks[0].Reason, "1 cannot be undone") ||
+		asks[0].Since.IsZero() || !slices.Equal(asks[0].StepTools, []string{"write", "bash"}) {
+		t.Fatalf("queue %+v", asks)
+	}
+	path := "/v1/sessions/" + id + "/approve"
+	approve := func(token string, undo bool) *httptest.ResponseRecorder {
+		return send(token, path, fmt.Sprintf(`{"approved":true,"request_id":"plan:%s","confirm_no_undo":%v}`, hash, undo))
+	}
+	live := s.anyLive(t)
+	bound := func() bool { _, _, ok := live.Loop.BoundRunbook(); return ok }
+	if w := approve("alice", true); w.Code != http.StatusForbidden || bound() {
+		t.Fatalf("the owner approved their own runbook: %d %s", w.Code, w.Body)
+	}
+	if w := approve("bob", false); w.Code != http.StatusPreconditionRequired {
+		t.Fatalf("a step with no undo was not confirmed: %d %s", w.Code, w.Body)
+	}
+	if w := send("bob", path, `{"approved":true,"scope":"bash(*)","request_id":"plan:`+hash+`"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("a scope on a runbook: %d", w.Code)
+	}
+	if w := approve("bob", true); w.Code != http.StatusAccepted || bound() {
+		t.Fatalf("one approval of two: %d %s", w.Code, w.Body)
+	}
+	if w := approve("carol", true); w.Code != http.StatusNoContent || !bound() {
+		t.Fatalf("the second approval: %d %s", w.Code, w.Body)
+	}
+	if q := live.Loop.Queued(); len(q) != 1 || !strings.Contains(q[0].Text, hash[:12]) {
+		t.Fatalf("the plan's message was not queued for the owner: %+v", q)
+	}
+	if len(s.PendingAsks(func(string, string) bool { return true })) != 0 {
+		t.Fatal("an answered runbook is still listed")
+	}
+	// The owner's next message runs with the plan's message read first.
+	if w := send("alice", "/v1/sessions/"+id+"/messages", `{"prompt":"go"}`); w.Code >= 300 {
+		t.Fatalf("message: %d %s", w.Code, w.Body)
+	}
+	evs := turnsEnded(t, st, id, 2)
+	read := false
+	for _, e := range evs {
+		read = read || e.Type == agent.EvUserMessage && strings.Contains(string(e.Payload), hash[:12])
+	}
+	if !read {
+		t.Fatal("the queued plan message was not read by the next run")
+	}
+	for _, e := range evs {
+		if e.Type == agent.EvPlanDecided && !strings.Contains(string(e.Payload), `"by":"carol"`) {
+			t.Fatalf("plan.decided %s", e.Payload)
 		}
 	}
 }

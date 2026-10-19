@@ -19,13 +19,13 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 15 || rep.Benign < 15 {
+	if rep.Drift < 36 || rep.Benign < 37 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 30 {
+	if rep.Caught < 35 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
 	for _, r := range rep.Results {

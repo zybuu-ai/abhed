@@ -117,9 +117,15 @@ be undone. A server session leaves plan mode only for `default`, or for
   whose edition has approvers, accepting a plan with a runbook is one answer
   to the gate, for the plan's hash: an answer it refuses (such as approving
   your own runbook) binds nothing, one it holds keeps the plan waiting, and
-  the answer that settles it binds the runbook. Approvers the gate allows
-  answer with the same `POST /v1/sessions/{id}/plan`; `plan.decided` names
-  who answered (`by`).
+  the answer that settles it binds the runbook. A waiting runbook is listed
+  with the session's other pending approvals as one request, `plan:<hash>`
+  (tool `exit_plan`, the plan clipped and one line per step), and approvers
+  the gate allows answer it with `POST /v1/sessions/{id}/plan`, or with
+  `POST /v1/sessions/{id}/approve` and `request_id: "plan:<hash>"` (add
+  `confirm_no_undo: true` when a step cannot be undone; there is no "always
+  allow"). `plan.decided` names who answered (`by`). When an approver settles
+  it, the plan's message is queued for the owner's next message, so the
+  agent carries it out once the owner goes on.
 - **The supervisor is never answered by the plan.** When it has a concern
   with a step, the step is put to you (`asked again: supervisor: …`), and a
   refusal of its stays a refusal. What the approved runbook names counts as

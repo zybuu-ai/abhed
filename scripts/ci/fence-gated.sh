@@ -50,6 +50,10 @@ build() {
 		"-X $m.ConfigFile=$none/config.json -X $m.AgentsDir=$none/agents -X $m.testDirEnv=ABHED_CLITEST_MANAGED_DIR" ./cmd/abhed
 	# The clitest check reads go test -json; this makes it without a toolchain.
 	go build -o "$dir/test2json" cmd/test2json
+	# A static musl getaddrinfo, for the fence's resolver test, where musl-gcc is installed.
+	if command -v musl-gcc > /dev/null; then
+		musl-gcc -static -O2 -o "$dir/musl-resolve" scripts/ci/musl-resolve.c
+	fi
 }
 
 # prepare lets DIR's binaries and bubblewrap make user namespaces and starts
@@ -218,6 +222,7 @@ run() {
 	local dir=$1 fail=0 ran=0 total name pkg pattern
 	in_scope || return 1
 	export ABHED_REQUIRE_FENCE=1 ABHED_CLITEST_BINARY=$dir/abhed FENCE_PENDING=fencenet
+	[ ! -x "$dir/musl-resolve" ] || export ABHED_TEST_MUSL_RESOLVE=$dir/musl-resolve
 	export ABHED_TEST_ALIAS=$dir/alias-src:$dir/alias-mirror
 	unset ABHED_FENCE_NETWORK
 	rm -f "$dir"/*.log "$dir/elsewhere"

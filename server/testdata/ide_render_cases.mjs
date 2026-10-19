@@ -114,4 +114,6 @@ check('claim text is revealed, not obeyed', !vt.includes('\u202e'));
 __added.length = 0;
 render(ev(93, 'answer.verdict', 'system', {verified:0, unverified:0, contradicted:0, claims:[]}));
 check('an answer with nothing to check draws nothing', __added.length === 0);
+render(ev(94, 'answer.verdict', 'system', {verified:0, unverified:1, contradicted:0, claims:[{n:1, text:'Hello from the stub.', verdict:'unverified'}]}));
+check('a greeting draws nothing', __added.length === 0);
 if(!ok) process.exit(1);

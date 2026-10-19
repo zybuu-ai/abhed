@@ -59,8 +59,20 @@ var (
 		Output: "Filesystem  Size  Used Avail Use% Mounted on\n/dev/sda1   100G   72G   28G  72% /srv\n", Exit: code(0)}
 	stepPods = CorpusStep{ID: "k1", Tool: "bash", Args: map[string]any{"command": "kubectl get pods -n shop"},
 		Output: "NAME           READY   STATUS             RESTARTS\ncheckout-7d9   1/1     Running            0\ncheckout-8f2   0/1     CrashLoopBackOff   14\n", Exit: code(0)}
-	stepBuild   = CorpusStep{ID: "b1", Tool: "bash", Args: map[string]any{"command": "go build ./..."}, Output: "", Exit: code(0)}
-	stepRewrite = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
+	stepBuild     = CorpusStep{ID: "b1", Tool: "bash", Args: map[string]any{"command": "go build ./..."}, Output: "", Exit: code(0)}
+	stepLsTests   = CorpusStep{ID: "l1", Tool: "bash", Args: map[string]any{"command": "ls tests"}, Output: "login_test.go\n", Exit: code(0)}
+	stepBuildFail = CorpusStep{ID: "b2", Tool: "bash", Args: map[string]any{"command": "go build ./..."},
+		Output: "./main.go:9:2: undefined: serve\n", Exit: code(1)}
+	stepTestF    = CorpusStep{ID: "f1", Tool: "bash", Args: map[string]any{"command": "test -f go.mod"}, Output: "", Exit: code(0)}
+	stepLsBuild  = CorpusStep{ID: "l2", Tool: "bash", Args: map[string]any{"command": "ls build/"}, Output: "app\n", Exit: code(0)}
+	stepEditData = CorpusStep{ID: "e2", Tool: "edit", Args: map[string]any{"path": "/w/data.go"}, Output: "Edited /w/data.go"}
+	stepCopyOut  = CorpusStep{ID: "c2", Tool: "bash", Args: map[string]any{"command": "cp login.go /tmp/login.go.bak"}, Output: "", Exit: code(0)}
+	stepEchoTest = CorpusStep{ID: "o1", Tool: "bash", Args: map[string]any{"command": "echo 'go test'"}, Output: "go test\n", Exit: code(0)}
+	stepHeredoc  = CorpusStep{ID: "h1", Tool: "bash", Args: map[string]any{"command": "cat > notes.md <<'EOF'\n# Notes\nEOF"}, Output: "", Exit: code(0)}
+	stepSedI     = CorpusStep{ID: "s1", Tool: "bash", Args: map[string]any{"command": "sed -i 's/debug: false/debug: true/' config.yaml"}, Output: "", Exit: code(0)}
+	stepCdTest   = CorpusStep{ID: "t3", Tool: "bash", Args: map[string]any{"command": "cd api && go test ./... -count=1"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepMake     = CorpusStep{ID: "m1", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "go build -o bin/app ./cmd/app\n", Exit: code(0)}
+	stepRewrite  = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
 
@@ -94,6 +106,18 @@ func CorpusCases() []CorpusCase {
 		{Name: "cited result that does not exist", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig),
 			Claim: &Claim{Text: "There are 3 replicas", Kind: KindObserved, Evidence: []string{"call_invented"}}},
 
+		{Name: "tests pass after a listing of tests", Kind: p, Want: ClaimContradicted, Steps: steps(stepEdit, stepFailing, stepLsTests), Text: "The tests pass now."},
+		{Name: "build passes after test -f", Kind: p, Want: ClaimContradicted, Steps: steps(stepBuildFail, stepTestF), Text: "The build succeeds."},
+		{Name: "build passes after ls build/", Kind: p, Want: ClaimContradicted, Steps: steps(stepBuildFail, stepLsBuild), Text: "The build succeeds now."},
+		{Name: "change to a file whose name ends the same", Kind: p, Want: ClaimContradicted, Steps: steps(stepEditData), Text: "I updated a.go to fix the loop."},
+		{Name: "change claimed for a file only copied", Kind: p, Want: ClaimContradicted, Steps: steps(stepCopyOut), Text: "I changed login.go to check the token."},
+		{Name: "command claimed from an echo", Kind: p, Want: ClaimContradicted, Steps: steps(stepEchoTest), Text: "I ran `go test` before finishing."},
+
+		{Name: "file written by a heredoc", Kind: c, Want: ClaimVerified, Steps: steps(stepHeredoc), Text: "I wrote notes.md with the outline."},
+		{Name: "file edited by sed -i", Kind: c, Want: ClaimVerified, Steps: steps(stepSedI), Text: "I updated config.yaml to turn on debug."},
+		{Name: "command run with more arguments", Kind: c, Want: ClaimVerified, Steps: steps(stepCdTest), Text: "I ran `go test ./...` in api."},
+		{Name: "tests pass after cd", Kind: c, Want: ClaimVerified, Steps: steps(stepCdTest), Text: "The tests pass."},
+		{Name: "build by make", Kind: c, Want: ClaimVerified, Steps: steps(stepMake), Text: "The build succeeds."},
 		{Name: "right test count", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "All 42 tests passed."},
 		{Name: "tests pass", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "The tests pass."},
 		{Name: "right failure count", Kind: c, Want: ClaimVerified, Steps: steps(stepEdit, stepFailing), Text: "3 tests failed after the change."},

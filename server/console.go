@@ -139,6 +139,17 @@ button,select,textarea,input{font:inherit;color:inherit}
 .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .led.up{background:var(--done);box-shadow:0 0 0 3px var(--done-bg)}
 .led.down{background:var(--error);box-shadow:0 0 0 3px var(--error-bg)}
+/* An answer's checks: ✓ verified, ? unverified, ✗ contradicted (struck through, with the record against it). */
+.verdict{border:1px solid var(--line);border-radius:6px;padding:5px 10px;margin:6px 0;font-size:12px}
+.verdict.bad{border-color:var(--error)}.verdict.unk{border-color:var(--waiting)}
+.verdict .vsum{font-family:var(--mono);color:var(--muted)}
+.verdict .vbanner,.said .vflag{margin:4px 0;padding:4px 8px;border-radius:4px;background:var(--error-bg);color:var(--error);font-weight:700}
+.said.contradicted{box-shadow:inset 3px 0 0 var(--error)}
+.verdict .cl{display:flex;gap:7px;padding:2px 0}
+.verdict .mk{font-weight:700;width:1em;flex:none;text-align:center}
+.verdict .verified .mk{color:var(--done)}.verdict .unverified .mk{color:var(--waiting)}.verdict .contradicted .mk{color:var(--error)}
+.verdict .contradicted .t{text-decoration:line-through}
+.verdict .why{color:var(--muted);font-family:var(--mono);font-size:11px;overflow-wrap:anywhere}
 .who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none;
   border-radius:11px;background:var(--sunken);border:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
@@ -1521,7 +1532,11 @@ function render(ev){
       break;
     }
 
+    case 'answer.verdict': drawVerdict(p); break;
+
     case 'action.requested': {
+      // The answer tool's text arrives as the reply; its checks as answer.verdict.
+      if(p.tool === 'answer') break;
       hideThinking();
       // A tool call ends the current streamed reply.
       streamEl = null; streamBody = null;
@@ -1543,6 +1558,7 @@ function render(ev){
     }
 
     case 'observation': {
+      if(p.tool === 'answer' && !p.is_error) break;
       const wrap = calls.get(p.call_id) || turnEl || newTurn();
       if(p.is_error) wrap.classList.add('err');
 
@@ -1790,6 +1806,44 @@ function clip(s, n){ return s.length > n ? s.slice(0,n) + '\n… ' + (s.length-n
 
 // lastStreamedBubble finds the reply bubble the deltas were writing into, so
 // agent.message can reconcile with it even when the stream reference is gone.
+// drawVerdict shows the checks on an answer under it, as the workbench does.
+// A contradiction is flagged on the reply itself too: it streamed before it
+// was checked. Claims and excerpts are the model's and the tools' text.
+function drawVerdict(p){
+  const claims = p.claims || [], contract = p.contract;
+  const n = p.contradicted || 0, bad = n > 0 || (contract && !contract.ok);
+  const unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
+  // Nothing checkable (a greeting, general knowledge) draws nothing.
+  if(!contract && !p.revision && !bad && !unk && !(p.verified || 0)) return;
+  if(n > 0){
+    const last = lastStreamedBubble(), bubble = last ? last.el : null;
+    const said = (turnEl || $('tx')).querySelectorAll('.said:not(.user)');
+    const target = bubble || said[said.length - 1];
+    if(target){ target.classList.add('contradicted');
+      target.appendChild(node('vflag', '\u2717 NOT FACT: ' + n + (n === 1 ? ' statement in this reply is' : ' statements in this reply are') +
+        ' contradicted by the session\'s record' + (p.revision ? '; the agent is asked to correct it' : '; see below'))); }
+  }
+  const box = node('verdict' + (bad ? ' bad' : unk ? ' unk' : ''));
+  const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  if(n > 0) box.appendChild(node('vbanner', '\u2717 NOT FACT: ' + n + ' contradicted by the session\'s record' + (p.revision ? ' \u00b7 the agent is asked to correct it' : '')));
+  box.appendChild(node('vsum', (p.verified || 0) + ' verified \u00b7 ' + (p.unverified || 0) + ' unverified' +
+    (known ? (known === (p.unverified || 0) ? ' (general knowledge)' : ' (' + known + ' general knowledge)') : '') + ' \u00b7 ' + n + ' contradicted' +
+    (contract ? (contract.ok ? ' \u00b7 contract met' : ' \u00b7 contract not met') : '')));
+  for(const c of claims){
+    const r = node('cl ' + (c.verdict || 'unverified')), b = node('');
+    r.appendChild(node('mk', c.verdict === 'verified' ? '\u2713' : c.verdict === 'contradicted' ? '\u2717' : '?'));
+    b.appendChild(node('t', visible(c.text || '')));
+    const k = c.conflict;
+    b.appendChild(node('why', visible(k && k.excerpt ? 'record' + (k.seq ? ' #' + k.seq : '') + ': ' + k.excerpt : c.reason || '')));
+    r.appendChild(b); box.appendChild(r);
+  }
+  if(contract && !contract.ok){
+    for(const q of contract.require || []) if(!q.ok) box.appendChild(node('why', visible('\u2717 required "' + (q.command || '') + '": ' + (q.reason || ''))));
+    if((contract.protected_changed || []).length) box.appendChild(node('why', visible('\u2717 protected files changed: ' + contract.protected_changed.join(', '))));
+  }
+  (turnEl || $('tx')).appendChild(box);
+}
+
 function lastStreamedBubble(){
   const scope = turnEl || $('tx');
   if(!scope) return null;

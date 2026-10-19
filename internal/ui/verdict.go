@@ -11,6 +11,10 @@ import (
 // maxShownClaims bounds the claims drawn under an answer; /evidence lists all.
 const maxShownClaims = 6
 
+// footerWidth is what the footer's text may take beside its mark and indent
+// on an 80-column terminal.
+const footerWidth = 76
+
 // ClaimMark is a claim's verdict as one character: ✓ verified, ? unverified,
 // ✗ contradicted.
 func ClaimMark(s Style, verdict string) string {
@@ -29,7 +33,9 @@ func ClaimMark(s Style, verdict string) string {
 // hint adds where to look further, for a terminal that has /evidence. An
 // answer with nothing in it to check draws nothing.
 func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
-	if len(v.Claims) == 0 && v.Contract == nil && v.Revision == "" {
+	// Nothing checkable (no claim, or only general knowledge and plain
+	// statements) draws nothing: a greeting earns no footer.
+	if v.Contract == nil && v.Revision == "" && v.Verified == 0 && v.Contradicted == 0 && v.Unverified == v.Unchecked() {
 		return nil
 	}
 	var rows []string
@@ -48,16 +54,18 @@ func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 	} else if v.Revision != "" {
 		rows = append(rows, "  "+s.Yellow("↻ ")+s.Dim("Some of this could not be confirmed from the session's record; the agent is asked to revise it once."))
 	}
+	// ✓ only when something was verified and nothing about the work was not.
 	mark := s.Green("✓")
 	switch {
 	case v.Contradicted > 0 || (v.Contract != nil && !v.Contract.OK):
 		mark = s.Red("✗")
-	case v.Unverified > v.Unchecked():
+	case v.Unverified > v.Unchecked() || v.Verified == 0:
 		mark = s.Yellow("?")
 	}
+	// One line at 80 columns: the hint goes only where it fits.
 	foot := VisibleLine(v.Footer())
-	if hint {
-		foot += " · /evidence N shows the record behind claim N"
+	if hint && len([]rune(foot))+len(" · /evidence N") <= footerWidth {
+		foot += " · /evidence N"
 	}
 	rows = append(rows, "  "+mark+" "+s.Dim(foot))
 	shown := 0
@@ -92,6 +100,9 @@ func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 		}
 		if len(c.Protected) > 0 {
 			rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("protected files changed: "+VisibleLine(clip(strings.Join(c.Protected, ", "), 160))))
+		}
+		if c.ProtectPartial {
+			rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("protect matches more files than are checked, so they could not all be checked"))
 		}
 	}
 	return rows
