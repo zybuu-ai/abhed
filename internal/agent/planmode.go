@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -18,6 +19,10 @@ const (
 type planState struct {
 	mu      sync.Mutex
 	pending *PlanProposed
+	// offered is the runbook of the plan last proposed, until it is accepted
+	// or another is; bound is the one accepted, which calls are held to.
+	offered *Runbook
+	bound   *boundPlan
 }
 
 // EnablePlanExit gives the loop the exit_plan tool, offered only in plan
@@ -33,13 +38,18 @@ func (l *Loop) EnablePlanExit() {
 	l.Tools.Add(tools.ExitPlan{Submit: l.proposePlan})
 }
 
-func (l *Loop) proposePlan(_ context.Context, text string) error {
-	p := PlanProposed{Text: text}
+func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.RunbookStep) error {
+	rb, err := l.prepareRunbook(text, steps)
+	if err != nil {
+		return fmt.Errorf("the runbook was refused: %w", err)
+	}
+	p := PlanProposed{Text: text, Runbook: rb}
 	if _, err := l.Recorder.Record(EvPlanProposed, ActorAgent, Trusted, p); err != nil {
 		return err
 	}
 	l.plans.mu.Lock()
 	l.plans.pending = &p
+	l.plans.offered = rb
 	l.plans.mu.Unlock()
 	return nil
 }

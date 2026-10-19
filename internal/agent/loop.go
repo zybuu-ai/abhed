@@ -1086,6 +1086,7 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
+	l.UnbindPlan() // a runbook binds the conversation that approved it, not one rebuilt from a record
 	if turns > l.turns {
 		l.turns = turns
 	}
@@ -1518,6 +1519,12 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
 		}
 	}
+	// An approved runbook answers the ask of the call that is its next step,
+	// and makes any other change ask.
+	var planned *planHit
+	if doomed == nil {
+		decision, planned = l.planBind(ctx, tool, call, decision)
+	}
 
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
@@ -1648,12 +1655,16 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			}
 		}
 	}
+	if ok, res := l.planClaim(call, planned, approvedBy); !ok {
+		return false, res, ""
+	}
 	// A call runs only with its approval on record: one that ran unrecorded
 	// would be asked again, and could run again, wherever the session goes on.
 	if _, err := l.Recorder.Record(EvActionApproved, actorFor(approvedBy["by"]), Trusted, approvedBy); err != nil {
 		l.noteRecordErr(err)
 		return false, tools.Result{Content: notRecorded, IsError: true}, ""
 	}
+	l.recordPlanStep(call, planned, approvedBy["by"])
 	return true, tools.Result{}, ""
 }
 

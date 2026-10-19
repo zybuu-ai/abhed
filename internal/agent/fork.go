@@ -278,6 +278,8 @@ func (l *Loop) forkTo(events []Event, seq int64, empty bool) (int, int64, error)
 	// so it goes; one made before the point stays, as the conversation does.
 	l.Session.ForgetScopedAfter(forkTime(live, seq))
 	l.messages = msgs
+	// Its remote steps cannot be taken back, so a rewound conversation asks for each again.
+	l.UnbindPlan()
 	return len(msgs), seq, nil
 }
 

@@ -221,12 +221,19 @@ type FileRestored struct {
 // PlanProposed is the payload of plan.proposed.
 type PlanProposed struct {
 	Text string `json:"text"`
+	// Runbook is the plan's steps, canonical and hashed; nil for a plan without one.
+	Runbook *Runbook `json:"runbook,omitempty"`
 }
 
 // PlanDecided is the payload of plan.decided.
 type PlanDecided struct {
 	Decision string `json:"decision"` // accept, or keep-planning
 	ToMode   string `json:"to_mode,omitempty"`
+	// PlanHash and Runbook name the runbook an accept bound; Via is operator
+	// when the operator's setting, not a person's answer, approved it.
+	PlanHash string   `json:"plan_hash,omitempty"`
+	Runbook  *Runbook `json:"runbook,omitempty"`
+	Via      string   `json:"via,omitempty"`
 }
 
 // ModelFallback is the payload of model.fallback.
