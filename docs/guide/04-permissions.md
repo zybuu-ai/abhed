@@ -76,6 +76,13 @@ as `/mode`, recorded as `mode.changed` with `via: plan-exit`, and the
 conversation goes on with "The plan is approved (mode …). Carry it out." as
 the next message. To keep planning, say what to change.
 
+A plan can carry a **runbook**, the exact calls it will make. Accepting it
+binds them: a call made exactly as the next step runs without asking, and
+any other change asks with "not in the approved plan", even where a rule or
+the mode would allow it. Deny rules, hooks and the sandbox still apply, and
+steps that cannot be undone are confirmed a second time when the plan is
+accepted. See [Runbooks](28-runbooks.md).
+
 ### Session rules: `/permissions`
 
 `/permissions` lists every rule in force with where it came from:

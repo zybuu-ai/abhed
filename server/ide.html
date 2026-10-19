@@ -309,6 +309,9 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
 .ask button.no{color:var(--bad);border-color:var(--bad)}
 .ask .done{font:12px var(--mono);color:var(--muted)}
+.ask ol.runbook{margin:0 0 8px;padding-left:20px;font-size:12px}.ask ol.runbook li{margin:0 0 6px}
+.ask ol.runbook pre{margin:3px 0 0;padding:6px 8px;background:var(--surface);border-radius:4px;font:11.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.ask ol.runbook .undo{color:var(--bad);font-weight:600}
 .todo{border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;flex:none}
 .todo h4{margin:0 0 5px;font:600 10px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .todo div{display:flex;gap:7px;padding:1px 0}.todo .done{color:var(--muted);text-decoration:line-through}
@@ -1576,6 +1579,15 @@ async function loadHawkeye(){
   box.appendChild(dl);
   const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => visible(k) + ' ' + v).join(' · ');
   if(steps){ box.appendChild(el('div', 'group', 'Policy steps')); box.appendChild(el('div', 'rules', steps)); }
+  // What reached each host and cluster, how it ended, and the runbook step it was.
+  for(const h of r.remote_changes || []){
+    box.appendChild(el('div', 'group', 'Remote changes · ' + visible(h.kind) + ' ' + visible(h.name)));
+    for(const c of h.changes || []){
+      const end = c.decision === 'denied' ? 'denied' : !c.ran ? 'not run' : c.exit_code != null ? 'exit ' + c.exit_code : c.is_error ? 'failed' : 'ok';
+      box.appendChild(el('div', 'rules', '#' + c.seq + ' ' + visible(c.what) + (c.namespace ? ' · ns ' + visible(c.namespace) : '') + ' · ' + end +
+        (c.by ? ' · by ' + visible(c.by) : '') + (c.plan_hash ? ' · plan ' + visible(c.plan_hash).slice(0, 12) + ' step ' + c.plan_step : '')));
+    }
+  }
   const fs = r.findings || []; const loud = fs.filter(f => f.severity !== 'info').length;
   $('b-hawk').hidden = !loud; $('b-hawk').textContent = loud;
   $('n-prob').textContent = fs.length ? ' ' + fs.length : '';
@@ -2437,6 +2449,10 @@ function render(ev){
     if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
+  // A plan from plan mode, with its runbook, is answered here once; the record settles it.
+  case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
+  case 'plan.decided': settleAsk('plan', p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') + (p.plan_hash ? ' · runbook ' + p.plan_hash.slice(0, 12) : '') : 'keep planning'); break;
+  case 'plan.step': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why', visible('runbook step ' + p.step + ' of ' + p.of + ' · plan ' + String(p.plan_hash || '').slice(0, 12) + byWhom(p)))); break; }
   // What the supervisor told the model, under the call it refused; a re-plan note in the transcript.
   case 'supervisor.correction': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why sup', visible(p.text || ''))); break; }
   case 'supervisor.replan': add(el('div', 'sys', visible(p.text || ''))); break;
@@ -2636,6 +2652,60 @@ function askApproval(p, rid){
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon(); notify('ask');
   // A pending question is never left half off screen, wherever the reader had scrolled to.
+  requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
+}
+// stepText is what a runbook step runs: its command, or its other arguments.
+function stepText(st){
+  const a = Object.assign({}, st.args || {});
+  if((st.tool === 'ssh' || st.tool === 'bash') && typeof a.command === 'string') return visible(a.command, true);
+  for(const k of ['host', 'cluster', 'namespace', 'path']) if(typeof a[k] === 'string' && String(st.target || '').includes(a[k])) delete a[k];
+  return visible(JSON.stringify(a, null, 2), true);
+}
+// planCard puts a proposed plan to the person: the plan, each runbook step
+// exactly as it will run, and the CLI's three answers. Steps with no undo are
+// asked about a second time. Accepting sends the message the server returns.
+function planCard(p){
+  settleAsk('plan', 'superseded by a newer plan');
+  const a = el('div', 'ask plan'); a.dataset.call = 'plan';
+  a.appendChild(el('b', '', 'Plan ready · proceed with this plan?')); a.appendChild(md(p.text || ''));
+  const rb = p.runbook, risky = rb ? rb.steps.filter(st => st.destructive) : [];
+  if(rb){
+    a.appendChild(el('p', 'scope-note', 'Runbook · ' + rb.steps.length + ' steps · plan ' + rb.hash.slice(0, 12) +
+      '. Approving runs each step without asking when it is made exactly as listed; any other change asks, even where a rule or the mode would allow it. Deny rules and the sandbox still apply.'));
+    const ol = el('ol', 'runbook');
+    for(const st of rb.steps){ const li = el('li'); li.appendChild(el('span', 'tool', visible(st.tool)));
+      if(st.target) li.appendChild(el('span', 'subj', ' · ' + visible(st.target)));
+      if(st.note) li.appendChild(el('span', '', ' — ' + visible(st.note)));
+      if(st.destructive) li.appendChild(el('span', 'undo', ' · no undo: ' + visible(st.destructive)));
+      li.appendChild(el('pre', '', stepText(st))); ol.appendChild(li); }
+    a.appendChild(ol);
+    if([p.text, JSON.stringify(rb.steps)].some(v => hasHidden(v))) a.appendChild(el('p', 'hidden-warn', '! this plan contains hidden or control characters'));
+  }
+  const btns = el('div', 'btns'), note = el('p', 'note');
+  const answer = async (decision, undoOK) => {
+    btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
+    try{
+      const r = await api('/v1/sessions/' + current + '/plan', {method:'POST', body: JSON.stringify({decision, plan_hash: p.hash, confirm_no_undo: !!undoOK})});
+      if(decision === 'keep-planning'){ settleAsk('plan', 'keep planning · say what to change'); $('q').focus(); return; }
+      settleAsk('plan', 'approved · mode ' + visible(r.mode || ''));
+      if(r && r.message){ $('q').value = r.message; send(); }
+    }catch(e){
+      if(e.status === 409){ settleAsk('plan', 'no longer waiting for an answer · ' + visible(e.message)); return; }
+      note.textContent = visible(e.message); btns.querySelectorAll('button').forEach(x => { x.disabled = false; });
+    }
+  };
+  const mk = (label, cls, decision) => { const b = el('button', cls, label); b.type = 'button';
+    b.addEventListener('click', () => {
+      if(decision === 'keep-planning' || !risky.length) return answer(decision);
+      // The steps with no undo were each a double confirm; they are asked about again here.
+      clear(btns); note.textContent = risky.length + ' step' + (risky.length === 1 ? '' : 's') + ' of this runbook cannot be undone: ' +
+        risky.map(st => st.index + ' (' + visible(st.destructive) + ')').join(', ') + '. They will run without asking.';
+      const no = el('button', 'no', 'No, keep planning'), yes = el('button', 'yes', 'Yes, approve the steps that cannot be undone');
+      no.type = yes.type = 'button'; no.addEventListener('click', () => answer('keep-planning')); yes.addEventListener('click', () => answer(decision, true));
+      btns.append(no, yes); no.focus();
+    }); return b; };
+  btns.append(mk('Yes, and accept edits', '', 'accept-edits'), mk('Yes, ask before each change', 'yes', 'approve'), mk('No, keep planning', 'no', 'keep-planning'));
+  a.append(note, btns); add(a); focusSoon(); notify('ask');
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
 }
 // Focus goes to the newest open prompt once the stream has caught up, so a

@@ -36,8 +36,11 @@ type Report struct {
 	Offloads    []Offload     `json:"offloads,omitempty"`
 	Subagents   []Subagent    `json:"subagents,omitempty"`
 	Files       []FileTouch   `json:"files,omitempty"`
-	Findings    []Finding     `json:"findings"`
-	Integrity   Integrity     `json:"integrity"`
+	// RemoteChanges are the commands and cluster writes sent to each host
+	// and cluster, with how each ended and the runbook step it was.
+	RemoteChanges []RemoteTarget `json:"remote_changes,omitempty"`
+	Findings      []Finding      `json:"findings"`
+	Integrity     Integrity      `json:"integrity"`
 
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.
@@ -130,13 +133,16 @@ type Call struct {
 	SandboxDenied bool `json:"sandbox_denied,omitempty"`
 	// NetworkDenied counts the connections and requests of this call the
 	// egress allowlist refused, from its egress.decision events.
-	NetworkDenied int    `json:"network_denied,omitempty"`
-	IsError       bool   `json:"is_error"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
-	Truncated     bool   `json:"truncated"`
-	DurationMS    int64  `json:"duration_ms"`
-	Output        string `json:"output,omitempty"`
-	OutputLen     int    `json:"output_len"`
+	NetworkDenied int  `json:"network_denied,omitempty"`
+	IsError       bool `json:"is_error"`
+	ExitCode      *int `json:"exit_code,omitempty"`
+	// PlanHash and PlanStep name the approved runbook step the call was.
+	PlanHash   string `json:"plan_hash,omitempty"`
+	PlanStep   int    `json:"plan_step,omitempty"`
+	Truncated  bool   `json:"truncated"`
+	DurationMS int64  `json:"duration_ms"`
+	Output     string `json:"output,omitempty"`
+	OutputLen  int    `json:"output_len"`
 }
 
 type PolicyStats struct {

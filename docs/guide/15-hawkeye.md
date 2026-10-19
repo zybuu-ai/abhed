@@ -91,6 +91,7 @@ capture does not say it left any out.
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
 | Supervisor | when the [supervisor](04-permissions.md#the-supervisor) left anything in the record: how many calls it reviewed and tightened, how often its judge was unavailable, the corrections it sent the model and the re-plan notes, its concerns by code with each one's call, and the judge's version (`supervisor` in the JSON) |
 | Turns | per-turn tokens, time to first token, total latency |
+| Remote changes | per host and per cluster, every `ssh` command and `k8s_apply` write in order: the address or server the approval named, the decision and who made it, the exit code (or `denied`, `not run`, `failed`), and the [runbook](28-runbooks.md) step it was (`remote_changes` in the JSON) |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
 

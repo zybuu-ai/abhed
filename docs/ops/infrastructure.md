@@ -434,6 +434,11 @@ cannot. A managed file that sets it replaces the list (`[]` allows none), and
 one that sets any `permissions` key without it sets the person's entries
 aside, as it does their allow rules.
 
+A [runbook](../guide/28-runbooks.md) is the one way to approve remote commands
+ahead of time: the person reads each exact command once, with the plan, and
+only a call made exactly as the next step runs without its own ask. Deny
+rules still refuse it.
+
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
 

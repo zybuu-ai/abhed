@@ -34,6 +34,7 @@ more often a mistyped command than a task.
 | `-mcp-config FILE`, `-strict-mcp-config` | MCP servers for this run, and whether they are the only ones; see below |
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
+| `-runbook FILE`, `-runbook-sha256 HASH` | with `-p`, approve a plan's runbook for the run, pinned to the hash you reviewed: see [Runbooks](28-runbooks.md#headless-runs) |
 
 These flags come before a subcommand or after it: `abhed -C ~/src/app
 doctor` and `abhed doctor -C ~/src/app` are the same. Before or after a
