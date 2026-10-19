@@ -58,6 +58,8 @@ type Case struct {
 	// DeclaredRead is the operator's ssh.read_commands entry an ssh call
 	// runs, when it runs one: the operator has said that command is a read.
 	DeclaredRead string
+	// Plan is the plan the person approved, if any.
+	Plan string
 }
 
 // Provenance is one name in the arguments and where it was first seen.
@@ -73,6 +75,9 @@ type Recent struct {
 	Tool    string
 	Subject string
 	IsError bool
+	// Credential is set when the call brought credential content into the
+	// session; see CredentialSeen.
+	Credential bool
 }
 
 // Verdict is the judge's answer.

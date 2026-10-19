@@ -55,7 +55,11 @@ func TestSupervisorKnowsDeclaredHosts(t *testing.T) {
 	cfg := config.Default()
 	cfg.SSH.Hosts = []config.SSHHostConfig{{Name: "web1", Addr: "10.0.0.11:22"}, {Name: "db", Addr: "db.internal"}}
 	cfg.K8s.Clusters = []config.K8sClusterConfig{{Name: "prod-k8s"}}
-	got := Supervisor(cfg, nil, false).Monitor.(monitor.Rules).Declared
+	rules := Supervisor(cfg, nil, false).Monitor.(monitor.Rules)
+	if h := rules.Hosts; len(h) != 2 || h[0] != (monitor.DeclaredHost{Name: "web1", Addr: "10.0.0.11"}) || h[1].Addr != "db.internal" {
+		t.Fatalf("hosts %v", h)
+	}
+	got := rules.Declared
 	want := []string{"web1", "10.0.0.11", "db", "db.internal", "prod-k8s"}
 	if len(got) != len(want) {
 		t.Fatalf("%v", got)
