@@ -342,13 +342,14 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	} else if n := len(l.messages); n > 0 && l.messages[n-1].Role == model.RoleAssistant && len(l.messages[n-1].ToolCalls) == 0 {
 		source, text = "text", l.messages[n-1].Content
 		claims = textClaims(text)
-		if strings.TrimSpace(text) == "" {
-			source = "" // nothing said
-		}
+	}
+	// Nothing said: no claim to check, but the contract still gates the run.
+	if source == "text" && strings.TrimSpace(text) == "" && v.Contract == nil {
+		return false, TermCompleted
 	}
 	// Stopped as it ended: the answer stands as given, unchecked.
-	// No answer to check: a plan put to the person, a structured result, or
-	// nothing said. The contract gates an answer, so it waits for one too.
+	// No answer to check: a plan put to the person or a structured result.
+	// The contract gates an answer, so it waits for one too.
 	if source == "" || ctx.Err() != nil {
 		return false, TermCompleted
 	}

@@ -104,6 +104,9 @@ type obsRec struct {
 	via     string
 	ev      *evidenceText
 	inspect bool // a command that only reads
+	// selfStale: the call's line changes something after printing what the
+	// result shows, so its output may predate that change.
+	selfStale bool
 }
 
 // mutation is a recorded call that may have changed what later output shows.
@@ -115,6 +118,9 @@ type mutation struct {
 	command string
 	person  bool
 	failed  bool
+	// known: every file the call may have changed is in targets, absolute.
+	known   bool
+	targets []string
 }
 
 type recordIndex struct {
@@ -126,6 +132,8 @@ type recordIndex struct {
 	// subagents is set when a subagent ran whose own record could not be
 	// read, so its work is not in the index.
 	subagents bool
+	// workDir is the workspace, against which a claim's relative path is read.
+	workDir string
 }
 
 // readers are the built-in tools that never change anything.
@@ -138,7 +146,7 @@ var readers = map[string]bool{
 const maxChildDepth = 3
 
 func indexRecord(env checkEnv) *recordIndex {
-	ix := &recordIndex{byCall: map[string]*obsRec{}, bySeq: map[int64]*obsRec{}, types: map[int64]EventType{}}
+	ix := &recordIndex{byCall: map[string]*obsRec{}, bySeq: map[int64]*obsRec{}, types: map[int64]EventType{}, workDir: env.workDir}
 	ix.add(env, env.events, "", nil, 0, map[string]bool{})
 	sort.SliceStable(ix.obs, func(i, j int) bool { return ix.obs[i].pos < ix.obs[j].pos })
 	sort.SliceStable(ix.mutations, func(i, j int) bool { return ix.mutations[i].pos < ix.mutations[j].pos })
@@ -166,6 +174,13 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 		return *at, float64(*at) - 1 + float64(seq)/float64(top+1)
 	}
 	reqs := map[string]req{}
+	// The folder each bash call ran in: the workspace, moved by a call that
+	// is only `cd <folder>`, as the bash tool follows it. A subagent's record
+	// may be another worktree's, so its folder is not known.
+	cwd := ""
+	if at == nil {
+		cwd = env.workDir
+	}
 	children := map[string]int64{}
 	var order []string
 	for _, e := range Live(events) {
@@ -205,8 +220,23 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			}
 			_ = json.Unmarshal(r.a.Args, &args)
 			rec.command, rec.path = args.Command, args.Path
-			if o.Tool == "bash" {
-				rec.inspect = inspectionCommand(args.Command)
+			var line lineFacts
+			if o.Tool == "bash" || o.Tool == "ssh" {
+				// A remote command's folder is not this machine's: its
+				// relative targets are not known.
+				dir := cwd
+				if o.Tool == "ssh" {
+					dir = ""
+				}
+				line = readLine(args.Command, dir)
+				rec.inspect, rec.selfStale = line.parsed && line.inspect, line.selfStale
+				if o.Tool == "bash" && line.cdTo != "" && !o.IsError && cwd != "" {
+					if filepath.IsAbs(line.cdTo) {
+						cwd = filepath.Clean(line.cdTo)
+					} else {
+						cwd = filepath.Join(cwd, line.cdTo)
+					}
+				}
 			}
 			mut := false
 			switch {
@@ -228,8 +258,11 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			fileTool := o.Tool == "write" || o.Tool == "edit"
 			if mut && (!fileTool || !o.IsError) || o.OutcomeUnknown {
 				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError}
-				if fileTool {
-					m.path = args.Path
+				switch {
+				case fileTool:
+					m.path, m.known, m.targets = args.Path, args.Path != "", []string{args.Path}
+				case o.Tool == "bash" || o.Tool == "ssh":
+					m.known, m.targets = line.parsed && line.known, line.targets
 				}
 				ix.mutations = append(ix.mutations, m)
 			}
@@ -274,13 +307,19 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 	for i := range ix.mutations {
 		m := &ix.mutations[i]
+		// A line that changes something after printing what its result
+		// shows is out of date by its own change.
+		if m.pos == o.pos && o.selfStale {
+			return m
+		}
 		if m.pos <= o.pos {
 			continue
 		}
 		fileEdit := m.tool == "write" || m.tool == "edit"
 		switch o.tool {
 		case "read":
-			if !fileEdit || samePath(m.path, o.path) {
+			// A change whose files are all known leaves a read of another alone.
+			if !m.known || touches(m.targets, o.path) {
 				return m
 			}
 		case "grep", "glob", "bash":
@@ -292,6 +331,15 @@ func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 		}
 	}
 	return nil
+}
+
+func touches(targets []string, p string) bool {
+	for _, t := range targets {
+		if samePath(t, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func samePath(a, b string) bool {
@@ -710,7 +758,8 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 		if !after(o) {
 			continue
 		}
-		if *o.exit == 0 {
+		// A pass the same line then changed things after is not after the change.
+		if *o.exit == 0 && !o.selfStale {
 			return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
 		}
 	}
@@ -730,29 +779,22 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 
 // changedPath checks "I changed X" against the calls that changed files.
 func (ix *recordIndex) changedPath(p string) finding {
-	// The record contradicts the claim only when every change in it has
-	// targets that are known, and none of them is p.
+	// The record contradicts the claim only when every change in it names
+	// its files in full, resolved against the folder it ran in, and none of
+	// them is p.
 	var unread *mutation
 	for i, m := range ix.mutations {
-		if m.person || m.failed {
+		if m.person {
 			continue
 		}
-		// A file tool's own path, or a file a command writes: a path it only
-		// reads (the source of a cp) is not a change to it.
-		targets, known := []string{m.path}, true
-		switch {
-		case m.path != "":
-		case m.tool == "bash" || m.tool == "ssh":
-			targets, known = writeTargets(m.command)
-		default:
-			targets, known = nil, false // another tool's writes cannot be read from its call
-		}
-		for _, t := range targets {
-			if pathIs(t, p) {
-				return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+		if !m.failed {
+			for _, t := range m.targets {
+				if pathIs(t, p, ix.workDir) {
+					return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
+				}
 			}
 		}
-		if !known && unread == nil {
+		if !m.known && unread == nil {
 			unread = &ix.mutations[i]
 		}
 	}
@@ -881,111 +923,4 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
-}
-
-// inspectionCommand reports whether a shell command only reads: every part
-// of it is a program known not to write, and nothing is redirected to a file.
-// Anything else counts as a change, which is the cautious way to be wrong.
-func inspectionCommand(cmd string) bool {
-	c := strings.TrimSpace(cmd)
-	if c == "" {
-		return false
-	}
-	clean := redirectOK.ReplaceAllString(c, " ")
-	if strings.ContainsAny(clean, ">`") || strings.Contains(clean, "$(") {
-		return false
-	}
-	// Runners and launchers are taken off: `env sed -i` is sed -i.
-	for _, words := range simpleCommands(clean) {
-		prog := filepath.Base(words[0])
-		sub := ""
-		if len(words) > 1 {
-			sub = words[1]
-		}
-		if !readOnlyProgram(prog, sub, words) {
-			return false
-		}
-	}
-	return true
-}
-
-var (
-	redirectOK = regexp.MustCompile(`\d?>&\d|&?>\s*/dev/null|\d>\s*/dev/null`)
-	cmdSplit   = regexp.MustCompile(`&&|\|\||;|\||\n`)
-)
-
-var readOnlyPrograms = map[string]bool{
-	"ls": true, "cat": true, "head": true, "tail": true, "grep": true, "rg": true, "egrep": true, "fgrep": true,
-	"wc": true, "echo": true, "printf": true, "pwd": true, "stat": true, "file": true, "diff": true, "cmp": true,
-	"which": true, "type": true, "whoami": true, "id": true, "uname": true, "date": true,
-	"printenv": true, "du": true, "df": true, "tree": true, "jq": true, "yq": true, "sort": true, "uniq": true,
-	"cut": true, "tr": true, "awk": true, "column": true, "nl": true, "less": true, "more": true, "true": true,
-	"test": true, "[": true, "basename": true, "dirname": true, "realpath": true, "readlink": true, "sha256sum": true,
-	"shasum": true, "md5sum": true, "md5": true, "hexdump": true, "xxd": true, "od": true, "strings": true,
-	"pytest": true, "jest": true, "vitest": true, "mocha": true, "tsc": true, "eslint": true, "ruff": true,
-	"mypy": true, "flake8": true, "pylint": true, "golangci-lint": true, "shellcheck": true, "cd": true,
-	"ps": true, "uptime": true, "free": true, "hostname": true, "nproc": true, "lsof": true, "curl": true,
-	"kubectl": false, "find": true, "sleep": true,
-}
-
-func readOnlyProgram(prog, sub string, words []string) bool {
-	switch prog {
-	case "find":
-		for _, w := range words {
-			if w == "-delete" || w == "-exec" || w == "-execdir" || w == "-ok" {
-				return false
-			}
-		}
-		return true
-	case "sed":
-		for _, w := range words {
-			if strings.HasPrefix(w, "-i") || w == "--in-place" {
-				return false
-			}
-		}
-		return true
-	case "curl":
-		for _, w := range words {
-			if w == "-o" || w == "-O" || strings.HasPrefix(w, "--output") || w == "-X" || w == "-d" || strings.HasPrefix(w, "--data") {
-				return false
-			}
-		}
-		return true
-	case "awk":
-		return !strings.Contains(strings.Join(words, " "), "system(")
-	case "git":
-		switch sub {
-		case "status", "diff", "log", "show", "rev-parse", "blame", "ls-files", "describe", "shortlog", "grep", "remote":
-			return true
-		case "branch", "tag":
-			return len(words) == 2 || words[2] == "--list" || words[2] == "-l" || words[2] == "-a" || words[2] == "-v"
-		}
-		return false
-	case "go":
-		switch sub {
-		case "test", "vet", "build", "list", "version", "env", "doc":
-			return true
-		}
-		return false
-	case "cargo":
-		return sub == "test" || sub == "check" || sub == "build" || sub == "clippy"
-	case "npm", "pnpm", "yarn":
-		return sub == "test" || sub == "t" || (sub == "run" && len(words) > 2 && (strings.HasPrefix(words[2], "test") ||
-			strings.HasPrefix(words[2], "lint") || strings.HasPrefix(words[2], "build") || strings.HasPrefix(words[2], "check")))
-	case "make":
-		// make and make all build, which writes; a check target only reads.
-		return sub == "test" || sub == "check" || sub == "lint" || sub == "vet"
-	case "sort":
-		for _, w := range words {
-			if w == "-o" || strings.HasPrefix(w, "-o") || strings.HasPrefix(w, "--output") {
-				return false
-			}
-		}
-		return true
-	case "python", "python3":
-		return len(words) > 2 && sub == "-m" && (words[2] == "pytest" || words[2] == "unittest" || words[2] == "mypy")
-	case "mvn", "gradle", "./gradlew":
-		return sub == "test" || sub == "verify" || sub == "check"
-	}
-	return readOnlyPrograms[prog]
 }
