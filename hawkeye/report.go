@@ -302,8 +302,8 @@ type Integrity struct {
 // that shows it.
 type SandboxSignal struct {
 	Seq int64 `json:"seq"`
-	// Source is the evidence: "cgroup" (the fence's limits), "git" (git
-	// protection), or "bash" (bash's note on an error naming a folder every
+	// Source is the evidence: "cgroup" (the fence's limits), "seccomp" (the
+	// fence's system-call filter), "git" (git protection), or "bash" (bash's note on an error naming a folder every
 	// sandbox tier denies).
 	Source string `json:"source"`
 	What   string `json:"what"`

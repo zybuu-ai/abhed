@@ -33,6 +33,18 @@ func TestChainSoak(t *testing.T) {
 		runtimeStore(t, "soak") // provisions the runtime role's grants
 		cfg = DefaultConfig(rt)
 	}
+	// ABHED_SOAK_SETUP_SQL runs as the owner once the schema is applied, so a
+	// change to it can be measured against the same soak before it ships. It
+	// needs the runtime role: a single-role open applies the schema again.
+	if q := os.Getenv("ABHED_SOAK_SETUP_SQL"); q != "" {
+		if cfg.SingleRole {
+			t.Fatal("ABHED_SOAK_SETUP_SQL needs ABHED_TEST_RUNTIME_DSN")
+		}
+		owner := openStore(t, "soak")
+		if _, err := owner.pool.Exec(context.Background(), q); err != nil {
+			t.Fatalf("ABHED_SOAK_SETUP_SQL: %v", err)
+		}
+	}
 	cfg.Tenant = testID(t, "t-soak-")
 	cfg.MaxConns = int32(sessions)
 	p, err := Open(context.Background(), cfg)

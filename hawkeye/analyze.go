@@ -3,6 +3,7 @@ package hawkeye
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -165,7 +166,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			c.Truncated, c.DurationMS = o.Truncated, o.DurationMS
 			c.Output, c.OutputLen = clip(o.Content, outputKeep), len(o.Content)
 
-		case agent.EvFenceLimit, sandboxGitPlanted, sandboxGitLinked, sandboxGitWalkBounded:
+		case agent.EvFenceLimit, agent.EvFenceDenied, sandboxGitPlanted, sandboxGitLinked, sandboxGitWalkBounded:
 			sandboxSignal(calls, e)
 
 		case agent.EvEgressDecision:
@@ -475,18 +476,19 @@ var sandboxNotes = map[string]string{
 }
 
 // sandboxSignal adds what a sandbox event says it refused to the call it
-// names: the fence's cgroup killing for memory or refusing forks, or git
-// protection not running a command.
+// names: the fence's cgroup killing for memory or refusing forks, its
+// seccomp filter refusing system calls, or git protection not running a command.
 func sandboxSignal(calls map[string]*Call, e agent.Event) {
 	var p struct {
-		CallID         string `json:"call_id"`
-		OOMKill        int64  `json:"oom_kill"`
-		OOMGroupKill   int64  `json:"oom_group_kill"`
-		PidsMax        int64  `json:"pids_max"`
-		SessionPidsMax int64  `json:"session_pids_max"`
-		MemoryMaxMB    int64  `json:"memory_max_mb"`
-		MaxProcs       int64  `json:"max_procs"`
-		Refused        *bool  `json:"refused"`
+		CallID         string         `json:"call_id"`
+		OOMKill        int64          `json:"oom_kill"`
+		OOMGroupKill   int64          `json:"oom_group_kill"`
+		PidsMax        int64          `json:"pids_max"`
+		SessionPidsMax int64          `json:"session_pids_max"`
+		MemoryMaxMB    int64          `json:"memory_max_mb"`
+		MaxProcs       int64          `json:"max_procs"`
+		Refused        *bool          `json:"refused"`
+		Calls          map[string]int `json:"calls"`
 	}
 	if json.Unmarshal(e.Payload, &p) != nil {
 		return
@@ -509,6 +511,14 @@ func sandboxSignal(calls map[string]*Call, e agent.Event) {
 		}
 		if p.SessionPidsMax > 0 {
 			add("cgroup", fmt.Sprintf("refused %d new process(es) at the session's process limit", p.SessionPidsMax))
+		}
+	case agent.EvFenceDenied:
+		if len(p.Calls) > 0 {
+			parts := make([]string, 0, len(p.Calls))
+			for _, name := range slices.Sorted(maps.Keys(p.Calls)) {
+				parts = append(parts, fmt.Sprintf("%s ×%d", name, p.Calls[name]))
+			}
+			add("seccomp", "refused system calls: "+strings.Join(parts, ", "))
 		}
 	case sandboxGitPlanted:
 		add("git", "did not run it: a repository made earlier names a program git would run")

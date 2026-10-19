@@ -840,6 +840,10 @@ func everySpelling(name string) []string {
 // workspace that can no longer be listed to look for one.
 const EvFenceStatePlanted = "fence.state_planted"
 
+// EvFenceDenied is what the fence refused a command, as Abhed answered it:
+// the call, the source ("seccomp") and each refused system call's count.
+const EvFenceDenied = "fence.denied"
+
 // plantedPrefix begins the name a planted .abhed, or an entry of the covered
 // one, is renamed to; no part of Abhed reads it.
 const plantedPrefix = ".abhed-planted-"

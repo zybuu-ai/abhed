@@ -321,12 +321,20 @@ All notable changes to Abhed are recorded here. The format follows
   events a second held for two minutes (180,032 events), and 1,400 to 2,300
   a second flat out with the VM's CPU the limit, none dropped; the local
   record about 63,000 a second.
+- The fence learns what its seccomp filter refuses: in `mount_namespace`
+  mode, on Linux 5.7 or later, each refusal goes to Abhed (seccomp user
+  notification), which answers with the same EPERM and records the counts
+  as `fence.denied`. The command, in its own PID namespace, cannot reach the
+  listener; with Abhed gone the kernel refuses with ENOSYS. Landlock's
+  refusals are not reported: the kernel offers them only to its audit log
+  (Linux 6.15), which an unprivileged process cannot read.
 - HawkEYE reads the sandbox's own events for `sandbox-denied`: the fence's
-  memory kills and process-limit refusals (`fence.limit`), git protection's
+  memory kills and process-limit refusals (`fence.limit`), seccomp's
+  refusals (`fence.denied`), git protection's
   refusals, and bash's note, now recorded with the result as
   `sandbox_note`. The detail names each and the event it is from. On a
-  labelled set of 30 calls its precision is 1.00 and its recall 0.81,
-  against 0.57 and 0.50 for the output's words alone
+  labelled set of 32 calls its precision is 1.00 and its recall 0.83,
+  against 0.62 and 0.56 for the output's words alone
   ([HawkEYE](docs/guide/15-hawkeye.md#findings)).
 - The record as OCSF events. Every record type maps to an OCSF 1.8.0 class:
   API Activity (with the AI Operation profile's model, role and tokens) for
@@ -375,6 +383,12 @@ All notable changes to Abhed are recorded here. The format follows
   that an operation was not permitted under a sandbox: the credential path
   or Abhed's own state the output named, or `denied`
   ([Data model](docs/architecture/10-data-model.md)).
+- Postgres schema version 14 makes each event insert cheaper with the same
+  hash: the chain's trigger uses fixed queries and renders only the hashed
+  columns (about 120 down to 30 microseconds a row), sets `inserted_at`
+  itself instead of a second trigger, and the unused GIN index on the
+  sealed `payload` is dropped. Apply it with `abhed migrate`; a server on
+  an older schema still starts.
 - A `bash` note now also names a refusal of a credential file the sandbox
   denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
   `~/.netrc` or `~/.config/gh`), and of Abhed's own state.

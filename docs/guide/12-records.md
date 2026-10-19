@@ -451,7 +451,16 @@ written was in the database, in order, and every chain verified: none were
 dropped. That is well short of 10,000 a second; a dedicated database server
 will do better, and each event being its own transaction is the cost.
 `store/chain_soak_test.go` is the soak (`ABHED_SOAK_SECONDS`,
-`ABHED_SOAK_SESSIONS`, `ABHED_SOAK_RATE`). The local
+`ABHED_SOAK_SESSIONS`, `ABHED_SOAK_RATE`).
+
+There, the writers wait on the database's write-ahead log: each event is
+made durable before its append returns, and the VM's disk flushes are the
+limit. Schema version 14 made each insert cheaper without changing that:
+the chain's trigger time fell from about 120 to about 30 microseconds a
+row, an append from one writer from about 485 to about 345 microseconds,
+and the log written from about 2,740 to about 2,540 bytes an event
+(`store/chain_cost_test.go`, `ABHED_APPEND_COST`). The soak's rate did not
+move with it, as it is bound by the flushes, not by the inserts' work. The local
 record, on the same Mac, took about 63,000 events a second with a sync every
 20 (`store/local/soak_test.go`). Measure yours.
 

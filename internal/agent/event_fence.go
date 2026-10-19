@@ -22,6 +22,10 @@ const (
 	// workspace: where it was moved, and that the session's fence runs no
 	// further command.
 	EvFenceStatePlanted EventType = sandbox.EvFenceStatePlanted
+	// EvFenceDenied is the system calls seccomp refused a fenced command,
+	// counted by name, recorded once it has exited. Only where the fence can
+	// learn of them: in mount_namespace mode, on Linux 5.7 or later.
+	EvFenceDenied EventType = sandbox.EvFenceDenied
 	// EvEgressDecision is one decision of the egress proxy under
 	// sandbox.network allowlist: the call, host, port, address, method and
 	// path for plain HTTP, the decision, the rule, and the bytes each way.

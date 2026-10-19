@@ -708,3 +708,64 @@ func TestFencePlantedEndsRunningCommands(t *testing.T) {
 		t.Fatalf("the next command ran:\n%s", out)
 	}
 }
+
+// In mount_namespace mode seccomp's refusals go to Abhed, which refuses them
+// as the filter did (EPERM) and records each as fence.denied. The command
+// cannot see the listener to answer its own; landlock_only records none.
+func TestFenceRecordsSeccompRefusals(t *testing.T) {
+	f, p := fenced(t, nil)
+	if f.Mode() != FenceModeMounts {
+		t.Skipf("mode %s", f.Mode())
+	}
+	ev := &events{}
+	out, err := fenceRun(t, f, p.Workspace, `unshare -U true; echo "unshare=$?"; `+
+		`python3 -c 'import socket; socket.socket(socket.AF_UNIX)' 2>&1 | tail -1; `+
+		`ls -l /proc/[0-9]*/fd 2>/dev/null | grep -c seccomp; true`, ev.record(nil), "call-deny")
+	if err != nil || !strings.Contains(out, "unshare=1") || !strings.Contains(out, "PermissionError") {
+		t.Fatalf("the refusals were not EPERM: %v\n%s", err, out)
+	}
+	if lines := strings.Fields(out); lines[len(lines)-1] != "0" {
+		t.Fatalf("the command could see a seccomp listener:\n%s", out)
+	}
+	launched := ev.of("process.launched")
+	if len(launched) != 1 || launched[0]["seccomp_notify"] != true {
+		t.Fatalf("process.launched: %v", launched)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for len(ev.of("fence.denied")) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	denied := ev.of("fence.denied")
+	if len(denied) != 1 || denied[0]["call_id"] != "call-deny" || denied[0]["source"] != "seccomp" {
+		t.Fatalf("fence.denied: %v", denied)
+	}
+	calls, _ := denied[0]["calls"].(map[string]int)
+	if calls["unshare"] < 1 || calls["socket(unix)"] < 1 {
+		t.Fatalf("refused calls: %v", calls)
+	}
+	// A command that is refused nothing records nothing.
+	quiet := &events{}
+	if _, err := fenceRun(t, f, p.Workspace, "true", quiet.record(nil), "call-quiet"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	if d := quiet.of("fence.denied"); len(d) != 0 {
+		t.Fatalf("fence.denied for a clean command: %v", d)
+	}
+}
+
+func TestFenceLandlockOnlyRecordsNoSeccompRefusals(t *testing.T) {
+	f, p := fenced(t, noMounts)
+	ev := &events{}
+	out, _ := fenceRun(t, f, p.Workspace, `unshare -U true; echo "unshare=$?"`, ev.record(nil), "call-ll")
+	if !strings.Contains(out, "unshare=1") {
+		t.Fatalf("unshare was not refused:\n%s", out)
+	}
+	time.Sleep(time.Second)
+	if l := ev.of("process.launched"); len(l) != 1 || l[0]["seccomp_notify"] != false {
+		t.Fatalf("process.launched: %v", l)
+	}
+	if d := ev.of("fence.denied"); len(d) != 0 {
+		t.Fatalf("fence.denied without a PID namespace: %v", d)
+	}
+}

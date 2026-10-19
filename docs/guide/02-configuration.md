@@ -624,6 +624,13 @@ without running anything.
   process id, `kill` of its process group or of every process (`kill -1`),
   and `pidfd_send_signal` altogether, since a filter cannot see whom a pidfd
   names. Each command also runs in a process group apart from Abhed's.
+  In `mount_namespace` mode, on Linux 5.7 or later, each refused call is
+  sent to Abhed (seccomp user notification), which answers it with the same
+  EPERM and counts it; the command, in its own PID namespace, cannot see
+  the listener to answer its own. `process.launched` says
+  `seccomp_notify: true` then. If Abhed is gone the kernel refuses the call
+  with ENOSYS instead. In `landlock_only`, or on an older kernel, the filter
+  refuses with EPERM itself and nothing is counted.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
   refused, and Landlock refuses TCP as well (plain TCP only: since Linux 6.14
   Landlock leaves MPTCP and SCTP alone, so the `socket()` refusal is what
@@ -677,7 +684,9 @@ without running anything.
   process limit (`pids_max` the forks refused in its own cgroup,
   `session_pids_max` those refused at the session's limit while it ran,
   which on Linux 6.14 and later are counted only there and may include
-  another command's), and `fence.state_planted` a `.abhed` found in the workspace.
+  another command's), `fence.denied` the system calls seccomp refused a
+  command, counted by name (`calls`, such as `"socket(unix)": 2`), when it
+  sends them to Abhed, and `fence.state_planted` a `.abhed` found in the workspace.
   `process.launched` names its `source`: `call` for a tool call or a `!`
   command, `harness` for one Abhed runs itself within a session. When
   `fence.qualified` cannot be recorded, the command line closes the fence
