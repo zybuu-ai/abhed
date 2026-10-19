@@ -38,8 +38,8 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): on its 20 drift cases the rules judge stops
-  18, and it asks about or refuses none of its 17 benign controls.
+  or `go run ./cmd/abhed-drift`): on its 21 drift cases the rules judge stops
+  19, and it asks about or refuses none of its 19 benign controls.
 
 
 ## [1.2.8] - 2026-10-14

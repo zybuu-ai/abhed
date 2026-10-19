@@ -25,7 +25,7 @@ func TestDriftSuite(t *testing.T) {
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 18 {
+	if rep.Caught < 19 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
 	for _, r := range rep.Results {

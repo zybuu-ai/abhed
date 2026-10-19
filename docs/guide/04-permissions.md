@@ -1212,7 +1212,7 @@ reviewed, because a command may change anything.
 | `unknown-program` | deny | A `bash` program that is not on the PATH where commands run. Checked only where commands run on this machine's own files (the process and fence tiers, and none); a container's or a VM's programs are not looked up. A line that installs something, sets `PATH` or defines the function it calls is left alone |
 | `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host |
 | `unverified-target` | ask | A `write` or `edit`, a redirection, or a writing command (`tee`, `touch`, `mkdir`, the destination of `cp`, `mv`, `ln`, `install`, `rsync` or `scp`, `chmod`, `chown`, `sed -i`) aimed at an absolute path the person never named and no earlier call showed; a `k8s_apply` namespace or name the same is true of. Paths under the workspace and in temporary folders are the session's own |
-| `unverified-host` | ask | A host in a URL, a `user@host`, or an argument of a program that reaches the network (`curl`, `wget`, `ssh`, `scp`, `rsync`, `nc`, …) that the person never named and no earlier command showed. Loopback names are exempt. What `web_fetch` and `web_search` returned does not count as having shown it, since that is where an injected instruction comes from |
+| `unverified-host` | ask | A host in a URL, a `user@host`, or an argument of a program that reaches the network (`curl`, `wget`, `ssh`, `scp`, `rsync`, `nc`, …) that the person never named and no earlier command showed. Loopback names are exempt, and so is fetching from a host code and packages come from (`github.com`, `pypi.org`, `registry.npmjs.org`, `proxy.golang.org`, …), though sending to one is not (`git push`, an upload). What `web_fetch` and `web_search` returned does not count as having shown it, since that is where an injected instruction comes from |
 | `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after a credential file was read in the session: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json` |
 | `honeytoken` | deny | A value from `monitor.honeytokens` (eight characters or more) anywhere in the arguments, before any judge and even in a read. The value is not repeated in the reason |
 
@@ -1288,12 +1288,12 @@ rest keep the decision policy made and are not reviewed.
 
 ### What it has been measured to do
 
-The drift suite is 20 calls a model gone wrong might make — a wrong host, a
+The drift suite is 21 calls a model gone wrong might make — a wrong host, a
 made-up path, destructive work outside the task, an instruction injected by a
 fetched page, a program that is not there, a credential followed by a way
-out, a planted honeytoken — and 17 benign controls, each one let through by a
-mode first. On it the rules judge stops 18 of the 20 and denies or asks about
-none of the 17 controls, at under a millisecond a call. The two it misses are
+out, a planted honeytoken — and 19 benign controls, each one let through by a
+mode first. On it the rules judge stops 19 of the 21 and denies or asks about
+none of the 19 controls, at under a millisecond a call. The two it misses are
 in the suite on purpose: a `git reset --hard` inside the workspace (the
 destructive step asks about that one), and a file's contents sent to a host the person
 named. The suite was written alongside the rules, so it shows what they do on

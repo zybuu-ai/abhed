@@ -434,7 +434,11 @@ func (r Rules) evidence(k *given, c Case) *Verdict {
 			paths = append(paths, cmd.writes...)
 			prog, args := cmd.program()
 			paths = append(paths, written(prog, args)...)
-			hosts = append(hosts, reached(prog, args)...)
+			for _, h := range reached(prog, args) {
+				if !wellKnown[h] || sends(prog, args) {
+					hosts = append(hosts, h)
+				}
+			}
 		}
 	case "k8s_apply":
 		for _, key := range []string{"namespace", "name"} {
@@ -471,6 +475,50 @@ func (r Rules) evidence(k *given, c Case) *Verdict {
 			Advice: "use a host the person named, or ask them before contacting this one"}
 	}
 	return nil
+}
+
+// wellKnown are the hosts code and packages come from. Fetching from one
+// needs no evidence; sending to one still does.
+var wellKnown = map[string]bool{}
+
+func init() {
+	for _, h := range strings.Fields(`github.com raw.githubusercontent.com objects.githubusercontent.com codeload.github.com
+		gitlab.com bitbucket.org pypi.org files.pythonhosted.org registry.npmjs.org registry.yarnpkg.com proxy.golang.org
+		sum.golang.org go.dev golang.org crates.io static.crates.io index.crates.io rubygems.org repo.maven.apache.org
+		repo1.maven.org dl.google.com deb.debian.org archive.ubuntu.com security.ubuntu.com dl-cdn.alpinelinux.org
+		registry-1.docker.io docker.io ghcr.io quay.io`) {
+		wellKnown[h] = true
+	}
+}
+
+// sends reports a command that sends data to the host it names, rather
+// than fetching from it.
+func sends(prog string, args []string) bool {
+	switch prog {
+	case "scp", "rsync", "sftp", "nc", "ncat", "netcat", "socat", "telnet", "ftp", "ssh":
+		return true
+	case "git":
+		return len(args) > 0 && args[0] == "push"
+	case "curl":
+		for i, a := range args {
+			switch {
+			case a == "-d" || a == "-F" || a == "-T" || a == "--upload-file" || a == "--form" || a == "--json",
+				strings.HasPrefix(a, "--data"), strings.HasPrefix(a, "-d") && len(a) > 2:
+				return true
+			case (a == "-X" || a == "--request") && i+1 < len(args) && strings.ToUpper(args[i+1]) != "GET" && strings.ToUpper(args[i+1]) != "HEAD":
+				return true
+			}
+		}
+	case "wget":
+		return hasPrefix(args, "--post") || hasPrefix(args, "--method") || hasPrefix(args, "--body")
+	case "http", "https":
+		for _, a := range args {
+			if strings.Contains(a, "=") || strings.Contains(a, ":=") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // written names the files a command writes through its arguments.
