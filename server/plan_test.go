@@ -258,7 +258,7 @@ func TestQueueAnswersARunbook(t *testing.T) {
 
 	asks := s.PendingAsks(func(string, string) bool { return true })
 	if len(asks) != 1 || asks[0].Request != "plan:"+hash || asks[0].RequestID != "plan:"+hash || asks[0].Tool != "exit_plan" ||
-		asks[0].Owner != "alice" || !strings.Contains(string(asks[0].Args), "rm -rf build") || !strings.Contains(asks[0].Reason, "1 cannot be undone") ||
+		asks[0].Owner != "alice" || !strings.Contains(string(asks[0].Args), `"2. bash rm -rf build (no undo:`) || !strings.Contains(string(asks[0].Args), "1. write ") || !strings.Contains(asks[0].Reason, "1 cannot be undone") ||
 		asks[0].Since.IsZero() || !slices.Equal(asks[0].StepTools, []string{"write", "bash"}) {
 		t.Fatalf("queue %+v", asks)
 	}
