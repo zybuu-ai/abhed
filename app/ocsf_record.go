@@ -137,28 +137,20 @@ func serveOCSF(cfg config.Config, st server.EventStore) (stop func(), err error)
 		release = w.Close
 		opts.Cursors = pgCursors{w}
 		opts.Read = storeLines(pg)
+		// Nothing is listed: the feed goes on from the place in commit order
+		// kept with the cursors, which a sink's first start sets to the end.
 		opts.Sessions = func() (map[string]ocsf.Cursor, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
 			saved, err := w.LoadPos()
-			if err != nil {
-				return nil, err
+			if err != nil || saved != "" {
+				return map[string]ocsf.Cursor{}, err
 			}
-			if saved != "" {
-				seqs, err := pg.EventEnds(ctx, nil)
-				return seqCursors(seqs), err
-			}
-			// A sink's first start: its cursors and the place its feed reads
-			// on from are the same moment, so no event falls between them.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
 			end, err := pg.CommitEnd(ctx)
 			if err != nil {
 				return nil, err
 			}
-			seqs, err := pg.EventEnds(ctx, &end)
-			if err != nil {
-				return nil, err
-			}
-			return seqCursors(seqs), w.SavePos(end.String())
+			return map[string]ocsf.Cursor{}, w.SavePos(end.String())
 		}
 		opts.Feed = commitFeed(pg, w)
 		st = nil
@@ -215,8 +207,8 @@ func (c pgCursors) Lock() (func(), error) {
 	return unlock, err
 }
 
-func (c pgCursors) Load() (map[string]ocsf.Cursor, bool, error) {
-	rows, begun, err := c.w.Load()
+func (c pgCursors) Load(ids []string) (map[string]ocsf.Cursor, bool, error) {
+	rows, begun, err := c.w.Load(ids)
 	out := make(map[string]ocsf.Cursor, len(rows))
 	for id, r := range rows {
 		out[id] = ocsf.Cursor{Seq: r.Seq, Provider: r.Provider, Primed: r.Primed}
@@ -232,39 +224,43 @@ func (c pgCursors) Save(moved map[string]ocsf.Cursor) error {
 	return c.w.Save(rows)
 }
 
-// commitFeed hands the sink the events committed since the place the
-// writer last read to, kept in Postgres and first set by the sink's first
-// scan. Each poll reads at most 10,000, and the rest at the next.
-func commitFeed(pg *store.Postgres, w *store.OCSFWriter) func(func(ocsf.Line)) error {
-	return func(add func(ocsf.Line)) error {
+// commitFeed gives the sink the events committed since the place kept with
+// the cursors, at most 10,000 a poll; the place moves only once they are in
+// the file, so a writer that stops before goes on from before them. Any
+// session's events after the place are read whatever its cursor says, which
+// the cursor's seq then filters: a server taking over reads from the place,
+// not every session.
+func commitFeed(pg *store.Postgres, w *store.OCSFWriter) func() ([]ocsf.Line, func() error, error) {
+	return func() ([]ocsf.Line, func() error, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		saved, err := w.LoadPos()
 		if err != nil || saved == "" {
-			return err // the first scan has not set it yet
+			return nil, nil, err // the first scan has not set it yet
 		}
 		pos, err := store.ParseCommitPos(saved)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		const batch = 500
+		var lines []ocsf.Line
 		for range 20 {
 			n := 0
 			err := pg.ScanCommitted(ctx, pos, batch, func(ev agent.Event, at store.CommitPos) error {
-				add(ocsf.Line{Event: ev})
+				lines = append(lines, ocsf.Line{Event: ev})
 				pos, n = at, n+1
 				return nil
 			})
 			if err != nil {
-				return err
+				return nil, nil, err
 			}
 			if n < batch {
 				break
 			}
 		}
 		if p := pos.String(); p != saved {
-			return w.SavePos(p)
+			return lines, func() error { return w.SavePos(p) }, nil
 		}
-		return nil
+		return lines, nil, nil
 	}
 }

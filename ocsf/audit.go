@@ -1,6 +1,7 @@
 package ocsf
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -115,7 +116,20 @@ func MapAuditLink(a controlplane.AuditEvent, link *AuditLink, opts Options) Even
 	} else {
 		delete(meta, "correlation_uid")
 	}
-	delete(meta, "uid")
+	// A stable id, the same each time the row is read, for a reader that
+	// takes it more than once: its place in its chain, or else its seq.
+	tenant := opts.Tenant
+	if tenant == "" {
+		tenant = "default"
+	}
+	switch {
+	case link != nil && link.Chain != "" && link.Pos > 0:
+		meta["uid"] = fmt.Sprintf("%s/%s/%d", link.Chain, tenant, link.Pos)
+	case a.Seq > 0:
+		meta["uid"] = fmt.Sprintf("controlplane/%s/seq/%d", tenant, a.Seq)
+	default:
+		delete(meta, "uid")
+	}
 	un := ev["unmapped"].(map[string]any)
 	rec := map[string]any{"created_at": a.At.UTC().Format(time.RFC3339Nano)}
 	if link != nil {
