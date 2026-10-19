@@ -107,12 +107,15 @@ be undone. A server session leaves plan mode only for `default`, or for
   sandbox, the egress allowlist and the `ssh.connect_hosts` bounds still
   apply. An ask from the supervisor, or for a call that may already have run
   on a process that stopped, still goes to you.
-- **Some asks are never the plan's to answer.** An ask rule the managed
-  configuration lists, or a policy layer an edition added (a Team
-  workspace's), asks for each call inside a runbook too, and so do a command
-  too tangled for the rules to read in full (step `screen`) and one that
-  names workspace trust for a nested run. An ask rule from your own or the
-  workspace's configuration is answered by the plan.
+- **Some asks are never the plan's to answer.** The plan answers only the
+  asks of the default and mode steps, a destructive command's, and an ask
+  rule's from your own or the workspace's configuration. Every other ask
+  still asks for each call inside a runbook too: an ask rule the managed
+  configuration lists; any ask rule of a policy layer an edition added (a
+  Team workspace's); any ask no rule made, which is Abhed's own (a command
+  that names workspace trust for a nested run, and any like it added
+  later); a command too tangled for the rules to read in full (step
+  `screen`); and the asks of the supervisor, of a hook and of a handover.
 - **An approval gate decides a runbook as it decides any ask.** On a server
   whose edition has approvers, accepting a plan with a runbook is one answer
   to the gate, for the plan's hash: an answer it refuses (such as approving

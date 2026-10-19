@@ -502,7 +502,8 @@ jobs:
           skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetDeltaLatency|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
           mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
-          go test -count=1 -skip "$skip" "${pkgs[@]}"
+          # Emulated, the server package alone is slower than go test's 10m default.
+          go test -count=1 -timeout 60m -skip "$skip" "${pkgs[@]}"
       - name: The s390x table was checked on s390x
         run: |
           go test -count=1 -v -run 'TestNativeTableMatchesUnix|TestTablesMatchXSys' ./internal/fence/seccomp/ > table.log 2>&1 || { cat table.log; exit 1; }
@@ -831,7 +832,7 @@ jobs:
       - name: The helper speaks protocol 1, refuses what it must, and is checked before use
         run: |
           set -euo pipefail
-          ABHED_TEST_VZ_HELPER="$RUNNER_TEMP/abhed-vmhelper" go test -race -count=1 -v ./driver/microvm/ 2>&1 | tee "$RUNNER_TEMP/vmhelper.log"
+          ABHED_TEST_VZ_HELPER="$RUNNER_TEMP/abhed-vmhelper" go test -race -count=1 -timeout 30m -v ./driver/microvm/ 2>&1 | tee "$RUNNER_TEMP/vmhelper.log"
           for t in TestVZHelperWithoutBooting TestHelperSignatureIsChecked TestHelperBackendWithFakeHelper TestHelperRefusedWithoutAHelper TestHelperEndsWithItsDriver TestEgressThroughFakeHelper; do
             grep -q -- "--- PASS: $t " "$RUNNER_TEMP/vmhelper.log" || { echo "::error::$t did not run and pass"; exit 1; }
           done

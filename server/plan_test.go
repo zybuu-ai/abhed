@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -305,5 +306,24 @@ func TestQueueAnswersARunbook(t *testing.T) {
 		if e.Type == agent.EvPlanDecided && !strings.Contains(string(e.Payload), `"by":"carol"`) {
 			t.Fatalf("plan.decided %s", e.Payload)
 		}
+	}
+}
+
+// An answer the record does not take changes nothing: the session stays in
+// plan mode, no runbook is bound, and the plan still waits.
+func TestWorkbenchPlanAnswerNotRecorded(t *testing.T) {
+	s, st, _ := planServer(t, `[{"tool":"write","target":"WS/notes.txt","args":{"content":"x"}}]`)
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"plan it","mode":"plan"}`))
+	hash := proposedHash(t, turnsEnded(t, st, id, 1))
+	live := s.anyLive(t)
+	live.Loop.Recorder.Gate = func() error { return errors.New("the record is gone") }
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/plan", `{"decision":"approve","plan_hash":"`+hash+`"}`); w.Code != http.StatusInternalServerError {
+		t.Fatalf("approve: %d %s", w.Code, w.Body)
+	}
+	if _, _, bound := live.Loop.BoundRunbook(); bound || live.Loop.Policy.Mode != "plan" {
+		t.Fatalf("bound %v, mode %s", bound, live.Loop.Policy.Mode)
+	}
+	if _, ok := live.Loop.PendingPlan(); !ok {
+		t.Fatal("the plan no longer waits")
 	}
 }

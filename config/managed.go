@@ -17,7 +17,6 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
-	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // LoadManaged is the built-in defaults with only the managed configuration
@@ -624,9 +623,9 @@ func (c Config) RuleLayer(list, rule string) string {
 	return "config"
 }
 
-// ManagedAsk reports an ask decided by an ask rule the managed
-// configuration lists, which an approved runbook does not answer; see
-// policy.Engine.KeepAsk.
-func (c Config) ManagedAsk(r policy.Result) bool {
-	return r.Step == "ask" && r.Rule != "" && c.RuleLayer("ask", r.Rule) == LayerManaged
+// ManagedAskRule reports whether rule, as written, is an ask rule the
+// managed configuration lists: one that asks for each call, inside an
+// approved runbook too (the engine's KeepAsk is set from it).
+func (c Config) ManagedAskRule(rule string) bool {
+	return rule != "" && c.RuleLayer("ask", rule) == LayerManaged
 }
