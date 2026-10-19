@@ -974,7 +974,8 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		check = l.Compactor.ShouldCompactNow
 	}
 	l.justCompacted = false
-	should, used, err := check(l.Config.SystemPrompt, l.messages, toolDefs(l.Tools))
+	// Counted as sent: a tool of another mode is not in the request.
+	should, used, err := check(l.Config.SystemPrompt, l.messages, l.offeredDefs())
 	if err != nil || !should {
 		return err
 	}
@@ -1986,7 +1987,7 @@ func (l *Loop) contextSize() (used, window int) {
 	n, err := l.Adapter.CountTokens(model.Request{
 		System:   l.Config.SystemPrompt,
 		Messages: l.messages,
-		Tools:    toolDefs(l.Tools),
+		Tools:    l.offeredDefs(),
 	})
 	if err != nil {
 		return 0, window

@@ -36,6 +36,12 @@ All notable changes to Abhed are recorded here. The format follows
   one; `plan.decided` carries the `plan_hash` and runbook an accept bound
   ([Data model](docs/architecture/10-data-model.md)).
 
+### Fixed
+
+- The context size that decides when to offload and compact, and that
+  `session.ended` records, counts only the tools the model is offered in the
+  current mode, so a tool of another mode no longer brings compaction early.
+
 
 ## [1.2.8] - 2026-10-14
 
