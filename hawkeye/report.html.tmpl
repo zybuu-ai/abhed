@@ -126,6 +126,19 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
 </section>
 {{end}}
 
+{{if .RemoteChanges}}
+<section>
+  <h2>Remote changes</h2>
+  {{range .RemoteChanges}}
+  <h3>{{.Kind}} · {{.Name}}</h3>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>command or write</th><th>where</th><th>decision</th><th>outcome</th><th>runbook</th></tr>
+    {{range .Changes}}<tr><td class="seq">#{{.Seq}}</td><td class="wide"><code>{{.What}}</code>{{if .Namespace}} · ns {{.Namespace}}{{end}}</td><td>{{.Where}}</td><td>{{.Decision}}{{if .By}} by {{.By}}{{end}}</td><td{{if or .IsError (eq .Decision "denied")}} class="err"{{end}}>{{remoteOutcome .}}</td><td>{{plan .PlanHash .PlanStep}}</td></tr>{{end}}
+  </table></div>
+  {{end}}
+</section>
+{{end}}
+
 {{if .Calls}}
 <section>
   <h2>Calls · policy steps: {{steps .Policy.ByStep}}</h2>
