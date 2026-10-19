@@ -1906,14 +1906,15 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	l.noteCall(call.Name, policy.Subject(call.Name, call.Args), result.IsError,
 		l.Monitor != nil && !result.IsError && monitor.CredentialSeen(call.Name, string(call.Args), result.Content))
 	if _, err := l.Recorder.Record(EvObservation, ActorTool, trust, Observation{
-		CallID:     call.ID,
-		Tool:       call.Name,
-		Content:    result.Content,
-		IsError:    result.IsError,
-		Truncated:  result.Truncated,
-		ExitCode:   result.ExitCode,
-		DurationMS: elapsed.Milliseconds(),
-		Sandbox:    result.Tier,
+		CallID:      call.ID,
+		Tool:        call.Name,
+		Content:     result.Content,
+		IsError:     result.IsError,
+		Truncated:   result.Truncated,
+		ExitCode:    result.ExitCode,
+		DurationMS:  elapsed.Milliseconds(),
+		Sandbox:     result.Tier,
+		SandboxNote: result.SandboxNote,
 	}); err != nil {
 		return result, TermError
 	}
