@@ -81,10 +81,14 @@ All notable changes to Abhed are recorded here. The format follows
   for a program on a list of known reads, in a read form of it (`cat *`,
   `systemctl status *`, `journalctl -u * -n 50`, `ip addr show *`,
   `openssl x509 -enddate -noout -in *`), and every call it matches is held
-  to that form: `journalctl --vacuum-size`, `date -s`, `dmesg -C`,
-  `sort --compress-program`, `ip addr add` and the like are not reads,
-  whatever the pattern; any other wildcard entry is refused at load with
-  "declare the exact command instead". A matching `ssh` call, read as bash
+  to that form. A form lists the options it allows, with those that take a
+  value, and refuses every other, an abbreviated long option and an
+  unlisted cluster included, so `journalctl --vacuum-size` or
+  `--cursor-file`, `openssl x509 -CAcreateserial`, `date -s`, `dmesg -C`,
+  `sort --compress-program` and `ip addr add` are not reads, whatever the
+  pattern; a verb (`systemctl status`, `docker ps`, `apt list`) must be the
+  first word after the program. Any other wildcard entry is refused at load
+  with "declare the exact command instead". A matching `ssh` call, read as bash
   reads it, runs in plan mode and asks in no mode, so a plan can start by
   inspecting the fleet; a chain, pipe, substitution, redirection, a
   destructive command, one that runs another (`sh -c`, `su -c`, `sudo`),
