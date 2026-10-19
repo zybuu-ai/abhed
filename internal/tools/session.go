@@ -238,8 +238,8 @@ func (s *Session) Fork() *Session {
 	defer s.mu.Unlock()
 	return &Session{
 		Root: s.Root, Cwd: s.Root, rawRoot: s.rawRoot,
-		rawRoots:   append([]string(nil), s.rawRoots...),
-		Roots:      append([]string(nil), s.Roots...),
+		rawRoots:        append([]string(nil), s.rawRoots...),
+		Roots:           append([]string(nil), s.Roots...),
 		Checkpoint:      s.Checkpoint,
 		BashCheckpoint:  s.BashCheckpoint,
 		BashCheckpoints: s.BashCheckpoints,
