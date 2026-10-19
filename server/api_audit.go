@@ -184,7 +184,8 @@ func idToken(v string) bool {
 		return false
 	}
 	for _, c := range v {
-		if !(c == '_' || c == '-' || c == '.' || c == ':' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+		ok := c == '_' || c == '-' || c == '.' || c == ':' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !ok {
 			return false
 		}
 	}
