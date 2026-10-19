@@ -107,6 +107,17 @@ be undone. A server session leaves plan mode only for `default`, or for
   sandbox, the egress allowlist and the `ssh.connect_hosts` bounds still
   apply. An ask from the supervisor, or for a call that may already have run
   on a process that stopped, still goes to you.
+- **A managed ask rule still asks.** An ask rule the managed configuration
+  lists asks for each call, inside a runbook too; any other ask rule is
+  answered by the plan.
+- **The supervisor is never answered by the plan.** When it has a concern
+  with a step, the step is put to you (`asked again: supervisor: …`), and a
+  refusal of its stays a refusal. The plan's message names every step, so
+  the supervisor's rules about paths, hosts and programs nobody named are
+  satisfied for the steps you approved. Its credential rule is not: once a
+  command that names a key file (`site.key`, `*.pem`) has run, every later
+  `ssh` call can send data out, and asks. In the example below that is every
+  step after the backup.
 - **Subagents are never steps.** A subagent's change in a session with a
   runbook asks.
 - **Rewinding or continuing a session lets the runbook go.** A rewound
@@ -171,8 +182,12 @@ a time, with a backup and a verification". The agent proposes:
 }
 ```
 
-You read the twelve commands once and approve. The rotation then runs
-without twelve separate prompts. If `nginx -t` fails on `web1`, the agent's
+You read the twelve commands once and approve. With the supervisor off,
+the rotation then runs without twelve separate prompts. With it on, as it is
+by default, the first two steps run unasked and the other ten still ask:
+step 2 names `site.key`, and the supervisor asks about every `ssh` call
+after a command that names a key file, since an `ssh` call can send data
+out. The plan does not answer the supervisor's asks. If `nginx -t` fails on `web1`, the agent's
 next move is not in the plan: a rollback such as `mv site.crt.bak site.crt
 && systemctl reload nginx` asks you, named as outside the plan, and so does
 any extra diagnosis it tries.
@@ -196,6 +211,18 @@ Afterwards, `abhed hawkeye` lists what reached each host:
 Each line has the decision and who made it, the exit code, and the runbook
 step it was; the HTML report and the workbench's HawkEYE panel show the same
 per host and cluster ([HawkEYE](15-hawkeye.md)).
+
+## Turning runbooks off
+
+```json
+"plan": { "runbooks": false }
+```
+
+With `plan.runbooks` false, `exit_plan` refuses a plan that carries a
+runbook (the agent is told to present it without one), and `-runbook`,
+`Options.Runbook` and `rpc`'s `runbook` are refused. Plans without a runbook
+are unchanged, and every call asks as it would. A workspace file may only
+turn runbooks off; the managed file's value binds either way.
 
 ## What it does not do
 

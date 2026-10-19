@@ -90,6 +90,7 @@ func (c *acpConn) decidePlan(ctx context.Context, s *acpSession, runErr error) s
 		s.record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit})
 	}
 	s.record(agent.EvPlanDecided, decided)
+	loop.SetApprovedPlan(plan.Text)
 	c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "completed"})
 	if rb := plan.Runbook; rb != nil {
 		return fmt.Sprintf("The plan is approved (mode %s). Carry it out.\n", to) + agent.RunbookPrompt(*rb)

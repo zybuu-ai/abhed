@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // planApprover answers every ask with yes, and keeps what it was asked.
@@ -345,5 +348,136 @@ func TestRunbookHookStillRefuses(t *testing.T) {
 	}
 	if _, done, _ := r.l.BoundRunbook(); done[0] {
 		t.Fatal("a refused step was marked run")
+	}
+}
+
+// certRotation is the guide's TLS rotation across web1 and web2.
+func certRotation() []tools.RunbookStep {
+	var steps []tools.RunbookStep
+	for _, h := range []string{"web1", "web2"} {
+		for _, c := range []string{
+			"openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt",
+			"cp -p /etc/nginx/tls/site.crt /etc/nginx/tls/site.crt.bak && cp -p /etc/nginx/tls/site.key /etc/nginx/tls/site.key.bak",
+			"step ca renew --force /etc/nginx/tls/site.crt /etc/nginx/tls/site.key",
+			"nginx -t",
+			"systemctl reload nginx",
+			"echo | openssl s_client -connect localhost:443 2>/dev/null | openssl x509 -noout -enddate",
+		} {
+			steps = append(steps, sshStep(h, c))
+		}
+	}
+	return steps
+}
+
+// With the supervisor on, as it is by default, its asks are never answered
+// by the plan. Under the plan's message, which names every step, the first
+// two steps of the rotation run unasked; the supervisor's credential-egress
+// rule then asks about every later ssh call, because step 2's command names
+// site.key, and an ssh call can send data out.
+func TestRunbookWithTheSupervisor(t *testing.T) {
+	steps := certRotation()
+	turns := func() []scriptedTurn {
+		var out []scriptedTurn
+		for i, s := range steps {
+			out = append(out, scriptedTurn{calls: []model.ToolCall{sshCall(strconv.Itoa(i), s.Target, s.Command)}})
+		}
+		return append(out, scriptedTurn{text: "rotated"})
+	}
+	run := func(t *testing.T, prompt func(Runbook) string) (*runbookRig, []Event) {
+		r := runbookHarness(t, policy.ModeDefault, steps, turns())
+		r.l.Monitor = &monitor.Guard{Monitor: monitor.Rules{}, OnUnavailable: policy.Ask}
+		r.appr.yes = false
+		rb, _, _ := r.l.BoundRunbook()
+		if _, err := r.l.Run(context.Background(), "rotate the TLS certificate on web1 and web2\n\n"+prompt(rb)); err != nil {
+			t.Fatal(err)
+		}
+		evs, _ := r.store.Events("sess1")
+		// Whatever the supervisor raised a concern with was put to the person.
+		for _, e := range evs {
+			if e.Type != EvMonitorVerdict {
+				continue
+			}
+			var v MonitorVerdict
+			_ = json.Unmarshal(e.Payload, &v)
+			if v.Code != monitor.CodeOK && approvals(t, evs)[v.CallID]["by"] == ByPlan {
+				t.Fatalf("the plan answered the supervisor's %s on %s", v.Code, v.CallID)
+			}
+		}
+		return r, evs
+	}
+	t.Run("the plan's message", func(t *testing.T) {
+		r, evs := run(t, RunbookPrompt)
+		codes := map[string]int{}
+		for _, e := range evs {
+			var v MonitorVerdict
+			if e.Type == EvMonitorVerdict && json.Unmarshal(e.Payload, &v) == nil && v.Code != monitor.CodeOK {
+				codes[v.Code]++
+			}
+		}
+		if len(codes) != 1 || codes[monitor.CodeCredentialEgress] == 0 {
+			t.Fatalf("supervisor concerns %v", codes)
+		}
+		got := approvals(t, evs)
+		if got["0"]["by"] != ByPlan || got["1"]["by"] != ByPlan {
+			t.Fatalf("the first steps did not run on the plan: %v %v", got["0"], got["1"])
+		}
+		if len(r.appr.reasons) == 0 || !strings.Contains(r.appr.reasons[0], "step 3 of 12") ||
+			!strings.Contains(r.appr.reasons[0], "supervisor: "+monitor.CodeCredentialEgress) {
+			t.Fatalf("asked %q", r.appr.reasons)
+		}
+	})
+	t.Run("a bare go", func(t *testing.T) {
+		r, _ := run(t, func(Runbook) string { return "go" })
+		if len(r.appr.reasons) == 0 || !strings.Contains(r.appr.reasons[0], "supervisor: ") {
+			t.Fatalf("asked %q", r.appr.reasons)
+		}
+		t.Logf("first ask without the plan's message: %s", r.appr.reasons[0])
+	})
+}
+
+// A managed ask rule still asks inside an approved runbook.
+func TestRunbookKeepsAManagedAsk(t *testing.T) {
+	r := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "systemctl reload nginx")}, []scriptedTurn{
+		{calls: []model.ToolCall{sshCall("a", "web1", "systemctl reload nginx")}},
+		{text: "done"},
+	})
+	if err := r.l.Policy.AddAsk("ssh(web1/*)"); err != nil {
+		t.Fatal(err)
+	}
+	r.l.Policy.KeepAsk = func(rule string) bool { return rule == "ssh(web1/*)" }
+	r.appr.yes = false
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.appr.reasons) != 1 || !strings.Contains(r.appr.reasons[0], "asked again") || len(*r.ran) != 0 {
+		t.Fatalf("asked %q ran %v", r.appr.reasons, *r.ran)
+	}
+	// Another ask rule is answered by the plan.
+	r2 := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "uptime")}, []scriptedTurn{
+		{calls: []model.ToolCall{sshCall("a", "web1", "uptime")}}, {text: "done"},
+	})
+	_ = r2.l.Policy.AddAsk("ssh(web1/*)")
+	r2.l.Policy.KeepAsk = func(string) bool { return false }
+	if _, err := r2.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r2.appr.reasons) != 0 || len(*r2.ran) != 1 {
+		t.Fatalf("asked %q ran %v", r2.appr.reasons, *r2.ran)
+	}
+}
+
+// plan.runbooks false refuses a runbook from the agent and from the operator.
+func TestRunbooksTurnedOff(t *testing.T) {
+	l, _ := harnessIn(t, tempDir(t), nil, policy.ModePlan, true)
+	l.Tools.Add(fakeSSH{ran: &[]string{}})
+	l.DisableRunbooks()
+	if err := l.proposePlan(context.Background(), "p", []tools.RunbookStep{sshStep("web1", "uptime")}); !errors.Is(err, ErrRunbooksOff) {
+		t.Fatalf("proposed: %v", err)
+	}
+	if err := l.proposePlan(context.Background(), "p", nil); err != nil {
+		t.Fatalf("a plan without a runbook: %v", err)
+	}
+	if _, err := l.BindRunbook("p", []tools.RunbookStep{sshStep("web1", "uptime")}, ""); !errors.Is(err, ErrRunbooksOff) {
+		t.Fatalf("bound: %v", err)
 	}
 }

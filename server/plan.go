@@ -106,6 +106,7 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 	if err := record(agent.EvPlanDecided, decided); err != nil {
 		s.log.Error("plan decision not recorded", "session", id, "error", err)
 	}
+	loop.SetApprovedPlan(plan.Text)
 	msg := fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 	if rb := plan.Runbook; rb != nil {
 		msg += "\n" + agent.RunbookPrompt(*rb)
