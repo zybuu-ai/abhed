@@ -80,6 +80,26 @@ type remoteRead struct {
 	quotedOnly bool
 }
 
+// backslashInSingleQuotes reports a backslash inside single quotes, which
+// POSIX shells keep as written and fish reads as an escape: a quoted span
+// with one does not mean the same on every login shell.
+func backslashInSingleQuotes(s string) bool {
+	for {
+		i := strings.IndexByte(s, '\'')
+		if i < 0 {
+			return false
+		}
+		j := strings.IndexByte(s[i+1:], '\'')
+		if j < 0 {
+			return strings.Contains(s[i+1:], "\\")
+		}
+		if strings.Contains(s[i+1:i+1+j], "\\") {
+			return true
+		}
+		s = s[i+j+2:]
+	}
+}
+
 // withoutSingleQuoted is s with the text inside each pair of single quotes
 // dropped; an unclosed quote keeps the rest.
 func withoutSingleQuoted(s string) string {
@@ -110,7 +130,8 @@ func readRemote(host, command string) remoteRead {
 	parsed := !canon.Unparsed() && !canon.Incomplete() && canon.Opaque() == "" && !canon.ProgramHidden()
 	r.narrow = narrow && parsed
 	// Shell control text only inside single quotes, as a query format's ${…}.
-	r.quotedOnly = !narrow && parsed && !canon.Reworded && !hasShellControl(withoutSingleQuoted(command))
+	r.quotedOnly = !narrow && parsed && !canon.Reworded && !hasShellControl(withoutSingleQuoted(command)) &&
+		!backslashInSingleQuotes(command)
 	seen := map[string]bool{}
 	add := func(s string) {
 		if !seen[s] {

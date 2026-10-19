@@ -53,7 +53,7 @@ func TestSSHReadGlobsAndOperands(t *testing.T) {
 		}
 	}
 	for _, cmd := range []string{"ls -l /etc/nginx/*.conf", "cat /var/log/*.log", "ps aux", "ps -ef",
-		"dpkg-query -W -f '${Package} ${Version}\\n' nginx", "rpm -qa --qf '%{NAME}-%{VERSION}\\n'"} {
+		"dpkg-query -W -f '${Package} ${Version} ' nginx", "rpm -qa --qf '%{NAME}-%{VERSION} '"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Allow {
 			t.Errorf("%q, a read, was refused: %+v", cmd, res)
 		}
@@ -68,5 +68,26 @@ func TestSSHReadGlobsAndOperands(t *testing.T) {
 		if _, err := policy.ParseRemoteRead(r); err == nil {
 			t.Errorf("%q was accepted", r)
 		}
+	}
+}
+
+// A backslash inside single quotes means one thing to a POSIX shell and
+// another to fish, which reads \' as a quote kept: such a call is not a read,
+// whatever the remote login shell. ps's e prints environments.
+func TestSSHReadShellNeutralQuotingAndPsEnv(t *testing.T) {
+	e := readsEngine(t, policy.ModePlan, "dpkg-query -W *", "rpm *", "cat *", "ps *")
+	for _, cmd := range []string{
+		`dpkg-query -W -f '\' 'x (id) y' '\'`,
+		`dpkg-query -W -f '${Package}\n' nginx`,
+		`rpm -qa --qf '%{NAME}\n'`,
+		`cat '\' /etc/hostname`,
+		"ps e", "ps auxe", "ps eaux", "ps axe",
+	} {
+		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Deny {
+			t.Errorf("%q ran in plan mode: %+v", cmd, res)
+		}
+	}
+	if _, err := policy.ParseRemoteRead(`dpkg-query -W -f '\' 'x ; id' '\'`); err == nil {
+		t.Error("an entry with a backslash in single quotes around shell text was accepted")
 	}
 }

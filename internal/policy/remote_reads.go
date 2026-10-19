@@ -35,7 +35,7 @@ func ParseRemoteRead(p string) (Rule, error) {
 	}
 	canon := tools.CanonicalCommand(s)
 	control := hasShellControl(s)
-	if control && knownReads[rawProgram(s)].quotedValues && !hasShellControl(withoutSingleQuoted(s)) {
+	if control && knownReads[rawProgram(s)].quotedValues && !hasShellControl(withoutSingleQuoted(s)) && !backslashInSingleQuotes(s) {
 		control = false // a query format's ${…}, in single quotes
 	}
 	if control || canon.Reworded || canon.Unparsed() || canon.Incomplete() {
@@ -128,7 +128,9 @@ func wildcardReadOK(text string) bool {
 		return false
 	}
 	words, dollar, glob := shellWords(text)
-	if len(words) == 0 || dollar || glob {
+	// The words are read as POSIX shells read them; a backslash inside single
+	// quotes is read otherwise by fish, so such a call is not a read.
+	if len(words) == 0 || dollar || glob || backslashInSingleQuotes(text) {
 		return false
 	}
 	return readCallOK(spec, words[1:], func(string) bool { return false })
