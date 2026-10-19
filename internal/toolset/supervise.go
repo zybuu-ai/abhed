@@ -1,6 +1,7 @@
 package toolset
 
 import (
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -20,7 +21,7 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 	if !m.Enabled {
 		return nil
 	}
-	var judge monitor.Monitor = monitor.Rules{LookPath: hostLookPath(reg)}
+	var judge monitor.Monitor = monitor.Rules{LookPath: hostLookPath(reg), Declared: declared(cfg)}
 	if m.Judge == "model" {
 		judge = monitor.Chain{judge, monitor.Model{Endpoint: m.Endpoint, Model: m.Model, APIKey: apiKey(m.APIKeyEnv)}}
 	}
@@ -33,6 +34,23 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 		g.Timeout = time.Duration(m.TimeoutMS) * time.Millisecond
 	}
 	return g
+}
+
+// declared are the ssh hosts and Kubernetes clusters the operator configured.
+func declared(cfg config.Config) []string {
+	var out []string
+	for _, h := range cfg.SSH.Hosts {
+		out = append(out, h.Name)
+		if host, _, err := net.SplitHostPort(h.Addr); err == nil {
+			out = append(out, host)
+		} else {
+			out = append(out, h.Addr)
+		}
+	}
+	for _, c := range cfg.K8s.Clusters {
+		out = append(out, c.Name)
+	}
+	return out
 }
 
 func apiKey(env string) string {

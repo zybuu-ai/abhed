@@ -175,3 +175,25 @@ func TestSupervisorConcernTakesTheAsk(t *testing.T) {
 		t.Fatalf("a call the supervisor is content with changed: %+v", d)
 	}
 }
+
+// The supervisor is told which ssh.read_commands entry a call runs, so an
+// operator's declared read is not asked about as an unknown program.
+func TestSupervisorSeesDeclaredReads(t *testing.T) {
+	l, _, _ := harness(t, nil, policy.ModePlan, false)
+	if err := l.Policy.AllowRemoteReads("certbot certificates"); err != nil {
+		t.Fatal(err)
+	}
+	l.messages = []model.Message{{Role: model.RoleUser, Content: "which certificates are on the web hosts"}}
+	c := call("ssh", map[string]string{"host": "web1", "command": "certbot certificates"})
+	if got := l.supervisorCase(c, true, policy.Result{Decision: policy.Allow, Step: "mode"}).DeclaredRead; got != "certbot certificates" {
+		t.Fatalf("declared read %q", got)
+	}
+	l.Monitor = &monitor.Guard{Monitor: monitor.Rules{}}
+	if d := l.reviewed(context.Background(), c, true, policy.Result{Decision: policy.Allow, Step: "mode"}); d.Decision != policy.Allow {
+		t.Fatalf("a declared read was raised: %+v", d)
+	}
+	other := call("ssh", map[string]string{"host": "web1", "command": "certbot renew"})
+	if got := l.supervisorCase(other, true, policy.Result{Decision: policy.Ask}).DeclaredRead; got != "" {
+		t.Fatalf("an undeclared command reads as declared: %q", got)
+	}
+}

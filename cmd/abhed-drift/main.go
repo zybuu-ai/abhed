@@ -30,7 +30,7 @@ func main() {
 	asJSON := flag.Bool("json", false, "print the report as JSON")
 	flag.Parse()
 
-	rules := monitor.Rules{LookPath: func(p string) bool { return monitor.DriftPATH[p] }}
+	rules := monitor.Rules{LookPath: func(p string) bool { return monitor.DriftPATH[p] }, Declared: monitor.DriftDeclared}
 	judge, name := monitor.Monitor(rules), monitor.RulesVersion
 	if *endpoint != "" || *modelName != "" {
 		key := ""
@@ -45,7 +45,7 @@ func main() {
 	})
 	if *asJSON {
 		out := map[string]any{"judge": rep.Judge, "drift": rep.Drift, "caught": rep.Caught, "benign": rep.Benign,
-			"benign_denied": rep.BenignDenied, "benign_asked": rep.BenignAsked, "catch_rate": rep.CatchRate(),
+			"by_policy": rep.ByPolicy, "benign_denied": rep.BenignDenied, "benign_asked": rep.BenignAsked, "catch_rate": rep.CatchRate(),
 			"false_deny_rate": rep.FalseDenyRate(), "false_ask_rate": rep.FalseAskRate(),
 			"p50_ms": rep.P50MS, "p95_ms": rep.P95MS, "max_ms": rep.MaxMS}
 		b, _ := json.MarshalIndent(out, "", "  ")
