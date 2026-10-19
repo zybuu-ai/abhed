@@ -39,6 +39,8 @@ const (
 	stageOrdinaryNo = "ordinary-off" // ordinary work, under Command(false)
 	stageSocketsOn  = "sockets-on"   // the socket checks, under Command(true)
 	stageSocketsPx  = "sockets-px"   // the socket checks, under Command(false) with ProxyOnly
+	stageNotify     = "notify"       // refusals sent to a listener this process serves
+	stageNotifyGone = "notify-gone"  // refusals sent to a listener no one holds any more
 )
 
 func TestMain(m *testing.M) {
@@ -79,6 +81,35 @@ func stageMain(stage, dir string) int {
 			return 2
 		}
 		out = socketChecks()
+	case stageNotify, stageNotifyGone:
+		fd, err := InstallNotify(guarded(false))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		var mu sync.Mutex
+		var names []string
+		stop, done := make(chan struct{}), make(chan struct{})
+		if stage == stageNotify {
+			go func() {
+				defer close(done)
+				_ = Serve(fd, stop, func(n string) { mu.Lock(); names = append(names, n); mu.Unlock() })
+			}()
+		} else {
+			_ = unix.Close(fd) // as when Abhed is gone
+			close(done)
+		}
+		out = append(out, outcome{"unshare(CLONE_NEWUSER)", result(unix.Unshare(unix.CLONE_NEWUSER))})
+		sfd, serr := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+		if serr == nil {
+			_ = unix.Close(sfd)
+		}
+		out = append(out, outcome{"socket(AF_UNIX stream)", result(serr)}, outcome{"getpid", result(nil)})
+		close(stop)
+		<-done
+		mu.Lock()
+		out = append(out, outcome{"refusals served", strings.Join(names, ",")})
+		mu.Unlock()
 	case stageSocketsPx:
 		p := guarded(false)
 		p.ProxyOnly = true
@@ -693,5 +724,21 @@ func TestOrdinaryWorkUnderFilter(t *testing.T) {
 		if !refused(got[name]) {
 			t.Errorf("%s: %s was not refused: %s", stage, name, got[name])
 		}
+	}
+}
+
+// With Notify, a refusal reaches the listener's server, which answers EPERM
+// and learns the call; with no listener left, as when Abhed is gone, the
+// kernel refuses the same calls with ENOSYS. Neither lets one run.
+func TestNotifyRefusesThroughTheListenerOrWithoutIt(t *testing.T) {
+	requireFence(t)
+	served := runStage(t, stageNotify)
+	if served["unshare(CLONE_NEWUSER)"] != "EPERM" || served["socket(AF_UNIX stream)"] != "EPERM" ||
+		served["refusals served"] != "unshare,socket(unix)" {
+		t.Errorf("served: %v", served)
+	}
+	gone := runStage(t, stageNotifyGone)
+	if gone["unshare(CLONE_NEWUSER)"] != "ENOSYS" || gone["socket(AF_UNIX stream)"] != "ENOSYS" || gone["refusals served"] != "" {
+		t.Errorf("with no listener: %v", gone)
 	}
 }
