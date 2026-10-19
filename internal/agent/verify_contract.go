@@ -78,8 +78,8 @@ func (l *Loop) runContract(ctx context.Context) *ContractResult {
 }
 
 // requireOne runs one required command, unless an earlier run of it passed
-// and nothing has changed since. Policy still judges it: a deny rule stops it,
-// and the contract then fails, closed.
+// and nothing has changed since. Policy still judges it, and anything it
+// will not let run unasked fails the contract, closed.
 func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) RequireResult {
 	r := RequireResult{Command: cmd}
 	if events, err := l.Recorder.store.Events(l.Recorder.sessionID); err == nil {
@@ -105,9 +105,18 @@ func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) Requir
 		a["timeout_ms"] = timeoutMS
 	}
 	args, _ := json.Marshal(a)
+	// The operator's declaration stands in for the approval an ordinary
+	// default-mode ask wants, as an allow rule of theirs would. Any other
+	// ask (a rule, a destructive command, a screen, a hook, or a managed
+	// policy) still binds: the harness does not run it unasked.
 	d := l.Policy.Evaluate("bash", tools.MutatesCall(bash, args), args)
-	if d.Decision == policy.Deny {
+	switch {
+	case d.Decision == policy.Deny:
 		r.Reason = "policy denies it: " + d.Reason
+		return r
+	case d.Decision == policy.Ask && (d.Step != "default" || l.Policy.Managed):
+		r.Reason = fmt.Sprintf("policy asks before it runs (%s: %s); the harness does not run it unasked. "+
+			"An allow rule such as bash(%s) lets it run", d.Step, d.Reason, cmd)
 		return r
 	}
 	call := model.ToolCall{ID: "contract_" + newID(), Name: "bash", Args: args}

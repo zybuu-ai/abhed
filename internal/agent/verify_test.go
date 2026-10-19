@@ -104,6 +104,25 @@ func TestNumberNotObservedIsUnverified(t *testing.T) {
 	wantVerdict(t, v[0], ClaimVerified)
 }
 
+// Uncited, a bare number found somewhere is not evidence, and a claim whose
+// pieces sit in different results is not verified by any one of them.
+func TestUncitedNeedsOneResultThatShowsIt(t *testing.T) {
+	b := newRec(t)
+	b.call("c1", "bash", map[string]string{"command": "ls"}, "a.txt\nb.txt\n3\n", exit(0))
+	b.call("c2", "read", map[string]string{"path": "/w/hosts"}, "db.internal.example.com\n", nil)
+	b.call("c3", "read", map[string]string{"path": "/w/ports"}, "5432\n", nil)
+	v := checkText(t, b, "", "The cluster has 3 nodes.")[0]
+	wantVerdict(t, v, ClaimUnverified)
+	v = checkText(t, b, "", "The database is db.internal.example.com on port 5432.")[0]
+	wantVerdict(t, v, ClaimUnverified)
+	if !strings.Contains(v.Reason, "no one result shows it") {
+		t.Fatalf("reason: %s", v.Reason)
+	}
+	// Cited, the two results together are what the agent says shows it.
+	v = checkCited(t, b, "", Claim{Text: "The database is db.internal.example.com on port 5432.", Evidence: []string{"c2", "c3"}})[0]
+	wantVerdict(t, v, ClaimVerified)
+}
+
 // "Tests pass" needs a command with exit 0 after the last change.
 func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 	b := newRec(t)
@@ -529,5 +548,41 @@ func TestVerifyModes(t *testing.T) {
 	}
 	if VerifyLabel.Tighter(VerifyStrict) != VerifyStrict || VerifyStrict.Tighter(VerifyOff) != VerifyStrict || !VerifyOff.Looser(VerifyLabel) {
 		t.Error("ordering")
+	}
+}
+
+// A required command policy would not let run unasked is not run, and the
+// contract fails closed: a destructive one still needs a person, a deny rule
+// still binds, and plan mode runs nothing.
+func TestContractRespectsPolicy(t *testing.T) {
+	for name, set := range map[string]func(l *Loop){
+		"destructive": func(l *Loop) { l.Verify.Contract.Require = []string{"rm -rf build"} },
+		"deny rule": func(l *Loop) {
+			r, err := policy.ParseRule("bash(make*)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.Policy.Deny = append(l.Policy.Deny, r)
+		},
+		"plan mode": func(l *Loop) { l.Policy.Mode = policy.ModePlan },
+	} {
+		t.Run(name, func(t *testing.T) {
+			l, store, _, _ := verifyHarness(t, VerifyOff, false, []scriptedTurn{{text: "Done."}, {text: "Done."}})
+			l.Verify = &Verifier{Mode: VerifyOff, Contract: &Contract{Require: []string{"make check"}}}
+			set(l)
+			if reason, _ := l.Run(context.Background(), "go"); reason != TermUnverified {
+				t.Fatalf("got %s", reason)
+			}
+			evs, _ := store.Events("sess1")
+			for _, e := range evs {
+				if e.Type == EvActionRequested && strings.Contains(string(e.Payload), ContractVia) {
+					t.Fatalf("the harness ran a command policy did not let it run unasked: %s", e.Payload)
+				}
+			}
+			vs := answerVerdicts(store)
+			if r := vs[len(vs)-1].Contract.Require[0]; r.OK || r.Reason == "" {
+				t.Fatalf("result %+v", r)
+			}
+		})
 	}
 }

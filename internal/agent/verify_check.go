@@ -257,6 +257,8 @@ type finding struct {
 	why      string // for an unverified or contradicted reason
 	seq      int64
 	conflict *Conflict
+	pooled   bool // matched in a tool result, not in the record's calls or the files
+	bare     bool // a number with nothing to say what it counts
 }
 
 // checkClaims checks each claim against the record. Claims from the answer
@@ -332,10 +334,37 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		}
 	}
 
-	if c.Quote != "" {
-		q := normText(c.Quote)
+	const none = "nothing in it could be matched to the cited output"
+	if cited {
+		return settle(v, append(findings, judgeFacts(env, ix, f, c.Quote, pool, true)...), none)
+	}
+	// Uncited, a claim is verified only by one result that shows all of it,
+	// and never by a bare number alone: a 3 somewhere in the output is not
+	// the 3 the claim means.
+	for i := len(pool) - 1; i >= 0; i-- {
+		fs := judgeFacts(env, ix, f, c.Quote, pool[i:i+1], false)
+		if got := settle(v, fs, none); got.Verdict == ClaimVerified && !bareOnly(fs) {
+			return got
+		}
+	}
+	fs := judgeFacts(env, ix, f, c.Quote, pool, false)
+	got := settle(v, fs, none)
+	if got.Verdict == ClaimVerified && pooledMatch(fs) {
+		got.Verdict = ClaimUnverified
+		got.Reason = "what it says appears only in pieces, or as bare numbers, across this session's results; " +
+			"no one result shows it (cite the one that does)"
+	}
+	return got
+}
+
+// judgeFacts compares a claim's facts with the pool of results it may rest
+// on, and with the record and the files where a fact is about those.
+func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*obsRec, cited bool) []finding {
+	var findings []finding
+	if quote != "" {
+		q := normText(quote)
 		if o := firstWith(pool, func(e *evidenceText) bool { return strings.Contains(e.norm, q) }); o != nil {
-			findings = append(findings, finding{out: matched, what: "quote in #" + itoa(o.seq), seq: o.seq})
+			findings = append(findings, finding{out: matched, what: "quote in #" + itoa(o.seq), seq: o.seq, pooled: true})
 		} else {
 			findings = append(findings, finding{out: missing, why: "its quote is not in the cited output"})
 		}
@@ -385,7 +414,32 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	if f.success {
 		findings = append(findings, ix.success(pool, f.testish, cited))
 	}
-	return settle(v, findings, "nothing in it could be matched to the cited output")
+	return findings
+}
+
+// bareOnly reports findings whose matches from tool output are all bare numbers.
+func bareOnly(fs []finding) bool {
+	seen := false
+	for _, f := range fs {
+		if f.out == matched {
+			if !f.bare {
+				return false
+			}
+			seen = true
+		}
+	}
+	return seen
+}
+
+// pooledMatch reports a match that came from tool output rather than from
+// the record's calls or the files.
+func pooledMatch(fs []finding) bool {
+	for _, f := range fs {
+		if f.out == matched && f.pooled {
+			return true
+		}
+	}
+	return false
 }
 
 // settle turns the findings into one verdict: any conflict contradicts, any
@@ -461,14 +515,14 @@ func firstWith(pool []*obsRec, ok func(*evidenceText) bool) *obsRec {
 
 func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.hasLiteral(lit) }); o != nil {
-		return finding{out: matched, what: fmt.Sprintf("%q in #%d", lit, o.seq), seq: o.seq}
+		return finding{out: matched, what: fmt.Sprintf("%q in #%d", lit, o.seq), seq: o.seq, pooled: true}
 	}
 	return finding{out: missing, why: fmt.Sprintf("%q is not in %s", clipRunes(lit, 60), poolName(cited))}
 }
 
 func (ix *recordIndex) number(pool []*obsRec, n string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.numbers[n] }); o != nil {
-		return finding{out: matched, what: "number " + n + " in #" + itoa(o.seq), seq: o.seq}
+		return finding{out: matched, what: "number " + n + " in #" + itoa(o.seq), seq: o.seq, pooled: true, bare: true}
 	}
 	return finding{out: missing, why: "the number " + n + " is not in " + poolName(cited)}
 }
@@ -486,7 +540,7 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 		e := pool[i].evidence()
 		for _, at := range e.counts[cf.unit] {
 			if at.n == cf.n {
-				return finding{out: matched, what: label + " in #" + itoa(pool[i].seq), seq: pool[i].seq}
+				return finding{out: matched, what: label + " in #" + itoa(pool[i].seq), seq: pool[i].seq, pooled: true}
 			}
 			if other == nil {
 				other, otherAt = pool[i], at
@@ -556,7 +610,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 			continue
 		}
 		if *o.exit == 0 {
-			return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq}
+			return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
 		}
 	}
 	if cited {
