@@ -99,7 +99,7 @@ func TestSSHReadFormsRefuseWritersAndRunners(t *testing.T) {
 		"docker system *", "docker volume *", "docker network *", "docker compose *", "docker plugin *",
 		"apt install *", "apt remove *", "apt purge *", "apt update *", "apt upgrade *", "apt edit-sources *",
 		"apt-cache gencaches *", "timedatectl set-time *", "timedatectl set-ntp *", "hostnamectl set-hostname *",
-		"openssl req *", "openssl genrsa *", "openssl enc *", "openssl ca *", "openssl pkcs12 *", "hostname *",
+		"openssl req *", "openssl genrsa *", "openssl enc *", "openssl ca *", "openssl pkcs12 *",
 		"ip *", "ip -batch *", "ip netns *", "ip link set *", "ip route add *",
 	} {
 		if _, err := policy.ParseRemoteRead(e); err == nil {

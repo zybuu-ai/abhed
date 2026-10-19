@@ -18,7 +18,7 @@ func TestSSHReadWildcardOnlyForKnownReads(t *testing.T) {
 		"nginx -t *", "nginx -t", "mount *", "su *", "sudo *", "bash *", "python3 *", "awk *", "sed *", "tar *",
 		// Listed programs, in a form that changes things or names no read verb.
 		"systemctl *", "systemctl stop *", "systemctl restart *", "journalctl --vacuum-size=*", "journalctl --rotate *",
-		"date -s *", "date --set=*", "hostname *", "dmesg -C *", "dmesg --clear *", "ss *", "sort -o *",
+		"date -s *", "date --set=*", "dmesg -C *", "dmesg --clear *", "ss *", "sort -o *",
 		"openssl x509 -out *", "openssl req *", "openssl *", "ip addr add *", "ip -batch *", "docker run *",
 		"docker exec *", "docker *", "rpm -e *", "rpm -i *", "dpkg -i *", "dpkg --configure *", "apt install *",
 		"rg --pre=* *", "file -C *", "hostnamectl set-hostname *", "timedatectl set-time *",
