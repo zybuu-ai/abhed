@@ -301,6 +301,8 @@ type Loop struct {
 	reasoning   []string
 	recentCalls []monitor.Recent
 	monitorMu   sync.Mutex
+	// sup is what the supervisor keeps between calls; see supervisor.go.
+	sup supervision
 
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
@@ -1530,6 +1532,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		Dropped:          dropped,
 		Resolved:         resolved,
 		Target:           target,
+		Supervisor:       l.supervisorNote(call.ID),
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -1551,6 +1554,11 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
 		}, decision))
 		// Feed the denial back so the model can choose another approach.
+		if decision.Step == "monitor" {
+			if fix := l.correction(call.ID, decision.Decision); fix != "" {
+				return false, tools.Result{Content: "Denied. " + fix, IsError: true}, ""
+			}
+		}
 		return false, tools.Result{
 			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
 			IsError: true,
@@ -1621,6 +1629,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			msg += ".\n"
 			if decision.Scope != "" {
 				msg += "It would be permitted by the rule " + decision.Scope + ", which is not configured.\n"
+			}
+			if fix := l.correction(call.ID, policy.Deny); fix != "" {
+				return false, tools.Result{Content: msg + fix, IsError: true}, ""
 			}
 			msg += "Do not retry this call or a re-worded version of it. " +
 				"Use a different tool, or explain what you need and stop."
@@ -2093,6 +2104,7 @@ func (l *Loop) resultLimitChars() int {
 func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalReason {
 	results := make([]callOutcome, len(calls))
 	l.ignored.Clear() // a call refused last turn never ran to take its entry
+	l.clearVerdicts()
 
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
@@ -2152,6 +2164,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 		}
 	}
 
+	l.replan(results)
 	l.appendResults(calls, results, len(calls))
 	for _, o := range results {
 		if o.terminal != "" {
@@ -2434,30 +2447,11 @@ func (l *Loop) noteReasoning(text string) {
 // reviewed puts a call to the monitor and returns the decision after it,
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
-	var remit, user strings.Builder
-	for _, m := range l.messages {
-		if m.Role == model.RoleUser {
-			if remit.Len() == 0 {
-				remit.WriteString(m.Content)
-			}
-			user.WriteString(m.Content)
-			user.WriteByte('\n')
-		}
-	}
-	args := string(call.Args)
-	l.monitorMu.Lock()
-	thoughts := append([]string(nil), l.reasoning...)
-	recent := append([]monitor.Recent(nil), l.recentCalls...)
-	l.monitorMu.Unlock()
-	c := monitor.Case{
-		Remit: remit.String(), Reasoning: thoughts,
-		Tool: call.Name, Args: args, Mutates: mutates, Provisional: before,
-		Provenance: monitor.Trace(args, user.String()), Recent: recent,
-	}
-	out := l.Monitor.Review(ctx, c)
+	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
 	if out.Skipped != "" {
 		return before
 	}
+	l.noteVerdict(call.ID, out.Verdict)
 	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
 		CallID: call.ID, Before: string(out.Before), After: string(out.After), Code: out.Verdict.Code,
 		Confidence: out.Verdict.Confidence, Rationale: out.Verdict.Rationale, LatencyMS: out.Verdict.LatencyMS,
@@ -2470,7 +2464,7 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	if out.Verdict.Rationale != "" {
 		why += " — " + out.Verdict.Rationale
 	}
-	return policy.Result{Decision: out.After, Reason: "monitor: " + why, Scope: before.Scope, Step: "monitor"}
+	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.
@@ -2478,8 +2472,8 @@ func (l *Loop) noteCall(tool, subject string, isError bool) {
 	l.monitorMu.Lock()
 	defer l.monitorMu.Unlock()
 	l.recentCalls = append(l.recentCalls, monitor.Recent{Tool: tool, Subject: subject, IsError: isError})
-	if len(l.recentCalls) > 5 {
-		l.recentCalls = l.recentCalls[len(l.recentCalls)-5:]
+	if len(l.recentCalls) > 20 {
+		l.recentCalls = l.recentCalls[len(l.recentCalls)-20:]
 	}
 }
 
