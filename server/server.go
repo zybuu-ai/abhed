@@ -864,6 +864,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/events", s.untilShutdown(s.streamEvents))
+	mux.HandleFunc("GET /v1/sessions/{id}/logs", s.untilShutdown(s.streamLogs))
 	mux.HandleFunc("GET /v1/streams", s.untilShutdown(s.openStreamMux))
 	mux.Handle("POST /v1/streams/{mux}/{ch}", s.openStreamChannel(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { top.ServeHTTP(w, r) })))
 	mux.HandleFunc("DELETE /v1/streams/{mux}/{ch}", s.closeStreamChannel)
@@ -2995,6 +2996,12 @@ func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
 // streamEvents serves the session's event stream over SSE, resumable via
 // Last-Event-ID so a dropped connection does not lose the session.
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
+	s.streamSession(w, r, writeSSE)
+}
+
+// streamSession is streamEvents with each event written by write, which
+// gives it the event's seq as its SSE id.
+func (s *Server) streamSession(w http.ResponseWriter, r *http.Request, write func(http.ResponseWriter, agent.Event)) {
 	id := r.PathValue("id")
 
 	// Guarded before anything is read or written, so a RecheckStreams from
@@ -3088,7 +3095,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				endStream(w, err)
 				return
 			}
-			writeSSE(w, ev)
+			write(w, ev)
 			lastSeq = ev.Seq
 			if running {
 				end.closes(ev, runLive)
@@ -3129,7 +3136,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				return true
 			}
 			lastSeq = e.Seq
-			writeSSE(w, e)
+			write(w, e)
 			ended = ended || end.closes(e, runLive)
 		}
 		flusher.Flush()

@@ -277,6 +277,7 @@ abhed record verify              the index and every session
 abhed record verify <session>    one session
 abhed record verify file.jsonl   an export, or a copy from elsewhere
 abhed record audit               the control-plane audit chain abhed serve writes
+abhed record audit -format ocsf  its rows as OCSF events, with their links
 ```
 
 `verify <session>` checks the index first, then the session. It fails, naming
@@ -499,6 +500,11 @@ and never into Abhed's state other than `~/.abhed/exports`. A relative
 `/export` path is taken from the workspace, and a path outside it asks first.
 HTML and text exports are for reading, not for verification. Every export is
 redacted, because the record it comes from is.
+
+To read the record as a log instead, as it grows, or to feed a SIEM, `abhed
+logs` prints it as shorthand or OCSF events and `record.ocsf` keeps a file of
+OCSF events beside it; each event carries its line's `prev` and `hash`, so a
+copy can be checked against the chain ([OCSF events and logs](30-ocsf-and-logs.md)).
 
 ## Pruning
 

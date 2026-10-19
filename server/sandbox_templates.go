@@ -167,5 +167,9 @@ func (s *Server) sandboxEvents(w http.ResponseWriter, r *http.Request, call verb
 		items = []controlplane.AuditEvent{}
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if q.Get("format") == "ocsf" {
+		s.sandboxEventsOCSF(w, r, items, next)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(eventsResult{Items: items, Next: next})
 }

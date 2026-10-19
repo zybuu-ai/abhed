@@ -786,6 +786,7 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 	if file := cfg.Record.Witness.File; file != "" && cfg.Record.Witness.On() && cfg.ManagedSets("record.witness") {
 		opts.Witnessed = (&witnessFile{cfg: cfg, path: file}).heads
 	}
+	startOCSF := withOCSF(cfg, &opts)
 	rec, err := local.Open(opts)
 	if err != nil {
 		if stop != nil {
@@ -793,6 +794,7 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 		}
 		return nil, fmt.Errorf("open the local record: %w", err)
 	}
+	startOCSF(rec)
 	if days := cfg.Record.RetentionDays; days > 0 && cfg.ManagedSets("record.retention_days") {
 		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 		pruned, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days))

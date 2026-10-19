@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/ocsf"
 )
 
 // Templates: an administrator makes them, everyone reads them, and a
@@ -127,6 +128,27 @@ func TestSandboxEvents(t *testing.T) {
 	}
 	if rec := r.do(t, cpCall{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":events?after=x", token: "alice"}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("a bad cursor: %d", rec.Code)
+	}
+	// The same page as OCSF API Activity, who asked as the actor.
+	for _, v := range ocsf.Versions {
+		rec = r.do(t, cpCall{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":events?limit=1&format=ocsf&version=" + v, token: "alice"})
+		var ocsfPage struct {
+			Items []map[string]any `json:"items"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &ocsfPage)
+		if rec.Code != http.StatusOK || len(ocsfPage.Items) != 1 {
+			t.Fatalf("ocsf %s: %d %s", v, rec.Code, rec.Body.String())
+		}
+		ev := ocsfPage.Items[0]
+		if err := ocsf.Validate(ev); err != nil {
+			t.Fatalf("ocsf %s: %v", v, err)
+		}
+		if ev["class_uid"] != float64(6003) || ev["activity_id"] != float64(1) {
+			t.Fatalf("ocsf %s: %s", v, rec.Body.String())
+		}
+	}
+	if rec := r.do(t, cpCall{method: "GET", path: "/v1/sandboxes/" + sb.ID + ":events?format=ocsf&version=9", token: "alice"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("an unknown OCSF version: %d", rec.Code)
 	}
 }
 

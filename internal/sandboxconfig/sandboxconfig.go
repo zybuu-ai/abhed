@@ -240,6 +240,10 @@ func StatePaths(cfg config.Config, workspace string) []string {
 			out = append(out, real)
 		}
 	}
+	// A managed record.ocsf.path's folder holds the record's OCSF copy and its cursor.
+	if p := cfg.Record.OCSF.Path; p != "" {
+		out = append(out, filepath.Dir(p))
+	}
 	out = append(out, controlPlaneFiles(cfg)...)
 	return append(out, cfg.Record.Also...)
 }

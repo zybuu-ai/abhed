@@ -35,6 +35,7 @@ model you point it at, and records everything it does.
 | [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
 | [Sessions and the local record](12-records.md) | `-c`, `-r`, rewind, checkpoints, `abhed record verify`, what tamper-evident means |
+| [OCSF events and logs](30-ocsf-and-logs.md) | the record as OCSF 1.8 (or 1.5, 1.3, 1.1) events: `abhed logs`, the `record.ocsf` file, the logs stream; what maps to which class |
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
 | [Sandboxes over the API](22-sandboxes.md) | `/v1/sandboxes`: create, run commands in, stop and restart sandboxes; templates; the `abhed sandbox` command; `serve -check`; `/v1/ready` |

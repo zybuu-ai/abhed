@@ -46,6 +46,8 @@ var runtimeGrants = []struct{ table, privileges string }{
 	{"sandbox_templates", "SELECT, INSERT, DELETE"},
 	// Written once by a migration; the server only reads it.
 	{"chain_pre", "SELECT"},
+	// The OCSF file's cursors move forward; none is removed.
+	{"ocsf_cursors", "SELECT, INSERT, UPDATE"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are
