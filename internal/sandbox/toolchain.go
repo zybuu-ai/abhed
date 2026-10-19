@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -49,6 +50,10 @@ var ErrImageNotPresent = errors.New("the image is not on this engine yet, so it 
 // image is known to lack every toolchain; any other is looked in only when
 // the engine already has it, with no network and no pull.
 func (c *Container) MissingPrograms(ctx context.Context, programs []string) ([]string, error) {
+	return c.missingPrograms(ctx, programs, c.engineCmd)
+}
+
+func (c *Container) missingPrograms(ctx context.Context, programs []string, engine func(context.Context, ...string) *exec.Cmd) ([]string, error) {
 	if len(programs) == 0 {
 		return nil, nil
 	}
@@ -56,13 +61,15 @@ func (c *Container) MissingPrograms(ctx context.Context, programs []string) ([]s
 	if img == DefaultImage {
 		return programs, nil
 	}
-	if err := c.engineCmd(ctx, "image", "inspect", "--format", "{{.Id}}", img).Run(); err != nil {
+	if err := engine(ctx, "image", "inspect", "--format", "{{.Id}}", img).Run(); err != nil {
 		return nil, ErrImageNotPresent
 	}
-	args := []string{"run", "--rm", "--pull=never", "--network=none", "--entrypoint", "/bin/sh",
-		"--name", containerName("abhed-look-"), img,
+	// The look runs the image's own shell, so it gets less than a command would.
+	args := []string{"run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
+		"--security-opt", "no-new-privileges", "--read-only", "--user", "65534:65534",
+		"--entrypoint", "/bin/sh", "--name", containerName("abhed-look-"), img,
 		"-c", `for p; do command -v "$p" >/dev/null 2>&1 || echo "$p"; done`, "sh"}
-	out, err := c.engineCmd(ctx, append(args, programs...)...).Output()
+	out, err := engine(ctx, append(args, programs...)...).Output()
 	if err != nil {
 		return nil, err
 	}

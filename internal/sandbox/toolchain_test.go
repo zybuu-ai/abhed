@@ -2,9 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -48,7 +51,7 @@ func TestMissingProgramsDefaultImage(t *testing.T) {
 	if SandboxImage() != "docker.io/library/golang:1.26-bookworm" {
 		t.Fatalf("image %s", SandboxImage())
 	}
-	if _, err := c.MissingPrograms(context.Background(), []string{"go"}); err != ErrImageNotPresent {
+	if _, err := c.MissingPrograms(context.Background(), []string{"go"}); !errors.Is(err, ErrImageNotPresent) {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -69,5 +72,34 @@ func TestSandboxImageOrder(t *testing.T) {
 	Image = "set:1"
 	if SandboxImage() != "set:1" {
 		t.Fatal(SandboxImage())
+	}
+}
+
+// The look container runs the image's shell with no network, no pull, no
+// capabilities, no privilege gain, a read-only root and an unprivileged user.
+func TestMissingProgramsLooksInAHardenedContainer(t *testing.T) {
+	old := Image
+	Image = "docker.io/library/golang:1.26-bookworm"
+	t.Cleanup(func() { Image = old })
+	var runArgs []string
+	engine := func(ctx context.Context, args ...string) *exec.Cmd {
+		if args[0] == "run" {
+			runArgs = args
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "echo node")
+		}
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "true")
+	}
+	got, err := (&Container{}).missingPrograms(context.Background(), []string{"go", "node"}, engine)
+	if err != nil || !slices.Equal(got, []string{"node"}) {
+		t.Fatalf("%v %v", got, err)
+	}
+	line := strings.Join(runArgs, " ")
+	for _, want := range []string{"--pull=never", "--network=none", "--cap-drop=ALL", "--security-opt no-new-privileges", "--read-only", "--user 65534:65534"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("look container without %s: %s", want, line)
+		}
+	}
+	if i := slices.Index(runArgs, Image); i < 0 || slices.Index(runArgs, "--user") > i {
+		t.Errorf("an option after the image: %s", line)
 	}
 }

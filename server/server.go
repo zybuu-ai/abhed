@@ -1951,7 +1951,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
 	undo.KeepFirst = true
 	sess.Checkpoint = undo.Record
-	// A command's changes are shown from the snapshot the session opened with, not checkpointed.
+	// A command's changes are shown from the session's opening snapshot, not
+	// checkpointed: the setting is kept so "required" refuses rather than runs unrecorded.
+	tc := s.opts.Config.Tools
+	sess.BashCheckpoints = tools.BashCheckpointsFrom(tc.BashCheckpoints, tc.BashCheckpointMB, tc.BashCheckpointFiles)
 
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant, workspace: workspace,

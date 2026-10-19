@@ -125,7 +125,9 @@ All notable changes to Abhed are recorded here. The format follows
   so `/undo` and `/rewind` (and Studio's undo and review) take them back. A
   change the limits kept no copy of is named in the record and the command's
   result, not put back; `tools.bash_checkpoints` is `on` (the default), `off`,
-  or `required`, which refuses a command whose snapshot is not whole, and
+  or `required`, which refuses a command whose snapshot is not whole, a
+  background command, and every command where no checkpoints are kept
+  (`abhed -p`, `rpc`, `eval`, `abhed serve` and an SDK agent);
   `tools.bash_checkpoint_mb` and `tools.bash_checkpoint_files` set the limits
   ([Records](docs/guide/12-records.md#changes-made-through-bash)).
 - `sandbox.image` names the container tier's image, such as one with Go,
@@ -133,7 +135,8 @@ All notable changes to Abhed are recorded here. The format follows
   cannot set it. `abhed doctor` (and Studio's checks) now warn when the
   workspace looks like a Go, Node, Python or Rust project and the image
   lacks its toolchain, and name an image that has it; nothing is pulled to
-  look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
+  look, and the look runs as an unprivileged user with no network, no
+  capabilities and a read-only root ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
 - Verified answers. Abhed does not promise the model is right. It shows you
   which statements it could check against what actually happened in this
   session, and it marks the rest. Each statement of an answer is held

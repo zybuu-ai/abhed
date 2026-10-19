@@ -400,8 +400,9 @@ from the same image.
 and `Cargo.toml`, and when the container tier's image lacks `go`, `node`,
 `python3` or `cargo`, says so on the `sandbox` line with the image to use.
 It knows the default image has none of them; any other it looks in only
-when the engine already has it, in a container with no network, and never
-pulls one to look.
+when the engine already has it, in a container with no network, no
+capabilities, a read-only root and an unprivileged user, and never pulls one
+to look.
 
 ### The fence tier (preview, Linux)
 

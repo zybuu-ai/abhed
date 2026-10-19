@@ -124,3 +124,35 @@ func TestBashCheckpointSkipsKeyFiles(t *testing.T) {
 		}
 	}
 }
+
+// "required" with no one to take the checkpoints refuses, and runs nothing.
+func TestBashCheckpointsRequiredWithNoHook(t *testing.T) {
+	s, dir := setup(t)
+	s.BashCheckpoints = BashCheckpointsFrom("required", 0, 0)
+	res := run(t, Bash{}, s, bashArgs{Command: "touch ran.txt", Description: "run"})
+	if !res.IsError || !strings.Contains(res.Content, "tools.bash_checkpoints") || !strings.Contains(res.Content, "Nothing was run") {
+		t.Fatalf("not refused: %s", res.Content)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ran.txt")); err == nil {
+		t.Fatal("the command ran")
+	}
+	// On, or off, with no hook it runs as before.
+	for _, mode := range []string{"", "on", "off"} {
+		s.BashCheckpoints = BashCheckpointsFrom(mode, 0, 0)
+		if res := run(t, Bash{}, s, bashArgs{Command: "true", Description: "run"}); res.IsError {
+			t.Fatalf("%q: %s", mode, res.Content)
+		}
+	}
+}
+
+// A background command is never checkpointed, so "required" refuses it.
+func TestBashCheckpointsRequiredRefusesBackground(t *testing.T) {
+	s, dir, _ := snapSession(t, BashCheckpointsFrom("required", 0, 0))
+	res := run(t, Bash{}, s, bashArgs{Command: "touch bg.txt", Description: "run", Background: true})
+	if !res.IsError || !strings.Contains(res.Content, "tools.bash_checkpoints") {
+		t.Fatalf("not refused: %s", res.Content)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bg.txt")); err == nil {
+		t.Fatal("the command ran")
+	}
+}

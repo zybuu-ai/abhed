@@ -403,6 +403,10 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("No secrets are configured on this deployment; run the command without `secrets`.")
 	}
 	if a.Background {
+		// Its changes are never checkpointed, which "required" does not allow.
+		if s.BashCheckpoints.Mode == BashCheckpointRequired {
+			return errf("Refused: tools.bash_checkpoints is \"required\", and a command run in the background is not checkpointed. Run it in the foreground. Nothing was run.")
+		}
 		return b.background(ctx, s, a)
 	}
 

@@ -226,6 +226,11 @@ func (s *Session) rel(path string) string {
 // snapshot, nil when none is taken, and a refusal when the mode requires a
 // whole snapshot and this one is not.
 func (s *Session) beforeBash(ctx context.Context) (*wsSnapshot, error) {
+	// Required with nothing to hand the checkpoints to refuses, never runs unrecorded.
+	if s.BashCheckpoints.Mode == BashCheckpointRequired && s.BashCheckpoint == nil {
+		return nil, errors.New("refused: tools.bash_checkpoints is \"required\", and this session keeps no checkpoints for bash commands " +
+			"(only the interactive terminal and Studio do), so a command's changes could not be taken back. Nothing was run")
+	}
 	if !s.bashSnapshotOn() {
 		return nil, nil
 	}
@@ -235,7 +240,7 @@ func (s *Session) beforeBash(ctx context.Context) (*wsSnapshot, error) {
 	sn.last = snap.files
 	sn.mu.Unlock()
 	if snap.cut != "" && s.BashCheckpoints.Mode == BashCheckpointRequired {
-		return nil, fmt.Errorf("refused: checkpoints.bash is \"required\" and the snapshot before this command is not whole: %s. Nothing was run", snap.cut)
+		return nil, fmt.Errorf("refused: tools.bash_checkpoints is \"required\" and the snapshot before this command is not whole: %s. Nothing was run", snap.cut)
 	}
 	return &snap, nil
 }
