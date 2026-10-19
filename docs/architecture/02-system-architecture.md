@@ -18,7 +18,7 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 │                                                                          │
 │   ┌────────────┐   ┌──────────────┐   ┌───────────────┐  ┌────────────┐ │
 │   │ Orchestr.  │──▶│ Context Mgr  │──▶│ Policy Engine │─▶│ Tool Router│ │
-│   │ step(state)│   │ compact/JIT  │   │ 7-step order  │  │ MCP+native │ │
+│   │ step(state)│   │ compact/JIT  │   │ 8-step order  │  │ MCP+native │ │
 │   └─────┬──────┘   └──────────────┘   └───────────────┘  └─────┬──────┘ │
 │         │                                                       │        │
 │   ┌─────▼──────┐   ┌──────────────┐   ┌───────────────┐        │        │
@@ -191,7 +191,7 @@ consistency benchmark is Abhed's differentiating asset.
 
 ```
  tenant ─┬─▶ access (authn/authz) ─┬─▶ control (policy) ─┬─▶ tools ─┬─▶ execution
-         │   OIDC, tenant scope     │   7-step ordered    │  MCP     │  sandbox
+         │   OIDC, tenant scope     │   8-step ordered    │  MCP     │  sandbox
          │                          │   deny is absolute  │  gateway │  no egress
          └──────────────────────────┴─────────────────────┴──────────┴─ audit (all)
 ```

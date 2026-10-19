@@ -748,6 +748,12 @@ Stated plainly rather than buried:
   `container` and `vm` tiers the sandbox's deny on `~/.abhed` and the state paths
   still holds; on `none` nothing stands behind the check. Run
   a tier other than `none` wherever the agent must not administer Abhed.
+- **No anomaly detection over the action stream.** The supervisor, on by
+  default, reviews each call after policy with fixed rules and may only make
+  a decision stricter ([The supervisor](../guide/04-permissions.md#the-supervisor)).
+  It judges one call at a time against what the session has shown; nothing
+  alerts on a pattern across many calls. Its drift suite was written
+  alongside its rules, and the optional model judge has not been measured.
 - **A small team.** Zybuu is a small company. There is no security team, no
   on-call rotation, and no bus-factor mitigation beyond what is written down
   in this repository. See `SECURITY.md` for the
