@@ -168,6 +168,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Session = &policy.Overlay{}
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
+	pol.KeepAsk = cfg.ManagedAsk
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
 	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))

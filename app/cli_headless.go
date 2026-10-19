@@ -490,6 +490,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		structured json.RawMessage
 		ran        bool
 	)
+	if !appCfg.Plan.Runbooks {
+		loop.DisableRunbooks()
+	}
 	if o.runbook != nil {
 		rb, err := loop.BindRunbook(o.runbook.text, o.runbook.steps, o.runbook.hash)
 		if err != nil {

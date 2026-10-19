@@ -23,6 +23,8 @@ type planState struct {
 	// or another is; bound is the one accepted, which calls are held to.
 	offered *Runbook
 	bound   *boundPlan
+	// off is plan.runbooks false: no runbook is taken.
+	off bool
 }
 
 // EnablePlanExit gives the loop the exit_plan tool, offered only in plan

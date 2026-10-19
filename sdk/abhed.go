@@ -375,6 +375,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AddAsk(cfg.Permissions.Ask...); err != nil {
 		return nil, fmt.Errorf("abhed: ask rule: %w", err)
 	}
+	pol.KeepAsk = cfg.ManagedAsk
 	if err := pol.AddAllow(cfg.Permissions.Allow...); err != nil {
 		return nil, fmt.Errorf("abhed: allow rule: %w", err)
 	}
@@ -521,6 +522,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loop.Provider = cfg.Model.Default
 	if x.PlanExit {
 		loop.EnablePlanExit()
+	}
+	if !cfg.Plan.Runbooks {
+		loop.DisableRunbooks()
 	}
 	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)

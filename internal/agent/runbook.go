@@ -101,11 +101,30 @@ type planHit struct {
 	replaced bool
 }
 
+// ErrRunbooksOff refuses a runbook where plan.runbooks is false.
+var ErrRunbooksOff = errors.New("runbooks are turned off here (plan.runbooks: false); present the plan without one, and each call will ask")
+
+// DisableRunbooks refuses every runbook this loop is offered: a plan with
+// one is not presented, and an operator's is not bound. A plan without one
+// is unchanged.
+func (l *Loop) DisableRunbooks() {
+	l.plans.mu.Lock()
+	l.plans.off = true
+	l.plans.bound, l.plans.offered = nil, nil
+	l.plans.mu.Unlock()
+}
+
 // prepareRunbook canonicalises and hashes a proposed runbook, refusing a step
 // that names an unknown tool, cannot be read, or that policy would refuse.
 func (l *Loop) prepareRunbook(text string, steps []tools.RunbookStep) (*Runbook, error) {
 	if len(steps) == 0 {
 		return nil, nil
+	}
+	l.plans.mu.Lock()
+	off := l.plans.off
+	l.plans.mu.Unlock()
+	if off {
+		return nil, ErrRunbooksOff
 	}
 	if len(steps) > maxRunbookSteps {
 		return nil, fmt.Errorf("the runbook has %d steps; at most %d are allowed", len(steps), maxRunbookSteps)
@@ -348,6 +367,7 @@ func (l *Loop) BindRunbook(text string, steps []tools.RunbookStep, want string) 
 	l.plans.offered = nil
 	l.plans.bound = &boundPlan{rb: *rb, done: make([]bool, len(rb.Steps))}
 	l.plans.mu.Unlock()
+	l.SetApprovedPlan(text)
 	return *rb, nil
 }
 
@@ -430,7 +450,7 @@ func (l *Loop) planBind(ctx context.Context, tool tools.Tool, call model.ToolCal
 		d.Reason = strings.TrimPrefix(d.Reason+"; "+label, "; ")
 		return d, hit
 	}
-	if !planReplaces[d.Step] {
+	if !planReplaces[d.Step] || d.Step == "ask" && l.Policy != nil && l.Policy.KeepAsk != nil && l.Policy.KeepAsk(d.Rule) {
 		d.Reason = label + ", asked again: " + d.Reason
 		return d, hit
 	}
