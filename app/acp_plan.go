@@ -98,14 +98,32 @@ func (c *acpConn) decidePlan(ctx context.Context, s *acpSession, runErr error) s
 			"\nThe plan's answer could not be recorded, so nothing changed and the plan still waits: " + err.Error() + "\n")})
 		return ""
 	}
-	if from := loop.Policy.Mode; from != to {
+	// withdraw takes back an accepted answer that did not take effect: the
+	// mode goes back, and the record says so where it can.
+	from := loop.Policy.Mode
+	withdraw := func(why string, applied bool) string {
+		if applied {
+			loop.Policy.Mode = from
+			if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(to), To: string(from), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
+				warnf("the restored plan mode was not recorded: %v", err)
+			}
+		}
+		if err := record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning}); err != nil {
+			warnf("a plan accepted on the record did not take effect, and its withdrawal was not recorded: %v", err)
+			why += " The record may show the plan accepted, though it did not take effect."
+		}
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "failed"})
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + why + "\n")})
+		return ""
+	}
+	if from != to {
 		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
-			return keep("The mode change could not be recorded, so planning goes on: " + err.Error())
+			return withdraw("The mode change could not be recorded, so planning goes on: "+err.Error(), false)
 		}
 		loop.Policy.Mode = to
 	}
 	if err := loop.AcceptPlan(plan); err != nil {
-		return keep("The runbook was not bound: " + err.Error())
+		return withdraw("The runbook was not bound, so the session stays in plan mode: "+err.Error(), from != to)
 	}
 	loop.SetApprovedPlan(plan.Text)
 	c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "completed"})
