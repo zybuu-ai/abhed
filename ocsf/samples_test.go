@@ -53,7 +53,7 @@ var samples = []sample{
 	{agent.EvTerminalInput, agent.ActorUser, `{"call_id":"c-8","line":"ls"}`},
 	{agent.EvCommandInvoked, agent.ActorUser, `{"name":"review","source":"workspace","sha256":"ab","args":""}`},
 	{agent.EvMemoryLoaded, agent.ActorSystem, `{"files":[{"path":"ABHED.md","scope":"project","sha256":"cd"}]}`},
-	{agent.EvModelSwitched, agent.ActorUser, `{"provider":"anthropic","model":"m-2","from":"m-1"}`},
+	{agent.EvModelSwitched, agent.ActorUser, `{"provider":"vllm","model":"m-2","from":"m-1"}`},
 	{agent.EvModelFallback, agent.ActorSystem, `{"from":"m-2","to":"m-3","reason":"unreachable"}`},
 	{agent.EvPlanProposed, agent.ActorAgent, `{"text":"1. test","hash":"ef"}`},
 	{agent.EvPlanDecided, agent.ActorUser, `{"decision":"accept","to_mode":"default","plan_hash":"ef"}`},
