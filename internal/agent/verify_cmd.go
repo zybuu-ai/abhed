@@ -594,7 +594,6 @@ func runsCommand(line, claimed string) bool {
 	return false
 }
 
-
 func equalWords(a, b []string) bool {
 	for i := range a {
 		if a[i] != b[i] && (i != 0 || filepath.Base(a[i]) != filepath.Base(b[i])) {
