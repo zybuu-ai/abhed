@@ -72,6 +72,9 @@ type Renderer struct {
 	// lock, and the renderer takes the dock's lock while holding its own.
 	usageMu sync.Mutex
 	usage   Usage
+
+	// verdict is the last answer.verdict, for /evidence.
+	verdict *agent.AnswerVerdict
 }
 
 // Usage is what the renderer has seen of the model's accounting.
@@ -227,6 +230,10 @@ func (r *Renderer) Event(ev agent.Event) {
 			r.lastReply = sanitize(m.Text, false)
 			r.lastReplyCut = r.lastReply != m.Text
 		}
+	case agent.EvAnswerVerdict:
+		if v, ok := verdictOf(ev); ok {
+			r.verdict = &v
+		}
 	case agent.EvSessionEnded:
 		var e agent.SessionEnded
 		if json.Unmarshal(ev.Payload, &e) == nil && e.ContextTokens > 0 {
@@ -306,7 +313,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 
 	case agent.EvActionRequested:
 		var a agent.ActionRequested
-		if json.Unmarshal(ev.Payload, &a) != nil {
+		if json.Unmarshal(ev.Payload, &a) != nil || hiddenCall(a.Tool) {
 			return
 		}
 		r.endReply(d, "")
@@ -314,10 +321,18 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 
 	case agent.EvObservation:
 		var o agent.Observation
-		if json.Unmarshal(ev.Payload, &o) != nil {
+		if json.Unmarshal(ev.Payload, &o) != nil || (hiddenCall(o.Tool) && !o.IsError) {
 			return
 		}
 		r.toolObserved(d, o)
+
+	case agent.EvAnswerVerdict:
+		if v, ok := verdictOf(ev); ok {
+			r.endReply(d, "")
+			if rows := VerdictRows(s, v, true); rows != nil {
+				d.commit(&rowsBlock{rows: rows})
+			}
+		}
 
 	case agent.EvActionDenied:
 		var m map[string]string
@@ -477,6 +492,8 @@ func endedText(reason agent.TerminalReason, detail string) string {
 		return "The model kept failing; gave up after retrying (retry_exhausted)"
 	case agent.TermStalled:
 		return "The model produced nothing, repeatedly (stalled)"
+	case agent.TermUnverified:
+		return "Ended unverified: the answer or the completion contract could not be checked against the record (unverified)"
 	}
 	return "ended: " + string(reason)
 }
@@ -584,14 +601,14 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 			return
 		}
 		var a agent.ActionRequested
-		if json.Unmarshal(ev.Payload, &a) != nil {
+		if json.Unmarshal(ev.Payload, &a) != nil || hiddenCall(a.Tool) {
 			return
 		}
 		fmt.Fprintf(r.w, "%s %s %s\n", s.Accent("●"), s.Bold(VisibleLine(a.Tool)), s.Dim(VisibleLine(summarizeArgs(a.Tool, a.Args))))
 
 	case agent.EvObservation:
 		var o agent.Observation
-		if json.Unmarshal(ev.Payload, &o) != nil {
+		if json.Unmarshal(ev.Payload, &o) != nil || (hiddenCall(o.Tool) && !o.IsError) {
 			return
 		}
 		if o.IsError {
@@ -640,6 +657,12 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 	case agent.EvTodoUpdated:
 		if b := r.todoEvent(ev); b != nil && !r.quiet {
 			r.emitRows(b.lines(100, s, false))
+		}
+
+	case agent.EvAnswerVerdict:
+		if v, ok := verdictOf(ev); ok {
+			r.endStream()
+			r.emitRows(VerdictRows(s, v, false))
 		}
 
 	case agent.EvSessionEnded:

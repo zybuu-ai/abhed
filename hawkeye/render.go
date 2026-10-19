@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 //go:embed report.html.tmpl
@@ -131,6 +133,27 @@ func Text(r Report) string {
 				at = fmt.Sprintf("  #%d", f.Seq)
 			}
 			fmt.Fprintf(&b, "  %-8s %s%s\n           %s\n", strings.ToUpper(string(f.Severity)), f.Title, at, f.Detail)
+		}
+	}
+
+	if len(r.Answers) > 0 {
+		b.WriteString("\n  Answers   ✓ verified · ? unverified · ✗ contradicted, against this session's record\n")
+		for _, a := range r.Answers {
+			fmt.Fprintf(&b, "  #%-4d %s (%s, %s)", a.Seq, a.Footer(), a.Mode, a.Source)
+			if a.Revision != "" {
+				b.WriteString(" · revision asked")
+			}
+			b.WriteString("\n")
+			for _, c := range a.Claims {
+				mark := "?"
+				switch c.Verdict {
+				case agent.ClaimVerified:
+					mark = "✓"
+				case agent.ClaimContradicted:
+					mark = "✗"
+				}
+				fmt.Fprintf(&b, "    %s %-60s %s\n", mark, clip(oneLine(c.Text), 60), clip(oneLine(c.Reason), 90))
+			}
 		}
 	}
 

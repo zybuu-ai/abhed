@@ -671,3 +671,39 @@ func TestEgressDecisionsAreReported(t *testing.T) {
 		t.Fatalf("network reported without decisions: %+v", plain.Network)
 	}
 }
+
+// The answers section lists each check with its claims; a contradicted claim
+// in the answer that was shown last is a finding, one a revision replaced is not.
+func TestAnswersSection(t *testing.T) {
+	v := func(revision string, verdict string) agent.AnswerVerdict {
+		return agent.AnswerVerdict{Mode: agent.VerifyStrict, Source: "text", Contradicted: 1, Revision: revision,
+			Claims: []agent.ClaimVerdict{{N: 1, Text: "All 15 tests pass‮", Verdict: verdict, Reason: "it says 15 test; #3 says 12 tests passed"}}}
+	}
+	b := (&rec{}).user("run the tests").
+		add(agent.EvAnswerVerdict, agent.ActorSystem, agent.Trusted, v("revise it", agent.ClaimContradicted)).
+		add(agent.EvAnswerVerdict, agent.ActorSystem, agent.Trusted, v("", agent.ClaimContradicted))
+	r := Analyze("s1", b.evs)
+	if len(r.Answers) != 2 || r.Answers[1].Seq != 3 {
+		t.Fatalf("answers %+v", r.Answers)
+	}
+	n := 0
+	for _, f := range r.Findings {
+		if f.Code == "contradicted-claim" {
+			n++
+			if f.Seq != 3 {
+				t.Fatalf("the finding names the answer shown: %+v", f)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want one contradicted-claim finding, got %d", n)
+	}
+	text := Text(r)
+	if !strings.Contains(text, "Answers") || !strings.Contains(text, "✗ All 15 tests pass") || strings.Contains(text, "‮") {
+		t.Fatalf("text:\n%s", text)
+	}
+	page, err := HTML(r)
+	if err != nil || !strings.Contains(page, "<s>All 15 tests pass") {
+		t.Fatalf("html: %v", err)
+	}
+}

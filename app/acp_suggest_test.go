@@ -2,6 +2,7 @@ package app
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,5 +63,33 @@ func TestStudioNoSuggestionWhenDisabled(t *testing.T) {
 	}
 	if p, _ := r.recorded(id, agent.EvSuggestionOffered); len(p) != 0 {
 		t.Fatalf("recorded %v", p)
+	}
+}
+
+// Studio labels each answer by default: the verdict follows the reply as a
+// message chunk carrying the footer as text and the verdict whole in _meta.
+func TestStudioAnswerVerdict(t *testing.T) {
+	r := newStudioRig(t, `,"suggest":{"enabled":false}`, say("The tests pass."))
+	id := r.open()
+	_, ups := r.prompt(id, "run the tests")
+	var got map[string]any
+	for _, u := range ups {
+		meta, _ := u["_meta"].(map[string]any)
+		ours, _ := meta[acpMetaKey].(map[string]any)
+		if v, ok := ours["verdict"].(map[string]any); ok {
+			got = v
+			if text, _ := u["content"].(map[string]any)["text"].(string); !strings.Contains(text, "0 verified · 1 unverified · 0 contradicted") {
+				t.Fatalf("the footer is not in the chunk's text: %q", text)
+			}
+		}
+	}
+	if got == nil || got["unverified"] != float64(1) {
+		t.Fatalf("verdict %v", got)
+	}
+	if p, _ := r.recorded(id, agent.EvAnswerVerdict); len(p) != 1 {
+		t.Fatalf("recorded %v", p)
+	}
+	if !slices.Contains(r.cl.conn.acpFeatures(), "answer-verdicts") {
+		t.Fatal("features do not list answer-verdicts")
 	}
 }

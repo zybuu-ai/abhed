@@ -134,6 +134,48 @@ All notable changes to Abhed are recorded here. The format follows
   workspace looks like a Go, Node, Python or Rust project and the image
   lacks its toolchain, and name an image that has it; nothing is pulled to
   look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
+- Verified answers. Abhed does not promise the model is right. It shows you
+  which statements it could check against what actually happened in this
+  session, and it marks the rest. Each statement of an answer is held
+  against the session's own record and labelled verified (a current tool
+  result from this session shows it), unverified, or contradicted (the record
+  says otherwise: shown struck through beside that evidence, never as fact).
+  The checks compare text, exit codes, the calls made and the files as they
+  are now, with no model involved, so they hold with a weak model. The
+  terminal, the workbench and console, and Abhed Studio label every answer
+  by default; a contradicted statement gets the agent one revision turn (the
+  only model call label mode adds) and, if it stays, a `NOT FACT` banner above
+  the labels and on the workbench's reply. `-p`, `rpc` and the SDK check only when
+  asked. `verify.mode` (`off`, `label`, `strict`), `-verify`, rpc's `start`,
+  a session's `verify` and `Options.Verify` choose; a managed mode may only
+  be made stricter, and a workspace file may only raise it. Claims about a
+  subagent's work are checked in its own record
+  ([Verified answers](docs/guide/29-verified-answers.md)).
+- `strict` mode gives the agent an `answer` tool to cite its evidence and,
+  when a statement about its work is not verified, one recorded revision
+  turn; a run still unverified ends with the new terminal reason
+  `unverified`, and `abhed -p` exits 8.
+- The terminal prints the checks under each reply
+  (`3 verified · 1 unverified (general knowledge) · 0 contradicted`), and
+  `/evidence N` opens the record behind statement N. The workbench badges
+  each statement ✓, ? or ✗ and opens the call it rests on. HawkEYE gains an
+  Answers section and the `contradicted-claim` and `contract-unmet`
+  findings. The record gains `answer.verdict`; `-p`'s result line, rpc's
+  answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
+  `Agent.Verdict()` carry it.
+- A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
+  of 21 planted wrong claims none is shown as verified and 10 are
+  contradicted, all 14 true controls are verified, and no true or neutral
+  claim is contradicted; the test holds those figures as a floor.
+- An optional critic (`verify.critic`) has a model, ideally of another
+  family, check each verified statement against its evidence. It can only
+  downgrade, and fails closed to unverified.
+- A completion contract (`verify.contract`): commands the harness runs in the
+  sandbox after the agent's last change (`require`), and files the run must
+  not change (`protect`). A run with a contract ends `completed` only when
+  they hold and its statements are verified. It lives in configuration the
+  agent cannot reach, and a required command runs only where policy would let
+  it run unasked.
 - Runbooks: a plan from plan mode can carry the exact calls it will make
   (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
   the policy and hashed when the plan is proposed, and you approve them once

@@ -97,6 +97,15 @@
   "web_fetch": {
     "enabled": false
   },
+  "verify": {
+    "critic": {
+      "enabled": false
+    },
+    "contract": {
+      "require": [],
+      "protect": []
+    }
+  },
   "monitor": {
     "enabled": true,
     "judge": "rules",

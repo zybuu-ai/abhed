@@ -189,6 +189,17 @@ type Options struct {
 	// suggest.enabled allows it. Off by default: one more model call per Run.
 	Suggest bool
 
+	// Verify checks each answer against the agent's record: off, label or
+	// strict, binding as the -verify flag does (a managed verify.mode may only
+	// be made stricter). Empty takes the configuration's verify.mode, and with
+	// that unset checks nothing unless VerifyByDefault is set. In strict mode
+	// a run whose answer stays unverified ends with an *EndedError whose
+	// Reason is unverified. Verdict reports the last check.
+	Verify string
+	// VerifyByDefault labels answers when neither Verify nor verify.mode
+	// says otherwise, as the terminal does where a person reads the answer.
+	VerifyByDefault bool
+
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
@@ -540,6 +551,15 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}
+	vcfg, err := toolset.VerifyFlag(cfg, opts.Verify)
+	if err != nil {
+		return fail(fmt.Errorf("abhed: Verify: %w", err))
+	}
+	verifier, err := toolset.Verifier(vcfg, opts.VerifyByDefault)
+	if err != nil {
+		return fail(fmt.Errorf("abhed: %w", err))
+	}
+	verifier.Install(loop)
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
 	// A surface's new session says how it started, as the command line's does.
@@ -716,6 +736,13 @@ func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 // WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
 // of its settings were ignored because it is not trusted.
 func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
+
+// AnswerVerdict is what the checks found for one answer; see Options.Verify.
+type AnswerVerdict = agent.AnswerVerdict
+
+// Verdict is the check of the last answer, or nil when answers are not
+// checked or none has been yet.
+func (a *Agent) Verdict() *AnswerVerdict { return a.loop.LastVerdict() }
 
 // Events returns everything recorded so far.
 func (a *Agent) Events() []Event {

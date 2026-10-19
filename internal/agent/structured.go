@@ -102,6 +102,12 @@ func RunStructured(ctx context.Context, loop *Loop, registry *tools.Registry,
 	rt := &resultTool{schema: schema, compiled: compiled}
 	registry.Add(rt)
 	defer registry.Remove(ResultToolName)
+	// The result is the answer here: the answer tool, which would end the run
+	// without one, is put away for the run.
+	if at, ok := registry.Get(AnswerToolName); ok {
+		registry.Remove(AnswerToolName)
+		defer registry.Add(at)
+	}
 
 	// The instruction rides with the prompt rather than the system prompt so
 	// it applies to this run only, and so a caller's own system prompt is not

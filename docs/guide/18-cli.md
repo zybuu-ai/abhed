@@ -33,6 +33,7 @@ more often a mistyped command than a task.
 | `-settings FILE` | a settings file, or inline JSON, for this run; see below |
 | `-mcp-config FILE`, `-strict-mcp-config` | MCP servers for this run, and whether they are the only ones; see below |
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
+| `-verify MODE` | `off`, `label` or `strict`: how each answer is checked against the session's record; a managed mode may only be made stricter — [Verified answers](29-verified-answers.md) |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
 | `-runbook FILE`, `-runbook-sha256 HASH` | with `-p`, approve a plan's runbook for the run, pinned to the hash you reviewed: see [Runbooks](28-runbooks.md#headless-runs) |
 
@@ -144,6 +145,7 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/status` | model, mode, workspace and branch, sandbox, record, session, context use, the turn limit and what it counts, token budget, background tasks, trust, managed settings |
 | `/usage` (or `/cost`) | tokens, cache hit rate, prefill saving, compactions, and a breakdown by subagent and by tool source |
 | `/todos` | the agent's task list as it stands; Ctrl-T lists the open items above the input — [The terminal](20-terminal.md#what-the-harness-does) |
+| `/evidence [N \| #seq]` | the checks on the last answer: every statement with its verdict, or the record behind statement N, or one entry of the record — [Verified answers](29-verified-answers.md#where-you-see-it) |
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
 | `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |

@@ -104,6 +104,16 @@ that urges past a safeguard or towards something destructive.
 `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
 
+**Checked answers.** A reply holding a statement the session's record
+contradicts is flagged on the reply itself (`✗ NOT FACT`, with a red edge),
+and the agent gets one turn to correct it. Under each reply, a box lists what checking it against
+the session's record found: each statement with a ✓ (verified), ? (unverified)
+or ✗ (contradicted, struck through, with the record entry against it). It
+opens by itself when a statement is contradicted or a statement about the work
+is unverified, and each `#seq` opens the tool call the statement rests on. The
+statements and excerpts are the model's and the tools' text, shown with every
+control and format character written out. A session's `verify` setting, or
+`verify.mode`, changes or turns it off ([Verified answers](29-verified-answers.md)).
 **A plan from plan mode.** A session started in plan mode can propose a plan
 with `exit_plan`. It is shown as a card with the plan and, when it has a
 [runbook](28-runbooks.md), every step as it will run, with the CLI's three

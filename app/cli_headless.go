@@ -384,12 +384,15 @@ type resultLine struct {
 	IsError    bool            `json:"is_error"`
 	Result     string          `json:"result"`
 	Structured json.RawMessage `json:"structured_output,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	SessionID  string          `json:"session_id"`
-	NumTurns   int             `json:"num_turns"`
-	DurationMS int64           `json:"duration_ms"`
-	ExitCode   int             `json:"exit_code"`
-	Usage      resultUsage     `json:"usage"`
+	// Verdict is what the checks found for the last answer, when answers
+	// are verified.
+	Verdict    *agent.AnswerVerdict `json:"verdict,omitempty"`
+	Error      string               `json:"error,omitempty"`
+	SessionID  string               `json:"session_id"`
+	NumTurns   int                  `json:"num_turns"`
+	DurationMS int64                `json:"duration_ms"`
+	ExitCode   int                  `json:"exit_code"`
+	Usage      resultUsage          `json:"usage"`
 	// Omitted names the event types this output left out, so a reader of the
 	// capture can tell a gap where they sat from a missing event.
 	Omitted []agent.EventType `json:"omitted,omitempty"`
@@ -450,6 +453,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Provider = appCfg.Model.Default
+	// A structured result is checked by its schema, not as prose.
+	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
+		v.Install(loop)
+	}
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
 	seed(loop)
@@ -555,7 +562,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
 			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
-			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}}
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict()}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
 		}

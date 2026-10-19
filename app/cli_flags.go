@@ -128,6 +128,7 @@ type cliFlags struct {
 	systemPrompt    string
 	systemFile      string
 	jsonSchema      string
+	verify          string
 	runbook         string
 	runbookHash     string
 	noStdin         bool
@@ -178,6 +179,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.systemPrompt, "system-prompt", "", "replace the system prompt; refused under a managed configuration (recorded by sha256)")
 	fs.StringVar(&f.systemFile, "system-prompt-file", "", "replace the system prompt with this file's contents")
 	fs.StringVar(&f.jsonSchema, "json-schema", "", "with -p, deliver the answer as JSON matching this schema (inline, or @file)")
+	fs.StringVar(&f.verify, "verify", "", "check answers against the session's record: off|label|strict; strict ends an unverified run with exit 8")
 	fs.StringVar(&f.runbook, "runbook", "", "with -p, a runbook file ({\"plan\":…,\"runbook\":[…]}) approved for this run: each step made exactly as listed runs without asking; any other change asks, and so is refused")
 	fs.StringVar(&f.runbookHash, "runbook-sha256", "", "with -runbook, the plan hash the runbook must have, or the run is refused")
 	fs.BoolVar(&f.skipPerms, "dangerously-skip-permissions", false, "bypass mode after a confirmation on a terminal; refused under a managed configuration; deny rules still apply")

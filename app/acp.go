@@ -802,6 +802,8 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		},
 		// The editor shows a next prompt in its input after a turn.
 		Suggest: true,
+		// A person reads the answer there, so it is labelled unless configured otherwise.
+		VerifyByDefault: true,
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
@@ -1104,6 +1106,9 @@ func stopReason(ctx context.Context, err error) (stop, reason string) {
 		return "cancelled", string(ended.Reason)
 	case agent.TermMaxBudget:
 		return "max_tokens", "budget"
+	case agent.TermUnverified:
+		// The turn ended with its answer; the checks could not verify it.
+		return "end_turn", string(ended.Reason)
 	}
 	return "refusal", string(ended.Reason)
 }

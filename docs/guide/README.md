@@ -41,6 +41,7 @@ model you point it at, and records everything it does.
 | [Container drivers](23-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
 | [Snapshots and forwarding](25-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
+| [Verified answers](29-verified-answers.md) | each statement of an answer checked against what the session observed: verified, unverified or contradicted; strict mode and the completion contract |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Running on Kubernetes](27-kubernetes.md) | the Helm chart: the restricted pod, probes, preflight, TLS, Postgres, ingress and OpenShift |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |

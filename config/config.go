@@ -78,6 +78,8 @@ type Config struct {
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
 	Suggest SuggestConfig `json:"suggest,omitempty"`
+	// Verify governs answer verification and the completion contract.
+	Verify VerifyConfig `json:"verify,omitempty"`
 	// Monitor governs the supervisor, which may only tighten a decision.
 	Monitor MonitorConfig `json:"monitor,omitempty"`
 	// Plan governs what an accepted plan may carry.
@@ -1801,6 +1803,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("suggest.model is %q, which is not a configured provider; available: %s",
 				m, strings.Join(providerNames(c.Model.Providers), ", "))
 		}
+	}
+	if err := c.validateVerify(); err != nil {
+		return err
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)

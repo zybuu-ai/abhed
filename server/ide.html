@@ -125,6 +125,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}.dot.background{background:var(--warn)}
 .badge{font-size:10px;padding:0 4px;border-radius:3px;color:var(--muted)}.badge.warn{color:var(--warn)}
 .dot.done.error,.dot.done.max_turns,.dot.done.max_budget,.dot.done.retry_exhausted,.dot.done.policy_denied,.dot.done.stalled,.dot.done.deadline{background:var(--del)}
+.dot.done.unverified{background:var(--warn)}
 .card{margin:6px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
 .card .t{display:flex;gap:8px;align-items:baseline}
 .card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
@@ -318,6 +319,21 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .todo .in_progress{color:var(--accent);font-weight:600}
 .sys{font:11.5px var(--mono);color:var(--muted);text-align:center;padding:2px 0;flex:none}
 .sys.bad{color:var(--bad)}
+/* An answer's checks: each claim badged ✓ verified, ? unverified, ✗ contradicted (struck through, with the record against it). */
+.verdict{border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:12px;flex:none}
+.verdict summary{cursor:pointer;font:11.5px var(--mono);color:var(--ink-2)}
+.verdict.bad{border-color:var(--bad)}.verdict.unk{border-color:var(--warn)}
+.verdict .cl{display:flex;gap:7px;padding:3px 0;align-items:baseline}
+.verdict .mk{font-weight:700;flex:none;width:1em;text-align:center}
+.verdict .verified .mk{color:var(--ok)}.verdict .unverified .mk{color:var(--warn)}.verdict .contradicted .mk{color:var(--bad)}
+.verdict .contradicted .t{text-decoration:line-through}
+.verdict .t{overflow-wrap:anywhere}
+.verdict .vbanner{margin:4px 0;padding:5px 8px;border-radius:4px;background:var(--bad-bg);color:var(--bad);font-weight:700}
+.msg.agent.contradicted{box-shadow:inset 3px 0 0 var(--bad)}
+.msg .vflag{margin-top:6px;color:var(--bad);font:700 11.5px var(--sans)}
+.verdict .why{color:var(--muted);font:11px/1.45 var(--mono);overflow-wrap:anywhere}
+.verdict a.seq{color:var(--accent);cursor:pointer;text-decoration:underline}
+.call.hl,.evt.hl{outline:2px solid var(--accent);outline-offset:1px}
 .sys.woke{color:var(--accent)}
 #composer{flex:none;border-top:1px solid var(--line);padding:9px 10px;position:relative}
 #q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
@@ -2421,6 +2437,8 @@ function render(ev){
     // The chat is the conversation with the agent: what the person did by
     // hand is in Events, their terminal and the changes view.
     if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
+    // The answer tool's text arrives as the agent's message; its checks as answer.verdict.
+    if(p.tool === 'answer') break;
     endThinking(at); streaming = null; streamBody = null;
     // A payload redaction could not run on is withheld whole: say so rather than draw "undefined".
     const d = el('details', 'call'), s = el('summary'); const subj = p.withheld ? p.withheld : subjectOf(p.tool, p.args);
@@ -2441,7 +2459,9 @@ function render(ev){
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + byWhom(p) + ' — ' + (p.reason || '')))); }
     answered(p, c, 'denied' + byWhom(p) + (p.reason ? ' — ' + p.reason : '')); hawkSoon(); break; }
   case 'observation': {
+    if(p.tool === 'answer' && !p.is_error) break;
     const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
+    if(c) c.seq = ev.seq;  // an answer's evidence names the result by seq
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
       c.out = body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''); if(c.node.open) fillCall(c); }
     if(p.tool === 'bash') logTerminal(c ? c.subject : '', p, mine ? 'you' : 'agent');
@@ -2449,6 +2469,7 @@ function render(ev){
     if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
+  case 'answer.verdict': drawVerdict(p); break;
   // A plan from plan mode, with its runbook, is answered here once; the record settles it.
   case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
   case 'plan.decided': settleAsk('plan', p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') + (p.plan_hash ? ' · runbook ' + p.plan_hash.slice(0, 12) : '') : 'keep planning'); break;
@@ -3131,9 +3152,58 @@ function logTerminal(cmd, p, who){
   agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }
+// drawVerdict shows the checks on an answer under it. Claims, reasons and
+// excerpts are the model's and the tools' text: shown, never obeyed.
+function drawVerdict(p){
+  const claims = p.claims || [], contract = p.contract;
+  if(!claims.length && !contract && !p.revision) return;
+  const bad = (p.contradicted || 0) > 0 || (contract && !contract.ok), unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
+  const d = el('details', 'verdict' + (bad ? ' bad' : unk ? ' unk' : '')); d.open = bad || unk;
+  const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  // The reply streamed before it was checked: a contradiction is flagged on
+  // the reply itself and at the top of the box, where it cannot be missed.
+  if((p.contradicted || 0) > 0){
+    const n = p.contradicted, what = n + (n === 1 ? ' statement in this reply is' : ' statements in this reply are') + ' contradicted by the session\'s record';
+    const msgs = tx().querySelectorAll('.msg.agent'), last = msgs[msgs.length - 1];
+    if(last){ last.classList.add('contradicted'); last.appendChild(el('div', 'vflag', '✗ NOT FACT: ' + what + (p.revision ? '; the agent is asked to correct it' : '; see the struck-through statements below'))); }
+  }
+  d.appendChild(el('summary', '', (bad ? '✗ ' : unk ? '? ' : '✓ ') + (p.verified || 0) + ' verified · ' + (p.unverified || 0) + ' unverified' +
+    (known ? (known === (p.unverified || 0) ? ' (general knowledge)' : ' (' + known + ' general knowledge)') : '') + ' · ' + (p.contradicted || 0) + ' contradicted' +
+    (contract ? (contract.ok ? ' · contract met' : ' · contract not met') : '') + (p.revision ? ' · the agent is asked to revise once' : '')));
+  if((p.contradicted || 0) > 0) d.appendChild(el('div', 'vbanner', '✗ NOT FACT: ' + p.contradicted + ' contradicted by the session\'s record' + (p.revision ? ' · the agent is asked to correct it' : '')));
+  for(const c of claims){
+    const r = el('div', 'cl ' + (c.verdict || 'unverified')), b = el('div');
+    r.appendChild(el('span', 'mk', c.verdict === 'verified' ? '✓' : c.verdict === 'contradicted' ? '✗' : '?'));
+    r.title = c.verdict || 'unverified';
+    b.appendChild(el('div', 't', visible(c.text || '')));
+    const k = c.conflict;
+    b.appendChild(el('div', 'why', visible(k && k.excerpt ? 'record' + (k.seq ? ' #' + k.seq : '') + ': ' + k.excerpt : c.reason || '')));
+    const seqs = (c.evidence || []).concat(k && k.seq ? [k.seq] : []);
+    if(seqs.length){ const e = el('div', 'why', 'evidence ');
+      for(const s of seqs){ const a = el('a', 'seq', '#' + s); a.tabIndex = 0; a.title = 'Show the tool call behind it';
+        a.addEventListener('click', () => showSeq(s)); a.addEventListener('keydown', x => { if(x.key === 'Enter') showSeq(s); }); e.appendChild(a); e.appendChild(document.createTextNode(' ')); }
+      b.appendChild(e); }
+    r.appendChild(b); d.appendChild(r);
+  }
+  if(contract && !contract.ok){
+    for(const q of contract.require || []) if(!q.ok) d.appendChild(el('div', 'why', visible('✗ required `' + (q.command || '') + '`: ' + (q.reason || ''))));
+    if((contract.protected_changed || []).length) d.appendChild(el('div', 'why', visible('✗ protected files changed: ' + contract.protected_changed.join(', '))));
+  }
+  add(d);
+}
+// showSeq opens the call an observation answered, or else its row in Events.
+function showSeq(seq){
+  const c = [...calls.values()].find(x => x.seq === seq);
+  const flash = n => { n.classList.add('hl'); n.scrollIntoView({block:'nearest'}); setTimeout(() => n.classList.remove('hl'), 1600); };
+  if(c){ c.node.open = true; fillCall(c); flash(c.node); return; }
+  setPanel('events');
+  const row = $('p-events').querySelector('.evt[data-seq="' + Number(seq) + '"]');
+  if(row) flash(row); else add(el('div', 'sys', '#' + Number(seq) + ' is older than the Events panel keeps; the session replay has it'));
+}
 function logEvent(ev, p){
   if(ev.type === 'agent.delta' || ev.type === 'agent.reasoning.delta') return;
   const box = $('p-events'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40, r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
+  r.dataset.seq = ev.seq;
   r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
   // Record text is the model's and the tools': shown, never obeyed (bidi, zero-width).
   r.appendChild(el('span', 'd', visible(p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160))));

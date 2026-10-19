@@ -94,6 +94,7 @@ capture does not say it left any out.
 | Remote changes | per host and per cluster, every `ssh` command and `k8s_apply` write in order: the address or server the approval named, the decision and who made it, the exit code (or `denied`, `not run`, `failed`), and the [runbook](28-runbooks.md) step it was (`remote_changes` in the JSON) |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
+| Answers | each check of an answer against the record, from its `answer.verdict`: the counts, the mode and whether the agent cited its evidence, and every statement with ✓, ? or ✗ and why (`answers` in the JSON) — [Verified answers](29-verified-answers.md) |
 
 The tokens in the summary and per turn are the conversation's own model
 calls. A next-prompt suggestion's call (`model.call` with `purpose:
@@ -140,6 +141,8 @@ and none of them is a model's opinion.
 | `broken-edit` | info | an `edit` or `write` was refused, because it would have left a file that parsed no longer parsing or its new text was a pasted diff; the file was left as it was |
 | `output-cap` | warn | a turn spent the whole output budget reasoning and made no tool call; the loop nudged it and lowered the effort |
 | `secret-redacted` | warn | a stored secret's value was written out by a command or the model and redacted before the record |
+| `contradicted-claim` | warn | an answer shown last (no revision followed it) made a statement the record contradicts; it was shown struck through, not as fact ([Verified answers](29-verified-answers.md)) |
+| `contract-unmet` | warn | the completion contract was not met: a required command failed or was not run, or a protected file changed |
 | `abnormal-end` | warn | the session ended as anything other than completed or a user interrupt |
 | `repeated-failure` | warn | the same call failed three times unchanged |
 | `context-pressure` | warn | a turn used 85% or more of the window |

@@ -213,6 +213,12 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				}
 			}
 
+		case agent.EvAnswerVerdict:
+			var v agent.AnswerVerdict
+			if json.Unmarshal(e.Payload, &v) == nil {
+				r.Answers = append(r.Answers, Answer{Seq: e.Seq, AnswerVerdict: v})
+			}
+
 		case agent.EvSessionEnded:
 			_ = json.Unmarshal(e.Payload, &ended)
 			r.Outcome = string(ended.Reason)

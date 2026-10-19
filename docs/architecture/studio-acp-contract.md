@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `worktrees`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -242,6 +242,23 @@ sent after an error or a cancel, while an approval waits, on a replay
 `model.call` with `purpose: "suggestion"`, whose `usage_update` is not sent
 (it is no measure of the context). `features` lists `suggestions`. Studio's own change is separate
 from the engine.
+
+### 3.4b Checked answers
+
+A session labels its answers unless the configuration's `verify.mode` says
+otherwise ([Verified answers](../guide/29-verified-answers.md)). After the
+reply, the engine sends one `agent_message_chunk` whose text is the footer and
+the contradicted and unverified statements as plain lines (empty for an answer
+with nothing to check), and whose `_meta["zybuu.ai/abhed"] = {verdict: …}` is
+the `answer.verdict` payload whole: each claim's `n`, `text`, `verdict`
+(`verified`, `unverified`, `contradicted`), `reason`, `evidence` (record `seq`s)
+and `conflict`, the counts, the contract's results and the revision note. An
+editor that knows the key draws ✓, ? and ✗ badges and strikes contradicted
+claims through; one that does not still shows the text. The `answer` tool's
+call sends no tool card: its text is the reply. A replay (`session/load`)
+sends the same chunk. In strict mode a run that ends unverified stops with
+`end_turn` and `_meta["zybuu.ai/abhed"].reason` `unverified`: the turn has its
+answer, and the checks could not verify it. `features` lists `answer-verdicts`.
 
 ### 3.5 Images
 
@@ -1013,6 +1030,7 @@ table.
 | Handshake, features | `initialize` + `meta`, `abhed version --json` | spec + meta | done |
 | Chat, thinking, plan, usage | `session/prompt`, `session/update` | spec | done: reasoning deltas, stop reasons from the terminal reason, usage `meta`; no `cost` (no price table) |
 | Next-prompt suggestion | `agent_message_chunk` + `_meta.suggestion` | spec + meta | done (§3.4a) |
+| Checked answers | `agent_message_chunk` + `_meta.verdict` | spec + meta | done (§3.4b) |
 | Models | `session/set_config_option` (`model`) | spec | done; `config_option_update` on `model.fallback` |
 | Thinking level | config option `thought_level` | spec | not yet: never offered, as no provider reports reasoning control |
 | Slash commands | `available_commands_update` | spec | done (see note 3) |
