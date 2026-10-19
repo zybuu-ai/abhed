@@ -37,6 +37,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/metrics"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -227,6 +228,13 @@ type Options struct {
 	Logger    *slog.Logger
 	// Store defaults to an in-memory store when nil.
 	Store EventStore
+	// Metrics, when set, counts what the record says and how the API is
+	// used; serving it is the caller's (abhed serve mounts or binds it).
+	Metrics *metrics.Abhed
+	// APIAudit, when set, is the chained record every mutating API request
+	// is written to with its principal, before it runs and with its outcome;
+	// a request whose first event cannot be written is refused.
+	APIAudit controlplane.AuditLog
 	// EventTap sees every event as it is appended, on the appending
 	// goroutine. It must return immediately; the telemetry exporter honours
 	// that by queueing and dropping rather than waiting. Nil means no tap.
@@ -756,8 +764,8 @@ func New(opts Options) *Server {
 		st = agent.NewMemStore()
 		tapped = st
 	}
-	if opts.EventTap != nil {
-		tapped = tapStore{EventStore: st, tap: opts.EventTap}
+	if opts.EventTap != nil || opts.Metrics != nil {
+		tapped = tapStore{EventStore: st, tap: opts.EventTap, metrics: opts.Metrics}
 	}
 	s := &Server{
 		opts:     opts,
@@ -782,6 +790,13 @@ func New(opts Options) *Server {
 		},
 	}
 	s.streamsEnd, s.endStreamsNow = context.WithCancel(context.Background())
+	if m := opts.Metrics; m != nil {
+		m.RunningSessions(func() int {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			return len(s.running)
+		})
+	}
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
@@ -1008,7 +1023,7 @@ func (s *Server) Handler() http.Handler {
 	// Order matters and is easy to get backwards: authentication must run
 	// BEFORE the layer that reads the identity, so it wraps closest to the
 	// outside. An inverted order silently yields anonymous identities.
-	handler := s.mustChangeGate(mux)
+	handler := s.mustChangeGate(s.routed(mux))
 	handler = s.requireGroup(handler)
 	handler = s.withMiddleware(handler) // reads identity, logs
 
@@ -5573,13 +5588,23 @@ func (s *Server) cancelRunning() {
 // subscriptions go straight through.
 type tapStore struct {
 	EventStore
-	tap func(agent.Event)
+	tap     func(agent.Event)
+	metrics *metrics.Abhed
 }
 
 func (t tapStore) Append(ev agent.Event) error {
+	start := time.Now()
 	err := t.EventStore.Append(ev)
+	if t.metrics != nil {
+		t.metrics.RecordWrite("events", time.Since(start), err)
+	}
 	if err == nil {
-		t.tap(ev)
+		if t.tap != nil {
+			t.tap(ev)
+		}
+		if t.metrics != nil {
+			t.metrics.Observe(ev)
+		}
 	}
 	return err
 }

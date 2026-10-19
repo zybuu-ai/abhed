@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"path"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -14,6 +15,11 @@ type command struct {
 	words []string
 	// writes are the files its redirections write; reads, those they read.
 	writes, reads []string
+	// dir is the working directory the command runs in, tracked through the
+	// script's cd/pushd/popd; dirKnown is false once a cd went to a target
+	// that could not be resolved statically. "" is where the script started.
+	dir      string
+	dirKnown bool
 }
 
 // script is what the rules read from a shell line.
@@ -25,50 +31,168 @@ type script struct {
 	setsPath bool
 }
 
-// parseScript reads a shell line. ok is false for a line the parser refuses,
-// which the rules then leave to the person and the sandbox.
-func parseScript(src string) (script, bool) {
+// parseScript reads a shell line, starting at the script's own directory.
+func parseScript(src string) (script, bool) { return parseScriptAt(src, "") }
+
+// parseScriptAt reads a shell line whose commands start in start ("" is the
+// local workspace root, "~" the login's home over ssh). It follows the
+// working directory through cd, pushd and popd so a relative target can be
+// resolved against the directory it would run in.
+func parseScriptAt(src, start string) (script, bool) {
 	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
 	if err != nil {
 		return script{}, false
 	}
 	s := script{funcs: map[string]bool{}}
-	syntax.Walk(f, func(n syntax.Node) bool {
-		switch x := n.(type) {
-		case *syntax.FuncDecl:
-			s.funcs[x.Name.Value] = true
-		case *syntax.Assign:
-			if x.Name != nil && x.Name.Value == "PATH" {
+	st := &dirState{dir: start, known: true}
+	walkStmts(src, f.Stmts, st, &s)
+	return s, true
+}
+
+// dirState is the working directory as the script walk reaches a command.
+type dirState struct {
+	dir   string
+	known bool
+	prev  string
+	stack []string
+}
+
+func (d dirState) clone() *dirState {
+	c := d
+	c.stack = append([]string(nil), d.stack...)
+	return &c
+}
+
+// walkStmts follows a list of statements in order, tracking the directory and
+// collecting each simple command with the directory it runs in.
+func walkStmts(src string, stmts []*syntax.Stmt, st *dirState, s *script) {
+	for _, stmt := range stmts {
+		walkCmd(src, stmt, st, s)
+	}
+}
+
+func walkCmd(src string, stmt *syntax.Stmt, st *dirState, s *script) {
+	switch x := stmt.Cmd.(type) {
+	case *syntax.CallExpr:
+		for _, a := range x.Assigns {
+			if a.Name != nil && a.Name.Value == "PATH" {
 				s.setsPath = true
 			}
-		case *syntax.Stmt:
-			call, ok := x.Cmd.(*syntax.CallExpr)
-			if !ok {
-				return true
+		}
+		simple(src, x, stmt, st, s)
+	case *syntax.BinaryCmd:
+		if x.Op == syntax.Pipe || x.Op == syntax.PipeAll {
+			// Each stage of a pipe runs in a subshell, so a cd in one does
+			// not reach the next or outlive the pipe.
+			walkCmd(src, x.X, st.clone(), s)
+			walkCmd(src, x.Y, st.clone(), s)
+			return
+		}
+		walkCmd(src, x.X, st, s) // && ; || run in the same shell
+		walkCmd(src, x.Y, st, s)
+	case *syntax.Block:
+		walkStmts(src, x.Stmts, st, s) // { …; } keeps the shell's directory
+	case *syntax.Subshell:
+		walkStmts(src, x.Stmts, st.clone(), s) // ( … ) is its own shell
+	case *syntax.FuncDecl:
+		if x.Name != nil {
+			s.funcs[x.Name.Value] = true
+		}
+		// A function body runs only when called; collect its commands for the
+		// rules, but on a copy so its cd does not move the caller.
+		walkCmd(src, x.Body, st.clone(), s)
+	default:
+		// if/while/for/case and the like: collect their commands on a copy so
+		// the directory is right inside the body, and where a cd happened in
+		// one the directory afterwards is unknown, since which branch ran is not.
+		before := *st
+		inner := st.clone()
+		syntax.Walk(stmt.Cmd, func(n syntax.Node) bool {
+			if sub, ok := n.(*syntax.Stmt); ok && sub != stmt {
+				walkCmd(src, sub, inner, s)
+				return false
 			}
-			var c command
-			for _, w := range call.Args {
-				c.words = append(c.words, wordText(src, w))
+			return true
+		})
+		if inner.dir != before.dir || inner.known != before.known {
+			st.known = false
+		}
+	}
+}
+
+// simple records one simple command, and applies it when it is a cd.
+func simple(src string, call *syntax.CallExpr, stmt *syntax.Stmt, st *dirState, s *script) {
+	var c command
+	c.dir, c.dirKnown = st.dir, st.known
+	for _, w := range call.Args {
+		c.words = append(c.words, wordText(src, w))
+	}
+	for _, r := range stmt.Redirs {
+		switch r.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob:
+			if r.Word != nil {
+				c.writes = append(c.writes, wordText(src, r.Word))
 			}
-			for _, r := range x.Redirs {
-				switch r.Op {
-				case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob:
-					if r.Word != nil {
-						c.writes = append(c.writes, wordText(src, r.Word))
-					}
-				case syntax.RdrIn:
-					if r.Word != nil {
-						c.reads = append(c.reads, wordText(src, r.Word))
-					}
-				}
-			}
-			if len(c.words) > 0 || len(c.writes) > 0 || len(c.reads) > 0 {
-				s.cmds = append(s.cmds, c)
+		case syntax.RdrIn:
+			if r.Word != nil {
+				c.reads = append(c.reads, wordText(src, r.Word))
 			}
 		}
-		return true
-	})
-	return s, true
+	}
+	prog, rest := c.program()
+	switch prog {
+	case "cd":
+		applyCd(st, firstWord(rest))
+	case "pushd":
+		st.stack = append(st.stack, st.dir)
+		applyCd(st, firstWord(rest))
+	case "popd":
+		if n := len(st.stack); n > 0 {
+			st.prev, st.dir = st.dir, st.stack[n-1]
+			st.stack = st.stack[:n-1]
+		} else {
+			st.known = false
+		}
+	}
+	if len(c.words) > 0 || len(c.writes) > 0 || len(c.reads) > 0 {
+		s.cmds = append(s.cmds, c)
+	}
+}
+
+// firstWord is the first operand, or "" when there is none.
+func firstWord(args []string) string {
+	for _, a := range operands(args) {
+		return a
+	}
+	return ""
+}
+
+// applyCd moves the tracked directory for a cd to word.
+func applyCd(st *dirState, word string) {
+	switch {
+	case word == "":
+		st.prev, st.dir = st.dir, "~" // cd with no argument goes home
+	case word == "-":
+		st.dir, st.prev = st.prev, st.dir
+	case homeish(word):
+		st.prev, st.dir = st.dir, path.Clean(homeTilde(word))
+	case strings.HasPrefix(word, "/"):
+		st.prev, st.dir = st.dir, path.Clean(word)
+	case strings.ContainsAny(word, "$*?`"):
+		st.prev, st.known = st.dir, false // a target only running the line would give
+	default:
+		st.prev, st.dir = st.dir, path.Clean(joinDir(st.dir, word))
+	}
+}
+
+// joinDir joins a relative path onto a base directory, treating a leading "~"
+// as a literal first segment so the home marker is kept.
+func joinDir(base, rel string) string {
+	rel = strings.TrimPrefix(rel, "./")
+	if base == "" {
+		return path.Clean(rel)
+	}
+	return path.Clean(path.Join(base, rel))
 }
 
 // wordText is a word with its quotes removed when it is literal throughout,

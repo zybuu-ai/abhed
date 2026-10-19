@@ -52,7 +52,10 @@ build() {
 	go build -o "$dir/test2json" cmd/test2json
 	# A static musl getaddrinfo, for the fence's resolver test, where musl-gcc is installed.
 	if command -v musl-gcc > /dev/null; then
-		musl-gcc -static -O2 -o "$dir/musl-resolve" scripts/ci/musl-resolve.c
+		musl-gcc -static -O2 -o "$dir/musl-resolve" scripts/ci/musl-resolve.c ||
+			{ echo "ENVIRONMENT: musl-gcc could not build scripts/ci/musl-resolve.c, which TestFenceResolvesWithMusl needs (is musl-tools installed?)"; return 1; }
+	else
+		echo "note: no musl-gcc here, so TestFenceResolvesWithMusl will fail under ABHED_REQUIRE_FENCE=1 (install musl-tools)"
 	fi
 }
 

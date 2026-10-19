@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -325,5 +326,77 @@ func TestWorkbenchPlanAnswerNotRecorded(t *testing.T) {
 	}
 	if _, ok := live.Loop.PendingPlan(); !ok {
 		t.Fatal("the plan no longer waits")
+	}
+}
+
+// disablingGate settles every answer, and turns runbooks off in the session
+// as it does, so the runbook cannot be bound after the mode has changed.
+type disablingGate struct{ loop func() *agent.Loop }
+
+func (disablingGate) MayAnswer(context.Context, string, string, string) bool { return false }
+func (g disablingGate) Answer(context.Context, ApprovalAnswer) (bool, error) {
+	g.loop().DisableRunbooks()
+	return true, nil
+}
+
+// A runbook that cannot be bound once the mode has changed takes the answer
+// back: the session returns to plan mode, recorded, and keep-planning is on
+// the record after the acceptance.
+func TestWorkbenchPlanNotBoundRestoresPlanMode(t *testing.T) {
+	var s *Server
+	s, st, _ := planServerWith(t, func(o *Options) {
+		o.ApprovalGate = disablingGate{loop: func() *agent.Loop { return s.anyLive(t).Loop }}
+	}, `[{"tool":"write","target":"WS/notes.txt","args":{"content":"x"}}]`)
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"plan it","mode":"plan"}`))
+	hash := proposedHash(t, turnsEnded(t, st, id, 1))
+	if w := call(t, s, "POST", "/v1/sessions/"+id+"/plan", `{"decision":"approve","plan_hash":"`+hash+`"}`); w.Code != http.StatusConflict {
+		t.Fatalf("approve: %d %s", w.Code, w.Body)
+	}
+	live := s.anyLive(t)
+	if live.Loop.Policy.Mode != "plan" {
+		t.Fatalf("mode %s", live.Loop.Policy.Mode)
+	}
+	evs, _ := st.Events(id)
+	var got []string
+	for _, e := range evs {
+		switch e.Type {
+		case agent.EvModeChanged:
+			var m agent.ModeChanged
+			_ = json.Unmarshal(e.Payload, &m)
+			got = append(got, m.From+">"+m.To)
+		case agent.EvPlanDecided:
+			var p agent.PlanDecided
+			_ = json.Unmarshal(e.Payload, &p)
+			got = append(got, p.Decision)
+		}
+	}
+	if strings.Join(got, ",") != "accept,plan>default,default>plan,keep-planning" {
+		t.Fatalf("recorded %v", got)
+	}
+}
+
+// When neither the mode change nor its withdrawal can be recorded, the
+// reply says the record may show an acceptance that did not take effect.
+func TestWorkbenchPlanSaysTheRecordMayMislead(t *testing.T) {
+	s, st, _ := planServer(t, `[{"tool":"write","target":"WS/notes.txt","args":{"content":"x"}}]`)
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"plan it","mode":"plan"}`))
+	hash := proposedHash(t, turnsEnded(t, st, id, 1))
+	live := s.anyLive(t)
+	var n atomic.Int32
+	live.Loop.Recorder.Gate = func() error {
+		if n.Add(1) > 1 {
+			return errors.New("the record is gone")
+		}
+		return nil
+	}
+	w := call(t, s, "POST", "/v1/sessions/"+id+"/plan", `{"decision":"approve","plan_hash":"`+hash+`"}`)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "may show the plan accepted") {
+		t.Fatalf("approve: %d %s", w.Code, w.Body)
+	}
+	if live.Loop.Policy.Mode != "plan" {
+		t.Fatalf("mode %s", live.Loop.Policy.Mode)
+	}
+	if _, _, bound := live.Loop.BoundRunbook(); bound {
+		t.Fatal("bound")
 	}
 }

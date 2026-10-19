@@ -378,13 +378,16 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		// Back to plan mode, with the plan waiting again: an answer the record
 		// does not hold leaves nothing in force.
 		st.loop.UnbindPlan()
-		_ = modes.Set(ctx, policy.ModePlan, agent.ViaSlash)
+		_ = modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit)
 		st.loop.ReofferPlan(plan)
 		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so the session stays in plan mode and the plan is put to you again after the next turn: " + err.Error()})
 		return ""
 	}
 	if err := st.loop.AcceptPlan(plan); err != nil {
-		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound: " + err.Error()})
+		// The accepted answer did not take effect: back to plan mode, and on the record.
+		_ = modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit)
+		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so the session stays in plan mode: " + err.Error()})
 		return ""
 	}
 	st.loop.SetApprovedPlan(plan.Text)

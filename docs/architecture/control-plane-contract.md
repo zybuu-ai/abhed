@@ -778,6 +778,20 @@ plane on, the reconciler runs and the store answers; else `503`. It names
 its checks with `ok` or `failed` and nothing more. `/v1/health` keeps its
 shape. `abhed serve -check` runs the start-up checks without serving.
 
+**API audit and metrics.** Every mutating API request, on these routes and
+every other, is written to the same audit record with its principal: one
+event with outcome `requested` before it runs, refused with `503` when that
+cannot be written, and one with `ok` or `failed` (and the status as `code`)
+after it. Its `action` is `api:` and the route pattern, its `sandbox_id`
+empty, and its `detail` the method, route, tenant, caller address and
+wildcard values; the `ok` event of a create adds `created.id` (or
+`created.session_id`, `created.name`) from its JSON answer. Terminal input
+and language-server messages get the `requested` event only. The sandbox
+operations above keep their own events beside these, chained on SQLite as
+on Postgres. With `server.metrics.enabled`, `abhed_sandbox_operations_total`
+counts each operation's outcome by action, and `abhed_http_requests_total`
+each request by route pattern ([Configuration](../guide/02-configuration.md#metrics-and-the-api-audit)).
+
 
 ## 12. Extension points for workspaces (Implemented)
 

@@ -271,7 +271,7 @@ It polls its store each second rather than being handed lines:
 - **Postgres**: one server at a time writes. It holds a Postgres advisory
   lock on a connection of its own, which the database lets go of when that
   connection ends, and keeps its cursors in the `ocsf_cursors` table
-  (schema version 12; run `abhed migrate`). Every other server stands by and
+  (schema version 13; run `abhed migrate`). Every other server stands by and
   tries for the lock each second; the one that takes it reads the cursors,
   looks at every session once for lines past them, and goes on. So each
   event is written by one server, in order, and a server that stopped

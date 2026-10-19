@@ -502,3 +502,27 @@ func TestCtrlBAfterTheTimeoutDoesNotMoveTheCommand(t *testing.T) {
 		t.Errorf("result: %q", res.Content)
 	}
 }
+
+// The note bash adds is recorded with the result as what it names, so the
+// record need not be read for its words: a folder the sandbox denies, or none.
+func TestBashRecordsWhatItsSandboxNoteNames(t *testing.T) {
+	s, dir := setup(t)
+	home, _ := os.UserHomeDir()
+	sb := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, Isolation: Isolation{Tier: "process"}}
+	for cmd, want := range map[string]string{
+		`echo "cat: ` + home + `/.ssh/id_rsa: Operation not permitted"; exit 1`: "ssh",
+		`echo "cat: ` + home + `/.netrc: Operation not permitted"; exit 1`:      "credentials",
+		`echo "ls: .abhed/records: Operation not permitted"; exit 1`:            "abhed",
+		`echo "chown: f: Operation not permitted"; exit 1`:                      "denied",
+		`echo "cat: ./project/.netrc: Operation not permitted"; exit 1`:         "denied",
+		`echo "chown: f: Operation not permitted"`:                              "",
+		`echo "no such file"; exit 1`:                                           "",
+	} {
+		if res := run(t, sb, s, bashArgs{Command: cmd, Description: "print"}); res.SandboxNote != want {
+			t.Errorf("%s: note %q, want %q", cmd, res.SandboxNote, want)
+		}
+	}
+	if res := run(t, Bash{}, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.SandboxNote != "" {
+		t.Errorf("a note on the host: %q", res.SandboxNote)
+	}
+}

@@ -17,11 +17,12 @@ var Budgets = struct {
 	StreamOverheadPerSec int           // bytes beyond the text while streaming
 	FirstToken           time.Duration // stub delta to screen, first token
 	DeltaSteady          time.Duration // stub delta to screen, steady state
-	StartupWarm          time.Duration // spawn to prompt ready, wall clock on an unloaded machine; reported
+	StartupWarm          time.Duration // spawn to prompt ready, wall clock on an unloaded machine; held at 3x where the load is under half the CPUs
 	StartupCold          time.Duration // first run in a fresh HOME, likewise
 	StartupWarmCPU       time.Duration // the binary's CPU time when its prompt appears
 	StartupColdCPU       time.Duration // the same, first run in a fresh HOME
-	StartupWallCeiling   time.Duration // wall clock to the prompt, held however loaded the machine; under the slow engine's 3 s
+	StartupWarmCeiling   time.Duration // wall clock to the prompt, best warm run, held however loaded the machine; not scaled under -race
+	StartupColdCeiling   time.Duration // the same for the first run in a fresh HOME
 	ApprovalDrawn        time.Duration
 	PasteBytes           int // a raw 25-line paste
 }{
@@ -35,11 +36,16 @@ var Budgets = struct {
 	StartupCold:          400 * time.Millisecond,
 	// 1.2.8 and 1.2.9 both reach the prompt in about 57 ms of CPU (cold
 	// runs 50-80 ms): about twice that fails a start that does twice the
-	// work, while 10 ms sampling and a busy machine do not. The wall clock
-	// is held to the ceiling, which a start waiting on the slow engine breaks.
-	StartupWarmCPU:     120 * time.Millisecond,
-	StartupColdCPU:     200 * time.Millisecond,
-	StartupWallCeiling: time.Second,
+	// work, while 10 ms sampling and a busy machine do not.
+	StartupWarmCPU: 120 * time.Millisecond,
+	StartupColdCPU: 200 * time.Millisecond,
+	// CPU time misses a start that waits. The worst starts measured under
+	// load (a whole-module run, load average 10-34) are 253 ms warm and
+	// 290 ms cold, and under -race 200 ms warm and 320 ms cold: 500 ms is
+	// clear of them and fails a 600 ms wait; the first run's extra work on a
+	// fresh HOME gets 800 ms. Both are well under the slow engine's 3 s.
+	StartupWarmCeiling: 500 * time.Millisecond,
+	StartupColdCeiling: 800 * time.Millisecond,
 	ApprovalDrawn:      50 * time.Millisecond,
 	PasteBytes:         20 << 10,
 }

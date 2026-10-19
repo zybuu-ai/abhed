@@ -43,7 +43,7 @@ listed in [OCSF events and logs](../guide/30-ocsf-and-logs.md#classes).
 | `agent.message` | text, reasoning (stripped from history) | agent |
 | `action.requested` | tool, args (always a JSON object, the canonical arguments every step and the tool read; `{}` on a call refused at step `args`); `raw_args`, the refused arguments as text; `dropped_args`, keys a built-in tool did not declare and dropped (each clipped to 64 characters, at most 32 and then `+N more`), which the observation also names to the model as `[ignored: …]`; `resolved`, arguments the harness set or rewrote before policy read the call, such as the cluster of the session's only login or a Kubernetes call's default namespace; `via` when something issued it for the agent, such as `skill research pipeline` for a skill pipeline's step (recorded in the record of the loop whose `skill` call ran the pipeline); `supervisor`, the supervisor's verdict on the call when it gave one: `decision`, `code`, `rationale`, `advice`, `judge` | agent |
 | `action.approved` / `.denied` | the step that decided (`step`; `plan` when an approved runbook's step stood in for the ask), `reason`, `by` (`plan` for that step); `plan_hash` and `plan_step` when the call was a runbook step; `rule`, the rule as written, when a deny, ask or allow rule decided, and `layer` when that rule came from a policy layer an edition added (below); `scope` when a remembered scope allowed it; `approver` and `granted_scope` when a person answered (below) | policy |
-| `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known | tool |
+| `observation` | result, truncated, exit code; `sandbox`, the tier a `bash` command ran under (`none` on the host), when known; `sandbox_note`, when `bash` added a note that an operation was not permitted under a sandbox: what the output named that the sandbox denies (`ssh`, `kube`, `aws`, `gnupg`, `credentials` for another credential path in the home folder, `abhed` for Abhed's own state), or `denied` when it named none | tool |
 | `observation` with `not_run` | the answer to an approved call its turn ended before running (an interrupt, a shutdown): `is_error`, and a "Not run" text. It is a result, not an outcome, and HawkEYE does not mark the call run | system |
 | `observation` with `outcome_unknown` | the answer to a call a process approved and then stopped before recording its result, written by the process that recovers the session (or, under an edition that moves turns, continues it): `is_error`, and an "Outcome unknown" text. The call is not run again, and the same call (tool and arguments) later in the session is asked of a person first, in every mode | system |
 | `message.dropped` | queue id, client id, text, when it was queued, reason; a queued message the model never read because the server stopped first, or because the session moved to another process | system |
@@ -215,6 +215,34 @@ CREATE TABLE models (               -- registry + capability profile (§08 L2)
 
 **Events are append-only.** No UPDATE, no DELETE. Retention is by partition drop, which keeps
 the audit guarantee intact — an audit log you can edit is not an audit log.
+
+**Events are hash-chained** (schema version 8). The sketch above leaves out
+three columns the trigger `zz_events_chain` sets on every insert, whatever the
+writer sent, in the insert's own transaction: `chain_pos` (1, 2, … within the
+session), `prev_hash` (the previous position's `hash`, 64 zeros at position 1)
+and `hash`, the SHA-256 in hex of `prev_hash`, a newline, and the row's
+columns `id, session_id, tenant_id, parent_id, seq, type, payload, actor,
+trust, created_at` as Postgres renders them as `jsonb` text in UTC. The chain
+is **per session**: sessions never wait on each other's lock, a session's
+chain is whole on its own (export, verify, erase by key), and a subagent's
+session has its own. What a per-session chain cannot show by itself is a
+whole session removed, or the end of one cut; that takes a head kept
+elsewhere (`record.witness`, or an edition's anchor; see
+[the Postgres record](../guide/12-records.md#the-postgres-record)). The control plane's `sandbox_audit` is chained the same way **per
+tenant**, being one stream.
+
+`chain_pre` (schema version 11) holds, per chain, how many unchained rows were
+already there when the chain began, counted once by a migration and never
+chained over. The runtime role can only read it. A check fails any unchained
+row it does not cover: one written with the trigger off.
+
+The chain head API (`store/chain`): `Source.Head(scope)` is the last position
+and hash, and `Source.VerifyRange(scope, from, to)` recomputes positions
+`from..to` and returns the hash it links to (`Before`) and the hash at `to`.
+`Postgres.EventChain()` (scope: a session), `Postgres.AuditChain()` (scope:
+the tenant), `local.Store.Chain()` (scope: a session, positions are lines),
+`local.AuditChain(dir)` (scope: the tenant's `api.jsonl`) and
+`sqlite.Store.AuditChain()` (the control plane's SQLite record) answer it.
 
 Tenant isolation is enforced in the query layer *and* by row-level security. A boundary that
 exists in only one place is not a boundary (§ops).

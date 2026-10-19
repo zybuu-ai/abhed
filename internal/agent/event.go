@@ -254,6 +254,9 @@ type Observation struct {
 	DurationMS int64  `json:"duration_ms"`
 	// Sandbox is the tier a command ran under ("none" on the host), when known.
 	Sandbox string `json:"sandbox,omitempty"`
+	// SandboxNote is set when bash added a note that the sandbox refused part
+	// of the command: the credential folder named, or "denied" for none.
+	SandboxNote string `json:"sandbox_note,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
 	// OutcomeUnknown marks the answer to a call that may have run on a

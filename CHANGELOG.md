@@ -46,6 +46,20 @@ All notable changes to Abhed are recorded here. The format follows
 - `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
   or `stringData`, and withholds its values from the record; build such a
   Secret with `secret_from` from stored secrets and workspace files.
+- `abhed serve` writes every API request that changes something to the
+  control-plane audit record, with who made it, before it runs and with its
+  outcome, and answers 503 without making the change when that record
+  cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
+  without, the new file `<records>/<tenant>/audit/api.jsonl` under
+  `record.dir` or `~/.abhed/records`.
+- Postgres: schema version 11 adds the `chain_pre` table. Run `abhed migrate`
+  as the owner role before starting a server as the runtime role, which
+  refuses an older schema and says so; a `storage.single_role` server
+  applies it itself.
+- HawkEYE's `sandbox-denied` no longer fires on the words of a command's
+  output alone. A call whose output says an operation was not permitted,
+  with nothing in the record to show the sandbox refused it, is now
+  `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
 
 ### Security
 
@@ -70,9 +84,44 @@ All notable changes to Abhed are recorded here. The format follows
   starts and never writes anywhere, cut to 12 hex digits: two compare only
   while that Abhed runs, and unlike a plain sha256 it cannot be used to
   guess a short value offline.
+- `abhed record verify` on Postgres asked the database's own
+  `abhed_chain_verify` whether a chain held, which the tables' owner could
+  replace with one that passes any chain, and counted an event inserted
+  with the chain's trigger off as "from before the chain" rather than a
+  failure. Abhed now recomputes every hash itself from the rows, and fails
+  an event with no chain unless the migration counted it as there before
+  the chain began.
 
 ### Added
 
+- The Postgres record in commit order, for exporters: each event keeps its
+  writing transaction (`commit_tx`, schema version 12; existing rows are not
+  rewritten and sort first), and `store.Postgres.ScanCommitted` reads a
+  tenant's events after a `CommitPos` only once every earlier transaction
+  has finished, so a reader resuming from a position never passes over a row
+  that commits late. `store.PostgresOf` finds the Postgres store behind a
+  wrapper such as the held store. Run `abhed migrate` to add the column and
+  its index.
+- `server.metrics`: Prometheus metrics for `abhed serve` and its control
+  plane, off by default. Policy decisions by decision, step and tool;
+  approvals by answer; supervisor verdicts by code; egress decisions by kind
+  and decision; sandbox operations and bindings; tool, model, record-write
+  and request latency; model tokens; sessions. Served at `/metrics` to
+  administrators, or on a `listen` address of its own, which needs a bearer
+  token (`token_env`) unless it is loopback. No label carries a path, a
+  command, a host or anything a person or model wrote.
+- Every mutating API route is audited with its principal in the chained
+  control-plane record: the route pattern as `api:<pattern>`, the method,
+  tenant, caller address and wildcard values, never the body or query.
+  `abhed record audit` checks the chain, in Postgres or the local file,
+  recomputing each hash itself, and against any `-head position:hash`
+  kept elsewhere.
+  A create's outcome names the id it made. A terminal's key batches and
+  language-server messages get one event a request instead of two.
+- The control plane's SQLite record (sandbox operations and the
+  reconciler's events) is hash-chained like the Postgres one, and
+  `abhed record audit` checks it; rows from before are reported as
+  unchained.
 - `ssh.read_commands`: commands the operator declares reads on every host.
   An exact entry (`uptime`, `df -h`) matches only its own text
   and may name any program but one that runs what it is given (a shell, a
@@ -81,10 +130,14 @@ All notable changes to Abhed are recorded here. The format follows
   for a program on a list of known reads, in a read form of it (`cat *`,
   `systemctl status *`, `journalctl -u * -n 50`, `ip addr show *`,
   `openssl x509 -enddate -noout -in *`), and every call it matches is held
-  to that form: `journalctl --vacuum-size`, `date -s`, `dmesg -C`,
-  `sort --compress-program`, `ip addr add` and the like are not reads,
-  whatever the pattern; any other wildcard entry is refused at load with
-  "declare the exact command instead". A matching `ssh` call, read as bash
+  to that form. A form lists the options it allows, with those that take a
+  value, and refuses every other, an abbreviated long option and an
+  unlisted cluster included, so `journalctl --vacuum-size` or
+  `--cursor-file`, `openssl x509 -CAcreateserial`, `date -s`, `dmesg -C`,
+  `sort --compress-program` and `ip addr add` are not reads, whatever the
+  pattern; a verb (`systemctl status`, `docker ps`, `apt list`) must be the
+  first word after the program. Any other wildcard entry is refused at load
+  with "declare the exact command instead". A matching `ssh` call, read as bash
   reads it, runs in plan mode and asks in no mode, so a plan can start by
   inspecting the fleet; a chain, pipe, substitution, redirection, a
   destructive command, one that runs another (`sh -c`, `su -c`, `sudo`),
@@ -108,9 +161,9 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 41 drift cases the rules judge stops 39
-  of the 40 a mode let through (the other is the destructive step's), and it
-  asks about or refuses none of its 39 benign controls, `ssh` inspection of
+  or `go run ./cmd/abhed-drift`): of its 50 drift cases the rules judge stops 48
+  of the 49 a mode let through (the other is the destructive step's), and it
+  asks about or refuses none of its 41 benign controls, `ssh` inspection of
   declared hosts with `ssh.read_commands` among them.
 - `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
   asking, and the approval names what would change, field by field, from
@@ -248,6 +301,33 @@ All notable changes to Abhed are recorded here. The format follows
   per host and cluster, with the decision, the exit code and the runbook
   step it was, in the text and HTML reports and the workbench
   ([HawkEYE](docs/guide/15-hawkeye.md)).
+- `abhed record export <session>` with `storage.driver: postgres` writes the
+  session's hash chain, each event as it was hashed, with the head the
+  database held; `abhed record verify` checks that file anywhere, with no
+  database, and fails an edited, removed, reordered, duplicated or cut line,
+  or a file that no longer holds a head given with `-head position:hash` or
+  held by `-witness` ([Records](docs/guide/12-records.md#the-postgres-record)).
+- Events written before the Postgres chain began (before 1.2.8) are
+  counted once, per session, in `chain_pre`, and reported as not covered;
+  nothing is chained over them.
+- A chain head API, `store/chain`: a chain's head (last position and hash)
+  and a check of a range of it, answered by the Postgres events (per
+  session), the control-plane audit (per tenant, in Postgres, the local
+  `api.jsonl` or the control plane's SQLite record) and the local record,
+  for heads to be signed and anchored outside the store.
+- Soaks of the chained append path, Postgres and local, which fail on any
+  event a writer was told was written and the store does not hold. On a
+  Mac with Postgres 17 in a 4-CPU Podman VM and 32 sessions writing: 1,500
+  events a second held for two minutes (180,032 events), and 1,400 to 2,300
+  a second flat out with the VM's CPU the limit, none dropped; the local
+  record about 63,000 a second.
+- HawkEYE reads the sandbox's own events for `sandbox-denied`: the fence's
+  memory kills and process-limit refusals (`fence.limit`), git protection's
+  refusals, and bash's note, now recorded with the result as
+  `sandbox_note`. The detail names each and the event it is from. On a
+  labelled set of 30 calls its precision is 1.00 and its recall 0.81,
+  against 0.57 and 0.50 for the output's words alone
+  ([HawkEYE](docs/guide/15-hawkeye.md#findings)).
 - The record as OCSF events. Every record type maps to an OCSF 1.8.0 class:
   API Activity (with the AI Operation profile's model, role and tokens) for
   messages, model calls, calls, decisions and results; File System, Process,
@@ -274,7 +354,7 @@ All notable changes to Abhed are recorded here. The format follows
   managed path's folder is state commands cannot reach. `abhed serve` writes
   its own file from its store: from Postgres, one server at a time holds an
   advisory lock and keeps the cursors in the new `ocsf_cursors` table
-  (schema version 12, `abhed migrate`), so another takes over where it
+  (schema version 13, `abhed migrate`), so another takes over where it
   stopped and no event is written by two.
 - `GET /v1/sessions/{id}/logs` streams a session's record as OCSF events or
   shorthand over SSE, on the events stream's sign-in, ownership check and
@@ -288,6 +368,13 @@ All notable changes to Abhed are recorded here. The format follows
   one; `plan.decided` carries the `plan_hash` and runbook an accept bound,
   and on a server who answered (`by`)
   ([Data model](docs/architecture/10-data-model.md)).
+- An `observation` of `bash` carries `sandbox_note` when bash added a note
+  that an operation was not permitted under a sandbox: the credential path
+  or Abhed's own state the output named, or `denied`
+  ([Data model](docs/architecture/10-data-model.md)).
+- A `bash` note now also names a refusal of a credential file the sandbox
+  denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
+  `~/.netrc` or `~/.config/gh`), and of Abhed's own state.
 
 ### Fixed
 
@@ -336,9 +423,29 @@ All notable changes to Abhed are recorded here. The format follows
   `BashCheckpointFiles`.
 - `hawkeye`: `RemoteTarget`, `RemoteChange`, `Report.RemoteChanges`,
   `Report.Answers` with `Answer`, and `SupervisorStats`.
+- `hawkeye`: also `Call.PlanHash`, `Call.PlanStep`, `Report.Supervisor` and
+  `SupervisorVerdict`.
+- `server`: `ApprovalAnswer` and `PendingAsk.StepTools`.
 - `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
-  `DriftReport` and `RunDrift`.
+  `DriftReport` and `RunDrift`; the judges `Rules`, `Model` and `Chain`;
+  `Guard.Honeytokens`, `Guard.Unattended` and `Guard.Child`; the `Case`
+  fields `Said`, `Roots`, `Seen`, `DeclaredRead`, `Plan`, `Observed` and
+  `Credential`; `Verdict.Advice`, `Verdict.LatencyMS` and
+  `Verdict.Correction`; the `Code*` verdict codes; and `RulesVersion`,
+  `HoneytokenVersion` and `PromptVersion`. `monitor.Guard` now holds a
+  mutex and a slice, so it is no longer comparable: code that compared two
+  `Guard` values with `==` or used one as a map key no longer compiles; use a
+  `*Guard`.
 - `abhed -p`'s JSON result line gains `verdict` when answers are checked.
+- `store/chain`: `Head`, `Range`, `Source`, `Link`, `LinkHash`, `Genesis`,
+  `Walker` and `NewWalker`, and the export format's `Header`, `Writer`,
+  `NewWriter`, `ExportReport`, `VerifyExport`, `IsExport` and
+  `ExportVersion`.
+- `store`: `Postgres.EventChain`, `Postgres.AuditChain`,
+  `Postgres.ExportChain`, and `ChainReport.Reason` and `ChainReport.PreChain`.
+- `store/local`: `Store.Chain` and `AuditChain`.
+- `store/sqlite`: `Store.AuditChain` and `ChainReport.Reason`.
+- `hawkeye`: `SandboxSignal`, `Call.Sandbox` and `Call.SandboxUnconfirmed`.
 - `ocsf`, a new package: `Mapper` (`NewMapper`, `Map`, `Observe`), `Line`,
   `Options`, `Event`, `Mapping`, `Types`, `MapAudit`, `Downgrade`, `Replay`,
   `ReplayJSON`, `Validate`, `CheckVersion`, `Shorthand`, `Version`,

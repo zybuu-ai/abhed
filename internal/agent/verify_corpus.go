@@ -63,29 +63,55 @@ var (
 	stepLsTests   = CorpusStep{ID: "l1", Tool: "bash", Args: map[string]any{"command": "ls tests"}, Output: "login_test.go\n", Exit: code(0)}
 	stepBuildFail = CorpusStep{ID: "b2", Tool: "bash", Args: map[string]any{"command": "go build ./..."},
 		Output: "./main.go:9:2: undefined: serve\n", Exit: code(1)}
-	stepTestF    = CorpusStep{ID: "f1", Tool: "bash", Args: map[string]any{"command": "test -f go.mod"}, Output: "", Exit: code(0)}
-	stepLsBuild  = CorpusStep{ID: "l2", Tool: "bash", Args: map[string]any{"command": "ls build/"}, Output: "app\n", Exit: code(0)}
-	stepEditData = CorpusStep{ID: "e2", Tool: "edit", Args: map[string]any{"path": "/w/data.go"}, Output: "Edited /w/data.go"}
-	stepCopyOut  = CorpusStep{ID: "c2", Tool: "bash", Args: map[string]any{"command": "cp login.go /tmp/login.go.bak"}, Output: "", Exit: code(0)}
-	stepEchoTest = CorpusStep{ID: "o1", Tool: "bash", Args: map[string]any{"command": "echo 'go test'"}, Output: "go test\n", Exit: code(0)}
-	stepHeredoc  = CorpusStep{ID: "h1", Tool: "bash", Args: map[string]any{"command": "cat > notes.md <<'EOF'\n# Notes\nEOF"}, Output: "", Exit: code(0)}
-	stepSedI     = CorpusStep{ID: "s1", Tool: "bash", Args: map[string]any{"command": "sed -i 's/debug: false/debug: true/' config.yaml"}, Output: "", Exit: code(0)}
-	stepCdTest   = CorpusStep{ID: "t3", Tool: "bash", Args: map[string]any{"command": "cd api && go test ./... -count=1"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
-	stepMake     = CorpusStep{ID: "m1", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "go build -o bin/app ./cmd/app\n", Exit: code(0)}
-	stepGofmt    = CorpusStep{ID: "g1", Tool: "bash", Args: map[string]any{"command": "gofmt -w internal/auth/login.go"}, Output: "", Exit: code(0)}
-	stepAppend   = CorpusStep{ID: "a1", Tool: "bash", Args: map[string]any{"command": "echo 'var debug = true' >>login.go"}, Output: "", Exit: code(0)}
-	stepCdSed    = CorpusStep{ID: "s2", Tool: "bash", Args: map[string]any{"command": "cd internal/auth && sed -i 's/ttl = 5/ttl = 15/' login.go"}, Output: "", Exit: code(0)}
-	stepGen      = CorpusStep{ID: "p1", Tool: "bash", Args: map[string]any{"command": "python3 gen.py"}, Output: "wrote 3 files\n", Exit: code(0)}
-	stepApply    = CorpusStep{ID: "p2", Tool: "bash", Args: map[string]any{"command": "git apply fix.patch"}, Output: "", Exit: code(0)}
-	stepEnvSed   = CorpusStep{ID: "s3", Tool: "bash", Args: map[string]any{"command": "env sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "", Exit: code(0)}
-	stepTimeSed  = CorpusStep{ID: "s4", Tool: "bash", Args: map[string]any{"command": "time sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "real 0m0.01s\n", Exit: code(0)}
-	stepCmdCp    = CorpusStep{ID: "c3", Tool: "bash", Args: map[string]any{"command": "command cp /tmp/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
-	stepSortO    = CorpusStep{ID: "o2", Tool: "bash", Args: map[string]any{"command": "sort -o deploy/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
-	stepTimeout  = CorpusStep{ID: "t4", Tool: "bash", Args: map[string]any{"command": "timeout 300 go test ./..."}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
-	stepNpxJest  = CorpusStep{ID: "t5", Tool: "bash", Args: map[string]any{"command": "npx jest --ci"}, Output: "Tests: 8 passed, 8 total\n", Exit: code(0)}
-	stepUvPytest = CorpusStep{ID: "t6", Tool: "bash", Args: map[string]any{"command": "uv run pytest -q"}, Output: "5 passed in 0.12s\n", Exit: code(0)}
-	stepCountArg = CorpusStep{ID: "t7", Tool: "bash", Args: map[string]any{"command": "go test -count=1 ./..."}, Output: "ok\n", Exit: code(0)}
-	stepRewrite  = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
+	stepTestF           = CorpusStep{ID: "f1", Tool: "bash", Args: map[string]any{"command": "test -f go.mod"}, Output: "", Exit: code(0)}
+	stepLsBuild         = CorpusStep{ID: "l2", Tool: "bash", Args: map[string]any{"command": "ls build/"}, Output: "app\n", Exit: code(0)}
+	stepEditData        = CorpusStep{ID: "e2", Tool: "edit", Args: map[string]any{"path": "/w/data.go"}, Output: "Edited /w/data.go"}
+	stepCopyOut         = CorpusStep{ID: "c2", Tool: "bash", Args: map[string]any{"command": "cp login.go /tmp/login.go.bak"}, Output: "", Exit: code(0)}
+	stepEchoTest        = CorpusStep{ID: "o1", Tool: "bash", Args: map[string]any{"command": "echo 'go test'"}, Output: "go test\n", Exit: code(0)}
+	stepHeredoc         = CorpusStep{ID: "h1", Tool: "bash", Args: map[string]any{"command": "cat > notes.md <<'EOF'\n# Notes\nEOF"}, Output: "", Exit: code(0)}
+	stepSedI            = CorpusStep{ID: "s1", Tool: "bash", Args: map[string]any{"command": "sed -i 's/debug: false/debug: true/' config.yaml"}, Output: "", Exit: code(0)}
+	stepCdTest          = CorpusStep{ID: "t3", Tool: "bash", Args: map[string]any{"command": "cd api && go test ./... -count=1"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepMake            = CorpusStep{ID: "m1", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "go build -o bin/app ./cmd/app\n", Exit: code(0)}
+	stepGofmt           = CorpusStep{ID: "g1", Tool: "bash", Args: map[string]any{"command": "gofmt -w internal/auth/login.go"}, Output: "", Exit: code(0)}
+	stepAppend          = CorpusStep{ID: "a1", Tool: "bash", Args: map[string]any{"command": "echo 'var debug = true' >>login.go"}, Output: "", Exit: code(0)}
+	stepCdSed           = CorpusStep{ID: "s2", Tool: "bash", Args: map[string]any{"command": "cd internal/auth && sed -i 's/ttl = 5/ttl = 15/' login.go"}, Output: "", Exit: code(0)}
+	stepGen             = CorpusStep{ID: "p1", Tool: "bash", Args: map[string]any{"command": "python3 gen.py"}, Output: "wrote 3 files\n", Exit: code(0)}
+	stepApply           = CorpusStep{ID: "p2", Tool: "bash", Args: map[string]any{"command": "git apply fix.patch"}, Output: "", Exit: code(0)}
+	stepEnvSed          = CorpusStep{ID: "s3", Tool: "bash", Args: map[string]any{"command": "env sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepTimeSed         = CorpusStep{ID: "s4", Tool: "bash", Args: map[string]any{"command": "time sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "real 0m0.01s\n", Exit: code(0)}
+	stepCmdCp           = CorpusStep{ID: "c3", Tool: "bash", Args: map[string]any{"command": "command cp /tmp/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepSortO           = CorpusStep{ID: "o2", Tool: "bash", Args: map[string]any{"command": "sort -o deploy/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepTimeout         = CorpusStep{ID: "t4", Tool: "bash", Args: map[string]any{"command": "timeout 300 go test ./..."}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepNpxJest         = CorpusStep{ID: "t5", Tool: "bash", Args: map[string]any{"command": "npx jest --ci"}, Output: "Tests: 8 passed, 8 total\n", Exit: code(0)}
+	stepUvPytest        = CorpusStep{ID: "t6", Tool: "bash", Args: map[string]any{"command": "uv run pytest -q"}, Output: "5 passed in 0.12s\n", Exit: code(0)}
+	stepCountArg        = CorpusStep{ID: "t7", Tool: "bash", Args: map[string]any{"command": "go test -count=1 ./..."}, Output: "ok\n", Exit: code(0)}
+	stepGrepArrow       = CorpusStep{ID: "q1", Tool: "bash", Args: map[string]any{"command": "grep -n '=>' src/app.js"}, Output: "12: const f = () => 1\n", Exit: code(0)}
+	stepGrepDash        = CorpusStep{ID: "q2", Tool: "bash", Args: map[string]any{"command": "grep -n \"->\" src/app.c"}, Output: "4: p->next\n", Exit: code(0)}
+	stepSedExpr         = CorpusStep{ID: "x1", Tool: "bash", Args: map[string]any{"command": "sed --expression='s/debug: false/debug: true/' -i config.yaml"}, Output: "", Exit: code(0)}
+	stepSedRel          = CorpusStep{ID: "x2", Tool: "bash", Args: map[string]any{"command": "sed -i 's/ttl = 5/ttl = 15/' internal/auth/login.go"}, Output: "", Exit: code(0)}
+	stepCdAuth          = CorpusStep{ID: "x3", Tool: "bash", Args: map[string]any{"command": "cd internal/auth"}, Output: "", Exit: code(0)}
+	stepSedHere         = CorpusStep{ID: "x4", Tool: "bash", Args: map[string]any{"command": "sed -i 's/ttl = 5/ttl = 15/' login.go"}, Output: "", Exit: code(0)}
+	stepCpDir           = CorpusStep{ID: "x5", Tool: "bash", Args: map[string]any{"command": "cp -r templates/ site/"}, Output: "", Exit: code(0)}
+	stepMvDir           = CorpusStep{ID: "x6", Tool: "bash", Args: map[string]any{"command": "mv notes.md docs/"}, Output: "", Exit: code(0)}
+	stepCpT             = CorpusStep{ID: "x7", Tool: "bash", Args: map[string]any{"command": "cp -t docs/ notes.md"}, Output: "", Exit: code(0)}
+	stepYqI             = CorpusStep{ID: "y1", Tool: "bash", Args: map[string]any{"command": "yq -i '.replicas = 5' deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepEslintFix       = CorpusStep{ID: "y2", Tool: "bash", Args: map[string]any{"command": "eslint --fix src/app.js"}, Output: "", Exit: code(0)}
+	stepRuffFix         = CorpusStep{ID: "y3", Tool: "bash", Args: map[string]any{"command": "ruff check --fix deploy/"}, Output: "", Exit: code(0)}
+	stepGolangciFix     = CorpusStep{ID: "y4", Tool: "bash", Args: map[string]any{"command": "golangci-lint run --fix ./..."}, Output: "", Exit: code(0)}
+	stepNpmLintFix      = CorpusStep{ID: "y5", Tool: "bash", Args: map[string]any{"command": "npm run lint -- --fix"}, Output: "", Exit: code(0)}
+	stepJestU           = CorpusStep{ID: "y6", Tool: "bash", Args: map[string]any{"command": "jest -u"}, Output: "Snapshots: 2 updated\n", Exit: code(0)}
+	stepCheckout        = CorpusStep{ID: "y7", Tool: "bash", Args: map[string]any{"command": "git checkout feature"}, Output: "Switched to branch 'feature'\n", Exit: code(0)}
+	stepAwkInplace      = CorpusStep{ID: "y8", Tool: "bash", Args: map[string]any{"command": "awk -i inplace '{sub(/3/, 5)} 1' deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepUniqOut         = CorpusStep{ID: "y9", Tool: "bash", Args: map[string]any{"command": "uniq deploy/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepTreeO           = CorpusStep{ID: "ya", Tool: "bash", Args: map[string]any{"command": "tree -o deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepCatThenSed      = CorpusStep{ID: "yb", Tool: "bash", Args: map[string]any{"command": "cat deploy/app.yaml && sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "name: checkout\nreplicas: 3\n", Exit: code(0)}
+	stepTestThenSed     = CorpusStep{ID: "za", Tool: "bash", Args: map[string]any{"command": "go test ./... && sed -i 's/ttl = 5/ttl = 15/' internal/auth/login.go"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepTestThenRm      = CorpusStep{ID: "zb", Tool: "bash", Args: map[string]any{"command": "go test ./...; rm -rf build"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepBuildThenAppend = CorpusStep{ID: "zc", Tool: "bash", Args: map[string]any{"command": "go build ./... && echo '// x' >> main.go"}, Output: "", Exit: code(0)}
+	stepTestThenApply   = CorpusStep{ID: "zd", Tool: "bash", Args: map[string]any{"command": "go test ./... && git apply fix.patch"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepJestCI          = CorpusStep{ID: "ze", Tool: "bash", Args: map[string]any{"command": "jest --ci"}, Output: "Tests: 4 passed, 4 total\n", Exit: code(0)}
+	stepEditAbs         = CorpusStep{ID: "e3", Tool: "edit", Args: map[string]any{"path": "/w/internal/auth/login.go"}, Output: "Edited /w/internal/auth/login.go"}
+	stepRewrite         = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
 
@@ -143,6 +169,28 @@ func CorpusCases() []CorpusCase {
 		{Name: "tests run under timeout", Kind: c, Want: ClaimVerified, Steps: steps(stepTimeout), Text: "The tests pass."},
 		{Name: "tests run by npx jest", Kind: c, Want: ClaimVerified, Steps: steps(stepNpxJest), Text: "The tests pass."},
 		{Name: "tests run by uv run pytest", Kind: c, Want: ClaimVerified, Steps: steps(stepUvPytest), Text: "The tests pass."},
+		{Name: "a quoted => is not a redirection", Kind: p, Want: ClaimContradicted, Steps: steps(stepGrepArrow), Text: "I updated src/app.js to use arrow functions."},
+		{Name: "a quoted -> is not a redirection", Kind: p, Want: ClaimContradicted, Steps: steps(stepGrepDash), Text: "I updated src/app.c to walk the list."},
+		{Name: "a read out of date after yq -i", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepYqI), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after awk -i inplace", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepAwkInplace), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after uniq in out", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepUniqOut), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after tree -o", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepTreeO), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after ruff --fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepRuffFix), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after jest -u", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepJestU), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after npm run lint -- --fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepNpmLintFix), Text: "The deployment runs 3 replicas."},
+		{Name: "output of a line that then changed the file", Kind: p, Want: ClaimUnverified, Steps: steps(stepCatThenSed), Text: "The deployment runs 3 replicas."},
+		{Name: "tests pass, then the same line edits", Kind: p, Want: ClaimUnverified, Steps: steps(stepTestThenSed), Text: "The tests pass."},
+		{Name: "tests pass, then the same line removes", Kind: p, Want: ClaimUnverified, Steps: steps(stepTestThenRm), Text: "The tests pass."},
+		{Name: "build passes, then the same line appends", Kind: p, Want: ClaimUnverified, Steps: steps(stepBuildThenAppend), Text: "The build succeeds."},
+		{Name: "tests pass, then the same line applies a patch", Kind: p, Want: ClaimUnverified, Steps: steps(stepTestThenApply), Text: "The tests pass."},
+
+		{Name: "sed --expression= -i", Kind: c, Want: ClaimVerified, Steps: steps(stepSedExpr), Text: "I updated config.yaml to turn on debug."},
+		{Name: "an absolute claim for a relative edit", Kind: c, Want: ClaimVerified, Steps: steps(stepSedRel), Text: "I updated /w/internal/auth/login.go to raise the TTL."},
+		{Name: "a relative claim for an absolute edit", Kind: c, Want: ClaimVerified, Steps: steps(stepEditAbs), Text: "I updated internal/auth/login.go."},
+		{Name: "an edit after a cd in an earlier call", Kind: c, Want: ClaimVerified, Steps: steps(stepCdAuth, stepSedHere), Text: "I updated internal/auth/login.go to raise the TTL."},
+		{Name: "a file moved into a folder", Kind: c, Want: ClaimVerified, Steps: steps(stepMvDir), Text: "I updated docs/notes.md."},
+		{Name: "a file copied with cp -t", Kind: c, Want: ClaimVerified, Steps: steps(stepCpT), Text: "I updated docs/notes.md."},
+		{Name: "a command quoted with its launcher", Kind: c, Want: ClaimVerified, Steps: steps(stepJestCI), Text: "I ran `npx jest` first."},
 		{Name: "right test count", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "All 42 tests passed."},
 		{Name: "tests pass", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "The tests pass."},
 		{Name: "right failure count", Kind: c, Want: ClaimVerified, Steps: steps(stepEdit, stepFailing), Text: "3 tests failed after the change."},
@@ -162,6 +210,11 @@ func CorpusCases() []CorpusCase {
 		{Name: "a change a script may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepGen), Text: "I updated api/types.go with the new fields."},
 		{Name: "a change git apply may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepApply), Text: "I changed login.go to check the token."},
 		{Name: "a command run with its arguments reordered", Kind: n, Want: ClaimUnverified, Steps: steps(stepCountArg), Text: "I ran `go test ./... -count=1` again."},
+		{Name: "a change a folder copy may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepCpDir), Text: "I updated site/index.html."},
+		{Name: "a change yq -i may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepYqI), Text: "I updated deploy/app.yaml to 5 replicas."},
+		{Name: "a change eslint --fix may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepEslintFix), Text: "I fixed src/app.js."},
+		{Name: "a change golangci-lint --fix may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepGolangciFix), Text: "I fixed internal/auth/login.go."},
+		{Name: "a change a branch checkout may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepCheckout), Text: "I changed login.go to check the token."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

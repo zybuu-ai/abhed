@@ -273,7 +273,11 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	if !ok {
 		return nil
 	}
-	s, ok := parseScript(src)
+	start := ""
+	if remote(c) {
+		start = "~" // an ssh command starts in the login's home
+	}
+	s, ok := parseScriptAt(src, start)
 	if !ok {
 		return nil
 	}
@@ -287,17 +291,35 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 			if t == "" || strings.HasPrefix(t, "$") && !homeish(t) {
 				continue // a target only running the line would show
 			}
-			// find's operand is where it looks, not what it deletes.
-			if prog != "find" && protectedRoot(t) {
+			eff, known := effectiveTarget(cmd, t)
+			// A relative target under a cd whose directory could not be
+			// resolved is not own ground: it could be anywhere.
+			if !known {
+				if k.named(eff) {
+					continue
+				}
 				return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-					Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, t, where, remit(c)),
+					Rationale: fmt.Sprintf("%s would destroy %s under a directory set from a value only running the line would give; %s", prog, t, remit(c)),
+					Advice:    "change into a directory named as a literal path, or name the path to delete in full"}
+			}
+			// find's operand is where it looks, not what it deletes.
+			if prog != "find" && protectedRoot(eff) {
+				// Named outright as the thing to delete: ask, never deny, so a
+				// person can still say yes; not named: deny.
+				if k.named(eff) {
+					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.9,
+						Rationale: fmt.Sprintf("%s would destroy %s %s whole; the task names it, so this is put to you", prog, display(eff, t), where),
+						Advice:    "confirm you mean to delete all of it, or name the folders inside it instead"}
+				}
+				return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+					Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, display(eff, t), where, remit(c)),
 					Advice:    "delete only the folders inside it that the task names, or ask the person first"}
 			}
-			if r.ownGround(k, c, t) {
+			if r.ownGround(k, c, eff) {
 				continue
 			}
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-				Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, t, where, remit(c)),
+				Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, display(eff, t), where, remit(c)),
 				Advice:    "keep destructive commands to the paths the task names, or ask the person first"}
 		}
 		if ns := kubectlDeleteNS(prog, args); ns != "" && ns != "default" && !k.named(ns) {
@@ -309,15 +331,18 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	return nil
 }
 
-// ownGround reports whether a destructive target is within the remit.
+// ownGround reports whether a destructive target, already resolved against the
+// command's working directory, is within the remit.
 func (Rules) ownGround(k *given, c Case, t string) bool {
 	if homeish(t) {
-		return k.named(homeTilde(t))
+		if k.named(homeTilde(t)) {
+			return true
+		}
+		// Over ssh the home is the login's own, so a folder under it whose top
+		// name the task gave is the folder the task meant.
+		return remote(c) && mentions(k.said, homeTop(t))
 	}
 	if !strings.HasPrefix(t, "/") {
-		if remote(c) {
-			return true // relative to the login's home; the host was named or configured
-		}
 		clean := path.Clean(t)
 		return clean != ".." && !strings.HasPrefix(clean, "../")
 	}
@@ -328,6 +353,62 @@ func (Rules) ownGround(k *given, c Case, t string) bool {
 		return scratch(path.Clean(t))
 	}
 	return k.local(t)
+}
+
+// effectiveTarget resolves a destructive target against the directory its
+// command runs in. An absolute or home target stands as written; a relative
+// one is joined onto the working directory, and a whole-directory shape
+// (*, ., ./*, ..) resolves to the directory itself (or its parent). ok is
+// false when the working directory could not be resolved.
+func effectiveTarget(cmd command, t string) (string, bool) {
+	if strings.HasPrefix(t, "/") || homeish(t) {
+		return t, true
+	}
+	if !cmd.dirKnown {
+		return t, false
+	}
+	base := cmd.dir
+	homeBase := strings.HasPrefix(base, "~")
+	rel := strings.TrimSuffix(strings.TrimPrefix(t, "./"), "/")
+	whole := rel == "" || rel == "." || rel == "*"
+	rel = strings.TrimSuffix(rel, "/*")
+	switch {
+	case whole || rel == "..":
+		if homeBase {
+			return "~", true // the home directory itself, or its parent
+		}
+		if rel == ".." {
+			return orDot(path.Join(base, "..")), true
+		}
+		return orDot(base), true
+	default:
+		return joinDir(base, rel), true
+	}
+}
+
+func orDot(s string) string {
+	if s == "" {
+		return "."
+	}
+	return s
+}
+
+// homeTop is the first path segment under a home directory: ~/releases/old → releases.
+func homeTop(t string) string {
+	rest := strings.TrimPrefix(homeTilde(t), "~")
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[i+1:]
+	}
+	seg, _, _ := strings.Cut(rest, "/")
+	return seg
+}
+
+// display names the resolved target, and adds the text as written when a cd moved it.
+func display(eff, written string) string {
+	if eff == written || eff == path.Clean(strings.TrimPrefix(written, "./")) {
+		return eff
+	}
+	return eff + " (" + written + ")"
 }
 
 func homeish(t string) bool {

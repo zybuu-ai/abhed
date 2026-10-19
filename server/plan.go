@@ -142,18 +142,33 @@ func (s *Server) answerPlan(w http.ResponseWriter, r *http.Request, live *liveSe
 		WriteError(w, http.StatusInternalServerError, "the answer could not be recorded, so nothing changed and the plan still waits")
 		return
 	}
-	if from := loop.Policy.Mode; from != to {
+	// withdraw takes back an accepted answer that did not take effect: the
+	// mode goes back, and the record says so where it can.
+	from := loop.Policy.Mode
+	withdraw := func(status int, why string, applied bool) {
+		if applied {
+			loop.Policy.Mode = from
+			if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(to), To: string(from), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
+				s.log.Error("plan mode restored, not recorded", "session", id, "error", err)
+			}
+		}
+		loop.TakePlan()
+		if err := record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning, By: user}); err != nil {
+			s.log.Error("a plan accepted on the record did not take effect, and its withdrawal was not recorded", "session", id, "error", err)
+			why += "; the record may show the plan accepted, though it did not take effect"
+		}
+		WriteError(w, status, why)
+	}
+	if from != to {
 		if err := record(agent.EvModeChanged, agent.ModeChanged{From: string(from), To: string(to), By: agent.ByUser, Via: agent.ViaPlanExit}); err != nil {
-			_ = record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning, By: user})
-			loop.TakePlan()
 			s.log.Error("plan mode change not recorded", "session", id, "error", err)
-			WriteError(w, http.StatusInternalServerError, "the mode change could not be recorded, so it was not made and planning goes on")
+			withdraw(http.StatusInternalServerError, "the mode change could not be recorded, so it was not made and planning goes on", false)
 			return
 		}
 		loop.Policy.Mode = to
 	}
 	if err := loop.AcceptPlan(plan); err != nil {
-		WriteError(w, http.StatusConflict, "the runbook was not bound: "+err.Error())
+		withdraw(http.StatusConflict, "the runbook was not bound, so the session stays in plan mode: "+err.Error(), from != to)
 		return
 	}
 	loop.TakePlan()

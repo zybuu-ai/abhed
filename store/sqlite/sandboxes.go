@@ -334,11 +334,16 @@ func (s *Store) Append(ctx context.Context, ev controlplane.AuditEvent) error {
 		}
 	}
 	return s.write(ctx, "record sandbox event", func(tx *sql.Tx) error {
+		r := auditRow{At: ev.At.UTC().Format(time.RFC3339Nano), Principal: ev.Principal, Action: ev.Action,
+			SandboxID: ev.SandboxID, Generation: ev.Generation, Outcome: ev.Outcome, Code: ev.Code, Detail: string(detail)}
+		if err := r.link(ctx, tx); err != nil {
+			return fmt.Errorf("record sandbox event: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO sandbox_audit (at, principal, action, sandbox_id, generation, outcome, code, detail)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			ev.At.UTC().Format(time.RFC3339Nano), ev.Principal, ev.Action, ev.SandboxID, ev.Generation,
-			ev.Outcome, ev.Code, string(detail)); err != nil {
+			INSERT INTO sandbox_audit (at, principal, action, sandbox_id, generation, outcome, code, detail, chain_pos, prev_hash, hash)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.At, r.Principal, r.Action, r.SandboxID, r.Generation, r.Outcome, r.Code, r.Detail,
+			r.Pos, r.Prev, r.Hash); err != nil {
 			return fmt.Errorf("record sandbox event: %w", err)
 		}
 		return nil
