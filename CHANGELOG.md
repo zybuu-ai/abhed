@@ -413,6 +413,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
+- `store/chain`: `Linker`, which the Postgres event and audit chains and the
+  control plane's SQLite audit answer, handing out their links as stored for
+  an export of a range.
 - `app`: `WithRecordAnchor`, `AnchorBuilder` and `RecordHead`: an edition's
   anchor is given each head of the record beside the managed
   `record.witness` (a local session's as it is synced, a Postgres session's

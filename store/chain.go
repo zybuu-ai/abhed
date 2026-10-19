@@ -140,6 +140,17 @@ func (c pgChain) VerifyRange(ctx context.Context, scope string, from, to int64) 
 	return c.p.verifyRange(ctx, c.t, scope, from, to)
 }
 
+// Links hands out the chain's links as stored (chain.Linker).
+func (c pgChain) Links(ctx context.Context, scope string, from, to int64, fn func(chain.Link) bool) error {
+	if err := c.scoped(scope); err != nil {
+		return err
+	}
+	if from < 1 {
+		from = 1
+	}
+	return c.p.walk(ctx, c.t, scope, from, to, fn)
+}
+
 // verifyRange recomputes positions from to to (0 is the head) of one chain.
 func (p *Postgres) verifyRange(ctx context.Context, t chainTable, key string, from, to int64) (chain.Range, error) {
 	if from < 1 {

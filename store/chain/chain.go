@@ -68,6 +68,14 @@ type Link struct {
 	Row  string `json:"row"`
 }
 
+// Linker is a Source that hands out its links as stored, from to to (to 0
+// is the head), unchecked and in order, for an export of a range; fn
+// returning false stops it. A store whose positions are not Links (a line
+// file hashed whole) is not one.
+type Linker interface {
+	Links(ctx context.Context, scope string, from, to int64, fn func(Link) bool) error
+}
+
 // LinkHash is the hash of a link whose predecessor's hash is prev: SHA-256,
 // in hex, of prev, a newline and row.
 func LinkHash(prev, row string) string {

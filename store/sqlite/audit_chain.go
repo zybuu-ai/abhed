@@ -114,6 +114,44 @@ func (a auditSource) Head(ctx context.Context, _ string) (chain.Head, error) {
 	return h, err
 }
 
+// Links hands out the audit's links as stored (chain.Linker).
+func (a auditSource) Links(ctx context.Context, _ string, from, to int64, fn func(chain.Link) bool) error {
+	if from < 1 {
+		from = 1
+	}
+	if to <= 0 {
+		to = math.MaxInt64
+	}
+	return a.s.links(ctx, from, to, fn)
+}
+
+// links reads positions from to to, each row as its hash covers it.
+func (s *Store) links(ctx context.Context, from, to int64, fn func(chain.Link) bool) error {
+	rows, err := s.r.QueryContext(ctx, `SELECT chain_pos, at, principal, action, sandbox_id, generation, outcome, code, detail,
+		coalesce(prev_hash, ''), coalesce(hash, '') FROM sandbox_audit WHERE chain_pos >= ? AND chain_pos <= ? ORDER BY chain_pos`, from, to)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var r auditRow
+		var l chain.Link
+		if err := rows.Scan(&r.Pos, &r.At, &r.Principal, &r.Action, &r.SandboxID, &r.Generation, &r.Outcome,
+			&r.Code, &r.Detail, &l.Prev, &l.Hash); err != nil {
+			return err
+		}
+		b, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		l.Pos, l.Row = r.Pos, string(b)
+		if !fn(l) {
+			break
+		}
+	}
+	return rows.Err()
+}
+
 func (a auditSource) VerifyRange(ctx context.Context, _ string, from, to int64) (chain.Range, error) {
 	return a.s.verifyRange(ctx, from, to)
 }
@@ -138,30 +176,8 @@ func (s *Store) verifyRange(ctx context.Context, from, to int64) (chain.Range, e
 	if hi <= 0 {
 		hi = math.MaxInt64
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT chain_pos, at, principal, action, sandbox_id, generation, outcome, code, detail,
-		coalesce(prev_hash, ''), coalesce(hash, '') FROM sandbox_audit WHERE chain_pos >= ? AND chain_pos <= ? ORDER BY chain_pos`, from, hi)
-	if err != nil {
-		return chain.Range{}, err
-	}
-	defer func() { _ = rows.Close() }()
 	w := chain.NewWalker(from, before, nil)
-	for rows.Next() {
-		var r auditRow
-		var l chain.Link
-		if err := rows.Scan(&r.Pos, &r.At, &r.Principal, &r.Action, &r.SandboxID, &r.Generation, &r.Outcome,
-			&r.Code, &r.Detail, &l.Prev, &l.Hash); err != nil {
-			return chain.Range{}, err
-		}
-		b, err := json.Marshal(r)
-		if err != nil {
-			return chain.Range{}, err
-		}
-		l.Pos, l.Row = r.Pos, string(b)
-		if !w.Next(l) {
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
+	if err := s.links(ctx, from, hi, w.Next); err != nil {
 		return chain.Range{}, err
 	}
 	return w.Done(to), nil
