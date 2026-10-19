@@ -371,7 +371,8 @@ All notable changes to Abhed are recorded here. The format follows
   control-plane record as OCSF API Activity, and `abhed record audit -format
   ocsf` every row of the control plane's audit chains: the principal as the
   actor, an API request's method, route, path, caller and created ids, and
-  each row's chain, position and links.
+  each row's chain, position and links, with a stable `metadata.uid` from
+  its place in the chain.
 
 ### Changed
 
@@ -477,7 +478,7 @@ All notable changes to Abhed are recorded here. The format follows
 - `store/local`: `Options.OnAppend`, `Sealed.End`, `LineHash`, and
   `Store.SessionIDs`, `Store.LinesFrom` and `Store.Size`.
 - `store`: `Postgres.OCSFWriter` with `OCSFWriter`, `OCSFCursor` and
-  `ErrOCSFStandby`, `Postgres.EventEnds`, `Postgres.CommitEnd`, and the audit
+  `ErrOCSFStandby`, `Postgres.CommitEnd`, and the audit
   chain's `Postgres.AuditRows`, `Postgres.AuditLinks`, `Sandboxes.AuditLinks`
   and `AuditChainName`; `store/sqlite`: `Store.AuditRows`,
   `Store.AuditLinks` and `AuditChainName`; `store/local`: `AuditRows` and

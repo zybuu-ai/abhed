@@ -89,28 +89,37 @@ func (w *OCSFWriter) Close() {
 	w.conn = nil
 }
 
-// Load reads the sink's cursors, and whether it has any: a sink with none
-// has not begun.
-func (w *OCSFWriter) Load() (map[string]OCSFCursor, bool, error) {
+// Load reads the cursors of the sessions named, or of every session when
+// ids is nil, and whether the sink has any row at all: a sink with none has
+// not begun.
+func (w *OCSFWriter) Load(ids []string) (map[string]OCSFCursor, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	rows, err := w.p.pool.Query(ctx, `SELECT session_id, seq, provider, primed FROM ocsf_cursors WHERE sink = $1`, w.sink)
-	if err != nil {
+	var begun bool
+	if err := w.p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM ocsf_cursors WHERE sink = $1)`, w.sink).Scan(&begun); err != nil {
 		return nil, false, fmt.Errorf("ocsf: read the cursors (has abhed migrate run?): %w", err)
 	}
-	defer rows.Close()
 	out := map[string]OCSFCursor{}
-	begun := false
+	if !begun || (ids != nil && len(ids) == 0) {
+		return out, begun, nil
+	}
+	q, args := `SELECT session_id, seq, provider, primed FROM ocsf_cursors WHERE sink = $1 AND session_id <> ''`, []any{w.sink}
+	if ids != nil {
+		q += ` AND session_id = ANY($2)`
+		args = append(args, ids)
+	}
+	rows, err := w.p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("ocsf: read the cursors: %w", err)
+	}
+	defer rows.Close()
 	for rows.Next() {
 		var id string
 		var c OCSFCursor
 		if err := rows.Scan(&id, &c.Seq, &c.Provider, &c.Primed); err != nil {
 			return nil, false, err
 		}
-		begun = true
-		if id != "" {
-			out[id] = c
-		}
+		out[id] = c
 	}
 	return out, begun, rows.Err()
 }
@@ -142,33 +151,6 @@ func (w *OCSFWriter) Save(moved map[string]OCSFCursor) error {
 	return tx.Commit(ctx)
 }
 
-// EventEnds is the last seq of each session with events, erased sessions
-// left out: what a new OCSF writer compares the cursors with, once. With
-// upTo set, only events at or before that place in commit order count.
-func (p *Postgres) EventEnds(ctx context.Context, upTo *CommitPos) (map[string]int64, error) {
-	q := `SELECT e.session_id, max(e.seq) FROM events e
-		WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.session_id AND s.deleted_at IS NOT NULL)`
-	var args []any
-	if upTo != nil {
-		q += ` AND (COALESCE(e.commit_tx, '0'::xid8), e.created_at, e.session_id, e.seq) <= ($1::text::xid8, $2, $3, $4)`
-		args = append(args, strconv.FormatUint(upTo.Tx, 10), upTo.At, upTo.Session, upTo.Seq)
-	}
-	rows, err := p.pool.Query(ctx, q+` GROUP BY e.session_id`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list the sessions' last events: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]int64{}
-	for rows.Next() {
-		var id string
-		var seq int64
-		if err := rows.Scan(&id, &seq); err != nil {
-			return nil, err
-		}
-		out[id] = seq
-	}
-	return out, rows.Err()
-}
 
 // LoadPos is the place in commit order the sink's writer reads on from, ""
 // before one was saved.

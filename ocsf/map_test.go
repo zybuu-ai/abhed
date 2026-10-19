@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -393,4 +394,59 @@ func TestMapAuditAPIRequest(t *testing.T) {
 	if MapAudit(controlplane.AuditEvent{Action: "admin:user.delete", At: at}, testOpts)["activity_id"] != 4 {
 		t.Error("admin:user.delete is not Delete")
 	}
+}
+
+// auditSamples are control-plane rows of each kind: a sandbox operation, an
+// API request and its outcome, a driver's event, an admin event from an
+// edition, and a row from before the chain.
+func auditSamples() []struct {
+	a    controlplane.AuditEvent
+	link *AuditLink
+} {
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	chained := func(pos int64) *AuditLink {
+		return &AuditLink{Chain: "postgres/sandbox_audit", Pos: pos, Prev: fmt.Sprintf("prev-%d", pos), Hash: fmt.Sprintf("hash-%d", pos)}
+	}
+	return []struct {
+		a    controlplane.AuditEvent
+		link *AuditLink
+	}{
+		{controlplane.AuditEvent{Seq: 11, At: at, Principal: "alice", Action: "create", SandboxID: "sb-1", Outcome: "requested"}, chained(1)},
+		{controlplane.AuditEvent{Seq: 12, At: at, Principal: "alice", Action: "api:POST /v1/sessions", Outcome: "requested",
+			Detail: map[string]string{"method": "POST", "route": "POST /v1/sessions", "remote": "10.0.0.7"}}, chained(2)},
+		{controlplane.AuditEvent{Seq: 13, At: at, Principal: "alice", Action: "api:POST /v1/sessions", Outcome: "ok",
+			Detail: map[string]string{"method": "POST", "route": "POST /v1/sessions", "created.session_id": "s-9"}}, chained(3)},
+		{controlplane.AuditEvent{Seq: 14, At: at, Principal: controlplane.DriverPrincipal, Action: "sandbox.snapshot", SandboxID: "sb-1",
+			Outcome: "ok", Detail: map[string]string{"snapshot": "snap-1"}}, chained(4)},
+		{controlplane.AuditEvent{Seq: 15, At: at, Principal: "root@example.com", Action: "admin:user.delete", Outcome: "ok",
+			Detail: map[string]string{"target": "bob"}}, chained(5)},
+		{controlplane.AuditEvent{Seq: 3, At: at, Principal: "alice", Action: "delete", SandboxID: "sb-0", Outcome: "failed", Code: "conflict"}, nil},
+	}
+}
+
+// Control-plane rows map as the golden file says, in every version, each
+// with a metadata.uid that is its own and the same however often it is read.
+func TestGoldenAudit(t *testing.T) {
+	var buf bytes.Buffer
+	seen := map[string]bool{}
+	for _, s := range auditSamples() {
+		ev := MapAuditLink(s.a, s.link, testOpts)
+		again := MapAuditLink(s.a, s.link, testOpts)
+		uid, _ := ev["metadata"].(map[string]any)["uid"].(string)
+		if uid == "" || uid != again["metadata"].(map[string]any)["uid"] || seen[uid] {
+			t.Fatalf("%s: metadata.uid %q is missing, unstable or shared", s.a.Action, uid)
+		}
+		seen[uid] = true
+		for _, v := range Versions {
+			down, err := Downgrade(ev, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Validate(down); err != nil {
+				t.Errorf("%s in %s: %v", s.a.Action, v, err)
+			}
+		}
+		writeJSONLine(t, &buf, ev)
+	}
+	golden(t, "testdata/golden-audit.jsonl", buf.Bytes())
 }

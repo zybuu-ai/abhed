@@ -41,8 +41,9 @@ type CursorStore interface {
 	// Lock is held while lines are written and the cursors moved; it is
 	// ErrStandby while another process is the writer.
 	Lock() (unlock func(), err error)
-	// Load returns the cursors, and whether any were ever saved.
-	Load() (map[string]Cursor, bool, error)
+	// Load returns the cursors of the sessions named, or of every session
+	// when ids is nil, and whether any were ever saved.
+	Load(ids []string) (map[string]Cursor, bool, error)
 	// Save sets the cursors of the sessions it names.
 	Save(map[string]Cursor) error
 }
@@ -74,10 +75,11 @@ type SinkOptions struct {
 	// Poll, when set, looks for new lines this often, for a record the sink
 	// is not handed lines from.
 	Poll time.Duration
-	// Feed, when set, is called at each poll while this process writes, to
-	// hand the sink the lines written since the last (through add, as Add);
-	// a poll then lists no sessions, which only a new writer's first scan does.
-	Feed func(add func(Line)) error
+	// Feed, when set, is called at each poll while this process writes, for
+	// the lines written since the last; done, once they are in the file and
+	// the cursors moved, keeps where the next goes on from. A poll then lists
+	// no sessions; only a sink's first scan does.
+	Feed func() (lines []Line, done func() error, err error)
 }
 
 // Sink writes the record's lines to a JSONL file as OCSF events. Its cursor,
@@ -151,7 +153,12 @@ func (s *Sink) scan(first bool) error {
 	full := first || !s.writer
 	s.writer = true
 	s.mu.Unlock()
-	cur, existed, err := s.o.Cursors.Load()
+	// A sink with a feed compares no session's cursor here: only whether it began.
+	var only []string
+	if s.o.Feed != nil {
+		only = []string{}
+	}
+	cur, existed, err := s.o.Cursors.Load(only)
 	if err != nil {
 		return err
 	}
@@ -282,9 +289,7 @@ func (s *Sink) run() {
 				s.fail(err)
 			}
 			if err == nil && s.o.Feed != nil {
-				if err := s.o.Feed(s.Add); err != nil {
-					s.fail(err)
-				}
+				s.feed()
 			}
 			s.catchUp()
 		}
@@ -343,28 +348,52 @@ func (s *Sink) cursorOf(id string) (Cursor, error) {
 		return Cursor{}, err
 	}
 	defer unlock()
-	cur, _, err := s.o.Cursors.Load()
+	cur, _, err := s.o.Cursors.Load([]string{id})
 	return cur[id], err
 }
 
-// write maps and appends lines past each session's cursor, then moves it.
-func (s *Sink) write(lines []Line, fromRecord bool) {
-	if len(lines) == 0 {
+// feed writes what Feed gives and, once it is in the file, lets Feed keep
+// its place; lines not written are given again at the next poll.
+func (s *Sink) feed() {
+	lines, done, err := s.o.Feed()
+	if err != nil {
+		s.fail(err)
 		return
+	}
+	if s.write(lines, true) && done != nil {
+		if err := done(); err != nil {
+			s.fail(err)
+		}
+	}
+}
+
+// write maps and appends lines past each session's cursor, then moves it.
+// It reports whether every line is in the file and its cursor moved.
+func (s *Sink) write(lines []Line, fromRecord bool) bool {
+	if len(lines) == 0 {
+		return true
 	}
 	unlock, err := s.o.Cursors.Lock()
 	if errors.Is(err, ErrStandby) {
-		return
+		return false
 	}
 	if err != nil {
 		s.fail(err)
-		return
+		return false
 	}
 	defer unlock()
-	cur, _, err := s.o.Cursors.Load()
+	ids := map[string]bool{}
+	for _, l := range lines {
+		ids[l.SessionID] = true
+	}
+	names := make([]string, 0, len(ids))
+	for id := range ids {
+		names = append(names, id)
+	}
+	cur, _, err := s.o.Cursors.Load(names)
 	if err != nil {
 		s.fail(err)
-		return
+		return false
 	}
 	s.mu.Lock()
 	behind := map[string]bool{}
@@ -384,7 +413,7 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 		if !fromRecord && behind[l.SessionID] {
 			continue
 		}
-		c = s.prime(l.SessionID, c)
+		c = s.prime(l.SessionID, c, l.Seq)
 		ev, ok, err := s.mapper.Map(l)
 		c.Seq, c.Provider = l.Seq, s.mapper.provider[l.SessionID]
 		if l.Pos > 0 {
@@ -418,9 +447,10 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 		if fromRecord && len(moved) > 0 {
 			if err := s.o.Cursors.Save(moved); err != nil {
 				s.fail(err)
+				return false
 			}
 		}
-		return
+		return true
 	}
 	if err := s.append(buf.Bytes()); err != nil {
 		// The cursor stays: the lines are written again from the record.
@@ -431,17 +461,19 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 		}
 		s.mu.Unlock()
 		s.poke()
-		return
+		return false
 	}
 	if err := s.o.Cursors.Save(moved); err != nil {
 		s.fail(err)
+		return false
 	}
+	return true
 }
 
-// prime gives the mapper what a session's lines before its cursor said: the
-// provider the cursor kept, or, once for a cursor that never kept one, what
-// the record's lines up to it say.
-func (s *Sink) prime(id string, c Cursor) Cursor {
+// prime gives the mapper what a session's lines before the one at seq said:
+// the provider the cursor kept, or, once for a cursor that never kept one,
+// what the record's lines before it say.
+func (s *Sink) prime(id string, c Cursor, seq int64) Cursor {
 	if _, ok := s.mapper.provider[id]; ok {
 		return c
 	}
@@ -449,7 +481,7 @@ func (s *Sink) prime(id string, c Cursor) Cursor {
 		s.mapper.provider[id] = c.Provider
 		return c
 	}
-	if c.Seq <= 0 || c.Primed || s.o.Read == nil {
+	if c.Primed || seq <= 1 || s.o.Read == nil {
 		c.Primed = true
 		return c
 	}
@@ -459,7 +491,7 @@ func (s *Sink) prime(id string, c Cursor) Cursor {
 		return c
 	}
 	for _, l := range lines {
-		if l.Seq > c.Seq {
+		if l.Seq >= seq {
 			break
 		}
 		s.mapper.Observe(l)
@@ -529,7 +561,7 @@ type cursorFile struct {
 	Sessions map[string]Cursor `json:"sessions"`
 }
 
-func (f *fileCursors) Load() (map[string]Cursor, bool, error) {
+func (f *fileCursors) Load(_ []string) (map[string]Cursor, bool, error) {
 	cur := cursorFile{Sessions: map[string]Cursor{}}
 	data, err := os.ReadFile(f.path + ".cursor")
 	if errors.Is(err, os.ErrNotExist) {
@@ -548,7 +580,7 @@ func (f *fileCursors) Load() (map[string]Cursor, bool, error) {
 }
 
 func (f *fileCursors) Save(moved map[string]Cursor) error {
-	all, _, err := f.Load()
+	all, _, err := f.Load(nil)
 	if err != nil {
 		return err
 	}
