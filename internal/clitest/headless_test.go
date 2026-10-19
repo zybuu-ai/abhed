@@ -293,3 +293,14 @@ func TestPositionalPrompt(t *testing.T) {
 		}
 	}
 }
+
+// A -json-schema run gives a result, not an answer, so a configured
+// completion contract is said not to apply rather than silently skipped.
+func TestSchemaRunNamesTheUncheckedContract(t *testing.T) {
+	cfg := strings.Replace(DefaultUserConfig, `{"sandbox"`, `{"verify":{"contract":{"require":["true"]}},"sandbox"`, 1)
+	h := piped(t, Opts{UserConfig: cfg, Args: []string{"-p", "count", "-json-schema", `{"type":"object","properties":{"n":{"type":"integer"}}}`},
+		Script: `tool result {"n":1}`})
+	if !strings.Contains(h.Stderr(), "verify.contract is not checked for a -json-schema run") {
+		t.Fatalf("stderr:\n%s", h.Stderr())
+	}
+}

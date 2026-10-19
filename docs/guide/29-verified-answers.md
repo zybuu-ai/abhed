@@ -262,7 +262,8 @@ the agent gets its one revision turn (with the failing command's output in the
 note), and then the run ends `unverified`, exit 8, whatever the mode. A contract
 works with `mode: off` too: then only the contract is checked. It gates an
 answer: a run that ends on a plan proposed for approval, a structured result or
-nothing said runs neither the checks nor the contract, and plan mode, which
+nothing said runs neither the checks nor the contract (`abhed -p -json-schema`
+says so on stderr when a contract is configured), and plan mode, which
 changes nothing, runs no contract. `abhed serve` refuses to start, and a
 session to open, when its answers cannot be checked as configured (a critic
 model that is not there, say).

@@ -329,3 +329,49 @@ func TestWorktreeHoldingWorkIsKept(t *testing.T) {
 		})
 	}
 }
+
+// A worktree subagent's session keeps the parent's bash checkpoint mode, so
+// "required" refuses its commands as it does the parent's.
+func TestWorktreeSubagentKeepsRequiredCheckpoints(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ws := gitRepo(t)
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
+	reg := tools.NewRegistry(tools.Read{}, tools.Bash{})
+	adapter := &workdirAdapter{plan: func(string) []scriptedTurn {
+		return []scriptedTurn{{calls: []model.ToolCall{call("bash", map[string]string{"command": "echo ran > BASH.txt", "description": "write"})}},
+			{text: "done"}}
+	}}
+	sess, err := tools.NewSession(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.BashCheckpoints = tools.BashCheckpoints{Mode: tools.BashCheckpointRequired}
+	store := NewMemStore()
+	f := &SubagentFactory{Adapter: adapter, Tools: reg, Policy: policy.New(policy.ModeBypass),
+		Approver: AutoApprove{Yes: true}, Session: sess, Store: store,
+		Budget: NewBudget(1_000_000, 10, false), Config: DefaultConfig(), Workspace: ws}
+	args, _ := json.Marshal(map[string]any{"isolation": "worktree",
+		"tasks": []map[string]any{{"prompt": "write it", "description": "writer"}}})
+	Tasks{Spawn: f.Spawn, Workspace: ws}.Run(context.Background(), nil, args)
+	refused := false
+	store.mu.RLock()
+	var ids []string
+	for id := range store.events {
+		ids = append(ids, id)
+	}
+	store.mu.RUnlock()
+	for _, id := range ids {
+		evs, _ := store.Events(id)
+		for _, e := range evs {
+			if e.Type == EvObservation && strings.Contains(string(e.Payload), "bash_checkpoints") {
+				refused = true
+			}
+		}
+	}
+	if !refused {
+		t.Fatal("the worktree subagent ran bash without the required checkpoints")
+	}
+}

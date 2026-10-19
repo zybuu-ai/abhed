@@ -851,3 +851,17 @@ func TestUnwrappedCommands(t *testing.T) {
 		t.Errorf("a redirection in a word: %q", ts)
 	}
 }
+
+// A reply with nothing in it is not an answer: no checks, no contract.
+func TestEmptyReplyRunsNoContract(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyLabel, false, nil)
+	l.Verify.Contract = &Contract{Require: []string{"true"}}
+	l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: "  \n"})
+	if again, reason := l.checkAnswer(context.Background()); again || reason != TermCompleted {
+		t.Fatalf("%v %s", again, reason)
+	}
+	evs, _ := store.Events("sess1")
+	if len(evs) != 0 {
+		t.Fatalf("an empty reply recorded %d events", len(evs))
+	}
+}
