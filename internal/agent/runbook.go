@@ -127,6 +127,15 @@ func (l *Loop) prepareRunbook(text string, steps []tools.RunbookStep) (*Runbook,
 	return rb, nil
 }
 
+// planTextHash is the hash of a plan without a runbook, as prepareRunbook
+// would begin it.
+func planTextHash(text string) string {
+	sum := sha256.New()
+	writeField(sum, "abhed-plan-v1")
+	writeField(sum, text)
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
 func writeField(h interface{ Write([]byte) (int, error) }, s string) {
 	_, _ = h.Write([]byte(strconv.Itoa(len(s)) + ":" + s + ";"))
 }
@@ -327,7 +336,7 @@ func (l *Loop) BindRunbook(text string, steps []tools.RunbookStep, want string) 
 	if want = strings.ToLower(strings.TrimSpace(want)); want != "" && want != rb.Hash {
 		return Runbook{}, fmt.Errorf("the runbook's plan hash is %s, not the %s approved", rb.Hash, want)
 	}
-	if _, err := l.Recorder.Record(EvPlanProposed, ActorUser, Trusted, PlanProposed{Text: text, Runbook: rb}); err != nil {
+	if _, err := l.Recorder.Record(EvPlanProposed, ActorUser, Trusted, PlanProposed{Text: text, Runbook: rb, Hash: rb.Hash}); err != nil {
 		return Runbook{}, err
 	}
 	if _, err := l.Recorder.Record(EvPlanDecided, ActorUser, Trusted, PlanDecided{

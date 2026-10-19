@@ -221,6 +221,9 @@ type FileRestored struct {
 // PlanProposed is the payload of plan.proposed.
 type PlanProposed struct {
 	Text string `json:"text"`
+	// Hash names the plan an answer is for: its runbook's hash, which covers
+	// the text, or for a plan without one the hash of its text alone.
+	Hash string `json:"hash,omitempty"`
 	// Runbook is the plan's steps, canonical and hashed; nil for a plan without one.
 	Runbook *Runbook `json:"runbook,omitempty"`
 }

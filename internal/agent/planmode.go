@@ -43,7 +43,10 @@ func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.Runbook
 	if err != nil {
 		return fmt.Errorf("the runbook was refused: %w", err)
 	}
-	p := PlanProposed{Text: text, Runbook: rb}
+	p := PlanProposed{Text: text, Runbook: rb, Hash: planTextHash(text)}
+	if rb != nil {
+		p.Hash = rb.Hash
+	}
 	if _, err := l.Recorder.Record(EvPlanProposed, ActorAgent, Trusted, p); err != nil {
 		return err
 	}
@@ -52,6 +55,16 @@ func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.Runbook
 	l.plans.offered = rb
 	l.plans.mu.Unlock()
 	return nil
+}
+
+// PendingPlan returns the plan the last run proposed, leaving it for TakePlan.
+func (l *Loop) PendingPlan() (PlanProposed, bool) {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	if l.plans.pending == nil {
+		return PlanProposed{}, false
+	}
+	return *l.plans.pending, true
 }
 
 // TakePlan returns the plan the last run proposed, once.
