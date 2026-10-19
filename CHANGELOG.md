@@ -248,6 +248,35 @@ All notable changes to Abhed are recorded here. The format follows
   per host and cluster, with the decision, the exit code and the runbook
   step it was, in the text and HTML reports and the workbench
   ([HawkEYE](docs/guide/15-hawkeye.md)).
+- The record as OCSF events. Every record type maps to an OCSF 1.8.0 class:
+  API Activity (with the AI Operation profile's model, role and tokens) for
+  messages, model calls, calls, decisions and results; File System, Process,
+  Network, HTTP and SSH Activity; Device Config State Change for modes,
+  rules, policy layers and refused settings; Detection Finding for the
+  supervisor's and the answer checker's verdicts and planted state; and
+  Application Lifecycle for sessions and subagents. Each event is derived
+  from one chained line and keeps that line's seq, id, chain links and
+  payload, so the line can be rebuilt from it and its hash checked; it holds
+  no more than the record, redactions included. Events can be taken down to
+  OCSF 1.5.0, 1.3.0 or 1.1.0, what an older version lacks kept under
+  `unmapped`. The schema facts are the published schema's, checked by the
+  tests for every event written ([OCSF events and logs](docs/guide/30-ocsf-and-logs.md)).
+- `abhed logs`: the local record as one line an event, as OCSF, or as its
+  own chained lines, for one session or all of them, with `-f` to follow,
+  `-since`, `-after`, `-type`, and `-cursor FILE`, which keeps the last seq
+  read of each session so a reader that restarts goes on where it stopped.
+- `record.ocsf`: with `enabled`, the command line's record writes each line
+  to a rotated JSONL file of OCSF events (`version`, `max_mb`, `keep`) beside
+  the record, with a cursor that survives a restart: lines recorded while it
+  was off are written when it next starts, and processes sharing the file
+  never write a line twice. `record.ocsf.path` and `record.ocsf.locked`
+  (the managed `record.ocsf` is then the whole of it) are managed only; a
+  managed path's folder is state commands cannot reach.
+- `GET /v1/sessions/{id}/logs` streams a session's record as OCSF events or
+  shorthand over SSE, on the events stream's sign-in, ownership check and
+  seq cursor (`Last-Event-ID`, `?after=`), with `?version=` and `?type=`.
+  `GET /v1/sandboxes/{id}:events?format=ocsf` gives a page of a sandbox's
+  control-plane record as OCSF API Activity, the principal as the actor.
 
 ### Changed
 
@@ -306,6 +335,12 @@ All notable changes to Abhed are recorded here. The format follows
 - `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
   `DriftReport` and `RunDrift`.
 - `abhed -p`'s JSON result line gains `verdict` when answers are checked.
+- `ocsf`, a new package: `Mapper` (`NewMapper`, `Map`, `Observe`), `Line`,
+  `Options`, `Event`, `Mapping`, `Types`, `MapAudit`, `Downgrade`, `Replay`,
+  `ReplayJSON`, `Validate`, `CheckVersion`, `Shorthand`, `Version`,
+  `Versions`, and the file sink `OpenSink`, `Sink` and `SinkOptions`.
+- `store/local`: `Options.OnAppend`, `LineHash` and `Store.SessionIDs`.
+- `config`: `RecordConfig.OCSF`, `OCSFConfig` and `OCSFVersions`.
 
 ## [1.2.8] - 2026-10-14
 

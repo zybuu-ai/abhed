@@ -56,7 +56,12 @@ ARGS`) is read as one of these.
 ```bash
 abhed sessions                 # this workspace's sessions, latest active first (abhed record list)
 abhed -r                       # pick one to resume
+abhed logs -f                  # the latest session's record as it is written, one line an event
 ```
+
+`abhed logs` reads the record as a log: shorthand, OCSF or its own lines,
+filtered by time and type, with a cursor file to resume from
+([OCSF events and logs](30-ocsf-and-logs.md#abhed-logs)).
 
 Inside a session, `/resume` or `/switch` alone opens the picker: type to
 filter it, Enter opens the first match, and the session you are in is marked

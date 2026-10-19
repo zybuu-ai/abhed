@@ -30,6 +30,10 @@ Policy reads it; the context assembler renders it in a distinct structural block
 
 ### Event types
 
+Each type also has a row in the OCSF table (`ocsf/table.go`): the OCSF 1.8 class its lines
+become, or why it is not mapped. A new type fails the tests until it has one; the classes are
+listed in [OCSF events and logs](../guide/30-ocsf-and-logs.md#classes).
+
 | Type | Payload | Emitted by |
 |---|---|---|
 | `session.started` | workspace, model, mode, origin (`chat` or `workbench`), provider; the first event of every session the server starts, so a resume keeps its provider. The CLI's also carries `surface`, `headless`, the permission `mode` it started in, `bypass_confirmed` (true only when bypass came from a confirmed `-dangerously-skip-permissions`) and the system prompt's digests. A CLI run that continues a recorded conversation (`-c`, `-r`, `/resume`, `-fork-session`) records its own after the record, with `resumed: true` and `through_seq`, the last step it goes on from, followed by a `mode.changed` when its mode is not the one the record was left in; a conversation rebuilt within the same process records none. A new `abhed acp` or `abhed rpc` session records one too, with `surface` (`acp`, `rpc`), `headless`, `provider`, `model`, `mode` and `workspace_trust`: `requested` (`stored`, `trusted` or `untrusted`, the trust the surface asked for), `trusted`, `reason` and `sha256` of what applied. An `abhed acp` session continued from its record records a `session.resumed` instead | system |
@@ -225,6 +229,8 @@ POST /v1/sessions/{id}/messages      → 202, events stream; to a busy session
                                        {delivery:"steered", queue_id}, or with
                                        "interrupt":true a fresh turn
 GET  /v1/sessions/{id}/events        → SSE (resumable via Last-Event-ID or ?after=seq)
+GET  /v1/sessions/{id}/logs          → the same stream as OCSF events (?format=shorthand,
+                                       ?version=, ?type=); see guide/30-ocsf-and-logs.md
 GET  /v1/sessions/{id}/queue         → messages waiting for the next turn boundary
 DELETE /v1/sessions/{id}/queue/{qid} → 204, or 404 once the loop has read it
                                        (these and /interrupt: 421 + Abhed-Session-Node

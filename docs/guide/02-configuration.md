@@ -1042,6 +1042,12 @@ configuration:
 the record is opened, leaving a tombstone for each. Unset, nothing is removed
 unless you run `abhed record prune`.
 
+`record.ocsf` writes the local record to a rotated JSONL file of OCSF events
+as it is recorded: `enabled`, `version` (`1.8.0`, `1.5.0`, `1.3.0` or
+`1.1.0`), `max_mb` and `keep` may be set in your own file; `path` and
+`locked`, which makes the managed `record.ocsf` the whole of it, only in the
+managed file ([OCSF events and logs](30-ocsf-and-logs.md#the-ocsf-file)).
+
 **Two roles, not one.** The audit record is only as protected as the role that
 writes it. Database triggers refuse an `UPDATE`, a `DELETE` or a `TRUNCATE` on
 `events` — but the role that *owns* a table may disable its triggers or drop
@@ -1227,7 +1233,7 @@ Later sources win, except that an org-managed file cannot be overridden:
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
-`record.witness`, `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
+`record.witness`, `record.ocsf.path`, `record.ocsf.locked`, `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
 `studio.disable_host_terminal`, `sandbox.network` (which your own file may
 use only to narrow `allow_network`), `sandbox.microvm_socket`,
 `fence.egress_port_only`, every key under `egress`,
