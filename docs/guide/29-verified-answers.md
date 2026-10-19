@@ -13,14 +13,16 @@ one of three:
 |---|---|---|
 | ✓ | **verified** | a tool result from this session, still current, shows it, and a check found the two consistent |
 | ? | **unverified** | nothing in this session shows it: general knowledge, a guess, or a result that has since changed |
-| ✗ | **contradicted** | the record says otherwise. It is shown struck through, beside the evidence against it, never as fact |
+| ✗ | **contradicted** | the result it cites says otherwise. It is shown struck through, beside that result, never as fact |
 
 "Verified" is a narrow word here. It means the statement matches what this
 session observed, not that the world agrees: a test suite that passes can still
 test the wrong thing, and a file the agent read can be wrong. What Abhed
 guarantees is the other direction: nothing is shown as verified unless it is
 tied to evidence from this session that a check could compare it with, and a
-statement the record contradicts is never presented as fact. The checks are
+statement the result it cites contradicts is never presented as fact. A
+statement that cites nothing is never marked contradicted: the checks say
+"unverified" whenever they cannot stand behind either answer. The checks are
 plain comparisons, with no model involved, so they hold with a small or weak
 model as well as a strong one.
 
@@ -87,56 +89,71 @@ counts (`12 tests`, `replicas: 3`). Then:
   `-delete`, `-exec` or `-fprint`; and `go test` and `go vet` with flags that
   write nothing. Where a program takes long options, only the ones spelled
   out in full are let through, since GNU and git programs take abbreviations.
-  Everything else, test runners, linters, build tools, `curl` and `xargs`
+  A command with an assignment before it (`UPDATE=1 go test`) is never a
+  reader. Everything else, test runners, linters, build tools, `curl` and `xargs`
   included, is a possible change whose files are unknown, and nothing is
   redirected to a file. Within one line, output printed before a later command
   on the same line changes something is out of date by that change: `cat f &&
   sed -i … f` does not show the file as it is.
 - **What the statement says must be in the output.** Its quote, and every
   path, host, version, date and number in it, must appear in the evidence,
-  compared without case, terminal colours or extra spaces. A number with its
-  counting word is contradicted when the output counts the same thing with
-  another number and never with this one: "15 tests passed" against
-  `12 tests passed` is ✗, with `12 tests passed` shown beside it.
-- **"Tests pass" and "the build succeeds" need a run.** Such a statement is
-  verified by a command of the kind it names (read from the program and its
-  subcommand: `go test`, `npm test`, `pytest`, `cargo build`, …, so `ls
-  tests` is no test run) that is the whole line, or the last command of an
-  `&&` chain at its top, so that its exit is the line's: not in a pipe and
-  not followed by `;`, `||` or `&`. It must have exited 0 after the last call
-  that may have changed anything. It is contradicted only when the last such
-  run since the last change failed, ran on its own (a `cd` before it at
-  most), and covers what the statement names (`./...`, or the folder or
-  package it names); a failed run of another package leaves it unverified.
-- **"I changed X" is checked against the calls.** It is verified by a call
-  that changed that file as the claim writes it and succeeded: a `write` or
-  `edit`, or a shell line read in full as known writers that exited 0 (a
-  redirection, `tee`, `cp`, `mv` and `cp -t`, `sed -i`, `rm`, `touch`,
-  `mkdir`, `gofmt -w` and `goimports -w`, …), whose files are resolved against
-  the folder the bash tool ran it in, as the record holds it, and a `cd`
-  earlier in its own `&&` chain. A folder a call changed covers the files
-  beneath it. The same file means the same absolute path, the claim's path in
-  the workspace, or a short name for a file in the workspace; the letter case
-  must match, and a match only ignoring case leaves the claim unverified. It
-  is contradicted only when every change in the session came through
-  `write` and `edit`, whose files are exact, and none was to this file; after
-  any shell, `ssh`, subagent or other call that may have changed things, and
-  after a failed call that names the file, it is unverified.
-- **"I ran `Y`" is checked against the commands.** It is verified when one of
-  the simple commands of a call is that command as written, perhaps with more
-  arguments after it, runners taken off both: `echo 'go test'` is not
-  `go test`, and "I ran `npx jest`" is met by `jest --ci`. Otherwise it is
-  unverified, never contradicted.
-- **A subagent's work counts.** The parent's record names each subagent's
-  session, and its own record is read too (up to three levels deep): its
-  results are evidence and its calls are changes, placed at the parent's
-  entry for its return, which is the `#seq` a verdict cites for them. Its
-  folder is not known, so its relative files are not either. Where that
-  record cannot be read, a claim about its work is unverified.
+  compared without case, terminal colours or extra spaces.
+- **Contradicted only from what it cites.** A statement that cites a result
+  (a `call_id` or `#seq` through the answer tool, or `(#12)` in the reply's
+  text) is contradicted when that result, still current, lacks its quote or
+  one of its numbers, dates, hosts or paths, or counts the same thing with
+  another number ("15 tests passed" citing `12 tests passed` is ✗, with the
+  result shown beside it); when it says a file was not changed and cites a
+  write or edit of that file that succeeded; or when it says tests pass (or
+  a build succeeds) and cites a failed run of the same kind and the same
+  scope, run on its own (no runner around it, exit 1). Nothing else is ever
+  contradicted: a statement that cites nothing, however wrong it looks
+  against some result, is unverified.
+- **A statement that something did not happen is never verified.** One that
+  says not, never, no, without, unchanged, untouched, left alone and the
+  like is not shown by a result that shows the thing.
+- **"Tests pass" and "the build succeeds" need a whole run.** Such a
+  statement is verified by a run of its own kind (read from the program and
+  its subcommand: `go test`, `npm test`, `pytest`, `cargo test` for tests,
+  `go build`, `cargo build`, `npm run build`, `make` for a build; a test run
+  never shows a build, and `go vet` or a linter shows neither) that:
+  - is the whole line, or the last command of an `&&` chain at its top with
+    only `cd` before it, so its exit is the line's: not in a pipe, and not
+    followed by `;`, `||` or `&`;
+  - ran in this session's workspace (the folder the record holds for it),
+    not over `ssh` and not in a subagent;
+  - filters, lists and dry-runs nothing (`-run`, `-skip`, `-short`, `-list`,
+    `-c`, `pytest -k` or `--collect-only`, `cargo test --no-run` and anything
+    else not read as a plain run leave it out);
+  - covers, by path, the packages or folders the statement names, or the
+    whole workspace (`./...` from the workspace) when it names none;
+  - exited 0 after the last call that may have changed anything.
+- **"I changed X" is checked against the calls.** It is verified by the last
+  call that changed X, as the statement writes it, when that call succeeded:
+  a `write` or `edit` of X, or a shell line in this session's workspace read
+  in full as known writers that exited 0, whose destination is X (a
+  redirection, `tee`, the destination of `cp`, `ln` or `install`, `sed -i`,
+  `rm`, `touch`, `mkdir` for the folder itself, or a file beneath a folder
+  `gofmt -w` or `goimports -w` rewrote). A file is resolved against the
+  folder the bash tool ran the line in, as the record holds it, and a `cd`
+  earlier in its own `&&` chain. A statement that names a folder is met by a
+  change beneath it. The path must match as written, letter case included. A
+  later call naming X that failed or was refused leaves it unverified, and a
+  change over `ssh` or in a subagent's worktree never shows a change to the
+  workspace. Otherwise it is unverified, never contradicted.
+- **"I ran `Y`" is checked against the commands.** It is verified when Y, as
+  written (assignments and the program's path included), perhaps with more
+  arguments after it, is a line's first command, or any command of an `&&`
+  chain whose exit was 0. A command after `;`, `||` or a failed `&&` may not
+  have run, and does not count. Otherwise it is unverified.
+- **A subagent's work counts as evidence.** The parent's record names each
+  subagent's session, and its own record is read too (up to three levels
+  deep): its results are evidence and its calls are changes, placed at the
+  parent's entry for its return. Its runs do not show the workspace's tests
+  passing, and its folder is not known.
 - **`file:line` cites are checked against the file now.** Text a cite quotes
-  must be on that line or the two either side. A cite of a line or a file
-  that is not there now leaves the statement unverified, since the file may
-  have changed since.
+  must be on that line or the two either side; a cite the file does not hold
+  now leaves the statement unverified.
 
 A statement with nothing in it to compare ("the design is sound") is
 unverified, and so is general knowledge. These are not counted as about the
@@ -172,7 +189,7 @@ last turn ends.
 
 ## The revision turn
 
-When a statement comes out contradicted, in `label` or `strict` mode, or when
+When a statement comes out contradicted (from what it cites), in `label` or `strict` mode, or when
 a statement about the session's work comes out unverified in `strict` mode or
 under a contract, the agent is sent one note, recorded in the `answer.verdict`
 event, listing each one and why: "Check what you can with a tool, then give
@@ -317,30 +334,28 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 72 plant a wrong claim: a test count or result, a replica count,
-port, version, host, path, disk figure, file change, command, `file:line` or
-citation; among them "tests pass" after a test run piped through `tail` or
-`grep -v`, followed by `|| true` or `; echo`, or with an edit later on its
-line; a change claimed after `cd /tmp`, `cd ..` or a `cd` before `;`; a
-failing run of another package against a claim about one folder; and reads
-relied on after `xargs rm`, `rm -rf` of their folder, `gofmt -w .`, `env > f`,
-`sed` writing with `w` or an abbreviated `--in-place`, `sort --out=`, `curl
--D`, `golangci-lint fmt`, `ruff --add-noqa`, `eslint --output-file`, `pytest
---junitxml`, `gawk -o`, `less -o`, `yq -s`, `go test -exec`, `git grep -O`, and
-the earlier rounds' shapes. 40 controls say only what the session showed,
-among them `README.md`, `docs/Guide.md` and a `Dockerfile` in their own case,
-`cp -R` and `make TEST=1` as written, files beneath a folder `gofmt -w` or
-`goimports -w` rewrote, and `touch -r` whose reference is no target. 15 are
-neutral: general knowledge, and true change claims a call whose files cannot
-be read may have made, or a failed call names. Today none of the 72 planted
-claims is shown as verified (15 are contradicted, the rest unverified), all
-40 controls are verified, and none of the 55 true or neutral claims is
+session. 94 plant a wrong claim. Some cite the result that shows them
+wrong (a test count, a replica count, a disk figure, a failed run, an edited
+file said untouched) and come out contradicted. The rest cite nothing, or
+rest on what the checks cannot read, and must come out unverified: wrong
+counts and paths, runs piped or followed by `;` or `|| true`, runs that
+filter, list or only compile, a package run against a claim about the whole
+suite, a trap before the run, commands after a failed `&&`, `||` or `exit`,
+a copy's or a link's source, a write refused in a folder `mkdir` made, a
+remote `rm`, a program at another path, a success of no named kind, reads
+relied on after changes the checks cannot rule out, and more. 41 controls say
+only what the session showed, among them a folder claim met by an edit in it
+and `sed -l` or `perl -I` with their values. 25 are neutral: general
+knowledge, and true claims the checks cannot stand behind, such as a build
+claim against a failed test run, a filtered or timed-out run, a run of
+another or a wider scope, an unrelated count of the same thing, or a `cd`
+after `CDPATH=`. Today none of the 94 planted claims is shown as verified (7
+are contradicted, all from cited evidence; the rest unverified), all 41
+controls are verified, and none of the 66 true or neutral claims is
 contradicted. The test fails if a planted claim is shown as verified, if a
 true one is contradicted, or if either count falls below its floor; the
-floors only go up. The checks contradict less than they did: by design, only
-the narrow rules above may say a claim is false. The corpus is small and
-written by the people who wrote the checks, so it shows what the checks do on
-these shapes of mistake, not how often a given model makes them.
+floors only go up. The corpus is small and written by the people who wrote
+the checks, so it shows what the checks do on these shapes of mistake, not how often a given model makes them.
 
 ## Limits
 

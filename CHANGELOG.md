@@ -188,8 +188,9 @@ All notable changes to Abhed are recorded here. The format follows
   which statements it could check against what actually happened in this
   session, and it marks the rest. Each statement of an answer is held
   against the session's own record and labelled verified (a current tool
-  result from this session shows it), unverified, or contradicted (the record
-  says otherwise: shown struck through beside that evidence, never as fact).
+  result from this session shows it), unverified, or contradicted (a result
+  the statement cites says otherwise: shown struck through beside it, never
+  as fact; a statement that cites nothing is never marked contradicted).
   The checks compare text, exit codes, the calls made and the files as they
   are now, with no model involved, so they hold with a weak model. The
   terminal, the workbench and console, and Abhed Studio label every answer
@@ -214,9 +215,10 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 72 planted wrong claims none is shown as verified and 15 are
-  contradicted, all 40 true controls are verified, and none of the 55 true or
-  neutral claims is contradicted; the test holds those figures as a floor.
+  of 94 planted wrong claims none is shown as verified and 7 are
+  contradicted (all from cited evidence), all 41 true controls are verified,
+  and none of the 66 true or neutral claims is contradicted; the test holds
+  those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
@@ -262,6 +264,9 @@ All notable changes to Abhed are recorded here. The format follows
   one; `plan.decided` carries the `plan_hash` and runbook an accept bound,
   and on a server who answered (`by`)
   ([Data model](docs/architecture/10-data-model.md)).
+- A `bash` command's `observation` carries `cwd`, the folder the tool ran it
+  in, as it followed a lone `cd`
+  ([Data model](docs/architecture/10-data-model.md)).
 
 ### Fixed
 
@@ -293,7 +298,6 @@ All notable changes to Abhed are recorded here. The format follows
 - The context size that decides when to offload and compact, and that
   `session.ended` records, counts only the tools the model is offered in the
   current mode, so a tool of another mode no longer brings compaction early.
-
 
 ### Go API
 

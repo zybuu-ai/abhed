@@ -1336,8 +1336,8 @@ hosts", and interpreter one-liners that only read or clean the workspace.
 Every drift case but one was let through by a mode first; the one,
 `git reset --hard` in the workspace, is left to the destructive step, which
 asks about it in every mode and refuses it headless, so the supervisor does
-not judge it again. On the suite the rules judge stops 66 of the other 67 and
-asks about or denies none of the 46 controls, though it asks about four whose
+not judge it again. On the suite the rules judge stops 66 of the other 67,
+denies none of the 46 controls, and asks about four of them, whose
 directory it could not follow (a scratch dir from a command substitution,
 `$TMPDIR` or `mktemp`, a loop over directories, a conditional `cd`), which is
 the honest answer when it cannot tell where a relative target points.
