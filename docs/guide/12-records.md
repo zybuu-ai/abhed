@@ -272,6 +272,7 @@ abhed record show <session>      a session's events
 abhed record verify              the index and every session
 abhed record verify <session>    one session
 abhed record verify file.jsonl   an export, or a copy from elsewhere
+abhed record audit               the control-plane audit chain abhed serve writes
 ```
 
 `verify <session>` checks the index first, then the session. It fails, naming
@@ -378,8 +379,11 @@ sent (the last sync), and anything before it was configured.
 In Postgres every event is chained to the one before it in its session, by
 the database itself: a trigger sets `chain_pos`, `prev_hash` and `hash`,
 whatever the server sent, and holds a lock per session so concurrent writers
-make one chain. The control plane's `sandbox_audit` is chained per tenant the
-same way. `abhed record verify [session ...]` with `storage.driver: postgres`
+make one chain. The control plane's `sandbox_audit`, which holds the sandbox
+operations and every API request that changes something, is chained per
+tenant the same way; `abhed record audit` walks it (and, without Postgres,
+the server's `<records>/<tenant>/audit/api.jsonl`, chained line by line).
+`abhed record verify [session ...]` with `storage.driver: postgres`
 walks each chain in the database (with no session named, the 100000 most
 recent, deleted and subagent sessions among them and marked so, and it says
 so when there are more) and reports the first event that was

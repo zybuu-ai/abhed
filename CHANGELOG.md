@@ -46,6 +46,12 @@ All notable changes to Abhed are recorded here. The format follows
 - `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
   or `stringData`, and withholds its values from the record; build such a
   Secret with `secret_from` from stored secrets and workspace files.
+- `abhed serve` writes every API request that changes something to the
+  control-plane audit record, with who made it, before it runs and with its
+  outcome, and answers 503 without making the change when that record
+  cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
+  without, the new file `<records>/<tenant>/audit/api.jsonl` under
+  `record.dir` or `~/.abhed/records`.
 
 ### Security
 
@@ -73,6 +79,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `server.metrics`: Prometheus metrics for `abhed serve` and its control
+  plane, off by default. Policy decisions by decision, step and tool;
+  approvals by answer; supervisor verdicts by code; egress decisions by kind
+  and decision; sandbox operations and bindings; tool, model, record-write
+  and request latency; model tokens; sessions. Served at `/metrics` to
+  administrators, or on a `listen` address of its own, which needs a bearer
+  token (`token_env`) unless it is loopback. No label carries a path, a
+  command, a host or anything a person or model wrote.
+- Every mutating API route is audited with its principal in the chained
+  control-plane record: the route pattern as `api:<pattern>`, the method,
+  tenant, caller address and wildcard values, never the body or query.
+  `abhed record audit` checks the chain, in Postgres or the local file.
 - `ssh.read_commands`: commands the operator declares reads on every host.
   An exact entry (`uptime`, `df -h`) matches only its own text
   and may name any program but one that runs what it is given (a shell, a
