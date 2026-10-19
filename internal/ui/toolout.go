@@ -219,6 +219,35 @@ func summarizeArgsRel(tool string, raw json.RawMessage, rel func(string) string)
 		return str("query")
 	case "shell_output", "shell_kill":
 		return str("shell_id")
+	case "ssh":
+		line := str("host") + " $ " + truncate(str("command"), 120)
+		if s := str("stdin_secret"); s != "" {
+			line += " (stdin: stored secret " + s + ")"
+		}
+		return line
+	case "ssh_connect":
+		who := str("addr")
+		if u := str("user"); u != "" {
+			who = u + "@" + who
+		}
+		if n := str("name"); n != "" && n != str("addr") {
+			who += " as " + n
+		}
+		return who
+	case "ssh_put":
+		from := "file " + rel(str("file"))
+		if s := str("secret"); s != "" {
+			from = "stored secret " + s
+		}
+		return str("host") + ":" + str("remote_path") + " ← " + from
+	case "ssh_get":
+		return str("host") + ":" + str("remote_path") + " → " + rel(str("file"))
+	case "k8s_get":
+		return k8sGetLine(m, str)
+	case "k8s_apply":
+		return k8sHead(m, str)
+	case "k8s_login":
+		return "cluster " + str("cluster") + " with stored secret " + str("token_secret")
 	}
 	return ""
 }
@@ -438,4 +467,29 @@ func observationSummary(o agent.Observation) string {
 		return firstLine(o.Content)
 	}
 	return ""
+}
+
+// k8sGetLine names what a k8s_get reads: resource, name, namespace, where,
+// and a rollout wait.
+func k8sGetLine(m map[string]any, str func(string) string) string {
+	what := str("resource")
+	if n := str("name"); n != "" {
+		what += "/" + n
+	}
+	parts := []string{what}
+	if ns := str("namespace"); ns != "" {
+		parts = append(parts, "namespace "+ns)
+	}
+	if c := str("cluster"); c != "" {
+		parts = append(parts, "cluster "+c)
+	} else if c := str("context"); c != "" {
+		parts = append(parts, "context "+c)
+	}
+	if sel := str("selector"); sel != "" {
+		parts = append(parts, "selector "+sel)
+	}
+	if w, ok := m["wait_seconds"].(float64); ok && w > 0 {
+		parts = append(parts, fmt.Sprintf("wait %vs for the rollout", w))
+	}
+	return strings.Join(parts, " · ")
 }
