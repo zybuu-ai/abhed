@@ -137,6 +137,10 @@ Make one with `ssh-keygen -t ed25519 -N '' -f ssh_host_ed25519_key` and
 - **Readiness** probes `GET /v1/ready`: the server is not draining, and the
   secrets store, the event store and the control plane each answer. A pod
   that fails it gets no traffic but is not restarted.
+- **Metrics** are off unless the configuration sets `server.metrics`; the
+  chart does not scrape them. Give them a port of their own with
+  `server.metrics.listen` and `token_env` ([Configuration](02-configuration.md#metrics-and-the-api-audit)),
+  and point your Prometheus at it.
 
 ## The pod
 

@@ -1145,6 +1145,63 @@ drain short: once shutdown has begun, both are ignored, and the server exits
 when the drain budget and the waits above have run out. To stop it sooner,
 send SIGKILL, and accept that turns still running then record no end.
 
+## Metrics and the API audit
+
+```json
+"server": { "metrics": { "enabled": true, "listen": "127.0.0.1:9464" } }
+```
+
+`abhed serve` serves Prometheus metrics only when `server.metrics.enabled` is
+set; off, nothing is counted. With `listen` set they are on that address
+alone, at `/metrics`, apart from the API; a `listen` other than a loopback
+address needs `token_env`, the name of an environment variable holding a
+bearer token the scraper sends, or the server refuses to start. Without
+`listen` they are at `/metrics` on the API's own address, for administrators
+only (the `auth.admin_group`), so a server with sign-in off has nobody who
+can read them there and should use `listen`.
+
+What is counted, all from the session record, the control plane's audit and
+the API, never from a command, a path, a host or anything a person or model
+wrote:
+
+| Metric | Labels |
+|---|---|
+| `abhed_policy_decisions_total` | `decision` (allow, ask, deny), `step`, `tool` |
+| `abhed_approvals_total` | `result` (approved, rejected, unanswered, interrupted, withheld, owner, ...), `by`, `tool` |
+| `abhed_supervisor_verdicts_total`, `abhed_supervisor_judge_seconds` | `code`, `before`, `after` |
+| `abhed_supervisor_corrections_total`, `abhed_supervisor_replans_total` | `code` |
+| `abhed_egress_decisions_total`, `abhed_egress_bytes_total` | `kind`, `decision`; `direction` |
+| `abhed_tool_duration_seconds` | `tool`, `outcome` (ok, error, not_run, unknown) |
+| `abhed_model_calls_total`, `abhed_model_call_seconds`, `abhed_model_first_token_seconds`, `abhed_model_tokens_total` | `model`, `purpose`, `outcome`; `kind` (in, out, cached) |
+| `abhed_plan_decisions_total`, `abhed_approval_scopes_granted_total`, `abhed_answer_claims_total` | `decision`, `via`; `verdict` |
+| `abhed_sessions_started_total`, `abhed_sessions_ended_total`, `abhed_sessions_live` | `reason` |
+| `abhed_sandbox_operations_total`, `abhed_sandbox_bound_total` | `action`, `outcome`; `driver`, `tier` |
+| `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
+| `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |
+| `abhed_audit_events_total` | `source` (api, sandbox), `outcome` |
+| `abhed_http_requests_total`, `abhed_http_request_seconds` | `route` (the pattern, such as `POST /v1/sessions/{id}/messages`), `method`, `code` |
+| `abhed_config_refused_total` | `kind` (refused, narrowed) |
+
+A label takes the values its list names, or a configured name (a tool, a
+model, a driver); anything else is counted as `other`, and each metric keeps
+at most 500 label sets. Egress decisions Abhed makes for its own requests
+outside any session, and anything an exporter outside this process does, are
+not counted here.
+
+Every API request that changes something (any method but GET, HEAD and
+OPTIONS) is written to the control-plane audit record with its principal,
+before it runs and again with its outcome: its action is `api:` and the
+route pattern, and its detail the method, the route, the tenant, the
+caller's address and what the route's wildcards took, never the body or the
+query. A request whose first event cannot be written is refused with 503
+and nothing is changed. Sign-in routes record `anonymous`, since nobody is
+signed in yet. The record is the tenant's `sandbox_audit` table on Postgres,
+chained per tenant beside the sandbox operations, or
+`<records>/<tenant>/audit/api.jsonl` (under `record.dir`, or
+`~/.abhed/records`) without it, chained line by line the same way.
+`abhed record audit` checks the chain. The two routes that only open and
+close a channel of the workbench's read-only stream are left out.
+
 ## Accounts
 
 With `auth.mode` set to `local` and no database, accounts live in a file:

@@ -40,6 +40,7 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
                                        jsonl carries its head for checking elsewhere
   prune   <session> | -older-than 90d [-yes]
                                        remove sessions, leaving a tombstone in the index
+  audit                                check the control-plane audit chain abhed serve writes
 A session is its id, a unique id prefix, its name, or the path of its file.
 `)
 		return 2
@@ -54,6 +55,9 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	}
 	// A moved record is state here too, so no export is written into it.
 	registerState(cfg, workspace)
+	if args[0] == "audit" {
+		return verifyAudit(cfg, args[1:], stdout, stderr)
+	}
 	if args[0] == "verify" && cfg.Storage.Driver == "postgres" {
 		return verifyPostgres(cfg, args[1:], stdout, stderr)
 	}
