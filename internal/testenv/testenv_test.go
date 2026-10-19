@@ -50,7 +50,12 @@ func TestIsolateGuards(t *testing.T) {
 		t.Fatalf("stub: %v %v", resp, err)
 	}
 	_ = resp.Body.Close()
-	if _, err := http.Get("http://127.0.0.1:11434/v1/models"); err == nil || !strings.Contains(err.Error(), "testenv") {
+	// Refused at the dial, before anything leaves the process.
+	real, err := http.Get("http://127.0.0.1:11434/v1/models")
+	if err == nil {
+		_ = real.Body.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "testenv") {
 		t.Fatalf("a dial to 11434 was let through: %v", err)
 	}
 	if n := len(g.Hits()); n != 2 {
