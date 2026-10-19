@@ -420,14 +420,46 @@ for it. Everything else is as before. The command must be one simple command,
 read as bash reads it: `uptime; rm -rf /srv`, `uptime | sh`,
 `systemctl status $(id)`, a redirection, a line the parser cannot read in
 full and one the destructive step names are not reads, and plan mode refuses
-them. Deny and ask rules come first, and a managed `bypass` refusal still
-asks. `*` matches any text, so `systemctl status *` also matches
-`systemctl status nginx --now`; prefer exact commands and patterns whose
-program cannot write. An entry is refused at load when it is not one simple
-command, when it does not start with the program written out (`* --version`),
-when a wildcard follows a runner or a shell (`sudo *`, `bash -c *`), or when
-the destructive step names it. The `ssh` tool's description lists the
-entries, so the model knows which commands it may run in plan mode.
+them. Nor is a call in which the parser finds another command
+(`su -c '…' root`, `sh -c …`, `sudo cat …`, `eval`), one that writes a file
+it can name (`tee`, `cp`, `find -fprint`, `-fprintf`, `-fls`), or one that
+carries a `stdin_secret`: the secret could come back in the output in a form
+the mask does not catch (`head -c 3`, `base64`). Behind a runner, or with a
+`find` action that runs a program (`-exec`, `-execdir`, `-ok`, `-okdir`),
+only an entry written exactly matches. Deny and ask rules come first. In
+`bypass` mode the read step is not used: bypass allows the call anyway, and
+where the managed configuration refuses bypass, the call asks as in default
+mode, a declared read included. `*` matches any text, so
+`systemctl status *` also matches `systemctl status nginx --now`; prefer
+exact commands and patterns whose program cannot write.
+
+An entry is refused at load when it is not one simple command, when it does
+not start with the program written out (`* --version`), when it runs another
+command or writes a file (`sudo cat …`, `tee /tmp/x`), when the destructive
+step names it, or when a wildcard follows a program that runs what it is
+given: a shell (`sh`, `bash`, `dash`, `zsh`, `ksh`, `ksh93`, `mksh`, `ash`,
+`csh`, `tcsh`, `fish`, `rc`, `busybox`, `source`, `.`, `eval`), a runner
+(`sudo`, `doas`, `su`, `runuser`, `pkexec`, `sg`, `chroot`, `flock`,
+`systemd-run`, `script`, `unshare`, `nsenter`, `taskset`, `nice`, `ionice`,
+`stdbuf`, `env`, `timeout`, `nohup`, `setsid`, `xargs`, `parallel`, `watch`,
+`at`, `batch`, `tmux`, `screen`, `strace`, `ltrace`, `gdb`, `ssh`, `docker`,
+`podman`, `kubectl`, `expect`), an interpreter (`python`, `perl`, `ruby`,
+`node`, `php`, `lua`, `tclsh`, `awk` and its kin), or a tool with an option
+that runs a program (`sed`, `tar`, `rsync`, `zip`, `vi`, `less`, `man`).
+
+**Do not declare with a wildcard** a program whose other forms change the
+host; Abhed loads such an entry with a warning. Among them: `systemctl`
+other than after a reading verb (`status`, `show`, `cat`, `list-units`,
+`list-unit-files`, `list-timers`, `is-active`, `is-enabled`, `is-failed`),
+`service`, `journalctl` (`--vacuum-size`, `--rotate`), `find` (`-delete`,
+`-fprint`), `openssl` (`-out`), `git`, `curl` and `wget` (`-o`), `sort -o`,
+`tee`, `dd`, `cp`, `mv`, `ln`, `install`, `truncate`, `touch`, `mkdir`,
+`chmod`, `chown`, `crontab`, `ip`, `iptables`, `nft`, `mount`, `sysctl`,
+`kill`, `apt`, `dnf`, `yum`, `rpm`, `dpkg`, `pip`, `npm`, `logrotate`,
+`nginx`, `certbot`. Write those entries out exactly.
+
+The `ssh` tool's description lists the entries, so the model knows which
+commands it may run in plan mode.
 
 Only a trusted configuration file sets `ssh.read_commands`; a workspace
 cannot. A managed file that sets it replaces the list (`[]` allows none), and
@@ -473,10 +505,12 @@ password or a key (`sudo -S`, `chpasswd`, `cat > /etc/app/key`) takes it
 from the secrets store: store it with `abhed secret set DB_PW`, allow
 `secret(DB_PW)`, and the agent passes `"stdin_secret": "DB_PW"` beside the
 command. The value is written to the command's stdin, with a final newline
-if it has none, and is never in the command line, the approval, the record
-or the model's view: the approval names it (`writes stored secret DB_PW to
-the command's stdin`), and anything the command prints of it comes back as
-`[secret DB_PW]`. The rules read the call as they read any `ssh` call, by
+if it has none, and is never in the command line, the approval or the
+arguments the model sees: the approval names it (`writes stored secret DB_PW
+to the command's stdin`), and output that prints it literally comes back as
+`[secret DB_PW]`. Output that transforms it (`head -c 3`, `base64`, a hash)
+is not masked, so use it with commands that do not print what they read; a
+call with `stdin_secret` is never a declared read. The rules read the call as they read any `ssh` call, by
 `host/command`, and the secret needs its own rule in every mode.
 
 ### Moving files to and from a host

@@ -878,6 +878,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	var remote *remoteRead
 	if host, command, ok := remoteCommand(tool, args); ok {
 		rr := readRemote(host, command)
+		rr.stdin = carriesStdinSecret(args)
 		remote, canon = &rr, rr.canon
 		subjects, allowSubjects, narrowAllows, complete = rr.subjects, rr.allow, rr.narrow, rr.complete
 	}

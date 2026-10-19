@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -103,7 +104,7 @@ func TestSSHReadCommandEntriesMustBeOneCommand(t *testing.T) {
 			t.Errorf("%q was accepted", bad)
 		}
 	}
-	for _, good := range []string{"uptime", "df -h", "systemctl status *", "sudo cat /var/log/syslog"} {
+	for _, good := range []string{"uptime", "df -h", "systemctl status *"} {
 		if _, err := policy.ParseRemoteRead(good); err != nil {
 			t.Errorf("%q: %v", good, err)
 		}
@@ -117,5 +118,62 @@ func TestSSHDescriptionNamesTheReads(t *testing.T) {
 	}
 	if d := (Tool{}).Description(); strings.Contains(d, "declared a read") {
 		t.Fatalf("%s", d)
+	}
+}
+
+// A wildcard after any program that runs a command or code it is given is
+// refused at load: it would make any command a read.
+func TestSSHReadCommandWildcardAfterARunnerRefused(t *testing.T) {
+	for _, prog := range []string{"su", "runuser", "chroot", "flock", "systemd-run", "script", "sg", "pkexec", "unshare",
+		"nsenter", "sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "ksh93", "mksh", "ash", "rc", "fish", "source", ".",
+		"taskset", "strace", "ltrace", "at", "batch", "tmux", "screen", "watch", "timeout", "nohup", "setsid", "xargs",
+		"parallel", "sudo", "doas", "busybox", "env", "nice", "ionice", "stdbuf", "python3", "python3.12", "perl", "ruby",
+		"node", "php", "lua", "awk", "gawk", "sed", "tar", "rsync", "ssh", "docker", "kubectl", "expect", "/usr/bin/su"} {
+		if _, err := policy.ParseRemoteRead(prog + " *"); err == nil {
+			t.Errorf("%s * was accepted", prog)
+		}
+	}
+	for _, bad := range []string{"su -c id root", "sh -c uptime", "sudo cat /var/log/syslog", "find /var/log -fprint /tmp/x", "tee /tmp/x"} {
+		if _, err := policy.ParseRemoteRead(bad); err == nil {
+			t.Errorf("%q, which runs another command or writes, was accepted", bad)
+		}
+	}
+	for _, ok := range []string{"systemctl status *", "journalctl -u nginx -n 50"} {
+		if _, err := policy.ParseRemoteRead(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+}
+
+// A call is never a declared read when the parser finds a command inside it,
+// when a find action runs or writes something, or when it carries a secret
+// on stdin, whatever entry it matches.
+func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
+	e := readsEngine(t, policy.ModePlan, "find /var/log *", "head *", "cat *")
+	for _, c := range []struct{ cmd, stdin string }{
+		{"su -c 'systemctl stop nginx' root", ""},
+		{"find /var/log -name x -exec id {} +", ""},
+		{"find /var/log -name x -execdir id {} +", ""},
+		{"find /var/log -name x -ok id {} +", ""},
+		{"find /var/log -fprint /etc/cron.d/x", ""},
+		{"find /var/log -fprintf /tmp/x %p", ""},
+		{"find /var/log -fls /tmp/x", ""},
+		{"head -c 3", "DB_PASSWORD"},
+		{"cat /etc/os-release", "DB_PASSWORD"},
+	} {
+		raw := map[string]string{"host": "web1", "command": c.cmd}
+		if c.stdin != "" {
+			raw["stdin_secret"] = c.stdin
+		}
+		args, _ := json.Marshal(raw)
+		if res := e.Evaluate("ssh", true, args); res.Decision == policy.Allow {
+			t.Errorf("%q (stdin %q) ran as a read: %+v", c.cmd, c.stdin, res)
+		}
+		if e.RemoteReadOf("ssh", args) != "" {
+			t.Errorf("%q (stdin %q) is a read to RemoteReadOf", c.cmd, c.stdin)
+		}
+	}
+	if res := e.Evaluate("ssh", true, sshCall("web1", "find /var/log -name '*.gz'")); res.Decision != policy.Allow {
+		t.Errorf("a plain find was not a read: %+v", res)
 	}
 }

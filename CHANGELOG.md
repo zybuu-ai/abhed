@@ -51,8 +51,13 @@ All notable changes to Abhed are recorded here. The format follows
   each an exact command or a pattern for one simple command, such as
   `uptime` or `systemctl status *`. A matching `ssh` call, read as bash
   reads it, runs in plan mode and asks in no mode, so a plan can start by
-  inspecting the fleet; a chain, pipe, substitution, redirection or a
-  destructive command is never a read. Deny and ask rules come first. Only
+  inspecting the fleet; a chain, pipe, substitution, redirection, a
+  destructive command, one that runs another (`sh -c`, `su -c`, `sudo`,
+  `find -exec`), one that writes a file (`tee`, `find -fprint`) and one
+  carrying a `stdin_secret` are never reads. An entry with a wildcard
+  after a shell, runner or interpreter is refused at load, and one after a
+  program that can also change things (`systemctl *`, `journalctl *`,
+  `openssl x509 *`) loads with a warning. Deny and ask rules come first. Only
   a trusted configuration file sets it; a managed file that sets it
   replaces the list, and one that sets the permissions without it sets the
   person's entries aside. The `ssh` tool's description names the entries.
@@ -98,8 +103,10 @@ All notable changes to Abhed are recorded here. The format follows
 - `ssh` `stdin_secret` writes a stored secret, by NAME and under its
   `secret(NAME)` rule, to the remote command's stdin, so a password for
   `sudo -S` or a key written to a file never appears in the command line,
-  the approval, the record or the model's view; output that echoes it
-  reads `[secret NAME]`.
+  the approval or the arguments the model sees. Output that echoes it
+  literally reads `[secret NAME]`; output that transforms it (a part of
+  it, its base64) is not masked, so the model sees whatever the command
+  prints. Such a call is never a declared read.
 - `ssh_put` and `ssh_get` move one file over SFTP, behind `ssh.transfers`
   (off by default) and `ssh.transfer_max_mb` (16 by default): `ssh_put`
   sends a workspace file or a stored secret by NAME, so a key reaches a

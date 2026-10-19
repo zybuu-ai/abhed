@@ -30,9 +30,21 @@ func (f *shellFacts) placeAndWrites(name string, args []*syntax.Word) {
 	case "sudo":
 		f.moves = f.moves || optionTaken(args, "D", "--chdir")
 	case "find":
-		for _, a := range args {
-			if v, _ := literal(a); v == "-execdir" || v == "-okdir" {
+		for j, a := range args {
+			v, _ := literal(a)
+			switch v {
+			case "-execdir", "-okdir":
 				f.moves = true
+			case "-fprint", "-fprint0", "-fprintf", "-fls":
+				// The next word is the file it writes.
+				if j+1 >= len(args) {
+					continue
+				}
+				if t, lit := literal(args[j+1]); lit {
+					f.wrote(t)
+				} else {
+					f.writeHidden = "find writing a file named by an expansion"
+				}
 			}
 		}
 	case "cp", "mv", "ln", "install", "rsync", "gcp", "gmv", "gln", "ginstall":

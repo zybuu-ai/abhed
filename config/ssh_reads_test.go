@@ -51,3 +51,25 @@ func TestSSHReadCommands(t *testing.T) {
 		t.Fatalf("a managed empty list did not lock it: %v %v", cfg.SSH.ReadCommands, err)
 	}
 }
+
+// An entry whose wildcard follows a program that can also change things is
+// loaded with a warning; an exact one, or a plain reader's pattern, is not.
+func TestSSHReadCommandsWarnOfWriters(t *testing.T) {
+	_, ws := trustHome(t, `{}`, "")
+	var warned []string
+	body := []byte(`{"ssh":{"read_commands":["systemctl *","journalctl *","openssl x509 *","find /var/log *","uptime","cat /etc/*","systemctl status nginx","systemctl status *"]}}`)
+	if _, err := LoadWith(ws, LoadOptions{Settings: body, SettingsName: "ci.json", Warn: func(s string) { warned = append(warned, s) }}); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(warned, "\n")
+	for _, w := range []string{"entry systemctl *:", "entry journalctl *:", "entry openssl x509 *:", "entry find /var/log *:"} {
+		if !strings.Contains(all, w) {
+			t.Errorf("no warning for %s:\n%s", w, all)
+		}
+	}
+	for _, q := range []string{"entry uptime:", "entry cat /etc/*:", "entry systemctl status nginx:", "entry systemctl status *:"} {
+		if strings.Contains(all, q) {
+			t.Errorf("a warning for %s:\n%s", q, all)
+		}
+	}
+}

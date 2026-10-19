@@ -74,6 +74,7 @@ type remoteRead struct {
 	allow    []string // host/command, as allow rules see it
 	narrow   bool
 	complete bool
+	stdin    bool // the call writes a stored secret to the command's stdin
 }
 
 // readRemote reads an ssh call's command. A line the parser cannot read in
