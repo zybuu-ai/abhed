@@ -19,8 +19,8 @@ func TestBudgetStartupWithSlowPodman(t *testing.T) {
 	first, warm := startupRuns(t, 5, func() Opts { return Opts{Podman: "sleep 3; exit 1"} })
 	// Every run has a fresh HOME, so the first is the plan's cold start.
 	t.Logf("startup with a slow podman: first %v, best of the rest %v", first, warm)
-	assertStartup(t, "startup, cold", first, Budgets.StartupColdCPU, Budgets.StartupCold)
-	assertStartup(t, "startup, warm", warm, Budgets.StartupWarmCPU, Budgets.StartupWarm)
+	assertStartup(t, "startup, cold", first, Budgets.StartupColdCPU, Budgets.StartupCold, Budgets.StartupColdCeiling)
+	assertStartup(t, "startup, warm", warm, Budgets.StartupWarmCPU, Budgets.StartupWarm, Budgets.StartupWarmCeiling)
 }
 
 // startupCost is how long a run took to its prompt: by the wall clock, and in
@@ -56,17 +56,23 @@ func startupRuns(t *testing.T, n int, opts func() Opts) (first, warm startupCost
 	return first, warm
 }
 
-// assertStartup holds a start to its CPU budget, and its wall clock to the
-// loose ceiling, which a start that waits on the slow engine (three seconds)
-// breaks. The tight wall-clock budget is only reported: the load average
-// lags, so it cannot say when the machine, such as a whole-module test run
-// beside this one, is what made a start slow.
-func assertStartup(t *testing.T, what string, got startupCost, cpu, wall time.Duration) {
+// assertStartup holds a start to its CPU budget, which load does not move,
+// and its wall clock to a ceiling, which catches what CPU time cannot: a
+// start that waits, on the slow engine or on anything else. The ceiling is
+// not scaled under -race, where a start takes about 200-320 ms. On a machine
+// whose load average is under half its CPUs the wall clock is also held to
+// three times the unloaded budget; the load average lags, so that is only
+// asked where it is clearly quiet.
+func assertStartup(t *testing.T, what string, got startupCost, cpu, wall, ceiling time.Duration) {
 	t.Helper()
 	AssertWithin(t, what+" (CPU)", got.cpu, cpu)
-	AssertWithin(t, what+" (wall, ceiling)", got.wall, Budgets.StartupWallCeiling)
-	if got.wall > raceSlack(wall) {
-		load, _ := Loaded()
+	if got.wall > ceiling {
+		t.Errorf("%s (wall, ceiling): %v, ceiling %v", what, got.wall.Round(time.Millisecond), ceiling)
+	}
+	load, _ := Loaded()
+	if quiet := load > 0 && load < float64(runtime.NumCPU())/2; quiet && !raceEnabled {
+		AssertWithin(t, what+" (wall, quiet machine)", got.wall, 3*wall)
+	} else if got.wall > raceSlack(wall) {
 		t.Logf("%s: %v by the wall clock, over the %v an unloaded machine takes (load average %.1f, %d CPUs)",
 			what, got.wall.Round(time.Millisecond), raceSlack(wall), load, runtime.NumCPU())
 	}
@@ -103,7 +109,7 @@ func TestBudgetStartupWithBrokenBwrap(t *testing.T) {
 	}
 	_, warm := startupRuns(t, 4, func() Opts { return brokenBwrap(Opts{Podman: "sleep 3; exit 1"}, "sleep 3; exit 1") })
 	t.Logf("startup with a broken bwrap and a slow engine: best of 3 %v", warm)
-	assertStartup(t, "startup, broken bwrap", warm, Budgets.StartupWarmCPU, Budgets.StartupWarm)
+	assertStartup(t, "startup, broken bwrap", warm, Budgets.StartupWarmCPU, Budgets.StartupWarm, Budgets.StartupWarmCeiling)
 }
 
 // Requiring the process tier where bwrap cannot run still refuses to start,
