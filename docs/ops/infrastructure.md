@@ -70,8 +70,13 @@ before anyone is asked, with the cluster's reason, and nothing is applied:
 the model reads `the cluster's dry run of this change failed, so it was not
 applied: …`. A call a rule denies reaches no cluster, not even for a dry run.
 
-**Secrets without the model.** A Secret written as a manifest carries its
-values in the call, where the model wrote them and the record keeps them.
+**Secrets without the model.** A Secret written as a manifest would carry
+its values in the call, where the rules, the approval and the record read
+them. So a `manifest` that is, or holds, a Secret with `data` or
+`stringData` is refused before any rule reads it, its values are withheld
+from the record (as length and fingerprint), and the model is told to use
+`secret_from`; so is a manifest that is not JSON and may hold one. A Secret
+without values (to set a label, say) is applied as any manifest is.
 `secret_from` builds the Secret instead, from values Abhed reads itself:
 
 ```json

@@ -218,7 +218,8 @@ func TestSecretDiffShowsNoValues(t *testing.T) {
 		live:   `{"kind":"Secret","apiVersion":"v1","metadata":{"name":"s","namespace":"prod"},"data":{"tls.key":"T0xELUtFWQ=="}}`,
 		answer: `{"kind":"Secret","apiVersion":"v1","metadata":{"name":"s","namespace":"prod"},"data":{"tls.key":"TkVXLUtFWQ==","tls.crt":"Q1JU"}}`,
 	}
-	m := `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s"},"data":{"tls.key":"TkVXLUtFWQ==","tls.crt":"Q1JU"}}`
+	// A manifest without values (a label, say); the cluster's answer has them.
+	m := `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s","labels":{"a":"b"}}}`
 	args, _ := json.Marshal(map[string]string{"action": "apply", "manifest": m})
 	ap, _ := runApply(t, f, nil, string(args))
 	if len(ap.seen) != 1 {

@@ -171,10 +171,10 @@ func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
 
 // deferrable reports whether t can be wrapped without losing an optional
 // interface: one whose mere presence the loop reads (SecretArgs, SecretPaths,
-// ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
+// SecretWithholder, ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
-	case tools.SecretArgs, tools.SecretPaths, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
+	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
 		return false
 	}
 	return true

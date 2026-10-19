@@ -223,9 +223,17 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 			}
 			set("manifest", string(skel))
 		}
+		if m := str("manifest"); m == withheldManifest {
+			return nil, nil, fmt.Errorf("the manifest is not one JSON object, so it cannot be applied (convert YAML "+
+				"to JSON first), and it was withheld from the record since it may hold a Secret's values. "+
+				"For a Secret: %s", secretFromHint)
+		}
 		mf, err := checkManifest(str("manifest"))
 		if err != nil {
 			return nil, nil, err
+		}
+		if mf != nil && hasSecretValues(mf.Object) {
+			return nil, nil, fmt.Errorf("%s", secretInManifest)
 		}
 		kind := ""
 		if mf != nil {
@@ -626,8 +634,9 @@ func (ApplyTool) Mutates() bool { return true }
 
 func (ApplyTool) Description() string {
 	return "Change a Kubernetes cluster: apply a manifest, scale a workload, delete a resource, " +
-		"restart a rollout, or roll a Deployment back to an earlier revision. Every call is " +
-		"dry-run on the cluster first and requires human approval. " +
+		"restart a rollout, or roll a Deployment back to an earlier revision. Every call requires " +
+		"human approval, and is dry-run on the cluster first where its credential is at hand; " +
+		"a call the dry run refuses comes back with the cluster's reason and changes nothing. " +
 		"Prefer k8s_get first to confirm what you are about to change, and k8s_get with " +
 		"wait_seconds after a restart or rollback to wait for the rollout. " +
 		"To create a Secret, such as a TLS certificate and key, use secret_from with stored " +
@@ -802,6 +811,9 @@ func (t ApplyTool) apply(sess *tools.Session, c *Cluster, a applyArgs) (*request
 	mf, err := kubescope.DecodeManifest(a.Manifest)
 	if err != nil {
 		return nil, fmt.Errorf("%w. Convert YAML to JSON first", err)
+	}
+	if hasSecretValues(mf.Object) {
+		return nil, fmt.Errorf("%s", secretInManifest)
 	}
 	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
