@@ -120,7 +120,8 @@ All notable changes to Abhed are recorded here. The format follows
   recomputing each hash itself, and against any `-head position:hash`
   kept elsewhere.
   A create's outcome names the id it made. A terminal's key batches and
-  language-server messages get one event a request instead of two.
+  language-server messages get one event a request instead of two. Traffic
+  to a sandbox's exposed service is not audited; the exposure itself is.
 - The control plane's SQLite record (sandbox operations and the
   reconciler's events) is hash-chained like the Postgres one, and
   `abhed record audit` checks it; rows from before are reported as
@@ -453,6 +454,10 @@ From `apidiff` between v1.2.8 and this release:
   longer comparable: code that compared two `Guard` values with `==` or used
   one as a map key no longer compiles; use a `*Guard`.
 
+- `server`: `Options.APIAudit` (the chained record every mutating request
+  is written to), `Options.Metrics` and the type `Metrics` with
+  `NewMetrics`, `(*Metrics).Handler` and `(*Metrics).AuditLog`, `Mutating`
+  and `APIAuditPrefix`.
 - `store/chain`: `Linker`, which the Postgres event and audit chains and the
   control plane's SQLite audit answer, handing out their links as stored for
   an export of a range.

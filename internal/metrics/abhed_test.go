@@ -121,6 +121,7 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	m.Observe(ev(agent.EvFenceLimit, map[string]any{"oom_kill": 1, "pids_max": 2}))
 	m.Observe(ev(agent.EvFenceStatePlanted, map[string]any{}))
 	m.Observe(ev(sandbox.EvGitPlanted, map[string]any{}))
+	m.Observe(ev(agent.EvFenceDenied, map[string]any{"source": "seccomp", "calls": map[string]int{"ptrace": 2, "socket(unix)": 1, "made_up": 4}}))
 	m.Observe(ev(agent.EvRecordRepaired, map[string]any{}))
 	m.Observe(ev(agent.EvConfigRefused, map[string]any{}))
 	m.Observe(ev(agent.EvConfigNarrowed, map[string]any{}))
@@ -136,6 +137,7 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 		"fence limits":  m.fenceLimits.Value("memory") == 1 && m.fenceLimits.Value("processes") == 1,
 		"planted":       m.planted.Value("abhed_state") == 1 && m.planted.Value("git") == 1,
 		"repairs":       m.repairs.Value() == 1,
+		"fence denied":  m.fenceDenied.Value("seccomp", "ptrace") == 2 && m.fenceDenied.Value("seccomp", "socket") == 1 && m.fenceDenied.Value("seccomp", Other) == 4,
 		"refused":       m.refused.Value("refused") == 1 && m.refused.Value("narrowed") == 1,
 	} {
 		if !ok {
@@ -280,5 +282,14 @@ func TestObserveWhileWriting(t *testing.T) {
 	<-done
 	if m.approvals.Value("approved", agent.ByReviewer, "bash") != 200 || m.runningSessions() != 2 {
 		t.Fatal("counts lost")
+	}
+}
+
+func TestRequestMethodIsBounded(t *testing.T) {
+	m := New()
+	m.Request("", "BREW-COFFEE", 405, 0)
+	m.Request("GET /v1/health", "GET", 200, 0)
+	if m.requests.Value("unmatched", Other, "405") != 1 || m.requests.Value("GET /v1/health", "GET", "200") != 1 {
+		t.Fatal("methods not bounded")
 	}
 }

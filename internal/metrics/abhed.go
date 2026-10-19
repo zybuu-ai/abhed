@@ -3,10 +3,12 @@ package metrics
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/fence/seccomp"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -17,6 +19,9 @@ var Steps = []string{
 	"handover", "plan", "precheck", "unknown", "withheld", "owner", "args", "unanswered",
 	"interrupted", "attachment", "state",
 }
+
+// Methods are the HTTP methods a request is counted by; any other is Other.
+var Methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 
 // Approvers are who an approval or denial names as deciding.
 var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByHeadless, agent.BySystem}
@@ -66,6 +71,7 @@ type Abhed struct {
 	repairs       *Counter
 	refused       *Counter
 	planted       *Counter
+	fenceDenied   *Counter
 
 	mu      sync.Mutex
 	calls   map[string]*call
@@ -146,6 +152,8 @@ func New() *Abhed {
 			"Settings a session refused or narrowed, by kind (refused, narrowed).", "kind"),
 		planted: r.Counter("abhed_sandbox_planted_total",
 			"State a command planted that the sandbox found and moved, by what (abhed_state, git).", "what"),
+		fenceDenied: r.Counter("abhed_fence_denied_total",
+			"System calls the fence refused fenced commands, by source (seccomp) and call.", "source", "call"),
 		calls: map[string]*call{},
 	}
 	r.GaugeFunc("abhed_sessions_live", "Sessions this process holds, as /v1/health counts them.", m.runningSessions)
@@ -183,7 +191,7 @@ func (m *Abhed) Request(route, method string, status int, d time.Duration) {
 	if route == "" {
 		route = "unmatched"
 	}
-	m.requests.Inc(route, method, strconv.Itoa(status))
+	m.requests.Inc(route, oneOf(method, Methods), strconv.Itoa(status))
 	m.requestTime.Observe(d.Seconds(), route)
 }
 
@@ -290,6 +298,19 @@ func (m *Abhed) Observe(ev agent.Event) {
 		m.planted.Inc("abhed_state")
 	case sandbox.EvGitPlanted:
 		m.planted.Inc("git")
+	case string(agent.EvFenceDenied):
+		var p struct {
+			Source string         `json:"source"`
+			Calls  map[string]int `json:"calls"`
+		}
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			source := oneOf(p.Source, []string{"seccomp"})
+			for c, n := range p.Calls {
+				// socket(inet) and the like are counted under the call.
+				c, _, _ = strings.Cut(c, "(")
+				m.fenceDenied.Add(float64(max(n, 0)), source, oneOf(c, seccomp.RefusableCalls()))
+			}
+		}
 	case string(agent.EvFenceLimit):
 		var p struct {
 			OOM          int64 `json:"oom"`

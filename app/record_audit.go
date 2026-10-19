@@ -55,6 +55,7 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 	}
 	ctx := context.Background()
 	var targets []auditTarget
+	missing := false
 	scope := "A passing check shows no line or row was edited, added, moved or removed. The machine's owner can rewrite the files and their chains."
 	if cfg.Storage.Driver == "postgres" {
 		pg, err := store.Open(ctx, storeConfig(cfg))
@@ -109,16 +110,27 @@ func verifyAudit(cfg config.Config, args []string, stdout, stderr io.Writer) int
 						}
 						return "", r.Reason, nil
 					}})
-			} else if !errors.Is(err, os.ErrNotExist) {
+			} else if errors.Is(err, os.ErrNotExist) {
+				// control_plane.enabled is set, so its record should be there.
+				out := stdout
+				if *format == "ocsf" {
+					out = stderr // stdout is the events
+				}
+				fmt.Fprintf(out, "MISSING %s: control_plane.enabled is set, but its database is not there; abhed serve makes it when it first starts the control plane\n", path)
+				missing = true
+			} else {
 				fmt.Fprintf(stderr, "abhed: the control plane's record: %v\n", err)
 				return 1
 			}
 		}
 	}
 	if *format == "ocsf" {
-		return auditOCSF(ctx, cfg, targets, *version, stdout, stderr)
+		if code := auditOCSF(ctx, cfg, targets, *version, stdout, stderr); code != 0 || !missing {
+			return code
+		}
+		return 1
 	}
-	bad := false
+	bad := missing
 	for i, t := range targets {
 		var h map[int64]string
 		if i == 0 {

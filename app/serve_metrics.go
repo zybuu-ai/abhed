@@ -12,7 +12,6 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
-	"github.com/zybuu-ai/abhed/internal/metrics"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -24,7 +23,7 @@ const MetricsPath = "/metrics"
 // serveMetrics is what server.metrics asks of serve: the metric set, and
 // whether it is mounted on the API or served on a listener of its own.
 type serveMetrics struct {
-	m      *metrics.Abhed
+	m      *server.Metrics
 	listen string
 	token  string
 }
@@ -35,7 +34,7 @@ func newServeMetrics(cfg config.Config) (*serveMetrics, error) {
 	if !mc.Enabled {
 		return nil, nil
 	}
-	sm := &serveMetrics{m: metrics.New(), listen: mc.Listen, token: mc.MetricsToken()}
+	sm := &serveMetrics{m: server.NewMetrics(), listen: mc.Listen, token: mc.MetricsToken()}
 	if mc.TokenEnv != "" && sm.token == "" {
 		return nil, fmt.Errorf("server.metrics.token_env names %s, which is unset or empty", mc.TokenEnv)
 	}
@@ -48,14 +47,14 @@ func (sm *serveMetrics) mount(s *server.Server, mux *http.ServeMux) {
 	if sm.listen != "" {
 		return
 	}
-	mux.Handle("GET "+MetricsPath, s.Admin(sm.m.Registry.Handler().ServeHTTP))
+	mux.Handle("GET "+MetricsPath, s.Admin(sm.m.Handler().ServeHTTP))
 }
 
 // handler is the separate listener's: /metrics only, behind the token when
 // one is set.
 func (sm *serveMetrics) handler() http.Handler {
 	mux := http.NewServeMux()
-	reg := sm.m.Registry.Handler()
+	reg := sm.m.Handler()
 	mux.HandleFunc("GET "+MetricsPath, func(w http.ResponseWriter, r *http.Request) {
 		if sm.token != "" {
 			got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -107,40 +106,10 @@ func (sm *serveMetrics) label(addr string, signIn bool) string {
 func (sm *serveMetrics) auditHook() ControlPlaneHook {
 	return func(_ context.Context, _ config.Config, c *controlplane.Config) error {
 		if c.Audit != nil {
-			c.Audit = countedAudit(c.Audit, sm.m)
+			c.Audit = sm.m.AuditLog(c.Audit)
 		}
 		return nil
 	}
-}
-
-type counted struct {
-	controlplane.AuditLog
-	m *metrics.Abhed
-}
-
-func (c counted) Append(ctx context.Context, ev controlplane.AuditEvent) error {
-	start := time.Now()
-	err := c.AuditLog.Append(ctx, ev)
-	c.m.Audit(ev.Action, ev.Outcome, !strings.HasPrefix(ev.Action, server.APIAuditPrefix), time.Since(start), err)
-	return err
-}
-
-type countedReader struct {
-	counted
-	controlplane.AuditReader
-}
-
-func (c countedReader) Append(ctx context.Context, ev controlplane.AuditEvent) error {
-	return c.counted.Append(ctx, ev)
-}
-
-// countedAudit wraps a, keeping it readable when it is.
-func countedAudit(a controlplane.AuditLog, m *metrics.Abhed) controlplane.AuditLog {
-	c := counted{AuditLog: a, m: m}
-	if rd, ok := a.(controlplane.AuditReader); ok {
-		return countedReader{counted: c, AuditReader: rd}
-	}
-	return c
 }
 
 // apiAudit is the chained record serve writes each mutating API request to:
