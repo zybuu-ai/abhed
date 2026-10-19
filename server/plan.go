@@ -152,7 +152,8 @@ func (s *Server) answerPlan(w http.ResponseWriter, r *http.Request, live *liveSe
 				s.log.Error("plan mode restored, not recorded", "session", id, "error", err)
 			}
 		}
-		loop.TakePlan()
+		// The plan stays pending so the person can try again, as the CLI and
+		// ACP paths leave it; it is consumed only on a bind that took effect.
 		if err := record(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning, By: user}); err != nil {
 			s.log.Error("a plan accepted on the record did not take effect, and its withdrawal was not recorded", "session", id, "error", err)
 			why += "; the record may show the plan accepted, though it did not take effect"
