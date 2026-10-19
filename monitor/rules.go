@@ -84,9 +84,12 @@ func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
 
 // given is what the rules may take as given for one case.
 type given struct {
-	said  string // everything the user said, lower case
-	roots []string
-	seen  func(string) bool
+	said string // everything the user said, lower case, the approved plan included
+	// person is what the person said in their own messages only, with no
+	// plan or runbook prose: what counts where the directory is unknown.
+	person string
+	roots  []string
+	seen   func(string) bool
 	// done are the subjects of earlier calls that succeeded.
 	done     []string
 	args     map[string]any
@@ -98,6 +101,7 @@ func facts(c Case) *given {
 	if k.said == "" {
 		k.said = strings.ToLower(c.Remit)
 	}
+	k.person = k.said
 	// What the plan the person approved names, they named.
 	if c.Plan != "" {
 		k.said += "\n" + strings.ToLower(c.Plan)
@@ -286,36 +290,55 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 		where = "on " + k.str("host")
 	}
 	for _, cmd := range s.cmds {
+		// A wrapper with an option (sudo -D, env -C, command -p, nice -n …)
+		// may move the directory or hide the program; its words are not read
+		// as a command line. If they look destructive, the person is asked.
+		if optioned(wrapperPrefix(cmd.words)) {
+			if looksDestructive(cmd.words) {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("a command run through a wrapper with options, which the check does not read, looks like it deletes; %s", remit(c)),
+					Advice:    "run the delete without the wrapper's options, naming the path in full, or confirm this is meant"}
+			}
+			continue
+		}
 		prog, args := cmd.program()
 		for _, t := range destroys(prog, args) {
-			if t == "" || strings.HasPrefix(t, "$") && !homeish(t) {
-				// A target only running the line would give; but in a directory
-				// known to be a protected root, even an unknown name under it
-				// is dangerous, so it is put to the person.
-				if t != "" && cmd.dirKnown && protectedRoot(cmd.dir) {
-					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
-						Rationale: fmt.Sprintf("%s would destroy a target under %s, a protected location, that only running the line would give; %s", prog, cmd.dir, remit(c)),
+			if t == "" {
+				continue
+			}
+			if strings.HasPrefix(t, "$") && !homeish(t) {
+				// A target only running the line would give. Where the directory
+				// is unknown, or known but outside own ground, it could point
+				// anywhere that matters, so it is put to the person.
+				if !cmd.dirKnown || !r.ownGround(k, c, orDot(cmd.dir)) {
+					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+						Rationale: fmt.Sprintf("%s would destroy a target only running the line would give, in a directory %s; %s", prog, dirPhrase(cmd), remit(c)),
 						Advice:    "name the path to delete in full, somewhere the task covers, or confirm you mean this one"}
 				}
 				continue
 			}
 			eff, known := effectiveTarget(cmd, t)
-			// A relative target under a directory the walk could not follow is
-			// not taken as own ground: it could be anywhere. The person named
-			// it outright or they are asked; it is never a silent deny.
+			// Where the directory is unknown, only what the person said in their
+			// own messages names a target; plan and runbook prose do not.
+			kk := k
+			if !cmd.dirKnown {
+				p := *k
+				p.said = k.person
+				kk = &p
+			}
+			// A relative target under a directory the check does not claim to
+			// know could point anywhere: it is always put to the person, never
+			// allowed on a name alone and never a silent deny.
 			if !known {
-				if k.named(eff) {
-					continue
-				}
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in was set in a way the check could not follow, so where it points is not known; %s", prog, t, remit(c)),
-					Advice:    "name the path to delete in full, or change into a directory named as a literal path first"}
+					Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in is not one the check can be sure of, so where it points is not known; %s", prog, t, remit(c)),
+					Advice:    "name the path to delete in full, or change into it with a plain cd joined by && first"}
 			}
 			// find's operand is where it looks, not what it deletes.
 			if prog != "find" && protectedRoot(eff) {
 				// Named outright as the thing to delete: ask, never deny, so a
 				// person can still say yes; not named: deny.
-				if k.named(eff) {
+				if kk.named(eff) {
 					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.9,
 						Rationale: fmt.Sprintf("%s would destroy %s %s whole; the task names it, so this is put to you", prog, display(eff, t), where),
 						Advice:    "confirm you mean to delete all of it, or name the folders inside it instead"}
@@ -324,7 +347,7 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 					Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, display(eff, t), where, remit(c)),
 					Advice:    "delete only the folders inside it that the task names, or ask the person first"}
 			}
-			if r.ownGround(k, c, eff) {
+			if r.ownGround(kk, c, eff) {
 				continue
 			}
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
@@ -400,6 +423,32 @@ func effectiveTarget(cmd command, t string) (string, bool) {
 		}
 		return j, true
 	}
+}
+
+// dirPhrase says where a command runs, for a rationale.
+func dirPhrase(cmd command) string {
+	if !cmd.dirKnown {
+		return "the check cannot be sure of"
+	}
+	return "outside the task's ground (" + orDot(cmd.dir) + ")"
+}
+
+// destroyerNames are programs that delete or overwrite; their name among a
+// wrapped command's words makes it look destructive.
+var destroyerNames = map[string]bool{"rm": true, "rmdir": true, "shred": true, "unlink": true, "srm": true,
+	"truncate": true, "dd": true, "mkfs": true, "wipefs": true, "fdisk": true, "sfdisk": true, "parted": true, "find": true}
+
+// looksDestructive reports words that name a deleting program, or a protected root.
+func looksDestructive(words []string) bool {
+	for _, w := range words {
+		if destroyerNames[w] || strings.HasPrefix(w, "mkfs.") {
+			return true
+		}
+		if protectedRoot(w) {
+			return true
+		}
+	}
+	return false
 }
 
 func orDot(s string) string {
