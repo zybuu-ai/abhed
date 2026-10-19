@@ -21,8 +21,15 @@ import (
 // simpleCmd is one simple command of a line.
 type simpleCmd struct {
 	// words are its literal words, runners taken off; nil when it is not
-	// a literal simple command.
-	words []string
+	// a literal simple command. raw are its words as written, assignments
+	// included; wrapped says a runner or an assignment was taken off.
+	words, raw []string
+	wrapped    bool
+	// first: the line's first command, at its top, which runs whatever
+	// follows it.
+	first bool
+	// covers are folders a formatter rewrote: every file beneath them.
+	covers []string
 	// pure: a known reader, with no output redirected. cd: a change of folder.
 	pure, cd bool
 	// writes: it may change something. known: every file it may change is
@@ -49,9 +56,14 @@ type lineFacts struct {
 	// command's, and an exit of 0 means every command ran and succeeded.
 	shape bool
 	// final is the shaped line's last command; leadCd that every command
-	// before it is a cd.
-	final  []string
-	leadCd bool
+	// before it is a cd; finalCwd the folder it ran in, "" when not known;
+	// finalWrapped that a runner or an assignment was taken off it.
+	final        []string
+	leadCd       bool
+	finalCwd     string
+	finalWrapped bool
+	// covers are the folders formatters rewrote.
+	covers []string
 	// writer: a shaped line of literal commands, each a cd, a reader or a
 	// known writer, whose every file is known.
 	writer bool
@@ -89,7 +101,10 @@ func readLine(line, cwd string) lineFacts {
 	if r.shape && len(lf.cmds) > 0 {
 		lf.shape = true
 		last := lf.cmds[len(lf.cmds)-1]
-		lf.final = last.words
+		lf.final, lf.finalWrapped = last.words, last.wrapped
+		if !r.unresolved {
+			lf.finalCwd = r.cwd
+		}
 		lf.leadCd = true
 		lf.writer = lf.known
 		for i, c := range lf.cmds {
@@ -112,6 +127,8 @@ type lineReader struct {
 	// unresolved: a change of folder that could not be followed, so the
 	// relative files after it are not known.
 	unresolved bool
+	// top is set while the statement being read is at the top of the line.
+	top bool
 }
 
 func (r *lineReader) stmts(list []*syntax.Stmt, follow bool) {
@@ -126,6 +143,7 @@ func (r *lineReader) stmt(st *syntax.Stmt, follow bool) {
 	if st.Background || st.Coprocess || st.Negated {
 		r.shape = false
 	}
+	r.top = follow
 	switch c := st.Cmd.(type) {
 	case *syntax.CallExpr:
 		r.call(st, c, follow)
@@ -178,9 +196,21 @@ func (r *lineReader) add(c simpleCmd) {
 			c.targets[i] = filepath.Join(r.cwd, t)
 		}
 	}
+	for i, t := range c.covers {
+		switch {
+		case filepath.IsAbs(t):
+			c.covers[i] = filepath.Clean(t)
+		case r.cwd == "" || r.unresolved:
+			c.covers[i] = ""
+		default:
+			c.covers[i] = filepath.Join(r.cwd, t)
+		}
+	}
+	c.first = len(r.lf.cmds) == 0 && r.top
 	r.lf.cmds = append(r.lf.cmds, c)
 	if c.writes {
 		r.lf.targets = append(r.lf.targets, c.targets...)
+		r.lf.covers = append(r.lf.covers, c.covers...)
 	}
 }
 
@@ -201,6 +231,16 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	})
 	words := make([]string, 0, len(call.Args))
 	literalAll := !hidden
+	var raw []string
+	for _, a := range call.Assigns {
+		if a.Value == nil {
+			literalAll = false
+			continue
+		}
+		v, ok := wordLiteral(a.Value)
+		literalAll = literalAll && ok && !a.Append && a.Index == nil && a.Array == nil
+		raw = append(raw, a.Name.Value+"="+v)
+	}
 	for _, w := range call.Args {
 		v, ok := wordLiteral(w)
 		literalAll = literalAll && ok
@@ -210,25 +250,43 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 		r.add(simpleCmd{writes: true})
 		return
 	}
-	words = unwrap(words)
+	raw = append(raw, words...)
+	unwrapped := unwrap(words)
+	// An assignment, before the command or given to env, can change what
+	// it does (UPDATE=1 go test rewrites goldens): never a reader then.
+	assigned := len(call.Assigns) > 0 || hasAssignment(words, unwrapped)
+	wrapped := assigned || len(unwrapped) != len(words)
+	words = unwrapped
 	if len(words) == 0 {
 		// A runner alone, as env, writes only where it is redirected.
-		r.add(simpleCmd{pure: !someRedirect, writes: someRedirect, known: redirectKnown, targets: redirected})
+		r.add(simpleCmd{raw: raw, pure: !someRedirect && !assigned, writes: someRedirect || assigned, known: redirectKnown && !assigned, targets: redirected})
 		return
 	}
 	switch filepath.Base(words[0]) {
 	case "cd", "pushd", "popd":
-		r.cd(words, follow)
-		r.add(simpleCmd{words: words, pure: !someRedirect, cd: true, writes: someRedirect, known: redirectKnown, targets: redirected})
+		if assigned {
+			r.unresolved = true // CDPATH=… cd: not the folder it names
+		} else {
+			r.cd(words, follow)
+		}
+		r.add(simpleCmd{words: words, raw: raw, pure: !someRedirect, cd: true, writes: someRedirect, known: redirectKnown, targets: redirected})
 		return
 	}
-	c := simpleCmd{words: words}
+	c := simpleCmd{words: words, raw: raw, wrapped: wrapped}
+	if assigned {
+		c.writes = true
+		r.add(c)
+		return
+	}
 	if pureReader(words) {
 		c.pure, c.writes = !someRedirect, someRedirect
 		c.known, c.targets = redirectKnown, redirected
 	} else {
 		c.writes = true
 		if targets, ok := knownWrites(st, words); ok && redirectKnown {
+			if p := filepath.Base(words[0]); p == "gofmt" || p == "goimports" {
+				c.covers = append([]string(nil), targets...)
+			}
 			targets = append(targets, redirected...)
 			c.known, c.targets = true, targets
 		}
@@ -249,6 +307,8 @@ func (r *lineReader) cd(words []string, follow bool) {
 	switch {
 	case dir == "" || strings.HasPrefix(dir, "-") || strings.HasPrefix(dir, "~"):
 		r.unresolved = true
+	case dir == ".." || strings.HasPrefix(dir, "../") || strings.Contains(dir, "/../") || strings.HasSuffix(dir, "/.."):
+		r.unresolved = true // .. after a link is not the lexical parent
 	case filepath.IsAbs(dir):
 		r.cwd = filepath.Clean(dir)
 	default:
@@ -378,9 +438,9 @@ func inPlaceFiles(words []string) ([]string, bool) {
 				inPlace = true // -i or -i.bak: the rest is a suffix
 				continue
 			}
-			takes := "ef"
+			takes, valued := "ef", "l"
 			if perl {
-				takes = "eE"
+				takes, valued = "eE", "IMml0"
 			}
 			for j := 0; j < len(cluster); j++ {
 				if cluster[j] == 'i' {
@@ -390,6 +450,14 @@ func inPlaceFiles(words []string) ([]string, bool) {
 				if strings.IndexByte(takes, cluster[j]) >= 0 {
 					script = true
 					if j == len(cluster)-1 {
+						i++
+					}
+					break
+				}
+				if strings.IndexByte(valued, cluster[j]) >= 0 {
+					// sed -l N, perl -Ilib, -MModule: the rest, or the next
+					// word, is the option's value, not a script or a file.
+					if j == len(cluster)-1 && (!perl || cluster[j] == 'I') {
 						i++
 					}
 					break
@@ -453,6 +521,16 @@ func unescapeLit(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// hasAssignment reports a NAME=value word taken off by unwrap, as env's.
+func hasAssignment(before, after []string) bool {
+	for _, w := range before[:len(before)-len(after)] {
+		if name, _, ok := strings.Cut(w, "="); ok && name != "" && !strings.HasPrefix(w, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 // unwrap takes off what runs a command for it, so the command itself is
@@ -569,25 +647,31 @@ func samePath(t, q, workDir string) bool {
 	return strings.HasPrefix(t, w+"/") && strings.HasSuffix(t, "/"+short)
 }
 
-// claimedCommand is the command a claim quotes, read as a line, unwrapped.
+// claimedCommand is the command a claim quotes, as written, assignments
+// included; nil unless it is one literal simple command.
 func claimedCommand(claimed string) []string {
-	cmds := simpleCommands(claimed)
-	if len(cmds) != 1 {
+	lf := readLine(claimed, "")
+	if !lf.parsed || len(lf.cmds) != 1 || lf.cmds[0].raw == nil {
 		return nil
 	}
-	return cmds[0]
+	return lf.cmds[0].raw
 }
 
-// runsCommand reports whether a shell line runs the command a claim quotes,
-// as one of its simple commands: the same words, as written, or those words
-// and more arguments after them, runners taken off both.
-func runsCommand(line, claimed string) bool {
+// ranIn reports whether a line ran the claimed command, as written, with
+// perhaps more arguments after it: as the line's first command, or as any
+// command of an && chain whose exit was 0. A command after ;, || or a failed
+// && may not have run, and a runner or a path is part of what is compared.
+func ranIn(lf lineFacts, exit *int, claimed string) bool {
 	want := claimedCommand(claimed)
-	if len(want) == 0 {
+	if len(want) == 0 || !lf.parsed {
 		return false
 	}
-	for _, w := range simpleCommands(line) {
-		if len(w) >= len(want) && equalWords(w[:len(want)], want) {
+	all := lf.shape && exit != nil && *exit == 0
+	for _, c := range lf.cmds {
+		if !c.first && !all {
+			continue
+		}
+		if len(c.raw) >= len(want) && equalWords(c.raw[:len(want)], want) {
 			return true
 		}
 	}
@@ -596,84 +680,9 @@ func runsCommand(line, claimed string) bool {
 
 func equalWords(a, b []string) bool {
 	for i := range a {
-		if a[i] != b[i] && (i != 0 || filepath.Base(a[i]) != filepath.Base(b[i])) {
+		if a[i] != b[i] {
 			return false
 		}
 	}
 	return true
-}
-
-// commandKind says whether one simple command runs tests ("test"), a build,
-// vet or lint ("build"), or neither (""), by its program and subcommand.
-func commandKind(words []string) string {
-	if len(words) == 0 {
-		return ""
-	}
-	prog := filepath.Base(words[0])
-	sub, third := "", ""
-	if len(words) > 1 {
-		sub = words[1]
-	}
-	if len(words) > 2 {
-		third = words[2]
-	}
-	switch prog {
-	case "go":
-		switch sub {
-		case "test":
-			return "test"
-		case "build", "vet", "install":
-			return "build"
-		}
-	case "cargo":
-		switch sub {
-		case "test", "nextest":
-			return "test"
-		case "build", "check", "clippy":
-			return "build"
-		}
-	case "npm", "pnpm", "yarn", "bun":
-		script := sub
-		if sub == "run" {
-			script = third
-		}
-		switch {
-		case script == "test" || script == "t" || strings.HasPrefix(script, "test:"):
-			return "test"
-		case script == "build" || strings.HasPrefix(script, "build:") || script == "lint" || script == "typecheck":
-			return "build"
-		case prog != "npm" && sub != "run" && len(words) > 1:
-			return commandKind(words[1:]) // yarn jest: the binary it runs
-		}
-	case "make", "gmake":
-		switch sub {
-		case "test", "check", "tests":
-			return "test"
-		case "", "build", "all", "lint", "vet":
-			return "build"
-		}
-	case "pytest", "jest", "vitest", "mocha", "rspec", "phpunit", "ctest":
-		return "test"
-	case "python", "python3":
-		if sub == "-m" && (third == "pytest" || third == "unittest") {
-			return "test"
-		}
-	case "tsc", "eslint", "ruff", "mypy", "flake8", "pylint", "golangci-lint", "shellcheck", "javac", "gcc", "clang":
-		return "build"
-	case "mvn", "gradle", "./gradlew", "gradlew":
-		switch sub {
-		case "test", "verify", "check":
-			return "test"
-		case "build", "package", "compile", "assemble":
-			return "build"
-		}
-	case "dotnet":
-		switch sub {
-		case "test":
-			return "test"
-		case "build":
-			return "build"
-		}
-	}
-	return ""
 }

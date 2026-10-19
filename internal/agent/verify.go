@@ -421,7 +421,17 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 func textClaims(text string) []Claim {
 	var out []Claim
 	for _, s := range splitClaims(text) {
-		out = append(out, Claim{Text: s})
+		c := Claim{Text: s}
+		// A citation in the text, (#12), is the claim's evidence as the
+		// answer tool's would be.
+		for _, m := range citeRe.FindAllStringSubmatch(s, -1) {
+			for _, n := range m[1:] {
+				if n != "" {
+					c.Evidence = append(c.Evidence, "#"+n)
+				}
+			}
+		}
+		out = append(out, c)
 	}
 	return out
 }

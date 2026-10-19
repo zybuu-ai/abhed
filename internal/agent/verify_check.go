@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // The deterministic answer checker. No model is asked anything here: each
@@ -107,8 +109,9 @@ type obsRec struct {
 	// selfStale: the call's line changes something after printing what the
 	// result shows, so its output may predate that change.
 	selfStale bool
-	// line is what a shell call's line does.
+	// line is what a shell call's line does; cwd the folder it ran in.
 	line lineFacts
+	cwd  string
 }
 
 // mutation is a recorded call that may have changed what later output shows.
@@ -126,6 +129,10 @@ type mutation struct {
 	// writer: a file tool, or a shell line read in full as known writers
 	// alone, whose exit says whether the change was made.
 	writer bool
+	// covers are folders a formatter rewrote; child is the subagent session
+	// the call was in, "" for this one's.
+	covers []string
+	child  string
 }
 
 type recordIndex struct {
@@ -229,7 +236,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				}
 				line = readLine(args.Command, dir)
 				rec.inspect, rec.selfStale = line.parsed && line.inspect, line.selfStale
-				rec.line = line
+				rec.line, rec.cwd = line, o.Cwd
 			}
 			mut := false
 			switch {
@@ -257,8 +264,9 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				case fileTool:
 					m.path, m.known, m.targets, m.writer = args.Path, args.Path != "", []string{args.Path}, true
 				case o.Tool == "bash" || o.Tool == "ssh":
-					m.known, m.targets, m.writer = line.parsed && line.known, line.targets, line.parsed && line.writer
+					m.known, m.targets, m.writer, m.covers = line.parsed && line.known, line.targets, line.parsed && line.writer, line.covers
 				}
+				m.child = session
 				ix.mutations = append(ix.mutations, m)
 			}
 			if o.OutcomeUnknown {
@@ -403,8 +411,22 @@ func checkClaims(env checkEnv, claims []Claim) ([]ClaimVerdict, *recordIndex) {
 	return out, ix
 }
 
+// checkOne checks a claim. One that says a thing did not happen, or is not
+// so, is never verified: output showing the thing does not show its absence.
 func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
-	f := extractFacts(c.Text)
+	v := checkClaim(env, ix, c)
+	if v.Verdict == ClaimVerified && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
+		v.Verdict = ClaimUnverified
+		v.Reason = "it says something did not happen or is not so, which a result showing the thing does not show"
+	}
+	return v
+}
+
+// citeRe is a citation written in a reply's text: (#12), [#12] or record #12.
+var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+)\b`)
+
+func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
+	f := extractFacts(citeRe.ReplaceAllString(c.Text, " "))
 	kind := c.Kind
 	switch kind {
 	case KindObserved, KindDerived, KindKnowledge:
@@ -493,8 +515,10 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		q := normText(quote)
 		if o := firstWith(pool, func(e *evidenceText) bool { return strings.Contains(e.norm, q) }); o != nil {
 			findings = append(findings, finding{out: matched, what: "quote in #" + itoa(o.seq), seq: o.seq, pooled: true})
+		} else if cited {
+			findings = append(findings, citedMiss(pool, "its quote"))
 		} else {
-			findings = append(findings, finding{out: missing, why: "its quote is not in the cited output"})
+			findings = append(findings, finding{out: missing, why: "its quote is not in any current result"})
 		}
 	}
 	// A file:line cite is checked against the file now; what it quotes there
@@ -509,7 +533,17 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	// What the agent says it changed or ran is found in its calls, not in
 	// their output.
-	if f.changed {
+	if f.changed && f.negated {
+		// "I did not change X": never verified by what was done; contradicted
+		// only by a cited write or edit of X.
+		for _, p := range f.paths {
+			if cited {
+				findings = append(findings, ix.negatedChange(pool, p))
+			} else {
+				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
+			}
+		}
+	} else if f.changed {
 		for _, p := range f.paths {
 			fd := ix.changedPath(p)
 			findings = append(findings, fd)
@@ -547,7 +581,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		findings = append(findings, ix.number(pool, n, cited))
 	}
 	if f.success {
-		findings = append(findings, ix.success(pool, f.testish, f.scope))
+		findings = append(findings, ix.success(pool, f.testish, f.scope, cited))
 	}
 	return findings
 }
@@ -652,12 +686,26 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.hasLiteral(lit) }); o != nil {
 		return finding{out: matched, what: fmt.Sprintf("%q in #%d", lit, o.seq), seq: o.seq, pooled: true}
 	}
+	if cited {
+		return citedMiss(pool, fmt.Sprintf("%q", clipRunes(lit, 60)))
+	}
 	return finding{out: missing, why: fmt.Sprintf("%q is not in %s", clipRunes(lit, 60), poolName(cited))}
+}
+
+// citedMiss is what the claim says that its cited, current output does not
+// hold: the record the agent pointed at says otherwise.
+func citedMiss(pool []*obsRec, what string) finding {
+	o := pool[len(pool)-1]
+	return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("%s is not in the cited #%d", what, o.seq),
+		conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: clipRunes(strings.TrimSpace(o.content), 160)}}
 }
 
 func (ix *recordIndex) number(pool []*obsRec, n string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.numbers[n] }); o != nil {
 		return finding{out: matched, what: "number " + n + " in #" + itoa(o.seq), seq: o.seq, pooled: true, bare: true}
+	}
+	if cited {
+		return citedMiss(pool, "the number "+n)
 	}
 	return finding{out: missing, why: "the number " + n + " is not in " + poolName(cited)}
 }
@@ -682,9 +730,11 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 			}
 		}
 	}
-	if other != nil {
+	// Another count of the same thing contradicts the claim only in the
+	// output the claim cites: uncited, it may count something else.
+	if other != nil && cited {
 		return finding{out: conflicted, seq: other.seq,
-			why:      fmt.Sprintf("it says %s; #%d says %s", label, other.seq, otherAt.excerpt),
+			why:      fmt.Sprintf("it says %s; the cited #%d says %s", label, other.seq, otherAt.excerpt),
 			conflict: &Conflict{Seq: other.seq, CallID: other.callID, Excerpt: otherAt.excerpt}}
 	}
 	// The output does not count that thing: the bare number decides.
@@ -726,121 +776,178 @@ func countedNumber(cs []countFact, n string) bool {
 // success checks a claim that tests passed or a command succeeded: a command
 // must have ended with exit 0 after the last change, and none of its kind
 // since may have failed.
-func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string) finding {
-	last := ix.lastChange()
-	// A command that is itself the last change, as a test runner may be,
-	// comes after it.
-	after := func(o *obsRec) bool { return last == nil || o.pos >= last.pos }
+func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, cited bool) finding {
 	// A run counts only as the whole line, or the last command of an &&
-	// chain at its top, so its exit is the run's: not in a pipe, and not
-	// followed by ;, || or &. The kind is read from its program and
-	// subcommand, not from a word in it: `ls tests` runs no tests.
-	fits := func(o *obsRec) bool {
-		if o.tool != "bash" || o.exit == nil || !o.usable() || !o.line.shape {
-			return false
+	// chain at its top with only cd before it, so its exit is the run's; of
+	// the claim's own kind (a test run is no build); in this session's
+	// workspace; neither filtering, listing nor compiling without running;
+	// and covering, by path, what the claim names, or the whole workspace.
+	scopeDirs := claimScope(scope, ix.workDir)
+	fits := func(o *obsRec) ([]scopePat, bool) {
+		if o.tool != "bash" || o.exit == nil || !o.usable() || o.child != "" || testish == "" || ix.workDir == "" {
+			return nil, false
 		}
-		if testish == "" {
-			return true
+		lf := o.line
+		if !lf.shape || !lf.leadCd || lf.finalCwd == "" || filepath.Clean(o.cwd) != filepath.Clean(ix.workDir) ||
+			commandKind(lf.final) != testish {
+			return nil, false
 		}
-		k := commandKind(o.line.final)
-		return k == testish || (testish == "build" && k == "test")
+		return runScope(lf.final, lf.finalCwd)
 	}
-	var latest *obsRec
+	if cited {
+		// Contradicted by a cited run of the same kind and the same scope
+		// that failed on its own: no runner around it, exit 1.
+		for _, o := range pool {
+			pats, ok := fits(o)
+			if ok && *o.exit == 1 && !o.line.finalWrapped && sameScope(pats, scopeDirs, ix.workDir) {
+				return finding{out: conflicted, seq: o.seq,
+					why:      fmt.Sprintf("the cited run #%d `%s` exited 1", o.seq, clipRunes(o.command, 60)),
+					conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: "exit 1: " + tailLines(o.content)}}
+			}
+		}
+	}
+	last := ix.lastChange()
+	// The latest such run that covers the claim, after the last possible
+	// change (a runner that is itself that change comes after it).
 	for i := len(ix.obs) - 1; i >= 0; i-- {
-		if o := ix.obs[i]; fits(o) && after(o) {
-			latest = o
+		o := ix.obs[i]
+		pats, ok := fits(o)
+		if !ok || !coversScope(pats, scopeDirs, ix.workDir) {
+			continue
+		}
+		if last != nil && o.pos < last.pos {
 			break
 		}
-	}
-	if latest != nil && *latest.exit != 0 {
-		// Contradicted only by a failed run that is the test itself (what
-		// runs before it is a cd at most) and covers what the claim names.
-		if latest.line.leadCd && covers(latest.command, scope) {
-			return finding{out: conflicted, seq: latest.seq,
-				why: fmt.Sprintf("the last such run since the last change, #%d `%s`, exited %d",
-					latest.seq, clipRunes(latest.command, 60), *latest.exit),
-				conflict: &Conflict{Seq: latest.seq, CallID: latest.callID,
-					Excerpt: fmt.Sprintf("exit %d: %s", *latest.exit, tailLines(latest.content))}}
+		if *o.exit != 0 {
+			return finding{out: missing, why: fmt.Sprintf("the last such run, #%d, exited %d", o.seq, *o.exit)}
 		}
-		return finding{out: missing, why: fmt.Sprintf("the last such run since the last change, #%d, exited %d", latest.seq, *latest.exit)}
-	}
-	for i := len(pool) - 1; i >= 0; i-- {
-		if o := pool[i]; fits(o) && after(o) && *o.exit == 0 {
-			return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
+		if cited && !inPool(pool, o) {
+			return finding{out: missing, why: fmt.Sprintf("#%d is the run that shows it, and is not cited", o.seq)}
 		}
+		return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
 	}
-	if last != nil {
-		return finding{out: missing, why: fmt.Sprintf("no command of that kind succeeded after the last change (#%d)", last.seq)}
+	if testish == "" {
+		return finding{out: missing, why: "a success of no named kind is not read from a run"}
 	}
-	return finding{out: missing, why: "no command of that kind ran in this session"}
+	return finding{out: missing, why: "no whole " + testish + " run covering it succeeded after the last change"}
 }
 
-// covers reports whether a test run's command covers what a claim names:
-// the claim names nothing, the run takes every package (./...), or it
-// names each of them.
-func covers(command string, scope []string) bool {
-	if len(scope) == 0 || strings.Contains(command, "./...") {
-		return true
-	}
-	for _, sc := range scope {
-		if !strings.Contains(command, strings.TrimPrefix(sc, "./")) {
-			return false
+func inPool(pool []*obsRec, o *obsRec) bool {
+	for _, p := range pool {
+		if p == o {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // changedPath checks "I changed X" against the calls that changed files.
 func (ix *recordIndex) changedPath(p string) finding {
-	// Verified by a change that names p exactly and succeeded: a file tool,
-	// or a shell line read in full as known writers. Contradicted only when
-	// every change in the session came through the file tools, whose files
-	// are exact, and none of them named p. Anything else leaves it open.
-	others, loose := false, false
-	var failedOn *mutation
-	for i, m := range ix.mutations {
+	// Verified by the last call that changed p, as the claim writes it, when
+	// it succeeded: a write or an edit of p, or a shell line in this session's
+	// workspace read in full as known writers, exit 0, whose destination is p
+	// (or a folder a formatter rewrote that holds p). A claim naming a folder
+	// is met by a change beneath it. A later call naming p that failed or was
+	// refused leaves it open. Uncited, it is never contradicted.
+	want := ix.inWorkspace(p)
+	if want == "" {
+		return finding{out: missing, why: "where " + p + " is cannot be told"}
+	}
+	names := func(t string) bool {
+		t = filepath.Clean(t)
+		return t == want || strings.HasPrefix(t, want+"/")
+	}
+	var hit, failedAfter *mutation
+	for i := range ix.mutations {
+		m := &ix.mutations[i]
 		if m.person {
 			continue
 		}
-		fileTool := m.tool == "write" || m.tool == "edit"
-		if !fileTool {
-			others = true
-		}
+		named := false
 		for _, t := range m.targets {
-			exact, l := pathIs(t, p, ix.workDir)
-			switch {
-			case exact && m.failed:
-				failedOn = &ix.mutations[i]
-			case exact && m.writer:
-				return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
-			case exact || l:
-				loose = true
+			named = named || names(t)
+		}
+		for _, c := range m.covers {
+			named = named || (c != "" && (filepath.Clean(c) == want || strings.HasPrefix(want, filepath.Clean(c)+"/")))
+		}
+		if !named {
+			continue
+		}
+		switch {
+		case m.failed:
+			if hit != nil {
+				failedAfter = m
 			}
+		case ix.localChange(m):
+			hit, failedAfter = m, nil
 		}
 	}
 	switch {
-	case failedOn != nil:
-		return finding{out: missing, why: fmt.Sprintf("#%d (%s) names %s but failed, so whether it changed it is not known", failedOn.seq, mutationLabel(*failedOn), p)}
-	case others:
-		return finding{out: missing, why: "no change the session's calls name in full is to " + p + ", but a command or tool whose changes are not all known ran"}
-	case loose:
-		return finding{out: missing, why: "a change names " + p + " only with other letter case"}
-	case ix.subagents:
-		return finding{out: missing, why: "no change to " + p + " in this session's calls (a subagent ran whose record could not be read)"}
+	case failedAfter != nil:
+		return finding{out: missing, why: fmt.Sprintf("#%d (%s) names %s after the change and failed", failedAfter.seq, mutationLabel(*failedAfter), p)}
+	case hit != nil:
+		return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, hit.seq), seq: hit.seq}
 	}
-	return finding{out: conflicted, why: "every change in this session came through the file tools, and none was to " + p,
-		conflict: &Conflict{Excerpt: "no write or edit of " + p}}
+	return finding{out: missing, why: "no call this session made is read as a change to " + p}
+}
+
+// inWorkspace is where a path a claim names is: as written when absolute,
+// else in the workspace; "" when that cannot be told.
+func (ix *recordIndex) inWorkspace(p string) string {
+	q := slashes(p)
+	if !filepath.IsAbs(q) {
+		if ix.workDir == "" {
+			return ""
+		}
+		q = filepath.Join(ix.workDir, strings.TrimPrefix(filepath.Clean(q), "./"))
+	}
+	return filepath.Clean(q)
+}
+
+// localChange reports a change made in this session's workspace by a call
+// read in full: a file tool's, or a known writer's line run in this session
+// (not over ssh, not in a subagent's worktree).
+func (ix *recordIndex) localChange(m *mutation) bool {
+	switch m.tool {
+	case "write", "edit":
+		if m.child == "" {
+			return true
+		}
+		// A subagent's file is the workspace's only outside its worktrees.
+		for _, t := range m.targets {
+			if ix.workDir == "" || !strings.HasPrefix(t, filepath.Clean(ix.workDir)+"/") || strings.Contains(t, "/"+tools.WorktreesDir+"/") {
+				return false
+			}
+		}
+		return true
+	case "bash":
+		return m.child == "" && m.writer
+	}
+	return false
+}
+
+// negatedChange contradicts "I did not change X" from cited evidence: a
+// cited write or edit of X that succeeded.
+func (ix *recordIndex) negatedChange(pool []*obsRec, p string) finding {
+	want := ix.inWorkspace(p)
+	for _, o := range pool {
+		if (o.tool == "write" || o.tool == "edit") && !o.isError && o.path != "" && want != "" && filepath.Clean(o.path) == want {
+			return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("the cited #%d is a %s of %s", o.seq, o.tool, p),
+				conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: tailLines(o.content)}}
+		}
+	}
+	return finding{out: missing, why: "a claim that something was not done is not shown by what was"}
 }
 
 // ranCommand checks "I ran `cmd`" against the commands in the record.
 func (ix *recordIndex) ranCommand(cmd string) finding {
 	for _, o := range ix.obs {
 		// A command run on a host over ssh is one the agent ran too.
-		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && runsCommand(o.command, cmd) {
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && ranIn(o.line, o.exit, cmd) {
 			return finding{out: matched, what: fmt.Sprintf("`%s` ran at #%d", clipRunes(cmd, 40), o.seq), seq: o.seq}
 		}
 	}
-	return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among this session's commands as written"}
+	return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among the commands this session ran, as written"}
 }
 
 // checkFileLine checks a path:line cite against the file as it is now, and,

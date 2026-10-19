@@ -32,7 +32,11 @@ func (b *rec) call(id, tool string, args any, out string, exit *int) int64 {
 	if _, err := b.r.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: id, Tool: tool, Args: raw}); err != nil {
 		b.t.Fatal(err)
 	}
-	ev, err := b.r.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: id, Tool: tool, Content: out, ExitCode: exit, IsError: exit != nil && *exit != 0})
+	cwd := ""
+	if tool == "bash" {
+		cwd = "/w" // the workspace the checks are given
+	}
+	ev, err := b.r.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: id, Tool: tool, Content: out, ExitCode: exit, IsError: exit != nil && *exit != 0, Cwd: cwd})
 	if err != nil {
 		b.t.Fatal(err)
 	}
@@ -48,6 +52,9 @@ func exit(n int) *int { return &n }
 
 func checkText(t *testing.T, b *rec, dir, text string) []ClaimVerdict {
 	t.Helper()
+	if dir == "" {
+		dir = "/w"
+	}
 	env := checkEnv{events: b.events(), workDir: dir, readFile: os.ReadFile}
 	v, _ := checkClaims(env, textClaims(text))
 	return v
@@ -55,7 +62,7 @@ func checkText(t *testing.T, b *rec, dir, text string) []ClaimVerdict {
 
 func checkCited(t *testing.T, b *rec, claims ...Claim) []ClaimVerdict {
 	t.Helper()
-	env := checkEnv{events: b.events(), workDir: "", readFile: os.ReadFile}
+	env := checkEnv{events: b.events(), workDir: "/w", readFile: os.ReadFile}
 	v, _ := checkClaims(env, claims)
 	return v
 }
@@ -72,23 +79,29 @@ func wantVerdict(t *testing.T, v ClaimVerdict, want string) {
 func TestInventedNumberIsContradicted(t *testing.T) {
 	b := newRec(t)
 	b.call("c1", "bash", map[string]string{"command": "go test ./..."}, "ok  \texample.com/pkg\t0.21s\n12 tests passed\n", exit(0))
+	// Uncited, the invented count is not shown as fact: another count of
+	// tests in some output may count something else, so it is unverified.
 	for _, text := range []string{"All 15 tests pass.", "I ran the suite and 15 tests passed."} {
 		v := checkText(t, b, "", text)
 		if len(v) != 1 {
 			t.Fatalf("want one claim, got %+v", v)
 		}
-		wantVerdict(t, v[0], ClaimContradicted)
-		if v[0].Conflict == nil || !strings.Contains(v[0].Conflict.Excerpt, "12 tests") {
-			t.Fatalf("the conflicting evidence is not shown: %+v", v[0].Conflict)
+		wantVerdict(t, v[0], ClaimUnverified)
+	}
+	// Cited, the output the agent pointed at contradicts it, and is shown.
+	for _, c := range []Claim{{Text: "15 tests passed", Kind: KindObserved, Evidence: []string{"c1"}}} {
+		v := checkCited(t, b, c)[0]
+		wantVerdict(t, v, ClaimContradicted)
+		if v.Conflict == nil || !strings.Contains(v.Conflict.Excerpt, "12 tests") {
+			t.Fatalf("the conflicting evidence is not shown: %+v", v.Conflict)
 		}
 	}
-	// Cited, the same invention fares no better.
-	v := checkCited(t, b, Claim{Text: "15 tests passed", Kind: KindObserved, Evidence: []string{"c1"}})
-	wantVerdict(t, v[0], ClaimContradicted)
+	v := checkText(t, b, "", "All 15 tests pass (#2).")[0]
+	wantVerdict(t, v, ClaimContradicted)
 	// And the true figure is verified, tied to the result.
-	v = checkText(t, b, "", "All 12 tests pass.")
-	wantVerdict(t, v[0], ClaimVerified)
-	if len(v[0].Evidence) == 0 {
+	v = checkText(t, b, "", "All 12 tests pass.")[0]
+	wantVerdict(t, v, ClaimVerified)
+	if len(v.Evidence) == 0 {
 		t.Fatal("a verified claim names its evidence")
 	}
 }
@@ -100,7 +113,8 @@ func TestNumberNotObservedIsUnverified(t *testing.T) {
 	v := checkText(t, b, "", "The api deployment runs with a memory limit of 512 MB.")
 	wantVerdict(t, v[0], ClaimUnverified)
 	v = checkText(t, b, "", "The config sets replicas: 4.")
-	wantVerdict(t, v[0], ClaimContradicted)
+	wantVerdict(t, v[0], ClaimUnverified)
+	wantVerdict(t, checkCited(t, b, Claim{Text: "The config sets replicas: 4", Evidence: []string{"c1"}})[0], ClaimContradicted)
 	v = checkText(t, b, "", "The config sets 3 replicas.")
 	wantVerdict(t, v[0], ClaimVerified)
 }
@@ -129,6 +143,8 @@ func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 	b := newRec(t)
 	b.call("c1", "bash", map[string]string{"command": "go test ./..."}, "ok", exit(0))
 	wantVerdict(t, checkText(t, b, "", "The tests pass now.")[0], ClaimVerified)
+	// A test run is no build.
+	wantVerdict(t, checkText(t, b, "", "The build succeeds.")[0], ClaimUnverified)
 
 	b.call("c2", "edit", map[string]string{"path": "/w/a.go", "old_string": "a", "new_string": "b"}, "Edited /w/a.go", nil)
 	v := checkText(t, b, "", "The tests pass now.")[0]
@@ -140,7 +156,9 @@ func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 	wantVerdict(t, checkCited(t, b, Claim{Text: "tests pass", Evidence: []string{"c1"}})[0], ClaimUnverified)
 
 	b.call("c3", "bash", map[string]string{"command": "go test ./..."}, "--- FAIL: TestA\nFAIL", exit(1))
-	v = checkText(t, b, "", "The tests pass now.")[0]
+	// Uncited, a failed run leaves the claim open; cited, it contradicts it.
+	wantVerdict(t, checkText(t, b, "", "The tests pass now.")[0], ClaimUnverified)
+	v = checkCited(t, b, Claim{Text: "the tests pass", Evidence: []string{"c3"}})[0]
 	wantVerdict(t, v, ClaimContradicted)
 	if v.Conflict == nil || v.Conflict.Seq == 0 {
 		t.Fatalf("the failing run is the conflict: %+v", v.Conflict)
@@ -192,9 +210,9 @@ func TestCitations(t *testing.T) {
 	if !strings.Contains(v.Reason, "user.message") {
 		t.Fatalf("reason: %s", v.Reason)
 	}
-	// A quote the output does not hold is not evidence.
+	// A quote the cited output does not hold: that output says otherwise.
 	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}, Quote: "listen 0.0.0.0:8080"})[0]
-	wantVerdict(t, v, ClaimUnverified)
+	wantVerdict(t, v, ClaimContradicted)
 	// The file changed after it was read: the read no longer shows the present.
 	b.call("c2", "write", map[string]string{"path": "/w/a.conf", "content": "listen 9090\n"}, "Wrote /w/a.conf", nil)
 	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0]
@@ -229,7 +247,8 @@ func TestActionsAgainstTheRecord(t *testing.T) {
 	b := newRec(t)
 	b.call("c1", "edit", map[string]string{"path": "/w/config.yaml"}, "Edited /w/config.yaml", nil)
 	wantVerdict(t, checkText(t, b, "", "I updated config.yaml to raise the limit.")[0], ClaimVerified)
-	wantVerdict(t, checkText(t, b, "", "I also updated deploy.yaml to match.")[0], ClaimContradicted)
+	// Uncited, a change claim is never contradicted.
+	wantVerdict(t, checkText(t, b, "", "I also updated deploy.yaml to match.")[0], ClaimUnverified)
 	// A command not run is unverified: the record never contradicts that.
 	wantVerdict(t, checkText(t, b, "", "I ran `make lint` first.")[0], ClaimUnverified)
 	b.call("c2", "bash", map[string]string{"command": "make lint"}, "", exit(0))
@@ -280,15 +299,6 @@ func TestSplitClaims(t *testing.T) {
 	}
 }
 
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
 // verifyHarness is the loop harness with a verifier installed.
 func verifyHarness(t *testing.T, mode VerifyMode, tool bool, turns []scriptedTurn) (*Loop, *MemStore, *scriptedAdapter, string) {
 	t.Helper()
@@ -331,10 +341,15 @@ func TestLabelMode(t *testing.T) {
 
 	// A contradiction gets the one revision; still contradicted, the run
 	// completes, with the claim labelled.
-	l, store, ad, _ = verifyHarness(t, VerifyLabel, false, []scriptedTurn{
+	// It cites the result, which counts 12: contradicted.
+	answer := func(text string) scriptedTurn {
+		return scriptedTurn{calls: []model.ToolCall{{ID: "a" + text[:3], Name: "answer", Args: json.RawMessage(
+			`{"text":"` + text + `","claims":[{"text":"` + text + `","evidence":["cbash"]}]}`)}}}
+	}
+	l, store, ad, _ = verifyHarness(t, VerifyLabel, true, []scriptedTurn{
 		{calls: []model.ToolCall{call("bash", map[string]string{"command": "printf '12 tests passed\\n'"})}},
-		{text: "All 15 tests pass."},
-		{text: "Yes: all 15 tests pass."},
+		answer("15 tests passed"),
+		answer("Yes, 15 tests passed"),
 	})
 	if reason, _ := l.Run(context.Background(), "run the tests"); reason != TermCompleted || len(ad.gotRequests) != 3 {
 		t.Fatalf("label mode ends completed after one revision: %s %d", reason, len(ad.gotRequests))
@@ -418,16 +433,22 @@ func TestAnswerTool(t *testing.T) {
 		t.Fatal("the prompt does not say how to answer")
 	}
 	reason, err := l.Run(context.Background(), "how many replicas?")
-	if err != nil || reason != TermCompleted || len(ad.gotRequests) != 2 {
+	// The pods claim cites a result with no 7 in it: contradicted, and label
+	// mode spends its one revision on it.
+	if err != nil || reason != TermCompleted || len(ad.gotRequests) != 3 {
 		t.Fatalf("%s %v %d", reason, err, len(ad.gotRequests))
 	}
 	vs := answerVerdicts(store)
-	if len(vs) != 1 || vs[0].Source != "answer_tool" || vs[0].Verified != 1 || vs[0].Unverified != 1 {
+	if len(vs) < 1 || vs[0].Source != "answer_tool" || vs[0].Verified != 1 || vs[0].Contradicted != 1 {
 		t.Fatalf("verdict: %+v", vs)
 	}
 	msgs := l.Messages()
-	if last := msgs[len(msgs)-1]; last.Role != model.RoleAssistant || last.Content != "There are 3 replicas, and 7 pods." {
-		t.Fatalf("the answer's text is the agent's last message: %+v", last)
+	found := false
+	for _, m := range msgs {
+		found = found || (m.Role == model.RoleAssistant && m.Content == "There are 3 replicas, and 7 pods.")
+	}
+	if !found {
+		t.Fatal("the answer's text is not kept as the agent's message")
 	}
 	evs, _ := store.Events("sess1")
 	if !hasEvent(evs, EvAgentMessage) {
@@ -650,7 +671,7 @@ func TestClaimsAboutASubagentsWork(t *testing.T) {
 	p.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"session": "kid", "reason": "completed"})
 	evs, _ := store.Events("sess1")
 	check := func(child bool, text string) ClaimVerdict {
-		env := checkEnv{events: evs}
+		env := checkEnv{events: evs, workDir: "/w"}
 		if child {
 			env.child = store.Events
 		}
@@ -658,15 +679,18 @@ func TestClaimsAboutASubagentsWork(t *testing.T) {
 		return v[0]
 	}
 	wantVerdict(t, check(true, "I updated config.yaml for the new limit."), ClaimVerified)
-	wantVerdict(t, check(true, "The suite passes: 7 tests passed."), ClaimVerified)
-	wantVerdict(t, check(true, "The suite passes: 9 tests passed."), ClaimContradicted)
+	// Its output is evidence, but a subagent's run is no proof the
+	// workspace's tests pass, and an uncited count is never contradicted.
+	wantVerdict(t, check(true, "The subagent's run counted 7 tests."), ClaimVerified)
+	wantVerdict(t, check(true, "The suite passes: 7 tests passed."), ClaimUnverified)
+	wantVerdict(t, check(true, "The subagent's run counted 9 tests."), ClaimUnverified)
 	wantVerdict(t, check(false, "I updated config.yaml for the new limit."), ClaimUnverified)
-	// The parent changes a file after the subagent returned: its test run is old.
+	// The parent changes a file after the subagent returned: its output is old.
 	raw, _ := json.Marshal(map[string]string{"path": "/w/main.go"})
 	p.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "p1", Tool: "edit", Args: raw})
 	p.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: "p1", Tool: "edit", Content: "Edited"})
 	evs, _ = store.Events("sess1")
-	wantVerdict(t, check(true, "The suite passes: 7 tests passed."), ClaimUnverified)
+	wantVerdict(t, check(true, "The subagent's run counted 7 tests."), ClaimUnverified)
 }
 
 // A runbook-driven run's answer is checked like any other, a remote command
@@ -706,7 +730,7 @@ func TestVerifyUnderARunbook(t *testing.T) {
 func TestReadingCommands(t *testing.T) {
 	for cmd, kind := range map[string]string{"go test ./...": "test", "cd api && npm run test:unit": "test", "ls tests": "",
 		"test -f go.mod": "", "ls build/": "", "make": "build", "sudo -E go build ./...": "", "echo 'go test'": "",
-		"python3 -m pytest -q": "test", "FOO=1 cargo clippy": "build"} {
+		"python3 -m pytest -q": "test", "FOO=1 cargo clippy": "lint"} {
 		got := ""
 		for _, w := range simpleCommands(cmd) {
 			if k := commandKind(w); k != "" {
@@ -737,9 +761,13 @@ func TestReadingCommands(t *testing.T) {
 	if e, l := pathIs("/w/README.md", "readme.md", "/w"); e || !l {
 		t.Error("a match in another letter case is loose, not exact")
 	}
-	if !runsCommand("cd api && go test ./... -count=1", "go test ./...") || runsCommand("echo 'go test'", "go test") ||
-		runsCommand("go testdata", "go test") {
-		t.Error("a claimed command matches whole simple commands")
+	ran := func(line string, code int, claimed string) bool {
+		return ranIn(readLine(line, ""), exit(code), claimed)
+	}
+	if !ran("cd api && go test ./... -count=1", 0, "go test ./...") || ran("echo 'go test'", 0, "go test") ||
+		ran("go testdata", 0, "go test") || ran("false && go test ./...", 1, "go test ./...") || ran("true; go test ./...", 0, "go test ./...") ||
+		ran("/tmp/evil/rm -rf x", 0, "rm -rf x") || ran("go test ./...", 0, "UPDATE=1 go test ./...") || !ran("UPDATE=1 go test ./...", 1, "UPDATE=1 go test") {
+		t.Error("a claimed command matches a simple command that ran, as written")
 	}
 }
 
