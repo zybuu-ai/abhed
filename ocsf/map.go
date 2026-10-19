@@ -30,6 +30,9 @@ type Line struct {
 	agent.Event
 	Prev string
 	Hash string
+	// Pos is where the record's reader goes on from after this line, for a
+	// sink's cursor; zero where the store reads by seq alone.
+	Pos int64
 }
 
 // Options say what every event names about where it came from.

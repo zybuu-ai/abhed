@@ -7,12 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/ocsf"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
+)
+
+// reads are the cursors the sinks' catch-ups read from.
+var (
+	readsMu sync.Mutex
+	reads   []ocsf.Cursor
 )
 
 // canary redacts one stored secret, as the vault's redactor does.
@@ -30,27 +37,32 @@ func recordWithSink(t *testing.T, dir, path string) (*local.Store, *ocsf.Sink) {
 	rec, err := local.Open(local.Options{Dir: dir, User: "tester", Redact: canary{},
 		OnAppend: func(l local.Sealed) {
 			if sink != nil {
-				sink.Add(ocsf.Line{Event: l.Event, Prev: l.Prev, Hash: l.Hash})
+				sink.Add(ocsf.Line{Event: l.Event, Prev: l.Prev, Hash: l.Hash, Pos: l.End})
 			}
 		}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	sink, err = ocsf.OpenSink(ocsf.SinkOptions{Path: path, Map: ocsf.Options{Hostname: "h", Tenant: rec.Tenant()},
-		Read: func(id string, after int64) ([]ocsf.Line, error) {
-			sealed, err := rec.SealedSince(id, after)
-			out := make([]ocsf.Line, len(sealed))
-			for i, s := range sealed {
-				out[i] = ocsf.Line{Event: s.Event, Prev: s.Prev, Hash: s.Hash}
+		Read: func(id string, from ocsf.Cursor) ([]ocsf.Line, error) {
+			readsMu.Lock()
+			reads = append(reads, from)
+			readsMu.Unlock()
+			sealed, _, err := rec.LinesFrom(id, from.Pos)
+			var out []ocsf.Line
+			for _, s := range sealed {
+				if s.Seq > from.Seq {
+					out = append(out, ocsf.Line{Event: s.Event, Prev: s.Prev, Hash: s.Hash, Pos: s.End})
+				}
 			}
 			return out, err
 		},
-		Sessions: func() (map[string]int64, error) {
+		Sessions: func() (map[string]ocsf.Cursor, error) {
 			ids, err := rec.SessionIDs()
-			out := map[string]int64{}
+			out := map[string]ocsf.Cursor{}
 			for _, id := range ids {
-				if seq, _, err := rec.Index().Head(id); err == nil {
-					out[id] = seq
+				if size, err := rec.Size(id); err == nil && size > 0 {
+					out[id] = ocsf.Cursor{Pos: size}
 				}
 			}
 			return out, err
@@ -253,5 +265,59 @@ func TestSinkCatchesUpWhatTheQueueDropped(t *testing.T) {
 		if got[i].Seq != sealed[i].Seq {
 			t.Fatalf("event %d is seq %d, want %d", i, got[i].Seq, sealed[i].Seq)
 		}
+	}
+}
+
+// Lines a writer that crashed left past the head it last synced are found
+// from the file itself, not the head, and written when a sink next starts.
+func TestSinkCatchesUpPastAStaleHead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	rec, sink := recordWithSink(t, dir, path)
+	r := newSession(t, rec, "s-1")
+	if _, err := r.Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sink.Close()
+	_ = rec.Close()
+
+	// A writer that never closes, as one that crashed: its last lines are
+	// past the head it synced at the user's message.
+	crashed, err := local.Open(local.Options{Dir: dir, User: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = crashed.Close() })
+	w := agent.NewRecorder(crashed, "s-1", "")
+	w.Advance(1)
+	for i := 0; i < 3; i++ {
+		if _, err := w.Record(agent.EvAgentMessage, agent.ActorAgent, agent.Trusted, agent.Message{Text: "two"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readsMu.Lock()
+	reads = nil
+	readsMu.Unlock()
+	rec, sink = recordWithSink(t, dir, path)
+	defer rec.Close()
+	if seq, _, _ := rec.Index().Head("s-1"); seq != 1 {
+		t.Fatalf("the head is at seq %d; the test needs one left behind at 1", seq)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEvents(t, path); len(got) != 4 || got[3].Seq != 4 {
+		t.Fatalf("the file holds %d events", len(got))
+	}
+	// The catch-up read on from the cursor's place in the file, not its start.
+	readsMu.Lock()
+	defer readsMu.Unlock()
+	for _, c := range reads {
+		if c.Pos == 0 {
+			t.Fatalf("a catch-up read the session from its start: %+v", reads)
+		}
+	}
+	if len(reads) == 0 {
+		t.Fatal("nothing was read back from the record")
 	}
 }

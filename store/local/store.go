@@ -601,6 +601,7 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	h.size += int64(len(line))
+	end := h.size
 	h.last = Head{Lines: h.last.Lines + 1, Seq: ev.Seq, Hash: l.Hash}
 	h.seqs[ev.Seq] = ev.ID
 	h.events = insertEvent(h.events, ev)
@@ -621,7 +622,7 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 
 	s.publish(ev)
 	if s.onAppend != nil {
-		s.onAppend(Sealed{Event: ev, Prev: l.Prev, Hash: l.Hash})
+		s.onAppend(Sealed{Event: ev, Prev: l.Prev, Hash: l.Hash, End: end})
 	}
 	if ended && h.child {
 		// A subagent's lock goes with its last end; a resume takes it again.
@@ -1142,6 +1143,9 @@ type Sealed struct {
 	agent.Event
 	Prev string
 	Hash string
+	// End is the file offset just past the line, where the next one starts;
+	// zero where it is not known, as from SealedSince.
+	End int64
 }
 
 // SealedSince returns a session's lines after seq, in seq order, read from

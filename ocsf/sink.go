@@ -20,6 +20,33 @@ import (
 // from the record.
 var sinkQueue = 4096
 
+// Cursor is how far a sink has written one session: the last seq, and Pos,
+// where the record's reader goes on from (bytes into the local record's file;
+// zero where the store reads by seq alone). Provider is what the mapper needs
+// from before the cursor, kept so it is never read again; Primed says it was
+// looked for.
+type Cursor struct {
+	Seq      int64  `json:"seq"`
+	Pos      int64  `json:"pos,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Primed   bool   `json:"primed,omitempty"`
+}
+
+// ErrStandby is a CursorStore's answer when another process holds the right
+// to write: this sink then writes nothing until it holds it.
+var ErrStandby = errors.New("another process writes the OCSF file")
+
+// CursorStore keeps a sink's cursors and decides which process writes.
+type CursorStore interface {
+	// Lock is held while lines are written and the cursors moved; it is
+	// ErrStandby while another process is the writer.
+	Lock() (unlock func(), err error)
+	// Load returns the cursors, and whether any were ever saved.
+	Load() (map[string]Cursor, bool, error)
+	// Save sets the cursors of the sessions it names.
+	Save(map[string]Cursor) error
+}
+
 // SinkOptions configure a JSONL file of OCSF events.
 type SinkOptions struct {
 	// Path is the file; rotated copies are Path.1, Path.2 and so on.
@@ -32,20 +59,29 @@ type SinkOptions struct {
 	Keep int
 	// Map names the source of every event.
 	Map Options
-	// Read gives a session's lines after seq from the record, for the lines
-	// the sink did not see written: before it started, or while it was behind.
-	Read func(session string, after int64) ([]Line, error)
-	// Sessions lists the record's sessions with their last seq, so lines
-	// written while no sink ran are caught up when one starts.
-	Sessions func() (map[string]int64, error)
+	// Cursors keeps the cursors; nil keeps them in Path.cursor under a lock
+	// on Path.lock, for the processes of one machine.
+	Cursors CursorStore
+	// Read gives a session's lines after a cursor, each with its Pos where
+	// the store has one, for the lines the sink did not see written.
+	Read func(session string, from Cursor) ([]Line, error)
+	// Sessions gives where each of the record's sessions ends (Seq, and Pos
+	// where the reader has one), so the lines past a cursor are found.
+	Sessions func() (map[string]Cursor, error)
+	// Changed is Sessions for the sessions written lately, which a poll asks;
+	// nil asks Sessions.
+	Changed func() (map[string]Cursor, error)
+	// Poll, when set, looks for new lines this often, for a record the sink
+	// is not handed lines from.
+	Poll time.Duration
 }
 
 // Sink writes the record's lines to a JSONL file as OCSF events. Its cursor,
-// the last seq written of each session, is kept beside the file and survives
-// a restart: what was recorded while no sink ran is written when one next
-// starts, and a line already written is never written twice by the sinks of
-// processes sharing the file. Delivery is at least once for a sink that
-// crashes between a write and its cursor; metadata.uid tells a repeat.
+// the last line written of each session, survives a restart: what was
+// recorded while no sink ran is written when one next runs, read from the
+// cursor on, and a line already written is not written again by any process
+// sharing the cursors. Delivery is at least once for a sink that stops
+// between a write and its cursor; metadata.uid tells a repeat.
 type Sink struct {
 	o      SinkOptions
 	in     chan Line
@@ -54,22 +90,16 @@ type Sink struct {
 	mapper *Mapper
 
 	mu      sync.Mutex
-	behind  map[string]bool // sessions whose lines overflowed the queue
-	primed  map[string]bool
+	behind  map[string]bool // sessions read from the record, not the queue
 	closed  bool
 	closing sync.Once
 	err     error
+	writer  bool // this process held the right to write at its last try
 }
 
-// cursorFile is the sink's progress, by session.
-type cursorFile struct {
-	Version  int              `json:"version"`
-	Sessions map[string]int64 `json:"sessions"`
-}
-
-// OpenSink starts a sink. A file with no cursor yet starts at each session's
-// present end, so turning the sink on does not write the whole history; the
-// lines of `abhed logs` cover that.
+// OpenSink starts a sink. Sessions with no cursor yet when the first is
+// saved start at their present end, so turning the sink on does not write
+// the whole history; `abhed logs` covers that.
 func OpenSink(o SinkOptions) (*Sink, error) {
 	if o.Path == "" {
 		return nil, errors.New("ocsf: the sink has no path")
@@ -89,47 +119,79 @@ func OpenSink(o SinkOptions) (*Sink, error) {
 	if err := os.MkdirAll(filepath.Dir(o.Path), 0o700); err != nil {
 		return nil, fmt.Errorf("ocsf: the sink's folder: %w", err)
 	}
+	if o.Cursors == nil {
+		o.Cursors = &fileCursors{path: o.Path}
+	}
 	s := &Sink{o: o, in: make(chan Line, sinkQueue), wake: make(chan struct{}, 1), done: make(chan struct{}),
-		mapper: NewMapper(o.Map), behind: map[string]bool{}, primed: map[string]bool{}}
-	if err := s.start(); err != nil {
+		mapper: NewMapper(o.Map), behind: map[string]bool{}}
+	if err := s.scan(true); err != nil && !errors.Is(err, ErrStandby) {
 		return nil, err
 	}
 	go s.run()
 	return s, nil
 }
 
-// start writes a first cursor, or marks what was recorded since the last.
-func (s *Sink) start() error {
-	unlock, err := s.lock()
+// scan finds the sessions with lines past their cursor. The first scan after
+// this process becomes the writer looks at every session; a later poll at
+// those written lately.
+func (s *Sink) scan(first bool) error {
+	unlock, err := s.o.Cursors.Lock()
 	if err != nil {
+		s.mu.Lock()
+		s.writer = false
+		s.mu.Unlock()
 		return err
 	}
 	defer unlock()
-	cur, existed, err := s.readCursor()
+	s.mu.Lock()
+	full := first || !s.writer
+	s.writer = true
+	s.mu.Unlock()
+	cur, existed, err := s.o.Cursors.Load()
 	if err != nil {
 		return err
 	}
-	var heads map[string]int64
-	if s.o.Sessions != nil {
-		if heads, err = s.o.Sessions(); err != nil {
-			return fmt.Errorf("ocsf: list the record's sessions: %w", err)
+	list := s.o.Sessions
+	if !full && s.o.Changed != nil {
+		list = s.o.Changed
+	}
+	if list == nil {
+		if !existed {
+			return s.o.Cursors.Save(map[string]Cursor{})
 		}
+		return nil
+	}
+	ends, err := list()
+	if err != nil {
+		return fmt.Errorf("ocsf: list the record's sessions: %w", err)
 	}
 	if !existed {
-		for id, seq := range heads {
-			cur.Sessions[id] = seq
-		}
-		return s.writeCursor(cur)
+		// Saved even when empty, so the next start knows the sink has begun.
+		return s.o.Cursors.Save(ends)
 	}
-	for id, seq := range heads {
-		if seq > cur.Sessions[id] {
+	var behind []string
+	for id, end := range ends {
+		if c, ok := cur[id]; !ok || past(end, c) {
+			behind = append(behind, id)
+		}
+	}
+	if len(behind) > 0 {
+		s.mu.Lock()
+		for _, id := range behind {
 			s.behind[id] = true
 		}
-	}
-	if len(s.behind) > 0 {
+		s.mu.Unlock()
 		s.poke()
 	}
 	return nil
+}
+
+// past reports whether a session's end is beyond cursor c.
+func past(end, c Cursor) bool {
+	if end.Pos > 0 {
+		return end.Pos > c.Pos
+	}
+	return end.Seq > c.Seq
 }
 
 // Add queues a line the record just wrote. It never blocks: a line that
@@ -178,15 +240,20 @@ func (s *Sink) Err() error {
 
 func (s *Sink) run() {
 	defer close(s.done)
+	var tick <-chan time.Time
+	if s.o.Poll > 0 {
+		t := time.NewTicker(s.o.Poll)
+		defer t.Stop()
+		tick = t.C
+	}
 	for {
-		var batch []Line
 		select {
 		case l, ok := <-s.in:
 			if !ok {
 				s.catchUp()
 				return
 			}
-			batch = append(batch, l)
+			batch := []Line{l}
 		drain:
 			for len(batch) < 512 {
 				select {
@@ -202,11 +269,16 @@ func (s *Sink) run() {
 			s.write(batch, false)
 		case <-s.wake:
 			s.catchUp()
+		case <-tick:
+			if err := s.scan(false); err != nil && !errors.Is(err, ErrStandby) {
+				s.fail(err)
+			}
+			s.catchUp()
 		}
 	}
 }
 
-// catchUp writes, from the record, the sessions the queue lost lines of.
+// catchUp writes, from the record, the sessions the queue did not carry.
 func (s *Sink) catchUp() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.behind))
@@ -220,12 +292,15 @@ func (s *Sink) catchUp() {
 		if s.o.Read == nil {
 			continue
 		}
-		cur, _, err := s.lockedCursor()
+		cur, err := s.cursorOf(id)
+		if errors.Is(err, ErrStandby) {
+			return
+		}
 		if err != nil {
 			s.fail(err)
 			continue
 		}
-		lines, err := s.o.Read(id, cur.Sessions[id])
+		lines, err := s.o.Read(id, cur)
 		if err != nil {
 			s.fail(fmt.Errorf("ocsf: read session %s: %w", id, err))
 			continue
@@ -249,13 +324,14 @@ func (s *Sink) catchUp() {
 	s.write(rest, false)
 }
 
-func (s *Sink) lockedCursor() (cursorFile, bool, error) {
-	unlock, err := s.lock()
+func (s *Sink) cursorOf(id string) (Cursor, error) {
+	unlock, err := s.o.Cursors.Lock()
 	if err != nil {
-		return cursorFile{}, false, err
+		return Cursor{}, err
 	}
 	defer unlock()
-	return s.readCursor()
+	cur, _, err := s.o.Cursors.Load()
+	return cur[id], err
 }
 
 // write maps and appends lines past each session's cursor, then moves it.
@@ -263,13 +339,16 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 	if len(lines) == 0 {
 		return
 	}
-	unlock, err := s.lock()
+	unlock, err := s.o.Cursors.Lock()
+	if errors.Is(err, ErrStandby) {
+		return
+	}
 	if err != nil {
 		s.fail(err)
 		return
 	}
 	defer unlock()
-	cur, _, err := s.readCursor()
+	cur, _, err := s.o.Cursors.Load()
 	if err != nil {
 		s.fail(err)
 		return
@@ -281,8 +360,10 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 	}
 	s.mu.Unlock()
 	var buf bytes.Buffer
+	moved := map[string]Cursor{}
 	for _, l := range lines {
-		if l.Seq <= cur.Sessions[l.SessionID] {
+		c := cur[l.SessionID]
+		if l.Seq <= c.Seq {
 			continue
 		}
 		// A session that lost lines from the queue is written from the
@@ -290,9 +371,13 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 		if !fromRecord && behind[l.SessionID] {
 			continue
 		}
-		s.prime(l.SessionID, cur.Sessions[l.SessionID])
+		c = s.prime(l.SessionID, c)
 		ev, ok, err := s.mapper.Map(l)
-		cur.Sessions[l.SessionID] = l.Seq
+		c.Seq, c.Provider = l.Seq, s.mapper.provider[l.SessionID]
+		if l.Pos > 0 {
+			c.Pos = l.Pos
+		}
+		cur[l.SessionID], moved[l.SessionID] = c, c
 		if err != nil {
 			s.fail(fmt.Errorf("ocsf: map %s: %w", l, err))
 			continue
@@ -316,6 +401,12 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 	// Lines that map to nothing, such as reply fragments, move no cursor on
 	// their own: read again after a restart, they are left out again.
 	if buf.Len() == 0 {
+		// Read from the record, they move it, so the next catch-up reads past them.
+		if fromRecord && len(moved) > 0 {
+			if err := s.o.Cursors.Save(moved); err != nil {
+				s.fail(err)
+			}
+		}
 		return
 	}
 	if err := s.append(buf.Bytes()); err != nil {
@@ -329,30 +420,38 @@ func (s *Sink) write(lines []Line, fromRecord bool) {
 		s.poke()
 		return
 	}
-	if err := s.writeCursor(cur); err != nil {
+	if err := s.o.Cursors.Save(moved); err != nil {
 		s.fail(err)
 	}
 }
 
-// prime gives the mapper what a session's lines before seq say, once.
-func (s *Sink) prime(id string, upTo int64) {
-	if s.primed[id] {
-		return
+// prime gives the mapper what a session's lines before its cursor said: the
+// provider the cursor kept, or, once for a cursor that never kept one, what
+// the record's lines up to it say.
+func (s *Sink) prime(id string, c Cursor) Cursor {
+	if _, ok := s.mapper.provider[id]; ok {
+		return c
 	}
-	s.primed[id] = true
-	if upTo <= 0 || s.o.Read == nil {
-		return
+	if c.Provider != "" {
+		s.mapper.provider[id] = c.Provider
+		return c
 	}
-	lines, err := s.o.Read(id, 0)
+	if c.Seq <= 0 || c.Primed || s.o.Read == nil {
+		c.Primed = true
+		return c
+	}
+	c.Primed = true
+	lines, err := s.o.Read(id, Cursor{})
 	if err != nil {
-		return
+		return c
 	}
 	for _, l := range lines {
-		if l.Seq > upTo {
+		if l.Seq > c.Seq {
 			break
 		}
 		s.mapper.Observe(l)
 	}
+	return c
 }
 
 func (s *Sink) append(data []byte) error {
@@ -388,47 +487,6 @@ func (s *Sink) rotate() error {
 	return nil
 }
 
-func (s *Sink) lock() (func(), error) {
-	unlock, err := filelock.Lock(s.o.Path+".lock", 10*time.Second, "another Abhed process is writing the OCSF file")
-	if err != nil {
-		return nil, fmt.Errorf("ocsf: %w", err)
-	}
-	return unlock, nil
-}
-
-func (s *Sink) readCursor() (cursorFile, bool, error) {
-	cur := cursorFile{Version: 1, Sessions: map[string]int64{}}
-	data, err := os.ReadFile(s.o.Path + ".cursor")
-	if errors.Is(err, os.ErrNotExist) {
-		return cur, false, nil
-	}
-	if err != nil {
-		return cur, false, fmt.Errorf("ocsf: read the sink's cursor: %w", err)
-	}
-	if err := json.Unmarshal(data, &cur); err != nil {
-		return cur, false, fmt.Errorf("ocsf: the sink's cursor %s is damaged: %w", s.o.Path+".cursor", err)
-	}
-	if cur.Sessions == nil {
-		cur.Sessions = map[string]int64{}
-	}
-	return cur, true, nil
-}
-
-func (s *Sink) writeCursor(cur cursorFile) error {
-	data, err := json.Marshal(cur)
-	if err != nil {
-		return err
-	}
-	tmp := s.o.Path + ".cursor.tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("ocsf: write the sink's cursor: %w", err)
-	}
-	if err := os.Rename(tmp, s.o.Path+".cursor"); err != nil {
-		return fmt.Errorf("ocsf: write the sink's cursor: %w", err)
-	}
-	return nil
-}
-
 func (s *Sink) fail(err error) {
 	s.mu.Lock()
 	first := s.err == nil
@@ -437,4 +495,63 @@ func (s *Sink) fail(err error) {
 	if first {
 		slog.Warn("ocsf: the OCSF file could not be written; it catches up from the record", "err", err)
 	}
+}
+
+// fileCursors keeps the cursors in Path.cursor, under a lock on Path.lock
+// that the processes of one machine share.
+type fileCursors struct {
+	path string
+}
+
+func (f *fileCursors) Lock() (func(), error) {
+	unlock, err := filelock.Lock(f.path+".lock", 10*time.Second, "another Abhed process is writing the OCSF file")
+	if err != nil {
+		return nil, fmt.Errorf("ocsf: %w", err)
+	}
+	return unlock, nil
+}
+
+type cursorFile struct {
+	Version  int               `json:"version"`
+	Sessions map[string]Cursor `json:"sessions"`
+}
+
+func (f *fileCursors) Load() (map[string]Cursor, bool, error) {
+	cur := cursorFile{Sessions: map[string]Cursor{}}
+	data, err := os.ReadFile(f.path + ".cursor")
+	if errors.Is(err, os.ErrNotExist) {
+		return cur.Sessions, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("ocsf: read the sink's cursor: %w", err)
+	}
+	if err := json.Unmarshal(data, &cur); err != nil {
+		return nil, false, fmt.Errorf("ocsf: the sink's cursor %s is damaged: %w", f.path+".cursor", err)
+	}
+	if cur.Sessions == nil {
+		cur.Sessions = map[string]Cursor{}
+	}
+	return cur.Sessions, true, nil
+}
+
+func (f *fileCursors) Save(moved map[string]Cursor) error {
+	all, _, err := f.Load()
+	if err != nil {
+		return err
+	}
+	for id, c := range moved {
+		all[id] = c
+	}
+	data, err := json.Marshal(cursorFile{Version: 2, Sessions: all})
+	if err != nil {
+		return err
+	}
+	tmp := f.path + ".cursor.tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("ocsf: write the sink's cursor: %w", err)
+	}
+	if err := os.Rename(tmp, f.path+".cursor"); err != nil {
+		return fmt.Errorf("ocsf: write the sink's cursor: %w", err)
+	}
+	return nil
 }

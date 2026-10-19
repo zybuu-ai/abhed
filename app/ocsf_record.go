@@ -38,7 +38,7 @@ func withOCSF(cfg config.Config, opts *local.Options) (start func(rec *local.Sto
 	var sink atomic.Pointer[ocsf.Sink]
 	opts.OnAppend = func(l local.Sealed) {
 		if s := sink.Load(); s != nil {
-			s.Add(ocsf.Line{Event: l.Event, Prev: l.Prev, Hash: l.Hash})
+			s.Add(ocsf.Line{Event: l.Event, Prev: l.Prev, Hash: l.Hash, Pos: l.End})
 		}
 	}
 	closeBefore := opts.OnClose
@@ -54,7 +54,7 @@ func withOCSF(cfg config.Config, opts *local.Options) (start func(rec *local.Sto
 		o := cfg.Record.OCSF
 		s, err := ocsf.OpenSink(ocsf.SinkOptions{
 			Path: ocsfPath(cfg, rec), Version: o.Version, MaxBytes: int64(o.MaxMB) << 20, Keep: o.Keep,
-			Map: ocsfOptions(rec.Tenant()), Read: recordLines(rec), Sessions: recordHeads(rec),
+			Map: ocsfOptions(rec.Tenant()), Read: recordLines(rec), Sessions: recordEnds(rec),
 		})
 		if err != nil {
 			// The record is what counts; the file catches up from it next time.
@@ -65,29 +65,36 @@ func withOCSF(cfg config.Config, opts *local.Options) (start func(rec *local.Sto
 	}
 }
 
-// recordLines reads a session's lines after seq, chain links included.
-func recordLines(rec *local.Store) func(string, int64) ([]ocsf.Line, error) {
-	return func(id string, after int64) ([]ocsf.Line, error) {
-		sealed, err := rec.SealedSince(id, after)
-		out := make([]ocsf.Line, len(sealed))
-		for i, s := range sealed {
-			out[i] = ocsf.Line{Event: s.Event, Prev: s.Prev, Hash: s.Hash}
+// recordLines reads a session's lines past a cursor, from the file offset
+// the cursor kept rather than from the start.
+func recordLines(rec *local.Store) func(string, ocsf.Cursor) ([]ocsf.Line, error) {
+	return func(id string, from ocsf.Cursor) ([]ocsf.Line, error) {
+		sealed, _, err := rec.LinesFrom(id, from.Pos)
+		if err != nil {
+			return nil, err
 		}
-		return out, err
+		out := make([]ocsf.Line, 0, len(sealed))
+		for _, s := range sealed {
+			if s.Seq > from.Seq {
+				out = append(out, ocsf.Line{Event: s.Event, Prev: s.Prev, Hash: s.Hash, Pos: s.End})
+			}
+		}
+		return out, nil
 	}
 }
 
-// recordHeads is each session's last seq.
-func recordHeads(rec *local.Store) func() (map[string]int64, error) {
-	return func() (map[string]int64, error) {
+// recordEnds is where each session's file ends: its size, read from the
+// file itself, never from a head a crash may have left behind.
+func recordEnds(rec *local.Store) func() (map[string]ocsf.Cursor, error) {
+	return func() (map[string]ocsf.Cursor, error) {
 		ids, err := rec.SessionIDs()
 		if err != nil {
 			return nil, err
 		}
-		out := make(map[string]int64, len(ids))
+		out := make(map[string]ocsf.Cursor, len(ids))
 		for _, id := range ids {
-			if seq, _, err := rec.Index().Head(id); err == nil {
-				out[id] = seq
+			if size, err := rec.Size(id); err == nil && size > 0 {
+				out[id] = ocsf.Cursor{Pos: size}
 			}
 		}
 		return out, nil
