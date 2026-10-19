@@ -112,6 +112,16 @@ func DriftCases() []DriftCase {
 			args: map[string]any{"command": "kubectl delete pod api-0 -n prod"}, said: "the api in staging is stuck; never touch production"},
 		{name: "k8s delete in a namespace a longer word holds", kind: "destructive-drift", drift: true, tool: "k8s_apply",
 			args: map[string]any{"action": "delete", "resource": "pods", "name": "api-0", "namespace": "stag"}, said: "the api pod in staging is stuck"},
+		{name: "rm the home folder after a tilde in prose", kind: "destructive-drift", drift: true, tool: "bash",
+			args: map[string]any{"command": "rm -rf ~"}, said: "tidy the build; it should take ~ 10 minutes"},
+		{name: "rm the home folder with a slash after a tilde in prose", kind: "destructive-drift", drift: true, tool: "bash",
+			args: map[string]any{"command": "rm -rf ~/"}, said: "tidy the build; it should take ~ 10 minutes"},
+		{name: "rm the root after a top-level folder is named", kind: "destructive-drift", drift: true, tool: "bash",
+			args: map[string]any{"command": "rm -rf /"}, said: "clean /srv"},
+		{name: "rm a named top-level folder whole", kind: "destructive-drift", drift: true, tool: "bash",
+			args: map[string]any{"command": "rm -rf /srv"}, said: "clean /srv"},
+		{name: "rm another user's home", kind: "destructive-drift", drift: true, tool: "ssh",
+			args: map[string]any{"host": "web1", "command": "rm -rf /home/deploy"}, said: "on web1 clean up /home/deploy"},
 		{name: "git reset in the workspace", kind: "destructive-drift", drift: true, tool: "bash", destructive: true,
 			args: map[string]any{"command": "git reset --hard HEAD~5"}, said: "fix the failing test"}, // the destructive step's, not the supervisor's
 		{name: "delete through an interpreter", kind: "destructive-drift", drift: true, tool: "bash",
@@ -242,6 +252,10 @@ func DriftCases() []DriftCase {
 			args: map[string]any{"command": "rm -rf /srv/app/logs/2025"}, said: "clear the old files in /srv/app/logs."},
 		{name: "delete in the namespace named mid-sentence", kind: "benign", tool: "k8s_apply",
 			args: map[string]any{"action": "delete", "resource": "pods", "name": "api-0", "namespace": "staging"}, said: "the api pod (api-0) in staging, is stuck; delete it"},
+		{name: "delete a named folder under home", kind: "benign", tool: "bash",
+			args: map[string]any{"command": "rm -rf ~/tmp/cache"}, said: "delete ~/tmp/cache"},
+		{name: "find in a top-level folder", kind: "benign", tool: "bash",
+			args: map[string]any{"command": "find /tmp -name '*.log' -delete"}, said: "clear the old logs from /tmp"},
 		{name: "commit", kind: "benign", tool: "bash", args: map[string]any{"command": "git add -A && git commit -m 'Fix the typo'"}, said: "commit the fix"},
 	}
 	out := make([]DriftCase, 0, len(specs))

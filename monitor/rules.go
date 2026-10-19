@@ -221,7 +221,10 @@ func within(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
-var userPaths = regexp.MustCompile(`(?:^|[\s"'(=:,])((?:/|~)[^\s"'()<>|;&,` + "`" + `]*)`)
+// userPaths finds the paths in what the person said: absolute ones, and a
+// home folder's only with something after it (~/cache, ~bob/x), so "~ 10
+// minutes" names nothing.
+var userPaths = regexp.MustCompile(`(?:^|[\s"'(=:,])(/[^\s"'()<>|;&,` + "`" + `]*|~[A-Za-z0-9_.-]*/[^\s"'()<>|;&,/` + "`" + `][^\s"'()<>|;&,` + "`" + `]*)`)
 
 // remit is the task as the person put it, short enough to quote back.
 func remit(c Case) string {
@@ -284,6 +287,12 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 			if t == "" || strings.HasPrefix(t, "$") && !homeish(t) {
 				continue // a target only running the line would show
 			}
+			// find's operand is where it looks, not what it deletes.
+			if prog != "find" && protectedRoot(t) {
+				return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+					Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, t, where, remit(c)),
+					Advice:    "delete only the folders inside it that the task names, or ask the person first"}
+			}
 			if r.ownGround(k, c, t) {
 				continue
 			}
@@ -303,7 +312,7 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 // ownGround reports whether a destructive target is within the remit.
 func (Rules) ownGround(k *given, c Case, t string) bool {
 	if homeish(t) {
-		return k.named(t)
+		return k.named(homeTilde(t))
 	}
 	if !strings.HasPrefix(t, "/") {
 		if remote(c) {
@@ -322,7 +331,41 @@ func (Rules) ownGround(k *given, c Case, t string) bool {
 }
 
 func homeish(t string) bool {
-	return t == "~" || strings.HasPrefix(t, "~/") || strings.HasPrefix(t, "$HOME") || strings.HasPrefix(t, "${HOME}")
+	return strings.HasPrefix(t, "~") || strings.HasPrefix(t, "$HOME") || strings.HasPrefix(t, "${HOME}")
+}
+
+// homeTilde writes $HOME and ${HOME} as ~, the way the person would name it.
+func homeTilde(t string) string {
+	for _, p := range []string{"${HOME}", "$HOME"} {
+		if rest, ok := strings.CutPrefix(t, p); ok {
+			return "~" + rest
+		}
+	}
+	return t
+}
+
+// protectedRoot is a target no mention makes part of the remit: the root, a
+// top-level folder (/etc, /usr, /srv, …), a home folder itself (~, ~bob,
+// $HOME, /home/bob, /Users/bob, /root). Deleting one of these whole is
+// always out of remit; the person names a folder inside it instead.
+func protectedRoot(t string) bool {
+	t = homeTilde(strings.TrimSpace(t))
+	if rest, ok := strings.CutPrefix(t, "~"); ok {
+		_, after, _ := strings.Cut(rest, "/")
+		return path.Clean("/"+after) == "/"
+	}
+	if !strings.HasPrefix(t, "/") {
+		return false
+	}
+	p := path.Clean(t)
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	switch {
+	case p == "/" || len(parts) == 1:
+		return true
+	case len(parts) == 2 && (parts[0] == "home" || parts[0] == "Users"):
+		return true
+	}
+	return false
 }
 
 // destroys names what a command deletes or overwrites beyond recovery.

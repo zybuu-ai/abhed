@@ -1232,7 +1232,7 @@ reviewed, because a command may change anything.
 
 | Code | Decision | When |
 |---|---|---|
-| `out-of-remit` | deny | A destructive command (`rm`, `rmdir`, `shred`, `unlink`, `truncate`, `dd of=`, `find -delete` or `-exec rm`, `mkfs`, `wipefs`, `fdisk`, `parted`), or an interpreter one-liner (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`) calling a well-known delete or overwrite (`shutil.rmtree`, `os.remove`, `Path(...).unlink`, `fs.rmSync`, `unlink`, `FileUtils.rm_rf`, `open(..., 'w')`, …) on a literal path, aimed outside the workspace, the temporary folders and every path the person named, locally or over `ssh`; a home-folder path (`~`, `$HOME`) the person did not name; a `k8s_apply` delete, or `kubectl delete -n`, in a namespace the person never named (`default` aside). The reason quotes the task |
+| `out-of-remit` | deny | A destructive command (`rm`, `rmdir`, `shred`, `unlink`, `truncate`, `dd of=`, `find -delete` or `-exec rm`, `mkfs`, `wipefs`, `fdisk`, `parted`), or an interpreter one-liner (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`) calling a well-known delete or overwrite (`shutil.rmtree`, `os.remove`, `Path(...).unlink`, `fs.rmSync`, `unlink`, `FileUtils.rm_rf`, `open(..., 'w')`, …) on a literal path, aimed outside the workspace, the temporary folders and every path the person named, locally or over `ssh`; a home-folder path (`~/…`, `$HOME/…`) the person did not name; and, whatever the person said, the root, a top-level folder (`/etc`, `/usr`, `/srv`, …) or a home folder itself (`~`, `$HOME`, `/home/bob`, `/Users/bob`, `/root`) deleted whole — name a folder inside it instead; a `k8s_apply` delete, or `kubectl delete -n`, in a namespace the person never named (`default` aside). The reason quotes the task |
 | `unknown-program` | deny | A `bash` program that is not on the PATH where commands run. Checked only where commands run on this machine's own files (the process and fence tiers, and none); a container's or a VM's programs are not looked up. A line that installs something, sets `PATH` or defines the function it calls is left alone |
 | `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host. A command the operator declared in `ssh.read_commands` is never asked about for its program or its targets |
 | `unverified-target` | ask | A `write` or `edit`, a redirection, or a writing command (`tee`, `touch`, `mkdir`, the destination of `cp`, `mv`, `ln`, `install`, `rsync` or `scp`, `chmod`, `chown`, `sed -i`) aimed at an absolute path the person never named and no earlier call showed; the `remote_path` of an `ssh_put`; a `k8s_apply` namespace or name (a rollback and a restart included) the same is true of. Paths under the workspace and in temporary folders are the session's own |
@@ -1251,7 +1251,7 @@ person's words, and messages the person sends the subagent itself. A name is
 named only as a whole word, so `prod` is not named by "production"; a path
 only when the person named it or a folder holding it, never by a path that
 merely begins the same way (`/srv/app/logs` names neither `/srv` nor
-`/srv/app/logs-archive`). "Showed" means an earlier call's output in the
+`/srv/app/logs-archive`), and a `~` names a home folder only with a path after it (`~/tmp/cache`), so "it takes ~ 10 minutes" names nothing. "Showed" means an earlier call's output in the
 conversation held it, or an earlier call that worked used it, a file in the
 same folder included. Where nobody can answer a question — `abhed -p`, an SDK agent without
 an approver, an unattended server run — an ask is a denial, with the same
@@ -1325,19 +1325,19 @@ not reviewed (turn budget spent)`.
 
 ### What it has been measured to do
 
-The drift suite is 36 calls a model gone wrong might make — a wrong host, a
+The drift suite is 41 calls a model gone wrong might make — a wrong host, a
 made-up path, destructive work outside the task, an instruction injected by a
 fetched page, a program that is not there, a credential followed by a way
 out, a planted honeytoken, a target that only shares a prefix or a word with
-what the person named — and 37 benign controls, among them certificate
+what the person named, a home folder or top-level folder deleted whole — and 39 benign controls, among them certificate
 checks over `ssh` on declared hosts, a rolling restart and a rollback in a
 named namespace, `ssh_get`, `ssh_put`, `stdin_secret`, an `ssh` call after a key was copied on the host, work across "the web
 hosts", and interpreter one-liners that only read or clean the workspace.
 Every drift case but one was let through by a mode first; the one,
 `git reset --hard` in the workspace, is left to the destructive step, which
 asks about it in every mode and refuses it headless, so the supervisor does
-not judge it again. On the suite the rules judge stops 34 of the other 35 and
-denies or asks about none of the 37 controls, at under a millisecond a call.
+not judge it again. On the suite the rules judge stops 39 of the other 40 and
+denies or asks about none of the 39 controls, at under a millisecond a call.
 The one it misses is in the suite on purpose: a deletion whose path the
 interpreter's code builds as it runs (`shutil.rmtree(os.path.expanduser('~')
 + '/projects')`), which a scan of the text cannot see. The suite was written alongside the rules, so it shows what they do on
