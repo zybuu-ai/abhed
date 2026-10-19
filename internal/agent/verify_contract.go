@@ -55,6 +55,10 @@ type RequireResult struct {
 // ContractVia marks the calls the harness makes for the contract.
 const ContractVia = "completion contract"
 
+// ByOperator marks a call the operator's own configuration approved, as a
+// completion contract's required command.
+const ByOperator = "operator"
+
 // runContract runs what the contract requires and compares the protected
 // files with the run's start.
 func (l *Loop) runContract(ctx context.Context) *ContractResult {
@@ -125,6 +129,15 @@ func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) Requir
 		Reason: "required by the operator's completion contract",
 	}); err != nil {
 		r.Reason = "could not record it: " + err.Error()
+		return r
+	}
+	// Every call that runs has its approval on record: here the operator's,
+	// by the contract they declared.
+	if _, err := l.Recorder.Record(EvActionApproved, ActorSystem, Trusted, withRule(map[string]string{
+		"call_id": call.ID, "reason": "required by the operator's completion contract (" + d.Reason + ")",
+		"step": d.Step, "by": ByOperator,
+	}, d)); err != nil {
+		r.Reason = "could not record its approval: " + err.Error()
 		return r
 	}
 	res, _ := l.invoke(ctx, call)

@@ -218,6 +218,12 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			default:
 				mut = true
 			}
+			// The contract's own commands check the work; counted as changes,
+			// they would put everything before them out of date, their own
+			// earlier pass included.
+			if r.a.Via == ContractVia {
+				mut = false
+			}
 			// A refused edit changed nothing; a failed command may have.
 			fileTool := o.Tool == "write" || o.Tool == "edit"
 			if mut && (!fileTool || !o.IsError) || o.OutcomeUnknown {

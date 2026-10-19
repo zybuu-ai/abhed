@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -340,12 +341,15 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		claims = textClaims(text)
 	}
 	// Stopped as it ended: the answer stands as given, unchecked.
-	if (source == "" && v.Contract == nil) || ctx.Err() != nil {
-		return false, TermCompleted // a structured result, or nothing said
+	// No answer to check: a plan put to the person, a structured result, or
+	// nothing said. The contract gates an answer, so it waits for one too.
+	if source == "" || ctx.Err() != nil {
+		return false, TermCompleted
 	}
 
 	var cr *ContractResult
-	if v.Contract != nil {
+	// Plan mode changes nothing, so there is no work for a contract to gate.
+	if v.Contract != nil && (l.Policy == nil || l.Policy.Mode != policy.ModePlan) {
 		cr = l.runContract(ctx)
 	}
 	events, err := l.Recorder.store.Events(l.Recorder.sessionID)

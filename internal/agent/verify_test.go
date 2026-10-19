@@ -564,8 +564,8 @@ func TestVerifyModes(t *testing.T) {
 }
 
 // A required command policy would not let run unasked is not run, and the
-// contract fails closed: a destructive one still needs a person, a deny rule
-// still binds, and plan mode runs nothing.
+// contract fails closed: a destructive one still needs a person, and a deny
+// rule still binds.
 func TestContractRespectsPolicy(t *testing.T) {
 	for name, set := range map[string]func(l *Loop){
 		"destructive": func(l *Loop) { l.Verify.Contract.Require = []string{"rm -rf build"} },
@@ -576,7 +576,6 @@ func TestContractRespectsPolicy(t *testing.T) {
 			}
 			l.Policy.Deny = append(l.Policy.Deny, r)
 		},
-		"plan mode": func(l *Loop) { l.Policy.Mode = policy.ModePlan },
 	} {
 		t.Run(name, func(t *testing.T) {
 			l, store, _, _ := verifyHarness(t, VerifyOff, false, []scriptedTurn{{text: "Done."}, {text: "Done."}})
@@ -720,5 +719,68 @@ func TestReadingCommands(t *testing.T) {
 	if !runsCommand("cd api && go test ./... -count=1", "go test ./...") || runsCommand("echo 'go test'", "go test") ||
 		runsCommand("go testdata", "go test") {
 		t.Error("a claimed command matches whole simple commands")
+	}
+}
+
+// The contract's own command is not a change: what was read before it stays
+// current, and a pass with nothing changed since is reused.
+func TestContractCommandIsNotAChange(t *testing.T) {
+	l, store, _, dir := verifyHarness(t, VerifyLabel, false, nil)
+	os.WriteFile(filepath.Join(dir, "ok.sh"), []byte("exit 0\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "a.conf"), []byte("port: 8080\n"), 0o644)
+	l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": filepath.Join(dir, "a.conf")})}},
+		{text: "It listens on port 8080."},
+		{text: "It listens on port 8080."},
+	}
+	l.Verify.Contract = &Contract{Require: []string{"sh ok.sh"}}
+	if reason, _ := l.Run(context.Background(), "which port?"); reason != TermCompleted {
+		t.Fatalf("got %s: %+v", reason, answerVerdicts(store))
+	}
+	if reason, _ := l.Run(context.Background(), "and again?"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	vs := answerVerdicts(store)
+	if len(vs) != 2 || vs[0].Verified != 1 || vs[1].Verified != 1 || !vs[1].Contract.Require[0].Reused {
+		t.Fatalf("verdicts %+v", vs)
+	}
+	// It ran with its approval on record, the operator's.
+	evs, _ := store.Events("sess1")
+	approved := 0
+	for _, e := range evs {
+		if e.Type == EvActionApproved && strings.Contains(string(e.Payload), `"by":"operator"`) {
+			approved++
+		}
+	}
+	if approved != 1 {
+		t.Fatalf("the contract's run has %d approvals on record, want 1", approved)
+	}
+}
+
+// A plan put to the person is not an answer: neither the checks nor the
+// contract run, and plan mode runs no contract for a text answer either.
+func TestNoContractOnAPlan(t *testing.T) {
+	for name, turn := range map[string]scriptedTurn{
+		"proposal": {calls: []model.ToolCall{{ID: "p1", Name: tools.ExitPlanName, Args: json.RawMessage(`{"plan":"1. read the config\n2. change the port"}`)}}},
+		"answer":   {text: "The plan: change the port in a.conf."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l, store, _, _ := verifyHarness(t, VerifyLabel, false, []scriptedTurn{turn})
+			l.Policy.Mode = policy.ModePlan
+			l.EnablePlanExit()
+			l.Verify.Contract = &Contract{Require: []string{"true"}}
+			if reason, _ := l.Run(context.Background(), "plan the change"); reason != TermCompleted {
+				t.Fatalf("got %s", reason)
+			}
+			evs, _ := store.Events("sess1")
+			for _, e := range evs {
+				if e.Type == EvActionRequested && strings.Contains(string(e.Payload), ContractVia) {
+					t.Fatal("the contract ran in plan mode")
+				}
+			}
+			if vs := answerVerdicts(store); name == "proposal" && len(vs) != 0 {
+				t.Fatalf("a plan proposal was checked as an answer: %+v", vs)
+			}
+		})
 	}
 }

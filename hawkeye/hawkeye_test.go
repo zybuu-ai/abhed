@@ -707,3 +707,18 @@ func TestAnswersSection(t *testing.T) {
 		t.Fatalf("html: %v", err)
 	}
 }
+
+// A completion contract's command is the operator's: it is shown run and
+// allowed, by the operator, not left pending.
+func TestContractCommandIsAllowedByTheOperator(t *testing.T) {
+	zero := 0
+	b := (&rec{}).user("fix it").
+		add(agent.EvActionRequested, agent.ActorSystem, agent.Trusted, agent.ActionRequested{CallID: "contract_1", Tool: "bash",
+			Args: []byte(`{"command":"go test ./..."}`), Via: agent.ContractVia}).
+		add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": "contract_1", "step": "default", "by": agent.ByOperator}).
+		add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "contract_1", Tool: "bash", Content: "ok", ExitCode: &zero})
+	r := Analyze("s1", b.evs)
+	if len(r.Calls) != 1 || r.Calls[0].Decision != "allowed" || !r.Calls[0].Ran || r.Calls[0].By != agent.ByOperator {
+		t.Fatalf("calls %+v", r.Calls)
+	}
+}
