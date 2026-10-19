@@ -135,6 +135,11 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
+| `monitor.enabled` | **applied** only when true |
+| `monitor.on_unavailable` | **applied** only for `deny` |
+| `monitor.max_per_turn` | **applied** only when more calls are reviewed; zero means no bound, so it is the most |
+| `monitor.honeytokens` | **applied**, added to the ones already there |
+| `monitor` (other keys: `judge`, `endpoint`, `model`, `api_key_env`, `timeout_ms`) | ignored: a judge endpoint receives the conversation |
 | `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |

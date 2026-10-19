@@ -45,6 +45,23 @@ func shown(r Report) Report {
 		})
 		r.Network = &n
 	}
+	if r.Supervisor != nil {
+		s := *r.Supervisor
+		if s.ByCode != nil {
+			by := make(map[string]int, len(s.ByCode))
+			for k, n := range s.ByCode {
+				by[v(k)] += n
+			}
+			s.ByCode = by
+		}
+		s.Judges = each(s.Judges, func(j string) string { return v(j) })
+		s.Concerns = each(s.Concerns, func(c SupervisorVerdict) SupervisorVerdict {
+			c.CallID, c.Tool, c.Subject, c.Before, c.After = v(c.CallID), v(c.Tool), v(c.Subject), v(c.Before), v(c.After)
+			c.Code, c.Rationale = v(c.Code), v(c.Rationale)
+			return c
+		})
+		r.Supervisor = &s
+	}
 	r.Compactions = each(r.Compactions, func(c Compaction) Compaction { c.Trigger = v(c.Trigger); return c })
 	r.Subagents = each(r.Subagents, func(s Subagent) Subagent {
 		s.Description, s.Type, s.Reason, s.Session = v(s.Description), v(s.Type), v(s.Reason), v(s.Session)

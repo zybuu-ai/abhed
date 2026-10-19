@@ -95,6 +95,12 @@
   "web_fetch": {
     "enabled": false
   },
+  "monitor": {
+    "enabled": true,
+    "judge": "rules",
+    "on_unavailable": "ask",
+    "honeytokens": []
+  },
   "storage": {
     "driver": "memory",
     "tenant": "default",

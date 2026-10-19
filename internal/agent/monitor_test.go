@@ -66,7 +66,7 @@ func TestMonitorDeniesWhatTheModeWavedThrough(t *testing.T) {
 	last := l.Adapter.(*scriptedAdapter).gotRequests[1]
 	told := false
 	for _, m := range last.Messages {
-		told = told || (m.Role == model.RoleTool && strings.Contains(m.Content, "monitor:") && strings.Contains(m.Content, "tool output"))
+		told = told || (m.Role == model.RoleTool && strings.Contains(m.Content, "Supervisor: goal-hijack.") && strings.Contains(m.Content, "tool output"))
 	}
 	if !told {
 		t.Fatal("the model was not told why the monitor refused")

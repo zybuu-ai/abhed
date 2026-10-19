@@ -945,6 +945,8 @@ them.
 | `conversation.forked` | user | from, through_seq |
 | `terminal.input` | user | line or withheld |
 | `monitor.verdict` | system | verdict, before, after (shown when present) |
+| *new* `supervisor.correction` | system | call_id, code, decision, text |
+| *new* `supervisor.replan` | system | failures, text |
 | `message.dropped` | system | |
 | *new* `mode.changed` | user | from, to, via |
 | *new* `permission.changed` | user | op, list, rule, scope |

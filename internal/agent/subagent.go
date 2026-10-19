@@ -17,7 +17,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
-	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // Budget enforces hierarchical spend limits across a session and its subagents.
@@ -743,8 +742,7 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 	}
 	// The parent's judge reviews the child's calls too, with a turn budget of the child's own.
 	if parent != nil && parent.loop != nil && parent.loop.Monitor != nil {
-		g := parent.loop.Monitor
-		sub.Monitor = &monitor.Guard{Monitor: g.Monitor, Timeout: g.Timeout, OnUnavailable: g.OnUnavailable, MaxPerTurn: g.MaxPerTurn}
+		sub.Monitor = parent.loop.Monitor.Child()
 	}
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.

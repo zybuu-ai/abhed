@@ -290,6 +290,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
 .ask p.hidden-warn{color:var(--bad);font-weight:600}
 .ask p.hidden-field{font:11.5px/1.5 var(--mono)}
+.ask p.sup,.why.sup{font:11.5px/1.5 var(--mono)}.ask p.sup.concern{color:var(--ink);font-weight:600}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -2362,6 +2363,9 @@ function render(ev){
     if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
+  // What the supervisor told the model, under the call it refused; a re-plan note in the transcript.
+  case 'supervisor.correction': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why sup', visible(p.text || ''))); break; }
+  case 'supervisor.replan': add(el('div', 'sys', visible(p.text || ''))); break;
   case 'session.started': recProvider = p.provider || null; break;
   case 'model.switched': showSwitch(p); break;
   // A suggestion's call is counted, but is no turn and says nothing of the context.
@@ -2512,6 +2516,11 @@ function drawPlan(items){
   items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', visible(i.text || ''))); todoNode.appendChild(r); });
   add(todoNode);
 }
+// The supervisor's verdict on a call, as one line: its concern and advice, or ok.
+function supChip(v){
+  const concern = v.code && v.code !== 'ok';
+  return el('p', 'sup' + (concern ? ' concern' : ''), 'supervisor: ' + (concern ? visible(v.decision || '') + ' · ' + visible(v.code) + (v.advice ? ' — ' + visible(v.advice) : '') : 'ok'));
+}
 function askApproval(p, rid){
   // An answer names its request; without one the server would apply it to whatever is pending.
   if(!rid) return;
@@ -2519,7 +2528,8 @@ function askApproval(p, rid){
   // Every field is made visible: the prompt must show exactly what allowing runs.
   const subj = subjectOf(p.tool, p.args) || '';
   a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
-  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v))){
+  if(p.supervisor) a.appendChild(supChip(p.supervisor));
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args, p.supervisor && p.supervisor.advice].some(v => v && hasHidden(v))){
     a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
     // A field the line above does not draw is shown too, so the warning points at something.
     if(p.args && typeof p.args === 'object') for(const [k, x] of Object.entries(p.args))
@@ -2548,7 +2558,7 @@ function askApproval(p, rid){
   if(p.tool === 'bash' && p.args && p.args.run_in_background === true)
     a.appendChild(el('p', 'scope-note', 'Starts in the background: it keeps running after this turn, until it ends or is stopped (Stop, or /tasks).'));
   // Say why the one-click scope is missing, so its absence does not read as a fault.
-  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command and any program off the short list are asked every time. A rule you add can allow it.'));
+  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command, a call the supervisor flagged and any program off the short list are asked every time. A rule you add can allow it.'));
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon(); notify('ask');
   // A pending question is never left half off screen, wherever the reader had scrolled to.

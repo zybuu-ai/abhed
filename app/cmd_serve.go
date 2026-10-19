@@ -128,6 +128,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
 	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
+	fmt.Printf("supervisor  %s\n", toolset.SupervisorLabel(cfg))
 	if line, failed := extensionsLabel(cfg, set); line != "" {
 		fmt.Printf("extensions  %s\n", line)
 		// Every session runs without a veto that did not start, so it is said where the operator looks.

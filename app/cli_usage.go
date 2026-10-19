@@ -11,6 +11,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -212,6 +213,7 @@ func slashStatus(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 		{"workspace", st.workspace},
 		{"branch", orDefault(m.GitBranch, "-")},
 		{"sandbox", sb},
+		{"supervisor", toolset.SupervisorLabel(cfg)},
 		{"record", record},
 		{"session", session},
 		{"context", fmt.Sprintf("%d tokens (%d%% of the window)", m.ContextTokens, m.ContextPercent)},

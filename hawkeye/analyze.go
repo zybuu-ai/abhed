@@ -228,6 +228,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 	sort.Slice(r.Files, func(i, j int) bool { return r.Files[i].Path < r.Files[j].Path })
 
 	r.totals(ended)
+	r.Supervisor = supervisor(evs, r.Calls)
 	r.Findings = findings(r, evs, opt)
 	return r
 }

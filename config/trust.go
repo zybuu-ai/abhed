@@ -732,6 +732,12 @@ var workspaceRules = map[string]fieldRule{
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
 	"suggest.model":       {nil, "a provider receives the conversation"},
 
+	"monitor.enabled":        {onlyTrue(func(c *Config) *bool { return &c.Monitor.Enabled }), "only true"},
+	"monitor.on_unavailable": {stricterUnavailable, "only deny"},
+	"monitor.max_per_turn":   {moreReviews, "only more calls reviewed"},
+	"monitor.honeytokens":    {union(func(c *Config) *[]string { return &c.Monitor.Honeytokens }), "added to the honeytokens"},
+	"monitor":                {nil, "a judge endpoint receives the conversation"},
+
 	"additional_dirs":  {nil, "widens the directories the agent may reach"},
 	"model":            {nil, "a provider and its base_url receive the code"},
 	"custom_providers": {nil, "a provider and its base_url receive the code"},

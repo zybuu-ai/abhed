@@ -6,6 +6,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading from 1.2.8
+
+- The supervisor is on by default, with its rules judge. Every surface
+  reviews each call after policy, and a call it has a concern with is asked
+  about, or refused with a correction for the model: destructive commands
+  outside the workspace and the paths you named, a program not on the PATH,
+  a change aimed at a path or host neither you nor an earlier call named, and
+  a call that can send data out after a credential file was read. In
+  `abhed -p`, an SDK agent without an approver and an unattended server run,
+  its asks are refusals. An ask it raised offers no "always allow". Set
+  `"monitor": {"enabled": false}` in your own file to turn it off; a managed
+  file may keep it on.
+- The reason of a call the supervisor refused starts `supervisor:` instead
+  of `monitor:`.
+
 ### Security
 
 - `ssh` rules matched the remote command as plain text. A deny rule such
@@ -32,6 +47,23 @@ All notable changes to Abhed are recorded here. The format follows
   a trusted configuration file sets it; a managed file that sets it
   replaces the list, and one that sets the permissions without it sets the
   person's entries aside. The `ssh` tool's description names the entries.
+- The supervisor, `monitor` in the configuration: it reviews each call after
+  policy and may only make the decision stricter. The rules judge checks for
+  destructive drift, programs that are not there, targets nothing showed, a
+  credential followed by a way out, and planted `honeytokens`;
+  `judge: "model"` adds a model judge behind any OpenAI-compatible endpoint,
+  which fails closed on a reply outside its fixed schema. A refused call
+  tells the model `Supervisor: <code>. <reason>. Do this instead: <advice>`,
+  recorded as `supervisor.correction`, and three refused or failed calls in a
+  row bring a note that restates the task and the approved plan
+  (`supervisor.replan`). It never rewrites a call.
+- The supervisor's verdict on approval cards in the terminal, the console
+  and the workbench; `supervisor: rules|model|off` in the banner, `/status`,
+  `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
+  `Options.Supervisor` in the SDK.
+- The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
+  or `go run ./cmd/abhed-drift`): on its 21 drift cases the rules judge stops
+  19, and it asks about or refuses none of its 19 benign controls.
 
 ### Fixed
 

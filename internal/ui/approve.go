@@ -113,6 +113,11 @@ func (a *Approver) Approve(ctx context.Context, tool string, args json.RawMessag
 		}
 		fmt.Fprintf(a.Out, "  %s\n", s.Dim(why))
 	}
+	if chip, concern := supervisorChip(ctx); concern {
+		fmt.Fprintf(a.Out, "  %s\n", s.Yellow(chip))
+	} else if chip != "" {
+		fmt.Fprintf(a.Out, "  %s\n", s.Dim(chip))
+	}
 	if preview := a.preview(tool, args); preview != "" {
 		fmt.Fprintln(a.Out, preview)
 	}

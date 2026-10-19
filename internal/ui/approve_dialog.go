@@ -161,6 +161,9 @@ func (a *DialogApprover) spec(ctx context.Context, tool string, args json.RawMes
 	if reason != "" {
 		why = append(why, reason)
 	}
+	if chip, _ := supervisorChip(ctx); chip != "" {
+		why = append(why, chip)
+	}
 
 	var body []Block
 	question := fmt.Sprintf("Allow %s?", toolTitle(tool))

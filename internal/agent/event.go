@@ -237,6 +237,8 @@ type ActionRequested struct {
 	// Target is where the call sends what it carries, from the operator's
 	// config, such as the server a login's token goes to.
 	Target string `json:"target,omitempty"`
+	// Supervisor is the supervisor's verdict on the call, when it gave one.
+	Supervisor *SupervisorNote `json:"supervisor,omitempty"`
 }
 
 type Observation struct {
