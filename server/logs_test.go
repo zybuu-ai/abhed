@@ -20,7 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/store/chain"
 )
 
-func logsServer(t *testing.T, cfg config.Config) (*httptest.Server, *agent.MemStore) {
+func logsServer(t *testing.T, cfg config.Config) *httptest.Server {
 	t.Helper()
 	st := agent.NewMemStore()
 	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
@@ -41,7 +41,7 @@ func logsServer(t *testing.T, cfg config.Config) (*httptest.Server, *agent.MemSt
 	s.running["s1"] = &liveSession{ID: "s1", User: "anonymous", Tenant: "default", State: "running", Created: time.Now()}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
-	return srv, st
+	return srv
 }
 
 // readSSE reads data lines with their ids until n have come.
@@ -51,7 +51,7 @@ func readSSE(t *testing.T, url string, header http.Header, n int) ([]int, []stri
 	for k, v := range header {
 		req.Header[k] = v
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by the defer below, after the reader goroutine
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func readSSE(t *testing.T, url string, header http.Header, n int) ([]int, []stri
 // seq as the SSE id so a client resumes where it stopped, fragments left
 // out, and no more than the record holds.
 func TestLogsStreamIsTheRecordAsOCSF(t *testing.T) {
-	srv, _ := logsServer(t, config.Default())
+	srv := logsServer(t, config.Default())
 	ids, data := readSSE(t, srv.URL+"/v1/sessions/s1/logs", nil, 3)
 	if want := []int{1, 2, 4}; len(ids) != 3 || ids[0] != want[0] || ids[1] != want[1] || ids[2] != want[2] {
 		t.Fatalf("ids %v, want %v (the delta left out)", ids, want)
@@ -122,7 +122,7 @@ func TestLogsStreamIsTheRecordAsOCSF(t *testing.T) {
 }
 
 func TestLogsStreamRefusesWhatItCannotWrite(t *testing.T) {
-	srv, _ := logsServer(t, config.Default())
+	srv := logsServer(t, config.Default())
 	for _, q := range []string{"?format=xml", "?version=1.4.0"} {
 		resp, err := http.Get(srv.URL + "/v1/sessions/s1/logs" + q)
 		if err != nil {
@@ -139,7 +139,7 @@ func TestLogsStreamRefusesWhatItCannotWrite(t *testing.T) {
 func TestLogsStreamIsTheOwnersOnly(t *testing.T) {
 	cfg := config.Default()
 	cfg.Auth.Mode = "proxy"
-	srv, _ := logsServer(t, cfg)
+	srv := logsServer(t, cfg)
 	req, _ := http.NewRequest("GET", srv.URL+"/v1/sessions/s1/logs", nil)
 	req.Header.Set("X-Abhed-User", "mallory")
 	resp, err := http.DefaultClient.Do(req)

@@ -151,7 +151,6 @@ func (w *OCSFWriter) Save(moved map[string]OCSFCursor) error {
 	return tx.Commit(ctx)
 }
 
-
 // LoadPos is the place in commit order the sink's writer reads on from, ""
 // before one was saved.
 func (w *OCSFWriter) LoadPos() (string, error) {
