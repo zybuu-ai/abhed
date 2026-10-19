@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -115,8 +116,9 @@ func TestWriteUserConfigNeverOverwritesOrStoresAKey(t *testing.T) {
 	}
 }
 
+// With no OLLAMA_HOST the default is Ollama's own (internal/defaults), here the test stub.
 func TestOllamaBase(t *testing.T) {
-	for in, want := range map[string]string{"": "http://localhost:11434/v1", "10.0.0.2:11434": "http://10.0.0.2:11434/v1",
+	for in, want := range map[string]string{"": defaults.LocalModelURL, "10.0.0.2:11434": "http://10.0.0.2:11434/v1",
 		"http://h:1/v1": "http://h:1/v1", "https://h/": "https://h/v1"} {
 		t.Setenv("OLLAMA_HOST", in)
 		if got := ollamaBase(); got != want {

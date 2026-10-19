@@ -20,6 +20,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/zybuu-ai/abhed/internal/clitest/vt"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
 // DefaultTimeout is how long WaitText waits.
@@ -65,12 +66,15 @@ func Binary(t testing.TB) string {
 			build.bin += ".exe"
 		}
 		pkg := "github.com/zybuu-ai/abhed/internal/managed"
+		defaultsPkg := "github.com/zybuu-ai/abhed/internal/defaults"
 		none := filepath.Join(build.dir, "no-managed")
 		// -buildvcs=false: a version stamped from the checkout differs on every
 		// commit, and the screens and /release-notes expect a development build.
 		args := []string{"build", "-buildvcs=false", "-o", build.bin, "-ldflags",
 			"-X " + pkg + ".ConfigFile=" + filepath.Join(none, "config.json") + " -X " + pkg + ".AgentsDir=" + filepath.Join(none, "agents") +
-				" -X " + pkg + ".testDirEnv=" + managedEnv}
+				" -X " + pkg + ".testDirEnv=" + managedEnv +
+				// The defaults a configuration falls back to lead to a closed port, never to Ollama.
+				" -X " + defaultsPkg + ".LocalModelURL=http://localhost:9/v1 -X " + defaultsPkg + ".OllamaURL=http://127.0.0.1:9/v1"}
 		if raceEnabled {
 			args = append(args, "-race")
 		}
@@ -95,7 +99,8 @@ func Binary(t testing.TB) string {
 // Main runs a package's tests and removes the built binary afterwards. Use
 // it from TestMain: os.Exit(clitest.Main(m)).
 func Main(m *testing.M) int {
-	code := m.Run()
+	g := testenv.Isolate()
+	code := g.Close(m.Run())
 	if build.dir != "" {
 		_ = os.RemoveAll(build.dir)
 	}
