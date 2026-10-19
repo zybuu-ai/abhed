@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -224,7 +225,7 @@ func TestWorkbenchPlanThroughTheApprovalGate(t *testing.T) {
 		t.Fatalf("plan.decided %+v", decided)
 	}
 	for _, a := range gate.seen {
-		if a.Request != "plan:"+hash || a.Tool != "exit_plan" {
+		if a.Request != "plan:"+hash || a.Tool != "exit_plan" || !slices.Equal(a.StepTools, []string{"write"}) {
 			t.Fatalf("the gate was told %+v", a)
 		}
 	}
@@ -258,7 +259,7 @@ func TestQueueAnswersARunbook(t *testing.T) {
 	asks := s.PendingAsks(func(string, string) bool { return true })
 	if len(asks) != 1 || asks[0].Request != "plan:"+hash || asks[0].RequestID != "plan:"+hash || asks[0].Tool != "exit_plan" ||
 		asks[0].Owner != "alice" || !strings.Contains(string(asks[0].Args), "rm -rf build") || !strings.Contains(asks[0].Reason, "1 cannot be undone") ||
-		asks[0].Since.IsZero() {
+		asks[0].Since.IsZero() || !slices.Equal(asks[0].StepTools, []string{"write", "bash"}) {
 		t.Fatalf("queue %+v", asks)
 	}
 	path := "/v1/sessions/" + id + "/approve"

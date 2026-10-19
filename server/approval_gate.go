@@ -49,6 +49,9 @@ type ApprovalAnswer struct {
 	By       string
 	Approved bool
 	Scope    string
+	// StepTools, for a plan's runbook (Tool exit_plan), are the tools its
+	// steps call, each once, so a rule on a tool can cover the runbook.
+	StepTools []string
 }
 
 // PendingAsk is an approval waiting in a session this process runs.
@@ -63,6 +66,8 @@ type PendingAsk struct {
 	Reason    string          `json:"reason,omitempty"`
 	Subagent  string          `json:"subagent,omitempty"`
 	Since     time.Time       `json:"since"`
+	// StepTools, for a plan's runbook, are the tools its steps call.
+	StepTools []string `json:"step_tools,omitempty"`
 }
 
 // PendingAsks lists the approvals waiting in sessions this process runs

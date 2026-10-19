@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -180,7 +181,7 @@ func pendingPlanAsk(l *liveSession, tenant, owner string) (PendingAsk, bool) {
 	}
 	return PendingAsk{SessionID: l.ID, Tenant: tenant, Owner: owner, Request: planRequest + plan.Hash,
 		RequestID: planRequest + plan.Hash, Tool: "exit_plan", Args: redactedArgs(l, planSummary(plan)),
-		Reason: planReason(plan), Since: l.Loop.PendingPlanSince()}, true
+		Reason: planReason(plan), Since: l.Loop.PendingPlanSince(), StepTools: stepTools(plan)}, true
 }
 
 // planSummary is a runbook as an approver reads it in a queue: the plan's
@@ -199,6 +200,17 @@ func planSummary(plan agent.PlanProposed) json.RawMessage {
 		steps = append(steps, line)
 	}
 	out, _ := json.Marshal(map[string]any{"plan": string(text), "steps": steps})
+	return out
+}
+
+// stepTools are the tools a runbook's steps call, each once, in order.
+func stepTools(plan agent.PlanProposed) []string {
+	var out []string
+	for _, st := range plan.Runbook.Steps {
+		if !slices.Contains(out, st.Tool) {
+			out = append(out, st.Tool)
+		}
+	}
 	return out
 }
 
@@ -230,7 +242,7 @@ func (s *Server) planAnswer(live *liveSession, plan agent.PlanProposed, by strin
 	s.mu.RUnlock()
 	return ApprovalAnswer{Tenant: tenant, SessionID: live.ID, Owner: owner, Request: planRequest + plan.Hash,
 		Tool: "exit_plan", Args: redactedArgs(live, planSummary(plan)), Reason: planReason(plan),
-		Since: live.Loop.PendingPlanSince(), By: by, Approved: approved}
+		Since: live.Loop.PendingPlanSince(), By: by, Approved: approved, StepTools: stepTools(plan)}
 }
 
 // undoable counts a runbook's steps that cannot be undone.
