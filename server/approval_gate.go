@@ -72,9 +72,10 @@ func (s *Server) PendingAsks(include func(tenant, owner string) bool) []PendingA
 	s.mu.RLock()
 	lives := make([]*liveSession, 0, len(s.running))
 	owners := make([]string, 0, len(s.running))
+	tenants := make([]string, 0, len(s.running))
 	for _, l := range s.running {
 		if include(l.Tenant, l.User) {
-			lives, owners = append(lives, l), append(owners, l.User)
+			lives, owners, tenants = append(lives, l), append(owners, l.User), append(tenants, l.Tenant)
 		}
 	}
 	s.mu.RUnlock()
@@ -91,6 +92,10 @@ func (s *Server) PendingAsks(include func(tenant, owner string) bool) []PendingA
 		l.mu.Unlock()
 		if ask.SessionID != "" {
 			out = append(out, ask)
+		}
+		// A plan's runbook waiting between turns is one request too.
+		if plan, ok := pendingPlanAsk(l, tenants[i], owners[i]); ok {
+			out = append(out, plan)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Since.Before(out[j].Since) })

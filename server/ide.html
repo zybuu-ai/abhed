@@ -2472,7 +2472,7 @@ function render(ev){
   case 'answer.verdict': drawVerdict(p); break;
   // A plan from plan mode, with its runbook, is answered here once; the record settles it.
   case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
-  case 'plan.decided': settleAsk('plan', p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') + (p.plan_hash ? ' · runbook ' + p.plan_hash.slice(0, 12) : '') : 'keep planning'); break;
+  case 'plan.decided': settleAsk('plan', (p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') + (p.plan_hash ? ' · runbook ' + p.plan_hash.slice(0, 12) : '') : 'keep planning') + (p.by ? ' · by ' + visible(p.by) : '')); break;
   case 'plan.step': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why', visible('runbook step ' + p.step + ' of ' + p.of + ' · plan ' + String(p.plan_hash || '').slice(0, 12) + byWhom(p)))); break; }
   // What the supervisor told the model, under the call it refused; a re-plan note in the transcript.
   case 'supervisor.correction': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why sup', visible(p.text || ''))); break; }

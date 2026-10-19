@@ -186,7 +186,8 @@ All notable changes to Abhed are recorded here. The format follows
   apply; an ask rule of the managed configuration or of an edition's policy
   layer, and a command too tangled to read in full, still ask. Steps that
   cannot be undone are confirmed a second time, an edition's approval gate
-  decides a runbook as one answer, and a new plan, a rewind or a continued
+  decides a runbook as one answer, listed in the approval queue as
+  `plan:<hash>`, and a new plan, a rewind or a continued
   session lets the runbook go
   ([Runbooks](docs/guide/28-runbooks.md)).
 - The plan card lists a runbook's steps in the CLI, the workbench, the
