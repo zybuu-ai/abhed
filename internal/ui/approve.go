@@ -287,7 +287,7 @@ func (a *Approver) preview(tool string, raw json.RawMessage) string {
 		}
 		return line
 
-	case "ssh", "web_fetch", "task", "k8s_apply":
+	case "ssh", "ssh_put", "ssh_get", "web_fetch", "task", "k8s_apply":
 		head, body := callPreview(tool, m)
 		var b strings.Builder
 		fmt.Fprintf(&b, "  %s", s.Dim(head))
@@ -322,6 +322,17 @@ func callPreview(tool string, m map[string]any) (string, []string) {
 	switch tool {
 	case "ssh":
 		head = VisibleLine(str("host")) + " $ " + VisibleLine(str("command"))
+		if s := str("stdin_secret"); s != "" {
+			body = []string{"stdin: stored secret " + s}
+		}
+	case "ssh_put":
+		from := "file " + str("file")
+		if s := str("secret"); s != "" {
+			from = "stored secret " + s
+		}
+		head = VisibleLine(str("host")+":"+str("remote_path")) + " ← " + VisibleLine(from)
+	case "ssh_get":
+		head = VisibleLine(str("host")+":"+str("remote_path")) + " → " + VisibleLine(str("file"))
 	case "web_fetch":
 		head = VisibleLine(str("url"))
 		if method := str("method"); method != "" {
@@ -369,6 +380,9 @@ func k8sHead(m map[string]any, str func(string) string) string {
 	}
 	if r, ok := m["replicas"].(float64); ok {
 		parts = append(parts, fmt.Sprintf("replicas %v", r))
+	}
+	if r, ok := m["revision"].(float64); ok && action == "rollback" {
+		parts = append(parts, fmt.Sprintf("revision %v", r))
 	}
 	return strings.Join(parts, " · ")
 }
