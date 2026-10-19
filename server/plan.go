@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -193,7 +194,8 @@ func planSummary(plan agent.PlanProposed) json.RawMessage {
 	}
 	var steps []string
 	for _, st := range plan.Runbook.Steps {
-		line := fmt.Sprintf("%d. %s %s %s", st.Index, st.Tool, st.Target, stepWhat(st))
+		line := strings.Join(slices.DeleteFunc([]string{fmt.Sprintf("%d.", st.Index), st.Tool, st.Target, stepWhat(st)},
+			func(s string) bool { return s == "" }), " ")
 		if st.Destructive != "" {
 			line += " (no undo: " + st.Destructive + ")"
 		}
