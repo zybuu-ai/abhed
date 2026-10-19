@@ -59,8 +59,9 @@ default: an untrusted workspace cannot turn labels off.
 ## How each statement is checked
 
 The answer is split into statements: one per sentence, list item or table
-row. Code blocks, headings, questions and courtesies ("let me know if…") are
-left out, and at most 40 statements are checked. From each statement Abhed
+row. Code blocks, headings, questions, courtesies ("let me know if…"), advice
+("run `make test` to confirm") and stated intentions ("I'll update the docs")
+are left out, and at most 40 statements are checked. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
 names and addresses, versions, dates, numbers, and a number with the word it
 counts (`12 tests`, `replicas: 3`). Then:
