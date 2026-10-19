@@ -53,8 +53,10 @@ sockets. Outside it stay `ssh`, the `k8s_*` tools, remote RAG, a stdio server's 
 requests system services make on a command's or server's behalf: `trustd` on macOS
 fetches a certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a resolver
 reached over a unix socket left visible looks names up (§5, §6,
-[Network policy](../guide/21-network-policy.md)). L5 is not built: nothing watches the
-action stream for anomalies, and the monitor is not turned on.
+[Network policy](../guide/21-network-policy.md)). L5 is partly built: the supervisor
+reviews each call after policy and may only tighten the decision (on by default, with a
+deterministic rules judge; [The supervisor](../guide/04-permissions.md#the-supervisor)),
+but nothing watches the action stream as a whole for anomalies.
 
 The key design decision is **L2**: policy never asks "does this look like a legitimate
 request?" It asks "is this action permitted for this session, regardless of why the model

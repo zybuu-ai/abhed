@@ -56,6 +56,7 @@ configuration](#trusting-the-workspace-configuration).
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
 | `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
+| `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
 | `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
 ## Context
