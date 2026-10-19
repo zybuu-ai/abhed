@@ -241,8 +241,8 @@ boundary, and the consequences are worth stating plainly:
 
 `k8s_get` is the sharp edge: in an unattended or `auto` deployment, an injected
 instruction in untrusted content can drive it to read and to reach the network with no
-sandbox boundary in the way. A Secret's values are masked to their length and sha256
-before anything reaches the model, but its keys and metadata are read. Argument-scoped
+sandbox boundary in the way. A Secret's values are masked to their length and a keyed
+fingerprint before anything reaches the model, but its keys and metadata are read. Argument-scoped
 policy rules (`deny k8s_get(secrets*)`) are the control that applies, and they work — but
 whole-tool policy is otherwise the only thing mediating these tools.
 

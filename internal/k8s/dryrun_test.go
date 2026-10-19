@@ -224,7 +224,8 @@ func TestSecretDiffShowsNoValues(t *testing.T) {
 		t.Fatalf("asked %d times", len(ap.seen))
 	}
 	why := ap.seen[0]
-	if !strings.Contains(why, "data.tls.key: \"[withheld: 7 bytes, sha256 ") || !strings.Contains(why, "+ data.tls.crt") {
+	if !strings.Contains(why, "data.tls.key: \"[withheld: 7 bytes, fingerprint ") || !strings.Contains(why, "+ data.tls.crt") ||
+		strings.Contains(why, "sha256") {
 		t.Errorf("approval %q", why)
 	}
 	for _, leak := range []string{"T0xELUtFWQ", "OLD-KEY", "Q1JU"} {

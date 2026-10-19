@@ -134,7 +134,8 @@ returns a Deployment to an earlier revision, and `k8s_get` with
 `wait_seconds` waits for a rollout. `secret_from` builds a Secret from
 stored secrets, each under its own `secret(NAME)` rule, and workspace
 files, so a TLS key never passes through the model. `k8s_get` shows a
-Secret's keys with each value's length and sha256, never the value.
+Secret's keys with each value's length and a fingerprint that compares
+only while that Abhed runs, never the value or its plain hash.
 `ssh_connect` sends a password only to a host whose key is already in
 `known_hosts`. `ssh` takes `stdin_secret`, a stored secret's NAME, to give a
 remote command a password or key on stdin, and `ssh_put` sends a workspace

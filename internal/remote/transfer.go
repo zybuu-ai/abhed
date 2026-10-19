@@ -20,7 +20,8 @@ import (
 // comes from a workspace file or a stored secret named by reference, so a
 // certificate's key reaches the host without passing through the model; what
 // is fetched lands in the workspace. The approval and the record keep the
-// paths, the size and the sha256, never the content.
+// paths, the size and a file's sha256 (a stored secret's keyed
+// fingerprint), never the content.
 
 // DefaultTransferMax is how many bytes one transfer may carry unless the
 // operator sets ssh.transfer_max_mb.
@@ -250,7 +251,7 @@ func (t PutTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 
 // Target names the account and address and where the content comes from.
 // It reads nothing: it is shown and recorded for a denied call too, and
-// the result gives the size and sha256 of what was sent.
+// the result gives the size and sha256 (or fingerprint) of what was sent.
 func (t PutTool) Target(sess *tools.Session, raw json.RawMessage) string {
 	var a putArgs
 	if json.Unmarshal(raw, &a) != nil {
@@ -293,8 +294,13 @@ func (t PutTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessa
 	if err := h.Put(ctx, a.RemotePath, data, mode); err != nil {
 		return errf("%v", err)
 	}
-	return tools.Result{Content: fmt.Sprintf("Wrote %s on %s@%s from %s: %d bytes, sha256 %s, mode %04o.",
-		a.RemotePath, h.User(), h.Name(), what, len(data), digest(data), mode)}
+	// A stored secret is described by a keyed fingerprint, never a plain hash.
+	sum := "sha256 " + digest(data)
+	if a.Secret != "" {
+		sum = "fingerprint " + secrets.Fingerprint(data) + ", comparable only while this Abhed runs"
+	}
+	return tools.Result{Content: fmt.Sprintf("Wrote %s on %s@%s from %s: %d bytes, %s, mode %04o.",
+		a.RemotePath, h.User(), h.Name(), what, len(data), sum, mode)}
 }
 
 // ---------------------------------------------------------------- get

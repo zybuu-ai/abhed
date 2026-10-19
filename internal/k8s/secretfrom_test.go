@@ -12,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -73,10 +74,14 @@ func TestSecretFromBuildsTheSecretWithoutTheModel(t *testing.T) {
 	why := ap.seen[0]
 	for _, want := range []string{"builds Secret site-tls (kubernetes.io/tls) with tls.crt from file ",
 		"tls.key from stored secret TLS_KEY", "dry run: creates Secret prod/site-tls",
-		"[withheld: " + itoa(len(tlsKey)) + " bytes, sha256 " + sha(tlsKey)} {
+		"[withheld: " + itoa(len(tlsKey)) + " bytes, fingerprint " + secrets.Fingerprint([]byte(tlsKey)),
+		"[" + itoa(len(tlsCrt)) + " bytes, sha256 " + sha(tlsCrt) + "]"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("approval %q lacks %q", why, want)
 		}
+	}
+	if strings.Contains(why, sha(tlsKey)) {
+		t.Errorf("approval %q holds the key's plain sha256", why)
 	}
 	keyB64 := base64.StdEncoding.EncodeToString([]byte(tlsKey))
 	for _, ev := range evs {
