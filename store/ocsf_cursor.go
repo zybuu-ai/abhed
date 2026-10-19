@@ -201,7 +201,7 @@ func (p *Postgres) CommitEnd(ctx context.Context) (CommitPos, error) {
 	// The last row with a transaction, by the same index ScanCommitted reads;
 	// with none, the last from before schema version 12.
 	err := p.pool.QueryRow(ctx, `
-		SELECT commit_tx::text, created_at, session_id, seq FROM events
+		SELECT commit_tx::text AS tx, created_at, session_id, seq FROM events
 		WHERE commit_tx IS NOT NULL AND commit_tx < pg_snapshot_xmin(pg_current_snapshot())
 		ORDER BY commit_tx DESC, created_at DESC, session_id DESC, seq DESC
 		LIMIT 1`).Scan(&tx, &pos.At, &pos.Session, &pos.Seq)
