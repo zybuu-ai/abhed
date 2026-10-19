@@ -250,7 +250,7 @@ func TestKnowledgeAndStatements(t *testing.T) {
 }
 
 func TestSplitClaims(t *testing.T) {
-	text := "Here is what I found:\n\n- The service listens on port 8080.\n- 3 replicas are configured. They use v1.2.8.\n\n```\nnot a claim 42\n```\nWould you like me to change it?\nLet me know if you need more."
+	text := "Here is what I found:\n\n- The service listens on port 8080.\n- 3 replicas are configured. They use v1.2.8.\n\n```\nnot a claim 42\n```\nRun `go test ./...` to confirm. I'll update the docs next.\nWould you like me to change it?\nLet me know if you need more."
 	got := splitClaims(text)
 	want := []string{"The service listens on port 8080.", "3 replicas are configured.", "They use v1.2.8."}
 	if strings.Join(got, "|") != strings.Join(want, "|") {

@@ -431,12 +431,16 @@ func sentences(t string) []string {
 	return out
 }
 
-var courtesyRe = regexp.MustCompile(`^(let me know|hope this helps|if you (?:want|need|like|'d like)|would you like|feel free|happy to|here(?:'s| is| are) (?:the|a|what)|in summary|summary:|note:)`)
+var (
+	courtesyRe = regexp.MustCompile(`^(let me know|hope this helps|if you (?:want|need|like|'d like)|would you like|feel free|happy to|here(?:'s| is| are) (?:the|a|what)|in summary|summary:|note:)`)
+	// Advice and intentions say what to do or what will be done, not what is.
+	adviceRe = regexp.MustCompile(`^(?:please |you (?:can|could|may|might|should|will need to)\b|i(?:'ll| will| can| could| would| suggest| recommend)\b|we(?:'ll| will| can| could| should)\b|consider|try|run|use|check|add|remove|make sure|ensure|install|set|open|restart|create|edit|replace|verify|review|apply|enable|disable|configure|deploy|commit|push|keep|avoid|see|look)\b`)
+)
 
 func keepClaim(s string) bool {
 	low := strings.ToLower(strings.TrimSpace(s))
 	if strings.HasSuffix(low, "?") || strings.HasSuffix(low, ":") || len(strings.Fields(low)) < 3 {
 		return false
 	}
-	return !courtesyRe.MatchString(low)
+	return !courtesyRe.MatchString(low) && !adviceRe.MatchString(low)
 }
