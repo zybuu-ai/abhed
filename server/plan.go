@@ -37,6 +37,9 @@ func (s *Server) decidePlan(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Held as a message holds it, so no turn starts while the mode changes.
+	live.claimMu.Lock()
+	defer live.claimMu.Unlock()
 	live.mu.Lock()
 	busy := live.ran != nil
 	live.mu.Unlock()

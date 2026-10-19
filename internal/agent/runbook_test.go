@@ -325,3 +325,25 @@ func TestRunbookSubagentCallAsks(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// A hook on asks still judges an approved step, and its refusal holds.
+func TestRunbookHookStillRefuses(t *testing.T) {
+	r := runbookHarness(t, policy.ModeDefault, []tools.RunbookStep{sshStep("web1", "systemctl reload nginx")}, []scriptedTurn{
+		{calls: []model.ToolCall{sshCall("a", "web1", "systemctl reload nginx")}},
+		{text: "done"},
+	})
+	r.l.Hooks = &fakeHooks{refuseCall: "reload"}
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := r.store.Events("sess1")
+	if a := approvals(t, evs)["a"]; a["event"] != string(EvActionDenied) || a["step"] != "hook" {
+		t.Fatalf("recorded %v", a)
+	}
+	if len(*r.ran) != 0 {
+		t.Fatalf("ran %v", *r.ran)
+	}
+	if _, done, _ := r.l.BoundRunbook(); done[0] {
+		t.Fatal("a refused step was marked run")
+	}
+}
