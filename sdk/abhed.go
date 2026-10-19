@@ -786,8 +786,6 @@ func (a *Agent) Fork(throughSeq int64) error {
 	return err
 }
 
-// startRun counts a run in progress, after any fork under way, and returns
-// what ends it.
 // withRunbook adds Options.Runbook's steps to the first run's prompt, once,
 // whichever entry point starts it.
 func (a *Agent) withRunbook(prompt string) string {
@@ -801,6 +799,8 @@ func (a *Agent) withRunbook(prompt string) string {
 	return strings.TrimSpace(prompt + "\n\n" + note)
 }
 
+// startRun counts a run in progress, after any fork under way, and returns
+// what ends it.
 func (a *Agent) startRun() func() {
 	a.forkMu.Lock()
 	a.running++
