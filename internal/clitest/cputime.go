@@ -76,9 +76,8 @@ func parsePSTime(s string) (time.Duration, error) {
 	return total + time.Duration(days)*24*time.Hour, nil
 }
 
-// Loaded reports whether the machine's one-minute load average is at or
-// over its CPU count, when a wall-clock budget says more about the machine
-// than about the binary; false when the load cannot be read.
+// Loaded is the machine's one-minute load average, and whether it is at or
+// over its CPU count; 0 and false when it cannot be read.
 func Loaded() (load float64, busy bool) {
 	var raw string
 	if runtime.GOOS == "linux" {

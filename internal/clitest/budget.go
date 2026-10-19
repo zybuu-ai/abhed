@@ -17,11 +17,11 @@ var Budgets = struct {
 	StreamOverheadPerSec int           // bytes beyond the text while streaming
 	FirstToken           time.Duration // stub delta to screen, first token
 	DeltaSteady          time.Duration // stub delta to screen, steady state
-	StartupWarm          time.Duration // spawn to prompt ready, wall clock, held on an unloaded machine
-	StartupCold          time.Duration // first run in a fresh HOME, wall clock, likewise
+	StartupWarm          time.Duration // spawn to prompt ready, wall clock on an unloaded machine; reported
+	StartupCold          time.Duration // first run in a fresh HOME, likewise
 	StartupWarmCPU       time.Duration // the binary's CPU time when its prompt appears
 	StartupColdCPU       time.Duration // the same, first run in a fresh HOME
-	StartupWallCeiling   time.Duration // wall clock to the prompt, held however loaded the machine
+	StartupWallCeiling   time.Duration // wall clock to the prompt, held however loaded the machine; under the slow engine's 3 s
 	ApprovalDrawn        time.Duration
 	PasteBytes           int // a raw 25-line paste
 }{
@@ -35,11 +35,11 @@ var Budgets = struct {
 	StartupCold:          400 * time.Millisecond,
 	// 1.2.8 and 1.2.9 both reach the prompt in about 57 ms of CPU (cold
 	// runs 50-80 ms): about twice that fails a start that does twice the
-	// work, while 10 ms sampling and a busy machine do not. The wall-clock
-	// budgets above still hold where the load allows; the ceiling always.
+	// work, while 10 ms sampling and a busy machine do not. The wall clock
+	// is held to the ceiling, which a start waiting on the slow engine breaks.
 	StartupWarmCPU:     120 * time.Millisecond,
 	StartupColdCPU:     200 * time.Millisecond,
-	StartupWallCeiling: 2 * time.Second,
+	StartupWallCeiling: time.Second,
 	ApprovalDrawn:      50 * time.Millisecond,
 	PasteBytes:         20 << 10,
 }
