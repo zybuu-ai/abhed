@@ -721,10 +721,12 @@ func (a *Agent) Queued() int { return len(a.loop.Queued()) }
 // returns an *EndedError with Reason prompt_refused.
 func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 	defer a.startRun()()
-	if note, _ := a.withRunbook(""); note != "" {
+	note, giveBack := a.withRunbook("")
+	if note != "" {
 		a.loop.Queue(note)
 	}
 	reason, err := a.loop.RunQueued(ctx)
+	giveBack(reason, err)
 	if err != nil {
 		return "", err
 	}
@@ -803,7 +805,7 @@ func (a *Agent) withRunbook(prompt string) (string, func(agent.TerminalReason, e
 	}
 	return strings.TrimSpace(prompt + "\n\n" + note), func(reason agent.TerminalReason, err error) {
 		refused := reason == agent.TermPromptRefused || a.loop.RefusedPrompt() != ""
-		if !refused && (err == nil || a.sent(note)) {
+		if refused && a.queued(note) || !refused && (err == nil || a.sent(note)) {
 			return
 		}
 		a.forkMu.Lock()
@@ -814,8 +816,22 @@ func (a *Agent) withRunbook(prompt string) (string, func(agent.TerminalReason, e
 	}
 }
 
-// sent reports whether a person's message in the conversation carries text.
+// queued reports whether a message still queued for the next run carries text.
+func (a *Agent) queued(text string) bool {
+	for _, q := range a.loop.Queued() {
+		if strings.Contains(q.Text, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// sent reports whether a person's message in the conversation carries
+// text, or one still queued for the next run does.
 func (a *Agent) sent(text string) bool {
+	if a.queued(text) {
+		return true
+	}
 	for _, m := range a.loop.Messages() {
 		if m.Role == model.RoleUser && strings.Contains(m.Content, text) {
 			return true

@@ -36,3 +36,18 @@ func TestRunbookNoteOutlivesARefusedPrompt(t *testing.T) {
 		t.Fatalf("the steps were lost with the refused prompt: %q", got)
 	}
 }
+
+// RunQueued gives the steps back too when the hook refuses the queued run.
+func TestRunbookNoteOutlivesARefusedQueuedRun(t *testing.T) {
+	a := forwardingAgent(t, nil)
+	a.runbookNote = "the steps"
+	a.loop.Hooks = refuseAll{}
+	_, err := a.RunQueued(context.Background())
+	var ended *EndedError
+	if !errors.As(err, &ended) || ended.Reason != agent.TermPromptRefused {
+		t.Fatalf("RunQueued: %v", err)
+	}
+	if got, _ := a.withRunbook("again"); !strings.Contains(got, "the steps") {
+		t.Fatalf("the steps were lost with the refused queued run: %q", got)
+	}
+}
