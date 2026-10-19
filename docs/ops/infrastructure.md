@@ -515,9 +515,11 @@ approval names the account, address, path, source and mode, and the result
 gives the size and sha256 of what moved (for a stored secret, its
 fingerprint instead, as for Secrets above); neither, nor the record, holds
 the content. A file over `transfer_max_mb` (16 MiB by default, at most
-1024) is refused before it is read or sent, and a call that cannot succeed
-(an unknown host, a relative or unclean path, a source that cannot be read)
-is refused before anyone is asked. A workspace configuration can only turn
+1024) is refused before it is read or sent. A transfer ends after five
+minutes, or when the turn is stopped, whatever the host does: a host that
+stops answering has its SFTP session, then its connection, closed. A call
+that cannot succeed (an unknown host, a relative or unclean path, a source
+that cannot be read) is refused before anyone is asked. A workspace configuration can only turn
 transfers off or lower the bound.
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
