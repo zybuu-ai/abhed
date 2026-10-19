@@ -99,7 +99,7 @@ func callEvents(command string, obs agent.Observation, between ...agent.Event) [
 		Args: json.RawMessage(fmt.Sprintf(`{"command":%q}`, command))})
 	r.add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": "c1", "step": "mode", "by": "policy"})
 	for _, e := range between {
-		r.add(e.Type, e.Actor, e.Trust, json.RawMessage(e.Payload))
+		r.add(e.Type, e.Actor, e.Trust, e.Payload)
 	}
 	obs.CallID, obs.Tool = "c1", "bash"
 	r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, obs)
