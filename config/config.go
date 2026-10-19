@@ -1086,6 +1086,8 @@ type ServerConfig struct {
 	// workspace and sandbox, as before 1.2.8. Unset, a server with more than
 	// one account gives each session a sandbox of its own.
 	SharedSessions bool `json:"shared_sessions,omitempty"`
+	// Metrics serves Prometheus metrics; off unless enabled. See metrics.go.
+	Metrics ServerMetricsConfig `json:"metrics,omitempty"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -1867,6 +1869,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
 	}
 	if err := c.validateTLS(); err != nil {
+		return err
+	}
+	if err := c.Server.Metrics.validate(); err != nil {
 		return err
 	}
 	if err := c.validateCLILogin(); err != nil {
