@@ -1206,13 +1206,17 @@ outside any session, and anything an exporter outside this process does, are
 not counted here.
 
 Every API request that changes something (any method but GET, HEAD and
-OPTIONS) is written to the control-plane audit record with its principal,
+OPTIONS) and reaches its route is written to the control-plane audit record
+with its principal,
 before it runs and again with its outcome: its action is `api:` and the
 route pattern, and its detail the method, the route, the tenant, the
 caller's address and what the route's wildcards took, never the body or the
 query. A request whose first event cannot be written is refused with 503
-and nothing is changed. Sign-in routes record `anonymous`, since nobody is
-signed in yet. The record is the tenant's `sandbox_audit` table on Postgres,
+and nothing is changed. What is audited is what got past sign-in: a request
+turned away before it reaches a route (refused sign-in, a cross-origin
+request, the rate limit, a required group or password change) changes
+nothing and is in the request log, not the audit. Sign-in routes record
+`anonymous`, since nobody is signed in yet. The record is the tenant's `sandbox_audit` table on Postgres,
 chained per tenant beside the sandbox operations, or
 `<records>/<tenant>/audit/api.jsonl` (under `record.dir`, or
 `~/.abhed/records`) without it, chained line by line the same way.
@@ -1225,8 +1229,13 @@ with JSON names what it created, from the answer's `id`, `session_id` or
 session or sandbox can be found by its id; nothing else of the answer is
 kept.
 
-Two routes are left out: the two that only open and close a channel of the
-workbench's read-only stream. Two more get one event a request, the
+Left out: the two routes that only open and close a channel of the
+workbench's read-only stream, and requests to a sandbox's exposed service
+(under `/v1/exposed/`), which are traffic to a person's own app rather than a
+change to the control plane; the exposure itself is made and removed through
+audited sandbox routes, and the app's paths and tokens are kept out of the
+audit. The metrics count those requests by the prefix alone, and a request's
+method is counted only if it is a standard HTTP method (`other` if not). Two more get one event a request, the
 `requested` one, and no outcome, since a client calls them every few keys:
 a terminal's input (`POST /v1/sessions/{id}/pty/{pty}/input`) and a message
 to a language server (`POST /v1/sessions/{id}/lsp/{lsp}`). A refused write

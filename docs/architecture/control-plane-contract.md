@@ -778,8 +778,8 @@ plane on, the reconciler runs and the store answers; else `503`. It names
 its checks with `ok` or `failed` and nothing more. `/v1/health` keeps its
 shape. `abhed serve -check` runs the start-up checks without serving.
 
-**API audit and metrics.** Every mutating API request, on these routes and
-every other, is written to the same audit record with its principal: one
+**API audit and metrics.** Every mutating API request that reaches a route,
+on these routes and every other but an exposed service's traffic, is written to the same audit record with its principal: one
 event with outcome `requested` before it runs, refused with `503` when that
 cannot be written, and one with `ok` or `failed` (and the status as `code`)
 after it. Its `action` is `api:` and the route pattern, its `sandbox_id`
