@@ -189,6 +189,11 @@ is API Activity:
 - its place in its chain under `unmapped.record`: `chain`
   (`postgres/sandbox_audit`, `sqlite/sandbox_audit` or `local/audit`),
   `pos`, `prev` and `hash`, the same links `abhed record audit` checks.
+- `metadata.uid`, the same each time the row is read, for a reader that
+  removes repeats: `<chain>/<tenant>/<pos>` (as
+  `postgres/sandbox_audit/acme/42`), or `controlplane/<tenant>/seq/<seq>`
+  for a row from before the chain. A SQLite chain is one server's own
+  database, so its ids are unique within that server.
 
 `GET /v1/sandboxes/{id}:events?format=ocsf` gives a page this way, and
 `abhed record audit -format ocsf [-ocsf-version V]` prints every row of each

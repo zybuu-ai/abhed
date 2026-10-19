@@ -363,7 +363,8 @@ All notable changes to Abhed are recorded here. The format follows
   control-plane record as OCSF API Activity, and `abhed record audit -format
   ocsf` every row of the control plane's audit chains: the principal as the
   actor, an API request's method, route, path, caller and created ids, and
-  each row's chain, position and links.
+  each row's chain, position and links, with a stable `metadata.uid` from
+  its place in the chain.
 
 ### Changed
 
