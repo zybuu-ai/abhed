@@ -1199,8 +1199,40 @@ signed in yet. The record is the tenant's `sandbox_audit` table on Postgres,
 chained per tenant beside the sandbox operations, or
 `<records>/<tenant>/audit/api.jsonl` (under `record.dir`, or
 `~/.abhed/records`) without it, chained line by line the same way.
-`abhed record audit` checks the chain. The two routes that only open and
-close a channel of the workbench's read-only stream are left out.
+`abhed record audit` checks the chain, and with the control plane on
+SQLite also the control plane's own record (its sandbox operations and the
+reconciler's events), chained the same way since this release; rows written
+before are counted as unchained. The outcome event of a POST that answers
+with JSON names what it created, from the answer's `id`, `session_id` or
+`name` field when that is a short identifier (`created.id`, ...), so a new
+session or sandbox can be found by its id; nothing else of the answer is
+kept.
+
+Two routes are left out: the two that only open and close a channel of the
+workbench's read-only stream. Two more get one event a request, the
+`requested` one, and no outcome, since a client calls them every few keys:
+a terminal's input (`POST /v1/sessions/{id}/pty/{pty}/input`) and a message
+to a language server (`POST /v1/sessions/{id}/lsp/{lsp}`). A refused write
+still stops them. What was typed is not in the audit: a shell's lines are in
+the session record as `terminal.input`, by the person; what a program reads
+is recorded nowhere, since it may be a password typed with echo off.
+
+What the audit costs on Postgres, measured with the opt-in
+`ABHED_AUDIT_LOAD=1 go test ./store -run TestAuditWriteLoad` against
+Postgres 16 in a podman VM on an Apple M3 Pro laptop, the server's default
+pool of 10 connections, one tenant, 1,000 writes per client:
+
+| Concurrent writers | Writes per second | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| 1 | 2,871 | 0.33 ms | 0.39 ms | 0.96 ms | 1.6 ms |
+| 5 | 4,451 | 1.05 ms | 1.5 ms | 2.1 ms | 9.4 ms |
+| 20 | 4,211 | 4.5 ms | 5.9 ms | 10.4 ms | 49 ms |
+
+A tenant's writes share one chain lock, so they do not get faster past a few
+writers: at 20 a write waits about 4.5 ms, and a request, which writes
+twice, about 9 ms more than it did. That is one machine with no network
+between server and database, not a promise; a database across a network
+adds its round trip to each write.
 
 ## Accounts
 
