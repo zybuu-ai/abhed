@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -75,6 +76,8 @@ type checkEnv struct {
 	// mutates reports whether a recorded call could change state; nil
 	// treats every call but the known readers as one that could.
 	mutates func(tool string, args json.RawMessage) bool
+	// child reads a subagent's own record by its session; nil reads none.
+	child func(session string) ([]Event, error)
 	// readFile reads a file as it is now; nil checks no file:line cite.
 	readFile func(path string) ([]byte, error)
 	// workDir resolves a relative path.
@@ -83,7 +86,12 @@ type checkEnv struct {
 
 // obsRec is one tool result in the record, with the call that produced it.
 type obsRec struct {
-	seq     int64
+	// seq is the parent record's entry a claim cites it by: its own, or for
+	// a subagent's result the parent's subagent.returned.
+	seq int64
+	// pos orders it among every call the checks read, a subagent's included.
+	pos     float64
+	child   string // the subagent session whose record holds it, "" for this session's
 	reqSeq  int64
 	callID  string
 	tool    string
@@ -101,6 +109,7 @@ type obsRec struct {
 // mutation is a recorded call that may have changed what later output shows.
 type mutation struct {
 	seq     int64
+	pos     float64
 	tool    string
 	path    string // set for write and edit: the one file changed
 	command string
@@ -114,7 +123,9 @@ type recordIndex struct {
 	bySeq     map[int64]*obsRec // by observation seq and by request seq
 	types     map[int64]EventType
 	mutations []mutation
-	subagents bool // a subagent ran, whose own record holds its work
+	// subagents is set when a subagent ran whose own record could not be
+	// read, so its work is not in the index.
+	subagents bool
 }
 
 // readers are the built-in tools that never change anything.
@@ -123,31 +134,70 @@ var readers = map[string]bool{
 	"web_fetch": true, "web_search": true, "task_status": true, "ls": true,
 }
 
+// maxChildDepth bounds how deep subagents' records are read.
+const maxChildDepth = 3
+
 func indexRecord(env checkEnv) *recordIndex {
 	ix := &recordIndex{byCall: map[string]*obsRec{}, bySeq: map[int64]*obsRec{}, types: map[int64]EventType{}}
+	ix.add(env, env.events, "", nil, 0, map[string]bool{})
+	sort.SliceStable(ix.obs, func(i, j int) bool { return ix.obs[i].pos < ix.obs[j].pos })
+	sort.SliceStable(ix.mutations, func(i, j int) bool { return ix.mutations[i].pos < ix.mutations[j].pos })
+	return ix
+}
+
+// add indexes one record. For this session's own, at is nil and an entry's
+// place is its seq. A subagent's record is placed at the parent's entry for
+// its return (at): its calls are taken as happening just before it, in
+// their own order, and a claim cites them by that entry.
+func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int64, depth int, seen map[string]bool) {
 	type req struct {
 		a      ActionRequested
 		seq    int64
 		person bool
 	}
+	var top int64
+	for _, e := range events {
+		top = max(top, e.Seq)
+	}
+	place := func(seq int64) (int64, float64) {
+		if at == nil {
+			return seq, float64(seq)
+		}
+		return *at, float64(*at) - 1 + float64(seq)/float64(top+1)
+	}
 	reqs := map[string]req{}
-	for _, e := range Live(env.events) {
-		ix.types[e.Seq] = e.Type
+	children := map[string]int64{}
+	var order []string
+	for _, e := range Live(events) {
+		if at == nil {
+			ix.types[e.Seq] = e.Type
+		}
 		switch e.Type {
 		case EvActionRequested:
 			var a ActionRequested
 			if json.Unmarshal(e.Payload, &a) == nil {
 				reqs[a.CallID] = req{a: a, seq: e.Seq, person: e.Actor == ActorUser}
 			}
-		case EvSubagentSpawned:
-			ix.subagents = true
+		case EvSubagentSpawned, EvSubagentReturn, EvSubagentNotice:
+			var p struct {
+				Session string `json:"session"`
+			}
+			if json.Unmarshal(e.Payload, &p) != nil || p.Session == "" || p.Session == session {
+				continue
+			}
+			if _, ok := children[p.Session]; !ok {
+				order = append(order, p.Session)
+			}
+			// The latest of its entries places it: its return, once there is one.
+			children[p.Session] = e.Seq
 		case EvObservation:
 			var o Observation
 			if json.Unmarshal(e.Payload, &o) != nil || o.NotRun {
 				continue
 			}
 			r := reqs[o.CallID]
-			rec := &obsRec{seq: e.Seq, reqSeq: r.seq, callID: o.CallID, tool: o.Tool, content: o.Content,
+			seq, pos := place(e.Seq)
+			rec := &obsRec{seq: seq, pos: pos, child: session, reqSeq: r.seq, callID: o.CallID, tool: o.Tool, content: o.Content,
 				exit: o.ExitCode, isError: o.IsError, person: r.person, via: r.a.Via}
 			var args struct {
 				Command string `json:"command"`
@@ -171,7 +221,7 @@ func indexRecord(env checkEnv) *recordIndex {
 			// A refused edit changed nothing; a failed command may have.
 			fileTool := o.Tool == "write" || o.Tool == "edit"
 			if mut && !(fileTool && o.IsError) || o.OutcomeUnknown {
-				m := mutation{seq: e.Seq, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError}
+				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError}
 				if fileTool {
 					m.path = args.Path
 				}
@@ -181,14 +231,34 @@ func indexRecord(env checkEnv) *recordIndex {
 				continue
 			}
 			ix.obs = append(ix.obs, rec)
-			ix.byCall[o.CallID] = rec
-			ix.bySeq[e.Seq] = rec
-			if r.seq > 0 {
-				ix.bySeq[r.seq] = rec
+			if _, taken := ix.byCall[o.CallID]; !taken || at == nil {
+				ix.byCall[o.CallID] = rec
+			}
+			if at == nil {
+				ix.bySeq[e.Seq] = rec
+				if r.seq > 0 {
+					ix.bySeq[r.seq] = rec
+				}
 			}
 		}
 	}
-	return ix
+	// A subagent's work is in its own record, read when the checks can.
+	for _, id := range order {
+		anchor := children[id]
+		if at != nil {
+			anchor = *at
+		}
+		var evs []Event
+		if env.child != nil && depth < maxChildDepth && !seen[id] {
+			seen[id] = true
+			evs, _ = env.child(id)
+		}
+		if len(evs) == 0 {
+			ix.subagents = true
+			continue
+		}
+		ix.add(env, evs, id, &anchor, depth+1, seen)
+	}
 }
 
 // staleBy is the first later mutation that could have changed what o shows,
@@ -198,7 +268,7 @@ func indexRecord(env checkEnv) *recordIndex {
 func (ix *recordIndex) staleBy(o *obsRec) *mutation {
 	for i := range ix.mutations {
 		m := &ix.mutations[i]
-		if m.seq <= o.seq {
+		if m.pos <= o.pos {
 			continue
 		}
 		fileEdit := m.tool == "write" || m.tool == "edit"
@@ -570,7 +640,7 @@ func countedNumber(cs []countFact, n string) bool {
 // since may have failed.
 func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) finding {
 	last := ix.lastChange()
-	after := func(o *obsRec) bool { return last == nil || o.seq > last.seq }
+	after := func(o *obsRec) bool { return last == nil || o.pos > last.pos }
 	fits := func(o *obsRec) bool {
 		if o.tool != "bash" || o.exit == nil || !o.usable() {
 			return false
@@ -642,7 +712,7 @@ func (ix *recordIndex) changedPath(p string) finding {
 		}
 	}
 	if ix.subagents {
-		return finding{out: missing, why: "no change to " + p + " in this session's own calls (a subagent's record may hold it)"}
+		return finding{out: missing, why: "no change to " + p + " in this session's calls (a subagent ran whose record could not be read)"}
 	}
 	return finding{out: conflicted, why: "the record has no change to " + p + " in this session",
 		conflict: &Conflict{Excerpt: "no write, edit or command touching " + p}}

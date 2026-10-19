@@ -606,3 +606,45 @@ func TestStructuredRunPutsTheAnswerToolAway(t *testing.T) {
 		t.Fatal("the answer tool did not come back")
 	}
 }
+
+// A subagent's work is checked in its own record: its edit verifies "I
+// updated", its test run verifies the count, and a parent's change after its
+// return makes its output out of date.
+func TestClaimsAboutASubagentsWork(t *testing.T) {
+	store := NewMemStore()
+	p, kid := NewRecorder(store, "sess1", ""), NewRecorder(store, "kid", "sess1")
+	kid.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "kid"})
+	for _, c := range []struct {
+		id, tool, out string
+		args          any
+		exit          *int
+	}{
+		{"k1", "edit", "Edited /w/config.yaml", map[string]string{"path": "/w/config.yaml"}, nil},
+		{"k2", "bash", "7 tests passed", map[string]string{"command": "go test ./..."}, exit(0)},
+	} {
+		raw, _ := json.Marshal(c.args)
+		kid.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: c.id, Tool: c.tool, Args: raw})
+		kid.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: c.id, Tool: c.tool, Content: c.out, ExitCode: c.exit})
+	}
+	p.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "kid"})
+	p.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"session": "kid", "reason": "completed"})
+	evs, _ := store.Events("sess1")
+	check := func(child bool, text string) ClaimVerdict {
+		env := checkEnv{events: evs}
+		if child {
+			env.child = store.Events
+		}
+		v, _ := checkClaims(env, textClaims(text))
+		return v[0]
+	}
+	wantVerdict(t, check(true, "I updated config.yaml for the new limit."), ClaimVerified)
+	wantVerdict(t, check(true, "The suite passes: 7 tests passed."), ClaimVerified)
+	wantVerdict(t, check(true, "The suite passes: 9 tests passed."), ClaimContradicted)
+	wantVerdict(t, check(false, "I updated config.yaml for the new limit."), ClaimUnverified)
+	// The parent changes a file after the subagent returned: its test run is old.
+	raw, _ := json.Marshal(map[string]string{"path": "/w/main.go"})
+	p.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "p1", Tool: "edit", Args: raw})
+	p.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: "p1", Tool: "edit", Content: "Edited"})
+	evs, _ = store.Events("sess1")
+	wantVerdict(t, check(true, "The suite passes: 7 tests passed."), ClaimUnverified)
+}

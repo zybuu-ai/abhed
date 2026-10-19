@@ -352,6 +352,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		events = nil // checked against nothing, everything stays unverified
 	}
 	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir()}
+	env.child = l.Recorder.store.Events
 	if l.Session != nil {
 		env.readFile = l.Session.ReadFile
 	}

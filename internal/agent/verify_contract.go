@@ -87,7 +87,7 @@ func (l *Loop) requireOne(ctx context.Context, cmd string, timeoutMS int) Requir
 		last := ix.lastChange()
 		for i := len(ix.obs) - 1; i >= 0; i-- {
 			o := ix.obs[i]
-			if o.via == ContractVia && o.command == cmd && (last == nil || o.seq > last.seq) {
+			if o.via == ContractVia && o.command == cmd && (last == nil || o.pos > last.pos) {
 				if o.exit != nil && *o.exit == 0 && !o.isError {
 					return RequireResult{Command: cmd, Seq: o.seq, Exit: o.exit, OK: true, Reused: true}
 				}
