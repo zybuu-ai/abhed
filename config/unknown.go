@@ -89,16 +89,6 @@ func warnNeverAllows(w warnSink, rules []string) {
 	}
 }
 
-// warnRemoteReads warns of each ssh.read_commands entry whose wildcard lets
-// a program that can also change things run unasked.
-func warnRemoteReads(w warnSink, entries []string) {
-	for _, e := range entries {
-		if why := policy.RemoteReadWarning(e); why != "" {
-			w.emit("ssh.read_commands\x00"+e, "ssh.read_commands entry "+Printable(e)+": "+why)
-		}
-	}
-}
-
 // warnRuleFindings warns of each rule that names no tool as written. A
 // managed deny rule that misnames its tool is refused, not warned of.
 func warnRuleFindings(w warnSink, findings []RuleFinding) {

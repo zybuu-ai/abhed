@@ -114,6 +114,10 @@ r = s.recv(512); print("ANSWER", ".".join(str(b) for b in r[-4:]))`
 func TestFenceResolvesWithMusl(t *testing.T) {
 	helper := os.Getenv("ABHED_TEST_MUSL_RESOLVE")
 	if helper == "" {
+		// Where the fence's tests must all run, a missing helper is a failure.
+		if os.Getenv("ABHED_REQUIRE_FENCE") == "1" {
+			t.Fatal("ABHED_REQUIRE_FENCE=1 but ABHED_TEST_MUSL_RESOLVE names no static musl resolver helper (scripts/ci/musl-resolve.c, built with musl-gcc -static)")
+		}
 		t.Skip("set ABHED_TEST_MUSL_RESOLVE to a static musl resolver helper")
 	}
 	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Ports: []int{80}, Decision: "allow"}}})

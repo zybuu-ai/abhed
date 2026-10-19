@@ -73,20 +73,26 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- `ssh.read_commands`: commands the operator declares reads on every host,
-  each an exact command or a pattern for one simple command, such as
-  `uptime` or `systemctl status *`. A matching `ssh` call, read as bash
+- `ssh.read_commands`: commands the operator declares reads on every host.
+  An exact entry (`uptime`, `df -h`) matches only its own text
+  and may name any program but one that runs what it is given (a shell, a
+  runner such as `sudo` or `nsenter`, an interpreter, or a client such as
+  `socat`, `psql` or `sqlite3`). An entry with a wildcard is accepted only
+  for a program on a list of known reads, in a read form of it (`cat *`,
+  `systemctl status *`, `journalctl -u * -n 50`, `ip addr show *`,
+  `openssl x509 -enddate -noout -in *`), and every call it matches is held
+  to that form: `journalctl --vacuum-size`, `date -s`, `dmesg -C`,
+  `sort --compress-program`, `ip addr add` and the like are not reads,
+  whatever the pattern; any other wildcard entry is refused at load with
+  "declare the exact command instead". A matching `ssh` call, read as bash
   reads it, runs in plan mode and asks in no mode, so a plan can start by
   inspecting the fleet; a chain, pipe, substitution, redirection, a
-  destructive command, one that runs another (`sh -c`, `su -c`, `sudo`,
-  `find -exec`), one that writes a file (`tee`, `find -fprint`) and one
-  carrying a `stdin_secret` are never reads. An entry with a wildcard
-  after a shell, runner or interpreter is refused at load, and one after a
-  program that can also change things (`systemctl *`, `journalctl *`,
-  `openssl x509 *`) loads with a warning. Deny and ask rules come first. Only
-  a trusted configuration file sets it; a managed file that sets it
-  replaces the list, and one that sets the permissions without it sets the
-  person's entries aside. The `ssh` tool's description names the entries.
+  destructive command, one that runs another (`sh -c`, `su -c`, `sudo`),
+  one that writes a file (`tee`, `find -fprint`) and one carrying a
+  `stdin_secret` are never reads. Deny and ask rules come first. Only a
+  trusted configuration file sets it; a managed file that sets it replaces
+  the list, and one that sets the permissions without it sets the person's
+  entries aside. The `ssh` tool's description names the entries.
 - The supervisor, `monitor` in the configuration: it reviews each call after
   policy and may only make the decision stricter. The rules judge checks for
   destructive drift, programs that are not there, targets nothing showed, a

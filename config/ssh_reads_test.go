@@ -52,24 +52,22 @@ func TestSSHReadCommands(t *testing.T) {
 	}
 }
 
-// An entry whose wildcard follows a program that can also change things is
-// loaded with a warning; an exact one, or a plain reader's pattern, is not.
-func TestSSHReadCommandsWarnOfWriters(t *testing.T) {
-	_, ws := trustHome(t, `{}`, "")
-	var warned []string
-	body := []byte(`{"ssh":{"read_commands":["systemctl *","journalctl *","openssl x509 *","find /var/log *","uptime","cat /etc/*","systemctl status nginx","systemctl status *"]}}`)
-	if _, err := LoadWith(ws, LoadOptions{Settings: body, SettingsName: "ci.json", Warn: func(s string) { warned = append(warned, s) }}); err != nil {
-		t.Fatal(err)
-	}
-	all := strings.Join(warned, "\n")
-	for _, w := range []string{"entry systemctl *:", "entry journalctl *:", "entry openssl x509 *:", "entry find /var/log *:"} {
-		if !strings.Contains(all, w) {
-			t.Errorf("no warning for %s:\n%s", w, all)
+// A wildcard entry for a program off the read-only list, or in a form of a
+// listed one that changes the host, stops the load and says to declare the
+// exact command.
+func TestSSHReadCommandsWildcardsOnlyForKnownReads(t *testing.T) {
+	for _, bad := range []string{`["systemctl *"]`, `["socat *"]`, `["find /var/log *"]`, `["journalctl --vacuum-size=*"]`} {
+		_, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"ssh":{"read_commands":` + bad + `}}`), SettingsName: "bad.json"})
+		if err == nil || !strings.Contains(err.Error(), "declare the exact command") {
+			t.Errorf("%s loaded: %v", bad, err)
 		}
 	}
-	for _, q := range []string{"entry uptime:", "entry cat /etc/*:", "entry systemctl status nginx:", "entry systemctl status *:"} {
-		if strings.Contains(all, q) {
-			t.Errorf("a warning for %s:\n%s", q, all)
-		}
+	good := []byte(`{"ssh":{"read_commands":["systemctl status *","journalctl -u * -n 50","nginx -V"]}}`)
+	if _, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: good, SettingsName: "ok.json"}); err == nil || !strings.Contains(err.Error(), "nginx") {
+		t.Errorf("an exact entry for nginx, which loads modules a config names, loaded: %v", err)
+	}
+	good = []byte(`{"ssh":{"read_commands":["systemctl status *","journalctl -u * -n 50","uname -a"]}}`)
+	if _, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: good, SettingsName: "ok.json"}); err != nil {
+		t.Errorf("read entries did not load: %v", err)
 	}
 }

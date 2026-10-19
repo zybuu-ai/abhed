@@ -27,7 +27,8 @@ import (
 // operator sets ssh.transfer_max_mb.
 const DefaultTransferMax = 16 << 20
 
-// transferTimeout bounds one transfer, however the host behaves.
+// transferTimeout bounds one transfer, however the host behaves. A variable
+// so tests can shorten it; those tests must not run in parallel.
 var transferTimeout = 5 * time.Minute
 
 func init() {
