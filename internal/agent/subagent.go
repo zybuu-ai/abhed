@@ -683,6 +683,9 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
+			// The checkpoint mode carries over, so "required" refuses here
+			// too: nothing keeps a worktree's bash changes for undo.
+			session.BashCheckpoints = f.Session.BashCheckpoints
 			// The editor's files in the worktree are as out of reach as the parent's.
 			session.Guard = f.Session.Guard
 			// Still the parent's conversation: a login it made carries over.

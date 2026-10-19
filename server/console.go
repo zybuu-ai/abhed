@@ -1804,8 +1804,6 @@ function shortPath(p){
 
 function clip(s, n){ return s.length > n ? s.slice(0,n) + '\n… ' + (s.length-n) + ' more characters' : s; }
 
-// lastStreamedBubble finds the reply bubble the deltas were writing into, so
-// agent.message can reconcile with it even when the stream reference is gone.
 // drawVerdict shows the checks on an answer under it, as the workbench does.
 // A contradiction is flagged on the reply itself too: it streamed before it
 // was checked. Claims and excerpts are the model's and the tools' text.
@@ -1844,6 +1842,8 @@ function drawVerdict(p){
   (turnEl || $('tx')).appendChild(box);
 }
 
+// lastStreamedBubble finds the reply bubble the deltas were writing into, so
+// agent.message can reconcile with it even when the stream reference is gone.
 function lastStreamedBubble(){
   const scope = turnEl || $('tx');
   if(!scope) return null;

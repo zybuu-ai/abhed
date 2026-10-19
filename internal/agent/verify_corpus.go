@@ -72,6 +72,19 @@ var (
 	stepSedI     = CorpusStep{ID: "s1", Tool: "bash", Args: map[string]any{"command": "sed -i 's/debug: false/debug: true/' config.yaml"}, Output: "", Exit: code(0)}
 	stepCdTest   = CorpusStep{ID: "t3", Tool: "bash", Args: map[string]any{"command": "cd api && go test ./... -count=1"}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
 	stepMake     = CorpusStep{ID: "m1", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "go build -o bin/app ./cmd/app\n", Exit: code(0)}
+	stepGofmt    = CorpusStep{ID: "g1", Tool: "bash", Args: map[string]any{"command": "gofmt -w internal/auth/login.go"}, Output: "", Exit: code(0)}
+	stepAppend   = CorpusStep{ID: "a1", Tool: "bash", Args: map[string]any{"command": "echo 'var debug = true' >>login.go"}, Output: "", Exit: code(0)}
+	stepCdSed    = CorpusStep{ID: "s2", Tool: "bash", Args: map[string]any{"command": "cd internal/auth && sed -i 's/ttl = 5/ttl = 15/' login.go"}, Output: "", Exit: code(0)}
+	stepGen      = CorpusStep{ID: "p1", Tool: "bash", Args: map[string]any{"command": "python3 gen.py"}, Output: "wrote 3 files\n", Exit: code(0)}
+	stepApply    = CorpusStep{ID: "p2", Tool: "bash", Args: map[string]any{"command": "git apply fix.patch"}, Output: "", Exit: code(0)}
+	stepEnvSed   = CorpusStep{ID: "s3", Tool: "bash", Args: map[string]any{"command": "env sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepTimeSed  = CorpusStep{ID: "s4", Tool: "bash", Args: map[string]any{"command": "time sed -i 's/replicas: 3/replicas: 5/' deploy/app.yaml"}, Output: "real 0m0.01s\n", Exit: code(0)}
+	stepCmdCp    = CorpusStep{ID: "c3", Tool: "bash", Args: map[string]any{"command": "command cp /tmp/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepSortO    = CorpusStep{ID: "o2", Tool: "bash", Args: map[string]any{"command": "sort -o deploy/app.yaml deploy/app.yaml"}, Output: "", Exit: code(0)}
+	stepTimeout  = CorpusStep{ID: "t4", Tool: "bash", Args: map[string]any{"command": "timeout 300 go test ./..."}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepNpxJest  = CorpusStep{ID: "t5", Tool: "bash", Args: map[string]any{"command": "npx jest --ci"}, Output: "Tests: 8 passed, 8 total\n", Exit: code(0)}
+	stepUvPytest = CorpusStep{ID: "t6", Tool: "bash", Args: map[string]any{"command": "uv run pytest -q"}, Output: "5 passed in 0.12s\n", Exit: code(0)}
+	stepCountArg = CorpusStep{ID: "t7", Tool: "bash", Args: map[string]any{"command": "go test -count=1 ./..."}, Output: "ok\n", Exit: code(0)}
 	stepRewrite  = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -118,6 +131,18 @@ func CorpusCases() []CorpusCase {
 		{Name: "command run with more arguments", Kind: c, Want: ClaimVerified, Steps: steps(stepCdTest), Text: "I ran `go test ./...` in api."},
 		{Name: "tests pass after cd", Kind: c, Want: ClaimVerified, Steps: steps(stepCdTest), Text: "The tests pass."},
 		{Name: "build by make", Kind: c, Want: ClaimVerified, Steps: steps(stepMake), Text: "The build succeeds."},
+		{Name: "a read out of date after env sed -i", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepEnvSed), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after time sed -i", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepTimeSed), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after command cp", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepCmdCp), Text: "The deployment runs 3 replicas."},
+		{Name: "a read out of date after sort -o", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepSortO), Text: "The deployment runs 3 replicas."},
+		{Name: "test output out of date after make", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests, stepMake), Text: "All 42 tests passed."},
+
+		{Name: "file formatted by gofmt -w", Kind: c, Want: ClaimVerified, Steps: steps(stepGofmt), Text: "I updated internal/auth/login.go."},
+		{Name: "file appended to with no space before >>", Kind: c, Want: ClaimVerified, Steps: steps(stepAppend), Text: "I changed login.go to turn on debug."},
+		{Name: "file edited by sed -i after cd", Kind: c, Want: ClaimVerified, Steps: steps(stepCdSed), Text: "I updated internal/auth/login.go to raise the TTL."},
+		{Name: "tests run under timeout", Kind: c, Want: ClaimVerified, Steps: steps(stepTimeout), Text: "The tests pass."},
+		{Name: "tests run by npx jest", Kind: c, Want: ClaimVerified, Steps: steps(stepNpxJest), Text: "The tests pass."},
+		{Name: "tests run by uv run pytest", Kind: c, Want: ClaimVerified, Steps: steps(stepUvPytest), Text: "The tests pass."},
 		{Name: "right test count", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "All 42 tests passed."},
 		{Name: "tests pass", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "The tests pass."},
 		{Name: "right failure count", Kind: c, Want: ClaimVerified, Steps: steps(stepEdit, stepFailing), Text: "3 tests failed after the change."},
@@ -134,6 +159,9 @@ func CorpusCases() []CorpusCase {
 			Claim: &Claim{Text: "There are 3 replicas", Kind: KindObserved, Evidence: []string{"r1"}, Quote: "replicas: 3"}},
 		{Name: "read before an unrelated edit", Kind: c, Want: ClaimVerified, Steps: steps(stepConfig, stepEdit), Text: "The checkout deployment runs 3 replicas."},
 
+		{Name: "a change a script may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepGen), Text: "I updated api/types.go with the new fields."},
+		{Name: "a change git apply may have made", Kind: n, Want: ClaimUnverified, Steps: steps(stepApply), Text: "I changed login.go to check the token."},
+		{Name: "a command run with its arguments reordered", Kind: n, Want: ClaimUnverified, Steps: steps(stepCountArg), Text: "I ran `go test ./... -count=1` again."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

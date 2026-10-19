@@ -63,7 +63,7 @@ func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 		mark = s.Yellow("?")
 	}
 	// One line at 80 columns: the hint goes only where it fits.
-	foot := VisibleLine(v.Footer())
+	foot := clip(VisibleLine(v.Footer()), footerWidth)
 	if hint && len([]rune(foot))+len(" · /evidence N") <= footerWidth {
 		foot += " · /evidence N"
 	}

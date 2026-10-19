@@ -207,8 +207,8 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 27 planted wrong claims none is shown as verified and 16 are
-  contradicted, all 19 true controls are verified, and no true or neutral
+  of 32 planted wrong claims none is shown as verified and 16 are
+  contradicted, all 25 true controls are verified, and no true or neutral
   claim is contradicted; the test holds those figures as a floor.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
@@ -290,12 +290,22 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Go API
 
-- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Agent.Verdict` and the
-  types `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult` and
-  `RequireResult`.
+- `sdk`: `Options.Verify`, `Options.VerifyByDefault`, `Options.Supervisor`,
+  `Options.Runbook`, `Agent.Verdict`, and the types `AnswerVerdict`,
+  `ClaimVerdict`, `Conflict`, `ContractResult`, `RequireResult`, `Runbook`
+  and `RunbookStep`.
 - `server`: `StartSpec.Verify`.
-- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`),
-  `VerifyRank`, `PlanConfig`, `MonitorConfig` and `ManagedAskRule`.
+- `config`: `VerifyConfig` (with `VerifyCriticConfig` and `ContractConfig`
+  and its `On`), `VerifyRank`, `PlanConfig`, `MonitorConfig` and its
+  `JudgeName`, `ManagedAskRule`, `Overrides.Supervisor`, `SSHConfig.ReadCommands`,
+  `SSHConfig.Transfers`, `SSHConfig.TransferMaxMB`, `SandboxConfig.Image`,
+  and `ToolsConfig.BashCheckpoints`, `BashCheckpointMB` and
+  `BashCheckpointFiles`.
+- `hawkeye`: `RemoteTarget`, `RemoteChange`, `Report.RemoteChanges`,
+  `Report.Answers` with `Answer`, and `SupervisorStats`.
+- `monitor`: the drift suite's `DriftCase`, `DriftCases`, `DriftResult`,
+  `DriftReport` and `RunDrift`.
+- `abhed -p`'s JSON result line gains `verdict` when answers are checked.
 
 ## [1.2.8] - 2026-10-14
 

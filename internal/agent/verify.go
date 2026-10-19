@@ -342,6 +342,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	} else if n := len(l.messages); n > 0 && l.messages[n-1].Role == model.RoleAssistant && len(l.messages[n-1].ToolCalls) == 0 {
 		source, text = "text", l.messages[n-1].Content
 		claims = textClaims(text)
+		if strings.TrimSpace(text) == "" {
+			source = "" // nothing said
+		}
 	}
 	// Stopped as it ended: the answer stands as given, unchecked.
 	// No answer to check: a plan put to the person, a structured result, or

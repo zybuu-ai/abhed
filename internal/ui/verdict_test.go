@@ -66,7 +66,8 @@ func TestVerdictFooterRules(t *testing.T) {
 	if len(rows) == 0 || strings.Contains(rows[0], "✓") {
 		t.Fatalf("rows %q", rows)
 	}
-	long := agent.AnswerVerdict{Verified: 12, Unverified: 13, Contradicted: 0, Claims: make([]agent.ClaimVerdict, 25)}
+	long := agent.AnswerVerdict{Verified: 1200, Unverified: 1300, Contradicted: 0, Claims: make([]agent.ClaimVerdict, 25),
+		Contract: &agent.ContractResult{OK: false}}
 	for i := range long.Claims {
 		long.Claims[i] = agent.ClaimVerdict{Verdict: agent.ClaimVerified}
 		if i >= 12 {

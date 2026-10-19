@@ -676,7 +676,8 @@ func countedNumber(cs []countFact, n string) bool {
 // since may have failed.
 func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) finding {
 	last := ix.lastChange()
-	after := func(o *obsRec) bool { return last == nil || o.pos > last.pos }
+	// A command that is itself the last change, as make is, comes after it.
+	after := func(o *obsRec) bool { return last == nil || o.pos >= last.pos }
 	fits := func(o *obsRec) bool {
 		if o.tool != "bash" || o.exit == nil || !o.usable() {
 			return false
@@ -729,21 +730,34 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, cited bool) findi
 
 // changedPath checks "I changed X" against the calls that changed files.
 func (ix *recordIndex) changedPath(p string) finding {
-	for _, m := range ix.mutations {
+	// The record contradicts the claim only when every change in it has
+	// targets that are known, and none of them is p.
+	var unread *mutation
+	for i, m := range ix.mutations {
 		if m.person || m.failed {
 			continue
 		}
 		// A file tool's own path, or a file a command writes: a path it only
 		// reads (the source of a cp) is not a change to it.
-		targets := []string{m.path}
-		if m.path == "" {
-			targets = writeTargets(m.command)
+		targets, known := []string{m.path}, true
+		switch {
+		case m.path != "":
+		case m.tool == "bash" || m.tool == "ssh":
+			targets, known = writeTargets(m.command)
+		default:
+			targets, known = nil, false // another tool's writes cannot be read from its call
 		}
 		for _, t := range targets {
 			if pathIs(t, p) {
 				return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, m.seq), seq: m.seq}
 			}
 		}
+		if !known && unread == nil {
+			unread = &ix.mutations[i]
+		}
+	}
+	if unread != nil {
+		return finding{out: missing, why: fmt.Sprintf("no call names a change to %s, but #%d (%s) may have made one", p, unread.seq, mutationLabel(*unread))}
 	}
 	if ix.subagents {
 		return finding{out: missing, why: "no change to " + p + " in this session's calls (a subagent ran whose record could not be read)"}
@@ -754,11 +768,23 @@ func (ix *recordIndex) changedPath(p string) finding {
 
 // ranCommand checks "I ran `cmd`" against the commands in the record.
 func (ix *recordIndex) ranCommand(cmd string) finding {
+	var near *obsRec
 	for _, o := range ix.obs {
 		// A command run on a host over ssh is one the agent ran too.
-		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && runsCommand(o.command, cmd) {
+		if (o.tool != "bash" && o.tool != "ssh") || !o.usable() {
+			continue
+		}
+		if runsCommand(o.command, cmd) {
 			return finding{out: matched, what: fmt.Sprintf("`%s` ran at #%d", clipRunes(cmd, 40), o.seq), seq: o.seq}
 		}
+		if near == nil && sameProgram(o.command, cmd) {
+			near = o
+		}
+	}
+	// The same program and subcommand with its arguments in another order:
+	// perhaps the command meant, so not a contradiction.
+	if near != nil {
+		return finding{out: missing, why: fmt.Sprintf("#%d ran `%s`, not quite `%s`", near.seq, clipRunes(near.command, 60), clipRunes(cmd, 60))}
 	}
 	if ix.subagents {
 		return finding{out: missing, why: "`" + clipRunes(cmd, 60) + "` is not among this session's own commands"}
@@ -869,14 +895,8 @@ func inspectionCommand(cmd string) bool {
 	if strings.ContainsAny(clean, ">`") || strings.Contains(clean, "$(") {
 		return false
 	}
-	for _, part := range cmdSplit.Split(clean, -1) {
-		words := strings.Fields(part)
-		for len(words) > 0 && strings.Contains(words[0], "=") && !strings.HasPrefix(words[0], "=") {
-			words = words[1:] // FOO=bar cmd
-		}
-		if len(words) == 0 {
-			continue
-		}
+	// Runners and launchers are taken off: `env sed -i` is sed -i.
+	for _, words := range simpleCommands(clean) {
 		prog := filepath.Base(words[0])
 		sub := ""
 		if len(words) > 1 {
@@ -897,7 +917,7 @@ var (
 var readOnlyPrograms = map[string]bool{
 	"ls": true, "cat": true, "head": true, "tail": true, "grep": true, "rg": true, "egrep": true, "fgrep": true,
 	"wc": true, "echo": true, "printf": true, "pwd": true, "stat": true, "file": true, "diff": true, "cmp": true,
-	"which": true, "type": true, "whoami": true, "id": true, "uname": true, "date": true, "env": true,
+	"which": true, "type": true, "whoami": true, "id": true, "uname": true, "date": true,
 	"printenv": true, "du": true, "df": true, "tree": true, "jq": true, "yq": true, "sort": true, "uniq": true,
 	"cut": true, "tr": true, "awk": true, "column": true, "nl": true, "less": true, "more": true, "true": true,
 	"test": true, "[": true, "basename": true, "dirname": true, "realpath": true, "readlink": true, "sha256sum": true,
@@ -905,7 +925,7 @@ var readOnlyPrograms = map[string]bool{
 	"pytest": true, "jest": true, "vitest": true, "mocha": true, "tsc": true, "eslint": true, "ruff": true,
 	"mypy": true, "flake8": true, "pylint": true, "golangci-lint": true, "shellcheck": true, "cd": true,
 	"ps": true, "uptime": true, "free": true, "hostname": true, "nproc": true, "lsof": true, "curl": true,
-	"kubectl": false, "find": true, "sleep": true, "time": true, "command": true,
+	"kubectl": false, "find": true, "sleep": true,
 }
 
 func readOnlyProgram(prog, sub string, words []string) bool {
@@ -953,7 +973,15 @@ func readOnlyProgram(prog, sub string, words []string) bool {
 		return sub == "test" || sub == "t" || (sub == "run" && len(words) > 2 && (strings.HasPrefix(words[2], "test") ||
 			strings.HasPrefix(words[2], "lint") || strings.HasPrefix(words[2], "build") || strings.HasPrefix(words[2], "check")))
 	case "make":
-		return sub == "" || sub == "all" || sub == "test" || sub == "check" || sub == "lint" || sub == "build" || sub == "vet"
+		// make and make all build, which writes; a check target only reads.
+		return sub == "test" || sub == "check" || sub == "lint" || sub == "vet"
+	case "sort":
+		for _, w := range words {
+			if w == "-o" || strings.HasPrefix(w, "-o") || strings.HasPrefix(w, "--output") {
+				return false
+			}
+		}
+		return true
 	case "python", "python3":
 		return len(words) > 2 && sub == "-m" && (words[2] == "pytest" || words[2] == "unittest" || words[2] == "mypy")
 	case "mvn", "gradle", "./gradlew":
