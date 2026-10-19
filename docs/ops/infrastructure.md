@@ -270,9 +270,13 @@ a cluster only by naming a context you already have, so the worst it can reach
 is what your own `kubectl` can. Token, tokenFile, client certificates and `exec`
 credential helpers (the cloud CLIs) all work; exec tokens are refreshed before
 they expire, because an expired token returns a 401 that reads like a
-permissions problem. An `exec` helper runs only when Abhed sends a request:
-for a `k8s_apply`, that includes its dry run before the approval, and never
-a call that is denied or refused in plan mode.
+permissions problem. An `exec` helper runs only when Abhed sends a request for a call that
+may run: never while a `k8s_apply` waits for approval, and never for a call
+that is denied or refused in plan mode. So a write to a kubeconfig context
+whose helper has not run yet is asked about without a dry run, and the
+approval says `no dry run: the kubeconfig's credential helper has not run
+yet`; once a call has run it, later writes are dry-run with its token
+until the token is close to expiring.
 
 Abhed talks to the API directly rather than importing `client-go`, which would
 add roughly a hundred transitive dependencies to a bundle where each one is

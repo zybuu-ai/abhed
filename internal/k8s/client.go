@@ -490,6 +490,15 @@ func (c *Cluster) credential() (string, error) {
 	return c.bearer, nil
 }
 
+// needsHelper reports whether the next request would run the exec
+// credential helper first.
+func (c *Cluster) needsHelper() bool {
+	c.tokMu.Lock()
+	defer c.tokMu.Unlock()
+	return c.execCfg != nil && (c.bearer == "" ||
+		!c.expires.IsZero() && time.Now().After(c.expires.Add(-30*time.Second)))
+}
+
 // Do issues a request against the API server.
 func (c *Cluster) Do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	// A short-lived token that has expired produces a 401 that looks like a

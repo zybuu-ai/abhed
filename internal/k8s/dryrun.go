@@ -30,6 +30,9 @@ const plannedFor = 30 * time.Minute
 // maxDiffLines is how many changed fields the approval names.
 const maxDiffLines = 20
 
+// noDryRun is what an approval says when the call could not be dry-run first.
+const noDryRun = "no dry run: the kubeconfig's credential helper has not run yet, and it runs only for an approved call"
+
 // planned is one call's checked request and what its dry run showed.
 type planned struct {
 	req     *request
@@ -115,6 +118,12 @@ func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 	}
 	c, err := t.M.cluster(sess, a.Cluster, a.Context)
 	if err != nil {
+		return nil
+	}
+	if c.needsHelper() {
+		// The operator's credential helper runs only for a call a person
+		// approved, so this one is asked about without a dry run.
+		t.M.keep(sess, raw, planned{preview: noDryRun})
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dryRunTimeout)
