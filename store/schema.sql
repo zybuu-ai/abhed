@@ -151,7 +151,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_session_seq_idx ON events (session_id, seq);
 CREATE INDEX IF NOT EXISTS events_type_time_idx   ON events (type, created_at DESC);
 CREATE INDEX IF NOT EXISTS events_tenant_time_idx ON events (tenant_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS events_payload_idx     ON events USING GIN (payload);
 
 -- Append-only enforcement. Retention is handled by dropping partitions or by a
 -- privileged archival role, never by mutating rows in place.
@@ -689,3 +688,37 @@ BEGIN
 END $$;
 
 INSERT INTO schema_version (version) VALUES (11) ON CONFLICT DO NOTHING;
+
+-- Schema version 14: a cheaper event chain, the same hash.
+--
+-- The events' chain trigger ran the generic abhed_chain_insert, which builds
+-- its queries as text on every row, so none is planned once, and renders the
+-- row as JSON twice. abhed_events_chain does the same with static queries and
+-- one rendering of only the hashed columns: jsonb_build_object gives the
+-- same jsonb, and so the same text and hash, as the named columns of
+-- to_jsonb(NEW). The GIN index on payload is dropped: no query used it, and
+-- payloads are sealed, so it indexed ciphertext on every insert.
+CREATE OR REPLACE FUNCTION abhed_events_chain() RETURNS trigger AS $$
+DECLARE
+  last_pos  bigint;
+  last_hash text;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('events/' || NEW.session_id, 0));
+  SELECT chain_pos, hash INTO last_pos, last_hash FROM events
+    WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
+  NEW.chain_pos := COALESCE(last_pos, 0) + 1;
+  NEW.prev_hash := COALESCE(last_hash, repeat('0', 64));
+  NEW.hash := encode(sha256(convert_to(NEW.prev_hash || E'\n' || jsonb_build_object(
+    'id', NEW.id, 'session_id', NEW.session_id, 'tenant_id', NEW.tenant_id, 'parent_id', NEW.parent_id,
+    'seq', NEW.seq, 'type', NEW.type, 'payload', NEW.payload, 'actor', NEW.actor, 'trust', NEW.trust,
+    'created_at', NEW.created_at)::text, 'UTF8')), 'hex');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SET timezone TO 'UTC';
+
+DROP TRIGGER IF EXISTS zz_events_chain ON events;
+CREATE TRIGGER zz_events_chain BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION abhed_events_chain();
+DROP INDEX IF EXISTS events_payload_idx;
+
+INSERT INTO schema_version (version) VALUES (14) ON CONFLICT DO NOTHING;
