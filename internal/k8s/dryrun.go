@@ -163,7 +163,7 @@ func dryRun(ctx context.Context, c *Cluster, req *request) (string, error) {
 		return "dry run: the cluster accepts the delete", nil
 	}
 	var after map[string]any
-	if json.Unmarshal(data, &after) != nil {
+	if readable := json.Unmarshal(data, &after) == nil && after != nil; !readable {
 		return about(req, "dry run: the cluster accepts the change (its answer could not be read for a diff)"), nil
 	}
 	if req.masked != nil {

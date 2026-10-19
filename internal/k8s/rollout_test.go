@@ -173,7 +173,9 @@ func deployStates(states ...string) (http.Handler, *atomic.Int32) {
 	}), &n
 }
 
-func deployState(gen, observed int, replicas, updated, available, total int, cond string) string {
+// deployState is generation 5 of a Deployment wanting 3 replicas.
+func deployState(observed, updated, available, total int, cond string) string {
+	const gen, replicas = 5, 3
 	return fmt.Sprintf(`{"kind":"Deployment","metadata":{"name":"web","generation":%d,
 	 "annotations":{"deployment.kubernetes.io/revision":"4"}},"spec":{"replicas":%d},
 	 "status":{"observedGeneration":%d,"replicas":%d,"updatedReplicas":%d,"availableReplicas":%d,"conditions":[%s]}}`,
@@ -188,23 +190,23 @@ func TestWaitForRollout(t *testing.T) {
 		return res.Content, res.IsError
 	}
 	h, reads := deployStates(
-		deployState(5, 4, 3, 3, 3, 3, ""),
-		deployState(5, 5, 3, 1, 1, 4, ""),
-		deployState(5, 5, 3, 3, 2, 3, ""),
-		deployState(5, 5, 3, 3, 3, 3, ""),
+		deployState(4, 3, 3, 3, ""),
+		deployState(5, 1, 1, 4, ""),
+		deployState(5, 3, 2, 3, ""),
+		deployState(5, 3, 3, 3, ""),
 	)
 	got, isErr := get(h, `{"resource":"deployments","name":"web","wait_seconds":30}`)
 	if isErr || !strings.Contains(got, "rolled out (revision 4)") || !strings.Contains(got, "3/3 updated, 3 available") || reads.Load() != 4 {
 		t.Fatalf("wait: %v %s after %d reads", isErr, got, reads.Load())
 	}
 
-	h, _ = deployStates(deployState(5, 5, 3, 1, 1, 3,
+	h, _ = deployStates(deployState(5, 1, 1, 3,
 		`{"type":"Progressing","reason":"ProgressDeadlineExceeded","message":"ReplicaSet web-x has timed out progressing."}`))
 	if got, isErr := get(h, `{"resource":"deployments","name":"web","wait_seconds":30}`); !isErr || !strings.Contains(got, "exceeded its progress deadline") {
 		t.Fatalf("failed rollout: %s", got)
 	}
 
-	h, _ = deployStates(deployState(5, 5, 3, 1, 1, 3, ""))
+	h, _ = deployStates(deployState(5, 1, 1, 3, ""))
 	start := time.Now()
 	got, isErr = get(h, `{"resource":"deployments","name":"web","wait_seconds":1}`)
 	if !isErr || !strings.Contains(got, "had not rolled out") || !strings.Contains(got, "waiting for updated replicas") {

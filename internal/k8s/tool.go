@@ -796,7 +796,7 @@ func (t ApplyTool) apply(sess *tools.Session, c *Cluster, a applyArgs) (*request
 	}
 	mf, err := kubescope.DecodeManifest(a.Manifest)
 	if err != nil {
-		return nil, fmt.Errorf("%v. Convert YAML to JSON first", err)
+		return nil, fmt.Errorf("%w. Convert YAML to JSON first", err)
 	}
 	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
@@ -818,8 +818,11 @@ func (t ApplyTool) apply(sess *tools.Session, c *Cluster, a applyArgs) (*request
 			ns = c.Namespace
 		}
 	}
-	if err := checkSegments(ns, name, ""); err != nil || ns == "*" {
-		return nil, fmt.Errorf("the manifest's name and namespace must each stand as one path segment: %v", err)
+	if ns == "*" {
+		return nil, fmt.Errorf("the manifest's namespace cannot be '*'")
+	}
+	if err := checkSegments(ns, name, ""); err != nil {
+		return nil, fmt.Errorf("the manifest's name and namespace must each stand as one path segment: %w", err)
 	}
 	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
