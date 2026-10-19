@@ -408,6 +408,10 @@ func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *ser
 		// relay's, in a network namespace with nothing else in it.
 		spec.ConnectTCP = []uint16{fc.port}
 		relay = fc.relay
+		// And the resolver's port, which in the namespace only the launcher serves.
+		if relay != nil && relay.DNS != "" {
+			spec.ConnectTCP = append(spec.ConnectTCP, 53)
+		}
 		if fc.caDir != "" {
 			spec.Read = append(spec.Read, fc.caDir) // the inspection CA bundle's folder, where its clients are pointed
 		}
@@ -459,7 +463,7 @@ func (f *Fence) launch(ctx context.Context, cwd string, env []string, files *ser
 	cmd.ExtraFiles = []*os.File{theirs}
 	if plan != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
-		mountns.AttrWith(cmd.SysProcAttr, mountns.Spaces{PID: true, Net: relay != nil})
+		mountns.AttrWith(cmd.SysProcAttr, mountns.Spaces{PID: true, Net: relay != nil, Resolver: relay != nil && relay.DNS != ""})
 	}
 	// Release ends the wait at once for a command that never starts.
 	abandoned := make(chan struct{})
@@ -694,6 +698,7 @@ func runLauncher(args []string) int {
 	if err := json.Unmarshal([]byte(args[0]), &s); err != nil {
 		return launchFail("the launcher's spec cannot be read: %v", err)
 	}
+	var dns func() // serves the resolver, once init runs
 	// 1. The probe: this run's pass, rechecked. As init of its own PID
 	// namespace, only the namespace's maker can have started the launcher.
 	started := s.ProbePID == os.Getppid()
@@ -730,6 +735,14 @@ func runLauncher(args []string) int {
 				return launchFail("%v", err)
 			}
 		}
+		// The resolver's port is bound while the launcher may; it is served as init.
+		if s.Egress != nil && s.Egress.DNS != "" {
+			serve, err := fenceResolver(s.Egress)
+			if err != nil {
+				return launchFail("the egress resolver: %v", err)
+			}
+			dns = serve
+		}
 		if err := mountns.Drop(); err != nil {
 			return launchFail("%v", err)
 		}
@@ -749,7 +762,7 @@ func runLauncher(args []string) int {
 		return launchFail("joining the call's cgroup: %v", err)
 	}
 	if s.PIDNS {
-		return runInit(s, args)
+		return runInit(s, args, dns)
 	}
 	// A session apart from Abhed's: kill(0) cannot reach Abhed, and /dev/tty
 	// opens only the command's own terminal.
@@ -786,15 +799,36 @@ const fenceChildArg = "__abhed_fence_child"
 var initSignals = []os.Signal{unix.SIGINT, unix.SIGTERM, unix.SIGHUP, unix.SIGQUIT, unix.SIGUSR1, unix.SIGUSR2,
 	unix.SIGWINCH, unix.SIGCONT, unix.SIGALRM}
 
+// fenceResolver binds the session's resolv.conf over the host's and listens
+// on the resolver's address in the command's network namespace, and returns
+// what serves it there with the call's credential.
+func fenceResolver(e *fenceEgressSpec) (func(), error) {
+	cred := egress.Credential(os.Getenv("HTTP_PROXY"))
+	if cred == "" {
+		return nil, errors.New("no proxy credential in HTTP_PROXY")
+	}
+	if err := mountns.BindFileOver(e.ResolvConf, "/etc/resolv.conf"); err != nil {
+		return nil, err
+	}
+	udp, tcp, err := egress.ListenResolver()
+	if err != nil {
+		return nil, err
+	}
+	return func() { egress.ServeDNS(udp, tcp, e.DNS, cred) }, nil
+}
+
 // runInit is the launcher as PID namespace init: init ignores unhandled
 // signals, so the command runs as its child and init relays them.
-func runInit(s fenceSpec, args []string) int {
+func runInit(s fenceSpec, args []string, dns func()) int {
 	if s.Egress != nil {
 		ln, err := net.Listen("tcp", s.Egress.Listen)
 		if err != nil {
 			return launchFail("the egress relay: %v", err)
 		}
 		go egress.Relay(ln, s.Egress.Sock)
+	}
+	if dns != nil {
+		go dns()
 	}
 	// A terminal goes to the command's session: init gives it up first.
 	_, terr := unix.IoctlGetTermios(0, unix.TCGETS)

@@ -122,7 +122,12 @@ func (r *Registry) Close() {
 }
 
 // Tool runs a command on a declared host.
-type Tool struct{ R *Registry }
+type Tool struct {
+	R *Registry
+	// Reads are the operator's ssh.read_commands, named to the model so it
+	// can inspect a host in plan mode; the policy decides what they allow.
+	Reads []string
+}
 
 func init() { tools.RegisterSubjector("ssh", Tool{}) }
 
@@ -152,7 +157,8 @@ func (Tool) Name() string { return "ssh" }
 // over SSH: the command runs with the remote account's full authority, and
 // there is no undo. Classifying `cat` as safe would be judging the string, not
 // the consequence — on a remote host Abhed cannot see, the two are not the
-// same thing. So every remote command asks.
+// same thing. So every remote command asks, unless the operator declared it
+// a read in ssh.read_commands, which the policy judges.
 func (Tool) Mutates() bool { return true }
 
 func (t Tool) Description() string {
@@ -163,8 +169,17 @@ func (t Tool) Description() string {
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
-		"the sandbox with no undo. Prefer one command that answers the question " +
+		"the sandbox with no undo" + reads(t.Reads) + ". Prefer one command that answers the question " +
 		"over several exploratory ones."
+}
+
+// reads names the operator's read commands, which run unasked and in plan mode.
+func reads(cmds []string) string {
+	if len(cmds) == 0 {
+		return ""
+	}
+	return ", except a command the operator declared a read, which runs unasked and in plan mode, " +
+		"alone and exactly as declared (* matches any text): " + strings.Join(cmds, "; ")
 }
 
 func (Tool) Schema() json.RawMessage {

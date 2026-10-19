@@ -6,6 +6,46 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- `ssh` rules matched the remote command as plain text. A deny rule such
+  as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,
+  an allow rule such as `ssh(web1/openssl x509 *)` also approved anything
+  chained after the command (`openssl x509 -in a.pem; rm -rf /var/www`),
+  and a remote `rm -rf` got a plain question. The command is now read as a
+  `bash` command is: deny and ask rules see each command in a chain, pipe
+  or substitution and behind `sudo`, `env`, `nice` and the other runners;
+  an allow rule with a pattern approves only one simple command; a line
+  that cannot be parsed in full is refused while a deny rule for `ssh` has
+  a pattern; a destructive remote command always confirms twice with no
+  "always"; and "don't ask again" offers no scope for a chain or a
+  wildcard.
+
+### Added
+
+- `ssh.read_commands`: commands the operator declares reads on every host,
+  each an exact command or a pattern for one simple command, such as
+  `uptime` or `systemctl status *`. A matching `ssh` call, read as bash
+  reads it, runs in plan mode and asks in no mode, so a plan can start by
+  inspecting the fleet; a chain, pipe, substitution, redirection or a
+  destructive command is never a read. Deny and ask rules come first. Only
+  a trusted configuration file sets it; a managed file that sets it
+  replaces the list, and one that sets the permissions without it sets the
+  person's entries aside. The `ssh` tool's description names the entries.
+
+### Fixed
+
+- In the terminal UI the output of a `!` command was shown twice: under
+  the call and again below it. It is now shown once, under the call, with
+  up to 40 lines before the rest folds behind ctrl+o.
+- On the fence tier in `mount_namespace` mode under the egress allowlist, a
+  command resolved no name, an allowed one included (`getent hosts` gave
+  nothing), while the process tier resolved it through the session's
+  resolver; requests through the proxy worked. The fence now serves the
+  same resolver in the command's network namespace, over TCP, since its
+  seccomp filter allows no UDP: an allowed name resolves to its
+  `198.18.0.0/15` address and is recorded as a `dns` decision, and any
+  other gets NXDOMAIN.
 
 ## [1.2.8] - 2026-10-14
 
