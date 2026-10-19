@@ -246,36 +246,36 @@ func (t GetTool) wait(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 	start := time.Now()
 	wctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
+	what, rev := "it had not been read yet", ""
 	for {
 		data, err := c.Do(wctx, "GET", path, nil)
-		if err != nil {
-			if wctx.Err() != nil && ctx.Err() == nil {
-				break
-			}
+		if err != nil && (wctx.Err() == nil || ctx.Err() != nil) {
 			return errf("%v", err)
 		}
-		var s rolloutState
-		if err := json.Unmarshal(data, &s); err != nil {
-			return errf("the Deployment could not be read: %v", err)
-		}
-		done, failed, what := s.progress()
-		took := time.Since(start).Round(time.Second)
-		rev := s.Metadata.Annotations[revisionKey]
-		switch {
-		case done:
-			return tools.Result{Content: fmt.Sprintf("Deployment %s rolled out (revision %s) after %s: %s.", a.Name, rev, took, what)}
-		case failed:
-			return errf("Deployment %s did not roll out (revision %s) after %s: %s.", a.Name, rev, took, what)
+		if err == nil {
+			var s rolloutState
+			if err := json.Unmarshal(data, &s); err != nil {
+				return errf("the Deployment could not be read: %v", err)
+			}
+			done, failed, now := s.progress()
+			what, rev = now, s.Metadata.Annotations[revisionKey]
+			took := time.Since(start).Round(time.Second)
+			switch {
+			case done:
+				return tools.Result{Content: fmt.Sprintf("Deployment %s rolled out (revision %s) after %s: %s.", a.Name, rev, took, what)}
+			case failed:
+				return errf("Deployment %s did not roll out (revision %s) after %s: %s.", a.Name, rev, took, what)
+			}
 		}
 		select {
 		case <-wctx.Done():
-			if ctx.Err() != nil {
-				return errf("Stopped waiting for deployment %s: %v.", a.Name, ctx.Err())
-			}
-			return errf("Deployment %s had not rolled out (revision %s) after %s: %s. Wait again, or look at its pods and events.",
-				a.Name, rev, took, what)
 		case <-time.After(waitPoll):
+			continue
 		}
+		if ctx.Err() != nil {
+			return errf("Stopped waiting for deployment %s: %v.", a.Name, ctx.Err())
+		}
+		return errf("Deployment %s had not rolled out (revision %s) after %s: %s. Wait again, or look at its pods and events.",
+			a.Name, rev, time.Since(start).Round(time.Second), what)
 	}
-	return errf("Deployment %s had not rolled out after %s.", a.Name, time.Since(start).Round(time.Second))
 }
