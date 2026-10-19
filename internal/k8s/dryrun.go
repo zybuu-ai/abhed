@@ -104,10 +104,9 @@ func (m *Manager) takePlanned(sess *tools.Session, raw json.RawMessage) *request
 	return p.req
 }
 
-// Precheck plans the call and has the cluster dry-run it. A dry run the
-// cluster refuses refuses the call before anyone is asked, with the
-// cluster's reason; nothing is applied. A call that cannot be planned is left
-// to Run, which says why.
+// Precheck plans the call and has the cluster dry-run it. A call that
+// cannot be planned, or whose dry run the cluster refuses, is refused before
+// anyone is asked, with the reason; nothing is applied.
 func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 	if t.M == nil {
 		return nil
@@ -128,9 +127,9 @@ func (t ApplyTool) Precheck(sess *tools.Session, raw json.RawMessage) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dryRunTimeout)
 	defer cancel()
-	req, err := t.plan(ctx, c, a)
+	req, err := t.plan(ctx, sess, c, a)
 	if err != nil {
-		return nil
+		return err
 	}
 	preview, err := dryRun(ctx, c, req)
 	if err != nil {
@@ -165,16 +164,29 @@ func dryRun(ctx context.Context, c *Cluster, req *request) (string, error) {
 	}
 	var after map[string]any
 	if json.Unmarshal(data, &after) != nil {
-		return "dry run: the cluster accepts the change (its answer could not be read for a diff)", nil
+		return about(req, "dry run: the cluster accepts the change (its answer could not be read for a diff)"), nil
+	}
+	if req.masked != nil {
+		// The dry run carried placeholders: what changes is the values read.
+		maskSecret(after)
+		after["data"] = req.masked
 	}
 	switch {
 	case readErr != nil:
-		return "dry run: the cluster accepts the change; the live object could not be read for a diff (" +
-			oneLine(readErr.Error(), 160) + ")", nil
+		return about(req, "dry run: the cluster accepts the change; the live object could not be read for a diff ("+
+			oneLine(readErr.Error(), 160)+")"), nil
 	case before == nil:
-		return "dry run: creates " + describe(after), nil
+		return about(req, "dry run: creates "+describe(after)), nil
 	}
-	return "dry run: " + diffSummary(before, after), nil
+	return about(req, "dry run: "+diffSummary(before, after)), nil
+}
+
+// about puts where a request's values come from before what its dry run said.
+func about(req *request, s string) string {
+	if req.about == "" {
+		return s
+	}
+	return req.about + "; " + s
 }
 
 // describe names an object as kind namespace/name.

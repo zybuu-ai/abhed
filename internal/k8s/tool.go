@@ -207,6 +207,22 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 	ns := str("namespace")
 	clusterWide := kubescope.ClusterScopedResource(resource)
 	if apply && str("action") == "apply" {
+		sf, err := decodeSecretFrom(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sf != nil {
+			// The values are read when the call runs; the rules, the
+			// approver and the record read the Secret without them.
+			skel, err := sf.skeleton()
+			if err != nil {
+				return nil, nil, err
+			}
+			if m := str("manifest"); strings.TrimSpace(m) != "" && m != string(skel) {
+				return nil, nil, fmt.Errorf("give a manifest or secret_from, not both")
+			}
+			set("manifest", string(skel))
+		}
 		mf, err := checkManifest(str("manifest"))
 		if err != nil {
 			return nil, nil, err
@@ -556,7 +572,43 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 
 // ---------------------------------------------------------------- write tool
 
-type ApplyTool struct{ M *Manager }
+type ApplyTool struct {
+	M *Manager
+	// Secret returns a stored secret's value, for secret_from; nil means no store.
+	Secret func(name string) (string, error)
+}
+
+// BindStore is the tool reading secret_from's secrets from v instead.
+func (t ApplyTool) BindStore(v *secrets.Store) tools.Tool {
+	t.Secret = v.Value
+	return t
+}
+
+// SecretArgs marks the tool as taking secrets by name; they are all in
+// secret_from, which SecretPaths names.
+func (ApplyTool) SecretArgs() []string { return nil }
+
+// SecretPaths puts each stored secret secret_from reads to a secret(NAME) rule.
+func (ApplyTool) SecretPaths() [][]string {
+	return [][]string{{"secret_from", "data", "*", "secret"}}
+}
+
+// FilesRead are the workspace files secret_from reads, each judged as a read.
+func (ApplyTool) FilesRead(raw json.RawMessage) []string {
+	sf, err := decodeSecretFrom(raw)
+	if err != nil || sf == nil {
+		return nil
+	}
+	var out []string
+	for _, k := range sf.keys() {
+		if f := sf.Data[k].File; f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func (ApplyTool) FilesWritten(json.RawMessage) []string { return nil }
 
 // ResolveArgs puts the call in the form it runs in, its cluster and
 // namespace named, so policy judges what the call changes.
@@ -577,7 +629,9 @@ func (ApplyTool) Description() string {
 		"restart a rollout, or roll a Deployment back to an earlier revision. Every call is " +
 		"dry-run on the cluster first and requires human approval. " +
 		"Prefer k8s_get first to confirm what you are about to change, and k8s_get with " +
-		"wait_seconds after a restart or rollback to wait for the rollout."
+		"wait_seconds after a restart or rollback to wait for the rollout. " +
+		"To create a Secret, such as a TLS certificate and key, use secret_from with stored " +
+		"secret NAMES and workspace files: never put a key or password in a manifest."
 }
 
 func (ApplyTool) Schema() json.RawMessage {
@@ -592,7 +646,17 @@ func (ApplyTool) Schema() json.RawMessage {
     "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster."},
     "replicas":{"type":"integer","description":"For scale: the desired replica count."},
-    "revision":{"type":"integer","description":"For rollback: the revision to return to. Omit for the one before the current."}
+    "revision":{"type":"integer","description":"For rollback: the revision to return to. Omit for the one before the current."},
+    "secret_from":{"type":"object","description":"For apply, instead of a manifest: build a Secret whose values Abhed reads itself, so they never pass through you. Each data key names a stored secret (by NAME) or a workspace file (absolute path).",
+      "properties":{
+        "name":{"type":"string","description":"The Secret's name."},
+        "type":{"type":"string","enum":["Opaque","kubernetes.io/tls"],"description":"Default Opaque. kubernetes.io/tls needs keys tls.crt and tls.key."},
+        "data":{"type":"object","description":"Key to source, e.g. {\"tls.crt\":{\"file\":\"/work/site.crt\"},\"tls.key\":{\"secret\":\"SITE_TLS_KEY\"}}.",
+          "additionalProperties":{"type":"object","properties":{
+            "secret":{"type":"string","description":"NAME of a stored secret. Never the value."},
+            "file":{"type":"string","description":"Absolute path of a workspace file."}}}}
+      },
+      "required":["name","data"]}
   },
   "required":["action"]
 }`)
@@ -608,6 +672,8 @@ type applyArgs struct {
 	Context   string `json:"context"`
 	Replicas  *int   `json:"replicas"`
 	Revision  int    `json:"revision"`
+	// SecretFrom builds a Secret from stored secrets and workspace files.
+	SecretFrom *secretFrom `json:"secret_from"`
 }
 
 // Target tells the person approving a write which cluster it changes, at
@@ -621,6 +687,8 @@ func (t ApplyTool) Target(sess *tools.Session, raw json.RawMessage) string {
 	where := t.M.where(sess, a.Cluster, a.Context)
 	if p, ok := t.M.peek(sess, raw); ok && p.preview != "" {
 		where = strings.TrimPrefix(where+"; "+p.preview, "; ")
+	} else if sf, err := decodeSecretFrom(raw); err == nil && sf != nil {
+		where = strings.TrimPrefix(where+"; "+sf.sources(), "; ")
 	}
 	return where
 }
@@ -637,7 +705,7 @@ func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	// The request the dry run checked and the approver saw is the one sent.
 	req := t.M.takePlanned(sess, raw)
 	if req == nil {
-		if req, err = t.plan(ctx, c, a); err != nil {
+		if req, err = t.plan(ctx, sess, c, a); err != nil {
 			return errf("%v", err)
 		}
 	}
@@ -659,11 +727,20 @@ type request struct {
 	done func(data []byte) string
 	// hint follows the cluster's error when the request fails.
 	hint string
+	// dryBody, when set, is what the dry run sends instead of body: a
+	// Secret's placeholders. masked is then the data the dry run's answer
+	// is shown with, and about says where the values come from.
+	dryBody []byte
+	masked  map[string]any
+	about   string
 }
 
 // send sends req, as a server-side dry run when dryRun is set.
 func (c *Cluster) send(ctx context.Context, req *request, dryRun bool) ([]byte, error) {
-	path := req.path
+	path, body := req.path, req.body
+	if dryRun && req.dryBody != nil {
+		body = req.dryBody
+	}
 	if dryRun {
 		sep := "?"
 		if strings.Contains(path, "?") {
@@ -672,16 +749,16 @@ func (c *Cluster) send(ctx context.Context, req *request, dryRun bool) ([]byte, 
 		path += sep + "dryRun=All"
 	}
 	if req.method == "PATCH" {
-		return c.doPatch(ctx, path, req.body, req.contentType)
+		return c.doPatch(ctx, path, body, req.contentType)
 	}
-	return c.Do(ctx, req.method, path, req.body)
+	return c.Do(ctx, req.method, path, body)
 }
 
 // plan builds the request a call sends, refusing one that cannot be sent.
-func (t ApplyTool) plan(ctx context.Context, c *Cluster, a applyArgs) (*request, error) {
+func (t ApplyTool) plan(ctx context.Context, sess *tools.Session, c *Cluster, a applyArgs) (*request, error) {
 	switch a.Action {
 	case "apply":
-		return t.apply(c, a)
+		return t.apply(sess, c, a)
 	case "delete":
 		return t.delete(c, a)
 	case "scale":
@@ -694,7 +771,26 @@ func (t ApplyTool) plan(ctx context.Context, c *Cluster, a applyArgs) (*request,
 	return nil, fmt.Errorf("unknown action %q (want apply, delete, scale, restart or rollback)", a.Action)
 }
 
-func (t ApplyTool) apply(c *Cluster, a applyArgs) (*request, error) {
+func (t ApplyTool) apply(sess *tools.Session, c *Cluster, a applyArgs) (*request, error) {
+	if a.SecretFrom != nil {
+		sf, err := decodeSecretFrom(mustJSON(map[string]any{"secret_from": a.SecretFrom}))
+		if err != nil {
+			return nil, err
+		}
+		skel, err := sf.skeleton()
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(a.Manifest) != "" && a.Manifest != string(skel) {
+			return nil, fmt.Errorf("give a manifest or secret_from, not both")
+		}
+		a.Manifest, a.SecretFrom = string(skel), nil
+		req, err := t.apply(sess, c, a)
+		if err != nil {
+			return nil, err
+		}
+		return req, t.secretRequest(sess, req, sf)
+	}
 	if strings.TrimSpace(a.Manifest) == "" {
 		return nil, fmt.Errorf("apply needs a manifest")
 	}
@@ -996,6 +1092,11 @@ func pluralFor(kind string) string {
 		return k[:len(k)-1] + "ies"
 	}
 	return k + "s"
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func errf(format string, a ...any) tools.Result {

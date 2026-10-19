@@ -29,6 +29,12 @@ All notable changes to Abhed are recorded here. The format follows
   and is refused if the Deployment changed since it was approved.
   `k8s_get` `wait_seconds` waits, up to 600 seconds, for a Deployment's
   rollout to finish or fail, so the agent need not poll.
+- `k8s_apply` `secret_from` builds a Secret, `Opaque` or
+  `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
+  a TLS key never passes through the model: the approval and the record
+  name each source with its value's length and sha256, each stored secret
+  needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
+  the dry run before the approval carries placeholders.
 
 ## [1.2.8] - 2026-10-14
 

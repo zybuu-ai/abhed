@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 )
 
 // lastApplied is the annotation kubectl apply keeps the whole object in, a
@@ -51,6 +52,9 @@ func maskedValue(v any, base64Encoded bool) string {
 	if !ok {
 		return "[withheld]"
 	}
+	if maskedRe.MatchString(s) {
+		return s // already masked
+	}
 	raw := []byte(s)
 	if base64Encoded {
 		if b, err := base64.StdEncoding.DecodeString(s); err == nil {
@@ -59,6 +63,8 @@ func maskedValue(v any, base64Encoded bool) string {
 	}
 	return withheldValue(raw)
 }
+
+var maskedRe = regexp.MustCompile(`^\[withheld: [0-9]+ bytes, sha256 [0-9a-f]{64}\]$`)
 
 // withheldValue describes a value without showing it.
 func withheldValue(raw []byte) string {

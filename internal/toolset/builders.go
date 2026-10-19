@@ -234,7 +234,7 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		out = append(out, k8s.GetTool{M: mgr},
 			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames})
 		if cfg.K8s.AllowWrites {
-			out = append(out, k8s.ApplyTool{M: mgr})
+			out = append(out, k8s.ApplyTool{M: mgr, Secret: secret})
 		}
 	}
 

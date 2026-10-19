@@ -127,7 +127,13 @@ verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.
 `k8s_apply` takes one object per call; a JSON list is refused with a message
-that says to apply each item in its own call.
+that says to apply each item in its own call. Each write is dry-run on the
+cluster before the approval, which shows what would change; `rollback`
+returns a Deployment to an earlier revision, and `k8s_get` with
+`wait_seconds` waits for a rollout. `secret_from` builds a Secret from
+stored secrets, each under its own `secret(NAME)` rule, and workspace
+files, so a TLS key never passes through the model. `k8s_get` shows a
+Secret's keys with each value's length and sha256, never the value.
 `ssh_connect` sends a password only to a host whose key is already in
 `known_hosts`.
 

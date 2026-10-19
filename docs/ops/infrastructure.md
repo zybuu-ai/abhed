@@ -64,6 +64,36 @@ before anyone is asked, with the cluster's reason, and nothing is applied:
 the model reads `the cluster's dry run of this change failed, so it was not
 applied: …`. A call a rule denies reaches no cluster, not even for a dry run.
 
+**Secrets without the model.** A Secret written as a manifest carries its
+values in the call, where the model wrote them and the record keeps them.
+`secret_from` builds the Secret instead, from values Abhed reads itself:
+
+```json
+{"action": "apply", "namespace": "web",
+ "secret_from": {"name": "site-tls", "type": "kubernetes.io/tls",
+   "data": {"tls.crt": {"file": "/work/certs/site.crt"},
+            "tls.key": {"secret": "SITE_TLS_KEY"}}}}
+```
+
+Each key comes from a stored secret, by NAME (`abhed secret set
+SITE_TLS_KEY`), or from a workspace file, by absolute path; `type` is
+`Opaque` (the default) or `kubernetes.io/tls`, which needs `tls.crt` and
+`tls.key` and checks that each is a PEM certificate or private key. Each
+stored secret needs its own `allow secret(NAME)` rule, as every secret use
+does, and each file is judged as a `read` of it would be, so
+`deny read(*.key)` holds here too. The rules read the call as an `apply` of
+a Secret in its namespace, and the manifest they, the approver and the
+record see is the Secret without its values. The approval names each
+source with its value's length and sha256:
+`builds Secret site-tls (kubernetes.io/tls) with tls.crt from file
+/work/certs/site.crt [withheld: 1310 bytes, sha256 …], tls.key from stored
+secret SITE_TLS_KEY [withheld: …]`. The dry run before it sends
+placeholders, so no value leaves Abhed before a person says yes, and the
+diff compares the live Secret's values with the ones read by hash. A
+source that cannot be read, a certificate that is not one, values over
+1 MiB in all, or a call with both a `manifest` and `secret_from` is refused
+before anyone is asked, naming the source and never its content.
+
 **Rollouts.** `k8s_apply` with `action: "rollback"`, `resource:
 "deployments"` and a `name` does what `kubectl rollout undo` does: it puts
 the pod template of the Deployment's previous revision back (or of
