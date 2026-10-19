@@ -27,8 +27,8 @@ import (
 // operator sets ssh.transfer_max_mb.
 const DefaultTransferMax = 16 << 20
 
-// transferTimeout bounds one transfer.
-const transferTimeout = 5 * time.Minute
+// transferTimeout bounds one transfer, however the host behaves.
+var transferTimeout = 5 * time.Minute
 
 func init() {
 	tools.RegisterSubjector("ssh_put", PutTool{})
