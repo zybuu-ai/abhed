@@ -225,6 +225,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- On a Mac, a Podman CLI that hung while Abhed asked it for its machine's
+  socket was killed alone: a helper it had started kept running, and its
+  open pipe held the query a second past its bound. The query now runs in
+  a process group of its own, which a timeout kills whole.
 - In the terminal UI the output of a `!` command was shown twice: under
   the call and again below it. It is now shown once, under the call, with
   up to 40 lines before the rest folds behind ctrl+o. Without the terminal
