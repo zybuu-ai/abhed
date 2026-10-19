@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
@@ -1447,7 +1448,7 @@ func Default() Config {
 			Providers: map[string]ProviderConfig{
 				"local": {
 					Type:    "openai-compatible",
-					BaseURL: "http://localhost:11434/v1", // Ollama's default
+					BaseURL: defaults.LocalModelURL, // Ollama's default
 					// gemma4:26b, chosen by measurement rather than benchmark
 					// (docs/ops/model-selection.md). It is MoE — 128 experts,
 					// 8 active — so it decodes at ~35 tok/s on an M3 Pro where

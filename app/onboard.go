@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -388,7 +389,7 @@ func firstRunNeeded(workspace string) bool {
 func ollamaBase() string {
 	h := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
 	if h == "" {
-		return "http://localhost:11434/v1"
+		return defaults.LocalModelURL
 	}
 	if !strings.Contains(h, "://") {
 		h = "http://" + h
