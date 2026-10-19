@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -92,8 +93,9 @@ func isNoSuchFile(err error) bool {
 	return errors.As(err, &se) && se.code == 2
 }
 
-// openSFTP starts the sftp subsystem on h.
-func (h *Host) openSFTP(ctx context.Context) (*sftpClient, error) {
+// openSFTP starts the sftp subsystem on h. track is given the client before
+// it is first used, so a transfer stopped while it starts can close it.
+func (h *Host) openSFTP(ctx context.Context, track func(*sftpClient) bool) (*sftpClient, error) {
 	client, err := h.connect(ctx)
 	if err != nil {
 		return nil, err
@@ -117,6 +119,10 @@ func (h *Host) openSFTP(ctx context.Context) (*sftpClient, error) {
 		return nil, fmt.Errorf("%s does not offer SFTP: %w", h.cfg.Name, err)
 	}
 	c := &sftpClient{session: session, w: w, r: r, ext: map[string]string{}}
+	if !track(c) {
+		_ = c.Close()
+		return nil, ctx.Err()
+	}
 	if err := c.init(); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("start SFTP on %s: %w", h.cfg.Name, err)
@@ -415,7 +421,13 @@ func (c *sftpClient) readAll(ctx context.Context, handle []byte, limit int64) ([
 // that is renamed over it once complete, so a failed transfer leaves the old
 // file. Where the server cannot rename over a file, it is written in place.
 func (h *Host) Put(ctx context.Context, path string, data []byte, perms uint32) error {
-	c, err := h.openSFTP(ctx)
+	return h.inFlight(ctx, func(open func() (*sftpClient, error)) error {
+		return h.put(ctx, open, path, data, perms)
+	})
+}
+
+func (h *Host) put(ctx context.Context, open func() (*sftpClient, error), path string, data []byte, perms uint32) error {
+	c, err := open()
 	if err != nil {
 		return err
 	}
@@ -462,7 +474,20 @@ func (h *Host) Put(ctx context.Context, path string, data []byte, perms uint32) 
 
 // Get reads path on h, refusing a file over limit bytes before reading it.
 func (h *Host) Get(ctx context.Context, path string, limit int64) ([]byte, error) {
-	c, err := h.openSFTP(ctx)
+	var data []byte
+	err := h.inFlight(ctx, func(open func() (*sftpClient, error)) error {
+		var err error
+		data, err = h.get(ctx, open, path, limit)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (h *Host) get(ctx context.Context, open func() (*sftpClient, error), path string, limit int64) ([]byte, error) {
+	c, err := open()
 	if err != nil {
 		return nil, err
 	}
@@ -480,4 +505,48 @@ func (h *Host) Get(ctx context.Context, path string, limit int64) ([]byte, error
 		return nil, fmt.Errorf("read %s on %s: %w", path, h.cfg.Name, err)
 	}
 	return data, nil
+}
+
+// sftpGrace is how long a transfer stopped by its context has to end once
+// its SFTP session is closed, before the connection to the host is closed too.
+var sftpGrace = 2 * time.Second
+
+// inFlight runs op until it ends or ctx does, whichever is first. When ctx
+// ends first, the SFTP session is closed; if op is still blocked on the host
+// after sftpGrace, so is the connection, so a host that stopped answering
+// holds no transfer and no call waits on it.
+func (h *Host) inFlight(ctx context.Context, op func(open func() (*sftpClient, error)) error) error {
+	var mu sync.Mutex
+	var live *sftpClient
+	stopped := false
+	track := func(c *sftpClient) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		live = c
+		return !stopped
+	}
+	open := func() (*sftpClient, error) { return h.openSFTP(ctx, track) }
+	done := make(chan error, 1)
+	go func() { done <- op(open) }()
+	select {
+	case err := <-done:
+		if err != nil && ctx.Err() != nil {
+			return fmt.Errorf("transfer on %s stopped: %w", h.cfg.Name, ctx.Err())
+		}
+		return err
+	case <-ctx.Done():
+	}
+	mu.Lock()
+	stopped = true
+	if live != nil {
+		// The session only: closing its stdin would race a write in flight.
+		_ = live.session.Close()
+	}
+	mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(sftpGrace):
+		_ = h.Close() // the next call dials again
+	}
+	return fmt.Errorf("transfer on %s stopped: %w", h.cfg.Name, ctx.Err())
 }

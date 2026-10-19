@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -34,6 +35,9 @@ func sftpServerBinary() string {
 // sftp subsystem with OpenSSH's own sftp-server, and keeps the commands it ran.
 type ioServer struct {
 	*testServer
+	// stall, when set, serves sftp with a server that stops answering at
+	// that request: "init" or "read".
+	stall    string
 	mu       sync.Mutex
 	commands []string
 	stdins   []string
@@ -114,6 +118,14 @@ func (s *ioServer) session(ch ssh.Channel, in <-chan *ssh.Request) {
 		case "subsystem":
 			var p struct{ Name string }
 			_ = ssh.Unmarshal(req.Payload, &p)
+			s.mu.Lock()
+			stall := s.stall
+			s.mu.Unlock()
+			if p.Name == "sftp" && stall != "" {
+				_ = req.Reply(true, nil)
+				stallingSFTP(ch, stall)
+				return
+			}
 			bin := sftpServerBinary()
 			if p.Name != "sftp" || bin == "" {
 				_ = req.Reply(false, nil)
@@ -150,6 +162,57 @@ func (s *ioServer) session(ch ssh.Channel, in <-chan *ssh.Request) {
 			return
 		default:
 			_ = req.Reply(false, nil)
+		}
+	}
+}
+
+// stallingSFTP answers SFTP until the request named by at, then reads on and
+// answers nothing more, as a host that hung would.
+func stallingSFTP(ch ssh.Channel, at string) {
+	reply := func(typ byte, body []byte) {
+		var b buf
+		b.u32(uint32(len(body) + 1))
+		b.u8(typ)
+		b.Write(body)
+		_, _ = ch.Write(b.Bytes())
+	}
+	for {
+		var hdr [4]byte
+		if _, err := io.ReadFull(ch, hdr[:]); err != nil {
+			return
+		}
+		pkt := make([]byte, binary.BigEndian.Uint32(hdr[:]))
+		if _, err := io.ReadFull(ch, pkt); err != nil {
+			return
+		}
+		typ, id := pkt[0], pkt[1:]
+		if len(id) >= 4 {
+			id = id[:4]
+		}
+		var b buf
+		switch {
+		case typ == fxpInit && at == "init":
+			continue
+		case typ == fxpInit:
+			b.u32(3)
+			reply(fxpVersion, b.Bytes())
+		case typ == fxpOpen:
+			b.Write(id)
+			b.str([]byte("h1"))
+			reply(fxpHandle, b.Bytes())
+		case typ == fxpFstat:
+			b.Write(id)
+			b.u32(attrSize)
+			b.u64(1 << 20)
+			reply(fxpAttrs, b.Bytes())
+		case typ == fxpRead && at == "read":
+			continue
+		default:
+			b.Write(id)
+			b.u32(4)
+			b.str([]byte("unexpected"))
+			b.str(nil)
+			reply(fxpStatus, b.Bytes())
 		}
 	}
 }

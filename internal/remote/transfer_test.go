@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -258,5 +260,43 @@ func TestTransfersThroughTheLoop(t *testing.T) {
 	if ap, _ := run(pol, sess, "ssh_get", marshal(map[string]any{"host": "vm1", "remote_path": keyDst, "file": filepath.Join(sess.Root, "a.conf")})); len(ap.reasons) != 1 ||
 		!strings.Contains(ap.reasons[0], "a.conf it would write") {
 		t.Fatalf("an ask rule on the file did not ask: %v", ap.reasons)
+	}
+}
+
+// A host that stops answering mid-transfer does not hold the call: the
+// transfer ends with its context, and transferTimeout bounds a tool call.
+func TestStalledTransferEndsWithItsContext(t *testing.T) {
+	defer func(g, tt time.Duration) { sftpGrace, transferTimeout = g, tt }(sftpGrace, transferTimeout)
+	sftpGrace = 200 * time.Millisecond
+	for _, at := range []string{"init", "read"} {
+		t.Run(at, func(t *testing.T) {
+			srv, reg := ioHost(t)
+			srv.mu.Lock()
+			srv.stall = at
+			srv.mu.Unlock()
+			h, _ := reg.get("vm1")
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := h.Get(ctx, "/etc/x", 1<<30)
+			if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("get from a stalled host: %v", err)
+			}
+			if took := time.Since(start); took > 3*time.Second {
+				t.Fatalf("a stalled get took %s", took)
+			}
+			// The tool's own bound holds without any deadline from the caller.
+			transferTimeout = 300 * time.Millisecond
+			sess := newSession(t)
+			start = time.Now()
+			res := call(t, GetTool{R: reg}, sess, map[string]any{"host": "vm1", "remote_path": "/etc/x", "file": filepath.Join(sess.Root, "x")})
+			if !res.IsError || !strings.Contains(res.Content, "stopped") || time.Since(start) > 3*time.Second {
+				t.Fatalf("tool call on a stalled host after %s: %s", time.Since(start), res.Content)
+			}
+			res = call(t, PutTool{R: reg, Secret: stored(map[string]string{"K": "v"})}, sess, map[string]any{"host": "vm1", "remote_path": "/etc/x", "secret": "K"})
+			if !res.IsError || time.Since(start) > 6*time.Second {
+				t.Fatalf("put on a stalled host: %s", res.Content)
+			}
+		})
 	}
 }

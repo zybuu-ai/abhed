@@ -100,9 +100,40 @@ func TestApplySecretResultIsMasked(t *testing.T) {
 	srv := secretServer(t, tlsSecret)
 	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
 	args, _ := json.Marshal(map[string]string{"action": "apply",
-		"manifest": `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"site-tls"},"data":{"tls.key":"S0VZLU1BVEVSSUFM"}}`})
+		"manifest": `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"site-tls","labels":{"team":"web"}}}`})
 	res := ApplyTool{M: mgr}.Run(context.Background(), nil, args)
 	if res.IsError || strings.Contains(res.Content, "hunter2") || strings.Contains(res.Content, `"S0VZLU1BVEVSSUFM"`) {
 		t.Errorf("apply result: %s", res.Content)
+	}
+}
+
+// A Secret's values in a manifest are refused, pointing to secret_from, and
+// withheld from the rules, the approver and the record: a Secret, a list
+// holding one, and a manifest that is not JSON.
+func TestSecretValuesInAManifestAreRefusedAndWithheld(t *testing.T) {
+	for name, m := range map[string]string{
+		"secret":   `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s"},"stringData":{"pw":"S0VZLU1BVEVSSUFM"}}`,
+		"list":     `{"apiVersion":"v1","kind":"List","items":[{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s"},"data":{"k":"S0VZLU1BVEVSSUFM"}}]}`,
+		"not json": `kind: Secret\ndata:\n  k: S0VZLU1BVEVSSUFM`,
+		"dup keys": `{"apiVersion":"v1","kind":"Secret","kind":"Secret","metadata":{"name":"s"},"data":{"k":"S0VZLU1BVEVSSUFM"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeCluster{answer: `{}`}
+			args, _ := json.Marshal(map[string]string{"action": "apply", "manifest": m})
+			ap, evs := runApply(t, f, nil, string(args))
+			if len(ap.seen) != 0 || len(f.got) != 0 {
+				t.Fatalf("asked %v, sent %+v", ap.seen, f.got)
+			}
+			for _, ev := range evs {
+				if strings.Contains(string(ev.Payload), "S0VZLU1BVEVSSUFM") {
+					t.Errorf("%s holds the value: %s", ev.Type, ev.Payload)
+				}
+			}
+			if name != "not json" && name != "dup keys" {
+				if out := toolResult(evs); !strings.Contains(out, "secret_from") {
+					t.Errorf("told %s", out)
+				}
+			}
+		})
 	}
 }

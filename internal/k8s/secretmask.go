@@ -68,3 +68,53 @@ var maskedRe = regexp.MustCompile(`^\[withheld: [0-9]+ bytes, fingerprint [0-9a-
 // withheldValue describes a secret value by its length and keyed
 // fingerprint, never the value or a plain hash of it.
 func withheldValue(raw []byte) string { return secrets.Withheld(raw) }
+
+// maskSecrets masks every Secret within v, a list's items included, and
+// reports whether it masked one.
+func maskSecrets(v any) bool {
+	found := false
+	switch x := v.(type) {
+	case map[string]any:
+		if isSecret(x) {
+			maskSecret(x)
+			found = true
+		}
+		for _, c := range x {
+			found = maskSecrets(c) || found
+		}
+	case []any:
+		for _, c := range x {
+			found = maskSecrets(c) || found
+		}
+	}
+	return found
+}
+
+// hasSecretValues reports whether a manifest is, or holds, a Secret with
+// data or stringData.
+func hasSecretValues(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		if isSecret(x) {
+			for _, f := range []string{"data", "stringData"} {
+				if d, ok := x[f]; ok && d != nil {
+					if m, isMap := d.(map[string]any); !isMap || len(m) > 0 {
+						return true
+					}
+				}
+			}
+		}
+		for _, c := range x {
+			if hasSecretValues(c) {
+				return true
+			}
+		}
+	case []any:
+		for _, c := range x {
+			if hasSecretValues(c) {
+				return true
+			}
+		}
+	}
+	return false
+}

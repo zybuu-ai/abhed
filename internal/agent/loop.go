@@ -1430,6 +1430,19 @@ func truncateKey(k string) string {
 // It replaces the call's arguments with their canonical encoding, so everything
 // after it, the tool included, reads the value policy judged.
 func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
+	ok, res, term := l.authorizeCall(ctx, c)
+	if !ok {
+		// What a tool readied for a call that will not run is let go now.
+		if t, found := l.Tools.Get(c.Name); found {
+			if u, isU := t.(tools.Unplanner); isU {
+				u.Unplan(l.Session, c.Args)
+			}
+		}
+	}
+	return ok, res, term
+}
+
+func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
 	tool, found := l.Tools.Get(call.Name)
 	if found && !l.offered(tool) {
@@ -1514,8 +1527,8 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	// deny. An allowed write the tool would refuse (into .abhed in
 	// accept-edits) was recorded approved, then refused.
 	var doomed error
-	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision != policy.Deny {
-		doomed = pc.Precheck(l.Session, call.Args)
+	if decision.Decision != policy.Deny {
+		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {

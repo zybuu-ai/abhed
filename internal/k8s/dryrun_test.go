@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -217,7 +218,8 @@ func TestSecretDiffShowsNoValues(t *testing.T) {
 		live:   `{"kind":"Secret","apiVersion":"v1","metadata":{"name":"s","namespace":"prod"},"data":{"tls.key":"T0xELUtFWQ=="}}`,
 		answer: `{"kind":"Secret","apiVersion":"v1","metadata":{"name":"s","namespace":"prod"},"data":{"tls.key":"TkVXLUtFWQ==","tls.crt":"Q1JU"}}`,
 	}
-	m := `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s"},"data":{"tls.key":"TkVXLUtFWQ==","tls.crt":"Q1JU"}}`
+	// A manifest without values (a label, say); the cluster's answer has them.
+	m := `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s","labels":{"a":"b"}}}`
 	args, _ := json.Marshal(map[string]string{"action": "apply", "manifest": m})
 	ap, _ := runApply(t, f, nil, string(args))
 	if len(ap.seen) != 1 {
@@ -233,4 +235,61 @@ func TestSecretDiffShowsNoValues(t *testing.T) {
 			t.Errorf("approval %q shows %q", why, leak)
 		}
 	}
+}
+
+// The dry run stops with the turn: a cluster that does not answer holds the
+// call only until its context ends.
+func TestDryRunStopsWithTheTurn(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := ApplyTool{M: mgr}.PrecheckContext(ctx, newSession(t),
+		json.RawMessage(`{"action":"restart","resource":"deployments","name":"web"}`))
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("dry run against a silent cluster: %v after %s", err, time.Since(start))
+	}
+}
+
+// A plan is let go when its call is not approved, and a session keeps a
+// bounded number of them.
+func TestPlansAreLetGo(t *testing.T) {
+	srv := httptest.NewServer(&fakeCluster{live: liveDeploy, answer: liveDeploy})
+	defer srv.Close()
+	mgr := NewManager(Config{Kubeconfig: writeKubeconfig(t, srv.URL)})
+	sess := newSession(t)
+	reg := tools.NewRegistry(ApplyTool{M: mgr})
+	l := agent.NewLoop(&oneCall{name: "k8s_apply", args: `{"action":"restart","resource":"deployments","name":"web"}`},
+		reg, policy.New(policy.ModeDefault), rejectAll{}, sess, agent.NewRecorder(agent.NewMemStore(), "s", ""), agent.DefaultConfig())
+	if _, err := l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if ps := mgr.plans(sess, false); ps == nil || len(ps.m) != 0 {
+		t.Fatalf("a rejected call's plan was kept: %v", ps)
+	}
+	tool := ApplyTool{M: mgr}
+	for i := range 40 {
+		raw := json.RawMessage(fmt.Sprintf(`{"action":"scale","resource":"deployments","name":"web","namespace":"prod","replicas":%d}`, i))
+		if err := tool.Precheck(sess, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(mgr.plans(sess, false).m); n != maxPlanned {
+		t.Fatalf("kept %d plans, want %d", n, maxPlanned)
+	}
+}
+
+type rejectAll struct{}
+
+func (rejectAll) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+	return false, nil
 }

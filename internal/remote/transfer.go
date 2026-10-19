@@ -27,8 +27,8 @@ import (
 // operator sets ssh.transfer_max_mb.
 const DefaultTransferMax = 16 << 20
 
-// transferTimeout bounds one transfer.
-const transferTimeout = 5 * time.Minute
+// transferTimeout bounds one transfer, however the host behaves.
+var transferTimeout = 5 * time.Minute
 
 func init() {
 	tools.RegisterSubjector("ssh_put", PutTool{})
@@ -111,6 +111,13 @@ type PutTool struct {
 }
 
 func (PutTool) Name() string { return "ssh_put" }
+
+// BindStore is the tool reading secret from v instead: on a server each
+// session reads only its own account's store.
+func (t PutTool) BindStore(v *secrets.Store) tools.Tool {
+	t.Secret = v.Value
+	return t
+}
 
 // Mutates is true: it changes a file on a host, with no undo.
 func (PutTool) Mutates() bool { return true }

@@ -20,6 +20,9 @@ All notable changes to Abhed are recorded here. The format follows
   file may keep it on.
 - The reason of a call the supervisor refused starts `supervisor:` instead
   of `monitor:`.
+- `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
+  or `stringData`, and withholds its values from the record; build such a
+  Secret with `secret_from` from stored secrets and workspace files.
 
 ### Security
 
@@ -95,11 +98,12 @@ All notable changes to Abhed are recorded here. The format follows
   rollout to finish or fail, so the agent need not poll.
 - `k8s_apply` `secret_from` builds a Secret, `Opaque` or
   `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
-  a TLS key never passes through the model: the approval and the record
-  name each source with its value's length, a fingerprint for a stored
-  secret and the sha256 for a workspace file, each stored secret
-  needs its `secret(NAME)` rule, each file is judged as a `read` of it, and
-  the dry run before the approval carries placeholders.
+  a TLS key never passes through the model. The approval and the record
+  name each source with its value's length and a fingerprint (a workspace
+  file's sha256). Each stored secret needs its `secret(NAME)` rule and each
+  file is judged as a `read` of it. The dry run before the approval carries
+  placeholders, no value is kept while the call waits, and a value changed
+  after the approval is not sent.
 - `ssh` `stdin_secret` writes a stored secret, by NAME and under its
   `secret(NAME)` rule, to the remote command's stdin, so a password for
   `sudo -S` or a key written to a file never appears in the command line,
