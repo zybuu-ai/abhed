@@ -311,6 +311,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if headless {
 		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start, fence: fenceOf(sb), attempts: attempts,
 			providerName: cfg.Model.Default, provider: provider, fallback: fallback}
+		if f.runbook != "" {
+			if o.runbook, err = loadRunbookFile(f.runbook, f.runbookHash); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: -runbook: %v\n", err)
+				return 2
+			}
+		}
 		prompt := f.task()
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
@@ -508,6 +514,10 @@ func checkHeadlessFlags(f *cliFlags) int {
 		return 2
 	}
 	switch {
+	case !f.print.on && f.runbook != "":
+		return bad("-runbook needs -p: in a conversation, the plan card approves a runbook")
+	case f.runbookHash != "" && f.runbook == "":
+		return bad("-runbook-sha256 needs -runbook")
 	case !f.print.on && f.jsonSchema != "":
 		return bad("-json-schema needs -p: a structured answer is for a script")
 	case !f.print.on && f.inputFormat != "text":

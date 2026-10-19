@@ -187,11 +187,29 @@ type Options struct {
 	// that tier is not available here, rather than running bash without it.
 	Sandbox bool
 
+	// Runbook, set by the operator, approves a plan's runbook for this agent
+	// before its first Run: each step made exactly as listed runs without
+	// asking Approve; any other change is put to Approve with "not in the
+	// approved plan", even where the policy alone would allow it. Deny rules,
+	// hooks and the sandbox still apply. Nil binds none.
+	Runbook *Runbook
+
 	// Store keeps the agent's record. Nil keeps it in memory, where it ends
 	// with the process; OpenLocalRecord gives the durable, chained local
 	// record the command line uses. See store.go.
 	Store Store
 }
+
+// Runbook is a plan and its steps, as exit_plan takes them. SHA256, when
+// set, is the plan hash the operator approved: one that differs is refused.
+type Runbook struct {
+	Plan   string        `json:"plan"`
+	Steps  []RunbookStep `json:"runbook"`
+	SHA256 string        `json:"sha256,omitempty"`
+}
+
+// RunbookStep is one step of a Runbook: the tool, where it runs, and what it runs.
+type RunbookStep = tools.RunbookStep
 
 // TaskInfo describes one background task.
 type TaskInfo = agent.TaskInfo
@@ -242,6 +260,8 @@ type Agent struct {
 	running int
 	// wakes are the wake runs this agent started on its own, by cancel.
 	wakes wakeRuns
+	// runbookNote gives the first Run the steps of Options.Runbook, once.
+	runbookNote string
 }
 
 // New builds an agent.
@@ -522,8 +542,16 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		fence.SetRecord(agent.SandboxRecord(rec))
 	}
+	runbookNote := ""
+	if rb := opts.Runbook; rb != nil {
+		bound, err := loop.BindRunbook(orDefault(rb.Plan, "Runbook"), rb.Steps, rb.SHA256)
+		if err != nil {
+			return fail(fmt.Errorf("abhed: runbook: %w", err))
+		}
+		runbookNote = agent.RunbookPrompt(bound)
+	}
 	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
-		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn}
+		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn, runbookNote: runbookNote}
 	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
@@ -537,6 +565,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 // were answered instead, the returned message is that answer.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 	defer a.startRun()()
+	if a.runbookNote != "" {
+		prompt, a.runbookNote = strings.TrimSpace(prompt+"\n\n"+a.runbookNote), ""
+	}
 	reason, err := a.loop.Run(ctx, prompt)
 	if err != nil {
 		return "", err

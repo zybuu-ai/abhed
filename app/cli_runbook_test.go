@@ -1,9 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,5 +106,73 @@ func TestRunbookDestructiveDeclinedKeepsPlanning(t *testing.T) {
 	c.command("1", "still in plan mode")
 	if got := planDecisions(t, c.export()); !slices.Equal(got, []string{"keep-planning>"}) {
 		t.Fatalf("decisions %v", got)
+	}
+}
+
+// scriptServer answers each model call with reply(n), n counting from 1.
+func scriptServer(t *testing.T, reply func(w io.Writer, n int)) string {
+	t.Helper()
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		reply(w, int(n.Add(1)))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// -p -runbook: the operator's file approves the steps; the step made as
+// listed runs, a change outside it asks and so is refused, and a pinned
+// hash that differs refuses the run before anything is recorded.
+func TestHeadlessRunbook(t *testing.T) {
+	var ws string
+	url := scriptServer(t, func(w io.Writer, n int) {
+		switch n {
+		case 1:
+			sseCall(w, n, "write", `{"path":`+strconv.Quote(filepath.Join(ws, "notes.txt"))+`,"content":"x"}`)
+		case 2:
+			sseCall(w, n, "write", `{"path":`+strconv.Quote(filepath.Join(ws, "other.txt"))+`,"content":"x"}`)
+		default:
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		}
+	})
+	ws = bgWorkspace(t, url, "")
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	file := filepath.Join(t.TempDir(), "rb.json")
+	doc, _ := json.Marshal(map[string]any{"plan": "notes", "runbook": []map[string]any{
+		{"tool": "write", "target": filepath.Join(ws, "notes.txt"), "args": map[string]string{"content": "x"}},
+	}})
+	if err := os.WriteFile(file, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := mainHelper([]string{"-C", ws, "-runbook", file, "-runbook-sha256", strings.Repeat("a", 64), "-p", "go"})
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err == nil || !strings.Contains(out.String(), "not the "+strings.Repeat("a", 64)) {
+		t.Fatalf("a runbook with another hash ran: %v\n%s", err, out.String())
+	}
+
+	cmd = mainHelper([]string{"-C", ws, "-runbook", file, "-output-format", "json", "-p", "go"})
+	out.Reset()
+	var errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	_ = cmd.Run()
+	if !strings.Contains(errOut.String(), "runbook bound: 1 steps") {
+		t.Fatalf("stderr:\n%s", errOut.String())
+	}
+	if b, err := os.ReadFile(filepath.Join(ws, "notes.txt")); err != nil || string(b) != "x" {
+		t.Fatalf("the step did not run: %v\n%s\n%s", err, out.String(), errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(ws, "other.txt")); err == nil {
+		t.Fatal("a change outside the runbook ran headless")
+	}
+	for _, want := range []string{`"plan.decided"`, `"via":"operator"`, `"plan.step"`, "not in the approved plan"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("no %s in the events:\n%s", want, out.String())
+		}
 	}
 }

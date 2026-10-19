@@ -2,7 +2,11 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -101,4 +105,48 @@ func runbookConfirm(steps []agent.RunbookStep) ui.DialogSpec {
 		Default: ui.ChoiceNo,
 		Cancel:  ui.ChoiceNo,
 	}
+}
+
+// runbookSpec is a runbook the operator supplied with -runbook.
+type runbookSpec struct {
+	text   string
+	steps  []tools.RunbookStep
+	hash   string // the plan hash it must have, "" for any
+	prompt string // the steps as the model is given them, once bound
+}
+
+// maxRunbookFile bounds a -runbook file.
+const maxRunbookFile = 1 << 20
+
+// loadRunbookFile reads a runbook file: exit_plan's own arguments, the plan
+// and its runbook, so a plan proposed in a conversation can be saved and run.
+func loadRunbookFile(path, hash string) (*runbookSpec, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxRunbookFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRunbookFile {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxRunbookFile)
+	}
+	var doc struct {
+		Plan    string              `json:"plan"`
+		Runbook []tools.RunbookStep `json:"runbook"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%s: %v", path, err)
+	}
+	if len(doc.Runbook) == 0 {
+		return nil, errors.New(path + " has no runbook steps")
+	}
+	if strings.TrimSpace(doc.Plan) == "" {
+		doc.Plan = "Runbook " + filepath.Base(path)
+	}
+	return &runbookSpec{text: doc.Plan, steps: doc.Runbook, hash: hash}, nil
 }

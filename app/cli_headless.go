@@ -49,6 +49,8 @@ type headlessOpts struct {
 	provider     config.ProviderConfig
 	// fallback, when set, records its moves in this run's record.
 	fallback *fallbackAdapter
+	// runbook is the runbook -runbook approved for this run, nil without one.
+	runbook *runbookSpec
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
@@ -486,7 +488,19 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		structured json.RawMessage
 		ran        bool
 	)
+	if o.runbook != nil {
+		rb, err := loop.BindRunbook(o.runbook.text, o.runbook.steps, o.runbook.hash)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: -runbook: %v\n", err)
+			return 2
+		}
+		fmt.Fprintf(os.Stderr, "abhed: runbook bound: %d steps, plan %s\n", len(rb.Steps), rb.Hash)
+		o.runbook.prompt = agent.RunbookPrompt(rb)
+	}
 	runOne := func(task string) {
+		if o.runbook != nil && !ran {
+			task = strings.TrimSpace(task + "\n\n" + o.runbook.prompt)
+		}
 		ran = true
 		if o.schema != nil {
 			structured, reason, err = agent.RunStructured(ctx, loop, loop.Tools, task, o.schema)

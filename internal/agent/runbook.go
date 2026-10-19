@@ -314,13 +314,18 @@ func (l *Loop) BindPlan(hash string) error {
 // BindRunbook binds a runbook the operator supplied, with no person asked:
 // the operator's setting is the approval. It is recorded as plan.proposed
 // and plan.decided, via operator.
-func (l *Loop) BindRunbook(text string, steps []tools.RunbookStep) (Runbook, error) {
+// A want other than "" is the plan hash the operator approved: a runbook
+// that hashes otherwise is refused, with nothing recorded.
+func (l *Loop) BindRunbook(text string, steps []tools.RunbookStep, want string) (Runbook, error) {
 	if len(steps) == 0 {
 		return Runbook{}, errors.New("the runbook has no steps")
 	}
 	rb, err := l.prepareRunbook(text, steps)
 	if err != nil {
 		return Runbook{}, err
+	}
+	if want = strings.ToLower(strings.TrimSpace(want)); want != "" && want != rb.Hash {
+		return Runbook{}, fmt.Errorf("the runbook's plan hash is %s, not the %s approved", rb.Hash, want)
 	}
 	if _, err := l.Recorder.Record(EvPlanProposed, ActorUser, Trusted, PlanProposed{Text: text, Runbook: rb}); err != nil {
 		return Runbook{}, err
