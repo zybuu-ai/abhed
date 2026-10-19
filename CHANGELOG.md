@@ -8,6 +8,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A subagent's worktree can be taken back by hunk: `/take` lists the
+  worktrees, `/take <id>` asks about each hunk, and the workbench's Changes
+  view shows them with tick boxes. What you accept is written into the
+  workspace as your own change, through the permission rules, git's
+  protection and checkpoints (so `/undo` takes it back); a hunk the
+  workspace changed meanwhile is reported as a conflict and left out, and
+  the worktree and its branch are removed only when you ask. Each take is
+  recorded as `worktree.taken`
+  ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
 - Changes made through `bash` are checkpointed: before each command the
   workspace's files are noted and copied in memory, within limits, and each
   file the command changed, removed or made is recorded as `checkpoint.saved`,
@@ -23,6 +32,15 @@ All notable changes to Abhed are recorded here. The format follows
   workspace looks like a Go, Node, Python or Rust project and the image
   lacks its toolchain, and name an image that has it; nothing is pulled to
   look ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
+
+### Fixed
+
+- The workbench's Changes view no longer lists the files in a subagent's
+  worktree (`.abhed-worktrees/`) as the workspace's own changes; they are
+  reviewed and taken on their own.
+- Studio's review no longer shows a file whose content was not kept before
+  the change (one that holds keys, or one a read rule denies) as a whole
+  file added from nothing.
 
 ## [1.2.8] - 2026-10-14
 

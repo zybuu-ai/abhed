@@ -295,8 +295,9 @@ func settleWorktree(ctx context.Context, ws, rel string, wt *worktree) string {
 	discard := fmt.Sprintf("To discard: `git worktree remove --force %s && git branch -D %s`.", rel, wt.Branch)
 	if stat, n := worktreeChanges(ctx, wt.Dir); n > 0 {
 		return fmt.Sprintf("Worktree %s (branch %s): %d file(s) changed, UNCOMMITTED.\n%s\n"+
-			"To take these changes: review with `git -C %s diff`, commit there, then "+
-			"`git merge %s` from the main tree. %s\n\n", rel, wt.Branch, n, stat, rel, wt.Branch, discard)
+			"To take these changes: `/take %s` in the terminal, or the workbench's Changes view, reviews them by hunk; "+
+			"or review with `git -C %s diff`, commit there, then `git merge %s` from the main tree. %s\n\n",
+			rel, wt.Branch, n, stat, filepath.Base(wt.Dir), rel, wt.Branch, discard)
 	}
 	return fmt.Sprintf("Worktree %s (branch %s): nothing uncommitted, but it holds commits or ignored files, "+
 		"so it is kept. Review with `git log %s..%s`, then `git merge %s` from the main tree. %s\n\n",

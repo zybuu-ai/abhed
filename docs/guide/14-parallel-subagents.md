@@ -102,14 +102,59 @@ subagent's summary and, for each worktree, what changed and how to take it:
 Worktree .abhed-worktrees/k3f9q2 (branch abhed/k3f9q2): 3 file(s) changed, UNCOMMITTED.
  auth/local.go | 12 ++++---
  …
-To take these changes: review with `git -C .abhed-worktrees/k3f9q2 diff`, commit
-there, then `git merge abhed/k3f9q2` from the main tree. To discard:
-`git worktree remove --force .abhed-worktrees/k3f9q2 && git branch -D abhed/k3f9q2`.
+To take these changes: `/take k3f9q2` in the terminal, or the workbench's
+Changes view, reviews them by hunk; or by hand, review with
+`git -C .abhed-worktrees/k3f9q2 diff`, commit there, then `git merge abhed/k3f9q2`
+from the main tree. To discard: `git worktree remove --force .abhed-worktrees/k3f9q2
+&& git branch -D abhed/k3f9q2`.
 ```
 
 Changes are left **uncommitted in the worktree**, on purpose. Merging is a
 decision, and the point of isolation is that a person — or the parent agent,
 with the diff in front of it — makes that decision rather than discovering it.
+
+## Taking a worktree back
+
+`/take` lists the subagent worktrees in the workspace; `/take <id>` shows
+one's changes a hunk at a time, each with three lines around it, and asks
+whether to take it, skip it, take or skip the rest of the file, or stop.
+Then it asks once more: take the hunks you accepted and keep the worktree,
+or take them and remove the worktree and its branch, which loses what was
+not taken. In the workbench the same changes are under **Changes**, below
+the session's own, each hunk with a tick box, and **Take ticked** or **Take
+ticked, remove worktree**.
+
+The changes are those against the commit the worktree shares with the
+workspace's `HEAD`: what the subagent left uncommitted, untracked files
+included, and anything it committed. What you accept is put in as your own
+change, not git's:
+
+- **Each file is your write**, through the same path as a save in the
+  workbench: the permission rules judge it (a deny rule refuses it, and the
+  refusal is recorded), git's config and hooks stay protected, and the file
+  is checkpointed, so `/undo` takes the whole take back. A file the take
+  removes is your judged and recorded `delete`. Removing the worktree is your
+  `delete` of its folder.
+- **Conflicts are reported, never forced.** Each accepted hunk is put where
+  its lines now are in the workspace's file. A hunk whose lines the workspace
+  has changed since, or changed right next to, is left out and named as a
+  conflict; the other hunks of the file still go in. A file the workspace
+  made or removed meanwhile is a conflict as a whole, unless it already
+  holds what the worktree has.
+- **The changes are read again at the take**, so a listing made earlier
+  cannot put in a hunk the worktree no longer holds.
+- **Some files are not taken here**: a link, a submodule, a path in a `.git`
+  folder, `.abhed` or `.abhed-worktrees`, and a file whose read a rule
+  denies (the workbench names it without its content). A binary file, or one
+  over 4 MiB, is one change, taken whole only when the workspace's copy is
+  still the shared commit's. Permission bits are not taken: a new file is
+  made as a write makes one.
+
+The take is recorded as `worktree.taken`, naming the worktree, its branch,
+the commit, the files taken, the conflicts and refusals, the hunks left, and
+whether the worktree was removed. Taking a hunk does not change the worktree:
+it lists the same changes until it is removed, and a hunk the workspace
+already holds is left alone when taken again.
 
 Worktrees are created up front and serially before any subagent starts, so a
 git failure stops the whole call before a token is spent. The directory is

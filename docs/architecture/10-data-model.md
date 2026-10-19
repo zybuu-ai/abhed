@@ -74,7 +74,7 @@ conversation opens, ahead of that message. A conversation opened after
 `/clear` or `/resume` first restates what it inherits: the mode, as
 `mode.changed` with `via: carried`, and each added directory as
 `workspace.dir_added`, so each record stands alone. Rewind reuses `conversation.forked`
-and adds `file.restored`.
+and adds `file.restored`; taking a worktree back adds `worktree.taken`.
 
 | Type | Payload | Emitted by |
 |---|---|---|
@@ -88,7 +88,8 @@ and adds `file.restored`.
 | `session.named` | `name`, from `-n` or `/rename` | user |
 | `session.branched` | the first event of a new session: `from`, the session it was copied from; `through_seq`, the last event taken; `unverified`, why the source's record failed verification, absent when it verified. A copy of the source's conversation and undo history follows, renumbered, with new ids; copies from a file or a failing record are `untrusted`. A `through_seq` inside a copied `session.started` or `session.resumed` is renumbered to the copy's numbering, as a restore's checkpoint is; `conversation.forked` markers are not copied | user |
 | `file.restored` | `path`, `before_sha256` (absent when the file did not exist), `after_sha256` (absent when the restore removed it), `checkpoint`, the seq of the `checkpoint.saved` whose content was put back, `by` (`user`). Recorded after the person's `action.requested`, the decision and its `observation` | user |
-| `checkpoint.saved` | a file's content just before the agent changed it: `path`; `sha256`, the blob holding the content, absent when the file did not exist or none was kept; `turn`; `mode`, its permission bits; `skipped`, why no content was kept (a read deny rule, or a name that holds keys) | system |
+| `checkpoint.saved` | a file's content just before the agent changed it, with the write or edit tools or through a `bash` command: `path`; `sha256`, the blob holding the content, absent when the file did not exist or none was kept; `turn`; `mode`, its permission bits; `skipped`, why no content was kept (a read deny rule, a name that holds keys, or a `bash` snapshot's limit) | system |
+| `worktree.taken` | a subagent's worktree taken back by hunk (`/take`, the workbench): `worktree` (`.abhed-worktrees/<id>`), `branch`, `base` (the commit it shares with the workspace), `taken` (paths written or removed), `conflicts`, `refused` (with the reason), `left` (hunks not taken), `removed` (the worktree and its branch). Each file taken is the person's own `write` or `delete` before it, with its decision and `observation` | user |
 | `plan.proposed` | `text`, the plan the agent submitted in plan mode | agent |
 | `plan.decided` | `decision` (`accept` or `keep-planning`), `to_mode`; never `auto` or `bypass` | user |
 | `model.fallback` | `from`, `to`, `reason`; a move to a configured fallback model *(not yet emitted)* | system |

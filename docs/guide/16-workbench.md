@@ -26,7 +26,7 @@ turns; the status bar names the model the last call went to
 |---|---|
 | **Explorer** | the session's workspace; click a file to open it in the editor. New file, new folder, rename (F2), delete, download and upload are on its toolbar and right-click menu, and files dropped on a folder go into it |
 | **Search** | text or a regular expression across the workspace, with match case and whole word; results grouped by file, a click opens the line |
-| **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change |
+| **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change; below them, each subagent worktree's changes by hunk, to [take into the workspace](14-parallel-subagents.md#taking-a-worktree-back) |
 | **Files** | the documents, images, spreadsheets and archives at the top of the workspace, each a click from downloading ([files in and out](#files-in-and-out)) |
 | **Tools** | every tool the agent has, whether it asks before running, and the permission rules in force |
 | **Extensions** | configured extensions and the events they hook, connected MCP servers, loaded skills |

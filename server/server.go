@@ -865,6 +865,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/search", s.searchSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
+	mux.HandleFunc("GET /v1/sessions/{id}/worktrees", s.listWorktrees)
+	mux.HandleFunc("POST /v1/sessions/{id}/worktrees/{wt}/take", s.takeWorktree)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
 	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.untilShutdown(s.streamLSP))
