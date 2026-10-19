@@ -333,9 +333,11 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.9"
-      # The process tier's per-command cgroup is tested here, in a delegated scope.
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+      # The process tier's per-command cgroup is tested here, in a delegated
+      # scope; musl-tools builds the static musl resolver helper the fence's
+      # name test runs, so a resolver that sends UDP alone is covered.
+      - name: Install bubblewrap and musl-tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap musl-tools
       - name: Build the test binaries
         run: scripts/ci/fence-gated.sh build "$FENCE_DIR"
       - name: Allow user namespaces to those binaries, mount the alias, start the user manager

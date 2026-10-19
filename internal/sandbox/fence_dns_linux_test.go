@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -106,6 +107,28 @@ r = s.recv(512); print("ANSWER", ".".join(str(b) for b in r[-4:]))`
 		if !strings.Contains(out, "(198.1") || !strings.Contains(out, "bad address 'other.test'") {
 			t.Fatalf("musl's getaddrinfo:\n%s", out)
 		}
+	}
+}
+
+// A static musl program's getaddrinfo, as CI builds it, resolves the same.
+func TestFenceResolvesWithMusl(t *testing.T) {
+	helper := os.Getenv("ABHED_TEST_MUSL_RESOLVE")
+	if helper == "" {
+		t.Skip("set ABHED_TEST_MUSL_RESOLVE to a static musl resolver helper")
+	}
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Ports: []int{80}, Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, p := fenced(t, func(p *Policy) { p.Egress = pol; p.ReadOnlyPaths = append(p.ReadOnlyPaths, filepath.Dir(helper)) })
+	if f.Mode() != FenceModeMounts {
+		t.Skip("mount_namespace mode is not available here")
+	}
+	out, _ := fenceRun(t, f, p.Workspace, helper+" allowed.test; "+helper+" other.test || echo OTHER-NONE", nil, "call-musl-c")
+	t.Logf("musl getaddrinfo:\n%s", out)
+	addr, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	if a, err := netip.ParseAddr(addr); err != nil || !egress.SynthPrefix.Contains(a) || !strings.Contains(out, "OTHER-NONE") {
+		t.Fatalf("musl getaddrinfo under the fence:\n%s", out)
 	}
 }
 
