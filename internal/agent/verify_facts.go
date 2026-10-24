@@ -54,7 +54,7 @@ func (f facts) any() bool {
 var (
 	ansiRe     = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
 	spaceRe    = regexp.MustCompile(`\s+`)
-	backtickRe = regexp.MustCompile("`([^`\n]{2,200})`")
+	backtickRe = regexp.MustCompile("`([^`\n]{1,200})`")
 	dquoteRe   = regexp.MustCompile(`"([^"\n]{2,200})"`)
 	urlRe      = regexp.MustCompile(`https?://[^\s<>"'` + "`" + `)\]]+`)
 	fileLineRe = regexp.MustCompile(`((?:[\w.\-]+/)*[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}):(\d+)(?::\d+)?\b`)
@@ -97,6 +97,9 @@ var notUnits = map[string]bool{
 	"was": true, "were": true, "at": true, "on": true, "for": true, "by": true, "out": true, "a": true,
 	"an": true, "as": true, "from": true, "with": true, "per": true, "than": true, "more": true,
 	"less": true, "times": true, "x": true, "it": true, "that": true, "this": true, "be": true,
+	// Joining words follow a number without counting anything either.
+	"because": true, "since": true, "so": true, "but": true, "if": true, "when": true, "then": true,
+	"while": true, "until": true, "unless": true, "though": true,
 }
 
 // keyStop are words a number follows without being their value.

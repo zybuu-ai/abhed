@@ -432,6 +432,18 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		v.Verdict = ClaimUnverified
 		v.Reason = "it says something did not happen or is not so, which a result showing the thing does not show"
 	}
+	// A state ("healthy", "down") or a deed ("we deployed") the matched
+	// output does not itself say is not shown by its other words matching.
+	if v.Verdict == ClaimVerified {
+		if why := unsaid(ix, c, v); why != "" {
+			v.Verdict, v.Reason = ClaimUnverified, why
+		}
+	}
+	// Explaining what a result showed is no claim about the session's work.
+	if v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
+		v.Kind, v.LoadBearing = KindKnowledge, false
+		v.Reason = "explains what a result showed; not a claim about this session's work"
+	}
 	return v
 }
 
