@@ -517,3 +517,62 @@ func TestCommandHomeFollowsTheBashTool(t *testing.T) {
 		}
 	}
 }
+
+// Container and cluster operations with no undo need confirmation; everyday
+// reads, builds and dev resets do not.
+func TestContainerClusterDestructive(t *testing.T) {
+	cases := map[string]bool{
+		"docker system prune -af --volumes":                                true,
+		"docker system prune":                                              true,
+		"podman system reset -f":                                           true,
+		"docker volume rm pgdata":                                          true,
+		"docker volume prune -af":                                          true,
+		"podman volume rm --all":                                           true,
+		"docker image prune -a":                                            true,
+		"docker image prune --all -f":                                      true,
+		"docker rmi -f app:dev":                                            true,
+		"docker image rm --force app":                                      true,
+		"kubectl delete ns prod":                                           true,
+		"kubectl delete namespaces a b":                                    true,
+		"kubectl --context prod delete ns/prod":                            true,
+		"kubectl delete pvc data-db-0":                                     true,
+		"kubectl delete all --all -A":                                      true,
+		"kubectl delete pods --all":                                        true,
+		"kubectl delete deploy web --all-namespaces":                       true,
+		"kubectl scale deploy/db --replicas=0":                             true,
+		"kubectl scale deploy db --replicas 0":                             true,
+		"kubectl drain node-1 --ignore-daemonsets":                         true,
+		"kubectl cordon node-1":                                            true,
+		"kubectl -n prod patch deploy db -p x":                             true,
+		"kubectl patch pvc data -p '{\"metadata\":{\"finalizers\":null}}'": true,
+		"kubectl apply -f k8s/ --prune -l app=x":                           true,
+
+		"oc delete project prod":                true,
+		"oc delete projects a b":                true,
+		"helm uninstall web -n prod":            true,
+		"helm delete web":                       true,
+		"helm list -n prod":                     false,
+		"helm upgrade --install web ./chart":    false,
+		"oc get projects":                       false,
+		"docker system df":                      false,
+		"docker image prune -f":                 false,
+		"docker volume ls":                      false,
+		"docker images":                         false,
+		"docker rmi app:old":                    false,
+		"docker compose down -v":                false,
+		"kubectl get ns":                        false,
+		"kubectl delete pod web-1":              false,
+		"kubectl delete pod mypod-ns-1":         false,
+		"kubectl scale deploy/web --replicas=3": false,
+		"kubectl rollout restart deploy/web":    false,
+		"kubectl apply -f k8s/":                 false,
+		"kubectl uncordon node-1":               false,
+		"kubectl patch deploy web -p x":         false,
+	}
+	for cmd, want := range cases {
+		what, got := IsDestructive(cmd)
+		if got != want {
+			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
