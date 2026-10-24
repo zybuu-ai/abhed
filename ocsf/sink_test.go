@@ -618,3 +618,52 @@ func TestCaughtUpWithNothingEndsTheBackoff(t *testing.T) {
 		t.Fatalf("a failure after catching up waits %v, want %v again: the session still counted as failing", got, ocsf.MinBackoff())
 	}
 }
+
+// A live write that succeeds ends the backoff its session's failure began,
+// as does a live line that maps to nothing: with no record to catch up
+// from, nothing else clears the session.
+func TestALiveWriteEndsTheBackoff(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		typ     agent.EventType
+		payload string
+	}{
+		{"a written line", agent.EvUserMessage, `{"text":"m"}`},
+		{"a line that maps to nothing", agent.EvAgentDelta, `{"text":"do","n":0}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cur := &scriptedCursors{failFor: "s"}
+			cur.rows = map[string]ocsf.Cursor{}
+			at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+			sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: filepath.Join(t.TempDir(), "c.jsonl"), Cursors: cur})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sink.Close()
+			add := func(seq int64, typ agent.EventType, payload string) {
+				sink.Add(ocsf.Line{Event: agent.Event{ID: fmt.Sprintf("s-%d", seq), SessionID: "s", Seq: seq, Type: typ,
+					Payload: []byte(payload), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}})
+			}
+			fail := func(seq int64) {
+				cur.failLoad.Store(1)
+				add(seq, agent.EvUserMessage, `{"text":"m"}`)
+				deadline := time.Now().Add(5 * time.Second)
+				for cur.failLoad.Load() != 0 && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			fail(1)
+			if got := sink.Backoff(); got != ocsf.MinBackoff() {
+				t.Fatalf("the first failure waits %v, want %v", got, ocsf.MinBackoff())
+			}
+			time.Sleep(ocsf.MinBackoff() + 100*time.Millisecond)
+			add(2, c.typ, c.payload)
+			time.Sleep(50 * time.Millisecond)
+			fail(3)
+			if got := sink.Backoff(); got != ocsf.MinBackoff() {
+				t.Fatalf("a failure after %s waits %v, want %v again", c.name, got, ocsf.MinBackoff())
+			}
+		})
+	}
+}

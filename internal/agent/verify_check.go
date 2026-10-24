@@ -580,8 +580,8 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		pathLit[normText(p)] = true
 		// A statement about a file this session changed, other than that it
 		// was changed, is about its content, which no output naming it shows.
-		if !f.changed && ix.namedByChange(p) {
-			changedLit[normText(p)] = p
+		if why := ix.namedByChange(p); !f.changed && why != "" {
+			changedLit[normText(p)] = why
 		}
 	}
 	var notFileTools []*obsRec
@@ -594,7 +594,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		switch {
 		case atLine[lit]:
 		case changedLit[lit] != "":
-			findings = append(findings, finding{out: missing, why: fmt.Sprintf("%s was changed in this session, and output naming it does not show what it holds", changedLit[lit])})
+			findings = append(findings, finding{out: missing, why: changedLit[lit] + ", and output naming it does not show what it holds"})
 		case pathLit[lit] && len(notFileTools) < len(pool):
 			fd := ix.literal(notFileTools, lit, false)
 			if fd.out != matched {
@@ -627,7 +627,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		findings = append(findings, ix.number(pool, n, cited))
 	}
 	if f.success {
-		findings = append(findings, ix.success(pool, f.testish, f.scope, cited))
+		findings = append(findings, ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited))
 	}
 	return findings
 }
@@ -887,7 +887,7 @@ func countedNumber(cs []countFact, n string) bool {
 // success checks a claim that tests passed or a command succeeded: a command
 // must have ended with exit 0 after the last change, and none of its kind
 // since may have failed.
-func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, cited bool) finding {
+func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, contradict, cited bool) finding {
 	// A run counts only as the whole line, or the last command of an &&
 	// chain at its top with only cd before it, so its exit is the run's; of
 	// the claim's own kind (a test run is no build); in this session's
@@ -905,9 +905,10 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 		}
 		return runScope(lf.final, lf.finalCwd)
 	}
-	if cited {
+	if contradict {
 		// Contradicted by a cited run of the same kind and the same scope
-		// that failed on its own: no runner around it, exit 1.
+		// that failed on its own: no runner around it, exit 1; only when the
+		// claim is that the run passed, not a count of what passed in it.
 		for _, o := range pool {
 			pats, ok := fits(o)
 			if ok && *o.exit == 1 && !o.line.finalWrapped && sameScope(pats, scopeDirs, ix.workDir) {
@@ -1002,13 +1003,13 @@ func (ix *recordIndex) changedPath(p string) finding {
 	return finding{out: missing, why: "no call this session made is read as a change to " + p}
 }
 
-// namedByChange reports a call of the agent's, failed or not, that may have
+// namedByChange says which call of the agent's, failed or not, may have
 // changed p or a folder holding it: one naming it, or, for a path in the
-// workspace, one whose files are not known.
-func (ix *recordIndex) namedByChange(p string) bool {
+// workspace, one whose files are not known; "" for none.
+func (ix *recordIndex) namedByChange(p string) string {
 	want := ix.inWorkspace(p)
 	if want == "" {
-		return false
+		return ""
 	}
 	inside := ix.workDir != "" && strings.HasPrefix(want+"/", filepath.Clean(ix.workDir)+"/")
 	for _, m := range ix.mutations {
@@ -1018,7 +1019,7 @@ func (ix *recordIndex) namedByChange(p string) bool {
 		// A call whose files are not known may have changed any of the
 		// workspace's (python fix.py); a remote one, none of them.
 		if !m.known && m.tool != "ssh" && inside {
-			return true
+			return fmt.Sprintf("#%d (%s) may have changed any file in the workspace, %s among them", m.seq, mutationLabel(m), p)
 		}
 		for _, t := range append(append([]string(nil), m.targets...), m.covers...) {
 			if t == "" {
@@ -1026,11 +1027,11 @@ func (ix *recordIndex) namedByChange(p string) bool {
 			}
 			t = filepath.Clean(t)
 			if t == want || strings.HasPrefix(want, t+"/") || strings.HasPrefix(t, want+"/") {
-				return true
+				return fmt.Sprintf("%s was changed in this session (#%d)", p, m.seq)
 			}
 		}
 	}
-	return false
+	return ""
 }
 
 // inWorkspace is where a path a claim names is: as written when absolute,
