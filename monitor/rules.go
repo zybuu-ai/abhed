@@ -46,7 +46,7 @@ type Rules struct {
 	Hosts []DeclaredHost
 	// Home is the home folder ~ stands for in a local command, so a target
 	// under ~ can be placed against the workspace. "" leaves ~ unexpanded.
-	Home string
+	Home func() (string, bool)
 }
 
 // DeclaredHost is one configured ssh host.
@@ -57,7 +57,11 @@ type DeclaredHost struct{ Name, Addr string }
 // credential followed by a way out, and ok otherwise.
 func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
 	k := facts(c)
-	k.home = r.Home
+	if r.Home != nil {
+		if h, ok := r.Home(); ok {
+			k.home = h
+		}
+	}
 	for _, d := range r.Declared {
 		if d != "" {
 			k.declared = append(k.declared, strings.ToLower(d))
@@ -294,14 +298,19 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	if remote(c) {
 		where = "on " + k.str("host")
 	}
+	if s.mentionsHome {
+		k.home = "" // HOME may be written in this line: ~ is not placed against the session's home
+	}
 	for _, cmd := range s.cmds {
 		// A command name the check cannot read plainly (\rm, r\m, a quoted or
-		// expanded name), or a wrapper with an option (sudo -u, env -C,
-		// command -p, nice -n …), may hide the program or move the directory;
-		// its words are not read as a command line. If they look destructive —
-		// a deleting program, an interpreter, a protected root — the person is asked.
-		if !plainHead(cmd) || optioned(wrapperPrefix(cmd.words)) {
-			if looksDestructive(cmd.words) {
+		// expanded name) — the first word or the program past a wrapper — or a
+		// wrapper with an option (sudo -u, env -C, command -p, nice -n …), may
+		// hide the program or move the directory; its words are not read as a
+		// command line. If they look destructive — a deleting program, an
+		// interpreter, a protected root, an operand outside own ground — the
+		// person is asked.
+		if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+			if looksDestructive(cmd.words) || r.strayOperand(k, c, cmd.words) {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 					Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
 					Advice:    "run the delete plainly, with no wrapper options and the path in full, or confirm this is meant"}
@@ -310,6 +319,11 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 		}
 		prog, args := cmd.program()
 		prog = path.Base(prog) // /bin/rm is rm
+		if prog == "find" && findExecHidden(args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("find runs a program by -exec that the check cannot read plainly; %s", remit(c)),
+				Advice:    "name the program find runs in full, or confirm this is meant"}
+		}
 		for _, t := range destroys(prog, args) {
 			if t == "" {
 				continue
@@ -464,7 +478,28 @@ func looksDestructive(words []string) bool {
 // codeRunners are interpreters and shells, which run code the check does not
 // read; one among a hidden command's words makes it look destructive.
 var codeRunners = map[string]bool{"node": true, "perl": true, "ruby": true, "php": true, "bash": true, "sh": true,
-	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true}
+	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true,
+	"lua": true, "Rscript": true, "tclsh": true, "osascript": true}
+
+// strayOperand reports, for a command the check does not read as a command
+// line, an operand that climbs out of or lies outside own ground: an absolute
+// or ~ path not own ground, or a relative path that climbs above where it starts.
+func (r Rules) strayOperand(k *given, c Case, words []string) bool {
+	for _, w := range operands(words) {
+		w = strings.ReplaceAll(w, `\`, "")
+		switch {
+		case strings.HasPrefix(w, "/") || homeish(w):
+			if !r.ownGround(k, c, w) {
+				return true
+			}
+		case !strings.HasPrefix(w, "$"):
+			if clean := path.Clean(w); clean == ".." || strings.HasPrefix(clean, "../") {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // plainHead reports a command whose name is a single plain literal.
 func plainHead(cmd command) bool {
@@ -634,7 +669,7 @@ func oneLiner(prog string, args []string) string {
 	switch {
 	case strings.HasPrefix(prog, "python"):
 		flag = "-c"
-	case prog == "node", prog == "perl", prog == "ruby":
+	case prog == "node", prog == "perl", prog == "ruby", prog == "lua", prog == "Rscript", prog == "osascript":
 		flag = "-e"
 	case prog == "php":
 		flag = "-r"
@@ -658,11 +693,26 @@ var codeDeletes = regexp.MustCompile(`(?:\b(?:rmtree|remove|unlink|rmdir|removed
 
 func execsRemove(args []string) bool {
 	for i, a := range args {
-		if (a == "-exec" || a == "-execdir" || a == "-ok") && i+1 < len(args) {
-			switch args[i+1] {
-			case "rm", "shred", "unlink":
+		if isExecFlag(a) && i+1 < len(args) {
+			switch path.Base(strings.ReplaceAll(args[i+1], `\`, "")) { // /bin/rm and \rm are rm
+			case "rm", "shred", "unlink", "srm":
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func isExecFlag(a string) bool {
+	return a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir"
+}
+
+// findExecHidden reports a find whose -exec program is not a literal the
+// check reads: an expansion it cannot resolve.
+func findExecHidden(args []string) bool {
+	for i, a := range args {
+		if isExecFlag(a) && i+1 < len(args) && strings.HasPrefix(args[i+1], "$") {
+			return true
 		}
 	}
 	return false
