@@ -69,7 +69,8 @@ var (
 	// What a claim says when it reports success; negRe undoes it.
 	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
-	countedOutcomeRe = regexp.MustCompile(`\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
+	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:the\s+|of\s+the\s+)?|\b\d+\s*/\s*|\b\d+\s+of\s+)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
+	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+of\s+)(\d+)\b)`)
 	noFailRe         = regexp.MustCompile(`\bno (?:errors|failures|failed tests?|tests? failed)\b`)
 	testRe           = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
 	buildRe          = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
@@ -294,7 +295,12 @@ func extractFacts(claim string) facts {
 	}
 	// "9 tests passed" is a count, judged as one: the run it counts may have
 	// failed other tests. Only a success said of the run itself is one.
-	said := countedOutcomeRe.ReplaceAllString(normText(claim), " ")
+	said := countedOutcomeRe.ReplaceAllStringFunc(normText(claim), func(m string) string {
+		if wholeRunCount(m) {
+			return m
+		}
+		return " "
+	})
 	plain := noFailRe.ReplaceAllString(normText(claim), " ")
 	if successRe.MatchString(said) && !negRe.MatchString(plain) {
 		f.success = true
@@ -315,6 +321,14 @@ func extractFacts(claim string) facts {
 		}
 	}
 	return f
+}
+
+// wholeRunCount reports a counted pass said of every test: "all 12 tests
+// passed", "12/12", "12 of 12". It is a claim the run passed, judged against
+// the run as well as counted.
+func wholeRunCount(m string) bool {
+	w := wholeRunRe.FindStringSubmatch(m)
+	return w != nil && (w[1] == "" || normNumber(w[1]) == normNumber(w[2]))
 }
 
 // looksLikePath tells a file path from words joined by a slash, as in
@@ -475,13 +489,55 @@ func readCount(s string, m []int) countFact {
 	// The M of "N of M" counts the whole, not what the words after it say of
 	// N; and a word after a "not" on the line says the opposite.
 	head := lineHead(s, m[0])
-	if f := strings.Fields(head); len(f) > 0 && (f[len(f)-1] == "of" || len(f) > 1 && f[len(f)-1] == "the" && f[len(f)-2] == "of") {
+	if part, ok := partOf(s, m[0], head); ok && part != c.n {
 		c.quals, c.denom = nil, true
 	}
-	if lineNegRe.MatchString(head) {
+	if lineNegRe.MatchString(clauseHead(head)) {
 		c.quals = nil
 	}
 	return c
+}
+
+// partOf reports a count at s[at] that is the M of "N of M": written "N/M",
+// or with "of" in the two words before it ("2 of 5", "2 of the 5", "2 of
+// all 5", "2 out of a total of 5"). part is N, normalised, or "" when it is
+// not a number. "12 of 12" and "12/12" are all of them, not a part.
+func partOf(s string, at int, head string) (part string, ok bool) {
+	if at > 0 && s[at-1] == '/' {
+		i := at - 1
+		for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+			i--
+		}
+		if i == at-1 {
+			return "", true
+		}
+		return normNumber(s[i : at-1]), true
+	}
+	f := strings.Fields(head)
+	for k := len(f) - 1; k >= 0 && k >= len(f)-2; k-- {
+		if f[k] != "of" {
+			continue
+		}
+		j := k - 1
+		if j >= 0 && f[j] == "out" {
+			j--
+		}
+		if j >= 0 && allDigits(f[j]) {
+			return normNumber(f[j]), true
+		}
+		return "", true
+	}
+	return "", false
+}
+
+// clauseHead is the part of a line's head after its last ";" or ",": a
+// negation in an earlier clause ("no errors; 3 replicas are ready") is not
+// this count's.
+func clauseHead(head string) string {
+	if i := strings.LastIndexAny(head, ";,"); i >= 0 {
+		return head[i+1:]
+	}
+	return head
 }
 
 // lineNegRe is a negation on a line before a count.
@@ -536,7 +592,7 @@ func plainWord(w string) bool {
 // labelQuals are a label's: the label when it is an outcome or a state, as
 // in "failed=3", and the word before it on its line ("tests run: 12").
 func labelQuals(s string, start int, label string) []string {
-	if lineNegRe.MatchString(lineHead(s, start)) {
+	if lineNegRe.MatchString(clauseHead(lineHead(s, start))) {
 		return nil
 	}
 	var q []string
@@ -617,7 +673,7 @@ var (
 	evLabelRe = regexp.MustCompile(`([a-z][a-z\-]{1,24}) *[:=] *((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)`)
 )
 
-func prepareEvidence(content string) *evidenceText {
+func prepareEvidence(content string, testRun bool) *evidenceText {
 	e := &evidenceText{norm: normText(content), numbers: map[string]bool{}, counts: map[string][]countAt{}, labels: map[string][]countAt{}}
 	// Counts are read line by line, so the words beside one are its own.
 	lines := strings.Split(content, "\n")
@@ -651,8 +707,8 @@ func prepareEvidence(content string) *evidenceText {
 		}
 		c := readCount(lined, m)
 		e.counts[c.unit] = append(e.counts[c.unit], countAt{n: c.n, excerpt: excerpt(m[0]), quals: c.quals})
-		// A runner's "3 failed, 9 passed" counts tests.
-		if raw := lined[m[4]:m[5]]; c.unit == unitOf(raw) && runOutcomes[closedQuals[raw]] && len(c.quals) > 0 {
+		// A test runner's "3 failed, 9 passed" counts tests.
+		if raw := lined[m[4]:m[5]]; testRun && c.unit == unitOf(raw) && runOutcomes[closedQuals[raw]] && len(c.quals) > 0 {
 			e.counts["test"] = append(e.counts["test"], countAt{n: c.n, excerpt: excerpt(m[0]), quals: c.quals})
 		}
 	}
