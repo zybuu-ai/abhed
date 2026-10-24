@@ -315,7 +315,7 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 		k.home = "" // the line may write HOME: ~ is not placed against the session's home
 	}
 	for _, cmd := range s.cmds {
-		if v := r.judgeCommand(k, c, cmd, where, 0); v != nil {
+		if v := r.judgeCommand(k, c, cmd, where, 0, false); v != nil {
 			return v
 		}
 	}
@@ -324,7 +324,7 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	// string, a here-document, an extra argument, an assignment value — names
 	// a deleting program or a protected root is put to the person. The precise
 	// rules above decide every line the check reads completely.
-	if !r.lineFullyRead(s) && lineMentionsDanger(s) {
+	if !r.lineFullyRead(s) && lineMentionsDanger(s, false) {
 		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
 			Rationale: fmt.Sprintf("the line runs something the check does not read in full, and it names a deleting program or a protected folder; %s", remit(c)),
 			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
@@ -335,7 +335,7 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 // judgeCommand runs the out-of-remit rules over one command. The top level
 // and code handed to a shell, eval or an interpreter both come through here;
 // depth counts how far code was handed down.
-func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth int) *Verdict {
+func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth int, container bool) *Verdict {
 	// A command name the check cannot read plainly (\rm, r\m, a quoted or
 	// expanded name) — the first word or the program past a wrapper — or a
 	// wrapper with an option (sudo -u, env -C, command -p, nice -n …), may
@@ -370,14 +370,31 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 		}
 	}
 	// Each command find runs by -exec, -execdir, -ok or -okdir is judged as a
-	// command of its own, with the directory unknown, whatever find's start.
+	// command of its own, with the directory unknown. The {} placeholder is
+	// the files find reaches, so it is replaced by each start path; a glob in
+	// the exec program position is not read.
 	if prog == "find" {
-		for _, words := range findExecCommands(args) {
-			sub := command{words: words, argsLiteral: true, literal: true}
-			if r.judgeCommand(k, c, sub, where, depth+1) != nil {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("find runs a command by -exec that looks like it deletes or reaches outside the task's ground; %s", remit(c)),
-					Advice:    "delete the paths the task names directly, or confirm this is meant"}
+		// A non-literal find argument may be a destructive action (-delete, an
+		// -exec); over paths outside own ground it is asked about.
+		if !cmd.argsLiteral && !r.findStartsOwnGround(k, c, args) {
+			return r.findExecAsk(c)
+		}
+		execs := findExecCommands(args)
+		// An -exec acts on every file find reaches, so when the start paths are
+		// not all own ground the command is asked about whatever it runs.
+		if len(execs) > 0 && !r.findStartsOwnGround(k, c, args) {
+			return r.findExecAsk(c)
+		}
+		for _, words := range execs {
+			// A glob in the exec program position is not read.
+			if ep, _ := (command{words: words}).program(); strings.ContainsAny(progBase(ep), "*?[") {
+				return r.findExecAsk(c)
+			}
+			// The {} placeholder is files under own ground here; an explicit
+			// target among the other words is judged as its own command.
+			sub := command{words: dropBraces(words)}
+			if r.judgeCommand(k, c, sub, where, depth+1, container) != nil {
+				return r.findExecAsk(c)
 			}
 		}
 	}
@@ -415,7 +432,7 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// directory unknown; any non-allow there is an ask here, since the check
 	// cannot be sure where it runs.
 	for _, code := range handedShellCode(prog, args, cmd.stdin) {
-		if r.codeVerdict(k, c, code, where, depth+1) != nil {
+		if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
 			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 				Rationale: fmt.Sprintf("%s runs code the check reads only in part, which looks like it deletes or shells out; %s", prog, remit(c)),
 				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
@@ -434,10 +451,28 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 			Rationale: fmt.Sprintf("kubectl would delete in namespace %s, which the task never named; %s", ns, remit(c)),
 			Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
 	}
+	// Code handed to a runner that is not a shell -c/eval/stdin call — git's
+	// foreach/exec/run/filter/alias, a container exec/run, xargs, man -P — is
+	// parsed and judged like any other handed code, not word-searched.
+	if v := r.runnerVerdict(k, c, cmd, prog, args, where, depth); v != nil {
+		return v
+	}
+	// General pass: any other command not fully read has its code-ish arguments
+	// and its stdin parsed and judged, so a quote-split or variable-built delete
+	// is seen however it is spelled.
+	if unknownRunner(prog) && !r.cmdFullyRead(cmd) {
+		for _, code := range append(handedArgs(cmd, args), cmd.stdin...) {
+			if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("%s is handed code that looks like it deletes or shells out; %s", prog, remit(c)),
+					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+			}
+		}
+	}
 	// The fallback for one command: read in part, and naming a deleter or a
 	// protected root, it is asked about (the line-level fallback covers text
 	// spread over several commands).
-	if !r.cmdFullyRead(cmd) && cmdMentionsDanger(cmd) {
+	if !handledRunner(prog) && !r.cmdFullyRead(cmd) && cmdMentionsDanger(cmd, container) {
 		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
 			Rationale: fmt.Sprintf("%s runs something the check does not read in full, and it names a deleting program or a protected folder; %s", prog, remit(c)),
 			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
@@ -783,6 +818,11 @@ func destroys(prog string, args []string) []string {
 	return nil
 }
 
+// msgCluster matches a short-flag cluster ending in m (git commit -am, -sm),
+// a message flag; msgAttached matches a message attached to it (-m"text").
+var msgCluster = regexp.MustCompile(`^-[A-Za-z]*m$`)
+var msgAttached = regexp.MustCompile(`^--(?:message|body|title)=(.*)$|^-[A-Za-z]*m(.+)$`)
+
 // psDelete names PowerShell's delete cmdlets, whose paths are often unquoted.
 var psDelete = regexp.MustCompile(`(?i)\b(?:Remove-Item|Remove-ItemProperty|Clear-Content)\b`)
 
@@ -795,21 +835,18 @@ var deleterWord = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:rm|rmdir|shred|unlink|s
 // subprocess, Node's child_process, Lua's os.execute and io.popen, a system
 // call in Perl or Ruby (system "…" or system(…)), AppleScript's do shell
 // script, Tcl's file delete.
-var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bsubprocess\b|\bchild_process\b|` +
-	`\bos\.(?:system|popen|execv?p?e?|spawn[a-z]*|execute)\s*\(|\bio\.popen\s*\(|\bexecSync\s*\(|\bspawnSync\s*\(|` +
-	`\bsystem\s*[("']|\bfile\s+delete\b`)
+var shellsOut = regexp.MustCompile("(?i)`|\\bdo\\s+shell\\s+script\\b|\\bsubprocess\\b|\\bchild_process\\b|\\bos\\.(?:system|popen|execv?p?e?|spawn[a-z]*|execute)\\s*\\(|\\bio\\.popen\\s*\\(|\\bexecSync\\s*\\(|\\bspawnSync\\s*\\(|\\b(?:qx|system|exec|spawn|shell_exec|passthru|proc_open|popen|pcntl_exec)\\s*[({/|(\"`']|%x[({\\[/!|]|\\bIO\\.popen\\b|\\bOpen3\\b|\\bfile\\s+delete\\b")
 
 // codeVerdict judges code handed to a shell, to eval, or on an interpreter's
 // stdin: it scans the text for a deleter, a shell-out, a delete call or a
 // protected root, then parses it and runs judgeCommand over every command
 // with the directory unknown, and the fallback over the whole; any non-allow
 // is an ask. Code handed deeper than maxHandDepth is asked about.
-func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int) *Verdict {
+func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int, container bool) *Verdict {
 	ask := &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 		Rationale: fmt.Sprintf("code handed to a shell, eval or an interpreter looks like it deletes or shells out; %s", remit(c)),
 		Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
-	if deleterWord.MatchString(code) || shellsOut.MatchString(code) ||
-		codeDeletes.MatchString(code) || mentionsProtectedRoot(code) {
+	if deleterWord.MatchString(code) || shellsOut.MatchString(code) || codeDeletes.MatchString(code) || (!container && mentionsProtectedRoot(code)) {
 		return ask
 	}
 	if depth > maxHandDepth {
@@ -823,11 +860,11 @@ func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int) *Ver
 		s.cmds[i].dirKnown, s.cmds[i].vars = false, nil
 	}
 	for _, cmd := range s.cmds {
-		if r.judgeCommand(k, c, cmd, where, depth) != nil {
+		if r.judgeCommand(k, c, cmd, where, depth, container) != nil {
 			return ask
 		}
 	}
-	if !r.lineFullyRead(s) && lineMentionsDanger(s) {
+	if !r.lineFullyRead(s) && lineMentionsDanger(s, container) {
 		return ask
 	}
 	return nil
@@ -899,9 +936,9 @@ func progBase(prog string) string {
 // a protected root anywhere the person's text reaches: a parsed word, an
 // assignment value, a here-document body. It reads the parsed words, not the
 // raw source, so a comment or a script's file name does not count.
-func lineMentionsDanger(s script) bool {
+func lineMentionsDanger(s script, container bool) bool {
 	for _, cmd := range s.cmds {
-		if cmdMentionsDanger(cmd) {
+		if cmdMentionsDanger(cmd, container) {
 			return true
 		}
 	}
@@ -931,9 +968,12 @@ func dangerWords(cmd command) []string {
 	prose := func(v string) bool { return strings.ContainsAny(v, " \t\n") }
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if skipVal[a] && i+1 < len(args) && prose(args[i+1]) {
+		if (skipVal[a] || msgCluster.MatchString(a)) && i+1 < len(args) && prose(args[i+1]) {
 			i++ // drop a message value that is prose, not a command
 			continue
+		}
+		if m := msgAttached.FindStringSubmatch(a); m != nil && prose(m[1]) {
+			continue // -m"the message" attached to the flag
 		}
 		if k, v, ok := strings.Cut(a, "="); ok && skipVal[k] && prose(v) {
 			continue
@@ -950,9 +990,9 @@ func dangerWords(cmd command) []string {
 // cmdMentionsDanger reports a command whose text names a deleter or (outside a
 // container command, where one-segment paths are container paths) a protected
 // root.
-func cmdMentionsDanger(cmd command) bool {
+func cmdMentionsDanger(cmd command, container bool) bool {
 	prog, _ := cmd.program()
-	container := containerProg(progBase(prog))
+	container = container || containerProg(progBase(prog))
 	for _, w := range commandText(cmd) {
 		if deleterWord.MatchString(w) {
 			return true
@@ -999,8 +1039,12 @@ func (r Rules) cmdFullyRead(cmd command) bool {
 	switch {
 	case base == "git":
 		return gitFullyRead(args)
-	case base == "kubectl":
-		return !kubectlRunsCommand(args)
+	case base == "kubectl" || base == "docker" || base == "podman" || base == "nerdctl":
+		return len(containerCommand(base, args)) == 0
+	case base == "xargs":
+		return len(xargsCommand(args)) == 0
+	case base == "man":
+		return !hasFlag(args, "-P") && !hasFlag(args, "--pager")
 	case printerProg[base]:
 		return true // only prints or searches its arguments
 	case destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") ||
@@ -1008,13 +1052,20 @@ func (r Rules) cmdFullyRead(cmd command) bool {
 		return true // the precise rules judge it
 	}
 	// An unknown program may run its arguments as a command. It is read
-	// completely only when no word of it names a deleter, shell or interpreter.
+	// completely only when no word of it names a deleter, shell or interpreter,
+	// and no argument could be code (text with whitespace or a shell metachar).
 	for _, w := range args {
-		if wordRunsCode(w) {
+		if wordRunsCode(w) || argIsCode(w) {
 			return false
 		}
 	}
 	return true
+}
+
+// argIsCode reports an argument that could be a command line: text holding
+// whitespace or a shell metacharacter, which an unknown runner might run.
+func argIsCode(w string) bool {
+	return strings.ContainsAny(w, " \t\n;|&<>`") || strings.Contains(w, "$(")
 }
 
 // gitFullyRead reports a git command whose arguments the rules read: no
@@ -1024,29 +1075,18 @@ func gitFullyRead(args []string) bool {
 	if hasFlag(args, "-c") || hasFlag(args, "--config") || hasFlag(args, "-C") {
 		return false
 	}
+	if len(gitHandedCode(args)) > 0 {
+		return false // a foreach/exec/run/filter/alias value is handed code
+	}
 	for i, w := range operands(args) {
 		if i == 0 && (w == "rm" || w == "mv" || w == "clean") {
 			continue // a git subcommand the rules judge
 		}
-		if wordRunsCode(w) {
+		if wordRunsCode(w) || argIsCode(w) {
 			return false
 		}
 	}
 	return true
-}
-
-// kubectlRunsCommand reports a kubectl subcommand that runs a command in a
-// container (exec, run, debug, attach, cp), whose command the rules do not read.
-func kubectlRunsCommand(args []string) bool {
-	ops := operands(args)
-	if len(ops) == 0 {
-		return false
-	}
-	switch ops[0] { // the subcommand is the first operand
-	case "exec", "run", "debug", "attach", "cp":
-		return true
-	}
-	return false
 }
 
 // envRunsCode reports an assignment before a command that could run code: a
@@ -1427,9 +1467,6 @@ func findExecCommands(args []string) [][]string {
 		}
 		var words []string
 		for j := i + 1; j < len(args) && args[j] != ";" && args[j] != "+" && args[j] != `\;`; j++ {
-			if args[j] == "{}" {
-				continue
-			}
 			words = append(words, args[j])
 		}
 		if len(words) > 0 {
@@ -1448,7 +1485,9 @@ func (r Rules) moveVerdict(k *given, c Case, cmd command, prog string, args []st
 	switch prog {
 	case "mv":
 		srcs, dst := mvTargets(args)
-		dstOK := dst != "" && r.groundOK(k, c, cmd, dst) && dst != "/dev/null"
+		// The file survives only at a real destination inside own ground; a
+		// scratch/temp destination or /dev/null discards it, so that is a deny.
+		dstOK := dst != "" && r.groundOK(k, c, cmd, dst) && !scratch(path.Clean(homeTilde(dst))) && dst != "/dev/null"
 		for _, s := range srcs {
 			eff, known := effectiveTarget(cmd, s)
 			if known && r.ownGround(ground(k, cmd), c, eff) {
@@ -1663,11 +1702,33 @@ func remoteDest(args []string) bool {
 // check reads: an expansion it cannot resolve.
 func findExecHidden(args []string) bool {
 	for i, a := range args {
-		if isExecFlag(a) && i+1 < len(args) && strings.HasPrefix(args[i+1], "$") {
+		if isExecFlag(a) && i+1 < len(args) &&
+			(strings.HasPrefix(args[i+1], "$") || strings.ContainsAny(progBase(args[i+1]), "*?[")) {
 			return true
 		}
 	}
 	return false
+}
+
+// dropBraces removes find's {} placeholder, so the -exec command's other
+// words (an explicit path) are judged; {} itself is handled by the start-path
+// check above.
+func dropBraces(words []string) []string {
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if w != "{}" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// findExecAsk is the verdict for a find -exec command that deletes or reaches
+// outside the task's ground.
+func (r Rules) findExecAsk(c Case) *Verdict {
+	return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+		Rationale: fmt.Sprintf("find runs a command by -exec that looks like it deletes or reaches outside the task's ground; %s", remit(c)),
+		Advice:    "delete the paths the task names directly, or confirm this is meant"}
 }
 
 // kubectlDeleteNS is the namespace a kubectl delete names, if any.
@@ -2174,4 +2235,228 @@ func init() {
 		openssl ssh scp rsync git python3 perl iptables nft ufw`) {
 		common[w] = true
 	}
+}
+
+// unknownRunner reports a program the structured handlers and the shell,
+// interpreter, printer and precise rules do not cover, whose arguments the
+// general handed pass must parse rather than trust.
+func unknownRunner(base string) bool {
+	return !handledRunner(base) && !shellNames[base] && !codeRunners[base] &&
+		!strings.HasPrefix(base, "python") && !printerProg[base] && !preciseProg(base) &&
+		base != "eval" && base != "source" && base != "."
+}
+
+// handledRunner names a program whose handed command runnerVerdict parses, or
+// find, whose -exec judge runs earlier, so the general handed pass skips it.
+func handledRunner(prog string) bool {
+	switch prog {
+	case "git", "kubectl", "docker", "podman", "nerdctl", "xargs", "man", "find":
+		return true
+	}
+	return false
+}
+
+// unreadVal reports a handed value that resolves only when the line runs (it
+// holds an expansion), so what it runs cannot be read.
+func unreadVal(s string) bool { return strings.Contains(s, "$") }
+
+// handedArgs are a command's arguments that could be a command line: text with
+// whitespace or a shell metacharacter, a code flag's value, less the message
+// values (a commit message, a sed script) dangerWords also drops.
+func handedArgs(cmd command, args []string) []string {
+	text := map[string]bool{}
+	for _, w := range dangerWords(cmd) {
+		text[w] = true
+	}
+	var out []string
+	for i, a := range args {
+		switch a {
+		case "-c", "-e", "--command", "-Command", "--eval", "-x", "--exec":
+			if i+1 < len(args) {
+				out = append(out, args[i+1])
+			}
+		}
+		if argIsCode(a) && text[a] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// runnerVerdict judges code handed to git, a container runtime, xargs or man.
+func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []string, where string, depth int) *Verdict {
+	ask := func() *Verdict {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s runs a command the check cannot read in full; %s", prog, remit(c)),
+			Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+	}
+	switch prog {
+	case "git":
+		for _, code := range gitHandedCode(args) {
+			if unreadVal(code) {
+				return ask()
+			}
+			if r.codeVerdict(k, c, code, where, depth+1, false) != nil {
+				return ask()
+			}
+		}
+		for name, v := range cmd.env {
+			if strings.HasPrefix(name, "GIT_CONFIG_VALUE") {
+				if unreadVal(v) {
+					return ask()
+				}
+				if r.codeVerdict(k, c, strings.TrimPrefix(v, "!"), where, depth+1, false) != nil {
+					return ask()
+				}
+			}
+		}
+	case "kubectl", "docker", "podman", "nerdctl":
+		cc := containerCommand(prog, args)
+		if len(cc) == 0 {
+			return nil
+		}
+		if unreadVal(cc[0]) {
+			return ask()
+		}
+		sub := command{words: cc}
+		if r.judgeCommand(k, c, sub, where, depth+1, true) != nil {
+			return ask()
+		}
+	case "xargs":
+		xc := xargsCommand(args)
+		if len(xc) == 0 {
+			return nil
+		}
+		if unreadVal(xc[0]) {
+			return ask()
+		}
+		sub := command{words: xc}
+		if r.judgeCommand(k, c, sub, where, depth+1, false) != nil {
+			return ask()
+		}
+	case "man":
+		for i, a := range args {
+			if (a == "-P" || a == "--pager") && i+1 < len(args) {
+				if r.codeVerdict(k, c, args[i+1], where, depth+1, false) != nil {
+					return ask()
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// gitHandedCode is the shell code a git command runs: submodule foreach, rebase
+// -x/--exec, bisect run, filter-branch --*-filter, config alias and -c alias.*.
+func gitHandedCode(args []string) []string {
+	var out []string
+	ops := operands(args)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-x" || a == "--exec":
+			if i+1 < len(args) {
+				out = append(out, args[i+1])
+			}
+		case a == "--exec" || strings.HasPrefix(a, "--") && strings.HasSuffix(a, "-filter"):
+			if i+1 < len(args) {
+				out = append(out, args[i+1])
+			}
+		case a == "-c" && i+1 < len(args):
+			if _, v, ok := strings.Cut(args[i+1], "="); ok && strings.Contains(args[i+1], "alias.") {
+				out = append(out, strings.TrimPrefix(v, "!"))
+			}
+		}
+	}
+	for i, a := range ops {
+		if a == "foreach" && i+1 < len(ops) {
+			out = append(out, ops[i+1])
+		}
+		if a == "run" && i > 0 && ops[i-1] == "bisect" && i+1 < len(ops) {
+			out = append(out, strings.Join(ops[i+1:], " "))
+		}
+		if a == "alias" && i > 0 && ops[i-1] == "config" && i+1 < len(ops) {
+			out = append(out, strings.TrimPrefix(ops[i+1], "!"))
+		}
+		// git config alias.x '!cmd' — the operand is alias.x, value next.
+		if strings.HasPrefix(a, "alias.") && i+1 < len(ops) {
+			out = append(out, strings.TrimPrefix(ops[i+1], "!"))
+		}
+	}
+	return out
+}
+
+// dockerValueFlags take a value as the next word in docker/podman run/exec.
+var dockerValueFlags = map[string]bool{"-v": true, "--volume": true, "-e": true, "--env": true, "--env-file": true,
+	"-w": true, "--workdir": true, "-p": true, "--publish": true, "--name": true, "--network": true, "--net": true,
+	"-u": true, "--user": true, "--entrypoint": true, "-l": true, "--label": true, "--mount": true, "--device": true,
+	"--add-host": true, "--dns": true, "-h": true, "--hostname": true, "--restart": true, "-m": true, "--memory": true,
+	"--cpus": true, "-a": true, "--attach": true, "--pid": true, "--ipc": true, "--platform": true}
+
+// containerCommand is the command a container runtime runs: for exec, the words
+// after the container name; for run, the words after the image; for kubectl,
+// the words after --.
+func containerCommand(prog string, args []string) []string {
+	if prog == "kubectl" {
+		for i, a := range args {
+			if a == "--" {
+				return args[i+1:]
+			}
+		}
+		return nil
+	}
+	// docker/podman/nerdctl
+	var sub string
+	for _, a := range operands(args) {
+		sub = a
+		break
+	}
+	if sub != "exec" && sub != "run" {
+		return nil
+	}
+	seenSub := false
+	skippedTarget := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !seenSub {
+			if a == sub {
+				seenSub = true
+			}
+			continue
+		}
+		if dockerValueFlags[a] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if !skippedTarget {
+			skippedTarget = true // the container name (exec) or image (run)
+			continue
+		}
+		return args[i:]
+	}
+	return nil
+}
+
+// xargsValueFlags take a value as the next word.
+var xargsValueFlags = map[string]bool{"-a": true, "--arg-file": true, "-I": true, "--replace": true, "-i": true,
+	"-n": true, "--max-args": true, "-P": true, "--max-procs": true, "-d": true, "--delimiter": true,
+	"-L": true, "--max-lines": true, "-l": true, "-s": true, "--max-chars": true, "-E": true, "--eof": true, "-e": true}
+
+// xargsCommand is the program xargs runs, past its options.
+func xargsCommand(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if xargsValueFlags[a] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		return args[i:]
+	}
+	return nil
 }
