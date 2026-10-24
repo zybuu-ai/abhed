@@ -21,6 +21,11 @@ type command struct {
 	// literal is set when every word, assignment value, redirection and
 	// here-document body of the command is literal text, with no expansion.
 	literal bool
+	// assigns are the command's assignment values (the value of NAME=value).
+	assigns []string
+	// readsPipe is set when a pipe feeds this command and it reads its stdin
+	// as code (a bare shell or interpreter), so the pipe's output is code.
+	readsPipe bool
 	// dir is the directory the command runs in; dirKnown says the rules may
 	// rely on it. It is known only along a plain top-level && chain (see
 	// chainDirs); everywhere else it is unknown.
@@ -74,8 +79,21 @@ func parseScriptAt(src, start string) (script, bool) {
 
 // collect gathers every simple command in the line, nested ones included.
 func collect(src string, f *syntax.File, s *script) {
+	pipeReaders := map[*syntax.CallExpr]bool{}
+	pipedText := map[*syntax.CallExpr]string{}
 	syntax.Walk(f, func(n syntax.Node) bool {
 		switch x := n.(type) {
+		case *syntax.BinaryCmd:
+			if (x.Op == syntax.Pipe || x.Op == syntax.PipeAll) && x.Y != nil {
+				if call, ok := x.Y.Cmd.(*syntax.CallExpr); ok && readsPipedCode(call) {
+					pipeReaders[call] = true
+					// When the left side only prints a literal, that text is the
+					// code the reader runs; keep it so it can be judged.
+					if lx, ok := x.X.Cmd.(*syntax.CallExpr); ok {
+						pipedText[call] = printedLiteral(src, lx)
+					}
+				}
+			}
 		case *syntax.FuncDecl:
 			if x.Name != nil {
 				s.funcs[x.Name.Value] = true
@@ -89,9 +107,17 @@ func collect(src string, f *syntax.File, s *script) {
 			if !ok {
 				return true
 			}
-			c := command{call: call, literal: readLeaf(x)}
+			c := command{call: call, literal: readLeaf(x), readsPipe: pipeReaders[call]}
+			if t := pipedText[call]; t != "" {
+				c.stdin = append(c.stdin, t)
+			}
 			for _, w := range call.Args {
 				c.words = append(c.words, wordText(src, w))
+			}
+			for _, a := range call.Assigns {
+				if a.Value != nil {
+					c.assigns = append(c.assigns, wordText(src, a.Value))
+				}
 			}
 			for _, r := range x.Redirs {
 				switch r.Op {
@@ -354,6 +380,65 @@ func readLeaf(leaf *syntax.Stmt) bool {
 		}
 	}
 	return true
+}
+
+// printedLiteral is the literal text an echo or printf prints, so a pipe into
+// a shell can be judged on what it actually runs; "" when the producer is
+// anything else or its arguments are not plain literals.
+func printedLiteral(src string, call *syntax.CallExpr) string {
+	var words []string
+	for _, w := range call.Args {
+		words = append(words, wordText(src, w))
+	}
+	prog, rest := (command{words: words}).program()
+	switch path.Base(prog) {
+	case "echo":
+		var out []string
+		for _, w := range rest {
+			if strings.HasPrefix(w, "-") {
+				continue // echo flags (-n, -e)
+			}
+			out = append(out, w)
+		}
+		return strings.Join(out, " ")
+	case "printf":
+		if len(rest) > 0 {
+			return rest[0] // the format string
+		}
+	}
+	return ""
+}
+
+// readsPipedCode reports a pipe's reader that runs what it is piped as code:
+// a bare shell or interpreter with no script or -c of its own.
+func readsPipedCode(call *syntax.CallExpr) bool {
+	var words []string
+	for _, w := range call.Args {
+		v, ok := plainWord(w)
+		if !ok {
+			return false
+		}
+		words = append(words, v)
+	}
+	prog, rest := (command{words: words}).program()
+	base := path.Base(prog)
+	if !readsStdinCode(base) {
+		return false
+	}
+	// A reader given its own -c or a script operand is not reading the pipe as code.
+	if _, hasC := shellDashC(rest); hasC {
+		return false
+	}
+	return oneLiner(base, rest) == "" && firstOperandIsFile(rest)
+}
+
+// firstOperandIsFile reports a reader with no operand, or a stdin operand, so
+// it takes its code from stdin rather than a named script.
+func firstOperandIsFile(args []string) bool {
+	for _, a := range operands(args) {
+		return a == "-" || a == "/dev/stdin"
+	}
+	return true // no operand: reads stdin
 }
 
 // homeWriterBuiltins write a variable by name, so they may write HOME.
