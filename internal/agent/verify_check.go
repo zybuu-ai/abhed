@@ -393,8 +393,9 @@ type finding struct {
 	why      string // for an unverified or contradicted reason
 	seq      int64
 	conflict *Conflict
-	pooled   bool // matched in a tool result, not in the record's calls or the files
-	bare     bool // a number with nothing to say what it counts
+	pooled   bool   // matched in a tool result, not in the record's calls or the files
+	bare     bool   // a number with nothing to say what it counts
+	unit     string // the unit or key a count or keyed finding is about
 }
 
 // checkClaims checks each claim against the record. Claims from the answer
@@ -592,16 +593,21 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			findings = append(findings, ix.literal(pool, lit, cited))
 		}
 	}
+	var unitFindings []finding
 	for _, cf := range f.counted {
-		findings = append(findings, ix.counted(pool, cf, cited))
+		fd := ix.counted(pool, cf, cited)
+		fd.unit = cf.unit
+		unitFindings = append(unitFindings, fd)
 	}
 	keyedOK := map[string]bool{}
 	for _, kf := range f.keyed {
 		if fd, ok := ix.keyed(pool, kf, cited); ok {
-			findings = append(findings, fd)
+			fd.unit = kf.unit
+			unitFindings = append(unitFindings, fd)
 			keyedOK[kf.n] = true
 		}
 	}
+	findings = append(findings, oneValueMet(unitFindings)...)
 	for _, n := range f.numbers {
 		if countedNumber(f.counted, n) || keyedOK[n] {
 			continue // judged with its unit above
@@ -612,6 +618,25 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		findings = append(findings, ix.success(pool, f.testish, f.scope, cited))
 	}
 	return findings
+}
+
+// oneValueMet: a statement that gives one unit or key more than one value
+// ("3 tests failed before the fix, 0 after", "from port 8080 to port 9090")
+// is not contradicted by the others when the result shows one of them.
+func oneValueMet(fs []finding) []finding {
+	met := map[string]bool{}
+	for _, f := range fs {
+		if f.out == matched {
+			met[f.unit] = true
+		}
+	}
+	for i, f := range fs {
+		if f.out == conflicted && met[f.unit] {
+			fs[i] = finding{out: missing, unit: f.unit,
+				why: "it gives " + f.unit + " more than one value, and the result shows one of them: " + f.why}
+		}
+	}
+	return fs
 }
 
 // bareOnly reports findings whose matches from tool output are all bare numbers.
@@ -752,6 +777,11 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 	label := cf.n + " " + cf.unit
 	if cf.unit == "%" {
 		label = cf.n + "%"
+	}
+	// The M of "N of M": the claim says N of them are so, which a count of M
+	// shows nothing of either way.
+	if cf.denom {
+		return finding{out: missing, unit: cf.unit, why: fmt.Sprintf("%s is the whole that part of it is counted against", label)}
 	}
 	said := closedOf(cf.quals)
 	var other, elsewise *obsRec
@@ -954,15 +984,22 @@ func (ix *recordIndex) changedPath(p string) finding {
 }
 
 // namedByChange reports a call of the agent's, failed or not, that may have
-// changed p or a folder holding it, as far as the calls name their files.
+// changed p or a folder holding it: one naming it, or, for a path in the
+// workspace, one whose files are not known.
 func (ix *recordIndex) namedByChange(p string) bool {
 	want := ix.inWorkspace(p)
 	if want == "" {
 		return false
 	}
+	inside := ix.workDir != "" && strings.HasPrefix(want+"/", filepath.Clean(ix.workDir)+"/")
 	for _, m := range ix.mutations {
 		if m.person {
 			continue
+		}
+		// A call whose files are not known may have changed any of the
+		// workspace's (python fix.py); a remote one, none of them.
+		if !m.known && m.tool != "ssh" && inside {
+			return true
 		}
 		for _, t := range append(append([]string(nil), m.targets...), m.covers...) {
 			if t == "" {

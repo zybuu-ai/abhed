@@ -36,6 +36,8 @@ type countFact struct {
 	// "passed"); see readCount. scoped: words after it narrow it.
 	quals  []string
 	scoped bool
+	// denom: the M of "N of M", a whole that N is part of.
+	denom bool
 }
 
 type fileLine struct {
@@ -65,12 +67,13 @@ var (
 	keyedRe    = regexp.MustCompile(`\b([a-z][a-z\-]{1,24})\s+((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b`)
 	countRe    = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
 	// What a claim says when it reports success; negRe undoes it.
-	successRe = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
-	negRe     = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
-	noFailRe  = regexp.MustCompile(`\bno (?:errors|failures|failed tests?|tests? failed)\b`)
-	testRe    = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
-	buildRe   = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
-	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
+	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
+	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
+	countedOutcomeRe = regexp.MustCompile(`\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
+	noFailRe         = regexp.MustCompile(`\bno (?:errors|failures|failed tests?|tests? failed)\b`)
+	testRe           = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
+	buildRe          = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
+	changedRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
 	negationRe = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
@@ -289,8 +292,11 @@ func extractFacts(claim string) facts {
 			f.numbers = append(f.numbers, n)
 		}
 	}
+	// "9 tests passed" is a count, judged as one: the run it counts may have
+	// failed other tests. Only a success said of the run itself is one.
+	said := countedOutcomeRe.ReplaceAllString(normText(claim), " ")
 	plain := noFailRe.ReplaceAllString(normText(claim), " ")
-	if successRe.MatchString(normText(claim)) && !negRe.MatchString(plain) {
+	if successRe.MatchString(said) && !negRe.MatchString(plain) {
 		f.success = true
 		switch {
 		case testRe.MatchString(plain):
@@ -393,6 +399,9 @@ var closedQuals = func() map[string]string {
 	return m
 }()
 
+// runOutcomes are what a test runner's summary counts by ("9 passed").
+var runOutcomes = map[string]bool{"pass": true, "fail": true, "skip": true, "deselect": true, "xfail": true, "xpass": true, "error": true}
+
 // qualStop are words beside a count that say nothing about what it counts.
 var qualStop = map[string]bool{"has": true, "have": true, "had": true, "all": true, "only": true, "about": true,
 	"over": true, "under": true, "after": true, "before": true, "since": true, "now": true, "just": true,
@@ -463,7 +472,28 @@ func readCount(s string, m []int) countFact {
 	if c.unit != "%" {
 		c.unit = unitOf(c.unit)
 	}
+	// The M of "N of M" counts the whole, not what the words after it say of
+	// N; and a word after a "not" on the line says the opposite.
+	head := lineHead(s, m[0])
+	if f := strings.Fields(head); len(f) > 0 && (f[len(f)-1] == "of" || len(f) > 1 && f[len(f)-1] == "the" && f[len(f)-2] == "of") {
+		c.quals, c.denom = nil, true
+	}
+	if lineNegRe.MatchString(head) {
+		c.quals = nil
+	}
 	return c
+}
+
+// lineNegRe is a negation on a line before a count.
+var lineNegRe = regexp.MustCompile(`\b(not|no|none|never|without|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|cannot|can't)\b`)
+
+// lineHead is the part of s's line before at.
+func lineHead(s string, at int) string {
+	head := s[:at]
+	if i := strings.LastIndexByte(head, '\n'); i >= 0 {
+		head = head[i+1:]
+	}
+	return head
 }
 
 // nextWord is the word after s[at], on its line and after a space, with the
@@ -506,6 +536,9 @@ func plainWord(w string) bool {
 // labelQuals are a label's: the label when it is an outcome or a state, as
 // in "failed=3", and the word before it on its line ("tests run: 12").
 func labelQuals(s string, start int, label string) []string {
+	if lineNegRe.MatchString(lineHead(s, start)) {
+		return nil
+	}
 	var q []string
 	if c, ok := closedQuals[label]; ok {
 		q = append(q, c)
@@ -618,6 +651,10 @@ func prepareEvidence(content string) *evidenceText {
 		}
 		c := readCount(lined, m)
 		e.counts[c.unit] = append(e.counts[c.unit], countAt{n: c.n, excerpt: excerpt(m[0]), quals: c.quals})
+		// A runner's "3 failed, 9 passed" counts tests.
+		if raw := lined[m[4]:m[5]]; c.unit == unitOf(raw) && runOutcomes[closedQuals[raw]] && len(c.quals) > 0 {
+			e.counts["test"] = append(e.counts["test"], countAt{n: c.n, excerpt: excerpt(m[0]), quals: c.quals})
+		}
 	}
 	for _, m := range evLabelRe.FindAllStringSubmatchIndex(lined, -1) {
 		w, n := lined[m[2]:m[3]], lined[m[4]:m[5]]
