@@ -198,6 +198,8 @@ func TestEngineForegroundAsksTheHostNotTheContainer(t *testing.T) {
 	}
 	cgroup := "0::/machine.slice/libpod-0123456789abcdef.scope/container\n"
 	stat := "4242 (bash) S 1 4242 4242 34816 4242 0\n"
+	// engineHostProc and engineAskWait are package globals this test swaps:
+	// it must never be made t.Parallel().
 	old, wait := engineHostProc, engineAskWait
 	t.Cleanup(func() { engineHostProc, engineAskWait = old, wait })
 	// The fake engine is a shell script; a loaded machine can take seconds to start one.

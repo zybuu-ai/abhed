@@ -15,6 +15,9 @@ type command struct {
 	words []string
 	// writes are the files its redirections write; reads, those they read.
 	writes, reads []string
+	// stdin is text a here-string or here-document gives the command, which
+	// an interpreter reads as its program.
+	stdin []string
 	// dir is the directory the command runs in; dirKnown says the rules may
 	// rely on it. It is known only along a plain top-level && chain (see
 	// chainDirs); everywhere else it is unknown.
@@ -51,7 +54,7 @@ func parseScriptAt(src, start string) (script, bool) {
 	if err != nil {
 		return script{}, false
 	}
-	s := script{funcs: map[string]bool{}, mentionsHome: strings.Contains(src, "HOME")}
+	s := script{funcs: map[string]bool{}, mentionsHome: writesHomeText(src)}
 	collect(src, f, &s)
 	dirs := chainDirs(f, start)
 	for i := range s.cmds {
@@ -94,6 +97,14 @@ func collect(src string, f *syntax.File, s *script) {
 				case syntax.RdrIn:
 					if r.Word != nil {
 						c.reads = append(c.reads, wordText(src, r.Word))
+					}
+				case syntax.WordHdoc:
+					if r.Word != nil {
+						c.stdin = append(c.stdin, wordText(src, r.Word))
+					}
+				case syntax.Hdoc, syntax.DashHdoc:
+					if r.Hdoc != nil {
+						c.stdin = append(c.stdin, wordText(src, r.Hdoc))
 					}
 				}
 			}
@@ -322,12 +333,31 @@ func readLeaf(leaf *syntax.Stmt) bool {
 			words = append(words, a.Value)
 		}
 	}
+	for _, r := range leaf.Redirs {
+		// A redirection's word and a here-document's body are expanded too:
+		// `: <<< ${CDPATH:=/}` writes CDPATH as surely as an argument would.
+		if r.Word != nil {
+			words = append(words, r.Word)
+		}
+		if r.Hdoc != nil {
+			words = append(words, r.Hdoc)
+		}
+	}
 	for _, w := range words {
 		if !literalText(w) {
 			return false
 		}
 	}
 	return true
+}
+
+// writesHomeText reports a line that mentions HOME other than to read it as a
+// plain $HOME or ${HOME}; such a line may write HOME, so ~ is not placed. It
+// is a guard beside the chain walk, which already loses the directory at any
+// HOME writer.
+func writesHomeText(src string) bool {
+	rest := strings.NewReplacer("${HOME}", "", "$HOME", "").Replace(src)
+	return strings.Contains(rest, "HOME")
 }
 
 // literalText reports a word with no expansion: literal, single- or
@@ -371,26 +401,33 @@ func plainExport(d *syntax.DeclClause) bool {
 // safeSet are the set options that change nothing a cd or command name depends on.
 var safeSet = map[string]bool{"pipefail": true, "errexit": true, "nounset": true, "xtrace": true}
 
-// harmlessSet reports `set -e`, `-u`, `-x`, combined (`-eu`, `-eux`), and
-// `-o pipefail|errexit|nounset|xtrace`, all plain; anything else (`set --`,
-// positional parameters, other options) is not.
+// harmlessSet reports `set` with only -e, -u, -x (alone or clustered) and
+// `-o pipefail|errexit|nounset|xtrace`, all plain. An `o` in a cluster must be
+// its last letter and be followed by one of those names; `set -o` alone,
+// `set --`, positional parameters and any other option are not harmless.
 func harmlessSet(args []*syntax.Word) bool {
 	if len(args) == 0 {
 		return false
 	}
-	for _, w := range args {
-		v, ok := plainWord(w)
-		if !ok {
+	for i := 0; i < len(args); i++ {
+		v, ok := plainWord(args[i])
+		if !ok || !strings.HasPrefix(v, "-") || v == "-" || v == "--" {
 			return false
 		}
-		if safeSet[v] {
-			continue
-		}
-		if !strings.HasPrefix(v, "-") || v == "-" || v == "--" {
-			return false
-		}
-		for _, r := range v[1:] {
-			if r != 'e' && r != 'u' && r != 'x' && r != 'o' {
+		letters := v[1:]
+		for k, r := range letters {
+			if r == 'o' {
+				if k != len(letters)-1 || i+1 >= len(args) {
+					return false
+				}
+				name, ok := plainWord(args[i+1])
+				if !ok || !safeSet[name] {
+					return false
+				}
+				i++
+				break
+			}
+			if r != 'e' && r != 'u' && r != 'x' {
 				return false
 			}
 		}

@@ -188,9 +188,9 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 124 drift cases the rules judge stops 122
-  of the 123 a mode let through (the other is the destructive step's), and it
-  refuses none of its 51 benign controls (it asks about 6 whose working
+  or `go run ./cmd/abhed-drift`): of its 139 drift cases the rules judge stops 137
+  of the 138 a mode let through (the other is the destructive step's), and it
+  refuses none of its 52 benign controls (it asks about 6 whose working
   directory it does not claim to know, such as a `cd` joined by `;`). The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
@@ -516,9 +516,11 @@ out):
   `CodeUnknownProgram`, `CodeUnverifiedHost` and `CodeUnverifiedTarget`;
   `CredentialSeen`, `DeclaredHost`, `SkippedBudget`, `TraceSeen` and
   `Untrusted`; `RulesVersion`, `HoneytokenVersion` and `PromptVersion`; and
-  the drift suite's `DriftCase`, `DriftCases`, `DriftDeclared`,
-  `DriftHome`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`, `DriftReport`, `DriftResult`
-  and `RunDrift`.
+  the `Rules` fields `LookPath`, `Declared`, `Hosts` and `Home` (a
+  `func() (string, bool)` giving the HOME commands get); and the drift
+  suite's `DriftCase`, `DriftCases`, `DriftDeclared`, `DriftHome`,
+  `DriftHomeDir`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`,
+  `DriftReport`, `DriftResult` and `RunDrift`.
 - `sdk`: `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
   `Options.Verify` and `Options.VerifyByDefault`, and the types
   `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
