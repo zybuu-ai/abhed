@@ -85,7 +85,7 @@ func collect(src string, f *syntax.File, s *script) {
 		switch x := n.(type) {
 		case *syntax.BinaryCmd:
 			if (x.Op == syntax.Pipe || x.Op == syntax.PipeAll) && x.Y != nil {
-				if call, ok := x.Y.Cmd.(*syntax.CallExpr); ok && readsPipedCode(src, call) {
+				if call, ok := x.Y.Cmd.(*syntax.CallExpr); ok && readsPipedCode(call) {
 					pipeReaders[call] = true
 					// When the left side only prints a literal, that text is the
 					// code the reader runs; keep it so it can be judged.
@@ -411,7 +411,7 @@ func printedLiteral(src string, call *syntax.CallExpr) string {
 
 // readsPipedCode reports a pipe's reader that runs what it is piped as code:
 // a bare shell or interpreter with no script or -c of its own.
-func readsPipedCode(src string, call *syntax.CallExpr) bool {
+func readsPipedCode(call *syntax.CallExpr) bool {
 	var words []string
 	for _, w := range call.Args {
 		v, ok := plainWord(w)
