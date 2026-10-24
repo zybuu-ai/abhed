@@ -326,3 +326,26 @@ func TestAuditNamesWhatWasCreated(t *testing.T) {
 		}
 	}
 }
+
+// A zero or nil Metrics counts nothing and does not panic, wherever it is used.
+func TestZeroMetricsIsSafe(t *testing.T) {
+	for _, m := range []*Metrics{nil, {}} {
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+		if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+			t.Fatalf("%d %q", rec.Code, rec.Body)
+		}
+		mem := controlplane.NewMemory()
+		if got := m.AuditLog(mem); got != controlplane.AuditLog(mem) {
+			t.Fatalf("a zero Metrics wrapped the log: %T", got)
+		}
+		audit := controlplane.NewMemory()
+		r, _ := auditRig(t, audit, m, nil)
+		if rec := r.do(t, cpCall{method: "POST", path: "/v1/edition/thing", token: "admin"}); rec.Code != http.StatusNoContent {
+			t.Fatalf("status %d", rec.Code)
+		}
+		if evs, _ := audit.AuditFor(context.Background(), ""); len(evs) != 2 {
+			t.Fatalf("%d events with a zero Metrics", len(evs))
+		}
+	}
+}

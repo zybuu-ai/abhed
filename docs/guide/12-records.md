@@ -394,6 +394,12 @@ plane's own SQLite record). It recomputes each hash itself, as `verify` does,
 fails a Postgres audit row written with the trigger off, and a SQLite row with
 no chain written after the chain began, and checks the API's chain against any
 `-head position:hash` kept elsewhere.
+With `control_plane.enabled` and no Postgres, a control-plane database that
+is not where `control_plane.sqlite_path` (or the default) says is reported as
+`MISSING`, and the check fails: a record that should exist and does not is
+not a pass. `abhed serve` makes it the first time it starts the control
+plane. Under `-format ocsf` that line goes to standard error, so standard
+output stays the events.
 
 The chain is per session, not per tenant, so sessions never wait on each
 other's lock and each session's chain is whole on its own. What no chain can

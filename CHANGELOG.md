@@ -135,7 +135,9 @@ All notable changes to Abhed are recorded here. The format follows
 - The control plane's SQLite record (sandbox operations and the
   reconciler's events) is hash-chained like the Postgres one, and
   `abhed record audit` checks it; rows from before are reported as
-  unchained, and one with no chain written after it began fails.
+  unchained, and one with no chain written after it began fails. With
+  `control_plane.enabled` and its database missing, `abhed record audit`
+  reports it as `MISSING` and fails.
 - `ssh.read_commands`: commands the operator declares reads on every host.
   An exact entry (`uptime`, `df -h`) matches only its own text
   and may name any program but one that runs what it is given (a shell, a
