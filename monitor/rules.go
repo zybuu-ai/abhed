@@ -59,7 +59,7 @@ func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
 	k := facts(c)
 	if r.Home != nil {
 		if h, ok := r.Home(); ok {
-			k.home = h
+			k.home, k.homeAvailable = h, true
 		}
 	}
 	for _, d := range r.Declared {
@@ -95,10 +95,11 @@ type given struct {
 	said string // everything the user said, lower case, the approved plan included
 	// person is what the person said in their own messages only, with no
 	// plan or runbook prose: what counts where the directory is unknown.
-	person string
-	roots  []string
-	home   string // the local home ~ stands for; "" when not known
-	seen   func(string) bool
+	person        string
+	roots         []string
+	home          string // the local home ~ stands for; "" when not known
+	homeAvailable bool   // a local home was configured (even if blanked for a command)
+	seen          func(string) bool
 	// done are the subjects of earlier calls that succeeded.
 	done     []string
 	args     map[string]any
@@ -306,8 +307,15 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	if remote(c) {
 		where = "on " + k.str("host")
 	}
-	if s.mentionsHome {
-		k.home = "" // HOME may be written in this line: ~ is not placed against the session's home
+	if s.homeWrites {
+		k.home = "" // the line may write HOME: ~ is not placed against the session's home
+	}
+	// A pipe into a shell or interpreter feeds it code to run; where the line
+	// looks destructive, where that code goes is not known, so it is asked.
+	if s.pipesIntoCode && lineLooksDestructive(s) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("the line pipes code into a shell or interpreter, and it looks like it deletes; %s", remit(c)),
+			Advice:    "run the delete plainly, naming the path in full, or confirm this is meant"}
 	}
 	for _, cmd := range s.cmds {
 		// A command name the check cannot read plainly (\rm, r\m, a quoted or
@@ -339,13 +347,6 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 				Rationale: fmt.Sprintf("find runs a shell or interpreter by -exec over paths outside the task's ground; %s", remit(c)),
 				Advice:    "delete the paths the task names directly, or confirm this is meant"}
 		}
-		// An interpreter one-liner, or program on stdin, that shells out or
-		// deletes runs code the check does not read: it is asked about.
-		if interpreterCodeShellsOut(prog, args, cmd.stdin) {
-			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-				Rationale: fmt.Sprintf("%s runs code that shells out or deletes, which the check does not read; %s", prog, remit(c)),
-				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
-		}
 		for _, t := range destroys(prog, args) {
 			if t == "" {
 				continue
@@ -364,14 +365,15 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 			}
 			eff, known := effectiveTarget(cmd, t)
 			// Where the directory is unknown, only what the person said in their
-			// own messages names a target; plan and runbook prose do not.
-			// Where the directory is unknown, only what the person said in their
 			// own messages names a target, and ~ is not placed against the
 			// session's home: a HOME writer earlier in the line ended what the
 			// check holds as known.
+			// Where the directory is unknown, only what the person said in their
+			// own messages names a relative target; the session's home still
+			// places ~, since ~ depends on HOME, not the directory.
 			p := *k
 			if !cmd.dirKnown {
-				p.said, p.home = k.person, ""
+				p.said = k.person
 			}
 			kk := &p
 			// A relative target under a directory the check does not claim to
@@ -382,11 +384,13 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 					Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in is not one the check can be sure of, so where it points is not known; %s", prog, t, remit(c)),
 					Advice:    "name the path to delete in full, or change into it with a plain cd joined by && first"}
 			}
-			// A ~ target under an unknown directory, not one the person named as
-			// a path, is put to them rather than placed or silently denied.
-			if !cmd.dirKnown && homeish(eff) && !protectedRoot(eff) && !kk.named(homeTilde(eff)) {
+			// A ~ or $HOME target the check cannot place — because the directory
+			// is unknown, or because the line may write HOME — is put to the
+			// person rather than placed or silently denied, unless they named
+			// it as a path outright.
+			if homeish(eff) && !remote(c) && k.homeAvailable && kk.home == "" && !protectedRoot(eff) && !kk.named(homeTilde(eff)) {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s would destroy %s, but HOME may have been changed earlier in the line, so where ~ points is not known; %s", prog, t, remit(c)),
+					Rationale: fmt.Sprintf("%s would destroy %s, but HOME may have been changed in the line, so where ~ points is not known; %s", prog, t, remit(c)),
 					Advice:    "name the path to delete in full, or confirm this is meant"}
 			}
 			// find's operand is where it looks, not what it deletes.
@@ -408,6 +412,27 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
 				Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, display(eff, t), where, remit(c)),
 				Advice:    "keep destructive commands to the paths the task names, or ask the person first"}
+		}
+		// Code the command hands to a shell, to eval or to an interpreter — a
+		// -c argument, eval's operands, a one-liner, or text on stdin — is not
+		// read as a command line. A destructive target the check could place
+		// was judged above; what is left is code it cannot read, which is
+		// asked about when it looks like it deletes or shells out.
+		for _, code := range handsOffCode(prog, args, cmd.stdin) {
+			if codeLooksDestructive(code) {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("%s runs code the check does not read, which looks like it deletes or shells out; %s", prog, remit(c)),
+					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+			}
+		}
+		// A destroyer whose targets come from stdin (xargs rm, with a pipe or
+		// here-string) could delete anything it is handed, so it is asked about.
+		if prog == "xargs" {
+			if xp, _ := (command{words: args}).program(); destroyerNames[path.Base(strings.ReplaceAll(xp, `\`, ""))] {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("xargs runs %s over targets that come from its input, which the check cannot see; %s", path.Base(xp), remit(c)),
+					Advice:    "name the paths to delete in full, or confirm this is meant"}
+			}
 		}
 		if ns := kubectlDeleteNS(prog, args); ns != "" && ns != "default" && !k.named(ns) {
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
@@ -664,13 +689,7 @@ func destroys(prog string, args []string) []string {
 		if !hasFlag(args, "-delete") && !execsRemove(args) {
 			return nil
 		}
-		var out []string
-		for _, a := range args {
-			if strings.HasPrefix(a, "-") || a == "(" || a == "!" {
-				break
-			}
-			out = append(out, a)
-		}
+		out := findStarts(args)
 		if len(out) == 0 {
 			out = []string{"."}
 		}
@@ -695,35 +714,99 @@ func destroys(prog string, args []string) []string {
 	return nil
 }
 
-// shellsOut finds code that runs a command or deletes through a call the
-// one-liner scan does not read: a shell-out, a system call, Tcl's file delete.
-var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bos\.system\s*\(|\bos\.popen\s*\(|\bsubprocess\b|` +
-	`\bos\.execute\s*\(|\bio\.popen\s*\(|\bchild_process\b|\bexecSync\s*\(|\bspawnSync\s*\(|\bsystem\s*\(|` +
-	`\bexec\s*\(|\bfile\s+delete\b|` + "`")
+// deleterWord names a deleting program as a whole word, wherever it sits in
+// a string of code — `system "rm -rf /etc"`, `os.execvp("rm", …)`.
+var deleterWord = regexp.MustCompile(`(?i)\b(?:rm|rmdir|shred|unlink|srm|dd|mkfs|wipefs|fdisk|sfdisk|parted|truncate)\b`)
 
-// interpreterCodeShellsOut reports an interpreter whose program — a one-liner,
-// or text on its stdin — shells out or deletes in a way the scan cannot place.
-func interpreterCodeShellsOut(prog string, args, stdin []string) bool {
-	if !codeRunners[prog] && !strings.HasPrefix(prog, "python") {
-		return false
-	}
-	if code := oneLiner(prog, args); code != "" && shellsOut.MatchString(code) {
+// shellsOut finds code that runs a command through a library call: a shell-out
+// or a system call the plain-word scan would miss.
+var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bsubprocess\b|\bchild_process\b|` +
+	`\bos\.(?:system|popen|execv?p?e?|spawn[a-z]*)\s*\(|\bexecSync\s*\(|\bspawnSync\s*\(|\bfile\s+delete\b`)
+
+// codeLooksDestructive reports a string of code — handed to a shell, to eval,
+// or to an interpreter — that names a deleting program or a protected root, or
+// shells out, so the check cannot be sure it is safe. It parses the code where
+// it can and falls back to a scan.
+func codeLooksDestructive(code string) bool {
+	// A deleting program named as a word, or a shell-out, cannot be placed.
+	// A codeDeletes match with a literal path is left to destroys, which
+	// judges that path, so it is not an ask here.
+	if deleterWord.MatchString(code) || shellsOut.MatchString(code) {
 		return true
 	}
-	shell := shellNames[prog]
-	for _, code := range stdin {
-		if shellsOut.MatchString(code) || codeDeletes.MatchString(code) {
+	for _, m := range userPaths.FindAllStringSubmatch(code, -1) {
+		if protectedRoot(strings.Trim(m[1], `"'`)) {
 			return true
 		}
-		// A shell reads its stdin as commands: a deleting program among them.
-		if shell && looksDestructive(strings.Fields(code)) {
-			return true
+	}
+	if s, ok := parseScript(code); ok {
+		for _, cmd := range s.cmds {
+			if looksDestructive(cmd.words) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// shellNames are the shells among codeRunners, which run stdin as commands.
+// lineLooksDestructive reports a line whose words or piped-in text name a
+// deleting program or a protected root.
+func lineLooksDestructive(s script) bool {
+	for _, cmd := range s.cmds {
+		if looksDestructive(cmd.words) {
+			return true
+		}
+		for _, in := range cmd.stdin {
+			if codeLooksDestructive(in) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// handsOffCode gathers the strings a command hands to another to run as code:
+// a shell's -c argument, eval's operands, an interpreter's one-liner, and the
+// text on the stdin of a shell or interpreter. The check cannot judge where
+// such code's targets point, so a destructive-looking one is put to the person.
+func handsOffCode(prog string, args, stdin []string) []string {
+	var out []string
+	if code := oneLiner(prog, args); code != "" {
+		out = append(out, code)
+	}
+	if shellNames[prog] {
+		if code := shellDashC(args); code != "" {
+			out = append(out, code)
+		}
+	}
+	if prog == "eval" {
+		out = append(out, strings.Join(operands(args), " "))
+	}
+	if readsStdinCode(prog) {
+		out = append(out, stdin...)
+	}
+	return out
+}
+
+// shellDashC is the code after a shell's -c, including a cluster such as -lc
+// or -ec; "" when the shell is not given -c.
+func shellDashC(args []string) string {
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// readsStdinCode reports a program that runs its standard input as code: a
+// shell, or an interpreter in a bare form (python3, node) with no script.
+func readsStdinCode(prog string) bool {
+	return shellNames[prog] || codeRunners[prog] || strings.HasPrefix(prog, "python")
+}
+
+// shellNames are the shells among codeRunners, which run their argument or
+// stdin as commands.
 var shellNames = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "busybox": true}
 
 // oneLiner is the code an interpreter is given on its command line.
@@ -795,19 +878,41 @@ func findExecRunsCode(args []string) bool {
 	return false
 }
 
+// findStarts are the paths a find command searches: the words after its
+// leading options (-H, -L, -P, -D <arg>, -O<n>) and before the first test or
+// action. find looks in . when none is given.
+func findStarts(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-H" || a == "-L" || a == "-P":
+			continue
+		case a == "-D":
+			i++ // -D takes a debug option as its own word
+			continue
+		case strings.HasPrefix(a, "-O"):
+			continue // -O<n>, an optimisation level
+		case strings.HasPrefix(a, "-") || a == "(" || a == "!":
+			return out // the first test or action: start paths end here
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // findStartsOwnGround reports whether every path find starts from is own ground.
 func (r Rules) findStartsOwnGround(k *given, c Case, args []string) bool {
-	starts := 0
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") || a == "(" || a == "!" {
-			break
-		}
-		starts++
+	starts := findStarts(args)
+	if len(starts) == 0 {
+		return r.ownGround(k, c, ".")
+	}
+	for _, a := range starts {
 		if !r.ownGround(k, c, a) {
 			return false
 		}
 	}
-	return starts > 0 || r.ownGround(k, c, ".")
+	return true
 }
 
 func isExecFlag(a string) bool {
