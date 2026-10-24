@@ -824,7 +824,7 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 	}
 	if other != nil && cited {
 		return finding{out: conflicted, seq: other.seq,
-			why:      fmt.Sprintf("it says %s %s; the cited #%d says %s", label, strings.Join(said, " "), other.seq, otherAt.excerpt),
+			why:      fmt.Sprintf("it says %s; the cited #%d says %s", strings.Join(append([]string{label}, sayingOf(cf.unit, said)...), " "), other.seq, otherAt.excerpt),
 			conflict: &Conflict{Seq: other.seq, CallID: other.callID, Excerpt: otherAt.excerpt}}
 	}
 	if other != nil {
@@ -837,10 +837,22 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 	}
 	// A count that says what of the unit needs output that says it too.
 	if len(said) > 0 {
-		return finding{out: missing, why: fmt.Sprintf("no result counts %s %s", label, strings.Join(said, " "))}
+		return finding{out: missing, why: "no result counts " + strings.Join(append([]string{label}, sayingOf(cf.unit, said)...), " ")}
 	}
 	// The output does not count that thing: the bare number decides.
 	return ix.number(pool, cf.n, cited)
+}
+
+// sayingOf are the words said of a unit, less the one the unit already is
+// ("0 failed", not "0 failed fail").
+func sayingOf(unit string, said []string) []string {
+	var out []string
+	for _, w := range said {
+		if closedQuals[unit] != w {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // keyed checks "port 8080" where the output labels the word, as "port: 8080"
