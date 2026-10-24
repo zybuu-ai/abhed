@@ -44,8 +44,12 @@ type Rules struct {
 	Declared []string
 	// Hosts are the configured ssh hosts, each by its name and address.
 	Hosts []DeclaredHost
-	// Home is the home folder ~ stands for in a local command, so a target
-	// under ~ can be placed against the workspace. "" leaves ~ unexpanded.
+	// Home is the HOME a local command gets, so a ~ or $HOME/ target can be
+	// placed against the workspace. Nil means no local home is known: a ~
+	// target is then never placed, and one the person did not name is denied
+	// as a home path outside the task. Production wires it from the bash
+	// tool (internal/toolset); an SDK caller that leaves it nil gets that
+	// stricter judgement.
 	Home func() (string, bool)
 }
 
@@ -310,13 +314,6 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	if s.homeWrites {
 		k.home = "" // the line may write HOME: ~ is not placed against the session's home
 	}
-	// A pipe into a shell or interpreter feeds it code to run; where the line
-	// looks destructive, where that code goes is not known, so it is asked.
-	if s.pipesIntoCode && lineLooksDestructive(s) {
-		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-			Rationale: fmt.Sprintf("the line pipes code into a shell or interpreter, and it looks like it deletes; %s", remit(c)),
-			Advice:    "run the delete plainly, naming the path in full, or confirm this is meant"}
-	}
 	for _, cmd := range s.cmds {
 		// A command name the check cannot read plainly (\rm, r\m, a quoted or
 		// expanded name) — the first word or the program past a wrapper — or a
@@ -364,10 +361,6 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 				t = v
 			}
 			eff, known := effectiveTarget(cmd, t)
-			// Where the directory is unknown, only what the person said in their
-			// own messages names a target, and ~ is not placed against the
-			// session's home: a HOME writer earlier in the line ended what the
-			// check holds as known.
 			// Where the directory is unknown, only what the person said in their
 			// own messages names a relative target; the session's home still
 			// places ~, since ~ depends on HOME, not the directory.
@@ -425,20 +418,29 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
 			}
 		}
-		// A destroyer whose targets come from stdin (xargs rm, with a pipe or
-		// here-string) could delete anything it is handed, so it is asked about.
-		if prog == "xargs" {
-			if xp, _ := (command{words: args}).program(); destroyerNames[path.Base(strings.ReplaceAll(xp, `\`, ""))] {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("xargs runs %s over targets that come from its input, which the check cannot see; %s", path.Base(xp), remit(c)),
-					Advice:    "name the paths to delete in full, or confirm this is meant"}
-			}
+		// Code the check cannot read at all — eval of an expansion, a shell's
+		// -c given an expansion, a script that is a process substitution — is
+		// asked about always: its text is not in the line to judge.
+		if runsUnreadCode(cmd, prog, args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s runs code that is built when the line runs, so the check cannot read it; %s", prog, remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
 		}
 		if ns := kubectlDeleteNS(prog, args); ns != "" && ns != "default" && !k.named(ns) {
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
 				Rationale: fmt.Sprintf("kubectl would delete in namespace %s, which the task never named; %s", ns, remit(c)),
 				Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
 		}
+	}
+	// The fallback, which does not depend on finding where code is handed:
+	// a line the check does not read completely that anywhere — a quoted
+	// string, a here-document, an extra argument, an assignment value — names
+	// a deleting program or a protected root is put to the person. The precise
+	// rules above decide every line the check reads completely.
+	if !lineFullyRead(s) && lineMentionsDanger(src) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
+			Rationale: fmt.Sprintf("the line runs something the check does not read in full, and it names a deleting program or a protected folder; %s", remit(c)),
+			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
 	}
 	return nil
 }
@@ -536,7 +538,7 @@ func looksDestructive(words []string) bool {
 // read; one among a hidden command's words makes it look destructive.
 var codeRunners = map[string]bool{"node": true, "perl": true, "ruby": true, "php": true, "bash": true, "sh": true,
 	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true,
-	"lua": true, "Rscript": true, "tclsh": true, "osascript": true}
+	"lua": true, "Rscript": true, "tclsh": true, "osascript": true, "mawk": true, "nawk": true}
 
 // strayOperand reports, for a command the check does not read as a command
 // line, an operand that climbs out of or lies outside own ground: an absolute
@@ -719,14 +721,18 @@ func destroys(prog string, args []string) []string {
 var deleterWord = regexp.MustCompile(`(?i)\b(?:rm|rmdir|shred|unlink|srm|dd|mkfs|wipefs|fdisk|sfdisk|parted|truncate)\b`)
 
 // shellsOut finds code that runs a command through a library call: a shell-out
-// or a system call the plain-word scan would miss.
+// or a system call the plain-word scan would miss — Python's os.system and
+// subprocess, Node's child_process, Lua's os.execute and io.popen, a system
+// call in Perl or Ruby (system "…" or system(…)), AppleScript's do shell
+// script, Tcl's file delete.
 var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bsubprocess\b|\bchild_process\b|` +
-	`\bos\.(?:system|popen|execv?p?e?|spawn[a-z]*)\s*\(|\bexecSync\s*\(|\bspawnSync\s*\(|\bfile\s+delete\b`)
+	`\bos\.(?:system|popen|execv?p?e?|spawn[a-z]*|execute)\s*\(|\bio\.popen\s*\(|\bexecSync\s*\(|\bspawnSync\s*\(|` +
+	`\bsystem\s*[("']|\bfile\s+delete\b`)
 
 // codeLooksDestructive reports a string of code — handed to a shell, to eval,
 // or to an interpreter — that names a deleting program or a protected root, or
-// shells out, so the check cannot be sure it is safe. It parses the code where
-// it can and falls back to a scan.
+// shells out. It does not count the reader itself (python3, xargs, a shell)
+// as destructive: only what the code would delete or run.
 func codeLooksDestructive(code string) bool {
 	// A deleting program named as a word, or a shell-out, cannot be placed.
 	// A codeDeletes match with a literal path is left to destroys, which
@@ -734,69 +740,145 @@ func codeLooksDestructive(code string) bool {
 	if deleterWord.MatchString(code) || shellsOut.MatchString(code) {
 		return true
 	}
-	for _, m := range userPaths.FindAllStringSubmatch(code, -1) {
-		if protectedRoot(strings.Trim(m[1], `"'`)) {
+	return mentionsProtectedRoot(code)
+}
+
+// mentionsProtectedRoot reports text that names a protected root as a path.
+func mentionsProtectedRoot(text string) bool {
+	for _, m := range userPaths.FindAllStringSubmatch(text, -1) {
+		if protectedRoot(strings.TrimRight(strings.Trim(m[1], `"'`), ".,;:)")) {
 			return true
-		}
-	}
-	if s, ok := parseScript(code); ok {
-		for _, cmd := range s.cmds {
-			if looksDestructive(cmd.words) {
-				return true
-			}
 		}
 	}
 	return false
 }
 
-// lineLooksDestructive reports a line whose words or piped-in text name a
-// deleting program or a protected root.
-func lineLooksDestructive(s script) bool {
+// lineMentionsDanger reports a line whose text, anywhere — a quoted string, a
+// here-document, an extra argument, an assignment value — names a deleting
+// program as a word or a protected root. It reads the raw text, so it does
+// not depend on finding where code is handed.
+func lineMentionsDanger(src string) bool {
+	return deleterWord.MatchString(src) || mentionsProtectedRoot(src)
+}
+
+// codeHandler reports a program that runs other code or commands it is given:
+// a shell, an interpreter, eval, source, ., or xargs.
+func codeHandler(prog string) bool {
+	return shellNames[prog] || codeRunners[prog] || strings.HasPrefix(prog, "python") ||
+		prog == "eval" || prog == "source" || prog == "."
+}
+
+// lineFullyRead reports a line in which nothing hides code from the check:
+// every command's name and program is a plain literal, run through no wrapper
+// option, and none hands code to another to run (a shell, an interpreter,
+// eval, source, ., xargs). A non-literal argument does not hide code — a
+// command inside $(…) is collected and judged on its own, and a $ target is
+// asked about by the precise rules — so it does not by itself make a line
+// unread. The precise rules decide a fully read line; any other falls to the
+// conservative fallback.
+func lineFullyRead(s script) bool {
 	for _, cmd := range s.cmds {
-		if looksDestructive(cmd.words) {
-			return true
+		if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+			return false
 		}
-		for _, in := range cmd.stdin {
-			if codeLooksDestructive(in) {
-				return true
-			}
+		if prog, _ := cmd.program(); codeHandler(path.Base(prog)) {
+			return false
 		}
+	}
+	return true
+}
+
+// runsUnreadCode reports a command whose code the check cannot read at all,
+// because it is built when the line runs: eval of an expansion, a shell's -c
+// given an expansion, or a shell, source or . reading a process substitution.
+func runsUnreadCode(cmd command, prog string, args []string) bool {
+	switch {
+	case prog == "eval":
+		return !cmd.literal
+	case shellNames[prog]:
+		if code, hasC := shellDashC(args); hasC && strings.HasPrefix(code, "$") {
+			return true // -c given $(…) or $X
+		}
+		return firstOperandIsProcSubst(args)
+	case prog == "source" || prog == ".":
+		return firstOperandIsProcSubst(args)
+	}
+	return false
+}
+
+// firstOperandIsProcSubst reports a first operand that is a process
+// substitution, <(…), whose content is code the line does not show.
+func firstOperandIsProcSubst(args []string) bool {
+	for _, a := range operands(args) {
+		return strings.Contains(a, "<(")
 	}
 	return false
 }
 
 // handsOffCode gathers the strings a command hands to another to run as code:
 // a shell's -c argument, eval's operands, an interpreter's one-liner, and the
-// text on the stdin of a shell or interpreter. The check cannot judge where
-// such code's targets point, so a destructive-looking one is put to the person.
+// text on the stdin of a shell, an interpreter, or source/. reading stdin. The
+// check cannot judge where such code's targets point, so a destructive-looking
+// one is put to the person.
 func handsOffCode(prog string, args, stdin []string) []string {
 	var out []string
 	if code := oneLiner(prog, args); code != "" {
 		out = append(out, code)
 	}
 	if shellNames[prog] {
-		if code := shellDashC(args); code != "" {
+		if code, _ := shellDashC(args); code != "" {
 			out = append(out, code)
 		}
 	}
 	if prog == "eval" {
 		out = append(out, strings.Join(operands(args), " "))
 	}
-	if readsStdinCode(prog) {
+	if readsStdinCode(prog) || (prog == "source" || prog == ".") && readsStdinPath(args) {
 		out = append(out, stdin...)
 	}
 	return out
 }
 
-// shellDashC is the code after a shell's -c, including a cluster such as -lc
-// or -ec; "" when the shell is not given -c.
-func shellDashC(args []string) string {
-	for i, a := range args {
-		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") && i+1 < len(args) {
-			return args[i+1]
+// readsStdinPath reports a source/. whose script is standard input.
+func readsStdinPath(args []string) bool {
+	for _, a := range operands(args) {
+		return a == "/dev/stdin" || a == "-"
+	}
+	return false
+}
+
+// shellDashC is the code a shell runs after -c, and whether -c was given. The
+// code is the first operand once the options end: every word starting with -
+// or + is an option (a -- ends them; -o, -O, +o, +O take a value), and the
+// code is used when any option cluster holds c (-c, -lc, -ec, -c --, -c -e).
+func shellDashC(args []string) (string, bool) {
+	sawC := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			if sawC && i+1 < len(args) {
+				return args[i+1], true
+			}
+			return "", sawC
+		case a == "-o" || a == "-O" || a == "+o" || a == "+O":
+			i++ // takes an option name
+		case a == "--rcfile" || a == "--init-file":
+			i++ // takes a file
+		case strings.HasPrefix(a, "--"):
+			// another long option
+		case (strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+")) && len(a) > 1:
+			if strings.HasPrefix(a, "-") && strings.Contains(a[1:], "c") {
+				sawC = true
+			}
+		default:
+			if sawC {
+				return a, true // the first operand is the code
+			}
+			return "", false
 		}
 	}
-	return ""
+	return "", sawC
 }
 
 // readsStdinCode reports a program that runs its standard input as code: a
@@ -809,22 +891,72 @@ func readsStdinCode(prog string) bool {
 // stdin as commands.
 var shellNames = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "busybox": true}
 
-// oneLiner is the code an interpreter is given on its command line.
+// awkNames are the awk family, whose first operand is its program.
+var awkNames = map[string]bool{"awk": true, "gawk": true, "mawk": true, "nawk": true}
+
+// oneLiner is the code an interpreter is given on its command line. A short
+// option cluster that ends in the code flag counts (python3 -Bc, perl -le,
+// -ne, -pe, -E), as do node's -p, --print and --eval[=], and awk's program
+// operand or -e/--source value.
 func oneLiner(prog string, args []string) string {
-	flag := ""
+	if awkNames[prog] {
+		return awkProgram(args)
+	}
+	var flags string // the letters that introduce code
 	switch {
 	case strings.HasPrefix(prog, "python"):
-		flag = "-c"
-	case prog == "node", prog == "perl", prog == "ruby", prog == "lua", prog == "Rscript", prog == "osascript":
-		flag = "-e"
+		flags = "c"
+	case prog == "perl":
+		flags = "eE"
+	case prog == "node":
+		flags = "ep"
+	case prog == "ruby", prog == "lua", prog == "Rscript", prog == "osascript":
+		flags = "e"
 	case prog == "php":
-		flag = "-r"
+		flags = "r"
 	default:
 		return ""
 	}
 	for i, a := range args {
-		if (a == flag || prog == "node" && a == "--eval") && i+1 < len(args) {
-			return args[i+1]
+		if prog == "node" {
+			switch {
+			case a == "--eval" || a == "--print":
+				if i+1 < len(args) {
+					return args[i+1]
+				}
+			case strings.HasPrefix(a, "--eval="):
+				return strings.TrimPrefix(a, "--eval=")
+			case strings.HasPrefix(a, "--print="):
+				return strings.TrimPrefix(a, "--print=")
+			}
+		}
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && len(a) > 1 &&
+			strings.ContainsRune(flags, rune(a[len(a)-1])) && i+1 < len(args) {
+			return args[i+1] // a cluster ending in the code flag
+		}
+	}
+	return ""
+}
+
+// awkProgram is awk's program text: its -e/--source value, or the first
+// operand that is not an option. A program read from a file (-f) is not shown.
+func awkProgram(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-f" || a == "--file":
+			return ""
+		case a == "-e" || a == "--source":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		case a == "-v" || a == "-F":
+			i++ // takes a value
+		case strings.HasPrefix(a, "-"):
+			// another option
+		default:
+			return a
 		}
 	}
 	return ""

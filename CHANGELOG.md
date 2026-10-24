@@ -234,12 +234,14 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 163 drift cases the rules judge
-  stops all 162 a mode let through (the 163rd, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 188 drift cases the rules judge
+  stops all 187 a mode let through (the 188th, the destructive step, policy
   already asks about), and it
-  refuses none of its 55 benign controls (it asks about 7: six whose working
+  refuses none of its 62 benign controls (it asks about 7: six whose working
   directory it does not claim to know, and one interpreter running a
-  subprocess). The
+  subprocess). A conservative fallback catches code the precise reading
+  misses: a line the check does not read completely that names a deleting
+  program or a protected folder anywhere in its text is asked about. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an
