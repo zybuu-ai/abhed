@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -253,6 +254,8 @@ type Provider struct {
 
 // Agent is an embedded Abhed.
 type Agent struct {
+	// warnings are the configuration's repeated and unread keys, for editors.
+	warnings []string
 	registry *tools.Registry
 	loop     *agent.Loop
 	store    agent.Store
@@ -591,7 +594,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		runbookNote = agent.RunbookPrompt(bound)
 	}
-	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
+	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace, warnings: cfg.Warnings(),
 		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn, runbookNote: runbookNote}
 	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
@@ -742,6 +745,10 @@ func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 // WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
 // of its settings were ignored because it is not trusted.
 func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
+
+// ConfigWarnings are what was wrong with the configuration files the agent
+// was built from: repeated keys and keys nothing reads, one sentence each.
+func (a *Agent) ConfigWarnings() []string { return slices.Clone(a.warnings) }
 
 // AnswerVerdict is what the checks found for one answer; see Options.Verify.
 type AnswerVerdict = agent.AnswerVerdict

@@ -111,6 +111,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A key written twice in a configuration file is reported. encoding/json
+  keeps the last one without a word, so a second provider of the same name
+  in `model.providers` used to replace the first silently. Loading now warns
+  of every repeated key at any depth (and of a setting written twice in
+  different letter case), on the command line, in the serve log, in
+  `abhed doctor` and the ACP doctor, and to editors in `session/new`'s
+  `_meta["zybuu.ai/abhed"].configWarnings`, which also lists unknown keys and
+  the settings an untrusted workspace file could not make. Abhed Studio shows
+  them in its model picker. A managed file with a repeated key is still
+  refused.
+- An editor's approval request carries the supervisor's verdict on the call
+  (`_meta["zybuu.ai/abhed"].supervisor`: decision, code, rationale, advice
+  and judge, as the record holds it), so Abhed Studio shows it on the card as
+  the workbench does.
 - A local Ollama model chosen without Ollama running now gets working with
   you instead of failing. When the chosen model is one a local Ollama serves
   (at the start of a session, `/model`, `/ollama`, `abhed ollama check`, the
@@ -528,8 +542,9 @@ out):
   map key no longer compiles. Compare a `Call`'s fields, and use a `*Guard`.
 - New packages: `ocsf`, `store/chain` and the command `cmd/abhed-drift`.
 - `app`: `AnchorBuilder`, `MetricsPath`, `RecordHead` and `WithRecordAnchor`.
-- `config`: the `Config` fields `Monitor`, `Plan` and `Verify`, and its
-  method `ManagedAskRule`; the types `ContractConfig`, `MonitorConfig`,
+- `config`: the `Config` fields `Monitor`, `Plan`, `Verify` and
+  `Duplicates`, and its methods `ManagedAskRule` and `Warnings`; the type
+  `DuplicateKey`; the types `ContractConfig`, `MonitorConfig`,
   `OCSFConfig`, `PlanConfig`, `ServerMetricsConfig`, `VerifyConfig` and
   `VerifyCriticConfig`; `OCSFVersions` and `VerifyRank`;
   `Overrides.Supervisor`; `RecordConfig.OCSF`; `SSHConfig.ReadCommands`,
@@ -553,7 +568,7 @@ out):
   suite's `DriftCase`, `DriftCases`, `DriftDeclared`, `DriftHome`,
   `DriftHomeDir`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`,
   `DriftReport`, `DriftResult` and `RunDrift`.
-- `sdk`: `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
+- `sdk`: `(*Agent).ConfigWarnings`, `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
   `Options.Verify` and `Options.VerifyByDefault`, and the types
   `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
   `RequireResult`, `Runbook` and `RunbookStep`.

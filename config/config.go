@@ -100,6 +100,8 @@ type Config struct {
 	ManagedKeys []string `json:"-"`
 	// Unknown lists the keys in the files that no setting reads.
 	Unknown []UnknownKey `json:"-"`
+	// Duplicates are keys written twice in one object of a file read; the last one wins.
+	Duplicates []DuplicateKey `json:"-"`
 	// SetKeys are the settings any file made, as dotted paths; see Sets.
 	SetKeys []string `json:"-"`
 	// Workspace is what loading decided about the workspace's own file.
@@ -1615,6 +1617,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	applyEnv(&cfg)
 	w := warnSink(o.Warn)
 	warnUnknown(w, cfg.Unknown)
+	warnDuplicates(w, cfg.Duplicates)
 	warnSetAside(w, cfg.SetAside)
 	warnNotYetInEffect(w, cfg)
 	warnNeverAllows(w, cfg.Permissions.Allow)
@@ -1663,6 +1666,7 @@ func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
+	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
 	cfg.SetKeys = append(cfg.SetKeys, managedKeys(data)...)
 	return data, nil
 }

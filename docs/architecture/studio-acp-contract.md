@@ -191,6 +191,7 @@ a `resource_link` to the lines.
 | Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. |
 | Not implemented in 1.2.2 | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
 | Per-subagent model | `subagent.spawned` and the task list carry `provider` and `model` (already recorded). |
+| Configuration warnings | Added in 1.2.9. `session/new`, `load` and `resume` results carry `_meta["zybuu.ai/abhed"].configWarnings: string[]` when something is wrong with the configuration: a key written twice in one object of any file read (the last one wins; a second provider of the same name replaces the first), a setting written twice in different letter case, a key no part of Abhed reads, and each setting an untrusted workspace file could not make. One plain, redacted sentence each; absent when there are none. Studio lists them in its model picker. |
 | Security | The value is a configured name looked up in the engine's configuration. Nothing from Studio is used as an endpoint, key or model id. Descriptions never include the base URL, the key or the key's variable name. |
 
 ### 3.2a A local Ollama model
@@ -598,6 +599,8 @@ sends it:
 interface AskMeta {
   tool: string; step: string; reason: string; destructive: boolean;
   requestId?: string;        // the engine's action.requested id; <bind> is it
+  supervisor?: { decision: string; code: string; rationale?: string; advice?: string; judge?: string };
+                             // 1.2.9: the supervisor's verdict on the call, as recorded on action.requested
   scope?: string;            // what "always" grants, only when offered
   subagent?: string;         // a subagent's ask; toolCallId is "subagent-<requestId>"
   rule?: string;             // Not implemented in 1.2.2. The rule that asked, or "builtin:<name>"

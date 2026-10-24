@@ -860,7 +860,35 @@ func (c *acpConn) sessionResult(s *acpSession) map[string]any {
 	if r, ok := s.agent.(trustReporter); ok {
 		metaOf(res)["workspaceTrust"] = r.WorkspaceTrust()
 	}
+	// What is wrong with the configuration, for the model list (§3.2): repeated
+	// and unread keys, and the workspace settings an untrusted file could not make.
+	if w := configWarnings(s.agent); len(w) > 0 {
+		metaOf(res)["configWarnings"] = w
+	}
 	return res
+}
+
+// configWarner reports the configuration's problems, one sentence each.
+type configWarner interface{ ConfigWarnings() []string }
+
+// configWarnings are an agent's configuration warnings and its workspace
+// file's ignored keys, each redacted and on one printable line.
+func configWarnings(a any) []string {
+	var out []string
+	if w, ok := a.(configWarner); ok {
+		out = append(out, w.ConfigWarnings()...)
+	}
+	if r, ok := a.(trustReporter); ok {
+		if ws := r.WorkspaceTrust(); ws.File != "" && !ws.Trusted {
+			for _, k := range ws.Ignored {
+				out = append(out, fmt.Sprintf("%s: %s is not used while the workspace configuration is untrusted", config.Printable(ws.File), config.Printable(k.Key)))
+			}
+		}
+	}
+	for i, w := range out {
+		out[i] = ui.VisibleLine(redacted(w))
+	}
+	return out
 }
 
 // promptText splits the prompt into the person's words and what they attached,
@@ -1173,6 +1201,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	// The editor is shown the request as recorded (redacted when the session has
 	// a redactor); outside a loop there is no record, only the call's own values.
 	shown, reason, shownScope, via := args, d.Reason, scope, ""
+	var supervisor *agent.SupervisorNote
 	if rec, ok := agent.RequestedOf(ctx); ok {
 		// A person cannot review input the record withheld, so it is not asked.
 		if rec.Withheld {
@@ -1182,6 +1211,8 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 			return false, nil
 		}
 		shown, reason, shownScope, via = rec.Args, rec.Reason, rec.Scope, rec.Via
+		// The supervisor's verdict as the record holds it, for the card (studio-acp-contract.md §5.2).
+		supervisor = rec.Supervisor
 	}
 	offerAlways := scope != "" && shownScope != ""
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
@@ -1194,6 +1225,9 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		"rule": ruleOf(d)}
 	if requestID != "" {
 		meta["requestId"] = requestID
+	}
+	if supervisor != nil {
+		meta["supervisor"] = supervisor
 	}
 	if via != "" {
 		meta["via"] = via
