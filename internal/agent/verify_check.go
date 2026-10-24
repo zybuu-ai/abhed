@@ -63,6 +63,11 @@ type ClaimVerdict struct {
 	Checked []string `json:"checked,omitempty"`
 	// Critic is the critic's downgrade, when it made one.
 	Critic string `json:"critic,omitempty"`
+	// Explains marks an unverified claim that explains what a read showed.
+	// It is shown apart from unverified work, and changes nothing else: the
+	// claim keeps its kind and LoadBearing, so the answer's outcome and any
+	// revision are what they would be without it.
+	Explains bool `json:"explains,omitempty"`
 }
 
 // Conflict is the evidence a contradicted claim is shown with.
@@ -133,6 +138,9 @@ type mutation struct {
 	// the call was in, "" for this one's.
 	covers []string
 	child  string
+	// text is what the call was given (an edit's text, a command), where a
+	// change that names no file looks for the code it names.
+	text string
 }
 
 type recordIndex struct {
@@ -259,7 +267,8 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			// A refused edit changed nothing, but is kept, failed, so a claim
 			// about its file is left open; a failed command may have changed things.
 			if mut || o.OutcomeUnknown {
-				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError || o.OutcomeUnknown || (o.ExitCode != nil && *o.ExitCode != 0)}
+				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError || o.OutcomeUnknown || (o.ExitCode != nil && *o.ExitCode != 0),
+					text: string(r.a.Args)}
 				switch {
 				case fileTool:
 					m.path, m.known, m.targets, m.writer = args.Path, args.Path != "", []string{args.Path}, true
@@ -439,10 +448,10 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
 	}
-	// Explaining what a result showed is no claim about the session's work.
-	if v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
-		v.Kind, v.LoadBearing = KindKnowledge, false
-		v.Reason = "explains what a result showed; not a claim about this session's work"
+	// Explaining what a read showed is shown apart, and only shown: it never
+	// makes an answer verified.
+	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
+		v.Explains = true
 	}
 	return v
 }
@@ -568,7 +577,10 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if f.changed {
+	} else if f.changed || f.changeWord || f.deed && !f.proof && len(f.ran) == 0 && !f.negated {
+		// A change, in any wording, is read from the calls: by the file it
+		// names, or, naming none, by the code it names in what a call that
+		// changed something was given.
 		for _, p := range f.paths {
 			fd := ix.changedPath(p)
 			findings = append(findings, fd)
@@ -576,6 +588,18 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				atLine[normText(p)] = true
 			}
 		}
+		if len(f.paths) == 0 {
+			fd, tok := ix.changeNamed(f.tokens)
+			findings = append(findings, fd)
+			if fd.out == matched {
+				atLine[normText(tok)] = true
+			}
+		}
+	}
+	// A check or a release the agent says it did ("I tested", "we
+	// deployed") is no change, and no output shows that it was done.
+	if f.proof && len(f.ran) == 0 && !f.negated {
+		findings = append(findings, finding{out: missing, why: "it says what was done, which only the calls could show, and none is read as that"})
 	}
 	for _, cmd := range f.ran {
 		fd := ix.ranCommand(cmd)
@@ -1056,6 +1080,28 @@ func (ix *recordIndex) namedByChange(p string) string {
 		}
 	}
 	return ""
+}
+
+// changeNamed checks a change that names no file against the calls that
+// changed something: one that succeeded and was given the code it names,
+// as an edit's text or a command (`kubectl scale deploy/checkout`).
+func (ix *recordIndex) changeNamed(tokens []string) (finding, string) {
+	if len(tokens) == 0 {
+		return finding{out: missing, why: "it says what was changed but names neither a file nor code, and changes are read only from the calls"}, ""
+	}
+	for i := len(ix.mutations) - 1; i >= 0; i-- {
+		m := ix.mutations[i]
+		if m.person || m.failed || m.text == "" {
+			continue
+		}
+		hay := prepareEvidence(m.text, false)
+		for _, t := range tokens {
+			if hay.hasLiteral(normText(t)) {
+				return finding{out: matched, what: fmt.Sprintf("a change given %q at #%d", clipRunes(t, 40), m.seq), seq: m.seq}, t
+			}
+		}
+	}
+	return finding{out: missing, why: "it says what was changed but names no file, and no call this session that changed something was given " + strconv.Quote(clipRunes(tokens[0], 40))}, ""
 }
 
 // inWorkspace is where a path a claim names is: as written when absolute,

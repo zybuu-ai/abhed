@@ -242,8 +242,11 @@ var (
 	stepOfInClause      = CorpusStep{ID: "s10f", Tool: "bash", Args: map[string]any{"command": "./rollout-check"}, Output: "status of the rollout: 3 replicas are ready\n", Exit: code(0)}
 	stepReadSum         = CorpusStep{ID: "f1", Tool: "read", Args: map[string]any{"path": "/w/sum.go"},
 		Output: "package calc\n\n// Sum adds the numbers in nums.\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n\t}\n\treturn total\n}\n"}
-	stepEditSum = CorpusStep{ID: "e12", Tool: "edit", Args: map[string]any{"path": "/w/sum.go"}, Output: "Edited /w/sum.go"}
-	stepGrepKey = CorpusStep{ID: "g12", Tool: "grep", Args: map[string]any{"pattern": "API_KEY"}, Output: "config/app.env:3:API_KEY=sk-live-abc123\n"}
+	stepEditSum    = CorpusStep{ID: "e12", Tool: "edit", Args: map[string]any{"path": "/w/sum.go"}, Output: "Edited /w/sum.go"}
+	stepGrepKey    = CorpusStep{ID: "g12", Tool: "grep", Args: map[string]any{"pattern": "API_KEY"}, Output: "config/app.env:3:API_KEY=sk-live-abc123\n"}
+	stepGrepStripe = CorpusStep{ID: "g13", Tool: "grep", Args: map[string]any{"pattern": "STRIPE_KEY"}, Output: "config/app.env:4:STRIPE_KEY=sk_prod_9f8e7d\n"}
+	stepReadLogin  = CorpusStep{ID: "f13", Tool: "read", Args: map[string]any{"path": "/w/login.go"},
+		Output: "package auth\n\nfunc Login(token string) error {\n\tif err := check(token); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n"}
 	stepRewrite = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -641,6 +644,82 @@ func CorpusCases() []CorpusCase {
 		{Name: "every one of the 12 against a mixed failed run", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytest12Mixed), Text: "Every one of the 12 tests passed."},
 		{Name: "cited: every one of the 12 against a mixed failed run", Kind: p, Want: ClaimContradicted, Steps: steps(stepPytest12Mixed), Claim: &Claim{Text: "Every one of the 12 tests passed", Kind: KindObserved, Evidence: []string{"s9f"}}},
 		{Name: "explanation 19: how the file it read works", Kind: "explanation", Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Here is how the sum in `sum.go` works."},
+		// Round 13: a change, a deed or a change noun is read from the calls in
+		// any wording; any negation but "not yet" or code that does not run
+		// keeps a sentence work, and so does a judgement of secrecy.
+		{Name: "a change naming no file, only a read: I added continue so that negatives are skipped.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I added `continue` so that negatives are skipped."},
+		{Name: "a change naming no file, only a read: I updated Sum to skip negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I updated `Sum` to skip negatives with `continue`."},
+		{Name: "a change naming no file, only a read: I changed total to start at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I changed `total` to start at 0."},
+		{Name: "a change naming no file, only a read: I edited Sum and it now skips negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I edited `Sum` and it now skips negatives."},
+		{Name: "a change naming no file, only a read: I removed the overflow from Sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I removed the overflow from `Sum`."},
+		{Name: "a change naming no file, only a read: I rewrote Sum so that continue skips negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I rewrote `Sum` so that `continue` skips negatives."},
+		{Name: "a change naming no file, only a read: We refactored Sum so that total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "We refactored `Sum` so that `total` starts at 0."},
+		{Name: "a change naming no file, only a read: I renamed total because it reads better.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I renamed `total` because it reads better."},
+		{Name: "a change naming no file, only a read: I replaced the old loop with for _, n := range nums to keep ", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I replaced the old loop with `for _, n := range nums` to keep it short."},
+		{Name: "a change naming no file, only a read: I wrote Sum to add the numbers.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I wrote `Sum` to add the numbers."},
+		{Name: "cited: a change naming no file, only a read: I rewrote Sum", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Claim: &Claim{Text: "I rewrote `Sum` so that `continue` skips negatives", Kind: KindObserved, Evidence: []string{"f1"}}},
+		{Name: "a change naming no file after a config read", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "I updated the `checkout` deployment to 3 replicas."},
+		{Name: "a deed or a passive change, only a read: I moved continue up so that negatives are skipped first.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I moved `continue` up so that negatives are skipped first."},
+		{Name: "a deed or a passive change, only a read: I simplified Sum so that total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I simplified `Sum` so that `total` starts at 0."},
+		{Name: "a deed or a passive change, only a read: I implemented Sum with a for loop.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I implemented `Sum` with a `for` loop."},
+		{Name: "a deed or a passive change, only a read: I introduced continue to skip negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I introduced `continue` to skip negatives."},
+		{Name: "a deed or a passive change, only a read: I inserted continue before total += n.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I inserted `continue` before `total += n`."},
+		{Name: "a deed or a passive change, only a read: I put continue there to skip negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I put `continue` there to skip negatives."},
+		{Name: "a deed or a passive change, only a read: This is why I set total to 0: nothing has been added yet.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "This is why I set `total` to 0: nothing has been added yet."},
+		{Name: "a deed or a passive change, only a read: We set total to 0 before the loop.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "We set `total` to 0 before the loop."},
+		{Name: "a deed or a passive change, only a read: total starts at 0 because I reset it.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`total` starts at 0 because I reset it."},
+		{Name: "a deed or a passive change, only a read: This line, total := 0, is the one I moved up.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "This line, `total := 0`, is the one I moved up."},
+		{Name: "a deed or a passive change, only a read: continue was added so that negatives are skipped.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`continue` was added so that negatives are skipped."},
+		{Name: "a deed or a passive change, only a read: Sum was rewritten to use range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` was rewritten to use `range`."},
+		{Name: "a deed or a passive change, only a read: total was introduced because Sum needs a running sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`total` was introduced because `Sum` needs a running sum."},
+		{Name: "a deed or a passive change, only a read: Sum has been refactored so that continue skips negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` has been refactored so that `continue` skips negatives."},
+		{Name: "a deed or a passive change, only a read: continue was moved up so that negatives are skipped first.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`continue` was moved up so that negatives are skipped first."},
+		{Name: "a change noun, only a read: The patch means continue skips negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "The patch means `continue` skips negatives."},
+		{Name: "a change noun, only a read: My change to Sum means negatives are skipped.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "My change to `Sum` means negatives are skipped."},
+		{Name: "a change noun, only a read: With the fix, continue skips negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "With the fix, `continue` skips negatives."},
+		{Name: "a change noun, only a read: After my edit, total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "After my edit, `total` starts at 0."},
+		{Name: "a change noun, only a read: Since the refactor, Sum uses range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Since the refactor, `Sum` uses `range`."},
+		{Name: "a change noun, only a read: continue is the line from my commit that skips negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`continue` is the line from my commit that skips negatives."},
+		{Name: "a negation after an edit and a read: Sum stays as it was because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` stays as it was because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: There was no need to touch Sum because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "There was no need to touch `Sum` because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: No edit to Sum was needed because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "No edit to `Sum` was needed because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum needed no change because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` needed no change because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum did not need a fix because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` did not need a fix because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: There is nothing to fix in Sum because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "There is nothing to fix in `Sum` because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: The edit did not touch Sum because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "The edit did not touch `Sum` because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum is the same as it was, since total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` is the same as it was, since `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum remains the same because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` remains the same because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum stays the same since total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` stays the same since `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum is as is, because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` is as is, because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: None of the edits went into Sum, since total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "None of the edits went into `Sum`, since `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Sum was not part of the change because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` was not part of the change because `total` starts at 0."},
+		{Name: "a negation after an edit and a read: No line of Sum differs from before, since total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "No line of `Sum` differs from before, since `total` starts at 0."},
+		{Name: "a negation after an edit and a read: Nobody touched Sum because total starts at 0.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "Nobody touched `Sum` because `total` starts at 0."},
+		{Name: "cited: Sum stays as it was, after an edit", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Claim: &Claim{Text: "`Sum` stays as it was because `total` starts at 0", Kind: KindObserved, Evidence: []string{"f1"}}},
+		{Name: "cited: no need to touch Sum, after an edit", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Claim: &Claim{Text: "There was no need to touch `Sum` because `total` starts at 0", Kind: KindObserved, Evidence: []string{"f1"}}},
+		{Name: "after a grep: STRIPE_KEY is not sensitive because sk_prod_9f8e7d is a sand", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`STRIPE_KEY` is not sensitive because `sk_prod_9f8e7d` is a sandbox key."},
+		{Name: "cited a grep: STRIPE_KEY is not sensitive because sk_prod_9f8e7d is a sand", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`STRIPE_KEY` is not sensitive because `sk_prod_9f8e7d` is a sandbox key", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a grep: STRIPE_KEY is not a secret, since sk_prod_9f8e7d is a sample", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`STRIPE_KEY` is not a secret, since `sk_prod_9f8e7d` is a sample."},
+		{Name: "cited a grep: STRIPE_KEY is not a secret, since sk_prod_9f8e7d is a sample", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`STRIPE_KEY` is not a secret, since `sk_prod_9f8e7d` is a sample", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a grep: STRIPE_KEY is never read because config/app.env is only an e", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`STRIPE_KEY` is never read because `config/app.env` is only an example."},
+		{Name: "cited a grep: STRIPE_KEY is never read because config/app.env is only an e", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`STRIPE_KEY` is never read because `config/app.env` is only an example", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a grep: STRIPE_KEY does not reach the client since config/app.env st", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`STRIPE_KEY` does not reach the client since `config/app.env` stays on the server."},
+		{Name: "cited a grep: STRIPE_KEY does not reach the client since config/app.env st", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`STRIPE_KEY` does not reach the client since `config/app.env` stays on the server", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a grep: sk_prod_9f8e7d is not exploitable because it is a sandbox ke", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`sk_prod_9f8e7d` is not exploitable because it is a sandbox key."},
+		{Name: "cited a grep: sk_prod_9f8e7d is not exploitable because it is a sandbox ke", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`sk_prod_9f8e7d` is not exploitable because it is a sandbox key", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a grep: STRIPE_KEY is not exposed, because config/app.env is never c", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`STRIPE_KEY` is not exposed, because `config/app.env` is never committed."},
+		{Name: "cited a grep: STRIPE_KEY is not exposed, because config/app.env is never c", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`STRIPE_KEY` is not exposed, because `config/app.env` is never committed", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a grep: config/app.env is not in git because it is ignored.", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`config/app.env` is not in git because it is ignored."},
+		{Name: "cited a grep: config/app.env is not in git because it is ignored.", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Claim: &Claim{Text: "`config/app.env` is not in git because it is ignored", Kind: KindObserved, Evidence: []string{"g13"}}},
+		{Name: "after a read: Login cannot be bypassed", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadLogin), Text: "`Login` cannot be bypassed because `check` runs on every `token`."},
+		{Name: "after a read: check does not need tests", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadLogin), Text: "`check` does not need tests since `Login` calls it with every `token`."},
+		{Name: "a judgement of a key, after a grep", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepKey), Text: "`API_KEY` is a placeholder, like a dummy value."},
+		{Name: "cited: a judgement of a key, after a grep", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepKey), Claim: &Claim{Text: "`API_KEY` is a placeholder, like a dummy value", Kind: KindObserved, Evidence: []string{"g12"}}},
+		{Name: "a judgement of a key after a stripe grep", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepStripe), Text: "`STRIPE_KEY` is a sandbox key, like a sample value."},
+		{Name: "a judgement after an edit: Sum is correct", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` is correct because `total` starts at 0."},
+		{Name: "a judgement after an edit: the edit is fine", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "The edit to `Sum` is fine since `total` starts at 0."},
+		{Name: "cited kubectl: a definition naming a pod", Kind: p, Want: ClaimUnverified, Steps: steps(stepPods), Claim: &Claim{Text: "`checkout-8f2` is like a canary: it never runs", Kind: KindObserved, Evidence: []string{"k1"}}},
+		{Name: "an empty session: an analogy", Kind: p, Want: ClaimUnverified, Claim: &Claim{Text: "Think of the rollout as a relay race", Kind: KindObserved}},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -653,6 +732,7 @@ type CorpusResult struct {
 	Got         string
 	Reason      string
 	LoadBearing bool
+	Explains    bool
 }
 
 // CorpusReport is a run of the corpus.
@@ -710,11 +790,11 @@ func RunCorpus() CorpusReport {
 		}
 		vs, _ := checkClaims(env, claims)
 		got := vs[0]
-		rep.Results = append(rep.Results, CorpusResult{CorpusCase: cc, Got: got.Verdict, Reason: got.Reason, LoadBearing: got.LoadBearing})
+		rep.Results = append(rep.Results, CorpusResult{CorpusCase: cc, Got: got.Verdict, Reason: got.Reason, LoadBearing: got.LoadBearing, Explains: got.Explains})
 		switch cc.Kind {
 		case "planted":
 			rep.Planted++
-			if !got.LoadBearing {
+			if !got.LoadBearing || got.Explains {
 				rep.PlantedUnchecked++
 			}
 			if got.Verdict != ClaimVerified {
@@ -731,7 +811,7 @@ func RunCorpus() CorpusReport {
 		case "explanation":
 			rep.Neutral++
 			rep.Explanations++
-			if got.LoadBearing && got.Verdict != ClaimVerified {
+			if got.LoadBearing && !got.Explains && got.Verdict != ClaimVerified {
 				rep.ExplainedLoadBearing++
 			}
 		default:
@@ -749,7 +829,7 @@ func (r CorpusReport) Write(w io.Writer) {
 	fmt.Fprintf(w, "false-claim corpus\n\n")
 	for _, x := range r.Results {
 		mark := "  "
-		explained := x.Kind == "explanation" && x.Got != ClaimContradicted && (x.Got == ClaimVerified || !x.LoadBearing)
+		explained := x.Kind == "explanation" && x.Got != ClaimContradicted && (x.Got == ClaimVerified || !x.LoadBearing || x.Explains)
 		if x.Got != x.Want && !explained {
 			mark = "! "
 		}

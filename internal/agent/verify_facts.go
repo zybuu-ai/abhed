@@ -26,8 +26,16 @@ type facts struct {
 	wholeRun  bool        // success said of the run, not only of a count in it
 	changed   bool        // says the agent changed the paths it names
 	negated   bool        // says something did not happen, or is not so
-	scope     []string    // packages or folders a test claim names, such as internal/auth
-	ran       []string    // commands the claim says were run
+	// deed: the agent says it did something (first person, past or
+	// perfect); proof: what it did is a check or a release (tested,
+	// verified, deployed), which no change shows. changeWord: a passive
+	// change of named code ("`Sum` was rewritten") or a change noun ("my
+	// fix", "the patch"). tokens are the code it names, for a change that
+	// names no file.
+	deed, proof, changeWord bool
+	tokens                  []string
+	scope                   []string // packages or folders a test claim names, such as internal/auth
+	ran                     []string // commands the claim says were run
 }
 
 type countFact struct {
@@ -83,12 +91,23 @@ var (
 	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
-	negationRe = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
+	negationRe = regexp.MustCompile(`\b(not|never|no|none|nobody|no one|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
 	// "I did not change X", "I avoided editing X", "I kept X as it was".
 	notChangedRe = regexp.MustCompile(`\b(?:i|we)\s+(?:(?:did\s+not|didn't|have\s+not|haven't|never|did\s+never)\s+(?:\w+\s+)?(?:edit|update|change|modify|create|write|touch|delete|remove|rename|patch|rewrite|replace)` +
 		`|(?:avoided|refrained\s+from)\s+(?:\w+ing)` +
 		`|(?:kept|left)\s+(?:\S+\s+){1,4}?(?:as\s+it\s+was|as\s+is|unchanged|untouched|intact|alone))`)
-	ranRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
+	// deedRe is the agent saying it did something: a first-person subject,
+	// then a verb in the past or the perfect, whatever the verb.
+	deedRe = regexp.MustCompile(`\b(?:i|we|i've|we've|i'd|we'd|i'll have|we'll have)\s+(?:have\s+|had\s+|has\s+|just\s+|also\s+|then\s+|now\s+|already\s+|recently\s+|first\s+|finally\s+|since\s+|then\s+|carefully\s+|quickly\s+)*(?:\w+ed|wrote|rewrote|put|set|reset|made|did|ran|built|rebuilt|sent|kept|left|took|gave|got|brought|chose|drew|split|cut|undid|redid|shut|held|threw|broke|began|ate|went|found|saw|read|led|spun|hid|tore|wound|bound|won|stuck|struck|swapped|tore|done|written|rewritten|made|taken|given|begun|gone|seen|known|shown|thrown|broken|chosen|hidden|undone|redone)\b`)
+	// proofRe are deeds that check or release something: no change in the
+	// calls shows them.
+	proofRe = regexp.MustCompile(`\b(tested|verified|checked|confirmed|validated|reviewed|approved|deployed|released|shipped|merged|pushed|restarted|rebooted|installed|published|rolled|ensured|proved|proven|audited|benchmarked|measured|profiled|ran|run)\b`)
+	// passiveRe is a change said in the passive: "was added", "has been
+	// refactored", "got moved".
+	passiveRe = regexp.MustCompile(`\b(?:was|were|has been|have been|had been|has now been|have now been|got|gets|is being|are being)\s+(?:\w+ed|rewritten|written|reset|set|put|made|built|rebuilt|done|undone|redone|taken|split|cut)\b`)
+	// changeNounRe is the agent's change named as a thing.
+	changeNounRe = regexp.MustCompile(`\b(?:my|our)\s+(?:change|changes|edit|edits|commit|commits|patch|patches|fix|fixes|refactor|rewrite|update|updates|work|diff|pr|pull request)\b|\b(?:the|this|that)\s+(?:fix|patch|refactor|rewrite|hotfix)\b|\b(?:after|since|with|before)\s+(?:my|our)\s+(?:change|edit|commit|patch|fix|refactor|rewrite|update)\b`)
+	ranRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
 )
 
 // Words that follow a number without counting anything.
@@ -185,6 +204,14 @@ func extractFacts(claim string) facts {
 	}
 	lower := strings.ToLower(text)
 	f.changed = changedRe.MatchString(lower)
+	f.deed = saysDeed(lower) && !f.changed
+	f.proof = f.deed && proofRe.MatchString(lower)
+	f.changeWord = changeNounRe.MatchString(lower) || passiveRe.MatchString(lower) && backtickRe.MatchString(text)
+	for _, m := range backtickRe.FindAllStringSubmatch(text, -1) {
+		if t := strings.TrimSpace(m[1]); t != "" {
+			f.tokens = append(f.tokens, t)
+		}
+	}
 	f.negated = negationRe.MatchString(noFailRe.ReplaceAllString(lower, " "))
 
 	if notChangedRe.MatchString(lower) {
@@ -352,6 +379,21 @@ func extractFacts(claim string) facts {
 func wholeRunCount(m string) bool {
 	w := wholeRunRe.FindStringSubmatch(m)
 	return w != nil && (w[1] == "" || normNumber(w[1]) == normNumber(w[2]))
+}
+
+// presentEed are verbs that end in -ed in the present: "we need to check".
+var presentEed = map[string]bool{"need": true, "feed": true, "speed": true, "seed": true, "bleed": true,
+	"breed": true, "proceed": true, "succeed": true, "exceed": true, "embed": true, "shed": true, "bed": true, "red": true}
+
+// saysDeed reports the agent saying it did something.
+func saysDeed(lower string) bool {
+	for _, m := range deedRe.FindAllString(lower, -1) {
+		f := strings.Fields(m)
+		if !presentEed[f[len(f)-1]] {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikePath tells a file path from words joined by a slash, as in

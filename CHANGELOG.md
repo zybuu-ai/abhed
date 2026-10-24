@@ -356,7 +356,7 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 224 planted wrong claims none is shown as verified and 30 are
+  of 297 planted wrong claims none is shown as verified and 30 are
   contradicted (all from cited, conflicting evidence), all 54 true controls
   are verified, and none of the 134 true or neutral claims is
   contradicted; the test holds those figures as a floor. A fact a cited
@@ -381,16 +381,17 @@ All notable changes to Abhed are recorded here. The format follows
   file this session changed, or about any workspace file after a call
   whose files cannot be told, other than that it changed, is never
   verified by output naming it; a state, an
-  outcome or a deed ("I've verified", "the hotfix is live") the matched
-  output does not say is not verified; and a sentence that explains what a
-  read or a search showed (an analogy, a definition, a reason, a walk
-  through code whose every token the read holds) is shown as general
-  knowledge, not as unverified work, by an allowlist that keeps as work
-  anything citing a run, a change or `kubectl`, anything in a session with
-  nothing read, and anything that says what was done or came about,
-  negates a change or a state, or judges the work: on a line-by-line
-  explanation of a function, the sentences counted as unverified work went
-  from 5 to the 2 that were about the work.
+  outcome or a judgement ("the hotfix is live", "`API_KEY` is a
+  placeholder") the matched output does not say is not verified; what the
+  agent did, in any first-person past or perfect, a passive change of
+  named code or a change noun ("my fix"), is read only from the calls, and
+  a change that names no file is verified only by a call given the code it
+  names; and a sentence that explains what a read or a search showed is
+  drawn apart, as an explanation, and left out of the unverified-work
+  count, but changes no outcome and no revision, so it can never make an
+  answer verified. On a line-by-line explanation of a function, the
+  sentences counted as unverified work went from 5 to the 2 that were
+  about the work.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.

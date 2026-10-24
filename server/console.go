@@ -1839,13 +1839,14 @@ function drawVerdict(p){
   }
   const box = node('verdict' + (bad ? ' bad' : unk ? ' unk' : ''));
   const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  const expl = claims.filter(c => c.verdict === 'unverified' && c.explains).length;
   if(n > 0) box.appendChild(node('vbanner', '\u2717 NOT FACT: ' + n + ' contradicted by the session\'s record' + (p.revision ? ' \u00b7 the agent is asked to correct it' : '')));
   box.appendChild(node('vsum', (p.verified || 0) + ' verified \u00b7 ' + (p.unverified || 0) + ' unverified' +
-    (known ? (known === (p.unverified || 0) ? ' (general knowledge)' : ' (' + known + ' general knowledge)') : '') + ' \u00b7 ' + n + ' contradicted' +
+    (known || expl ? ' (' + [known ? (known === (p.unverified || 0) ? 'general knowledge' : known + ' general knowledge') : '', expl ? expl + ' explanation' : ''].filter(Boolean).join(', ') + ')' : '') + ' \u00b7 ' + n + ' contradicted' +
     (contract ? (contract.ok ? ' \u00b7 contract met' : ' \u00b7 contract not met') : '')));
   for(const c of claims){
     const r = node('cl ' + (c.verdict || 'unverified')), b = node('');
-    r.appendChild(node('mk', c.verdict === 'verified' ? '\u2713' : c.verdict === 'contradicted' ? '\u2717' : '?'));
+    r.appendChild(node('mk', c.verdict === 'verified' ? '\u2713' : c.verdict === 'contradicted' ? '\u2717' : c.explains ? '\u00b7' : '?'));
     b.appendChild(node('t', visible(c.text || '')));
     const k = c.conflict;
     b.appendChild(node('why', visible(k && k.excerpt ? 'record' + (k.seq ? ' #' + k.seq : '') + ': ' + k.excerpt : c.reason || '')));

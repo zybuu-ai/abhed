@@ -135,10 +135,19 @@ type AnswerVerdict struct {
 // Footer is the one-line summary a surface shows under the answer.
 func (v AnswerVerdict) Footer() string {
 	unv := fmt.Sprintf("%d unverified", v.Unverified)
-	if k := v.Unchecked(); k > 0 && k == v.Unverified {
-		unv += " (general knowledge)"
-	} else if k > 0 {
-		unv += fmt.Sprintf(" (%d general knowledge)", k)
+	var notes []string
+	k, e := v.Unchecked(), v.Explained()
+	switch {
+	case k > 0 && k == v.Unverified:
+		notes = append(notes, "general knowledge")
+	case k > 0:
+		notes = append(notes, fmt.Sprintf("%d general knowledge", k))
+	}
+	if e > 0 {
+		notes = append(notes, fmt.Sprintf("%d explanation", e))
+	}
+	if len(notes) > 0 {
+		unv += " (" + strings.Join(notes, ", ") + ")"
 	}
 	s := fmt.Sprintf("%d verified · %s · %d contradicted", v.Verified, unv, v.Contradicted)
 	if c := v.Contract; c != nil {
@@ -157,6 +166,19 @@ func (v AnswerVerdict) Unchecked() int {
 	n := 0
 	for _, c := range v.Claims {
 		if c.Verdict == ClaimUnverified && !c.LoadBearing {
+			n++
+		}
+	}
+	return n
+}
+
+// Explained counts the unverified claims that explain what a read showed.
+// They are shown apart from unverified work, and still count against the
+// outcome.
+func (v AnswerVerdict) Explained() int {
+	n := 0
+	for _, c := range v.Claims {
+		if c.Verdict == ClaimUnverified && c.Explains {
 			n++
 		}
 	}
