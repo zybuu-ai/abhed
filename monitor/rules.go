@@ -469,12 +469,12 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	for _, ns := range kubectlDeleteNS(prog, args) {
 		if ns == allNamespaces {
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-				Rationale: fmt.Sprintf("kubectl would delete across every namespace, which no task names; %s", remit(c)),
+				Rationale: fmt.Sprintf("%s would delete across every namespace, which no task names; %s", prog, remit(c)),
 				Advice:    "delete in the namespaces the task names, or ask the person first"}
 		}
 		if ns != "" && ns != "default" && !k.named(ns) {
 			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-				Rationale: fmt.Sprintf("kubectl would delete namespace %s or in it, which the task never named; %s", ns, remit(c)),
+				Rationale: fmt.Sprintf("%s would delete namespace %s or in it, which the task never named; %s", prog, ns, remit(c)),
 				Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
 		}
 	}
@@ -1911,7 +1911,24 @@ const allNamespaces = "\x00all-namespaces"
 // -n/--namespace value, the names after `delete ns|namespace|namespaces`, and
 // allNamespaces for -A/--all-namespaces.
 func kubectlDeleteNS(prog string, args []string) []string {
-	if prog != "kubectl" {
+	if prog == "helm" {
+		// helm uninstall REL -n NS removes the release from namespace NS.
+		verb, _, ok := containerAction("helm", args)
+		if !ok || !helmUninstall[verb] {
+			return nil
+		}
+		var out []string
+		for i, a := range args {
+			switch {
+			case (a == "-n" || a == "--namespace") && i+1 < len(args):
+				out = append(out, args[i+1])
+			case strings.HasPrefix(a, "--namespace="):
+				out = append(out, strings.TrimPrefix(a, "--namespace="))
+			}
+		}
+		return out
+	}
+	if prog != "kubectl" && prog != "oc" {
 		return nil
 	}
 	verb, idx, ok := containerAction("kubectl", args)
@@ -1933,7 +1950,7 @@ func kubectlDeleteNS(prog string, args []string) []string {
 	if len(ops) > 0 {
 		kinds := strings.Split(ops[0], "/")
 		switch strings.Split(kinds[0], ",")[0] {
-		case "ns", "namespace", "namespaces":
+		case "ns", "namespace", "namespaces", "project", "projects":
 			if len(kinds) > 1 {
 				out = append(out, kinds[1]) // ns/prod
 			}
@@ -1968,7 +1985,11 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 		case (verb == "rmi" || verb == "image" && (first == "rm" || first == "remove")) && forced:
 			return "force-remove container images", true
 		}
-	case "kubectl":
+	case "helm":
+		if verb, _, ok := containerAction("helm", args); ok && helmUninstall[verb] {
+			return "uninstall a Helm release", true
+		}
+	case "kubectl", "oc":
 		verb, idx, ok := containerAction("kubectl", args)
 		if !ok {
 			return "", false
@@ -1982,7 +2003,7 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 			}
 			if len(ops) > 0 {
 				switch strings.Split(strings.Split(ops[0], "/")[0], ",")[0] {
-				case "ns", "namespace", "namespaces", "pvc", "pv", "persistentvolume", "persistentvolumes",
+				case "ns", "namespace", "namespaces", "project", "projects", "pvc", "pv", "persistentvolume", "persistentvolumes",
 					"persistentvolumeclaim", "persistentvolumeclaims", "all":
 					return "delete namespaces, volumes or every resource", true
 				}
@@ -2824,6 +2845,13 @@ var kubectlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "
 	"-v": true, "--v": true, "--vmodule": true, "--profile": true, "--profile-output": true,
 	"--log-file": true, "--username": true, "--password": true, "--log-dir": true}
 
+// helmGlobalValueFlags come before a helm subcommand; helmUninstall names the
+// subcommand and its aliases that remove a release.
+var helmGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "--kube-context": true,
+	"--kubeconfig": true, "--kube-apiserver": true, "--kube-token": true, "--registry-config": true,
+	"--repository-config": true, "--repository-cache": true, "--burst-limit": true, "--qps": true}
+var helmUninstall = map[string]bool{"uninstall": true, "delete": true, "del": true, "un": true}
+
 // nerdctlGlobalValueFlags and podmanGlobalValueFlags extend the docker set with
 // each tool's own global value-taking options.
 var nerdctlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "-a": true, "--address": true,
@@ -2837,8 +2865,10 @@ var podmanGlobalValueFlags = map[string]bool{"--root": true, "--runroot": true, 
 // containerGlobals is the value-flag set for a tool's global options.
 func containerGlobals(prog string) map[string]bool {
 	switch prog {
-	case "kubectl":
+	case "kubectl", "oc":
 		return kubectlGlobalValueFlags
+	case "helm":
+		return helmGlobalValueFlags
 	case "nerdctl":
 		return union(dockerGlobalValueFlags, nerdctlGlobalValueFlags)
 	case "podman":

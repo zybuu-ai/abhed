@@ -239,8 +239,8 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 631 drift cases the rules judge
-  stops all 630 a mode let through (the 631st, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 636 drift cases the rules judge
+  stops all 635 a mode let through (the 636th, the destructive step, policy
   already asks about), and it
   refuses none of its 283 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
@@ -259,8 +259,9 @@ All notable changes to Abhed are recorded here. The format follows
   man -P, mv, rsync and git clean are read only for the forms the rules judge. Destructive container and cluster operations (system prune/reset,
   volume rm/prune, image prune -a, forced rmi; kubectl delete of namespaces,
   volumes, all or --all, scale to zero, drain, cordon, forced or production
-  patch, apply --prune) are asked by the supervisor and the destructive step,
-  and deleting an unnamed namespace or every namespace is denied. The
+  patch, apply --prune; oc delete project; helm uninstall) are asked by the
+  supervisor and the destructive step, and deleting an unnamed namespace or
+  every namespace, or a helm uninstall in an unnamed namespace, is denied. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an

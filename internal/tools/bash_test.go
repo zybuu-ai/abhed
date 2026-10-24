@@ -547,6 +547,13 @@ func TestContainerClusterDestructive(t *testing.T) {
 		"kubectl patch pvc data -p '{\"metadata\":{\"finalizers\":null}}'": true,
 		"kubectl apply -f k8s/ --prune -l app=x":                           true,
 
+		"oc delete project prod":                true,
+		"oc delete projects a b":                true,
+		"helm uninstall web -n prod":            true,
+		"helm delete web":                       true,
+		"helm list -n prod":                     false,
+		"helm upgrade --install web ./chart":    false,
+		"oc get projects":                       false,
 		"docker system df":                      false,
 		"docker image prune -f":                 false,
 		"docker volume ls":                      false,

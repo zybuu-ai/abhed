@@ -220,6 +220,8 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\bkubectl\b.*\s(?:drain|cordon)\b`), "drain or cordon a node"},
 	{regexp.MustCompile(`\bkubectl\b.*(?:\s(?:patch|replace)\b.*(?:--force\b|finalizers|prod)|prod.*\s(?:patch|replace)\b)`), "forced or production patch/replace"},
 	{regexp.MustCompile(`\bkubectl\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
+	{regexp.MustCompile(`\boc\b.*\sdelete\s+(?:.*\s)?(?:projects?|ns|namespaces?)(?:[\s/,]|$)`), "delete an OpenShift project"},
+	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless
