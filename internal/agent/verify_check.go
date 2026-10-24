@@ -368,9 +368,20 @@ func (ix *recordIndex) lastChange() *mutation {
 
 func (o *obsRec) evidence() *evidenceText {
 	if o.ev == nil {
-		o.ev = prepareEvidence(o.content)
+		o.ev = prepareEvidence(o.content, o.testRun())
 	}
 	return o.ev
+}
+
+// testRun reports a shell line with a test run in it, whose bare "9 passed"
+// counts tests.
+func (o *obsRec) testRun() bool {
+	for _, c := range o.line.cmds {
+		if commandKind(c.words) == "test" {
+			return true
+		}
+	}
+	return false
 }
 
 // usable is the evidence a claim of the model's may rest on: results of the
@@ -393,9 +404,10 @@ type finding struct {
 	why      string // for an unverified or contradicted reason
 	seq      int64
 	conflict *Conflict
-	pooled   bool   // matched in a tool result, not in the record's calls or the files
-	bare     bool   // a number with nothing to say what it counts
-	unit     string // the unit or key a count or keyed finding is about
+	pooled   bool     // matched in a tool result, not in the record's calls or the files
+	bare     bool     // a number with nothing to say what it counts
+	unit     string   // the unit or key a count or keyed finding is about
+	said     []string // the outcome, action or state words of a count finding
 }
 
 // checkClaims checks each claim against the record. Claims from the answer
@@ -596,7 +608,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	var unitFindings []finding
 	for _, cf := range f.counted {
 		fd := ix.counted(pool, cf, cited)
-		fd.unit = cf.unit
+		fd.unit, fd.said = cf.unit, closedOf(cf.quals)
 		unitFindings = append(unitFindings, fd)
 	}
 	keyedOK := map[string]bool{}
@@ -624,14 +636,21 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 // ("3 tests failed before the fix, 0 after", "from port 8080 to port 9090")
 // is not contradicted by the others when the result shows one of them.
 func oneValueMet(fs []finding) []finding {
-	met := map[string]bool{}
-	for _, f := range fs {
-		if f.out == matched {
-			met[f.unit] = true
-		}
+	// Values are of one thing when they share the unit and a word said of
+	// it, or neither says one: "9 tests passed" met does not excuse "2 tests
+	// failed".
+	oneThing := func(a, b finding) bool {
+		return a.unit == b.unit && (len(a.said) == 0 && len(b.said) == 0 || sharesQual(a.said, b.said))
 	}
 	for i, f := range fs {
-		if f.out == conflicted && met[f.unit] {
+		if f.out != conflicted {
+			continue
+		}
+		met := false
+		for _, g := range fs {
+			met = met || g.out == matched && oneThing(f, g)
+		}
+		if met {
 			fs[i] = finding{out: missing, unit: f.unit,
 				why: "it gives " + f.unit + " more than one value, and the result shows one of them: " + f.why}
 		}
@@ -1095,7 +1114,7 @@ func checkFileLine(env checkEnv, fl fileLine, literals []string) (finding, strin
 			conflict: &Conflict{Excerpt: fmt.Sprintf("%s has %d lines", fl.path, len(lines))}}, ""
 	}
 	from, to := max(0, fl.line-3), min(len(lines), fl.line+2)
-	window := prepareEvidence(strings.Join(lines[from:to], "\n"))
+	window := prepareEvidence(strings.Join(lines[from:to], "\n"), false)
 	for _, lit := range literals {
 		if strings.Contains(lit, normText(fl.path)) || strings.Contains(normText(fl.path), lit) {
 			continue

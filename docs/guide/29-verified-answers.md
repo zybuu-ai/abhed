@@ -118,15 +118,24 @@ counts (`12 tests`, `replicas: 3`). Then:
   does not show "12 tests failed". A plain count ("3 replicas") is verified
   by any count of the unit with its number. A count the output gives in
   other words leaves the statement unverified. Two shapes never carry the
-  words after them: the whole of "N of M" ("0 of 3 updated replicas are
-  available" does not show "3 replicas are available", and "2 out of 5
-  nodes are down" does not show "5 nodes are down"), and a count after a
-  "not" on its line ("not ready: 3 replicas"). A statement that counts a
-  part of a whole ("3 of 5 nodes are down") is not verified by a count of
-  the whole. A count's outcome word is that count's, not the run's: "9
-  tests passed" is checked as a count, and met by `3 failed, 9 passed` from
-  a run that failed; a runner's summary (`9 passed`, `Tests: 2 failed`)
-  counts tests.
+  words after them: the whole of "N of M", written `N/M` or with "of" in
+  the two words before it ("0 of 3 updated replicas are available",
+  `0/3 nodes are available`, "2 out of 5", "2 of all 5", "2 out of a total
+  of 5"), and a count after a negation (not, no, none, never, without,
+  isn't, don't and the like) earlier in its clause, the text since the last
+  `;` or `,` on its line ("not ready: 3 replicas"; but `no errors; 3
+  replicas are ready` shows "3 replicas are ready"). "12 of 12" and `12/12`
+  are all of them, not a part. A statement that counts a part of a whole
+  ("3 of 5 nodes are down") is not verified by a count of the whole.
+- **A count's outcome is that count's, unless it is said of every test.**
+  "9 tests passed" is checked as a count, and met by `3 failed, 9 passed`
+  from a run that failed. A pass counted with "all", "every" or "each"
+  before it, or as "12/12" or "12 of 12", says the run passed: it is
+  checked as a count and as "tests pass", so `3 failed, 12 passed` from a
+  run that exited 1 leaves "All 12 tests passed" unverified, and
+  contradicts it when cited. A bare `9 passed` or `2 failed` counts tests
+  only in the output of a line that runs tests (`pytest`, `go test`, `npm
+  test` and the like), not a linter's.
 - **Contradicted only from what it cites, and only by evidence that
   conflicts.** A statement that cites a result (a `call_id` or `#seq`
   through the answer tool, or `(#12)` in the reply's text) is contradicted
@@ -141,7 +150,9 @@ counts (`12 tests`, `replicas: 3`). Then:
   A statement that gives one unit or key more than one value, as a
   before and an after ("3 tests failed before the fix, 0 after", "from
   port 8080 to port 9090"), is not contradicted when the result shows one
-  of them;
+  of them, where the values say the same of the unit: "9 tests passed and
+  2 tests failed" citing `3 failed, 9 passed` is still ✗, since 9 passed
+  says nothing of how many failed;
   when it says a file was not changed, or that the agent avoided or kept it,
   and cites a write or edit of that file that succeeded; or when it says
   tests pass (or a build succeeds) and cites a failed run of the same kind
@@ -384,38 +395,44 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 139 plant a wrong claim. Some cite the result that shows them
+session. 153 plant a wrong claim. Some cite the result that shows them
 wrong (a test, outcome or files-changed count with the same word, a runner's
-summary, a key given another value, a failed run, an edited file said
-untouched, avoided or kept as it was) and come out contradicted. The rest
-cite nothing, or rest on what the checks cannot read, and must come out
-unverified: wrong counts and paths, a count said with another outcome, a
-state ("3 replicas are ready", "5 nodes are down", "12 tests failed")
-against a plain count, the whole of "N of M" or a count after "not" read as
-the state after it, a part claimed of a whole, a file this session or a
-script changed said to be as before, preserved or fine, runs piped or
-followed by `;` or `|| true`, runs that filter, list or only compile, runs
-given `GOFLAGS`, `PYTEST_ADDOPTS` or `CI`, or run through `pipenv`, `hatch`,
-`uv run --env-file`, `dotenv` or `direnv`, a package run against a claim
-about the whole suite, a trap before the run, commands after a failed `&&`,
-`||` or `exit`, a copy's or a link's source, a write refused in a folder
-`mkdir` made, a remote `rm`, a program at another path, a success of no
-named kind, a path read from an edit's own report, reads relied on after
-changes the checks cannot rule out, and more. 50 controls say only what the
-session showed, among them a folder claim met by an edit in it, `sed -l` or
-`perl -I` with their values, a run given only `NO_COLOR`, a files-changed
-count, and passed and failed counts from a run that failed. 47 are neutral:
-general knowledge, and true claims the checks cannot stand behind, such as a
-build claim against a failed test run, a filtered or timed-out run, a run of
-another or a wider scope, a count of the same thing in other words ("added 3
-tests" citing `42 tests passed`, "fixed 2 errors" citing `Found 5 errors`), a
-narrowed count against a whole run, a port the cited result also holds, a
-value given before and after a fix, a `cd` after `CDPATH=`, and things a
-cited result is silent on (no panic lines in a log tail, a port not
-listening, a file not in a response). Today none of the 139 planted claims
-is shown as verified (12 are contradicted, all from cited, conflicting
-evidence; the rest unverified), all 50 controls are verified, and none of
-the 97 true or neutral claims is contradicted. The test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
+summary, a failure count beside a pass count that is right, a key given
+another value, a failed run, "all 12 tests passed" against a run that
+failed, an edited file said untouched, avoided or kept as it was) and come
+out contradicted. The rest cite nothing, or rest on what the checks cannot
+read, and must come out unverified: wrong counts and paths, a count said
+with another outcome, a state ("3 replicas are ready", "5 nodes are down",
+"12 tests failed") against a plain count, the whole of "N of M" (`0/3 nodes
+are available`, `1/3`, "2 of all 5", "2 out of a total of 5") or a count
+after "not" read as the state after it, a part claimed of a whole, a count
+said of every test ("All 12 tests passed", "12/12", "All 9 tests are
+passing") against a run that failed, a linter's bare "9 passed" read as
+tests, a file this session or a script changed said to be as before,
+preserved or fine, runs piped or followed by `;` or `|| true`, runs that
+filter, list or only compile, runs given `GOFLAGS`, `PYTEST_ADDOPTS` or
+`CI`, or run through `pipenv`, `hatch`, `uv run --env-file`, `dotenv` or
+`direnv`, a package run against a claim about the whole suite, a trap
+before the run, commands after a failed `&&`, `||` or `exit`, a copy's or a
+link's source, a write refused in a folder `mkdir` made, a remote `rm`, a
+program at another path, a success of no named kind, a path read from an
+edit's own report, reads relied on after changes the checks cannot rule
+out, and more. 53 controls say only what the session showed, among them a
+folder claim met by an edit in it, `sed -l` or `perl -I` with their values,
+a run given only `NO_COLOR`, a files-changed count, passed and failed counts
+from a run that failed, "12 of 12 tests passed" from a run that passed, and a
+state after another clause's "no". 47 are neutral: general knowledge, and
+true claims the checks cannot stand behind, such as a build claim against a
+failed test run, a filtered or timed-out run, a run of another or a wider
+scope, a count of the same thing in other words ("added 3 tests" citing `42
+tests passed`, "fixed 2 errors" citing `Found 5 errors`), a narrowed count
+against a whole run, a port the cited result also holds, a value given
+before and after a fix, a `cd` after `CDPATH=`, and things a cited result is
+silent on (no panic lines in a log tail, a port not listening, a file not in
+a response). Today none of the 153 planted claims is shown as verified (15
+are contradicted, all from cited, conflicting evidence; the rest
+unverified), all 53 controls are verified, and none of the 100 true or
+neutral claims is contradicted. The test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
 floors only go up. The corpus is small and written by the people who wrote
 the checks, so it shows what the checks do on these shapes of mistake, not how often a given model makes them.
 
