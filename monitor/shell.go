@@ -37,9 +37,13 @@ type script struct {
 	funcs map[string]bool
 	// setsPath is set when the line changes PATH, so which program runs is unknown.
 	setsPath bool
-	// mentionsHome is set when HOME appears anywhere in the line, which could
-	// write it; ~ is then not placed against the session's home.
-	mentionsHome bool
+	// homeWrites is set when the line may write HOME, so ~ and $HOME are not
+	// placed against the session's home. ~ depends on HOME, not the working
+	// directory, so this is a line-level fact, not per command.
+	homeWrites bool
+	// pipesIntoCode is set when a pipe feeds a shell or interpreter, which
+	// reads what it is piped as code to run.
+	pipesIntoCode bool
 }
 
 // parseScript reads a shell line, starting at the script's own directory.
@@ -54,8 +58,9 @@ func parseScriptAt(src, start string) (script, bool) {
 	if err != nil {
 		return script{}, false
 	}
-	s := script{funcs: map[string]bool{}, mentionsHome: writesHomeText(src)}
+	s := script{funcs: map[string]bool{}}
 	collect(src, f, &s)
+	s.homeWrites = writesHomeText(src) || writesHomeStructural(f)
 	dirs := chainDirs(f, start)
 	for i := range s.cmds {
 		d, ok := dirs[s.cmds[i].call]
@@ -74,6 +79,10 @@ func collect(src string, f *syntax.File, s *script) {
 		case *syntax.FuncDecl:
 			if x.Name != nil {
 				s.funcs[x.Name.Value] = true
+			}
+		case *syntax.BinaryCmd:
+			if (x.Op == syntax.Pipe || x.Op == syntax.PipeAll) && readsPipedCode(x.Y) {
+				s.pipesIntoCode = true
 			}
 		case *syntax.Assign:
 			if x.Name != nil && x.Name.Value == "PATH" {
@@ -349,6 +358,82 @@ func readLeaf(leaf *syntax.Stmt) bool {
 		}
 	}
 	return true
+}
+
+// readsPipedCode reports a statement that is a shell or interpreter which
+// reads what it is piped as the code to run (echo … | bash, … | python3).
+func readsPipedCode(st *syntax.Stmt) bool {
+	call, ok := st.Cmd.(*syntax.CallExpr)
+	if !ok {
+		return false
+	}
+	var words []string
+	for _, w := range call.Args {
+		v, ok := plainWord(w)
+		if !ok {
+			return false
+		}
+		words = append(words, v)
+	}
+	prog, _ := (command{words: words}).program()
+	base := path.Base(prog)
+	return readsStdinCode(base)
+}
+
+// homeWriterBuiltins write a variable by name, so they may write HOME.
+var homeWriterBuiltins = map[string]bool{"read": true, "mapfile": true, "readarray": true,
+	"eval": true, "source": true, ".": true}
+
+// declMayWriteHome reports an export/declare/local/readonly/typeset that may
+// write HOME: a name that is HOME, or a name the parser did not split out
+// (declare "HO""ME=…"), which could be HOME.
+func declMayWriteHome(d *syntax.DeclClause) bool {
+	for _, a := range d.Args {
+		switch {
+		case a.Name != nil && a.Name.Value == "HOME":
+			return true
+		case a.Name == nil && a.Value != nil:
+			return true
+		}
+	}
+	return false
+}
+
+// writesHomeStructural reports a line with a statement that may write HOME in
+// a way the plain-text scan would miss: an assignment to HOME, an export or
+// declare the check cannot read in full, printf -v, read, eval, source, or any
+// simple command the check cannot read plainly.
+func writesHomeStructural(f *syntax.File) bool {
+	found := false
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch x := n.(type) {
+		case *syntax.DeclClause:
+			if declMayWriteHome(x) {
+				found = true
+			}
+		case *syntax.CallExpr:
+			for _, a := range x.Assigns {
+				if a.Name != nil && a.Name.Value == "HOME" {
+					found = true
+				}
+			}
+			if len(x.Args) == 0 {
+				return !found
+			}
+			head, ok := plainWord(x.Args[0])
+			base := path.Base(head)
+			switch {
+			case !ok:
+				found = true // an expanded or quoted command name
+			case homeWriterBuiltins[base]:
+				found = true
+			case base == "printf" && printfSetsVar(x.Args[1:]):
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // writesHomeText reports a line that mentions HOME other than to read it as a

@@ -360,3 +360,29 @@ func TestHarmlessSetForms(t *testing.T) {
 		}
 	}
 }
+
+// A line that writes HOME, by any means the check can see, is not trusted to
+// place ~; a line that does not still places it, even across a ;.
+func TestHomeWrites(t *testing.T) {
+	for line, writes := range map[string]bool{
+		"X=1; rm -rf ~/x":               false,
+		"cd build && rm -rf out":        false,
+		"echo hi":                       false,
+		"HOME=/srv rm -rf ~/x":          true,
+		"HOME=/srv; rm -rf ~/x":         true,
+		`declare "HO""ME=/srv"`:         true,
+		"printf -vHOME /srv":            true,
+		"read HOME <<< /srv":            true,
+		"eval HOME=/srv":                true,
+		"export CDPATH=/ && rm -rf ~/x": false, // CDPATH is not HOME
+		"export HOME=/srv":              true,
+	} {
+		s, ok := parseScript(line)
+		if !ok {
+			continue // an unparseable line is handled earlier, as an ask
+		}
+		if s.homeWrites != writes {
+			t.Errorf("%q: homeWrites=%v, want %v", line, s.homeWrites, writes)
+		}
+	}
+}
