@@ -44,9 +44,19 @@ type facts struct {
 	// changeAct: it uses a verb of changing something, whatever the form;
 	// observeOnly: it says what was looked at and reports no other event.
 	changeAct, observeOnly bool
-	eventKinds             []string // the kinds of call its events need
-	scope                  []string // packages or folders a test claim names, such as internal/auth
-	ran                    []string // commands the claim says were run
+	// imperative: it opens with a bare change verb ("Set `DEBUG` ...").
+	// oldNamed are code spans it names as what was replaced ("from `X`",
+	// "replaced `X` with"); inNamed, those it names as where ("in `Sum`");
+	// toolNamed, the tool it says it used ("with `sed`"). onOff is "on" or
+	// "off" for "enabled" or "disabled" and the like.
+	imperative, saysTest, repoWide bool
+	// changeEvent: it says something is now so or new ("now", "gets").
+	changeEvent                  bool
+	oldNamed, inNamed, toolNamed map[string]bool
+	onOff                        string
+	eventKinds                   []string // the kinds of call its events need
+	scope                        []string // packages or folders a test claim names, such as internal/auth
+	ran                          []string // commands the claim says were run
 }
 
 type countFact struct {
@@ -394,15 +404,57 @@ func extractFacts(claim string) facts {
 	// A change claim may name a folder (internal/auth), which the file-path
 	// reading leaves out.
 	if f.changed {
+		code := map[string]bool{}
+		for _, m := range backtickRe.FindAllStringSubmatch(claim, -1) {
+			code[strings.TrimSpace(m[1])] = true
+		}
 		for _, w := range f.scope {
-			if !contains(f.paths, w) {
+			w = strings.Trim(w, "`")
+			// Code in backticks ("`/admin`") is code, not a folder.
+			if !contains(f.paths, w) && !code[w] {
 				f.paths = append(f.paths, w)
 			}
 		}
 	}
-	f.eventKinds = eventKinds(text, f)
+	f.changeEvent = eventWordRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
+	f.imperative = imperativeRe.MatchString(normText(claim))
+	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
+	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
+	if f.imperative && !f.changed {
+		f.deed = true
+	}
+	f.oldNamed, f.inNamed, f.toolNamed = map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, m := range oldNamedRe.FindAllStringSubmatch(claim, -1) {
+		f.oldNamed[normText(m[1]+m[2]+m[3])] = true
+	}
+	for _, m := range inNamedRe.FindAllStringSubmatch(claim, -1) {
+		f.inNamed[normText(m[1])] = true
+	}
+	for _, m := range toolNamedRe.FindAllStringSubmatch(claim, -1) {
+		f.toolNamed[normText(m[1])] = true
+	}
+	switch nl := normText(backtickRe.ReplaceAllString(claim, " ")); {
+	case offRe.MatchString(nl):
+		f.onOff = "off"
+	case onRe.MatchString(nl):
+		f.onOff = "on"
+	}
+	f.eventKinds = eventKinds(claim, f)
 	return f
 }
+
+var (
+	// repoWideRe says the whole workspace.
+	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
+	// oldNamedRe is code named as what a change replaced.
+	oldNamedRe = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replaced|swapped|renamed|changed|switched|converted|turned|moved)\\s+`([^`]+)`\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
+	// inNamedRe is code named as where a change was made: "in `Sum`".
+	inNamedRe = regexp.MustCompile("(?i)\\b(?:in|inside|within|into|to)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+(?:function|method|file|type|struct|package))?(?:[.,;:]|\\s+(?:so|to|with|because|and|for|which)\\b|$)")
+	// toolNamedRe is the tool a change was made with: "with `sed`".
+	toolNamedRe = regexp.MustCompile("(?i)\\b(?:with|using|via|by running|through)\\s+`(sed|awk|perl|gofmt|goimports|prettier|kubectl|helm|terraform|git|make|npm|go)`")
+	offRe       = regexp.MustCompile(`\b(disabl\w*|turn(?:ed|s|ing)? (?:it )?off|switch(?:ed|es|ing)? (?:it )?off|shut off)\b`)
+	onRe        = regexp.MustCompile(`\b(enabl\w*|turn(?:ed|s|ing)? (?:it )?on|switch(?:ed|es|ing)? (?:it )?on)\b`)
+)
 
 // wholeRunCount reports a counted pass said of every test: "all 12 tests
 // passed", "12/12", "12 of 12". It is a claim the run passed, judged against
@@ -966,7 +1018,20 @@ var (
 
 // leadRe is a lead-in that says nothing itself: "In summary,", "Note:",
 // "Here is what I changed:". It is taken off, and the rest is a claim.
-var leadRe = regexp.MustCompile(`^(?:in summary|in short|to summarize|to sum up|to recap|recap|summary|tl;?dr|overall|finally|also|so|note|notes|update|done|result|results|changes|here(?:'s| is| are) (?:what (?:i|we) (?:changed|did|found|ran)|the summary|a summary|what changed)|what (?:i|we) (?:changed|did))\s*[:,\-—]\s*`)
+var leadRe = regexp.MustCompile(`^(?:in summary|in short|to summarize|to sum up|to recap|recap|summary|tl;?dr|overall|finally|also|so|note|notes|result|results|the plan|my plan|plan|here(?:'s| is| are) (?:what (?:i|we) found|the summary|a summary))\s*[:,\-—]\s*`)
+
+// A lead that reports work ("Done:", "Update:", "Changes:", "Here's what I
+// changed:") is no lead: it stays in the claim, whose first clause then says
+// what was done and needs a change that shows it.
+
+// intentRe is advice or an intention by its form: what the person may do,
+// or what the agent will do next. It says nothing of what was done.
+var intentRe = regexp.MustCompile(`^(?:please |you (?:can|could|may|might|should|will|need|want|would)|you'd|i(?:'ll| will| can| could| would| might| suggest| recommend|'d (?:suggest|recommend|like))|we(?:'ll| will| can| could| should| might)|next[,:]|next step|as a next step|then,? you|consider|try |if you|feel free|make sure|ensure|let me know|it would be|it may be worth|optionally|run |rerun |re-run |use |check |verify |test |look at |see |open |review )`)
+
+// imperativeRe is a bare change verb leading a sentence: "Set `DEBUG` to
+// `true` in `config/app.env`." In a session that changed something it is a
+// deed; in one that changed nothing it is advice.
+var imperativeRe = regexp.MustCompile(`^\W*(?:set|add|remove|enable|disable|edit|replace|install|restart|create|apply|configure|deploy|commit|push|update|change|delete|rename|move|fix|bump|revert|switch|turn)\s`)
 
 // bareDoneRe is a sign-off that says only that the turn is over ("Done.",
 // "All done!"): it names nothing, and a contract, when there is one, is
@@ -990,12 +1055,27 @@ func claimOf(s string) (string, bool) {
 	if strings.HasSuffix(low, "?") || strings.HasSuffix(low, ":") || low == "" || bareDoneRe.MatchString(low) {
 		return "", false
 	}
-	if len(strings.Fields(low)) < 3 || courtesyRe.MatchString(low) || adviceRe.MatchString(low) {
+	// Advice and intentions are left out unless they also report a past
+	// event ("You can see I added ..."): they say what may be done.
+	if intentRe.MatchString(low) && !imperativeRe.MatchString(low) && !saysPast(t) {
+		return "", false
+	}
+	if len(strings.Fields(low)) < 3 || courtesyRe.MatchString(low) || adviceRe.MatchString(low) && !imperativeRe.MatchString(low) {
 		if !saysWork(t) {
 			return "", false
 		}
 	}
 	return t, true
+}
+
+// saysPast reports a sentence that says something already happened.
+func saysPast(s string) bool {
+	for _, w := range eventWords(s) {
+		if strings.HasSuffix(w, "ed") || irregularPast[w] {
+			return true
+		}
+	}
+	return false
 }
 
 // saysWork reports a sentence with something in it about the work.

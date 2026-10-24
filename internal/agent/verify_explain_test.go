@@ -137,7 +137,8 @@ func TestSummaryAndLookAndChangeInStrictMode(t *testing.T) {
 		"I read `sum.go`. In summary, I rewrote `Sum` to use `range`.",
 		"I read `sum.go`. Here is what I changed: I removed the overflow check from `Sum`.",
 		"I read `sum.go` and inserted `continue` before `total += n`.",
-		"- Set `DEBUG` to `true` in `config/app.env`.",
+		"Done: `Sum` skips negatives with `continue`.",
+		"Here's what I changed: `Sum` skips negatives with `continue`.",
 	} {
 		l, store, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
 		path := filepath.Join(dir, "sum.go")
@@ -173,6 +174,52 @@ func TestMutatingCommands(t *testing.T) {
 	} {
 		if got := mutatingCmd(cmd); got != want {
 			t.Errorf("%q: %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+// In strict mode, after a real edit: a true addition named with the function
+// it was made in completes, advice or a next step after it changes nothing,
+// and a flag said turned the other way stays unverified.
+func TestStrictChangesReadTheWayTheyAreSaid(t *testing.T) {
+	run := func(t *testing.T, file, before, old, new, reply string) TerminalReason {
+		t.Helper()
+		l, _, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
+		path := filepath.Join(dir, file)
+		if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ad.turns = []scriptedTurn{
+			{calls: []model.ToolCall{call("read", map[string]string{"path": path})}},
+			{calls: []model.ToolCall{call("edit", map[string]string{"path": path, "old_string": old, "new_string": new})}},
+			{text: reply},
+			{text: reply},
+		}
+		reason, _ := l.Run(context.Background(), "change it")
+		return reason
+	}
+	sum := "package calc\n\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t}\n\treturn total\n}\n"
+	add := func(reply string) TerminalReason {
+		return run(t, "sum.go", sum, "\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n", reply)
+	}
+	for _, reply := range []string{
+		"I added `continue` to `Sum`.",
+		"I added `continue` to `Sum` so negatives are skipped.",
+		"I added `continue`. Run `go test ./...` to confirm.",
+		"I added `continue`. You can run `go test ./...` to check it.",
+		"I added `continue`. I'll update the docs next.",
+	} {
+		if got := add(reply); got != TermCompleted {
+			t.Errorf("%q: want completed, got %s", reply, got)
+		}
+	}
+	env := "DEBUG=false\nPORT=8080\n"
+	for _, reply := range []string{
+		"I set `DEBUG` to `false` in `app.env`.",
+		"I changed `DEBUG` from `true` to `false`.",
+	} {
+		if got := run(t, "app.env", env, "DEBUG=false", "DEBUG=true", reply); got != TermUnverified {
+			t.Errorf("%q after false -> true: want unverified, got %s", reply, got)
 		}
 	}
 }
