@@ -204,7 +204,8 @@ func TestFirstRunWithOllama(t *testing.T) {
 	if err != nil || json.Unmarshal(data, &cfg) != nil {
 		t.Fatalf("%v %s", err, data)
 	}
-	if cfg.Model.Default != "ollama" || cfg.Model.Providers["ollama"]["model"] != "stub-model" || cfg.Memory.Auto {
+	// Written as Ollama's, so the session checked it (the stub answers as Ollama's OpenAI API does) and it was ready.
+	if cfg.Model.Default != "ollama" || cfg.Model.Providers["ollama"]["model"] != "stub-model" || cfg.Model.Providers["ollama"]["type"] != "ollama" || cfg.Memory.Auto {
 		t.Fatalf("config %s", data)
 	}
 	if st, _ := os.Stat(filepath.Join(h.Home(), ".abhed", "config.json")); st.Mode().Perm() != 0o600 {

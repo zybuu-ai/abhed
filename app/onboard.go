@@ -566,7 +566,8 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 				fmt.Fprintf(out, "  %q is not one of the choices.\n", pick)
 				continue
 			}
-			name, p = "ollama", config.ProviderConfig{Type: "openai-compatible", BaseURL: base, Model: choices[n-1]}
+			// Written as Ollama's, so a later session checks it and offers what it lacks, on any port.
+			name, p = "ollama", config.ProviderConfig{Type: "ollama", BaseURL: base, Model: choices[n-1]}
 		}
 	}
 
