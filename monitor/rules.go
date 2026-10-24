@@ -842,14 +842,19 @@ func runsUnreadArg(cmd command, args []string) bool {
 	if cmd.call == nil {
 		return false
 	}
+	if p, _ := cmd.program(); printerProg[progBase(p)] {
+		return false // a printer runs nothing
+	}
 	off := len(cmd.words) - len(args)
 	plain := func(i int) bool {
 		j := off + i
 		if j < 0 || j >= len(cmd.call.Args) {
 			return true
 		}
-		_, ok := plainWord(cmd.call.Args[j])
-		return ok
+		w := cmd.call.Args[j]
+		// One literal part, quoted or not, is readable; an expansion, a glob, or
+		// quoting split across parts (ba""sh) resolves only when the line runs.
+		return literalText(w) && !globbed(w) && len(w.Parts) == 1
 	}
 	first := true
 	for i, a := range args {
