@@ -70,7 +70,7 @@ var (
 	// What a claim says when it reports success; negRe undoes it.
 	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
-	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:the\s+|of\s+the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
+	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:one\s+)?(?:of\s+)?(?:the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
 	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
 	everyRe          = regexp.MustCompile(`\b(?:all|every|each)\b`)
 	// backRefRe is what may follow a pass count and say it was every test:
@@ -556,6 +556,11 @@ func partOf(s string, at int, head string) (part string, ok bool) {
 		}
 		if j >= 0 && allDigits(f[j]) {
 			return normNumber(f[j]), true
+		}
+		// "every one of the 12", "each of the 12", "all of the 12": all of them.
+		if j >= 0 && (f[j] == "all" || f[j] == "each" || f[j] == "every" ||
+			f[j] == "one" && j > 0 && (f[j-1] == "every" || f[j-1] == "each")) {
+			return normNumber(s[at : strings.IndexFunc(s[at:]+" ", func(r rune) bool { return r < '0' || r > '9' })+at]), true
 		}
 		return "", true
 	}

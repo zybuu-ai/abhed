@@ -354,9 +354,9 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 193 planted wrong claims none is shown as verified and 29 are
+  of 224 planted wrong claims none is shown as verified and 30 are
   contradicted (all from cited, conflicting evidence), all 54 true controls
-  are verified, and none of the 133 true or neutral claims is
+  are verified, and none of the 134 true or neutral claims is
   contradicted; the test holds those figures as a floor. A fact a cited
   result is silent on leaves a statement unverified, never contradicted;
   counts are compared by a fixed list of outcome, action and state words,
@@ -378,13 +378,17 @@ All notable changes to Abhed are recorded here. The format follows
   edit's own report is no evidence for its path; and a statement about a
   file this session changed, or about any workspace file after a call
   whose files cannot be told, other than that it changed, is never
-  verified by output naming it; a state or a
-  deed the matched output does not say is not verified; and a sentence
-  that explains what a result showed (an analogy, a definition, a reason,
-  a walk through code whose every token the result holds) is shown as
-  general knowledge, not as unverified work: on a line-by-line explanation
-  of a function, the sentences counted as unverified work went from 5 to
-  the 2 that were about the work.
+  verified by output naming it; a state, an
+  outcome or a deed ("I've verified", "the hotfix is live") the matched
+  output does not say is not verified; and a sentence that explains what a
+  read or a search showed (an analogy, a definition, a reason, a walk
+  through code whose every token the read holds) is shown as general
+  knowledge, not as unverified work, by an allowlist that keeps as work
+  anything citing a run, a change or `kubectl`, anything in a session with
+  nothing read, and anything that says what was done or came about,
+  negates a change or a state, or judges the work: on a line-by-line
+  explanation of a function, the sentences counted as unverified work went
+  from 5 to the 2 that were about the work.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
