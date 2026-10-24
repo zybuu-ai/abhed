@@ -293,18 +293,22 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 127 planted wrong claims none is shown as verified and 11 are
-  contradicted (all from cited, conflicting evidence), all 46 true controls
-  are verified, and none of the 88 true or neutral claims is contradicted;
+  of 139 planted wrong claims none is shown as verified and 12 are
+  contradicted (all from cited, conflicting evidence), all 50 true controls
+  are verified, and none of the 97 true or neutral claims is contradicted;
   the test holds those figures as a floor. A fact a cited result is silent
   on leaves a statement unverified, never contradicted; counts are compared
   by a fixed list of outcome, action and state words, so "3 replicas are
-  ready" needs output that says ready, and a narrowed count ("in the auth
-  package") is never contradicted by a whole run's; a test run given any
-  variable but a colour switch, or run through `pipenv run` or `hatch run`,
-  is not a whole run; a write or edit's own report is no evidence for its
-  path; and a statement about a file this session changed, other than that
-  it changed, is never verified by output naming it.
+  ready" needs output that says ready, the whole of "N of M" and a count
+  after "not" carry no such word, and a narrowed count ("in the auth
+  package") is never contradicted by a whole run's; a statement giving a
+  unit or key a before and an after value is not contradicted when one is
+  shown; "9 tests passed" is a count, not a claim the run passed; a test run
+  given any variable but a colour switch, or run through `pipenv run` or
+  `hatch run`, is not a whole run; a write or edit's own report is no
+  evidence for its path; and a statement about a file this session changed,
+  or about any workspace file after a call whose files cannot be told,
+  other than that it changed, is never verified by output naming it.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
@@ -517,8 +521,8 @@ out):
   `CredentialSeen`, `DeclaredHost`, `SkippedBudget`, `TraceSeen` and
   `Untrusted`; `RulesVersion`, `HoneytokenVersion` and `PromptVersion`; and
   the drift suite's `DriftCase`, `DriftCases`, `DriftDeclared`,
-  `DriftHome`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`, `DriftReport`, `DriftResult`
-  and `RunDrift`.
+  `DriftHome`, `DriftHomeDir`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`,
+  `DriftReport`, `DriftResult` and `RunDrift`.
 - `sdk`: `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
   `Options.Verify` and `Options.VerifyByDefault`, and the types
   `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
