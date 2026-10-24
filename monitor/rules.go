@@ -344,7 +344,7 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// interpreter, a protected root, an operand outside own ground — the
 	// person is asked.
 	if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
-		if looksDestructive(cmd.words) || r.strayOperand(k, c, cmd.words) {
+		if looksDestructive(cmd.words) || (!container && r.strayOperand(k, c, cmd.words)) {
 			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 				Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
 				Advice:    "run the delete plainly, with no wrapper options and the path in full, or confirm this is meant"}
@@ -363,7 +363,7 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 				Rationale: fmt.Sprintf("%s is given a program or code only running the line would give, so the check cannot read what it runs; %s", prog, remit(c)),
 				Advice:    "write the program and its code plainly, or confirm this is meant"}
 		}
-		if looksDestructive(args) || r.strayOperand(k, c, args) {
+		if looksDestructive(args) || (!container && r.strayOperand(k, c, args)) {
 			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 				Rationale: fmt.Sprintf("%s is given arguments only running the line would give, and they look like they delete or reach outside the task's ground; %s", prog, remit(c)),
 				Advice:    "write the command and its paths plainly, or confirm this is meant"}
@@ -374,26 +374,46 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// the files find reaches, so it is replaced by each start path; a glob in
 	// the exec program position is not read.
 	if prog == "find" {
-		// A non-literal find argument may be a destructive action (-delete, an
-		// -exec); over paths outside own ground it is asked about.
-		if !cmd.argsLiteral && !r.findStartsOwnGround(k, c, args) {
+		execs := findExecCommands(args)
+		// A non-literal find argument (an action built from an expansion) over
+		// paths outside own ground is asked about.
+		if !cmd.argsLiteral && len(execs) == 0 && !r.findStartsOwnGround(k, c, args) {
 			return r.findExecAsk(c)
 		}
-		execs := findExecCommands(args)
-		// An -exec acts on every file find reaches, so when the start paths are
-		// not all own ground the command is asked about whatever it runs.
-		if len(execs) > 0 && !r.findStartsOwnGround(k, c, args) {
-			return r.findExecAsk(c)
+		starts := findStarts(args)
+		if len(starts) == 0 {
+			starts = []string{"."}
 		}
 		for _, words := range execs {
 			// A glob in the exec program position is not read.
-			if ep, _ := (command{words: words}).program(); strings.ContainsAny(progBase(ep), "*?[") {
+			ep, _ := (command{words: words}).program()
+			if strings.ContainsAny(progBase(ep), "*?[") {
 				return r.findExecAsk(c)
 			}
-			// The {} placeholder is files under own ground here; an explicit
-			// target among the other words is judged as its own command.
-			sub := command{words: dropBraces(words)}
-			if r.judgeCommand(k, c, sub, where, depth+1, container) != nil {
+			if readOnlyProg[progBase(ep)] {
+				// A read-only -exec never deletes; judge its own args ({} dropped),
+				// and do not ask on the start paths.
+				sub := command{words: dropBraces(words)}
+				if v := r.judgeCommand(k, c, sub, where, depth+1, container); v != nil {
+					return v
+				}
+				continue
+			}
+			// {} stands for the files find reaches: judge the -exec command with
+			// it replaced by each start path, keeping a deny. The start path is
+			// the directory the target sits under, so own-ground starts allow.
+			for _, st := range starts {
+				sub := command{words: substituteBraces(words, st), dir: st, dirKnown: true}
+				if v := r.judgeCommand(k, c, sub, where, depth+1, container); v != nil {
+					if v.Decision == policy.Deny {
+						return v
+					}
+					return r.findExecAsk(c)
+				}
+			}
+			// An -exec that can write or run code over paths outside own ground is
+			// asked about even when the command itself read as allowed.
+			if !r.findStartsOwnGround(k, c, args) {
 				return r.findExecAsk(c)
 			}
 		}
@@ -1040,11 +1060,11 @@ func (r Rules) cmdFullyRead(cmd command) bool {
 	case base == "git":
 		return gitFullyRead(args)
 	case base == "kubectl" || base == "docker" || base == "podman" || base == "nerdctl":
-		return len(containerCommand(base, args)) == 0
+		return !containerRuns(args) // a running subcommand is not fully read
 	case base == "xargs":
 		return len(xargsCommand(args)) == 0
 	case base == "man":
-		return !hasFlag(args, "-P") && !hasFlag(args, "--pager")
+		return manPager(args) == ""
 	case printerProg[base]:
 		return true // only prints or searches its arguments
 	case destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") ||
@@ -1710,6 +1730,28 @@ func findExecHidden(args []string) bool {
 	return false
 }
 
+// substituteBraces replaces find's {} placeholder with a start path, so the
+// -exec command is judged against what find reaches.
+func substituteBraces(words []string, start string) []string {
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if w == "{}" {
+			out = append(out, start)
+		} else {
+			out = append(out, strings.ReplaceAll(w, "{}", start))
+		}
+	}
+	return out
+}
+
+// readOnlyProg only reads or reports its arguments, so a find -exec that runs
+// one deletes nothing; its own arguments are still judged.
+var readOnlyProg = map[string]bool{"ls": true, "grep": true, "egrep": true, "fgrep": true, "rg": true,
+	"stat": true, "cat": true, "head": true, "tail": true, "wc": true, "file": true, "dirname": true,
+	"basename": true, "du": true, "md5sum": true, "shasum": true, "sha1sum": true, "sha256sum": true,
+	"readlink": true, "realpath": true, "test": true, "echo": true, "printf": true, "less": true,
+	"diff": true, "cksum": true}
+
 // dropBraces removes find's {} placeholder, so the -exec command's other
 // words (an explicit path) are judged; {} itself is handled by the start-path
 // check above.
@@ -2301,7 +2343,7 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 			}
 		}
 		for name, v := range cmd.env {
-			if strings.HasPrefix(name, "GIT_CONFIG_VALUE") {
+			if strings.HasPrefix(name, "GIT_CONFIG_VALUE") || gitEnvCode[name] {
 				if unreadVal(v) {
 					return ask()
 				}
@@ -2311,16 +2353,24 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 			}
 		}
 	case "kubectl", "docker", "podman", "nerdctl":
-		cc := containerCommand(prog, args)
-		if len(cc) == 0 {
-			return nil
+		if !containerRuns(args) {
+			return nil // ls/ps/logs/get/up/down/build/… run nothing of ours
 		}
-		if unreadVal(cc[0]) {
-			return ask()
+		ccs, located := containerCommands(prog, args)
+		if !located {
+			return ask() // a running form whose command we cannot locate: fail closed
 		}
-		sub := command{words: cc}
-		if r.judgeCommand(k, c, sub, where, depth+1, true) != nil {
-			return ask()
+		for _, cc := range ccs {
+			if len(cc) == 0 {
+				continue // a run with no explicit command (the image default)
+			}
+			if unreadVal(cc[0]) {
+				return ask()
+			}
+			sub := command{words: cc, argsLiteral: true}
+			if r.judgeCommand(k, c, sub, where, depth+1, true) != nil {
+				return ask()
+			}
 		}
 	case "xargs":
 		xc := xargsCommand(args)
@@ -2330,27 +2380,60 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 		if unreadVal(xc[0]) {
 			return ask()
 		}
-		sub := command{words: xc}
+		sub := command{words: xc, argsLiteral: true}
 		if r.judgeCommand(k, c, sub, where, depth+1, false) != nil {
 			return ask()
 		}
 	case "man":
-		for i, a := range args {
-			if (a == "-P" || a == "--pager") && i+1 < len(args) {
-				if r.codeVerdict(k, c, args[i+1], where, depth+1, false) != nil {
-					return ask()
-				}
+		if pg := manPager(args); pg != "" {
+			if unreadVal(pg) {
+				return ask()
+			}
+			if r.codeVerdict(k, c, pg, where, depth+1, false) != nil {
+				return ask()
 			}
 		}
 	}
 	return nil
 }
 
-// gitHandedCode is the shell code a git command runs: submodule foreach, rebase
-// -x/--exec, bisect run, filter-branch --*-filter, config alias and -c alias.*.
+// gitRunsConfigKey reports a git config key whose value git runs as a command.
+func gitRunsConfigKey(key string) bool {
+	k := strings.ToLower(key)
+	switch k {
+	case "core.pager", "core.editor", "core.sshcommand", "core.fsmonitor", "core.hookspath",
+		"sequence.editor", "diff.external", "credential.helper", "gpg.program":
+		return true
+	}
+	if strings.HasPrefix(k, "pager.") || strings.HasPrefix(k, "alias.") {
+		return true
+	}
+	if strings.HasPrefix(k, "filter.") && (strings.HasSuffix(k, ".clean") || strings.HasSuffix(k, ".smudge") || strings.HasSuffix(k, ".process")) {
+		return true
+	}
+	if strings.HasSuffix(k, ".textconv") {
+		return true
+	}
+	// A key ending in command/cmd/editor/pager/program names a command.
+	for _, suf := range []string{"command", "cmd", "editor", "pager", "program"} {
+		if strings.HasSuffix(k, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitEnvCode names the git environment variables whose value git runs.
+var gitEnvCode = map[string]bool{"GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true, "GIT_PAGER": true,
+	"GIT_SSH_COMMAND": true, "GIT_SSH": true, "GIT_EXTERNAL_DIFF": true, "GIT_ASKPASS": true}
+
+// gitHandedCode is the code a git command runs: submodule foreach, rebase
+// -x/--exec, bisect run, filter-branch --*-filter, and the value of a -c or
+// `git config` key git runs as a command (alias.*, core.pager/editor/…). A
+// leading ! on an alias or credential helper is dropped. Attached values
+// (--exec=…, -x…, --opt=…) are read like separate words.
 func gitHandedCode(args []string) []string {
 	var out []string
-	ops := operands(args)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -2358,16 +2441,29 @@ func gitHandedCode(args []string) []string {
 			if i+1 < len(args) {
 				out = append(out, args[i+1])
 			}
-		case a == "--exec" || strings.HasPrefix(a, "--") && strings.HasSuffix(a, "-filter"):
-			if i+1 < len(args) {
+		case strings.HasPrefix(a, "--exec="):
+			out = append(out, strings.TrimPrefix(a, "--exec="))
+		case strings.HasPrefix(a, "-x") && len(a) > 2:
+			out = append(out, a[2:])
+		case strings.HasPrefix(a, "--") && strings.Contains(a, "-filter"):
+			if k, v, ok := strings.Cut(a, "="); ok && strings.HasSuffix(k, "-filter") {
+				out = append(out, v)
+			} else if strings.HasSuffix(a, "-filter") && i+1 < len(args) {
 				out = append(out, args[i+1])
 			}
-		case a == "-c" && i+1 < len(args):
-			if _, v, ok := strings.Cut(args[i+1], "="); ok && strings.Contains(args[i+1], "alias.") {
+		case a == "-c":
+			if i+1 < len(args) {
+				if key, v, ok := strings.Cut(args[i+1], "="); ok && gitRunsConfigKey(key) {
+					out = append(out, strings.TrimPrefix(v, "!"))
+				}
+			}
+		case strings.HasPrefix(a, "-c"):
+			if key, v, ok := strings.Cut(a[2:], "="); ok && gitRunsConfigKey(key) {
 				out = append(out, strings.TrimPrefix(v, "!"))
 			}
 		}
 	}
+	ops := operands(args)
 	for i, a := range ops {
 		if a == "foreach" && i+1 < len(ops) {
 			out = append(out, ops[i+1])
@@ -2375,12 +2471,14 @@ func gitHandedCode(args []string) []string {
 		if a == "run" && i > 0 && ops[i-1] == "bisect" && i+1 < len(ops) {
 			out = append(out, strings.Join(ops[i+1:], " "))
 		}
-		if a == "alias" && i > 0 && ops[i-1] == "config" && i+1 < len(ops) {
-			out = append(out, strings.TrimPrefix(ops[i+1], "!"))
-		}
-		// git config alias.x '!cmd' — the operand is alias.x, value next.
-		if strings.HasPrefix(a, "alias.") && i+1 < len(ops) {
-			out = append(out, strings.TrimPrefix(ops[i+1], "!"))
+		// git config [--global…] KEY VALUE, where KEY git runs as a command.
+		if a == "config" {
+			for j := i + 1; j+1 < len(ops); j++ {
+				if gitRunsConfigKey(ops[j]) {
+					out = append(out, strings.TrimPrefix(ops[j+1], "!"))
+					break
+				}
+			}
 		}
 	}
 	return out
@@ -2391,54 +2489,162 @@ var dockerValueFlags = map[string]bool{"-v": true, "--volume": true, "-e": true,
 	"-w": true, "--workdir": true, "-p": true, "--publish": true, "--name": true, "--network": true, "--net": true,
 	"-u": true, "--user": true, "--entrypoint": true, "-l": true, "--label": true, "--mount": true, "--device": true,
 	"--add-host": true, "--dns": true, "-h": true, "--hostname": true, "--restart": true, "-m": true, "--memory": true,
-	"--cpus": true, "-a": true, "--attach": true, "--pid": true, "--ipc": true, "--platform": true}
+	"--cpus": true, "-a": true, "--attach": true, "--pid": true, "--ipc": true, "--platform": true, "--tmpfs": true,
+	"--cap-add": true, "--cap-drop": true, "--security-opt": true, "--ulimit": true, "--shm-size": true,
+	"--log-driver": true, "--log-opt": true, "--gpus": true, "--health-cmd": true, "--stop-signal": true,
+	"--volumes-from": true, "--link": true, "--expose": true, "--sysctl": true, "--runtime": true, "-c": true,
+	"--container": true, "--namespace": true, "-n": true}
 
-// containerCommand is the command a container runtime runs: for exec, the words
-// after the container name; for run, the words after the image; for kubectl,
-// the words after --.
-func containerCommand(prog string, args []string) []string {
-	if prog == "kubectl" {
-		for i, a := range args {
-			if a == "--" {
-				return args[i+1:]
-			}
-		}
-		return nil
-	}
-	// docker/podman/nerdctl
-	var sub string
-	for _, a := range operands(args) {
-		sub = a
-		break
-	}
-	if sub != "exec" && sub != "run" {
-		return nil
-	}
-	seenSub := false
-	skippedTarget := false
+// containerSubs are the docker/podman/kubectl subcommands that run a command we
+// can read from the line, mapped to whether an image sits before the command.
+var containerSubs = map[string]bool{"exec": false, "run": true, "debug": true}
+
+// containerRuns reports a container command whose subcommand runs a command of
+// ours (exec/run/debug, including under compose/container), as opposed to one
+// that runs nothing we can see (ps, logs, ls, get, up, down, build, pull, …).
+func containerRuns(args []string) bool {
+	_, ok := containerSub(args)
+	return ok
+}
+
+// containerSub finds the running subcommand (exec/run/debug) past any compose
+// or container prefix, and reports the index in args just after it.
+func containerSub(args []string) (int, bool) {
+	skip := map[string]bool{"compose": true, "container": true}
+	seen := 0
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if !seenSub {
-			if a == sub {
-				seenSub = true
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		if skip[a] {
+			continue
+		}
+		if _, ok := containerSubs[a]; ok {
+			return i, true
+		}
+		seen++
+		if seen >= 2 {
+			break // the first operands are not a running subcommand
+		}
+	}
+	return 0, false
+}
+
+// manPager is the pager command man is told to use (-P value, -P<attached>,
+// --pager value or --pager=value), or "".
+func manPager(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-P" || a == "--pager":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(a, "--pager="):
+			return strings.TrimPrefix(a, "--pager=")
+		case strings.HasPrefix(a, "-P") && len(a) > 2:
+			return a[2:]
+		}
+	}
+	return ""
+}
+
+// containerCommands returns the one or two readings of the command a container
+// runtime runs. Two readings arise when an unknown long option might or might
+// not take a value, shifting where the command starts; both are judged.
+func containerCommands(prog string, args []string) ([][]string, bool) {
+	subIdx, ok := containerSub(args)
+	if !ok {
+		return nil, false
+	}
+	rest := args[subIdx+1:]
+	if prog == "kubectl" {
+		for i, a := range rest {
+			if a == "--" {
+				return [][]string{rest[i+1:]}, true
+			}
+		}
+		return readings(rest, 1, kubectlValueFlags)
+	}
+	// docker/podman/nerdctl exec skips the container, run skips the image.
+	return readings(rest, 1, dockerValueFlags)
+}
+
+// readings returns the command words past skipN bare operands, under both the
+// reading where each unknown long option takes no value and the one where it
+// does, so neither hides the command. located is false when skipN operands
+// were never passed (the command could not be found: fail closed).
+func readings(args []string, skipN int, valueFlags map[string]bool) ([][]string, bool) {
+	a, okA := afterTarget(args, skipN, valueFlags, false)
+	b, okB := afterTarget(args, skipN, valueFlags, true)
+	if !okA && !okB {
+		return nil, false
+	}
+	var out [][]string
+	if okA {
+		out = append(out, a)
+	}
+	if okB && !sameWords(a, b) {
+		out = append(out, b)
+	}
+	return out, true
+}
+
+func sameWords(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// afterTarget skips skipN bare operands (past options that take a value) and
+// returns the remaining words. With greedy, an unknown long option followed by
+// a non-flag word is taken to consume that word.
+func afterTarget(args []string, skipN int, valueFlags map[string]bool, greedy bool) ([]string, bool) {
+	skipped := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if skipped >= skipN {
+				return args[i+1:], true
 			}
 			continue
 		}
-		if dockerValueFlags[a] {
+		if valueFlags[a] {
 			i++
 			continue
 		}
-		if strings.HasPrefix(a, "-") {
+		if k, _, ok := strings.Cut(a, "="); ok && valueFlags[k] {
 			continue
 		}
-		if !skippedTarget {
-			skippedTarget = true // the container name (exec) or image (run)
+		if greedy && strings.HasPrefix(a, "--") && !strings.Contains(a, "=") &&
+			i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && skipped >= skipN {
+			i++ // an unknown long option taking the next word as its value
 			continue
 		}
-		return args[i:]
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		if skipped < skipN {
+			skipped++
+			continue
+		}
+		return args[i:], true
 	}
-	return nil
+	return nil, skipped >= skipN
 }
+
+// kubectlValueFlags take a value in kubectl exec/run/debug.
+var kubectlValueFlags = map[string]bool{"-n": true, "--namespace": true, "-c": true, "--container": true,
+	"--image": true, "-f": true, "--filename": true, "--pod-running-timeout": true, "--request-timeout": true,
+	"--kubeconfig": true, "--context": true, "--cluster": true, "--user": true, "--as": true, "--as-group": true,
+	"--target": true}
 
 // xargsValueFlags take a value as the next word.
 var xargsValueFlags = map[string]bool{"-a": true, "--arg-file": true, "-I": true, "--replace": true, "-i": true,
