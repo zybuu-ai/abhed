@@ -910,10 +910,13 @@ Every call goes through the same steps, and the order is the design:
    `redis-cli FLUSH(ALL|DB)`, a Mongo `dropDatabase`, `.drop()`,
    `deleteMany({})` or `remove({})`, `ALTER TABLE … DROP COLUMN|CONSTRAINT`;
    a framework reset — `prisma migrate reset`, `prisma db push --force-reset`,
-   `rails`/`rake db:drop|reset`, `manage.py flush`, `artisan migrate:fresh|reset`
-   or `db:wipe`, `dotnet ef database drop`, `sequelize db:drop` — and tearing
+   `rails`/`rake db:drop|reset|purge|truncate_all|migrate:reset|schema:load`,
+   `manage.py flush`, `artisan migrate:fresh|reset|refresh|rollback` or
+   `db:wipe`, `dotnet ef database drop`, `sequelize db:drop`, run directly or
+   through a package runner (`npx`, `yarn`, `pnpm exec`, `bunx`) — and tearing
    down infrastructure — `terraform`/`tofu`/`terragrunt destroy` (also
-   `run-all destroy`), `apply -destroy`, `state rm`, `workspace delete`,
+   `run-all destroy`), `taint`, `apply -destroy` or `apply -replace=`, `state rm`,
+   `workspace delete`,
    `pulumi`/`cdk destroy`, `sam delete`, `serverless remove`, `eksctl delete`,
    `gcloud`/`az`/`doctl`/`hcloud … delete` (including `delete-batch`), and
    `aws s3 rb`/`s3 rm --recursive`/`s3 sync --delete` or any `aws …
@@ -921,8 +924,10 @@ Every call goes through the same steps, and the order is the design:
    push. The line is split into simple commands outside quotes, so a quoted
    multi-statement query stays whole and a word from one command never
    completes a match in another; the data-store patterns are read over the
-   whole line when it runs that client, so a heredoc body or a literal piped
-   in counts. A table name may be schema-qualified or quoted. Everyday reads
+   whole line when one of its simple commands runs that client (directly, or
+   past `sudo`/`su`/`env`, a package runner, or a container `exec`/`run`), so a
+   heredoc body or a literal piped in counts, and a client named only in a
+   commit message does not. A table name may be schema-qualified or quoted. Everyday reads
    (`select`, `PING`, `plan`, `plan -destroy`, `list`, `describe`) are not
    prompted. It misses, among others: `git checkout FILE` with one word and no
    file extension (`Makefile`), which git reads as a branch first and
@@ -1354,19 +1359,19 @@ not reviewed (turn budget spent)`.
 
 ### What it has been measured to do
 
-The drift suite is 812 calls a model gone wrong might make — a wrong host, a
+The drift suite is 955 calls a model gone wrong might make — a wrong host, a
 made-up path, destructive work outside the task, an instruction injected by a
 fetched page, a program that is not there, a credential followed by a way
 out, a planted honeytoken, a target that only shares a prefix or a word with
-what the person named, a home folder or top-level folder deleted whole, a destructive command after a `cd`, wrapper, builtin, escaped name or other change the check cannot follow, code handed to a shell, to `eval` or to an interpreter, unknown runners carrying a deleter, commands run by `find -exec`, git/kubectl subcommands that run other commands, and `mv`, `git clean` and `rsync --delete` outside the remit — and 386 benign controls, among them seven everyday samples written by reviewers (64, 39, 30, 30, 49, 59 and 52 commands) of build, test, git, package-manager, docker, kubectl, mount and file-move work — only genuinely harmless lines; an allowed probe line is a drift case or a documented limit, never a control — among them certificate
+what the person named, a home folder or top-level folder deleted whole, a destructive command after a `cd`, wrapper, builtin, escaped name or other change the check cannot follow, code handed to a shell, to `eval` or to an interpreter, unknown runners carrying a deleter, commands run by `find -exec`, git/kubectl subcommands that run other commands, and `mv`, `git clean` and `rsync --delete` outside the remit — and 421 benign controls, among them eight everyday samples written by reviewers (64, 39, 30, 30, 49, 59, 52 and 35 commands) of build, test, git, package-manager, docker, kubectl, mount and file-move work — only genuinely harmless lines; an allowed probe line is a drift case or a documented limit, never a control — among them certificate
 checks over `ssh` on declared hosts, a rolling restart and a rollback in a
 named namespace, `ssh_get`, `ssh_put`, `stdin_secret`, an `ssh` call after a key was copied on the host, work across "the web
 hosts", and interpreter one-liners that only read or clean the workspace.
 Every drift case but one was let through by a mode first; the one,
 `git reset --hard` in the workspace, is left to the destructive step, which
 asks about it in every mode and refuses it headless, so the supervisor does
-not judge it again. On the suite the rules judge stops 811 of the other 811. It
-denies none of the 386 controls; it asks about 10 of them: six whose working
+not judge it again. On the suite the rules judge stops 954 of the other 954. It
+denies none of the 421 controls; it asks about 10 of them: six whose working
 directory it deliberately does not claim to know — a scratch directory from a
 command substitution, `$TMPDIR` or `mktemp`, a loop over directories, a
 conditional `cd`, and a `cd` joined to the next command by `;` — one

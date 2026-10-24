@@ -336,6 +336,13 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 // and code handed to a shell, eval or an interpreter both come through here;
 // depth counts how far code was handed down.
 func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth int, container bool) *Verdict {
+	// A destructive data-store, infrastructure, container or cluster operation
+	// is judged past a package runner (npx/yarn/pnpm exec …) and past sudo/su
+	// and their options, which the plain reading below would send to the
+	// weaker fallback.
+	if v := r.familyVerdict(k, c, cmd, where, depth); v != nil {
+		return v
+	}
 	// A command name the check cannot read plainly (\rm, r\m, a quoted or
 	// expanded name) — the first word or the program past a wrapper — or a
 	// wrapper with an option (sudo -u, env -C, command -p, nice -n …), may
@@ -2074,6 +2081,9 @@ func gitPushDestructive(args []string) (string, bool) {
 	if hasFlag(args, "--mirror") {
 		return "mirror-push, deleting remote refs", true
 	}
+	if hasFlag(args, "--prune") {
+		return "prune remote branches", true
+	}
 	force := hasFlag(args, "--force") || hasFlag(args, "-f") || hasFlag(args, "--force-with-lease") ||
 		hasPrefix(args, "--force-with-lease=") || shortFlag(args, 'f')
 	for _, ref := range ops[1:] {
@@ -2106,8 +2116,93 @@ func gitPushDestructive(args []string) (string, bool) {
 // destructive step asks about (dropping a database, flushing a cache,
 // destroying infrastructure, deleting cloud resources), so the supervisor asks
 // too. The text is the command's own words, read case-insensitively.
+// packageRunner steps past a JS package runner to the program it runs, so a
+// family check sees cdk/serverless/prisma rather than npx/yarn/pnpm. aws-cdk
+// is read as cdk.
+func packageRunner(words []string) []string {
+	for len(words) > 0 {
+		switch progBase(words[0]) {
+		case "npx", "bunx":
+			words = words[1:]
+		case "bun":
+			if len(words) > 1 && words[1] == "x" {
+				words = words[2:]
+				continue
+			}
+			return words
+		case "yarn", "pnpm":
+			words = words[1:]
+			if len(words) > 0 && (words[0] == "exec" || words[0] == "dlx") {
+				words = words[1:]
+			}
+		case "npm":
+			if len(words) > 1 && words[1] == "exec" {
+				words = words[2:]
+				if len(words) > 0 && words[0] == "--" {
+					words = words[1:]
+				}
+				continue
+			}
+			return words
+		default:
+			if len(words) > 0 && progBase(words[0]) == "aws-cdk" {
+				words[0] = "cdk"
+			}
+			return words
+		}
+	}
+	return words
+}
+
+// familyVerdict runs the destructive data-store, infrastructure, container and
+// cluster checks on the real program a command runs, stepping past a package
+// runner and past sudo/doas/env wrappers and su/runuser -c code. It catches
+// the shapes the plain, wrapper-option fallback below would miss.
+func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth int) *Verdict {
+	ask := func(what string) *Verdict {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("the command would %s, which cannot be undone; %s", what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
+	w := packageRunner(cmd.words)
+	plain, _ := cmd.program()
+	stripped := len(w) != len(cmd.words)
+	optWrap := optioned(wrapperPrefix(cmd.words))
+	suWrap := progBase(plain) == "su" || progBase(plain) == "runuser"
+	if !stripped && !optWrap && !suWrap {
+		return nil // the plain reading below handles it (and keeps the namespace deny)
+	}
+	prog, args := command{words: w, call: cmd.call}.program()
+	prog = progBase(prog)
+	// su/runuser/doas -c CODE runs a shell: judge that code as handed code.
+	if prog == "su" || prog == "runuser" || prog == "doas" {
+		for i, a := range args {
+			if a == "-c" && i+1 < len(args) {
+				if r.codeVerdict(k, c, args[i+1], where, depth+1, false) != nil {
+					return ask("run code the check cannot read")
+				}
+			}
+		}
+	}
+	if what, ok := stdinDestructive(prog, cmd.stdin); ok {
+		return ask(what)
+	}
+	if what, ok := dataInfraDestructive(prog, args); ok {
+		return ask(what)
+	}
+	if what, ok := clusterDestructive(prog, args); ok {
+		return ask(what)
+	}
+	if prog == "git" {
+		if what, ok := gitPushDestructive(args); ok {
+			return ask(what)
+		}
+	}
+	return nil
+}
+
 func dataInfraDestructive(prog string, args []string) (string, bool) {
-	text := strings.Join(args, " ")
+	text := strings.Join(splitAttachedFlags(args), " ")
 	low := strings.ToLower(text)
 	if ormReset.MatchString(prog + " " + text) {
 		return "reset a database through an ORM", true
@@ -2139,7 +2234,8 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 		return "destroy infrastructure", true
 	case prog == "gcloud" || prog == "az" || prog == "doctl" || prog == "hcloud":
 		for _, a := range args {
-			if a == "delete" || a == "destroy" || strings.HasPrefix(a, "delete-") {
+			if a == "delete" || a == "destroy" || strings.HasPrefix(a, "delete-") ||
+				a == "bulk-delete" || strings.HasSuffix(a, "-delete") {
 				return "delete cloud resources", true
 			}
 		}
@@ -2149,6 +2245,25 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// splitAttachedFlags splits an attached -c/-e/--command/--execute value so a
+// query glued to the flag (-c"DROP …", --execute=DROP) is still matched.
+func splitAttachedFlags(args []string) []string {
+	var out []string
+	for _, a := range args {
+		switch {
+		case len(a) > 2 && (strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-e")) && a[1] != '-':
+			out = append(out, a[:2], a[2:])
+		case strings.HasPrefix(a, "--command="):
+			out = append(out, "--command", strings.TrimPrefix(a, "--command="))
+		case strings.HasPrefix(a, "--execute="):
+			out = append(out, "--execute", strings.TrimPrefix(a, "--execute="))
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // stdinDestructive reads a data-store client's literal stdin (a heredoc, a
@@ -2182,10 +2297,17 @@ func tfDestroyOp(args []string) bool {
 		return false
 	}
 	switch ops[0] {
-	case "destroy":
+	case "destroy", "taint":
 		return true
 	case "apply":
-		return slices.Contains(args, "-destroy")
+		if slices.Contains(args, "-destroy") {
+			return true
+		}
+		for _, a := range args {
+			if a == "-replace" || strings.HasPrefix(a, "-replace=") {
+				return true // replace destroys and recreates the resource
+			}
+		}
 	case "state":
 		return len(ops) > 1 && ops[1] == "rm"
 	case "workspace":
@@ -2194,15 +2316,17 @@ func tfDestroyOp(args []string) bool {
 	return false
 }
 
-var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b`)
+var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b)`)
 var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
 var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`)
-var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bs3\s+sync\b.*--delete\b|\b(?:batch-)?(?:delete|terminate)-[\w-]+\b`)
+var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bs3\s+sync\b.*--delete\b|\b(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|\bdelete-objects\b`)
 
 // ormReset matches the framework commands that drop or wipe every table.
 var ormReset = regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b|` +
-	`\b(?:rails|rake)\b.*\bdb:(?:drop|reset)\b|\b(?:manage\.py|django-admin)\s+flush\b|` +
-	`\bartisan\s+(?:migrate:fresh|migrate:reset|db:wipe)\b|\bdotnet\s+ef\s+database\s+drop\b|\bsequelize(?:-cli)?\s+db:drop\b`)
+	`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load)\b|` +
+	`\b(?:manage\.py|django-admin)\s+flush\b|` +
+	`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b|` +
+	`\bdotnet\s+ef\s+database\s+drop\b|\bsequelize(?:-cli)?\s+db:drop\b`)
 
 // clusterDestructive reports a container or cluster operation with no undo.
 func clusterDestructive(prog string, args []string) (string, bool) {
@@ -2242,6 +2366,8 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 			return "remove every container image", true
 		case (verb == "rmi" || verb == "image" && (first == "rm" || first == "remove")) && forced:
 			return "force-remove container images", true
+		case (verb == "rm" || verb == "container" && first == "rm") && forced && shortFlag(rest, 'v'):
+			return "force-remove a container and its anonymous volumes", true
 		}
 	case "helm":
 		if verb, _, ok := containerAction("helm", args); ok && helmUninstall[verb] {

@@ -189,6 +189,8 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf]`), "recursive/forced delete"},
 	{regexp.MustCompile(`\bgit\s+push\s+.*--force(?:-with-lease)?\b`), "force push"},
 	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--mirror\b`), "mirror push (deletes remote refs)"},
+	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--prune\b`), "prune remote branches"},
+	{regexp.MustCompile(`\bgit\b.*\sgc\b.*--prune=now\b|\bgit\b.*\sreflog\s+expire\b.*--expire(?:-unreachable)?=(?:now|0)`), "make discarded commits unrecoverable"},
 	{regexp.MustCompile(`\bgit\s+reset\s+--hard\b`), "hard reset"},
 	{regexp.MustCompile(`\bgit\s+clean\s+.*-[a-zA-Z]*f`), "forced clean"},
 	{regexp.MustCompile(`\b(mkfs|fdisk|dd)\b`), "disk operation"},
@@ -235,36 +237,77 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
 	// Framework database resets that drop or wipe every table.
 	{regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b`), "reset a database through an ORM"},
-	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load)\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:manage\.py|django-admin)\s+flush\b`), "reset a database through an ORM"},
-	{regexp.MustCompile(`\bartisan\s+(?:migrate:fresh|migrate:reset|db:wipe)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\bdotnet\s+ef\s+database\s+drop\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\bsequelize(?:-cli)?\s+db:drop\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:dropdb|dropuser)\b`), "drop a database"},
 	{regexp.MustCompile(`(?i)\bmysqladmin\b.*\bdrop\b`), "drop a database"},
 	// Infrastructure teardown.
-	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|apply\b.*\s-destroy\b|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|taint\b|apply\b.*\s-(?:destroy|replace)[=\s]|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
 	{regexp.MustCompile(`\b(?:pulumi|cdk)\b.*\s(?:destroy|down)\b`), "destroy infrastructure"},
 	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
-	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy)\b`), "delete cloud resources"},
-	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate)-[\w-]+\b)`), "delete cloud resources"},
+	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy|bulk-delete|delete-batch|[\w-]*-delete)\b`), "delete cloud resources"},
+	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|delete-objects\b)`), "delete cloud resources"},
 }
 
 // dataStorePatterns are matched against the whole line when any simple
 // command in it runs the named client, so a query split across a quoted
 // multi-statement string, a heredoc body or a pipe into the client is read.
 var dataStorePatterns = []struct {
-	client *regexp.Regexp
-	body   *regexp.Regexp
-	what   string
+	clients map[string]bool
+	body    *regexp.Regexp
+	what    string
 }{
-	{regexp.MustCompile(`(?i)\b(?:psql|mysql|mariadb|sqlite3|sqlcmd|clickhouse-client|cockroach|duckdb|cqlsh)\b`),
-		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b`),
+	{map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true, "sqlcmd": true,
+		"clickhouse-client": true, "cockroach": true, "duckdb": true, "cqlsh": true},
+		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b)`),
 		"drop or empty a database or table"},
-	{regexp.MustCompile(`\bredis-cli\b`), regexp.MustCompile(`(?i)\bflush(?:all|db)\b`), "flush a Redis store"},
-	{regexp.MustCompile(`\b(?:mongosh|mongo)\b`),
+	{map[string]bool{"redis-cli": true}, regexp.MustCompile(`(?i)\bflush(?:all|db)\b`), "flush a Redis store"},
+	{map[string]bool{"mongosh": true, "mongo": true},
 		regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`),
 		"drop or empty a Mongo database or collection"},
+}
+
+// runsClient reports a line in which one of the given programs is the program
+// word of a simple command — its first word, or the word after sudo/doas/su/env
+// options, a package runner, or a docker/kubectl exec/run and its --.
+func runsClient(command string, clients map[string]bool) bool {
+	for _, part := range splitSimple(command) {
+		words := strings.Fields(shellQuotes.Replace(part))
+		for i := 0; i < len(words); i++ {
+			w := strings.TrimSuffix(CommandName(path.Base(words[i])), ".exe")
+			switch {
+			case clients[w]:
+				return true
+			case w == "sudo" || w == "doas" || w == "runuser" || w == "env":
+				for i+1 < len(words) && strings.HasPrefix(words[i+1], "-") {
+					f := words[i+1]
+					i++
+					if (f == "-u" || f == "-g" || f == "-U") && i+1 < len(words) {
+						i++ // skip the flag's value (the user or group)
+					}
+				}
+				continue
+			case w == "su":
+				if i+1 < len(words) && !strings.HasPrefix(words[i+1], "-") {
+					i++ // skip the target user
+				}
+				continue
+			case w == "npx" || w == "bunx" || w == "yarn" || w == "pnpm" || w == "npm" ||
+				w == "exec" || w == "run" || w == "--" || strings.HasPrefix(words[i], "-") ||
+				strings.Contains(words[i], "="):
+				continue // a runner, exec verb, flag or assignment
+			case w == "docker" || w == "podman" || w == "nerdctl" || w == "kubectl" || w == "compose" || w == "container":
+				continue
+			default:
+				// a non-client program word: this command does not run a client
+			}
+			break
+		}
+	}
+	return false
 }
 
 // splitSimple splits a line into its simple commands on ;, &, |, ( ) and
@@ -308,7 +351,7 @@ func segmentDestructive(command string) (string, bool) {
 		}
 	}
 	for _, d := range dataStorePatterns {
-		if d.client.MatchString(command) && d.body.MatchString(command) {
+		if runsClient(command, d.clients) && d.body.MatchString(command) {
 			return d.what, true
 		}
 	}
