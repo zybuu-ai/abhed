@@ -23,6 +23,13 @@ type command struct {
 	literal bool
 	// assigns are the command's assignment values (the value of NAME=value).
 	assigns []string
+	// argsLiteral is set when every word of the command is literal text with
+	// no expansion, substitution or glob, so its words are what will run.
+	argsLiteral bool
+	// env maps each NAME=value assignment before the command to its value.
+	env map[string]string
+	// printed is the literal an echo or printf command prints, if it is one.
+	printed string
 	// readsPipe is set when a pipe feeds this command and it reads its stdin
 	// as code (a bare shell or interpreter), so the pipe's output is code.
 	readsPipe bool
@@ -66,6 +73,7 @@ func parseScriptAt(src, start string) (script, bool) {
 	s := script{funcs: map[string]bool{}}
 	collect(src, f, &s)
 	s.homeWrites = writesHomeText(src) || writesHomeStructural(f)
+	scriptsWritten(&s)
 	dirs := chainDirs(f, start)
 	for i := range s.cmds {
 		d, ok := dirs[s.cmds[i].call]
@@ -111,14 +119,29 @@ func collect(src string, f *syntax.File, s *script) {
 			if t := pipedText[call]; t != "" {
 				c.stdin = append(c.stdin, t)
 			}
+			c.argsLiteral = true
 			for _, w := range call.Args {
 				c.words = append(c.words, wordText(src, w))
+				if !literalText(w) || globbed(w) {
+					c.argsLiteral = false
+				}
 			}
 			for _, a := range call.Assigns {
 				if a.Value != nil {
 					c.assigns = append(c.assigns, wordText(src, a.Value))
 				}
+				if a.Name != nil {
+					if c.env == nil {
+						c.env = map[string]string{}
+					}
+					v := ""
+					if a.Value != nil {
+						v = wordText(src, a.Value)
+					}
+					c.env[a.Name.Value] = v
+				}
 			}
+			c.printed = printedLiteral(src, call)
 			for _, r := range x.Redirs {
 				switch r.Op {
 				case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob:
@@ -380,6 +403,42 @@ func readLeaf(leaf *syntax.Stmt) bool {
 		}
 	}
 	return true
+}
+
+// globbed reports a word with an unquoted glob character, whose value only
+// running the line would give.
+func globbed(w *syntax.Word) bool {
+	for _, p := range w.Parts {
+		if l, ok := p.(*syntax.Lit); ok && strings.ContainsAny(l.Value, "*?[") {
+			return true
+		}
+	}
+	return false
+}
+
+// scriptsWritten finds a script the line writes with echo or printf and then
+// runs with a shell or interpreter, and gives the runner that text as code to
+// judge, as if it were read on stdin.
+func scriptsWritten(s *script) {
+	written := map[string]string{}
+	for i := range s.cmds {
+		c := &s.cmds[i]
+		prog, args := c.program()
+		base := path.Base(prog)
+		if readsStdinCode(base) {
+			for _, a := range operands(args) {
+				if t, ok := written[path.Clean(a)]; ok {
+					c.stdin = append(c.stdin, t)
+				}
+				break // only the script operand
+			}
+		}
+		if c.printed != "" {
+			for _, w := range c.writes {
+				written[path.Clean(w)] = c.printed
+			}
+		}
+	}
 }
 
 // printedLiteral is the literal text an echo or printf prints, so a pipe into
