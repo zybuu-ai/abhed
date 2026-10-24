@@ -87,7 +87,7 @@ func TestNoSubagentSessionUnderADeletedParent(t *testing.T) {
 	}
 	made := make(chan error, 1)
 	go func() { made <- p.CreateSubagentSession(ctx, testID(t, "sess-kid2-"), parent2, "racing") }()
-	time.Sleep(300 * time.Millisecond)
+	waitForLockWaiter(t, p, parent2)
 	if err := p.DeleteSessionTx(ctx, tx, ids); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestNoSubagentSessionUnderADeletedParent(t *testing.T) {
 	}
 	deleted := make(chan error, 1)
 	go func() { deleted <- p.DeleteSession(parent3) }()
-	time.Sleep(300 * time.Millisecond)
+	waitForLockWaiter(t, p, parent3)
 	if err := ctx3.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -128,4 +128,26 @@ func TestNoSubagentSessionUnderADeletedParent(t *testing.T) {
 	if err := p.pool.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM sessions WHERE id = $1`, kid).Scan(&gone); err != nil || !gone {
 		t.Fatalf("the subagent made as the delete began was left: %v %v", gone, err)
 	}
+}
+
+// waitForLockWaiter returns once a transaction is waiting for session's
+// append lock, so the race a test sets up is the one it runs.
+func waitForLockWaiter(t *testing.T, p *Postgres, session string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		err := p.pool.QueryRow(context.Background(), `
+			WITH k AS (SELECT hashtextextended('events/' || $1, 0) AS v)
+			SELECT EXISTS (SELECT 1 FROM pg_locks, k WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+			               AND classid::bigint = (k.v >> 32) & 4294967295 AND objid::bigint = k.v & 4294967295)`, session).Scan(&waiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no transaction came to wait for the lock of %s", session)
 }
