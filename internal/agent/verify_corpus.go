@@ -198,6 +198,18 @@ var (
 	stepEditMain        = CorpusStep{ID: "r7j", Tool: "edit", Args: map[string]any{"path": "/w/main.go"}, Output: "Edited /w/main.go"}
 	stepWriteMain       = CorpusStep{ID: "r7k", Tool: "write", Args: map[string]any{"path": "/w/main.go"}, Output: "Wrote /w/main.go"}
 	stepPytestCounts    = CorpusStep{ID: "r7l", Tool: "bash", Args: map[string]any{"command": "pytest"}, Output: "12 passed, 2 skipped in 0.40s\n", Exit: code(0)}
+	stepUnittest        = CorpusStep{ID: "r8a", Tool: "bash", Args: map[string]any{"command": "python -m unittest"}, Output: "Ran 12 tests in 0.30s\n\nOK\n", Exit: code(0)}
+	stepTsc             = CorpusStep{ID: "r8b", Tool: "bash", Args: map[string]any{"command": "npx tsc --noEmit"}, Output: "Found 5 errors in 2 files.\n", Exit: code(2)}
+	stepEnvPort         = CorpusStep{ID: "r8c", Tool: "bash", Args: map[string]any{"command": "cat .env"}, Output: "PORT=8080\nREDIS_URL=redis://cache:6379\n", Exit: code(0)}
+	stepDeployStatus    = CorpusStep{ID: "r8d", Tool: "bash", Args: map[string]any{"command": "kubectl get deploy checkout -o yaml | grep -i replicas"}, Output: "replicas: 3\nreadyReplicas: 1\n", Exit: code(0)}
+	stepNodes           = CorpusStep{ID: "r8e", Tool: "bash", Args: map[string]any{"command": "./cluster-status"}, Output: "nodes: 5\ndown: 0\n", Exit: code(0)}
+	stepLsMain          = CorpusStep{ID: "r8f", Tool: "bash", Args: map[string]any{"command": "ls"}, Output: "go.mod\nmain.go\n", Exit: code(0)}
+	stepDiffStat        = CorpusStep{ID: "r8g", Tool: "bash", Args: map[string]any{"command": "git diff --stat"}, Output: " a.go | 2 +-\n b.go | 4 ++--\n c.go | 1 +\n 3 files changed, 4 insertions(+), 3 deletions(-)\n", Exit: code(0)}
+	stepUvEnvFile       = CorpusStep{ID: "r8h", Tool: "bash", Args: map[string]any{"command": "uv run --env-file .env.test pytest"}, Output: "5 passed in 0.20s\n", Exit: code(0)}
+	stepDotenv          = CorpusStep{ID: "r8i", Tool: "bash", Args: map[string]any{"command": "dotenv -f .env.test run pytest"}, Output: "5 passed in 0.20s\n", Exit: code(0)}
+	stepDirenv          = CorpusStep{ID: "r8j", Tool: "bash", Args: map[string]any{"command": "direnv exec . go test ./..."}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
+	stepPipenv          = CorpusStep{ID: "r8k", Tool: "bash", Args: map[string]any{"command": "pipenv run pytest"}, Output: "5 passed in 0.20s\n", Exit: code(0)}
+	stepHatch           = CorpusStep{ID: "r8l", Tool: "bash", Args: map[string]any{"command": "hatch run pytest"}, Output: "5 passed in 0.20s\n", Exit: code(0)}
 	stepRewrite         = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -228,7 +240,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "file:line past the end", Kind: p, Want: ClaimUnverified, Text: "The handler is `func Serve` at main.go:40."},
 		{Name: "file:line with the wrong symbol", Kind: p, Want: ClaimUnverified, Text: "`func Listen` is defined at main.go:3."},
 		{Name: "stale read after a rewrite", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig, stepRewrite), Text: "The deployment runs 3 replicas."},
-		{Name: "cited with a quote it does not hold", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig),
+		{Name: "cited with a quote it does not hold", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig),
 			Claim: &Claim{Text: "There are 4 replicas", Kind: KindObserved, Evidence: []string{"r1"}, Quote: "replicas: 4"}},
 		{Name: "cited result that does not exist", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig),
 			Claim: &Claim{Text: "There are 3 replicas", Kind: KindObserved, Evidence: []string{"call_invented"}}},
@@ -342,7 +354,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "a write in a line that then failed", Kind: n, Want: ClaimUnverified, Steps: steps(stepEchoFalse), Text: "I updated f.txt."},
 		{Name: "the reference file of touch -r", Kind: n, Want: ClaimUnverified, Steps: steps(stepTouchRef), Text: "I updated ref.txt."},
 		{Name: "cited: wrong test count", Kind: p, Want: ClaimContradicted, Steps: steps(stepTests), Claim: &Claim{Text: "42 tests passed is wrong: 45 tests passed", Kind: KindObserved, Evidence: []string{"t1"}}},
-		{Name: "cited: wrong replica count", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig), Claim: &Claim{Text: "The deployment runs 5 replicas", Kind: KindObserved, Evidence: []string{"r1"}}},
+		{Name: "cited: wrong replica count, a plain count", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig), Claim: &Claim{Text: "The deployment runs 5 replicas", Kind: KindObserved, Evidence: []string{"r1"}}},
 		{Name: "cited: wrong disk usage, said as full", Kind: p, Want: ClaimUnverified, Steps: steps(stepDisk), Claim: &Claim{Text: "The /srv volume is 91% full", Kind: KindObserved, Evidence: []string{"d1"}}},
 		{Name: "cited: tests pass against a failed whole run", Kind: p, Want: ClaimContradicted, Steps: steps(stepEdit, stepFailing), Claim: &Claim{Text: "The tests pass", Kind: KindObserved, Evidence: []string{"t2"}}},
 		{Name: "cited: an edit of a file said untouched", Kind: p, Want: ClaimContradicted, Steps: steps(stepEditTest), Claim: &Claim{Text: "I did not modify a_test.go", Kind: KindObserved, Evidence: []string{"r5t"}}},
@@ -405,6 +417,36 @@ func CorpusCases() []CorpusCase {
 		{Name: "cited: kept a file it edited as it was", Kind: p, Want: ClaimContradicted, Steps: steps(stepEditMain), Claim: &Claim{Text: "I kept main.go as it was", Kind: KindObserved, Evidence: []string{"r7j"}}},
 		{Name: "cited: a file said untouched, citing its write", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteMain), Claim: &Claim{Text: "main.go was not touched", Kind: KindObserved, Evidence: []string{"r7k"}}},
 		{Name: "cited: a path read from an edit's report", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditMain), Claim: &Claim{Text: "The server code is in /w/main.go", Kind: KindObserved, Evidence: []string{"r7j"}}},
+		// Round 7: counts compared only by a shared outcome, action or state
+		// word and never across a narrowing; a count that names one needs it
+		// in the output; a file changed this session is not shown by output
+		// naming it; runners that load variables.
+		{Name: "cited: a scoped count against an unscoped run", Kind: n, Want: ClaimUnverified, Steps: steps(stepUnittest), Claim: &Claim{Text: "There are 3 tests in the auth package", Kind: KindObserved, Evidence: []string{"r8a"}}},
+		{Name: "cited: tests passed in a package against a whole run", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Claim: &Claim{Text: "12 tests passed in internal/auth", Kind: KindObserved, Evidence: []string{"t1"}}},
+		{Name: "cited: errors fixed against errors found", Kind: n, Want: ClaimUnverified, Steps: steps(stepTsc), Claim: &Claim{Text: "I fixed 2 errors in api.ts", Kind: KindObserved, Evidence: []string{"r8b"}}},
+		{Name: "cited: a port the result also holds", Kind: n, Want: ClaimUnverified, Steps: steps(stepEnvPort), Claim: &Claim{Text: "Redis is on port 6379", Kind: KindObserved, Evidence: []string{"r8c"}}},
+		{Name: "cited: a plain count against another plain count", Kind: n, Want: ClaimUnverified, Steps: steps(stepUnittest), Claim: &Claim{Text: "The suite has 40 tests", Kind: KindObserved, Evidence: []string{"r8a"}}},
+		{Name: "cited: ready replicas from a plain count", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeployStatus), Claim: &Claim{Text: "3 replicas are ready", Kind: KindObserved, Evidence: []string{"r8d"}}},
+		{Name: "ready replicas from a plain count", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeployStatus), Text: "All 3 replicas are ready."},
+		{Name: "3 ready replicas from a plain count", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeployStatus), Text: "There are 3 ready replicas."},
+		{Name: "cited: failed tests from tests ran", Kind: p, Want: ClaimUnverified, Steps: steps(stepUnittest), Claim: &Claim{Text: "12 tests failed", Kind: KindObserved, Evidence: []string{"r8a"}}},
+		{Name: "nodes down from a plain count", Kind: p, Want: ClaimUnverified, Steps: steps(stepNodes), Text: "5 nodes are down."},
+		{Name: "a file said as before after an edit and ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditMain, stepLsMain), Text: "main.go is exactly as before."},
+		{Name: "a file said to stay the same after an edit and ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditMain, stepLsMain), Text: "main.go stays the same."},
+		{Name: "a file said preserved after an edit and ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditMain, stepLsMain), Text: "I preserved main.go."},
+		{Name: "a file said to keep its content after an edit and ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditMain, stepLsMain), Text: "main.go keeps its first content."},
+		{Name: "cited: a file said fine after an edit, citing ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditMain, stepLsMain), Claim: &Claim{Text: "main.go is fine as it stands", Kind: KindObserved, Evidence: []string{"r8f"}}},
+		{Name: "a file listed that nothing changed", Kind: c, Want: ClaimVerified, Steps: steps(stepEditMain, stepLsMain), Text: "The folder holds go.mod."},
+		{Name: "cited: files changed, another number", Kind: p, Want: ClaimContradicted, Steps: steps(stepDiffStat), Claim: &Claim{Text: "I changed 5 files", Kind: KindObserved, Evidence: []string{"r8g"}}},
+		{Name: "cited: files changed, the number", Kind: c, Want: ClaimVerified, Steps: steps(stepDiffStat), Claim: &Claim{Text: "3 files changed", Kind: KindObserved, Evidence: []string{"r8g"}}},
+		{Name: "cited: tests failed, another number", Kind: p, Want: ClaimContradicted, Steps: steps(stepFailing), Claim: &Claim{Text: "2 tests failed", Kind: KindObserved, Evidence: []string{"t2"}}},
+		{Name: "cited: a key with another value", Kind: p, Want: ClaimContradicted, Steps: steps(stepConfig), Claim: &Claim{Text: "The config sets replicas: 5", Kind: KindObserved, Evidence: []string{"r1"}}},
+		{Name: "cited: a key whose value the result holds elsewhere", Kind: n, Want: ClaimUnverified, Steps: steps(stepEnvPort), Claim: &Claim{Text: "The cache listens on port: 6379", Kind: KindObserved, Evidence: []string{"r8c"}}},
+		{Name: "tests pass under uv run --env-file", Kind: p, Want: ClaimUnverified, Steps: steps(stepUvEnvFile), Text: "The tests pass."},
+		{Name: "tests pass under dotenv run", Kind: p, Want: ClaimUnverified, Steps: steps(stepDotenv), Text: "The tests pass."},
+		{Name: "tests pass under direnv exec", Kind: p, Want: ClaimUnverified, Steps: steps(stepDirenv), Text: "The tests pass."},
+		{Name: "tests pass under pipenv run", Kind: p, Want: ClaimUnverified, Steps: steps(stepPipenv), Text: "The tests pass."},
+		{Name: "tests pass under hatch run", Kind: p, Want: ClaimUnverified, Steps: steps(stepHatch), Text: "The tests pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

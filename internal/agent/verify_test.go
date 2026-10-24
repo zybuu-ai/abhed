@@ -430,7 +430,7 @@ func TestAnswerTool(t *testing.T) {
 	l, store, ad, _ := verifyHarness(t, VerifyLabel, true, []scriptedTurn{
 		{calls: []model.ToolCall{{ID: "t1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'replicas: 3\\npods: 5\\n'"}`)}}},
 		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(
-			`{"text":"There are 3 replicas, and 7 pods.","claims":[{"text":"There are 3 replicas","kind":"observed","evidence":["t1"],"quote":"replicas: 3"},{"text":"there are 7 pods","evidence":"t1"}]}`)}}},
+			`{"text":"There are 3 replicas, and 7 pods.","claims":[{"text":"There are 3 replicas","kind":"observed","evidence":["t1"],"quote":"replicas: 3"},{"text":"the output says pods: 7","evidence":"t1"}]}`)}}},
 	})
 	if !strings.Contains(l.Config.SystemPrompt, "`answer`") {
 		t.Fatal("the prompt does not say how to answer")

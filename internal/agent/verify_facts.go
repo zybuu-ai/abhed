@@ -33,8 +33,9 @@ type countFact struct {
 	n    string
 	unit string
 	// quals are the words that say what about the unit is counted ("added",
-	// "passed"), stemmed; see countQuals.
-	quals []string
+	// "passed"); see readCount. scoped: words after it narrow it.
+	quals  []string
+	scoped bool
 }
 
 type fileLine struct {
@@ -72,7 +73,7 @@ var (
 	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
-	negationRe = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact)\b`)
+	negationRe = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
 	// "I did not change X", "I avoided editing X", "I kept X as it was".
 	notChangedRe = regexp.MustCompile(`\b(?:i|we)\s+(?:(?:did\s+not|didn't|have\s+not|haven't|never|did\s+never)\s+(?:\w+\s+)?(?:edit|update|change|modify|create|write|touch|delete|remove|rename|patch|rewrite|replace)` +
 		`|(?:avoided|refrained\s+from)\s+(?:\w+ing)` +
@@ -244,10 +245,7 @@ func extractFacts(claim string) facts {
 		if notUnits[unit] {
 			continue
 		}
-		cf := countFact{n: normNumber(low[at[2]:at[3]]), unit: unitOf(unit), quals: countQuals(low, at[0], at[1], unit)}
-		if unit == "%" {
-			cf.unit = "%"
-		}
+		cf := readCount(low, at)
 		if key := cf.n + " " + cf.unit + " " + strings.Join(cf.quals, " "); !counted[key] {
 			counted[key] = true
 			f.counted = append(f.counted, cf)
@@ -272,6 +270,12 @@ func extractFacts(claim string) facts {
 			continue
 		}
 		f.keyed = append(f.keyed, countFact{n: normNumber(m[2]), unit: unitOf(m[1])})
+	}
+	// "replicas: 4" is a key and its value as well.
+	for _, m := range evLabelRe.FindAllStringSubmatch(low, -1) {
+		if !notUnits[m[1]] && !keyStop[m[1]] {
+			f.keyed = append(f.keyed, countFact{n: normNumber(m[2]), unit: unitOf(m[1])})
+		}
 	}
 	nums := map[string]bool{}
 	for _, m := range numberRe.FindAllStringIndex(low, -1) {
@@ -350,9 +354,44 @@ type countAt struct {
 	quals   []string
 }
 
-// outcomeUnits count an outcome themselves: "12 passed" says what of a run.
-var outcomeUnits = map[string]bool{"pass": true, "fail": true, "skip": true, "error": true, "warning": true,
-	"deselect": true, "xfail": true, "xpass": true, "succeed": true}
+// closedQuals are the words a count can be compared by: outcomes of a run,
+// actions on a thing and states of one, each form mapped to one word. Only
+// counts that share one of these say the same thing; any other word beside
+// a count ("found", "in the auth package") leaves it a different count.
+var closedQuals = func() map[string]string {
+	m := map[string]string{}
+	verb := func(base string, double bool) {
+		m[base] = base
+		switch {
+		case strings.HasSuffix(base, "s"), strings.HasSuffix(base, "x"), strings.HasSuffix(base, "ch"), strings.HasSuffix(base, "sh"):
+			m[base+"es"] = base
+		default:
+			m[base+"s"] = base
+		}
+		stem := base
+		switch {
+		case double:
+			stem = base + base[len(base)-1:]
+		case strings.HasSuffix(base, "e"):
+			stem = base[:len(base)-1]
+		}
+		m[stem+"ed"], m[stem+"ing"] = base, base
+	}
+	for _, v := range []string{"pass", "fail", "deselect", "xfail", "xpass", "succeed", "add", "remove", "delete",
+		"change", "modify", "create", "fix", "update", "insert", "rename", "rewrite", "restart", "revert",
+		"close", "open", "evict", "terminate", "crash"} {
+		verb(v, false)
+	}
+	verb("skip", true)
+	verb("stop", true)
+	m["modified"], m["modifies"] = "modify", "modify"
+	m["failure"], m["failures"], m["errored"] = "fail", "fail", "error"
+	for _, st := range []string{"ready", "down", "up", "healthy", "unhealthy", "available", "unavailable", "pending",
+		"running", "broken", "missing", "outdated", "idle", "active", "inactive", "degraded", "unused", "flaky"} {
+		m[st] = st
+	}
+	return m
+}()
 
 // qualStop are words beside a count that say nothing about what it counts.
 var qualStop = map[string]bool{"has": true, "have": true, "had": true, "all": true, "only": true, "about": true,
@@ -360,38 +399,116 @@ var qualStop = map[string]bool{"has": true, "have": true, "had": true, "all": tr
 	"also": true, "then": true, "there": true, "here": true, "these": true, "those": true, "its": true,
 	"their": true, "our": true, "my": true, "your": true, "some": true, "new": true}
 
+// copulas may stand between a count and its state: "3 replicas are ready".
+var copulas = map[string]bool{"are": true, "is": true, "was": true, "were": true, "be": true, "been": true,
+	"being": true, "have": true, "has": true, "had": true, "now": true, "still": true, "currently": true,
+	"already": true, "all": true}
+
+// scopeWords after a count narrow it: "3 tests in the auth package".
+var scopeWords = map[string]bool{"in": true, "for": true, "under": true, "within": true, "across": true,
+	"from": true, "of": true, "on": true, "inside": true}
+
 // neutralQual are verbs that only report a count ("runs 3 replicas", "found
 // 2 issues"): they leave it a plain count, as "replicas: 3" is.
-var neutralQual = map[string]bool{"run": true, "runs": true, "ran": true, "running": true, "set": true, "sets": true,
+var neutralQual = map[string]bool{"run": true, "runs": true, "ran": true, "set": true, "sets": true,
 	"show": true, "shows": true, "showed": true, "shown": true, "count": true, "counts": true, "counted": true,
 	"configured": true, "list": true, "lists": true, "listed": true, "report": true, "reports": true,
 	"reported": true, "contain": true, "contains": true, "contained": true, "hold": true, "holds": true,
 	"held": true, "found": true, "finds": true, "got": true, "gets": true, "returns": true, "returned": true}
 
-// countQuals are the words that say what about a count's unit is counted:
-// the word before the number and the word after the unit, as in "added 3
-// tests" or "12 tests passed", stemmed; and the unit when it is an outcome
-// itself. Two counts of one unit say the same thing only when they share one.
-func countQuals(s string, start, end int, unit string) []string {
-	var q []string
-	if w := wordBefore(s, start); w != "" {
-		q = append(q, w)
+// readCount reads the count a countRe or evCountRe match m found in s: its
+// number and unit, the words beside it that say what of the unit is counted
+// (the word before the number, the word after the unit past any "are" or
+// "is", and the unit itself when it is an outcome, as in "12 passed"), and
+// whether words after it narrow it. A state before the unit ("3 ready
+// replicas") is taken as its word, and the noun after it as the unit.
+func readCount(s string, m []int) countFact {
+	c := countFact{n: normNumber(s[m[2]:m[3]]), unit: s[m[4]:m[5]]}
+	end := m[1]
+	// "12 passed" names an outcome; "14 restarts" or "3 changes" is a plural
+	// noun, a plain count.
+	if q, ok := closedQuals[c.unit]; ok && !strings.HasSuffix(c.unit, "s") {
+		c.quals = append(c.quals, q)
+		if w, at := nextWord(s, end); w != "" && !notUnits[w] && closedQuals[w] == "" && plainWord(w) {
+			c.unit, end = w, at
+		}
 	}
-	if w := wordAfter(s, end); w != "" {
-		q = append(q, w)
+	if w := wordBefore(s, m[0]); w != "" {
+		c.quals = append(c.quals, w)
 	}
-	if u := stemQual(unit); outcomeUnits[u] {
-		q = append(q, u)
+	at := end
+	for i := 0; i < 4; i++ {
+		w, next := nextWord(s, at)
+		if w == "" {
+			break
+		}
+		if copulas[w] {
+			at = next
+			continue
+		}
+		if q := qualWord(w); q != "" && closedQuals[w] != "" {
+			c.quals = append(c.quals, q)
+			at = next
+			continue
+		}
+		if scopeWords[w] {
+			if w2, _ := nextWord(s, next); w2 != "" && (w2[0] < '0' || w2[0] > '9') {
+				c.scoped = true
+			}
+		} else if q := qualWord(w); q != "" && i == 0 {
+			c.quals = append(c.quals, q)
+		}
+		break
 	}
-	return q
+	if c.unit != "%" {
+		c.unit = unitOf(c.unit)
+	}
+	return c
 }
 
-// labelQuals are a label's: the label when it is an outcome, as in
-// "failed=3", and the word before it on its line ("tests run: 12").
+// nextWord is the word after s[at], on its line and after a space, with the
+// index past it, or -1 when punctuation ends the phrase there; "" when there
+// is none.
+func nextWord(s string, at int) (string, int) {
+	if at < 0 || at >= len(s) || s[at] != ' ' {
+		return "", at
+	}
+	i := at
+	for i < len(s) && s[i] == ' ' {
+		i++
+	}
+	j := i
+	for j < len(s) && s[j] != ' ' && s[j] != '\n' {
+		j++
+	}
+	w := strings.Trim(s[i:j], ",.;:!?()[]{}'\"`*")
+	if w == "" {
+		return "", at
+	}
+	if strings.ContainsAny(s[j-1:j], ",.;:!?)") {
+		return w, -1
+	}
+	return w, j
+}
+
+func plainWord(w string) bool {
+	if len(w) < 2 {
+		return false
+	}
+	for _, r := range w {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+// labelQuals are a label's: the label when it is an outcome or a state, as
+// in "failed=3", and the word before it on its line ("tests run: 12").
 func labelQuals(s string, start int, label string) []string {
 	var q []string
-	if u := stemQual(label); outcomeUnits[u] {
-		q = append(q, u)
+	if c, ok := closedQuals[label]; ok {
+		q = append(q, c)
 	}
 	if w := wordBefore(s, start); w != "" {
 		q = append(q, w)
@@ -399,7 +516,7 @@ func labelQuals(s string, start int, label string) []string {
 	return q
 }
 
-// wordBefore and wordAfter stay on the count's line.
+// wordBefore stays on the count's line.
 func wordBefore(s string, at int) string {
 	head := s[:at]
 	if i := strings.LastIndexByte(head, '\n'); i >= 0 {
@@ -412,44 +529,20 @@ func wordBefore(s string, at int) string {
 	return qualWord(f[len(f)-1])
 }
 
-func wordAfter(s string, at int) string {
-	tail, _, _ := strings.Cut(s[at:], "\n")
-	f := strings.Fields(tail)
-	if len(f) == 0 || tail[0] != ' ' {
-		return ""
-	}
-	return qualWord(f[0])
-}
-
 // qualWord is a word beside a count as compared, or "" for none.
 func qualWord(w string) string {
 	w = strings.Trim(w, ",.;:!?()[]{}'\"`*")
-	if len(w) < 2 || notUnits[w] || qualStop[w] || neutralQual[w] {
-		return ""
+	if c, ok := closedQuals[w]; ok {
+		return c
 	}
-	for _, r := range w {
-		if r < 'a' || r > 'z' {
-			return ""
-		}
+	if notUnits[w] || qualStop[w] || neutralQual[w] || copulas[w] || scopeWords[w] || !plainWord(w) {
+		return ""
 	}
 	return stemQual(w)
 }
 
-// stemQual folds the forms of a word together: passed, passes, passing and
-// pass are one.
+// stemQual folds the forms of a word outside closedQuals together, roughly.
 func stemQual(w string) string {
-	switch w {
-	case "ran", "runs", "running":
-		return "run"
-	case "failure", "failures":
-		return "fail"
-	case "errors", "errored":
-		return "error"
-	case "warnings":
-		return "warning"
-	case "succeeded", "succeeds":
-		return "succeed"
-	}
 	switch {
 	case strings.HasSuffix(w, "sses"), strings.HasSuffix(w, "xes"), strings.HasSuffix(w, "ches"), strings.HasSuffix(w, "shes"):
 		return w[:len(w)-2]
@@ -458,21 +551,21 @@ func stemQual(w string) string {
 	}
 	for _, suf := range []string{"ing", "ed"} {
 		if strings.HasSuffix(w, suf) && len(w) > len(suf)+2 {
-			w = strings.TrimSuffix(w, suf)
-			// skipped → skip; pass and add stay as they are.
-			if n := len(w); n > 2 && w[n-1] == w[n-2] && strings.ContainsRune("bgmnprt", rune(w[n-1])) {
-				w = w[:n-1]
-			}
-			break
+			return strings.TrimSuffix(w, suf)
 		}
 	}
 	return w
 }
 
-// samePhrase reports two counts of one unit that say the same of it: they
-// share a word, or neither says more than the plain count.
-func samePhrase(a, b []string) bool {
-	return (len(a) == 0 && len(b) == 0) || sharesQual(a, b)
+// closedOf are the words of qs from closedQuals.
+func closedOf(qs []string) []string {
+	var out []string
+	for _, q := range qs {
+		if closedQuals[q] == q {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // sharesQual reports a word two counts share.
@@ -520,8 +613,11 @@ func prepareEvidence(content string) *evidenceText {
 		if m[0] > 0 && isWordRune(rune(lined[m[0]-1])) {
 			continue
 		}
-		unit := lined[m[4]:m[5]]
-		add(lined[m[2]:m[3]], unit, m[0], countQuals(lined, m[0], m[1], unit))
+		if notUnits[lined[m[4]:m[5]]] {
+			continue
+		}
+		c := readCount(lined, m)
+		e.counts[c.unit] = append(e.counts[c.unit], countAt{n: c.n, excerpt: excerpt(m[0]), quals: c.quals})
 	}
 	for _, m := range evLabelRe.FindAllStringSubmatchIndex(lined, -1) {
 		w, n := lined[m[2]:m[3]], lined[m[4]:m[5]]

@@ -101,19 +101,33 @@ counts (`12 tests`, `replicas: 3`). Then:
   leaves it unverified ("`auth.go` is not in the cited #12"), never
   contradicted: output that is silent on a thing does not say otherwise. A
   `write` or `edit` result is no evidence for a path: it reports only the
-  file the call was given, and whether that file changed is the next rule's
-  to say.
-- **A count is compared with the same phrase.** "12 tests passed" is
-  compared with a count of tests that also says passed, and "3 replicas"
-  with a plain "replicas: 3"; "I added 3 tests" is not compared with
-  `12 tests passed`. A count the output gives in other words leaves the
-  statement unverified.
+  file the call was given, and whether that file changed is the "I changed
+  X" rule's to say. And a statement about a file this session changed (a
+  write, an edit, or a shell line naming it), other than that it was
+  changed, is never verified by output naming the file: "`main.go` is
+  exactly as before" after an edit of it stays unverified whatever `ls`
+  shows.
+- **A count is compared by what it says of its unit.** The words beside a
+  count that name an outcome (passed, failed, skipped), an action (added,
+  changed, fixed, removed and the like) or a state (ready, down, running,
+  healthy and the like) come from a fixed list. A count that names one
+  ("12 tests passed", "3 replicas are ready", "5 nodes are down") is
+  verified only by a count of the same unit that names it too, so
+  `replicas: 3` does not show "3 replicas are ready", and `Ran 12 tests`
+  does not show "12 tests failed". A plain count ("3 replicas") is verified
+  by any count of the unit with its number. A count the output gives in
+  other words leaves the statement unverified.
 - **Contradicted only from what it cites, and only by evidence that
   conflicts.** A statement that cites a result (a `call_id` or `#seq`
   through the answer tool, or `(#12)` in the reply's text) is contradicted
-  when that result, still current, counts the same thing in the same words
-  with another number ("15 tests passed" citing `12 tests passed`, or
-  "port 9090" citing `port: 8080`, is ✗, with the result shown beside it);
+  when that result, still current, counts the same unit with another number
+  and the same outcome, action or state word ("15 tests passed" citing
+  `12 tests passed` is ✗, with the result shown beside it), unless words
+  after the statement's count narrow it ("3 tests passed in the auth
+  package" is never contradicted by a count of the whole run); when it
+  gives a key another value than the cited result does and its own value
+  is nowhere in that result ("port 9090" citing `port: 8080`; but "Redis is
+  on port 6379" citing `PORT=8080` beside `redis://cache:6379` is not);
   when it says a file was not changed, or that the agent avoided or kept it,
   and cites a write or edit of that file that succeeded; or when it says
   tests pass (or a build succeeds) and cites a failed run of the same kind
@@ -142,7 +156,11 @@ counts (`12 tests`, `replicas: 3`). Then:
   - is given no variable but `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR` or
     `CLICOLOR_FORCE`, which only colour its output: any other
     (`GOFLAGS=-run=TestA`, `PYTEST_ADDOPTS='-k x'`, `CI=true`), before it or
-    through `env`, may filter it or change what passes;
+    through `env`, may filter it or change what passes. Runners that load
+    variables from a file are not read either: `pipenv run` (the project's
+    `.env`), `hatch run` (its environment's variables), and `uv run
+    --env-file`, `dotenv` and `direnv exec`, which are not taken off, so the
+    run is not one of a known kind;
   - covers, by path, the packages or folders the statement names, or the
     whole workspace (`./...` from the workspace) when it names none;
   - exited 0 after the last call that may have changed anything.
@@ -352,30 +370,35 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 109 plant a wrong claim. Some cite the result that shows them
-wrong (a test or outcome count in the same words, a replica count, a port, a
-failed run, an edited file said untouched, avoided or kept as it was) and
-come out contradicted. The rest cite nothing, or rest on what the checks
-cannot read, and must come out unverified: wrong counts and paths, a count
-said with another outcome, runs piped or followed by `;` or `|| true`, runs
-that filter, list or only compile, runs given `GOFLAGS`, `PYTEST_ADDOPTS` or
-`CI`, a package run against a claim about the whole suite, a trap before the
-run, commands after a failed `&&`, `||` or `exit`, a copy's or a link's
-source, a write refused in a folder `mkdir` made, a remote `rm`, a program at
-another path, a success of no named kind, a path read from an edit's own
-report, reads relied on after changes the checks cannot rule out, and more.
-44 controls say only what the session showed, among them a folder claim met
-by an edit in it, `sed -l` or `perl -I` with their values, and a run given
-only `NO_COLOR`. 36 are neutral: general knowledge, and true claims the
+session. 127 plant a wrong claim. Some cite the result that shows them
+wrong (a test, outcome or files-changed count with the same word, a key
+given another value, a failed run, an edited file said untouched, avoided or
+kept as it was) and come out contradicted. The rest cite nothing, or rest on
+what the checks cannot read, and must come out unverified: wrong counts and
+paths, a count said with another outcome, a state ("3 replicas are ready",
+"5 nodes are down", "12 tests failed") against a plain count, a file this
+session changed said to be as before, preserved or fine, runs piped or
+followed by `;` or `|| true`, runs that filter, list or only compile, runs
+given `GOFLAGS`, `PYTEST_ADDOPTS` or `CI`, or run through `pipenv`, `hatch`,
+`uv run --env-file`, `dotenv` or `direnv`, a package run against a claim
+about the whole suite, a trap before the run, commands after a failed `&&`,
+`||` or `exit`, a copy's or a link's source, a write refused in a folder
+`mkdir` made, a remote `rm`, a program at another path, a success of no
+named kind, a path read from an edit's own report, reads relied on after
+changes the checks cannot rule out, and more. 46 controls say only what the
+session showed, among them a folder claim met by an edit in it, `sed -l` or
+`perl -I` with their values, a run given only `NO_COLOR`, and a
+files-changed count. 42 are neutral: general knowledge, and true claims the
 checks cannot stand behind, such as a build claim against a failed test run,
 a filtered or timed-out run, a run of another or a wider scope, a count of
-the same thing in other words ("added 3 tests" citing `42 tests passed`), a
-`cd` after `CDPATH=`, and things a cited result is silent on (no panic lines
-in a log tail, a port not listening, a file not in a response). Today none
-of the 109 planted claims is shown as verified (10 are contradicted, all from
-cited, conflicting evidence; the rest unverified), all 44 controls are
-verified, and none of the 80 true or neutral claims is contradicted. The
-test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
+the same thing in other words ("added 3 tests" citing `42 tests passed`,
+"fixed 2 errors" citing `Found 5 errors`), a narrowed count against a whole
+run, a port the cited result also holds, a `cd` after `CDPATH=`, and things a
+cited result is silent on (no panic lines in a log tail, a port not
+listening, a file not in a response). Today none of the 127 planted claims
+is shown as verified (11 are contradicted, all from cited, conflicting
+evidence; the rest unverified), all 46 controls are verified, and none of
+the 88 true or neutral claims is contradicted. The test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
 floors only go up. The corpus is small and written by the people who wrote
 the checks, so it shows what the checks do on these shapes of mistake, not how often a given model makes them.
 

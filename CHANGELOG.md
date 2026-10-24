@@ -66,9 +66,13 @@ All notable changes to Abhed are recorded here. The format follows
   16 replaces version 12's commit-order index with `events_commit_tx_idx`,
   which row security lets the commit-ordered scan use; `abhed migrate` builds
   it in its transaction, holding appends to `events` until it is built, so
-  on a large table run it in a quiet window. A server runs on 13 to 15 too,
-  its commit-ordered reads (`record.ocsf` on `abhed serve`, an edition's
-  export) only slower.
+  on a large table run it in a quiet window. A server still starts on 13 to
+  15, but without what the later versions add: on 13 the trigger does not
+  set `commit_tx` itself (14), so a writer could keep its row out of the
+  commit-ordered scan; on 13 and 14 a row can still land in a session
+  deleted while its insert waited (15); and below 16 commit-ordered reads
+  (`record.ocsf` on `abhed serve`, an edition's export) are slower. Migrate
+  to 16.
 - HawkEYE's `sandbox-denied` no longer fires on the words of a command's
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
@@ -289,14 +293,18 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 109 planted wrong claims none is shown as verified and 10 are
-  contradicted (all from cited, conflicting evidence), all 44 true controls
-  are verified, and none of the 80 true or neutral claims is contradicted;
+  of 127 planted wrong claims none is shown as verified and 11 are
+  contradicted (all from cited, conflicting evidence), all 46 true controls
+  are verified, and none of the 88 true or neutral claims is contradicted;
   the test holds those figures as a floor. A fact a cited result is silent
   on leaves a statement unverified, never contradicted; counts are compared
-  only in the same words ("tests passed" with "tests passed"); a test run
-  given any variable but a colour switch is not a whole run; and a write or
-  edit's own report is no evidence for its path.
+  by a fixed list of outcome, action and state words, so "3 replicas are
+  ready" needs output that says ready, and a narrowed count ("in the auth
+  package") is never contradicted by a whole run's; a test run given any
+  variable but a colour switch, or run through `pipenv run` or `hatch run`,
+  is not a whole run; a write or edit's own report is no evidence for its
+  path; and a statement about a file this session changed, other than that
+  it changed, is never verified by output naming it.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
@@ -509,18 +517,18 @@ out):
   `CredentialSeen`, `DeclaredHost`, `SkippedBudget`, `TraceSeen` and
   `Untrusted`; `RulesVersion`, `HoneytokenVersion` and `PromptVersion`; and
   the drift suite's `DriftCase`, `DriftCases`, `DriftDeclared`,
-  `DriftHoneytoken`, `DriftHosts`, `DriftPATH`, `DriftReport`, `DriftResult`
+  `DriftHome`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`, `DriftReport`, `DriftResult`
   and `RunDrift`.
 - `sdk`: `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
   `Options.Verify` and `Options.VerifyByDefault`, and the types
   `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
   `RequireResult`, `Runbook` and `RunbookStep`.
-- `server`: `APIAuditPrefix`, `Mutating`, `Options.APIAudit`,
-  `Options.Metrics`, `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
+- `server`: `APIAuditPrefix`, `Metrics` and `NewMetrics`, `Mutating`,
+  `Options.APIAudit`, `Options.Metrics`, `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
   `PendingAsk.StepTools`.
 - `store`: the `*Postgres` methods `AuditChain`, `AuditLinks`, `AuditRows`,
-  `CommitEnd`, `EventChain`, `ExportChain`, `OCSFWriter`, `ScanCommitted`
-  and `VerifyAuditChain`; `(*Sandboxes).AuditChainName` and
+  `CommitEnd`, `DeleteSessionTx`, `EventChain`, `ExportChain`, `Forget`,
+  `LockSessionTree`, `OCSFWriter`, `ScanCommitted` and `VerifyAuditChain`; `(*Sandboxes).AuditChainName` and
   `(*Sandboxes).AuditLinks`; `AuditChainName`, `CommitPos`,
   `ParseCommitPos`, `PostgresOf`, `OCSFCursor`, `OCSFWriter` and
   `ErrOCSFStandby`; and `ChainReport.PreChain` and `ChainReport.Reason`.

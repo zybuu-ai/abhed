@@ -548,6 +548,11 @@ func assignedNames(call *syntax.CallExpr, raw, words []string) []string {
 		if name, _, ok := strings.Cut(w, "="); ok && name != "" && !strings.HasPrefix(w, "-") {
 			names = append(names, name)
 		}
+		// pipenv run loads the project's .env, and hatch run its environment's
+		// env-vars: variables with no word on the line to show them.
+		if b := filepath.Base(w); b == "pipenv" || b == "hatch" {
+			names = append(names, ".env")
+		}
 	}
 	return names
 }
