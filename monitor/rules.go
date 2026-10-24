@@ -1946,22 +1946,163 @@ func kubectlDeleteNS(prog string, args []string) []string {
 			out = append(out, allNamespaces)
 		}
 	}
-	ops := operands(args[idx:])
+	ops := kubectlOperands(args[idx:])
 	if len(ops) > 0 {
-		kinds := strings.Split(ops[0], "/")
-		switch strings.Split(kinds[0], ",")[0] {
-		case "ns", "namespace", "namespaces", "project", "projects":
-			if len(kinds) > 1 {
-				out = append(out, kinds[1]) // ns/prod
+		names := false
+		for _, item := range strings.Split(ops[0], ",") {
+			kind, name, hasName := strings.Cut(item, "/")
+			switch kind {
+			case "ns", "namespace", "namespaces", "project", "projects":
+				if hasName {
+					out = append(out, name) // ns/prod
+				} else {
+					names = true
+				}
 			}
+		}
+		if names {
 			out = append(out, ops[1:]...)
 		}
 	}
 	return out
 }
 
+// kubectlOperands are kubectl's operands with the values of its value-taking
+// options (-l, --selector, -f, -o, --field-selector, -n, …) skipped, so a
+// selector before the kind is not taken for the kind.
+func kubectlOperands(args []string) []string {
+	skip := map[string]bool{"-l": true, "--selector": true, "-f": true, "--filename": true, "-o": true,
+		"--output": true, "--field-selector": true, "-n": true, "--namespace": true, "-c": true,
+		"--container": true, "--context": true, "--grace-period": true, "--timeout": true, "-k": true,
+		"--kustomize": true, "--cascade": true}
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if skip[a] {
+			i++
+			continue
+		}
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// kubectlKinds are the kinds in a kubectl kind word: a comma list of kind or
+// kind/name items, each counted.
+func kubectlKinds(word string) []string {
+	var out []string
+	for _, item := range strings.Split(word, ",") {
+		kind, _, _ := strings.Cut(item, "/")
+		if kind != "" {
+			out = append(out, strings.ToLower(kind))
+		}
+	}
+	return out
+}
+
+// destructiveKind names the kinds whose deletion takes data or a whole class
+// of resources with it.
+var destructiveKind = map[string]bool{"ns": true, "namespace": true, "namespaces": true, "project": true,
+	"projects": true, "pvc": true, "pv": true, "persistentvolume": true, "persistentvolumes": true,
+	"persistentvolumeclaim": true, "persistentvolumeclaims": true, "all": true, "crd": true, "crds": true,
+	"customresourcedefinition": true, "customresourcedefinitions": true, "storageclass": true,
+	"storageclasses": true, "sc": true, "clusterrole": true, "clusterroles": true,
+	"clusterrolebinding": true, "clusterrolebindings": true}
+
+// prodScope reports a kubectl/oc namespace, context or selector value that
+// names production as a whole value or a segment of it (prod, production,
+// prod-eu), not a resource that merely contains the letters (product-api).
+func prodScope(args []string) bool {
+	vals := []string{}
+	for i, a := range args {
+		switch {
+		case (a == "-n" || a == "--namespace" || a == "--context" || a == "-l" || a == "--selector") && i+1 < len(args):
+			vals = append(vals, args[i+1])
+		default:
+			for _, f := range []string{"--namespace=", "--context=", "--selector="} {
+				if v, ok := strings.CutPrefix(a, f); ok {
+					vals = append(vals, v)
+				}
+			}
+		}
+	}
+	for _, v := range vals {
+		for _, seg := range strings.FieldsFunc(v, func(r rune) bool { return r == '-' || r == '_' || r == '.' || r == '=' || r == ',' || r == '/' }) {
+			if seg == "prod" || seg == "production" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dataInfraDestructive mirrors the data-store and infrastructure teardown the
+// destructive step asks about (dropping a database, flushing a cache,
+// destroying infrastructure, deleting cloud resources), so the supervisor asks
+// too. The text is the command's own words, read case-insensitively.
+func dataInfraDestructive(prog string, args []string) (string, bool) {
+	text := strings.Join(args, " ")
+	low := strings.ToLower(text)
+	switch {
+	case prog == "redis-cli" && redisFlush.MatchString(low):
+		return "flush a Redis store", true
+	case (prog == "mongosh" || prog == "mongo") && mongoDrop.MatchString(text):
+		return "drop a Mongo database or collection", true
+	case sqlClient[prog]:
+		if sqlDrop.MatchString(low) {
+			return "drop or empty a database or table", true
+		}
+	case prog == "dropdb" || prog == "dropuser":
+		return "drop a database", true
+	case prog == "mysqladmin" && strings.Contains(low, "drop"):
+		return "drop a database", true
+	case prog == "terraform" || prog == "tofu":
+		if tfDestroy.MatchString(text) {
+			return "destroy infrastructure", true
+		}
+	case prog == "pulumi":
+		if hasWord2(args, "destroy") || hasWord2(args, "down") {
+			return "destroy infrastructure", true
+		}
+	case prog == "gcloud" || prog == "az" || prog == "doctl" || prog == "hcloud":
+		if hasWord2(args, "delete") || hasWord2(args, "destroy") {
+			return "delete cloud resources", true
+		}
+	case prog == "aws":
+		if awsDestroy.MatchString(text) {
+			return "delete cloud resources", true
+		}
+	}
+	return "", false
+}
+
+var sqlDrop = regexp.MustCompile(`\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+\w+\s*(?:;|$|['"])`)
+var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
+var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\)`)
+var tfDestroy = regexp.MustCompile(`\bdestroy\b|\bapply\b.*\s-destroy\b|\bstate\s+rm\b`)
+var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bec2\s+terminate-instances\b|\brds\s+delete-db-(?:instance|cluster)\b|\bcloudformation\s+delete-stack\b|\bdynamodb\s+delete-table\b|\beks\s+delete-cluster\b`)
+
+// hasWord2 reports an exact word among args.
+func hasWord2(args []string, w string) bool {
+	for _, a := range args {
+		if a == w {
+			return true
+		}
+	}
+	return false
+}
+
 // clusterDestructive reports a container or cluster operation with no undo.
 func clusterDestructive(prog string, args []string) (string, bool) {
+	if what, ok := dataInfraDestructive(prog, args); ok {
+		return what, true
+	}
 	switch prog {
 	case "docker", "podman", "nerdctl":
 		verb, idx, ok := containerAction(prog, args)
@@ -1995,17 +2136,17 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 			return "", false
 		}
 		rest := args[idx:]
-		ops := operands(rest)
+		ops := kubectlOperands(rest)
 		switch verb {
 		case "delete":
 			if hasFlag(rest, "--all") || hasFlag(rest, "-A") || hasFlag(rest, "--all-namespaces") {
 				return "delete every resource of a kind or across namespaces", true
 			}
 			if len(ops) > 0 {
-				switch strings.Split(strings.Split(ops[0], "/")[0], ",")[0] {
-				case "ns", "namespace", "namespaces", "project", "projects", "pvc", "pv", "persistentvolume", "persistentvolumes",
-					"persistentvolumeclaim", "persistentvolumeclaims", "all":
-					return "delete namespaces, volumes or every resource", true
+				for _, kind := range kubectlKinds(ops[0]) {
+					if destructiveKind[kind] {
+						return "delete namespaces, volumes, definitions or every resource", true
+					}
 				}
 			}
 		case "scale":
@@ -2018,7 +2159,7 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 			return verb + " a node", true
 		case "patch", "replace":
 			if hasFlag(rest, "--force") || strings.Contains(strings.Join(args, " "), "finalizers") ||
-				strings.Contains(strings.Join(args, " "), "prod") {
+				prodScope(args) {
 				return "force or patch a production resource", true
 			}
 		case "apply":
@@ -2561,12 +2702,23 @@ func unreadVal(s string) bool { return strings.Contains(s, "$") }
 func handedArgs(cmd command, args []string) []string {
 	if prog, _ := cmd.program(); sqlClient[progBase(prog)] {
 		// A SQL client's query is data, except where it escapes to a shell
-		// (\!, \o |, .shell, system, COPY … PROGRAM): that part is code.
+		// (\!, \o |, .shell, system, COPY … PROGRAM): that part is code. The
+		// query can also arrive on stdin (echo '\! …' | psql).
 		var out []string
-		for _, a := range args {
+		vals := append(append([]string(nil), args...), cmd.stdin...)
+		pipeOut := false
+		for _, a := range vals {
 			if code, ok := sqlShellEscape(a); ok {
 				out = append(out, code)
 			}
+			if sqlPipeOut.MatchString(a) {
+				pipeOut = true
+			}
+		}
+		if pipeOut {
+			// \o |CMD pipes the query's output to CMD, which then runs the
+			// other values' text; judge those too.
+			out = append(out, vals...)
 		}
 		return out
 	}
@@ -2591,6 +2743,7 @@ func handedArgs(cmd command, args []string) []string {
 
 // sqlEscape finds a SQL client's escape to a shell: psql \! and \o|/\g|
 // pipes, mysql \! and system, sqlite3 .shell/.system, and COPY … PROGRAM.
+var sqlPipeOut = regexp.MustCompile(`\\[og]\s*\|`)
 var sqlEscape = regexp.MustCompile(`(?i)\\!|\\[og]\s*\||(?:^|[;\s])system\s|\.(?:shell|system)\b|\bprogram\s`)
 
 // sqlShellEscape returns the shell code after a SQL client's escape, if any.
@@ -3086,6 +3239,21 @@ func xargsCommand(args []string) []string {
 	return nil
 }
 
+// modeReadOnly reports a bind mount's options making it read-only: an option
+// that is exactly ro or readonly, or ro=/readonly= with the value true or 1.
+func modeReadOnly(opts string) bool {
+	for _, o := range strings.Split(opts, ",") {
+		k, v, has := strings.Cut(o, "=")
+		switch k {
+		case "ro", "readonly":
+			if !has || v == "true" || v == "1" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // containerCpVerdict judges a docker/kubectl cp whose host side (an operand
 // with no name: prefix) sits outside own ground.
 func (r Rules) containerCpVerdict(k *given, c Case, rest []string) *Verdict {
@@ -3111,9 +3279,9 @@ func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
 			return ""
 		}
 		// A read-only mount cannot be written through, so it does not make the
-		// container's paths writable host paths.
-		if len(parts) == 3 && (parts[2] == "ro" || strings.HasPrefix(parts[2], "ro,") ||
-			strings.Contains(parts[2], ",ro") || strings.Contains(parts[2], "readonly")) {
+		// container's paths writable host paths. The mode is read-only only
+		// when an option is exactly ro/readonly (or =true/=1), not readonly=false.
+		if len(parts) == 3 && modeReadOnly(parts[2]) {
 			return ""
 		}
 		return parts[0]
@@ -3137,7 +3305,7 @@ func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
 	}
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
-		switch {
+		switch { //nolint:gocritic
 		case a == "-v" || a == "--volume":
 			if i+1 < len(rest) && outside(src(rest[i+1])) {
 				return true
@@ -3155,8 +3323,7 @@ func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
 			if a == "--mount" && i+1 < len(rest) {
 				spec = rest[i+1]
 			}
-			if strings.Contains(spec, "type=bind") && !strings.Contains(spec, "readonly") &&
-				!strings.Contains(spec, "ro=true") && !strings.HasSuffix(spec, ",ro") && !strings.Contains(spec, ",ro,") {
+			if strings.Contains(spec, "type=bind") && !modeReadOnly(spec) {
 				for _, f := range strings.Split(spec, ",") {
 					if v, ok := strings.CutPrefix(f, "src="); ok && outside(v) {
 						return true

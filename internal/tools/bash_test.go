@@ -576,3 +576,69 @@ func TestContainerClusterDestructive(t *testing.T) {
 		}
 	}
 }
+
+// Round-17 classes: comma kind lists, data-store drops, infrastructure
+// teardown; and per-command matching so a word from another command in the
+// line does not decide, with reads staying unprompted.
+func TestSegmentDestructive(t *testing.T) {
+	cases := map[string]bool{
+		"kubectl delete sts,pvc -l app=db":                      true,
+		"kubectl delete statefulset/db,pvc/data-db":             true,
+		"oc delete sts,pvc -l app=db":                           true,
+		"kubectl delete -l app=db pvc":                          true,
+		"oc delete pvc data":                                    true,
+		"oc scale dc/db --replicas=0":                           true,
+		"oc delete all --all":                                   true,
+		"kubectl delete crd widgets.example.com":                true,
+		"kubectl delete storageclass fast":                      true,
+		"kubectl delete clusterrolebinding admin":               true,
+		"psql -c 'drop table users'":                            true,
+		"psql -c 'DROP DATABASE app'":                           true,
+		"mysql -e 'truncate orders'":                            true,
+		"psql -c 'delete from users'":                           true,
+		"docker exec db dropdb app":                             true,
+		"mysqladmin -f drop prod":                               true,
+		"redis-cli FLUSHALL":                                    true,
+		"redis-cli -n 2 flushdb":                                true,
+		"mongosh app --eval 'db.dropDatabase()'":                true,
+		"terraform destroy -auto-approve":                       true,
+		"terraform apply -destroy -auto-approve":                true,
+		"terraform state rm aws_db_instance.main":               true,
+		"tofu destroy":                                          true,
+		"pulumi destroy --yes":                                  true,
+		"gcloud sql instances delete prod":                      true,
+		"az group delete -n prod --yes":                         true,
+		"aws s3 rb s3://prod-bucket --force":                    true,
+		"aws s3 rm s3://b/x --recursive":                        true,
+		"aws ec2 terminate-instances --instance-ids i-1":        true,
+		"aws rds delete-db-instance --db-instance-identifier p": true,
+		"aws cloudformation delete-stack --stack-name p":        true,
+		"doctl compute droplet delete web":                      true,
+		"hcloud server delete web":                              true,
+
+		"psql -c 'select 1'":                            false,
+		"psql -c 'delete from users where id = 1'":      false,
+		"mysql -e 'show databases'":                     false,
+		"redis-cli PING":                                false,
+		"terraform plan":                                false,
+		"terraform apply -auto-approve":                 false,
+		"gcloud compute instances list":                 false,
+		"az group list":                                 false,
+		"aws s3 ls s3://b":                              false,
+		"aws ec2 describe-instances":                    false,
+		"kubectl delete pod web-1 && kubectl get all":   false,
+		"kubectl get pods -A && echo delete":            false,
+		"helm list && grep uninstall notes.txt":         false,
+		"kubectl patch deploy product-api -p x":         false,
+		"kubectl get deploy -n prod":                    false,
+		"kubectl -n product patch deploy x -p y":        false,
+		"kubectl patch deploy x -p y --context prod-eu": true,
+		"kubectl -n production replace -f x.yaml":       true,
+	}
+	for cmd, want := range cases {
+		what, got := IsDestructive(cmd)
+		if got != want {
+			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
