@@ -74,7 +74,9 @@ const abhedOllama = (() => {
     }
     if(rep.can_act && rep.start){
       card.appendChild(mk('p', '', 'Start command: ')).appendChild(mk('code', '', rep.start.command));
-      card.appendChild(mk('p', 'res', 'It runs on the server host only, as the server\'s user, and keeps running when Abhed stops.'));
+      card.appendChild(mk('p', 'res', rep.start.app_binds
+        ? 'This opens the Ollama app on the server host; the app listens where its own settings say, which Abhed does not control. It keeps running when Abhed stops.'
+        : 'It runs on the server host only, listening on loopback, as the server\'s user, and keeps running when Abhed stops.'));
       button('Start Ollama', 'go', () => {
         if(confirm('Start Ollama on the server host?\n\nCommand: ' + rep.start.command + '\n\nIt keeps running when Abhed stops.')) act('/v1/ollama/start');
       });

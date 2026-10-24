@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,9 +20,9 @@ import (
 // The picker asks GET /v1/ollama/status for a provider that Ollama serves
 // and shows a card: what is wrong, the numbered steps a person can run, and
 // the next step when this person may take it. Starting, installing and
-// pulling act on the server's host, so only an administrator may (or,
-// where nobody signs in, a request from the host itself); everyone else
-// gets the message and the steps. The card asks before every action; the
+// pulling act on the server's host, so only a signed-in administrator may;
+// everyone else, and everyone where nobody signs in, gets the message and
+// the steps, with `abhed ollama check` to run on the host. The card asks before every action; the
 // server applies model.ollama.assist, acts only on the host's own loopback
 // Ollama, and records each attempt in the session the request names, as
 // well as in the server's log and audit.
@@ -49,22 +48,19 @@ type ollamaRequest struct {
 	Always bool `json:"always,omitempty"`
 }
 
-// ollamaAdmin reports whether the caller may act on this host: an
-// administrator, or, where nobody signs in, a request from the host itself.
-func (s *Server) ollamaAdmin(r *http.Request) bool {
-	if s.IsAdmin(r) {
-		return true
+// ollamaAdmin reports whether the caller may act on this host: a
+// signed-in administrator, and no one else. Where nobody signs in, nobody
+// may: a request from loopback could be the agent's own command, a page
+// rebound to this host, or anything behind a proxy on it.
+func (s *Server) ollamaAdmin(r *http.Request) bool { return s.IsAdmin(r) }
+
+// shown is st as this caller may see it: the host's paths and Ollama's
+// version only to an administrator.
+func shown(admin bool, st ollama.Status) ollama.Status {
+	if !admin {
+		st.Binary, st.App, st.Version = "", "", ""
 	}
-	mw := s.authMiddleware()
-	if len(mw.Providers) > 0 || mw.Verifier != nil || mw.TrustHeaders {
-		return false
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return st
 }
 
 // ollamaAssist resolves the provider and the assist for this caller, or
@@ -143,17 +139,26 @@ func decodeOllama(w http.ResponseWriter, r *http.Request) (ollamaRequest, bool) 
 // ollamaFailure answers a Problem: 403 when this caller or the
 // configuration may not, 409 for a host that is not ready, 502 when the
 // step failed.
-func ollamaFailure(w http.ResponseWriter, p *ollama.Problem, st ollama.Status) {
+func ollamaFailure(w http.ResponseWriter, admin bool, p *ollama.Problem, st ollama.Status) {
+	st = shown(admin, st)
 	code := http.StatusBadGateway
 	switch p.Kind {
 	case ollama.KindNotAdmin, ollama.KindAssistOff, ollama.KindInAgent, ollama.KindRemote:
 		code = http.StatusForbidden
-	case ollama.KindNotInstalled, ollama.KindNeedsTerminal, ollama.KindManual, ollama.KindDiskShort, ollama.KindPortBusy, ollama.KindModelNotFound:
+	case ollama.KindNotInstalled, ollama.KindNotOllama, ollama.KindManual, ollama.KindDiskShort, ollama.KindPortBusy, ollama.KindModelNotFound:
 		code = http.StatusConflict
 	case ollama.KindCancelled:
 		code = http.StatusRequestTimeout
 	}
 	WriteJSON(w, code, map[string]any{"error": p.Message, "problem": p, "status": st})
+}
+
+// refuseOllama answers a caller who may not act on this host, and records
+// the attempt as refused.
+func (s *Server) refuseOllama(w http.ResponseWriter, a ollama.Assist, op string, t ollama.Target, st ollama.Status) {
+	p := a.May(op, t, st)
+	a.Note(op, agent.OllamaRefused, t, p)
+	ollamaFailure(w, false, p, st)
 }
 
 // getOllamaStatus is GET /v1/ollama/status?provider=NAME: the card's content.
@@ -162,7 +167,9 @@ func (s *Server) getOllamaStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	WriteJSON(w, http.StatusOK, a.Report(r.Context(), t))
+	rep := a.Report(r.Context(), t)
+	rep.Status = shown(a.Admin, rep.Status)
+	WriteJSON(w, http.StatusOK, rep)
 }
 
 // postOllamaStart is POST /v1/ollama/start.
@@ -176,29 +183,34 @@ func (s *Server) postOllamaStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := a.Env.Check(r.Context(), t)
+	if !a.Admin {
+		s.refuseOllama(w, a, ollama.OpStart, t, st)
+		return
+	}
 	if st.Running {
-		WriteJSON(w, http.StatusOK, map[string]any{"status": st})
+		WriteJSON(w, http.StatusOK, map[string]any{"status": shown(a.Admin, st)})
 		return
 	}
 	consent := "asked"
-	if req.Always && a.May(ollama.OpStart, t, st) == nil {
-		if err := a.Env.SetStartAlways(true); err != nil {
+	plan, planErr := a.Env.PlanStart(t, st)
+	if req.Always && planErr == nil && a.May(ollama.OpStart, t, st) == nil {
+		if err := a.Env.SetStartAlways(true, plan.Program); err != nil {
 			s.log.Warn("the choice to always start Ollama was not kept", "error", err)
 		}
-	} else if !req.Always && a.Env.StartAlways() {
+	} else if !req.Always && planErr == nil && a.Env.StartAlways(plan.Program) {
 		consent = "always"
 	}
 	started, p := a.Start(r.Context(), t, st, consent)
 	if p != nil {
-		ollamaFailure(w, p, a.Env.Check(r.Context(), t))
+		ollamaFailure(w, a.Admin, p, a.Env.Check(r.Context(), t))
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"started": started, "status": a.Env.Check(r.Context(), t)})
 }
 
-// postOllamaInstall is POST /v1/ollama/install. The Linux install script is
-// never run by the server: it may ask for a password, which only the
-// person at the host's terminal can give.
+// postOllamaInstall is POST /v1/ollama/install: Homebrew, or the macOS
+// download page opened on the host. The Linux install script is never run;
+// it is a step for the person.
 func (s *Server) postOllamaInstall(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeOllama(w, r)
 	if !ok {
@@ -209,14 +221,18 @@ func (s *Server) postOllamaInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := a.Env.Check(r.Context(), t)
+	if !a.Admin {
+		s.refuseOllama(w, a, ollama.OpInstall, t, st)
+		return
+	}
 	if st.Installed || st.Running {
-		WriteJSON(w, http.StatusOK, map[string]any{"status": st})
+		WriteJSON(w, http.StatusOK, map[string]any{"status": shown(a.Admin, st)})
 		return
 	}
 	plan := a.Env.PlanInstall()
 	var buf tailWriter
-	if p := a.Install(r.Context(), t, st, plan, false, nil, &buf, &buf); p != nil {
-		ollamaFailure(w, p, a.Env.Check(r.Context(), t))
+	if p := a.Install(r.Context(), t, st, plan, nil, &buf, &buf); p != nil {
+		ollamaFailure(w, a.Admin, p, a.Env.Check(r.Context(), t))
 		return
 	}
 	outcome := agent.OllamaOK
@@ -239,19 +255,23 @@ func (s *Server) postOllamaPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := a.Env.Check(r.Context(), t)
+	if !a.Admin {
+		s.refuseOllama(w, a, ollama.OpPull, t, st)
+		return
+	}
 	if st.Pulled {
-		WriteJSON(w, http.StatusOK, map[string]any{"status": st})
+		WriteJSON(w, http.StatusOK, map[string]any{"status": shown(a.Admin, st)})
 		return
 	}
 	if p := a.May(ollama.OpPull, t, st); p != nil {
 		a.Note(ollama.OpPull, agent.OllamaRefused, t, p)
-		ollamaFailure(w, p, st)
+		ollamaFailure(w, a.Admin, p, st)
 		return
 	}
 	fit, p := a.Env.CheckFit(r.Context(), t, st)
 	if p != nil {
 		a.Note(ollama.OpPull, agent.OllamaFailed, t, p)
-		ollamaFailure(w, p, st)
+		ollamaFailure(w, a.Admin, p, st)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
@@ -282,7 +302,7 @@ func (s *Server) postOllamaForget(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, "only an administrator of this server can change that")
 		return
 	}
-	if err := ollamaEnv().SetStartAlways(false); err != nil {
+	if err := ollamaEnv().SetStartAlways(false, ""); err != nil {
 		WriteError(w, http.StatusInternalServerError, "the choice could not be forgotten")
 		return
 	}

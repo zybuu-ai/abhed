@@ -33,7 +33,7 @@ type Report struct {
 // assist off or local nothing leaves the machine.
 func (a Assist) Report(ctx context.Context, t Target) Report {
 	st := a.Env.Check(ctx, t)
-	r := Report{Status: st, Assist: a.Mode, StartAlways: a.Env.StartAlways(), Catalog: Catalog}
+	r := Report{Status: st, Assist: a.Mode, Catalog: Catalog}
 	if st.Next == "" {
 		return r
 	}
@@ -51,6 +51,7 @@ func (a Assist) Report(ctx context.Context, t Target) Report {
 			return r
 		}
 		r.Start = &plan
+		r.StartAlways = a.Env.StartAlways(plan.Program)
 	case OpInstall:
 		plan := a.Env.PlanInstall()
 		a.Env.InstallSize(ctx, &plan)

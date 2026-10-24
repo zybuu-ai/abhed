@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,8 @@ type appOllama struct {
 	pulled   []string
 	launched []string
 	env      ollama.Env
+	// program is the fake ollama's resolved path.
+	program string
 }
 
 func newAppOllama(t *testing.T) *appOllama {
@@ -85,6 +88,7 @@ func newAppOllama(t *testing.T) *appOllama {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
+	f.program = filepath.Join(bin, "ollama")
 	f.env = ollama.Env{
 		GOOS: "linux",
 		LookPath: func(name string) (string, error) {
@@ -97,13 +101,14 @@ func newAppOllama(t *testing.T) *appOllama {
 		LogDir: filepath.Join(home, "logs"), StateDir: filepath.Join(home, "state"), ReadyWait: 2 * time.Second,
 		MemTotal: func() (uint64, error) { return 64 << 30, nil }, DiskFree: func(string) (uint64, error) { return 500 << 30, nil },
 		ModelsDir: home, Environ: func() []string { return nil },
-		Launch: func(path string, args, env []string, _ *os.File) (int, error) {
+		Launch: func(path string, args, env []string, _ *os.File) (int, <-chan error, error) {
 			f.mu.Lock()
 			f.launched = append(f.launched, strings.Join(append(append([]string{}, env...), append([]string{path}, args...)...), " "))
 			f.mu.Unlock()
 			f.start(t)
-			return 4242, nil
+			return 4242, nil, nil
 		},
+		Listening: func(context.Context, string) bool { return false },
 	}
 	old := ollamaEnv
 	ollamaEnv = func() ollama.Env { return f.env }
@@ -216,15 +221,20 @@ func TestOllamaFlowAlwaysStartIsKeptAndForgotten(t *testing.T) {
 	if env.st.ensureOllamaFor(context.Background(), surface, "olm") {
 		t.Fatal("ready without the model")
 	}
-	if !f.env.StartAlways() || outcomes(acts()) != "start:ok" {
-		t.Fatalf("always %v, recorded %s", f.env.StartAlways(), outcomes(acts()))
+	// The pull refused under local is recorded, as the server and Studio record it.
+	if !f.env.StartAlways(f.program) || outcomes(acts()) != "start:ok,pull:refused" {
+		t.Fatalf("always %v, recorded %s", f.env.StartAlways(f.program), outcomes(acts()))
 	}
 	// local: the pull is not offered; the steps say how to do it.
 	if text := surface.text(); !strings.Contains(text, "model.ollama.assist is local") || !strings.Contains(text, "ollama pull qwen3:8b") {
 		t.Fatalf("shown:\n%s", text)
 	}
-	if _, err := slashOllama(context.Background(), env, []string{"forget"}); err != nil || f.env.StartAlways() {
-		t.Fatalf("forget: %v, still %v", err, f.env.StartAlways())
+	// A different ollama on PATH is asked about again.
+	if f.env.StartAlways("/tmp/elsewhere/ollama") {
+		t.Fatal("always covered another program")
+	}
+	if _, err := slashOllama(context.Background(), env, []string{"forget"}); err != nil || f.env.StartAlways(f.program) {
+		t.Fatalf("forget: %v, still %v", err, f.env.StartAlways(f.program))
 	}
 }
 
@@ -239,7 +249,7 @@ func TestOllamaFlowAssistOffOffersNothing(t *testing.T) {
 			t.Fatal("assist off offered to start")
 		}
 	}
-	if len(f.launched) != 0 || len(acts()) != 0 {
+	if len(f.launched) != 0 || outcomes(acts()) != "start:refused" || acts()[0].Problem != "assist_off" {
 		t.Fatalf("launched %v, recorded %v", f.launched, acts())
 	}
 	if !strings.Contains(surface.text(), "model.ollama.assist is off") {
@@ -297,7 +307,7 @@ func TestOllamaSubcommandIsRefusedInAnAgentsCommand(t *testing.T) {
 	}
 }
 
-// abhed ollama check asks on its own lines, records in a session of its own,
+// abhed ollama check asks at a terminal, records in a session of its own,
 // and abhed ollama status only reads.
 func TestOllamaSubcommand(t *testing.T) {
 	f := newAppOllama(t)
@@ -311,8 +321,11 @@ func TestOllamaSubcommand(t *testing.T) {
 	if len(f.launched) != 0 {
 		t.Fatal("status started Ollama")
 	}
+	// As at a terminal: 1 starts it, then 1 (yes) to the download.
+	old := ollamaTerminal
+	ollamaTerminal = func(io.Reader, io.Writer) bool { return true }
+	t.Cleanup(func() { ollamaTerminal = old })
 	out.Reset()
-	// 1: start it; then 1 (yes) to the download.
 	if code := ollamaCmd(ws, []string{"check"}, config.TrustAsStored, strings.NewReader("1\n1\n"), &out, &errb); code != 0 {
 		t.Fatalf("check: %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -322,6 +335,30 @@ func TestOllamaSubcommand(t *testing.T) {
 	out.Reset()
 	if code := ollamaCmd(ws, []string{"models"}, config.TrustAsStored, nil, &out, &errb); code != 0 || !strings.Contains(out.String(), "gemma4:31b") {
 		t.Fatalf("models: %s", out.String())
+	}
+}
+
+// From a pipe, abhed ollama check and install run nothing, whatever is
+// piped in: they say what is wrong and the steps.
+func TestOllamaSubcommandFromAPipeRunsNothing(t *testing.T) {
+	f := newAppOllama(t)
+	ws := t.TempDir()
+	cfg := `{"model":{"default":"olm","providers":{"olm":{"type":"ollama","base_url":"` + f.url + `/v1","model":"qwen3:8b","context_window":8192}}}}`
+	acpModelsEnv(t, cfg)
+	for _, verb := range []string{"check", "install"} {
+		var out, errb bytes.Buffer
+		if code := ollamaCmd(ws, []string{verb}, config.TrustAsStored, strings.NewReader("1\n1\n1\n2\n"), &out, &errb); code != 1 {
+			t.Fatalf("%s from a pipe: %d\n%s", verb, code, out.String())
+		}
+		if !strings.Contains(out.String(), "ollama serve") || strings.Contains(out.String(), "Start Ollama?") {
+			t.Fatalf("%s from a pipe asked:\n%s", verb, out.String())
+		}
+	}
+	if len(f.launched) != 0 {
+		t.Fatalf("a pipe started Ollama: %v", f.launched)
+	}
+	if ollamaTerminal(strings.NewReader(""), &bytes.Buffer{}) {
+		t.Fatal("a reader and a buffer count as a terminal")
 	}
 }
 

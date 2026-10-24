@@ -42,9 +42,8 @@ const ollamaRounds = 8
 type ollamaFlow struct {
 	ui ui.Surface
 	a  ollama.Assist
-	// terminal is set when a step may take the terminal itself (the official
-	// Linux install script, which may ask for a password); only `abhed ollama`
-	// before any session sets it.
+	// terminal is set for `abhed ollama` at a terminal, where an install's
+	// own output is shown as it runs.
 	terminal bool
 	// out takes an install's own output when terminal is set.
 	out io.Writer
@@ -86,8 +85,10 @@ func (f ollamaFlow) ensure(ctx context.Context, t ollama.Target) bool {
 	return f.a.Env.Check(ctx, t).Ready
 }
 
-// refused shows why a step is not offered, with the steps, and asks to retry.
-func (f ollamaFlow) refused(ctx context.Context, st ollama.Status, p *ollama.Problem) bool {
+// refused records and shows why a step is not offered, with the steps, and
+// asks to retry.
+func (f ollamaFlow) refused(ctx context.Context, op string, t ollama.Target, st ollama.Status, p *ollama.Problem) bool {
+	f.a.Note(op, agent.OllamaRefused, t, p)
 	msg := st.Problem.Message + "\n" + p.Text()
 	f.ui.Append(ui.Block{Kind: ui.BlockError, Text: msg})
 	if !p.Retry {
@@ -98,7 +99,7 @@ func (f ollamaFlow) refused(ctx context.Context, st ollama.Status, p *ollama.Pro
 
 func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status) bool {
 	if p := f.a.May(ollama.OpStart, t, st); p != nil {
-		return f.refused(ctx, st, p)
+		return f.refused(ctx, ollama.OpStart, t, st, p)
 	}
 	plan, p := f.a.Env.PlanStart(t, st)
 	if p != nil {
@@ -106,13 +107,18 @@ func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status
 		return p.Retry && f.retry(ctx, "Check again?")
 	}
 	consent := "always"
-	if !f.a.Env.StartAlways() {
+	if !f.a.Env.StartAlways(plan.Program) {
 		body := []ui.Block{{Kind: ui.BlockNotice, Text: st.Problem.Message},
 			{Kind: ui.BlockNotice, Text: "Command: " + plan.Display}}
 		if plan.Log != "" {
 			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "Its output goes to " + plan.Log + "."})
 		}
-		body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "It runs as you, on this machine only, and keeps running when Abhed exits; stop it as you would any Ollama."})
+		if plan.AppBinds {
+			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "This opens the Ollama app, which listens where its own settings say; Abhed does not control that."})
+		} else {
+			body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "It listens on this machine only."})
+		}
+		body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "It runs as you and keeps running when Abhed exits; stop it as you would any Ollama."})
 		id, err := f.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogChoice, Title: "Start Ollama?", Body: body,
 			Ask: "Start the Ollama server now?",
 			Choices: []ui.Choice{{ID: "start", Label: "Start it"},
@@ -125,7 +131,7 @@ func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status
 			f.manual(st)
 			return false
 		case id == "always":
-			if err := f.a.Env.SetStartAlways(true); err != nil {
+			if err := f.a.Env.SetStartAlways(true, plan.Program); err != nil {
 				f.ui.Append(ui.Block{Kind: ui.BlockError, Text: "The choice to always start could not be kept: " + err.Error()})
 			}
 		default:
@@ -146,13 +152,13 @@ func (f ollamaFlow) start(ctx context.Context, t ollama.Target, st ollama.Status
 
 func (f ollamaFlow) install(ctx context.Context, t ollama.Target, st ollama.Status) bool {
 	if p := f.a.May(ollama.OpInstall, t, st); p != nil {
-		return f.refused(ctx, st, p)
+		return f.refused(ctx, ollama.OpInstall, t, st, p)
 	}
 	plan := f.a.Env.PlanInstall()
-	if plan.Kind == ollama.InstallManual || plan.Kind == ollama.InstallScript && !f.terminal {
-		why := "Abhed does not install Ollama on this system itself."
-		if plan.Kind == ollama.InstallScript {
-			why = "The official install script may ask for your password, so run it yourself, or run `abhed ollama install` in a terminal, which shows it and runs it once you agree."
+	if plan.Kind == ollama.InstallManual {
+		why := "Abhed does not install Ollama on this system itself; run the step below yourself."
+		if plan.Display == ollama.ScriptCommand {
+			why = "Abhed never runs the official install script, which runs sudo itself; run it yourself (source: " + plan.Source + ")."
 		}
 		f.ui.Append(ui.Block{Kind: ui.BlockError, Text: st.Problem.Message + " " + why + "\n" + (&ollama.Problem{Steps: f.a.Env.Steps(t, st)}).Text()})
 		return f.retry(ctx, "Check again once it is installed?")
@@ -178,11 +184,7 @@ func (f ollamaFlow) install(ctx context.Context, t ollama.Target, st ollama.Stat
 		out = f.out
 	}
 	f.ui.Notify(ui.Toast{Text: "running " + plan.Display + "…"})
-	var stdin io.Reader
-	if f.terminal {
-		stdin = os.Stdin
-	}
-	if p := f.a.Install(ctx, t, st, plan, f.terminal, stdin, out, out); p != nil {
+	if p := f.a.Install(ctx, t, st, plan, nil, out, out); p != nil {
 		text := p.Text()
 		if tail := buf.String(); tail != "" {
 			text += "\nThe last of its output:\n" + tail
@@ -200,11 +202,11 @@ func (f ollamaFlow) install(ctx context.Context, t ollama.Target, st ollama.Stat
 
 func (f ollamaFlow) pull(ctx context.Context, t ollama.Target, st ollama.Status) bool {
 	if p := f.a.May(ollama.OpPull, t, st); p != nil {
-		return f.refused(ctx, st, p)
+		return f.refused(ctx, ollama.OpPull, t, st, p)
 	}
 	fit, p := f.a.Env.CheckFit(ctx, t, st)
 	if p != nil {
-		// Nothing was offered, so nothing was attempted or recorded.
+		f.a.Note(ollama.OpPull, agent.OllamaFailed, t, p)
 		f.ui.Append(ui.Block{Kind: ui.BlockError, Text: p.Text()})
 		return p.Retry && f.retry(ctx, "Check again?")
 	}
@@ -328,7 +330,7 @@ func slashOllama(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		if args[0] != "forget" {
 			return false, fmt.Errorf("/ollama takes forget, or nothing")
 		}
-		if err := ollamaEnv().SetStartAlways(false); err != nil {
+		if err := ollamaEnv().SetStartAlways(false, ""); err != nil {
 			return false, err
 		}
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "Abhed will ask again before it starts Ollama."})

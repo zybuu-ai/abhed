@@ -4,6 +4,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -501,11 +502,38 @@ func (h *run) refuseRealServices(args, env []string) {
 		}
 	}
 	for _, s := range texts {
+		if name := ollamaDefaultProvider(s); name != "" {
+			_ = os.RemoveAll(h.root) // no cleanup is registered yet
+			h.t.Fatalf("clitest: provider %q is type ollama with no base_url, which is Ollama's own 127.0.0.1:11434; give it the stub's URL", name)
+		}
 		if m := realService.FindString(s); m != "" {
 			_ = os.RemoveAll(h.root) // no cleanup is registered yet
 			h.t.Fatalf("clitest: the run names %s, a real local model service; tests use the stub", m)
 		}
 	}
+}
+
+// ollamaDefaultProvider names a provider in a configuration text that is
+// type ollama with no base_url, so would reach the real Ollama port; "" when
+// there is none or the text is not a configuration.
+func ollamaDefaultProvider(text string) string {
+	var cfg struct {
+		Model struct {
+			Providers map[string]struct {
+				Type    string `json:"type"`
+				BaseURL string `json:"base_url"`
+			} `json:"providers"`
+		} `json:"model"`
+	}
+	if json.Unmarshal([]byte(text), &cfg) != nil {
+		return ""
+	}
+	for name, p := range cfg.Model.Providers {
+		if strings.EqualFold(strings.TrimSpace(p.Type), "ollama") && strings.TrimSpace(p.BaseURL) == "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func (h *run) env() []string {

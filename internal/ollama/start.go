@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,14 +16,26 @@ type StartPlan struct {
 	// Display is the exact command, as the person is shown it.
 	Display string `json:"command"`
 	// Log is where the server's output goes, when Abhed starts it itself.
-	Log  string   `json:"log,omitempty"`
-	path string   // the program
-	args []string // its arguments
-	env  []string // what is added to the environment
+	Log string `json:"log,omitempty"`
+	// Program is the program run: the resolved ollama binary, or the app.
+	// A standing "always start" is kept for this path only.
+	Program string `json:"program,omitempty"`
+	// AppBinds is set when the macOS app is opened: it listens where its
+	// own settings say, which Abhed does not control.
+	AppBinds bool     `json:"app_binds,omitempty"`
+	path     string   // what is executed
+	args     []string // its arguments
+	env      []string // what is added to the environment
+	// handsOff is set for a launcher that exits once it has handed off
+	// (open), so its exit is not the server failing.
+	handsOff bool
 }
 
 // PlanStart says how the server would be started for t, or a Problem when
-// it cannot be started from here.
+// it cannot be started from here. With the ollama program present it is
+// always `ollama serve` with OLLAMA_HOST forced to the target's loopback
+// address. Only when the macOS app alone is installed is the app opened,
+// by its path, and only for the default address it listens on.
 func (e Env) PlanStart(t Target, st Status) (StartPlan, *Problem) {
 	if !t.Loopback {
 		return StartPlan{}, &Problem{Kind: KindRemote, Message: fmt.Sprintf("%s is on another machine; Abhed starts Ollama only on this one.", t.API),
@@ -31,19 +44,21 @@ func (e Env) PlanStart(t Target, st Status) (StartPlan, *Problem) {
 	if !st.Installed {
 		return StartPlan{}, e.problem(KindNotInstalled, "Ollama is not installed on this machine, so it cannot be started.", t, st)
 	}
-	// The app listens only on the default address, so it is used only for that.
-	if e.GOOS == "darwin" && st.App != "" && t.Default() {
+	if st.Binary != "" {
+		logPath := filepath.Join(e.LogDir, "ollama-serve.log")
+		host := t.serveHost()
+		return StartPlan{Display: "OLLAMA_HOST=" + host + " " + st.Binary + " serve", Log: logPath, Program: st.Binary,
+			path: st.Binary, args: []string{"serve"}, env: []string{"OLLAMA_HOST=" + host}}, nil
+	}
+	if e.GOOS == "darwin" && st.App != "" {
+		if !t.Default() {
+			return StartPlan{}, e.problem(KindStartFailed, "Only the Ollama app is installed, and it listens on its own address, not on port "+t.Port+".", t, st)
+		}
 		if open, err := e.look("open"); err == nil {
-			return StartPlan{Display: "open -a Ollama", path: open, args: []string{"-a", "Ollama"}}, nil
+			return StartPlan{Display: "open " + st.App, Program: st.App, AppBinds: true, path: open, args: []string{st.App}, handsOff: true}, nil
 		}
 	}
-	if st.Binary == "" {
-		return StartPlan{}, e.problem(KindNotInstalled, "The ollama program was not found, so the server cannot be started.", t, st)
-	}
-	logPath := filepath.Join(e.LogDir, "ollama-serve.log")
-	host := t.serveHost()
-	return StartPlan{Display: "OLLAMA_HOST=" + host + " " + st.Binary + " serve", Log: logPath,
-		path: st.Binary, args: []string{"serve"}, env: []string{"OLLAMA_HOST=" + host}}, nil
+	return StartPlan{}, e.problem(KindNotInstalled, "The ollama program was not found, so the server cannot be started.", t, st)
 }
 
 func (e Env) look(name string) (string, error) {
@@ -60,9 +75,19 @@ type Started struct {
 	Log     string `json:"log,omitempty"`
 }
 
+// starting serializes starts per target, so two requests cannot launch two
+// servers on one port.
+var starting sync.Map // API -> *sync.Mutex
+
+func startLock(api string) *sync.Mutex {
+	m, _ := starting.LoadOrStore(api, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
 // Start starts the server as plan says, detached as the person's own
-// process in its own process group, and waits up to ReadyWait for it to
-// answer. Abhed does not stop it on exit: it is the person's server.
+// process in its own process group with a minimal environment, and waits up
+// to ReadyWait for it to answer, or for it to exit. Abhed does not stop it
+// on exit: it is the person's server.
 func (e Env) Start(ctx context.Context, t Target, st Status, plan StartPlan) (Started, *Problem) {
 	var out Started
 	if plan.path == "" {
@@ -84,8 +109,8 @@ func (e Env) Start(ctx context.Context, t Target, st Status, plan StartPlan) (St
 		}
 		logFile, out.Log = f, plan.Log
 	}
-	env := append(withoutKey(e.environ(), "OLLAMA_HOST"), plan.env...)
-	pid, err := e.Launch(plan.path, plan.args, env, logFile)
+	env := append(MinimalEnv(e.environ()), plan.env...)
+	pid, exited, err := e.Launch(plan.path, plan.args, env, logFile)
 	if err != nil {
 		return out, e.problem(KindStartFailed, fmt.Sprintf("Ollama could not be started (%s): %v", plan.Display, err), t, st)
 	}
@@ -95,13 +120,12 @@ func (e Env) Start(ctx context.Context, t Target, st Status, plan StartPlan) (St
 		wait = 30 * time.Second
 	}
 	deadline := time.Now().Add(wait)
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		if v, err := e.version(ctx, t); err == nil {
 			out.Version = v
 			return out, nil
-		}
-		if ctx.Err() != nil {
-			return out, &Problem{Kind: KindCancelled, Message: "Stopped waiting for Ollama to start.", Steps: e.Steps(t, st), Retry: true}
 		}
 		if busy := portBusyIn(plan.Log, logStart); busy {
 			st.PortBusy = true
@@ -118,9 +142,75 @@ func (e Env) Start(ctx context.Context, t Target, st Status, plan StartPlan) (St
 		}
 		select {
 		case <-ctx.Done():
-		case <-time.After(250 * time.Millisecond):
+			return out, &Problem{Kind: KindCancelled, Message: "Stopped waiting for Ollama to start.", Steps: e.Steps(t, st), Retry: true}
+		case werr := <-exited:
+			exited = nil
+			if plan.handsOff && werr == nil {
+				continue // open handed off to the app; keep waiting for it
+			}
+			if portBusyIn(plan.Log, logStart) {
+				continue // said as port busy at the top of the loop
+			}
+			// A server that exits before it answers has failed; say how, from its log.
+			msg := fmt.Sprintf("Ollama exited before it answered (%s)", plan.Display)
+			if werr != nil {
+				msg += ": " + werr.Error()
+			}
+			if tail := logTail(plan.Log, logStart); tail != "" {
+				msg += ". The end of its log:\n" + tail
+			}
+			return out, e.problem(KindStartFailed, msg, t, st)
+		case <-tick.C:
 		}
 	}
+}
+
+// logTail is the last lines the server wrote to its log from offset on.
+func logTail(path string, offset int64) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, 64<<10)
+	n, _ := f.ReadAt(buf, offset)
+	lines := strings.Split(strings.TrimSpace(string(bytes.ToValidUTF8(buf[:n], nil))), "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// keepEnv are the variables a started or installing program is given; the
+// rest of Abhed's environment, which on a server can hold provider keys,
+// tokens and database addresses, is not passed on.
+var keepEnv = []string{"PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "USER", "LOGNAME", "SHELL",
+	"SYSTEMROOT", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "XDG_RUNTIME_DIR"}
+
+// MinimalEnv keeps from env only keepEnv, the LC_* locale variables, the
+// HOMEBREW_* ones brew reads, and OLLAMA_* other than OLLAMA_HOST.
+func MinimalEnv(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		u := strings.ToUpper(k)
+		switch {
+		case u == "OLLAMA_HOST":
+		case strings.HasPrefix(u, "OLLAMA_"), strings.HasPrefix(u, "LC_"), strings.HasPrefix(u, "HOMEBREW_"):
+			out = append(out, kv)
+		default:
+			for _, keep := range keepEnv {
+				if strings.EqualFold(k, keep) {
+					out = append(out, kv)
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 // portBusyIn reports whether the server's log, from offset on, says the
@@ -144,15 +234,4 @@ func (e Env) environ() []string {
 		return os.Environ()
 	}
 	return e.Environ()
-}
-
-// withoutKey drops key from an environment.
-func withoutKey(env []string, key string) []string {
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, key) {
-			out = append(out, kv)
-		}
-	}
-	return out
 }
