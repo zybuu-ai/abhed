@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -383,4 +385,83 @@ func (m *memCursors) Save(c map[string]ocsf.Cursor) error {
 		m.rows[k] = v
 	}
 	return nil
+}
+
+// The cursor's provider is the one the lines up to it said, so a sink takes
+// it over what it remembered: another may have written lines since.
+func TestSinkPrefersTheCursorsProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.jsonl")
+	cur := &memCursors{}
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: path, Cursors: cur})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	line := func(seq int64, typ agent.EventType, payload string) ocsf.Line {
+		return ocsf.Line{Event: agent.Event{ID: fmt.Sprintf("e-%d", seq), SessionID: "s-1", Seq: seq, Type: typ,
+			Payload: []byte(payload), Actor: agent.ActorSystem, Trust: agent.Trusted, CreatedAt: at}}
+	}
+	sink.Add(line(1, agent.EvSessionStarted, `{"provider":"first","model":"m"}`))
+	deadline := time.Now().Add(5 * time.Second)
+	for len(readEventsIfAny(t, path)) < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Another writer took seq 2, a model.switched, and moved the cursor on.
+	cur.mu.Lock()
+	cur.rows["s-1"] = ocsf.Cursor{Seq: 2, Provider: "second", Primed: true}
+	cur.mu.Unlock()
+	sink.Add(line(3, agent.EvModelCall, `{"model":"m","tokens_in":1,"tokens_out":1}`))
+	_ = sink.Close()
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"ai_provider":"second"`) {
+		t.Fatalf("the model call did not take the cursor's provider: %s", data)
+	}
+}
+
+// A session that keeps failing grows the backoff, whatever another session
+// written meanwhile does: here every read of its cursor fails, and the
+// other session's lines are written all along.
+func TestBackoffGrowsDespiteOtherSessionsWritten(t *testing.T) {
+	cur := &badCursors{}
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: filepath.Join(t.TempDir(), "b.jsonl"), Cursors: cur,
+		Read: func(string, ocsf.Cursor) ([]ocsf.Line, error) { return nil, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(session string, seq int64) {
+		sink.Add(ocsf.Line{Event: agent.Event{ID: fmt.Sprintf("%s-%d", session, seq), SessionID: session, Seq: seq,
+			Type: agent.EvUserMessage, Payload: []byte(`{"text":"m"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}})
+	}
+	add("bad", 1)
+	// Its first failure before the other session's lines, so no batch holds both.
+	for cur.badTries.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	for i := 0; i < 80; i++ {
+		add("good", int64(i+1))
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = sink.Close()
+	// 800 ms: a backoff of 100, 200 and 400 ms tries it about four times; one
+	// reset by every good write would try it every 100 ms or more often.
+	if n := cur.badTries.Load(); n == 0 || n > 5 {
+		t.Fatalf("the failing session was tried %d times in 800 ms; want a few, backing off", n)
+	}
+}
+
+// badCursors fails every load that names the session "bad".
+type badCursors struct {
+	memCursors
+	badTries atomic.Int32
+}
+
+func (b *badCursors) Load(ids []string) (map[string]ocsf.Cursor, bool, error) {
+	for _, id := range ids {
+		if id == "bad" {
+			b.badTries.Add(1)
+			return nil, false, errors.New("the cursor of bad cannot be read")
+		}
+	}
+	return b.memCursors.Load(ids)
 }

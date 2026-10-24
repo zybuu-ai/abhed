@@ -217,4 +217,7 @@ func TestSandboxEventsOCSFRefusedWithoutLinks(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
+	if strings.Contains(rec.Body.String(), "database went away") {
+		t.Fatalf("the store's error reached the caller: %s", rec.Body.String())
+	}
 }
