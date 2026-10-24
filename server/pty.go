@@ -1066,8 +1066,9 @@ func dockerTopForeground(ctx context.Context, engine, name string, pid int) (pro
 	return false, false
 }
 
-// engineAskWait bounds asking the engine at a line's Enter.
-const engineAskWait = 3 * time.Second
+// engineAskWait bounds asking the engine at a line's Enter. A variable so a
+// test under load is not decided by the clock.
+var engineAskWait = 3 * time.Second
 
 // foregroundIsProgram reads a /proc/<pid>/stat line: whether the terminal's
 // foreground group (tpgid) is set and is not the process's own group.
