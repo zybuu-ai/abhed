@@ -197,7 +197,7 @@ a `resource_link` to the lines.
 
 Added in 1.2.9; served when `features` lists `ollama`. When the person
 chooses a model that a local Ollama serves (provider `type: "ollama"`, or an
-OpenAI-compatible `base_url` on port 11434 or at `OLLAMA_HOST`), the engine
+OpenAI-compatible `base_url` on port 11434), the engine
 can say whether it works and, after the person agrees in Studio, start
 Ollama, install it or pull the model. Studio shows a card; the engine decides
 what may run.

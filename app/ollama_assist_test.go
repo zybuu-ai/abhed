@@ -252,7 +252,7 @@ func TestOllamaFlowAssistOffOffersNothing(t *testing.T) {
 func TestOllamaFlowTellsWithoutATerminal(t *testing.T) {
 	f := newAppOllama(t)
 	env, surface, _ := ollamaEnvFor(t, f, "")
-	t2, _ := ollama.Resolve("olm", "ollama", f.url+"/v1", "qwen3:8b", "", "")
+	t2, _ := ollama.Resolve("olm", "ollama", f.url+"/v1", "qwen3:8b", "")
 	fl := ollamaFlow{ui: surface, a: env.st.cliOllama("cli"), tell: true}
 	if fl.ensure(context.Background(), t2) || len(surface.asked) != 0 || len(f.launched) != 0 {
 		t.Fatalf("asked %d, launched %v", len(surface.asked), f.launched)

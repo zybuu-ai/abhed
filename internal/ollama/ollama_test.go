@@ -89,7 +89,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 }
 
 func (f *fakeAPI) target(model string) Target {
-	tg, ok := Resolve("local", "ollama", f.srv.URL+"/v1", model, "", "")
+	tg, ok := Resolve("local", "ollama", f.srv.URL+"/v1", model, "")
 	if !ok {
 		panic("not a target")
 	}
@@ -169,16 +169,17 @@ func TestResolve(t *testing.T) {
 		{"ollama", "http://10.0.0.2:11434/v1", "", true, false, "http://10.0.0.2:11434"},
 		{"openai-compatible", "http://localhost:11434/v1", "", true, true, "http://localhost:11434"},
 		{"openai-compatible", "http://127.0.0.1:4000/v1", "", false, false, ""},
-		{"openai-compatible", "http://127.0.0.1:11500/v1", "127.0.0.1:11500", true, true, "http://127.0.0.1:11500"},
+		// OLLAMA_HOST does not make another OpenAI-compatible endpoint Ollama's.
+		{"openai-compatible", "http://127.0.0.1:11500/v1", "127.0.0.1:11500", false, false, ""},
 		{"anthropic", "http://127.0.0.1:11434", "", false, false, ""},
 		{"openai-compatible", "::bad", "", false, false, ""},
 	} {
-		tg, ok := Resolve("p", c.typ, c.base, "m", "http://127.0.0.1:11434/v1", c.host)
+		tg, ok := Resolve("p", c.typ, c.base, "m", "http://127.0.0.1:11434/v1")
 		if ok != c.ok || ok && (tg.Loopback != c.loop || tg.API != c.api) {
 			t.Errorf("%s %s: got %+v %v", c.typ, c.base, tg, ok)
 		}
 	}
-	tg, _ := Resolve("p", "ollama", "http://localhost:11500/v1", "m", "", "")
+	tg, _ := Resolve("p", "ollama", "http://localhost:11500/v1", "m", "")
 	if tg.serveHost() != "127.0.0.1:11500" || tg.hostPrefix() != "OLLAMA_HOST=127.0.0.1:11500 " {
 		t.Fatalf("serve host %q prefix %q", tg.serveHost(), tg.hostPrefix())
 	}
@@ -245,7 +246,7 @@ func TestCheckNothingListening(t *testing.T) {
 	addr := l.Addr().String()
 	l.Close()
 	env := testEnv(t, t.TempDir())
-	tg, _ := Resolve("local", "ollama", "http://"+addr+"/v1", "qwen3:8b", "", "")
+	tg, _ := Resolve("local", "ollama", "http://"+addr+"/v1", "qwen3:8b", "")
 	st := env.Check(context.Background(), tg)
 	if st.PortBusy || st.Running || st.Problem.Kind != KindNotInstalled {
 		t.Fatalf("nothing listening and nothing installed: %+v", st)
@@ -260,7 +261,7 @@ func TestCheckNothingListening(t *testing.T) {
 
 func TestRemoteIsGuidanceOnly(t *testing.T) {
 	env := testEnv(t, t.TempDir())
-	tg, _ := Resolve("far", "ollama", "http://192.0.2.1:11434/v1", "qwen3:8b", "", "")
+	tg, _ := Resolve("far", "ollama", "http://192.0.2.1:11434/v1", "qwen3:8b", "")
 	a := Assist{Env: env, Mode: ModeAsk, Admin: true}
 	for _, op := range []string{OpStart, OpInstall, OpPull} {
 		if p := a.May(op, tg, Status{Target: tg}); p == nil || p.Kind != KindRemote {
@@ -403,13 +404,13 @@ func TestPlanStartPrefersTheMacAppOnlyForTheDefaultPort(t *testing.T) {
 	fakeBin(t, bin, "open", "")
 	env := testEnv(t, bin)
 	env.GOOS = "darwin"
-	def, _ := Resolve("l", "ollama", "http://127.0.0.1:11434/v1", "m", "", "")
+	def, _ := Resolve("l", "ollama", "http://127.0.0.1:11434/v1", "m", "")
 	st := Status{Target: def, Installed: true, App: "/Applications/Ollama.app", Binary: "/usr/local/bin/ollama"}
 	plan, p := env.PlanStart(def, st)
 	if p != nil || plan.Display != "open -a Ollama" {
 		t.Fatalf("default port on macOS: %+v %v", plan, p)
 	}
-	other, _ := Resolve("l", "ollama", "http://127.0.0.1:11500/v1", "m", "", "")
+	other, _ := Resolve("l", "ollama", "http://127.0.0.1:11500/v1", "m", "")
 	st.Target = other
 	if plan, _ = env.PlanStart(other, st); plan.Display != "OLLAMA_HOST=127.0.0.1:11500 /usr/local/bin/ollama serve" {
 		t.Fatalf("another port: %+v", plan)
@@ -445,7 +446,7 @@ func TestPullStreamsAndChecksFit(t *testing.T) {
 	if fit, _ = env.CheckFit(context.Background(), tg, st); len(fit.Warnings) != 1 || !strings.Contains(fit.Warnings[0], "8 GB") {
 		t.Fatalf("short of memory: %+v", fit)
 	}
-	gemma, _ := Resolve("g", "ollama", api.srv.URL, "gemma4:31b", "", "")
+	gemma, _ := Resolve("g", "ollama", api.srv.URL, "gemma4:31b", "")
 	handler.Store(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"config":{"size":1},"layers":[{"size":20000000000}]}`)
 	}))
@@ -546,7 +547,7 @@ func TestInstallRunsAsThePersonAndRefusesTheScriptWithoutATerminal(t *testing.T)
 	fakeBin(t, bin, "sh", "exit 0")
 	env := testEnv(t, bin)
 	env.GOOS = "darwin"
-	tg, _ := Resolve("l", "ollama", "http://127.0.0.1:11434/v1", "m", "", "")
+	tg, _ := Resolve("l", "ollama", "http://127.0.0.1:11434/v1", "m", "")
 	var rec []agent.OllamaAction
 	a := Assist{Env: env, Mode: ModeAsk, Admin: true, Record: func(_ agent.EventType, ev agent.OllamaAction) { rec = append(rec, ev) }}
 	var out bytes.Buffer
@@ -668,5 +669,28 @@ func TestManifestPath(t *testing.T) {
 		if _, err := manifestPath(bad); err == nil {
 			t.Errorf("%q passed", bad)
 		}
+	}
+}
+
+// A server that serves the OpenAI API Ollama also serves, but not
+// /api/version, is running, not something else holding the port.
+func TestCheckAcceptsAnOpenAIStandIn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"data":[{"id":"stub-model"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	env := testEnv(t, t.TempDir())
+	tg, _ := Resolve("p", "ollama", srv.URL+"/v1", "stub-model", "")
+	st := env.Check(context.Background(), tg)
+	if !st.Running || st.PortBusy || !st.Pulled || !st.Ready || st.Problem != nil {
+		t.Fatalf("an OpenAI stand-in: %+v", st)
+	}
+	tg.Model = "other:1b"
+	if st = env.Check(context.Background(), tg); !st.Running || st.Pulled || st.Next != "pull" {
+		t.Fatalf("a model it does not list: %+v", st)
 	}
 }

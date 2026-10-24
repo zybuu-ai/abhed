@@ -1,8 +1,6 @@
 package toolset
 
 import (
-	"os"
-
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/defaults"
@@ -16,7 +14,7 @@ func OllamaTarget(cfg config.Config, name string) (ollama.Target, bool) {
 	if !ok {
 		return ollama.Target{}, false
 	}
-	return ollama.Resolve(name, p.Type, p.BaseURL, p.Model, defaults.OllamaURL, os.Getenv("OLLAMA_HOST"))
+	return ollama.Resolve(name, p.Type, p.BaseURL, p.Model, defaults.OllamaURL)
 }
 
 // OllamaAssist is what a surface may do for a person who chose an Ollama
