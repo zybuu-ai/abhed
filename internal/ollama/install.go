@@ -19,11 +19,9 @@ const (
 	InstallRun = "run"
 	// InstallOpen opens the official download page; the person installs.
 	InstallOpen = "open"
-	// InstallScript runs the official install script, which may ask for the
-	// person's password through sudo itself; only at a terminal.
-	InstallScript = "script"
-	// InstallManual is steps only: a package that needs sudo, or a system
-	// Abhed does not install on.
+	// InstallManual is steps only: a package that needs sudo, the official
+	// Linux install script (which runs sudo itself), or a system Abhed does
+	// not install on. Abhed prints it, with its source, and runs nothing.
 	InstallManual = "manual"
 )
 
@@ -53,11 +51,8 @@ type InstallPlan struct {
 	// Manual are the person's own steps, for a manual plan or as the
 	// fallback of any other.
 	Manual []string `json:"steps,omitempty"`
-	// NeedsTerminal is set when the step can only run at the person's own
-	// terminal, where sudo can ask for a password.
-	NeedsTerminal bool `json:"needs_terminal,omitempty"`
-	path          string
-	args          []string
+	path   string
+	args   []string
 }
 
 // PlanInstall chooses how to install Ollama here. It never chooses a step
@@ -85,15 +80,15 @@ func (e Env) PlanInstall() InstallPlan {
 			return InstallPlan{Kind: InstallManual, Display: pkg, Source: "your distribution's ollama package",
 				SizeNote: "the package manager shows the size", Manual: []string{pkg + "   (needs sudo, so run it yourself)"}}
 		}
-		sh, _ := e.look("sh")
 		arch := runtime.GOARCH
 		if arch != "arm64" {
 			arch = "amd64"
 		}
-		return InstallPlan{Kind: InstallScript, Display: ScriptCommand, Source: "the official install script from ollama.com (see " + LinuxPage + ")",
-			SizeURL: "https://ollama.com/download/ollama-linux-" + arch + ".tar.zst", NeedsTerminal: true,
-			path: sh, args: []string{"-c", ScriptCommand},
-			Manual: []string{ScriptCommand + "   (the script asks for sudo itself where it needs it)"}}
+		// The official script runs sudo itself, so Abhed never runs it: it
+		// is a step for the person, with its source.
+		return InstallPlan{Kind: InstallManual, Display: ScriptCommand, Source: "the official install script from ollama.com (see " + LinuxPage + ")",
+			SizeURL: "https://ollama.com/download/ollama-linux-" + arch + ".tar.zst",
+			Manual:  []string{ScriptCommand + "   (the official script from " + LinuxPage + "; it runs sudo itself where it needs it, so run it yourself)"}}
 	case "windows":
 		return InstallPlan{Kind: InstallManual, Display: WindowsPage, Source: "the official Ollama installer from ollama.com",
 			SizeNote: "shown by the download", Manual: []string{"Download and run the installer from " + WindowsPage}}
@@ -148,26 +143,20 @@ func (e Env) InstallSize(ctx context.Context, p *InstallPlan) {
 	p.SizeNote = "not known until the download starts"
 }
 
-// Install runs the plan as the person, never with sudo. For an open plan
-// it only opens the page, and the outcome is the person's to finish. A
-// script plan runs only when terminal is set: it may ask for a password.
-func (e Env) Install(ctx context.Context, p InstallPlan, terminal bool, stdin io.Reader, stdout, stderr io.Writer) *Problem {
+// Install runs the plan as the person, never with sudo and with a minimal
+// environment. For an open plan it only opens the page, and the outcome is
+// the person's to finish. A manual plan runs nothing.
+func (e Env) Install(ctx context.Context, p InstallPlan, stdin io.Reader, stdout, stderr io.Writer) *Problem {
 	fail := func(kind, msg string) *Problem {
 		return &Problem{Kind: kind, Message: msg, Steps: append(append([]string{}, p.Manual...), "Then choose the model again in Abhed."), Retry: true}
 	}
-	switch p.Kind {
-	case InstallManual:
-		return fail(KindManual, "Abhed does not install Ollama on this system; the steps below do.")
-	case InstallScript:
-		if !terminal {
-			return fail(KindNeedsTerminal, "The official install script may ask for your password, so it runs only from Abhed in a terminal, or by you.")
-		}
+	if p.Kind == InstallManual {
+		return fail(KindManual, "Abhed does not install Ollama on this system; the steps below do, run by you.")
 	}
 	if p.path == "" {
 		return fail(KindInstallFailed, "The program the install needs was not found.")
 	}
-	env := e.environ()
-	if err := e.Run(ctx, p.path, p.args, env, stdin, stdout, stderr); err != nil {
+	if err := e.Run(ctx, p.path, p.args, MinimalEnv(e.environ()), stdin, stdout, stderr); err != nil {
 		if ctx.Err() != nil {
 			return fail(KindCancelled, "The install was stopped.")
 		}

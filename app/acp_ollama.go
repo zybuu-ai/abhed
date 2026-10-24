@@ -109,13 +109,14 @@ func (c *acpConn) ollamaStart(msg rpcMessage) {
 		return
 	}
 	consent := "asked"
-	if p.Always {
+	plan, planErr := a.Env.PlanStart(t, st)
+	if p.Always && planErr == nil {
 		if pr := a.May(ollama.OpStart, t, st); pr == nil {
-			if err := a.Env.SetStartAlways(true); err != nil {
+			if err := a.Env.SetStartAlways(true, plan.Program); err != nil {
 				warnf("the choice to always start Ollama could not be kept: %v", err)
 			}
 		}
-	} else if a.Env.StartAlways() {
+	} else if planErr == nil && a.Env.StartAlways(plan.Program) {
 		consent = "always"
 	}
 	s, pr := a.Start(c.root(), t, st, consent)
@@ -139,8 +140,7 @@ func (c *acpConn) ollamaInstall(msg rpcMessage) {
 	}
 	plan := a.Env.PlanInstall()
 	var buf tailBuffer
-	// Studio has no terminal for a password prompt, so the script is never run here.
-	if pr := a.Install(c.root(), t, st, plan, false, nil, &buf, &buf); pr != nil {
+	if pr := a.Install(c.root(), t, st, plan, nil, &buf, &buf); pr != nil {
 		c.reply(msg.ID, nil, ollamaRefusal(pr, a.Env.Check(c.root(), t)))
 		return
 	}
@@ -222,7 +222,7 @@ func (c *acpConn) ollamaCancel(msg rpcMessage) {
 }
 
 func (c *acpConn) ollamaForget(msg rpcMessage) {
-	if err := ollamaEnv().SetStartAlways(false); err != nil {
+	if err := ollamaEnv().SetStartAlways(false, ""); err != nil {
 		c.reply(msg.ID, nil, refusal(errRefused, "the choice could not be forgotten: %v", err))
 		return
 	}

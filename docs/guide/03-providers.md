@@ -191,14 +191,17 @@ on screen and `/ollama` (or the card's *Check again*) checks again.
 
 | Step | What runs | Asks |
 |---|---|---|
-| Start the server | macOS with the app and the default address: `open -a Ollama`. Otherwise `ollama serve` with `OLLAMA_HOST` set to `127.0.0.1` and the provider's port, detached in a process group of its own, output to `~/.abhed/logs/ollama-serve.log`. Abhed waits up to 30 seconds for it to answer | the first time; answer *always* to start it without asking from then on. `abhed ollama forget`, `/ollama forget`, Studio's forget or `POST /v1/ollama/forget` takes that back |
-| Install Ollama | macOS: `brew install ollama` when Homebrew is installed, otherwise it opens the official download page (`https://ollama.com/download/mac`) and you install the signed app yourself. Linux: `brew install ollama` with Homebrew; on Arch it shows `sudo pacman -S ollama` for you to run; otherwise the official script, `curl -fsSL https://ollama.com/install.sh \| sh`, shown in full and run only by `abhed ollama check` at a terminal, since it may ask for your password. Windows: the official installer link (`https://ollama.com/download/windows`) | every time, showing the exact command, where it comes from and its size |
+| Start the server | `ollama serve` whenever the `ollama` program is found (on `PATH`, or inside the macOS app), on macOS too, with `OLLAMA_HOST` set to `127.0.0.1` and the provider's port, detached in a process group of its own, with a minimal environment (`PATH`, `HOME`, the locale and `OLLAMA_*` other than `OLLAMA_HOST`; no keys or tokens), output to `~/.abhed/logs/ollama-serve.log`. Only when the macOS app is installed without the program does Abhed open the app, by its path (`open /Applications/Ollama.app`), and only for the default address; the app then listens where its own settings say, which Abhed does not control. Abhed waits up to 30 seconds for it to answer, and reports at once, with the end of its log, a server that exits first | the first time; answer *always* to start it without asking from then on. The choice is kept for that program's path: a different `ollama` on `PATH` is asked about again. `abhed ollama forget`, `/ollama forget`, Studio's forget or `POST /v1/ollama/forget` takes it back |
+| Install Ollama | macOS: `brew install ollama` when Homebrew is installed, otherwise it opens the official download page (`https://ollama.com/download/mac`) and you install the signed app yourself. Linux: `brew install ollama` with Homebrew; on Arch it prints `sudo pacman -S ollama` for you to run; otherwise it prints the official script, `curl -fsSL https://ollama.com/install.sh \| sh`, with its source (`https://ollama.com/download/linux`), for you to run: the script runs `sudo` itself, so Abhed never runs it. Windows: the official installer link (`https://ollama.com/download/windows`) | every time, showing the exact command, where it comes from and its size |
 | Pull the model | `ollama pull <tag>` through the server's `/api/pull`, with progress; Esc, Ctrl-C, *Stop* or `_abhed/ollama/cancel` stops it, and Ollama keeps what it fetched, so pulling again resumes | every time, showing the command, the source (`registry.ollama.ai`), the download size from the registry's manifest, the free disk where Ollama keeps models, and a memory warning when the machine has less than the model wants |
 
-Nothing is ever installed or downloaded without that answer. Every step runs
-as you, never with `sudo`: a step that needs it is printed for you to run.
-Abhed never binds Ollama to anything but loopback: a server it starts gets
-`OLLAMA_HOST=127.0.0.1:<port>` whatever your environment says. It acts only on
+Nothing is ever installed or downloaded without that answer. What Abhed runs
+(`brew install ollama`, `ollama serve`, opening a page or the app) runs as
+you, never with `sudo`; a step that needs `sudo`, the official Linux script
+among them, is printed for you to run. A server Abhed starts with `ollama
+serve` gets `OLLAMA_HOST=127.0.0.1:<port>` whatever your environment says;
+the macOS app, opened only when the program is missing, binds where its own
+settings say. It acts only on
 an Ollama on this machine; for one at another address it shows the steps to
 run there. **Abhed does not stop a server it started** when it exits: it is
 your Ollama, and other programs may use it. Stop it as you would any other
@@ -241,9 +244,18 @@ guidance. An untrusted workspace file may only turn it down (`off` < `local`
 **Who may act.** Only you, choosing the model. No tool reaches any of this,
 so the agent cannot start, install or pull anything this way, and inside an
 agent's command `abhed ollama check`, `install` and `forget` are refused. On
-`abhed serve` the steps act on the server's host, so only an administrator
-may take them (or, where nobody signs in, a request from the host itself);
-anyone else sees the message and the steps.
+`abhed serve` the steps act on the server's host, so only a signed-in
+administrator may take them. Where nobody signs in, nobody may: a request
+from the host itself could be the agent's own command or a page rebound to
+it. Anyone else sees the message and the steps, with `abhed ollama check` to
+run in a terminal on the host; the host's paths and Ollama's version are
+shown only to an administrator. A model a server answers only through the
+OpenAI API (`/v1/models`), not Ollama's own `/api/version`, is never offered
+a pull: it may not be Ollama, so the steps are shown instead.
+
+**At a terminal only.** `abhed ollama check` and `install` offer a step only
+when both their input and output are a terminal; from a pipe, a script or a
+job they print what is wrong and the steps, and run nothing.
 
 **Recorded.** Each attempt, and how it ended, is an `ollama.start`,
 `ollama.install` or `ollama.pull` event attributed to you, with the command

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -13,11 +14,12 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/server"
+	"golang.org/x/term"
 )
 
 // abhed ollama: the same check and offers as choosing the model in a
-// session, from a terminal of its own. It is the one place the official
-// Linux install script runs, since it may ask for a password. Attempts are
+// session, from a terminal of its own; from anything else it only says what
+// is wrong and the steps. Attempts are
 // recorded in a short session of their own in the local record, which
 // `abhed sessions` lists and `abhed hawkeye` reports on.
 
@@ -56,7 +58,7 @@ func ollamaCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 		fmt.Fprintln(stdout, "Sizes are the registry's when the list was made; a pull shows the size it is now.")
 		return 0
 	case "forget":
-		if err := ollamaEnv().SetStartAlways(false); err != nil {
+		if err := ollamaEnv().SetStartAlways(false, ""); err != nil {
 			fmt.Fprintf(stderr, "abhed: ollama forget: %v\n", err)
 			return 1
 		}
@@ -113,12 +115,22 @@ func ollamaCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 	defer rec.close()
 	a := toolset.OllamaAssist(cfg, ollamaEnv(), "cli", true, "", rec.record)
 	sf := ui.NewLineSurface(stdout, ui.NewStyle(stdout), readerAnswers{in: stdin})
-	f := ollamaFlow{ui: sf, a: a, terminal: true, out: stdout}
+	// Only at a terminal is anything offered; from a pipe, a script or a job
+	// it says what is wrong and the steps, and runs nothing.
+	terminal := ollamaTerminal(stdin, stdout)
+	f := ollamaFlow{ui: sf, a: a, terminal: terminal, out: stdout, tell: !terminal}
 	if f.ensure(ctx, t) {
 		fmt.Fprintf(stdout, "%s (%s) is ready at %s.\n", name, t.Model, t.API)
 		return 0
 	}
 	return 1
+}
+
+// ollamaTerminal reports whether both ends are a terminal; tests replace it.
+var ollamaTerminal = func(in io.Reader, out io.Writer) bool {
+	fi, ok := in.(*os.File)
+	fo, ok2 := out.(*os.File)
+	return ok && ok2 && term.IsTerminal(int(fi.Fd())) && term.IsTerminal(int(fo.Fd()))
 }
 
 // readerAnswers reads a dialog's answers from a reader, a line at a time.

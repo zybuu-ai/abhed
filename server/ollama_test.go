@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -97,13 +98,14 @@ func newFakeOllama(t *testing.T) *fakeOllama {
 		LogDir: filepath.Join(home, "logs"), StateDir: filepath.Join(home, "state"), ReadyWait: 2 * time.Second,
 		MemTotal: func() (uint64, error) { return 64 << 30, nil }, DiskFree: func(string) (uint64, error) { return 500 << 30, nil },
 		ModelsDir: home, Environ: func() []string { return nil },
-		Launch: func(path string, args, env []string, _ *os.File) (int, error) {
+		Launch: func(path string, args, env []string, _ *os.File) (int, <-chan error, error) {
 			f.mu.Lock()
 			f.launched = append(f.launched, strings.Join(append(append([]string{}, env...), append([]string{path}, args...)...), " "))
 			f.mu.Unlock()
 			f.start(t)
-			return 4242, nil
+			return 4242, nil, nil
 		},
+		Listening: func(context.Context, string) bool { return false },
 	}
 	old := ollamaEnv
 	ollamaEnv = func() ollama.Env { return env }
@@ -125,73 +127,122 @@ func (f *fakeOllama) start(t *testing.T) {
 	})
 }
 
-// ollamaServer is switchServer with a provider "olm" that the fake Ollama serves.
-func ollamaServer(t *testing.T, assist string) (*Server, *durableMem, *fakeOllama) {
+// ollamaServer serves provider "a" by default and "olm", which the fake
+// Ollama serves. auth is "" (nobody signs in) or "proxy", where the
+// X-Abhed-User and X-Abhed-Groups headers name the caller.
+func ollamaServer(t *testing.T, assist, auth string, m *Metrics) (*Server, *durableMem, *fakeOllama) {
 	t.Helper()
 	f := newFakeOllama(t)
-	s, st, _, _ := switchServer(t)
-	s.opts.Config.Model.Providers["olm"] = config.ProviderConfig{Type: "ollama", BaseURL: f.url + "/v1", Model: "qwen3:8b", ContextWindow: 8192}
-	s.opts.Config.Model.Ollama.Assist = assist
+	a := newModelServer(t, "from a")
+	cfg := config.Default()
+	cfg.Suggest.Enabled = false
+	cfg.Auth.Mode = auth
+	cfg.Model.Default = "a"
+	cfg.Model.Providers = map[string]config.ProviderConfig{
+		"a":   {Type: "openai-compatible", BaseURL: a.url, Model: "model-a", ContextWindow: 8192},
+		"olm": {Type: "ollama", BaseURL: f.url + "/v1", Model: "qwen3:8b", ContextWindow: 8192},
+	}
+	cfg.Model.Ollama.Assist = assist
+	def, err := cfg.Model.Providers["a"].Adapter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: def, Metrics: m,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}), Store: st})
 	return s, st, f
 }
 
-// callFrom is call from a remote address: loopback is the host itself.
-func callFrom(t *testing.T, s *Server, remote, method, path, body string) *httptest.ResponseRecorder {
+// who is a caller: where from, and as whom under proxy auth.
+type who struct{ remote, user, groups string }
+
+var (
+	loopbackNobody = who{remote: "127.0.0.1:50000"}
+	admin          = who{remote: "127.0.0.1:50000", user: "alice", groups: DefaultAdminGroup}
+	loopbackBob    = who{remote: "127.0.0.1:50000", user: "bob"}
+)
+
+func callWho(t *testing.T, s *Server, c who, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
-	r.RemoteAddr = remote
+	r.RemoteAddr = c.remote
+	if c.user != "" {
+		r.Header.Set("X-Abhed-User", c.user)
+	}
+	if c.groups != "" {
+		r.Header.Set("X-Abhed-Groups", c.groups)
+	}
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	return w
 }
 
-const (
-	fromHost  = "127.0.0.1:50000"
-	fromOther = "192.0.2.7:50000"
-)
-
 func TestOllamaProvidersAreMarked(t *testing.T) {
-	s, _, _ := ollamaServer(t, "")
+	s, _, _ := ollamaServer(t, "", "", nil)
 	var list []providerInfo
 	_ = json.Unmarshal(call(t, s, "GET", "/v1/providers", "").Body.Bytes(), &list)
 	marked := map[string]bool{}
 	for _, p := range list {
 		marked[p.Name] = p.Ollama
 	}
-	if !marked["olm"] || marked["a"] || marked["b"] {
+	if !marked["olm"] || marked["a"] {
 		t.Fatalf("providers %+v", list)
 	}
 }
 
-// Only someone who may act on the host gets the offer; anyone else gets the
-// message and the steps, and nothing runs.
-func TestOllamaOnlyTheHostOrAnAdministratorActs(t *testing.T) {
-	s, _, f := ollamaServer(t, "")
+// refusedEverywhere checks a caller is shown the steps and nothing runs.
+func refusedEverywhere(t *testing.T, s *Server, f *fakeOllama, c who) {
+	t.Helper()
+	w := callWho(t, s, c, "GET", "/v1/ollama/status?provider=olm", "")
 	var rep ollama.Report
-	w := callFrom(t, s, fromOther, "GET", "/v1/ollama/status?provider=olm", "")
 	_ = json.Unmarshal(w.Body.Bytes(), &rep)
-	if w.Code != http.StatusOK || rep.CanAct || rep.Refusal == nil || rep.Refusal.Kind != ollama.KindNotAdmin || rep.Problem == nil || len(rep.Problem.Steps) == 0 {
-		t.Fatalf("status for another machine: %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK || rep.CanAct || rep.Refusal == nil || rep.Refusal.Kind != ollama.KindNotAdmin ||
+		!strings.Contains(strings.Join(rep.Refusal.Steps, "\n"), "abhed ollama check olm") || rep.Problem == nil || len(rep.Problem.Steps) == 0 {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
 	}
-	if w := callFrom(t, s, fromOther, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"kind":"not_admin"`) {
-		t.Fatalf("start from another machine: %d %s", w.Code, w.Body.String())
+	if strings.Contains(w.Body.String(), `"binary"`) || rep.Binary != "" || rep.Version != "" {
+		t.Fatalf("the host's paths shown to a caller who may not act: %s", w.Body.String())
+	}
+	for _, path := range []string{"/v1/ollama/start", "/v1/ollama/install", "/v1/ollama/pull"} {
+		if w := callWho(t, s, c, "POST", path, `{"provider":"olm","always":true}`); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"kind":"not_admin"`) || strings.Contains(w.Body.String(), `"binary"`) {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+	if w := callWho(t, s, c, "POST", "/v1/ollama/forget", `{}`); w.Code != http.StatusForbidden {
+		t.Fatalf("forget: %d", w.Code)
 	}
 	if len(f.launched) != 0 {
 		t.Fatalf("launched %v", f.launched)
 	}
-	if w := callFrom(t, s, fromOther, "POST", "/v1/ollama/forget", `{}`); w.Code != http.StatusForbidden {
-		t.Fatalf("forget from another machine: %d", w.Code)
+	if _, err := os.Stat(filepath.Join(ollamaEnv().StateDir, "ollama.json")); err == nil {
+		t.Fatal("a refused caller wrote the always-start choice")
 	}
+}
 
-	w = callFrom(t, s, fromHost, "GET", "/v1/ollama/status?provider=olm", "")
-	rep = ollama.Report{}
+// With nobody signing in, a request from loopback acts for no one: it could
+// be the agent's own command, a rebound page or a proxy on the host.
+func TestOllamaUnauthenticatedLoopbackIsRefused(t *testing.T) {
+	s, _, f := ollamaServer(t, "", "", nil)
+	refusedEverywhere(t, s, f, loopbackNobody)
+}
+
+// A signed-in caller who is not an administrator is refused, from loopback too.
+func TestOllamaSignedInNonAdminIsRefused(t *testing.T) {
+	s, _, f := ollamaServer(t, "", "proxy", nil)
+	refusedEverywhere(t, s, f, loopbackBob)
+}
+
+func TestOllamaAdministratorActs(t *testing.T) {
+	s, _, f := ollamaServer(t, "", "proxy", nil)
+	w := callWho(t, s, admin, "GET", "/v1/ollama/status?provider=olm", "")
+	var rep ollama.Report
 	_ = json.Unmarshal(w.Body.Bytes(), &rep)
-	if !rep.CanAct || rep.Start == nil || rep.Next != "start" {
-		t.Fatalf("status from the host: %s", w.Body.String())
+	if !rep.CanAct || rep.Start == nil || rep.Next != "start" || rep.Binary == "" {
+		t.Fatalf("status for an administrator: %s", w.Body.String())
 	}
-	w = callFrom(t, s, fromHost, "POST", "/v1/ollama/start", `{"provider":"olm"}`)
+	w = callWho(t, s, admin, "POST", "/v1/ollama/start", `{"provider":"olm"}`)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"version":"0.40.10"`) {
-		t.Fatalf("start from the host: %d %s", w.Code, w.Body.String())
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
 	}
 	if len(f.launched) != 1 || !strings.Contains(f.launched[0], "OLLAMA_HOST=127.0.0.1:") || !strings.HasSuffix(f.launched[0], "ollama serve") {
 		t.Fatalf("launched %v", f.launched)
@@ -199,30 +250,37 @@ func TestOllamaOnlyTheHostOrAnAdministratorActs(t *testing.T) {
 }
 
 func TestOllamaAssistOffActsOnNothing(t *testing.T) {
-	s, _, f := ollamaServer(t, "off")
+	s, _, f := ollamaServer(t, "off", "proxy", nil)
 	for _, path := range []string{"/v1/ollama/start", "/v1/ollama/pull"} {
-		if w := callFrom(t, s, fromHost, "POST", path, `{"provider":"olm"}`); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"kind":"assist_off"`) {
+		if w := callWho(t, s, admin, "POST", path, `{"provider":"olm"}`); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"kind":"assist_off"`) {
 			t.Fatalf("%s with assist off: %d %s", path, w.Code, w.Body.String())
 		}
 	}
 	if len(f.launched) != 0 {
 		t.Fatalf("launched %v", f.launched)
 	}
-	if w := callFrom(t, s, fromHost, "POST", "/v1/ollama/start", `{"provider":"a"}`); w.Code != http.StatusBadRequest {
+	if w := callWho(t, s, admin, "POST", "/v1/ollama/start", `{"provider":"a"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("a provider Ollama does not serve: %d", w.Code)
 	}
-	if w := callFrom(t, s, fromHost, "POST", "/v1/ollama/start", `{"provider":"nope"}`); w.Code != http.StatusBadRequest {
+	if w := callWho(t, s, admin, "POST", "/v1/ollama/start", `{"provider":"nope"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("an unknown provider: %d", w.Code)
 	}
 }
 
-// A pull streams its progress, and the attempts are in the session's record.
-func TestOllamaPullStreamsAndIsRecorded(t *testing.T) {
-	s, st, f := ollamaServer(t, "ask")
-	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one"}`))
+// adminSession starts a session as the administrator and waits for its turn.
+func adminSession(t *testing.T, s *Server, st *durableMem) string {
+	t.Helper()
+	id := sessionOf(t, callWho(t, s, admin, "POST", "/v1/sessions", `{"prompt":"one"}`))
 	turnsEnded(t, st, id, 1)
+	return id
+}
+
+// A pull streams its progress, and the attempt is in the session's record.
+func TestOllamaPullStreamsAndIsRecorded(t *testing.T) {
+	s, st, f := ollamaServer(t, "ask", "proxy", nil)
+	id := adminSession(t, s, st)
 	f.start(t)
-	w := callFrom(t, s, fromHost, "POST", "/v1/ollama/pull", `{"provider":"olm","session_id":"`+id+`"}`)
+	w := callWho(t, s, admin, "POST", "/v1/ollama/pull", `{"provider":"olm","session_id":"`+id+`"}`)
 	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/x-ndjson" {
 		t.Fatalf("pull: %d %s", w.Code, w.Body.String())
 	}
@@ -253,36 +311,14 @@ func TestOllamaPullStreamsAndIsRecorded(t *testing.T) {
 	}
 }
 
-// metricsServer is ollamaServer counting into a metric set, as abhed serve does.
-func metricsServer(t *testing.T) (*Server, *durableMem, *fakeOllama, *Metrics) {
-	t.Helper()
-	f := newFakeOllama(t)
-	a := newModelServer(t, "from a")
-	cfg := config.Default()
-	cfg.Suggest.Enabled = false
-	cfg.Model.Default = "a"
-	cfg.Model.Providers = map[string]config.ProviderConfig{
-		"a":   {Type: "openai-compatible", BaseURL: a.url, Model: "model-a", ContextWindow: 8192},
-		"olm": {Type: "ollama", BaseURL: f.url + "/v1", Model: "qwen3:8b", ContextWindow: 8192},
-	}
-	def, err := cfg.Model.Providers["a"].Adapter()
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
-	m := NewMetrics()
-	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: def, Metrics: m,
-		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}), Store: st})
-	return s, st, f, m
-}
-
 func ollamaCount(t *testing.T, m *Metrics, op, outcome string) string {
 	t.Helper()
 	w := httptest.NewRecorder()
 	m.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	prefix := `abhed_ollama_actions_total{op="` + op + `",outcome="` + outcome + `"} `
 	for _, line := range strings.Split(w.Body.String(), "\n") {
-		if strings.HasPrefix(line, `abhed_ollama_actions_total{op="`+op+`",outcome="`+outcome+`"} `) {
-			return strings.TrimPrefix(line, `abhed_ollama_actions_total{op="`+op+`",outcome="`+outcome+`"} `)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
 		}
 	}
 	return "0"
@@ -291,22 +327,22 @@ func ollamaCount(t *testing.T, m *Metrics, op, outcome string) string {
 // Every attempt the server handles is counted once: one with no session
 // here, one recorded in a session as its event is written.
 func TestOllamaAttemptsAreCountedOnce(t *testing.T) {
-	s, st, f, m := metricsServer(t)
-	if w := callFrom(t, s, fromOther, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusForbidden {
-		t.Fatalf("start from another machine: %d", w.Code)
+	m := NewMetrics()
+	s, st, f := ollamaServer(t, "", "proxy", m)
+	if w := callWho(t, s, loopbackBob, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("start by a non-administrator: %d", w.Code)
 	}
 	if got := ollamaCount(t, m, "start", "refused"); got != "1" {
 		t.Fatalf("a refused start with no session counted %s", got)
 	}
-	if w := callFrom(t, s, fromHost, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusOK {
+	if w := callWho(t, s, admin, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusOK {
 		t.Fatalf("start: %d %s", w.Code, w.Body.String())
 	}
 	if got := ollamaCount(t, m, "start", "ok"); got != "1" {
 		t.Fatalf("a start with no session counted %s", got)
 	}
-	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one"}`))
-	turnsEnded(t, st, id, 1)
-	if w := callFrom(t, s, fromHost, "POST", "/v1/ollama/pull", `{"provider":"olm","session_id":"`+id+`"}`); w.Code != http.StatusOK {
+	id := adminSession(t, s, st)
+	if w := callWho(t, s, admin, "POST", "/v1/ollama/pull", `{"provider":"olm","session_id":"`+id+`"}`); w.Code != http.StatusOK {
 		t.Fatalf("pull: %d %s", w.Code, w.Body.String())
 	}
 	if got := ollamaCount(t, m, "pull", "ok"); got != "1" {

@@ -215,7 +215,7 @@ not serve it, and nothing is shown.
 interface OllamaProblem {
   kind: "not_installed" | "not_running" | "not_pulled" | "port_busy" | "not_ready" | "start_failed"
       | "install_failed" | "no_network" | "disk_short" | "pull_failed" | "model_not_found"
-      | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "needs_terminal" | "manual_steps";
+      | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "not_ollama" | "manual_steps";
   message: string;      // one plain sentence
   steps: string[];      // numbered manual steps, in order: commands or sentences
   retry: boolean;       // checking again may work once the steps are done
@@ -234,9 +234,9 @@ interface OllamaReport extends OllamaStatus {
   assist: "ask" | "local" | "off";  // model.ollama.assist
   can_act: boolean;                 // the next step may be offered
   start_always: boolean;            // the person said "always start"
-  start?: { command: string; log?: string };
-  install?: { kind: "run" | "open" | "script" | "manual"; command: string; source: string;
-              size?: string; steps?: string[]; needs_terminal?: boolean };
+  start?: { command: string; log?: string; program?: string; app_binds?: boolean };
+  install?: { kind: "run" | "open" | "manual"; command: string; source: string;
+              size?: string; steps?: string[] };
   pull?: { command: string; source: string; bytes: number; size_known: boolean;
            disk_free?: number; mem_total?: number; ram_needed_gb?: number; ram_estimate?: boolean;
            warnings?: string[]; smaller?: string };
@@ -249,7 +249,7 @@ interface OllamaReport extends OllamaStatus {
 |---|---|
 | `_abhed/ollama/status` | `{sessionId, provider?}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only; asks the registry or download host for a size only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
 | `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?}, status: OllamaStatus}`, or `{status}` when it was already running. `always` keeps "always start without asking" (only after the person ticked it). Recorded `ollama.start` |
-| `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs the Linux install script (`needs_terminal`), never `sudo` (`manual_steps`). Recorded `ollama.install` |
+| `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs `sudo`, nor the official Linux install script, which does: both are `manual_steps`, printed with their source. Recorded `ollama.install` |
 | `_abhed/ollama/pull` | `{sessionId, provider?, pullId}` → `{status}` when it ends ready. While it runs, notifications `_abhed/ollama/progress {sessionId, pullId, status, completed?, total?}`. Disk short, model not in the registry or no network fail before any download. Recorded `ollama.pull` |
 | `_abhed/ollama/cancel` | `{pullId}` → `{cancelled: boolean}`; the pull's reply is then -32000 with `kind: "cancelled"`. Ollama keeps what it fetched |
 | `_abhed/ollama/forget` | `{}` → `{}`: forget "always start" |
@@ -257,7 +257,7 @@ interface OllamaReport extends OllamaStatus {
 **Errors.** A refusal by configuration or place (`assist_off`, `not_admin`,
 `in_agent`, `remote`) is -32001; a failure (`start_failed`, `not_ready`,
 `port_busy`, `install_failed`, `pull_failed`, `disk_short`, `no_network`,
-`model_not_found`, `cancelled`, `needs_terminal`, `manual_steps`) is
+`model_not_found`, `cancelled`, `manual_steps`, and `not_ollama` for a pull asked of a server that answers only the OpenAI API) is
 -32000. Either way `data` is `{problem: OllamaProblem, status:
 OllamaStatus}`; Studio shows `problem.message`, the numbered `problem.steps`
 and a *Check again* button. A provider Ollama does not serve, or not
@@ -268,13 +268,16 @@ configured, is -32602.
 widening choice). Before `install` and `pull`, a modal every time showing the
 exact `command`, `source` and size (`install.size`, or `pull.bytes` with
 `pull.warnings` and `pull.smaller`), default No. A *Stop* button sends
-`_abhed/ollama/cancel`. A `needs_terminal` or `manual_steps` answer shows the
-steps; Studio may open an Abhed terminal (§7.1) for the person to run
-`abhed ollama check` themselves. Nothing is sent without a click (§2.2).
+`_abhed/ollama/cancel`. A `manual_steps` answer shows the steps for the
+person to run in their own terminal, outside Abhed. Not in the sandboxed
+Abhed terminal (§7.1): there `abhed ollama check` is refused as running
+inside an agent's command, and the sandbox could not install anyway.
+Nothing is sent without a click (§2.2). When `start.app_binds` is set, the
+modal says the app listens where its own settings say.
 
 | | |
 |---|---|
-| Security | The engine acts only on a loopback Ollama, as the engine's user, never with `sudo`, and binds a server it starts to `127.0.0.1`. `model.ollama.assist` (managed-lockable) is applied whatever Studio sends; inside an agent's command every action is refused. No tool exposes any of this, so the agent cannot start, install or pull. A server it started keeps running when the engine exits. Every attempt and outcome is recorded with `by: "user"` and `surface: "acp"`. |
+| Security | The engine acts only on a loopback Ollama, as the engine's user with a minimal environment, never with `sudo`. A server it starts with `ollama serve` (always, when the program is found) is bound to `127.0.0.1`; the macOS app, opened by its path only when the program is missing, binds where its own settings say, which the engine does not control. `model.ollama.assist` (managed-lockable) is applied whatever Studio sends; inside an agent's command every action is refused. No tool exposes any of this, so the agent cannot start, install or pull. A server it started keeps running when the engine exits. Every attempt and outcome is recorded with `by: "user"` and `surface: "acp"`. |
 
 ### 3.3 Slash commands
 

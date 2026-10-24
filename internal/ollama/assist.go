@@ -74,11 +74,15 @@ func (a Assist) May(op string, t Target, st Status) *Problem {
 	case !t.Loopback:
 		return &Problem{Kind: KindRemote, Message: t.API + " is on another machine; Abhed acts only on this one.", Steps: steps, Retry: true}
 	case !a.Admin:
-		return &Problem{Kind: KindNotAdmin, Message: "Only an administrator of this server can start, install or download Ollama on it.", Steps: append([]string{"Ask an administrator of this server to do the steps below, or to choose the model once in the workbench"}, steps...), Retry: true}
+		return &Problem{Kind: KindNotAdmin, Message: "Only a signed-in administrator of this server can start, install or download Ollama on it.",
+			Steps: append([]string{"On the server's host, in a terminal: abhed ollama check " + t.Provider + "   (it shows each step and asks first), or do the steps below there"}, steps...), Retry: true}
 	case a.Mode == ModeOff:
 		return &Problem{Kind: KindAssistOff, Message: "Abhed is set not to start, install or download Ollama here (model.ollama.assist is off).", Steps: steps, Retry: true}
 	case a.Mode == ModeLocal && op != OpStart:
 		return &Problem{Kind: KindAssistOff, Message: "Abhed is set not to install or download anything here (model.ollama.assist is local).", Steps: steps, Retry: true}
+	case op == OpPull && st.Running && st.Version == "":
+		// It answers the OpenAI API but not Ollama's own, so it may not be Ollama.
+		return &Problem{Kind: KindNotOllama, Message: "The server at " + t.API + " answers the OpenAI API but not Ollama's own, so Abhed will not ask it to download anything.", Steps: steps, Retry: true}
 	}
 	return nil
 }
@@ -109,18 +113,25 @@ func outcomeOf(p *Problem) string {
 		return agent.OllamaOK
 	case p.Kind == KindCancelled:
 		return agent.OllamaCancelled
-	case p.Kind == KindNeedsTerminal || p.Kind == KindManual:
+	case p.Kind == KindManual:
 		return agent.OllamaManual
 	}
 	return agent.OllamaFailed
 }
 
 // Start starts the server for t, after the person agreed (consent is
-// asked or always), and records the attempt.
+// asked or always), and records the attempt. Starts of one target are
+// serialized; one that finds the server already answering starts nothing.
 func (a Assist) Start(ctx context.Context, t Target, st Status, consent string) (Started, *Problem) {
 	if p := a.May(OpStart, t, st); p != nil {
 		a.Note(OpStart, agent.OllamaRefused, t, p)
 		return Started{}, p
+	}
+	lock := startLock(t.API)
+	lock.Lock()
+	defer lock.Unlock()
+	if v, err := a.Env.version(ctx, t); err == nil {
+		return Started{Version: v}, nil // another request started it
 	}
 	ev := a.action(OpStart, "", t)
 	ev.Consent = consent
@@ -140,14 +151,14 @@ func (a Assist) Start(ctx context.Context, t Target, st Status, consent string) 
 }
 
 // Install runs plan after the person agreed this time, and records it.
-func (a Assist) Install(ctx context.Context, t Target, st Status, plan InstallPlan, terminal bool, stdin io.Reader, stdout, stderr io.Writer) *Problem {
+func (a Assist) Install(ctx context.Context, t Target, st Status, plan InstallPlan, stdin io.Reader, stdout, stderr io.Writer) *Problem {
 	if p := a.May(OpInstall, t, st); p != nil {
 		a.Note(OpInstall, agent.OllamaRefused, t, p)
 		return p
 	}
 	ev := a.action(OpInstall, "", t)
 	ev.Consent, ev.Command, ev.Source = "asked", plan.Display, plan.Source
-	p := a.Env.Install(ctx, plan, terminal, stdin, stdout, stderr)
+	p := a.Env.Install(ctx, plan, stdin, stdout, stderr)
 	ev.Outcome = outcomeOf(p)
 	if p == nil && plan.Kind == InstallOpen {
 		ev.Outcome = agent.OllamaManual
@@ -177,17 +188,20 @@ func (a Assist) Pull(ctx context.Context, t Target, st Status, fit Fit, progress
 	return p
 }
 
-// consent is the person's standing choice, kept in StateDir.
+// consent is the person's standing choice, kept in StateDir, for one program.
 type consent struct {
-	Start string    `json:"start,omitempty"` // always
-	At    time.Time `json:"at,omitzero"`
+	Start string `json:"start,omitempty"` // always
+	// Program is the resolved path the choice was made for; a different
+	// program on PATH is asked about again.
+	Program string    `json:"program,omitempty"`
+	At      time.Time `json:"at,omitzero"`
 }
 
 func (e Env) consentFile() string { return filepath.Join(e.StateDir, "ollama.json") }
 
-// StartAlways reports whether the person said to start the server without asking.
-func (e Env) StartAlways() bool {
-	if e.StateDir == "" {
+// StartAlways reports whether the person said to start program without asking.
+func (e Env) StartAlways(program string) bool {
+	if e.StateDir == "" || program == "" {
 		return false
 	}
 	b, err := os.ReadFile(e.consentFile())
@@ -195,11 +209,12 @@ func (e Env) StartAlways() bool {
 		return false
 	}
 	var c consent
-	return json.Unmarshal(b, &c) == nil && c.Start == "always"
+	return json.Unmarshal(b, &c) == nil && c.Start == "always" && c.Program == program
 }
 
-// SetStartAlways keeps or forgets the choice to start without asking.
-func (e Env) SetStartAlways(on bool) error {
+// SetStartAlways keeps the choice to start program without asking, or with
+// on false forgets any such choice.
+func (e Env) SetStartAlways(on bool, program string) error {
 	if e.StateDir == "" {
 		return errors.New("there is no state folder to keep the choice in")
 	}
@@ -210,10 +225,13 @@ func (e Env) SetStartAlways(on bool) error {
 		}
 		return err
 	}
+	if program == "" {
+		return errors.New("there is no program to keep the choice for")
+	}
 	if err := os.MkdirAll(e.StateDir, 0o700); err != nil {
 		return err
 	}
-	b, _ := json.Marshal(consent{Start: "always", At: time.Now().UTC()})
+	b, _ := json.Marshal(consent{Start: "always", Program: program, At: time.Now().UTC()})
 	tmp := e.consentFile() + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err

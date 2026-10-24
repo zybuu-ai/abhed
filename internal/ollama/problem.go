@@ -24,7 +24,7 @@ const (
 	KindNotAdmin      = "not_admin"
 	KindInAgent       = "in_agent"
 	KindCancelled     = "cancelled"
-	KindNeedsTerminal = "needs_terminal"
+	KindNotOllama     = "not_ollama"
 	KindManual        = "manual_steps"
 )
 

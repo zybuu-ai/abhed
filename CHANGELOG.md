@@ -143,10 +143,15 @@ All notable changes to Abhed are recorded here. The format follows
   forget` takes back), and installing Ollama or pulling the model (asked
   every time, showing the exact command, its source and its size, with free
   disk checked and a warning and a smaller suggestion when memory is short).
-  Nothing is installed or downloaded without a yes, nothing runs with `sudo`,
-  a started server is bound to `127.0.0.1` and is not stopped when Abhed
-  exits. `model.ollama.assist` (`ask`, `local`, `off`) narrows it, and a
-  managed file holds it; on `abhed serve` only an administrator may act; the
+  Nothing is installed or downloaded without a yes. What Abhed runs never
+  uses `sudo`, and it never runs the official Linux install script, which
+  does: it prints it, with its source, for you to run. `ollama serve` is
+  started bound to `127.0.0.1` with a minimal environment and is not stopped
+  when Abhed exits; the macOS app, opened only when the `ollama` program is
+  missing, binds where its own settings say. `model.ollama.assist` (`ask`, `local`, `off`) narrows it, and a
+  managed file holds it; on `abhed serve` only a signed-in administrator may
+  act, and where nobody signs in nobody may; `abhed ollama check` offers
+  steps only at a terminal; the
   agent cannot reach it. Each attempt is recorded as `ollama.start`,
   `ollama.install` or `ollama.pull`, mapped in the OCSF export, shown in
   HawkEYE, and counted in `abhed_ollama_actions_total`. New: `abhed ollama

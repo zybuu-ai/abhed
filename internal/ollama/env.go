@@ -53,8 +53,11 @@ type Env struct {
 	// Environ is the environment a started or installing program inherits.
 	Environ func() []string
 	// Launch starts a program detached from Abhed: its own process group,
-	// output to log. It returns the process id.
-	Launch func(path string, args, env []string, log *os.File) (int, error)
+	// output to log. It returns the process id and a channel that receives
+	// how it exited.
+	Launch func(path string, args, env []string, log *os.File) (int, <-chan error, error)
+	// Listening reports whether anything accepts a TCP connection at addr.
+	Listening func(ctx context.Context, addr string) bool
 	// Run runs a program to its end, for an install.
 	Run func(ctx context.Context, path string, args []string, env []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
@@ -90,6 +93,7 @@ func DefaultEnv() Env {
 		Environ:   os.Environ,
 		Launch:    launch,
 		Run:       run,
+		Listening: dialable,
 	}.underTest()
 }
 
@@ -100,7 +104,8 @@ func (e Env) underTest() Env {
 	}
 	e.AppPath = ""
 	e.LookPath = func(name string) (string, error) { return "", errUnderTest }
-	e.Launch = func(string, []string, []string, *os.File) (int, error) { return 0, errUnderTest }
+	e.Launch = func(string, []string, []string, *os.File) (int, <-chan error, error) { return 0, nil, errUnderTest }
+	e.Listening = func(context.Context, string) bool { return false }
 	e.Run = func(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error {
 		return errUnderTest
 	}
@@ -328,8 +333,16 @@ func (e Env) web() *http.Client {
 
 // listening reports whether anything accepts a connection at the target.
 func (e Env) listening(ctx context.Context, t Target) bool {
+	if e.Listening == nil {
+		return false
+	}
+	return e.Listening(ctx, net.JoinHostPort(strings.Trim(t.Host, "[]"), t.Port))
+}
+
+// dialable dials addr once, briefly.
+func dialable(ctx context.Context, addr string) bool {
 	d := net.Dialer{Timeout: 500 * time.Millisecond}
-	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(strings.Trim(t.Host, "[]"), t.Port))
+	c, err := d.DialContext(ctx, "tcp", addr)
 	if c != nil {
 		_ = c.Close()
 	}

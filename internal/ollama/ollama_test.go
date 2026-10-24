@@ -133,6 +133,7 @@ func testEnv(t *testing.T, bin string) Env {
 		Environ:   func() []string { return []string{"PATH=" + bin + ":/usr/bin:/bin", "OLLAMA_HOST=0.0.0.0:11434"} },
 		Launch:    launch,
 		Run:       run,
+		Listening: dialable,
 	}
 }
 
@@ -145,7 +146,7 @@ func TestDefaultEnvUnderTestRunsNothing(t *testing.T) {
 	if _, err := e.LookPath("ollama"); err == nil {
 		t.Fatal("a test found the real ollama")
 	}
-	if _, err := e.Launch("/bin/sh", nil, nil, nil); err == nil {
+	if _, _, err := e.Launch("/bin/sh", nil, nil, nil); err == nil {
 		t.Fatal("a test could launch a program")
 	}
 	if err := e.Run(context.Background(), "/bin/sh", nil, nil, nil, nil, nil); err == nil {
@@ -156,6 +157,9 @@ func TestDefaultEnvUnderTestRunsNothing(t *testing.T) {
 	}
 	if e.AppPath != "" {
 		t.Fatal("a test looks for the macOS app")
+	}
+	if e.Listening(context.Background(), "127.0.0.1:11434") {
+		t.Fatal("a test probed a real port")
 	}
 }
 
@@ -399,7 +403,10 @@ func TestStartNotReadyAndPortBusy(t *testing.T) {
 	killPID(t, s.PID)
 }
 
-func TestPlanStartPrefersTheMacAppOnlyForTheDefaultPort(t *testing.T) {
+// With the ollama program present it is always `ollama serve` with
+// OLLAMA_HOST forced, on macOS too; the app alone is opened by its path, and
+// only for the default port it listens on.
+func TestPlanStartUsesServeWheneverTheProgramIsThere(t *testing.T) {
 	bin := t.TempDir()
 	fakeBin(t, bin, "open", "")
 	env := testEnv(t, bin)
@@ -407,13 +414,103 @@ func TestPlanStartPrefersTheMacAppOnlyForTheDefaultPort(t *testing.T) {
 	def, _ := Resolve("l", "ollama", "http://127.0.0.1:11434/v1", "m", "")
 	st := Status{Target: def, Installed: true, App: "/Applications/Ollama.app", Binary: "/usr/local/bin/ollama"}
 	plan, p := env.PlanStart(def, st)
-	if p != nil || plan.Display != "open -a Ollama" {
-		t.Fatalf("default port on macOS: %+v %v", plan, p)
+	if p != nil || plan.Display != "OLLAMA_HOST=127.0.0.1:11434 /usr/local/bin/ollama serve" || plan.AppBinds || plan.Program != "/usr/local/bin/ollama" {
+		t.Fatalf("macOS with the program: %+v %v", plan, p)
+	}
+	st.Binary = ""
+	if plan, p = env.PlanStart(def, st); p != nil || plan.Display != "open /Applications/Ollama.app" || !plan.AppBinds || plan.Program != "/Applications/Ollama.app" {
+		t.Fatalf("macOS with only the app: %+v %v", plan, p)
 	}
 	other, _ := Resolve("l", "ollama", "http://127.0.0.1:11500/v1", "m", "")
 	st.Target = other
-	if plan, _ = env.PlanStart(other, st); plan.Display != "OLLAMA_HOST=127.0.0.1:11500 /usr/local/bin/ollama serve" {
-		t.Fatalf("another port: %+v", plan)
+	if _, p = env.PlanStart(other, st); p == nil || p.Kind != KindStartFailed {
+		t.Fatalf("only the app, another port: %+v", p)
+	}
+}
+
+// A server that exits before it answers is reported at once, with its log.
+func TestStartReportsAnEarlyExit(t *testing.T) {
+	api := newFakeAPI(t)
+	bin := t.TempDir()
+	fakeBin(t, bin, "ollama", "echo 'error while loading shared libraries: libfoo.so'\nexit 127")
+	env := testEnv(t, bin)
+	env.ReadyWait = 20 * time.Second
+	tg := api.target("qwen3:8b")
+	st := Status{Target: tg, Installed: true, Binary: filepath.Join(bin, "ollama")}
+	plan, _ := env.PlanStart(tg, st)
+	began := time.Now()
+	_, p := env.Start(context.Background(), tg, st, plan)
+	if p == nil || p.Kind != KindStartFailed || !strings.Contains(p.Message, "libfoo.so") {
+		t.Fatalf("early exit: %+v", p)
+	}
+	if time.Since(began) > 10*time.Second {
+		t.Fatal("waited out the bound for a server that had exited")
+	}
+}
+
+// A started program gets a minimal environment: no keys, OLLAMA_HOST forced.
+func TestMinimalEnv(t *testing.T) {
+	got := strings.Join(MinimalEnv([]string{"PATH=/bin", "HOME=/h", "OPENAI_API_KEY=sk-x", "ABHED_DATABASE_URL=postgres://x",
+		"OLLAMA_HOST=0.0.0.0", "OLLAMA_MODELS=/m", "LC_ALL=C", "HOMEBREW_NO_ANALYTICS=1"}), " ")
+	if got != "PATH=/bin HOME=/h OLLAMA_MODELS=/m LC_ALL=C HOMEBREW_NO_ANALYTICS=1" {
+		t.Fatalf("env %q", got)
+	}
+}
+
+// Two starts of one target at once launch one server.
+func TestStartsAreSerialized(t *testing.T) {
+	api := newFakeAPI(t)
+	bin := t.TempDir()
+	fakeBin(t, bin, "ollama", "exit 0")
+	env := testEnv(t, bin)
+	var launches atomic.Int32
+	env.Launch = func(string, []string, []string, *os.File) (int, <-chan error, error) {
+		launches.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		api.up.Store(true)
+		return 1, nil, nil
+	}
+	tg := api.target("qwen3:8b")
+	st := Status{Target: tg, Installed: true, Binary: filepath.Join(bin, "ollama")}
+	a := Assist{Env: env, Mode: ModeAsk, Admin: true}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, p := a.Start(context.Background(), tg, st, "asked"); p != nil {
+				t.Errorf("start: %s", p.Text())
+			}
+		}()
+	}
+	wg.Wait()
+	if launches.Load() != 1 {
+		t.Fatalf("launched %d servers", launches.Load())
+	}
+}
+
+// A server that answers only the OpenAI API is never asked to pull.
+func TestNoPullOfferedWithoutOllamasOwnAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"data":[]}`)
+			return
+		}
+		if r.URL.Path == "/api/pull" {
+			t.Error("a pull reached a server that is not known to be Ollama")
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	env := testEnv(t, t.TempDir())
+	tg, _ := Resolve("p", "ollama", srv.URL+"/v1", "qwen3:8b", "")
+	a := Assist{Env: env, Mode: ModeAsk, Admin: true}
+	r := a.Report(context.Background(), tg)
+	if r.CanAct || r.Pull != nil || r.Refusal == nil || r.Refusal.Kind != KindNotOllama {
+		t.Fatalf("report %+v", r)
+	}
+	if p := a.Pull(context.Background(), tg, r.Status, Fit{}, nil); p == nil || p.Kind != KindNotOllama {
+		t.Fatalf("pull %+v", p)
 	}
 }
 
@@ -500,7 +597,7 @@ func TestPullIsCancellable(t *testing.T) {
 	a := Assist{Env: env, Mode: ModeAsk, Admin: true, Record: func(_ agent.EventType, ev agent.OllamaAction) { rec = append(rec, ev) }}
 	done := make(chan *Problem)
 	go func() {
-		done <- a.Pull(ctx, tg, Status{Target: tg, Running: true}, Fit{}, func(Progress) { cancel() })
+		done <- a.Pull(ctx, tg, Status{Target: tg, Running: true, Version: "0.40.10"}, Fit{}, func(Progress) { cancel() })
 	}()
 	select {
 	case p := <-done:
@@ -528,7 +625,7 @@ func TestPlanInstall(t *testing.T) {
 	}
 	os.Remove(filepath.Join(bin, "brew"))
 	env.GOOS = "linux"
-	if p := env.PlanInstall(); p.Kind != InstallScript || p.Display != ScriptCommand || !p.NeedsTerminal {
+	if p := env.PlanInstall(); p.Kind != InstallManual || p.Display != ScriptCommand || !strings.Contains(p.Manual[0], "runs sudo itself") {
 		t.Fatalf("linux: %+v", p)
 	}
 	_ = os.WriteFile(env.OSRelease, []byte("NAME=\"Arch Linux\"\nID=arch\n"), 0o644)
@@ -541,7 +638,7 @@ func TestPlanInstall(t *testing.T) {
 	}
 }
 
-func TestInstallRunsAsThePersonAndRefusesTheScriptWithoutATerminal(t *testing.T) {
+func TestInstallRunsAsThePersonAndNeverRunsTheScript(t *testing.T) {
 	bin := t.TempDir()
 	fakeBin(t, bin, "brew", "echo installed")
 	fakeBin(t, bin, "sh", "exit 0")
@@ -551,7 +648,7 @@ func TestInstallRunsAsThePersonAndRefusesTheScriptWithoutATerminal(t *testing.T)
 	var rec []agent.OllamaAction
 	a := Assist{Env: env, Mode: ModeAsk, Admin: true, Record: func(_ agent.EventType, ev agent.OllamaAction) { rec = append(rec, ev) }}
 	var out bytes.Buffer
-	if p := a.Install(context.Background(), tg, Status{Target: tg}, env.PlanInstall(), false, nil, &out, io.Discard); p != nil {
+	if p := a.Install(context.Background(), tg, Status{Target: tg}, env.PlanInstall(), nil, &out, io.Discard); p != nil {
 		t.Fatalf("brew: %s", p.Text())
 	}
 	calls, _ := os.ReadFile(filepath.Join(bin, "calls"))
@@ -565,14 +662,17 @@ func TestInstallRunsAsThePersonAndRefusesTheScriptWithoutATerminal(t *testing.T)
 	env.GOOS = "linux"
 	os.Remove(filepath.Join(bin, "brew"))
 	a.Env = env
-	if p := a.Install(context.Background(), tg, Status{Target: tg}, env.PlanInstall(), false, nil, io.Discard, io.Discard); p == nil || p.Kind != KindNeedsTerminal {
-		t.Fatalf("script without a terminal: %+v", p)
+	if p := a.Install(context.Background(), tg, Status{Target: tg}, env.PlanInstall(), nil, io.Discard, io.Discard); p == nil || p.Kind != KindManual {
+		t.Fatalf("the script plan: %+v", p)
+	}
+	if calls, _ := os.ReadFile(filepath.Join(bin, "calls")); strings.Contains(string(calls), "sh -c") {
+		t.Fatalf("the script ran: %q", calls)
 	}
 	if rec[1].Outcome != agent.OllamaManual {
 		t.Fatalf("recorded %+v", rec[1])
 	}
 	a.Mode = ModeLocal
-	if p := a.Install(context.Background(), tg, Status{Target: tg}, env.PlanInstall(), true, nil, io.Discard, io.Discard); p == nil || p.Kind != KindAssistOff {
+	if p := a.Install(context.Background(), tg, Status{Target: tg}, env.PlanInstall(), nil, io.Discard, io.Discard); p == nil || p.Kind != KindAssistOff {
 		t.Fatalf("local installs nothing: %+v", p)
 	}
 }
@@ -628,21 +728,24 @@ func TestReportAsksNothingOfTheNetworkWhenAssistIsOff(t *testing.T) {
 	}
 }
 
-func TestStartAlwaysIsRevocable(t *testing.T) {
+func TestStartAlwaysIsRevocableAndTiedToTheProgram(t *testing.T) {
 	env := testEnv(t, t.TempDir())
-	if env.StartAlways() {
+	if env.StartAlways("/usr/bin/ollama") {
 		t.Fatal("always before it was chosen")
 	}
-	if err := env.SetStartAlways(true); err != nil || !env.StartAlways() {
+	if err := env.SetStartAlways(true, "/usr/bin/ollama"); err != nil || !env.StartAlways("/usr/bin/ollama") {
 		t.Fatalf("set: %v", err)
+	}
+	if env.StartAlways("/tmp/ollama") {
+		t.Fatal("always covered another program")
 	}
 	if fi, _ := os.Stat(env.consentFile()); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", fi.Mode())
 	}
-	if err := env.SetStartAlways(false); err != nil || env.StartAlways() {
+	if err := env.SetStartAlways(false, ""); err != nil || env.StartAlways("/usr/bin/ollama") {
 		t.Fatalf("revoke: %v", err)
 	}
-	if err := env.SetStartAlways(false); err != nil {
+	if err := env.SetStartAlways(false, ""); err != nil {
 		t.Fatalf("revoking twice: %v", err)
 	}
 }

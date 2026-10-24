@@ -121,3 +121,17 @@ func TestStartRefusesARealLocalService(t *testing.T) {
 		}
 	}
 }
+
+// A provider of type ollama with no base_url resolves to Ollama's own port,
+// so a run that names one is refused like a literal 127.0.0.1:11434.
+func TestOllamaProviderWithNoBaseURLIsRefused(t *testing.T) {
+	if got := ollamaDefaultProvider(`{"model":{"providers":{"o":{"type":"ollama","model":"m"}}}}`); got != "o" {
+		t.Fatalf("not refused: %q", got)
+	}
+	for _, ok := range []string{`{"model":{"providers":{"o":{"type":"ollama","base_url":"http://127.0.0.1:9/v1"}}}}`,
+		`{"model":{"providers":{"x":{"type":"openai-compatible"}}}}`, `not json`} {
+		if got := ollamaDefaultProvider(ok); got != "" {
+			t.Errorf("%s refused as %q", ok, got)
+		}
+	}
+}
