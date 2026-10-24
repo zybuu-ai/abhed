@@ -388,12 +388,10 @@ func (s *Sink) catchUp() {
 		}
 		if err == nil {
 			var lines []Line
+			// A session the record no longer holds (a deleted one: no file
+			// locally, no rows in Postgres) reads as no lines, as one already
+			// caught up does; both stop counting as failing below.
 			lines, err = s.o.Read(id, cur)
-			if errors.Is(err, os.ErrNotExist) {
-				// A session the record no longer holds has nothing to write.
-				s.written([]string{id})
-				continue
-			}
 			if err == nil {
 				ok := s.write(lines, true)
 				if !ok && s.waiting() {
