@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -318,7 +319,28 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 				"Set storage.tenant to match the tenant your requests carry, or run a "+
 				"store per tenant", s.Tenant, p.tenant)
 	}
-	_, err := p.pool.Exec(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create session %s: %w", s.ID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// A subagent's row is made under its parent's append lock, which a delete
+	// of the parent's tree holds: it waits out a delete in progress and is
+	// then refused, or commits first and is found by the delete's re-read.
+	if s.ParentID != "" {
+		var deleted bool
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('events/' || $1, 0))`, s.ParentID); err != nil {
+			return fmt.Errorf("create session %s: %w", s.ID, err)
+		}
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND deleted_at IS NOT NULL)`,
+			s.ParentID).Scan(&deleted); err != nil {
+			return fmt.Errorf("create session %s: %w", s.ID, err)
+		}
+		if deleted {
+			return fmt.Errorf("create session %s under %s: %w", s.ID, s.ParentID, ErrSessionDeleted)
+		}
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO sessions (id, tenant_id, user_id, workspace, model,
 		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt,
 		                      node_id, node_seen_at)
@@ -327,6 +349,9 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 		s.ID, s.Tenant, s.User, s.Workspace, s.Model,
 		s.PromptHash, s.HarnessVersion, s.Mode, s.ParentID, s.StartedAt,
 		truncatePrompt(s.Prompt), s.Holder)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		// An id already taken is another session's record; writing into it would merge the two.
 		var pgErr *pgconn.PgError
@@ -1116,27 +1141,42 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 // commits. A caller can check the tree under the locks, then delete it with
 // DeleteSessionTx in the same tx.
 func (p *Postgres) LockSessionTree(ctx context.Context, tx pgx.Tx, root string) ([]string, error) {
-	rows, err := tx.Query(ctx, `
-		WITH RECURSIVE tree(id) AS (
-			SELECT id FROM sessions WHERE id = $1
-			UNION
-			SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
-		)
-		SELECT id FROM tree ORDER BY id`, root)
-	if err != nil {
-		return nil, fmt.Errorf("lock session %s: %w", root, err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("lock session %s: %w", root, err)
-	}
-	// The lock abhed_events_chain takes for each insert.
-	for _, id := range ids {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('events/' || $1, 0))`, id); err != nil {
-			return nil, fmt.Errorf("lock session %s: %w", id, err)
+	locked := map[string]bool{}
+	var ids []string
+	// Read again once the locks are held: a subagent made under a member
+	// while they were taken committed before its lock was granted here.
+	for {
+		rows, err := tx.Query(ctx, `
+			WITH RECURSIVE tree(id) AS (
+				SELECT id FROM sessions WHERE id = $1
+				UNION
+				SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
+			)
+			SELECT id FROM tree ORDER BY id`, root)
+		if err != nil {
+			return nil, fmt.Errorf("lock session %s: %w", root, err)
+		}
+		tree, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return nil, fmt.Errorf("lock session %s: %w", root, err)
+		}
+		grew := false
+		// The lock abhed_events_chain takes for each insert.
+		for _, id := range tree {
+			if locked[id] {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('events/' || $1, 0))`, id); err != nil {
+				return nil, fmt.Errorf("lock session %s: %w", id, err)
+			}
+			locked[id], grew = true, true
+			ids = append(ids, id)
+		}
+		if !grew {
+			slices.Sort(ids)
+			return ids, nil
 		}
 	}
-	return ids, nil
 }
 
 // DeleteSessionTx marks the sessions ids (a tree LockSessionTree gave)
