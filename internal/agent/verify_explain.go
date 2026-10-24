@@ -37,7 +37,7 @@ var (
 	judgeRe = regexp.MustCompile(`\b(issues?|problems?|bugs?|cause[sd]?|harmless|real|matters?|present|safe|unsafe|secure|insecure|security|leak\w*|outage|prod|production|stale|cached|regression|incident|vulnerab\w*|secrets?|sensitiv\w*|expos\w*|exploit\w*|bypass\w*|credentials?|passwords?|private|confidential|attack\w*|unauthori[sz]ed|authori[sz]\w*|permission\w*|committed|git|tests?|tested|correct|incorrect|fine|right|wrong|ok|okay|revoked|expired|rotated|stub|unused|example|bug-free|robust|intended|every case)\b`)
 	// verdictRe are judgements a verified claim must find in what it matched:
 	// "`Sum` is correct", "`API_KEY` is a placeholder".
-	verdictRe = regexp.MustCompile(`\b(correct|incorrect|fine|safe|unsafe|secure|insecure|harmless|placeholder|dummy|sandbox|fake|mock|valid|invalid|sensitive|secret|exposed|exploitable|bypassable|real|revoked|expired|rotated|stub|unused|example|test value|bug-free|robust|as intended|every case)\b`)
+	verdictRe = regexp.MustCompile(`\b(correct|incorrect|fine|safe|unsafe|secure|insecure|harmless|placeholder|dummy|sandbox|fake|mock|valid|invalid|sensitive|secret|exposed|exploitable|bypassable|real|revoked|expired|rotated|stub|unused|example|test value|bug-free|robust|as intended|every case|protected|guarded|restricted|authenticated|locked)\b`)
 	// secretLineRe is a line that sets or shows a credential.
 	secretLineRe = regexp.MustCompile(`(?i)(key|secret|token|passw|credential|private|auth|bearer)\w*\s*[:=]|\b(sk|pk|rk)[-_](live|test|prod)?|akia[0-9a-z]{8}|gh[pousr]_|xox[abprs]-|-----begin`)
 	// codeTokenRe splits a code span into its words.
@@ -94,7 +94,8 @@ func explains(ix *recordIndex, c Claim) bool {
 	// An event (something done or changed) is no explanation, but for a few
 	// participles that say what code does, and what a "not ... yet" denies.
 	for _, w := range eventWords(stripCodeNeg(normText(text))) {
-		if !codeParticiple[w] {
+		// "before adding it": a step of the code, said as what comes first.
+		if !codeParticiple[w] && !strings.HasSuffix(w, "ing") {
 			return false
 		}
 	}

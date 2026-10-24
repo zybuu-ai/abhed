@@ -105,6 +105,7 @@ type obsRec struct {
 	command string // bash's command
 	path    string // a file tool's path
 	args    string // every string argument, decoded
+	argMap  map[string]string
 	content string
 	exit    *int
 	isError bool
@@ -233,7 +234,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				Path    string `json:"path"`
 			}
 			_ = json.Unmarshal(r.a.Args, &args)
-			rec.command, rec.path, rec.args = args.Command, args.Path, argText(r.a.Args)
+			rec.command, rec.path, rec.args, rec.argMap = args.Command, args.Path, argText(r.a.Args), argMap(r.a.Args)
 			var line lineFacts
 			if o.Tool == "bash" || o.Tool == "ssh" {
 				// The folder the bash tool ran the command in, as the record
@@ -419,6 +420,7 @@ type finding struct {
 	unit     string   // the unit or key a count or keyed finding is about
 	said     []string // the outcome, action or state words of a count finding
 	call     bool     // matched in the record's calls, which can show an event
+	kind     string   // for a call match: "change", "run" or "look"
 }
 
 // checkClaims checks each claim against the record. Claims from the answer
@@ -438,6 +440,36 @@ func checkClaims(env checkEnv, claims []Claim) ([]ClaimVerdict, *recordIndex) {
 // checkOne checks a claim. One that says a thing did not happen, or is not
 // so, is never verified: output showing the thing does not show its absence.
 func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
+	v := checkWhole(env, ix, c)
+	// Each clause is judged on its own too, and the claim is verified only
+	// when every one is: "I read `sum.go` and inserted `continue`" needs the
+	// read and the change.
+	if v.Verdict == ClaimVerified && c.Quote == "" {
+		if parts := clauses(c.Text); len(parts) > 1 {
+			for _, p := range parts {
+				// A clause that says nothing about the work has nothing to show.
+				if !saysWork(p) {
+					continue
+				}
+				cv := checkWhole(env, ix, Claim{Text: p, Kind: c.Kind, Evidence: c.Evidence})
+				if cv.Verdict != ClaimVerified {
+					v.Verdict = ClaimUnverified
+					v.Reason = fmt.Sprintf("in %q: %s", clipRunes(p, 60), cv.Reason)
+					break
+				}
+			}
+		}
+	}
+	// Explaining what a read showed is shown apart, and only shown: it never
+	// makes an answer verified.
+	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
+		v.Explains = true
+	}
+	return v
+}
+
+// checkWhole checks a claim as one statement.
+func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	v := checkClaim(env, ix, c)
 	if v.Verdict == ClaimVerified && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
 		v.Verdict = ClaimUnverified
@@ -449,11 +481,6 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		if why := unsaid(ix, c, v); why != "" {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
-	}
-	// Explaining what a read showed is shown apart, and only shown: it never
-	// makes an answer verified.
-	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
-		v.Explains = true
 	}
 	return v
 }
@@ -468,7 +495,11 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	case KindObserved, KindDerived, KindKnowledge:
 	case "":
 		kind = KindObserved
-		if !f.any() && c.Quote == "" && len(c.Evidence) == 0 {
+		// A sentence that says something was done or changed is about the work
+		// even with nothing else in it; a participle alone ("a compiled
+		// language") is not.
+		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != ""
+		if !f.any() && !workEvent && c.Quote == "" && len(c.Evidence) == 0 {
 			kind = KindStatement
 		}
 	default:
@@ -580,12 +611,32 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if f.changed || f.changeWord || (f.deed || f.event != "") && !f.proof && !f.observe && !f.success && len(f.ran) == 0 && !f.negated {
-		// A change, in any wording, is read from the calls: by the file it
-		// names, or, naming none, by the code it names in what a change was
-		// given.
+	} else if (f.changed || f.changeWord || f.changeAct && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && !f.success && len(f.ran) == 0 && !f.negated {
+		// A change, in any wording, is read from the calls: by the change to
+		// the file it names, whose own changed text must hold the code it
+		// names; or, naming none, by a change whose text holds that code.
+		pathTok := map[string]bool{}
+		for _, p := range f.paths {
+			pathTok[normText(p)] = true
+		}
+		code := false
+		for _, t := range f.tokens {
+			code = code || !pathTok[normText(t)] && !pathTok[normText(rawPath(t))]
+		}
 		for _, p := range f.paths {
 			fd := ix.changedPath(p)
+			fd.kind = "change"
+			if fd.out == matched && code {
+				nfd, put := ix.changeNamed(f, ix.inWorkspace(p))
+				if nfd.out != matched {
+					fd = nfd
+				} else {
+					for _, t := range f.tokens {
+						atLine[normText(t)] = true
+					}
+					changedText = put
+				}
+			}
 			fd.call = fd.out == matched
 			findings = append(findings, fd)
 			if fd.out == matched {
@@ -593,10 +644,13 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			}
 		}
 		if len(f.paths) == 0 {
-			fd, tok, put := ix.changeNamed(f)
+			fd, put := ix.changeNamed(f, "")
+			fd.kind = "change"
 			findings = append(findings, fd)
 			if fd.out == matched {
-				atLine[normText(tok)] = true
+				for _, t := range f.tokens {
+					atLine[normText(t)] = true
+				}
 				changedText = put
 			}
 		}
@@ -604,10 +658,15 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	// What the agent says it looked at is read from its reads and searches.
 	if f.observe && !f.negated {
 		fd := ix.observed(f)
+		// A look shows only itself: never another event in the sentence.
+		fd.call, fd.kind = fd.out == matched, "look"
 		findings = append(findings, fd)
 		if fd.out == matched {
 			for _, p := range f.paths {
 				atLine[normText(p)] = true
+			}
+			for _, t := range f.tokens {
+				atLine[normText(t)] = true
 			}
 		}
 	}
@@ -618,7 +677,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	for _, cmd := range f.ran {
 		fd := ix.ranCommand(cmd)
-		fd.call = fd.out == matched
+		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
 		if fd.out == matched {
 			atLine[normText(cmd)] = true
@@ -658,14 +717,20 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		}
 	}
 	var unitFindings []finding
+	// A count said of a change is the change's: read from what it was given
+	// ("--replicas=3"), never from output after it.
+	cpool, ccited := pool, cited
+	if changedText != nil {
+		cpool, ccited = []*obsRec{{ev: changedText}}, false
+	}
 	for _, cf := range f.counted {
-		fd := ix.counted(pool, cf, cited)
+		fd := ix.counted(cpool, cf, ccited)
 		fd.unit, fd.said = cf.unit, closedOf(cf.quals)
 		unitFindings = append(unitFindings, fd)
 	}
 	keyedOK := map[string]bool{}
 	for _, kf := range f.keyed {
-		if fd, ok := ix.keyed(pool, kf, cited); ok {
+		if fd, ok := ix.keyed(cpool, kf, ccited); ok {
 			fd.unit = kf.unit
 			unitFindings = append(unitFindings, fd)
 			keyedOK[kf.n] = true
@@ -676,26 +741,36 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		if countedNumber(f.counted, n) || keyedOK[n] {
 			continue // judged with its unit above
 		}
-		if changedText != nil && changedText.numbers[n] {
-			continue // in what the change put in
+		if changedText != nil {
+			if !changedText.numbers[n] {
+				findings = append(findings, finding{out: missing, why: "the number " + n + " is not in what the change was given"})
+			}
+			continue
 		}
 		findings = append(findings, ix.number(pool, n, cited))
 	}
 	if f.success {
 		fd := ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited)
-		fd.call = fd.out == matched
+		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
 	}
 	// A sentence that reports an event is shown only by the calls: output
 	// matching its words is not enough.
 	if f.event != "" {
-		called := false
+		// Each kind of event the sentence reports needs a call of that kind:
+		// a run for a pass, a look for a look, a change for anything else.
+		have := map[string]bool{}
 		for _, fd := range findings {
-			called = called || fd.call && fd.out == matched
+			if fd.call && fd.out == matched {
+				have[fd.kind] = true
+			}
 		}
-		if !called {
-			findings = append(findings, finding{out: missing,
-				why: fmt.Sprintf("it says something happened (%q), which only the calls can show, and none is read as that", f.event)})
+		for _, k := range f.eventKinds {
+			if !have[k] {
+				findings = append(findings, finding{out: missing,
+					why: fmt.Sprintf("it says something happened (%q), which only the calls can show, and none is read as that", f.event)})
+				break
+			}
 		}
 	}
 	return findings

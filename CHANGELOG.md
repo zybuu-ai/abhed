@@ -363,43 +363,48 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 364 planted wrong claims none is shown as verified and 30 are
-  contradicted (all from cited, conflicting evidence), all 64 true controls
-  are verified, and none of the 145 true or neutral claims is contradicted;
-  the test holds those figures as a floor. A fact a cited result is silent
-  on leaves a statement unverified, never contradicted; counts are compared
-  by a fixed list of outcome, action and state words, so "3 replicas are
-  ready" needs output that says ready, a count after a `/` with any spacing
-  or an "of" in its clause (`0 / 3`, "2 of all the 5") and a count after a
-  negation in its clause carry no such word, and a narrowed count ("in the
-  auth package") is never contradicted by a whole run's; a statement giving
-  a unit or key a before and an after value is not contradicted when one is
-  shown, if both say the same of it; any pass said of tests, "9 tests
-  passed" and "9 passed, 3 failed" included, is verified only by a whole
-  test run that exited 0, whatever else the statement says ("fixed the
-  failing test; all 12 pass"), and one that says every test passed, in any
-  wording ("all 12", "12/12", "12 out of 12", "12 tests all passed", ", all
-  of them"), is contradicted by a cited failed run, while "in all", "after
-  all" and "each in under a second" are only counts; a bare "9 passed"
-  counts tests only from a test run; a test run given any variable but a
-  colour switch, or run through `pipenv run` or `hatch run`, is not a whole
-  run; a write or edit's own report is no evidence for its path; and a
-  statement about a file this session changed, or about any workspace file
-  after a call whose files cannot be told, other than that it changed, is
-  never verified by output naming it; a state, an outcome or a judgement
-  ("the hotfix is live", "`API_KEY` is a placeholder") the matched output
-  does not say is not verified; a sentence that reports an event, in any
-  wording or person (a past form or participle, "now", "new", a change
+  -v`): of 414 planted wrong claims none is shown as verified and 30 are
+  contradicted (all from cited, conflicting evidence), all 67 true controls
+  are verified, and none of the 152 true or neutral claims is contradicted;
+  the test holds those figures as a floor. Every clause of a statement is
+  judged on its own, and a lead-in ("In summary,", "Here is what I
+  changed:") is taken off and the rest checked. A fact a cited result is
+  silent on leaves a statement unverified, never contradicted; counts are
+  compared by a fixed list of outcome, action and state words, so "3
+  replicas are ready" needs output that says ready, a count after a `/` with
+  any spacing or an "of" in its clause (`0 / 3`, "2 of all the 5") and a
+  count after a negation in its clause carry no such word, and a narrowed
+  count ("in the auth package") is never contradicted by a whole run's; a
+  statement giving a unit or key a before and an after value is not
+  contradicted when one is shown, if both say the same of it; any pass said
+  of tests, "9 tests passed" and "9 passed, 3 failed" included, is verified
+  only by a whole test run that exited 0, whatever else the statement says
+  ("fixed the failing test; all 12 pass"), and one that says every test
+  passed, in any wording ("all 12", "12/12", "12 out of 12", "12 tests all
+  passed", ", all of them"), is contradicted by a cited failed run, while
+  "in all", "after all" and "each in under a second" are only counts; a bare
+  "9 passed" counts tests only from a test run; a test run given any
+  variable but a colour switch, or run through `pipenv run` or `hatch run`,
+  is not a whole run; a write or edit's own report is no evidence for its
+  path; and a statement about a file this session changed, or about any
+  workspace file after a call whose files cannot be told, other than that it
+  changed, is never verified by output naming it; a state, an outcome or a
+  judgement ("the hotfix is live", "`API_KEY` is a placeholder") the matched
+  output does not say is not verified; a sentence that reports an event, in
+  any wording or person (a past form or participle, "now", "new", a change
   noun), is shown only by the calls; a change that names no file is verified
   only by an edit, a write or a resource command given the code it names,
-  read the way the sentence says (added, removed) from the decoded
-  arguments, never by a memory note, a commit message or a formatter; what
-  the agent read or searched for is verified by those calls; and a sentence
-  that explains what a read or a search showed is drawn apart, as an
-  explanation, and left out of the unverified-work count, but changes no
-  outcome and no revision, so it can never make an answer verified. On a
-  line-by-line explanation of a function, the sentences counted as
-  unverified work went from 5 to the 2 that were about the work.
+  read the way the sentence says (added, removed) from the change's own
+  changed lines (an edit, `sed -i`, or a write against what the session last
+  read of the file), with any count it gives read from what the change was
+  given, never by a memory note, a commit message or a formatter; a change
+  that names a file is shown only by that file's change; and what the agent
+  read or searched for is verified by a call of its own for each path it
+  names; and a sentence that explains what a read or a search showed is
+  drawn apart, as an explanation, and left out of the unverified-work count,
+  but changes no outcome and no revision, so it can never make an answer
+  verified. On a line-by-line explanation of a function, the sentences
+  counted as unverified work went from 5 to the 2 that were about the work.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.
@@ -408,7 +413,8 @@ All notable changes to Abhed are recorded here. The format follows
   not change (`protect`). A run with a contract ends `completed` only when
   they hold and its statements are verified. It lives in configuration the
   agent cannot reach, and a required command runs only where policy would let
-  it run unasked.
+  it run unasked. In plan mode, which changes nothing, it neither runs nor
+  gates the answer.
 - Runbooks: a plan from plan mode can carry the exact calls it will make
   (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
   the policy and hashed when the plan is proposed, and you approve them once

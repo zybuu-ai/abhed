@@ -38,11 +38,15 @@ type facts struct {
 	// happened (verify_events.go); such a claim is shown only by the calls.
 	// observe: it says the agent looked at something; found, that it found
 	// something; dir is "add" or "remove" for a change that says which.
-	event          string
-	observe, found bool
-	dir            string
-	scope          []string // packages or folders a test claim names, such as internal/auth
-	ran            []string // commands the claim says were run
+	event                    string
+	observe, found, searched bool
+	dir                      string
+	// changeAct: it uses a verb of changing something, whatever the form;
+	// observeOnly: it says what was looked at and reports no other event.
+	changeAct, observeOnly bool
+	eventKinds             []string // the kinds of call its events need
+	scope                  []string // packages or folders a test claim names, such as internal/auth
+	ran                    []string // commands the claim says were run
 }
 
 type countFact struct {
@@ -219,6 +223,12 @@ func extractFacts(claim string) facts {
 	}
 	f.observe = observeRe.MatchString(normText(backtickRe.ReplaceAllString(text, " ")))
 	f.found = f.observe && strings.Contains(nlow, "found")
+	f.searched = f.observe && searchVerbRe.MatchString(normText(backtickRe.ReplaceAllString(text, " ")))
+	f.changeAct = changeActRe.MatchString(normText(backtickRe.ReplaceAllString(text, " ")))
+	if f.observe {
+		rest := observeChainRe.ReplaceAllString(observeRe.ReplaceAllString(normText(backtickRe.ReplaceAllString(text, " ")), " "), " ")
+		f.observeOnly = len(eventWords(rest)) == 0 && !saysDeed(rest) && !bareDeedRe.MatchString(rest)
+	}
 	f.proof = (f.deed || f.event != "") && !f.observe && proofRe.MatchString(nlow)
 	switch {
 	case removeRe.MatchString(normText(backtickRe.ReplaceAllString(text, " "))):
@@ -253,7 +263,7 @@ func extractFacts(claim string) facts {
 		if fl := fileLineRe.FindStringSubmatch(m[1]); fl != nil {
 			n, _ := strconv.Atoi(fl[2])
 			f.fileLines = append(f.fileLines, fileLine{path: fl[1], line: n})
-		} else if p := pathRe.FindString(m[1]); p == m[1] {
+		} else if p := pathRe.FindString(m[1]); p == m[1] && !isResource(p) {
 			f.paths = append(f.paths, rawPath(p))
 		}
 		return true
@@ -277,7 +287,7 @@ func extractFacts(claim string) facts {
 	cut(versionRe, func(m []string) bool { addLit(m[0]); return true })
 	cut(pathRe, func(m []string) bool {
 		p := strings.TrimRight(m[0], ".")
-		if !looksLikePath(p) {
+		if !looksLikePath(p) || isResource(p) {
 			return false
 		}
 		addLit(p)
@@ -390,6 +400,7 @@ func extractFacts(claim string) facts {
 			}
 		}
 	}
+	f.eventKinds = eventKinds(text, f)
 	return f
 }
 
@@ -414,6 +425,20 @@ func saysDeed(lower string) bool {
 		}
 	}
 	return false
+}
+
+// resourceRe is a cluster resource named kind/name ("deploy/checkout"),
+// which is no file.
+var resourceRe = regexp.MustCompile(`^(?:deploy|deployment|deployments|svc|service|services|pod|pods|po|sts|statefulset|statefulsets|ds|daemonset|daemonsets|cm|configmap|configmaps|secret|secrets|ns|namespace|job|jobs|cronjob|cronjobs|ing|ingress|rs|replicaset|hpa|pvc|pv|node|nodes|sa|serviceaccount)/[\w.\-]+$`)
+
+// isResource reports kind/name with no file ending.
+func isResource(p string) bool {
+	if !resourceRe.MatchString(p) {
+		return false
+	}
+	base := p[strings.LastIndex(p, "/")+1:]
+	dot := strings.LastIndex(base, ".")
+	return dot < 0 || !fileExts[strings.ToLower(base[dot+1:])]
 }
 
 // looksLikePath tells a file path from words joined by a slash, as in
@@ -886,8 +911,8 @@ func splitClaims(text string) []string {
 			t = strings.TrimSpace(strings.Join(strings.FieldsFunc(t, func(r rune) bool { return r == '|' }), " · "))
 		}
 		for _, s := range sentences(t) {
-			if keepClaim(s) {
-				out = append(out, s)
+			if c, ok := claimOf(s); ok {
+				out = append(out, c)
 			}
 		}
 	}
@@ -939,10 +964,42 @@ var (
 	adviceRe = regexp.MustCompile(`^(?:please |you (?:can|could|may|might|should|will need to)\b|i(?:'ll| will| can| could| would| suggest| recommend)\b|we(?:'ll| will| can| could| should)\b|consider|try|run|use|check|add|remove|make sure|ensure|install|set|open|restart|create|edit|replace|verify|review|apply|enable|disable|configure|deploy|commit|push|keep|avoid|see|look)\b`)
 )
 
-func keepClaim(s string) bool {
-	low := strings.ToLower(strings.TrimSpace(s))
-	if strings.HasSuffix(low, "?") || strings.HasSuffix(low, ":") || len(strings.Fields(low)) < 3 {
-		return false
+// leadRe is a lead-in that says nothing itself: "In summary,", "Note:",
+// "Here is what I changed:". It is taken off, and the rest is a claim.
+var leadRe = regexp.MustCompile(`^(?:in summary|in short|to summarize|to sum up|to recap|recap|summary|tl;?dr|overall|finally|also|so|note|notes|update|done|result|results|changes|here(?:'s| is| are) (?:what (?:i|we) (?:changed|did|found|ran)|the summary|a summary|what changed)|what (?:i|we) (?:changed|did))\s*[:,\-—]\s*`)
+
+// bareDoneRe is a sign-off that says only that the turn is over ("Done.",
+// "All done!"): it names nothing, and a contract, when there is one, is
+// what shows the work is.
+var bareDoneRe = regexp.MustCompile(`^(?:all |still |now |and )?(?:done|finished|complete|completed)(?:,? (?:really|now|then))?[.!]*$`)
+
+// claimOf is the claim a sentence makes, its lead-in taken off, or false
+// for one that makes none: a question, a lead line with nothing after it,
+// or a courtesy or a piece of advice that says nothing about the work (no
+// event, change, count, state, path or other fact).
+func claimOf(s string) (string, bool) {
+	t := strings.TrimSpace(s)
+	for {
+		m := leadRe.FindStringIndex(strings.ToLower(t))
+		if m == nil || m[1] >= len(t) {
+			break
+		}
+		t = strings.TrimSpace(t[m[1]:])
 	}
-	return !courtesyRe.MatchString(low) && !adviceRe.MatchString(low)
+	low := strings.ToLower(t)
+	if strings.HasSuffix(low, "?") || strings.HasSuffix(low, ":") || low == "" || bareDoneRe.MatchString(low) {
+		return "", false
+	}
+	if len(strings.Fields(low)) < 3 || courtesyRe.MatchString(low) || adviceRe.MatchString(low) {
+		if !saysWork(t) {
+			return "", false
+		}
+	}
+	return t, true
+}
+
+// saysWork reports a sentence with something in it about the work.
+func saysWork(s string) bool {
+	f := extractFacts(s)
+	return f.any() || f.changed || f.deed || f.event != "" || stateRe.MatchString(normText(s))
 }
