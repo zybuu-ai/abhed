@@ -397,6 +397,7 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 	dec.UseNumber()
 	_ = dec.Decode(&raw)
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
+	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
 	// A rule that does not parse is set aside here, so it cannot stop Abhed starting.
 	for key, list := range map[string]*[]string{"permissions.deny": &ws.Permissions.Deny, "permissions.ask": &ws.Permissions.Ask} {
 		var ok []string

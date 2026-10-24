@@ -666,16 +666,16 @@ func printNotInEffect(w io.Writer, cfg config.Config) bool {
 	return len(keys) > 0
 }
 
-// printUnknown lists the configuration's unknown keys and reports whether there were any.
+// printUnknown lists the configuration's repeated and unknown keys and reports whether there were any.
 func printUnknown(w io.Writer, cfg config.Config) bool {
-	for i, u := range cfg.Unknown {
+	for i, line := range cfg.Warnings() {
 		label := "            "
 		if i == 0 {
 			label = "config      "
 		}
-		fmt.Fprintf(w, "%s%s  ⚠\n", label, u)
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, line)
 	}
-	return len(cfg.Unknown) > 0
+	return len(cfg.Unknown)+len(cfg.Duplicates) > 0
 }
 
 // modelAwaitsTrust reports an untrusted workspace that sets the model while

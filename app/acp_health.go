@@ -47,6 +47,8 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 		return out
 	}
 	switch {
+	case len(cfg.Duplicates) > 0:
+		add("config", "Configuration", "warn", strings.Join(cfg.Warnings(), "\n"))
 	case len(cfg.Unknown) > 0:
 		add("config", "Configuration", "warn", fmt.Sprintf("%d setting(s) no part of Abhed reads", len(cfg.Unknown)))
 	default:
