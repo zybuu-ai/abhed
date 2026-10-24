@@ -562,8 +562,14 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	// A write or an edit reports the file it changed: whether a path was
 	// changed is the record's to say (changedPath), not that report's.
 	pathLit := map[string]bool{}
+	changedLit := map[string]string{}
 	for _, p := range f.paths {
 		pathLit[normText(p)] = true
+		// A statement about a file this session changed, other than that it
+		// was changed, is about its content, which no output naming it shows.
+		if !f.changed && ix.namedByChange(p) {
+			changedLit[normText(p)] = p
+		}
 	}
 	var notFileTools []*obsRec
 	for _, o := range pool {
@@ -574,6 +580,8 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	for _, lit := range f.literals {
 		switch {
 		case atLine[lit]:
+		case changedLit[lit] != "":
+			findings = append(findings, finding{out: missing, why: fmt.Sprintf("%s was changed in this session, and output naming it does not show what it holds", changedLit[lit])})
 		case pathLit[lit] && len(notFileTools) < len(pool):
 			fd := ix.literal(notFileTools, lit, false)
 			if fd.out != matched {
@@ -734,24 +742,31 @@ func (ix *recordIndex) number(pool []*obsRec, n string, cited bool) finding {
 }
 
 // counted checks a number with the word it counts, and with what it says of
-// it ("added 3 tests", "12 tests passed"). Output that counts the same unit
-// with the same word and another number, in what the claim cites,
-// contradicts it; a count of the unit that says something else is no
-// evidence either way.
+// it. A count that names an outcome, an action or a state ("12 tests
+// passed", "added 3 tests", "3 replicas are ready") is met only by one that
+// names it too, and contradicted only by a cited count of the same unit that
+// names it with another number, and never when words after the claim's
+// count narrow it ("3 tests in the auth package"). A plain count is met by
+// any count of the unit with its number, and contradicted by none.
 func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding {
 	label := cf.n + " " + cf.unit
 	if cf.unit == "%" {
 		label = cf.n + "%"
 	}
+	said := closedOf(cf.quals)
 	var other, elsewise *obsRec
 	var otherAt, elseAt countAt
 	for i := len(pool) - 1; i >= 0; i-- {
 		e := pool[i].evidence()
 		for _, at := range e.counts[cf.unit] {
+			same := sharesQual(said, at.quals)
+			if len(said) == 0 {
+				same = len(cf.quals) == 0 || len(at.quals) == 0 || sharesQual(cf.quals, at.quals)
+			}
 			switch {
-			case at.n == cf.n && (len(cf.quals) == 0 || len(at.quals) == 0 || sharesQual(cf.quals, at.quals)):
+			case at.n == cf.n && same:
 				return finding{out: matched, what: label + " in #" + itoa(pool[i].seq), seq: pool[i].seq, pooled: true}
-			case at.n != cf.n && samePhrase(cf.quals, at.quals) && other == nil:
+			case at.n != cf.n && len(said) > 0 && same && !cf.scoped && other == nil:
 				other, otherAt = pool[i], at
 			case elsewise == nil:
 				elsewise, elseAt = pool[i], at
@@ -760,7 +775,7 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 	}
 	if other != nil && cited {
 		return finding{out: conflicted, seq: other.seq,
-			why:      fmt.Sprintf("it says %s; the cited #%d says %s", label, other.seq, otherAt.excerpt),
+			why:      fmt.Sprintf("it says %s %s; the cited #%d says %s", label, strings.Join(said, " "), other.seq, otherAt.excerpt),
 			conflict: &Conflict{Seq: other.seq, CallID: other.callID, Excerpt: otherAt.excerpt}}
 	}
 	if other != nil {
@@ -770,6 +785,10 @@ func (ix *recordIndex) counted(pool []*obsRec, cf countFact, cited bool) finding
 	// elsewhere in it is not the claim's.
 	if elsewise != nil {
 		return finding{out: missing, why: fmt.Sprintf("it says %s; #%d counts it otherwise: %s", label, elsewise.seq, elseAt.excerpt)}
+	}
+	// A count that says what of the unit needs output that says it too.
+	if len(said) > 0 {
+		return finding{out: missing, why: fmt.Sprintf("no result counts %s %s", label, strings.Join(said, " "))}
 	}
 	// The output does not count that thing: the bare number decides.
 	return ix.number(pool, cf.n, cited)
@@ -793,8 +812,13 @@ func (ix *recordIndex) keyed(pool []*obsRec, kf countFact, cited bool) (finding,
 	if other == nil {
 		return finding{}, false
 	}
-	// Uncited, the other label may be another thing's (another server's port).
-	if !cited {
+	// Uncited, the other label may be another thing's (another server's
+	// port); cited, so may it be when the claim's number is there too.
+	held := false
+	for _, o := range pool {
+		held = held || o.evidence().numbers[kf.n]
+	}
+	if !cited || held {
 		return finding{out: missing, why: fmt.Sprintf("it says %s %s; #%d says %s", kf.unit, kf.n, other.seq, otherAt.excerpt)}, true
 	}
 	return finding{out: conflicted, seq: other.seq,
@@ -927,6 +951,30 @@ func (ix *recordIndex) changedPath(p string) finding {
 		return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, hit.seq), seq: hit.seq}
 	}
 	return finding{out: missing, why: "no call this session made is read as a change to " + p}
+}
+
+// namedByChange reports a call of the agent's, failed or not, that may have
+// changed p or a folder holding it, as far as the calls name their files.
+func (ix *recordIndex) namedByChange(p string) bool {
+	want := ix.inWorkspace(p)
+	if want == "" {
+		return false
+	}
+	for _, m := range ix.mutations {
+		if m.person {
+			continue
+		}
+		for _, t := range append(append([]string(nil), m.targets...), m.covers...) {
+			if t == "" {
+				continue
+			}
+			t = filepath.Clean(t)
+			if t == want || strings.HasPrefix(want, t+"/") || strings.HasPrefix(t, want+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // inWorkspace is where a path a claim names is: as written when absolute,
