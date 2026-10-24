@@ -465,3 +465,122 @@ func (b *badCursors) Load(ids []string) (map[string]ocsf.Cursor, bool, error) {
 	}
 	return b.memCursors.Load(ids)
 }
+
+// scriptedCursors are memCursors whose Lock answers ErrStandby the next
+// standby times, and whose Load fails for a session the next failLoad times.
+type scriptedCursors struct {
+	memCursors
+	standby  atomic.Int32
+	failFor  string
+	failLoad atomic.Int32
+}
+
+func (c *scriptedCursors) Lock() (func(), error) {
+	if c.standby.Load() > 0 {
+		c.standby.Add(-1)
+		return nil, ocsf.ErrStandby
+	}
+	return c.memCursors.Lock()
+}
+
+func (c *scriptedCursors) Load(ids []string) (map[string]ocsf.Cursor, bool, error) {
+	for _, id := range ids {
+		if id == c.failFor && c.failLoad.Load() > 0 {
+			c.failLoad.Add(-1)
+			return nil, false, errors.New("the cursor cannot be read")
+		}
+	}
+	return c.memCursors.Load(ids)
+}
+
+// A sink refused the lock while writing stands by: when it next has the
+// lock its scan looks at every session, not only those written lately, and
+// what it writes takes the provider from the cursor.
+func TestStandbyInWriteMeansAFullScanNext(t *testing.T) {
+	st := agent.NewMemStore()
+	cur := &scriptedCursors{}
+	cur.rows = map[string]ocsf.Cursor{}
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	ev := func(session string, seq int64, typ agent.EventType, payload string) agent.Event {
+		return agent.Event{ID: fmt.Sprintf("%s-%d", session, seq), SessionID: session, Seq: seq, Type: typ,
+			Payload: []byte(payload), Actor: agent.ActorSystem, Trust: agent.Trusted, CreatedAt: at}
+	}
+	_ = st.Append(ev("s-2", 1, agent.EvSessionStarted, `{"provider":"first","model":"m"}`))
+	// Another writer wrote s-2's first line, and the provider it then had.
+	cur.rows["s-2"] = ocsf.Cursor{Seq: 1, Provider: "second", Primed: true}
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: path, Cursors: cur, Poll: 300 * time.Millisecond,
+		Read: func(id string, from ocsf.Cursor) ([]ocsf.Line, error) {
+			evs, err := st.Since(id, from.Seq)
+			out := make([]ocsf.Line, len(evs))
+			for i, e := range evs {
+				out[i] = ocsf.Line{Event: e}
+			}
+			return out, err
+		},
+		Sessions: func() (map[string]ocsf.Cursor, error) {
+			out := map[string]ocsf.Cursor{}
+			for id, seq := range st.Ends() {
+				out[id] = ocsf.Cursor{Seq: seq}
+			}
+			return out, nil
+		},
+		// A poll by a writer that never stood by asks only for what changed lately: nothing here.
+		Changed: func() (map[string]ocsf.Cursor, error) { return map[string]ocsf.Cursor{}, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	// s-2 grows where no recent list shows it.
+	_ = st.Append(ev("s-2", 2, agent.EvModelCall, `{"model":"m","tokens_in":1,"tokens_out":1}`))
+	// The next lock, taken by this write, is refused.
+	cur.standby.Store(1)
+	sink.Add(ocsf.Line{Event: ev("s-1", 1, agent.EvUserMessage, `{"text":"m"}`)})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(path)
+		if strings.Contains(string(data), `"correlation_uid":"s-2"`) {
+			if !strings.Contains(string(data), `"ai_provider":"second"`) {
+				t.Fatalf("s-2's model call did not take the cursor's provider: %s", data)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("after standing by, the sink never scanned every session and s-2 was not written")
+}
+
+// A session the record no longer holds is dropped, not retried: it leaves
+// no backoff behind, and the feed of the other sessions goes on.
+func TestAGoneSessionDoesNotHoldTheFile(t *testing.T) {
+	cur := &scriptedCursors{failFor: "gone"}
+	cur.failLoad.Store(1)
+	path := filepath.Join(t.TempDir(), "g.jsonl")
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	var seq atomic.Int64
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: path, Cursors: cur, Poll: 10 * time.Millisecond,
+		Read: func(id string, _ ocsf.Cursor) ([]ocsf.Line, error) {
+			if id == "gone" {
+				return nil, fmt.Errorf("session gone: %w", os.ErrNotExist)
+			}
+			return nil, nil
+		},
+		Feed: func() ([]ocsf.Line, func() error, error) {
+			n := seq.Add(1)
+			return []ocsf.Line{{Event: agent.Event{ID: fmt.Sprintf("ok-%d", n), SessionID: "ok", Seq: n, Type: agent.EvUserMessage,
+				Payload: []byte(`{"text":"m"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}}}, nil, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One failed write of "gone" starts a backoff.
+	sink.Add(ocsf.Line{Event: agent.Event{ID: "g-1", SessionID: "gone", Seq: 1, Type: agent.EvUserMessage,
+		Payload: []byte(`{"text":"m"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}})
+	time.Sleep(time.Second)
+	_ = sink.Close()
+	// Polls every 10 ms for a second; a backoff held by "gone" (100, 200,
+	// 400 ms and on) would leave a handful.
+	if n := len(readEventsIfAny(t, path)); n < 40 {
+		t.Fatalf("the feed wrote %d events in a second; the gone session held the file", n)
+	}
+}

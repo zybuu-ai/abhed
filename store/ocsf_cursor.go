@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -187,7 +186,7 @@ func (w *OCSFWriter) SavePos(pos string) error {
 	var stored string
 	if err := w.p.pool.QueryRow(ctx, `SELECT commit_pos FROM ocsf_cursors WHERE sink = $1 AND session_id = ''`, w.sink).Scan(&stored); err == nil && stored != "" {
 		if _, perr := ParseCommitPos(stored); perr != nil {
-			slog.Warn("OCSF cursor: the saved place cannot be read and is replaced", "sink", w.sink, "error", perr)
+			w.p.logger().Warn("OCSF cursor: the saved place cannot be read and is replaced", "sink", w.sink, "error", perr)
 		}
 	}
 	_, err = w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)

@@ -388,8 +388,15 @@ func (s *Sink) catchUp() {
 		}
 		if err == nil {
 			var lines []Line
-			if lines, err = s.o.Read(id, cur); err == nil {
-				if !s.write(lines, true) && s.waiting() {
+			lines, err = s.o.Read(id, cur)
+			if errors.Is(err, os.ErrNotExist) {
+				// A session the record no longer holds has nothing to write.
+				s.written([]string{id})
+				continue
+			}
+			if err == nil {
+				ok := s.write(lines, true)
+				if !ok && s.waiting() {
 					// The file failed: the rest wait out the backoff too.
 					s.mu.Lock()
 					for _, rest := range append(failed, ids[i:]...) {
@@ -397,6 +404,10 @@ func (s *Sink) catchUp() {
 					}
 					s.mu.Unlock()
 					return
+				}
+				if ok {
+					// Caught up, with or without lines to write.
+					s.written([]string{id})
 				}
 				continue
 			}
@@ -540,6 +551,7 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 				return false
 			}
 		}
+		s.written(names)
 		return true
 	}
 	if err := s.append(buf.Bytes()); err != nil {
