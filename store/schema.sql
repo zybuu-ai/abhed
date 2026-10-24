@@ -745,6 +745,11 @@ DECLARE
   last_hash text;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended('events/' || NEW.session_id, 0));
+  -- Read after the lock (version 15): a delete that held it has committed, and
+  -- a row for its session is refused rather than written into an erased one.
+  IF EXISTS (SELECT 1 FROM sessions WHERE id = NEW.session_id AND deleted_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'session % is deleted', NEW.session_id USING ERRCODE = 'ABD01';
+  END IF;
   SELECT chain_pos, hash INTO last_pos, last_hash FROM events
     WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
   NEW.inserted_at := now();
@@ -767,7 +772,13 @@ DROP INDEX IF EXISTS events_payload_idx;
 
 INSERT INTO schema_version (version) VALUES (14) ON CONFLICT DO NOTHING;
 
--- Schema version 15: the commit-ordered scan by an index row security can
+-- Schema version 15: abhed_events_chain refuses a row for a deleted session
+-- once it holds the session's lock (SQLSTATE ABD01). A delete that takes the
+-- same locks for its session tree (DeleteSessionTx) cannot be followed by a
+-- row the insert's own check let through before the delete committed.
+INSERT INTO schema_version (version) VALUES (15) ON CONFLICT DO NOTHING;
+
+-- Schema version 16: the commit-ordered scan by an index row security can
 -- use. A COALESCE of commit_tx is not a condition Postgres takes into an
 -- index under row security, so the scan read every row of the tenant; the
 -- bare column is. Rows from before version 12 have no transaction and are
@@ -776,4 +787,4 @@ CREATE INDEX IF NOT EXISTS events_commit_tx_idx
   ON events (tenant_id, commit_tx, created_at, session_id, seq) WHERE commit_tx IS NOT NULL;
 DROP INDEX IF EXISTS events_commit_order_idx;
 
-INSERT INTO schema_version (version) VALUES (15) ON CONFLICT DO NOTHING;
+INSERT INTO schema_version (version) VALUES (16) ON CONFLICT DO NOTHING;

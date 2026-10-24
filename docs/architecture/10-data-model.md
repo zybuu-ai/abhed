@@ -246,7 +246,7 @@ reader that resumes from a position (`CommitPos`) never skips a row that
 commits later. Rows from before version 12 have no `commit_tx` and come
 first, by time. The column was added without a default and given one after,
 so existing rows are not rewritten. Version 12's index on `COALESCE(commit_tx,
-'0')` is replaced in **schema version 15** by `events_commit_tx_idx` on
+'0')` is replaced in **schema version 16** by `events_commit_tx_idx` on
 `(tenant_id, commit_tx, created_at, session_id, seq) WHERE commit_tx IS NOT
 NULL`: under row security Postgres does not take a condition on the
 `COALESCE` into an index, so every scan read all of the tenant's rows; on the
@@ -272,6 +272,12 @@ writer sent, so no writer can keep a row out of the commit-ordered scan; the
 separate `events_inserted_at` trigger is dropped, so each insert runs one
 trigger. The GIN index on `events.payload` is dropped: no query used it, and
 payloads are sealed, so it indexed ciphertext on every insert.
+
+**A deleted session takes no row** (schema version 15). Once
+`abhed_events_chain` holds the session's lock it checks `sessions.deleted_at`
+again and refuses the row (SQLSTATE `ABD01`). A delete takes the same locks
+for its whole session tree (`LockSessionTree`, `DeleteSessionTx`), so no row
+an insert's earlier check let through can land after the delete commits.
 
 The chain head API (`store/chain`): `Source.Head(scope)` is the last position
 and hash, and `Source.VerifyRange(scope, from, to)` recomputes positions

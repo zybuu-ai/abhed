@@ -321,7 +321,7 @@ It polls its store each second rather than being handed lines:
   of 100 events each in Postgres 17 in a 4-CPU Podman VM on a Mac, the
   database work of taking over was 0.6 ms, against 120 to 190 ms for
   comparing every session's last event and cursor, which grows with the
-  table. Before schema version 15 the commit-ordered read itself took about
+  table. Before schema version 16 the commit-ordered read itself took about
   90 ms there, reading every row of the tenant. A session is read whole only once, for
   the model provider a later line needs, when it was started before the
   place.
