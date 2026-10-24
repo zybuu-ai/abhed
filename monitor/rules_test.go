@@ -386,3 +386,37 @@ func TestHomeWrites(t *testing.T) {
 		}
 	}
 }
+
+// kubectl namespace deletion and the cluster/container operations with no undo
+// are judged: an unnamed namespace, or every namespace, is denied; the others ask.
+func TestRulesClusterDestructive(t *testing.T) {
+	for _, rc := range []struct {
+		cmd  string
+		want policy.Decision
+	}{
+		{"kubectl delete ns prod", policy.Deny},
+		{"kubectl --context prod delete namespace prod", policy.Deny},
+		{"kubectl delete namespaces a b", policy.Deny},
+		{"kubectl delete all --all -A", policy.Deny},
+		{"kubectl delete pvc data-db-0", policy.Ask},
+		{"kubectl scale deploy/db --replicas=0", policy.Ask},
+		{"kubectl drain node-1", policy.Ask},
+		{"docker volume rm pgdata", policy.Ask},
+		{"docker system prune -af --volumes", policy.Ask},
+		{"podman system reset -f", policy.Ask},
+		{"docker image prune -a", policy.Ask},
+		{"kubectl get ns", policy.Allow},
+		{"kubectl delete pod web-1", policy.Allow},
+		{"docker image prune -f", policy.Allow},
+		{"kubectl scale deploy/web --replicas=3", policy.Allow},
+	} {
+		r := Rules{LookPath: func(string) bool { return true }}
+		v, err := r.Judge(context.Background(), ruleCase{tool: "bash", args: map[string]any{"command": rc.cmd}, said: "rebuild the app"}.build())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Decision != rc.want {
+			t.Errorf("%s: got %s/%s (%s), want %s", rc.cmd, v.Decision, v.Code, v.Rationale, rc.want)
+		}
+	}
+}

@@ -239,10 +239,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 535 drift cases the rules judge
-  stops all 534 a mode let through (the 535th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 631 drift cases the rules judge
+  stops all 630 a mode let through (the 631st, the destructive step, policy
   already asks about), and it
-  refuses none of its 257 benign controls (it asks about 10: six whose working
+  refuses none of its 283 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
@@ -256,7 +256,11 @@ All notable changes to Abhed are recorded here. The format follows
   is asked about as a conservative fallback. git (foreach/exec/run/filter and the config keys and env it runs as
   commands), containers (docker/podman/kubectl exec/run/debug, compose and
   container forms, failing closed when the command cannot be located), xargs,
-  man -P, mv, rsync and git clean are read only for the forms the rules judge. The
+  man -P, mv, rsync and git clean are read only for the forms the rules judge. Destructive container and cluster operations (system prune/reset,
+  volume rm/prune, image prune -a, forced rmi; kubectl delete of namespaces,
+  volumes, all or --all, scale to zero, drain, cordon, forced or production
+  patch, apply --prune) are asked by the supervisor and the destructive step,
+  and deleting an unnamed namespace or every namespace is denied. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an

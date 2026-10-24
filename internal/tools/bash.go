@@ -207,6 +207,19 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\bgit\s+branch\s+-D\b`), "force branch delete"},
 	{regexp.MustCompile(`\bunlink\s+\S`), "delete via unlink"},
 	{regexp.MustCompile(`\brmdir\b.*\s(?:-[a-zA-Z]*p[a-zA-Z]*|--parents?)\b`), "delete parent folders (rmdir -p)"},
+	// Container and cluster operations that discard data or capacity with no
+	// undo: daemon prunes and resets, volume deletion, removing every image,
+	// forced image removal, and deleting namespaces, volumes or whole kinds.
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bsystem\s+(?:prune|reset)\b`), "container system prune/reset"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bvolume\s+(?:rm|remove|prune)\b`), "container volume delete"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bimage\s+prune\b.*(?:\s-[a-zA-Z]*a|\s--all\b)`), "remove all container images"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:rmi|image\s+(?:rm|remove))\b.*(?:\s-[a-zA-Z]*f|\s--force\b)`), "forced image removal"},
+	{regexp.MustCompile(`\bkubectl\b.*\bdelete\b.*\s(?:ns|namespaces?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all)(?:[\s/,]|$)`), "cluster delete of namespaces, volumes or every resource"},
+	{regexp.MustCompile(`\bkubectl\b.*\bdelete\b.*\s(?:--all\b|--all-namespaces\b|-A\b)`), "cluster delete across all resources or namespaces"},
+	{regexp.MustCompile(`\bkubectl\b.*\bscale\b.*--replicas[=\s]+0\b`), "scale a workload to zero"},
+	{regexp.MustCompile(`\bkubectl\b.*\s(?:drain|cordon)\b`), "drain or cordon a node"},
+	{regexp.MustCompile(`\bkubectl\b.*(?:\s(?:patch|replace)\b.*(?:--force\b|finalizers|prod)|prod.*\s(?:patch|replace)\b)`), "forced or production patch/replace"},
+	{regexp.MustCompile(`\bkubectl\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless

@@ -466,10 +466,26 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 			Rationale: fmt.Sprintf("%s runs code that is built when the line runs, so the check cannot read it; %s", prog, remit(c)),
 			Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
 	}
-	if ns := kubectlDeleteNS(prog, args); ns != "" && ns != "default" && !k.named(ns) {
-		return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-			Rationale: fmt.Sprintf("kubectl would delete in namespace %s, which the task never named; %s", ns, remit(c)),
-			Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
+	for _, ns := range kubectlDeleteNS(prog, args) {
+		if ns == allNamespaces {
+			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+				Rationale: fmt.Sprintf("kubectl would delete across every namespace, which no task names; %s", remit(c)),
+				Advice:    "delete in the namespaces the task names, or ask the person first"}
+		}
+		if ns != "" && ns != "default" && !k.named(ns) {
+			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+				Rationale: fmt.Sprintf("kubectl would delete namespace %s or in it, which the task never named; %s", ns, remit(c)),
+				Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
+		}
+	}
+	// Container and cluster operations with no undo — daemon prunes and resets,
+	// volume deletion, removing every image, deleting namespaces, volumes or
+	// whole kinds, scaling to zero, draining, forced or production patches —
+	// are put to the person even where the target is named.
+	if what, ok := clusterDestructive(prog, args); ok {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("%s would %s, which cannot be undone; %s", prog, what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
 	}
 	// Code handed to a runner that is not a shell -c/eval/stdin call — git's
 	// foreach/exec/run/filter/alias, a container exec/run, xargs, man -P — is
@@ -913,6 +929,11 @@ func runsUnreadArg(cmd command, args []string) bool {
 		return false
 	}
 	if p, _ := cmd.program(); sqlClient[progBase(p)] {
+		for _, a := range args {
+			if _, ok := sqlShellEscape(a); ok {
+				return true // a shell escape built from text the line does not show
+			}
+		}
 		return false // a SQL client's -c/-e is a query, not a program
 	}
 	if p, _ := cmd.program(); printerProg[progBase(p)] {
@@ -1573,8 +1594,12 @@ func gitEnvAssignments(cmd command) map[string]string {
 	for k, v := range cmd.env {
 		out[k] = v
 	}
-	for _, w := range cmd.words {
-		if k, v, ok := strings.Cut(w, "="); ok && (gitEnvCode[k] || strings.HasPrefix(k, "GIT_CONFIG_VALUE")) {
+	// Only the words before the program (an env wrapper's NAME=value): a
+	// commit message or other argument is not an environment setting.
+	_, args := cmd.program()
+	end := len(cmd.words) - len(args) - 1
+	for i := 0; i < end && i < len(cmd.words); i++ {
+		if k, v, ok := strings.Cut(cmd.words[i], "="); ok && (gitEnvCode[k] || strings.HasPrefix(k, "GIT_CONFIG_VALUE")) {
 			out[k] = v
 		}
 	}
@@ -1616,11 +1641,13 @@ func (r Rules) gitDiscardVerdict(k *given, c Case, cmd command, args []string, w
 	if !discards {
 		return nil
 	}
+	// The tree is the -C/--work-tree path, joined under the command's own
+	// directory (a cd before it), or that directory itself.
 	eff := "."
 	if tree != "" && tree != "." {
 		eff = tree
 	}
-	if v := r.judgeTarget(k, c, command{dir: tree, dirKnown: true}, "git", eff, where); v != nil {
+	if v := r.judgeTarget(k, c, cmd, "git", eff, where); v != nil {
 		return v
 	}
 	return nil
@@ -1877,25 +1904,115 @@ func (r Rules) findExecAsk(c Case) *Verdict {
 		Advice:    "delete the paths the task names directly, or confirm this is meant"}
 }
 
-// kubectlDeleteNS is the namespace a kubectl delete names, if any.
-func kubectlDeleteNS(prog string, args []string) string {
-	if prog != "kubectl" || len(operands(args)) == 0 || !hasWord(args, "delete") {
-		return ""
+// allNamespaces stands for a kubectl delete across every namespace (-A).
+const allNamespaces = "\x00all-namespaces"
+
+// kubectlDeleteNS is the namespaces a kubectl delete removes or deletes in: the
+// -n/--namespace value, the names after `delete ns|namespace|namespaces`, and
+// allNamespaces for -A/--all-namespaces.
+func kubectlDeleteNS(prog string, args []string) []string {
+	if prog != "kubectl" {
+		return nil
 	}
+	verb, idx, ok := containerAction("kubectl", args)
+	if !ok || verb != "delete" {
+		return nil
+	}
+	var out []string
 	for i, a := range args {
-		if (a == "-n" || a == "--namespace") && i+1 < len(args) {
-			return args[i+1]
-		}
-		if v, ok := strings.CutPrefix(a, "--namespace="); ok {
-			return v
+		switch {
+		case (a == "-n" || a == "--namespace") && i+1 < len(args):
+			out = append(out, args[i+1])
+		case strings.HasPrefix(a, "--namespace="):
+			out = append(out, strings.TrimPrefix(a, "--namespace="))
+		case a == "-A" || a == "--all-namespaces":
+			out = append(out, allNamespaces)
 		}
 	}
-	return ""
+	ops := operands(args[idx:])
+	if len(ops) > 0 {
+		kinds := strings.Split(ops[0], "/")
+		switch strings.Split(kinds[0], ",")[0] {
+		case "ns", "namespace", "namespaces":
+			if len(kinds) > 1 {
+				out = append(out, kinds[1]) // ns/prod
+			}
+			out = append(out, ops[1:]...)
+		}
+	}
+	return out
 }
 
-func hasWord(args []string, w string) bool {
+// clusterDestructive reports a container or cluster operation with no undo.
+func clusterDestructive(prog string, args []string) (string, bool) {
+	switch prog {
+	case "docker", "podman", "nerdctl":
+		verb, idx, ok := containerAction(prog, args)
+		if !ok {
+			return "", false
+		}
+		rest := args[idx:]
+		ops := operands(rest)
+		first := ""
+		if len(ops) > 0 {
+			first = ops[0]
+		}
+		forced := hasFlag(rest, "--force") || shortFlag(rest, 'f')
+		switch {
+		case verb == "system" && (first == "prune" || first == "reset"):
+			return "prune or reset the container system", true
+		case verb == "volume" && (first == "rm" || first == "remove" || first == "prune"):
+			return "delete container volumes", true
+		case verb == "image" && first == "prune" && (hasFlag(rest, "--all") || shortFlag(rest, 'a')):
+			return "remove every container image", true
+		case (verb == "rmi" || verb == "image" && (first == "rm" || first == "remove")) && forced:
+			return "force-remove container images", true
+		}
+	case "kubectl":
+		verb, idx, ok := containerAction("kubectl", args)
+		if !ok {
+			return "", false
+		}
+		rest := args[idx:]
+		ops := operands(rest)
+		switch verb {
+		case "delete":
+			if hasFlag(rest, "--all") || hasFlag(rest, "-A") || hasFlag(rest, "--all-namespaces") {
+				return "delete every resource of a kind or across namespaces", true
+			}
+			if len(ops) > 0 {
+				switch strings.Split(strings.Split(ops[0], "/")[0], ",")[0] {
+				case "ns", "namespace", "namespaces", "pvc", "pv", "persistentvolume", "persistentvolumes",
+					"persistentvolumeclaim", "persistentvolumeclaims", "all":
+					return "delete namespaces, volumes or every resource", true
+				}
+			}
+		case "scale":
+			for i, a := range rest {
+				if a == "--replicas=0" || a == "--replicas" && i+1 < len(rest) && rest[i+1] == "0" {
+					return "scale a workload to zero", true
+				}
+			}
+		case "drain", "cordon":
+			return verb + " a node", true
+		case "patch", "replace":
+			if hasFlag(rest, "--force") || strings.Contains(strings.Join(args, " "), "finalizers") ||
+				strings.Contains(strings.Join(args, " "), "prod") {
+				return "force or patch a production resource", true
+			}
+		case "apply":
+			if hasFlag(rest, "--prune") {
+				return "apply with prune, which deletes resources", true
+			}
+		}
+	}
+	return "", false
+}
+
+// shortFlag reports a short-option cluster holding letter (-af holds a and f).
+func shortFlag(args []string, letter byte) bool {
 	for _, a := range args {
-		if a == w {
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.IndexByte(a[1:], letter) >= 0 {
 			return true
 		}
 	}
@@ -2422,7 +2539,15 @@ func unreadVal(s string) bool { return strings.Contains(s, "$") }
 // values (a commit message, a sed script) dangerWords also drops.
 func handedArgs(cmd command, args []string) []string {
 	if prog, _ := cmd.program(); sqlClient[progBase(prog)] {
-		return nil // a SQL client's -c/-e is a query, not shell code
+		// A SQL client's query is data, except where it escapes to a shell
+		// (\!, \o |, .shell, system, COPY … PROGRAM): that part is code.
+		var out []string
+		for _, a := range args {
+			if code, ok := sqlShellEscape(a); ok {
+				out = append(out, code)
+			}
+		}
+		return out
 	}
 	text := map[string]bool{}
 	for _, w := range dangerWords(cmd) {
@@ -2441,6 +2566,19 @@ func handedArgs(cmd command, args []string) []string {
 		}
 	}
 	return out
+}
+
+// sqlEscape finds a SQL client's escape to a shell: psql \! and \o|/\g|
+// pipes, mysql \! and system, sqlite3 .shell/.system, and COPY … PROGRAM.
+var sqlEscape = regexp.MustCompile(`(?i)\\!|\\[og]\s*\||(?:^|[;\s])system\s|\.(?:shell|system)\b|\bprogram\s`)
+
+// sqlShellEscape returns the shell code after a SQL client's escape, if any.
+func sqlShellEscape(v string) (string, bool) {
+	loc := sqlEscape.FindStringIndex(v)
+	if loc == nil {
+		return "", false
+	}
+	return strings.Trim(strings.TrimSpace(v[loc[1]:]), "'\";"), true
 }
 
 // sqlClient runs a query, not a shell command, from -c/-e, so that value is data.
@@ -2486,7 +2624,18 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 		if verb == "attach" {
 			return ask() // attach joins a running process we cannot read
 		}
-		if !containerRunVerbs[verb] {
+		storesCmd := verb == "service" && idx < len(args) && args[idx] == "create"
+		if !containerRunVerbs[verb] && !storesCmd {
+			if !containerReadVerbs[verb] {
+				// An unknown subcommand (an option value the tables lack, or a
+				// verb we do not know) followed by a running word is not read.
+				for _, a := range args[idx:] {
+					switch a {
+					case "exec", "run", "debug", "attach", "cp":
+						return ask()
+					}
+				}
+			}
 			return nil // a management subcommand runs nothing of ours
 		}
 		ccs, located := containerCommands(prog, args)
@@ -2495,7 +2644,7 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 		}
 		// A bind mount of a host path outside own ground makes the container's
 		// paths host paths: keep the host checks for the whole command then.
-		hostBind := (verb == "run") && r.containerBindOutside(k, c, args[idx:])
+		hostBind := (verb == "run" || verb == "create" || storesCmd) && r.containerBindOutside(k, c, args[idx:])
 		for _, cc := range ccs {
 			if len(cc) == 0 {
 				continue // a run with no explicit command (the image default)
@@ -2642,7 +2791,7 @@ var containerReadVerbs = map[string]bool{
 	"ps": true, "logs": true, "ls": true, "images": true, "image": true, "rmi": true, "rm": true,
 	"inspect": true, "build": true, "buildx": true, "builder": true, "pull": true, "push": true,
 	"prune": true, "system": true, "volume": true, "network": true, "context": true, "manifest": true,
-	"create": true, "start": true, "stop": true, "restart": true, "kill": true, "pause": true,
+	"start": true, "stop": true, "restart": true, "kill": true, "pause": true,
 	"unpause": true, "commit": true, "tag": true, "save": true, "load": true, "history": true,
 	"stats": true, "top": true, "port": true, "diff": true, "wait": true, "events": true, "version": true,
 	"info": true, "login": true, "logout": true, "search": true, "update": true, "rename": true,
@@ -2654,7 +2803,7 @@ var containerReadVerbs = map[string]bool{
 	"cluster-info": true, "explain": true, "auth": true, "wait-for": true, "set": true}
 
 // containerRunVerbs run a command we read from the line.
-var containerRunVerbs = map[string]bool{"exec": true, "run": true, "debug": true}
+var containerRunVerbs = map[string]bool{"exec": true, "run": true, "debug": true, "create": true}
 
 // dockerGlobalValueFlags take a value and come before the subcommand.
 var dockerGlobalValueFlags = map[string]bool{"-c": true, "--context": true, "-H": true, "--host": true,
@@ -2671,14 +2820,42 @@ var composeGlobalValueFlags = map[string]bool{"-f": true, "--file": true, "-p": 
 var kubectlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "--context": true,
 	"--kubeconfig": true, "--cluster": true, "--user": true, "-s": true, "--server": true, "--as": true,
 	"--as-group": true, "--token": true, "--request-timeout": true, "--cache-dir": true, "--tls-server-name": true,
-	"--certificate-authority": true, "--client-certificate": true, "--client-key": true}
+	"--certificate-authority": true, "--client-certificate": true, "--client-key": true,
+	"-v": true, "--v": true, "--vmodule": true, "--profile": true, "--profile-output": true,
+	"--log-file": true, "--username": true, "--password": true, "--log-dir": true}
+
+// nerdctlGlobalValueFlags and podmanGlobalValueFlags extend the docker set with
+// each tool's own global value-taking options.
+var nerdctlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "-a": true, "--address": true,
+	"--snapshotter": true, "--data-root": true, "--cni-path": true, "--cni-netconfpath": true,
+	"--cgroup-manager": true, "--host-gateway-ip": true}
+var podmanGlobalValueFlags = map[string]bool{"--root": true, "--runroot": true, "--runtime": true,
+	"--storage-driver": true, "--storage-opt": true, "--cgroup-manager": true, "--tmpdir": true,
+	"--events-backend": true, "--network-cmd-path": true, "--ssh": true, "--hooks-dir": true,
+	"--module": true, "--out": true, "--volumepath": true, "--imagestore": true}
 
 // containerGlobals is the value-flag set for a tool's global options.
 func containerGlobals(prog string) map[string]bool {
-	if prog == "kubectl" {
+	switch prog {
+	case "kubectl":
 		return kubectlGlobalValueFlags
+	case "nerdctl":
+		return union(dockerGlobalValueFlags, nerdctlGlobalValueFlags)
+	case "podman":
+		return union(dockerGlobalValueFlags, podmanGlobalValueFlags)
 	}
 	return dockerGlobalValueFlags
+}
+
+func union(a, b map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(a)+len(b))
+	for k := range a {
+		out[k] = true
+	}
+	for k := range b {
+		out[k] = true
+	}
+	return out
 }
 
 // containerAction finds the subcommand that decides what a container command
@@ -2727,7 +2904,7 @@ func containerRuns(prog string, args []string) bool {
 	return true
 }
 
-// manPager is the pager command man is told to use// manPager is the pager command man is told to use (-P value, -P<attached>,
+// manPager is the pager command man is told to use (-P value, -P<attached>,
 // --pager value or --pager=value), or "".
 func manPager(args []string) string {
 	for i := 0; i < len(args); i++ {
@@ -2751,10 +2928,26 @@ func manPager(args []string) string {
 // not take a value, shifting where the command starts; both are judged.
 func containerCommands(prog string, args []string) ([][]string, bool) {
 	verb, idx, ok := containerAction(prog, args)
-	if !ok || !containerRunVerbs[verb] {
+	if !ok || !containerRunVerbs[verb] && verb != "service" {
 		return nil, false
 	}
 	rest := args[idx:]
+	// service create IMAGE CMD and kubectl create job|deployment|cronjob … -- CMD
+	// store a command that runs later; judge it like run.
+	if verb == "service" {
+		if len(rest) == 0 || rest[0] != "create" {
+			return nil, false
+		}
+		rest = rest[1:]
+	}
+	if prog == "kubectl" && verb == "create" {
+		for i, a := range rest {
+			if a == "--" {
+				return [][]string{rest[i+1:]}, true
+			}
+		}
+		return nil, true // no stored command
+	}
 	if prog == "kubectl" {
 		for i, a := range rest {
 			if a == "--" {
@@ -2884,12 +3077,29 @@ func (r Rules) containerCpVerdict(k *given, c Case, rest []string) *Verdict {
 func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
 	src := func(spec string) string {
 		parts := strings.SplitN(spec, ":", 3)
-		if len(parts) >= 2 {
-			return parts[0]
+		if len(parts) < 2 {
+			return ""
 		}
-		return ""
+		// A read-only mount cannot be written through, so it does not make the
+		// container's paths writable host paths.
+		if len(parts) == 3 && (parts[2] == "ro" || strings.HasPrefix(parts[2], "ro,") ||
+			strings.Contains(parts[2], ",ro") || strings.Contains(parts[2], "readonly")) {
+			return ""
+		}
+		return parts[0]
 	}
 	outside := func(p string) bool {
+		p = strings.NewReplacer(`"`, "", `'`, "").Replace(p)
+		if strings.HasPrefix(p, "$") {
+			// Only the working directory itself, or a plain path under it, is
+			// own ground; any other expansion ($HOME/…, $PWD/../…) is not.
+			for _, wd := range []string{"$PWD", "${PWD}", "$(pwd)"} {
+				if p == wd || strings.HasPrefix(p, wd+"/") && !strings.Contains(p, "..") {
+					return false
+				}
+			}
+			return true
+		}
 		if p == "" || (!strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, ".")) {
 			return false // empty, or a named volume rather than a host path
 		}
@@ -2915,7 +3125,8 @@ func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
 			if a == "--mount" && i+1 < len(rest) {
 				spec = rest[i+1]
 			}
-			if strings.Contains(spec, "type=bind") {
+			if strings.Contains(spec, "type=bind") && !strings.Contains(spec, "readonly") &&
+				!strings.Contains(spec, "ro=true") && !strings.HasSuffix(spec, ",ro") && !strings.Contains(spec, ",ro,") {
 				for _, f := range strings.Split(spec, ",") {
 					if v, ok := strings.CutPrefix(f, "src="); ok && outside(v) {
 						return true
