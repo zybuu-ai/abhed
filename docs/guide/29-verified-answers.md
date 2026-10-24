@@ -106,7 +106,8 @@ counts (`12 tests`, `replicas: 3`). Then:
   write, an edit, or a shell line naming it), other than that it was
   changed, is never verified by output naming the file: "`main.go` is
   exactly as before" after an edit of it stays unverified whatever `ls`
-  shows.
+  shows. A call whose files the checks cannot tell (`python fix.py`) counts
+  as changing every file in the workspace this way.
 - **A count is compared by what it says of its unit.** The words beside a
   count that name an outcome (passed, failed, skipped), an action (added,
   changed, fixed, removed and the like) or a state (ready, down, running,
@@ -116,7 +117,16 @@ counts (`12 tests`, `replicas: 3`). Then:
   `replicas: 3` does not show "3 replicas are ready", and `Ran 12 tests`
   does not show "12 tests failed". A plain count ("3 replicas") is verified
   by any count of the unit with its number. A count the output gives in
-  other words leaves the statement unverified.
+  other words leaves the statement unverified. Two shapes never carry the
+  words after them: the whole of "N of M" ("0 of 3 updated replicas are
+  available" does not show "3 replicas are available", and "2 out of 5
+  nodes are down" does not show "5 nodes are down"), and a count after a
+  "not" on its line ("not ready: 3 replicas"). A statement that counts a
+  part of a whole ("3 of 5 nodes are down") is not verified by a count of
+  the whole. A count's outcome word is that count's, not the run's: "9
+  tests passed" is checked as a count, and met by `3 failed, 9 passed` from
+  a run that failed; a runner's summary (`9 passed`, `Tests: 2 failed`)
+  counts tests.
 - **Contradicted only from what it cites, and only by evidence that
   conflicts.** A statement that cites a result (a `call_id` or `#seq`
   through the answer tool, or `(#12)` in the reply's text) is contradicted
@@ -127,7 +137,11 @@ counts (`12 tests`, `replicas: 3`). Then:
   package" is never contradicted by a count of the whole run); when it
   gives a key another value than the cited result does and its own value
   is nowhere in that result ("port 9090" citing `port: 8080`; but "Redis is
-  on port 6379" citing `PORT=8080` beside `redis://cache:6379` is not);
+  on port 6379" citing `PORT=8080` beside `redis://cache:6379` is not).
+  A statement that gives one unit or key more than one value, as a
+  before and an after ("3 tests failed before the fix, 0 after", "from
+  port 8080 to port 9090"), is not contradicted when the result shows one
+  of them;
   when it says a file was not changed, or that the agent avoided or kept it,
   and cites a write or edit of that file that succeeded; or when it says
   tests pass (or a build succeeds) and cites a failed run of the same kind
@@ -370,14 +384,16 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 127 plant a wrong claim. Some cite the result that shows them
-wrong (a test, outcome or files-changed count with the same word, a key
-given another value, a failed run, an edited file said untouched, avoided or
-kept as it was) and come out contradicted. The rest cite nothing, or rest on
-what the checks cannot read, and must come out unverified: wrong counts and
-paths, a count said with another outcome, a state ("3 replicas are ready",
-"5 nodes are down", "12 tests failed") against a plain count, a file this
-session changed said to be as before, preserved or fine, runs piped or
+session. 139 plant a wrong claim. Some cite the result that shows them
+wrong (a test, outcome or files-changed count with the same word, a runner's
+summary, a key given another value, a failed run, an edited file said
+untouched, avoided or kept as it was) and come out contradicted. The rest
+cite nothing, or rest on what the checks cannot read, and must come out
+unverified: wrong counts and paths, a count said with another outcome, a
+state ("3 replicas are ready", "5 nodes are down", "12 tests failed")
+against a plain count, the whole of "N of M" or a count after "not" read as
+the state after it, a part claimed of a whole, a file this session or a
+script changed said to be as before, preserved or fine, runs piped or
 followed by `;` or `|| true`, runs that filter, list or only compile, runs
 given `GOFLAGS`, `PYTEST_ADDOPTS` or `CI`, or run through `pipenv`, `hatch`,
 `uv run --env-file`, `dotenv` or `direnv`, a package run against a claim
@@ -385,20 +401,21 @@ about the whole suite, a trap before the run, commands after a failed `&&`,
 `||` or `exit`, a copy's or a link's source, a write refused in a folder
 `mkdir` made, a remote `rm`, a program at another path, a success of no
 named kind, a path read from an edit's own report, reads relied on after
-changes the checks cannot rule out, and more. 46 controls say only what the
+changes the checks cannot rule out, and more. 50 controls say only what the
 session showed, among them a folder claim met by an edit in it, `sed -l` or
-`perl -I` with their values, a run given only `NO_COLOR`, and a
-files-changed count. 42 are neutral: general knowledge, and true claims the
-checks cannot stand behind, such as a build claim against a failed test run,
-a filtered or timed-out run, a run of another or a wider scope, a count of
-the same thing in other words ("added 3 tests" citing `42 tests passed`,
-"fixed 2 errors" citing `Found 5 errors`), a narrowed count against a whole
-run, a port the cited result also holds, a `cd` after `CDPATH=`, and things a
+`perl -I` with their values, a run given only `NO_COLOR`, a files-changed
+count, and passed and failed counts from a run that failed. 47 are neutral:
+general knowledge, and true claims the checks cannot stand behind, such as a
+build claim against a failed test run, a filtered or timed-out run, a run of
+another or a wider scope, a count of the same thing in other words ("added 3
+tests" citing `42 tests passed`, "fixed 2 errors" citing `Found 5 errors`), a
+narrowed count against a whole run, a port the cited result also holds, a
+value given before and after a fix, a `cd` after `CDPATH=`, and things a
 cited result is silent on (no panic lines in a log tail, a port not
-listening, a file not in a response). Today none of the 127 planted claims
-is shown as verified (11 are contradicted, all from cited, conflicting
-evidence; the rest unverified), all 46 controls are verified, and none of
-the 88 true or neutral claims is contradicted. The test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
+listening, a file not in a response). Today none of the 139 planted claims
+is shown as verified (12 are contradicted, all from cited, conflicting
+evidence; the rest unverified), all 50 controls are verified, and none of
+the 97 true or neutral claims is contradicted. The test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
 floors only go up. The corpus is small and written by the people who wrote
 the checks, so it shows what the checks do on these shapes of mistake, not how often a given model makes them.
 

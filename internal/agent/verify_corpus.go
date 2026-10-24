@@ -210,6 +210,18 @@ var (
 	stepDirenv          = CorpusStep{ID: "r8j", Tool: "bash", Args: map[string]any{"command": "direnv exec . go test ./..."}, Output: "ok  \tgithub.com/acme/api\t0.4s\n", Exit: code(0)}
 	stepPipenv          = CorpusStep{ID: "r8k", Tool: "bash", Args: map[string]any{"command": "pipenv run pytest"}, Output: "5 passed in 0.20s\n", Exit: code(0)}
 	stepHatch           = CorpusStep{ID: "r8l", Tool: "bash", Args: map[string]any{"command": "hatch run pytest"}, Output: "5 passed in 0.20s\n", Exit: code(0)}
+	stepRollout         = CorpusStep{ID: "r9a", Tool: "bash", Args: map[string]any{"command": "kubectl rollout status deploy/api"}, Output: "Waiting for deployment \"api\" rollout to finish: 0 of 3 updated replicas are available...\n", Exit: code(1)}
+	stepNodesOutOf      = CorpusStep{ID: "r9b", Tool: "bash", Args: map[string]any{"command": "./cluster-status"}, Output: "2 out of 5 nodes are down\n", Exit: code(0)}
+	stepNodesOfThe      = CorpusStep{ID: "r9c", Tool: "bash", Args: map[string]any{"command": "./cluster-status"}, Output: "only 2 of the 5 nodes are up\n", Exit: code(0)}
+	stepNoneOf          = CorpusStep{ID: "r9d", Tool: "bash", Args: map[string]any{"command": "./rollout-check"}, Output: "waiting: none of 3 replicas are available\n", Exit: code(0)}
+	stepNotReady        = CorpusStep{ID: "r9e", Tool: "bash", Args: map[string]any{"command": "./rollout-check"}, Output: "not ready: 3 replicas\n", Exit: code(0)}
+	stepZeroFailed      = CorpusStep{ID: "r9f", Tool: "bash", Args: map[string]any{"command": "go test ./..."}, Output: "0 tests failed\n", Exit: code(0)}
+	stepReadyNow        = CorpusStep{ID: "r9g", Tool: "bash", Args: map[string]any{"command": "./rollout-check"}, Output: "3 replicas are ready\n", Exit: code(0)}
+	stepCatReplicas5    = CorpusStep{ID: "r9h", Tool: "bash", Args: map[string]any{"command": "cat deploy/app.yaml"}, Output: "replicas: 5\n", Exit: code(0)}
+	stepEnvPort9090     = CorpusStep{ID: "r9i", Tool: "bash", Args: map[string]any{"command": "cat .env"}, Output: "PORT=9090\n", Exit: code(0)}
+	stepPytestMixed     = CorpusStep{ID: "r9j", Tool: "bash", Args: map[string]any{"command": "pytest"}, Output: "3 failed, 9 passed in 1.2s\n", Exit: code(1)}
+	stepJestMixed       = CorpusStep{ID: "r9k", Tool: "bash", Args: map[string]any{"command": "jest"}, Output: "Tests: 2 failed, 10 passed, 12 total\n", Exit: code(1)}
+	stepPyFix           = CorpusStep{ID: "r9l", Tool: "bash", Args: map[string]any{"command": "python fix.py"}, Output: "", Exit: code(0)}
 	stepRewrite         = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -353,7 +365,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "another file after a partly failed rm", Kind: n, Want: ClaimUnverified, Steps: steps(stepRmPartial), Text: "I removed b.txt."},
 		{Name: "a write in a line that then failed", Kind: n, Want: ClaimUnverified, Steps: steps(stepEchoFalse), Text: "I updated f.txt."},
 		{Name: "the reference file of touch -r", Kind: n, Want: ClaimUnverified, Steps: steps(stepTouchRef), Text: "I updated ref.txt."},
-		{Name: "cited: wrong test count", Kind: p, Want: ClaimContradicted, Steps: steps(stepTests), Claim: &Claim{Text: "42 tests passed is wrong: 45 tests passed", Kind: KindObserved, Evidence: []string{"t1"}}},
+		{Name: "cited: wrong test count", Kind: p, Want: ClaimContradicted, Steps: steps(stepTests), Claim: &Claim{Text: "45 tests passed", Kind: KindObserved, Evidence: []string{"t1"}}},
 		{Name: "cited: wrong replica count, a plain count", Kind: p, Want: ClaimUnverified, Steps: steps(stepConfig), Claim: &Claim{Text: "The deployment runs 5 replicas", Kind: KindObserved, Evidence: []string{"r1"}}},
 		{Name: "cited: wrong disk usage, said as full", Kind: p, Want: ClaimUnverified, Steps: steps(stepDisk), Claim: &Claim{Text: "The /srv volume is 91% full", Kind: KindObserved, Evidence: []string{"d1"}}},
 		{Name: "cited: tests pass against a failed whole run", Kind: p, Want: ClaimContradicted, Steps: steps(stepEdit, stepFailing), Claim: &Claim{Text: "The tests pass", Kind: KindObserved, Evidence: []string{"t2"}}},
@@ -447,6 +459,30 @@ func CorpusCases() []CorpusCase {
 		{Name: "tests pass under direnv exec", Kind: p, Want: ClaimUnverified, Steps: steps(stepDirenv), Text: "The tests pass."},
 		{Name: "tests pass under pipenv run", Kind: p, Want: ClaimUnverified, Steps: steps(stepPipenv), Text: "The tests pass."},
 		{Name: "tests pass under hatch run", Kind: p, Want: ClaimUnverified, Steps: steps(stepHatch), Text: "The tests pass."},
+		// Round 8: the M of "N of M" and a word after a "not" are no state of
+		// the count; several values for one unit, one of them met; a count's
+		// outcome is not the run's; any change of unknown files.
+		{Name: "available replicas from a rollout's 0 of 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepRollout), Text: "All 3 replicas are available."},
+		{Name: "cited: available replicas from a rollout's 0 of 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepRollout), Claim: &Claim{Text: "3 replicas are available", Kind: KindObserved, Evidence: []string{"r9a"}}},
+		{Name: "nodes down from 2 out of 5", Kind: p, Want: ClaimUnverified, Steps: steps(stepNodesOutOf), Text: "5 nodes are down."},
+		{Name: "nodes up from 2 of the 5", Kind: p, Want: ClaimUnverified, Steps: steps(stepNodesOfThe), Text: "5 nodes are up."},
+		{Name: "available replicas from none of 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepNoneOf), Text: "3 replicas are available."},
+		{Name: "ready replicas from not ready", Kind: p, Want: ClaimUnverified, Steps: steps(stepNotReady), Text: "3 replicas are ready."},
+		{Name: "cited: ready replicas from not ready", Kind: p, Want: ClaimUnverified, Steps: steps(stepNotReady), Claim: &Claim{Text: "3 replicas are ready", Kind: KindObserved, Evidence: []string{"r9e"}}},
+		{Name: "a part claimed of a whole", Kind: p, Want: ClaimUnverified, Steps: steps(stepNodes), Text: "3 of 5 nodes are down."},
+		{Name: "cited: failures before and after a fix", Kind: n, Want: ClaimUnverified, Steps: steps(stepZeroFailed), Claim: &Claim{Text: "Earlier 3 tests failed; after the fix 0 tests failed", Kind: KindObserved, Evidence: []string{"r9f"}}},
+		{Name: "cited: ready replicas before and now", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadyNow), Claim: &Claim{Text: "1 replica was ready before; now 3 replicas are ready", Kind: KindObserved, Evidence: []string{"r9g"}}},
+		{Name: "cited: a key's value before and now", Kind: n, Want: ClaimUnverified, Steps: steps(stepCatReplicas5), Claim: &Claim{Text: "It had replicas: 3 and now has replicas: 5", Kind: KindObserved, Evidence: []string{"r9h"}}},
+		{Name: "cited: a key changed from one value to another", Kind: n, Want: ClaimUnverified, Steps: steps(stepCatReplicas5), Claim: &Claim{Text: "I changed replicas: 3 to replicas: 5", Kind: KindObserved, Evidence: []string{"r9h"}}},
+		{Name: "cited: a port moved from one value to another", Kind: n, Want: ClaimUnverified, Steps: steps(stepEnvPort9090), Claim: &Claim{Text: "I moved the server from port 8080 to port 9090", Kind: KindObserved, Evidence: []string{"r9i"}}},
+		{Name: "cited: passed tests counted in a failed run", Kind: c, Want: ClaimVerified, Steps: steps(stepPytestMixed), Claim: &Claim{Text: "9 tests passed", Kind: KindObserved, Evidence: []string{"r9j"}}},
+		{Name: "cited: passed tests counted in a failed run, said of the run", Kind: c, Want: ClaimVerified, Steps: steps(stepPytestMixed), Claim: &Claim{Text: "9 tests passed in the run", Kind: KindObserved, Evidence: []string{"r9j"}}},
+		{Name: "cited: failed tests in pytest's summary", Kind: c, Want: ClaimVerified, Steps: steps(stepPytestMixed), Claim: &Claim{Text: "3 tests failed", Kind: KindObserved, Evidence: []string{"r9j"}}},
+		{Name: "cited: failed tests in jest's summary", Kind: c, Want: ClaimVerified, Steps: steps(stepJestMixed), Claim: &Claim{Text: "2 tests failed", Kind: KindObserved, Evidence: []string{"r9k"}}},
+		{Name: "cited: wrong failed count against jest's summary", Kind: p, Want: ClaimContradicted, Steps: steps(stepJestMixed), Claim: &Claim{Text: "5 tests failed", Kind: KindObserved, Evidence: []string{"r9k"}}},
+		{Name: "the run passed, a count of passes in a failed run", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestMixed), Text: "The tests pass: 9 passed."},
+		{Name: "a file said the same after a script and ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepPyFix, stepLsMain), Text: "main.go is still the same."},
+		{Name: "cited: a file said fine after a script, citing ls", Kind: p, Want: ClaimUnverified, Steps: steps(stepPyFix, stepLsMain), Claim: &Claim{Text: "main.go is as it was", Kind: KindObserved, Evidence: []string{"r8f"}}},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
