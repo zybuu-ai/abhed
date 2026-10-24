@@ -18,7 +18,7 @@ import (
 var (
 	// explainRe is how an explanation reads: an analogy, a definition, a
 	// reason, or a walk through code.
-	explainRe = regexp.MustCompile(`\b((?:here|this) is how|like|think of|imagine|as if|analogy|is a|is an|are a|means|refers to|stands for|because|since|so that|in order to|this is why|that is why|which is why|this (?:line|function|loop|variable|means|is)|here we|we need to|we (?:then|first|start|keep|add|check|loop|return|skip|ignore|move|write)|it (?:then|first|keeps|adds|checks|loops|returns|skips|starts|hands|gives|visits|walks))\b`)
+	explainRe = regexp.MustCompile(`\b((?:here|this) is how|returns|hands|gives back|loops over|walks through|visits|stores|keeps|takes the|skips|at the end|like|think of|imagine|as if|analogy|is a|is an|are a|means|refers to|stands for|because|since|so that|in order to|this is why|that is why|which is why|this (?:line|function|loop|variable|means|is)|here we|we need to|we (?:then|first|start|keep|add|check|loop|return|skip|ignore|move|write)|it (?:then|first|keeps|adds|checks|loops|returns|skips|starts|hands|gives|visits|walks))\b`)
 	// defineRe is a definition or an analogy, the only explanation that may
 	// name no code.
 	defineRe = regexp.MustCompile(`\b(like|think of|imagine|as if|analogy|is a|is an|are a|means|refers to|stands for)\b`)
@@ -34,10 +34,10 @@ var (
 	codeNegRe = regexp.MustCompile(`\b(?:not|nothing|none|no)\b[^.;,:]{0,40}?\byet\b|\b(?:never|not|no longer|doesn't|don't|won't|isn't|does not|do not|will not|cannot|can't)\s+(?:\w+\s+)?(?:runs?|run|executes?|execute|returns?|return|loops?|loop|calls?|call|reach(?:es)?|match(?:es)?|adds?|add|happens?|happen|panics?|panic|iterates?|iterate|enters?|enter|fires?|fire|evaluates?|evaluate|sees?|see|blocks?|block|waits?|wait|overflows?|overflow|races?|race|deadlocks?|deadlock|leaks? memory)\b|\b(?:is|are|can be|will be)\s+(?:never|not)\s+(?:nil|null|empty|negative|zero)\b`)
 	// judgeRe are words that judge the work or a system, or speak of
 	// secrecy and security, never needed to explain code.
-	judgeRe = regexp.MustCompile(`\b(issues?|problems?|bugs?|cause[sd]?|harmless|real|matters?|present|safe|unsafe|secure|insecure|security|leak\w*|outage|prod|production|stale|cached|regression|incident|vulnerab\w*|secrets?|sensitiv\w*|expos\w*|exploit\w*|bypass\w*|credentials?|passwords?|private|confidential|attack\w*|unauthori[sz]ed|authori[sz]\w*|permission\w*|committed|git|tests?|tested|correct|incorrect|fine|right|wrong|ok|okay|needs?|needed)\b`)
+	judgeRe = regexp.MustCompile(`\b(issues?|problems?|bugs?|cause[sd]?|harmless|real|matters?|present|safe|unsafe|secure|insecure|security|leak\w*|outage|prod|production|stale|cached|regression|incident|vulnerab\w*|secrets?|sensitiv\w*|expos\w*|exploit\w*|bypass\w*|credentials?|passwords?|private|confidential|attack\w*|unauthori[sz]ed|authori[sz]\w*|permission\w*|committed|git|tests?|tested|correct|incorrect|fine|right|wrong|ok|okay|revoked|expired|rotated|stub|unused|example|bug-free|robust|intended|every case)\b`)
 	// verdictRe are judgements a verified claim must find in what it matched:
 	// "`Sum` is correct", "`API_KEY` is a placeholder".
-	verdictRe = regexp.MustCompile(`\b(correct|incorrect|fine|safe|unsafe|secure|insecure|harmless|placeholder|dummy|sandbox|fake|mock|valid|invalid|sensitive|secret|exposed|exploitable|bypassable|real)\b`)
+	verdictRe = regexp.MustCompile(`\b(correct|incorrect|fine|safe|unsafe|secure|insecure|harmless|placeholder|dummy|sandbox|fake|mock|valid|invalid|sensitive|secret|exposed|exploitable|bypassable|real|revoked|expired|rotated|stub|unused|example|test value|bug-free|robust|as intended|every case)\b`)
 	// secretLineRe is a line that sets or shows a credential.
 	secretLineRe = regexp.MustCompile(`(?i)(key|secret|token|passw|credential|private|auth|bearer)\w*\s*[:=]|\b(sk|pk|rk)[-_](live|test|prod)?|akia[0-9a-z]{8}|gh[pousr]_|xox[abprs]-|-----begin`)
 	// codeTokenRe splits a code span into its words.
@@ -51,6 +51,24 @@ var (
 // explainsOn turns the explanation group on; tests turn it off to show it
 // changes no outcome.
 var explainsOn = true
+
+// changeVerbRe are verbs of a change, which no "not ... yet" excuses:
+// "`Sum` has not been touched yet" says what was done to it.
+var changeVerbRe = regexp.MustCompile(`\b(touch\w*|chang\w*|edit\w*|modif\w*|updat\w*|rewr\w*|fix\w*|need\w*|alter\w*|patch\w*|refactor\w*)\b`)
+
+// stripCodeNeg takes out the negations an explanation may make.
+func stripCodeNeg(s string) string {
+	return codeNegRe.ReplaceAllStringFunc(s, func(m string) string {
+		if strings.HasSuffix(m, "yet") && changeVerbRe.MatchString(m) {
+			return m
+		}
+		return " "
+	})
+}
+
+// codeParticiple are participles an explanation uses of what code does.
+var codeParticiple = wordSet(`skipped called ignored stored returned passed given used named based declared defined
+	locked unlocked guarded kept held`)
 
 // shownTools are the tools whose results show content an explanation may be
 // about: reads and searches, never a run, a change or its report.
@@ -70,8 +88,15 @@ func explains(ix *recordIndex, c Claim) bool {
 		return false
 	}
 	// A negation may only be one of what the code does.
-	if negationRe.MatchString(codeNegRe.ReplaceAllString(noFailRe.ReplaceAllString(low, " "), " ")) {
+	if negationRe.MatchString(stripCodeNeg(noFailRe.ReplaceAllString(low, " "))) {
 		return false
+	}
+	// An event (something done or changed) is no explanation, but for a few
+	// participles that say what code does, and what a "not ... yet" denies.
+	for _, w := range eventWords(stripCodeNeg(normText(text))) {
+		if !codeParticiple[w] {
+			return false
+		}
 	}
 	spans := codeSpans(c.Text)
 	// What it explains must be shown by a read or a search: the results it

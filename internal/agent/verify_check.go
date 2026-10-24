@@ -104,6 +104,7 @@ type obsRec struct {
 	tool    string
 	command string // bash's command
 	path    string // a file tool's path
+	args    string // every string argument, decoded
 	content string
 	exit    *int
 	isError bool
@@ -232,7 +233,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				Path    string `json:"path"`
 			}
 			_ = json.Unmarshal(r.a.Args, &args)
-			rec.command, rec.path = args.Command, args.Path
+			rec.command, rec.path, rec.args = args.Command, args.Path, argText(r.a.Args)
 			var line lineFacts
 			if o.Tool == "bash" || o.Tool == "ssh" {
 				// The folder the bash tool ran the command in, as the record
@@ -417,6 +418,7 @@ type finding struct {
 	bare     bool     // a number with nothing to say what it counts
 	unit     string   // the unit or key a count or keyed finding is about
 	said     []string // the outcome, action or state words of a count finding
+	call     bool     // matched in the record's calls, which can show an event
 }
 
 // checkClaims checks each claim against the record. Claims from the answer
@@ -565,6 +567,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			atLine[lit] = true
 		}
 	}
+	var changedText *evidenceText // what a matched change put in
 	// What the agent says it changed or ran is found in its calls, not in
 	// their output.
 	if f.changed && f.negated {
@@ -577,32 +580,45 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if f.changed || f.changeWord || f.deed && !f.proof && len(f.ran) == 0 && !f.negated {
+	} else if f.changed || f.changeWord || (f.deed || f.event != "") && !f.proof && !f.observe && !f.success && len(f.ran) == 0 && !f.negated {
 		// A change, in any wording, is read from the calls: by the file it
-		// names, or, naming none, by the code it names in what a call that
-		// changed something was given.
+		// names, or, naming none, by the code it names in what a change was
+		// given.
 		for _, p := range f.paths {
 			fd := ix.changedPath(p)
+			fd.call = fd.out == matched
 			findings = append(findings, fd)
 			if fd.out == matched {
 				atLine[normText(p)] = true
 			}
 		}
 		if len(f.paths) == 0 {
-			fd, tok := ix.changeNamed(f.tokens)
+			fd, tok, put := ix.changeNamed(f)
 			findings = append(findings, fd)
 			if fd.out == matched {
 				atLine[normText(tok)] = true
+				changedText = put
+			}
+		}
+	}
+	// What the agent says it looked at is read from its reads and searches.
+	if f.observe && !f.negated {
+		fd := ix.observed(f)
+		findings = append(findings, fd)
+		if fd.out == matched {
+			for _, p := range f.paths {
+				atLine[normText(p)] = true
 			}
 		}
 	}
 	// A check or a release the agent says it did ("I tested", "we
 	// deployed") is no change, and no output shows that it was done.
-	if f.proof && len(f.ran) == 0 && !f.negated {
+	if f.proof && len(f.ran) == 0 && !f.negated && !f.success {
 		findings = append(findings, finding{out: missing, why: "it says what was done, which only the calls could show, and none is read as that"})
 	}
 	for _, cmd := range f.ran {
 		fd := ix.ranCommand(cmd)
+		fd.call = fd.out == matched
 		findings = append(findings, fd)
 		if fd.out == matched {
 			atLine[normText(cmd)] = true
@@ -660,10 +676,27 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		if countedNumber(f.counted, n) || keyedOK[n] {
 			continue // judged with its unit above
 		}
+		if changedText != nil && changedText.numbers[n] {
+			continue // in what the change put in
+		}
 		findings = append(findings, ix.number(pool, n, cited))
 	}
 	if f.success {
-		findings = append(findings, ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited))
+		fd := ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited)
+		fd.call = fd.out == matched
+		findings = append(findings, fd)
+	}
+	// A sentence that reports an event is shown only by the calls: output
+	// matching its words is not enough.
+	if f.event != "" {
+		called := false
+		for _, fd := range findings {
+			called = called || fd.call && fd.out == matched
+		}
+		if !called {
+			findings = append(findings, finding{out: missing,
+				why: fmt.Sprintf("it says something happened (%q), which only the calls can show, and none is read as that", f.event)})
+		}
 	}
 	return findings
 }
@@ -1080,28 +1113,6 @@ func (ix *recordIndex) namedByChange(p string) string {
 		}
 	}
 	return ""
-}
-
-// changeNamed checks a change that names no file against the calls that
-// changed something: one that succeeded and was given the code it names,
-// as an edit's text or a command (`kubectl scale deploy/checkout`).
-func (ix *recordIndex) changeNamed(tokens []string) (finding, string) {
-	if len(tokens) == 0 {
-		return finding{out: missing, why: "it says what was changed but names neither a file nor code, and changes are read only from the calls"}, ""
-	}
-	for i := len(ix.mutations) - 1; i >= 0; i-- {
-		m := ix.mutations[i]
-		if m.person || m.failed || m.text == "" {
-			continue
-		}
-		hay := prepareEvidence(m.text, false)
-		for _, t := range tokens {
-			if hay.hasLiteral(normText(t)) {
-				return finding{out: matched, what: fmt.Sprintf("a change given %q at #%d", clipRunes(t, 40), m.seq), seq: m.seq}, t
-			}
-		}
-	}
-	return finding{out: missing, why: "it says what was changed but names no file, and no call this session that changed something was given " + strconv.Quote(clipRunes(tokens[0], 40))}, ""
 }
 
 // inWorkspace is where a path a claim names is: as written when absolute,
