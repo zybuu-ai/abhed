@@ -234,7 +234,7 @@ func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 		var owns, canInsert, canUpdate, canDelete, canTruncate bool
 		err := pool.QueryRow(ctx, `
 			SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
-			       has_table_privilege(current_user, c.oid, 'INSERT'),
+			       has_any_column_privilege(current_user, c.oid, 'INSERT'),
 			       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
 			       has_table_privilege(current_user, c.oid, 'DELETE'),
 			       has_table_privilege(current_user, c.oid, 'TRUNCATE')
