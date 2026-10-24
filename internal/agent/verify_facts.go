@@ -54,7 +54,7 @@ func (f facts) any() bool {
 var (
 	ansiRe     = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
 	spaceRe    = regexp.MustCompile(`\s+`)
-	backtickRe = regexp.MustCompile("`([^`\n]{2,200})`")
+	backtickRe = regexp.MustCompile("`([^`\n]{1,200})`")
 	dquoteRe   = regexp.MustCompile(`"([^"\n]{2,200})"`)
 	urlRe      = regexp.MustCompile(`https?://[^\s<>"'` + "`" + `)\]]+`)
 	fileLineRe = regexp.MustCompile(`((?:[\w.\-]+/)*[\w\-]+\.[A-Za-z][A-Za-z0-9]{0,5}):(\d+)(?::\d+)?\b`)
@@ -73,10 +73,14 @@ var (
 	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:the\s+|of\s+the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
 	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
 	everyRe          = regexp.MustCompile(`\b(?:all|every|each)\b`)
-	noFailRe         = regexp.MustCompile(`\bno (?:errors|failures|failed tests?|tests? failed)\b`)
-	testRe           = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
-	buildRe          = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
-	changedRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
+	// backRefRe is what may follow a pass count and say it was every test:
+	// ", all of them", "- every one", "(each of the 12)"; not "in all",
+	// "after all" or "each in under a second".
+	backRefRe = regexp.MustCompile(`^\s*[,:(-]?\s*(?:all|every|each)(?:\s+(?:one|single one|one of them|of them|of the \d+))?\s*\)?\s*[,]?\s*$`)
+	noFailRe  = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed)\b`)
+	testRe    = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
+	buildRe   = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
+	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
 	negationRe = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
@@ -93,6 +97,9 @@ var notUnits = map[string]bool{
 	"was": true, "were": true, "at": true, "on": true, "for": true, "by": true, "out": true, "a": true,
 	"an": true, "as": true, "from": true, "with": true, "per": true, "than": true, "more": true,
 	"less": true, "times": true, "x": true, "it": true, "that": true, "this": true, "be": true,
+	// Joining words follow a number without counting anything either.
+	"because": true, "since": true, "so": true, "but": true, "if": true, "when": true, "then": true,
+	"while": true, "until": true, "unless": true, "though": true,
 }
 
 // keyStop are words a number follows without being their value.
@@ -184,7 +191,7 @@ func extractFacts(claim string) facts {
 		f.changed, f.negated = true, true
 	}
 	for _, w := range strings.Fields(text) {
-		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") {
+		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
 			f.scope = append(f.scope, w)
 		}
 	}
@@ -295,10 +302,12 @@ func extractFacts(claim string) facts {
 			f.numbers = append(f.numbers, n)
 		}
 	}
-	// Any pass said of tests, "9 tests passed" included, needs a whole run
-	// that passed. Only one said of every test ("all 12 tests passed",
-	// "12/12", "12 out of 12", "12 tests all passed") or of the run itself
-	// is a claim the run passed, which a cited failed run contradicts.
+	// Any pass said of tests, "9 tests passed" and "9 passed, 3 failed"
+	// included, needs a whole run that passed, whatever other words share
+	// the claim ("fixed the failing test; all 12 tests pass"). Only one said
+	// of every test ("all 12 tests passed", "12/12", "12 out of 12", "12
+	// tests passed, all of them") or of the run itself is a claim the run
+	// passed, which a cited failed run contradicts.
 	full := normText(claim)
 	said := full
 	for _, m := range countedOutcomeRe.FindAllStringIndex(full, -1) {
@@ -306,14 +315,18 @@ func extractFacts(claim string) facts {
 		if i := strings.IndexAny(rest, ";."); i >= 0 {
 			rest = rest[:i]
 		}
-		if !wholeRunCount(full[m[0]:m[1]]) && !everyRe.MatchString(full[m[0]:m[1]]) && !everyRe.MatchString(rest) {
-			said = strings.Replace(said, full[m[0]:m[1]], strings.Repeat(" ", m[1]-m[0]), 1)
+		if !wholeRunCount(full[m[0]:m[1]]) && !everyRe.MatchString(full[m[0]:m[1]]) && !backRefRe.MatchString(rest) {
+			said = said[:m[0]] + strings.Repeat(" ", m[1]-m[0]) + said[m[1]:]
 		}
 	}
 	plain := noFailRe.ReplaceAllString(full, " ")
-	if successRe.MatchString(full) && !negRe.MatchString(plain) {
+	// Fail, error and broken words elsewhere do not undo a pass said of
+	// tests; not or never does.
+	testPass := successRe.MatchString(full) && testRe.MatchString(plain) && !negationRe.MatchString(plain)
+	if testPass || successRe.MatchString(full) && !negRe.MatchString(plain) {
 		f.success = true
-		f.wholeRun = successRe.MatchString(said)
+		// A claim that says not or never is no claim the run passed.
+		f.wholeRun = successRe.MatchString(said) && !negationRe.MatchString(plain)
 		switch {
 		case testRe.MatchString(plain):
 			f.testish = "test"
