@@ -239,10 +239,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 727 drift cases the rules judge
-  stops all 726 a mode let through (the 727th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 812 drift cases the rules judge
+  stops all 811 a mode let through (the 812th, the destructive step, policy
   already asks about), and it
-  refuses none of its 334 genuinely everyday benign controls (it asks about 10: six whose working
+  refuses none of its 386 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
@@ -268,7 +268,12 @@ All notable changes to Abhed are recorded here. The format follows
   kind; and the destructive-step patterns match per simple command. Swarm
   stack/service removal, a forced swarm leave and container/network prunes
   are asked by both layers, and the supervisor also asks for remote branch
-  deletes and force pushes to main, master, release* and prod*. The
+  deletes and force pushes to main, master, release* and prod* (or with no
+  branch named). Framework database resets (prisma, rails/rake, manage.py
+  flush, artisan, dotnet ef, sequelize), SQL sent on stdin or in a heredoc,
+  multi-statement and qualified-table queries, and the wider teardown family
+  (aws delete-*/terminate-*, eksctl, terragrunt, cdk, sam, serverless) are
+  asked by both layers; terraform plan -destroy is not. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an

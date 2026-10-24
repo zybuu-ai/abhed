@@ -656,3 +656,59 @@ func TestSegmentDestructive(t *testing.T) {
 		}
 	}
 }
+
+// Round-18: quoted multi-statement queries, qualified tables, stdin and
+// heredoc SQL, Mongo drops, ORM resets and the wider teardown families.
+func TestDataStoreDestructive(t *testing.T) {
+	cases := map[string]bool{
+		`psql -c "BEGIN; TRUNCATE users; COMMIT;"`:         true,
+		`psql -c "select 1; drop table users"`:             true,
+		`psql -c 'DELETE FROM public.users;'`:              true,
+		`psql -c "DELETE FROM \"users\""`:                  true,
+		`psql -c 'alter table users drop column email'`:    true,
+		"psql <<EOF\nDROP TABLE users;\nEOF":               true,
+		"echo 'DROP DATABASE app;' | psql":                 true,
+		"mysql app <<< 'drop table orders'":                true,
+		"mongosh --eval 'db.users.drop()'":                 true,
+		"mongosh app --eval 'db.users.deleteMany({})'":     true,
+		"npx prisma migrate reset --force":                 true,
+		"npx prisma db push --force-reset":                 true,
+		"rails db:drop":                                    true,
+		"bin/rails db:reset":                               true,
+		"python manage.py flush --noinput":                 true,
+		"php artisan migrate:fresh --force":                true,
+		"php artisan db:wipe --force":                      true,
+		"dotnet ef database drop --force":                  true,
+		"npx sequelize-cli db:drop":                        true,
+		"terragrunt run-all destroy":                       true,
+		"terraform workspace delete prod":                  true,
+		"cdk destroy --force":                              true,
+		"sam delete --no-prompts":                          true,
+		"serverless remove --stage prod":                   true,
+		"eksctl delete cluster --name prod":                true,
+		"aws s3api delete-bucket --bucket b":               true,
+		"aws lambda delete-function --function-name api":   true,
+		"aws ecr batch-delete-image --repository-name app": true,
+		"az storage blob delete-batch -s data":             true,
+		"kubectl delete PVC data-0":                        true,
+		"git push --mirror origin":                         true,
+
+		"echo 'select 1' | psql":                             false,
+		"psql app <<'SQL'\nselect count(*) from users;\nSQL": false,
+		`psql -c "select 1; select 2"`:                       false,
+		"psql -c 'delete from users where id = 1'":           false,
+		"npx prisma migrate dev":                             false,
+		"npx prisma generate":                                false,
+		"python manage.py migrate":                           false,
+		"rails db:migrate":                                   false,
+		"terraform plan -destroy":                            false,
+		"aws ec2 describe-instances":                         false,
+		"mongosh app --eval 'db.users.find({})'":             false,
+	}
+	for cmd, want := range cases {
+		what, got := IsDestructive(cmd)
+		if got != want {
+			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
