@@ -748,7 +748,7 @@ func wordText(src string, w *syntax.Word) string {
 	for _, p := range w.Parts {
 		switch x := p.(type) {
 		case *syntax.Lit:
-			b.WriteString(x.Value)
+			b.WriteString(unescape(x.Value, false))
 		case *syntax.SglQuoted:
 			b.WriteString(x.Value)
 		case *syntax.DblQuoted:
@@ -757,11 +757,35 @@ func wordText(src string, w *syntax.Word) string {
 				if !ok {
 					return raw(src, w)
 				}
-				b.WriteString(l.Value)
+				b.WriteString(unescape(l.Value, true))
 			}
 		default:
 			return raw(src, w)
 		}
+	}
+	return b.String()
+}
+
+// unescape removes backslashes as bash does: outside quotes a backslash
+// escapes any character (and a backslash-newline joins lines); inside double
+// quotes only before $, `, ", \ and newline.
+func unescape(v string, dquoted bool) string {
+	if !strings.Contains(v, `\`) {
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		if v[i] == '\\' && i+1 < len(v) {
+			n := v[i+1]
+			if !dquoted || strings.IndexByte("$`\"\\\n", n) >= 0 {
+				if n != '\n' {
+					b.WriteByte(n)
+				}
+				i++
+				continue
+			}
+		}
+		b.WriteByte(v[i])
 	}
 	return b.String()
 }

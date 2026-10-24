@@ -358,6 +358,11 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// rules do not judge precisely, it is asked about when its words look
 	// destructive or an operand lies outside own ground.
 	if !cmd.argsLiteral && !preciseProg(prog) && !containerProg(prog) {
+		if runsUnreadArg(cmd, args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s is given a program or code only running the line would give, so the check cannot read what it runs; %s", prog, remit(c)),
+				Advice:    "write the program and its code plainly, or confirm this is meant"}
+		}
 		if looksDestructive(args) || r.strayOperand(k, c, args) {
 			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 				Rationale: fmt.Sprintf("%s is given arguments only running the line would give, and they look like they delete or reach outside the task's ground; %s", prog, remit(c)),
@@ -812,7 +817,7 @@ func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int) *Ver
 	}
 	s, ok := parseScript(code)
 	if !ok {
-		return nil // unparseable handed code: the text scans above are the check
+		return ask // handed code the check cannot parse fails closed
 	}
 	for i := range s.cmds {
 		s.cmds[i].dirKnown, s.cmds[i].vars = false, nil
@@ -826,6 +831,42 @@ func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int) *Ver
 		return ask
 	}
 	return nil
+}
+
+// runsUnreadArg reports an unknown runner whose program operand (its first
+// operand, with more words after it) or the value of a code flag (-c, -e,
+// --command, --eval, -x, --exec) is not a plain literal — a variable, a
+// substitution, or a quote-split word — so what it runs resolves only when
+// the line runs.
+func runsUnreadArg(cmd command, args []string) bool {
+	if cmd.call == nil {
+		return false
+	}
+	off := len(cmd.words) - len(args)
+	plain := func(i int) bool {
+		j := off + i
+		if j < 0 || j >= len(cmd.call.Args) {
+			return true
+		}
+		_, ok := plainWord(cmd.call.Args[j])
+		return ok
+	}
+	first := true
+	for i, a := range args {
+		switch a {
+		case "-c", "-e", "--command", "-Command", "--eval", "-x", "--exec":
+			if i+1 < len(args) && !plain(i+1) {
+				return true
+			}
+		}
+		if first && !strings.HasPrefix(a, "-") {
+			first = false
+			if !plain(i) && i+1 < len(args) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // maxHandDepth bounds how deep handed code is followed; deeper code is asked about.
