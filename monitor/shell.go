@@ -111,6 +111,32 @@ func collect(src string, f *syntax.File, s *script) {
 				s.setsPath = true
 			}
 		case *syntax.Stmt:
+			if d, ok := x.Cmd.(*syntax.DeclClause); ok {
+				// export/declare NAME=value: collect as a command so its
+				// assignments (e.g. a git command-env variable) can be judged.
+				var c command
+				c.words = append(c.words, d.Variant.Value)
+				c.argsLiteral = true
+				c.env = map[string]string{}
+				for _, a := range d.Args {
+					if a.Name == nil {
+						continue
+					}
+					v := ""
+					if a.Value != nil {
+						v = wordText(src, a.Value)
+						if !literalText(a.Value) {
+							c.argsLiteral = false
+						}
+					}
+					c.words = append(c.words, a.Name.Value+"="+v)
+					c.env[a.Name.Value] = v
+				}
+				if len(c.words) > 1 {
+					s.cmds = append(s.cmds, c)
+				}
+				return true
+			}
 			call, ok := x.Cmd.(*syntax.CallExpr)
 			if !ok {
 				return true
