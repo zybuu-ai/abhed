@@ -2042,6 +2042,41 @@ func prodScope(args []string) bool {
 	return false
 }
 
+// gitPushDestructive reports a push that deletes a remote branch (--delete,
+// -d, :branch) or force-pushes a shared branch (main, master, release*, prod*).
+func gitPushDestructive(args []string) (string, bool) {
+	ops := operands(args)
+	if len(ops) == 0 || ops[0] != "push" {
+		return "", false
+	}
+	if hasFlag(args, "--delete") || hasFlag(args, "-d") {
+		return "delete a remote branch", true
+	}
+	force := hasFlag(args, "--force") || hasFlag(args, "-f") || hasFlag(args, "--force-with-lease") ||
+		hasPrefix(args, "--force-with-lease=") || shortFlag(args, 'f')
+	for _, ref := range ops[1:] {
+		if strings.HasPrefix(ref, ":") {
+			return "delete a remote branch", true
+		}
+		if strings.HasPrefix(ref, "+") {
+			force = true
+		}
+	}
+	if force {
+		for _, ref := range ops[1:] {
+			dst := ref
+			if _, d, ok := strings.Cut(ref, ":"); ok {
+				dst = d
+			}
+			dst = strings.TrimPrefix(strings.TrimPrefix(dst, "+"), "refs/heads/")
+			if dst == "main" || dst == "master" || strings.HasPrefix(dst, "release") || strings.HasPrefix(dst, "prod") {
+				return "force-push a shared branch", true
+			}
+		}
+	}
+	return "", false
+}
+
 // dataInfraDestructive mirrors the data-store and infrastructure teardown the
 // destructive step asks about (dropping a database, flushing a cache,
 // destroying infrastructure, deleting cloud resources), so the supervisor asks
@@ -2103,6 +2138,11 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 	if what, ok := dataInfraDestructive(prog, args); ok {
 		return what, true
 	}
+	if prog == "git" {
+		if what, ok := gitPushDestructive(args); ok {
+			return what, true
+		}
+	}
 	switch prog {
 	case "docker", "podman", "nerdctl":
 		verb, idx, ok := containerAction(prog, args)
@@ -2121,6 +2161,12 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 			return "prune or reset the container system", true
 		case verb == "volume" && (first == "rm" || first == "remove" || first == "prune"):
 			return "delete container volumes", true
+		case verb == "prune" || verb == "network" && first == "prune": // container prune, network prune
+			return "prune containers or networks", true
+		case (verb == "stack" || verb == "service") && (first == "rm" || first == "remove"):
+			return "remove a swarm stack or service", true
+		case verb == "swarm" && first == "leave" && forced:
+			return "force a node out of the swarm", true
 		case verb == "image" && first == "prune" && (hasFlag(rest, "--all") || shortFlag(rest, 'a')):
 			return "remove every container image", true
 		case (verb == "rmi" || verb == "image" && (first == "rm" || first == "remove")) && forced:

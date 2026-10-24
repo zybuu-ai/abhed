@@ -219,6 +219,9 @@ var segmentPatterns = []struct {
 }{
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bsystem\s+(?:prune|reset)\b`), "container system prune/reset"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bvolume\s+(?:rm|remove|prune)\b`), "container volume delete"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:container|network)\s+prune\b`), "prune containers or networks"},
+	{regexp.MustCompile(`\b(?:docker|podman)\b.*\b(?:stack|service)\s+(?:rm|remove)\b`), "remove a swarm stack or service"},
+	{regexp.MustCompile(`\b(?:docker|podman)\b.*\bswarm\s+leave\b.*(?:\s-f\b|\s--force\b)`), "force a node out of the swarm"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bimage\s+prune\b.*(?:\s-[a-zA-Z]*a|\s--all\b)`), "remove all container images"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:rmi|image\s+(?:rm|remove))\b.*(?:\s-[a-zA-Z]*f|\s--force\b)`), "forced image removal"},
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bdelete\b.*[\s,](?:ns|namespaces?|projects?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all|crds?|customresourcedefinitions?|storageclass(?:es)?|sc|clusterroles?|clusterrolebindings?)(?:[\s/,.]|$)`), "cluster delete of namespaces, volumes, definitions or every resource"},
