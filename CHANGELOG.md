@@ -533,7 +533,8 @@ out):
   `LockSessionTree`, `OCSFWriter`, `ScanCommitted` and `VerifyAuditChain`; `(*Sandboxes).AuditChainName` and
   `(*Sandboxes).AuditLinks`; `AuditChainName`, `CommitPos`,
   `ParseCommitPos`, `PostgresOf`, `OCSFCursor`, `OCSFWriter` and
-  `ErrOCSFStandby`; and `ChainReport.PreChain` and `ChainReport.Reason`.
+  `ErrOCSFStandby`; `Config.Logger`; and `ChainReport.PreChain` and
+  `ChainReport.Reason`.
 - `store/local`: the `*Store` methods `Chain`, `LinesFrom`, `SessionIDs`
   and `Size`; `AuditChain`, `AuditChainName`, `AuditFile`, `AuditPath`,
   `AuditReport`, `AuditRows`, `LineHash`, `OpenAudit` and `VerifyAudit`;

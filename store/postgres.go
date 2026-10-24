@@ -52,6 +52,7 @@ type Postgres struct {
 
 	owners        OwnerPolicy
 	ownerAccounts func() ([]*auth.User, error)
+	log           *slog.Logger
 
 	// keys caches the payload ciphers of sessions written lately; see seal.go.
 	keys keyCache
@@ -84,6 +85,8 @@ type Config struct {
 	// position and hash) at the end of each run, for a witness outside the
 	// database. It must not block; an error it has is its own to report.
 	Anchor func(tenant, session string, pos int64, hash string)
+	// Logger, when set, is where the store's own warnings go; nil is slog's default.
+	Logger *slog.Logger
 }
 
 func DefaultConfig(dsn string) Config {
@@ -150,7 +153,7 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts,
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts, log: cfg.Logger,
 		anchor: cfg.Anchor}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
@@ -1333,4 +1336,12 @@ func redactDSN(dsn string) string {
 		}
 	}
 	return dsn
+}
+
+// logger is the store's logger, slog's default when none was given.
+func (p *Postgres) logger() *slog.Logger {
+	if p.log != nil {
+		return p.log
+	}
+	return slog.Default()
 }
