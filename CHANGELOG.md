@@ -343,9 +343,9 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 168 planted wrong claims none is shown as verified and 18 are
-  contradicted (all from cited, conflicting evidence), all 50 true controls
-  are verified, and none of the 102 true or neutral claims is
+  of 185 planted wrong claims none is shown as verified and 28 are
+  contradicted (all from cited, conflicting evidence), all 54 true controls
+  are verified, and none of the 114 true or neutral claims is
   contradicted; the test holds those figures as a floor. A fact a cited
   result is silent on leaves a statement unverified, never contradicted;
   counts are compared by a fixed list of outcome, action and state words,
@@ -355,10 +355,13 @@ All notable changes to Abhed are recorded here. The format follows
   narrowed count ("in the auth package") is never contradicted by a whole
   run's; a statement giving a unit or key a before and an after value is
   not contradicted when one is shown, if both say the same of it; any pass
-  said of tests, "9 tests passed" included, is verified only by a whole
-  test run that exited 0, and one that says every test passed, in any
-  wording ("all 12", "12/12", "12 out of 12", "12 tests all passed"), is
-  contradicted by a cited failed run; a bare "9 passed" counts tests only
+  said of tests, "9 tests passed" and "9 passed, 3 failed" included, is
+  verified only by a whole test run that exited 0, whatever else the
+  statement says ("fixed the failing test; all 12 pass"), and one that says
+  every test passed, in any wording ("all 12", "12/12", "12 out of 12", "12
+  tests all passed", ", all of them"), is contradicted by a cited failed
+  run, while "in all", "after all" and "each in under a second" are only
+  counts; a bare "9 passed" counts tests only
   from a test run; a test run given any variable but a colour switch, or
   run through `pipenv run` or `hatch run`, is not a whole run; a write or
   edit's own report is no evidence for its path; and a statement about a
