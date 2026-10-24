@@ -550,8 +550,8 @@ func TestStandbyInWriteMeansAFullScanNext(t *testing.T) {
 	t.Fatal("after standing by, the sink never scanned every session and s-2 was not written")
 }
 
-// A session the record no longer holds is dropped, not retried: it leaves
-// no backoff behind, and the feed of the other sessions goes on.
+// A session the record no longer holds reads as no lines: it stops counting
+// as failing, leaves no backoff behind, and the feed of the others goes on.
 func TestAGoneSessionDoesNotHoldTheFile(t *testing.T) {
 	cur := &scriptedCursors{failFor: "gone"}
 	cur.failLoad.Store(1)
@@ -560,9 +560,7 @@ func TestAGoneSessionDoesNotHoldTheFile(t *testing.T) {
 	var seq atomic.Int64
 	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: path, Cursors: cur, Poll: 10 * time.Millisecond,
 		Read: func(id string, _ ocsf.Cursor) ([]ocsf.Line, error) {
-			if id == "gone" {
-				return nil, fmt.Errorf("session gone: %w", os.ErrNotExist)
-			}
+			// A deleted session reads as no lines, as both stores give it.
 			return nil, nil
 		},
 		Feed: func() ([]ocsf.Line, func() error, error) {
@@ -582,5 +580,41 @@ func TestAGoneSessionDoesNotHoldTheFile(t *testing.T) {
 	// 400 ms and on) would leave a handful.
 	if n := len(readEventsIfAny(t, path)); n < 40 {
 		t.Fatalf("the feed wrote %d events in a second; the gone session held the file", n)
+	}
+}
+
+// A session that failed, then caught up with nothing to write, no longer
+// counts as failing: the next failure starts again at the first wait.
+func TestCaughtUpWithNothingEndsTheBackoff(t *testing.T) {
+	cur := &scriptedCursors{failFor: "s"}
+	cur.rows = map[string]ocsf.Cursor{}
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	sink, err := ocsf.OpenSink(ocsf.SinkOptions{Path: filepath.Join(t.TempDir(), "c.jsonl"), Cursors: cur,
+		Read: func(string, ocsf.Cursor) ([]ocsf.Line, error) { return nil, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	fail := func(seq int64) {
+		cur.failLoad.Store(1)
+		sink.Add(ocsf.Line{Event: agent.Event{ID: fmt.Sprintf("s-%d", seq), SessionID: "s", Seq: seq, Type: agent.EvUserMessage,
+			Payload: []byte(`{"text":"m"}`), Actor: agent.ActorUser, Trust: agent.Trusted, CreatedAt: at}})
+		deadline := time.Now().Add(5 * time.Second)
+		for cur.failLoad.Load() != 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	fail(1)
+	time.Sleep(20 * time.Millisecond)
+	if got := sink.Backoff(); got != ocsf.MinBackoff() {
+		t.Fatalf("the first failure waits %v, want %v", got, ocsf.MinBackoff())
+	}
+	// The backoff ends, the catch-up finds nothing to write, and the session
+	// is caught up.
+	time.Sleep(ocsf.MinBackoff() + 100*time.Millisecond)
+	fail(2)
+	time.Sleep(20 * time.Millisecond)
+	if got := sink.Backoff(); got != ocsf.MinBackoff() {
+		t.Fatalf("a failure after catching up waits %v, want %v again: the session still counted as failing", got, ocsf.MinBackoff())
 	}
 }
