@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.8
 
+- First run now writes the Ollama model you choose as `"type": "ollama"`
+  (it wrote `openai-compatible`). Both use the same local sampling set; the
+  `ollama` type does not send `parallel_tool_calls`. A configuration already
+  written is not changed. The new check that gets a local Ollama model
+  working applies to `"type": "ollama"` at any address and to an
+  OpenAI-compatible `base_url` on port 11434; for an Ollama on another port
+  written as `openai-compatible`, set its `type` to `ollama`, or move
+  `~/.abhed/config.json` aside and run `abhed` again to redo first run.
 - The supervisor is on by default, with its rules judge. Every surface
   reviews each call after policy, and a call it has a concern with is asked
   about, or refused with a correction for the model: destructive commands

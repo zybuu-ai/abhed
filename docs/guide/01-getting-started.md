@@ -157,7 +157,9 @@ The first time you run `abhed` on a terminal with no configuration
 anywhere, it offers to set one up:
 
 - It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
-  its models.
+  its models. A model chosen from that list is written as `"type":
+  "ollama"`, so later sessions check that Ollama and offer what it lacks,
+  on any port.
 - Or it takes an OpenAI-compatible endpoint: its base URL, and the **name**
   of the environment variable that holds its key. A key itself is never
   written: an answer that looks like a key (a known prefix such as `sk-`,

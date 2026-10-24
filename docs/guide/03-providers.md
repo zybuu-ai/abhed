@@ -163,7 +163,7 @@ you. A provider counts as Ollama's when its `type` is `ollama`, or when an
 `openai-compatible` (or `openai`) `base_url` is on port 11434. Any other
 OpenAI-compatible endpoint is not taken for Ollama, even at the address
 `OLLAMA_HOST` names: one that is down is named as down, with no offer. Give
-an Ollama on another port `"type": "ollama"`. A server there that answers
+an Ollama on another port `"type": "ollama"`, as first run writes it. A server there that answers
 the OpenAI API (`/v1/models`) but not Ollama's `/api/version`, such as a
 proxy in front of Ollama, counts as running.
 
