@@ -28,6 +28,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
@@ -108,6 +109,9 @@ type Set struct {
 	// Egress judges Abhed's own requests under sandbox.network allowlist; nil
 	// otherwise. Build puts it in force until Close.
 	Egress *egress.Guard
+	// Toolchains are the toolchains commands get and the toolchain tool
+	// installs; nil when the cache has no home.
+	Toolchains *toolchain.Session
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -132,6 +136,8 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		o.Bash.Secrets = o.Vault.Env
 		o.Bash.SecretNames = VaultNames(o.Vault)
 	}
+	tc := Toolchains(cfg, o.Workspace, o.Sandbox)
+	o.Bash = withToolchains(o.Bash, tc)
 	s := &Set{
 		Egress: OwnEgress(cfg),
 		Registry: tools.NewRegistry(
@@ -140,8 +146,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.ShellOutput{}, agent.ShellKill{},
 			agent.TodoTool{},
 		),
-		Skills: skills.NewRegistry(),
-		Agents: agent.BuiltinDefinitions(),
+		Toolchains: tc,
+		Skills:     skills.NewRegistry(),
+		Agents:     agent.BuiltinDefinitions(),
+	}
+	if tc != nil && !tc.Off {
+		s.Registry.Add(toolchain.Tool{S: tc})
 	}
 	// In force before anything below connects, MCP servers included.
 	// An unguarded set too, so a request naming no set amid a mix is refused.

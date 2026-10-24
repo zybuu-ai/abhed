@@ -279,6 +279,36 @@ modal says the app listens where its own settings say.
 |---|---|
 | Security | The engine acts only on a loopback Ollama, as the engine's user with a minimal environment, never with `sudo`. A server it starts with `ollama serve` (always, when the program is found) is bound to `127.0.0.1`; the macOS app, opened by its path only when the program is missing, binds where its own settings say, which the engine does not control. `model.ollama.assist` (managed-lockable) is applied whatever Studio sends; inside an agent's command every action is refused. No tool exposes any of this, so the agent cannot start, install or pull. A server it started keeps running when the engine exits. Every attempt and outcome is recorded with `by: "user"` and `surface: "acp"`. |
 
+### 3.2b Language toolchains
+
+The agent's commands get the language toolchains Abhed installed, first on
+`PATH` ([Toolchains](../guide/29-toolchains.md)). The agent installs one with
+its `toolchain` tool, as an ordinary ask. Studio may offer the same from its
+own UI, for instance when the workspace needs a language that is missing, with
+these methods (`toolchains` in the session's `_meta` features):
+
+| Method | |
+|---|---|
+| `_abhed/toolchain/status` | `{sessionId}` → `{enabled, platform, active: Installed[], installed: Installed[], pins}`: what the session's commands get now (one toolchain per language), everything installed for the platform the commands run on (`linux-<arch>` under a container), and the versions the workspace pins, by language (`{spec: {Lang, Version}, file}`). Reads only. Not recorded |
+| `_abhed/toolchain/offer` | `{sessionId, lang, version?}` → `{version, plan: {spec, why, artifact: {version, url, digest, size, format, source}, installed?}}`: what an install would fetch and why that version (`requested`, `pinned by <file>`, `latest stable`). Asks the official release source; installs nothing. Not recorded |
+| `_abhed/toolchain/install` | `{sessionId, lang, version?, installId}` → `{installed, dir, bin}` once it is verified and in place. While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"` |
+| `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 and nothing partial is left |
+
+**Errors.** `sandbox.toolchains: "off"` and an install from inside an agent's
+command are -32001; an unknown language or a version that is not plain
+numbers is -32602; a source that has no such build, a download that fails or
+does not match its published checksum is -32000 with the reason.
+
+**Studio's side.** Before `install`, a modal showing the language, version and
+why, the source, the URL, the size and the checksum from `offer`, default No.
+The modal is the person's consent; the engine records it as such. A *Stop*
+button sends `_abhed/toolchain/cancel`. After an install, the next command
+of the agent or the terminal finds the toolchain on `PATH`.
+
+| | |
+|---|---|
+| Security | Downloads go only to each language's official release hosts, redirects included, and are checked against the checksum the project publishes (Ruby's against digests pinned in Abhed). A toolchain is unpacked into the per-user cache, refusing any entry or link that leaves it, and made read-only; commands can read it, never change it. Nothing is installed system-wide or with `sudo`. `sandbox.toolchains` (managed-lockable) is applied whatever Studio sends. |
+
 ### 3.3 Slash commands
 
 `available_commands_update` (spec), sent after `session/new` and

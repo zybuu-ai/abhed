@@ -50,6 +50,13 @@ func Broker(workspace string, tier func() sandbox.Tier, netOpen bool, command fu
 	}
 }
 
+// Brokered reports whether line is a git command run on the host for the
+// sandbox, which a wrapper must pass on as it is.
+func Brokered(line string) bool {
+	_, ok := brokered(line)
+	return ok
+}
+
 // noProtocol names no transport git has, so git reaches no remote.
 const noProtocol = "abhed-none"
 

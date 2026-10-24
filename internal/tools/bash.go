@@ -65,6 +65,9 @@ type Bash struct {
 	// Forward, when set, passes named variables already in a command's Env
 	// into what Sandbox built, in place of sandbox.ForwardEnv.
 	Forward func(cmd *exec.Cmd, names []string)
+	// NotFound, when set, says what a command run in dir that could not
+	// find program can do about it, such as install the toolchain; "" says nothing.
+	NotFound func(dir, program string) string
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -665,7 +668,9 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	note := ""
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
-	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
+	if missing := b.notFoundNote(s.Cwd, content, exitCode); missing != "" {
+		content = withNote(content, missing)
+	} else if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
 		content = withNote(content, networkHint)
 	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
@@ -679,6 +684,24 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 		NoOutput:    noOutput,
 		SandboxNote: note,
 	}
+}
+
+// notFoundRE finds a program the shell could not find: bash's "go: command
+// not found", dash's "sh: 1: go: not found", env's "env: 'node': No such file".
+var notFoundRE = regexp.MustCompile(`(?m)(?:^|: )'?([A-Za-z0-9_.+-]{1,40})'?: (?:command not found|not found|No such file or directory)\s*$`)
+
+// notFoundNote is what NotFound says of the first program a failed command
+// could not find, or "".
+func (b Bash) notFoundNote(dir, content string, exitCode int) string {
+	if b.NotFound == nil || exitCode == 0 {
+		return ""
+	}
+	for _, m := range notFoundRE.FindAllStringSubmatch(content, 8) {
+		if note := b.NotFound(dir, m[1]); note != "" {
+			return note
+		}
+	}
+	return ""
 }
 
 // withNote puts a note after the output with one blank line between, however the output ends.

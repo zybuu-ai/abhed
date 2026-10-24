@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -70,6 +71,11 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		p.Egress, p.AllowNetwork = pol, false
 	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
+	// The toolchain cache, which commands read and never write: a container
+	// mounts it read-only, so the toolchains Abhed installed are there.
+	if root := toolchainCache(cfg); root != "" {
+		p.ReadOnlyPaths = append(append([]string(nil), p.ReadOnlyPaths...), root)
+	}
 	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.ProtectGit, p.GitRequired = cfg.Sandbox.GitProtected()
 	p.ScopeSignals = cfg.Sandbox.ScopeSignals
@@ -492,4 +498,17 @@ func Isolation(cfg config.Config, tier string) tools.Isolation {
 		iso.AllowedHosts, iso.DefaultAllow = pol.AllowedHosts(), pol.DefaultAllow()
 	}
 	return iso
+}
+
+// toolchainCache is the toolchain cache, made so a container can mount it,
+// or "" where sandbox.toolchains is off or it cannot be made.
+func toolchainCache(cfg config.Config) string {
+	if cfg.Sandbox.Toolchains == "off" {
+		return ""
+	}
+	root, err := toolchain.DefaultRoot()
+	if err != nil || os.MkdirAll(root, 0o755) != nil {
+		return ""
+	}
+	return root
 }

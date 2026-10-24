@@ -25,6 +25,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 )
 
 type Config struct {
@@ -1380,6 +1381,14 @@ type SandboxConfig struct {
 	// of allow_network. Managed only.
 	Network       string   `json:"network,omitempty"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
+	// Toolchains is whether Abhed installs a language toolchain a command
+	// needs: "ask" (the default) asks once per language and major version,
+	// "auto" installs without asking, "off" never does. A workspace file may
+	// only make it stricter.
+	Toolchains string `json:"toolchains,omitempty"`
+	// ToolchainsPreapproved are installs that need no ask, such as "go" or
+	// "python@3.12". Not from a workspace file until it is trusted.
+	ToolchainsPreapproved []string `json:"toolchains_preapproved,omitempty"`
 	// MaxMemoryMB applies on every tier but none and the macOS process tier;
 	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
@@ -1813,6 +1822,16 @@ func (c Config) Validate() error {
 		if !slices.Contains(DefaultModeCycle, m) {
 			return fmt.Errorf("cli.mode_cycle may only leave modes out of %s; %q is not one of them",
 				strings.Join(DefaultModeCycle, ", "), m)
+		}
+	}
+	switch c.Sandbox.Toolchains {
+	case "", "ask", "auto", "off":
+	default:
+		return fmt.Errorf("sandbox.toolchains is %q; use ask, auto or off", c.Sandbox.Toolchains)
+	}
+	for _, p := range c.Sandbox.ToolchainsPreapproved {
+		if _, err := toolchain.ParseSpec(p); err != nil {
+			return fmt.Errorf("sandbox.toolchains_preapproved: %w", err)
 		}
 	}
 	switch c.Sandbox.Network {

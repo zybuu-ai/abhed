@@ -122,6 +122,29 @@ func Pins(workspace string) map[string]Pin {
 	return out
 }
 
+// pinFiles are the files Pins reads.
+var pinFiles = []string{"go.mod", ".python-version", ".nvmrc", ".node-version", "rust-toolchain.toml", "rust-toolchain",
+	".java-version", ".ruby-version", "global.json", ".tool-versions"}
+
+// PinsFrom are the pins of the nearest folder at or above dir that has a
+// pin file, as a command run in dir would find its project's.
+func PinsFrom(dir string) map[string]Pin {
+	d := filepath.Clean(dir)
+	for i := 0; i < 32 && d != ""; i++ {
+		for _, f := range pinFiles {
+			if info, err := os.Lstat(filepath.Join(d, f)); err == nil && info.Mode().IsRegular() {
+				return Pins(d)
+			}
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			break
+		}
+		d = up
+	}
+	return map[string]Pin{}
+}
+
 // Choose is the version to install: an explicit request, else the project's
 // pin, else the latest stable.
 func Choose(requested Spec, pins map[string]Pin) (Spec, string) {

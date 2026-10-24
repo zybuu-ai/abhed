@@ -121,6 +121,8 @@ var samples = []sample{
 	{agent.EvOllamaInstall, agent.ActorUser, `{"op":"install","outcome":"failed","provider":"local","model":"qwen3:8b","command":"brew install ollama","source":"the Homebrew formula ollama","consent":"asked","problem":"install_failed","error":"brew install ollama failed: exit status 1","by":"user","surface":"cli"}`},
 	{agent.EvOllamaInstall, agent.ActorUser, `{"op":"install","outcome":"manual","provider":"local","command":"open https://ollama.com/download/mac","consent":"asked","by":"user","surface":"server"}`},
 	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"ok","provider":"local","model":"qwen3:8b","base":"http://127.0.0.1:11434","command":"ollama pull qwen3:8b","source":"https://registry.ollama.ai","bytes":5225388164,"consent":"asked","by":"user","surface":"acp"}`},
+	{agent.EvToolchainInstall, agent.ActorSystem, `{"lang":"go","version":"1.22.5","platform":"linux-arm64","outcome":"ok","why":"pinned by go.mod","source":"the Go project's releases (go.dev/dl)","url":"https://go.dev/dl/go1.22.5.linux-arm64.tar.gz","digest":"sha256:8d7e8f0c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a","bytes":65000000,"consent":"call","by":"agent","surface":"tool"}`},
+	{agent.EvToolchainInstall, agent.ActorUser, `{"lang":"python","version":"3.12","outcome":"refused","error":"installing toolchains is turned off here (sandbox.toolchains off)","by":"user","surface":"acp"}`},
 	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"refused","provider":"local","model":"qwen3:8b","problem":"assist_off","error":"Abhed is set not to install or download anything here","by":"user","surface":"server"}`},
 }
 

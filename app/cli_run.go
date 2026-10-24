@@ -179,6 +179,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
+	must(pol.AddAllow(toolset.ToolchainAllows(cfg)...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
 	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))
