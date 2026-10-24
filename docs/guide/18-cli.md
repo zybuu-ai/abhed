@@ -120,13 +120,23 @@ to do.
 | Command | |
 |---|---|
 | `/model` | pick a configured model: its id, context window, and whether it is local |
-| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on |
+| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on. A local Ollama model is the exception: it is checked first, and what it lacks offered ([A local Ollama model](03-providers.md#a-local-ollama-model)); when it is still not ready you choose whether to switch anyway, and No stays |
+| `/ollama` | check the current model's local Ollama again and offer each missing step (start, install, pull), asking before each |
+| `/ollama forget` | take back "always start Ollama without asking" |
 | `/effort low\|medium\|high` | the reasoning effort, where the provider takes one |
 | `/effort on\|off` | thinking on or off, where the provider has the switch |
 | `/effort default` | back to the provider's own setting |
 
 `/model` offers only configured providers, never an endpoint typed at the
 prompt, and a managed `model.default` is not switched.
+
+`abhed ollama check [provider]` does the same from a shell before any
+session, and is the one place the official Linux install script runs, since
+it may ask for your password; `abhed ollama status [-json]` only reports,
+`abhed ollama models` lists the curated models with their sizes, and `abhed
+ollama forget` takes back "always start". With input piped in, a session
+does not ask: it prints what is wrong and the steps, so a piped line is never
+taken as an answer.
 
 ### Fallback
 

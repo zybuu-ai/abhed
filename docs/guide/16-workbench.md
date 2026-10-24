@@ -20,7 +20,14 @@ on, laid out the way an editor is.
 The composer's model picker, shown when more than one provider is configured,
 chooses the model a new session starts on and switches the open one between
 turns; the status bar names the model the last call went to
-([switching models](03-providers.md#switching-mid-session)).
+([switching models](03-providers.md#switching-mid-session)). For a model a local Ollama serves that is not ready, a card in the
+conversation says what is wrong and lists the steps to run, and offers the
+next one (start Ollama, install it, download the model) with its exact
+command, source and size, asking before it runs. Only an administrator of
+the server, or a request from the server's own host where nobody signs in,
+is offered the step; others see the steps
+([A local Ollama model](03-providers.md#a-local-ollama-model)). The console
+shows the same card.
 
 | Where | What it shows |
 |---|---|

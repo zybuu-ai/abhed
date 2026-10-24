@@ -330,6 +330,12 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
+	// A local Ollama that is down or lacks the model: what is wrong, and the steps.
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
+		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
+			return steps + "\nOr run `abhed ollama check " + name + "`, which offers each step and asks before it runs one."
+		}
+	}
 	switch {
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Sprintf("Nothing is answering at %s (model %q). Start the model server there. %s", where, name, next)

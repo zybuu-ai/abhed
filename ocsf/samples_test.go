@@ -117,6 +117,11 @@ var samples = []sample{
 	{agent.EvSuggestionOffered, agent.ActorSystem, `{"text":"run the tests","turn":2}`},
 	{agent.EvAgentDelta, agent.ActorAgent, `{"text":"do","n":0}`},
 	{agent.EvAgentReasoningDelta, agent.ActorAgent, `{"text":"thi","n":0}`},
+	{agent.EvOllamaStart, agent.ActorUser, `{"op":"start","outcome":"ok","provider":"local","model":"qwen3:8b","base":"http://127.0.0.1:11434","command":"open -a Ollama","pid":4242,"consent":"asked","by":"user","surface":"tui"}`},
+	{agent.EvOllamaInstall, agent.ActorUser, `{"op":"install","outcome":"failed","provider":"local","model":"qwen3:8b","command":"brew install ollama","source":"the Homebrew formula ollama","consent":"asked","problem":"install_failed","error":"brew install ollama failed: exit status 1","by":"user","surface":"cli"}`},
+	{agent.EvOllamaInstall, agent.ActorUser, `{"op":"install","outcome":"manual","provider":"local","command":"open https://ollama.com/download/mac","consent":"asked","by":"user","surface":"server"}`},
+	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"ok","provider":"local","model":"qwen3:8b","base":"http://127.0.0.1:11434","command":"ollama pull qwen3:8b","source":"https://registry.ollama.ai","bytes":5225388164,"consent":"asked","by":"user","surface":"acp"}`},
+	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"refused","provider":"local","model":"qwen3:8b","problem":"assist_off","error":"Abhed is set not to install or download anything here","by":"user","surface":"server"}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

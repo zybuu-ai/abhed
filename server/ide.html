@@ -1923,11 +1923,13 @@ async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ providers = []; }
   if(!Array.isArray(providers)) providers = [];
   const sel = $('mdlpick');
-  if(providers.length < 2) return;
+  // One provider has no picker, but a local Ollama model still gets its card.
+  if(providers.length < 2){ const d = providers.find(p => p.default); if(d) checkOllama(d.name); return; }
   clear(sel);
   for(const p of providers){ const o = el('option', '', modelLabel(p.name, p.model)); o.value = p.name; o.selected = p.default; sel.appendChild(o); }
   sel.dataset.prev = sel.value; sel.hidden = false;
   if(current) showSessionModel(sessionList.find(x => x.id === current));
+  checkOllama(sel.value);
 }
 const modelOf = name => { const p = providers.find(x => x.name === name) || providers.find(x => x.default); return p ? p.model : caps ? caps.model.name : ''; };
 // The picker's choice for a new session, or nothing when it is the default.
@@ -1942,8 +1944,20 @@ function showSessionModel(s){
   const p = providers.find(x => x.name === s.provider) || providers.find(x => x.model === s.model);
   if(p){ sel.value = p.name; sel.dataset.prev = p.name; }
 }
+/*OLLAMA-CARD*/
+// A model a local Ollama serves gets a card when it is not ready: what is
+// wrong, the steps, and the next step for a person who may take it.
+const ollamaCard = {card: null};
+function checkOllama(name){
+  const p = providers.find(x => x.name === name);
+  if(!p || !p.ollama){ if(ollamaCard.card){ ollamaCard.card.remove(); ollamaCard.card = null; } return; }
+  ollamaCard.provider = name; ollamaCard.session = current || '';
+  ollamaCard.mount = n => add(n);
+  abhedOllama.show(ollamaCard);
+}
 async function switchModel(){
   const sel = $('mdlpick');
+  checkOllama(sel.value);
   if(!current){ sel.dataset.prev = sel.value; $('s-model').textContent = modelOf(sel.value); return; }
   sel.disabled = true;
   try{
@@ -1963,6 +1977,7 @@ function openSession(id, state, opts){
   // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
   if(s && s.mode) $('mode').value = s.mode;
   showSessionModel(s);
+  { const d = providers.find(p => p.default); checkOllama((s && s.provider) || (d && d.name)); }
   $('mode').disabled = true; $('mode').title = 'Fixed when the session started. Start a new session to choose another mode.';
   $('s-mode').textContent = 'mode ' + $('mode').value;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);

@@ -62,6 +62,11 @@ func selfAdmin(rest []string) string {
 		if verb != "" && verb != "-h" && verb != "--help" && verb != "help" {
 			return "abhed sandbox " + verb
 		}
+	case "ollama":
+		// Starting, installing or downloading is the person's choice, never a command's.
+		if verb == "check" || verb == "install" || verb == "forget" {
+			return "abhed ollama " + verb
+		}
 	case "migrate":
 		return "abhed migrate"
 	case "admin":

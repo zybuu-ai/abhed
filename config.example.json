@@ -29,7 +29,8 @@
         "extra": { "user": "<sso>" },
         "params": {}
       }
-    }
+    },
+    "ollama": { "assist": "ask" }
   },
   "permissions": {
     "mode": "default",

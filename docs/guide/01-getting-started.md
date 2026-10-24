@@ -143,6 +143,16 @@ ollama serve
 ollama pull qwen3-coder:30b
 ```
 
+You do not have to start Ollama first. When the model you choose is one
+Ollama serves and it is not running, not installed or lacks the model,
+Abhed says so with the commands to run yourself, and offers to start
+Ollama, install it or pull the model, asking before each and showing the
+exact command, where it comes from and its size. Nothing is installed or
+downloaded unless you answer yes, and Abhed does not stop a server it
+started when it exits. `abhed ollama check` does the same from a shell, and
+`abhed ollama models` lists the models it suggests — [A local Ollama
+model](03-providers.md#a-local-ollama-model).
+
 The first time you run `abhed` on a terminal with no configuration
 anywhere, it offers to set one up:
 
@@ -199,7 +209,9 @@ The session opens at once: a check for a container runtime, and for the
 model endpoint, run behind the prompt. The banner says `process or stronger
 (checking)` until the sandbox is chosen, and commands wait for that choice.
 An endpoint that is down is named with what to do about it, and a task
-then fails at once rather than after the retries.
+then fails at once rather than after the retries. For a local Ollama model,
+the session checks Ollama before the first prompt and offers what is
+missing, as above.
 
 Type a task. Abhed reads code, runs commands, edits files, and asks before
 anything it is not permitted to do unattended. A quoted task on the command

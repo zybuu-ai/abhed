@@ -577,6 +577,27 @@ type ModelConfig struct {
 	// Fallback names configured providers, in order, to move to when the
 	// default is unreachable or refuses access. The move is recorded.
 	Fallback []string `json:"fallback,omitempty"`
+	// Ollama is what Abhed may do when a person chooses a model that a
+	// local Ollama serves and it is not working yet.
+	Ollama OllamaConfig `json:"ollama,omitzero"`
+}
+
+// OllamaConfig governs getting a chosen Ollama model working.
+type OllamaConfig struct {
+	// Assist is ask (the default: offer to start Ollama, install it and pull
+	// the model, asking each time), local (offer to start it only; never
+	// install or download) or off (say what is wrong and the steps, and do
+	// nothing). A managed configuration that sets it holds it.
+	Assist string `json:"assist,omitempty"`
+}
+
+// OllamaAssist is model.ollama.assist, ask when unset.
+func (c Config) OllamaAssist() string {
+	switch a := strings.ToLower(strings.TrimSpace(c.Model.Ollama.Assist)); a {
+	case "local", "off":
+		return a
+	}
+	return "ask"
 }
 
 type ProviderConfig struct {
@@ -1912,6 +1933,11 @@ func (c Config) Validate() error {
 	}
 	if err := c.K8s.validateClusters(); err != nil {
 		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Model.Ollama.Assist)) {
+	case "", "ask", "local", "off":
+	default:
+		return fmt.Errorf("unknown model.ollama.assist %q (want ask, local or off)", c.Model.Ollama.Assist)
 	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":

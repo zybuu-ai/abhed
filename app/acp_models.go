@@ -127,7 +127,13 @@ func (c *acpConn) setConfigOption(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.reply(msg.ID, map[string]any{"configOptions": c.configOptions(c.session(p.SessionID))}, nil)
+	s := c.session(p.SessionID)
+	out := map[string]any{"configOptions": c.configOptions(s)}
+	// A local Ollama model that is not ready says so, for Studio's card (§3.2a).
+	if st := c.ollamaMeta(s, value); st != nil {
+		out["_meta"] = map[string]any{acpMetaKey: map[string]any{"ollama": st}}
+	}
+	c.reply(msg.ID, out, nil)
 }
 
 // setModel answers the unstable session/set_model; its result has no fields,
@@ -143,6 +149,9 @@ func (c *acpConn) setModel(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.reply(msg.ID, map[string]any{"_meta": map[string]any{acpMetaKey: map[string]any{
-		"currentModelId": currentModel(m.Models())}}}, nil)
+	meta := map[string]any{"currentModelId": currentModel(m.Models())}
+	if st := c.ollamaMeta(c.session(p.SessionID), p.ModelID); st != nil {
+		meta["ollama"] = st
+	}
+	c.reply(msg.ID, map[string]any{"_meta": map[string]any{acpMetaKey: meta}}, nil)
 }

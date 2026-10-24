@@ -91,6 +91,16 @@ func Text(r Report) string {
 		}
 		b.WriteString("\n")
 	}
+	for _, l := range r.LocalModel {
+		fmt.Fprintf(&b, "  ollama    #%d %s %s: %s", l.Seq, l.Op, l.Model, l.Outcome)
+		if l.Command != "" {
+			fmt.Fprintf(&b, " (%s)", clip(l.Command, 120))
+		}
+		if l.Error != "" {
+			fmt.Fprintf(&b, " — %s", clip(l.Error, 160))
+		}
+		b.WriteString("\n")
+	}
 	if n := r.Network; n != nil {
 		fmt.Fprintf(&b, "  network   %d allowed · %d refused", n.Allowed, n.Denied)
 		if n.WouldDeny > 0 {

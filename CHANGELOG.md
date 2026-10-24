@@ -111,6 +111,30 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A local Ollama model chosen without Ollama running now gets working with
+  you instead of failing. When the chosen model is one a local Ollama serves
+  (at the start of a session, `/model`, `/ollama`, `abhed ollama check`, the
+  workbench and console pickers, and Abhed Studio), Abhed checks whether
+  Ollama is installed, answering and has the model, and says what is wrong
+  with the numbered steps to run yourself. It then offers the next step:
+  starting the server (asked once, with an "always" that `abhed ollama
+  forget` takes back), and installing Ollama or pulling the model (asked
+  every time, showing the exact command, its source and its size, with free
+  disk checked and a warning and a smaller suggestion when memory is short).
+  Nothing is installed or downloaded without a yes, nothing runs with `sudo`,
+  a started server is bound to `127.0.0.1` and is not stopped when Abhed
+  exits. `model.ollama.assist` (`ask`, `local`, `off`) narrows it, and a
+  managed file holds it; on `abhed serve` only an administrator may act; the
+  agent cannot reach it. Each attempt is recorded as `ollama.start`,
+  `ollama.install` or `ollama.pull`, mapped in the OCSF export, shown in
+  HawkEYE, and counted in `abhed_ollama_actions_total`. New: `abhed ollama
+  check|status|models|forget`, `/ollama`, `GET /v1/ollama/status`,
+  `POST /v1/ollama/start|install|pull|forget`, and the ACP methods
+  `_abhed/ollama/*` (feature `ollama`). `abhed ollama models` lists the
+  curated models, each tag checked against the Ollama library: Qwen2.5-Coder
+  7B (`qwen2.5-coder:7b`), Qwen3 8B (`qwen3:8b`), Qwen3-Coder (`qwen3-coder:30b`),
+  Gemma 4 26B (`gemma4:26b`) and Gemma 4 31B (`gemma4:31b`) — [A local Ollama
+  model](docs/guide/03-providers.md#a-local-ollama-model).
 - The Postgres record in commit order, for exporters: each event keeps its
   writing transaction (`commit_tx`, schema version 12; existing rows are not
   rewritten and sort first), and `store.Postgres.ScanCommitted` reads a
@@ -546,6 +570,8 @@ out):
 - `store/sqlite`: the `*Store` methods `AuditChain`, `AuditChainName`,
   `AuditLinks`, `AuditRows` and `VerifyAuditChain`; and `AuditChainName`
   and the type `ChainReport`.
+- For a local Ollama model: `config.OllamaConfig`, `ModelConfig.Ollama` and
+  `Config.OllamaAssist`; `hawkeye.LocalModelStep` and `Report.LocalModel`.
 
 ## [1.2.8] - 2026-10-14
 

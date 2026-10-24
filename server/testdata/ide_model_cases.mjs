@@ -49,4 +49,7 @@ const lines = __root.childNodes.length;
 showSwitch({provider:'a', model:'m', from:'m'});
 check('switching back is its own line, naming both providers', __root.childNodes.length === lines + 1 && lastLine() === 'model switched to a · m (was b · m)');
 
+// A picker asks the Ollama card about the model it shows, on load and on each choice.
+check('the Ollama card is asked about the models chosen', __ollama.length >= 2 && __ollama.includes('a') && __ollama.includes('b'));
+
 if(!ok) process.exit(1);

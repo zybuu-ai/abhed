@@ -34,6 +34,9 @@ type Report struct {
 	// PolicyLayers are the policy layers an edition added to the session, as
 	// its policy.layer events recorded them, in order.
 	PolicyLayers []PolicyLayer `json:"policy_layers,omitempty"`
+	// LocalModel are the person's attempts to start, install or pull a
+	// local Ollama for the session's model, as ollama.* events recorded them.
+	LocalModel []LocalModelStep `json:"local_model,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
@@ -174,6 +177,12 @@ type PolicyStats struct {
 }
 
 // PolicyLayer is one policy.layer event: the rules an edition added.
+// LocalModelStep is one ollama.start, ollama.install or ollama.pull.
+type LocalModelStep struct {
+	Seq int64 `json:"seq"`
+	agent.OllamaAction
+}
+
 type PolicyLayer struct {
 	Seq      int64    `json:"seq"`
 	Name     string   `json:"layer"`

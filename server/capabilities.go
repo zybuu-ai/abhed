@@ -20,7 +20,7 @@ import (
 //go:embed ide.html
 var ideHTML string
 
-var idePage = brandify(ideHTML)
+var idePage = brandify(withOllamaCard(ideHTML))
 
 // The editor and terminal components are built into the binary, under their
 // own licences (ide/vendor/NOTICE), so the page still loads nothing from anywhere.

@@ -110,6 +110,12 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				remote[a.CallID] = remoteInfo{name: name, ns: ns, what: clip(what, 2000), where: a.Target}
 			}
 
+		case agent.EvOllamaStart, agent.EvOllamaInstall, agent.EvOllamaPull:
+			var a agent.OllamaAction
+			if json.Unmarshal(e.Payload, &a) == nil {
+				r.LocalModel = append(r.LocalModel, LocalModelStep{Seq: e.Seq, OllamaAction: a})
+			}
+
 		case agent.EvPolicyLayer:
 			var l PolicyLayer
 			if json.Unmarshal(e.Payload, &l) == nil {
