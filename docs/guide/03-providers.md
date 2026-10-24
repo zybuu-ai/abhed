@@ -245,13 +245,16 @@ agent's command `abhed ollama check`, `install` and `forget` are refused. On
 may take them (or, where nobody signs in, a request from the host itself);
 anyone else sees the message and the steps.
 
-**Recorded.** Every attempt, and how it ended, is an event in the session's
-record, attributed to you: `ollama.start`, `ollama.install` and
-`ollama.pull`, with the command shown, the outcome (`ok`, `failed`,
-`declined`, `refused`, `cancelled`, or `manual` when the step was left to
-you) and why. HawkEYE lists them under *Local model (Ollama)*, the OCSF
-export maps them ([OCSF](30-ocsf-and-logs.md#classes)), and `abhed serve`
-counts them in `abhed_ollama_actions_total` and logs them. `abhed ollama
+**Recorded.** An attempt made for a session, and how it ended, is an event
+in that session's record, attributed to you: `ollama.start`,
+`ollama.install` and `ollama.pull`, with the command shown, the outcome
+(`ok`, `failed`, `declined`, `refused`, `cancelled`, or `manual` when the
+step was left to you) and why. HawkEYE lists them under *Local model
+(Ollama)*, the OCSF export maps them ([OCSF](30-ocsf-and-logs.md#classes)),
+and `abhed serve` counts the recorded ones in `abhed_ollama_actions_total`.
+An attempt from a model picker that belongs to no session, or one made while
+a session is mid-turn, is not in a record or the metric; it still reaches
+the admin audit and the log, which cover every attempt. `abhed ollama
 check` records its attempts in a short session of its own, which `abhed
 sessions` lists and `abhed hawkeye <id>` reports on.
 

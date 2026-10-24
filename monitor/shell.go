@@ -18,6 +18,9 @@ type command struct {
 	// stdin is text a here-string or here-document gives the command, which
 	// an interpreter reads as its program.
 	stdin []string
+	// literal is set when every word, assignment value, redirection and
+	// here-document body of the command is literal text, with no expansion.
+	literal bool
 	// dir is the directory the command runs in; dirKnown says the rules may
 	// rely on it. It is known only along a plain top-level && chain (see
 	// chainDirs); everywhere else it is unknown.
@@ -41,9 +44,6 @@ type script struct {
 	// placed against the session's home. ~ depends on HOME, not the working
 	// directory, so this is a line-level fact, not per command.
 	homeWrites bool
-	// pipesIntoCode is set when a pipe feeds a shell or interpreter, which
-	// reads what it is piped as code to run.
-	pipesIntoCode bool
 }
 
 // parseScript reads a shell line, starting at the script's own directory.
@@ -80,10 +80,6 @@ func collect(src string, f *syntax.File, s *script) {
 			if x.Name != nil {
 				s.funcs[x.Name.Value] = true
 			}
-		case *syntax.BinaryCmd:
-			if (x.Op == syntax.Pipe || x.Op == syntax.PipeAll) && readsPipedCode(x.Y) {
-				s.pipesIntoCode = true
-			}
 		case *syntax.Assign:
 			if x.Name != nil && x.Name.Value == "PATH" {
 				s.setsPath = true
@@ -93,7 +89,7 @@ func collect(src string, f *syntax.File, s *script) {
 			if !ok {
 				return true
 			}
-			c := command{call: call}
+			c := command{call: call, literal: readLeaf(x)}
 			for _, w := range call.Args {
 				c.words = append(c.words, wordText(src, w))
 			}
@@ -360,28 +356,8 @@ func readLeaf(leaf *syntax.Stmt) bool {
 	return true
 }
 
-// readsPipedCode reports a statement that is a shell or interpreter which
-// reads what it is piped as the code to run (echo … | bash, … | python3).
-func readsPipedCode(st *syntax.Stmt) bool {
-	call, ok := st.Cmd.(*syntax.CallExpr)
-	if !ok {
-		return false
-	}
-	var words []string
-	for _, w := range call.Args {
-		v, ok := plainWord(w)
-		if !ok {
-			return false
-		}
-		words = append(words, v)
-	}
-	prog, _ := (command{words: words}).program()
-	base := path.Base(prog)
-	return readsStdinCode(base)
-}
-
 // homeWriterBuiltins write a variable by name, so they may write HOME.
-var homeWriterBuiltins = map[string]bool{"read": true, "mapfile": true, "readarray": true,
+var homeWriterBuiltins = map[string]bool{"read": true, "mapfile": true, "readarray": true, "getopts": true,
 	"eval": true, "source": true, ".": true}
 
 // declMayWriteHome reports an export/declare/local/readonly/typeset that may
