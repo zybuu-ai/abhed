@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -240,7 +241,15 @@ func commitFeed(pg *store.Postgres, w *store.OCSFWriter) func() ([]ocsf.Line, fu
 		}
 		pos, err := store.ParseCommitPos(saved)
 		if err != nil {
-			return nil, nil, err
+			// A place that cannot be read counts as older than any: the feed goes
+			// on from the end, as a sink's first start does, rather than stop.
+			end, eerr := pg.CommitEnd(ctx)
+			if eerr != nil {
+				return nil, nil, eerr
+			}
+			slog.Warn("OCSF file: the saved place in commit order cannot be read; going on from the end, events since the last good place are not exported",
+				"error", err, "from", end.String())
+			return nil, nil, w.SavePos(end.String())
 		}
 		const batch = 500
 		var lines []ocsf.Line
