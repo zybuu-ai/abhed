@@ -74,8 +74,13 @@ func (a Assist) May(op string, t Target, st Status) *Problem {
 	case !t.Loopback:
 		return &Problem{Kind: KindRemote, Message: t.API + " is on another machine; Abhed acts only on this one.", Steps: steps, Retry: true}
 	case !a.Admin:
+		first := "On the server's host, as the user that runs abhed serve, do the steps below"
+		if t.Provider != "" {
+			first = "On the server's host, as the user that runs abhed serve and with its configuration: abhed ollama check " + t.Provider +
+				"   (it shows each step and asks first), or do the steps below there"
+		}
 		return &Problem{Kind: KindNotAdmin, Message: "Only a signed-in administrator of this server can start, install or download Ollama on it.",
-			Steps: append([]string{"On the server's host, in a terminal: abhed ollama check " + t.Provider + "   (it shows each step and asks first), or do the steps below there"}, steps...), Retry: true}
+			Steps: append([]string{first}, steps...), Retry: true}
 	case a.Mode == ModeOff:
 		return &Problem{Kind: KindAssistOff, Message: "Abhed is set not to start, install or download Ollama here (model.ollama.assist is off).", Steps: steps, Retry: true}
 	case a.Mode == ModeLocal && op != OpStart:
@@ -127,9 +132,13 @@ func (a Assist) Start(ctx context.Context, t Target, st Status, consent string) 
 		a.Note(OpStart, agent.OllamaRefused, t, p)
 		return Started{}, p
 	}
-	lock := startLock(t.API)
-	lock.Lock()
-	defer lock.Unlock()
+	slot := startSlot(t.API)
+	select {
+	case slot <- struct{}{}:
+		defer func() { <-slot }()
+	case <-ctx.Done():
+		return Started{}, &Problem{Kind: KindCancelled, Message: "Stopped waiting for another start of Ollama to finish.", Steps: a.Env.Steps(t, st), Retry: true}
+	}
 	if v, err := a.Env.version(ctx, t); err == nil {
 		return Started{Version: v}, nil // another request started it
 	}

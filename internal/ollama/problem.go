@@ -87,14 +87,16 @@ func (e Env) installSteps() []string {
 }
 
 // startStep is the person's own command to start the server.
+// It leads with `ollama serve` bound to loopback, as Abhed itself starts it.
 func (e Env) startStep(t Target, st Status) string {
+	serve := "OLLAMA_HOST=" + t.serveHost() + " ollama serve"
 	switch {
-	case e.GOOS == "darwin" && st.App != "" && t.Default():
-		return "open -a Ollama   (or, in a terminal: ollama serve)"
 	case e.GOOS == "windows":
-		return "Start Ollama from the Start menu, or run: ollama serve"
+		return "set OLLAMA_HOST=" + t.serveHost() + " && ollama serve   (or start Ollama from the Start menu, which listens where its own settings say)"
+	case e.GOOS == "darwin" && st.App != "" && t.Default():
+		return serve + "   (or open the Ollama app, which listens where its own settings say)"
 	}
-	return t.hostPrefix() + "ollama serve"
+	return serve
 }
 
 func (e Env) problem(kind, msg string, t Target, st Status) *Problem {

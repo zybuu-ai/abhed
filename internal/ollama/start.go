@@ -77,11 +77,13 @@ type Started struct {
 
 // starting serializes starts per target, so two requests cannot launch two
 // servers on one port.
-var starting sync.Map // API -> *sync.Mutex
+var starting sync.Map // API -> chan struct{}, one slot
 
-func startLock(api string) *sync.Mutex {
-	m, _ := starting.LoadOrStore(api, &sync.Mutex{})
-	return m.(*sync.Mutex)
+// startSlot is the per-target slot a start holds; waiting for it ends with
+// ctx, so a request whose client has gone stops waiting behind another.
+func startSlot(api string) chan struct{} {
+	m, _ := starting.LoadOrStore(api, make(chan struct{}, 1))
+	return m.(chan struct{})
 }
 
 // Start starts the server as plan says, detached as the person's own
@@ -184,14 +186,20 @@ func logTail(path string, offset int64) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-// keepEnv are the variables a started or installing program is given; the
-// rest of Abhed's environment, which on a server can hold provider keys,
-// tokens and database addresses, is not passed on.
+// keepEnv are the variables a started or installing program is given: the
+// basics, the proxy and certificate settings a download needs behind a
+// proxy, and the GPU selection and library path a Linux server needs to use
+// the GPU as the person's own `ollama serve` would. The rest of Abhed's
+// environment, which on a server can hold provider keys, Abhed's tokens and
+// store addresses, is not passed on.
 var keepEnv = []string{"PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "USER", "LOGNAME", "SHELL",
-	"SYSTEMROOT", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "XDG_RUNTIME_DIR"}
+	"SYSTEMROOT", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "XDG_RUNTIME_DIR",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+	"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "LD_LIBRARY_PATH"}
 
-// MinimalEnv keeps from env only keepEnv, the LC_* locale variables, the
-// HOMEBREW_* ones brew reads, and OLLAMA_* other than OLLAMA_HOST.
+// MinimalEnv keeps from env only keepEnv (in either case, so http_proxy
+// too), the LC_* locale variables, the HOMEBREW_* ones brew reads, and
+// OLLAMA_* other than OLLAMA_HOST.
 func MinimalEnv(env []string) []string {
 	var out []string
 	for _, kv := range env {
