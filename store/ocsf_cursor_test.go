@@ -124,6 +124,18 @@ func TestOCSFCommitPos(t *testing.T) {
 	if got, _ := w.LoadPos(); got != ahead.String() {
 		t.Fatalf("a later place was not saved: %q", got)
 	}
+	// A stored place that cannot be read counts as older: the next save replaces it.
+	for _, bad := range []string{"garbage", "1/2", "99999999999999999999999/1/1/s", "x/1/1/s"} {
+		if _, err := p.pool.Exec(context.Background(), `UPDATE ocsf_cursors SET commit_pos = $2 WHERE sink = $1 AND session_id = ''`, w.sink, bad); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.SavePos(end.String()); err != nil {
+			t.Fatalf("saving over %q: %v", bad, err)
+		}
+		if got, _ := w.LoadPos(); got != end.String() {
+			t.Fatalf("an unreadable place %q was kept: %q", bad, got)
+		}
+	}
 }
 
 // The tenant's audit rows come back with their chain links, the last one's

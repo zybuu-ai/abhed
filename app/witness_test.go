@@ -374,8 +374,13 @@ func TestRecordVerifyPostgresWitnessAfterDelete(t *testing.T) {
 		t.Fatalf("a deleted session failed against the witness: %d %s %s", code, out.String(), errb.String())
 	}
 	// With no session named, deleted and subagent sessions are walked too, and said to be.
+	// A subagent is made under a live session: none is made under a deleted one.
+	live := "sess-live-" + newConversationID()
+	if err := pg.CreateSession(ctx, store.SessionRecord{ID: live, Tenant: "default", User: "u", Workspace: "/w", Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
 	child := "sess-sub-" + newConversationID()
-	if err := pg.CreateSubagentSession(ctx, child, id, "helper"); err != nil {
+	if err := pg.CreateSubagentSession(ctx, child, live, "helper"); err != nil {
 		t.Fatal(err)
 	}
 	cr := agent.NewRecorder(pg, child, "")

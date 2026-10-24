@@ -469,6 +469,10 @@ All notable changes to Abhed are recorded here. The format follows
 - The context size that decides when to offload and compact, and that
   `session.ended` records, counts only the tools the model is offered in the
   current mode, so a tool of another mode no longer brings compaction early.
+- On Postgres, a subagent's session could be created under a session
+  whose delete was under way, and outlive it. It is now created under its
+  parent's lock and refused once the parent is deleted, and a delete reads
+  the tree again after taking its locks.
 
 ### Go API
 
