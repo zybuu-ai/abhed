@@ -96,9 +96,13 @@ func collect(src string, f *syntax.File, s *script) {
 				if call, ok := x.Y.Cmd.(*syntax.CallExpr); ok && readsPipedCode(call) {
 					pipeReaders[call] = true
 					// When the left side only prints a literal, that text is the
-					// code the reader runs; keep it so it can be judged.
+					// code the reader runs; keep it so it can be judged. A cat with
+					// no file reading a heredoc or here-string prints that body.
 					if lx, ok := x.X.Cmd.(*syntax.CallExpr); ok {
 						pipedText[call] = printedLiteral(src, lx)
+						if pipedText[call] == "" {
+							pipedText[call] = catBody(src, x.X, lx)
+						}
 					}
 				}
 			}
@@ -494,6 +498,25 @@ func printedLiteral(src string, call *syntax.CallExpr) string {
 	return ""
 }
 
+// catBody is the heredoc or here-string body a bare cat prints, or "".
+func catBody(src string, st *syntax.Stmt, call *syntax.CallExpr) string {
+	if len(call.Args) != 1 {
+		return "" // cat given a file reads that, not stdin
+	}
+	if v, ok := plainWord(call.Args[0]); !ok || path.Base(v) != "cat" {
+		return ""
+	}
+	for _, r := range st.Redirs {
+		switch {
+		case r.Hdoc != nil:
+			return wordText(src, r.Hdoc)
+		case r.Op == syntax.WordHdoc && r.Word != nil:
+			return wordText(src, r.Word)
+		}
+	}
+	return ""
+}
+
 // readsPipedCode reports a pipe's reader that runs what it is piped as code:
 // a bare shell or interpreter with no script or -c of its own.
 func readsPipedCode(call *syntax.CallExpr) bool {
@@ -509,6 +532,14 @@ func readsPipedCode(call *syntax.CallExpr) bool {
 	base := path.Base(prog)
 	if sqlClient[base] {
 		return true // a SQL client reads its piped stdin as a query
+	}
+	// A container exec/run whose command is a SQL client passes the pipe on.
+	if base == "docker" || base == "podman" || base == "nerdctl" || base == "kubectl" {
+		for _, w := range rest {
+			if sqlClient[path.Base(w)] {
+				return true
+			}
+		}
 	}
 	if !readsStdinCode(base) {
 		return false

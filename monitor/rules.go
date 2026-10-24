@@ -482,6 +482,11 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// volume deletion, removing every image, deleting namespaces, volumes or
 	// whole kinds, scaling to zero, draining, forced or production patches —
 	// are put to the person even where the target is named.
+	if what, ok := stdinDestructive(prog, cmd.stdin); ok {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("%s would %s, which cannot be undone; %s", prog, what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
 	if what, ok := clusterDestructive(prog, args); ok {
 		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
 			Rationale: fmt.Sprintf("%s would %s, which cannot be undone; %s", prog, what, remit(c)),
@@ -510,7 +515,11 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// and its stdin parsed and judged, so a quote-split or variable-built delete
 	// is seen however it is spelled.
 	if unknownRunner(prog) && !r.cmdFullyRead(cmd) {
-		for _, code := range append(handedArgs(cmd, args), cmd.stdin...) {
+		handed := handedArgs(cmd, args)
+		if !sqlClient[prog] {
+			handed = append(handed, cmd.stdin...) // a SQL client's stdin is its query, judged above
+		}
+		for _, code := range handed {
 			if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 					Rationale: fmt.Sprintf("%s is handed code that looks like it deletes or shells out; %s", prog, remit(c)),
@@ -1974,7 +1983,8 @@ func kubectlOperands(args []string) []string {
 	skip := map[string]bool{"-l": true, "--selector": true, "-f": true, "--filename": true, "-o": true,
 		"--output": true, "--field-selector": true, "-n": true, "--namespace": true, "-c": true,
 		"--container": true, "--context": true, "--grace-period": true, "--timeout": true, "-k": true,
-		"--kustomize": true, "--cascade": true}
+		"--kustomize": true, "--cascade": true, "--kubeconfig": true, "--cluster": true, "--user": true,
+		"-s": true, "--server": true, "--as": true, "--as-group": true, "--token": true}
 	var out []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -1999,6 +2009,7 @@ func kubectlKinds(word string) []string {
 	var out []string
 	for _, item := range strings.Split(word, ",") {
 		kind, _, _ := strings.Cut(item, "/")
+		kind, _, _ = strings.Cut(kind, ".") // pvc.v1, persistentvolumeclaim.v1.
 		if kind != "" {
 			out = append(out, strings.ToLower(kind))
 		}
@@ -2045,12 +2056,23 @@ func prodScope(args []string) bool {
 // gitPushDestructive reports a push that deletes a remote branch (--delete,
 // -d, :branch) or force-pushes a shared branch (main, master, release*, prod*).
 func gitPushDestructive(args []string) (string, bool) {
+	// Skip git's own value-taking options (-C repo, -c k=v) before the subcommand.
+	for len(args) > 0 && (gitValueOpt[args[0]] || strings.HasPrefix(args[0], "-")) {
+		if gitValueOpt[args[0]] && len(args) > 1 {
+			args = args[2:]
+		} else {
+			args = args[1:]
+		}
+	}
 	ops := operands(args)
 	if len(ops) == 0 || ops[0] != "push" {
 		return "", false
 	}
 	if hasFlag(args, "--delete") || hasFlag(args, "-d") {
 		return "delete a remote branch", true
+	}
+	if hasFlag(args, "--mirror") {
+		return "mirror-push, deleting remote refs", true
 	}
 	force := hasFlag(args, "--force") || hasFlag(args, "-f") || hasFlag(args, "--force-with-lease") ||
 		hasPrefix(args, "--force-with-lease=") || shortFlag(args, 'f')
@@ -2061,6 +2083,9 @@ func gitPushDestructive(args []string) (string, bool) {
 		if strings.HasPrefix(ref, "+") {
 			force = true
 		}
+	}
+	if force && len(ops) <= 2 {
+		return "force-push the upstream branch, which may be shared", true // no refspec named
 	}
 	if force {
 		for _, ref := range ops[1:] {
@@ -2084,11 +2109,14 @@ func gitPushDestructive(args []string) (string, bool) {
 func dataInfraDestructive(prog string, args []string) (string, bool) {
 	text := strings.Join(args, " ")
 	low := strings.ToLower(text)
+	if ormReset.MatchString(prog + " " + text) {
+		return "reset a database through an ORM", true
+	}
 	switch {
 	case prog == "redis-cli" && redisFlush.MatchString(low):
 		return "flush a Redis store", true
 	case (prog == "mongosh" || prog == "mongo") && mongoDrop.MatchString(text):
-		return "drop a Mongo database or collection", true
+		return "drop or empty a Mongo database or collection", true
 	case sqlClient[prog]:
 		if sqlDrop.MatchString(low) {
 			return "drop or empty a database or table", true
@@ -2097,17 +2125,23 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 		return "drop a database", true
 	case prog == "mysqladmin" && strings.Contains(low, "drop"):
 		return "drop a database", true
-	case prog == "terraform" || prog == "tofu":
-		if tfDestroy.MatchString(text) {
+	case prog == "terraform" || prog == "tofu" || prog == "terragrunt":
+		if tfDestroyOp(args) {
 			return "destroy infrastructure", true
 		}
-	case prog == "pulumi":
-		if hasWord2(args, "destroy") || hasWord2(args, "down") {
+	case prog == "pulumi" || prog == "cdk":
+		if slices.Contains(args, "destroy") || prog == "pulumi" && slices.Contains(args, "down") {
 			return "destroy infrastructure", true
 		}
+	case prog == "sam" && slices.Contains(args, "delete"),
+		(prog == "serverless" || prog == "sls") && slices.Contains(args, "remove"),
+		prog == "eksctl" && slices.Contains(args, "delete"):
+		return "destroy infrastructure", true
 	case prog == "gcloud" || prog == "az" || prog == "doctl" || prog == "hcloud":
-		if hasWord2(args, "delete") || hasWord2(args, "destroy") {
-			return "delete cloud resources", true
+		for _, a := range args {
+			if a == "delete" || a == "destroy" || strings.HasPrefix(a, "delete-") {
+				return "delete cloud resources", true
+			}
 		}
 	case prog == "aws":
 		if awsDestroy.MatchString(text) {
@@ -2117,21 +2151,58 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 	return "", false
 }
 
-var sqlDrop = regexp.MustCompile(`\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+\w+\s*(?:;|$|['"])`)
-var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
-var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\)`)
-var tfDestroy = regexp.MustCompile(`\bdestroy\b|\bapply\b.*\s-destroy\b|\bstate\s+rm\b`)
-var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bec2\s+terminate-instances\b|\brds\s+delete-db-(?:instance|cluster)\b|\bcloudformation\s+delete-stack\b|\bdynamodb\s+delete-table\b|\beks\s+delete-cluster\b`)
+// stdinDestructive reads a data-store client's literal stdin (a heredoc, a
+// here-string, a printed literal piped in) as the client's own language, not
+// as shell code, and reports a drop or flush in it.
+func stdinDestructive(prog string, stdin []string) (string, bool) {
+	if len(stdin) == 0 {
+		return "", false
+	}
+	text := strings.Join(stdin, "\n")
+	switch {
+	case prog == "redis-cli" && redisFlush.MatchString(strings.ToLower(text)):
+		return "flush a Redis store", true
+	case (prog == "mongosh" || prog == "mongo") && mongoDrop.MatchString(text):
+		return "drop or empty a Mongo database or collection", true
+	case sqlClient[prog] && sqlDrop.MatchString(strings.ToLower(text)):
+		return "drop or empty a database or table", true
+	}
+	return "", false
+}
 
-// hasWord2 reports an exact word among args.
-func hasWord2(args []string, w string) bool {
-	for _, a := range args {
-		if a == w {
-			return true
-		}
+// tfDestroyOp reports terraform/tofu/terragrunt destroy as the subcommand
+// (past -chdir= and run-all), apply -destroy, state rm or workspace delete;
+// plan -destroy is a dry run.
+func tfDestroyOp(args []string) bool {
+	ops := operands(args)
+	for len(ops) > 0 && ops[0] == "run-all" {
+		ops = ops[1:]
+	}
+	if len(ops) == 0 {
+		return false
+	}
+	switch ops[0] {
+	case "destroy":
+		return true
+	case "apply":
+		return slices.Contains(args, "-destroy")
+	case "state":
+		return len(ops) > 1 && ops[1] == "rm"
+	case "workspace":
+		return len(ops) > 1 && ops[1] == "delete"
 	}
 	return false
 }
+
+var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b`)
+var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
+var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`)
+var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bs3\s+sync\b.*--delete\b|\b(?:batch-)?(?:delete|terminate)-[\w-]+\b`)
+
+// ormReset matches the framework commands that drop or wipe every table.
+var ormReset = regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b|` +
+	`\b(?:rails|rake)\b.*\bdb:(?:drop|reset)\b|\b(?:manage\.py|django-admin)\s+flush\b|` +
+	`\bartisan\s+(?:migrate:fresh|migrate:reset|db:wipe)\b|\bdotnet\s+ef\s+database\s+drop\b|\bsequelize(?:-cli)?\s+db:drop\b`)
 
 // clusterDestructive reports a container or cluster operation with no undo.
 func clusterDestructive(prog string, args []string) (string, bool) {
@@ -2764,7 +2835,7 @@ func handedArgs(cmd command, args []string) []string {
 		if pipeOut {
 			// \o |CMD pipes the query's output to CMD, which then runs the
 			// other values' text; judge those too.
-			out = append(out, vals...)
+			out = append(out, args...)
 		}
 		return out
 	}
@@ -2872,7 +2943,7 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 			if unreadVal(cc[0]) {
 				return ask()
 			}
-			sub := command{words: cc, argsLiteral: !hostBind}
+			sub := command{words: cc, argsLiteral: !hostBind, stdin: cmd.stdin}
 			if r.judgeCommand(k, c, sub, where, depth+1, !hostBind) != nil {
 				return ask()
 			}
@@ -3351,7 +3422,7 @@ func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
 	}
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
-		switch { //nolint:gocritic
+		switch {
 		case a == "-v" || a == "--volume":
 			if i+1 < len(rest) && outside(src(rest[i+1])) {
 				return true

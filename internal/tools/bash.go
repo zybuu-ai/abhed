@@ -188,6 +188,7 @@ var destructivePatterns = []struct {
 }{
 	{regexp.MustCompile(`\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf]`), "recursive/forced delete"},
 	{regexp.MustCompile(`\bgit\s+push\s+.*--force(?:-with-lease)?\b`), "force push"},
+	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--mirror\b`), "mirror push (deletes remote refs)"},
 	{regexp.MustCompile(`\bgit\s+reset\s+--hard\b`), "hard reset"},
 	{regexp.MustCompile(`\bgit\s+clean\s+.*-[a-zA-Z]*f`), "forced clean"},
 	{regexp.MustCompile(`\b(mkfs|fdisk|dd)\b`), "disk operation"},
@@ -224,7 +225,7 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`\b(?:docker|podman)\b.*\bswarm\s+leave\b.*(?:\s-f\b|\s--force\b)`), "force a node out of the swarm"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bimage\s+prune\b.*(?:\s-[a-zA-Z]*a|\s--all\b)`), "remove all container images"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:rmi|image\s+(?:rm|remove))\b.*(?:\s-[a-zA-Z]*f|\s--force\b)`), "forced image removal"},
-	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bdelete\b.*[\s,](?:ns|namespaces?|projects?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all|crds?|customresourcedefinitions?|storageclass(?:es)?|sc|clusterroles?|clusterrolebindings?)(?:[\s/,.]|$)`), "cluster delete of namespaces, volumes, definitions or every resource"},
+	{regexp.MustCompile(`(?i)\b(?:kubectl|oc)\b.*\bdelete\b.*[\s,](?:ns|namespaces?|projects?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all|crds?|customresourcedefinitions?|storageclass(?:es)?|sc|clusterroles?|clusterrolebindings?)(?:[\s/,.]|$)`), "cluster delete of namespaces, volumes, definitions or every resource"},
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bdelete\b.*\s(?:--all\b|--all-namespaces\b|-A\b)`), "cluster delete across all resources or namespaces"},
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bscale\b.*--replicas[=\s]+0\b`), "scale a workload to zero"},
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\s(?:drain|cordon)\b`), "drain or cordon a node"},
@@ -232,27 +233,83 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b(?:.*(?:-n|--namespace|--context|-l|--selector)[=\s]+(?:[\w.]*[-_.=])?prod(?:uction)?(?:[-_.,][\w.,=-]*)?\b.*\s(?:patch|replace)\b|.*\s(?:patch|replace)\b.*(?:-n|--namespace|--context|-l|--selector)[=\s]+(?:[\w.]*[-_.=])?prod(?:uction)?(?:[-_.,][\w.,=-]*)?\b)`), "production patch/replace"},
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
 	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
-	// Data stores: dropping or emptying a database, schema or table, flushing a
-	// cache, or dropping a Mongo database.
-	{regexp.MustCompile(`(?i)\b(?:psql|mysql|mariadb|sqlite3|sqlcmd|clickhouse-client|cockroach|duckdb|cqlsh)\b.*\b(?:drop\s+(?:database|schema|table|keyspace)|truncate\b|delete\s+from\s+\w+\s*(?:;|$|['"]))`), "drop or empty a database or table"},
+	// Framework database resets that drop or wipe every table.
+	{regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:manage\.py|django-admin)\s+flush\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bartisan\s+(?:migrate:fresh|migrate:reset|db:wipe)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bdotnet\s+ef\s+database\s+drop\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bsequelize(?:-cli)?\s+db:drop\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:dropdb|dropuser)\b`), "drop a database"},
 	{regexp.MustCompile(`(?i)\bmysqladmin\b.*\bdrop\b`), "drop a database"},
-	{regexp.MustCompile(`(?i)\bredis-cli\b.*\bflush(?:all|db)\b`), "flush a Redis store"},
-	{regexp.MustCompile(`(?i)\b(?:mongosh|mongo)\b.*\b(?:dropDatabase|\.drop\(\))`), "drop a Mongo database or collection"},
 	// Infrastructure teardown.
-	{regexp.MustCompile(`\b(?:terraform|tofu)\b.*\s(?:destroy\b|apply\b.*\s-destroy\b|state\s+rm\b)`), "destroy infrastructure"},
-	{regexp.MustCompile(`\bpulumi\b.*\s(?:destroy|down)\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|apply\b.*\s-destroy\b|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:pulumi|cdk)\b.*\s(?:destroy|down)\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
 	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy)\b`), "delete cloud resources"},
-	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|ec2\s+terminate-instances\b|rds\s+delete-db-(?:instance|cluster)\b|cloudformation\s+delete-stack\b|dynamodb\s+delete-table\b|eks\s+delete-cluster\b)`), "delete cloud resources"},
+	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate)-[\w-]+\b)`), "delete cloud resources"},
 }
 
-// segmentDestructive reports a segment pattern matching one simple command.
+// dataStorePatterns are matched against the whole line when any simple
+// command in it runs the named client, so a query split across a quoted
+// multi-statement string, a heredoc body or a pipe into the client is read.
+var dataStorePatterns = []struct {
+	client *regexp.Regexp
+	body   *regexp.Regexp
+	what   string
+}{
+	{regexp.MustCompile(`(?i)\b(?:psql|mysql|mariadb|sqlite3|sqlcmd|clickhouse-client|cockroach|duckdb|cqlsh)\b`),
+		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b`),
+		"drop or empty a database or table"},
+	{regexp.MustCompile(`\bredis-cli\b`), regexp.MustCompile(`(?i)\bflush(?:all|db)\b`), "flush a Redis store"},
+	{regexp.MustCompile(`\b(?:mongosh|mongo)\b`),
+		regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`),
+		"drop or empty a Mongo database or collection"},
+}
+
+// splitSimple splits a line into its simple commands on ;, &, |, ( ) and
+// newlines that sit outside quotes, so a quoted query is kept whole.
+func splitSimple(line string) []string {
+	var parts []string
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(line):
+			b.WriteByte(c)
+			b.WriteByte(line[i+1])
+			i++
+			continue
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case strings.IndexByte(";&|()\n", c) >= 0:
+			parts = append(parts, b.String())
+			b.Reset()
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return append(parts, b.String())
+}
+
+// segmentDestructive reports a segment pattern matching one simple command,
+// or a data-store pattern matching a line that runs that client.
 func segmentDestructive(command string) (string, bool) {
-	for _, part := range strings.Split(rmBreaks.Replace(command), "\n") {
+	for _, part := range splitSimple(command) {
 		for _, d := range segmentPatterns {
 			if d.re.MatchString(part) {
 				return d.what, true
 			}
+		}
+	}
+	for _, d := range dataStorePatterns {
+		if d.client.MatchString(command) && d.body.MatchString(command) {
+			return d.what, true
 		}
 	}
 	return "", false
