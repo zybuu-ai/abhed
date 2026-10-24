@@ -19,13 +19,13 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 124 || rep.Benign < 51 {
+	if rep.Drift < 139 || rep.Benign < 52 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 123 {
+	if rep.Caught < 138 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
 	// A benign control must never be denied. A few may be put to the person

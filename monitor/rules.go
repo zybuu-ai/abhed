@@ -292,6 +292,14 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	}
 	s, ok := parseScriptAt(src, start)
 	if !ok {
+		// A line the parser refuses is one the check cannot read at all
+		// (bash may still run it: `export HO\ME=/srv`). If it looks
+		// destructive, the person is asked rather than the line let through.
+		if looksDestructive(strings.Fields(src)) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
+				Rationale: fmt.Sprintf("the command line could not be parsed, and it looks like it deletes or runs code; %s", remit(c)),
+				Advice:    "write the command plainly so it can be checked, or confirm this is meant"}
+		}
 		return nil
 	}
 	where := "here"
@@ -324,6 +332,20 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 				Rationale: fmt.Sprintf("find runs a program by -exec that the check cannot read plainly; %s", remit(c)),
 				Advice:    "name the program find runs in full, or confirm this is meant"}
 		}
+		// A shell, interpreter or xargs that find runs by -exec can delete what
+		// it is handed; where find looks outside own ground, that is asked.
+		if prog == "find" && findExecRunsCode(args) && !r.findStartsOwnGround(k, c, args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("find runs a shell or interpreter by -exec over paths outside the task's ground; %s", remit(c)),
+				Advice:    "delete the paths the task names directly, or confirm this is meant"}
+		}
+		// An interpreter one-liner, or program on stdin, that shells out or
+		// deletes runs code the check does not read: it is asked about.
+		if interpreterCodeShellsOut(prog, args, cmd.stdin) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s runs code that shells out or deletes, which the check does not read; %s", prog, remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
 		for _, t := range destroys(prog, args) {
 			if t == "" {
 				continue
@@ -343,12 +365,15 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 			eff, known := effectiveTarget(cmd, t)
 			// Where the directory is unknown, only what the person said in their
 			// own messages names a target; plan and runbook prose do not.
-			kk := k
+			// Where the directory is unknown, only what the person said in their
+			// own messages names a target, and ~ is not placed against the
+			// session's home: a HOME writer earlier in the line ended what the
+			// check holds as known.
+			p := *k
 			if !cmd.dirKnown {
-				p := *k
-				p.said = k.person
-				kk = &p
+				p.said, p.home = k.person, ""
 			}
+			kk := &p
 			// A relative target under a directory the check does not claim to
 			// know could point anywhere: it is always put to the person, never
 			// allowed on a name alone and never a silent deny.
@@ -356,6 +381,13 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 					Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in is not one the check can be sure of, so where it points is not known; %s", prog, t, remit(c)),
 					Advice:    "name the path to delete in full, or change into it with a plain cd joined by && first"}
+			}
+			// A ~ target under an unknown directory, not one the person named as
+			// a path, is put to them rather than placed or silently denied.
+			if !cmd.dirKnown && homeish(eff) && !protectedRoot(eff) && !kk.named(homeTilde(eff)) {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("%s would destroy %s, but HOME may have been changed earlier in the line, so where ~ points is not known; %s", prog, t, remit(c)),
+					Advice:    "name the path to delete in full, or confirm this is meant"}
 			}
 			// find's operand is where it looks, not what it deletes.
 			if prog != "find" && protectedRoot(eff) {
@@ -663,6 +695,37 @@ func destroys(prog string, args []string) []string {
 	return nil
 }
 
+// shellsOut finds code that runs a command or deletes through a call the
+// one-liner scan does not read: a shell-out, a system call, Tcl's file delete.
+var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bos\.system\s*\(|\bos\.popen\s*\(|\bsubprocess\b|` +
+	`\bos\.execute\s*\(|\bio\.popen\s*\(|\bchild_process\b|\bexecSync\s*\(|\bspawnSync\s*\(|\bsystem\s*\(|` +
+	`\bexec\s*\(|\bfile\s+delete\b|` + "`")
+
+// interpreterCodeShellsOut reports an interpreter whose program — a one-liner,
+// or text on its stdin — shells out or deletes in a way the scan cannot place.
+func interpreterCodeShellsOut(prog string, args, stdin []string) bool {
+	if !codeRunners[prog] && !strings.HasPrefix(prog, "python") {
+		return false
+	}
+	if code := oneLiner(prog, args); code != "" && shellsOut.MatchString(code) {
+		return true
+	}
+	shell := shellNames[prog]
+	for _, code := range stdin {
+		if shellsOut.MatchString(code) || codeDeletes.MatchString(code) {
+			return true
+		}
+		// A shell reads its stdin as commands: a deleting program among them.
+		if shell && looksDestructive(strings.Fields(code)) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellNames are the shells among codeRunners, which run stdin as commands.
+var shellNames = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "busybox": true}
+
 // oneLiner is the code an interpreter is given on its command line.
 func oneLiner(prog string, args []string) string {
 	flag := ""
@@ -692,15 +755,59 @@ var codeDeletes = regexp.MustCompile(`(?:\b(?:rmtree|remove|unlink|rmdir|removed
 	`|\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][wa])`)
 
 func execsRemove(args []string) bool {
-	for i, a := range args {
-		if isExecFlag(a) && i+1 < len(args) {
-			switch path.Base(strings.ReplaceAll(args[i+1], `\`, "")) { // /bin/rm and \rm are rm
-			case "rm", "shred", "unlink", "srm":
-				return true
-			}
+	for _, p := range findExecProgs(args) {
+		switch p {
+		case "rm", "shred", "unlink", "srm":
+			return true
 		}
 	}
 	return false
+}
+
+// findExecProgs are the programs find runs by -exec, -execdir, -ok and
+// -okdir, each resolved as any other program is: past wrappers (sudo rm, env
+// rm), base-named and unescaped (/bin/rm, \rm are rm).
+func findExecProgs(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if !isExecFlag(args[i]) {
+			continue
+		}
+		var words []string
+		for j := i + 1; j < len(args) && args[j] != ";" && args[j] != "+" && args[j] != `\;`; j++ {
+			words = append(words, args[j])
+		}
+		if p, _ := (command{words: words}).program(); p != "" {
+			out = append(out, path.Base(strings.ReplaceAll(p, `\`, "")))
+		}
+	}
+	return out
+}
+
+// findExecRunsCode reports a find whose -exec program is a shell, an
+// interpreter or xargs, any of which can run a deleting command it is handed.
+func findExecRunsCode(args []string) bool {
+	for _, p := range findExecProgs(args) {
+		if codeRunners[p] || strings.HasPrefix(p, "python") {
+			return true
+		}
+	}
+	return false
+}
+
+// findStartsOwnGround reports whether every path find starts from is own ground.
+func (r Rules) findStartsOwnGround(k *given, c Case, args []string) bool {
+	starts := 0
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || a == "(" || a == "!" {
+			break
+		}
+		starts++
+		if !r.ownGround(k, c, a) {
+			return false
+		}
+	}
+	return starts > 0 || r.ownGround(k, c, ".")
 }
 
 func isExecFlag(a string) bool {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // installed is the fake PATH the rule tests run with.
@@ -334,5 +335,28 @@ func TestRulesUnknownDirNamesOnlyFromThePerson(t *testing.T) {
 	c.Plan = "1. remove /srv/old"
 	if v, _ := (Rules{}).Judge(context.Background(), c); v.Decision != policy.Allow {
 		t.Fatalf("a known-directory plan-named target: %+v", v)
+	}
+}
+
+// harmlessSet accepts only -e, -u, -x (alone or clustered) and -o with one of
+// pipefail, errexit, nounset, xtrace; an o must end its cluster and take a
+// name. Everything else is refused.
+func TestHarmlessSetForms(t *testing.T) {
+	parse := func(line string) []*syntax.Word {
+		f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(line), "")
+		if err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		return f.Stmts[0].Cmd.(*syntax.CallExpr).Args[1:]
+	}
+	for line, want := range map[string]bool{
+		"set -e": true, "set -u": true, "set -x": true, "set -eux": true, "set -e -u": true,
+		"set -o pipefail": true, "set -euo pipefail": true, "set -o errexit -o nounset": true,
+		"set -o": false, "set -oo": false, "set -oe pipefail": false, "set -o vi": false, "set -o posix": false,
+		"set --": false, "set -": false, "set a b": false, "set -f": false, "set +e": false, "set -e x": false,
+	} {
+		if got := harmlessSet(parse(line)); got != want {
+			t.Errorf("%q: harmless=%v, want %v", line, got, want)
+		}
 	}
 }
