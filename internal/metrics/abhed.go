@@ -166,6 +166,13 @@ func New() *Abhed {
 	return m
 }
 
+// OllamaAction counts one attempt to start, install or pull a local Ollama.
+// A recorded ollama.* event is counted as it is written; a caller counts here
+// an attempt no session's record took.
+func (m *Abhed) OllamaAction(op, outcome string) {
+	m.ollama.Inc(oneOf(op, []string{"start", "install", "pull"}), oneOf(outcome, OllamaOutcomes))
+}
+
 // RunningSessions makes fn the source of the number of sessions this
 // process holds; the last server to call it is the one counted.
 func (m *Abhed) RunningSessions(fn func() int) {
@@ -320,7 +327,7 @@ func (m *Abhed) Observe(ev agent.Event) {
 	case string(agent.EvOllamaStart), string(agent.EvOllamaInstall), string(agent.EvOllamaPull):
 		var p agent.OllamaAction
 		_ = json.Unmarshal(ev.Payload, &p)
-		m.ollama.Inc(oneOf(p.Op, []string{"start", "install", "pull"}), oneOf(p.Outcome, OllamaOutcomes))
+		m.OllamaAction(p.Op, p.Outcome)
 	case string(agent.EvFenceLimit):
 		var p struct {
 			OOM          int64 `json:"oom"`

@@ -85,10 +85,18 @@ func (s *Server) ollamaAssist(w http.ResponseWriter, r *http.Request, req ollama
 		ev.By = agent.ByUser
 		s.log.Info("ollama "+ev.Op, "outcome", ev.Outcome, "provider", ev.Provider, "model", ev.Model, "user", user, "problem", ev.Problem)
 		s.adminAudit(r, "ollama."+ev.Op, ev.Provider, map[string]any{"outcome": ev.Outcome, "model": ev.Model, "command": ev.Command, "problem": ev.Problem})
+		// In the session's record when the picker belongs to a session that is
+		// between turns, which counts it as it is written; otherwise counted here.
+		recorded := false
 		if req.SessionID != "" {
-			if err := s.recordPerson(context.WithoutCancel(r.Context()), req.SessionID, typ, ev); err != nil {
+			err := s.recordPerson(context.WithoutCancel(r.Context()), req.SessionID, typ, ev)
+			if err != nil {
 				s.log.Warn("ollama attempt not in the session's record", "session", req.SessionID, "error", err)
 			}
+			recorded = err == nil
+		}
+		if m := s.opts.Metrics.abhed(); m != nil && !recorded {
+			m.OllamaAction(ev.Op, ev.Outcome)
 		}
 	})
 	return a, t, true

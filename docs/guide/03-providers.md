@@ -245,15 +245,26 @@ agent's command `abhed ollama check`, `install` and `forget` are refused. On
 may take them (or, where nobody signs in, a request from the host itself);
 anyone else sees the message and the steps.
 
-**Recorded.** Every attempt, and how it ended, is an event in the session's
-record, attributed to you: `ollama.start`, `ollama.install` and
-`ollama.pull`, with the command shown, the outcome (`ok`, `failed`,
-`declined`, `refused`, `cancelled`, or `manual` when the step was left to
-you) and why. HawkEYE lists them under *Local model (Ollama)*, the OCSF
-export maps them ([OCSF](30-ocsf-and-logs.md#classes)), and `abhed serve`
-counts them in `abhed_ollama_actions_total` and logs them. `abhed ollama
-check` records its attempts in a short session of its own, which `abhed
-sessions` lists and `abhed hawkeye <id>` reports on.
+**Recorded.** Each attempt, and how it ended, is an `ollama.start`,
+`ollama.install` or `ollama.pull` event attributed to you, with the command
+shown, the outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, or
+`manual` when the step was left to you) and why. Where it is kept depends on
+where you chose the model:
+
+| Where | Recorded in |
+|---|---|
+| The CLI, in a conversation | that conversation's record |
+| The CLI, at the start or before the first message | held, and written to the conversation's record when your first message opens it; a session that ends with no message keeps none of them |
+| `abhed ollama check` | a short session of its own in the local record, which `abhed sessions` lists and `abhed hawkeye <id>` reports on |
+| Abhed Studio | the session's record |
+| The workbench or console, with a session open and between turns | that session's record, as well as the server's log and admin audit |
+| The workbench or console, with no session open, or mid-turn | the server's log and admin audit only (`admin action` with `action` `ollama.start`, `ollama.install` or `ollama.pull`); the request itself is in the API audit as any `POST` is |
+
+HawkEYE lists the recorded ones under *Local model (Ollama)*, and the OCSF
+export maps them ([OCSF](30-ocsf-and-logs.md#classes)). `abhed serve` counts
+every attempt it handles in `abhed_ollama_actions_total`, recorded in a
+session or not; attempts in the CLI, `abhed ollama` and Studio are not
+counted there, since those processes export no metrics.
 
 **The API.** The workbench and console use `GET /v1/ollama/status?provider=<name>`
 (what was found, the next step's exact command, size and source, or why it is

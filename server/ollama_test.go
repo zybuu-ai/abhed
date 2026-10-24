@@ -18,6 +18,8 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/ollama"
+	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/store"
 )
 
 // fakeOllama is the host the server's assist sees: an httptest Ollama API,
@@ -248,5 +250,76 @@ func TestOllamaPullStreamsAndIsRecorded(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Outcome != agent.OllamaOK || got[0].Surface != "server" || got[0].Bytes != 5010 || got[0].Model != "qwen3:8b" {
 		t.Fatalf("recorded %+v", got)
+	}
+}
+
+// metricsServer is ollamaServer counting into a metric set, as abhed serve does.
+func metricsServer(t *testing.T) (*Server, *durableMem, *fakeOllama, *Metrics) {
+	t.Helper()
+	f := newFakeOllama(t)
+	a := newModelServer(t, "from a")
+	cfg := config.Default()
+	cfg.Suggest.Enabled = false
+	cfg.Model.Default = "a"
+	cfg.Model.Providers = map[string]config.ProviderConfig{
+		"a":   {Type: "openai-compatible", BaseURL: a.url, Model: "model-a", ContextWindow: 8192},
+		"olm": {Type: "ollama", BaseURL: f.url + "/v1", Model: "qwen3:8b", ContextWindow: 8192},
+	}
+	def, err := cfg.Model.Providers["a"].Adapter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
+	m := NewMetrics()
+	s := New(Options{Workspace: t.TempDir(), Config: cfg, Adapter: def, Metrics: m,
+		Registry: tools.NewRegistry(tools.Read{}, tools.Glob{}), Store: st})
+	return s, st, f, m
+}
+
+func ollamaCount(t *testing.T, m *Metrics, op, outcome string) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	for _, line := range strings.Split(w.Body.String(), "\n") {
+		if strings.HasPrefix(line, `abhed_ollama_actions_total{op="`+op+`",outcome="`+outcome+`"} `) {
+			return strings.TrimPrefix(line, `abhed_ollama_actions_total{op="`+op+`",outcome="`+outcome+`"} `)
+		}
+	}
+	return "0"
+}
+
+// Every attempt the server handles is counted once: one with no session
+// here, one recorded in a session as its event is written.
+func TestOllamaAttemptsAreCountedOnce(t *testing.T) {
+	s, st, f, m := metricsServer(t)
+	if w := callFrom(t, s, fromOther, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("start from another machine: %d", w.Code)
+	}
+	if got := ollamaCount(t, m, "start", "refused"); got != "1" {
+		t.Fatalf("a refused start with no session counted %s", got)
+	}
+	if w := callFrom(t, s, fromHost, "POST", "/v1/ollama/start", `{"provider":"olm"}`); w.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", w.Code, w.Body.String())
+	}
+	if got := ollamaCount(t, m, "start", "ok"); got != "1" {
+		t.Fatalf("a start with no session counted %s", got)
+	}
+	id := sessionOf(t, call(t, s, "POST", "/v1/sessions", `{"prompt":"one"}`))
+	turnsEnded(t, st, id, 1)
+	if w := callFrom(t, s, fromHost, "POST", "/v1/ollama/pull", `{"provider":"olm","session_id":"`+id+`"}`); w.Code != http.StatusOK {
+		t.Fatalf("pull: %d %s", w.Code, w.Body.String())
+	}
+	if got := ollamaCount(t, m, "pull", "ok"); got != "1" {
+		t.Fatalf("a pull recorded in a session counted %s", got)
+	}
+	evs, _ := st.Events(id)
+	n := 0
+	for _, ev := range evs {
+		if ev.Type == agent.EvOllamaPull {
+			n++
+		}
+	}
+	if n != 1 || len(f.launched) != 1 {
+		t.Fatalf("pull events %d, launched %v", n, f.launched)
 	}
 }
