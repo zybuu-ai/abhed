@@ -27,15 +27,19 @@ var (
 	// outcomeRe are words that say something came about: an explanation
 	// says how shown content is, not what changed.
 	outcomeRe = regexp.MustCompile(`\b(now|no longer|any ?more|again|fixed|resolved|solved|addressed|works now|now works|is working|recovered|finished|complete|completed|(?:is|are|was|were) done|patched|landed|merged|live|shipped|released|corrected|reviewed|approved|rolled out|went out|cleared|gone|green|stable|succeeded|works again)\b`)
-	// didRe is the agent saying what it did.
-	didRe = regexp.MustCompile(`\b(?:i|we|i've|we've|i'd|we'd|i'm|we're)\s+(?:have\s+|had\s+|just\s+|also\s+|then\s+|now\s+|already\s+)?(?:deployed|restarted|installed|configured|enabled|disabled|started|stopped|killed|merged|pushed|released|rolled|scaled|migrated|ran|did|made|wrote|built|sent|verified|checked|tested|confirmed|fixed|cleaned|applied|upgraded|downgraded|reverted|rebooted|provisioned|created|deleted|removed|updated|changed|added|edited|modified|shipped|corrected|reviewed|approved|resolved|solved|patched|landed|done|finished|completed|kept|left|preserved|avoided)\b`)
-	// workNegRe is a negation about a change, the work or how something
-	// stands, which an explanation of shown code never needs; one about what
-	// the code does ("the loop body never runs") is another matter.
-	workNegRe = regexp.MustCompile(`\b(unchanged|untouched|unmodified|unaltered|left alone|intact|as before|preserved|original|no longer|any ?more|nothing\b[^.;]{0,40}\bchanged|(?:not|never|n't)\s+(?:been\s+|be\s+)?(?:\w+\s+)?(?:changed|modified|touched|edited|altered)|means nothing|does(?:n't| not) matter)\b`)
-	// judgeRe are words that judge the work or a system, never needed to
-	// explain code.
-	judgeRe = regexp.MustCompile(`\b(issues?|problems?|bugs?|cause[sd]?|harmless|real|matters?|present|safe|secure|leaks?|outage|prod|production|stale|cached|regression|incident|vulnerab\w*)\b`)
+	// codeNegRe are the negations an explanation of code may make: "not
+	// ... yet", and code that does not run, return, loop or the like. Any
+	// other negation (of a change, the work or how something stands) keeps
+	// the sentence a claim about the work.
+	codeNegRe = regexp.MustCompile(`\b(?:not|nothing|none|no)\b[^.;,:]{0,40}?\byet\b|\b(?:never|not|no longer|doesn't|don't|won't|isn't|does not|do not|will not|cannot|can't)\s+(?:\w+\s+)?(?:runs?|run|executes?|execute|returns?|return|loops?|loop|calls?|call|reach(?:es)?|match(?:es)?|adds?|add|happens?|happen|panics?|panic|iterates?|iterate|enters?|enter|fires?|fire|evaluates?|evaluate|sees?|see|blocks?|block|waits?|wait|overflows?|overflow|races?|race|deadlocks?|deadlock|leaks? memory)\b|\b(?:is|are|can be|will be)\s+(?:never|not)\s+(?:nil|null|empty|negative|zero)\b`)
+	// judgeRe are words that judge the work or a system, or speak of
+	// secrecy and security, never needed to explain code.
+	judgeRe = regexp.MustCompile(`\b(issues?|problems?|bugs?|cause[sd]?|harmless|real|matters?|present|safe|unsafe|secure|insecure|security|leak\w*|outage|prod|production|stale|cached|regression|incident|vulnerab\w*|secrets?|sensitiv\w*|expos\w*|exploit\w*|bypass\w*|credentials?|passwords?|private|confidential|attack\w*|unauthori[sz]ed|authori[sz]\w*|permission\w*|committed|git|tests?|tested|correct|incorrect|fine|right|wrong|ok|okay|needs?|needed)\b`)
+	// verdictRe are judgements a verified claim must find in what it matched:
+	// "`Sum` is correct", "`API_KEY` is a placeholder".
+	verdictRe = regexp.MustCompile(`\b(correct|incorrect|fine|safe|unsafe|secure|insecure|harmless|placeholder|dummy|sandbox|fake|mock|valid|invalid|sensitive|secret|exposed|exploitable|bypassable|real)\b`)
+	// secretLineRe is a line that sets or shows a credential.
+	secretLineRe = regexp.MustCompile(`(?i)(key|secret|token|passw|credential|private|auth|bearer)\w*\s*[:=]|\b(sk|pk|rk)[-_](live|test|prod)?|akia[0-9a-z]{8}|gh[pousr]_|xox[abprs]-|-----begin`)
 	// codeTokenRe splits a code span into its words.
 	codeTokenRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*|\d+`)
 	// codePunctRe marks a span written as code, not prose in backticks.
@@ -43,6 +47,10 @@ var (
 	// wordRe are the words of a sentence, for what a definition is about.
 	wordRe = regexp.MustCompile(`[a-z]{4,}`)
 )
+
+// explainsOn turns the explanation group on; tests turn it off to show it
+// changes no outcome.
+var explainsOn = true
 
 // shownTools are the tools whose results show content an explanation may be
 // about: reads and searches, never a run, a change or its report.
@@ -57,9 +65,12 @@ func explains(ix *recordIndex, c Claim) bool {
 	f := extractFacts(text)
 	low := normText(text)
 	if f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0 || len(f.counted) > 0 ||
-		len(f.hosts) > 0 || c.Quote != "" || didRe.MatchString(low) || stateRe.MatchString(low) ||
-		outcomeRe.MatchString(low) || workNegRe.MatchString(low) || judgeRe.MatchString(low) ||
-		!explainRe.MatchString(low) {
+		len(f.hosts) > 0 || c.Quote != "" || f.deed || f.proof || f.changeWord || stateRe.MatchString(low) ||
+		outcomeRe.MatchString(low) || judgeRe.MatchString(low) || !explainRe.MatchString(low) {
+		return false
+	}
+	// A negation may only be one of what the code does.
+	if negationRe.MatchString(codeNegRe.ReplaceAllString(noFailRe.ReplaceAllString(low, " "), " ")) {
 		return false
 	}
 	spans := codeSpans(c.Text)
@@ -82,8 +93,18 @@ func explains(ix *recordIndex, c Claim) bool {
 			}
 		}
 	}
+	// Both paths below need a shown result too; this says so plainly.
 	if len(shown) == 0 {
 		return false
+	}
+	// Code that a result shows on a line setting a credential is a secret's,
+	// and what is said of it a judgement of it.
+	for _, sp := range spans {
+		for _, o := range shown {
+			if secretShown(o.content, sp) {
+				return false
+			}
+		}
 	}
 	// "port 8080" is a setting the result can label; "gives 0" is prose.
 	for _, kf := range f.keyed {
@@ -100,6 +121,20 @@ func explains(ix *recordIndex, c Claim) bool {
 	}
 	for _, o := range shown {
 		if holdsAll(o, spans, f) {
+			return true
+		}
+	}
+	return false
+}
+
+// secretShown reports a result line holding v that sets or shows a credential.
+func secretShown(content, v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, v) && secretLineRe.MatchString(line) {
 			return true
 		}
 	}
@@ -179,10 +214,8 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 		return ""
 	}
 	low := normText(text)
-	if !f.changed && len(f.ran) == 0 && didRe.MatchString(low) {
-		return "it says what was done, which is read only from the calls, and none is read as that"
-	}
-	for _, w := range append(stateRe.FindAllString(low, -1), outcomeRe.FindAllString(low, -1)...) {
+	words := append(stateRe.FindAllString(low, -1), outcomeRe.FindAllString(low, -1)...)
+	for _, w := range append(words, verdictRe.FindAllString(low, -1)...) {
 		if w == "now" || w == "again" {
 			continue // a time, not a thing an output says
 		}

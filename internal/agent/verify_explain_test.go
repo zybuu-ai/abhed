@@ -29,13 +29,14 @@ func TestAnExplanationIsNotUnverifiedWork(t *testing.T) {
 	work, explained := 0, 0
 	for _, v := range vs {
 		switch {
-		case v.LoadBearing && v.Verdict != ClaimVerified:
+		case v.LoadBearing && v.Verdict != ClaimVerified && !v.Explains:
 			work++
 			t.Logf("unverified work: %q (%s)", v.Text, v.Reason)
-		case !v.LoadBearing:
+		case !v.LoadBearing || v.Explains:
 			explained++
 		}
 	}
+	t.Logf("sum walkthrough: %d verified, %d unverified work, %d explanation or general knowledge, of %d", len(vs)-work-explained, work, explained, len(vs))
 	// The last two are about the session's work and stay so; no other
 	// sentence counts as unverified work.
 	if work != 2 {
@@ -43,5 +44,48 @@ func TestAnExplanationIsNotUnverifiedWork(t *testing.T) {
 	}
 	if explained == 0 {
 		t.Fatal("no sentence was taken as explanation")
+	}
+}
+
+// A walkthrough of a mutex-guarded cache the session read: what it explains
+// is not unverified work, and what it says of how the cache stands is.
+func TestACacheWalkthrough(t *testing.T) {
+	b := newRec(t)
+	b.call("f1", "read", map[string]string{"path": "/w/cache/cache.go"},
+		"package cache\n\nimport \"sync\"\n\n// Cache holds values by key, safe for use from many goroutines.\ntype Cache struct {\n"+
+			"\tmu    sync.Mutex\n\titems map[string]string\n}\n\n// New makes an empty Cache.\nfunc New() *Cache {\n\treturn &Cache{items: map[string]string{}}\n}\n\n"+
+			"// Get returns the value for key, and whether it was there.\nfunc (c *Cache) Get(key string) (string, bool) {\n\tc.mu.Lock()\n\tdefer c.mu.Unlock()\n"+
+			"\tv, ok := c.items[key]\n\treturn v, ok\n}\n\n// Set stores value under key.\nfunc (c *Cache) Set(key, value string) {\n\tc.mu.Lock()\n"+
+			"\tdefer c.mu.Unlock()\n\tc.items[key] = value\n}\n", nil)
+	reply := "Here is how the cache in `cache.go` works.\n\n" +
+		"- `Cache` keeps its values in `items`, a map from `string` to `string`.\n" +
+		"- Think of `mu` as a key to a room: only one goroutine can hold it at a time.\n" +
+		"- `New` makes an empty `Cache` so that `items` is never nil.\n" +
+		"- `Get` takes the lock with `c.mu.Lock()` because two goroutines could read and write `items` at once.\n" +
+		"- The `defer c.mu.Unlock()` line means the lock is let go however `Get` returns.\n" +
+		"- `v, ok := c.items[key]` reads the value and whether it was there.\n" +
+		"- `Set` works the same way: it locks, stores `value` under `key`, and unlocks.\n" +
+		"- A `sync.Mutex` is like a single-lane bridge for goroutines.\n" +
+		"- Because both methods lock `mu`, a caller never sees half a write.\n" +
+		"- A `sync.RWMutex` would let many readers in at once.\n" +
+		"- The cache is ready to use from many goroutines.\n" +
+		"- It is not safe to copy a `Cache` after first use.\n"
+	vs := checkText(t, b, "", reply)
+	work, explained, verified := 0, 0, 0
+	for _, v := range vs {
+		switch {
+		case v.Verdict == ClaimVerified:
+			verified++
+		case v.LoadBearing && !v.Explains:
+			work++
+			t.Logf("unverified work: %q (%s)", v.Text, v.Reason)
+		default:
+			explained++
+		}
+	}
+	t.Logf("cache walkthrough: %d verified, %d unverified work, %d explanation or general knowledge, of %d", verified, work, explained, len(vs))
+	// "ready to use", "not safe" and the RWMutex the read lacks are work.
+	if work > 3 {
+		t.Fatalf("%d sentences counted as unverified work, want at most the 3 about state, judgement and unshown code", work)
 	}
 }

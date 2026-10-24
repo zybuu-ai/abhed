@@ -86,11 +86,18 @@ func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 			"      "+s.Dim("record: "+VisibleLine(clip(why, 160))))
 	}
 	for _, c := range v.Claims {
-		if c.Verdict != agent.ClaimUnverified || !c.LoadBearing || shown >= maxShownClaims {
+		if c.Verdict != agent.ClaimUnverified || !c.LoadBearing || c.Explains || shown >= maxShownClaims {
 			continue
 		}
 		shown++
 		rows = append(rows, fmt.Sprintf("    %s %d %s", s.Yellow("?"), c.N, s.Dim(VisibleLine(clip(c.Text, 100))+" — "+VisibleLine(clip(c.Reason, 120)))))
+	}
+	if e := v.Explained(); e > 0 {
+		what := fmt.Sprintf("%d sentences explain", e)
+		if e == 1 {
+			what = "1 sentence explains"
+		}
+		rows = append(rows, "    "+s.Dim("· "+what+" what a read showed; not checked as work, and the answer still counts them"))
 	}
 	if c := v.Contract; c != nil && !c.OK {
 		for _, r := range c.Require {

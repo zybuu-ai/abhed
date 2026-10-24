@@ -3177,6 +3177,7 @@ function drawVerdict(p){
   if(!contract && !p.revision && !bad && !unk && !(p.verified || 0)) return;
   const d = el('details', 'verdict' + (bad ? ' bad' : unk ? ' unk' : '')); d.open = bad || unk;
   const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  const expl = claims.filter(c => c.verdict === 'unverified' && c.explains).length;
   // The reply streamed before it was checked: a contradiction is flagged on
   // the reply itself and at the top of the box, where it cannot be missed.
   if((p.contradicted || 0) > 0){
@@ -3185,13 +3186,13 @@ function drawVerdict(p){
     if(last){ last.classList.add('contradicted'); last.appendChild(el('div', 'vflag', '✗ NOT FACT: ' + what + (p.revision ? '; the agent is asked to correct it' : '; see the struck-through statements below'))); }
   }
   d.appendChild(el('summary', '', (bad ? '✗ ' : unk || !(p.verified || 0) ? '? ' : '✓ ') + (p.verified || 0) + ' verified · ' + (p.unverified || 0) + ' unverified' +
-    (known ? (known === (p.unverified || 0) ? ' (general knowledge)' : ' (' + known + ' general knowledge)') : '') + ' · ' + (p.contradicted || 0) + ' contradicted' +
+    (known || expl ? ' (' + [known ? (known === (p.unverified || 0) ? 'general knowledge' : known + ' general knowledge') : '', expl ? expl + ' explanation' : ''].filter(Boolean).join(', ') + ')' : '') + ' · ' + (p.contradicted || 0) + ' contradicted' +
     (contract ? (contract.ok ? ' · contract met' : ' · contract not met') : '') + (p.revision ? ' · the agent is asked to revise once' : '')));
   if((p.contradicted || 0) > 0) d.appendChild(el('div', 'vbanner', '✗ NOT FACT: ' + p.contradicted + ' contradicted by the session\'s record' + (p.revision ? ' · the agent is asked to correct it' : '')));
   for(const c of claims){
     const r = el('div', 'cl ' + (c.verdict || 'unverified')), b = el('div');
-    r.appendChild(el('span', 'mk', c.verdict === 'verified' ? '✓' : c.verdict === 'contradicted' ? '✗' : '?'));
-    r.title = c.verdict || 'unverified';
+    r.appendChild(el('span', 'mk', c.verdict === 'verified' ? '✓' : c.verdict === 'contradicted' ? '✗' : c.explains ? '·' : '?'));
+    r.title = c.explains ? 'explanation: explains what a read showed; still counts against the answer' : c.verdict || 'unverified';
     b.appendChild(el('div', 't', visible(c.text || '')));
     const k = c.conflict;
     b.appendChild(el('div', 'why', visible(k && k.excerpt ? 'record' + (k.seq ? ' #' + k.seq : '') + ': ' + k.excerpt : c.reason || '')));
