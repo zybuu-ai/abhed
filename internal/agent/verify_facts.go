@@ -34,8 +34,15 @@ type facts struct {
 	// names no file.
 	deed, proof, changeWord bool
 	tokens                  []string
-	scope                   []string // packages or folders a test claim names, such as internal/auth
-	ran                     []string // commands the claim says were run
+	// event is the word that makes the claim report something that
+	// happened (verify_events.go); such a claim is shown only by the calls.
+	// observe: it says the agent looked at something; found, that it found
+	// something; dir is "add" or "remove" for a change that says which.
+	event          string
+	observe, found bool
+	dir            string
+	scope          []string // packages or folders a test claim names, such as internal/auth
+	ran            []string // commands the claim says were run
 }
 
 type countFact struct {
@@ -98,7 +105,7 @@ var (
 		`|(?:kept|left)\s+(?:\S+\s+){1,4}?(?:as\s+it\s+was|as\s+is|unchanged|untouched|intact|alone))`)
 	// deedRe is the agent saying it did something: a first-person subject,
 	// then a verb in the past or the perfect, whatever the verb.
-	deedRe = regexp.MustCompile(`\b(?:i|we|i've|we've|i'd|we'd|i'll have|we'll have)\s+(?:have\s+|had\s+|has\s+|just\s+|also\s+|then\s+|now\s+|already\s+|recently\s+|first\s+|finally\s+|since\s+|then\s+|carefully\s+|quickly\s+)*(?:\w+ed|wrote|rewrote|put|set|reset|made|did|ran|built|rebuilt|sent|kept|left|took|gave|got|brought|chose|drew|split|cut|undid|redid|shut|held|threw|broke|began|ate|went|found|saw|read|led|spun|hid|tore|wound|bound|won|stuck|struck|swapped|tore|done|written|rewritten|made|taken|given|begun|gone|seen|known|shown|thrown|broken|chosen|hidden|undone|redone)\b`)
+	deedRe = regexp.MustCompile(`\b(?:i|we|i've|we've|i'd|we'd|i'll have|we'll have|i'm|we're)\s+(?:have\s+|had\s+|has\s+|just\s+|also\s+|then\s+|now\s+|already\s+|first\s+|since\s+|done\s+|\w+ly\s+)*(?:[a-z]+-)?(?:\w+ed|wrote|rewrote|put|set|reset|made|did|ran|built|rebuilt|sent|kept|left|took|gave|got|brought|chose|drew|split|cut|undid|redid|shut|held|threw|broke|began|ate|went|found|saw|read|led|spun|hid|tore|wound|bound|won|stuck|struck|swapped|tore|done|written|rewritten|made|taken|given|begun|gone|seen|known|shown|thrown|broken|chosen|hidden|undone|redone)\b`)
 	// proofRe are deeds that check or release something: no change in the
 	// calls shows them.
 	proofRe = regexp.MustCompile(`\b(tested|verified|checked|confirmed|validated|reviewed|approved|deployed|released|shipped|merged|pushed|restarted|rebooted|installed|published|rolled|ensured|proved|proven|audited|benchmarked|measured|profiled|ran|run)\b`)
@@ -204,8 +211,21 @@ func extractFacts(claim string) facts {
 	}
 	lower := strings.ToLower(text)
 	f.changed = changedRe.MatchString(lower)
-	f.deed = saysDeed(lower) && !f.changed
-	f.proof = f.deed && proofRe.MatchString(lower)
+	nlow := normText(text)
+	f.deed = saysDeed(nlow) && !f.changed
+	f.event = eventWord(text)
+	if f.event == "" && (f.deed || f.changed) {
+		f.event = "done"
+	}
+	f.observe = observeRe.MatchString(normText(backtickRe.ReplaceAllString(text, " ")))
+	f.found = f.observe && strings.Contains(nlow, "found")
+	f.proof = (f.deed || f.event != "") && !f.observe && proofRe.MatchString(nlow)
+	switch {
+	case removeRe.MatchString(normText(backtickRe.ReplaceAllString(text, " "))):
+		f.dir = "remove"
+	case addRe.MatchString(normText(backtickRe.ReplaceAllString(text, " "))):
+		f.dir = "add"
+	}
 	f.changeWord = changeNounRe.MatchString(lower) || passiveRe.MatchString(lower) && backtickRe.MatchString(text)
 	for _, m := range backtickRe.FindAllStringSubmatch(text, -1) {
 		if t := strings.TrimSpace(m[1]); t != "" {

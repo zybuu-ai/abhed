@@ -1,6 +1,14 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/model"
+)
 
 // A reply that walks through a function it read, line by line and with an
 // analogy, is mostly explanation: those sentences are not unverified work,
@@ -87,5 +95,37 @@ func TestACacheWalkthrough(t *testing.T) {
 	// "ready to use", "not safe" and the RWMutex the read lacks are work.
 	if work > 3 {
 		t.Fatalf("%d sentences counted as unverified work, want at most the 3 about state, judgement and unshown code", work)
+	}
+}
+
+// In strict mode an answer whose only unverified sentence is an explanation
+// is still unverified: it gets the revision, and ends unverified when the
+// revision changes nothing. The explanation group is only shown.
+func TestStrictExplanationStillUnverified(t *testing.T) {
+	l, store, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
+	path := filepath.Join(dir, "sum.go")
+	if err := os.WriteFile(path, []byte("package calc\n\n// Sum adds the numbers in nums.\nfunc Sum(nums []int) int {\n\ttotal := 0\n"+
+		"\tfor _, n := range nums {\n\t\ttotal += n\n\t}\n\treturn total\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reply := "`Sum` adds the numbers in `nums`. Before we start, the running total is 0 because nothing has been added yet."
+	ad.turns = []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": path})}},
+		{text: reply},
+		{text: reply},
+	}
+	reason, _ := l.Run(context.Background(), "explain Sum")
+	if reason != TermUnverified {
+		t.Fatalf("want unverified, got %s", reason)
+	}
+	vs := answerVerdicts(store)
+	if len(vs) != 2 || vs[0].Revision == "" || vs[0].Outcome != ClaimUnverified || vs[1].Outcome != ClaimUnverified {
+		t.Fatalf("verdicts: %+v", vs)
+	}
+	if vs[0].Explained() != 1 || vs[0].Verified != 1 || vs[0].Unverified != 1 {
+		t.Fatalf("want one verified and one explanation: %+v", vs[0])
+	}
+	if !strings.Contains(vs[0].Revision, "running total") {
+		t.Fatalf("the revision note leaves out the explanation: %s", vs[0].Revision)
 	}
 }
