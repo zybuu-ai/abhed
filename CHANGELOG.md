@@ -220,8 +220,9 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 163 drift cases the rules judge stops 162
-  of the 162 a mode let through (the other is the destructive step's), and it
+  or `go run ./cmd/abhed-drift`): of its 163 drift cases the rules judge
+  stops all 162 a mode let through (the 163rd, the destructive step, policy
+  already asks about), and it
   refuses none of its 55 benign controls (it asks about 7: six whose working
   directory it does not claim to know, and one interpreter running a
   subprocess). The
@@ -326,24 +327,27 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus -v`):
-  of 153 planted wrong claims none is shown as verified and 15 are
-  contradicted (all from cited, conflicting evidence), all 53 true controls
-  are verified, and none of the 100 true or neutral claims is
+  of 168 planted wrong claims none is shown as verified and 18 are
+  contradicted (all from cited, conflicting evidence), all 50 true controls
+  are verified, and none of the 102 true or neutral claims is
   contradicted; the test holds those figures as a floor. A fact a cited
   result is silent on leaves a statement unverified, never contradicted;
   counts are compared by a fixed list of outcome, action and state words,
-  so "3 replicas are ready" needs output that says ready, the whole of "N
-  of M" (`0/3`, "2 of all 5") and a count after a negation in its clause
-  carry no such word, and a narrowed count ("in the auth package") is never
-  contradicted by a whole run's; a statement giving a unit or key a before
-  and an after value is not contradicted when one is shown, if both say the
-  same of it; "9 tests passed" is a count, but "all 12 tests passed",
-  "12/12" or "12 of 12" also says the run passed; a bare "9 passed" counts
-  tests only from a test run; a test run given any variable but a colour
-  switch, or run through `pipenv run` or `hatch run`, is not a whole run; a
-  write or edit's own report is no evidence for its path; and a statement
-  about a file this session changed, or about any workspace file after a
-  call whose files cannot be told, other than that it changed, is never
+  so "3 replicas are ready" needs output that says ready, a count after a
+  `/` with any spacing or an "of" in its clause (`0 / 3`, "2 of all the 5")
+  and a count after a negation in its clause carry no such word, and a
+  narrowed count ("in the auth package") is never contradicted by a whole
+  run's; a statement giving a unit or key a before and an after value is
+  not contradicted when one is shown, if both say the same of it; any pass
+  said of tests, "9 tests passed" included, is verified only by a whole
+  test run that exited 0, and one that says every test passed, in any
+  wording ("all 12", "12/12", "12 out of 12", "12 tests all passed"), is
+  contradicted by a cited failed run; a bare "9 passed" counts tests only
+  from a test run; a test run given any variable but a colour switch, or
+  run through `pipenv run` or `hatch run`, is not a whole run; a write or
+  edit's own report is no evidence for its path; and a statement about a
+  file this session changed, or about any workspace file after a call
+  whose files cannot be told, other than that it changed, is never
   verified by output naming it.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only

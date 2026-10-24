@@ -9,7 +9,7 @@ model you point it at, and records everything it does.
 |---|---|
 | [Getting started](01-getting-started.md) | install, first run, the shape of a session |
 | [Configuration](02-configuration.md) | models, permissions, storage, every setting |
-| [Models and providers](03-providers.md) | the twenty providers, sampling parameters, subscriptions |
+| [Models and providers](03-providers.md) | the twenty providers, a local Ollama model, sampling parameters, subscriptions |
 | [Permissions and safety](04-permissions.md) | what the agent may do, and how you decide |
 | [Runbooks](28-runbooks.md) | approve a plan's exact calls once; each step then runs without asking, and anything else asks |
 | [Network policy](21-network-policy.md) | the egress allowlist: which destinations commands reach, and the record of each |
