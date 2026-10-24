@@ -129,3 +129,50 @@ func TestStrictExplanationStillUnverified(t *testing.T) {
 		t.Fatalf("the revision note leaves out the explanation: %s", vs[0].Revision)
 	}
 }
+
+// A summary's own claim is checked: "In summary, I rewrote ..." after only a
+// read ends unverified in strict mode, and so does "read X and changed Y".
+func TestSummaryAndLookAndChangeInStrictMode(t *testing.T) {
+	for _, reply := range []string{
+		"I read `sum.go`. In summary, I rewrote `Sum` to use `range`.",
+		"I read `sum.go`. Here is what I changed: I removed the overflow check from `Sum`.",
+		"I read `sum.go` and inserted `continue` before `total += n`.",
+		"- Set `DEBUG` to `true` in `config/app.env`.",
+	} {
+		l, store, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
+		path := filepath.Join(dir, "sum.go")
+		if err := os.WriteFile(path, []byte("package calc\n\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n\t}\n\treturn total\n}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ad.turns = []scriptedTurn{{calls: []model.ToolCall{call("read", map[string]string{"path": path})}}, {text: reply}, {text: reply}}
+		if reason, _ := l.Run(context.Background(), "fix Sum"); reason != TermUnverified {
+			t.Errorf("%q: want unverified, got %s", reply, reason)
+		}
+		if vs := answerVerdicts(store); len(vs) == 0 || vs[0].Outcome != ClaimUnverified {
+			t.Errorf("%q: verdicts %+v", reply, vs)
+		}
+	}
+}
+
+// Only a command that changes the resource it names counts as a change.
+func TestMutatingCommands(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"kubectl scale deploy/checkout --replicas=3":    true,
+		"kubectl -n shop apply -f app.yaml":             true,
+		"kubectl rollout restart deploy/checkout":       true,
+		"kubectl rollout status deploy/checkout":        false,
+		"kubectl auth can-i delete deployment checkout": false,
+		"kubectl get deploy scale-test":                 false,
+		"kubectl describe deploy checkout":              false,
+		"kubectl diff -f app.yaml":                      false,
+		"kubectl explain deployment":                    false,
+		"helm upgrade api ./chart":                      true,
+		"helm list":                                     false,
+		"terraform apply -auto-approve":                 true,
+		"terraform plan":                                false,
+	} {
+		if got := mutatingCmd(cmd); got != want {
+			t.Errorf("%q: %v, want %v", cmd, got, want)
+		}
+	}
+}

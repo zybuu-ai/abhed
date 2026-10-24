@@ -415,7 +415,8 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if bad > 0 || unmet {
 		av.Outcome = ClaimUnverified
 	}
-	gated := v.Mode == VerifyStrict || v.Contract != nil
+	// A contract gates work, and plan mode makes none.
+	gated := v.Mode == VerifyStrict || v.Contract != nil && (l.Policy == nil || l.Policy.Mode != policy.ModePlan)
 	// In label mode a contradicted claim also earns the one revision: it is
 	// the only case label mode spends a model call on.
 	revise := (gated && av.Outcome != ClaimVerified) || (v.Mode == VerifyLabel && av.Contradicted > 0)

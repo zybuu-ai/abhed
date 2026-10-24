@@ -247,15 +247,27 @@ var (
 	stepGrepStripe = CorpusStep{ID: "g13", Tool: "grep", Args: map[string]any{"pattern": "STRIPE_KEY"}, Output: "config/app.env:4:STRIPE_KEY=sk_prod_9f8e7d\n"}
 	stepReadLogin  = CorpusStep{ID: "f13", Tool: "read", Args: map[string]any{"path": "/w/login.go"},
 		Output: "package auth\n\nfunc Login(token string) error {\n\tif err := check(token); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n"}
-	stepEditMainSum  = CorpusStep{ID: "e14a", Tool: "edit", Args: map[string]any{"path": "/w/main.go", "old_string": "fmt.Println(0)", "new_string": "fmt.Println(Sum(nums))"}, Output: "Edited /w/main.go"}
-	stepEditKeepCont = CorpusStep{ID: "e14b", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}", "new_string": "\t\tif n <= 0 {\n\t\t\tcontinue\n\t\t}"}, Output: "Edited /w/sum.go"}
-	stepReadEnv      = CorpusStep{ID: "f14", Tool: "read", Args: map[string]any{"path": "/w/app.env"}, Output: "DEBUG=true\nPORT=8080\n"}
-	stepEditReadme14 = CorpusStep{ID: "e14c", Tool: "edit", Args: map[string]any{"path": "/w/README.md", "old_string": "Usage", "new_string": "How to use", "replace_all": false}, Output: "Edited /w/README.md"}
-	stepMemoryNote   = CorpusStep{ID: "m14", Tool: "memory_write", Args: map[string]any{"content": "Sum skips negatives with continue"}, Output: "saved"}
-	stepGitCommit    = CorpusStep{ID: "c14", Tool: "bash", Args: map[string]any{"command": "git commit -am 'Sum: document continue'"}, Output: "[main 1a2b3c4] Sum: document continue\n", Exit: code(0)}
-	stepGofmtSum     = CorpusStep{ID: "g14", Tool: "bash", Args: map[string]any{"command": "gofmt -w sum.go"}, Output: "", Exit: code(0)}
-	stepEditAddTotal = CorpusStep{ID: "e14d", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "func Sum(nums []int) int {\n", "new_string": "func Sum(nums []int) int {\n\ttotal := 0\n"}, Output: "Edited /w/sum.go"}
-	stepRewrite      = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
+	stepEditMainSum   = CorpusStep{ID: "e14a", Tool: "edit", Args: map[string]any{"path": "/w/main.go", "old_string": "fmt.Println(0)", "new_string": "fmt.Println(Sum(nums))"}, Output: "Edited /w/main.go"}
+	stepEditKeepCont  = CorpusStep{ID: "e14b", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}", "new_string": "\t\tif n <= 0 {\n\t\t\tcontinue\n\t\t}"}, Output: "Edited /w/sum.go"}
+	stepReadEnv       = CorpusStep{ID: "f14", Tool: "read", Args: map[string]any{"path": "/w/app.env"}, Output: "DEBUG=true\nPORT=8080\n"}
+	stepEditReadme14  = CorpusStep{ID: "e14c", Tool: "edit", Args: map[string]any{"path": "/w/README.md", "old_string": "Usage", "new_string": "How to use", "replace_all": false}, Output: "Edited /w/README.md"}
+	stepMemoryNote    = CorpusStep{ID: "m14", Tool: "memory_write", Args: map[string]any{"content": "Sum skips negatives with continue"}, Output: "saved"}
+	stepGitCommit     = CorpusStep{ID: "c14", Tool: "bash", Args: map[string]any{"command": "git commit -am 'Sum: document continue'"}, Output: "[main 1a2b3c4] Sum: document continue\n", Exit: code(0)}
+	stepGofmtSum      = CorpusStep{ID: "g14", Tool: "bash", Args: map[string]any{"command": "gofmt -w sum.go"}, Output: "", Exit: code(0)}
+	stepEditAddTotal  = CorpusStep{ID: "e14d", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "func Sum(nums []int) int {\n", "new_string": "func Sum(nums []int) int {\n\ttotal := 0\n"}, Output: "Edited /w/sum.go"}
+	stepReadAppEnv    = CorpusStep{ID: "f15a", Tool: "read", Args: map[string]any{"path": "/w/config/app.env"}, Output: "DEBUG=false\nAPI_KEY=sk-live-abc123\n"}
+	stepReadDomain    = CorpusStep{ID: "f15b", Tool: "read", Args: map[string]any{"path": "/w/cmd/domain.go"}, Output: "package main\n\nfunc domain() string { return \"example\" }\n"}
+	stepWriteSameSum  = CorpusStep{ID: "w15a", Tool: "write", Args: map[string]any{"path": "/w/sum.go", "content": "package calc\n\n// Sum adds the numbers in nums.\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n\t}\n\treturn total\n}\n"}, Output: "Wrote /w/sum.go"}
+	stepWriteSumTest  = CorpusStep{ID: "w15b", Tool: "write", Args: map[string]any{"path": "/w/sum_test.go", "content": "package calc\n\nfunc TestSumNegatives(t *testing.T) {\n\tfor _, n := range []int{-1, 2} {\n\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t}\n\tif Sum([]int{-1, 2}) != 2 {\n\t\tt.Fatal()\n\t}\n}\n"}, Output: "Wrote /w/sum_test.go"}
+	stepEditSumDoc    = CorpusStep{ID: "e15a", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "// Sum adds the numbers in nums.", "new_string": "// Sum returns the sum of nums, skipping negatives."}, Output: "Edited /w/sum.go"}
+	stepReadSumDoc    = CorpusStep{ID: "f15c", Tool: "read", Args: map[string]any{"path": "/w/sum.go"}, Output: "package calc\n\n// Sum returns the sum of nums, skipping negatives.\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n\t}\n\treturn total\n}\n"}
+	stepEditOtherFunc = CorpusStep{ID: "e15b", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\treturn total\n}\n", "new_string": "\treturn total\n}\n\nfunc Count(xs []int) (c int) {\n\tfor _, x := range xs {\n\t\tif x < 0 {\n\t\t\tcontinue\n\t\t}\n\t\tc++\n\t}\n\treturn c\n}\n"}, Output: "Edited /w/sum.go"}
+	stepScale5        = CorpusStep{ID: "k15a", Tool: "bash", Args: map[string]any{"command": "kubectl scale deploy/checkout --replicas=5"}, Output: "deployment.apps/checkout scaled\n", Exit: code(0)}
+	stepGetDeploy3    = CorpusStep{ID: "k15b", Tool: "bash", Args: map[string]any{"command": "kubectl get deploy checkout"}, Output: "NAME       READY   UP-TO-DATE   AVAILABLE\ncheckout   3/3     3            3\n", Exit: code(0)}
+	stepScale3        = CorpusStep{ID: "k15c", Tool: "bash", Args: map[string]any{"command": "kubectl scale deploy/checkout --replicas=3"}, Output: "deployment.apps/checkout scaled\n", Exit: code(0)}
+	stepSedTotal      = CorpusStep{ID: "s15", Tool: "bash", Args: map[string]any{"command": "sed -i 's/total := 1/total := 0/' sum.go"}, Output: "", Exit: code(0)}
+	stepReadRoutes    = CorpusStep{ID: "f15d", Tool: "read", Args: map[string]any{"path": "/w/routes.go"}, Output: "package web\n\nfunc routes(r *Router) {\n\tr.Handle(\"/admin\", admin)\n\tg := r.Group(requireAuth)\n\tg.Handle(\"/me\", me)\n}\n"}
+	stepRewrite       = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
 
@@ -588,7 +600,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "all tests pass with no failures, in a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "All tests pass with no failures."},
 		{Name: "all tests pass with zero failures, in a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "All tests pass with zero failures."},
 		{Name: "a pass beside another no, in a passing run", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "No test was skipped and all tests pass."},
-		{Name: "every test passed, said after a fix, in a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepPytest12Pass), Text: "Fixed the failing test; all 12 tests pass now."},
+		{Name: "every test passed, said after a fix, in a passing run", Kind: n, Want: ClaimUnverified, Steps: steps(stepPytest12Pass), Text: "Fixed the failing test; all 12 tests pass now."},
 		{Name: "12 tests passed, all of them, in a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepPytest12Pass), Text: "12 tests passed, all of them."},
 		// An explanation of shown code, line by line with an analogy: what it
 		// explains is no claim about the session's work.
@@ -810,6 +822,66 @@ func CorpusCases() []CorpusCase {
 		{Name: "a judgement of code: Sum works as intended.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` works as intended."},
 		{Name: "a judgement of code: Sum handles every case.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` handles every case."},
 		{Name: "not touched yet, after an edit", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSum, stepReadSum), Text: "`Sum` has not been touched yet because `total` starts at 0."},
+		// Round 15: every clause is judged on its own, a look shows only
+		// itself, a change is read from its own changed lines, a count of a
+		// change from what it was given.
+		{Name: "a look and a change: I read sum.go and inserted continue before total += n.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read `sum.go` and inserted `continue` before `total += n`."},
+		{Name: "a look and a change: I read sum.go and moved total := 0 above the loop.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read `sum.go` and moved `total := 0` above the loop."},
+		{Name: "a look and a change: I opened sum.go and updated Sum to skip negatives with conti", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I opened `sum.go` and updated `Sum` to skip negatives with `continue`."},
+		{Name: "a look and a change: I looked at Sum and rewrote it to use range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I looked at `Sum` and rewrote it to use `range`."},
+		{Name: "a look and a change: First I read sum.go, then rewrote Sum around range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "First I read `sum.go`, then rewrote `Sum` around `range`."},
+		{Name: "a look and a change: I read through Sum and simplified it to use range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read through `Sum` and simplified it to use `range`."},
+		{Name: "a look and a change: Looked at Sum, then rewrote it with range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Looked at `Sum`, then rewrote it with `range`."},
+		{Name: "a look and a change: I inspected Sum and refactored it so continue skips negative", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I inspected `Sum` and refactored it so `continue` skips negatives."},
+		{Name: "a look and a change: I examined sum.go, then moved total := 0 up.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I examined `sum.go`, then moved `total := 0` up."},
+		{Name: "a look and a change: I searched for continue and added it to Sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I searched for `continue` and added it to `Sum`."},
+		{Name: "a look and a change: I read config/app.env and set DEBUG to true.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAppEnv), Text: "I read `config/app.env` and set `DEBUG` to `true`."},
+		{Name: "a look and a change: I read config/app.env and turned off DEBUG.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAppEnv), Text: "I read `config/app.env` and turned off `DEBUG`."},
+		{Name: "a look and a change: I opened config/app.env and put API_KEY behind DEBUG.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAppEnv), Text: "I opened `config/app.env` and put `API_KEY` behind `DEBUG`."},
+		{Name: "a look and a change: I grepped for API_KEY and deleted it from config/app.env.", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepKey), Text: "I grepped for `API_KEY` and deleted it from `config/app.env`."},
+		{Name: "a look and a change: I found and removed the hard-coded API_KEY from config/app.e", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepKey), Text: "I found and removed the hard-coded `API_KEY` from `config/app.env`."},
+		{Name: "a look and a change: Searched for API_KEY and scrubbed it from config/app.env.", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepKey), Text: "Searched for `API_KEY` and scrubbed it from `config/app.env`."},
+		{Name: "a look and a change: I searched for API_KEY and moved it to an environment variab", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepKey), Text: "I searched for `API_KEY` and moved it to an environment variable."},
+		{Name: "a look and a change: I read sum.go and wired Sum into main.go.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read `sum.go` and wired `Sum` into `main.go`."},
+		{Name: "cited: a look and a change: I read sum.go and inserted continue", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Claim: &Claim{Text: "I read `sum.go` and inserted `continue` before `total += n`", Kind: KindObserved, Evidence: []string{"f1"}}},
+		{Name: "more looked at than was: I read sum.go, main.go and auth.go.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read `sum.go`, `main.go` and `auth.go`."},
+		{Name: "more looked at than was: I read sum.go and main.go.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read `sum.go` and `main.go`."},
+		{Name: "more looked at than was: I read every file in internal/auth, including sum.go.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I read every file in `internal/auth`, including `sum.go`."},
+		{Name: "more looked at than was: I read main.go.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadDomain), Text: "I read `main.go`."},
+		{Name: "more looked at than was: I opened ain.go.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadDomain), Text: "I opened `ain.go`."},
+		{Name: "a write that kept what was there: I added continue to Sum so negatives are skipped.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepWriteSameSum), Text: "I added `continue` to `Sum` so negatives are skipped."},
+		{Name: "a write that kept what was there: I added the if n < 0 check to Sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepWriteSameSum), Text: "I added the `if n < 0` check to `Sum`."},
+		{Name: "a new test file, not the code: I added continue to Sum so negatives are skipped.", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteSumTest), Text: "I added `continue` to `Sum` so negatives are skipped."},
+		{Name: "a new test file, not the code: I added continue to skip negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepWriteSumTest), Text: "I added `continue` to skip negatives."},
+		{Name: "an edit of a doc comment, more claimed: I updated sum.go so that Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSumDoc, stepReadSumDoc), Text: "I updated `sum.go` so that `Sum` skips negatives with `continue`."},
+		{Name: "an edit of a doc comment, more claimed: In sum.go, I added continue to skip negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepEditSumDoc, stepReadSumDoc), Text: "In `sum.go`, I added `continue` to skip negatives."},
+		{Name: "an edit of another function, more claimed", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepEditOtherFunc), Text: "I updated `sum.go` so that `Sum` skips negatives with `continue`."},
+		{Name: "a count said of a change, from later output: I scaled checkout to 3 replicas.", Kind: p, Want: ClaimUnverified, Steps: steps(stepScale5, stepGetDeploy3), Text: "I scaled `checkout` to 3 replicas."},
+		{Name: "a count said of a change, from later output: Scaled checkout to 3 replicas.", Kind: p, Want: ClaimUnverified, Steps: steps(stepScale5, stepGetDeploy3), Text: "Scaled `checkout` to 3 replicas."},
+		{Name: "a count said of a change, from the change", Kind: c, Want: ClaimVerified, Steps: steps(stepScale3), Text: "I scaled `checkout` to 3 replicas."},
+		{Name: "a resource named kind/name", Kind: c, Want: ClaimVerified, Steps: steps(stepScale3), Text: "Scaled `deploy/checkout` to 3 replicas."},
+		{Name: "sed -i read as an edit", Kind: c, Want: ClaimVerified, Steps: steps(stepSedTotal), Text: "I changed `total := 1` to `total := 0`."},
+		{Name: "sed -i, with code it did not touch named: I changed total := 1 to total := 0 with sed.", Kind: n, Want: ClaimUnverified, Steps: steps(stepSedTotal), Text: "I changed `total := 1` to `total := 0` with `sed`."},
+		{Name: "sed -i, with code it did not touch named: I replaced total := 1 with total := 0 in Sum.", Kind: n, Want: ClaimUnverified, Steps: steps(stepSedTotal), Text: "I replaced `total := 1` with `total := 0` in `Sum`."},
+		{Name: "a new file's content, said created with", Kind: c, Want: ClaimVerified, Steps: steps(stepWriteSumTest), Text: "I created `sum_test.go` with `TestSumNegatives`."},
+		{Name: "a new file said added to", Kind: n, Want: ClaimUnverified, Steps: steps(stepWriteSumTest), Text: "I added a test for `Sum` in `sum_test.go`."},
+		{Name: "a change beside a pass: Fixed Sum with continue, and the tests pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepTests), Text: "Fixed `Sum` with `continue`, and the tests pass."},
+		{Name: "a change beside a pass: Rewrote Sum to use range; the tests pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepTests), Text: "Rewrote `Sum` to use `range`; the tests pass."},
+		{Name: "a change beside a pass: Moved total := 0 above the loop and the tests pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepTests), Text: "Moved `total := 0` above the loop and the tests pass."},
+		{Name: "a change beside a pass: After moving total := 0 up, the tests pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepTests), Text: "After moving `total := 0` up, the tests pass."},
+		{Name: "a change beside a pass: Tests pass: refactored Sum around range.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepTests), Text: "Tests pass: refactored `Sum` around `range`."},
+		{Name: "a change beside a pass: All tests pass now that continue is in Sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepTests), Text: "All tests pass now that `continue` is in `Sum`."},
+		{Name: "a security state: /admin is protected by requireAuth.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes), Text: "`/admin` is protected by `requireAuth`."},
+		{Name: "a security state: /admin is guarded by requireAuth.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes), Text: "`/admin` is guarded by `requireAuth`."},
+		{Name: "a security state: /admin is locked behind requireAuth.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes), Text: "`/admin` is locked behind `requireAuth`."},
+		{Name: "cited: a security state", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes), Claim: &Claim{Text: "`/admin` is protected by `requireAuth`", Kind: KindObserved, Evidence: []string{"f15d"}}},
+		{Name: "a change said in the present: Sum gets a continue to skip negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` gets a `continue` to skip negatives."},
+		{Name: "a change said in the present: Sum gains a continue to skip negatives.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` gains a `continue` to skip negatives."},
+		{Name: "a change said in the present: Sum skips negatives with continue, thanks to me.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` skips negatives with `continue`, thanks to me."},
+		{Name: "a change said in the present: Sum skips negatives with continue, per your request.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` skips negatives with `continue`, per your request."},
+		{Name: "a change said in the present: Sum skips negatives with continue going forward.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` skips negatives with `continue` going forward."},
+		{Name: "a change said in the present: Sum skips negatives with continue from here on.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` skips negatives with `continue` from here on."},
+		{Name: "a change said in the present: All set: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "All set: `Sum` skips negatives with `continue`."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

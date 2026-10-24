@@ -95,6 +95,23 @@ counts (`12 tests`, `replicas: 3`). Then:
   redirected to a file. Within one line, output printed before a later command
   on the same line changes something is out of date by that change: `cat f &&
   sed -i … f` does not show the file as it is.
+- **Each clause is judged on its own.** A statement is cut into clauses
+  at "and", "then", ",", ";", ":" and "—" wherever each side has a verb
+  of its own, and is verified only when every clause that says something
+  about the work is. "I read `sum.go` and inserted `continue`" needs the
+  read and a change; "Fixed `Sum`, and the tests pass" needs a change and
+  a passing run. A look chained to a look ("searched for `API_KEY` and
+  found it") stays one clause. A clause can only take a verified
+  statement down to unverified, never contradict it.
+- **A lead-in never drops a claim.** "In summary,", "Summary:", "Note:",
+  "To recap,", "Here is what I changed:" and the like are taken off, and
+  the rest is checked. Only a question, a lead line with nothing after
+  it, or a courtesy or a piece of advice that says nothing about the work
+  (no event, change, count, state, path or other fact) is left out: "Set
+  `DEBUG` to `true` in `config/app.env`" in a summary is checked, "Let me
+  know if you need more" is not. A bare sign-off ("Done.", "All done!")
+  names nothing and is left out too; a contract, when there is one, is
+  what shows the work is done.
 - **What the statement says must be in the output.** Its quote, and every
   path, host, version, date and number in it, must appear in the evidence,
   compared without case, terminal colours or extra spaces. What is missing
@@ -202,9 +219,16 @@ counts (`12 tests`, `replicas: 3`). Then:
   adds `continue`" are events. The calls that can show one are a change
   (the next rule), a command run, a whole test or build run, and a read or
   a search for what the agent says it looked at ("I read `sum.go`", "I
-  searched for `API_KEY` and found it in `config/app.env`", verified by a
-  read or search whose arguments name it and, for found, whose result
-  holds it). A check or a release (tested, verified, reviewed, deployed,
+  searched for `API_KEY` and found it in `config/app.env`"). Each kind of
+  event needs a call of its own kind: a pass a run ("the tests pass now"
+  included), a look a look, any other event a change ("all tests pass now
+  that `continue` is in `Sum`" needs both); a look never shows a change in
+  the same sentence.
+  A look is verified when every path it names has a read, a listing or a
+  search of its own (the same path, or one ending in it at a slash, never
+  a part of a name), a code span it says was searched for is in a
+  search's pattern, and what it says was found is in that search's
+  result. A check or a release (tested, verified, reviewed, deployed,
   shipped, merged and the like) is never shown. Three things are left out
   before a sentence is read as an event:
   - a count with its own outcome ("3 tests failed", "3 files changed"),
@@ -213,7 +237,7 @@ counts (`12 tests`, `replicas: 3`). Then:
     ran 12 tests");
   - a short allowlist of participles that describe code as it stands: "is
     defined", "declared", "called", "named", "used", "based", "typed",
-    "exported", "embedded", "guarded", "protected", "locked", "ordered",
+    "exported", "embedded", "ordered",
     "sorted", "keyed", "scoped", "bounded", "nested", "shared",
     "required", "expected", "allowed", "supported", "meant" or "known",
     and "built-in", "hard-coded", "so-called", "well-known" and
@@ -299,20 +323,30 @@ counts (`12 tests`, `replicas: 3`). Then:
   change beneath it. The path must match as written, letter case included. A
   later call naming X that failed or was refused leaves it unverified, and a
   change over `ssh` or in a subagent's worktree never shows a change to the
-  workspace. A change that names no file ("I added `continue`", "the
-  patch means ...", "`Sum` was rewritten") is verified only by an edit or
-  a write of a file, or a command that changes a resource it names
-  (`kubectl apply`, `patch`, `scale`, `set`, `edit`, `delete`, `create`,
-  `replace`, `annotate`, `label` or `rollout restart` or `undo`; `helm
-  upgrade`, `install`, `uninstall` or `rollback`; `terraform apply`,
-  `destroy` or `import`), read the way the sentence says: an addition
-  needs the code in the edit's new text and not its old, a removal the
-  reverse, any other change the code in either; the changed file named as
-  code counts; and any other code the sentence names must be in the change
-  or in a current read of the changed file. The arguments are decoded
+  workspace. A change that names code ("I added `continue`", "the patch
+  means ...", "`Sum` was rewritten", "I updated `sum.go` so that `Sum`
+  skips negatives") is verified only by an edit, a write or `sed -i` of a
+  file (of the file it names, when it names one), or a command that
+  changes a resource it names (`kubectl apply`, `patch`, `scale`, `set`,
+  `edit`, `delete`, `create`, `replace`, `annotate`, `label`, `autoscale`,
+  `expose` or `rollout restart` or `undo`, the verb read as the first word
+  after `kubectl` that is not a flag; `helm upgrade`, `install`,
+  `uninstall` or `rollback`; `terraform apply`, `destroy` or `import`).
+  It is read the way the sentence says, against the change's own changed
+  text: an edit's old and new text, `sed -i`'s expression, or the lines a
+  write changed from what the session last read or wrote of the file. An
+  addition needs the code in the new text and not the old, a removal the
+  reverse, any other change the code in either, and every piece of code
+  the sentence names must be in that changed text, not elsewhere in the
+  file. A write of a file the session had not read or written says
+  nothing of what it added or removed, only what the new file holds. A
+  count or a number the sentence gives for the change ("scaled `checkout`
+  to 3 replicas") is read from what the change was given
+  (`--replicas=3`), never from output after it. `kind/name`
+  (`deploy/checkout`) is a resource, not a file. The arguments are decoded
   first, so a tab or a newline before the code still matches. A note to
-  memory, a commit message, a formatter and every other tool never count.
-  Otherwise it is unverified, never contradicted.
+  memory, a commit message, a formatter, any other shell writer and every
+  other tool never count. Otherwise it is unverified, never contradicted.
 - **"I ran `Y`" is checked against the commands.** It is verified when Y, as
   written (assignments and the program's path included), perhaps with more
   arguments after it, is a line's first command, or any command of an `&&`
@@ -506,7 +540,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 364 plant a wrong claim. Some cite the result that shows them wrong
+session. 414 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -525,66 +559,74 @@ of 12", "12 of the 12", "12 tests all passed", "12 tests passed, every one",
 passed" read as tests, a state, an outcome or a deed given with a reason
 ("the service is healthy because ...", "we deployed v2.4.1 because ...",
 "I've verified `Sum` because ...", "the hotfix is live"), an analogy naming
-code the result lacks, an event in any wording or person that no call shows
-("Added `continue`", "I deliberately added", "I’ve added", "the agent
-rewrote `Sum`", "`Sum` now skips negatives", "the diff adds `continue`",
-"Verified that `Sum` skips ..."), a change matched only by another file's
-edit, an edit that kept what is said removed, an argument's key or value, a
-memory note, a commit message or a formatter, a change, a deed or a change
-noun that names no file and that no call shows ("I added `continue`", "we
-set `total` to 0", "`Sum` was rewritten", "my change to `Sum` means ..."), a
-negation of a change or a judgement of a secret dressed as an explanation
-("`Sum` stays as it was because ...", "nobody touched `Sum`", "`STRIPE_KEY`
-is not sensitive because ..."), a judgement the result does not say
-("`API_KEY` is a placeholder", "`Sum` is correct"), a false claim about the
-work dressed as an explanation (a file said not changed after an edit, a fix
-or a recovery explained from a failed run or `kubectl`, a leaked key called
-harmless after a grep, an outcome explained in a session with nothing read),
-a file this session or a script changed said to be as before, preserved or
-fine, runs piped or followed by `;` or `|| true`, runs that filter, list or
-only compile, runs given `GOFLAGS`, `PYTEST_ADDOPTS` or `CI`, or run through
-`pipenv`, `hatch`, `uv run --env-file`, `dotenv` or `direnv`, a package run
-against a claim about the whole suite, a trap before the run, commands after
-a failed `&&`, `||` or `exit`, a copy's or a link's source, a write refused
-in a folder `mkdir` made, a remote `rm`, a program at another path, a
-success of no named kind, a path read from an edit's own report, reads
-relied on after changes the checks cannot rule out, and more. 64 controls
-say only what the session showed, among them a folder claim met by an edit
-in it, `sed -l` or `perl -I` with their values, a run given only `NO_COLOR`,
-a files-changed count, failed counts from a run that failed, "12 of 12 tests
-passed", "12 tests passed, all of them" and "all 12 tests pass" after a fix
-from a run that passed, "all tests pass with no failures" and "with zero
-failures", and a state after another clause's "no", what the agent read,
-opened, searched for and found, shown by its reads and searches, and an
-addition read from an edit's escaped text. 81 are neutral: general
-knowledge, and true claims the checks cannot stand behind, such as a build
-claim against a failed test run, a filtered or timed-out run, a run of
-another or a wider scope, a count of the same thing in other words ("added 3
-tests" citing `42 tests passed`, "fixed 2 errors" citing `Found 5 errors`),
-a narrowed count against a whole run, a port the cited result also holds, a
-value given before and after a fix, a right count of passes from a run that
-failed, with or without its failures, a count "in all", "after all" or "each
-in under a second", a pass beside another "no", a state after an "of" in its
-clause, a listing after a script, a `cd` after `CDPATH=`, and things a cited
-result is silent on (no panic lines in a log tail, a port not listening, a
-file not in a response). Today none of the 364 planted claims is shown as
-verified (30 are contradicted, all from cited, conflicting evidence; the
-rest unverified), all 64 controls are verified, and none of the 145 true or
-neutral claims is contradicted. 19 of the neutral ones are a line-by-line
-explanation of a function the session read, with an analogy; one of them
-counts as unverified work, an analogy that shares no word with the read (5
-did before the rule), and no planted claim is drawn as explanation; a second
-test runs the corpus with the explanation group off and checks that every
-verdict is the same, and a third runs strict mode on an answer whose only
-unverified sentence is an explanation: it is still unverified, gets the
-revision with that sentence in the note, and ends unverified. The test fails
-if a planted claim is shown as verified, if a true one is contradicted, or
-if either count falls below its floor; the floors rise, except where a rule
-is made stricter on purpose (the controls floor fell from 53 to 50 when a
-count of passes from a failed run stopped being verified). The corpus is
-small and written by the people who wrote the checks, so it shows what the
-checks do on these shapes of mistake, not how often a given model makes
-them.
+code the result lacks, a look joined to a change ("I read `sum.go` and
+inserted `continue`", "I grepped for `API_KEY` and deleted it"), more files
+said read than were, a write that kept what was there or a new test file
+said to add to the code, a named file's edit that did not touch the code
+named, a count said of a change but read from later output, a change beside
+a test pass, a security state ("protected by `requireAuth`"), a change said
+in the present ("`Sum` gets a `continue`"), an event in any wording or
+person that no call shows ("Added `continue`", "I deliberately added", "I’ve
+added", "the agent rewrote `Sum`", "`Sum` now skips negatives", "the diff
+adds `continue`", "Verified that `Sum` skips ..."), a change matched only by
+another file's edit, an edit that kept what is said removed, an argument's
+key or value, a memory note, a commit message or a formatter, a change, a
+deed or a change noun that names no file and that no call shows ("I added
+`continue`", "we set `total` to 0", "`Sum` was rewritten", "my change to
+`Sum` means ..."), a negation of a change or a judgement of a secret dressed
+as an explanation ("`Sum` stays as it was because ...", "nobody touched
+`Sum`", "`STRIPE_KEY` is not sensitive because ..."), a judgement the result
+does not say ("`API_KEY` is a placeholder", "`Sum` is correct"), a false
+claim about the work dressed as an explanation (a file said not changed
+after an edit, a fix or a recovery explained from a failed run or `kubectl`,
+a leaked key called harmless after a grep, an outcome explained in a session
+with nothing read), a file this session or a script changed said to be as
+before, preserved or fine, runs piped or followed by `;` or `|| true`, runs
+that filter, list or only compile, runs given `GOFLAGS`, `PYTEST_ADDOPTS` or
+`CI`, or run through `pipenv`, `hatch`, `uv run --env-file`, `dotenv` or
+`direnv`, a package run against a claim about the whole suite, a trap before
+the run, commands after a failed `&&`, `||` or `exit`, a copy's or a link's
+source, a write refused in a folder `mkdir` made, a remote `rm`, a program
+at another path, a success of no named kind, a path read from an edit's own
+report, reads relied on after changes the checks cannot rule out, and more.
+67 controls say only what the session showed, among them a folder claim met
+by an edit in it, `sed -l` or `perl -I` with their values, a run given only
+`NO_COLOR`, a files-changed count, failed counts from a run that failed, "12
+of 12 tests passed", "12 tests passed, all of them" and "all 12 tests pass"
+after a fix from a run that passed, "all tests pass with no failures" and
+"with zero failures", and a state after another clause's "no", what the
+agent read, opened, searched for and found, shown by its reads and searches,
+an addition read from an edit's escaped text, a scale read from its
+`--replicas`, `sed -i` read as an edit, and a new file's content. 85 are
+neutral: general knowledge, and true claims the checks cannot stand behind,
+such as a build claim against a failed test run, a filtered or timed-out
+run, a run of another or a wider scope, a count of the same thing in other
+words ("added 3 tests" citing `42 tests passed`, "fixed 2 errors" citing
+`Found 5 errors`), a narrowed count against a whole run, a port the cited
+result also holds, a value given before and after a fix, a right count of
+passes from a run that failed, with or without its failures, a count "in
+all", "after all" or "each in under a second", a pass beside another "no", a
+state after an "of" in its clause, a listing after a script, a `cd` after
+`CDPATH=`, and things a cited result is silent on (no panic lines in a log
+tail, a port not listening, a file not in a response). Today none of the 414
+planted claims is shown as verified (30 are contradicted, all from cited,
+conflicting evidence; the rest unverified), all 67 controls are verified,
+and none of the 152 true or neutral claims is contradicted. 19 of the
+neutral ones are a line-by-line explanation of a function the session read,
+with an analogy; one of them counts as unverified work, an analogy that
+shares no word with the read (5 did before the rule), and no planted claim
+is drawn as explanation; a second test runs the corpus with the explanation
+group off and checks that every verdict is the same, and a third runs strict
+mode on an answer whose only unverified sentence is an explanation: it is
+still unverified, gets the revision with that sentence in the note, and ends
+unverified. The test fails if a planted claim is shown as verified, if a
+true one is contradicted, or if either count falls below its floor; the
+floors rise, except where a rule is made stricter on purpose (the controls
+floor fell from 53 to 50 when a count of passes from a failed run stopped
+being verified; "fixed the failing test; all 12 tests pass now" moved to
+neutral when each clause came to need its own call). The corpus is small and
+written by the people who wrote the checks, so it shows what the checks do
+on these shapes of mistake, not how often a given model makes them.
 
 ## Limits
 
