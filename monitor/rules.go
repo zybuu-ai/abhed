@@ -315,129 +315,8 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 		k.home = "" // the line may write HOME: ~ is not placed against the session's home
 	}
 	for _, cmd := range s.cmds {
-		// A command name the check cannot read plainly (\rm, r\m, a quoted or
-		// expanded name) — the first word or the program past a wrapper — or a
-		// wrapper with an option (sudo -u, env -C, command -p, nice -n …), may
-		// hide the program or move the directory; its words are not read as a
-		// command line. If they look destructive — a deleting program, an
-		// interpreter, a protected root, an operand outside own ground — the
-		// person is asked.
-		if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
-			if looksDestructive(cmd.words) || r.strayOperand(k, c, cmd.words) {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
-					Advice:    "run the delete plainly, with no wrapper options and the path in full, or confirm this is meant"}
-			}
-			continue
-		}
-		prog, args := cmd.program()
-		prog = path.Base(prog) // /bin/rm is rm
-		if prog == "find" && findExecHidden(args) {
-			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-				Rationale: fmt.Sprintf("find runs a program by -exec that the check cannot read plainly; %s", remit(c)),
-				Advice:    "name the program find runs in full, or confirm this is meant"}
-		}
-		// A shell, interpreter or xargs that find runs by -exec can delete what
-		// it is handed; where find looks outside own ground, that is asked.
-		if prog == "find" && findExecRunsCode(args) && !r.findStartsOwnGround(k, c, args) {
-			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-				Rationale: fmt.Sprintf("find runs a shell or interpreter by -exec over paths outside the task's ground; %s", remit(c)),
-				Advice:    "delete the paths the task names directly, or confirm this is meant"}
-		}
-		for _, t := range destroys(prog, args) {
-			if t == "" {
-				continue
-			}
-			if strings.HasPrefix(t, "$") && !homeish(t) {
-				// A target only running the line would give. It is read only when
-				// it is a variable set to a plain literal earlier in the same plain
-				// chain, and then judged as that path; otherwise it is asked about.
-				v, ok := literalVar(cmd, t)
-				if !ok {
-					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-						Rationale: fmt.Sprintf("%s would destroy a target only running the line would give; %s", prog, remit(c)),
-						Advice:    "name the path to delete in full, somewhere the task covers, or confirm you mean this one"}
-				}
-				t = v
-			}
-			eff, known := effectiveTarget(cmd, t)
-			// Where the directory is unknown, only what the person said in their
-			// own messages names a relative target; the session's home still
-			// places ~, since ~ depends on HOME, not the directory.
-			p := *k
-			if !cmd.dirKnown {
-				p.said = k.person
-			}
-			kk := &p
-			// A relative target under a directory the check does not claim to
-			// know could point anywhere: it is always put to the person, never
-			// allowed on a name alone and never a silent deny.
-			if !known {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in is not one the check can be sure of, so where it points is not known; %s", prog, t, remit(c)),
-					Advice:    "name the path to delete in full, or change into it with a plain cd joined by && first"}
-			}
-			// A ~ or $HOME target the check cannot place — because the directory
-			// is unknown, or because the line may write HOME — is put to the
-			// person rather than placed or silently denied, unless they named
-			// it as a path outright.
-			if homeish(eff) && !remote(c) && k.homeAvailable && kk.home == "" && !protectedRoot(eff) && !kk.named(homeTilde(eff)) {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s would destroy %s, but HOME may have been changed in the line, so where ~ points is not known; %s", prog, t, remit(c)),
-					Advice:    "name the path to delete in full, or confirm this is meant"}
-			}
-			// find's operand is where it looks, not what it deletes.
-			if prog != "find" && protectedRoot(eff) {
-				// Named outright as the thing to delete: ask, never deny, so a
-				// person can still say yes; not named: deny.
-				if kk.named(eff) {
-					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.9,
-						Rationale: fmt.Sprintf("%s would destroy %s %s whole; the task names it, so this is put to you", prog, display(eff, t), where),
-						Advice:    "confirm you mean to delete all of it, or name the folders inside it instead"}
-				}
-				return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-					Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, display(eff, t), where, remit(c)),
-					Advice:    "delete only the folders inside it that the task names, or ask the person first"}
-			}
-			if r.ownGround(kk, c, eff) {
-				continue
-			}
-			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-				Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, display(eff, t), where, remit(c)),
-				Advice:    "keep destructive commands to the paths the task names, or ask the person first"}
-		}
-		// An interpreter one-liner's literal-path deletes were judged above by
-		// destroys; here its shell-outs and the deleter names it spells.
-		if code := oneLiner(prog, args); code != "" {
-			if deleterWord.MatchString(code) || shellsOut.MatchString(code) || mentionsProtectedRoot(code) {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s runs code the check does not read, which names a deleter, a protected folder or a shell-out; %s", prog, remit(c)),
-					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
-			}
-		}
-		// Code the command hands to a shell, to eval, or on the stdin of a shell
-		// or interpreter is parsed and run through these rules with the
-		// directory unknown; any non-allow there is an ask here, since the check
-		// cannot be sure where it runs.
-		for _, code := range handedShellCode(prog, args, cmd.stdin) {
-			if r.codeDestructive(code, 0) {
-				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s runs code the check reads only in part, which looks like it deletes or shells out; %s", prog, remit(c)),
-					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
-			}
-		}
-		// Code the check cannot read at all — eval of an expansion, a shell's
-		// -c given an expansion, a script that is a process substitution — is
-		// asked about always: its text is not in the line to judge.
-		if runsUnreadCode(cmd, prog, args) {
-			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-				Rationale: fmt.Sprintf("%s runs code that is built when the line runs, so the check cannot read it; %s", prog, remit(c)),
-				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
-		}
-		if ns := kubectlDeleteNS(prog, args); ns != "" && ns != "default" && !k.named(ns) {
-			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
-				Rationale: fmt.Sprintf("kubectl would delete in namespace %s, which the task never named; %s", ns, remit(c)),
-				Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
+		if v := r.judgeCommand(k, c, cmd, where, 0); v != nil {
+			return v
 		}
 	}
 	// The fallback, which does not depend on finding where code is handed:
@@ -451,6 +330,185 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
 	}
 	return nil
+}
+
+// judgeCommand runs the out-of-remit rules over one command. The top level
+// and code handed to a shell, eval or an interpreter both come through here;
+// depth counts how far code was handed down.
+func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth int) *Verdict {
+	// A command name the check cannot read plainly (\rm, r\m, a quoted or
+	// expanded name) — the first word or the program past a wrapper — or a
+	// wrapper with an option (sudo -u, env -C, command -p, nice -n …), may
+	// hide the program or move the directory; its words are not read as a
+	// command line. If they look destructive — a deleting program, an
+	// interpreter, a protected root, an operand outside own ground — the
+	// person is asked.
+	if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+		if looksDestructive(cmd.words) || r.strayOperand(k, c, cmd.words) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
+				Advice:    "run the delete plainly, with no wrapper options and the path in full, or confirm this is meant"}
+		}
+		return nil
+	}
+	prog, args := cmd.program()
+	prog = path.Base(prog) // /bin/rm is rm
+	// An argument the check cannot read (an expansion, a substitution, a glob)
+	// may be the program an unknown runner runs, or a target; for a program the
+	// rules do not judge precisely, it is asked about when its words look
+	// destructive or an operand lies outside own ground.
+	if !cmd.argsLiteral && !preciseProg(prog) && !containerProg(prog) {
+		if runsUnreadArg(cmd, args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s is given a program or code only running the line would give, so the check cannot read what it runs; %s", prog, remit(c)),
+				Advice:    "write the program and its code plainly, or confirm this is meant"}
+		}
+		if looksDestructive(args) || r.strayOperand(k, c, args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s is given arguments only running the line would give, and they look like they delete or reach outside the task's ground; %s", prog, remit(c)),
+				Advice:    "write the command and its paths plainly, or confirm this is meant"}
+		}
+	}
+	// Each command find runs by -exec, -execdir, -ok or -okdir is judged as a
+	// command of its own, with the directory unknown, whatever find's start.
+	if prog == "find" {
+		for _, words := range findExecCommands(args) {
+			sub := command{words: words, argsLiteral: true, literal: true}
+			if r.judgeCommand(k, c, sub, where, depth+1) != nil {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("find runs a command by -exec that looks like it deletes or reaches outside the task's ground; %s", remit(c)),
+					Advice:    "delete the paths the task names directly, or confirm this is meant"}
+			}
+		}
+	}
+	if v := r.moveVerdict(k, c, cmd, prog, args, where); v != nil {
+		return v
+	}
+	if prog == "find" && findExecHidden(args) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("find runs a program by -exec that the check cannot read plainly; %s", remit(c)),
+			Advice:    "name the program find runs in full, or confirm this is meant"}
+	}
+	// A shell, interpreter or xargs that find runs by -exec can delete what
+	// it is handed; where find looks outside own ground, that is asked.
+	if prog == "find" && findExecRunsCode(args) && !r.findStartsOwnGround(k, c, args) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("find runs a shell or interpreter by -exec over paths outside the task's ground; %s", remit(c)),
+			Advice:    "delete the paths the task names directly, or confirm this is meant"}
+	}
+	for _, t := range destroys(prog, args) {
+		if v := r.judgeTarget(k, c, cmd, prog, t, where); v != nil {
+			return v
+		}
+	}
+	// An interpreter one-liner's literal-path deletes were judged above by
+	// destroys; here its shell-outs and the deleter names it spells.
+	if code := oneLiner(prog, args); code != "" {
+		if deleterWord.MatchString(code) || shellsOut.MatchString(code) || mentionsProtectedRoot(code) || psDelete.MatchString(code) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s runs code the check does not read, which names a deleter, a protected folder or a shell-out; %s", prog, remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
+	}
+	// Code the command hands to a shell, to eval, or on the stdin of a shell
+	// or interpreter is parsed and run through these rules with the
+	// directory unknown; any non-allow there is an ask here, since the check
+	// cannot be sure where it runs.
+	for _, code := range handedShellCode(prog, args, cmd.stdin) {
+		if r.codeVerdict(k, c, code, where, depth+1) != nil {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s runs code the check reads only in part, which looks like it deletes or shells out; %s", prog, remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
+	}
+	// Code the check cannot read at all — eval of an expansion, a shell's
+	// -c given an expansion, a script that is a process substitution — is
+	// asked about always: its text is not in the line to judge.
+	if runsUnreadCode(cmd, prog, args) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s runs code that is built when the line runs, so the check cannot read it; %s", prog, remit(c)),
+			Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+	}
+	if ns := kubectlDeleteNS(prog, args); ns != "" && ns != "default" && !k.named(ns) {
+		return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+			Rationale: fmt.Sprintf("kubectl would delete in namespace %s, which the task never named; %s", ns, remit(c)),
+			Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
+	}
+	// The fallback for one command: read in part, and naming a deleter or a
+	// protected root, it is asked about (the line-level fallback covers text
+	// spread over several commands).
+	if !r.cmdFullyRead(cmd) && cmdMentionsDanger(cmd) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
+			Rationale: fmt.Sprintf("%s runs something the check does not read in full, and it names a deleting program or a protected folder; %s", prog, remit(c)),
+			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
+	}
+	return nil
+}
+
+// judgeTarget judges one target a command would destroy: a $ target it cannot
+// read, a target under an unknown directory, a home path it cannot place, a
+// protected root, or a path outside own ground. nil means own ground.
+func (r Rules) judgeTarget(k *given, c Case, cmd command, prog, t, where string) *Verdict {
+	if t == "" {
+		return nil
+	}
+	if strings.HasPrefix(t, "$") && !homeish(t) {
+		// A target only running the line would give. It is read only when
+		// it is a variable set to a plain literal earlier in the same plain
+		// chain, and then judged as that path; otherwise it is asked about.
+		v, ok := literalVar(cmd, t)
+		if !ok {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s would destroy a target only running the line would give; %s", prog, remit(c)),
+				Advice:    "name the path to delete in full, somewhere the task covers, or confirm you mean this one"}
+		}
+		t = v
+	}
+	eff, known := effectiveTarget(cmd, t)
+	// Where the directory is unknown, only what the person said in their
+	// own messages names a relative target; the session's home still
+	// places ~, since ~ depends on HOME, not the directory.
+	p := *k
+	if !cmd.dirKnown {
+		p.said = k.person
+	}
+	kk := &p
+	// A relative target under a directory the check does not claim to
+	// know could point anywhere: it is always put to the person, never
+	// allowed on a name alone and never a silent deny.
+	if !known {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in is not one the check can be sure of, so where it points is not known; %s", prog, t, remit(c)),
+			Advice:    "name the path to delete in full, or change into it with a plain cd joined by && first"}
+	}
+	// A ~ or $HOME target the check cannot place — because the directory
+	// is unknown, or because the line may write HOME — is put to the
+	// person rather than placed or silently denied, unless they named
+	// it as a path outright.
+	if homeish(eff) && !remote(c) && k.homeAvailable && kk.home == "" && !protectedRoot(eff) && !kk.named(homeTilde(eff)) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s would destroy %s, but HOME may have been changed in the line, so where ~ points is not known; %s", prog, t, remit(c)),
+			Advice:    "name the path to delete in full, or confirm this is meant"}
+	}
+	// find's operand is where it looks, not what it deletes.
+	if prog != "find" && protectedRoot(eff) {
+		// Named outright as the thing to delete: ask, never deny, so a
+		// person can still say yes; not named: deny.
+		if kk.named(eff) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.9,
+				Rationale: fmt.Sprintf("%s would destroy %s %s whole; the task names it, so this is put to you", prog, display(eff, t), where),
+				Advice:    "confirm you mean to delete all of it, or name the folders inside it instead"}
+		}
+		return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+			Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, display(eff, t), where, remit(c)),
+			Advice:    "delete only the folders inside it that the task names, or ask the person first"}
+	}
+	if r.ownGround(kk, c, eff) {
+		return nil
+	}
+	return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+		Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, display(eff, t), where, remit(c)),
+		Advice:    "keep destructive commands to the paths the task names, or ask the person first"}
 }
 
 // ownGround reports whether a destructive target, already resolved against the
@@ -546,7 +604,8 @@ func looksDestructive(words []string) bool {
 // read; one among a hidden command's words makes it look destructive.
 var codeRunners = map[string]bool{"node": true, "perl": true, "ruby": true, "php": true, "bash": true, "sh": true,
 	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true,
-	"lua": true, "Rscript": true, "tclsh": true, "osascript": true, "mawk": true, "nawk": true, "julia": true}
+	"lua": true, "Rscript": true, "tclsh": true, "osascript": true, "mawk": true, "nawk": true, "julia": true,
+	"bun": true, "deno": true, "pwsh": true, "powershell": true}
 
 // strayOperand reports, for a command the check does not read as a command
 // line, an operand that climbs out of or lies outside own ground: an absolute
@@ -706,34 +765,6 @@ func destroys(prog string, args []string) []string {
 		return out
 	case "mkfs", "wipefs", "fdisk", "sfdisk", "parted":
 		return operands(args)
-	case "mv":
-		// mv removes its sources from where they were; every operand but the
-		// last is a source. (The last, the destination, is judged by the
-		// unverified-target rule.)
-		ops := operands(args)
-		if len(ops) > 1 {
-			return ops[:len(ops)-1]
-		}
-	case "rsync":
-		// rsync --delete removes, from the destination, whatever is not in the
-		// source, so the destination (the last operand) is at risk.
-		if hasFlag(args, "--delete") || hasFlag(args, "--del") || hasFlag(args, "--delete-after") ||
-			hasFlag(args, "--delete-before") || hasFlag(args, "--delete-during") || hasFlag(args, "--delete-excluded") {
-			if ops := operands(args); len(ops) > 0 {
-				return ops[len(ops)-1:]
-			}
-		}
-	case "git":
-		// git clean removes untracked files from the tree it runs in; -C names
-		// that tree, else it is the working directory.
-		if hasWord(args, "clean") && (hasFlag(args, "-f") || hasFlag(args, "--force") || hasPrefix(args, "-f") || hasPrefix(args, "-d")) {
-			for i, a := range args {
-				if a == "-C" && i+1 < len(args) {
-					return []string{args[i+1]}
-				}
-			}
-			return []string{"."}
-		}
 	}
 	if strings.HasPrefix(prog, "mkfs.") {
 		return operands(args)
@@ -752,9 +783,12 @@ func destroys(prog string, args []string) []string {
 	return nil
 }
 
+// psDelete names PowerShell's delete cmdlets, whose paths are often unquoted.
+var psDelete = regexp.MustCompile(`(?i)\b(?:Remove-Item|Remove-ItemProperty|Clear-Content)\b`)
+
 // deleterWord names a deleting program as a whole word, wherever it sits in
 // a string of code — `system "rm -rf /etc"`, `os.execvp("rm", …)`.
-var deleterWord = regexp.MustCompile(`(?i)\b(?:rm|rmdir|shred|unlink|srm|dd|mkfs|wipefs|fdisk|sfdisk|parted|truncate)\b`)
+var deleterWord = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:rm|rmdir|shred|unlink|srm|dd|mkfs|wipefs|fdisk|sfdisk|parted|truncate)\b`)
 
 // shellsOut finds code that runs a command through a library call: a shell-out
 // or a system call the plain-word scan would miss — Python's os.system and
@@ -765,40 +799,83 @@ var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bsubprocess\b|\
 	`\bos\.(?:system|popen|execv?p?e?|spawn[a-z]*|execute)\s*\(|\bio\.popen\s*\(|\bexecSync\s*\(|\bspawnSync\s*\(|` +
 	`\bsystem\s*[("']|\bfile\s+delete\b`)
 
-// codeDestructive reports a string of code — handed to a shell, to eval, or on
-// an interpreter's stdin — that would delete or run something the check cannot
-// place. It parses the code and runs these rules over each command with the
-// directory unknown, and scans the text for a deleter, a shell-out or a
-// protected root, bounded against code that hands off code in turn.
-func (r Rules) codeDestructive(code string, depth int) bool {
+// codeVerdict judges code handed to a shell, to eval, or on an interpreter's
+// stdin: it scans the text for a deleter, a shell-out, a delete call or a
+// protected root, then parses it and runs judgeCommand over every command
+// with the directory unknown, and the fallback over the whole; any non-allow
+// is an ask. Code handed deeper than maxHandDepth is asked about.
+func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int) *Verdict {
+	ask := &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+		Rationale: fmt.Sprintf("code handed to a shell, eval or an interpreter looks like it deletes or shells out; %s", remit(c)),
+		Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
 	if deleterWord.MatchString(code) || shellsOut.MatchString(code) ||
 		codeDeletes.MatchString(code) || mentionsProtectedRoot(code) {
-		return true
+		return ask
 	}
-	if depth >= 4 {
-		return false
+	if depth > maxHandDepth {
+		return ask // a bound reached fails closed
 	}
 	s, ok := parseScript(code)
 	if !ok {
-		return false // unparseable handed code: the text scans above are the check
+		return ask // handed code the check cannot parse fails closed
+	}
+	for i := range s.cmds {
+		s.cmds[i].dirKnown, s.cmds[i].vars = false, nil
 	}
 	for _, cmd := range s.cmds {
-		p, a := cmd.program()
-		p = progBase(p)
-		if len(destroys(p, a)) > 0 || runsUnreadCode(cmd, p, a) {
+		if r.judgeCommand(k, c, cmd, where, depth) != nil {
+			return ask
+		}
+	}
+	if !r.lineFullyRead(s) && lineMentionsDanger(s) {
+		return ask
+	}
+	return nil
+}
+
+// runsUnreadArg reports an unknown runner whose program operand (its first
+// operand, with more words after it) or the value of a code flag (-c, -e,
+// --command, --eval, -x, --exec) is not a plain literal — a variable, a
+// substitution, or a quote-split word — so what it runs resolves only when
+// the line runs.
+func runsUnreadArg(cmd command, args []string) bool {
+	if cmd.call == nil {
+		return false
+	}
+	if p, _ := cmd.program(); printerProg[progBase(p)] {
+		return false // a printer runs nothing
+	}
+	off := len(cmd.words) - len(args)
+	plain := func(i int) bool {
+		j := off + i
+		if j < 0 || j >= len(cmd.call.Args) {
 			return true
 		}
-		for _, inner := range handedShellCode(p, a, cmd.stdin) {
-			if r.codeDestructive(inner, depth+1) {
+		w := cmd.call.Args[j]
+		// One literal part, quoted or not, is readable; an expansion, a glob, or
+		// quoting split across parts (ba""sh) resolves only when the line runs.
+		return literalText(w) && !globbed(w) && len(w.Parts) == 1
+	}
+	first := true
+	for i, a := range args {
+		switch a {
+		case "-c", "-e", "--command", "-Command", "--eval", "-x", "--exec":
+			if i+1 < len(args) && !plain(i+1) {
 				return true
 			}
 		}
-		if ic := oneLiner(p, a); ic != "" && (deleterWord.MatchString(ic) || shellsOut.MatchString(ic) || mentionsProtectedRoot(ic)) {
-			return true
+		if first && !strings.HasPrefix(a, "-") {
+			first = false
+			if !plain(i) && i+1 < len(args) {
+				return true
+			}
 		}
 	}
 	return false
 }
+
+// maxHandDepth bounds how deep handed code is followed; deeper code is asked about.
+const maxHandDepth = 6
 
 // mentionsProtectedRoot reports text that names a protected root as a path,
 // leaving out the temporary folders, which are the session's own ground.
@@ -824,10 +901,8 @@ func progBase(prog string) string {
 // raw source, so a comment or a script's file name does not count.
 func lineMentionsDanger(s script) bool {
 	for _, cmd := range s.cmds {
-		for _, w := range commandText(cmd) {
-			if deleterWord.MatchString(w) || mentionsProtectedRoot(w) {
-				return true
-			}
+		if cmdMentionsDanger(cmd) {
+			return true
 		}
 	}
 	return false
@@ -836,10 +911,57 @@ func lineMentionsDanger(s script) bool {
 // commandText is every piece of a command's text the person wrote: its words,
 // its assignment values, and anything on its stdin.
 func commandText(cmd command) []string {
-	out := append([]string(nil), cmd.words...)
+	out := append([]string(nil), dangerWords(cmd)...)
 	out = append(out, cmd.stdin...)
 	out = append(out, cmd.assigns...)
 	return out
+}
+
+// dangerWords are a command's words with the ones that only carry a human
+// message or an edit expression dropped, so a deleter word in prose (a commit
+// or PR message, a sed script) is not read as a command.
+func dangerWords(cmd command) []string {
+	prog, args := cmd.program()
+	base := progBase(prog)
+	skipVal := map[string]bool{"-m": true, "--message": true, "-b": true, "--body": true, "--title": true, "-t": true}
+	sed := base == "sed" || base == "gsed"
+	head := append([]string(nil), cmd.words[:len(cmd.words)-len(args)]...)
+	var out []string
+	sawScript := false
+	prose := func(v string) bool { return strings.ContainsAny(v, " \t\n") }
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if skipVal[a] && i+1 < len(args) && prose(args[i+1]) {
+			i++ // drop a message value that is prose, not a command
+			continue
+		}
+		if k, v, ok := strings.Cut(a, "="); ok && skipVal[k] && prose(v) {
+			continue
+		}
+		if sed && !strings.HasPrefix(a, "-") && !sawScript {
+			sawScript = true // the sed script is an expression, not a command
+			continue
+		}
+		out = append(out, a)
+	}
+	return append(head, out...)
+}
+
+// cmdMentionsDanger reports a command whose text names a deleter or (outside a
+// container command, where one-segment paths are container paths) a protected
+// root.
+func cmdMentionsDanger(cmd command) bool {
+	prog, _ := cmd.program()
+	container := containerProg(progBase(prog))
+	for _, w := range commandText(cmd) {
+		if deleterWord.MatchString(w) {
+			return true
+		}
+		if !container && mentionsProtectedRoot(w) {
+			return true
+		}
+	}
+	return false
 }
 
 // lineFullyRead reports a line the check reads completely, so the precise
@@ -871,12 +993,18 @@ func (r Rules) cmdFullyRead(cmd command) bool {
 	if len(handsOffCode(base, args, cmd.stdin)) > 0 || runsUnreadCode(cmd, base, args) {
 		return false // it hands or runs code
 	}
+	if envRunsCode(cmd.env) {
+		return false // an assignment names a deleter/shell or sets git's config/work-tree
+	}
 	switch {
+	case base == "git":
+		return gitFullyRead(args)
+	case base == "kubectl":
+		return !kubectlRunsCommand(args)
 	case printerProg[base]:
 		return true // only prints or searches its arguments
-	case base == "git" && !hasFlag(args, "-c") && !hasFlag(args, "--config") && !hasFlag(args, "-C"):
-		return true // a git subcommand; git -c/-C may inject, so those fall through
-	case destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") || base == "kubectl":
+	case destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") ||
+		base == "mv" || base == "rsync":
 		return true // the precise rules judge it
 	}
 	// An unknown program may run its arguments as a command. It is read
@@ -887,6 +1015,54 @@ func (r Rules) cmdFullyRead(cmd command) bool {
 		}
 	}
 	return true
+}
+
+// gitFullyRead reports a git command whose arguments the rules read: no
+// -c/--config/-C alias injection, and no word that names a deleter, shell or
+// interpreter past a precise git subcommand (rm, mv, clean).
+func gitFullyRead(args []string) bool {
+	if hasFlag(args, "-c") || hasFlag(args, "--config") || hasFlag(args, "-C") {
+		return false
+	}
+	for i, w := range operands(args) {
+		if i == 0 && (w == "rm" || w == "mv" || w == "clean") {
+			continue // a git subcommand the rules judge
+		}
+		if wordRunsCode(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// kubectlRunsCommand reports a kubectl subcommand that runs a command in a
+// container (exec, run, debug, attach, cp), whose command the rules do not read.
+func kubectlRunsCommand(args []string) bool {
+	ops := operands(args)
+	if len(ops) == 0 {
+		return false
+	}
+	switch ops[0] { // the subcommand is the first operand
+	case "exec", "run", "debug", "attach", "cp":
+		return true
+	}
+	return false
+}
+
+// envRunsCode reports an assignment before a command that could run code: a
+// value naming a deleter, shell or interpreter, or a git variable that injects
+// config, an alias or a work tree.
+func envRunsCode(env map[string]string) bool {
+	for name, v := range env {
+		if strings.HasPrefix(name, "GIT_CONFIG") || name == "GIT_WORK_TREE" ||
+			name == "GIT_DIR" || name == "GIT_SSH_COMMAND" || name == "GIT_EXTERNAL_DIFF" {
+			return true
+		}
+		if wordRunsCode(v) {
+			return true
+		}
+	}
+	return false
 }
 
 // readsStdinFile reports a command given /dev/stdin or - to read.
@@ -910,7 +1086,8 @@ func readsStdinFile(cmd command) bool {
 func wordRunsCode(w string) bool {
 	u := strings.ReplaceAll(w, `\`, "")
 	if strings.ContainsAny(u, " \t\n") {
-		return deleterWord.MatchString(u) || mentionsProtectedRoot(u)
+		return deleterWord.MatchString(u) || shellsOut.MatchString(u) ||
+			codeDeletes.MatchString(u) || mentionsProtectedRoot(u)
 	}
 	name := progBase(u)
 	return destroyerNames[name] || shellNames[name] || codeRunners[name] || strings.HasPrefix(name, "python")
@@ -918,7 +1095,24 @@ func wordRunsCode(w string) bool {
 
 // printerProg only prints or searches its arguments; it does not run them.
 var printerProg = map[string]bool{"echo": true, "printf": true, "grep": true, "egrep": true, "fgrep": true,
-	"man": true, "which": true, "type": true, "cat": true, "head": true, "tail": true, "wc": true, "ls": true}
+	"which": true, "type": true, "cat": true, "head": true, "tail": true, "wc": true, "ls": true}
+
+// containerProg runs a command inside a container, where absolute paths are
+// container paths, not host paths, so a one-segment root there is not protected.
+func containerProg(base string) bool {
+	switch base {
+	case "docker", "podman", "nerdctl", "kubectl", "ctr", "lima", "colima":
+		return true
+	}
+	return false
+}
+
+// preciseProg reports a program whose destructive forms the rules parse, so a
+// non-literal argument need not trigger the stray-operand sweep.
+func preciseProg(base string) bool {
+	return destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") ||
+		base == "mv" || base == "rsync" || base == "git" || base == "kubectl"
+}
 
 // runsUnreadCode reports a command whose code the check cannot read at all,
 // because it is built when the line runs: eval of an expansion, a shell's -c
@@ -1063,10 +1257,21 @@ func oneLiner(prog string, args []string) string {
 	if awkNames[prog] {
 		return awkProgram(args)
 	}
+	if prog == "deno" { // deno eval '<code>' / deno run takes a file, not code
+		ops := operands(args)
+		if len(ops) >= 2 && ops[0] == "eval" {
+			return ops[1]
+		}
+		return ""
+	}
 	var flags string // the letters that introduce code
 	switch {
 	case strings.HasPrefix(prog, "python"):
 		flags = "c"
+	case prog == "pwsh", prog == "powershell":
+		flags = "c" // -c / -Command
+	case prog == "bun":
+		flags = "e"
 	case prog == "perl":
 		flags = "eE"
 	case prog == "node":
@@ -1126,7 +1331,7 @@ func awkProgram(args []string) string {
 // codeDeletes finds the well-known calls that delete or overwrite a file,
 // with the literal path they are given, in one line of Python, Node, Perl,
 // Ruby or PHP. A textual scan: it finds the common forms, not every one.
-var codeDeletes = regexp.MustCompile(`(?:\b(?:rmtree|remove|unlink|rmdir|removedirs|rmSync|unlinkSync|rmdirSync|rm_rf|rm_r|rm_f|delete|truncate|writeFileSync|write_text|write_bytes)\s*\(?\s*['"]([^'"]+)['"]` +
+var codeDeletes = regexp.MustCompile(`(?:\b(?:rmtree|remove|unlink|rmdir|removedirs|rmSync|removeSync|unlinkSync|rmdirSync|remove_dir_all|rm_rf|rm_r|rm_f|delete|truncate|writeFileSync|write_text|write_bytes)\s*\(?\s*['"]([^'"]+)['"]` +
 	`|\bPath\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*(?:unlink|rmdir|write_text|write_bytes)\b` +
 	`|\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][wa])`)
 
@@ -1211,6 +1416,248 @@ func (r Rules) findStartsOwnGround(k *given, c Case, args []string) bool {
 func isExecFlag(a string) bool {
 	return a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir"
 }
+
+// findExecCommands is each command find runs by -exec/-execdir/-ok/-okdir: the
+// words up to the terminating ; or +, with the {} placeholder dropped.
+func findExecCommands(args []string) [][]string {
+	var out [][]string
+	for i := 0; i < len(args); i++ {
+		if !isExecFlag(args[i]) {
+			continue
+		}
+		var words []string
+		for j := i + 1; j < len(args) && args[j] != ";" && args[j] != "+" && args[j] != `\;`; j++ {
+			if args[j] == "{}" {
+				continue
+			}
+			words = append(words, args[j])
+		}
+		if len(words) > 0 {
+			out = append(out, words)
+		}
+	}
+	return out
+}
+
+// moveVerdict judges mv, rsync and git clean, which remove data without an rm.
+// A mv source outside own ground is an ask (the data survives at the
+// destination) unless the destination is also outside own ground or /dev/null;
+// rsync --delete / --remove-source-files and git clean destroy, so a target
+// outside own ground is denied, and a remote or unreadable target is an ask.
+func (r Rules) moveVerdict(k *given, c Case, cmd command, prog string, args []string, where string) *Verdict {
+	switch prog {
+	case "mv":
+		srcs, dst := mvTargets(args)
+		dstOK := dst != "" && r.groundOK(k, c, cmd, dst) && dst != "/dev/null"
+		for _, s := range srcs {
+			eff, known := effectiveTarget(cmd, s)
+			if known && r.ownGround(ground(k, cmd), c, eff) {
+				continue
+			}
+			if dstOK {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("mv would move %s out of the task's ground; %s", display(eff, s), remit(c)),
+					Advice:    "confirm you mean to move it, or name a source the task covers"}
+			}
+			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+				Rationale: fmt.Sprintf("mv would remove %s, outside what the task names; %s", display(eff, s), remit(c)),
+				Advice:    "keep moves to the paths the task names, or ask the person first"}
+		}
+	case "rsync":
+		if remoteDest(args) && (hasDeleteFlag(args) || hasFlag(args, "--remove-source-files")) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("rsync would delete at a remote destination the check cannot place; %s", remit(c)),
+				Advice:    "confirm the destination, or run it without --delete"}
+		}
+		var targets []string
+		ops := rsyncOperands(args)
+		if hasDeleteFlag(args) && len(ops) > 0 {
+			targets = append(targets, ops[len(ops)-1]) // the destination
+		}
+		if hasFlag(args, "--remove-source-files") && len(ops) > 1 {
+			targets = append(targets, ops[:len(ops)-1]...) // the sources
+		}
+		for _, t := range targets {
+			if v := r.judgeTarget(k, c, cmd, prog, t, where); v != nil {
+				return v
+			}
+		}
+	case "git":
+		return r.gitCleanVerdict(k, c, cmd, args, where)
+	}
+	return nil
+}
+
+// gitCleanVerdict judges git clean -f, which deletes untracked files. It reads
+// a cumulative -C, --work-tree and GIT_WORK_TREE for the tree, the explicit
+// path operands when given, and asks when any of those is non-literal.
+func (r Rules) gitCleanVerdict(k *given, c Case, cmd command, args []string, where string) *Verdict {
+	tree := "."
+	if v, ok := cmd.env["GIT_WORK_TREE"]; ok {
+		tree = v
+	}
+	var paths []string
+	forces, clean := false, false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-C" || a == "--work-tree" || a == "--git-dir" || a == "-c" || a == "--config":
+			val := ""
+			if i+1 < len(args) {
+				val, i = args[i+1], i+1
+			}
+			switch a {
+			case "-C":
+				tree = joinUnder(tree, val)
+			case "--work-tree":
+				tree = val
+			}
+		case strings.HasPrefix(a, "--work-tree="):
+			tree = strings.TrimPrefix(a, "--work-tree=")
+		case strings.HasPrefix(a, "--git-dir="), strings.HasPrefix(a, "-C="):
+			// read but not a tree
+		case a == "--":
+			paths = append(paths, args[i+1:]...)
+			i = len(args)
+		case strings.HasPrefix(a, "-"):
+			if !clean { // git's own options, before the subcommand
+				continue
+			}
+			if a == "--force" || (!strings.HasPrefix(a, "--") && strings.ContainsAny(a, "fd")) {
+				forces = true
+			}
+		case !clean:
+			if a != "clean" {
+				return nil // a different git subcommand
+			}
+			clean = true
+		default:
+			paths = append(paths, a) // a path operand to clean
+		}
+	}
+	if !clean || !forces {
+		return nil
+	}
+	targets := paths
+	if len(targets) == 0 {
+		targets = []string{tree}
+	}
+	for _, t := range targets {
+		if strings.ContainsAny(t, "$*?[") {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("git clean would delete in a path the check cannot place; %s", remit(c)),
+				Advice:    "run it from the tree plainly, or confirm this is meant"}
+		}
+		eff := t
+		if !strings.HasPrefix(t, "/") && !homeish(t) && tree != "." {
+			eff = joinUnder(tree, t)
+		}
+		sub := cmd
+		if v := r.judgeTarget(k, c, sub, "git", eff, where); v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// joinUnder joins rel onto base, with an absolute or ~ rel replacing base (as
+// git -C and a path operand do).
+func joinUnder(base, rel string) string {
+	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "~") {
+		return rel
+	}
+	return joinDir(base, rel)
+}
+
+// groundOK reports a path resolved and within own ground.
+func (r Rules) groundOK(k *given, c Case, cmd command, t string) bool {
+	eff, known := effectiveTarget(cmd, t)
+	return known && r.ownGround(ground(k, cmd), c, eff)
+}
+
+// ground gives the facts to judge a target by, with said widened to the
+// person's own words where the directory is unknown (as judgeTarget does).
+func ground(k *given, cmd command) *given {
+	if cmd.dirKnown {
+		return k
+	}
+	p := *k
+	p.said = k.person
+	return &p
+}
+
+// mvTargets are mv's sources and its destination. With -t/--target-directory
+// every operand is a source and the directory is the destination.
+func mvTargets(args []string) ([]string, string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-t" || a == "--target-directory" {
+			if i+1 < len(args) {
+				return operands(args), args[i+1]
+			}
+		}
+		if v, ok := strings.CutPrefix(a, "--target-directory="); ok {
+			return operands(args), v
+		}
+	}
+	ops := operands(args)
+	if len(ops) < 2 {
+		return nil, ""
+	}
+	return ops[:len(ops)-1], ops[len(ops)-1]
+}
+
+// rsyncValueFlags take a value the next word gives, which is not a path.
+var rsyncValueFlags = map[string]bool{"--exclude": true, "--include": true, "--filter": true, "-f": true,
+	"--exclude-from": true, "--include-from": true, "-e": true, "--rsh": true, "--backup-dir": true,
+	"--partial-dir": true, "--temp-dir": true, "-T": true, "--log-file": true, "--files-from": true,
+	"--compare-dest": true, "--link-dest": true, "--copy-dest": true, "--out-format": true, "--chmod": true}
+
+// rsyncOperands are rsync's source and destination paths, with option values
+// skipped wherever they appear.
+func rsyncOperands(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if rsyncValueFlags[a] {
+			i++ // skip its value
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// hasDeleteFlag reports any --delete* or --del spelling.
+func hasDeleteFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--del" || strings.HasPrefix(a, "--delete") {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteDest reports a remote rsync destination (host:path, user@host:path,
+// rsync://…) as the last operand.
+func remoteDest(args []string) bool {
+	ops := rsyncOperands(args)
+	if len(ops) == 0 {
+		return false
+	}
+	d := ops[len(ops)-1]
+	if strings.HasPrefix(d, "rsync://") {
+		return true
+	}
+	i := strings.IndexByte(d, ':')
+	return i > 0 && !strings.HasPrefix(d, "/") && !strings.Contains(d[:i], "/")
+}
+
+// gitWorkTree is the tree git clean runs in: GIT_WORK_TREE or --work-tree win,
+// else successive -C paths joined onto the start, else the working directory.
 
 // findExecHidden reports a find whose -exec program is not a literal the
 // check reads: an expansion it cannot resolve.

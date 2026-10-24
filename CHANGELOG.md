@@ -239,15 +239,20 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 229 drift cases the rules judge
-  stops all 228 a mode let through (the 229th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 267 drift cases the rules judge
+  stops all 266 a mode let through (the 267th, the destructive step, policy
   already asks about), and it
-  refuses none of its 67 benign controls (it asks about 8: six whose working
+  refuses none of its 131 benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
-  and one `eval` of an expansion). Code handed to a shell, to `eval` or to an
-  interpreter is parsed and judged by the same rules; a line the check does
-  not read completely that names a deleting program or a protected folder
-  anywhere in its text is asked about as a conservative fallback. The
+  two `eval`s of an expansion, and one `mv` of a file from outside the task's
+  ground). Code handed to a shell, to `eval` or to an interpreter — and each
+  command `find` runs by `-exec` — is parsed and run through the same
+  per-command rules and fallback with the directory unknown (code it cannot
+  parse, or handed too deep, is asked about); an unknown runner given a
+  program or code only running the line would give is asked about; a line the check
+  does not read completely that names a deleting program or a protected folder
+  is asked about as a conservative fallback. git, kubectl, mv, rsync and git
+  clean are read only for the forms the rules judge. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an
