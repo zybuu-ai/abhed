@@ -797,3 +797,68 @@ func TestCheckAcceptsAnOpenAIStandIn(t *testing.T) {
 		t.Fatalf("a model it does not list: %+v", st)
 	}
 }
+
+// The proxy, certificate and GPU settings pass to a started program; keys do not.
+func TestMinimalEnvKeepsProxyCertsAndGPU(t *testing.T) {
+	in := []string{"https_proxy=http://p:3128", "HTTP_PROXY=http://p:3128", "no_proxy=localhost", "SSL_CERT_FILE=/c.pem",
+		"SSL_CERT_DIR=/certs", "CUDA_VISIBLE_DEVICES=0", "HIP_VISIBLE_DEVICES=1", "ROCR_VISIBLE_DEVICES=1", "GPU_DEVICE_ORDINAL=0",
+		"LD_LIBRARY_PATH=/opt/cuda/lib", "ANTHROPIC_API_KEY=sk-ant", "ABHED_API_KEY=x", "GITHUB_TOKEN=ghp"}
+	got := strings.Join(MinimalEnv(in), " ")
+	for _, want := range in[:10] {
+		if !strings.Contains(got, want) {
+			t.Errorf("%s was dropped: %s", want, got)
+		}
+	}
+	for _, bad := range []string{"sk-ant", "ABHED_API_KEY", "ghp"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%s passed: %s", bad, got)
+		}
+	}
+}
+
+// A start waiting behind another stops when its context ends.
+func TestStartWaitIsCancellable(t *testing.T) {
+	api := newFakeAPI(t)
+	env := testEnv(t, t.TempDir())
+	tg := api.target("qwen3:8b")
+	slot := startSlot(tg.API)
+	slot <- struct{}{} // another start holds it
+	defer func() { <-slot }()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	_, p := Assist{Env: env, Mode: ModeAsk, Admin: true}.Start(ctx, tg, Status{Target: tg, Installed: true}, "asked")
+	if p == nil || p.Kind != KindCancelled || time.Since(began) > 5*time.Second {
+		t.Fatalf("waited %v: %+v", time.Since(began), p)
+	}
+}
+
+// The step for a caller who may not act says to run it as the server's user
+// with its configuration, and names no command without a provider.
+func TestNotAdminStep(t *testing.T) {
+	env := testEnv(t, t.TempDir())
+	tg, _ := Resolve("olm", "ollama", "http://127.0.0.1:11434/v1", "m", "")
+	p := Assist{Env: env, Mode: ModeAsk}.May(OpStart, tg, Status{Target: tg})
+	if p == nil || !strings.Contains(p.Steps[0], "as the user that runs abhed serve and with its configuration: abhed ollama check olm") {
+		t.Fatalf("step %+v", p)
+	}
+	tg.Provider = ""
+	p = Assist{Env: env, Mode: ModeAsk}.May(OpStart, tg, Status{Target: tg})
+	if strings.Contains(p.Steps[0], "abhed ollama check") || !strings.Contains(p.Steps[0], "as the user that runs abhed serve") {
+		t.Fatalf("step without a provider %q", p.Steps[0])
+	}
+}
+
+// The person's start step leads with ollama serve bound to loopback, as Abhed starts it.
+func TestStartStepLeadsWithServe(t *testing.T) {
+	env := testEnv(t, t.TempDir())
+	env.GOOS = "darwin"
+	tg, _ := Resolve("olm", "ollama", "http://localhost:11434/v1", "m", "")
+	if got := env.startStep(tg, Status{Target: tg, App: "/Applications/Ollama.app"}); !strings.HasPrefix(got, "OLLAMA_HOST=127.0.0.1:11434 ollama serve") || !strings.Contains(got, "Ollama app") {
+		t.Fatalf("macOS step %q", got)
+	}
+	env.GOOS = "linux"
+	if got := env.startStep(tg, Status{Target: tg}); got != "OLLAMA_HOST=127.0.0.1:11434 ollama serve" {
+		t.Fatalf("linux step %q", got)
+	}
+}
