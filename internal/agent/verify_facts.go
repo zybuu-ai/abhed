@@ -32,6 +32,9 @@ type facts struct {
 type countFact struct {
 	n    string
 	unit string
+	// quals are the words that say what about the unit is counted ("added",
+	// "passed"), stemmed; see countQuals.
+	quals []string
 }
 
 type fileLine struct {
@@ -69,9 +72,12 @@ var (
 	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
-	negationRe   = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor)\b`)
-	notChangedRe = regexp.MustCompile(`\b(?:i|we)\s+(?:did\s+not|didn't|have\s+not|haven't|never|did\s+never)\s+(?:\w+\s+)?(?:edit|update|change|modify|create|write|touch|delete|remove|rename|patch|rewrite|replace)`)
-	ranRe        = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
+	negationRe = regexp.MustCompile(`\b(not|never|no|none|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact)\b`)
+	// "I did not change X", "I avoided editing X", "I kept X as it was".
+	notChangedRe = regexp.MustCompile(`\b(?:i|we)\s+(?:(?:did\s+not|didn't|have\s+not|haven't|never|did\s+never)\s+(?:\w+\s+)?(?:edit|update|change|modify|create|write|touch|delete|remove|rename|patch|rewrite|replace)` +
+		`|(?:avoided|refrained\s+from)\s+(?:\w+ing)` +
+		`|(?:kept|left)\s+(?:\S+\s+){1,4}?(?:as\s+it\s+was|as\s+is|unchanged|untouched|intact|alone))`)
+	ranRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've)\s+(?:also\s+|then\s+|just\s+)?(?:ran|run|executed)\b`)
 )
 
 // Words that follow a number without counting anything.
@@ -233,29 +239,29 @@ func extractFacts(claim string) facts {
 	low = hostRe.ReplaceAllString(low, " ")
 	low = timeRe.ReplaceAllStringFunc(low, func(m string) string { addLit(m); return " " })
 	counted := map[string]bool{}
-	for _, m := range countRe.FindAllStringSubmatch(low, -1) {
-		unit := m[2]
+	for _, at := range countRe.FindAllStringSubmatchIndex(low, -1) {
+		unit := low[at[4]:at[5]]
 		if notUnits[unit] {
 			continue
 		}
-		n := normNumber(m[1])
-		cf := countFact{n: n, unit: unitOf(unit)}
+		cf := countFact{n: normNumber(low[at[2]:at[3]]), unit: unitOf(unit), quals: countQuals(low, at[0], at[1], unit)}
 		if unit == "%" {
 			cf.unit = "%"
 		}
-		if !counted[cf.n+" "+cf.unit] {
-			counted[cf.n+" "+cf.unit] = true
+		if key := cf.n + " " + cf.unit + " " + strings.Join(cf.quals, " "); !counted[key] {
+			counted[key] = true
 			f.counted = append(f.counted, cf)
 		}
 	}
-	// "replicas: 3", "failed=0".
-	for _, m := range evLabelRe.FindAllStringSubmatch(low, -1) {
-		if notUnits[m[1]] {
+	// "replicas: 3", "failed=0": the label is what is counted.
+	for _, at := range evLabelRe.FindAllStringSubmatchIndex(low, -1) {
+		w := low[at[2]:at[3]]
+		if notUnits[w] {
 			continue
 		}
-		cf := countFact{n: normNumber(m[2]), unit: unitOf(m[1])}
-		if !counted[cf.n+" "+cf.unit] {
-			counted[cf.n+" "+cf.unit] = true
+		cf := countFact{n: normNumber(low[at[4]:at[5]]), unit: unitOf(w), quals: labelQuals(low, at[0], w)}
+		if key := cf.n + " " + cf.unit + " " + strings.Join(cf.quals, " "); !counted[key] {
+			counted[key] = true
 			f.counted = append(f.counted, cf)
 		}
 	}
@@ -341,23 +347,166 @@ type evidenceText struct {
 type countAt struct {
 	n       string
 	excerpt string
+	quals   []string
+}
+
+// outcomeUnits count an outcome themselves: "12 passed" says what of a run.
+var outcomeUnits = map[string]bool{"pass": true, "fail": true, "skip": true, "error": true, "warning": true,
+	"deselect": true, "xfail": true, "xpass": true, "succeed": true}
+
+// qualStop are words beside a count that say nothing about what it counts.
+var qualStop = map[string]bool{"has": true, "have": true, "had": true, "all": true, "only": true, "about": true,
+	"over": true, "under": true, "after": true, "before": true, "since": true, "now": true, "just": true,
+	"also": true, "then": true, "there": true, "here": true, "these": true, "those": true, "its": true,
+	"their": true, "our": true, "my": true, "your": true, "some": true, "new": true}
+
+// neutralQual are verbs that only report a count ("runs 3 replicas", "found
+// 2 issues"): they leave it a plain count, as "replicas: 3" is.
+var neutralQual = map[string]bool{"run": true, "runs": true, "ran": true, "running": true, "set": true, "sets": true,
+	"show": true, "shows": true, "showed": true, "shown": true, "count": true, "counts": true, "counted": true,
+	"configured": true, "list": true, "lists": true, "listed": true, "report": true, "reports": true,
+	"reported": true, "contain": true, "contains": true, "contained": true, "hold": true, "holds": true,
+	"held": true, "found": true, "finds": true, "got": true, "gets": true, "returns": true, "returned": true}
+
+// countQuals are the words that say what about a count's unit is counted:
+// the word before the number and the word after the unit, as in "added 3
+// tests" or "12 tests passed", stemmed; and the unit when it is an outcome
+// itself. Two counts of one unit say the same thing only when they share one.
+func countQuals(s string, start, end int, unit string) []string {
+	var q []string
+	if w := wordBefore(s, start); w != "" {
+		q = append(q, w)
+	}
+	if w := wordAfter(s, end); w != "" {
+		q = append(q, w)
+	}
+	if u := stemQual(unit); outcomeUnits[u] {
+		q = append(q, u)
+	}
+	return q
+}
+
+// labelQuals are a label's: the label when it is an outcome, as in
+// "failed=3", and the word before it on its line ("tests run: 12").
+func labelQuals(s string, start int, label string) []string {
+	var q []string
+	if u := stemQual(label); outcomeUnits[u] {
+		q = append(q, u)
+	}
+	if w := wordBefore(s, start); w != "" {
+		q = append(q, w)
+	}
+	return q
+}
+
+// wordBefore and wordAfter stay on the count's line.
+func wordBefore(s string, at int) string {
+	head := s[:at]
+	if i := strings.LastIndexByte(head, '\n'); i >= 0 {
+		head = head[i+1:]
+	}
+	f := strings.Fields(head)
+	if len(f) == 0 || strings.ContainsAny(f[len(f)-1][len(f[len(f)-1])-1:], ".!?;,") {
+		return "" // the word ends another phrase
+	}
+	return qualWord(f[len(f)-1])
+}
+
+func wordAfter(s string, at int) string {
+	tail, _, _ := strings.Cut(s[at:], "\n")
+	f := strings.Fields(tail)
+	if len(f) == 0 || tail[0] != ' ' {
+		return ""
+	}
+	return qualWord(f[0])
+}
+
+// qualWord is a word beside a count as compared, or "" for none.
+func qualWord(w string) string {
+	w = strings.Trim(w, ",.;:!?()[]{}'\"`*")
+	if len(w) < 2 || notUnits[w] || qualStop[w] || neutralQual[w] {
+		return ""
+	}
+	for _, r := range w {
+		if r < 'a' || r > 'z' {
+			return ""
+		}
+	}
+	return stemQual(w)
+}
+
+// stemQual folds the forms of a word together: passed, passes, passing and
+// pass are one.
+func stemQual(w string) string {
+	switch w {
+	case "ran", "runs", "running":
+		return "run"
+	case "failure", "failures":
+		return "fail"
+	case "errors", "errored":
+		return "error"
+	case "warnings":
+		return "warning"
+	case "succeeded", "succeeds":
+		return "succeed"
+	}
+	switch {
+	case strings.HasSuffix(w, "sses"), strings.HasSuffix(w, "xes"), strings.HasSuffix(w, "ches"), strings.HasSuffix(w, "shes"):
+		return w[:len(w)-2]
+	case strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss") && len(w) > 3:
+		return w[:len(w)-1]
+	}
+	for _, suf := range []string{"ing", "ed"} {
+		if strings.HasSuffix(w, suf) && len(w) > len(suf)+2 {
+			w = strings.TrimSuffix(w, suf)
+			// skipped → skip; pass and add stay as they are.
+			if n := len(w); n > 2 && w[n-1] == w[n-2] && strings.ContainsRune("bgmnprt", rune(w[n-1])) {
+				w = w[:n-1]
+			}
+			break
+		}
+	}
+	return w
+}
+
+// samePhrase reports two counts of one unit that say the same of it: they
+// share a word, or neither says more than the plain count.
+func samePhrase(a, b []string) bool {
+	return (len(a) == 0 && len(b) == 0) || sharesQual(a, b)
+}
+
+// sharesQual reports a word two counts share.
+func sharesQual(a, b []string) bool {
+	for _, x := range a {
+		if contains(b, x) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
 	// "3 passed", "12 tests"; and "tests: 12", "failed=3".
-	evCountRe = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
-	evLabelRe = regexp.MustCompile(`([a-z][a-z\-]{1,24})\s*[:=]\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)`)
+	evCountRe = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?) *(%|[a-z][a-z\-]{1,24})`)
+	evLabelRe = regexp.MustCompile(`([a-z][a-z\-]{1,24}) *[:=] *((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)`)
 )
 
 func prepareEvidence(content string) *evidenceText {
 	e := &evidenceText{norm: normText(content), numbers: map[string]bool{}, counts: map[string][]countAt{}, labels: map[string][]countAt{}}
+	// Counts are read line by line, so the words beside one are its own.
+	lines := strings.Split(content, "\n")
+	for i, l := range lines {
+		lines[i] = normText(l)
+	}
+	lined := strings.Join(lines, "\n")
 	for _, m := range numberRe.FindAllStringIndex(e.norm, -1) {
 		if m[0] > 0 && isWordRune(rune(e.norm[m[0]-1])) {
 			continue
 		}
 		e.numbers[normNumber(e.norm[m[0]:m[1]])] = true
 	}
-	add := func(n, unit string, at int) {
+	excerpt := func(at int) string { return strings.ReplaceAll(excerptAround(lined, at, 60), "\n", " ") }
+	add := func(n, unit string, at int, quals []string) {
 		if notUnits[unit] {
 			return
 		}
@@ -365,19 +514,20 @@ func prepareEvidence(content string) *evidenceText {
 		if unit == "%" {
 			u = "%"
 		}
-		e.counts[u] = append(e.counts[u], countAt{n: normNumber(n), excerpt: excerptAround(e.norm, at, 60)})
+		e.counts[u] = append(e.counts[u], countAt{n: normNumber(n), excerpt: excerpt(at), quals: quals})
 	}
-	for _, m := range evCountRe.FindAllStringSubmatchIndex(e.norm, -1) {
-		if m[0] > 0 && isWordRune(rune(e.norm[m[0]-1])) {
+	for _, m := range evCountRe.FindAllStringSubmatchIndex(lined, -1) {
+		if m[0] > 0 && isWordRune(rune(lined[m[0]-1])) {
 			continue
 		}
-		add(e.norm[m[2]:m[3]], e.norm[m[4]:m[5]], m[0])
+		unit := lined[m[4]:m[5]]
+		add(lined[m[2]:m[3]], unit, m[0], countQuals(lined, m[0], m[1], unit))
 	}
-	for _, m := range evLabelRe.FindAllStringSubmatchIndex(e.norm, -1) {
-		add(e.norm[m[4]:m[5]], e.norm[m[2]:m[3]], m[0])
-		if w := e.norm[m[2]:m[3]]; !notUnits[w] {
-			u := unitOf(w)
-			e.labels[u] = append(e.labels[u], countAt{n: normNumber(e.norm[m[4]:m[5]]), excerpt: excerptAround(e.norm, m[0], 60)})
+	for _, m := range evLabelRe.FindAllStringSubmatchIndex(lined, -1) {
+		w, n := lined[m[2]:m[3]], lined[m[4]:m[5]]
+		add(n, w, m[0], labelQuals(lined, m[0], w))
+		if !notUnits[w] {
+			e.labels[unitOf(w)] = append(e.labels[unitOf(w)], countAt{n: normNumber(n), excerpt: excerpt(m[0])})
 		}
 	}
 	return e

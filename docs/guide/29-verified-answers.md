@@ -97,21 +97,35 @@ counts (`12 tests`, `replicas: 3`). Then:
   sed -i … f` does not show the file as it is.
 - **What the statement says must be in the output.** Its quote, and every
   path, host, version, date and number in it, must appear in the evidence,
-  compared without case, terminal colours or extra spaces.
-- **Contradicted only from what it cites.** A statement that cites a result
-  (a `call_id` or `#seq` through the answer tool, or `(#12)` in the reply's
-  text) is contradicted when that result, still current, lacks its quote or
-  one of its numbers, dates, hosts or paths, or counts the same thing with
-  another number ("15 tests passed" citing `12 tests passed` is ✗, with the
-  result shown beside it); when it says a file was not changed and cites a
-  write or edit of that file that succeeded; or when it says tests pass (or
-  a build succeeds) and cites a failed run of the same kind and the same
-  scope, run on its own (no runner around it, exit 1). Nothing else is ever
-  contradicted: a statement that cites nothing, however wrong it looks
-  against some result, is unverified.
+  compared without case, terminal colours or extra spaces. What is missing
+  leaves it unverified ("`auth.go` is not in the cited #12"), never
+  contradicted: output that is silent on a thing does not say otherwise. A
+  `write` or `edit` result is no evidence for a path: it reports only the
+  file the call was given, and whether that file changed is the next rule's
+  to say.
+- **A count is compared with the same phrase.** "12 tests passed" is
+  compared with a count of tests that also says passed, and "3 replicas"
+  with a plain "replicas: 3"; "I added 3 tests" is not compared with
+  `12 tests passed`. A count the output gives in other words leaves the
+  statement unverified.
+- **Contradicted only from what it cites, and only by evidence that
+  conflicts.** A statement that cites a result (a `call_id` or `#seq`
+  through the answer tool, or `(#12)` in the reply's text) is contradicted
+  when that result, still current, counts the same thing in the same words
+  with another number ("15 tests passed" citing `12 tests passed`, or
+  "port 9090" citing `port: 8080`, is ✗, with the result shown beside it);
+  when it says a file was not changed, or that the agent avoided or kept it,
+  and cites a write or edit of that file that succeeded; or when it says
+  tests pass (or a build succeeds) and cites a failed run of the same kind
+  and the same scope, run on its own (no runner around it, exit 1). Nothing
+  else is ever contradicted: a statement that cites nothing, however wrong
+  it looks against some result, is unverified.
 - **A statement that something did not happen is never verified.** One that
-  says not, never, no, without, unchanged, untouched, left alone and the
-  like is not shown by a result that shows the thing.
+  says not, never, no, without, unchanged, untouched, left alone, avoided,
+  kept as it was and the like is not shown by a result that shows the
+  thing. The cost is that some true statements are never verified either:
+  "all tests pass with no failures" says "no", so it stays unverified even
+  after a clean run, where "all tests pass" alone is verified.
 - **"Tests pass" and "the build succeeds" need a whole run.** Such a
   statement is verified by a run of its own kind (read from the program and
   its subcommand: `go test`, `npm test`, `pytest`, `cargo test` for tests,
@@ -125,6 +139,10 @@ counts (`12 tests`, `replicas: 3`). Then:
   - filters, lists and dry-runs nothing (`-run`, `-skip`, `-short`, `-list`,
     `-c`, `pytest -k` or `--collect-only`, `cargo test --no-run` and anything
     else not read as a plain run leave it out);
+  - is given no variable but `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR` or
+    `CLICOLOR_FORCE`, which only colour its output: any other
+    (`GOFLAGS=-run=TestA`, `PYTEST_ADDOPTS='-k x'`, `CI=true`), before it or
+    through `env`, may filter it or change what passes;
   - covers, by path, the packages or folders the statement names, or the
     whole workspace (`./...` from the workspace) when it names none;
   - exited 0 after the last call that may have changed anything.
@@ -334,26 +352,30 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 94 plant a wrong claim. Some cite the result that shows them
-wrong (a test count, a replica count, a disk figure, a failed run, an edited
-file said untouched) and come out contradicted. The rest cite nothing, or
-rest on what the checks cannot read, and must come out unverified: wrong
-counts and paths, runs piped or followed by `;` or `|| true`, runs that
-filter, list or only compile, a package run against a claim about the whole
-suite, a trap before the run, commands after a failed `&&`, `||` or `exit`,
-a copy's or a link's source, a write refused in a folder `mkdir` made, a
-remote `rm`, a program at another path, a success of no named kind, reads
-relied on after changes the checks cannot rule out, and more. 41 controls say
-only what the session showed, among them a folder claim met by an edit in it
-and `sed -l` or `perl -I` with their values. 25 are neutral: general
-knowledge, and true claims the checks cannot stand behind, such as a build
-claim against a failed test run, a filtered or timed-out run, a run of
-another or a wider scope, an unrelated count of the same thing, or a `cd`
-after `CDPATH=`. Today none of the 94 planted claims is shown as verified (7
-are contradicted, all from cited evidence; the rest unverified), all 41
-controls are verified, and none of the 66 true or neutral claims is
-contradicted. The test fails if a planted claim is shown as verified, if a
-true one is contradicted, or if either count falls below its floor; the
+session. 109 plant a wrong claim. Some cite the result that shows them
+wrong (a test or outcome count in the same words, a replica count, a port, a
+failed run, an edited file said untouched, avoided or kept as it was) and
+come out contradicted. The rest cite nothing, or rest on what the checks
+cannot read, and must come out unverified: wrong counts and paths, a count
+said with another outcome, runs piped or followed by `;` or `|| true`, runs
+that filter, list or only compile, runs given `GOFLAGS`, `PYTEST_ADDOPTS` or
+`CI`, a package run against a claim about the whole suite, a trap before the
+run, commands after a failed `&&`, `||` or `exit`, a copy's or a link's
+source, a write refused in a folder `mkdir` made, a remote `rm`, a program at
+another path, a success of no named kind, a path read from an edit's own
+report, reads relied on after changes the checks cannot rule out, and more.
+44 controls say only what the session showed, among them a folder claim met
+by an edit in it, `sed -l` or `perl -I` with their values, and a run given
+only `NO_COLOR`. 36 are neutral: general knowledge, and true claims the
+checks cannot stand behind, such as a build claim against a failed test run,
+a filtered or timed-out run, a run of another or a wider scope, a count of
+the same thing in other words ("added 3 tests" citing `42 tests passed`), a
+`cd` after `CDPATH=`, and things a cited result is silent on (no panic lines
+in a log tail, a port not listening, a file not in a response). Today none
+of the 109 planted claims is shown as verified (10 are contradicted, all from
+cited, conflicting evidence; the rest unverified), all 44 controls are
+verified, and none of the 80 true or neutral claims is contradicted. The
+test fails if a planted claim is shown as verified, if a true one is contradicted, or if either count falls below its floor; the
 floors only go up. The corpus is small and written by the people who wrote
 the checks, so it shows what the checks do on these shapes of mistake, not how often a given model makes them.
 

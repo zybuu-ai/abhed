@@ -210,9 +210,12 @@ func TestCitations(t *testing.T) {
 	if !strings.Contains(v.Reason, "user.message") {
 		t.Fatalf("reason: %s", v.Reason)
 	}
-	// A quote the cited output does not hold: that output says otherwise.
+	// A quote the cited output does not hold: silence is not a contradiction.
 	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}, Quote: "listen 0.0.0.0:8080"})[0]
-	wantVerdict(t, v, ClaimContradicted)
+	wantVerdict(t, v, ClaimUnverified)
+	if !strings.Contains(v.Reason, "is not in the cited") {
+		t.Fatalf("reason: %s", v.Reason)
+	}
 	// The file changed after it was read: the read no longer shows the present.
 	b.call("c2", "write", map[string]string{"path": "/w/a.conf", "content": "listen 9090\n"}, "Wrote /w/a.conf", nil)
 	v = checkCited(t, b, Claim{Text: "it listens on 8080", Evidence: []string{"c1"}})[0]
@@ -425,7 +428,7 @@ func TestStrictEndsUnverified(t *testing.T) {
 // recorded as its message, and the run ends without another turn.
 func TestAnswerTool(t *testing.T) {
 	l, store, ad, _ := verifyHarness(t, VerifyLabel, true, []scriptedTurn{
-		{calls: []model.ToolCall{{ID: "t1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'replicas: 3\\n'"}`)}}},
+		{calls: []model.ToolCall{{ID: "t1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'replicas: 3\\npods: 5\\n'"}`)}}},
 		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(
 			`{"text":"There are 3 replicas, and 7 pods.","claims":[{"text":"There are 3 replicas","kind":"observed","evidence":["t1"],"quote":"replicas: 3"},{"text":"there are 7 pods","evidence":"t1"}]}`)}}},
 	})
@@ -433,8 +436,8 @@ func TestAnswerTool(t *testing.T) {
 		t.Fatal("the prompt does not say how to answer")
 	}
 	reason, err := l.Run(context.Background(), "how many replicas?")
-	// The pods claim cites a result with no 7 in it: contradicted, and label
-	// mode spends its one revision on it.
+	// The pods claim cites a result that counts 5 pods: contradicted, and
+	// label mode spends its one revision on it.
 	if err != nil || reason != TermCompleted || len(ad.gotRequests) != 3 {
 		t.Fatalf("%s %v %d", reason, err, len(ad.gotRequests))
 	}

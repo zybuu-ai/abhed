@@ -88,6 +88,21 @@ func commandKind(words []string) string {
 	return ""
 }
 
+// colourEnv are variables that change only how a run's output is coloured,
+// never what runs or how it is judged. Any other variable set for a run
+// (GOFLAGS=-run=X, PYTEST_ADDOPTS='-k x', CI, UPDATE) may filter it or change
+// what passes, so the run is not taken as a whole one.
+var colourEnv = map[string]bool{"NO_COLOR": true, "FORCE_COLOR": true, "CLICOLOR": true, "CLICOLOR_FORCE": true}
+
+func harmlessEnv(names []string) bool {
+	for _, n := range names {
+		if !colourEnv[n] {
+			return false
+		}
+	}
+	return true
+}
+
 // scopePat is a folder a run covers, and whether it covers what is beneath.
 type scopePat struct {
 	dir string
