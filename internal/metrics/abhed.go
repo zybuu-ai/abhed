@@ -20,6 +20,9 @@ var Steps = []string{
 	"interrupted", "attachment", "state",
 }
 
+// OllamaOutcomes are how a person's start, install or pull of Ollama ended.
+var OllamaOutcomes = []string{agent.OllamaOK, agent.OllamaFailed, agent.OllamaDeclined, agent.OllamaRefused, agent.OllamaCancelled, agent.OllamaManual}
+
 // Methods are the HTTP methods a request is counted by; any other is Other.
 var Methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 
@@ -72,6 +75,7 @@ type Abhed struct {
 	refused       *Counter
 	planted       *Counter
 	fenceDenied   *Counter
+	ollama        *Counter
 
 	mu      sync.Mutex
 	calls   map[string]*call
@@ -154,6 +158,8 @@ func New() *Abhed {
 			"State a command planted that the sandbox found and moved, by what (abhed_state, git).", "what"),
 		fenceDenied: r.Counter("abhed_fence_denied_total",
 			"System calls the fence refused fenced commands, by source (seccomp) and call.", "source", "call"),
+		ollama: r.Counter("abhed_ollama_actions_total",
+			"A person's attempts to start, install or pull a local Ollama, by op (start, install, pull) and outcome (ok, failed, declined, refused, cancelled, manual).", "op", "outcome"),
 		calls: map[string]*call{},
 	}
 	r.GaugeFunc("abhed_sessions_live", "Sessions this process holds, as /v1/health counts them.", m.runningSessions)
@@ -311,6 +317,10 @@ func (m *Abhed) Observe(ev agent.Event) {
 				m.fenceDenied.Add(float64(max(n, 0)), source, oneOf(c, seccomp.RefusableCalls()))
 			}
 		}
+	case string(agent.EvOllamaStart), string(agent.EvOllamaInstall), string(agent.EvOllamaPull):
+		var p agent.OllamaAction
+		_ = json.Unmarshal(ev.Payload, &p)
+		m.ollama.Inc(oneOf(p.Op, []string{"start", "install", "pull"}), oneOf(p.Outcome, OllamaOutcomes))
 	case string(agent.EvFenceLimit):
 		var p struct {
 			OOM          int64 `json:"oom"`

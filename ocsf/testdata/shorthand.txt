@@ -95,3 +95,8 @@
 2026-10-19T11:59:36.123Z s-1#95 BASE:Other INFO plan.updated
 2026-10-19T11:59:37.123Z s-1#96 BASE:Other INFO todo.updated
 2026-10-19T11:59:38.123Z s-1#97 BASE:Other INFO suggestion.offered
+2026-10-19T11:59:41.123Z s-1#100 PROC:Launch INFO ollama start qwen3:8b: ok
+2026-10-19T11:59:42.123Z s-1#101 PROC:Launch INFO ollama install qwen3:8b: failed
+2026-10-19T11:59:43.123Z s-1#102 PROC:Launch INFO ollama install: manual
+2026-10-19T11:59:44.123Z s-1#103 API:Create INFO ollama pull qwen3:8b: ok
+2026-10-19T11:59:45.123Z s-1#104 API:Create INFO ollama pull qwen3:8b: refused

@@ -57,7 +57,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is
 	// named now; one still being dialled is left to the first task.
-	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
+	// A model a local Ollama serves is checked below, with what it lacks offered.
+	_, viaOllama := toolset.OllamaTarget(appCfg, appCfg.Model.Default)
+	if err := start.probe.firstResult(100 * time.Millisecond); err != nil && !viaOllama {
 		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
 	}
 
@@ -207,6 +209,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		return loop
 	}
 	defer sessionState.endBackground()
+	if viaOllama && !sessionState.ensureOllamaFor(ctx, sessionState.surface, appCfg.Model.Default) {
+		sessionState.surface.Append(ui.Block{Kind: ui.BlockNotice, Text: appCfg.Model.Default + " is not ready; /ollama checks it again, /model chooses another"})
+	}
 	// -c, -r and --fork-session choose the conversation before the first prompt.
 	startSession(ctx, sessionState, r)
 

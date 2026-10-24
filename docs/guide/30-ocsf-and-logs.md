@@ -98,12 +98,14 @@ record withheld.
 | `observation` | API Activity (6003) | Other (Result): success, failure, Not run, or Unknown for an outcome a crash left unknown; `duration` |
 | `hook.fired` | API Activity (6003) | Other (Hook): a `block` is Denied and Blocked, `ask` and `annotate` Observed |
 | `mcp.status` | API Activity (6003) | Other (Restart), the server as a resource |
+| `ollama.pull` | API Activity (6003) | Create, the model as a resource; a declined, refused, cancelled or failed pull is a failure with the reason, one left to the person (`manual`) is Other |
 | `plan.proposed`, `session.branched`, `conversation.forked`, `sandbox.snapshot` | API Activity (6003) | Create |
 | `memory.loaded` | API Activity (6003) | Read |
 | `model.switched`, `model.fallback`, `session.renamed`, `session.named`, `sandbox.restore` | API Activity (6003) | Update |
 | `plan.decided`, `plan.step`, `subagent.ask`, `subagent.backgrounded`, `subagent.notice`, `terminal.input`, `command.invoked`, `change.accepted`, `worktree.taken`, `task.cancelled`, `message.dropped`, `turn.continued` | API Activity (6003) | Other, named for the type |
 | `input.mention`, `memory.written`, `manual.edit`, `file.restored`, `checkpoint.saved` | File System Activity (1001) | Read, Update, Update, Create/Update/Delete by what the restore did, Other (Checkpoint); the file's SHA-256 where the line has one |
 | `process.launched`, `shell.started`, `shell.ended` | Process Activity (1007) | Launch, Launch, Terminate with `exit_code` |
+| `ollama.start`, `ollama.install` | Process Activity (1007) | Launch, with the command shown to the person as `process.cmd_line` and a started server's `pid`; a declined, refused, cancelled or failed attempt is a failure with the reason, an installer page opened for the person (`manual`) is Other |
 | `egress.decision` | Network Activity (4001); HTTP Activity (4002) for a plain HTTP request with its method | Open, Refuse for a denial, Traffic for a rate-limit summary (its count as `count`); the method's activity for HTTP. `action_id`/`disposition_id` (Allowed; Denied and Blocked; `would_deny` in audit mode is Allowed and Detected), the rule as `firewall_rule.name`, bytes as `traffic` |
 | `sandbox.forward`, `sandbox.forward_listen`, `sandbox.expose` | Network Activity (4001) | Listen, Close |
 | `mode.changed`, `permission.changed`, `policy.layer`, `policy.startup_trusted`, `config.refused`, `config.narrowed`, `approval.scope_granted`, `workspace.dir_added`, `sandbox.bound`, `fence.qualified`, `session.wake_set` | Device Config State Change (5019) | Log; a refused setting is a failure |

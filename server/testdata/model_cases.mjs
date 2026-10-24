@@ -47,4 +47,7 @@ const notes = $('tx').childNodes.length;
 await sel.onchange();
 check('a switch its event already drew is not a second line', $('tx').childNodes.length === notes);
 
+// A picker asks the Ollama card about the model it shows, on load and on each choice.
+check('the Ollama card is asked about the models chosen', __ollama.length >= 2 && __ollama.includes('a') && __ollama.includes('b'));
+
 if(!ok) process.exit(1);

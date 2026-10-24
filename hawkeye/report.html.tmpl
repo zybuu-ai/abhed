@@ -150,6 +150,16 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
 </section>
 {{end}}
 
+{{if .LocalModel}}
+<section>
+  <h2>Local model (Ollama)</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>step</th><th>model</th><th>outcome</th><th>command</th><th>by · surface</th></tr>
+    {{range .LocalModel}}<tr><td class="seq">#{{.Seq}}</td><td>{{.Op}}</td><td>{{.Model}}</td><td{{if or (eq .Outcome "failed") (eq .Outcome "refused")}} class="err"{{end}}>{{.Outcome}}{{if .Error}} · {{.Error}}{{end}}</td><td class="wide"><code>{{.Command}}</code></td><td>{{.By}}{{if .Surface}} · {{.Surface}}{{end}}</td></tr>{{end}}
+  </table></div>
+</section>
+{{end}}
+
 {{if .RemoteChanges}}
 <section>
   <h2>Remote changes</h2>

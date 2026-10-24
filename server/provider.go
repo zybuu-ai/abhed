@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // Choosing the model from the console.
@@ -33,6 +34,9 @@ type providerInfo struct {
 	Type          string `json:"type"`
 	ContextWindow int    `json:"context_window,omitempty"`
 	Default       bool   `json:"default"`
+	// Ollama is set when a local Ollama serves it, so the picker asks
+	// /v1/ollama/status whether it is ready.
+	Ollama bool `json:"ollama,omitempty"`
 }
 
 // providers lists what this deployment can switch between.
@@ -45,10 +49,12 @@ func (s *Server) providers() []providerInfo {
 		if cfg.ModelAllowed(name) != nil {
 			continue
 		}
+		_, viaOllama := toolset.OllamaTarget(cfg, name)
 		out = append(out, providerInfo{
 			Name: name, Model: p.Model, Type: p.Type,
 			ContextWindow: p.ContextWindow,
 			Default:       name == cfg.Model.Default,
+			Ollama:        viaOllama,
 		})
 	}
 	// Stable order, or the dropdown reshuffles on every poll.

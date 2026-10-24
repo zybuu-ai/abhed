@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -192,6 +192,88 @@ a `resource_link` to the lines.
 | Not implemented in 1.2.2 | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
 | Per-subagent model | `subagent.spawned` and the task list carry `provider` and `model` (already recorded). |
 | Security | The value is a configured name looked up in the engine's configuration. Nothing from Studio is used as an endpoint, key or model id. Descriptions never include the base URL, the key or the key's variable name. |
+
+### 3.2a A local Ollama model
+
+Added in 1.2.9; served when `features` lists `ollama`. When the person
+chooses a model that a local Ollama serves (provider `type: "ollama"`, or an
+OpenAI-compatible `base_url` on port 11434 or at `OLLAMA_HOST`), the engine
+can say whether it works and, after the person agrees in Studio, start
+Ollama, install it or pull the model. Studio shows a card; the engine decides
+what may run.
+
+**On a switch.** The reply to `session/set_config_option` (`configId:
+"model"`) and to `session/set_model` carries `meta.ollama: OllamaStatus` when
+the chosen model is Ollama's and not ready; it is absent otherwise. This only
+reads this machine (no registry, no download host). Studio then calls
+`_abhed/ollama/status` for the full card. After `session/new` Studio calls
+`_abhed/ollama/status` once for the current model; -32602 means Ollama does
+not serve it, and nothing is shown.
+
+```ts
+interface OllamaProblem {
+  kind: "not_installed" | "not_running" | "not_pulled" | "port_busy" | "not_ready" | "start_failed"
+      | "install_failed" | "no_network" | "disk_short" | "pull_failed" | "model_not_found"
+      | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "needs_terminal" | "manual_steps";
+  message: string;      // one plain sentence
+  steps: string[];      // numbered manual steps, in order: commands or sentences
+  retry: boolean;       // checking again may work once the steps are done
+}
+interface OllamaStatus {
+  provider: string; model: string;  // configured name; Ollama tag
+  api: string;                      // Ollama's API root, e.g. http://127.0.0.1:11434
+  loopback: boolean;                // only then does the engine act
+  installed: boolean; binary?: string; app?: string;
+  running: boolean; version?: string; port_busy?: boolean;
+  pulled: boolean; ready: boolean;
+  next?: "install" | "start" | "pull";
+  problem?: OllamaProblem;          // absent when ready
+}
+interface OllamaReport extends OllamaStatus {
+  assist: "ask" | "local" | "off";  // model.ollama.assist
+  can_act: boolean;                 // the next step may be offered
+  start_always: boolean;            // the person said "always start"
+  start?: { command: string; log?: string };
+  install?: { kind: "run" | "open" | "script" | "manual"; command: string; source: string;
+              size?: string; steps?: string[]; needs_terminal?: boolean };
+  pull?: { command: string; source: string; bytes: number; size_known: boolean;
+           disk_free?: number; mem_total?: number; ram_needed_gb?: number; ram_estimate?: boolean;
+           warnings?: string[]; smaller?: string };
+  refusal?: OllamaProblem;          // why the next step is not offered
+  catalog: { tag: string; label: string; bytes: number; min_ram_gb: number }[];
+}
+```
+
+| Method | Params → result |
+|---|---|
+| `_abhed/ollama/status` | `{sessionId, provider?}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only; asks the registry or download host for a size only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
+| `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?}, status: OllamaStatus}`, or `{status}` when it was already running. `always` keeps "always start without asking" (only after the person ticked it). Recorded `ollama.start` |
+| `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs the Linux install script (`needs_terminal`), never `sudo` (`manual_steps`). Recorded `ollama.install` |
+| `_abhed/ollama/pull` | `{sessionId, provider?, pullId}` → `{status}` when it ends ready. While it runs, notifications `_abhed/ollama/progress {sessionId, pullId, status, completed?, total?}`. Disk short, model not in the registry or no network fail before any download. Recorded `ollama.pull` |
+| `_abhed/ollama/cancel` | `{pullId}` → `{cancelled: boolean}`; the pull's reply is then -32000 with `kind: "cancelled"`. Ollama keeps what it fetched |
+| `_abhed/ollama/forget` | `{}` → `{}`: forget "always start" |
+
+**Errors.** A refusal by configuration or place (`assist_off`, `not_admin`,
+`in_agent`, `remote`) is -32001; a failure (`start_failed`, `not_ready`,
+`port_busy`, `install_failed`, `pull_failed`, `disk_short`, `no_network`,
+`model_not_found`, `cancelled`, `needs_terminal`, `manual_steps`) is
+-32000. Either way `data` is `{problem: OllamaProblem, status:
+OllamaStatus}`; Studio shows `problem.message`, the numbered `problem.steps`
+and a *Check again* button. A provider Ollama does not serve, or not
+configured, is -32602.
+
+**Studio's side.** Before `start`, a modal showing `start.command` with
+*Start*, *Always start without asking* and *No* (default No; *always* is a
+widening choice). Before `install` and `pull`, a modal every time showing the
+exact `command`, `source` and size (`install.size`, or `pull.bytes` with
+`pull.warnings` and `pull.smaller`), default No. A *Stop* button sends
+`_abhed/ollama/cancel`. A `needs_terminal` or `manual_steps` answer shows the
+steps; Studio may open an Abhed terminal (§7.1) for the person to run
+`abhed ollama check` themselves. Nothing is sent without a click (§2.2).
+
+| | |
+|---|---|
+| Security | The engine acts only on a loopback Ollama, as the engine's user, never with `sudo`, and binds a server it starts to `127.0.0.1`. `model.ollama.assist` (managed-lockable) is applied whatever Studio sends; inside an agent's command every action is refused. No tool exposes any of this, so the agent cannot start, install or pull. A server it started keeps running when the engine exits. Every attempt and outcome is recorded with `by: "user"` and `surface: "acp"`. |
 
 ### 3.3 Slash commands
 
@@ -1012,6 +1094,7 @@ them.
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
 | `mcp.status` | user | server, op (`restart`), status, error |
+| `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
 An unknown type is shown with its raw payload as text. Studio never infers
@@ -1048,6 +1131,7 @@ table.
 | Worktree take-back | `_abhed/worktrees/list`, `_abhed/worktrees/take` | ext | done in the engine (1.2.9; `worktrees` in `features`); Studio's view not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
+| Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |
 | Host terminal | none (Studio only), removable by managed `studio.disable_host_terminal` | — | Studio; the managed key is read into `capabilities.studio` |

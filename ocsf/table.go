@@ -50,6 +50,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSubagentNotice:       {fn: apiOther("Notice"), classes: []int{6003}},
 	agent.EvHookFired:            {fn: mapHook, classes: []int{6003}},
 	agent.EvMCPStatus:            {fn: mapMCPStatus, classes: []int{6003}},
+	agent.EvOllamaPull:           {fn: mapOllama, classes: []int{6003}},
 	agent.EvTerminalInput:        {fn: apiOther("Terminal input"), classes: []int{6003}},
 	agent.EvCommandInvoked:       {fn: apiOther("Command"), classes: []int{6003}},
 	agent.EvMemoryLoaded:         {fn: apiActivity(2, "Read"), classes: []int{6003}},
@@ -79,6 +80,8 @@ var table = map[agent.EventType]rule{
 
 	// Commands: Process Activity.
 	agent.EvProcessLaunched: {fn: mapProcess(1, "Launch"), classes: []int{1007}},
+	agent.EvOllamaStart:     {fn: mapOllama, classes: []int{1007}},
+	agent.EvOllamaInstall:   {fn: mapOllama, classes: []int{1007}},
 	agent.EvShellStarted:    {fn: mapProcess(1, "Launch"), classes: []int{1007}},
 	agent.EvShellEnded:      {fn: mapProcess(2, "Terminate"), classes: []int{1007}},
 
@@ -382,6 +385,53 @@ func mapMCPStatus(b *builder) {
 		b.status(1, "", "")
 	}
 	b.set("message", "mcp "+b.str("server")+" "+b.str("op")+": "+b.str("status"))
+}
+
+// mapOllama is a person's start, install or pull of a local Ollama: the
+// server's start and an install as Process Activity (Launch), a pull as
+// API Activity (Create) of the model; declined, refused and failed
+// attempts as a failure with the reason.
+func mapOllama(b *builder) {
+	op := b.str("op")
+	if op == "pull" {
+		b.classify(6003, 1, "Create")
+		b.api("ollama.pull", "")
+		b.set("resources", []any{map[string]any{"name": b.str("model"), "type": "model"}})
+	} else {
+		b.classify(1007, 1, "Launch")
+		proc := map[string]any{}
+		if pid, ok := b.num("pid"); ok {
+			proc["pid"] = pid
+		}
+		if c := b.str("command"); c != "" {
+			proc["cmd_line"] = c
+		}
+		b.set("process", proc)
+		b.device()
+	}
+	b.actor(b.str("by"))
+	switch outcome := b.str("outcome"); outcome {
+	case "ok":
+		b.status(1, "", "")
+	case "manual":
+		b.status(99, "Manual", "left to the person: "+b.str("command"))
+	default:
+		b.status(2, outcome, firstOf(b.str("error"), b.str("problem")))
+	}
+	msg := "ollama " + op
+	if m := b.str("model"); m != "" {
+		msg += " " + m
+	}
+	b.set("message", msg+": "+b.str("outcome"))
+}
+
+func firstOf(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func mapPlanDecided(b *builder) {

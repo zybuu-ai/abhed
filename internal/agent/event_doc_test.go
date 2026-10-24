@@ -21,4 +21,7 @@ func TestCLIEventTypesAreDocumented(t *testing.T) {
 			t.Errorf("%s has no row in docs/architecture/10-data-model.md", e)
 		}
 	}
+	if !strings.Contains(string(doc), "| `ollama.start`, `ollama.install`, `ollama.pull` |") {
+		t.Error("the ollama events have no row in docs/architecture/10-data-model.md")
+	}
 }

@@ -405,6 +405,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
+	case "ollama":
+		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "record":
 		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "logs":
@@ -508,7 +510,7 @@ var permissionModes = map[string]string{
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
 	"sandbox": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
 }
 
 func isHelpArg(s string) bool {

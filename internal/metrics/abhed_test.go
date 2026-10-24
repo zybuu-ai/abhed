@@ -109,6 +109,12 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	if m.tokens.Value("m1", "in") != 10 || m.tokens.Value("m1", "out") != 5 || m.modelTime.Count("m1", "turn") != 2 {
 		t.Error("model tokens or latency not counted")
 	}
+	m.Observe(ev(agent.EvOllamaStart, agent.OllamaAction{Op: "start", Outcome: agent.OllamaOK, Command: "/secret/path/ollama serve"}))
+	m.Observe(ev(agent.EvOllamaPull, agent.OllamaAction{Op: "pull", Outcome: agent.OllamaRefused, Model: "qwen3:8b"}))
+	m.Observe(ev(agent.EvOllamaInstall, agent.OllamaAction{Op: "install", Outcome: "made up"}))
+	if m.ollama.Value("start", "ok") != 1 || m.ollama.Value("pull", "refused") != 1 || m.ollama.Value("install", Other) != 1 {
+		t.Error("ollama attempts not counted by op and outcome")
+	}
 	m.Observe(ev(agent.EvPlanDecided, agent.PlanDecided{Decision: "accept", Via: "operator"}))
 	m.Observe(ev(agent.EvPlanDecided, agent.PlanDecided{Decision: "keep-planning"}))
 	m.Observe(ev(agent.EvApprovalScopeGranted, map[string]string{}))

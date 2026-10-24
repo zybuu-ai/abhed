@@ -47,7 +47,7 @@ func WithHome(page, home string) string {
 		`<a href="`+esc+`" class="home" title="Back to `+label+`">`+label+` <span aria-hidden="true">&#8599;</span></a>`)
 }
 
-var consoleHTML = brandify(strings.ReplaceAll(`<!doctype html>
+var consoleHTML = brandify(withOllamaCard(strings.ReplaceAll(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -882,7 +882,9 @@ let recProvider = null;
 let sessionsSeen = [];
 async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ return; }
-  if(!Array.isArray(providers) || providers.length < 2) return;
+  if(!Array.isArray(providers)) return;
+  // One provider has no picker, but a local Ollama model still gets its card.
+  if(providers.length < 2){ const d = providers.find(p => p.default); if(d) checkOllama(d.name); return; }
 
   const sel = $('mdlpick');
   sel.textContent = '';
@@ -897,8 +899,10 @@ async function loadProviders(){
   sel.hidden = false;
   sel.dataset.prev = sel.value;
   if(current) showSessionModel(current);
+  checkOllama(sel.value);
 
   sel.onchange = async () => {
+    checkOllama(sel.value);
     // With no session yet the choice applies to the next one: createSession carries it.
     if(!current){ sel.dataset.prev = sel.value; return; }
     sel.disabled = true;
@@ -918,6 +922,18 @@ async function loadProviders(){
       sel.disabled = false;
     }
   };
+}
+
+/*OLLAMA-CARD*/
+// A model a local Ollama serves gets a card when it is not ready: what is
+// wrong, the steps, and the next step for a person who may take it.
+const ollamaCard = {card: null};
+function checkOllama(name){
+  const p = providers.find(x => x.name === name);
+  if(!p || !p.ollama){ if(ollamaCard.card){ ollamaCard.card.remove(); ollamaCard.card = null; } return; }
+  ollamaCard.provider = name; ollamaCard.session = current || '';
+  ollamaCard.mount = n => { const t = $('tx'); if(!t) return; t.appendChild(n); t.scrollTop = t.scrollHeight; };
+  abhedOllama.show(ollamaCard);
 }
 
 // One wording for a switch, so the reply and its recorded event show as one line;
@@ -2814,7 +2830,7 @@ setInterval(health, 10000);
 setInterval(refresh, 5000);
 </script>
 </body>
-</html>`, "\x00", ""))
+</html>`, "\x00", "")))
 
 // authDisabledHTML is shown when someone reaches /login or /logout on a server
 // running without authentication. It says what is true and what to change,
