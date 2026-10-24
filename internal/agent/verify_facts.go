@@ -23,6 +23,7 @@ type facts struct {
 	fileLines []fileLine  // path:line cites, checked against the file now
 	success   bool        // says a command, test or build succeeded
 	testish   string      // "test" or "build" when success names one
+	wholeRun  bool        // success said of the run, not only of a count in it
 	changed   bool        // says the agent changed the paths it names
 	negated   bool        // says something did not happen, or is not so
 	scope     []string    // packages or folders a test claim names, such as internal/auth
@@ -69,8 +70,9 @@ var (
 	// What a claim says when it reports success; negRe undoes it.
 	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
-	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:the\s+|of\s+the\s+)?|\b\d+\s*/\s*|\b\d+\s+of\s+)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
-	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+of\s+)(\d+)\b)`)
+	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:the\s+|of\s+the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
+	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
+	everyRe          = regexp.MustCompile(`\b(?:all|every|each)\b`)
 	noFailRe         = regexp.MustCompile(`\bno (?:errors|failures|failed tests?|tests? failed)\b`)
 	testRe           = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
 	buildRe          = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
@@ -293,17 +295,25 @@ func extractFacts(claim string) facts {
 			f.numbers = append(f.numbers, n)
 		}
 	}
-	// "9 tests passed" is a count, judged as one: the run it counts may have
-	// failed other tests. Only a success said of the run itself is one.
-	said := countedOutcomeRe.ReplaceAllStringFunc(normText(claim), func(m string) string {
-		if wholeRunCount(m) {
-			return m
+	// Any pass said of tests, "9 tests passed" included, needs a whole run
+	// that passed. Only one said of every test ("all 12 tests passed",
+	// "12/12", "12 out of 12", "12 tests all passed") or of the run itself
+	// is a claim the run passed, which a cited failed run contradicts.
+	full := normText(claim)
+	said := full
+	for _, m := range countedOutcomeRe.FindAllStringIndex(full, -1) {
+		rest := full[m[1]:]
+		if i := strings.IndexAny(rest, ";."); i >= 0 {
+			rest = rest[:i]
 		}
-		return " "
-	})
-	plain := noFailRe.ReplaceAllString(normText(claim), " ")
-	if successRe.MatchString(said) && !negRe.MatchString(plain) {
+		if !wholeRunCount(full[m[0]:m[1]]) && !everyRe.MatchString(full[m[0]:m[1]]) && !everyRe.MatchString(rest) {
+			said = strings.Replace(said, full[m[0]:m[1]], strings.Repeat(" ", m[1]-m[0]), 1)
+		}
+	}
+	plain := noFailRe.ReplaceAllString(full, " ")
+	if successRe.MatchString(full) && !negRe.MatchString(plain) {
 		f.success = true
+		f.wholeRun = successRe.MatchString(said)
 		switch {
 		case testRe.MatchString(plain):
 			f.testish = "test"
@@ -498,23 +508,32 @@ func readCount(s string, m []int) countFact {
 	return c
 }
 
-// partOf reports a count at s[at] that is the M of "N of M": written "N/M",
-// or with "of" in the two words before it ("2 of 5", "2 of the 5", "2 of
-// all 5", "2 out of a total of 5"). part is N, normalised, or "" when it is
-// not a number. "12 of 12" and "12/12" are all of them, not a part.
+// partOf reports a count at s[at] that is the M of "N of M": after a "/"
+// with any spacing ("0/3", "1 / 3"), or with "of" anywhere before it in its
+// clause ("2 of 5", "2 of all the 5", "2 out of a total of 5"). part is N,
+// normalised, or "" when it is not a number. "12 of 12" and "12/12" are
+// all of them, not a part.
 func partOf(s string, at int, head string) (part string, ok bool) {
-	if at > 0 && s[at-1] == '/' {
-		i := at - 1
-		for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
-			i--
+	i := at
+	for i > 0 && s[i-1] == ' ' {
+		i--
+	}
+	if i > 0 && s[i-1] == '/' {
+		j := i - 1
+		for j > 0 && s[j-1] == ' ' {
+			j--
 		}
-		if i == at-1 {
+		k := j
+		for k > 0 && s[k-1] >= '0' && s[k-1] <= '9' {
+			k--
+		}
+		if k == j {
 			return "", true
 		}
-		return normNumber(s[i : at-1]), true
+		return normNumber(s[k:j]), true
 	}
-	f := strings.Fields(head)
-	for k := len(f) - 1; k >= 0 && k >= len(f)-2; k-- {
+	f := strings.Fields(clauseHead(head))
+	for k := len(f) - 1; k >= 0; k-- {
 		if f[k] != "of" {
 			continue
 		}
