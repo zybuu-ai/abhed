@@ -377,7 +377,7 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 		execs := findExecCommands(args)
 		// A non-literal find argument (an action built from an expansion) over
 		// paths outside own ground is asked about.
-		if !cmd.argsLiteral && len(execs) == 0 && !r.findStartsOwnGround(k, c, args) {
+		if !cmd.argsLiteral && !r.findStartsOwnGround(k, c, args) {
 			return r.findExecAsk(c)
 		}
 		starts := findStarts(args)
@@ -476,6 +476,19 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// parsed and judged like any other handed code, not word-searched.
 	if v := r.runnerVerdict(k, c, cmd, prog, args, where, depth); v != nil {
 		return v
+	}
+	// export/declare of a git command-env variable (GIT_PAGER, GIT_SSH_COMMAND,
+	// …) to code it will run is handed code: a later git call would run it.
+	if prog == "export" || prog == "declare" || prog == "typeset" {
+		for _, a := range args {
+			if key, v, ok := strings.Cut(a, "="); ok && gitEnvCode[key] {
+				if unreadVal(v) || r.codeVerdict(k, c, strings.TrimPrefix(v, "!"), where, depth+1, false) != nil {
+					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+						Rationale: fmt.Sprintf("%s sets a git command variable to code that would run later; %s", key, remit(c)),
+						Advice:    "set it to a plain program, or confirm this is meant"}
+				}
+			}
+		}
 	}
 	// General pass: any other command not fully read has its code-ish arguments
 	// and its stdin parsed and judged, so a quote-split or variable-built delete
@@ -899,6 +912,9 @@ func runsUnreadArg(cmd command, args []string) bool {
 	if cmd.call == nil {
 		return false
 	}
+	if p, _ := cmd.program(); sqlClient[progBase(p)] {
+		return false // a SQL client's -c/-e is a query, not a program
+	}
 	if p, _ := cmd.program(); printerProg[progBase(p)] {
 		return false // a printer runs nothing
 	}
@@ -1060,7 +1076,7 @@ func (r Rules) cmdFullyRead(cmd command) bool {
 	case base == "git":
 		return gitFullyRead(args)
 	case base == "kubectl" || base == "docker" || base == "podman" || base == "nerdctl":
-		return !containerRuns(args) // a running subcommand is not fully read
+		return !containerRuns(base, args) // a running subcommand is not fully read
 	case base == "xargs":
 		return len(xargsCommand(args)) == 0
 	case base == "man":
@@ -1542,9 +1558,97 @@ func (r Rules) moveVerdict(k *given, c Case, cmd command, prog string, args []st
 			}
 		}
 	case "git":
-		return r.gitCleanVerdict(k, c, cmd, args, where)
+		if v := r.gitCleanVerdict(k, c, cmd, args, where); v != nil {
+			return v
+		}
+		return r.gitDiscardVerdict(k, c, cmd, args, where)
 	}
 	return nil
+}
+
+// gitEnvAssignments gathers git-relevant NAME=value settings both from a shell
+// assignment prefix (cmd.env) and from an env wrapper's words (env NAME=value git).
+func gitEnvAssignments(cmd command) map[string]string {
+	out := map[string]string{}
+	for k, v := range cmd.env {
+		out[k] = v
+	}
+	for _, w := range cmd.words {
+		if k, v, ok := strings.Cut(w, "="); ok && (gitEnvCode[k] || strings.HasPrefix(k, "GIT_CONFIG_VALUE")) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// gitDiscardVerdict judges git subcommands that discard work in their tree —
+// reset --hard, checkout with -- or -f, restore — over a -C/--work-tree path
+// outside own ground.
+func (r Rules) gitDiscardVerdict(k *given, c Case, cmd command, args []string, where string) *Verdict {
+	tree := gitWorkTree(cmd, args)
+	sub, discards := "", false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if gitValueOpt[a] && i+1 < len(args) {
+			i++ // a value-taking option: skip its value
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			switch a {
+			case "--hard":
+				if sub == "reset" {
+					discards = true
+				}
+			case "-f", "--force", "--":
+				if sub == "checkout" || sub == "restore" || sub == "switch" {
+					discards = true
+				}
+			}
+			continue
+		}
+		if sub == "" {
+			sub = a
+			if sub == "restore" {
+				discards = true // restore overwrites the worktree
+			}
+		}
+	}
+	if !discards {
+		return nil
+	}
+	eff := "."
+	if tree != "" && tree != "." {
+		eff = tree
+	}
+	if v := r.judgeTarget(k, c, command{dir: tree, dirKnown: true}, "git", eff, where); v != nil {
+		return v
+	}
+	return nil
+}
+
+// gitValueOpt names git global options that take a value, so the next word is
+// not the subcommand.
+var gitValueOpt = map[string]bool{"-C": true, "--git-dir": true, "--work-tree": true, "-c": true,
+	"--namespace": true, "--config-env": true, "--exec-path": true}
+
+// gitWorkTree is the cumulative -C/--work-tree/GIT_WORK_TREE tree, or "".
+func gitWorkTree(cmd command, args []string) string {
+	tree := ""
+	if v, ok := cmd.env["GIT_WORK_TREE"]; ok {
+		tree = v
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-C" && i+1 < len(args):
+			tree, i = joinUnder(tree, args[i+1]), i+1
+		case a == "--work-tree" && i+1 < len(args):
+			tree, i = args[i+1], i+1
+		case strings.HasPrefix(a, "--work-tree="):
+			tree = strings.TrimPrefix(a, "--work-tree=")
+		}
+	}
+	return tree
 }
 
 // gitCleanVerdict judges git clean -f, which deletes untracked files. It reads
@@ -1749,7 +1853,7 @@ func substituteBraces(words []string, start string) []string {
 var readOnlyProg = map[string]bool{"ls": true, "grep": true, "egrep": true, "fgrep": true, "rg": true,
 	"stat": true, "cat": true, "head": true, "tail": true, "wc": true, "file": true, "dirname": true,
 	"basename": true, "du": true, "md5sum": true, "shasum": true, "sha1sum": true, "sha256sum": true,
-	"readlink": true, "realpath": true, "test": true, "echo": true, "printf": true, "less": true,
+	"readlink": true, "realpath": true, "test": true, "echo": true, "printf": true,
 	"diff": true, "cksum": true}
 
 // dropBraces removes find's {} placeholder, so the -exec command's other
@@ -2043,6 +2147,17 @@ func written(prog string, args []string) []string {
 				return ops[1:]
 			}
 		}
+	case "find":
+		var out []string
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "-fprint", "-fprint0", "-fprintf", "-fls":
+				if i+1 < len(args) {
+					out = append(out, args[i+1]) // the file find writes
+				}
+			}
+		}
+		return out
 	}
 	return nil
 }
@@ -2306,6 +2421,9 @@ func unreadVal(s string) bool { return strings.Contains(s, "$") }
 // whitespace or a shell metacharacter, a code flag's value, less the message
 // values (a commit message, a sed script) dangerWords also drops.
 func handedArgs(cmd command, args []string) []string {
+	if prog, _ := cmd.program(); sqlClient[progBase(prog)] {
+		return nil // a SQL client's -c/-e is a query, not shell code
+	}
 	text := map[string]bool{}
 	for _, w := range dangerWords(cmd) {
 		text[w] = true
@@ -2325,6 +2443,11 @@ func handedArgs(cmd command, args []string) []string {
 	return out
 }
 
+// sqlClient runs a query, not a shell command, from -c/-e, so that value is data.
+var sqlClient = map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true,
+	"mongosh": true, "mongo": true, "redis-cli": true, "clickhouse-client": true, "cqlsh": true,
+	"duckdb": true, "sqlcmd": true, "cockroach": true}
+
 // runnerVerdict judges code handed to git, a container runtime, xargs or man.
 func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []string, where string, depth int) *Verdict {
 	ask := func() *Verdict {
@@ -2342,7 +2465,7 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 				return ask()
 			}
 		}
-		for name, v := range cmd.env {
+		for name, v := range gitEnvAssignments(cmd) {
 			if strings.HasPrefix(name, "GIT_CONFIG_VALUE") || gitEnvCode[name] {
 				if unreadVal(v) {
 					return ask()
@@ -2353,13 +2476,26 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 			}
 		}
 	case "kubectl", "docker", "podman", "nerdctl":
-		if !containerRuns(args) {
-			return nil // ls/ps/logs/get/up/down/build/… run nothing of ours
+		verb, idx, ok := containerAction(prog, args)
+		if !ok {
+			return ask() // no subcommand located: fail closed
+		}
+		if verb == "cp" {
+			return r.containerCpVerdict(k, c, args[idx:])
+		}
+		if verb == "attach" {
+			return ask() // attach joins a running process we cannot read
+		}
+		if !containerRunVerbs[verb] {
+			return nil // a management subcommand runs nothing of ours
 		}
 		ccs, located := containerCommands(prog, args)
 		if !located {
 			return ask() // a running form whose command we cannot locate: fail closed
 		}
+		// A bind mount of a host path outside own ground makes the container's
+		// paths host paths: keep the host checks for the whole command then.
+		hostBind := (verb == "run") && r.containerBindOutside(k, c, args[idx:])
 		for _, cc := range ccs {
 			if len(cc) == 0 {
 				continue // a run with no explicit command (the image default)
@@ -2367,8 +2503,8 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 			if unreadVal(cc[0]) {
 				return ask()
 			}
-			sub := command{words: cc, argsLiteral: true}
-			if r.judgeCommand(k, c, sub, where, depth+1, true) != nil {
+			sub := command{words: cc, argsLiteral: !hostBind}
+			if r.judgeCommand(k, c, sub, where, depth+1, !hostBind) != nil {
 				return ask()
 			}
 		}
@@ -2437,6 +2573,10 @@ func gitHandedCode(args []string) []string {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case strings.HasPrefix(a, "--config-env="):
+			if key, _, ok := strings.Cut(strings.TrimPrefix(a, "--config-env="), "="); ok && gitRunsConfigKey(key) {
+				out = append(out, "$CONFIG_ENV") // read from an env var: unread, asks
+			}
 		case a == "-x" || a == "--exec":
 			if i+1 < len(args) {
 				out = append(out, args[i+1])
@@ -2495,43 +2635,99 @@ var dockerValueFlags = map[string]bool{"-v": true, "--volume": true, "-e": true,
 	"--volumes-from": true, "--link": true, "--expose": true, "--sysctl": true, "--runtime": true, "-c": true,
 	"--container": true, "--namespace": true, "-n": true}
 
-// containerSubs are the docker/podman/kubectl subcommands that run a command we
-// can read from the line, mapped to whether an image sits before the command.
-var containerSubs = map[string]bool{"exec": false, "run": true, "debug": true}
+// containerReadVerbs are the docker/podman/kubectl subcommands that manage
+// images, volumes or the daemon and do not run a command of ours; the command
+// is read when its subcommand is one of these.
+var containerReadVerbs = map[string]bool{
+	"ps": true, "logs": true, "ls": true, "images": true, "image": true, "rmi": true, "rm": true,
+	"inspect": true, "build": true, "buildx": true, "builder": true, "pull": true, "push": true,
+	"prune": true, "system": true, "volume": true, "network": true, "context": true, "manifest": true,
+	"create": true, "start": true, "stop": true, "restart": true, "kill": true, "pause": true,
+	"unpause": true, "commit": true, "tag": true, "save": true, "load": true, "history": true,
+	"stats": true, "top": true, "port": true, "diff": true, "wait": true, "events": true, "version": true,
+	"info": true, "login": true, "logout": true, "search": true, "update": true, "rename": true,
+	"export": true, "import": true, "swarm": true, "node": true, "service": true, "stack": true,
+	"secret": true, "config": true, "plugin": true, "trust": true, "init": true, "compose": true,
+	"get": true, "describe": true, "apply": true, "delete": true, "scale": true, "rollout": true,
+	"expose": true, "label": true, "annotate": true, "patch": true, "cordon": true, "drain": true,
+	"taint": true, "up": true, "down": true, "cp": true, "api-resources": true, "api-versions": true,
+	"cluster-info": true, "explain": true, "auth": true, "wait-for": true, "set": true}
 
-// containerRuns reports a container command whose subcommand runs a command of
-// ours (exec/run/debug, including under compose/container), as opposed to one
-// that runs nothing we can see (ps, logs, ls, get, up, down, build, pull, …).
-func containerRuns(args []string) bool {
-	_, ok := containerSub(args)
-	return ok
-}
+// containerRunVerbs run a command we read from the line.
+var containerRunVerbs = map[string]bool{"exec": true, "run": true, "debug": true}
 
-// containerSub finds the running subcommand (exec/run/debug) past any compose
-// or container prefix, and reports the index in args just after it.
-func containerSub(args []string) (int, bool) {
-	skip := map[string]bool{"compose": true, "container": true}
-	seen := 0
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "-") && a != "-" {
-			continue
-		}
-		if skip[a] {
-			continue
-		}
-		if _, ok := containerSubs[a]; ok {
-			return i, true
-		}
-		seen++
-		if seen >= 2 {
-			break // the first operands are not a running subcommand
-		}
+// dockerGlobalValueFlags take a value and come before the subcommand.
+var dockerGlobalValueFlags = map[string]bool{"-c": true, "--context": true, "-H": true, "--host": true,
+	"--config": true, "-l": true, "--log-level": true, "--connection": true, "--url": true, "--identity": true,
+	"--tlscacert": true, "--tlscert": true, "--tlskey": true}
+
+// composeGlobalValueFlags come before a compose subcommand.
+var composeGlobalValueFlags = map[string]bool{"-f": true, "--file": true, "-p": true, "--project-name": true,
+	"--env-file": true, "--profile": true, "--project-directory": true, "--ansi": true, "--parallel": true,
+	"--progress": true, "-c": true, "--context": true, "-H": true, "--host": true, "--log-level": true,
+	"-l": true, "--connection": true}
+
+// kubectlGlobalValueFlags come before a kubectl subcommand.
+var kubectlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "--context": true,
+	"--kubeconfig": true, "--cluster": true, "--user": true, "-s": true, "--server": true, "--as": true,
+	"--as-group": true, "--token": true, "--request-timeout": true, "--cache-dir": true, "--tls-server-name": true,
+	"--certificate-authority": true, "--client-certificate": true, "--client-key": true}
+
+// containerGlobals is the value-flag set for a tool's global options.
+func containerGlobals(prog string) map[string]bool {
+	if prog == "kubectl" {
+		return kubectlGlobalValueFlags
 	}
-	return 0, false
+	return dockerGlobalValueFlags
 }
 
-// manPager is the pager command man is told to use (-P value, -P<attached>,
+// containerAction finds the subcommand that decides what a container command
+// does, past global value-taking options and the compose/container group
+// words, and returns it, the index just after it, and whether one was found.
+func containerAction(prog string, args []string) (string, int, bool) {
+	globals := containerGlobals(prog)
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "compose" || a == "container" {
+			if a == "compose" {
+				globals = composeGlobalValueFlags
+			}
+			i++
+			continue
+		}
+		if globals[a] {
+			i += 2
+			continue
+		}
+		if _, _, ok := strings.Cut(a, "="); ok && globals[strings.SplitN(a, "=", 2)[0]] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			i++
+			continue
+		}
+		return a, i + 1, true
+	}
+	return "", 0, false
+}
+
+// containerRuns reports a container command that is not simply read: it runs a
+// command of ours, or its subcommand is unknown, or none was located. Only a
+// recognised management subcommand (ps, logs, build, rm, …) is read.
+func containerRuns(prog string, args []string) bool {
+	verb, _, ok := containerAction(prog, args)
+	if !ok {
+		return true // no subcommand located: not read, fail closed
+	}
+	if containerReadVerbs[verb] && !containerRunVerbs[verb] {
+		return false
+	}
+	return true
+}
+
+// manPager is the pager command man is told to use// manPager is the pager command man is told to use (-P value, -P<attached>,
 // --pager value or --pager=value), or "".
 func manPager(args []string) string {
 	for i := 0; i < len(args); i++ {
@@ -2554,11 +2750,11 @@ func manPager(args []string) string {
 // runtime runs. Two readings arise when an unknown long option might or might
 // not take a value, shifting where the command starts; both are judged.
 func containerCommands(prog string, args []string) ([][]string, bool) {
-	subIdx, ok := containerSub(args)
-	if !ok {
+	verb, idx, ok := containerAction(prog, args)
+	if !ok || !containerRunVerbs[verb] {
 		return nil, false
 	}
-	rest := args[subIdx+1:]
+	rest := args[idx:]
 	if prog == "kubectl" {
 		for i, a := range rest {
 			if a == "--" {
@@ -2665,4 +2861,71 @@ func xargsCommand(args []string) []string {
 		return args[i:]
 	}
 	return nil
+}
+
+// containerCpVerdict judges a docker/kubectl cp whose host side (an operand
+// with no name: prefix) sits outside own ground.
+func (r Rules) containerCpVerdict(k *given, c Case, rest []string) *Verdict {
+	for _, a := range operands(rest) {
+		if strings.Contains(a, ":") && !strings.HasPrefix(a, "/") && !strings.HasPrefix(a, ".") && !strings.HasPrefix(a, "~") {
+			continue // a container reference (name:path)
+		}
+		if r.strayOperand(k, c, []string{a}) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("cp would write %s on the host, outside the task's ground; %s", a, remit(c)),
+				Advice:    "copy into the workspace or a path the task names, or confirm this is meant"}
+		}
+	}
+	return nil
+}
+
+// containerBindOutside reports a run whose -v/--volume/--mount bind source is a
+// literal host path outside own ground, so the container's paths are host paths.
+func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
+	src := func(spec string) string {
+		parts := strings.SplitN(spec, ":", 3)
+		if len(parts) >= 2 {
+			return parts[0]
+		}
+		return ""
+	}
+	outside := func(p string) bool {
+		if p == "" || (!strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, ".")) {
+			return false // empty, or a named volume rather than a host path
+		}
+		return r.strayOperand(k, c, []string{p})
+	}
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "-v" || a == "--volume":
+			if i+1 < len(rest) && outside(src(rest[i+1])) {
+				return true
+			}
+		case strings.HasPrefix(a, "-v") && len(a) > 2:
+			if outside(src(a[2:])) {
+				return true
+			}
+		case strings.HasPrefix(a, "--volume="):
+			if outside(src(strings.TrimPrefix(a, "--volume="))) {
+				return true
+			}
+		case a == "--mount" || strings.HasPrefix(a, "--mount="):
+			spec := strings.TrimPrefix(a, "--mount=")
+			if a == "--mount" && i+1 < len(rest) {
+				spec = rest[i+1]
+			}
+			if strings.Contains(spec, "type=bind") {
+				for _, f := range strings.Split(spec, ",") {
+					if v, ok := strings.CutPrefix(f, "src="); ok && outside(v) {
+						return true
+					}
+					if v, ok := strings.CutPrefix(f, "source="); ok && outside(v) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }

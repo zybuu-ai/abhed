@@ -239,10 +239,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 410 drift cases the rules judge
-  stops all 409 a mode let through (the 410th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 535 drift cases the rules judge
+  stops all 534 a mode let through (the 535th, the destructive step, policy
   already asks about), and it
-  refuses none of its 203 benign controls (it asks about 10: six whose working
+  refuses none of its 257 benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
