@@ -105,6 +105,7 @@ type Sink struct {
 	// doubling to maxBackoff; retryAt is when, and before it nothing is.
 	backoff time.Duration
 	retryAt time.Time
+	failing map[string]bool // sessions whose last try failed
 }
 
 // The wait after a failed write: from minBackoff, doubling, to maxBackoff.
@@ -119,8 +120,11 @@ var (
 func (s *Sink) retry(ids []string, err error) {
 	s.fail(err)
 	s.mu.Lock()
+	if s.failing == nil {
+		s.failing = map[string]bool{}
+	}
 	for _, id := range ids {
-		s.behind[id] = true
+		s.behind[id], s.failing[id] = true, true
 	}
 	s.backoff = min(max(s.backoff*2, minBackoff), maxBackoff)
 	s.retryAt = time.Now().Add(s.backoff)
@@ -129,10 +133,24 @@ func (s *Sink) retry(ids []string, err error) {
 	time.AfterFunc(wait, s.poke)
 }
 
-// written ends a backoff: the file takes lines again.
-func (s *Sink) written() {
+// written ends a backoff once no session's last try failed: one session
+// written while another still fails ends none.
+func (s *Sink) written(ids []string) {
 	s.mu.Lock()
-	s.backoff, s.retryAt = 0, time.Time{}
+	for _, id := range ids {
+		delete(s.failing, id)
+	}
+	if len(s.failing) == 0 {
+		s.backoff, s.retryAt = 0, time.Time{}
+	}
+	s.mu.Unlock()
+}
+
+// standby notes that another process writes, so the next lock this one
+// gets starts with a full scan and forgets what it remembered.
+func (s *Sink) standby() {
+	s.mu.Lock()
+	s.writer = false
 	s.mu.Unlock()
 }
 
@@ -357,7 +375,10 @@ func (s *Sink) catchUp() {
 	s.behind = map[string]bool{}
 	s.mu.Unlock()
 	sort.Strings(ids)
-	for _, id := range ids {
+	// The sessions that fail wait one backoff step together; the rest go on.
+	var failed []string
+	var failure error
+	for i, id := range ids {
 		if s.o.Read == nil {
 			continue
 		}
@@ -365,24 +386,26 @@ func (s *Sink) catchUp() {
 		if errors.Is(err, ErrStandby) {
 			return
 		}
-		if err != nil {
-			s.retry([]string{id}, err)
-			continue
-		}
-		lines, err := s.o.Read(id, cur)
-		if err != nil {
-			s.retry([]string{id}, fmt.Errorf("ocsf: read session %s: %w", id, err))
-			continue
-		}
-		if !s.write(lines, true) && s.waiting() {
-			// The rest wait out the backoff too.
-			s.mu.Lock()
-			for _, rest := range ids {
-				s.behind[rest] = true
+		if err == nil {
+			var lines []Line
+			if lines, err = s.o.Read(id, cur); err == nil {
+				if !s.write(lines, true) && s.waiting() {
+					// The file failed: the rest wait out the backoff too.
+					s.mu.Lock()
+					for _, rest := range append(failed, ids[i:]...) {
+						s.behind[rest] = true
+					}
+					s.mu.Unlock()
+					return
+				}
+				continue
 			}
-			s.mu.Unlock()
-			return
+			err = fmt.Errorf("ocsf: read session %s: %w", id, err)
 		}
+		failed, failure = append(failed, id), err
+	}
+	if len(failed) > 0 {
+		s.retry(failed, failure)
 	}
 	// Drained here too, so a close writes what was still queued.
 	var rest []Line
@@ -403,6 +426,9 @@ func (s *Sink) catchUp() {
 
 func (s *Sink) cursorOf(id string) (Cursor, error) {
 	unlock, err := s.o.Cursors.Lock()
+	if errors.Is(err, ErrStandby) {
+		s.standby()
+	}
 	if err != nil {
 		return Cursor{}, err
 	}
@@ -445,6 +471,7 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 	}
 	unlock, err := s.o.Cursors.Lock()
 	if errors.Is(err, ErrStandby) {
+		s.standby()
 		return false
 	}
 	if err != nil {
@@ -525,7 +552,7 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 		s.retry(names, err)
 		return false
 	}
-	s.written()
+	s.written(names)
 	return true
 }
 
@@ -533,11 +560,13 @@ func (s *Sink) write(lines []Line, fromRecord bool) bool {
 // the provider the cursor kept, or, once for a cursor that never kept one,
 // what the record's lines before it say.
 func (s *Sink) prime(id string, c Cursor, seq int64) Cursor {
-	if _, ok := s.mapper.provider[id]; ok {
-		return c
-	}
+	// The cursor's provider is what the lines up to it said, whoever wrote
+	// them: another sink may have written some since this one remembered.
 	if c.Provider != "" {
 		s.mapper.provider[id] = c.Provider
+		return c
+	}
+	if _, ok := s.mapper.provider[id]; ok {
 		return c
 	}
 	if c.Primed || seq <= 1 || s.o.Read == nil {

@@ -104,7 +104,8 @@ func (s *Server) sandboxEventsOCSF(w http.ResponseWriter, r *http.Request, items
 	if err != nil {
 		// Without its links a row's metadata.uid would not be the one it has
 		// when they are read, and a reader would take it as a new event.
-		writeCPError(w, http.StatusServiceUnavailable, "unavailable", "the audit chain's links could not be read: "+err.Error())
+		s.log.Error("ocsf: the audit chain's links could not be read", "err", err)
+		writeCPError(w, http.StatusServiceUnavailable, "unavailable", "the audit chain's links could not be read")
 		return
 	}
 	out := make([]ocsf.Event, 0, len(items))

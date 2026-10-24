@@ -450,3 +450,16 @@ func TestGoldenAudit(t *testing.T) {
 	}
 	golden(t, "testdata/golden-audit.jsonl", buf.Bytes())
 }
+
+// A fence refusal that names no call still reads as one sentence.
+func TestFenceDeniedWithNoCalls(t *testing.T) {
+	l := sampleLines()[0]
+	l.Type, l.Payload = "fence.denied", []byte(`{"call_id":"c-1","sandbox":"f-1","source":"seccomp","calls":{}}`)
+	ev, _, _ := NewMapper(testOpts).Map(l)
+	if m := ev["message"].(string); strings.Contains(m, "  ") || m != "fence refused system calls for c-1" {
+		t.Fatalf("message %q", m)
+	}
+	if err := Validate(ev); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -375,7 +375,8 @@ All notable changes to Abhed are recorded here. The format follows
   messages, model calls, calls, decisions and results; File System, Process,
   Network, HTTP and SSH Activity; Device Config State Change for modes,
   rules, policy layers and refused settings; Detection Finding for the
-  supervisor's and the answer checker's verdicts and planted state; and
+  supervisor's and the answer checker's verdicts, the fence's refused system
+  calls (`fence.denied`, Denied and Blocked) and planted state; and
   Application Lifecycle for sessions and subagents. Each event is derived
   from one chained line and keeps that line's seq, id, chain links and
   payload, so the line can be rebuilt from it and its hash checked; it holds

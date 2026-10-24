@@ -617,9 +617,17 @@ func mapFenceDenied(b *builder) {
 	if total > 0 {
 		b.set("count", total)
 	}
+	what := strings.Join(names, ", ")
+	if what == "" {
+		what = "system calls"
+	}
 	info := b.ev["finding_info"].(map[string]any)
-	info["desc"] = b.str("source") + " refused " + strings.Join(names, ", ")
-	b.set("message", "fence refused "+strings.Join(names, ", ")+" for "+b.str("call_id"))
+	info["desc"] = strings.TrimSpace(b.str("source") + " refused " + what)
+	msg := "fence refused " + what
+	if c := b.str("call_id"); c != "" {
+		msg += " for " + c
+	}
+	b.set("message", msg)
 }
 
 func mapMonitor(b *builder) {
