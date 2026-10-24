@@ -125,7 +125,7 @@ func TestOCSFCommitPos(t *testing.T) {
 		t.Fatalf("a later place was not saved: %q", got)
 	}
 	// A stored place that cannot be read counts as older: the next save replaces it.
-	for _, bad := range []string{"garbage", "1/2", "99999999999999999999999/1/1/s", "x/1/1/s"} {
+	for _, bad := range []string{"garbage", "1/2", "99999999999999999999999/1/1/s", "99999999999999999999/1/1/s", "x/1/1/s"} {
 		if _, err := p.pool.Exec(context.Background(), `UPDATE ocsf_cursors SET commit_pos = $2 WHERE sink = $1 AND session_id = ''`, w.sink, bad); err != nil {
 			t.Fatal(err)
 		}

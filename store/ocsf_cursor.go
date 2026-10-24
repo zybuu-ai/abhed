@@ -182,21 +182,24 @@ func (w *OCSFWriter) SavePos(pos string) error {
 		return err
 	}
 	// A stored place that cannot be read counts as older and is replaced, so
-	// it cannot stop the writer saving for good; it is logged.
+	// it cannot stop the writer saving for good; it is logged once replaced.
 	var stored string
+	var unreadable error
 	if err := w.p.pool.QueryRow(ctx, `SELECT commit_pos FROM ocsf_cursors WHERE sink = $1 AND session_id = ''`, w.sink).Scan(&stored); err == nil && stored != "" {
-		if _, perr := ParseCommitPos(stored); perr != nil {
-			w.p.logger().Warn("OCSF cursor: the saved place cannot be read and is replaced", "sink", w.sink, "error", perr)
-		}
+		_, unreadable = ParseCommitPos(stored)
 	}
-	_, err = w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)
+	tag, err := w.p.pool.Exec(ctx, `INSERT INTO ocsf_cursors (tenant_id, sink, session_id, seq, commit_pos)
 		VALUES ($1, $2, '', 0, $3)
 		ON CONFLICT (tenant_id, sink, session_id) DO UPDATE SET commit_pos = EXCLUDED.commit_pos, updated_at = now()
 		WHERE CASE WHEN ocsf_cursors.commit_pos !~ '^[0-9]{1,20}/-?[0-9]{1,18}/-?[0-9]{1,18}/' THEN true
+		      WHEN split_part(ocsf_cursors.commit_pos, '/', 1)::numeric > 18446744073709551615 THEN true
 		      ELSE (split_part(ocsf_cursors.commit_pos, '/', 1)::numeric, split_part(ocsf_cursors.commit_pos, '/', 2)::bigint,
 		            regexp_replace(ocsf_cursors.commit_pos, '^([^/]*/){3}', ''), split_part(ocsf_cursors.commit_pos, '/', 3)::bigint)
 		           < ($4::numeric, $5::bigint, $6::text, $7::bigint) END`,
 		w.p.tenant, w.sink, pos, strconv.FormatUint(c.Tx, 10), c.At.UnixMicro(), c.Session, c.Seq)
+	if err == nil && unreadable != nil && tag.RowsAffected() > 0 {
+		w.p.logger().Warn("OCSF cursor: the saved place could not be read and was replaced", "sink", w.sink, "error", unreadable)
+	}
 	return err
 }
 
