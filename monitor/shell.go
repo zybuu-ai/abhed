@@ -34,6 +34,9 @@ type script struct {
 	funcs map[string]bool
 	// setsPath is set when the line changes PATH, so which program runs is unknown.
 	setsPath bool
+	// mentionsHome is set when HOME appears anywhere in the line, which could
+	// write it; ~ is then not placed against the session's home.
+	mentionsHome bool
 }
 
 // parseScript reads a shell line, starting at the script's own directory.
@@ -48,7 +51,7 @@ func parseScriptAt(src, start string) (script, bool) {
 	if err != nil {
 		return script{}, false
 	}
-	s := script{funcs: map[string]bool{}}
+	s := script{funcs: map[string]bool{}, mentionsHome: strings.Contains(src, "HOME")}
 	collect(src, f, &s)
 	dirs := chainDirs(f, start)
 	for i := range s.cmds {
@@ -142,6 +145,13 @@ func chainDirs(f *syntax.File, start string) map[*syntax.CallExpr]dirInfo {
 			out[call] = dirInfo{dir: dir, known: known, vars: snap}
 			noteVars(call, vars)
 		}
+		// A leaf the check cannot read in full — any expansion in its words
+		// or assignments, such as ${CDPATH:=/} — may write a variable cd or a
+		// later target reads, so the directory and the literals end here.
+		if !readLeaf(leaf) {
+			known = false
+			clear(vars)
+		}
 		if known {
 			dir, known = stepDir(leaf, dir)
 		}
@@ -159,7 +169,7 @@ func noteVars(call *syntax.CallExpr, vars map[string]string) {
 		if a.Name == nil {
 			continue
 		}
-		if a.Value != nil && a.Index == nil && a.Array == nil {
+		if a.Value != nil && a.Index == nil && a.Array == nil && !a.Append { // X+=… depends on X
 			if v, ok := plainWord(a.Value); ok {
 				vars[a.Name.Value] = v
 				continue
@@ -220,9 +230,15 @@ func init() {
 // stepDir is the directory after one leaf of the chain, and whether it is
 // still known.
 func stepDir(leaf *syntax.Stmt, dir string) (string, bool) {
+	if decl, ok := leaf.Cmd.(*syntax.DeclClause); ok {
+		if plainExport(decl) {
+			return dir, true
+		}
+		return dir, false // declare, local, readonly, typeset, or export with options: may write by name
+	}
 	call, ok := leaf.Cmd.(*syntax.CallExpr)
 	if !ok {
-		return dir, false // export, declare, local, readonly, typeset: may write a directory variable by name
+		return dir, false
 	}
 	for _, a := range call.Assigns {
 		if a.Name != nil && dirVars[a.Name.Value] {
@@ -239,6 +255,12 @@ func stepDir(leaf *syntax.Stmt, dir string) (string, bool) {
 	base := path.Base(head)
 	if head == "cd" {
 		return plainCd(dir, call.Args[1:])
+	}
+	if base == "set" {
+		if harmlessSet(call.Args[1:]) {
+			return dir, true
+		}
+		return dir, false
 	}
 	if bashBuiltins[base] {
 		if !harmlessBuiltins[base] || base == "printf" && printfSetsVar(call.Args[1:]) {
@@ -265,14 +287,115 @@ func stepDir(leaf *syntax.Stmt, dir string) (string, bool) {
 	return dir, true // an external command does not move the shell
 }
 
-// printfSetsVar reports printf -v, which writes a variable by name.
+// printfSetsVar reports a printf that may write a variable by name: a plain
+// -v, or any argument the check cannot read plainly ('-v', \-v, an expansion).
 func printfSetsVar(args []*syntax.Word) bool {
 	for _, w := range args {
-		if v, ok := plainWord(w); ok && (v == "-v" || strings.HasPrefix(v, "-v")) {
+		v, ok := plainWord(w)
+		if !ok || v == "-v" || strings.HasPrefix(v, "-v") {
 			return true
 		}
 	}
 	return false
+}
+
+// readLeaf reports a chain leaf the check reads in full: every word and
+// assignment value made of literal text only, with no expansion of any kind
+// (parameter, command, arithmetic, process substitution) and no array or
+// index assignment.
+func readLeaf(leaf *syntax.Stmt) bool {
+	var assigns []*syntax.Assign
+	var words []*syntax.Word
+	switch x := leaf.Cmd.(type) {
+	case *syntax.CallExpr:
+		assigns, words = x.Assigns, x.Args
+	case *syntax.DeclClause:
+		assigns = x.Args
+	default:
+		return false
+	}
+	for _, a := range assigns {
+		if a.Index != nil || a.Array != nil {
+			return false
+		}
+		if a.Value != nil {
+			words = append(words, a.Value)
+		}
+	}
+	for _, w := range words {
+		if !literalText(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// literalText reports a word with no expansion: literal, single- or
+// double-quoted text only.
+func literalText(w *syntax.Word) bool {
+	for _, p := range w.Parts {
+		switch x := p.(type) {
+		case *syntax.Lit, *syntax.SglQuoted:
+		case *syntax.DblQuoted:
+			for _, q := range x.Parts {
+				if _, ok := q.(*syntax.Lit); !ok {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// plainExport reports `export NAME=literal …` with no options, each name
+// outside the directory variables and each value a plain literal.
+func plainExport(d *syntax.DeclClause) bool {
+	if d.Variant == nil || d.Variant.Value != "export" || len(d.Args) == 0 {
+		return false
+	}
+	for _, a := range d.Args {
+		if a.Name == nil || dirVars[a.Name.Value] || a.Append || a.Index != nil || a.Array != nil {
+			return false // an option (-n, -f) parses as a nameless assignment
+		}
+		if a.Value != nil {
+			if _, ok := plainWord(a.Value); !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// safeSet are the set options that change nothing a cd or command name depends on.
+var safeSet = map[string]bool{"pipefail": true, "errexit": true, "nounset": true, "xtrace": true}
+
+// harmlessSet reports `set -e`, `-u`, `-x`, combined (`-eu`, `-eux`), and
+// `-o pipefail|errexit|nounset|xtrace`, all plain; anything else (`set --`,
+// positional parameters, other options) is not.
+func harmlessSet(args []*syntax.Word) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, w := range args {
+		v, ok := plainWord(w)
+		if !ok {
+			return false
+		}
+		if safeSet[v] {
+			continue
+		}
+		if !strings.HasPrefix(v, "-") || v == "-" || v == "--" {
+			return false
+		}
+		for _, r := range v[1:] {
+			if r != 'e' && r != 'u' && r != 'x' && r != 'o' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // plainWord is a word that is a single plain literal — letters, digits and
@@ -451,6 +574,22 @@ func (c command) program() (string, []string) {
 		}
 	}
 	return "", nil
+}
+
+// plainProgram reports whether the program a command resolves to, past any
+// wrappers, is a single plain literal word; a command with no call (a bare
+// redirection) is plain.
+func (c command) plainProgram() bool {
+	prog, rest := c.program()
+	if prog == "" || c.call == nil {
+		return true
+	}
+	i := len(c.words) - len(rest) - 1
+	if i < 0 || i >= len(c.call.Args) {
+		return false
+	}
+	_, ok := plainWord(c.call.Args[i])
+	return ok
 }
 
 // operands are the words that are not flags.

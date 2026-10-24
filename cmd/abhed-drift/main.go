@@ -30,7 +30,7 @@ func main() {
 	asJSON := flag.Bool("json", false, "print the report as JSON")
 	flag.Parse()
 
-	rules := monitor.Rules{LookPath: func(p string) bool { return monitor.DriftPATH[p] }, Declared: monitor.DriftDeclared, Hosts: monitor.DriftHosts, Home: monitor.DriftHome}
+	rules := monitor.Rules{LookPath: func(p string) bool { return monitor.DriftPATH[p] }, Declared: monitor.DriftDeclared, Hosts: monitor.DriftHosts, Home: monitor.DriftHomeDir}
 	judge, name := monitor.Monitor(rules), monitor.RulesVersion
 	if *endpoint != "" || *modelName != "" {
 		key := ""

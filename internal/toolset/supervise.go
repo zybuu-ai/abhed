@@ -22,9 +22,9 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 		return nil
 	}
 	look := hostLookPath(reg)
-	var home string
-	if look != nil { // commands run on this machine's own files, so ~ is its home
-		home, _ = os.UserHomeDir()
+	var home func() (string, bool)
+	if look != nil { // commands run on this machine's files: ~ is the HOME they get (the fence's temp home on that tier)
+		home = tools.CommandHome(reg)
 	}
 	var judge monitor.Monitor = monitor.Rules{LookPath: look, Declared: declared(cfg), Hosts: sshHosts(cfg), Home: home}
 	if m.Judge == "model" {
