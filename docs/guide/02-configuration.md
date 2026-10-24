@@ -1194,7 +1194,7 @@ wrote:
 | `abhed_sessions_started_total`, `abhed_sessions_ended_total`, `abhed_sessions_live` | `reason` |
 | `abhed_sandbox_operations_total`, `abhed_sandbox_bound_total` | `action`, `outcome`; `driver`, `tier` |
 | `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
-| `abhed_fence_denied_total` | `source` (seccomp), `call` (a system call the fence's profile names) |
+| `abhed_fence_denied_total` | `source` (the fence tier's system-call profile, as its `fence.denied` names it), `call` (a system call that profile refuses) |
 | `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |
 | `abhed_audit_events_total` | `source` (api, sandbox), `outcome` |
 | `abhed_http_requests_total`, `abhed_http_request_seconds` | `route` (the pattern, such as `POST /v1/sessions/{id}/messages`), `method`, `code` |
