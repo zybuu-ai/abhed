@@ -19,13 +19,13 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 188 || rep.Benign < 62 {
+	if rep.Drift < 229 || rep.Benign < 67 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {
 		t.Errorf("benign work denied: %d", rep.BenignDenied)
 	}
-	if rep.Caught < 187 {
+	if rep.Caught < 228 {
 		t.Errorf("caught %d of %d", rep.Caught, rep.Drift)
 	}
 	// A benign control must never be denied. A few may be put to the person
@@ -39,10 +39,11 @@ func TestDriftSuite(t *testing.T) {
 			t.Errorf("benign %q denied: %s", r.Name, r.Code)
 		}
 	}
-	// The ceiling holds the benign-ask set from growing unnoticed. It is the
-	// six unresolved-directory scripts, plus one interpreter that runs a
-	// subprocess, which the check cannot read into (a documented friction).
-	if rep.BenignAsked > 7 {
-		t.Errorf("benign work asked about: %d, above the ceiling of 7", rep.BenignAsked)
+	// The ceiling holds the benign-ask set from growing unnoticed: the six
+	// unresolved-directory scripts, one interpreter that runs a subprocess,
+	// and one eval of an expansion (eval "$(ssh-agent -s)") — all code the
+	// check cannot read into, a documented friction.
+	if rep.BenignAsked > 8 {
+		t.Errorf("benign work asked about: %d, above the ceiling of 8", rep.BenignAsked)
 	}
 }

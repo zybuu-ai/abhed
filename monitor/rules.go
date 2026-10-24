@@ -406,15 +406,23 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 				Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, display(eff, t), where, remit(c)),
 				Advice:    "keep destructive commands to the paths the task names, or ask the person first"}
 		}
-		// Code the command hands to a shell, to eval or to an interpreter — a
-		// -c argument, eval's operands, a one-liner, or text on stdin — is not
-		// read as a command line. A destructive target the check could place
-		// was judged above; what is left is code it cannot read, which is
-		// asked about when it looks like it deletes or shells out.
-		for _, code := range handsOffCode(prog, args, cmd.stdin) {
-			if codeLooksDestructive(code) {
+		// An interpreter one-liner's literal-path deletes were judged above by
+		// destroys; here its shell-outs and the deleter names it spells.
+		if code := oneLiner(prog, args); code != "" {
+			if deleterWord.MatchString(code) || shellsOut.MatchString(code) || mentionsProtectedRoot(code) {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
-					Rationale: fmt.Sprintf("%s runs code the check does not read, which looks like it deletes or shells out; %s", prog, remit(c)),
+					Rationale: fmt.Sprintf("%s runs code the check does not read, which names a deleter, a protected folder or a shell-out; %s", prog, remit(c)),
+					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+			}
+		}
+		// Code the command hands to a shell, to eval, or on the stdin of a shell
+		// or interpreter is parsed and run through these rules with the
+		// directory unknown; any non-allow there is an ask here, since the check
+		// cannot be sure where it runs.
+		for _, code := range handedShellCode(prog, args, cmd.stdin) {
+			if r.codeDestructive(code, 0) {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("%s runs code the check reads only in part, which looks like it deletes or shells out; %s", prog, remit(c)),
 					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
 			}
 		}
@@ -437,7 +445,7 @@ func (r Rules) drift(k *given, c Case) *Verdict {
 	// string, a here-document, an extra argument, an assignment value — names
 	// a deleting program or a protected root is put to the person. The precise
 	// rules above decide every line the check reads completely.
-	if !lineFullyRead(s) && lineMentionsDanger(src) {
+	if !r.lineFullyRead(s) && lineMentionsDanger(s) {
 		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
 			Rationale: fmt.Sprintf("the line runs something the check does not read in full, and it names a deleting program or a protected folder; %s", remit(c)),
 			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
@@ -538,7 +546,7 @@ func looksDestructive(words []string) bool {
 // read; one among a hidden command's words makes it look destructive.
 var codeRunners = map[string]bool{"node": true, "perl": true, "ruby": true, "php": true, "bash": true, "sh": true,
 	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true,
-	"lua": true, "Rscript": true, "tclsh": true, "osascript": true, "mawk": true, "nawk": true}
+	"lua": true, "Rscript": true, "tclsh": true, "osascript": true, "mawk": true, "nawk": true, "julia": true}
 
 // strayOperand reports, for a command the check does not read as a command
 // line, an operand that climbs out of or lies outside own ground: an absolute
@@ -698,6 +706,34 @@ func destroys(prog string, args []string) []string {
 		return out
 	case "mkfs", "wipefs", "fdisk", "sfdisk", "parted":
 		return operands(args)
+	case "mv":
+		// mv removes its sources from where they were; every operand but the
+		// last is a source. (The last, the destination, is judged by the
+		// unverified-target rule.)
+		ops := operands(args)
+		if len(ops) > 1 {
+			return ops[:len(ops)-1]
+		}
+	case "rsync":
+		// rsync --delete removes, from the destination, whatever is not in the
+		// source, so the destination (the last operand) is at risk.
+		if hasFlag(args, "--delete") || hasFlag(args, "--del") || hasFlag(args, "--delete-after") ||
+			hasFlag(args, "--delete-before") || hasFlag(args, "--delete-during") || hasFlag(args, "--delete-excluded") {
+			if ops := operands(args); len(ops) > 0 {
+				return ops[len(ops)-1:]
+			}
+		}
+	case "git":
+		// git clean removes untracked files from the tree it runs in; -C names
+		// that tree, else it is the working directory.
+		if hasWord(args, "clean") && (hasFlag(args, "-f") || hasFlag(args, "--force") || hasPrefix(args, "-f") || hasPrefix(args, "-d")) {
+			for i, a := range args {
+				if a == "-C" && i+1 < len(args) {
+					return []string{args[i+1]}
+				}
+			}
+			return []string{"."}
+		}
 	}
 	if strings.HasPrefix(prog, "mkfs.") {
 		return operands(args)
@@ -729,69 +765,171 @@ var shellsOut = regexp.MustCompile(`(?i)\bdo\s+shell\s+script\b|\bsubprocess\b|\
 	`\bos\.(?:system|popen|execv?p?e?|spawn[a-z]*|execute)\s*\(|\bio\.popen\s*\(|\bexecSync\s*\(|\bspawnSync\s*\(|` +
 	`\bsystem\s*[("']|\bfile\s+delete\b`)
 
-// codeLooksDestructive reports a string of code — handed to a shell, to eval,
-// or to an interpreter — that names a deleting program or a protected root, or
-// shells out. It does not count the reader itself (python3, xargs, a shell)
-// as destructive: only what the code would delete or run.
-func codeLooksDestructive(code string) bool {
-	// A deleting program named as a word, or a shell-out, cannot be placed.
-	// A codeDeletes match with a literal path is left to destroys, which
-	// judges that path, so it is not an ask here.
-	if deleterWord.MatchString(code) || shellsOut.MatchString(code) {
+// codeDestructive reports a string of code — handed to a shell, to eval, or on
+// an interpreter's stdin — that would delete or run something the check cannot
+// place. It parses the code and runs these rules over each command with the
+// directory unknown, and scans the text for a deleter, a shell-out or a
+// protected root, bounded against code that hands off code in turn.
+func (r Rules) codeDestructive(code string, depth int) bool {
+	if deleterWord.MatchString(code) || shellsOut.MatchString(code) ||
+		codeDeletes.MatchString(code) || mentionsProtectedRoot(code) {
 		return true
 	}
-	return mentionsProtectedRoot(code)
-}
-
-// mentionsProtectedRoot reports text that names a protected root as a path.
-func mentionsProtectedRoot(text string) bool {
-	for _, m := range userPaths.FindAllStringSubmatch(text, -1) {
-		if protectedRoot(strings.TrimRight(strings.Trim(m[1], `"'`), ".,;:)")) {
+	if depth >= 4 {
+		return false
+	}
+	s, ok := parseScript(code)
+	if !ok {
+		return false // unparseable handed code: the text scans above are the check
+	}
+	for _, cmd := range s.cmds {
+		p, a := cmd.program()
+		p = progBase(p)
+		if len(destroys(p, a)) > 0 || runsUnreadCode(cmd, p, a) {
+			return true
+		}
+		for _, inner := range handedShellCode(p, a, cmd.stdin) {
+			if r.codeDestructive(inner, depth+1) {
+				return true
+			}
+		}
+		if ic := oneLiner(p, a); ic != "" && (deleterWord.MatchString(ic) || shellsOut.MatchString(ic) || mentionsProtectedRoot(ic)) {
 			return true
 		}
 	}
 	return false
 }
 
-// lineMentionsDanger reports a line whose text, anywhere — a quoted string, a
-// here-document, an extra argument, an assignment value — names a deleting
-// program as a word or a protected root. It reads the raw text, so it does
-// not depend on finding where code is handed.
-func lineMentionsDanger(src string) bool {
-	return deleterWord.MatchString(src) || mentionsProtectedRoot(src)
-}
-
-// codeHandler reports a program that runs other code or commands it is given:
-// a shell, an interpreter, eval, source, ., or xargs.
-func codeHandler(prog string) bool {
-	return shellNames[prog] || codeRunners[prog] || strings.HasPrefix(prog, "python") ||
-		prog == "eval" || prog == "source" || prog == "."
-}
-
-// lineFullyRead reports a line in which nothing hides code from the check:
-// every command's name and program is a plain literal, run through no wrapper
-// option, and none hands code to another to run (a shell, an interpreter,
-// eval, source, ., xargs). A non-literal argument does not hide code — a
-// command inside $(…) is collected and judged on its own, and a $ target is
-// asked about by the precise rules — so it does not by itself make a line
-// unread. The precise rules decide a fully read line; any other falls to the
-// conservative fallback.
-func lineFullyRead(s script) bool {
-	for _, cmd := range s.cmds {
-		if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
-			return false
+// mentionsProtectedRoot reports text that names a protected root as a path,
+// leaving out the temporary folders, which are the session's own ground.
+func mentionsProtectedRoot(text string) bool {
+	for _, m := range userPaths.FindAllStringSubmatch(text, -1) {
+		p := strings.TrimRight(strings.Trim(m[1], `"'`), ".,;:)")
+		if protectedRoot(p) && !scratch(path.Clean(homeTilde(p))) {
+			return true
 		}
-		if prog, _ := cmd.program(); codeHandler(path.Base(prog)) {
+	}
+	return false
+}
+
+// progBase is a program's base name with quotes and escapes removed, so
+// /bin/rm, m and 'rm' all read as rm.
+func progBase(prog string) string {
+	return path.Base(strings.ReplaceAll(strings.Trim(prog, `"'`), `\`, ""))
+}
+
+// lineMentionsDanger reports a line that names a deleting program as a word or
+// a protected root anywhere the person's text reaches: a parsed word, an
+// assignment value, a here-document body. It reads the parsed words, not the
+// raw source, so a comment or a script's file name does not count.
+func lineMentionsDanger(s script) bool {
+	for _, cmd := range s.cmds {
+		for _, w := range commandText(cmd) {
+			if deleterWord.MatchString(w) || mentionsProtectedRoot(w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// commandText is every piece of a command's text the person wrote: its words,
+// its assignment values, and anything on its stdin.
+func commandText(cmd command) []string {
+	out := append([]string(nil), cmd.words...)
+	out = append(out, cmd.stdin...)
+	out = append(out, cmd.assigns...)
+	return out
+}
+
+// lineFullyRead reports a line the check reads completely, so the precise
+// rules decide it and the fallback need not. It is an allowlist, not a
+// denylist of known handlers: a command is read completely only when it
+// neither hands nor runs code the rules did not see, and its program is one
+// the rules judge or carries no deleter, shell or interpreter among its words.
+// Any other command — an unknown program that may run its arguments, a shell
+// given code, a here-document — leaves the line to the fallback.
+func (r Rules) lineFullyRead(s script) bool {
+	for _, cmd := range s.cmds {
+		if !r.cmdFullyRead(cmd) {
 			return false
 		}
 	}
 	return true
 }
 
+// cmdFullyRead reports one command read completely by the precise rules.
+func (r Rules) cmdFullyRead(cmd command) bool {
+	if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+		return false
+	}
+	if len(cmd.stdin) > 0 || readsStdinFile(cmd) || cmd.readsPipe {
+		return false // its stdin is text or piped code the line does not fully show
+	}
+	prog, args := cmd.program()
+	base := progBase(prog)
+	if len(handsOffCode(base, args, cmd.stdin)) > 0 || runsUnreadCode(cmd, base, args) {
+		return false // it hands or runs code
+	}
+	switch {
+	case printerProg[base]:
+		return true // only prints or searches its arguments
+	case base == "git" && !hasFlag(args, "-c") && !hasFlag(args, "--config") && !hasFlag(args, "-C"):
+		return true // a git subcommand; git -c/-C may inject, so those fall through
+	case destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") || base == "kubectl":
+		return true // the precise rules judge it
+	}
+	// An unknown program may run its arguments as a command. It is read
+	// completely only when no word of it names a deleter, shell or interpreter.
+	for _, w := range args {
+		if wordRunsCode(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// readsStdinFile reports a command given /dev/stdin or - to read.
+func readsStdinFile(cmd command) bool {
+	for _, w := range cmd.words {
+		if w == "/dev/stdin" || w == "/proc/self/fd/0" {
+			return true
+		}
+	}
+	for _, r := range cmd.reads {
+		if r == "/dev/stdin" || r == "-" || strings.Contains(r, "<(") {
+			return true
+		}
+	}
+	return false
+}
+
+// wordRunsCode reports an argument that could make an unknown program run a
+// deleter: a word that is exactly a deleter, shell or interpreter name, or a
+// multi-token string (a quoted command) that names a deleter or protected root.
+func wordRunsCode(w string) bool {
+	u := strings.ReplaceAll(w, `\`, "")
+	if strings.ContainsAny(u, " \t\n") {
+		return deleterWord.MatchString(u) || mentionsProtectedRoot(u)
+	}
+	name := progBase(u)
+	return destroyerNames[name] || shellNames[name] || codeRunners[name] || strings.HasPrefix(name, "python")
+}
+
+// printerProg only prints or searches its arguments; it does not run them.
+var printerProg = map[string]bool{"echo": true, "printf": true, "grep": true, "egrep": true, "fgrep": true,
+	"man": true, "which": true, "type": true, "cat": true, "head": true, "tail": true, "wc": true, "ls": true}
+
 // runsUnreadCode reports a command whose code the check cannot read at all,
 // because it is built when the line runs: eval of an expansion, a shell's -c
 // given an expansion, or a shell, source or . reading a process substitution.
 func runsUnreadCode(cmd command, prog string, args []string) bool {
+	// A shell or interpreter reading its script from a process substitution,
+	// whether as the operand or redirected onto stdin (bash < <(…)), runs
+	// code the line does not show.
+	if (shellNames[prog] || readsStdinCode(prog) || prog == "source" || prog == ".") && readsProcSubst(cmd, args) {
+		return true
+	}
 	switch {
 	case prog == "eval":
 		return !cmd.literal
@@ -799,9 +937,23 @@ func runsUnreadCode(cmd command, prog string, args []string) bool {
 		if code, hasC := shellDashC(args); hasC && strings.HasPrefix(code, "$") {
 			return true // -c given $(…) or $X
 		}
-		return firstOperandIsProcSubst(args)
-	case prog == "source" || prog == ".":
-		return firstOperandIsProcSubst(args)
+	case codeRunners[prog] || strings.HasPrefix(prog, "python"):
+		// An interpreter whose code is an expansion is unread, as -c "$X" is.
+		return strings.HasPrefix(oneLiner(prog, args), "$")
+	}
+	return false
+}
+
+// readsProcSubst reports a process substitution as the first operand, or
+// redirected onto stdin.
+func readsProcSubst(cmd command, args []string) bool {
+	if firstOperandIsProcSubst(args) {
+		return true
+	}
+	for _, rd := range cmd.reads {
+		if strings.Contains(rd, "<(") {
+			return true
+		}
 	}
 	return false
 }
@@ -815,16 +967,24 @@ func firstOperandIsProcSubst(args []string) bool {
 	return false
 }
 
-// handsOffCode gathers the strings a command hands to another to run as code:
-// a shell's -c argument, eval's operands, an interpreter's one-liner, and the
-// text on the stdin of a shell, an interpreter, or source/. reading stdin. The
-// check cannot judge where such code's targets point, so a destructive-looking
-// one is put to the person.
+// handsOffCode gathers every string a command hands to another to run as code:
+// an interpreter's one-liner, a shell's -c argument, eval's operands, and the
+// text on the stdin of a shell, an interpreter, or source/. reading stdin.
+// cmdFullyRead uses it only to tell whether a command hands off code at all.
 func handsOffCode(prog string, args, stdin []string) []string {
-	var out []string
+	out := handedShellCode(prog, args, stdin)
 	if code := oneLiner(prog, args); code != "" {
 		out = append(out, code)
 	}
+	return out
+}
+
+// handedShellCode is the code a command hands to a shell or to eval, and the
+// text on the stdin of a shell or interpreter — the strings parsed and fully
+// judged. It leaves out an interpreter's one-liner, whose literal-path deletes
+// destroys judges by path.
+func handedShellCode(prog string, args, stdin []string) []string {
+	var out []string
 	if shellNames[prog] {
 		if code, _ := shellDashC(args); code != "" {
 			out = append(out, code)
@@ -889,7 +1049,8 @@ func readsStdinCode(prog string) bool {
 
 // shellNames are the shells among codeRunners, which run their argument or
 // stdin as commands.
-var shellNames = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true, "busybox": true}
+var shellNames = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true,
+	"busybox": true, "ash": true, "mksh": true, "yash": true, "posh": true, "tcsh": true, "csh": true, "su": true}
 
 // awkNames are the awk family, whose first operand is its program.
 var awkNames = map[string]bool{"awk": true, "gawk": true, "mawk": true, "nawk": true}
