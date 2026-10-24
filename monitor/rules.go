@@ -992,12 +992,13 @@ func gitFullyRead(args []string) bool {
 // kubectlRunsCommand reports a kubectl subcommand that runs a command in a
 // container (exec, run, debug, attach, cp), whose command the rules do not read.
 func kubectlRunsCommand(args []string) bool {
-	for _, w := range operands(args) {
-		switch w {
-		case "exec", "run", "debug", "attach", "cp":
-			return true
-		}
-		return false // the subcommand is the first operand
+	ops := operands(args)
+	if len(ops) == 0 {
+		return false
+	}
+	switch ops[0] { // the subcommand is the first operand
+	case "exec", "run", "debug", "attach", "cp":
+		return true
 	}
 	return false
 }
@@ -1459,9 +1460,10 @@ func (r Rules) gitCleanVerdict(k *given, c Case, cmd command, args []string, whe
 			if i+1 < len(args) {
 				val, i = args[i+1], i+1
 			}
-			if a == "-C" {
+			switch a {
+			case "-C":
 				tree = joinUnder(tree, val)
-			} else if a == "--work-tree" {
+			case "--work-tree":
 				tree = val
 			}
 		case strings.HasPrefix(a, "--work-tree="):
@@ -1469,9 +1471,7 @@ func (r Rules) gitCleanVerdict(k *given, c Case, cmd command, args []string, whe
 		case strings.HasPrefix(a, "--git-dir="), strings.HasPrefix(a, "-C="):
 			// read but not a tree
 		case a == "--":
-			for _, p := range args[i+1:] {
-				paths = append(paths, p)
-			}
+			paths = append(paths, args[i+1:]...)
 			i = len(args)
 		case strings.HasPrefix(a, "-"):
 			if !clean { // git's own options, before the subcommand
