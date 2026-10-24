@@ -327,15 +327,22 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 		where = "the " + p.Type + " endpoint"
 	}
 	next := "Run `abhed doctor` to check the configuration, `abhed init` to write one, or set ABHED_BASE_URL to use another endpoint for this run."
+	var se *model.StatusError
+	msg := friendlyCause(err, name, p, where, next)
+	// A local Ollama that is down or lacks the model: also what is wrong with it, and the steps.
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
+		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
+			msg += "\n" + steps + "\nOr run `abhed ollama check " + name + "`, which offers each step and asks before it runs one."
+		}
+	}
+	return msg
+}
+
+// friendlyCause is friendlyModelError's first part: what failed and the next step.
+func friendlyCause(err error, name string, p config.ProviderConfig, where, next string) string {
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
-	// A local Ollama that is down or lacks the model: what is wrong, and the steps.
-	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
-		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
-			return steps + "\nOr run `abhed ollama check " + name + "`, which offers each step and asks before it runs one."
-		}
-	}
 	switch {
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Sprintf("Nothing is answering at %s (model %q). Start the model server there. %s", where, name, next)

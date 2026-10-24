@@ -150,15 +150,28 @@ func (e Env) Check(ctx context.Context, t Target) Status {
 		st.Installed = st.Binary != "" || st.App != ""
 	}
 	ver, err := e.version(ctx, t)
+	// A server that does not answer Ollama's own /api/version but serves
+	// the OpenAI API Ollama also serves (/v1/models) is taken as running:
+	// a proxy in front of Ollama, or a stand-in, is not "something else".
+	var openAI []string
+	openAIErr := errors.New("not asked")
+	if err != nil && !refused(err) {
+		openAI, openAIErr = e.openAIModels(ctx, t)
+	}
 	switch {
 	case err == nil:
 		st.Running, st.Version = true, ver
+	case openAIErr == nil:
+		st.Running = true
 	case t.Loopback && !refused(err):
 		// Something answered at the port, but not as Ollama does.
 		st.PortBusy = e.listening(ctx, t)
 	}
 	if st.Running && t.Model != "" {
 		models, err := e.tags(ctx, t)
+		if err != nil && openAIErr == nil {
+			models, err = openAI, nil
+		}
 		st.Pulled = err == nil && hasModel(models, t.Model)
 	}
 	st.Ready = st.Running && (st.Pulled || t.Model == "")
@@ -252,6 +265,25 @@ func (e Env) tags(ctx context.Context, t Target) ([]string, error) {
 	var out []string
 	for _, m := range body.Models {
 		out = append(out, m.Name, m.Model)
+	}
+	return out, nil
+}
+
+// openAIModels lists the models of the OpenAI API at the target, /v1/models.
+func (e Env) openAIModels(ctx context.Context, t Target) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := e.getJSON(ctx, t.API+"/v1/models", &body); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(body.Data))
+	for _, d := range body.Data {
+		out = append(out, d.ID)
 	}
 	return out, nil
 }

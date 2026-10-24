@@ -16,7 +16,7 @@ func TestFriendlyModelErrorForAnOllamaModel(t *testing.T) {
 	refused := fmt.Errorf("Post %q: %w", f.url+"/v1/chat/completions",
 		&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})
 	got := friendlyModelError(refused, "olm", f.provider())
-	for _, want := range []string{"installed but not running", "1. OLLAMA_HOST=127.0.0.1:", "ollama pull qwen3:8b", "abhed ollama check olm"} {
+	for _, want := range []string{"Nothing is answering at " + f.url + "/v1", "installed but not running", "1. OLLAMA_HOST=127.0.0.1:", "ollama pull qwen3:8b", "abhed ollama check olm"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lacks %q:\n%s", want, got)
 		}

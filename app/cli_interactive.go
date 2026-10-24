@@ -57,9 +57,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is
 	// named now; one still being dialled is left to the first task.
-	// A model a local Ollama serves is checked below, with what it lacks offered.
+	// A model a local Ollama serves is also checked below, with what it lacks offered.
 	_, viaOllama := toolset.OllamaTarget(appCfg, appCfg.Model.Default)
-	if err := start.probe.firstResult(100 * time.Millisecond); err != nil && !viaOllama {
+	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
 		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
 	}
 

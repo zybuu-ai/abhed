@@ -40,9 +40,12 @@ func (t Target) Default() bool { return t.Loopback && t.Port == DefaultPort }
 
 // Resolve says whether a provider of type typ at base, for model, is served
 // by Ollama, and where. It is when the type is ollama, or when an
-// OpenAI-compatible base is on Ollama's port or is the address OLLAMA_HOST
-// names. A base that cannot be parsed is not a target.
-func Resolve(provider, typ, base, model, defaultBase, ollamaHost string) (Target, bool) {
+// OpenAI-compatible base is on Ollama's own port, 11434. Any other
+// OpenAI-compatible endpoint is not taken for Ollama, whatever OLLAMA_HOST
+// says: a server that is down there gets the plain "nothing is answering",
+// not an offer to start or install Ollama. A base that cannot be parsed is
+// not a target.
+func Resolve(provider, typ, base, model, defaultBase string) (Target, bool) {
 	typ = strings.ToLower(strings.TrimSpace(typ))
 	if base == "" && typ == "ollama" {
 		base = defaultBase
@@ -58,7 +61,7 @@ func Resolve(provider, typ, base, model, defaultBase, ollamaHost string) (Target
 	switch typ {
 	case "ollama":
 	case "openai-compatible", "openai":
-		if port != DefaultPort && !sameHost(u, ollamaHost) {
+		if port != DefaultPort {
 			return Target{}, false
 		}
 	default:
@@ -67,30 +70,6 @@ func Resolve(provider, typ, base, model, defaultBase, ollamaHost string) (Target
 	api := u.Scheme + "://" + u.Host
 	host := u.Hostname()
 	return Target{Provider: provider, Model: strings.TrimSpace(model), API: api, Host: host, Port: port, Loopback: loopback(host)}, true
-}
-
-// sameHost reports whether u is the address OLLAMA_HOST names.
-func sameHost(u *url.URL, ollamaHost string) bool {
-	h := strings.TrimSpace(ollamaHost)
-	if h == "" {
-		return false
-	}
-	if !strings.Contains(h, "://") {
-		h = "http://" + h
-	}
-	o, err := url.Parse(h)
-	if err != nil || o.Host == "" {
-		return false
-	}
-	op := o.Port()
-	if op == "" {
-		op = DefaultPort
-	}
-	up := u.Port()
-	if up == "" {
-		up = map[string]string{"http": "80", "https": "443"}[u.Scheme]
-	}
-	return strings.EqualFold(o.Hostname(), u.Hostname()) && op == up
 }
 
 // loopback reports whether host is this machine.

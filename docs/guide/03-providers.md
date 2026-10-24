@@ -160,8 +160,12 @@ and HawkEYE name the model in use.
 When the model you choose is one a local [Ollama](https://ollama.com) serves,
 Abhed checks that it works before you rely on it, and gets it working with
 you. A provider counts as Ollama's when its `type` is `ollama`, or when an
-`openai-compatible` (or `openai`) `base_url` is on port 11434 or at the
-address `OLLAMA_HOST` names.
+`openai-compatible` (or `openai`) `base_url` is on port 11434. Any other
+OpenAI-compatible endpoint is not taken for Ollama, even at the address
+`OLLAMA_HOST` names: one that is down is named as down, with no offer. Give
+an Ollama on another port `"type": "ollama"`. A server there that answers
+the OpenAI API (`/v1/models`) but not Ollama's `/api/version`, such as a
+proxy in front of Ollama, counts as running.
 
 **When it checks.** At the start of an interactive `abhed` whose model is
 Ollama's, on `/model <name>`, with `/ollama`, with `abhed ollama check`, in

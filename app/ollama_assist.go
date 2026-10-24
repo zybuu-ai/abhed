@@ -348,7 +348,7 @@ func slashOllama(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 // ollamaSteps is the message and manual steps for an Ollama model that
 // failed, or "" when the provider is not one or is ready. It only reads.
 func ollamaSteps(ctx context.Context, name string, p config.ProviderConfig) string {
-	t, ok := ollama.Resolve(name, p.Type, p.BaseURL, p.Model, defaults.OllamaURL, os.Getenv("OLLAMA_HOST"))
+	t, ok := ollama.Resolve(name, p.Type, p.BaseURL, p.Model, defaults.OllamaURL)
 	if !ok {
 		return ""
 	}
