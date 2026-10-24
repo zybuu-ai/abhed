@@ -339,16 +339,18 @@ func TestRuntimeRoleThatCanMarkPreChainRowsIsRefused(t *testing.T) {
 	}
 	role := pgx.Identifier{rc.User}.Sanitize()
 	ctx := context.Background()
-	for _, priv := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE"} {
-		if _, err := owner.pool.Exec(ctx, `GRANT `+priv+` ON chain_pre TO `+role); err != nil {
+	// Column grants too: a table-level check misses them.
+	for _, g := range []struct{ grant, name string }{{"INSERT", "INSERT"}, {"UPDATE", "UPDATE"}, {"DELETE", "DELETE"},
+		{"TRUNCATE", "TRUNCATE"}, {"INSERT (pre_rows)", "INSERT"}, {"UPDATE (pre_rows)", "UPDATE"}} {
+		if _, err := owner.pool.Exec(ctx, `GRANT `+g.grant+` ON chain_pre TO `+role); err != nil {
 			t.Fatal(err)
 		}
 		_, err := Open(ctx, DefaultConfig(rt))
-		if _, rerr := owner.pool.Exec(ctx, `REVOKE `+priv+` ON chain_pre FROM `+role); rerr != nil {
+		if _, rerr := owner.pool.Exec(ctx, `REVOKE `+g.grant+` ON chain_pre FROM `+role); rerr != nil {
 			t.Fatal(rerr)
 		}
-		if err == nil || !strings.Contains(err.Error(), "holds "+priv+" on chain_pre") {
-			t.Errorf("a runtime role holding %s on chain_pre: %v", priv, err)
+		if err == nil || !strings.Contains(err.Error(), "holds "+g.name+" on chain_pre") {
+			t.Errorf("a runtime role granted %s on chain_pre: %v", g.grant, err)
 		}
 	}
 	if p, err := Open(ctx, DefaultConfig(rt)); err != nil {
