@@ -507,6 +507,9 @@ func readsPipedCode(call *syntax.CallExpr) bool {
 	}
 	prog, rest := (command{words: words}).program()
 	base := path.Base(prog)
+	if sqlClient[base] {
+		return true // a SQL client reads its piped stdin as a query
+	}
 	if !readsStdinCode(base) {
 		return false
 	}

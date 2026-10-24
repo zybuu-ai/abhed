@@ -239,10 +239,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 636 drift cases the rules judge
-  stops all 635 a mode let through (the 636th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 727 drift cases the rules judge
+  stops all 726 a mode let through (the 727th, the destructive step, policy
   already asks about), and it
-  refuses none of its 283 genuinely everyday benign controls (it asks about 10: six whose working
+  refuses none of its 334 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
@@ -261,7 +261,14 @@ All notable changes to Abhed are recorded here. The format follows
   volumes, all or --all, scale to zero, drain, cordon, forced or production
   patch, apply --prune; oc delete project; helm uninstall) are asked by the
   supervisor and the destructive step, and deleting an unnamed namespace or
-  every namespace, or a helm uninstall in an unnamed namespace, is denied. The
+  every namespace, or a helm uninstall in an unnamed namespace, is denied. Dropping a data store (SQL DROP/TRUNCATE/unbounded DELETE, dropdb,
+  redis-cli FLUSH*, Mongo dropDatabase) and tearing down infrastructure
+  (terraform/tofu/pulumi destroy, gcloud/az/aws/doctl/hcloud deletes) are
+  asked by both layers; a comma-joined kubectl/oc kind list is read kind by
+  kind; and the destructive-step patterns match per simple command. Swarm
+  stack/service removal, a forced swarm leave and container/network prunes
+  are asked by both layers, and the supervisor also asks for remote branch
+  deletes and force pushes to main, master, release* and prod*. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an

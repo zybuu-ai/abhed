@@ -207,21 +207,55 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\bgit\s+branch\s+-D\b`), "force branch delete"},
 	{regexp.MustCompile(`\bunlink\s+\S`), "delete via unlink"},
 	{regexp.MustCompile(`\brmdir\b.*\s(?:-[a-zA-Z]*p[a-zA-Z]*|--parents?)\b`), "delete parent folders (rmdir -p)"},
-	// Container and cluster operations that discard data or capacity with no
-	// undo: daemon prunes and resets, volume deletion, removing every image,
-	// forced image removal, and deleting namespaces, volumes or whole kinds.
+}
+
+// segmentPatterns are matched against each simple command of a line on its
+// own (the line split on ;, &, |, ( and )), so a word from one command never
+// completes a match begun in another. They cover the operations with no undo
+// on containers, clusters, data stores and cloud infrastructure.
+var segmentPatterns = []struct {
+	re   *regexp.Regexp
+	what string
+}{
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bsystem\s+(?:prune|reset)\b`), "container system prune/reset"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bvolume\s+(?:rm|remove|prune)\b`), "container volume delete"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:container|network)\s+prune\b`), "prune containers or networks"},
+	{regexp.MustCompile(`\b(?:docker|podman)\b.*\b(?:stack|service)\s+(?:rm|remove)\b`), "remove a swarm stack or service"},
+	{regexp.MustCompile(`\b(?:docker|podman)\b.*\bswarm\s+leave\b.*(?:\s-f\b|\s--force\b)`), "force a node out of the swarm"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bimage\s+prune\b.*(?:\s-[a-zA-Z]*a|\s--all\b)`), "remove all container images"},
 	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:rmi|image\s+(?:rm|remove))\b.*(?:\s-[a-zA-Z]*f|\s--force\b)`), "forced image removal"},
-	{regexp.MustCompile(`\bkubectl\b.*\bdelete\b.*\s(?:ns|namespaces?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all)(?:[\s/,]|$)`), "cluster delete of namespaces, volumes or every resource"},
-	{regexp.MustCompile(`\bkubectl\b.*\bdelete\b.*\s(?:--all\b|--all-namespaces\b|-A\b)`), "cluster delete across all resources or namespaces"},
-	{regexp.MustCompile(`\bkubectl\b.*\bscale\b.*--replicas[=\s]+0\b`), "scale a workload to zero"},
-	{regexp.MustCompile(`\bkubectl\b.*\s(?:drain|cordon)\b`), "drain or cordon a node"},
-	{regexp.MustCompile(`\bkubectl\b.*(?:\s(?:patch|replace)\b.*(?:--force\b|finalizers|prod)|prod.*\s(?:patch|replace)\b)`), "forced or production patch/replace"},
-	{regexp.MustCompile(`\bkubectl\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
-	{regexp.MustCompile(`\boc\b.*\sdelete\s+(?:.*\s)?(?:projects?|ns|namespaces?)(?:[\s/,]|$)`), "delete an OpenShift project"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bdelete\b.*[\s,](?:ns|namespaces?|projects?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all|crds?|customresourcedefinitions?|storageclass(?:es)?|sc|clusterroles?|clusterrolebindings?)(?:[\s/,.]|$)`), "cluster delete of namespaces, volumes, definitions or every resource"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bdelete\b.*\s(?:--all\b|--all-namespaces\b|-A\b)`), "cluster delete across all resources or namespaces"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bscale\b.*--replicas[=\s]+0\b`), "scale a workload to zero"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\s(?:drain|cordon)\b`), "drain or cordon a node"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\s(?:patch|replace)\b.*(?:--force\b|finalizers)`), "forced patch/replace"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b(?:.*(?:-n|--namespace|--context|-l|--selector)[=\s]+(?:[\w.]*[-_.=])?prod(?:uction)?(?:[-_.,][\w.,=-]*)?\b.*\s(?:patch|replace)\b|.*\s(?:patch|replace)\b.*(?:-n|--namespace|--context|-l|--selector)[=\s]+(?:[\w.]*[-_.=])?prod(?:uction)?(?:[-_.,][\w.,=-]*)?\b)`), "production patch/replace"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
 	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
+	// Data stores: dropping or emptying a database, schema or table, flushing a
+	// cache, or dropping a Mongo database.
+	{regexp.MustCompile(`(?i)\b(?:psql|mysql|mariadb|sqlite3|sqlcmd|clickhouse-client|cockroach|duckdb|cqlsh)\b.*\b(?:drop\s+(?:database|schema|table|keyspace)|truncate\b|delete\s+from\s+\w+\s*(?:;|$|['"]))`), "drop or empty a database or table"},
+	{regexp.MustCompile(`\b(?:dropdb|dropuser)\b`), "drop a database"},
+	{regexp.MustCompile(`(?i)\bmysqladmin\b.*\bdrop\b`), "drop a database"},
+	{regexp.MustCompile(`(?i)\bredis-cli\b.*\bflush(?:all|db)\b`), "flush a Redis store"},
+	{regexp.MustCompile(`(?i)\b(?:mongosh|mongo)\b.*\b(?:dropDatabase|\.drop\(\))`), "drop a Mongo database or collection"},
+	// Infrastructure teardown.
+	{regexp.MustCompile(`\b(?:terraform|tofu)\b.*\s(?:destroy\b|apply\b.*\s-destroy\b|state\s+rm\b)`), "destroy infrastructure"},
+	{regexp.MustCompile(`\bpulumi\b.*\s(?:destroy|down)\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy)\b`), "delete cloud resources"},
+	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|ec2\s+terminate-instances\b|rds\s+delete-db-(?:instance|cluster)\b|cloudformation\s+delete-stack\b|dynamodb\s+delete-table\b|eks\s+delete-cluster\b)`), "delete cloud resources"},
+}
+
+// segmentDestructive reports a segment pattern matching one simple command.
+func segmentDestructive(command string) (string, bool) {
+	for _, part := range strings.Split(rmBreaks.Replace(command), "\n") {
+		for _, d := range segmentPatterns {
+			if d.re.MatchString(part) {
+				return d.what, true
+			}
+		}
+	}
+	return "", false
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless
@@ -316,6 +350,14 @@ func destructiveText(command string, gitExtensions map[string]bool) (string, boo
 	}
 	if rmForced(command) {
 		return "recursive/forced delete", true
+	}
+	if what, ok := segmentDestructive(command); ok {
+		return what, true
+	}
+	if folded != command {
+		if what, ok := segmentDestructive(folded); ok {
+			return what, true
+		}
 	}
 	return gitDestructive(command, gitExtensions)
 }
