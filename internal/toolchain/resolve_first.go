@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -200,6 +201,9 @@ func (s *Source) resolvePython(ctx context.Context, want string, p Platform) (Ar
 		return Artifact{}, err
 	}
 	name := best.URL[strings.LastIndex(best.URL, "/")+1:]
+	if un, err := url.PathUnescape(name); err == nil {
+		name = un // the list names python+build, the URL python%2Bbuild
+	}
 	sum, ok := sumFor(sums, name)
 	if !ok {
 		return Artifact{}, fmt.Errorf("SHA256SUMS of release %s does not list %s", rel.Tag, name)

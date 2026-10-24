@@ -177,7 +177,7 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 	in := Installed{Lang: a.Lang, Version: a.Version, Platform: a.Platform.String(), URL: a.URL, Digest: a.Digest,
 		Bytes: n, InstalledAt: time.Now().UTC()}
 	if fix, ok := postInstall[a.Lang]; ok {
-		if err := fix(top, a); err != nil {
+		if top, err = fix(top, a); err != nil {
 			return Installed{}, err
 		}
 	}
@@ -202,7 +202,8 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 }
 
 // postInstall finishes a language's unpacked tree before it is moved in place.
-var postInstall = map[string]func(dir string, a Artifact) error{}
+// It returns the directory that becomes the toolchain.
+var postInstall = map[string]func(dir string, a Artifact) (string, error){}
 
 // Remove deletes an installed toolchain.
 func (c Cache) Remove(p Platform, lang, version string) error {
