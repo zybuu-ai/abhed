@@ -117,3 +117,35 @@ func TestTerminalGetsTheToolchains(t *testing.T) {
 		t.Fatalf("no note for a missing program, or not 127:\n%s", got)
 	}
 }
+
+// A deny or ask rule on a language holds for that language with its
+// debugger, in every mode; an allow for the language alone does not cover
+// the debugger.
+func TestToolchainRulesHoldWithTheDebugger(t *testing.T) {
+	for _, lang := range []string{"go", "python"} {
+		plain := json.RawMessage(`{"name":"` + lang + `@3.12"}`)
+		dbg := json.RawMessage(`{"name":"` + lang + `+debugger@3.12","debugger":true}`)
+		deny := policy.New(policy.ModeDefault)
+		_ = deny.AddAllow(toolchain.ToolName)
+		_ = deny.AddDeny(toolchain.ToolName + "(" + lang + "@*)")
+		for _, a := range []json.RawMessage{plain, dbg} {
+			if d := deny.Evaluate(toolchain.ToolName, true, a); d.Decision != policy.Deny {
+				t.Errorf("%s: deny %s@* with auto: %s %+v", lang, lang, a, d)
+			}
+		}
+		ask := policy.New(policy.ModeDefault)
+		_ = ask.AddAllow(toolchain.ToolName)
+		_ = ask.AddAsk(toolchain.ToolName + "(" + lang + "@*)")
+		if d := ask.Evaluate(toolchain.ToolName, true, dbg); d.Decision != policy.Ask {
+			t.Errorf("%s: ask rule with the debugger: %+v", lang, d)
+		}
+		allow := policy.New(policy.ModeDefault)
+		_ = allow.AddAllow(toolchain.ToolName + "(" + lang + "@*)")
+		if d := allow.Evaluate(toolchain.ToolName, true, plain); d.Decision != policy.Allow {
+			t.Errorf("%s: allow %s@*: %+v", lang, lang, d)
+		}
+		if d := allow.Evaluate(toolchain.ToolName, true, dbg); d.Decision != policy.Ask {
+			t.Errorf("%s: an allow for the language covered its debugger: %+v", lang, d)
+		}
+	}
+}
