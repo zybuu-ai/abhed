@@ -17,7 +17,7 @@ import (
 var Steps = []string{
 	"hook", "deny", "destructive", "screen", "ask", "mode", "allow", "default", "monitor",
 	"handover", "plan", "precheck", "unknown", "withheld", "owner", "args", "unanswered",
-	"interrupted", "attachment", "state",
+	"interrupted", "attachment", "state", "workspace",
 }
 
 // ToolchainOutcomes are how a toolchain install ended.

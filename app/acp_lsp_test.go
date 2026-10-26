@@ -91,9 +91,15 @@ func fakeLSP(t *testing.T, root string, env ...string) *[]string {
 	lspCommand = func(_ tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
 		asked = append(asked, command)
 		c := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLSPFakeServer$") // #nosec G204 -- the test binary
-		if os.Getenv("ABHED_FAKE_LSP_TS") != "" {
+		if ts := os.Getenv("ABHED_FAKE_LSP_TS"); ts != "" {
 			// As the real script does for typescript-language-server: name the TypeScript beside it.
-			c = exec.CommandContext(ctx, "/bin/sh", "-c", `echo "`+lsprelay.TSServerMarker+`/opt/ts/lib/tsserver.js" >&2; exec "$0" -test.run='^TestLSPFakeServer$'`, os.Args[0]) // #nosec G204 -- the test binary
+			if ts == "1" {
+				ts = "/opt/ts/lib/tsserver.js"
+			}
+			c = exec.CommandContext(ctx, "/bin/sh", "-c", `echo "`+lsprelay.TSServerMarker+ts+`" >&2; exec "$0" -test.run='^TestLSPFakeServer$'`, os.Args[0]) // #nosec G204 -- the test binary
+		}
+		if os.Getenv("ABHED_FAKE_LSP_EXIT") != "" {
+			c = exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1") // #nosec G204 -- a test's own script
 		}
 		c.Env = append(append(os.Environ(), "ABHED_FAKE_LSP=1", "ABHED_FAKE_LSP_ROOT="+root), env...)
 		c.Dir = cwd
@@ -312,7 +318,7 @@ func TestStudioLanguageServerSafeSettings(t *testing.T) {
 	if !strings.Contains(string(topts), `"tsserver":{"path":"/opt/ts/lib/tsserver.js"}`) {
 		t.Fatalf("typescript initializationOptions %s", topts)
 	}
-	if len(*asked) != 1 || !strings.Contains((*asked)[0], "require.resolve(\"typescript/lib/tsserver.js\"") {
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "lib/node_modules/typescript-language-server") {
 		t.Fatalf("command %v", *asked)
 	}
 	ts.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": tres.LSPID}, nil)
@@ -410,4 +416,110 @@ func TestStudioLanguageServerRestartWindowAndClose(t *testing.T) {
 	if len(stopped) != 2 || stopped[1]["reason"] != "closed" {
 		t.Fatalf("lsp.stopped %v", stopped)
 	}
+}
+
+// typescript-language-server is never initialized without the pin: no name
+// in time, a start that exits first, or a name under the workspace, each
+// end the start as server-missing, without a long wait for the second.
+func TestStudioTypeScriptStartFailsClosed(t *testing.T) {
+	old := lspTSWait
+	lspTSWait = 400 * time.Millisecond
+	t.Cleanup(func() { lspTSWait = old })
+	for _, c := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"no name", nil, "TypeScript"},
+		{"exits first", []string{"ABHED_FAKE_LSP_EXIT=1"}, "TypeScript"},
+		{"in the workspace", []string{"WS"}, "workspace or a home folder"},
+	} {
+		r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+		env := c.env
+		if len(env) == 1 && env[0] == "WS" {
+			env = []string{"ABHED_FAKE_LSP_TS=" + r.ws + "/node_modules/typescript/lib/tsserver.js"}
+		}
+		for _, e := range env {
+			k, v, _ := strings.Cut(e, "=")
+			t.Setenv(k, v)
+		}
+		fakeLSP(t, r.ws, env...)
+		id := r.open()
+		began := time.Now()
+		m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "typescript"})
+		if m.Error == nil || !strings.Contains(m.Error.Message, c.want) || !strings.Contains(fmt.Sprint(m.Error.Data), "server-missing") {
+			t.Fatalf("%s: %+v %s", c.name, m.Error, m.Result)
+		}
+		if c.name == "exits first" && time.Since(began) > 5*time.Second {
+			t.Fatalf("a start that exited took %v to report", time.Since(began))
+		}
+		for _, e := range env {
+			k, _, _ := strings.Cut(e, "=")
+			_ = os.Unsetenv(k)
+		}
+	}
+}
+
+// A workspace rust-analyzer.toml overrides the engine's settings: the start
+// is put to the person, told so; Allow starts it, Deny or no answer does
+// not. Without one, nobody is asked.
+func TestStudioRustAnalyzerConfigAsksThePerson(t *testing.T) {
+	for _, c := range []struct {
+		answer string
+		ok     bool
+	}{{"once:", true}, {"reject:", false}, {"", false}} {
+		r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+		asked := fakeLSP(t, r.ws)
+		r.write("crates/a/rust-analyzer.toml", "[cargo.buildScripts]\nenable = true\n")
+		id := r.open()
+		var reasons []string
+		r.cl.answering(func(method string, params json.RawMessage) any {
+			if method != "session/request_permission" {
+				return map[string]any{}
+			}
+			var p struct {
+				ToolCall struct {
+					ToolCallID string                    `json:"toolCallId"`
+					Meta       map[string]map[string]any `json:"_meta"`
+				} `json:"toolCall"`
+			}
+			_ = json.Unmarshal(params, &p)
+			reasons = append(reasons, fmt.Sprint(p.ToolCall.Meta[acpMetaKey]["reason"], " step=", p.ToolCall.Meta[acpMetaKey]["step"]))
+			if c.answer == "" {
+				return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+			}
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": c.answer + p.ToolCall.ToolCallID}}
+		})
+		params := map[string]any{"sessionId": id, "language": "rust"}
+		if c.ok {
+			var res struct {
+				LSPID string `json:"lspId"`
+			}
+			r.cl.ok("_abhed/lsp/start", params, &res)
+			r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
+		} else {
+			r.cl.refused(errPolicy, "_abhed/lsp/start", params)
+		}
+		if len(reasons) != 1 || !strings.Contains(reasons[0], "crates/a/rust-analyzer.toml") || !strings.Contains(reasons[0], "build scripts") || !strings.Contains(reasons[0], "step=workspace") {
+			t.Fatalf("%q: asked %v", c.answer, reasons)
+		}
+		if (len(*asked) == 1) != c.ok {
+			t.Fatalf("%q: started %v", c.answer, *asked)
+		}
+		reqs, _ := r.recorded(id, agent.EvActionRequested)
+		if len(reqs) == 0 || !strings.Contains(fmt.Sprint(reqs[len(reqs)-1]["reason"]), "rust-analyzer.toml") {
+			t.Fatalf("not recorded with its reason: %v", reqs)
+		}
+	}
+	r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+	asked := fakeLSP(t, r.ws)
+	id := r.open()
+	var res struct {
+		LSPID string `json:"lspId"`
+	}
+	r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "rust"}, &res)
+	if len(*asked) != 1 {
+		t.Fatal("a rust start with no rust-analyzer.toml did not start")
+	}
+	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
 }

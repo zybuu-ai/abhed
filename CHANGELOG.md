@@ -164,18 +164,25 @@ All notable changes to Abhed are recorded here. The format follows
   and recorded as your bash call (a supervisor's question goes to you as a
   permission request); the engine initializes it with its own settings,
   which turn off rust-analyzer's build scripts, proc macros and check on
-  save and pin typescript-language-server to its own TypeScript, and the
-  guide says what each server may still run in the sandbox. Only standard
+  save and pin typescript-language-server to the TypeScript installed
+  beside it (looked for only in the server's own install, never the home
+  folder, `NODE_PATH` or the workspace; without one the start fails), and
+  the guide says what each server may still run in the sandbox. A workspace
+  `rust-analyzer.toml`, which would override those settings, makes
+  rust-analyzer's start a question to you in Studio (no answer is no). Only standard
   LSP methods pass from Studio (rust-analyzer's own methods that run cargo
   are refused), as do no settings changes, no commands that could run
   programs, and no file URIs outside the session's folders or in `.abhed`,
   links followed; the server's requests to open a page or edit an outside
-  file are answered by the engine. A crashed server is restarted with a
+  file are answered by the engine, and from its notifications and answers
+  each item naming an outside file is dropped. A crashed server is restarted with a
   backoff. Starts and ends are recorded as `lsp.started` and `lsp.stopped`,
   with message counts, and counted in the metrics. The workbench's editor
   shares the same relay: what its page sends a server is now kept to the
-  session's folders the same way; what the server sends the page is not
-  filtered there ([Language servers](docs/guide/33-language-servers.md)).
+  session's folders the same way, and its servers get the same settings
+  (rust-analyzer does not start there when a workspace `rust-analyzer.toml`
+  would override them); what the server sends the page is not filtered
+  there ([Language servers](docs/guide/33-language-servers.md)).
 - The Linux helper: releases ship `abhed-helper-linux-<arch>` beside the
   `abhed` binary (in each archive and as a bare download), with its sha256
   pinned into the binary. Where the container engine is in a VM or

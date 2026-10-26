@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,10 +37,15 @@ type lspRun struct {
 	root         string
 	// roots are the session's folders: the workspace, its added folders
 	// and skill folders, any of which the editor may have open.
-	roots   []string
-	cancel  context.CancelFunc
-	stdin   io.WriteCloser
-	writeMu sync.Mutex
+	roots []string
+	// options and settings are the engine's settings for the server
+	// (lsprelay.SafeSettings): its initializationOptions, and its answers to
+	// workspace/configuration, which the engine gives it itself.
+	options  json.RawMessage
+	settings map[string]json.RawMessage
+	cancel   context.CancelFunc
+	stdin    io.WriteCloser
+	writeMu  sync.Mutex
 
 	mu       sync.Mutex
 	subs     map[*lspSub]struct{}
@@ -82,12 +89,12 @@ const lspCapabilities = `{"textDocument":{"hover":{"contentFormat":["markdown","
 // lspAllowed returns, rebuilt, the page's message that may reach the server:
 // one of lspMethods, or a null answer to the server's own request.
 func lspAllowed(body []byte, root string) ([]byte, bool) {
-	return lspAllowedIn(body, root, []string{root})
+	return lspAllowedIn(body, root, []string{root}, nil)
 }
 
 // lspAllowedIn is lspAllowed with the session's folders as the roots a file
 // may be in.
-func lspAllowedIn(body []byte, root string, roots []string) ([]byte, bool) {
+func lspAllowedIn(body []byte, root string, roots []string, options json.RawMessage) ([]byte, bool) {
 	// Read by exact keys, as the server reads it: a key twice, or but for case, is refused.
 	if lsprelay.UniqueKeys(body) != nil {
 		return nil, false
@@ -113,7 +120,7 @@ func lspAllowedIn(body []byte, root string, roots []string) ([]byte, bool) {
 		case "initialize":
 			// initializationOptions and the like can set a server's environment
 			// or tools, so the server is told only the workspace and capabilities.
-			m["params"] = lsprelay.InitParams(root, json.RawMessage(lspCapabilities), nil)
+			m["params"] = lsprelay.InitParams(root, json.RawMessage(lspCapabilities), options)
 		case "initialized":
 			m["params"] = json.RawMessage(`{}`)
 		}
@@ -187,6 +194,14 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A workspace rust-analyzer.toml overrides the engine's settings, and
+	// the workbench has no one to ask on the spot, so the start is refused.
+	if req.Language == "rust" {
+		if files := lsprelay.RustAnalyzerConfigs(sess.PolicyRoots()); len(files) > 0 {
+			WriteError(w, http.StatusConflict, "not started: "+lsprelay.RustAnalyzerConfigWhy(files)+"; start it from Abhed Studio, which asks you, or remove the file")
+			return
+		}
+	}
 	id := "u" + newSessionID()
 	command := lsprelay.CommandLine(argv)
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + req.Language + " in the workbench editor, run with " + strings.TrimSpace(lsprelay.Env)})
@@ -207,11 +222,12 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
-	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Env+command)
+	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Script(argv))
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
-	cmd.Stderr = &limitedWriter{w: &stderr, n: 16 << 10}
+	tsLine := make(chan string, 1)
+	cmd.Stderr = &lsprelay.MarkerWriter{W: &limitedWriter{w: &stderr, n: 16 << 10}, Marker: lsprelay.TSServerMarker, Found: tsLine}
 	// Unstarted, the command closes neither pipe itself.
 	closePipes := func() {
 		if stdin != nil {
@@ -227,7 +243,9 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusInternalServerError, "the language server could not be started: "+err.Error())
 		return
 	}
+	options, settings := lsprelay.SafeSettings(req.Language, "")
 	run := &lspRun{id: id, language: req.Language, root: sess.Root, roots: sess.PolicyRoots(), cancel: cancel, stdin: stdin,
+		options: options, settings: settings,
 		subs: map[*lspSub]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
 	// Listed before it starts, so a session closing from here on waits for its end.
 	live.mu.Lock()
@@ -278,6 +296,24 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		// Only now: closing the session waits on done for this end to be recorded.
 		close(run.done)
 	}()
+	// typescript-language-server gets the TypeScript beside it, or does not
+	// run: without the pin it would take the workspace's own.
+	if filepath.Base(argv[0]) == "typescript-language-server" {
+		var ts string
+		select {
+		case ts = <-tsLine:
+		case <-run.done:
+		case <-time.After(lspTSWait):
+		}
+		home, _ := os.UserHomeDir()
+		if ts == "" || lsprelay.WithinAny(ts, append(append([]string{}, run.roots...), home)) {
+			cancel()
+			<-run.done
+			WriteError(w, http.StatusConflict, "typescript-language-server was not started: no TypeScript installed beside it outside the workspace and home folders, and the workspace's own is not used")
+			return
+		}
+		run.options, _ = lsprelay.SafeSettings(req.Language, ts)
+	}
 	WriteJSON(w, http.StatusOK, lspStartResponse{ID: id, Root: sess.Root})
 }
 
@@ -289,6 +325,14 @@ func (l *lspRun) read(out io.Reader) {
 		if err != nil {
 			l.cancel()
 			return
+		}
+		// The server's settings are the engine's: it is answered here, and
+		// the page never sees the question.
+		if answer := l.configurationAnswer(msg); answer != nil {
+			l.writeMu.Lock()
+			_ = lsprelay.Write(l.stdin, answer)
+			l.writeMu.Unlock()
+			continue
 		}
 		l.mu.Lock()
 		for sub := range l.subs {
@@ -306,6 +350,28 @@ func (l *lspRun) read(out io.Reader) {
 		l.mu.Unlock()
 	}
 }
+
+// configurationAnswer is the engine's answer to a workspace/configuration
+// request in msg, or nil when msg is not one.
+func (l *lspRun) configurationAnswer(msg []byte) []byte {
+	if !bytes.Contains(msg, []byte("workspace/configuration")) {
+		return nil
+	}
+	var m struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if lsprelay.UniqueKeys(msg) != nil || json.Unmarshal(msg, &m) != nil || m.Method != "workspace/configuration" || len(m.ID) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": lsprelay.Configuration(l.settings, m.Params)})
+	return b
+}
+
+// lspTSWait bounds the wait for typescript-language-server's start to name
+// the TypeScript beside it; tests shorten it.
+var lspTSWait = 15 * time.Second
 
 // drop ends a reader that has fallen behind: a message lost would leave the
 // page waiting on an answer, and one kept would grow without bound. Under l.mu.
@@ -342,7 +408,7 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the message is not JSON")
 		return
 	}
-	body, ok = lspAllowedIn(body, run.root, run.roots)
+	body, ok = lspAllowedIn(body, run.root, run.roots, run.options)
 	if !ok {
 		WriteError(w, http.StatusForbidden, "the workbench sends a language server only editor requests")
 		return

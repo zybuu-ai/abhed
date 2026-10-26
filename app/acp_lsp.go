@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -62,10 +63,11 @@ const (
 	lspStopGrace   = 3 * time.Second
 	lspMaxRestarts = 5
 	exitNoServer   = lsprelay.ExitNoServer
-	// lspTSWait bounds the wait for the start script to name the TypeScript
-	// beside typescript-language-server.
-	lspTSWait = 15 * time.Second
 )
+
+// lspTSWait bounds the wait for the start script to name the TypeScript
+// beside typescript-language-server; tests shorten it.
+var lspTSWait = 15 * time.Second
 
 // lspCommand starts the server command in the session's sandbox; tests
 // replace it, and lspTier, with their own.
@@ -217,7 +219,15 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " +
 		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language)})
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
-	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args, c.manualAsk(s, callID, "lsp", command))
+	// A workspace rust-analyzer.toml overrides the engine's settings, so the
+	// person is asked, told what it can do.
+	var why string
+	if l.language == "rust" {
+		if files := lsprelay.RustAnalyzerConfigs(l.filter.Roots); len(files) > 0 {
+			why = lsprelay.RustAnalyzerConfigWhy(files)
+		}
+	}
+	_, refused, err := loop.ManualAuthorizeAsking(ctx, "bash", callID, args, c.manualAsk(s, callID, "lsp", command), why)
 	if err != nil {
 		cancel()
 		return nil, refusal(errRecord, "the language server could not be recorded, so it was not started: %v", err)
@@ -232,8 +242,8 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
 	tsLine := make(chan string, 1)
-	cmd.Stderr = &markerWriter{w: &limitedWriter{w: &stderr, left: 32 << 10}, marker: lsprelay.TSServerMarker, found: tsLine}
-	err = errors.Join(cmd.Err, err1, err2)
+	errPipe, err3 := cmd.StderrPipe()
+	err = errors.Join(cmd.Err, err1, err2, err3)
 	if err == nil {
 		err = cmd.Start()
 	}
@@ -243,6 +253,12 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the language server could not start: " + err.Error(), IsError: true}, 0)
 		return nil, refusal(errRefused, "the language server could not start: %v", err)
 	}
+	// stderr is read here, so its end says the process has gone.
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(&lsprelay.MarkerWriter{W: &limitedWriter{w: &stderr, left: 32 << 10}, Marker: lsprelay.TSServerMarker, Found: tsLine}, errPipe)
+	}()
 	out := make(chan []byte, lspOutQueue)
 	outBytes := &atomic.Int64{}
 	go lspWriter(stdin, out, outBytes, cancel)
@@ -253,23 +269,42 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 
 	// typescript-language-server is given the TypeScript beside it, which
 	// the script names, so it never runs the workspace's own.
+	// Without it the server is never initialized: it would take the
+	// workspace's own. No name in time, the process gone first, or one
+	// under a session folder or home, ends the start.
 	var tsserver string
+	var initErr error
 	if filepath.Base(l.argv[0]) == "typescript-language-server" {
 		select {
 		case tsserver = <-tsLine:
+		case <-stderrDone:
 		case <-time.After(lspTSWait):
+		}
+		home, _ := os.UserHomeDir()
+		switch {
+		case tsserver == "":
+			initErr = errNoTSServer
+		case lsprelay.WithinAny(tsserver, append(append([]string{}, l.filter.Roots...), home)):
+			initErr = errTSServerInWorkspace
+		}
+		if initErr != nil {
+			cancel()
 		}
 	}
 	options, sections := lsprelay.SafeSettings(l.language, tsserver)
 	l.filter.Settings = sections
 	br := bufio.NewReaderSize(stdout, 64<<10)
-	served, initErr := c.lspInitialize(l, br, options)
+	var served json.RawMessage
+	if initErr == nil {
+		served, initErr = c.lspInitialize(l, br, options)
+	}
 	ended := make(chan struct{})
 	go func() {
 		defer close(ended)
 		if initErr == nil {
 			c.lspPump(l, br)
 		}
+		<-stderrDone
 		werr := cmd.Wait()
 		sandbox.Release(cmd)
 		cancel()
@@ -318,7 +353,14 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	}()
 	if initErr != nil {
 		<-ended
-		if bytes.Contains(stderr.Bytes(), []byte("abhed-lsp: no TypeScript")) {
+		if errors.Is(initErr, errTSServerInWorkspace) {
+			return nil, &rpcError{Code: errRefused, Message: "the only TypeScript beside typescript-language-server is in the workspace or a home folder, which Abhed does not run",
+				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
+					"message": "typescript-language-server's TypeScript was found under a session folder or a home folder, where a command could have put it",
+					"steps": []string{"Install typescript-language-server with its TypeScript outside the workspace and home: abhed toolchain install -lsp node, or a sandbox image that has both",
+						"Start the language server again"}}}}
+		}
+		if errors.Is(initErr, errNoTSServer) || bytes.Contains(stderr.Bytes(), []byte("abhed-lsp: no TypeScript")) {
 			return nil, &rpcError{Code: errRefused, Message: "no TypeScript is installed beside typescript-language-server in the sandbox",
 				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
 					"message": "typescript-language-server needs the TypeScript installed with it; Abhed does not let it run the workspace's own node_modules/typescript",
@@ -339,6 +381,12 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	}
 	return served, nil
 }
+
+// The typescript-language-server start's failures before initialize.
+var (
+	errNoTSServer          = errors.New("typescript-language-server's start did not name the TypeScript beside it")
+	errTSServerInWorkspace = errors.New("the TypeScript beside typescript-language-server is under a session folder or a home folder")
+)
 
 // lspMissingSteps are what to do when a language's server is not on PATH:
 // install it with its language through the toolchain route, where Abhed
@@ -535,36 +583,6 @@ func lspWriter(stdin io.WriteCloser, out <-chan []byte, queued *atomic.Int64, ca
 	}
 }
 
-// markerWriter passes what it is written to w, and sends the rest of the
-// first line that starts with marker to found.
-type markerWriter struct {
-	w      io.Writer
-	marker string
-	found  chan<- string
-	line   []byte
-	sent   bool
-}
-
-func (m *markerWriter) Write(p []byte) (int, error) {
-	if !m.sent {
-		for _, c := range p {
-			if c != '\n' {
-				if len(m.line) < 4096 {
-					m.line = append(m.line, c)
-				}
-				continue
-			}
-			if v, ok := strings.CutPrefix(string(m.line), m.marker); ok {
-				m.found <- strings.TrimSpace(v)
-				m.sent = true
-				break
-			}
-			m.line = m.line[:0]
-		}
-	}
-	return m.w.Write(p)
-}
-
 // lspRuns says, for the judged call and the record, what a server may still
 // run inside the sandbox with the engine's settings.
 func lspRuns(language string) string {
@@ -572,7 +590,7 @@ func lspRuns(language string) string {
 	case "go":
 		return "gopls runs go list (and, for packages that use cgo, the cgo tool and the C compiler) to load packages, but no project code"
 	case "rust":
-		return "rust-analyzer runs cargo metadata, which reads the workspace's .cargo/config.toml and can run a rustc or rustc-wrapper it names; build scripts, proc macros and cargo check are off"
+		return "rust-analyzer runs cargo metadata, which reads the workspace's .cargo/config.toml and can run a rustc or rustc-wrapper it names; build scripts, proc macros and cargo check are off, and a workspace rust-analyzer.toml, which would override that, is put to the person"
 	case "typescript", "javascript":
 		return "typescript-language-server runs the TypeScript installed with it, never the workspace's node_modules/typescript"
 	case "python":
@@ -662,6 +680,10 @@ func (c *acpConn) lspSend(l *acpLSP, msg rpcMessage) {
 		l.mu.Lock()
 		l.refused++
 		l.mu.Unlock()
+		if r.ToServer != nil {
+			// The server's request is answered, with an error, not left waiting.
+			_ = l.write(r.ToServer)
+		}
 		if len(r.ID) > 0 && string(r.ID) != "null" {
 			// The editor's request gets the server's kind of answer: an error.
 			answer, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": r.ID, "error": map[string]any{"code": -32600, "message": r.Reason}})

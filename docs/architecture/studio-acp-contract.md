@@ -1157,7 +1157,12 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   with `lsp: true`, §3.2b) where Abhed installs that server.
   A supervisor's ask on the start goes to Studio as a normal
   `session/request_permission` (`meta.lsp: true`, `meta.step: "monitor"`,
-  Allow once or Deny); it starts only on Allow. The server runs as
+  Allow once or Deny); it starts only on Allow. For rust-analyzer, a
+  `rust-analyzer.toml` or `.rust-analyzer.toml` in a root, a folder under
+  it or a folder above it overrides the engine's settings, so the start is
+  put to the person the same way (`meta.step: "workspace"`, the reason
+  naming the files; no answer is Deny) even when policy would allow it, and
+  the answer is recorded. The server runs as
   `exec env GOTOOLCHAIN=local GOFLAGS= GOENV=off <command>`.
 - The engine sends `initialize` (workspace folder, the given capabilities,
   and the engine's own `initializationOptions`, never Studio's) and
@@ -1167,8 +1172,16 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   - rust-analyzer: `cargo.buildScripts.enable`, `procMacro.enable`,
     `checkOnSave` and `cargo.autoreload` off;
   - typescript-language-server: `tsserver.path` set to the TypeScript
-    installed beside the server (found in the sandbox before it starts;
-    without one the start fails, `server-missing`), never the workspace's;
+    installed beside the server, never the workspace's. A shell step before
+    the server looks only under the server's own install
+    (`<bin>/../lib/node_modules/typescript-language-server`, Abhed's layout,
+    and the package two folders above the command's link target, npm's),
+    at `<pkg>/node_modules/typescript/lib/tsserver.js` and
+    `<pkg>/../typescript/lib/tsserver.js`, links resolved; no module
+    search, `HOME` or `NODE_PATH`, and a result under `HOME` is dropped.
+    The engine refuses a result under a session root or the host's home
+    folder. No result within 15 s, or the process ending first: it is
+    killed and the start fails, `server-missing`;
   - gopls, basedpyright: their defaults (`null`).
   What each may still run inside the sandbox: gopls runs `go list` (and, for
   cgo packages, the cgo tool and the C compiler), no project code;
@@ -1189,17 +1202,24 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   `workspace/didChangeConfiguration`, a `workspace/executeCommand` not on
   the server's safe list, a URI outside the session's roots, or an answer to
   nothing the server asked. Answers to `workspace/configuration` reach the
-  server as the engine's settings above.
+  server as the engine's settings above. A refused answer to a request the
+  server is waiting on also sends the server an error answer for that id.
 - URIs are checked in URI positions only (`uri`, `oldUri`, `newUri`,
-  `targetUri`, `rootUri`, `scopeUri`, `baseUri`, the keys of a
-  WorkspaceEdit's `changes`, and `rootPath`): one there that is not an
-  absolute `file:` URI (a bare or percent-encoded path, another scheme), is
-  under a root's `.abhed` folder, or leads out of the roots through a link
-  (the deepest existing part of its path resolved) is outside. Document text
-  that starts with `file:` is content, not a URI.
+  `targetUri`, `rootUri`, `scopeUri`, `baseUri`, gopls's `URI` command
+  argument, the keys of a WorkspaceEdit's `changes` and of a report's
+  `relatedDocuments`, and `rootPath`): one there that is not an absolute
+  `file:` URI (a bare or percent-encoded path, another scheme), is under a
+  root's `.abhed` folder, or leads out of the roots through a link (the
+  deepest existing part of its path resolved) is outside. Links (`target`,
+  `href`) may also be `http` or `https`; a `file:` link is checked as a URI
+  and any other scheme is outside. Document text that starts with `file:`
+  is content, not a URI.
 - From the server: `window/showDocument` for a non-file or outside URI is
-  answered by the engine (`success: false`); notifications naming outside
-  files are dropped; answers naming them reach Studio as `null`; a request
+  answered by the engine (`success: false`); in notifications and answers
+  each array item naming an outside file (and each outside key of
+  `relatedDocuments` or `changes`) is dropped and the rest passes; a
+  notification outside as a whole is dropped, such an answer (or error
+  answer) reaches Studio as `null` (a `null` result); a request
   naming one, a `workspace/applyEdit` whose create, rename, delete or edit
   is outside or in `.abhed` included, is answered with an error and never
   reaches Studio; a request reusing an id still waiting for Studio's answer
