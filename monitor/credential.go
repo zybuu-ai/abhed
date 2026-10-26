@@ -2,16 +2,10 @@ package monitor
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
-)
 
-// keyMaterial is text that is a secret by its shape: a private key block,
-// or a token in a format its issuer documents.
-var keyMaterial = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\bASIA[0-9A-Z]{16}\b|` +
-	`\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b|\bglpat-[A-Za-z0-9_-]{20,}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}\b|` +
-	`\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}\b|\bAIza[0-9A-Za-z_-]{35}\b|(?i)\baws_secret_access_key\s*[=:]\s*\S{20,}|` +
-	`(?im)^\s*(?:export\s+)?[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*\S{8,}`)
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
+)
 
 // printers write a file's content to their output.
 var printers = map[string]bool{"cat": true, "head": true, "tail": true, "less": true, "more": true, "base64": true,
@@ -27,7 +21,7 @@ func CredentialSeen(tool, args, output string) bool {
 	if strings.TrimSpace(output) == "" {
 		return false
 	}
-	if keyMaterial.MatchString(output) {
+	if secretfiles.HasKeyMaterial(output) {
 		return true
 	}
 	var a map[string]any

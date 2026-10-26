@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -106,8 +107,9 @@ type acpCompleter struct {
 	chatOnly bool // the provider's completions endpoint refused fill in the middle
 	rate     bucket
 	cancel   context.CancelFunc
-	latest   int64 // the newest request's sequence
-	enabled  bool  // completion.enabled is recorded
+	latest   int64  // the newest request's sequence
+	mode     string // the mode completion.enabled last recorded
+	closed   bool   // the session has closed; nothing more is sent
 	sum      agent.CompletionSummary
 }
 
@@ -159,7 +161,8 @@ func completeOff(cfg config.Config) (string, config.ProviderConfig) {
 }
 
 // completionAdapter builds the provider's adapter for completions: no key
-// but the one it names, and under local_only no redirect off this machine.
+// but the one it names, each request sent once, and under local_only no
+// redirect off this machine. An adapter that cannot take that is refused.
 func completionAdapter(p config.ProviderConfig, localOnly bool) (model.Adapter, error) {
 	spec := p.Spec()
 	spec.NoAmbientKey = true
@@ -167,17 +170,38 @@ func completionAdapter(p config.ProviderConfig, localOnly bool) (model.Adapter, 
 	if err != nil {
 		return nil, err
 	}
-	if c, ok := a.(*model.OpenAICompatible); ok && localOnly && c.HTTP != nil {
-		hc := *c.HTTP
-		hc.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+	var redirect func(*http.Request, []*http.Request) error
+	if localOnly {
+		redirect = func(req *http.Request, _ []*http.Request) error {
 			if !(config.ProviderConfig{BaseURL: req.URL.String()}).OnThisMachine() {
 				return fmt.Errorf("a redirect to %s leaves this machine (completion.local_only)", req.URL.Host)
 			}
 			return nil
 		}
-		c.HTTP = &hc
+	}
+	if !model.SendOnce(a, redirect) {
+		return nil, fmt.Errorf("provider type %s cannot be held to one request on this machine", p.Type)
 	}
 	return a, nil
+}
+
+// noFIM matches a 400's body that says the endpoint or a parameter is not
+// supported, as opposed to a bad request of another kind.
+var noFIM = regexp.MustCompile(`(?i)not (?:currently )?supported|unsupported|does not support|unrecogni[sz]ed|unknown (?:field|param|argument)|extra (?:fields|inputs) not permitted|suffix`)
+
+// fimRefused reports an answer that says the endpoint does not fill in the middle.
+func fimRefused(err error) bool {
+	var se *model.StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.Status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	case http.StatusBadRequest:
+		return noFIM.MatchString(se.Body)
+	}
+	return false
 }
 
 // sendable is the file a URI names when it may be sent, else why not: under
@@ -323,9 +347,16 @@ func (c *acpConn) complete(msg rpcMessage) {
 		return
 	}
 
+	// Stored secrets, and anything shaped like a key, never leave: withheld
+	// from the whole text before it is cut, so a cut cannot split one.
+	clean := func(text string) string {
+		text = parts.Loop.Withheld(text)
+		text, _ = secretfiles.RedactContent(text)
+		return text
+	}
 	// Only what is near the cursor goes, and other open files only as far as given.
-	prefix := tailRunes(req.Prefix, completePrefix)
-	suffix := headRunes(req.Suffix, completeSuffix)
+	prefix := tailRunes(clean(req.Prefix), completePrefix)
+	suffix := headRunes(clean(req.Suffix), completeSuffix)
 	var lead strings.Builder
 	used := 0
 	for _, f := range req.Context {
@@ -336,7 +367,7 @@ func (c *acpConn) complete(msg rpcMessage) {
 		if why != "" || fp == path || readDenied(parts.Loop.Policy, fp) {
 			continue
 		}
-		lines := strings.SplitN(f.Text, "\n", completeFileLines+1)
+		lines := strings.SplitN(clean(f.Text), "\n", completeFileLines+1)
 		if len(lines) > completeFileLines {
 			lines = lines[:completeFileLines]
 		}
@@ -345,15 +376,14 @@ func (c *acpConn) complete(msg rpcMessage) {
 		lead.WriteString(headBytes(part, completeAllFiles-lead.Len()))
 		used++
 	}
-	// Stored secrets, and anything shaped like a key, never leave.
-	clean := func(text string) string {
-		text = parts.Loop.Withheld(text)
-		text, _ = secretfiles.RedactContent(text)
-		return text
-	}
-	sentPrefix, sentSuffix := clean(lead.String()+prefix), clean(suffix)
+	sentPrefix, sentSuffix := lead.String()+prefix, suffix
 
 	k.mu.Lock()
+	if k.closed {
+		k.mu.Unlock()
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
 	now := completeNow()
 	// The session's limit first, so a session over it spends none of the connection's.
 	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
@@ -401,10 +431,14 @@ func (c *acpConn) complete(msg rpcMessage) {
 		empty("cancelled", "a newer completion replaced it")
 		return
 	}
-	// The record names where the code goes before the first of it goes; a
-	// record that cannot be written stops it.
-	if err := c.completeEnabled(s, k, provider, fim); err != nil {
-		refuse("the record did not take the completion, so nothing was sent")
+	// The record names where the code goes, and how, before any of it goes;
+	// a record that cannot be written, or a session that has closed, stops it.
+	mode := "chat"
+	if fim {
+		mode = "fim"
+	}
+	if why := c.completeEnabled(s, k, provider, mode); why != "" {
+		refuse(why)
 		return
 	}
 	in := model.InfillRequest{Prefix: sentPrefix, Suffix: sentSuffix, Language: req.Language, MaxTokens: completeMaxTokens, Stop: []string{"\n\n\n"}}
@@ -412,18 +446,26 @@ func (c *acpConn) complete(msg rpcMessage) {
 	var err error
 	if fim {
 		res, err = a.(model.Infiller).Infill(ctx, in)
-		var se *model.StatusError
-		if errors.As(err, &se) && (se.Status == http.StatusNotFound || se.Status == http.StatusBadRequest) && ctx.Err() == nil {
-			// No fill in the middle here: chat from now on.
+		if fimRefused(err) && ctx.Err() == nil {
+			// No fill in the middle here: chat from now on, recorded as such first.
 			k.mu.Lock()
 			k.chatOnly = true
 			k.mu.Unlock()
+			if why := c.completeEnabled(s, k, provider, "chat"); why != "" {
+				k.count(func(s *agent.CompletionSummary) { s.Requests++; s.Failed++ })
+				empty("refused", why)
+				return
+			}
 			res, err = model.InfillByChat(ctx, a, in)
 		}
 	} else {
 		res, err = model.InfillByChat(ctx, a, in)
 	}
-	text := clean(res.Text)
+	// A reply that carries a secret is dropped, not edited into the code.
+	text := res.Text
+	if clean(text) != text {
+		text = ""
+	}
 	cancelled := err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
 	k.mu.Lock()
 	k.sum.Requests++
@@ -450,26 +492,24 @@ func (c *acpConn) complete(msg rpcMessage) {
 	}
 }
 
-// completeEnabled records completion.enabled once per session, before the
-// first request goes; the session counts as enabled only once it is written.
-func (c *acpConn) completeEnabled(s *acpSession, k *acpCompleter, p config.ProviderConfig, fim bool) error {
+// completeEnabled records completion.enabled before the first request of a
+// session goes, and again if the mode changes; it says why not to send
+// ("" to send): the record did not take it, or the session has closed.
+func (c *acpConn) completeEnabled(s *acpSession, k *acpCompleter, p config.ProviderConfig, mode string) string {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.enabled {
-		return nil
+	if k.closed {
+		return "the session has closed"
 	}
-	mode := "chat"
-	if fim {
-		mode = "fim"
+	if k.mode == mode {
+		return ""
 	}
-	if s.inner {
-		if _, err := s.parts.Loop.Recorder.Record(agent.EvCompletionEnabled, agent.ActorUser, agent.Trusted,
-			agent.CompletionEnabled{Provider: k.provider, Model: p.Model, Local: p.OnThisMachine(), Mode: mode}); err != nil {
-			return err
-		}
+	if _, err := s.parts.Loop.Recorder.Record(agent.EvCompletionEnabled, agent.ActorUser, agent.Trusted,
+		agent.CompletionEnabled{Provider: k.provider, Model: p.Model, Local: p.OnThisMachine(), Mode: mode}); err != nil {
+		return "the record did not take the completion, so nothing was sent"
 	}
-	k.enabled = true
-	return nil
+	k.mode = mode
+	return ""
 }
 
 // compRateTake takes one from the connection's rate limit, or gives the
@@ -516,6 +556,7 @@ func (c *acpConn) completionSummary(s *acpSession) {
 		return
 	}
 	k.mu.Lock()
+	k.closed = true
 	if k.cancel != nil {
 		k.cancel()
 	}

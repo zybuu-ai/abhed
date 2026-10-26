@@ -28,6 +28,10 @@ All notable changes to Abhed are recorded here. The format follows
   file may keep it on.
 - The reason of a call the supervisor refused starts `supervisor:` instead
   of `monitor:`.
+- The supervisor counts more output as credential content: JWTs, Slack
+  webhook URLs, Stripe live keys, passwords in URLs and secret-named URL
+  parameters, and tokens run into other text. It shares one list of these
+  shapes with the redaction of inline completions.
 - Answers are checked and labelled by default in the terminal, the workbench
   and console, and Abhed Studio. A reply with a statement the record
   contradicts gets one more model call, the agent's revision turn, and an
@@ -147,8 +151,10 @@ All notable changes to Abhed are recorded here. The format follows
   is sent, and a managed `model.default` pins completions too unless the
   managed file sets `model.completion`. Files outside the workspace (links
   followed), ones a read rule keeps, ones of keys and Abhed's state are
-  never sent; stored secrets and key-shaped text are withheld both ways, and
-  context is capped in bytes. One request is in flight per session, ordered
+  never sent; stored secrets and key-shaped text are withheld before any cut,
+  a suggestion carrying one is dropped, and context is capped in bytes. Each
+  request is sent once, and under `local_only` no provider follows a
+  redirect off the machine. One request is in flight per session, ordered
   by Studio's `seq`, with a debounce and per-session and per-connection rate
   limits. `completion.enabled` and `completion.local_only` turn them off or
   keep them on this machine, from the managed file down; a workspace file may

@@ -1264,7 +1264,8 @@ _abhed/complete/cancel { sessionId } → {}
   context file outside the session's roots, one a read rule denies, one that
   looks like keys, or Abhed's state is not sent (`refused`); every path form
   (as named, links followed) is checked. Stored secrets and key-shaped text
-  are withheld from what is sent and from the reply.
+  are withheld from the whole of each text before it is cut; a reply that
+  carries one is dropped (empty `items`).
 - One request in flight per session: a newer one cancels it (`cancelled`).
   `seq`, increasing per session, orders requests; one at or below the newest
   seen is dropped (`cancelled`). Without it, arrival order. A short debounce;
@@ -1272,10 +1273,14 @@ _abhed/complete/cancel { sessionId } → {}
   model error is `-32000`; a closed session's request is refused with
   `-32602`.
 - Fill-in-the-middle on the completions endpoint for local server types and
-  `openai-compatible`, else a chat turn; a 404 or 400 from the completions
-  endpoint switches the session to chat. Text only, no tools.
-- Recorded as `completion.enabled` just before the first request is sent
-  (if it cannot be recorded, nothing is sent) and `completion.summary` when
+  `openai-compatible`, else a chat turn; a 404, 405 or 501 from the
+  completions endpoint, or a 400 saying it or `suffix` is not supported,
+  switches the session to chat. Each request is sent once, no retries; under
+  `local_only` no provider follows a redirect off the machine. Text only, no
+  tools.
+- Recorded as `completion.enabled` just before the first request is sent,
+  and again with `mode: "chat"` before a fallback's first chat request (if
+  it cannot be recorded, nothing is sent) and `completion.summary` when
   the session closes, which counts `superseded` (replaced before sending)
   apart from `cancelled` (after); single completions are not recorded.
 
