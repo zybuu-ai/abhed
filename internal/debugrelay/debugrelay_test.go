@@ -427,7 +427,12 @@ func TestLaunchResponseIsOneShot(t *testing.T) {
 	if s := <-f.statusGot; !strings.HasPrefix(s, "failed:") || len(s) > len("failed:")+maxDetail+len("…") {
 		t.Fatalf("status of %d bytes", len(s))
 	}
-	f.send(t, map[string]any{"seq": 3, "type": "response", "request_seq": l["seq"], "command": "launch", "success": false, "message": "again"})
+	// Not -1 either: the taken launch leaves no seq a later response can name.
+	f.send(t, map[string]any{"seq": 3, "type": "response", "request_seq": -1, "command": "launch", "success": false, "message": "forged"})
+	if m := f.editor(t); m["message"] != "forged" {
+		t.Fatalf("editor got %v", m)
+	}
+	f.send(t, map[string]any{"seq": 4, "type": "response", "request_seq": l["seq"], "command": "launch", "success": false, "message": "again"})
 	if m := f.editor(t); m["message"] != "again" {
 		t.Fatalf("editor got %v", m)
 	}

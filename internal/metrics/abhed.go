@@ -26,10 +26,10 @@ var ToolchainOutcomes = []string{agent.ToolchainOK, agent.ToolchainFailed, agent
 // toolchainLangs bound the lang label.
 var toolchainLangs = []string{"go", "python", "node", "rust", "java", "maven", "gradle", "ruby", "dotnet"}
 
-// OllamaOutcomes are how a person's start, install or pull of Ollama ended.
 // lspLangs are the languages the language-server counters name.
 var lspLangs = []string{"go", "python", "typescript", "javascript", "rust"}
 
+// OllamaOutcomes are how a person's start, install or pull of Ollama ended.
 var OllamaOutcomes = []string{agent.OllamaOK, agent.OllamaFailed, agent.OllamaDeclined, agent.OllamaRefused, agent.OllamaCancelled, agent.OllamaManual}
 
 // Methods are the HTTP methods a request is counted by; any other is Other.

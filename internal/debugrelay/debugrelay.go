@@ -259,7 +259,9 @@ type Relay struct {
 	dropped   int
 	seq       int
 	launchSeq int
-	launched  bool
+	// launchAnswered is set once the launch's response has been taken.
+	launchAnswered bool
+	launched       bool
 	// terminating is set once the editor asked the adapter to terminate.
 	terminating bool
 	onEnd       func()
@@ -511,10 +513,10 @@ func (r *Relay) Pump(adapter io.Reader) error {
 func (r *Relay) consumeLaunch(seq int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.launchSeq == 0 || seq != r.launchSeq {
+	if r.launchAnswered || r.launchSeq == 0 || seq != r.launchSeq {
 		return false
 	}
-	r.launchSeq = -1
+	r.launchAnswered = true
 	return true
 }
 

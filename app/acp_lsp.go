@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strconv"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -59,7 +61,10 @@ const (
 	lspLife        = 12 * time.Hour
 	lspStopGrace   = 3 * time.Second
 	lspMaxRestarts = 5
-	exitNoServer   = 96
+	exitNoServer   = lsprelay.ExitNoServer
+	// lspTSWait bounds the wait for the start script to name the TypeScript
+	// beside typescript-language-server.
+	lspTSWait = 15 * time.Second
 )
 
 // lspCommand starts the server command in the session's sandbox; tests
@@ -80,24 +85,36 @@ type acpLSP struct {
 	filter                *lsprelay.Filter
 
 	mu       sync.Mutex
-	out      chan []byte // the running process's input, written in order by one writer
+	out      chan []byte // the running process's input, written in order by one writer; nil between processes
+	outBytes *atomic.Int64
 	cancel   context.CancelFunc
 	stopped  bool
-	restarts int
-	served   json.RawMessage // the server's capabilities
-	requests int
-	refused  int
-	done     chan struct{} // closed when the server is gone for good
-	// in holds Studio's messages in the order they were read, for one worker.
-	in chan rpcMessage
+	reason   string // how a stop ended it: stopped, or closed with its session
+	// restarting is set between a crash and the next process's start.
+	restarting bool
+	restarts   int
+	served     json.RawMessage // the server's capabilities
+	requests   int
+	refused    int
+	done       chan struct{} // closed when the server is gone for good
+	// ready is closed once the first start has initialized the server, or
+	// failed (startErr); a second start for the same language waits on it.
+	ready    chan struct{}
+	startErr *rpcError
+	// in holds Studio's messages in the order they were read, for one
+	// worker; inBytes is what they hold.
+	in      chan rpcMessage
+	inBytes atomic.Int64
 }
 
 // Queue bounds: Studio's messages waiting for the filter, and messages
-// waiting for the server to read them; past the second the server is not
-// reading, and is ended.
+// waiting for the server to read them, by count and by bytes; past the
+// second the server is not reading, and is ended.
 const (
 	lspInQueue  = 256
 	lspOutQueue = 1024
+	lspInBytes  = 32 << 20
+	lspOutBytes = 32 << 20
 )
 
 func (c *acpConn) lspStart(msg rpcMessage) {
@@ -137,9 +154,20 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 	for _, l := range c.lsps {
 		if l.session == s.id && l.language == p.Language {
 			c.lspMu.Unlock()
+			// A second start waits for the first to initialize, or fail.
+			select {
+			case <-l.ready:
+			case <-c.goneCh():
+				c.reply(msg.ID, nil, refusal(errRefused, "the connection is closing"))
+				return
+			}
 			l.mu.Lock()
-			served := l.served
+			served, startErr := l.served, l.startErr
 			l.mu.Unlock()
+			if startErr != nil {
+				c.reply(msg.ID, nil, startErr)
+				return
+			}
 			c.reply(msg.ID, map[string]any{"lspId": l.id, "capabilities": served}, nil)
 			return
 		}
@@ -154,8 +182,9 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 		caps = json.RawMessage(defaultClientCapabilities)
 	}
 	l := &acpLSP{id: "lsp-" + acpID(), language: p.Language, session: s.id, argv: argv, caps: caps,
-		filter: &lsprelay.Filter{Roots: append([]string{parts.Session.Root}, s.roots()...), Language: p.Language},
-		done:   make(chan struct{}), in: make(chan rpcMessage, lspInQueue)}
+		filter: &lsprelay.Filter{Roots: append([]string{parts.Session.Root}, s.roots()...), Language: p.Language,
+			Methods: lsprelay.ServerMethods[p.Language]},
+		done: make(chan struct{}), ready: make(chan struct{}), in: make(chan rpcMessage, lspInQueue)}
 	if c.lsps == nil {
 		c.lsps = map[string]*acpLSP{}
 	}
@@ -163,6 +192,10 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 	c.lspMu.Unlock()
 	go c.lspWork(l)
 	served, e := c.lspRun(s, l, b, 0)
+	l.mu.Lock()
+	l.startErr = e
+	l.mu.Unlock()
+	close(l.ready)
 	if e != nil {
 		c.lspMu.Lock()
 		delete(c.lsps, l.id)
@@ -181,7 +214,8 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	loop := parts.Loop
 	command := lsprelay.CommandLine(l.argv)
 	callID := "u" + acpID()
-	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " + lsprelay.Env})
+	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " +
+		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language)})
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
 	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args, c.manualAsk(s, callID, "lsp", command))
 	if err != nil {
@@ -193,12 +227,12 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		_ = loop.ManualObserve(callID, "bash", *refused, 0)
 		return nil, refusal(errPolicy, "%s", refused.Content)
 	}
-	script := "command -v " + lsprelay.CommandLine(l.argv[:1]) + " >/dev/null 2>&1 || { echo 'abhed-lsp: " + l.argv[0] + " is not on PATH' >&2; exit " + strconv.Itoa(exitNoServer) + "; }; " + lsprelay.Env + "exec " + command
-	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, script)
+	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, lsprelay.Script(l.argv))
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
-	cmd.Stderr = &limitedWriter{w: &stderr, left: 32 << 10}
+	tsLine := make(chan string, 1)
+	cmd.Stderr = &markerWriter{w: &limitedWriter{w: &stderr, left: 32 << 10}, marker: lsprelay.TSServerMarker, found: tsLine}
 	err = errors.Join(cmd.Err, err1, err2)
 	if err == nil {
 		err = cmd.Start()
@@ -210,14 +244,26 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		return nil, refusal(errRefused, "the language server could not start: %v", err)
 	}
 	out := make(chan []byte, lspOutQueue)
-	go lspWriter(stdin, out, cancel)
+	outBytes := &atomic.Int64{}
+	go lspWriter(stdin, out, outBytes, cancel)
 	l.mu.Lock()
-	l.out, l.cancel, l.restarts = out, cancel, restart
+	l.out, l.outBytes, l.cancel, l.restarts, l.restarting = out, outBytes, cancel, restart, false
 	l.mu.Unlock()
 	s.record(agent.EvLSPStarted, agent.LSPStarted{LSPID: l.id, CallID: callID, Language: l.language, Command: command, Tier: lspTier(b), Restart: restart})
 
+	// typescript-language-server is given the TypeScript beside it, which
+	// the script names, so it never runs the workspace's own.
+	var tsserver string
+	if filepath.Base(l.argv[0]) == "typescript-language-server" {
+		select {
+		case tsserver = <-tsLine:
+		case <-time.After(lspTSWait):
+		}
+	}
+	options, sections := lsprelay.SafeSettings(l.language, tsserver)
+	l.filter.Settings = sections
 	br := bufio.NewReaderSize(stdout, 64<<10)
-	served, initErr := c.lspInitialize(l, br)
+	served, initErr := c.lspInitialize(l, br, options)
 	ended := make(chan struct{})
 	go func() {
 		defer close(ended)
@@ -227,6 +273,15 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		werr := cmd.Wait()
 		sandbox.Release(cmd)
 		cancel()
+		// This process's input is closed, so its writer ends; between
+		// processes a send is refused as restarting, never queued for no one.
+		l.mu.Lock()
+		if l.out == out {
+			close(out)
+			l.out = nil
+		}
+		l.restarting = !l.stopped && initErr == nil && restart < lspMaxRestarts
+		l.mu.Unlock()
 		code := 0
 		var ee *exec.ExitError
 		if errors.As(werr, &ee) {
@@ -235,14 +290,14 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 			code = -1
 		}
 		l.mu.Lock()
-		stopped, requests, refusedN := l.stopped, l.requests, l.refused
+		stopped, stopReason, requests, refusedN := l.stopped, l.reason, l.requests, l.refused
 		l.requests, l.refused = 0, 0
 		l.mu.Unlock()
 		reason := "crashed"
 		switch {
 		case stopped:
-			reason = "stopped"
-		case initErr != nil || code == exitNoServer:
+			reason = orDefault(stopReason, "stopped")
+		case initErr != nil || code == exitNoServer || code == lsprelay.ExitNoTypeScript:
 			reason = "failed"
 		}
 		exit := code
@@ -263,6 +318,13 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	}()
 	if initErr != nil {
 		<-ended
+		if bytes.Contains(stderr.Bytes(), []byte("abhed-lsp: no TypeScript")) {
+			return nil, &rpcError{Code: errRefused, Message: "no TypeScript is installed beside typescript-language-server in the sandbox",
+				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
+					"message": "typescript-language-server needs the TypeScript installed with it; Abhed does not let it run the workspace's own node_modules/typescript",
+					"steps": []string{"Install TypeScript beside the server in the sandbox (npm install -g typescript typescript-language-server), or use an image that has both",
+						"Start the language server again"}}}}
+		}
 		if bytes.Contains(stderr.Bytes(), []byte("abhed-lsp:")) {
 			return nil, &rpcError{Code: errRefused, Message: l.argv[0] + " is not installed in the sandbox",
 				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
@@ -317,7 +379,10 @@ func (c *acpConn) lspRestart(s *acpSession, l *acpLSP, b tools.Bash, n int) {
 	stopped := l.stopped
 	l.mu.Unlock()
 	if stopped {
-		c.lspEnd(l, "stopped")
+		l.mu.Lock()
+		reason := orDefault(l.reason, "stopped")
+		l.mu.Unlock()
+		c.lspEnd(l, reason)
 		return
 	}
 	served, e := c.lspRun(s, l, b, n)
@@ -344,9 +409,9 @@ func (c *acpConn) lspEnd(l *acpLSP, reason string) {
 
 // lspInitialize sends the engine's initialize and initialized, and returns
 // the server's capabilities.
-func (c *acpConn) lspInitialize(l *acpLSP, br *bufio.Reader) (json.RawMessage, error) {
+func (c *acpConn) lspInitialize(l *acpLSP, br *bufio.Reader, options json.RawMessage) (json.RawMessage, error) {
 	init, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "abhed-init", "method": "initialize",
-		"params": lsprelay.InitParams(l.filter.Roots[0], l.caps)})
+		"params": lsprelay.InitParams(l.filter.Roots[0], l.caps, options)})
 	if err := l.write(init); err != nil {
 		return nil, err
 	}
@@ -420,36 +485,100 @@ func (c *acpConn) lspPump(l *acpLSP, br *bufio.Reader) {
 	}
 }
 
+// errLSPRestarting is a send while a crashed server is being started again.
+var errLSPRestarting = errors.New("the language server is restarting; send again once its status is restarted")
+
+// write queues body for the running process. The channel is sent on and
+// closed only under l.mu, so a send never meets a closed channel.
 func (l *acpLSP) write(body []byte) error {
 	l.mu.Lock()
-	out := l.out
-	l.mu.Unlock()
+	out, restarting := l.out, l.restarting
 	if out == nil {
+		l.mu.Unlock()
+		if restarting {
+			return errLSPRestarting
+		}
 		return errors.New("the language server is not running")
 	}
-	select {
-	case out <- body:
-		return nil
-	default:
+	full := l.outBytes.Load()+int64(len(body)) > lspOutBytes
+	if !full {
+		select {
+		case out <- body:
+			l.outBytes.Add(int64(len(body)))
+		default:
+			full = true
+		}
+	}
+	l.mu.Unlock()
+	if full {
 		// It has stopped reading what it is sent.
 		l.kill()
 		return errors.New("the language server is not reading its input; it was ended")
 	}
+	return nil
 }
 
-// lspWriter writes a process's input in the order it was queued, and closes
-// it at the nil the stop queues; a failed write ends the process.
-func lspWriter(stdin io.WriteCloser, out <-chan []byte, cancel context.CancelFunc) {
+// lspWriter writes a process's input in the order it was queued, until the
+// channel closes or the nil a stop queues; a failed write ends the process.
+func lspWriter(stdin io.WriteCloser, out <-chan []byte, queued *atomic.Int64, cancel context.CancelFunc) {
 	defer func() { _ = stdin.Close() }()
 	for body := range out {
 		if body == nil {
 			return
 		}
-		if err := lsprelay.Write(stdin, body); err != nil {
+		err := lsprelay.Write(stdin, body)
+		queued.Add(-int64(len(body)))
+		if err != nil {
 			cancel()
 			return
 		}
 	}
+}
+
+// markerWriter passes what it is written to w, and sends the rest of the
+// first line that starts with marker to found.
+type markerWriter struct {
+	w      io.Writer
+	marker string
+	found  chan<- string
+	line   []byte
+	sent   bool
+}
+
+func (m *markerWriter) Write(p []byte) (int, error) {
+	if !m.sent {
+		for _, c := range p {
+			if c != '\n' {
+				if len(m.line) < 4096 {
+					m.line = append(m.line, c)
+				}
+				continue
+			}
+			if v, ok := strings.CutPrefix(string(m.line), m.marker); ok {
+				m.found <- strings.TrimSpace(v)
+				m.sent = true
+				break
+			}
+			m.line = m.line[:0]
+		}
+	}
+	return m.w.Write(p)
+}
+
+// lspRuns says, for the judged call and the record, what a server may still
+// run inside the sandbox with the engine's settings.
+func lspRuns(language string) string {
+	switch language {
+	case "go":
+		return "gopls runs go list (and, for packages that use cgo, the cgo tool and the C compiler) to load packages, but no project code"
+	case "rust":
+		return "rust-analyzer runs cargo metadata, which reads the workspace's .cargo/config.toml and can run a rustc or rustc-wrapper it names; build scripts, proc macros and cargo check are off"
+	case "typescript", "javascript":
+		return "typescript-language-server runs the TypeScript installed with it, never the workspace's node_modules/typescript"
+	case "python":
+		return "basedpyright runs the Python interpreter it finds, the sandbox's or one a pyrightconfig.json names, to read its import paths"
+	}
+	return "the server may run programs of its own"
 }
 
 func (l *acpLSP) kill() {
@@ -483,9 +612,14 @@ func (c *acpConn) lspEnqueue(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
+	if l.inBytes.Load()+int64(len(msg.Params)) > lspInBytes {
+		c.reply(msg.ID, nil, refusal(errBusy, "the language server has %d MiB of messages waiting; try again", lspInBytes>>20))
+		return
+	}
 	c.inflight.Add(1)
 	select {
 	case l.in <- msg:
+		l.inBytes.Add(int64(len(msg.Params)))
 	default:
 		c.inflight.Done()
 		c.reply(msg.ID, nil, refusal(errBusy, "the language server has %d messages waiting; try again", lspInQueue))
@@ -497,6 +631,7 @@ func (c *acpConn) lspWork(l *acpLSP) {
 	for {
 		select {
 		case msg := <-l.in:
+			l.inBytes.Add(-int64(len(msg.Params)))
 			c.lspSend(l, msg)
 			c.inflight.Done()
 		case <-l.done:
@@ -536,7 +671,11 @@ func (c *acpConn) lspSend(l *acpLSP, msg rpcMessage) {
 		return
 	}
 	if err := l.write(out); err != nil {
-		c.reply(msg.ID, nil, refusal(errRefused, "%v", err))
+		code := errRefused
+		if errors.Is(err, errLSPRestarting) {
+			code = errBusy
+		}
+		c.reply(msg.ID, nil, refusal(code, "%v", err))
 		return
 	}
 	l.mu.Lock()
@@ -551,17 +690,19 @@ func (c *acpConn) lspStop(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	l.stop()
+	l.stop("stopped")
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
 // stop asks the server to shut down and exit, closes its input, and ends it
 // if it has not gone within the grace.
-func (l *acpLSP) stop() {
+func (l *acpLSP) stop(reason string) {
 	l.mu.Lock()
 	already := l.stopped
-	l.stopped = true
-	out := l.out
+	l.stopped, l.restarting = true, false
+	if !already {
+		l.reason = reason
+	}
 	l.mu.Unlock()
 	if already {
 		return
@@ -576,12 +717,14 @@ func (l *acpLSP) stop() {
 	}()
 	_ = l.write([]byte(`{"jsonrpc":"2.0","id":"abhed-shutdown","method":"shutdown"}`))
 	_ = l.write([]byte(`{"jsonrpc":"2.0","method":"exit"}`))
-	if out != nil {
+	l.mu.Lock()
+	if l.out != nil {
 		select {
-		case out <- nil: // the writer closes the input after what is queued
+		case l.out <- nil: // the writer closes the input after what is queued
 		default:
 		}
 	}
+	l.mu.Unlock()
 }
 
 // killLSPs stops a session's language servers, or every one for "", and
@@ -596,7 +739,7 @@ func (c *acpConn) killLSPs(sessionID string) {
 	}
 	c.lspMu.Unlock()
 	for _, l := range mine {
-		l.stop()
+		l.stop("closed")
 	}
 	for _, l := range mine {
 		select {

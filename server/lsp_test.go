@@ -504,3 +504,21 @@ func TestLanguageServerKeepsTheLocalGo(t *testing.T) {
 		t.Fatal("the record does not say the language server runs with GOTOOLCHAIN=local")
 	}
 }
+
+// The workbench sends the server files in any of the session's folders,
+// added and skill folders too, and a document whose text starts with file:
+// is content, not a file to refuse; a file outside them is still refused.
+func TestLSPAllowsTheSessionsFolders(t *testing.T) {
+	roots := []string{"/w", "/extra"}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///extra/x.go","languageId":"go","version":1,"text":"package x"}}}`,
+		`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///w/a.go","version":2},"contentChanges":[{"text":"file:///etc/passwd starts this line"}]}}`,
+	} {
+		if _, ok := lspAllowedIn([]byte(m), "/w", roots); !ok {
+			t.Errorf("refused %s", m)
+		}
+	}
+	if _, ok := lspAllowedIn([]byte(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///etc/passwd","text":""}}}`), "/w", roots); ok {
+		t.Fatal("a file outside the session's folders was passed")
+	}
+}
