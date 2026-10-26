@@ -45,12 +45,14 @@ func newAnthropicAdapter(s Spec) (Adapter, error) {
 		a.Defaults = s.Params
 		// A subscription token, if the operator supplied one: config first, then
 		// Abhed's own variable, then the name an existing setup-token writes.
-		a.Bearer = firstNonEmptyString(
-			s.Get("oauth_token"),
-			os.Getenv("ABHED_ANTHROPIC_OAUTH_TOKEN"),
-			os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"),
-			os.Getenv("ANTHROPIC_AUTH_TOKEN"),
-		)
+		a.Bearer = s.Get("oauth_token")
+		if a.Bearer == "" && !s.NoAmbientKey {
+			a.Bearer = firstNonEmptyString(
+				os.Getenv("ABHED_ANTHROPIC_OAUTH_TOKEN"),
+				os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"),
+				os.Getenv("ANTHROPIC_AUTH_TOKEN"),
+			)
+		}
 		if v := s.Get("api_version"); v != "" {
 			a.Version = v
 		}

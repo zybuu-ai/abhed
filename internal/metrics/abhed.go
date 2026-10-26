@@ -178,7 +178,7 @@ func New() *Abhed {
 		registries: r.Counter("abhed_toolchain_registries_opened_total",
 			"Package registries opened to sessions' commands with a toolchain, by language.", "lang"),
 		completions: r.Counter("abhed_completions_total",
-			"Editor inline completions by outcome (served, refused, failed, cancelled, empty), counted when each session closes.", "outcome"),
+			"Editor inline completions by outcome (served, empty, failed, cancelled after sending; refused, superseded before), counted when each session closes.", "outcome"),
 		completionTokens: r.Counter("abhed_completion_tokens_total",
 			"Tokens editor inline completions used, by kind (in, out).", "kind"),
 		lspStarts: r.Counter("abhed_lsp_starts_total",
@@ -278,6 +278,7 @@ func (m *Abhed) Observe(ev agent.Event) {
 			m.completions.Add(float64(p.Refused), "refused")
 			m.completions.Add(float64(p.Failed), "failed")
 			m.completions.Add(float64(p.Cancelled), "cancelled")
+			m.completions.Add(float64(p.Superseded), "superseded")
 			m.completions.Add(float64(max(0, p.Requests-p.Served-p.Failed-p.Cancelled)), "empty")
 			m.completionTokens.Add(float64(p.TokensIn), "in")
 			m.completionTokens.Add(float64(p.TokensOut), "out")

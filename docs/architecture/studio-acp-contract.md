@@ -1182,7 +1182,7 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
 
 ```ts
 _abhed/complete { sessionId, uri, position: { line, character }, prefix: string, suffix: string,
-                  language?: string, trigger?: "auto" | "invoked",
+                  language?: string, trigger?: "auto" | "invoked", seq?: number,
                   context?: { uri, text }[] }        // other open files, optional
   → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string }
 _abhed/complete/cancel { sessionId } → {}
@@ -1190,19 +1190,30 @@ _abhed/complete/cancel { sessionId } → {}
 
 - Listed under the `complete` feature; whether completions are on is in each
   answer: `disabled` names why not (no `model.completion`,
-  `completion.enabled: false`, or `completion.local_only` with a remote
-  model). Nothing is sent then.
+  `completion.enabled: false`, a provider the configuration does not offer,
+  a managed `model.default` pin the managed file does not extend to
+  `model.completion`, or `completion.local_only` with a remote model).
+  Nothing is sent then. Only the provider's own key is sent.
 - The engine sends at most the last 6,000 characters of `prefix`, the first
-  2,000 of `suffix`, and the first 60 lines of up to three `context` files. A
-  document or context file outside the session's roots, one a read rule
-  denies, or one that looks like keys is not sent (`refused`).
-- One request in flight per session: a newer one cancels it (`cancelled`); a
-  short debounce; at most five a second (`limited`). A model error is
-  `-32000`.
+  2,000 of `suffix`, and the first 60 lines of up to three `context` files,
+  4 KiB of each and 12 KiB in all, cut between characters. A document or
+  context file outside the session's roots, one a read rule denies, one that
+  looks like keys, or Abhed's state is not sent (`refused`); every path form
+  (as named, links followed) is checked. Stored secrets and key-shaped text
+  are withheld from what is sent and from the reply.
+- One request in flight per session: a newer one cancels it (`cancelled`).
+  `seq`, increasing per session, orders requests; one at or below the newest
+  seen is dropped (`cancelled`). Without it, arrival order. A short debounce;
+  at most five a second per session and ten per connection (`limited`). A
+  model error is `-32000`; a closed session's request is refused with
+  `-32602`.
 - Fill-in-the-middle on the completions endpoint for local server types and
-  `openai-compatible`, else a chat turn; text only, no tools.
-- Recorded as `completion.enabled` on first use and `completion.summary` when
-  the session closes; single completions are not recorded.
+  `openai-compatible`, else a chat turn; a 404 or 400 from the completions
+  endpoint switches the session to chat. Text only, no tools.
+- Recorded as `completion.enabled` just before the first request is sent
+  (if it cannot be recorded, nothing is sent) and `completion.summary` when
+  the session closes, which counts `superseded` (replaced before sending)
+  apart from `cancelled` (after); single completions are not recorded.
 
 ## 8. Health, setup and memory
 

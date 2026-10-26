@@ -34,6 +34,11 @@ type Spec struct {
 	// Keeping them here rather than as fields on every Spec stops this struct
 	// growing a column per vendor.
 	Extra map[string]string
+
+	// NoAmbientKey takes a key only from the spec itself, never from a
+	// variable such as OPENAI_API_KEY: a key meant for one endpoint is not
+	// sent to another that does not name it.
+	NoAmbientKey bool
 }
 
 // Get reads an Extra value.
