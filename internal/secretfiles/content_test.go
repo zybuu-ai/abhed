@@ -94,6 +94,13 @@ func TestContentPlaceholdersAreNotSecrets(t *testing.T) {
 		`GITHUB_TOKEN: 'Zx81kLm0Pw7xQr2'`:                 "Zx81kLm0Pw7x",
 		"STRIPE_KEY=Xk9fQ2mPz8Lw4Rt7 # live":              "Xk9fQ2mPz8Lw",
 		`postgres://app:Hunter2SuperSecret@db/app`:        "Hunter2Super",
+		"DB_PASSWORD=p@ss.word.2024":                      "p@ss.word",
+		"DB_PASSWORD=Tr0ub4dor&3xyz":                      "Tr0ub4dor",
+		"API_TOKEN=abc,def,ghi,jkl":                       "abc,def",
+		"MY_SECRET=abc:def:ghijk":                         "abc:def",
+		"DATABASE_PASSWORD = s3cr3t-value; # comment":     "s3cr3t-value",
+		"DB_PASSWORD=12345678901":                         "12345678901",
+		`PASSWORD="correct horse battery staple"`:         "correct horse",
 	} {
 		if out, found := RedactContent(in); !found || strings.Contains(out, secret) {
 			t.Errorf("%q -> %q", in, out)

@@ -61,7 +61,8 @@ workspace or to a key file is refused too.
 What is sent has every stored secret's value withheld, as the agent's own
 messages do, and anything shaped like a key replaced: a private key block,
 a cloud, forge, chat or payment token, a JWT, a password in a URL, an
-upper-case `*_TOKEN`, `*_PASSWORD` or `*_KEY` given a literal value. A
+upper-case `*_TOKEN`, `*_PASSWORD` or `*_KEY` given a literal value (quoted,
+or bare and not code such as a call or `settings.API_KEY`). A
 placeholder is not a secret and is sent as written: a format verb (`%s`),
 `${…}`, `$NAME`, `{…}`, `<…>`, `***`, `xxx`, `changeme`, or a URL whose
 password is its user name (`postgres:postgres`). This happens before the

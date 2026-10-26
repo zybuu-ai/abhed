@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
 
 // fimServer is a completion model's fill-in-the-middle endpoint: it answers
@@ -760,5 +761,22 @@ func TestStudioCompletionsWithholdAcrossTheCursor(t *testing.T) {
 	}
 	if p, sfx := fmt.Sprint(seen[2]["prompt"]), fmt.Sprint(seen[2]["suffix"]); p != "k := \"stored-secret-valué-x" || sfx != "\"\nnext()" {
 		t.Fatalf("text with no secret changed: %q | %q", p, sfx)
+	}
+}
+
+// The cursor stays where it is when only one side shows a secret, and that
+// side's secret is still withheld.
+func TestWithheldAroundKeepsTheCursor(t *testing.T) {
+	clean := func(s string) string { out, _ := secretfiles.RedactContent(s); return out }
+	for _, tc := range []struct{ prefix, suffix, wantP, wantS string }{
+		{"a", "sk-abcdefghijklmnopqrstuvwx rest()", "a", "[secret] rest()"},
+		{"    cfg.", "SECRET_KEY = \"abcdefgh12\"\nnext()", "    cfg.", "SECRET_KEY = \"[secret]\"\nnext()"},
+		{"x := 1", "\ny := 2", "x := 1", "\ny := 2"},
+		{"t := \"ghp_" + strings.Repeat("Z", 18), strings.Repeat("Z", 22) + "\"", "t := \"[secret]", "\""},
+	} {
+		p, s := withheldAround(clean, tc.prefix, tc.suffix)
+		if p != tc.wantP || s != tc.wantS {
+			t.Errorf("%q | %q -> %q | %q; want %q | %q", tc.prefix, tc.suffix, p, s, tc.wantP, tc.wantS)
+		}
 	}
 }

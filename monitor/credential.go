@@ -2,10 +2,33 @@ package monitor
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
+
+// legacyKeyMaterial is the monitor's shapes as they were before the shared
+// list; it stays so the monitor sees at least what it saw then. Only a
+// placeholder value in its assignment shape (group 1) is let through.
+var legacyKeyMaterial = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\bASIA[0-9A-Z]{16}\b|` +
+	`\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b|\bglpat-[A-Za-z0-9_-]{20,}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}\b|` +
+	`\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}\b|\bAIza[0-9A-Za-z_-]{35}\b|(?i)\baws_secret_access_key\s*[=:]\s*\S{20,}|` +
+	`(?im)^\s*(?:export\s+)?[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*(\S{8,})`)
+
+// keyMaterial reports output that carries a key or token by its shape, in
+// the shared list or the monitor's earlier one.
+func keyMaterial(output string) bool {
+	if secretfiles.HasKeyMaterial(output) {
+		return true
+	}
+	for _, l := range legacyKeyMaterial.FindAllStringSubmatchIndex(output, -1) {
+		if l[2] < 0 || !secretfiles.IsPlaceholder(output[l[2]:l[3]]) {
+			return true
+		}
+	}
+	return false
+}
 
 // printers write a file's content to their output.
 var printers = map[string]bool{"cat": true, "head": true, "tail": true, "less": true, "more": true, "base64": true,
@@ -21,7 +44,7 @@ func CredentialSeen(tool, args, output string) bool {
 	if strings.TrimSpace(output) == "" {
 		return false
 	}
-	if secretfiles.HasKeyMaterial(output) {
+	if keyMaterial(output) {
 		return true
 	}
 	var a map[string]any

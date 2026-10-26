@@ -28,3 +28,24 @@ func TestCredentialSeen(t *testing.T) {
 		}
 	}
 }
+
+// Output the monitor counted as credential content before the shared list
+// still counts, and only a placeholder value is let through.
+func TestKeyMaterialKeepsTheEarlierShapes(t *testing.T) {
+	for _, line := range []string{
+		`api_key = "3f9a2b7c4d1e8f6a0b5c9d2e"`, `password = "hunter2hunter2"`, `secret_key = 'django-insecure-abc123xyz789'`,
+		"db_password=Sup3rS3cretPw", "DB_PASSWORD=Tr0ub4dor&3xyz", "DB_PASSWORD=p@ss.word.2024",
+		`PASSWORD="correct horse battery staple"`, "DB_PASSWORD=12345678901", "DATABASE_PASSWORD = s3cr3t-value; # comment",
+		`client_secret = "9f8e7d6c5b4a39281706"`, "auth_token=Zq81kLm0Pw7xYb2", `token = "Zq81kLm0Pw7xYb2c"`,
+		"API_TOKEN=abc,def,ghi,jkl", "MY_SECRET=abc:def:ghijk", "TOKEN=value1234 ./run.sh", "    token = get_token()",
+	} {
+		if !keyMaterial(line + "\n") {
+			t.Errorf("no longer counted: %q", line)
+		}
+	}
+	for _, line := range []string{"API_TOKEN=${API_TOKEN}", "DB_PASSWORD=changeme", `SECRET_KEY="%s"`, "export TOKEN=$TOKEN", "package main"} {
+		if keyMaterial(line + "\n") {
+			t.Errorf("a placeholder counted: %q", line)
+		}
+	}
+}
