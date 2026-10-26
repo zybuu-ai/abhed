@@ -99,14 +99,19 @@ type LinuxHelper interface {
 	Find(arch string) (path string, pinned bool, err error)
 }
 
-// linuxHelper is the lookup the debug bridge uses. The toolchain work ships
-// the helper and its lookup; until it is wired here, none is found.
-var linuxHelper LinuxHelper = noLinuxHelper{}
+// linuxHelper is the lookup the debug bridge uses; tests set it.
+var linuxHelper LinuxHelper = bundledLinuxHelper{}
 
-type noLinuxHelper struct{}
+// bundledLinuxHelper is sandbox.BundledHelper: the helper shipped beside the
+// engine, used only as a checked copy matching the build's pin.
+type bundledLinuxHelper struct{}
 
-func (noLinuxHelper) Find(string) (string, bool, error) {
-	return "", false, errors.New("this build has no bundled Linux helper")
+func (bundledLinuxHelper) Find(arch string) (string, bool, error) {
+	path, why := sandbox.BundledHelper(arch)
+	if path == "" {
+		return "", false, errors.New(why)
+	}
+	return path, true, nil
 }
 
 // debugBridge is the command that carries Delve's socket over stdio inside
