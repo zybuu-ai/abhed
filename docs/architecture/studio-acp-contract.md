@@ -1288,8 +1288,10 @@ _abhed/complete/cancel { sessionId } → {}
   context file outside the session's roots, one a read rule denies, one that
   looks like keys, or Abhed's state is not sent (`refused`); every path form
   (as named, links followed) is checked. Stored secrets and key-shaped text
-  are withheld from the whole of each text before it is cut; a reply that
-  carries one is dropped (empty `items`).
+  are withheld from the whole of each text before it is cut, and from
+  `prefix`+`suffix` as one so a secret the cursor splits is withheld on both
+  sides; placeholders (`%s`, `${…}`, `$NAME`, `{…}`, `<…>`, masks) are not
+  secrets. A reply that carries one is dropped (empty `items`).
 - One request in flight per session: a newer one cancels it (`cancelled`).
   `seq`, increasing per session, orders requests; one at or below the newest
   seen is dropped (`cancelled`). Without it, arrival order. A short debounce;

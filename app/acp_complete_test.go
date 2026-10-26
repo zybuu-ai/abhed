@@ -580,6 +580,7 @@ func TestStudioCompletionsBadRequestIsNotFallback(t *testing.T) {
 	}{
 		{`{"error":"This model's maximum context length is 2048 tokens"}`, false},
 		{`{"error":"suffix is not currently supported"}`, true},
+		{`{"error":"prompt plus suffix exceeds the context length of 4096 tokens"}`, false},
 		{`{"error":"registry.ollama.ai/library/llama3 does not support insert"}`, true},
 	} {
 		fim := newFIMServer(t, "c")
@@ -718,5 +719,46 @@ func TestStudioCompletionsRedirectsUnderLocalOnly(t *testing.T) {
 				t.Fatalf("a completion was sent %d times: %v", len(far), far)
 			}
 		})
+	}
+}
+
+// A secret the cursor splits is withheld whole: neither side keeps part of it.
+func TestStudioCompletionsWithholdAcrossTheCursor(t *testing.T) {
+	fim := newFIMServer(t, "ok")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	secret := "stored-secret-value-0123456789abcdef"
+	store := filepath.Join(os.Getenv("HOME"), ".abhed", "secrets.json")
+	if err := os.WriteFile(store, []byte(`{"FAKE_TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABHED_SECRETS_FILE", store)
+	id := r.open()
+	tok := "ghp_" + strings.Repeat("Z", 40)
+	for _, tc := range []struct{ prefix, suffix string }{
+		{"k := \"" + secret[:18], secret[18:] + "\"\nnext()"},
+		{"t := \"" + tok[:22], tok[22:] + "\"\nnext()"},
+		{"k := \"stored-secret-valué-" + "x", "\"\nnext()"}, // no secret: sent as written
+	} {
+		var res completeItems
+		r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": tc.prefix, "suffix": tc.suffix}, &res)
+	}
+	seen := fim.requests()
+	if len(seen) != 3 {
+		t.Fatalf("%d requests", len(seen))
+	}
+	for i, req := range seen[:2] {
+		p, sfx := fmt.Sprint(req["prompt"]), fmt.Sprint(req["suffix"])
+		for _, frag := range []string{"stored-secret", "0123456789", "ghp_", "ZZZZZZ"} {
+			if strings.Contains(p, frag) || strings.Contains(sfx, frag) {
+				t.Fatalf("request %d sent %q of a secret split at the cursor: %q | %q", i, frag, p, sfx)
+			}
+		}
+		if !strings.HasSuffix(sfx, "\"\nnext()") || !strings.Contains(p+sfx, "[secret") {
+			t.Fatalf("request %d: %q | %q", i, p, sfx)
+		}
+	}
+	if p, sfx := fmt.Sprint(seen[2]["prompt"]), fmt.Sprint(seen[2]["suffix"]); p != "k := \"stored-secret-valué-x" || sfx != "\"\nnext()" {
+		t.Fatalf("text with no secret changed: %q | %q", p, sfx)
 	}
 }
