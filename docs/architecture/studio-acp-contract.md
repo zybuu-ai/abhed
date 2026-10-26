@@ -1122,6 +1122,51 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   though the engine already refuses and filters these; it renders text as
   text and opens no path or URL from it without the person's action.
 
+### 7.9 Language servers
+
+```ts
+_abhed/lsp/start { sessionId, language: "go" | "python" | "typescript" | "javascript" | "rust" | <a sandbox.language_servers name>,
+                   capabilities?: ClientCapabilities }   // the editor's; a broad default when absent
+  → { lspId, capabilities: ServerCapabilities }
+_abhed/lsp/send  { lspId, message: <LSP JSON-RPC message> } → {} | { refused: string }
+_abhed/lsp/stop  { lspId } → {}
+// notifications
+_abhed/lsp/message { lspId, message: <LSP JSON-RPC message> }
+_abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart?, reason?, message? }
+```
+
+- Listed under the `lsp` feature. One server per session and language: a
+  second `start` returns the running one. At most four per connection.
+- The server runs in the session's sandbox on any tier but `none`; its
+  command (operator-named, else the language's default) is judged as the
+  person's `bash` call (`-32001` when refused) and recorded as `lsp.started`;
+  a missing server is `-32000` with `data.problem.kind: "server-missing"`.
+- The engine sends `initialize` (workspace folder, the given capabilities, no
+  `initializationOptions`) and `initialized`; Studio must not. File URIs are
+  the host's paths: the sandbox shows the workspace at its own path.
+- `send` passes Studio's message through the filter: refused with
+  `{refused}` (and, for a request, an LSP error answer in a `message`) for
+  `initialize`, `initialized`, `workspace/didChangeConfiguration`, a
+  `workspace/executeCommand` not on the server's safe list, a file URI
+  outside the session's roots, or an answer to nothing the server asked.
+  Answers to `workspace/configuration` reach the server as nulls.
+- From the server: `window/showDocument` for a non-file or outside URI is
+  answered by the engine (`success: false`); notifications naming outside
+  files are dropped; answers naming them reach Studio as `null`;
+  `workspace/applyEdit` and everything else pass to Studio.
+- A crash restarts the server (backoff 1, 2, 4, 8, 16 s, at most five), judged
+  and initialized again: `status: restarted` with its capabilities, after
+  which Studio opens its documents again. `stop` sends `shutdown` and `exit`
+  and ends it after three seconds. `lsp.stopped` records the reason and the
+  counts of messages passed and refused; requests are not recorded singly.
+- Messages are read by their exact keys: one with a key twice, or two keys
+  that differ only in case, anywhere in it, is refused from Studio and
+  dropped from the server. Header lines and their number are bounded, and a
+  message is at most 8 MiB.
+- Studio's `send`s reach the server in the order they were read, through one
+  queue per server (at most 256 waiting; past that `-32002`, busy) and one
+  writer; a server that stops reading its input is ended.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1243,6 +1288,7 @@ table.
 | Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
 | Worktree take-back | `_abhed/worktrees/list`, `_abhed/worktrees/take` | ext | done in the engine (1.2.9; `worktrees` in `features`); Studio's view not yet |
 | Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
+| Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |

@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -181,10 +182,10 @@ func TestLanguageServerRefusals(t *testing.T) {
 
 func TestLSPFraming(t *testing.T) {
 	br := bufio.NewReader(strings.NewReader("Content-Type: x\r\nContent-Length: 2\r\n\r\n{}Content-Length: 99999999999\r\n\r\n"))
-	if m, err := readLSPMessage(br); err != nil || string(m) != "{}" {
+	if m, err := lsprelay.Read(br); err != nil || string(m) != "{}" {
 		t.Fatalf("%q %v", m, err)
 	}
-	if _, err := readLSPMessage(br); err == nil {
+	if _, err := lsprelay.Read(br); err == nil {
 		t.Fatal("an oversized message was read")
 	}
 }
@@ -198,7 +199,7 @@ func TestLSPHeaderBounded(t *testing.T) {
 		"many headers": strings.Repeat("X-Pad: 1\r\n", 100) + "Content-Length: 2\r\n\r\n{}",
 	} {
 		br := bufio.NewReaderSize(strings.NewReader(in), 64<<10)
-		if _, err := readLSPMessage(br); err == nil || !strings.Contains(err.Error(), "header too long") {
+		if _, err := lsprelay.Read(br); err == nil || !strings.Contains(err.Error(), "header too long") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -376,7 +377,7 @@ func TestLSPGoplsRunsNothingThePageNames(t *testing.T) {
 		return res.StatusCode
 	}
 	env, _ := json.Marshal(map[string]any{"env": map[string]string{"GOPACKAGESDRIVER": driver, "GOFLAGS": "-toolexec=" + driver}})
-	uri := lspURI(wb.workspace)
+	uri := lsprelay.URI(wb.workspace)
 	post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"` + uri + `","initializationOptions":` + string(env) + `,"capabilities":{"workspace":{"configuration":true}}}}`)
 	post(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)
 	post(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"` + uri + `/a.go","languageId":"go","version":1,"text":"package m\n\nfunc A() {}\n"}}}`)

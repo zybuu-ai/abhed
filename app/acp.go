@@ -333,6 +333,9 @@ type acpConn struct {
 	debugs  map[string]*acpDebug
 	// debugReserved are slots held by launches still being judged.
 	debugReserved int
+	// lsps are the person's language servers, by id (§7.9).
+	lspMu sync.Mutex
+	lsps  map[string]*acpLSP
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -430,6 +433,9 @@ func (c *acpConn) serve(in io.Reader) error {
 		case msg.Method == "_abhed/debug/send":
 			// In the order read, so the adapter gets Studio's messages in order.
 			c.debugEnqueue(msg)
+		case msg.Method == "_abhed/lsp/send":
+			// Queued as read: a language server needs Studio's edits in order.
+			c.lspEnqueue(msg)
 		default:
 			// A prompt runs for as long as the model does; the loop must keep
 			// reading for the cancel and the permission answers meanwhile.
@@ -576,6 +582,7 @@ func (c *acpConn) closeAll() {
 	}
 	c.killTerminals("")
 	c.killDebugs("")
+	c.killLSPs("")
 }
 
 // shut ends a session's hold: its prompt and review window stop, its
@@ -593,6 +600,7 @@ func (c *acpConn) shut(s *acpSession) {
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)
+	c.killLSPs(s.id)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
