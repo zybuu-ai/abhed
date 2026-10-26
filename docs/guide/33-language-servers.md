@@ -65,8 +65,10 @@ nor the workspace can supply it. One where a command could have put it is
 refused: under a session folder, the sandbox's home or temporary folder
 (`$HOME`, `$TMPDIR`, `/tmp`, `/var/tmp`), or the host's home folder. Abhed's
 toolchain cache (`~/.cache/abhed/toolchains`, or under `XDG_CACHE_HOME`) is
-the exception: commands only read it, so the TypeScript that
-`abhed toolchain install -lsp node` puts there is used, on every tier. If
+the exception while the sandbox mounts it read-only, which it does on every
+tier unless `sandbox.toolchains` is `off`: commands can only read it then, so
+the TypeScript that `abhed toolchain install -lsp node` puts there is used.
+With `sandbox.toolchains` off the cache is not exempt. If
 none is found within 15 seconds, or the server ends first, it is stopped and
 the start fails with `server-missing`.
 
@@ -93,7 +95,8 @@ The check is repeated while rust-analyzer runs. It is stopped (status
 - every 10 seconds, a `rust-analyzer.toml` appears, changes or goes in a
   session folder or a folder above it, or one found at the start changes.
 
-Its next start asks you again. A file a command writes deeper in the tree,
+Its next start asks you again. One written while you are still being asked
+about the start stops it there: the server is not started. A file a command writes deeper in the tree,
 which Studio does not report, is seen at the next start; until then the
 running server may read it.
 

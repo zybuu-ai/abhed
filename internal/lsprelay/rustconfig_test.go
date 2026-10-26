@@ -129,6 +129,7 @@ func TestNamesRustAnalyzerConfig(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":"file:///w/.rust-analyzer.toml","type":1}]}}`:                         true,
 		`{"jsonrpc":"2.0","method":"workspace/didRenameFiles","params":{"files":[{"oldUri":"file:///w/x","newUri":"file:///w/rust-analyzer.toml"}]}}`:                  true,
 		`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///w/README.md"},"contentChanges":[{"text":"rust-analyzer.toml"}]}}`: false,
+		`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///w/rust%2Danalyzer.toml","text":""}}}`:                               true,
 		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///w/rust-analyzer.toml"}}}`:                                      false,
 	} {
 		if got := NamesRustAnalyzerConfig([]byte(body)); got != want {

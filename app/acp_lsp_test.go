@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -645,7 +646,7 @@ func TestStudioTypeScriptFromTheToolchainCache(t *testing.T) {
 		r := newStudioRig(t, `,"monitor":{"enabled":false}`)
 		home, _ := os.UserHomeDir()
 		oldRoot := lspToolchainRoot
-		lspToolchainRoot = func() string { return home + "/.cache/abhed/toolchains" }
+		lspToolchainRoot = func(config.Config) string { return home + "/.cache/abhed/toolchains" }
 		ts := home + "/" + c.ts
 		t.Setenv("ABHED_FAKE_LSP_TS", ts)
 		fakeLSP(t, r.ws, "ABHED_FAKE_LSP_TS="+ts)
@@ -662,5 +663,69 @@ func TestStudioTypeScriptFromTheToolchainCache(t *testing.T) {
 			r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
 		}
 		lspToolchainRoot = oldRoot
+	}
+}
+
+// A stop that comes while the start is being decided holds: an agent's
+// write of a rust-analyzer.toml during the question, or the person's own
+// stop, and no server runs; Studio is told it ended, and the end recorded.
+func TestStudioRustAnalyzerStopDuringTheQuestion(t *testing.T) {
+	for _, c := range []struct{ name, reason string }{
+		{"agent write", "workspace-config-changed"},
+		{"person's stop", "stopped"},
+	} {
+		r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+		asked := fakeLSP(t, r.ws)
+		r.write("crates/a/rust-analyzer.toml", "[cargo]\n")
+		id := r.open()
+		from := r.cl.mark()
+		r.cl.answering(func(method string, params json.RawMessage) any {
+			if method != "session/request_permission" {
+				return map[string]any{}
+			}
+			var p struct {
+				ToolCall struct {
+					ToolCallID string `json:"toolCallId"`
+				} `json:"toolCall"`
+			}
+			_ = json.Unmarshal(params, &p)
+			if c.reason == "stopped" {
+				r.cl.conn.lspMu.Lock()
+				var mine []*acpLSP
+				for _, l := range r.cl.conn.lsps {
+					mine = append(mine, l)
+				}
+				r.cl.conn.lspMu.Unlock()
+				for _, l := range mine {
+					l.stop("stopped")
+				}
+			} else {
+				r.write("crates/a/rust-analyzer.toml", "[cargo.buildScripts]\nenable = true\n")
+				args, _ := json.Marshal(map[string]any{"path": r.ws + "/crates/a/rust-analyzer.toml", "content": "x"})
+				payload, _ := json.Marshal(agent.ActionRequested{CallID: "w1", Tool: "write", Args: args})
+				r.cl.conn.lspNoteAction(r.cl.conn.session(id), abhed.Event{Type: agent.EvActionRequested, Payload: payload})
+			}
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "once:" + p.ToolCall.ToolCallID}}
+		})
+		m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "rust"})
+		if m.Error == nil {
+			t.Fatalf("%s: the start went ahead: %s", c.name, m.Result)
+		}
+		if len(*asked) != 0 {
+			t.Fatalf("%s: a server ran: %v", c.name, *asked)
+		}
+		r.cl.waitFor(from, "ended", func(m rpcMessage) bool {
+			return m.Method == "_abhed/lsp/status" && strings.Contains(string(m.Params), `"ended"`) && strings.Contains(string(m.Params), c.reason)
+		})
+		stopped, _ := r.recorded(id, agent.EvLSPStopped)
+		if len(stopped) != 1 || stopped[0]["reason"] != c.reason {
+			t.Fatalf("%s: lsp.stopped %v", c.name, stopped)
+		}
+		r.cl.conn.lspMu.Lock()
+		left := len(r.cl.conn.lsps)
+		r.cl.conn.lspMu.Unlock()
+		if left != 0 {
+			t.Fatalf("%s: %d servers still listed", c.name, left)
+		}
 	}
 }

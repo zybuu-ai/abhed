@@ -319,7 +319,9 @@ func TestScriptRunsUnderTheShells(t *testing.T) {
 		if code != 0 || !strings.Contains(out, "GOTOOLCHAIN=local GOFLAGS=[] GOENV=off") {
 			t.Fatalf("%s gopls: %d %q %q", shell, code, out, errOut)
 		}
-		out, errOut, code = run(Script([]string{"typescript-language-server", "--stdio"}, ""))
+		// The fixture is named as the toolchain root, so where the test's
+		// temporary folder lives (/tmp included) does not matter here.
+		out, errOut, code = run(Script([]string{"typescript-language-server", "--stdio"}, prefix))
 		if code != 0 || !strings.Contains(out, "ts argv=--stdio") || !strings.Contains(errOut, TSServerMarker+realTS) {
 			t.Fatalf("%s typescript: %d %q %q", shell, code, out, errOut)
 		}

@@ -513,6 +513,11 @@ func Isolation(cfg config.Config, tier string) tools.Isolation {
 
 // toolchainCache is the toolchain cache, made so a container can mount it,
 // or "" where sandbox.toolchains is off or it cannot be made.
+// ToolchainCache is the toolchain cache root the sandbox mounts read-only
+// for cfg, or "" when it does not (sandbox.toolchains off): only then is a
+// file there one no command could have written.
+func ToolchainCache(cfg config.Config) string { return toolchainCache(cfg) }
+
 func toolchainCache(cfg config.Config) string {
 	if cfg.Sandbox.Toolchains == "off" {
 		return ""

@@ -12,13 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
-	"github.com/zybuu-ai/abhed/internal/toolchain"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -209,7 +208,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	var watch *lsprelay.RustAnalyzerWatch
 	if req.Language == "rust" {
 		watch = lsprelay.NewRustAnalyzerWatch(sess.PolicyRoots(), nil)
-		raFiles, incomplete := live.raConfigs.Get(sess.PolicyRoots(), strconv.FormatInt(live.Loop.Recorder.LastAppended(), 10))
+		raFiles, incomplete := live.raConfigs.Get(sess.PolicyRoots(), lsprelay.RecordStamp(live.Loop.Recorder))
 		watch.Add(raFiles)
 		if why := lsprelay.RustAnalyzerConfigWhy(raFiles, incomplete); why != "" {
 			WriteError(w, http.StatusConflict, "not started: "+why+"; start it from Abhed Studio, which asks you, or remove the file")
@@ -236,7 +235,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
-	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Script(argv, lspToolchainRoot()))
+	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Script(argv, lspToolchainRoot(cfg)))
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
@@ -340,7 +339,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(lspTSWait):
 		}
 		home, _ := os.UserHomeDir()
-		if lsprelay.TSServerRefused(ts, run.roots, home, lspToolchainRoot()) {
+		if lsprelay.TSServerRefused(ts, run.roots, home, lspToolchainRoot(cfg)) {
 			cancel()
 			<-run.done
 			WriteError(w, http.StatusConflict, "typescript-language-server was not started: no TypeScript is installed beside it where commands cannot write (Abhed's toolchain cache, or outside the session's folders, home and temporary folders), and the workspace's own is not used")
@@ -420,12 +419,11 @@ func (l *lspRun) stopFor(reason string) {
 	l.cancel()
 }
 
-// lspToolchainRoot is Abhed's toolchain cache, which the sandbox only
-// reads: a TypeScript there is taken though it is under the home folder.
-var lspToolchainRoot = func() string {
-	root, _ := toolchain.DefaultRoot()
-	return root
-}
+// lspToolchainRoot is Abhed's toolchain cache when the sandbox mounts it
+// read-only (sandbox.toolchains not off): a TypeScript there is taken
+// though it is under the home folder. Otherwise it is "" and nothing is
+// exempt.
+var lspToolchainRoot = sandboxconfig.ToolchainCache
 
 // lspTSWait bounds the wait for typescript-language-server's start to name
 // the TypeScript beside it; tests shorten it.
