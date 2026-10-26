@@ -526,13 +526,16 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// General pass: any other command not fully read has its code-ish arguments
 	// and its stdin parsed and judged, so a quote-split or variable-built delete
 	// is seen however it is spelled.
-	if unknownRunner(prog) && !r.cmdFullyRead(cmd) {
+	if unknownRunner(prog) && !r.cmdFullyRead(cmd) && !searcher[prog] {
 		handed := handedArgs(cmd, args)
 		if !sqlClient[prog] {
 			handed = append(handed, cmd.stdin...) // a SQL client's stdin is its query, judged above
 		}
+		// A command run on a remote host or in a container reaches remote paths,
+		// not host ground, so its paths are suppressed; a deleter is still caught.
+		remote := container || prog == "ssh" || prog == "fly" || prog == "heroku"
 		for _, code := range handed {
-			if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
+			if r.codeVerdict(k, c, code, where, depth+1, remote) != nil {
 				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 					Rationale: fmt.Sprintf("%s is handed code that looks like it deletes or shells out; %s", prog, remit(c)),
 					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
@@ -542,7 +545,7 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// The fallback for one command: read in part, and naming a deleter or a
 	// protected root, it is asked about (the line-level fallback covers text
 	// spread over several commands).
-	if !handledRunner(prog) && !r.cmdFullyRead(cmd) && cmdMentionsDanger(cmd, container) {
+	if !handledRunner(prog) && !r.cmdFullyRead(cmd) && cmdMentionsDanger(cmd, container || remoteExec(prog)) {
 		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
 			Rationale: fmt.Sprintf("%s runs something the check does not read in full, and it names a deleting program or a protected folder; %s", prog, remit(c)),
 			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
@@ -1070,7 +1073,7 @@ func dangerWords(cmd command) []string {
 // root.
 func cmdMentionsDanger(cmd command, container bool) bool {
 	prog, _ := cmd.program()
-	container = container || containerProg(progBase(prog))
+	container = container || containerProg(progBase(prog)) || remoteExec(progBase(prog))
 	for _, w := range commandText(cmd) {
 		if deleterWord.MatchString(w) {
 			return true
@@ -2098,7 +2101,7 @@ func gitPruneHistory(args []string) (string, bool) {
 			return "prune unreachable commits for good", true
 		}
 	case "reflog":
-		if len(ops) > 1 && ops[1] == "expire" && (hasPrefix(args, "--expire=now") || hasPrefix(args, "--expire-unreachable=now") || hasFlag(args, "--expire=0")) {
+		if len(ops) > 1 && ops[1] == "expire" && (hasPrefix(args, "--expire=now") || hasPrefix(args, "--expire=all") || hasPrefix(args, "--expire-unreachable=now") || hasFlag(args, "--expire=0")) {
 			return "expire the reflog, losing the way back to discarded commits", true
 		}
 	}
@@ -2178,6 +2181,10 @@ func packageRunner(words []string) []string {
 		return w
 	}
 	for len(words) > 0 {
+		if words[0] == "--" {
+			words = words[1:]
+			continue
+		}
 		switch progBase(words[0]) {
 		case "npx", "bunx", "pnpx":
 			words = skipOpts(words[1:])
@@ -2195,8 +2202,13 @@ func packageRunner(words []string) []string {
 			}
 			if len(words) > 0 {
 				switch words[0] {
-				case "exec", "dlx", "x", "run", "run-script":
+				case "exec", "dlx", "x":
 					words = skipOpts(words[1:])
+				case "run", "run-script":
+					words = skipOpts(words[1:]) // words[0] is now the script
+					if len(words) > 1 && words[1] == "--" {
+						words = append(words[:1:1], words[2:]...) // drop -- after the script
+					}
 				default:
 					if runner == "npm" {
 						return words // npm runs a bin only through exec/run
@@ -2206,8 +2218,24 @@ func packageRunner(words []string) []string {
 			if len(words) > 0 && words[0] == "--" {
 				words = words[1:]
 			}
+		case "dotenv", "cross-env", "env-cmd":
+			// An env-setting runner: NODE_ENV=x and -e FILE, then the real command.
+			words = words[1:]
+			for len(words) > 0 && (strings.HasPrefix(words[0], "-") || strings.Contains(words[0], "=")) && words[0] != "--" {
+				if (words[0] == "-e" || words[0] == "-f" || words[0] == "-c" || words[0] == "-v") && len(words) > 1 {
+					words = words[1:]
+				}
+				words = words[1:]
+			}
+			if len(words) > 0 && words[0] == "--" {
+				words = words[1:]
+			}
 		default:
-			// A package spec names its program: aws-cdk@2 is cdk, serverless@3 is serverless.
+			// A package spec names its program: aws-cdk@2 is cdk, serverless@3 is
+			// serverless, @aws-cdk/cli is cdk.
+			if strings.HasPrefix(words[0], "@aws-cdk/") {
+				words[0] = "cdk"
+			}
 			if i := strings.LastIndex(words[0], "@"); i > 0 {
 				words[0] = words[0][:i]
 			}
@@ -2242,12 +2270,29 @@ func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth 
 	prog, args := command{words: w, call: cmd.call}.program()
 	prog = progBase(prog)
 	// su/runuser/doas -c CODE runs a shell: judge that code as handed code.
+	// Their `-- CMD` (runuser -u USER -- psql …) runs CMD as given.
 	if prog == "su" || prog == "runuser" || prog == "doas" {
 		for i, a := range args {
 			if a == "-c" && i+1 < len(args) {
 				if r.codeVerdict(k, c, args[i+1], where, depth+1, false) != nil {
 					return ask("run code the check cannot read")
 				}
+			}
+			if a == "--" {
+				sub := command{words: args[i+1:], stdin: cmd.stdin}
+				sp, sa := sub.program()
+				sp = progBase(sp)
+				for _, fn := range []func() (string, bool){
+					func() (string, bool) { return stdinDestructive(sp, sub.stdin) },
+					func() (string, bool) { return dataInfraDestructive(sp, sa) },
+					func() (string, bool) { return clusterDestructive(sp, sa) },
+					func() (string, bool) { return r.embeddedDataStore(sub) },
+				} {
+					if what, ok := fn(); ok {
+						return ask(what)
+					}
+				}
+				break
 			}
 		}
 	}
@@ -2272,25 +2317,47 @@ func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth 
 // container model does not cover — ssh HOST, oc/docker-compose exec, heroku
 // pg:psql/run, fly ssh console -C — and judges the drop or flush it carries.
 // A client named only in a message value or printed by echo/printf is skipped.
+// remoteExec runs its command on another host or in a container, so the paths
+// it names are not host ground.
+func remoteExec(prog string) bool {
+	switch prog {
+	case "ssh", "fly", "heroku":
+		return true
+	}
+	return false
+}
+
+// searcher reads or matches patterns in its arguments; they are data.
+var searcher = map[string]bool{"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true}
+
 func (r Rules) embeddedDataStore(cmd command) (string, bool) {
 	prog, _ := cmd.program()
 	switch progBase(prog) {
-	case "echo", "printf":
-		return "", false
+	case "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag":
+		return "", false // a printer or searcher: its operands are text, not a client
+	}
+	// Flatten the words to tokens, dropping a commit/tag/PR message value whole
+	// (a client named in a message is not run), for git/gh/glab/hg only.
+	msgProg := false
+	switch progBase(prog) {
+	case "git", "gh", "glab", "hg", "jj":
+		msgProg = true
 	}
 	var tok []string
-	for _, w := range cmd.words {
-		tok = append(tok, strings.Fields(w)...)
-	}
-	for i := 0; i < len(tok); i++ {
-		if msgFlag(tok[i]) {
-			if !strings.Contains(tok[i], "=") {
-				i++
+	for wi := 0; wi < len(cmd.words); wi++ {
+		w := cmd.words[wi]
+		if msgProg && msgFlag(w) {
+			if !strings.Contains(w, "=") {
+				wi++ // drop the message value word whole
 			}
 			continue
 		}
+		tok = append(tok, strings.Fields(w)...)
+	}
+	for i := 0; i < len(tok); i++ {
 		base := progBase(tok[i])
-		if base == prog || !sqlClient[base] && base != "redis-cli" && base != "mongosh" && base != "mongo" {
+		if base == prog || !sqlClient[base] && base != "redis-cli" && base != "mongosh" &&
+			base != "mongo" && base != "dropdb" && base != "dropuser" {
 			continue
 		}
 		rest := tok[i+1:]
@@ -2339,7 +2406,7 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 		}
 	case prog == "pulumi" || prog == "cdk":
 		if slices.Contains(args, "destroy") || prog == "pulumi" && slices.Contains(args, "down") ||
-			prog == "pulumi" && slices.Contains(args, "up") && (slices.Contains(args, "--replace") || hasPrefix(args, "--replace=")) {
+			prog == "pulumi" && slices.Contains(args, "up") && (slices.Contains(args, "--replace") || hasPrefix(args, "--replace=") || slices.Contains(args, "--target-replace") || hasPrefix(args, "--target-replace=")) {
 			return "destroy infrastructure", true
 		}
 	case prog == "sam" && slices.Contains(args, "delete"),
@@ -2355,6 +2422,12 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 	case prog == "aws":
 		if awsDestroy.MatchString(text) {
 			return "delete cloud resources", true
+		}
+	case prog == "heroku":
+		for _, a := range args {
+			if a == "pg:reset" {
+				return "reset a Heroku database", true
+			}
 		}
 	}
 	return "", false
@@ -3059,7 +3132,7 @@ func unreadVal(s string) bool { return strings.Contains(s, "$") }
 // whitespace or a shell metacharacter, a code flag's value, less the message
 // values (a commit message, a sed script) dangerWords also drops.
 func handedArgs(cmd command, args []string) []string {
-	if prog, _ := cmd.program(); sqlClient[progBase(prog)] {
+	if prog, _ := cmd.program(); sqlClient[progBase(prog)] || progBase(prog) == "heroku" {
 		// A SQL client's query is data, except where it escapes to a shell
 		// (\!, \o |, .shell, system, COPY … PROGRAM): that part is code. The
 		// query can also arrive on stdin (echo '\! …' | psql).
