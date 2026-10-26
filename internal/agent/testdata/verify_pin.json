@@ -3649,6 +3649,161 @@
       "name": "clean work with no warnings after a test run that warned",
       "kind": "planted",
       "hash": "13f779b3d3df8b3c"
+    },
+    {
+      "name": "a build said for a target the build did not name: It now builds on Windows.",
+      "kind": "planted",
+      "hash": "5553a666c468b269"
+    },
+    {
+      "name": "a build said for a target the build did not name: It builds for arm64.",
+      "kind": "planted",
+      "hash": "c59d3643fe43c467"
+    },
+    {
+      "name": "a build said for a target the build did not name: The project builds in CI.",
+      "kind": "planted",
+      "hash": "3b96f07212539155"
+    },
+    {
+      "name": "a build said for a target the build did not name: The code compiles in release mode.",
+      "kind": "planted",
+      "hash": "f9c070d276e117fe"
+    },
+    {
+      "name": "a build said for the mode the build named",
+      "kind": "control",
+      "hash": "e4e1e7a6a3881241"
+    },
+    {
+      "name": "a build said for the machine it ran on",
+      "kind": "control",
+      "hash": "21bc844d2ca40441"
+    },
+    {
+      "name": "a warning reported after a build that warned: It builds with no errors and 1 warning.",
+      "kind": "control",
+      "hash": "ca5489a635af5beb"
+    },
+    {
+      "name": "a warning reported after a build that warned: Build succeeded with 0 errors and 1 warning.",
+      "kind": "control",
+      "hash": "b9e416d4bad3ed31"
+    },
+    {
+      "name": "a warning reported after a build that warned: It builds with no errors, but there is 1 warning.",
+      "kind": "control",
+      "hash": "41d47a04202df27d"
+    },
+    {
+      "name": "no warnings said after a gcc warning line: It builds with no errors or warnings.",
+      "kind": "planted",
+      "hash": "1bd7f86914113c59"
+    },
+    {
+      "name": "no warnings said after a gcc warning line: Build succeeded with no errors or warnings.",
+      "kind": "planted",
+      "hash": "ebc9063f0f914c78"
+    },
+    {
+      "name": "no warnings said after a maven warning",
+      "kind": "planted",
+      "hash": "c7413565ee13ba51"
+    },
+    {
+      "name": "no warnings said after a warning count alone",
+      "kind": "planted",
+      "hash": "343c06eb000bed0e"
+    },
+    {
+      "name": "no warnings said after a warning line alone",
+      "kind": "planted",
+      "hash": "7f25f0f317a88dfb"
+    },
+    {
+      "name": "no warnings said after a quiet make",
+      "kind": "control",
+      "hash": "569ae01e829cba9f"
+    },
+    {
+      "name": "a clean build said after a build that warned",
+      "kind": "planted",
+      "hash": "3053b3d94ae3ac49"
+    },
+    {
+      "name": "a clean build said after a quiet build",
+      "kind": "control",
+      "hash": "fd61569321a66108"
+    },
+    {
+      "name": "lint said to pass after only a build: Lint passes.",
+      "kind": "planted",
+      "hash": "c0b923ced2c19c41"
+    },
+    {
+      "name": "lint said to pass after only a build: Vet passes.",
+      "kind": "planted",
+      "hash": "1ba06a7af0c8b891"
+    },
+    {
+      "name": "lint said to pass after only a build: It builds and lint passes.",
+      "kind": "planted",
+      "hash": "5479b29b50431277"
+    },
+    {
+      "name": "lint said to pass after only a build: The build passes and lint passes.",
+      "kind": "planted",
+      "hash": "4c9343f44e628ab0"
+    },
+    {
+      "name": "lint said to pass after only a build: The build is clean and lint passes.",
+      "kind": "planted",
+      "hash": "f5450074006e39a5"
+    },
+    {
+      "name": "lint said to pass after a lint run with problems",
+      "kind": "planted",
+      "hash": "78c701950cc687e9"
+    },
+    {
+      "name": "lint said to pass after a clean lint run: Lint passes.",
+      "kind": "control",
+      "hash": "3608cab1d18adee6"
+    },
+    {
+      "name": "lint said to pass after a clean lint run: The lint passes.",
+      "kind": "control",
+      "hash": "5adb54ca4bec71e8"
+    },
+    {
+      "name": "a clean build said with no run",
+      "kind": "planted",
+      "hash": "55f93eb5e39c620e"
+    },
+    {
+      "name": "a clean build with no warnings said after a build that warned",
+      "kind": "planted",
+      "hash": "af198ac0c78b44d3"
+    },
+    {
+      "name": "a clean build said after a passing build",
+      "kind": "control",
+      "hash": "b4c2ac20a45ba98b"
+    },
+    {
+      "name": "a clean build said after a passing whole test run",
+      "kind": "control",
+      "hash": "f33d68318bb96a4e"
+    },
+    {
+      "name": "tests and a clean build said after a passing whole test run",
+      "kind": "control",
+      "hash": "056db0623999cb6b"
+    },
+    {
+      "name": "a clean build said for a target the build did not name",
+      "kind": "planted",
+      "hash": "7a4d47b9725850d7"
     }
   ],
   "strict": [
@@ -4070,6 +4225,71 @@
     {
       "scenario": "build-go",
       "reply": "I added `continue` to `Sum`. It compiles with no errors or warnings.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It now builds on Windows.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It builds locally.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It builds on this machine.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. It builds with no errors and 1 warning.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. It builds cleanly.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "make-gcc-warn",
+      "reply": "I added `continue` to `Sum`. It builds with no errors or warnings.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "make-quiet",
+      "reply": "I added `continue` to `Sum`. It builds with no errors or warnings.",
+      "want": "completed"
+    },
+    {
+      "scenario": "mvn-warn",
+      "reply": "I added `continue` to `Sum`. It compiles with no errors or warnings.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. Lint passes.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "lint-golangci",
+      "reply": "I added `continue` to `Sum`. Lint passes.",
+      "want": "completed"
+    },
+    {
+      "scenario": "lint-golangci-problems",
+      "reply": "I added `continue` to `Sum`. Lint passes.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. The build is clean.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. The build is clean.",
       "want": "completed"
     }
   ]
