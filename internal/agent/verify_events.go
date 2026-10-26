@@ -38,6 +38,9 @@ var (
 	// staticPhrases are participles that describe code as it stands, not an
 	// event: the short allowlist the guide names.
 	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
+	// searchFoundRe is what a search turned up: its output, not a change.
+	searchFoundRe = regexp.MustCompile(`\b(?:search|grep|scan)\b[^.;]*?\bturned up\b`)
+
 	// outputSaysRe is a tool's output said as such: "pytest reported 2
 	// skipped" describes the output, which the checks compare it with.
 	outputSaysRe = regexp.MustCompile(`\b(?:pytest|jest|vitest|mocha|go test|go vet|npm|pnpm|yarn|cargo|kubectl|git|gofmt|golangci-lint|ruff|eslint|flake8|pylint|mypy|rubocop|staticcheck|shellcheck|clippy|tsc|(?:the|its|this|that)\s+(?:\w+'s\s+)?(?:output|run|tool|command|log|logs|result|results|test run|tests|suite|build|linter|summary|read|search|grep|listing|file|job|pipeline|scan))\s+(?:reported|reports|printed|prints|showed|shows|said|says|returned|gave|listed|logged|reads|read|ran|counted|found|finds|collected|matched)\b`)
@@ -76,6 +79,7 @@ func eventWords(text string) []string {
 	t = countOutcomeRe.ReplaceAllString(t, " ")
 	t = staticPhrases.ReplaceAllString(t, " ")
 	t = outputSaysRe.ReplaceAllString(t, " ")
+	t = searchFoundRe.ReplaceAllString(t, " ")
 	t = noFailRe.ReplaceAllString(t, " ")
 	out := eventWordRe.FindAllString(t, -1)
 	// "after moving `total := 0` up": a change said as what came before.
@@ -387,8 +391,14 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 			switch {
 			case t == hit || isFile(nt) || inNew:
 			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
+			case f.anchorNamed[nt] != "" && !inOld:
+				// A side named ("before `X`") is the side: on the edit's text
+				// or the file after it, never a line merely enclosing.
+				if !anchorSide(f.anchorNamed[nt], nt, ct.new, put) && !anchorSide(f.anchorNamed[nt], nt, ix.fileAfter(ct), put) {
+					ok = false
+				}
 			case (added || f.inNamed[nt]) && !inOld && after(nt):
-			case !inOld && ctxE.hasLiteral(nt) && (anchorSide(f.anchorNamed[nt], nt, ct.new, put) || after(nt)):
+			case !inOld && ctxE.hasLiteral(nt) && after(nt):
 			default:
 				ok = false
 			}
@@ -415,16 +425,24 @@ func anchorSide(prep, nt, text, put string) bool {
 	}
 	first := firstCodeLine(put)
 	lines := strings.Split(text, "\n")
-	at, pi := -1, -1
+	pi := -1
 	for i, l := range lines {
-		if pi < 0 && first != "" && strings.TrimSpace(l) == first {
+		if first != "" && strings.TrimSpace(l) == first {
 			pi = i
+			break
 		}
-		if at < 0 && strings.Contains(normText(l), nt) {
+	}
+	if pi < 0 {
+		return false
+	}
+	// The anchor line nearest the put-in line: a name may sit there twice.
+	at := -1
+	for i, l := range lines {
+		if i != pi && strings.Contains(normText(l), nt) && (at < 0 || absInt(i-pi) < absInt(at-pi)) {
 			at = i
 		}
 	}
-	if at < 0 || pi < 0 {
+	if at < 0 {
 		return false
 	}
 	switch prep {
@@ -434,6 +452,13 @@ func anchorSide(prep, nt, text, put string) bool {
 		return at > pi
 	}
 	return at == pi-1 || at == pi+1
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // isTestFile reports a file of tests.
@@ -841,9 +866,6 @@ func clauses(text string) []string {
 			held = piece // a lead with no verb goes with what follows
 		case len(out) > 0 && !has:
 			out[len(out)-1] += " " + piece
-		case len(out) > 0 && contrastRe.MatchString(strings.ToLower(piece)):
-			// "looks good for positives, but it counts negatives" is one claim.
-			out[len(out)-1] += ", " + piece
 		case len(out) > 0 && checkLeadRe.MatchString(normText(out[len(out)-1])):
 			// "I tested it: all 12 tests pass" is one claim: what was tested.
 			out[len(out)-1] += ": " + piece
@@ -863,9 +885,6 @@ func clauses(text string) []string {
 	}
 	return out
 }
-
-// contrastRe opens a clause that qualifies the one before it.
-var contrastRe = regexp.MustCompile(`^(?:but|except|however|though|although|apart from|other than)\b`)
 
 // checkLeadRe is a check said with nothing after it: "I tested it".
 var checkLeadRe = regexp.MustCompile(`^(?:(?:i|we|i've|we've) )?(?:\w+ly )?(?:tested|verified|checked|confirmed|ran the tests)(?: (?:it|this|that|them|everything|all|the change|the fix))?(?: (?:locally|again|manually|myself|here|too|as well))?[.:]?$`)

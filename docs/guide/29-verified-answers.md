@@ -231,13 +231,18 @@ counts (`12 tests`, `replicas: 3`). Then:
   placeholder" stay unverified, whatever the result shows. A claim that
   the work is clean ("no issues", "looks good", "nothing else needs
   changing", "everything is in order", "LGTM", "no regressions", "the
-  code is clean") is work too, shown only by a lint or whole test run
-  that passed after the last change; a lint run is whole with no path,
-  `.` or `./...` (`golangci-lint run ./...`, `ruff check .`, `eslint .`,
-  `flake8`, `pylint`, `mypy`, `rubocop`, `staticcheck`, `go vet ./...`,
-  `cargo clippy`, `tsc --noEmit`), and "found" or "reports" in such a
-  sentence is the run's. Praise of a part ("looks good for positive
-  inputs, but …") or a denial ("does not look correct") is no such claim.
+  code is clean", "everything works", "lint is clean", "I couldn't find
+  any other issues") is work too, shown only by a lint or whole test run
+  that passed after the last change ("lint is clean" by a lint run alone,
+  "everything works" by a test or build run). A lint run counts only as a
+  check (`golangci-lint run`, `ruff check`, not `fmt`, `format` or
+  `--version`), over the whole workspace (no path, `.` or `./...`) or
+  over every file changed, and only when its output reports no problems
+  (`✖ 3 problems (0 errors, 3 warnings)` is not clean); "found" or
+  "reports" in such a sentence is the run's. A contrast after it ("LGTM,
+  but consider a test") never takes the claim back; a denial ("does not
+  look correct") is no such claim. "It compiles" and "the project builds"
+  need a build run that passed.
 - **An event is shown only by the calls.** Output (a read, a run's text)
   can verify only a sentence that describes content as it stands. A
   sentence that reports an event is shown only by the record's calls,
@@ -264,8 +269,10 @@ counts (`12 tests`, `replicas: 3`). Then:
   read `calc`" names no file, and is not shown by a read that mentions
   it; "I checked `sum.go`: …" and "I reviewed `sum.go`: …" are looks,
   shown by the read; "I read the `Sum` function" is shown by a read of a file that
-  declares `Sum`. A check or a release (tested, verified, reviewed, deployed,
-  shipped, merged and the like) is never shown. Three things are left out
+  declares `Sum`. Apart from "checked" or "reviewed" with a file, which are
+  looks, a check or a release (tested, verified, reviewed, deployed,
+  shipped, merged and the like) is never shown, and a look never shows a
+  build, a compile or a test ("I checked: it compiles" needs a build run). Three things are left out
   before a sentence is read as an event:
   - a count with its own outcome ("3 tests failed", "3 files changed"),
     which the count check compares with the output's;
@@ -383,9 +390,10 @@ counts (`12 tests`, `replicas: 3`). Then:
   `/admin`. A context line the edit carried counts only when it encloses
   the changed lines (a YAML key, a `[section]` header, a function header,
   the decorators above a decorator) or when the sentence names it as an
-  anchor, on the side the sentence says ("after `log.Print(err)`" needs
-  that line above the change, "before" or "above" below it); a sibling
-  line does not. A
+  anchor, on the side the sentence says, in the edit or the file after it
+  ("after `log.Print(err)`" needs that line above the change, "before" or
+  "above" below it; "below `def orders()`" for a decorator put above it
+  stays unverified); a sibling line does not. A
   replacement is located by where its old text sat in the file before,
   and a deletion's place is where it sat. Any other change (set, changed, updated, renamed, moved) needs
   its code in the new text, every piece of it: code only in the old text
@@ -602,7 +610,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 511 plant a wrong claim. Some cite the result that shows them wrong
+session. 545 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -665,7 +673,7 @@ the run, commands after a failed `&&`, `||` or `exit`, a copy's or a link's
 source, a write refused in a folder `mkdir` made, a remote `rm`, a program
 at another path, a success of no named kind, a path read from an edit's own
 report, reads relied on after changes the checks cannot rule out, and more.
-127 controls say only what the session showed, among them a folder claim met
+142 controls say only what the session showed, among them a folder claim met
 by an edit in it, `sed -l` or `perl -I` with their values, a run given only
 `NO_COLOR`, a files-changed count, failed counts from a run that failed, "12
 of 12 tests passed", "12 tests passed, all of them" and "all 12 tests pass"
@@ -694,10 +702,10 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 511
+tail, a port not listening, a file not in a response). Today none of the 545
 planted claims is shown as verified (30 are contradicted, all from cited,
-conflicting evidence; the rest unverified), all 127 controls are verified,
-and none of the 223 true or neutral claims is contradicted. 19 of the
+conflicting evidence; the rest unverified), all 142 controls are verified,
+and none of the 238 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -707,7 +715,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 64 strict-mode
+control, by name and by a hash of its text and calls, and 74 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -727,7 +735,10 @@ makes them.
   ("twelve" for `12`) is unverified. Quote the output, or use the answer tool's
   `quote`, where it matters. What code does is compared only by its names:
   "`Login` lets every `token` through because `check` returns nil" is
-  verified when the read holds `Login`, `token`, `check` and `nil`.
+  verified when the read holds `Login`, `token`, `check` and `nil`, and
+  "`Sum` counts negatives" after a read of a `Sum` that skips them is
+  verified when the read holds `Sum`: the words between the names are not
+  compared.
 - A subagent's work is placed at its return, so a parent's change made while
   a background subagent was still running may not make its output out of date.
 - Remote state (a cluster, a host over ssh) is only as current as the last

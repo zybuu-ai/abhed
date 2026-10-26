@@ -14,7 +14,7 @@ func TestFalseClaimCorpus(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Planted < 511 || rep.Controls < 127 || rep.Neutral < 96 {
+	if rep.Planted < 545 || rep.Controls < 142 || rep.Neutral < 96 {
 		t.Fatalf("the corpus shrank: %d planted, %d controls, %d neutral", rep.Planted, rep.Controls, rep.Neutral)
 	}
 	if rep.Caught != rep.Planted {
@@ -23,7 +23,7 @@ func TestFalseClaimCorpus(t *testing.T) {
 	if rep.FalseContradicted != 0 {
 		t.Errorf("true or neutral claims contradicted: %d", rep.FalseContradicted)
 	}
-	const contradictedFloor, verifiedFloor = 30, 127
+	const contradictedFloor, verifiedFloor = 30, 142
 	if rep.Contradicted < contradictedFloor || rep.Verified < verifiedFloor {
 		t.Errorf("below the floor: %d contradicted (floor %d), %d controls verified (floor %d)",
 			rep.Contradicted, contradictedFloor, rep.Verified, verifiedFloor)
