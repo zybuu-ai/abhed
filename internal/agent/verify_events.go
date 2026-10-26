@@ -50,7 +50,7 @@ var (
 	// observeRe is the agent saying it looked at something.
 	observeRe = regexp.MustCompile(`(?:^|\b(?:i|we|i've|we've|i have|we have|the agent|abhed)\s+(?:\w+ly\s+|also\s+|then\s+|first\s+|just\s+)*)(read|opened|looked (?:at|through|into)|viewed|listed|searched|grepped|found|inspected|fetched|scanned|examined)\b`)
 	// addRe and removeRe give a change's direction.
-	addRe    = regexp.MustCompile(`\b(add|adds|added|adding|introduc\w*|insert\w*|new|newly)\b`)
+	addRe    = regexp.MustCompile(`\b(add|adds|added|adding|introduc\w*|insert\w*|new|newly|now)\b`)
 	removeRe = regexp.MustCompile(`\b(remov\w*|delet\w*|drop\w*|strip\w*)\b`)
 )
 
@@ -132,6 +132,7 @@ type changeText struct {
 	path     string
 	old, new string
 	fresh    bool
+	created  bool   // a fresh write that made the file: all of it is added
 	full     string // a write's whole text, the next write's old text
 }
 
@@ -192,7 +193,7 @@ func (ix *recordIndex) changeTexts() []changeText {
 		case "write":
 			before, known := ix.before(a.Path, m.pos, out)
 			if !known {
-				out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, new: a.Content, fresh: true, full: a.Content})
+				out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, new: a.Content, fresh: true, full: a.Content, created: m.created})
 				continue
 			}
 			oldL, newL := lineDiff(before, a.Content)
@@ -310,7 +311,12 @@ func mutatingCmd(cmd string) bool {
 // removal, the reverse; any other change, one in either. A write of a file
 // the session had not read says nothing of what it added or removed.
 func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText) {
-	tokens := f.tokens
+	var tokens []string
+	for _, t := range f.tokens {
+		if !f.toolNamed[normText(t)] {
+			tokens = append(tokens, t)
+		}
+	}
 	if len(tokens) == 0 {
 		return finding{out: missing, why: "it says what was changed but names neither a file nor code, and changes are read only from the calls"}, nil
 	}
@@ -320,29 +326,60 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		if path != "" && !samePathAs(ct.path, path) {
 			continue
 		}
-		if ct.fresh && f.dir != "" {
+		if ct.fresh && !ct.created && f.dir != "" {
 			continue
 		}
-		oldE, newE := prepareEvidence(ct.old, false), prepareEvidence(ct.new, false)
-		hit, all := "", true
+		// A test file shows an addition only to a claim about tests.
+		if ct.created && isTestFile(ct.path) && !f.saysTest {
+			continue
+		}
+		oldE, newE := prepareEvidence(codeLines(ct.old, ct.path), false), prepareEvidence(codeLines(ct.new, ct.path), false)
+		var afterE *evidenceText
+		after := func(nt string) bool {
+			if afterE == nil {
+				afterE = prepareEvidence(ix.fileAfter(ct), false)
+			}
+			return afterE.hasLiteral(nt)
+		}
+		isFile := func(nt string) bool {
+			return ct.path != "" && (nt == normText(filepath.Base(ct.path)) || nt == normText(ct.path) || strings.HasSuffix(normText(ct.path), "/"+nt))
+		}
+		// The token that shows the change: put in for an addition or a change
+		// with no direction, taken away for a removal.
+		hit, added := "", false
 		for _, t := range tokens {
 			nt := normText(t)
 			inOld, inNew := oldE.hasLiteral(nt), newE.hasLiteral(nt)
 			switch {
-			case ct.path != "" && (nt == normText(filepath.Base(ct.path)) || nt == normText(ct.path) || strings.HasSuffix(normText(ct.path), "/"+nt)):
+			case isFile(nt):
 				if hit == "" && path == "" {
 					hit = t // the changed file itself, named as code
 				}
-			case f.dir == "add" && inNew && !inOld, f.dir == "remove" && inOld && !inNew, f.dir == "" && (inNew || inOld):
+			case f.dir == "remove" && inOld && !inNew, f.dir != "remove" && inNew && (f.dir != "add" || !inOld):
 				if hit == "" {
-					hit = t
+					hit, added = t, f.dir != ""
 				}
-			case inOld || inNew:
-			default:
-				all = false
 			}
 		}
-		if hit != "" && all {
+		// The rest: in the changed text, what it says was replaced, or, once
+		// something was added or removed, the place it was done in, in the
+		// file as it stands after the change.
+		ok := hit != ""
+		for _, t := range tokens {
+			nt := normText(t)
+			inOld, inNew := oldE.hasLiteral(nt), newE.hasLiteral(nt)
+			switch {
+			case t == hit || isFile(nt) || inNew:
+			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
+			case (added || f.inNamed[nt]) && after(nt):
+			default:
+				ok = false
+			}
+		}
+		if ok && f.onOff != "" && !onOffShown(f.onOff, newE) {
+			ok = false
+		}
+		if ok {
 			return finding{out: matched, call: true, what: fmt.Sprintf("a change given %q at #%d", clipRunes(hit, 40), ct.seq), seq: ct.seq}, newE
 		}
 	}
@@ -351,6 +388,71 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		where = "no change this session to " + path
 	}
 	return finding{out: missing, why: "it says what was changed, and " + where + " changed " + fmt.Sprintf("%q", clipRunes(tokens[0], 40)) + " the way it says"}, nil
+}
+
+// isTestFile reports a file of tests.
+func isTestFile(p string) bool {
+	b := strings.ToLower(filepath.Base(p))
+	return strings.HasSuffix(b, "_test.go") || strings.HasPrefix(b, "test_") || strings.HasSuffix(b, "_test.py") ||
+		strings.Contains(b, ".spec.") || strings.Contains(b, ".test.") || strings.Contains(filepath.ToSlash(p), "/tests/")
+}
+
+// onOffShown reports a change that put in the value "enabled" or
+// "disabled" says.
+func onOffShown(want string, newE *evidenceText) bool {
+	words := []string{"false", "off", "no", "0", "disabled", "disable"}
+	if want == "on" {
+		words = []string{"true", "on", "yes", "1", "enabled", "enable"}
+	}
+	for _, w := range words {
+		if newE.hasLiteral(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// codeLines drops the comment lines of a change's text: a comment that
+// names code adds none.
+func codeLines(text, path string) string {
+	var keep []string
+	for _, l := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") ||
+			strings.HasPrefix(t, "--") && !strings.HasPrefix(t, "---") ||
+			strings.HasPrefix(t, "#") && !strings.HasSuffix(path, ".md") && !strings.HasPrefix(t, "#include") && !strings.HasPrefix(t, "#!") {
+			continue
+		}
+		keep = append(keep, l)
+	}
+	return strings.Join(keep, "\n")
+}
+
+// fileAfter is a changed file as it stood after the change: a write's text,
+// a current read, or an earlier read with an edit's text put in.
+func (ix *recordIndex) fileAfter(ct changeText) string {
+	if ct.full != "" {
+		return ct.full
+	}
+	var cur, earlier *obsRec
+	for _, o := range ix.obs {
+		if o.tool != "read" || o.isError || !samePathAs(o.path, ct.path) {
+			continue
+		}
+		switch {
+		case o.pos > ct.pos && ix.staleBy(o) == nil:
+			cur = o
+		case o.pos < ct.pos:
+			earlier = o
+		}
+	}
+	switch {
+	case cur != nil:
+		return cur.content
+	case earlier != nil && ct.old != "":
+		return strings.Replace(earlier.content, ct.old, ct.new, 1)
+	}
+	return ""
 }
 
 // observed checks what the agent says it looked at against its reads,
@@ -374,6 +476,19 @@ func (ix *recordIndex) observed(f facts) finding {
 			}
 		}
 		return false
+	}
+	// "across the whole repo" needs a search of the whole workspace.
+	if f.repoWide && search {
+		whole := false
+		for _, o := range cur {
+			if isSearch(o) {
+				root := o.argMap["path"]
+				whole = whole || root == "" || root == "." || ix.workDir != "" && filepath.Clean(root) == filepath.Clean(ix.workDir)
+			}
+		}
+		if !whole {
+			return finding{out: missing, why: "it says the whole workspace was searched, and no search this session was of all of it"}
+		}
 	}
 	isPathTok := map[string]bool{}
 	for _, p := range f.paths {
@@ -401,7 +516,9 @@ func (ix *recordIndex) observed(f facts) finding {
 			case search && isSearch(o) && prepareEvidence(pattern, false).hasLiteral(nt):
 				ok = true
 			case !search && o.evidence().hasLiteral(nt):
-				inPath := len(f.paths) == 0
+				// "I read `calc`" names no file: a read is of a file. Code
+				// is found in the file it names, or by a search.
+				inPath := f.found && isSearch(o)
 				for _, p := range f.paths {
 					inPath = inPath || pathNamed(o, p) || isSearch(o)
 				}
@@ -463,7 +580,7 @@ func eventKinds(text string, f facts) []string {
 	}
 	for _, w := range eventWords(rest) {
 		switch {
-		case passWords[w] || f.success && w == "done":
+		case passWords[w] && aboutRuns(low, f) || f.success && w == "done":
 			need["run"] = true
 		case w == "now" && f.success && !f.changeAct && !strings.Contains(low, "now that"):
 			need["run"] = true // "the tests pass now": a time of the run
@@ -483,6 +600,14 @@ func eventKinds(text string, f facts) []string {
 	}
 	return out
 }
+
+// aboutRuns reports a sentence about tests, a build or a command, where
+// "skipped" or "failed" is a run's.
+func aboutRuns(low string, f facts) bool {
+	return f.testish != "" || len(f.ran) > 0 || testRe.MatchString(low) || runnerRe.MatchString(low)
+}
+
+var runnerRe = regexp.MustCompile(`\b(pytest|jest|vitest|go test|go vet|npm test|cargo test|make|build|lint|linter|command|script|job|pipeline|ci)\b`)
 
 // searchVerbRe says the agent searched for something.
 var searchVerbRe = regexp.MustCompile(`\b(searched|grepped|looked for|searched for|grepped for)\b`)
