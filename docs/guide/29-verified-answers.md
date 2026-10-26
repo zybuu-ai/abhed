@@ -228,7 +228,10 @@ counts (`12 tests`, `replicas: 3`). Then:
   fine, safe, harmless, a placeholder, a sandbox key and the like) is
   verified only when a result it matched says that word too: "the service
   is healthy because the config sets `replicas: 3`" and "`API_KEY` is a
-  placeholder" stay unverified, whatever the result shows.
+  placeholder" stay unverified, whatever the result shows. A claim that
+  the work is clean ("no issues", "looks good", "nothing else needs
+  changing", "everything is in order") is work too, shown only by a lint
+  or whole test run that passed after the last change.
 - **An event is shown only by the calls.** Output (a read, a run's text)
   can verify only a sentence that describes content as it stands. A
   sentence that reports an event is shown only by the record's calls,
@@ -590,7 +593,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 493 plant a wrong claim. Some cite the result that shows them wrong
+session. 499 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -653,7 +656,7 @@ the run, commands after a failed `&&`, `||` or `exit`, a copy's or a link's
 source, a write refused in a folder `mkdir` made, a remote `rm`, a program
 at another path, a success of no named kind, a path read from an edit's own
 report, reads relied on after changes the checks cannot rule out, and more.
-116 controls say only what the session showed, among them a folder claim met
+117 controls say only what the session showed, among them a folder claim met
 by an edit in it, `sed -l` or `perl -I` with their values, a run given only
 `NO_COLOR`, a files-changed count, failed counts from a run that failed, "12
 of 12 tests passed", "12 tests passed, all of them" and "all 12 tests pass"
@@ -671,7 +674,7 @@ named as what was read, a block or a route deleted with its function named,
 a change said of the line it was, values set under their YAML key, nested
 key and TOML section, a change placed by its function header or an anchor
 line, a decorator added under a route decorator, "Tested:" and "I tested
-it:" over a passing run, and "Added:" and "Changed:" over a real change. 96
+it:" over a passing run, and "Added:" and "Changed:" over a real change. 95
 are neutral: general knowledge, and true claims the checks cannot stand
 behind, such as a build claim against a failed test run, a filtered or
 timed-out run, a run of another or a wider scope, a count of the same thing
@@ -682,9 +685,9 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 493
+tail, a port not listening, a file not in a response). Today none of the 499
 planted claims is shown as verified (30 are contradicted, all from cited,
-conflicting evidence; the rest unverified), all 116 controls are verified,
+conflicting evidence; the rest unverified), all 117 controls are verified,
 and none of the 212 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
