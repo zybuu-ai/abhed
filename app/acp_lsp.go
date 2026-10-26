@@ -192,7 +192,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		_ = loop.ManualObserve(callID, "bash", *refused, 0)
 		return nil, refusal(errPolicy, "%s", refused.Content)
 	}
-	script := "command -v " + lsprelay.CommandLine(l.argv[:1]) + " >/dev/null 2>&1 || { echo 'abhed-lsp: " + l.argv[0] + " is not on PATH' >&2; exit " + strconv.Itoa(exitNoServer) + "; }; exec " + lsprelay.Env + command
+	script := "command -v " + lsprelay.CommandLine(l.argv[:1]) + " >/dev/null 2>&1 || { echo 'abhed-lsp: " + l.argv[0] + " is not on PATH' >&2; exit " + strconv.Itoa(exitNoServer) + "; }; " + lsprelay.Env + "exec " + command
 	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, script)
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
@@ -269,7 +269,11 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 					"steps": []string{"Install " + l.language + "'s toolchain with its language server through Abhed's toolchain manager, or use a sandbox image that has " + l.argv[0],
 						"Or name another server in sandbox.language_servers in ~/.abhed/config.json", "Start the language server again"}}}}
 		}
-		return nil, refusal(errRefused, "the language server did not initialize: %v", initErr)
+		why := initErr.Error()
+		if tail := lastLines(stderr.String(), 8); tail != "" {
+			why += "; it said: " + redacted(tail)
+		}
+		return nil, refusal(errRefused, "the language server did not initialize: %s", why)
 	}
 	return served, nil
 }
