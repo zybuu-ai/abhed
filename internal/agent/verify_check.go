@@ -442,7 +442,10 @@ func checkClaims(env checkEnv, claims []Claim) ([]ClaimVerdict, *recordIndex) {
 // checkOne checks a claim. One that says a thing did not happen, or is not
 // so, is never verified: output showing the thing does not show its absence.
 func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
+	shown := c.Text
+	c.Text = pastLabeled(c.Text)
 	v := checkWhole(env, ix, c)
+	v.Text = shown
 	// Each clause is judged on its own too, and the claim is verified only
 	// when every one is: "I read `sum.go` and inserted `continue`" needs the
 	// read and the change.
@@ -521,7 +524,9 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		switch {
 		case !ix.changedAny():
 			why = "it reads as advice, and this session changed nothing"
-		case adviceTailRe.MatchString(low) && !saysPast(c.Text):
+		case adviceTailRe.MatchString(low) && !saysPast(low[:adviceTailRe.FindStringIndex(low)[0]]):
+			// A past form before the tail ("Update `Sum`, which I changed, to
+			// …") reports work; one in the tail ("once this is deployed") does not.
 			why = "it reads as advice: it says when or what for"
 		default:
 			if m := unshownVerbRe.FindStringSubmatch(low); m != nil && !ix.ranWord(m[1]) {

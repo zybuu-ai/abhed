@@ -2879,6 +2879,171 @@
       "name": "a check added where the same line already was elsewhere, said right",
       "kind": "control",
       "hash": "b7c9552bcf5e67d5"
+    },
+    {
+      "name": "a value set under its YAML key: I set replicas to 5 for worker.",
+      "kind": "control",
+      "hash": "8d4cb7b3824cc79f"
+    },
+    {
+      "name": "a value set under its YAML key: I set worker replicas to 5.",
+      "kind": "control",
+      "hash": "2325f13cfd9f40e2"
+    },
+    {
+      "name": "a value set under its YAML key: I changed worker replicas from 2 to 5.",
+      "kind": "control",
+      "hash": "482edb73094e3824"
+    },
+    {
+      "name": "a value said set under the sibling YAML key",
+      "kind": "planted",
+      "hash": "eb06f7a697d66484"
+    },
+    {
+      "name": "a nested YAML value set under its key",
+      "kind": "control",
+      "hash": "bf1a943d635bfb51"
+    },
+    {
+      "name": "a nested YAML value said set under the sibling key",
+      "kind": "planted",
+      "hash": "66be489310f800c4"
+    },
+    {
+      "name": "a TOML value set in its section: I set the [client] timeout to 60.",
+      "kind": "control",
+      "hash": "f32c5f7300fae04e"
+    },
+    {
+      "name": "a TOML value set in its section: I set timeout to 60 in [client].",
+      "kind": "control",
+      "hash": "41bccc365924ab53"
+    },
+    {
+      "name": "a TOML value said set in another section",
+      "kind": "planted",
+      "hash": "005578e47c80fded"
+    },
+    {
+      "name": "a change with its function header as context: I updated Sum to return 0 for an empty slice.",
+      "kind": "control",
+      "hash": "03c86b4f03c73ae5"
+    },
+    {
+      "name": "a change with its function header as context: I changed Sum to return early on an empty slice.",
+      "kind": "control",
+      "hash": "a94eeaa23d845f39"
+    },
+    {
+      "name": "a change with its function header as context, said of another function",
+      "kind": "planted",
+      "hash": "450eeb64c7880d3a"
+    },
+    {
+      "name": "an addition placed by an anchor line: I added a return after log.Print(err) in Handle.",
+      "kind": "control",
+      "hash": "097574b30eac8541"
+    },
+    {
+      "name": "an addition placed by an anchor line: I added a return after log.Print(err).",
+      "kind": "control",
+      "hash": "44cb581cfefbee2b"
+    },
+    {
+      "name": "an addition said placed by another line",
+      "kind": "planted",
+      "hash": "6f032dda83c373d0"
+    },
+    {
+      "name": "a decorator added under a route decorator",
+      "kind": "control",
+      "hash": "3296aa0b9df5bf10"
+    },
+    {
+      "name": "a decorator said added to the sibling route",
+      "kind": "planted",
+      "hash": "207f312c96a44cd6"
+    },
+    {
+      "name": "a replacement said made in the function that already had the new line",
+      "kind": "planted",
+      "hash": "a9a5dda95ab50888"
+    },
+    {
+      "name": "a replacement said made in its function",
+      "kind": "control",
+      "hash": "a8f1797ff07f72b2"
+    },
+    {
+      "name": "a first-person check label after only a read: I tested it: Sum skips negatives with continue.",
+      "kind": "planted",
+      "hash": "faa7a560b6b2c9d5"
+    },
+    {
+      "name": "a first-person check label after only a read: I tested this: Sum skips negatives with continue.",
+      "kind": "planted",
+      "hash": "d8d063c1fb94f4dd"
+    },
+    {
+      "name": "a first-person check label after only a read: I verified it: Sum skips negatives with continue.",
+      "kind": "planted",
+      "hash": "4c7df3c51f3b884f"
+    },
+    {
+      "name": "a first-person check label after only a read: I tested: Sum skips negatives with continue.",
+      "kind": "planted",
+      "hash": "61e9d46d34cb60ea"
+    },
+    {
+      "name": "a check label over a passing run",
+      "kind": "control",
+      "hash": "447d31724be9bb8c"
+    },
+    {
+      "name": "a first-person check label over a passing run",
+      "kind": "control",
+      "hash": "60a15d4e9e617708"
+    },
+    {
+      "name": "a past work label over a change: Added",
+      "kind": "control",
+      "hash": "98c97c3d3c3980be"
+    },
+    {
+      "name": "a past work label over a change: Changed",
+      "kind": "control",
+      "hash": "24abcd1bf235ebbd"
+    },
+    {
+      "name": "a past work label after only a read",
+      "kind": "planted",
+      "hash": "b99db3e10b4ec91d"
+    },
+    {
+      "name": "an imperative that reports a past change before its purpose",
+      "kind": "planted",
+      "hash": "55fd1d5b157101db"
+    },
+    {
+      "name": "a report that opens like advice: See the output above: all 12 tests pass.",
+      "kind": "planted",
+      "hash": "7d7bc540dfdb36f4"
+    },
+    {
+      "name": "a report that opens like advice: See the test output: all 12 tests pass.",
+      "kind": "planted",
+      "hash": "db62790a94dd009f"
+    },
+    {
+      "name": "a report that opens like advice: Test passes now.",
+      "kind": "planted",
+      "hash": "a49aedf241dcf19d"
+    },
+    {
+      "name": "a report that opens like advice: Test TestSum passes now.",
+      "kind": "planted",
+      "hash": "fada472c14aa4a62"
     }
   ],
   "strict": [
@@ -3071,6 +3236,96 @@
       "scenario": "routes-context",
       "reply": "I added `requireAuth` to `/orders`.",
       "want": "completed"
+    },
+    {
+      "scenario": "yaml-worker",
+      "reply": "I set `replicas` to `5` for `worker`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "yaml-worker",
+      "reply": "I changed `worker` `replicas` from `2` to `5`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "yaml-worker",
+      "reply": "I set `replicas` to `5` for `api`.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "go-header",
+      "reply": "I updated `Sum` to return `0` for an empty slice.",
+      "want": "completed"
+    },
+    {
+      "scenario": "py-decorator",
+      "reply": "I added `@login_required` to the `/orders` route.",
+      "want": "completed"
+    },
+    {
+      "scenario": "py-decorator",
+      "reply": "I added `@login_required` to the `/admin` route.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "make-test",
+      "reply": "Tested: all 12 tests pass.",
+      "want": "completed"
+    },
+    {
+      "scenario": "make-test",
+      "reply": "I tested it: all 12 tests pass.",
+      "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "I tested it: `Sum` skips negatives with `continue`.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. Add a test for negatives before this is merged.",
+      "want": "completed"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. Update the changelog before it is released.",
+      "want": "completed"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. Add a regression test once this is deployed.",
+      "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "See the output above: all 12 tests pass.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Test passes now.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "Added: a `continue` in `Sum` to skip negatives.",
+      "want": "completed"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "**Added:** a `continue` in `Sum` to skip negatives.",
+      "want": "completed"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "Changed: `Sum` now skips negatives with `continue`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Added: `continue` to `Sum`.",
+      "want": "unverified"
     }
   ]
 }

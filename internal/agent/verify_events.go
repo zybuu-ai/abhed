@@ -336,6 +336,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		// Only the lines the change changed: context an edit carries is not it.
 		gone, put := lineDiff(ct.old, ct.new)
 		oldE, newE := prepareEvidence(codeLines(gone, ct.path), false), prepareEvidence(codeLines(put, ct.path), false)
+		ctxE := prepareEvidence(codeLines(ct.new+"\n"+ct.old, ct.path), false)
 		// The place a change was made: the changed text and the lines that
 		// enclose it in the file as it stands after the change.
 		var placeE *evidenceText
@@ -366,6 +367,16 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 				}
 			}
 		}
+		// A change named only by where it was made ("I changed `Sum` to return
+		// early"): every token on a line enclosing the changed lines.
+		if hit == "" && f.dir == "" {
+			for _, t := range tokens {
+				if nt := normText(t); ctxE.hasLiteral(nt) && after(nt) && !oldE.hasLiteral(nt) {
+					hit = t
+					break
+				}
+			}
+		}
 		// The rest: in the changed text, what it says was replaced, or, once
 		// something was added or removed, the place it was done in, in the
 		// file as it stands after the change.
@@ -377,6 +388,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 			case t == hit || isFile(nt) || inNew:
 			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
 			case (added || f.inNamed[nt]) && !inOld && after(nt):
+			case !inOld && ctxE.hasLiteral(nt) && (f.anchorNamed[nt] || after(nt)):
 			default:
 				ok = false
 			}
@@ -462,7 +474,18 @@ func enclosing(after, before, new, old string) string {
 	}
 	lines := strings.Split(file, "\n")
 	at := -1
-	if i := strings.Index(file, block); block != "" && i >= 0 {
+	// A replacement starts where its old text sat in the file before: the
+	// edit tool makes that text unique, where the new text may not be.
+	if j := strings.Index(before, old); first != "" && block == new && old != "" && j >= 0 {
+		start := strings.Count(before[:j], "\n")
+		for k, l := range strings.Split(new, "\n") {
+			if strings.TrimSpace(l) == first && start+k < len(lines) && strings.TrimSpace(lines[start+k]) == first {
+				at = start + k
+				break
+			}
+		}
+	}
+	if i := strings.Index(file, block); at < 0 && block != "" && i >= 0 {
 		start := strings.Count(file[:i], "\n")
 		for k, l := range strings.Split(block, "\n") {
 			if strings.TrimSpace(l) == first && start+k < len(lines) {
@@ -490,6 +513,19 @@ func enclosing(after, before, new, old string) string {
 				out = append(out, lines[i])
 				break
 			}
+		}
+		for i := at - 1; i >= 0; i-- {
+			t := strings.TrimSpace(lines[i])
+			if !strings.HasPrefix(t, "#[") && !strings.HasPrefix(t, "@") {
+				break
+			}
+			out = append(out, lines[i])
+		}
+	}
+	for i := at - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); indentOf(lines[i]) == 0 && strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") && !strings.Contains(t, ",") {
+			out = append(out, lines[i])
+			break
 		}
 	}
 	depth := indentOf(lines[at])
@@ -686,7 +722,7 @@ var afterDoingRe = regexp.MustCompile(`^\W*(?:after|since|by|from|once|upon|with
 var bareDeedRe = regexp.MustCompile(`\b(?:and|then)\s+(?:\w+ly\s+)?(set|put|cut|let|split|shut|reset|hit|quit)\b`)
 
 // passWords are events a run shows.
-var passWords = wordSet(`passed failed succeeded ran executed errored skipped deselected timed`)
+var passWords = wordSet(`passed failed succeeded ran executed errored skipped deselected timed tested verified checked`)
 
 // eventKinds are the kinds of call a claim's events need: "run" for a pass
 // or a run, "look" for what was looked at, "change" for any other.
@@ -776,6 +812,9 @@ func clauses(text string) []string {
 			held = piece // a lead with no verb goes with what follows
 		case len(out) > 0 && !has:
 			out[len(out)-1] += " " + piece
+		case len(out) > 0 && checkLeadRe.MatchString(normText(out[len(out)-1])):
+			// "I tested it: all 12 tests pass" is one claim: what was tested.
+			out[len(out)-1] += ": " + piece
 		case len(out) > 0 && look && lookOnly(out[len(out)-1]):
 			out[len(out)-1] += " and " + piece
 		default:
@@ -792,6 +831,9 @@ func clauses(text string) []string {
 	}
 	return out
 }
+
+// checkLeadRe is a check said with nothing after it: "I tested it".
+var checkLeadRe = regexp.MustCompile(`^(?:(?:i|we|i've|we've) )?(?:\w+ly )?(?:tested|verified|checked|confirmed|ran the tests)(?: (?:it|this|that|them|everything|all|the change|the fix))?[.:]?$`)
 
 // lookOnly reports a clause that only says what was looked at.
 func lookOnly(s string) bool {

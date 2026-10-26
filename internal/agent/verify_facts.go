@@ -51,12 +51,12 @@ type facts struct {
 	// "off" for "enabled" or "disabled" and the like.
 	imperative, saysTest, repoWide bool
 	// changeEvent: it says something is now so or new ("now", "gets").
-	changeEvent                  bool
-	oldNamed, inNamed, toolNamed map[string]bool
-	onOff                        string
-	eventKinds                   []string // the kinds of call its events need
-	scope                        []string // packages or folders a test claim names, such as internal/auth
-	ran                          []string // commands the claim says were run
+	changeEvent                               bool
+	oldNamed, inNamed, toolNamed, anchorNamed map[string]bool
+	onOff                                     string
+	eventKinds                                []string // the kinds of call its events need
+	scope                                     []string // packages or folders a test claim names, such as internal/auth
+	ran                                       []string // commands the claim says were run
 }
 
 type countFact struct {
@@ -427,6 +427,10 @@ func extractFacts(claim string) facts {
 	for _, m := range oldNamedRe.FindAllStringSubmatch(claim, -1) {
 		f.oldNamed[normText(m[1]+m[2]+m[3])] = true
 	}
+	f.anchorNamed = map[string]bool{}
+	for _, m := range anchorNamedRe.FindAllStringSubmatch(claim, -1) {
+		f.anchorNamed[normText(m[1])] = true
+	}
 	for _, m := range inNamedRe.FindAllStringSubmatch(claim, -1) {
 		f.inNamed[normText(m[1])] = true
 	}
@@ -447,7 +451,8 @@ var (
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
-	oldNamedRe = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replaced|swapped|renamed|changed|switched|converted|turned|moved)\\s+`([^`]+)`\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
+	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replaced|swapped|renamed|changed|switched|converted|turned|moved)\\s+`([^`]+)`\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
+	anchorNamedRe = regexp.MustCompile("(?i)\\b(?:after|before|above|below|beneath|under|next to|beside|following)\\s+(?:the\\s+)?`([^`]+)`")
 	// inNamedRe is code named as where a change was made: "in `Sum`".
 	inNamedRe = regexp.MustCompile("(?i)\\b(?:in|inside|within|into|to)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+(?:function|method|file|type|struct|package))?(?:[.,;:]|\\s+(?:so|to|with|because|and|for|which)\\b|$)")
 	// toolNamedRe is the tool a change was made with: "with `sed`".
@@ -1034,12 +1039,26 @@ var labelLeadRe = regexp.MustCompile("^[\\w`./'\\- ]{1,40}?:\\s+")
 // workLeadRe is a lead that reports work, which stays in the claim.
 var workLeadRe = regexp.MustCompile(`^(?:done|all done|update|updates|changes|changes made|summary of changes|fixed|fix|the fix|implemented|tested|verified|checked|ran|added|removed|changed|edited|modified|updated|deployed|built|here(?:'s| is) what (?:i|we) (?:changed|did)|what (?:i|we) (?:changed|did))\b`)
 
+// pastLabeled reads "Changed: X" as "I changed X": one claim, not a label
+// and a clause.
+func pastLabeled(t string) string {
+	if m := pastLabelRe.FindStringSubmatchIndex(strings.ToLower(t)); m != nil && m[1] < len(t) {
+		return "I " + strings.ToLower(t[m[2]:m[3]]) + " " + strings.TrimSpace(t[m[1]:])
+	}
+	return t
+}
+
+// pastLabelRe is a past work verb as a label.
+var pastLabelRe = regexp.MustCompile(`^\W*(added|removed|changed|edited|modified|updated|fixed|deployed|built|tested|verified|checked)\W*:\W*\s+`)
+
 // adviceLabelRe leads advice: what is left to do.
 var adviceLabelRe = regexp.MustCompile(`^(?:next steps?|recommendations?|suggestions?|follow[- ]ups?|todo|to do|optional|tip|nit)\s*:`)
 
 // reportSubjectRe is "test" or "run" as the subject of a report: "Test
 // coverage is", "Run results:".
-var reportSubjectRe = regexp.MustCompile(`^(?:test|run|build)s? (?:coverage|suite|results?|run|output|status|logs?)\b`)
+var reportSubjectRe = regexp.MustCompile("^(?:(?:review|inspection|scan|search|audit|check)s? (?:of|for)\\b|(?:test|run|build)s? (?:coverage|suite|results?|run|output|status|logs?)\\b|(?:tests?|builds?|checks?)(?: `[^`]+`)? (?:now )?(?:pass(?:es|ed)?|fail(?:s|ed)?|succeed(?:s|ed)?|is|are|was|were)\\b)")
+
+var lookLabelRe = regexp.MustCompile(`^(?:see|check|review|look at)\b[^:]{0,60}:\s+`)
 
 // stepLeadRe is a step's place in a told order: "Next, I …".
 var stepLeadRe = regexp.MustCompile(`^(?:next|then|first|second|third|finally|after that|afterwards|lastly),?\s+`)
@@ -1073,16 +1092,22 @@ func claimOf(s string) (string, bool) {
 		}
 		t = strings.TrimSpace(t[m[1]:])
 	}
-	// A label that leads advice ("Next steps:", "TODO:") leads no claim.
-	if adviceLabelRe.MatchString(strings.ToLower(t)) {
-		return "", false
+	// A label that leads advice ("Next steps:", "TODO:") leads no claim,
+	// unless what follows reports something done or passing.
+	if m := adviceLabelRe.FindStringIndex(strings.ToLower(t)); m != nil {
+		rest := strings.TrimSpace(t[m[1]:])
+		if !saysPast(rest) && !successRe.MatchString(normText(rest)) {
+			return "", false
+		}
+		t = rest
 	}
 	// A short label before a colon ("Test results:", "See `sum.go`:") is a
 	// lead too, unless it reports work ("Done:", "Tested:"), which stays.
 	if m := labelLeadRe.FindStringIndex(strings.ToLower(t)); m != nil && !workLeadRe.MatchString(strings.ToLower(t)) &&
-		len(strings.Fields(t[:m[1]])) <= 3 && len(strings.Fields(t[m[1]:])) >= 3 {
+		!saysPast(t[:m[1]]) && len(strings.Fields(t[:m[1]])) <= 3 && len(strings.Fields(t[m[1]:])) >= 3 {
 		t = strings.TrimSpace(t[m[1]:])
 	}
+
 	// "Next, I set …" tells a step done: the step is the claim.
 	if m := stepLeadRe.FindStringIndex(strings.ToLower(t)); m != nil {
 		rest := strings.ToLower(t[m[1]:])
@@ -1092,6 +1117,9 @@ func claimOf(s string) (string, bool) {
 	}
 	// "I can confirm X", "you can see X", "if you look at Y, X": X is said.
 	if m := reportLeadRe.FindStringIndex(strings.ToLower(t)); m != nil && m[1] < len(t) {
+		t = strings.TrimSpace(t[m[1]:])
+	}
+	if m := lookLabelRe.FindStringIndex(strings.ToLower(t)); m != nil && m[1] < len(t) {
 		t = strings.TrimSpace(t[m[1]:])
 	}
 	low := strings.ToLower(t)
@@ -1104,8 +1132,8 @@ func claimOf(s string) (string, bool) {
 	}
 	// Advice and intentions are left out unless they also report a past
 	// event: they say what may be done. "Run", "test" or "check" opening a
-	// sentence is advice only when no verb of its own follows ("Test
-	// coverage is now 92%" is a report).
+	// sentence is advice unless it is the subject of a report ("Test
+	// coverage is now 92%", "Test passes now").
 	if intentRe.MatchString(low) && !imperativeRe.MatchString(low) && !saysPast(t) && !reportSubjectRe.MatchString(low) {
 		return "", false
 	}

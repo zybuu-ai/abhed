@@ -305,6 +305,19 @@ var (
 	stepEditOrdersCtx  = CorpusStep{ID: "e18c", Tool: "edit", Args: map[string]any{"path": "/w/routes.go", "old_string": "\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "new_string": "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}, Output: "Edited /w/routes.go"}
 	stepReadUsers2     = CorpusStep{ID: "f18d", Tool: "read", Args: map[string]any{"path": "/w/users.go"}, Output: "package users\n\nfunc CreateUser(u User) error {\n\tif err := validate(u); err != nil {\n\t\treturn err\n\t}\n\treturn store.Put(u)\n}\n\nfunc UpdateUser(u User) error {\n\treturn store.Put(u)\n}\n"}
 	stepEditUpdate2    = CorpusStep{ID: "e18d", Tool: "edit", Args: map[string]any{"path": "/w/users.go", "old_string": "func UpdateUser(u User) error {\n", "new_string": "func UpdateUser(u User) error {\n\tif err := validate(u); err != nil {\n\t\treturn err\n\t}\n"}, Output: "Edited /w/users.go"}
+	stepReadYamlWorker = CorpusStep{ID: "f19a", Tool: "read", Args: map[string]any{"path": "/w/config.yaml"}, Output: "api:\n  replicas: 2\nworker:\n  replicas: 2\n"}
+	stepEditYamlWorker = CorpusStep{ID: "e19a", Tool: "edit", Args: map[string]any{"path": "/w/config.yaml", "old_string": "worker:\n  replicas: 2", "new_string": "worker:\n  replicas: 5"}, Output: "Edited /w/config.yaml"}
+	stepReadYamlNested = CorpusStep{ID: "f19b", Tool: "read", Args: map[string]any{"path": "/w/values.yaml"}, Output: "api:\n  resources:\n    memory: 256Mi\nworker:\n  resources:\n    memory: 256Mi\n"}
+	stepEditYamlNested = CorpusStep{ID: "e19b", Tool: "edit", Args: map[string]any{"path": "/w/values.yaml", "old_string": "worker:\n  resources:\n    memory: 256Mi", "new_string": "worker:\n  resources:\n    memory: 512Mi"}, Output: "Edited /w/values.yaml"}
+	stepReadToml       = CorpusStep{ID: "f19c", Tool: "read", Args: map[string]any{"path": "/w/app.toml"}, Output: "[server]\ntimeout = 30\n\n[client]\ntimeout = 30\n"}
+	stepEditToml       = CorpusStep{ID: "e19c", Tool: "edit", Args: map[string]any{"path": "/w/app.toml", "old_string": "[client]\ntimeout = 30", "new_string": "[client]\ntimeout = 60"}, Output: "Edited /w/app.toml"}
+	stepEditGoHeader   = CorpusStep{ID: "e19d", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "func Sum(nums []int) int {\n\ttotal := 0\n", "new_string": "func Sum(nums []int) int {\n\tif len(nums) == 0 {\n\t\treturn 0\n\t}\n\ttotal := 0\n"}, Output: "Edited /w/sum.go"}
+	stepReadHandle     = CorpusStep{ID: "f19d", Tool: "read", Args: map[string]any{"path": "/w/handle.go"}, Output: "package web\n\nfunc Handle(w http.ResponseWriter, r *http.Request) {\n\tdata, err := load(r)\n\tif err != nil {\n\t\tlog.Print(err)\n\t}\n\twrite(w, data)\n}\n"}
+	stepEditHandle     = CorpusStep{ID: "e19e", Tool: "edit", Args: map[string]any{"path": "/w/handle.go", "old_string": "\t\tlog.Print(err)\n\t}", "new_string": "\t\tlog.Print(err)\n\t\treturn\n\t}"}, Output: "Edited /w/handle.go"}
+	stepReadViews      = CorpusStep{ID: "f19e", Tool: "read", Args: map[string]any{"path": "/w/views.py"}, Output: "@app.route('/admin')\ndef admin():\n    pass\n\n@app.route('/orders')\ndef orders():\n    pass\n"}
+	stepEditViews      = CorpusStep{ID: "e19f", Tool: "edit", Args: map[string]any{"path": "/w/views.py", "old_string": "@app.route('/orders')\ndef orders():", "new_string": "@app.route('/orders')\n@login_required\ndef orders():"}, Output: "Edited /w/views.py"}
+	stepReadUsersPut   = CorpusStep{ID: "f19f", Tool: "read", Args: map[string]any{"path": "/w/users.go"}, Output: "package users\n\nfunc CreateUser(u User) error {\n\treturn store.Put(u)\n}\n\nfunc UpdateUser(u User) error {\n\treturn store.Save(u)\n}\n"}
+	stepEditUsersPut   = CorpusStep{ID: "e19g", Tool: "edit", Args: map[string]any{"path": "/w/users.go", "old_string": "\treturn store.Save(u)", "new_string": "\treturn store.Put(u)"}, Output: "Edited /w/users.go"}
 	stepRewrite        = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1033,6 +1046,43 @@ func CorpusCases() []CorpusCase {
 		{Name: "auth added beside a context line, said of its route", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRoutesCtx, stepEditOrdersCtx), Text: "I added `requireAuth` to `/orders`."},
 		{Name: "a check added where the same line already was elsewhere", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadUsers2, stepEditUpdate2), Text: "I added `validate` to `CreateUser`."},
 		{Name: "a check added where the same line already was elsewhere, said right", Kind: c, Want: ClaimVerified, Steps: steps(stepReadUsers2, stepEditUpdate2), Text: "I added `validate` to `UpdateUser`."},
+		// Round 19: context the edit carried counts on an enclosing line or as
+		// a named anchor; a past work label is the claim's verb; a check label
+		// keeps its event.
+		{Name: "a value set under its YAML key: I set replicas to 5 for worker.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadYamlWorker, stepEditYamlWorker), Text: "I set `replicas` to `5` for `worker`."},
+		{Name: "a value set under its YAML key: I set worker replicas to 5.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadYamlWorker, stepEditYamlWorker), Text: "I set `worker` `replicas` to `5`."},
+		{Name: "a value set under its YAML key: I changed worker replicas from 2 to 5.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadYamlWorker, stepEditYamlWorker), Text: "I changed `worker` `replicas` from `2` to `5`."},
+		{Name: "a value said set under the sibling YAML key", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadYamlWorker, stepEditYamlWorker), Text: "I set `replicas` to `5` for `api`."},
+		{Name: "a nested YAML value set under its key", Kind: c, Want: ClaimVerified, Steps: steps(stepReadYamlNested, stepEditYamlNested), Text: "I set `memory` to `512Mi` for `worker`."},
+		{Name: "a nested YAML value said set under the sibling key", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadYamlNested, stepEditYamlNested), Text: "I set `memory` to `512Mi` for `api`."},
+		{Name: "a TOML value set in its section: I set the [client] timeout to 60.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadToml, stepEditToml), Text: "I set the `[client]` `timeout` to `60`."},
+		{Name: "a TOML value set in its section: I set timeout to 60 in [client].", Kind: c, Want: ClaimVerified, Steps: steps(stepReadToml, stepEditToml), Text: "I set `timeout` to `60` in `[client]`."},
+		{Name: "a TOML value said set in another section", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadToml, stepEditToml), Text: "I set `timeout` to `60` in `[server]`."},
+		{Name: "a change with its function header as context: I updated Sum to return 0 for an empty slice.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditGoHeader), Text: "I updated `Sum` to return `0` for an empty slice."},
+		{Name: "a change with its function header as context: I changed Sum to return early on an empty slice.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditGoHeader), Text: "I changed `Sum` to return early on an empty slice."},
+		{Name: "a change with its function header as context, said of another function", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditGoHeader), Text: "I updated `Product` to return `0` for an empty slice."},
+		{Name: "an addition placed by an anchor line: I added a return after log.Print(err) in Handle.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadHandle, stepEditHandle), Text: "I added a `return` after `log.Print(err)` in `Handle`."},
+		{Name: "an addition placed by an anchor line: I added a return after log.Print(err).", Kind: c, Want: ClaimVerified, Steps: steps(stepReadHandle, stepEditHandle), Text: "I added a `return` after `log.Print(err)`."},
+		{Name: "an addition said placed by another line", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadHandle, stepEditHandle), Text: "I added a `return` after `write(w, data)`."},
+		{Name: "a decorator added under a route decorator", Kind: c, Want: ClaimVerified, Steps: steps(stepReadViews, stepEditViews), Text: "I added `@login_required` to the `/orders` route."},
+		{Name: "a decorator said added to the sibling route", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadViews, stepEditViews), Text: "I added `@login_required` to the `/admin` route."},
+		{Name: "a replacement said made in the function that already had the new line", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadUsersPut, stepEditUsersPut), Text: "I replaced `store.Save` with `store.Put` in `CreateUser`."},
+		{Name: "a replacement said made in its function", Kind: c, Want: ClaimVerified, Steps: steps(stepReadUsersPut, stepEditUsersPut), Text: "I replaced `store.Save` with `store.Put` in `UpdateUser`."},
+		{Name: "a first-person check label after only a read: I tested it: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I tested it: `Sum` skips negatives with `continue`."},
+		{Name: "a first-person check label after only a read: I tested this: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I tested this: `Sum` skips negatives with `continue`."},
+		{Name: "a first-person check label after only a read: I verified it: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I verified it: `Sum` skips negatives with `continue`."},
+		{Name: "a first-person check label after only a read: I tested: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I tested: `Sum` skips negatives with `continue`."},
+		{Name: "a check label over a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "Tested: all 42 tests pass."},
+		{Name: "a first-person check label over a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "I tested it: all 42 tests pass."},
+		{Name: "a past work label over a change: Added", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Added: a `continue` in `Sum` to skip negatives."},
+		{Name: "a past work label over a change: Changed", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepReadSumWith), Text: "Changed: `Sum` now skips negatives with `continue`."},
+		{Name: "a past work label after only a read", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Added: `continue` to `Sum`."},
+		{Name: "an imperative that reports a past change before its purpose", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Update `Sum`, which I changed to skip negatives, to apply the fix."},
+		{Name: "a report that opens like advice: See the output above: all 12 tests pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "See the output above: all 12 tests pass."},
+		{Name: "a report that opens like advice: See the test output: all 12 tests pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "See the test output: all 12 tests pass."},
+		{Name: "a report that opens like advice: Test passes now.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Test passes now."},
+		{Name: "a report that opens like advice: Test TestSum passes now.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Test `TestSum` passes now."},
+		{Name: "a report that opens like advice: Review of the diff shows no issues.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Review of the diff shows no issues."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

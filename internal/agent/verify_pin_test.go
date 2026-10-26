@@ -118,6 +118,11 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		"run-12": {bash: "printf '12 tests passed\\n'"},
 		"delete-panic": {file: "sum.go", text: "package calc\n\nfunc Sum(nums []int, max int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t\tif total > max {\n\t\t\tpanic(\"overflow\")\n\t\t}\n\t}\n\treturn total\n}\n\nfunc Product(nums []int) int {\n\tp := 1\n\tfor _, n := range nums {\n\t\tp *= n\n\t}\n\treturn p\n}\n",
 			edit: &edit{"\t\tif total > max {\n\t\t\tpanic(\"overflow\")\n\t\t}\n", ""}},
+		"yaml-worker": {file: "config.yaml", text: "api:\n  replicas: 2\nworker:\n  replicas: 2\n", edit: &edit{"worker:\n  replicas: 2", "worker:\n  replicas: 5"}},
+		"go-header":   {file: "sum.go", text: plain, edit: &edit{"func Sum(nums []int) int {\n\ttotal := 0\n", "func Sum(nums []int) int {\n\tif len(nums) == 0 {\n\t\treturn 0\n\t}\n\ttotal := 0\n"}},
+		"py-decorator": {file: "views.py", text: "@app.route('/admin')\ndef admin():\n    pass\n\n@app.route('/orders')\ndef orders():\n    pass\n",
+			edit: &edit{"@app.route('/orders')\ndef orders():", "@app.route('/orders')\n@login_required\ndef orders():"}},
+		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
 	}
@@ -161,6 +166,10 @@ func TestReportsAreKept(t *testing.T) {
 		"If you look at `sum.go`, `Sum` now skips negatives with `continue`.", "Check `sum.go`: `Sum` now skips negatives with `continue`.",
 		"See `sum.go`: `Sum` now skips negatives with `continue`.", "Review the diff: `Sum` now skips negatives with `continue`.",
 		"I'll note that `Sum` now skips negatives with `continue`.",
+		"Follow-up: I added `continue` to `Sum`.", "Optional: I also renamed `total` to `sum`.",
+		"Suggestion: I added `continue` to `Sum`, so review it.", "Tip: all 12 tests pass.",
+		"See the output above: all 12 tests pass.", "See the test output: all 12 tests pass.",
+		"Test passes now.", "Test `TestSum` passes now.", "Review of the diff shows no issues.",
 	} {
 		if got := splitClaims(s); len(got) != 1 {
 			t.Errorf("%q: kept %q, want one claim", s, got)
