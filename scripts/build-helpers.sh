@@ -6,7 +6,8 @@
 # pin each helper's sha256 into an engine build; any build that ships the
 # helpers beside its engine (the release, the desktop app, the enterprise
 # binary) passes them, or the engine does not use the helper. The build is
-# reproducible: no cgo, -trimpath and an empty build ID.
+# reproducible: no cgo, -trimpath and an empty build ID, with the Go toolchain
+# go.mod names (GOTOOLCHAIN fetches it); another Go version gives other sums.
 #
 #   scripts/build-helpers.sh [-o OUTDIR] [-a "amd64 arm64 s390x"]
 set -euo pipefail
@@ -16,7 +17,7 @@ while getopts "o:a:h" opt; do
   case $opt in
     o) OUTDIR="$OPTARG" ;;
     a) ARCHES="$OPTARG" ;;
-    h) sed -n '2,11p' "$0"; exit 0 ;;
+    h) sed -n '2,12p' "$0"; exit 0 ;;
     *) exit 2 ;;
   esac
 done
