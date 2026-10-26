@@ -71,7 +71,11 @@ type acpDebug struct {
 	done                chan struct{}
 	// sends are Studio's messages for the adapter, in the order the
 	// connection read them; one goroutine passes them on.
-	sends   chan rpcMessage
+	sends chan rpcMessage
+	// qmu guards qclosed: once the session has ended no send is queued,
+	// so every send is answered.
+	qmu     sync.Mutex
+	qclosed bool
 	mu      sync.Mutex
 	stopped bool
 	// reason is how a stop ended it: stopped, or closed with its session.
@@ -236,6 +240,13 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", refused.Content))
 		return
 	}
+	// The person may have closed the session while the supervisor's ask waited.
+	if sessionClosed(s) {
+		cancel()
+		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "not started: the session closed before the launch was allowed", IsError: true}, 0)
+		c.reply(msg.ID, nil, refusal(errRefused, "the session closed before the debug session could start"))
+		return
+	}
 	lctx := loop.LaunchContext(ctx, callID)
 	if bridgePath != "" {
 		lctx = sandbox.WithReadOnlyPaths(lctx, bridgePath)
@@ -266,7 +277,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 			c.notification("_abhed/debug/message", map[string]any{"debugId": d.id, "message": m})
 		},
 		func(state, message string) {
-			c.notification("_abhed/debug/status", map[string]any{"debugId": d.id, "state": state, "message": redacted(message)})
+			c.notification("_abhed/debug/status", map[string]any{"debugId": d.id, "state": state, "message": redacted(debugrelay.Bounded(message, 2000))})
 		})
 	// Over by the protocol: the adapter's input closes, as debugpy's needs to
 	// exit, and it is ended if it has not gone within the grace.
@@ -280,14 +291,30 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 			}
 		}()
 	})
-	c.debugMu.Lock()
-	if c.debugs == nil {
-		c.debugs = map[string]*acpDebug{}
+	// Inserted under the session's lock, which its close takes before it
+	// stops the session's debug sessions: either the close sees this one, or
+	// this sees the close and ends the adapter it just started.
+	s.mu.Lock()
+	closed := s.closed
+	if !closed {
+		c.debugMu.Lock()
+		if c.debugs == nil {
+			c.debugs = map[string]*acpDebug{}
+		}
+		c.debugs[d.id] = d
+		c.debugReserved--
+		reserved = false
+		c.debugMu.Unlock()
 	}
-	c.debugs[d.id] = d
-	c.debugReserved--
-	reserved = false
-	c.debugMu.Unlock()
+	s.mu.Unlock()
+	if closed {
+		cancel()
+		_ = cmd.Wait()
+		sandbox.Release(cmd)
+		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "ended: the session closed as the debug session started", IsError: true}, 0)
+		c.reply(msg.ID, nil, refusal(errRefused, "the session closed before the debug session could start"))
+		return
+	}
 	go c.debugSends(d)
 	launched := agent.DebugLaunched{DebugID: d.id, CallID: callID, Language: req.Language, Command: spec.Display, Tier: tier, BridgePinned: pinned}
 	if bridgePath != "" {
@@ -302,7 +329,12 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 // the session ended.
 func (c *acpConn) debugRun(s *acpSession, d *acpDebug, cmd *exec.Cmd, stdout io.Reader, stderr *bytes.Buffer, tier string) {
 	defer close(d.done)
-	_ = d.relay.Pump(stdout)
+	// An adapter whose output cannot be read (a header past its bound, a
+	// message too large) is ended, not left blocked on a pipe nobody reads.
+	pumpErr := d.relay.Pump(stdout)
+	if pumpErr != nil {
+		d.cancel()
+	}
 	err := cmd.Wait()
 	sandbox.Release(cmd)
 	d.cancel()
@@ -323,6 +355,9 @@ func (c *acpConn) debugRun(s *acpSession, d *acpDebug, cmd *exec.Cmd, stdout io.
 	if p := debugrelay.MissingAdapter(code, ""); p != nil {
 		reason = "adapter-missing"
 		state["state"], state["message"], state["problem"] = "failed", p.Message, p
+	} else if pumpErr != nil && reason == "ended" {
+		reason = "failed"
+		state["state"], state["message"] = "failed", "the adapter's output could not be read, so the session was ended: "+redacted(debugrelay.Bounded(pumpErr.Error(), 500))
 	} else if code != 0 && reason == "ended" {
 		reason = "failed"
 		state["state"], state["message"] = "failed", redacted(lastLines(stderr.String(), 20))
@@ -374,11 +409,11 @@ func (c *acpConn) debugEnqueue(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	select {
-	case <-d.done:
+	d.qmu.Lock()
+	defer d.qmu.Unlock()
+	if d.qclosed {
 		c.reply(msg.ID, nil, refusal(errParams, "the debug session has ended"))
 		return
-	default:
 	}
 	c.inflight.Add(1)
 	select {
@@ -389,8 +424,9 @@ func (c *acpConn) debugEnqueue(msg rpcMessage) {
 	}
 }
 
-// debugSends passes a session's messages to the adapter one at a time,
-// and answers those still queued when it ends.
+// debugSends passes a session's messages to the adapter one at a time.
+// Once the session ends it closes the queue, under the lock every enqueue
+// takes, and answers what was left in it, so no send goes unanswered.
 func (c *acpConn) debugSends(d *acpDebug) {
 	for {
 		select {
@@ -398,6 +434,9 @@ func (c *acpConn) debugSends(d *acpDebug) {
 			c.debugSend(d, msg)
 			c.inflight.Done()
 		case <-d.done:
+			d.qmu.Lock()
+			d.qclosed = true
+			d.qmu.Unlock()
 			for {
 				select {
 				case msg := <-d.sends:
@@ -562,4 +601,11 @@ func lastLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// sessionClosed reports whether the session has been closed.
+func sessionClosed(s *acpSession) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }

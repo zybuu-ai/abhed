@@ -196,7 +196,9 @@ func (s *Source) resolveGradle(ctx context.Context, want string, p Platform) (Ar
 	if err := s.getJSON(ctx, base+"versions/all", api, &all); err != nil {
 		return Artifact{}, err
 	}
-	hosts := []string{hostOf(base), "services.gradle.org", "downloads.gradle.org", "downloads.gradle-dn.com"}
+	// services.gradle.org now redirects its distributions to Gradle's own
+	// GitHub releases; the checksum still comes from services.gradle.org.
+	hosts := append([]string{hostOf(base), "services.gradle.org", "downloads.gradle.org", "downloads.gradle-dn.com"}, githubHosts...)
 	best := -1
 	for i, r := range all {
 		if r.Snapshot || r.Nightly || r.RCFor != "" || r.MilestoneF != "" || r.Broken || !versionRE.MatchString(r.Version) || !Matches(r.Version, want) {

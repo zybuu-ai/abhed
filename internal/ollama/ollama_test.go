@@ -396,6 +396,8 @@ func TestStartNotReadyAndPortBusy(t *testing.T) {
 	killPID(t, s.PID)
 
 	fakeBin(t, bin, "ollama", "echo 'Error: listen tcp 127.0.0.1:11434: bind: address already in use'\nexit 1")
+	// Reported once the log says so; the bound only has to outlast a loaded machine.
+	env.ReadyWait = 20 * time.Second
 	s, p = env.Start(context.Background(), tg, st, plan)
 	if p == nil || p.Kind != KindPortBusy {
 		t.Fatalf("port busy: %+v", p)

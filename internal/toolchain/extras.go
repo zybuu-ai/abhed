@@ -506,8 +506,11 @@ func (c Cache) placeExtra(e Extra, p Platform, build func(tmp, top string) (Extr
 		return ExtraInstalled{}, err
 	}
 	x.Name, x.Lang, x.Version, x.Platform, x.InstalledAt = e.Name, e.Lang, e.Version, p.String(), time.Now().UTC()
+	if err := linksStayWithin(top); err != nil {
+		return ExtraInstalled{}, fmt.Errorf("%s %s: %w", e.Name, e.Version, err)
+	}
 	marker, _ := json.MarshalIndent(x, "", "  ")
-	if err := os.WriteFile(filepath.Join(top, extraMarker), marker, 0o444); err != nil { // #nosec G306 -- read by the sandbox's commands
+	if err := writeExclusive(filepath.Join(top, extraMarker), marker, 0o444); err != nil {
 		return ExtraInstalled{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {

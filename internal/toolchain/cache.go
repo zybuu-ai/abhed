@@ -208,8 +208,12 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 			return Installed{}, err
 		}
 	}
+	// Checked again as the toolchain will stand, after its own finishing.
+	if err := linksStayWithin(top); err != nil {
+		return Installed{}, fmt.Errorf("%s %s: %w", a.Lang, a.Version, err)
+	}
 	marker, _ := json.MarshalIndent(in, "", "  ")
-	if err := os.WriteFile(filepath.Join(top, markerFile), marker, 0o444); err != nil {
+	if err := writeExclusive(filepath.Join(top, markerFile), marker, 0o444); err != nil {
 		return Installed{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
@@ -402,8 +406,10 @@ func noLinkParents(dir, p string) error {
 	return nil
 }
 
-// linksStayWithin checks, once everything is unpacked, that every link that
-// resolves lands inside dir, so a chain made in any order is refused too.
+// linksStayWithin checks, once everything is in place, every link in dir:
+// its target may not pass through another link, and it must resolve to a
+// path that exists inside dir. A dangling link is refused, as a later write
+// to its name would follow it wherever it leads.
 func linksStayWithin(dir string) error {
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -413,15 +419,62 @@ func linksStayWithin(dir string) error {
 		if err != nil || d.Type()&fs.ModeSymlink == 0 {
 			return err
 		}
-		r, err := filepath.EvalSymlinks(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil // dangling, and nothing is written through it
+		rel := strings.TrimPrefix(p, dir+string(filepath.Separator))
+		target, err := os.Readlink(p)
+		if err != nil || filepath.IsAbs(target) {
+			return fmt.Errorf("refused the link %s, which leaves the toolchain", rel)
 		}
-		if err != nil || r != real && !strings.HasPrefix(r, real+string(filepath.Separator)) {
-			return fmt.Errorf("refused the link %s, which leaves the toolchain", strings.TrimPrefix(p, dir+string(filepath.Separator)))
+		// No part of the target before its last may itself be a link.
+		parts := strings.Split(filepath.ToSlash(target), "/")
+		cur := filepath.Dir(p)
+		for _, c := range parts[:len(parts)-1] {
+			cur = filepath.Join(cur, c)
+			if c == "." || c == ".." || c == "" {
+				continue
+			}
+			if info, err := os.Lstat(cur); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("refused the link %s, whose target passes through the link %s", rel, strings.TrimPrefix(cur, dir+string(filepath.Separator)))
+			}
+		}
+		r, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			return fmt.Errorf("refused the link %s, which leads nowhere in the toolchain", rel)
+		}
+		if r != real && !strings.HasPrefix(r, real+string(filepath.Separator)) {
+			return fmt.Errorf("refused the link %s, which leaves the toolchain", rel)
 		}
 		return nil
 	})
+}
+
+// writeExclusive creates path with data, refusing a name that exists in
+// any form, a link included, so nothing an archive put there is followed.
+func writeExclusive(path string, data []byte, perm fs.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm) // #nosec G304 -- a file of the toolchain being installed
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", filepath.Base(path), err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// realDir makes the folder rel inside top, refusing one that passes
+// through or is a link.
+func realDir(top, rel string) (string, error) {
+	p, err := within(top, rel)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		return "", err
+	}
+	if info, err := os.Lstat(p); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("refused %s, which is not a folder of the toolchain", rel)
+	}
+	return p, nil
 }
 
 // linkWithin reports whether a link at path pointing at target stays in dir.

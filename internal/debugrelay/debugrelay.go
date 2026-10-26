@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Languages the relay debugs.
@@ -291,8 +292,10 @@ func New(adapter io.Writer, launch map[string]any, toEditor func(json.RawMessage
 }
 
 // header is the part of a DAP message the relay reads, each field taken by
-// its exact key as the editor (JSON.parse) and the adapters (Python's dict,
-// Go's exact readers) read them.
+// its exact key. Readers differ on other spellings: JSON.parse and Python's
+// dict take only the exact key, Go's encoding/json (go-dap, in Delve) also
+// any key equal under Unicode simple folding, the last one winning. So a
+// key that folds to a decisive one without being it is refused.
 type header struct {
 	Seq        int
 	Type       string
@@ -309,8 +312,19 @@ type header struct {
 // twice, or a key that differs from one only in case, is refused: readers
 // differ on which of two they take, and the relay must judge the one the
 // other side acts on.
-var headerKeys = map[string]bool{"seq": true, "type": true, "command": true, "request_seq": true,
-	"success": true, "message": true, "arguments": true, "event": true, "body": true}
+var headerKeys = []string{"seq", "type", "command", "request_seq", "success", "message", "arguments", "event", "body"}
+
+// decisive reports whether k is equal under Unicode simple folding (as
+// strings.EqualFold, and so as encoding/json, compares) to a decisive key,
+// and whether it is that key exactly.
+func decisive(k string) (match, exact bool) {
+	for _, name := range headerKeys {
+		if strings.EqualFold(k, name) {
+			return true, k == name
+		}
+	}
+	return false, false
+}
 
 // ErrAmbiguous is a message whose decisive keys repeat or differ in case.
 var ErrAmbiguous = errors.New("the message repeats a key, or has one that differs only in case from seq, type, command, request_seq, success, message, arguments, event or body")
@@ -327,7 +341,6 @@ func parseHeader(raw []byte) (header, error) {
 		return h, errors.New("not a JSON object")
 	}
 	vals := map[string]json.RawMessage{}
-	folded := map[string]string{}
 	for dec.More() {
 		kt, err := dec.Token()
 		if err != nil {
@@ -338,15 +351,11 @@ func parseHeader(raw []byte) (header, error) {
 		if err := dec.Decode(&v); err != nil {
 			return h, err
 		}
-		low := strings.ToLower(k)
-		if _, dup := vals[k]; dup && headerKeys[low] {
-			return h, ErrAmbiguous
-		}
-		if headerKeys[low] {
-			if prev, ok := folded[low]; ok && prev != k || k != low {
+		if match, exact := decisive(k); match {
+			// A variant (any case, ſ for s, K for k), or the key twice.
+			if _, dup := vals[k]; dup || !exact {
 				return h, ErrAmbiguous
 			}
-			folded[low] = k
 		}
 		vals[k] = v
 	}
@@ -465,17 +474,17 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			_ = r.reply(h, "Abhed runs the program inside the session's sandbox; it cannot be started in the editor's terminal")
 			r.status("note", "the adapter asked to "+h.Command+"; refused")
 			continue
-		case h.Type == "response" && r.isLaunch(h.RequestSeq):
+		case h.Type == "response" && r.consumeLaunch(h.RequestSeq):
 			if h.Success {
 				r.status("launched", "")
 			} else {
-				msg := orElse(h.Message, "the adapter did not launch the program")
+				msg := Bounded(orElse(h.Message, "the adapter did not launch the program"), maxDetail)
 				switch detail := errorDetail(h.Body); {
 				case detail == "" || detail == msg:
 				case strings.HasPrefix(detail, msg):
 					msg = detail
 				default:
-					msg += ": " + detail
+					msg = Bounded(msg+": "+detail, maxDetail)
 				}
 				r.status("failed", msg)
 			}
@@ -496,10 +505,17 @@ func (r *Relay) Pump(adapter io.Reader) error {
 	}
 }
 
-func (r *Relay) isLaunch(seq int) bool {
+// consumeLaunch reports whether seq answers the engine's launch, once: a
+// later response naming the same seq is the editor's to see, not a second
+// verdict on the launch.
+func (r *Relay) consumeLaunch(seq int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.launchSeq != 0 && seq == r.launchSeq
+	if r.launchSeq == 0 || seq != r.launchSeq {
+		return false
+	}
+	r.launchSeq = -1
+	return true
 }
 
 func (r *Relay) sendLaunch() error {
@@ -558,12 +574,27 @@ func (r *Relay) Dropped() int {
 	return r.dropped
 }
 
-// maxDetail bounds the adapter's error text a failed launch carries.
+// maxDetail bounds, in bytes, the adapter's text a status carries.
 const maxDetail = 2000
+
+// Bounded is s cut to at most n bytes on a rune boundary, marked when cut,
+// with invalid UTF-8 dropped.
+func Bounded(s string, n int) string {
+	if len(s) <= n {
+		return strings.ToValidUTF8(s, "")
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.ToValidUTF8(s[:cut], "") + "…"
+}
 
 // errorDetail renders a failed response's body.error as DAP defines it:
 // format with each {name} replaced by its variable. It is the adapter's
-// text, untrusted, bounded in length.
+// text, untrusted: built in one pass that stops at maxDetail bytes, so a
+// format of many placeholders and a large variable cannot grow the engine's
+// memory past the body itself and the budget.
 func errorDetail(body json.RawMessage) string {
 	var b struct {
 		Error struct {
@@ -574,14 +605,42 @@ func errorDetail(body json.RawMessage) string {
 	if len(body) == 0 || json.Unmarshal(body, &b) != nil || b.Error.Format == "" {
 		return ""
 	}
-	out := b.Error.Format
-	for k, v := range b.Error.Variables {
-		out = strings.ReplaceAll(out, "{"+k+"}", v)
+	var out strings.Builder
+	out.Grow(min(len(b.Error.Format), maxDetail) + 8)
+	add := func(s string) bool {
+		if room := maxDetail - out.Len(); len(s) > room {
+			out.WriteString(Bounded(s, room))
+			return false
+		}
+		out.WriteString(s)
+		return true
 	}
-	if len(out) > maxDetail {
-		out = out[:maxDetail] + "…"
+	f := b.Error.Format
+	for f != "" {
+		i := strings.IndexByte(f, '{')
+		if i < 0 {
+			add(f)
+			break
+		}
+		if !add(f[:i]) {
+			break
+		}
+		j := strings.IndexByte(f[i:], '}')
+		if j < 0 {
+			add(f[i:])
+			break
+		}
+		name := f[i+1 : i+j]
+		v, ok := b.Error.Variables[name]
+		if !ok {
+			v = f[i : i+j+1]
+		}
+		if !add(v) {
+			break
+		}
+		f = f[i+j+1:]
 	}
-	return strings.ToValidUTF8(out, "")
+	return strings.ToValidUTF8(out.String(), "")
 }
 
 // Write frames one message as DAP does.

@@ -4,10 +4,14 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"context"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // zipOf packs entries into a zip; a link entry is a symbolic link.
@@ -49,6 +53,9 @@ func TestUnpackRefusesLinkChains(t *testing.T) {
 		{"a hard link through a link", "tar.gz", []entry{{name: "secret", body: "s"}, sym("t/l", ".."), {name: "t/h", typ: tar.TypeLink, link: "t/l/secret"}}},
 		{"a hard link to a link", "tar.gz", []entry{sym("t/l", "../.."), {name: "t/h", typ: tar.TypeLink, link: "t/l"}}},
 		{"a chain made in the other order", "tar.gz", []entry{sym("t/x", "a/.."), sym("t/a", "..")}},
+		{"a dangling link through a dot link", "tar.gz", []entry{sym("go/s", "."), sym("go/x", "s/s/s/../../../../ESCAPED.txt")}},
+		{"a target through another link", "tar.gz", []entry{{name: "go/d/f", body: "x"}, sym("go/s", "d"), sym("go/x", "s/f")}},
+		{"a dangling link", "tar.gz", []entry{sym("go/x", "missing")}},
 		{"a zip link chain", "zip", []entry{{name: "t/a", link: "."}, {name: "t/a/b", link: ".."}, {name: "t/a/b/c", link: ".."}, {name: "t/a/b/c/ESCAPED.txt", body: "x"}}},
 	}
 	for _, c := range cases {
@@ -84,6 +91,60 @@ func TestUnpackRefusesLinkChains(t *testing.T) {
 		entry{name: "n/lib/libpy.so.1", body: "y"}, sym("n/lib/libpy.so", "libpy.so.1")), 0o600)
 	if err := unpack(archive, "tar.gz", filepath.Join(base, "out")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An archive with a dangling link at the marker's name, escaping only through
+// a "." link, is refused, and nothing is written outside the toolchain.
+func TestMarkerIsNeverWrittenThroughALink(t *testing.T) {
+	s, f := session(t)
+	evil := tarGz(t,
+		entry{name: "go/", typ: tar.TypeDir, mode: 0o755},
+		entry{name: "go/bin/go", body: "#!/bin/sh\necho go\n", mode: 0o755},
+		entry{name: "go/s", typ: tar.TypeSymlink, link: "."},
+		entry{name: "go/" + markerFile, typ: tar.TypeSymlink, link: "s/s/s/../../../../ESCAPED"})
+	f.goRelease("1.22.9", true, evil, linuxAMD64)
+	tool := Tool{S: s}
+	ts, _ := tools.NewSession(s.Workspace)
+	out, _, err := tool.ResolveArgs(ts, json.RawMessage(`{"name":"go@1.22"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := tool.Run(context.Background(), ts, out); !r.IsError {
+		t.Fatalf("installed: %s", r.Content)
+	}
+	_ = filepath.WalkDir(filepath.Dir(s.Cache.Root), func(p string, d os.DirEntry, err error) error {
+		if d != nil && d.Name() == "ESCAPED" {
+			t.Errorf("written outside the toolchain: %s", p)
+		}
+		return nil
+	})
+	// A plain file at the marker's name refuses too, rather than being overwritten.
+	s2, f2 := session(t)
+	f2.goRelease("1.22.9", true, tarGz(t, entry{name: "go/bin/go", body: "x", mode: 0o755}, entry{name: "go/" + markerFile, body: `{"lang":"go"}`}), linuxAMD64)
+	tool2 := Tool{S: s2}
+	ts2, _ := tools.NewSession(s2.Workspace)
+	out2, _, _ := tool2.ResolveArgs(ts2, json.RawMessage(`{"name":"go@1.22"}`))
+	if r := tool2.Run(context.Background(), ts2, out2); !r.IsError {
+		t.Fatalf("an archive's own marker was kept: %s", r.Content)
+	}
+}
+
+// A link to a sibling version in the cache is refused: links are checked
+// against the toolchain as it will stand.
+func TestLinksAreCheckedAgainstTheToolchain(t *testing.T) {
+	s, f := session(t)
+	f.goRelease("1.22.9", true, tarGz(t, entry{name: "go/bin/go", typ: tar.TypeSymlink, link: "../../1.22.5/bin/go"}), linuxAMD64)
+	installedMarker(t, s.Cache, linuxAMD64, "go", "1.22.5")
+	if err := os.WriteFile(filepath.Join(s.Cache.Dir(linuxAMD64, "go", "1.22.5"), "bin", "go"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.Plan(context.Background(), Spec{Lang: "go", Version: "1.22.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Install(context.Background(), plan, "user", "cli", "cli", nil); err == nil {
+		t.Fatal("a link to another version was installed")
 	}
 }
 

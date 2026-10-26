@@ -293,7 +293,7 @@ language (`go`, `python`, `node`, `rust`, `java`, `maven`, `gradle`, `ruby`,
 | Method | |
 |---|---|
 | `_abhed/toolchain/status` | `{sessionId, language, version?, debugger?, lsp?}` → `{language, available, version?, can_act, debugger?: {name, version, available}, lsp?: {name, version, available}, offer?: {command, title, source, size?, version?, into?, why, url, digest, registries, registries_note?, debugger?: extra, lsp?: extra}, refusal?: problem}`, where `extra` is `{name, display, version, source, url, digest, size?, note?, installed, needs?: {language, display, version, source, url, digest, size?}}`. With `lsp: true` the offer includes the language's server (gopls, basedpyright, typescript-language-server for `node`, `typescript` or `javascript`, rust-analyzer); `needs` is a language it runs on that is installed first (Node.js for basedpyright), which the modal must show, and `title` says so; `refusal.kind` is `no_lsp` where it cannot be had (Go older than 1.26, Node.js older than 22.22.2 for TypeScript's server, a platform with no build). With `debugger: true` the offer includes the language's debugger (Delve for Go, debugpy for Python; `title` names both, "Go 1.27.3 + Delve debugger 1.27.2", and `note` says how Delve is built); `refusal.kind` is `no_debugger` where it cannot be had (not a Linux amd64 or arm64 sandbox for Delve, Go older than 1.25, Python older than 3.10). `debugger` at the top says whether the session's commands have it now. `registries` are the package registry hosts the install opens to the session's commands through its egress proxy (an empty list with `registries_note` saying why none, such as `sandbox.toolchains_registries is off`); this is the one way a person opens egress outside the managed file, so **the modal must show them**. `available` and `version`: the session's commands have the language now (`into` is where an install would go, for the platform commands run on). `offer` is what an install would fetch: the version and `why` (`requested`, `pinned by <file>`, `latest stable`), the release `source`, the download `url`, its `size` and the published `digest` it is checked against; `command` is the same install from a terminal. `can_act` is false, with `refusal`, when `sandbox.toolchains` is off, inside an agent's command, or when the source has no such build. Asks the release source; installs nothing. Not recorded |
-| `_abhed/toolchain/install` | `{sessionId, language, version?, installId, debugger?, lsp?, agreed?: {version, digest, debugger_version?, debugger_digest?, lsp_version?, lsp_digest?}}`. Studio sends `agreed`, the offer's version and digests the modal showed; if the install would now fetch anything else it is refused with `changed` and nothing is installed. → `{language, available: true, version, dir, bin, debugger?: {name, version, dir, bin, pythonpath}, registries}` once it is verified and in place (with `debugger: true`, the debugger is planned first, and a `no_debugger` refusal installs nothing; progress for it has `status: "debugger"`); `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"`, and `toolchain.registry` for registries opened |
+| `_abhed/toolchain/install` | `{sessionId, language, version?, installId, debugger?, lsp?, agreed?: {version, digest, debugger_version?, debugger_digest?, lsp_version?, lsp_digest?, registries}}`. Studio sends `agreed`: the offer's version, digests and `registries` the modal showed; if the install would now fetch anything else, or open other registries, it is refused with `changed` and nothing is installed. An install without `agreed` (an older Studio) is still made, but recorded with `consent: "studio-unconfirmed"` and **opens no registries**; a later contract version will require `agreed`. → `{language, available: true, version, dir, bin, debugger?: {name, version, dir, bin, pythonpath}, lsp?: {name, version, dir, bin}, registries}` once it is verified and in place (with `debugger: true`, the debugger is planned first, and a `no_debugger` refusal installs nothing; progress for it has `status: "debugger"`); `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"` (or `"studio-unconfirmed"` without `agreed`), and `toolchain.registry` for registries opened |
 | `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 with `kind: "cancelled"`, and nothing partial is left |
 
 **Errors.** `data` is `{problem: {kind, message, steps?}}`, as the Ollama
@@ -1089,17 +1089,25 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   `launch` itself once `initialize` is answered and keeps its response:
   Studio sees `status: launched` or `status: failed` instead; a failed one's
   `message` carries the adapter's error, its `body.error.format` with the
-  variables filled in, up to 2,000 characters, as untrusted text. Studio's own
+  variables filled in, up to 2,000 bytes, as untrusted text. Every `status`
+  `message` is bounded the same way. Only the first response to the
+  engine's launch is taken as its verdict. Studio's own
   `launch`, `attach`, and a `restart` with arguments are answered with a
   failed DAP response in a `message`; a non-request is `-32602`. The
   engine reads `seq`, `type`, `command`, `request_seq`, `success`,
   `message`, `arguments`, `event` and `body` by their exact keys: a message
-  that repeats one, or has a key differing from one only in case, is
+  that repeats one, or has a key equal to one under Unicode case folding
+  without being it (`Command`, or `argumentſ` with U+017F, which Go's
+  encoding/json in Delve would read as `arguments`), is
   `-32602` from Studio, and from the adapter is dropped, never passed on,
   and counted (`dropped` in the final `status` and in `debug.stopped`).
   `send`s are passed to the adapter in the order the engine read them;
-  Studio need not wait for each reply. A header line over 1 KiB or a header
-  over 8 KiB from the adapter ends the session.
+  Studio need not wait for each reply, and every `send` is answered, those
+  still queued when the session ends with an error. A header line over 1 KiB
+  or a header over 8 KiB from the adapter, or a message it cannot read, ends
+  the session at once: the adapter is ended, `status: failed` says why and
+  `debug.stopped` records `failed`. A launch whose supervisor question is
+  answered after its session closed is not started (`-32000`).
 - The adapter's `runInTerminal` and `startDebugging` never reach Studio: the
   engine answers them with an error (`status: note`); `console` is always
   `internalConsole`.
@@ -1164,7 +1172,8 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   and ends it after three seconds. `lsp.stopped` records the reason and the
   counts of messages passed and refused; requests are not recorded singly.
 - Messages are read by their exact keys: one with a key twice, or two keys
-  that differ only in case, anywhere in it, is refused from Studio and
+  equal under Unicode case folding (`ſ` is `s`, `K` is `k`, as Go's
+  encoding/json matches them), anywhere in it, is refused from Studio and
   dropped from the server. Header lines and their number are bounded, and a
   message is at most 8 MiB.
 - Studio's `send`s reach the server in the order they were read, through one

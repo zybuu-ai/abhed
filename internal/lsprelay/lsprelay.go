@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/foldkey"
 )
 
 // Bounds on what a server or an editor may send.
@@ -287,7 +289,8 @@ func stringField(obj json.RawMessage, key string) string {
 }
 
 // UniqueKeys refuses JSON with an object whose keys repeat, exactly or but
-// for case, at any depth.
+// for case under Unicode simple folding (as Go's encoding/json matches
+// them), at any depth.
 func UniqueKeys(body []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -306,7 +309,8 @@ func UniqueKeys(body []byte) error {
 					return err
 				}
 				k, _ := kt.(string)
-				fold := strings.ToLower(k)
+				// As encoding/json and strings.EqualFold compare: ſ is s, K is k.
+				fold := foldkey.Key(k)
 				if seen[fold] {
 					return fmt.Errorf("the key %q appears twice, or twice but for case", k)
 				}

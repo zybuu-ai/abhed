@@ -85,14 +85,12 @@ var helperCacheRoot = func() (string, error) {
 
 var helperMu sync.Mutex
 
-// BundledHelper is hashed in full on every call, each time before it is
-// bound into a container, so a copy changed since, even with its size and
-// time put back, is replaced from the shipped file before it is used.
-//
 // BundledHelper is the Linux helper shipped beside this engine for arch,
 // when this build pins its checksum: a copy under the user's cache folder,
-// which a container engine in a VM can see, checked against the pin. A file
-// that does not match is never used. "" and why when there is none.
+// which a container engine in a VM can see, hashed in full against the pin
+// on every call, so before each bind. A copy that does not match, even with
+// its size and time put back, is replaced from the shipped file first; a
+// shipped file that does not match is never used. "" and why when none.
 func BundledHelper(arch string) (string, string) {
 	want := helperPin(arch)
 	if want == "" {
