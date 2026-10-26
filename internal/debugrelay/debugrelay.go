@@ -261,7 +261,7 @@ type Relay struct {
 	launchSeq int
 	// launchAnswered is set once the launch's response has been taken.
 	launchAnswered bool
-	launched  bool
+	launched       bool
 	// terminating is set once the editor asked the adapter to terminate.
 	terminating bool
 	onEnd       func()
