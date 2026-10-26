@@ -209,7 +209,7 @@ func Quote(s string) string { return shellQuote(s) }
 
 func shellQuote(s string) string {
 	if s != "" && strings.IndexFunc(s, func(r rune) bool {
-		return !(r == '/' || r == '.' || r == '-' || r == '_' || r == ':' || r == '=' || r == ',' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+		return !strings.ContainsRune("/.-_:=,", r) && (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z')
 	}) < 0 {
 		return s
 	}

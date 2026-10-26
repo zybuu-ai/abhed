@@ -101,7 +101,7 @@ func Run(addr string, in io.Reader, out io.Writer, wait time.Duration) error {
 			return fmt.Errorf("dapbridge: the adapter's socket %s: %w", path, err)
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	// Input ending closes the socket's writing half, and the adapter's answers
 	// still come back; the bridge ends when the adapter's side does.
 	go func() {
