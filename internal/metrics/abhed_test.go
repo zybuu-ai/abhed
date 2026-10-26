@@ -137,7 +137,10 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	m.Observe(ev(agent.EvRecordRepaired, map[string]any{}))
 	m.Observe(ev(agent.EvConfigRefused, map[string]any{}))
 	m.Observe(ev(agent.EvConfigNarrowed, map[string]any{}))
+	m.Observe(ev(agent.EvCompletionSummary, agent.CompletionSummary{Requests: 10, Served: 6, Failed: 1, Cancelled: 2, Refused: 3, Superseded: 4}))
 	for name, ok := range map[string]bool{
+		"completions": m.completions.Value("served") == 6 && m.completions.Value("empty") == 1 && m.completions.Value("cancelled") == 2 &&
+			m.completions.Value("refused") == 3 && m.completions.Value("superseded") == 4,
 		"plan accept":   m.plans.Value("accept", "operator") == 1 && m.plans.Value("keep-planning", "person") == 1,
 		"scope":         m.scopes.Value() == 1,
 		"claims":        m.claims.Value("verified") == 2 && m.claims.Value("contradicted") == 1,

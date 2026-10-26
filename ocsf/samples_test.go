@@ -65,7 +65,7 @@ var samples = []sample{
 	{agent.EvLSPStarted, agent.ActorUser, `{"lsp_id":"lsp-1","call_id":"u-2","language":"go","command":"gopls","tier":"container"}`},
 	{agent.EvLSPStopped, agent.ActorUser, `{"lsp_id":"lsp-1","call_id":"u-2","language":"go","reason":"stopped","exit_code":0,"requests":42,"refused":1,"duration_ms":60000}`},
 	{agent.EvCompletionEnabled, agent.ActorUser, `{"provider":"coder","model":"qwen2.5-coder:7b","local":true,"mode":"fim"}`},
-	{agent.EvCompletionSummary, agent.ActorSystem, `{"provider":"coder","model":"qwen2.5-coder:7b","requests":40,"served":31,"refused":2,"failed":1,"cancelled":6,"tokens_in":51200,"tokens_out":980}`},
+	{agent.EvCompletionSummary, agent.ActorSystem, `{"provider":"coder","model":"qwen2.5-coder:7b","requests":40,"served":31,"refused":2,"failed":1,"cancelled":6,"superseded":9,"tokens_in":51200,"tokens_out":980}`},
 	{agent.EvTaskCancelled, agent.ActorUser, `{"task_id":"s-child","by":"user"}`},
 	{agent.EvMessageDropped, agent.ActorSystem, `{"queue_id":"q1","text":"later","queued_at":"2026-10-19T10:00:00Z","reason":"shutdown"}`},
 	{agent.EvSessionRenamed, agent.ActorUser, `{"title":"build fix","by":"user"}`},

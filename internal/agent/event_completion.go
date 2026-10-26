@@ -24,14 +24,18 @@ type CompletionEnabled struct {
 type CompletionSummary struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	// Requests were asked of the provider; Served answered with text;
-	// Refused were not sent (a file a rule keeps, the rate limit); Failed
-	// erred; Cancelled were superseded or cancelled.
-	Requests  int `json:"requests"`
-	Served    int `json:"served"`
-	Refused   int `json:"refused"`
-	Failed    int `json:"failed"`
-	Cancelled int `json:"cancelled"`
+	// Requests were sent to the provider; Served answered with text; Failed
+	// erred; Cancelled were sent and then cancelled. Refused were not sent (a
+	// file a rule keeps, the rate limit), nor Superseded (replaced by a newer
+	// request before they went).
+	Requests   int `json:"requests"`
+	Served     int `json:"served"`
+	Refused    int `json:"refused"`
+	Failed     int `json:"failed"`
+	Cancelled  int `json:"cancelled"`
+	Superseded int `json:"superseded"`
+	// TokensIn and TokensOut are what the provider reported; a request
+	// cancelled after it went may cost tokens it never reported.
 	TokensIn  int `json:"tokens_in"`
 	TokensOut int `json:"tokens_out"`
 }

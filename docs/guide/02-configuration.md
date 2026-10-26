@@ -1487,7 +1487,10 @@ A managed `model.default` pins the model on every surface: `-model`,
 it starts, an editor over `abhed acp`, subagents, and the SDK's
 `SwitchModelNamed`, `SetModel` and `Options.Provider` all refuse another
 model. Fallbacks under a managed default are only those the managed
-`model.fallback` names. Without a managed `model.default`, any provider a
+`model.fallback` names. Studio's inline completions are pinned too: under a
+managed `model.default`, a `model.completion` naming another provider is
+refused unless the managed file sets `model.completion` itself
+([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default`, any provider a
 file defines may be chosen, and the SDK's `Provider` names any endpoint.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,

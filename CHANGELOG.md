@@ -143,13 +143,18 @@ All notable changes to Abhed are recorded here. The format follows
   feature) sends the code around the cursor, bounded, to the provider
   `model.completion` names, by fill in the middle on a local coding model
   (Ollama, vLLM, llama.cpp and other OpenAI-compatible servers) or through
-  a chat turn otherwise, and returns text only. Files outside the
-  workspace, ones a read rule keeps and ones of keys are never sent; one
-  request is in flight per session, with a debounce and a rate limit.
-  `completion.enabled` and `completion.local_only` turn them off or keep
-  them on this machine, from the managed file down; a workspace file may only
-  tighten them. The first use is recorded as `completion.enabled` and each
-  session's use as `completion.summary`, not each completion
+  a chat turn otherwise, and returns text only. Only the provider's own key
+  is sent, and a managed `model.default` pins completions too unless the
+  managed file sets `model.completion`. Files outside the workspace (links
+  followed), ones a read rule keeps, ones of keys and Abhed's state are
+  never sent; stored secrets and key-shaped text are withheld both ways, and
+  context is capped in bytes. One request is in flight per session, ordered
+  by Studio's `seq`, with a debounce and per-session and per-connection rate
+  limits. `completion.enabled` and `completion.local_only` turn them off or
+  keep them on this machine, from the managed file down; a workspace file may
+  only tighten them. `completion.enabled` is recorded before the first code
+  is sent, and nothing goes if it cannot be; each session's use is recorded
+  as `completion.summary`, not each completion
   ([Inline completions](docs/guide/34-inline-completions.md)).
 - Language servers for Abhed Studio: the editor protocol's `_abhed/lsp/start`,
   `/send` and `/stop` (the `lsp` feature) run gopls, basedpyright,

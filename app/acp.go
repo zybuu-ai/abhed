@@ -337,8 +337,9 @@ type acpConn struct {
 	lspMu sync.Mutex
 	lsps  map[string]*acpLSP
 	// comps are each session's inline completions (§7.10).
-	compMu sync.Mutex
-	comps  map[string]*acpCompleter
+	compMu   sync.Mutex
+	comps    map[string]*acpCompleter
+	compRate bucket
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.

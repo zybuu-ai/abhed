@@ -33,30 +33,53 @@ marked, and only the text of its reply is used.
 | `completion.enabled` | `true` when `model.completion` is set | `false` turns them off |
 | `completion.local_only` | `false` | `true` uses only a provider on this machine (a loopback address, `localhost`, or a local server type left at its default endpoint); any other is refused |
 
+The provider is resolved as a session's model is: the key its `api_key_env`
+names is the only key sent, never an `OPENAI_API_KEY` or other key from the
+environment, and it must be one the configuration offers. Under
+`local_only`, a redirect from the endpoint to another machine is refused.
+
 The managed configuration can turn completions off or keep them local, and a
-lower layer cannot undo it. A workspace file can only turn them off or set
-`local_only`, and cannot name the provider: the code goes to it.
+lower layer cannot undo it. A managed `model.default` pins completions as it
+pins the session's model: a `model.completion` naming another provider is
+refused unless the managed file sets `model.completion` too. A workspace file
+can only turn them off or set `local_only`, and cannot name the provider: the
+code goes to it.
 
 ## What is sent
 
 Only what is near the cursor: up to 6,000 characters before it and 2,000
 after it, and the first 60 lines of up to three other open files when Studio
-sends them. A file outside the session's workspace, one a read rule keeps
-from the agent, or one that looks like it holds keys (`.env`, `*.pem`, SSH
-keys) is never sent, as the document or as context; the request is answered
-with nothing. Requests to the model go through the same egress path as the
-agent's, so under the allowlist the rules apply.
+sends them, at most 4 KiB of each and 12 KiB in all. Every cut falls between
+characters. A file outside the session's workspace, one a read rule keeps
+from the agent, one that looks like it holds keys (`.env`, `*.pem`, SSH
+keys), or Abhed's own state (`.abhed`) is never sent, as the document or as
+context; the request is answered with nothing. A file reached through a link
+is checked both as named and where the link leads, so a link out of the
+workspace or to a key file is refused too.
+
+What is sent, and the text that comes back, has every stored secret's value
+withheld, as the agent's own messages do, and anything shaped like a key (a
+private key block, a cloud or forge access token) replaced. Requests to the
+model go through the same egress path as the agent's, so under the allowlist
+the rules apply.
 
 The engine keeps the requests reasonable: one in flight per session (a newer
-one replaces it), a short wait before asking so that a burst of keystrokes
-sends one request, and at most five a second.
+one replaces it, and Studio's `seq` decides which is newer when requests
+cross), a short wait before asking so that a burst of keystrokes sends one
+request, at most five a second per session and ten a second over all of an
+editor's sessions. A provider whose completions endpoint answers 404 or 400
+is asked through chat from then on in that session. A closed session's
+requests are refused.
 
 ## What is recorded
 
 Not each completion: there are too many. The record holds
-`completion.enabled` the first time a session asks the provider, naming it,
-its model, whether it is on this machine, and whether it was asked by
-fill-in-the-middle or chat; and `completion.summary` when the session closes,
-with how many were asked, answered, refused, failed and cancelled, and the
-tokens used. The metrics count the same (`abhed_completions_total`,
-`abhed_completion_tokens_total`).
+`completion.enabled` just before a session first sends code to the provider,
+naming it, its model, whether it is on this machine, and whether it was asked
+by fill-in-the-middle or chat. If that cannot be recorded, nothing is sent.
+`completion.summary`, when the session closes, counts the requests sent and
+how many were answered, failed or cancelled after sending, and those refused
+or superseded (replaced by a newer one) before anything went, with the tokens
+used. The token totals are a lower bound: a request cancelled after it went
+may have cost tokens the provider never reported. The metrics count the same
+(`abhed_completions_total`, `abhed_completion_tokens_total`).

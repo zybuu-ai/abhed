@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,44 +13,71 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // fimServer is a completion model's fill-in-the-middle endpoint: it answers
 // every request with text, after delay, and keeps what it was sent.
 type fimServer struct {
 	*httptest.Server
-	mu    sync.Mutex
-	seen  []map[string]any
-	delay time.Duration
+	mu      sync.Mutex
+	seen    []map[string]any
+	auth    []string
+	paths   []string
+	gate    chan struct{} // when set, a request waits for it to close
+	status  int           // when set, /v1/completions answers with it
+	arrived chan struct{}
 }
 
 func newFIMServer(t *testing.T, text string) *fimServer {
 	t.Helper()
-	f := &fimServer{}
+	f := &fimServer{arrived: make(chan struct{}, 64)}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/completions" {
-			http.Error(w, "only completions", http.StatusNotFound)
-			return
-		}
 		b, _ := io.ReadAll(r.Body)
 		var m map[string]any
 		_ = json.Unmarshal(b, &m)
 		f.mu.Lock()
-		f.seen = append(f.seen, m)
-		d := f.delay
-		f.mu.Unlock()
-		select {
-		case <-time.After(d):
-		case <-r.Context().Done():
-			return
+		f.paths = append(f.paths, r.URL.Path)
+		f.auth = append(f.auth, r.Header.Get("Authorization"))
+		gate, status := f.gate, f.status
+		if r.URL.Path == "/v1/completions" && status == 0 {
+			f.seen = append(f.seen, m)
 		}
-		out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"text": text}}, "usage": map[string]any{"prompt_tokens": 30, "completion_tokens": 4}})
-		_, _ = w.Write(out)
+		f.mu.Unlock()
+		f.arrived <- struct{}{}
+		if gate != nil {
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		switch {
+		case r.URL.Path == "/v1/completions" && status != 0:
+			http.Error(w, "no fill in the middle", status)
+		case r.URL.Path == "/v1/completions":
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"text": text}}, "usage": map[string]any{"prompt_tokens": 30, "completion_tokens": 4}})
+			_, _ = w.Write(out)
+		case r.URL.Path == "/v1/chat/completions":
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": text}, "finish_reason": "stop"}}})
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", out)
+		default:
+			http.Error(w, "not here", http.StatusNotFound)
+		}
 	}))
 	t.Cleanup(f.Close)
 	return f
+}
+
+// noHold skips the debounce, so a test's requests go at once.
+func noHold(t *testing.T) {
+	old := completeHold
+	completeHold = func(context.Context) error { return nil }
+	t.Cleanup(func() { completeHold = old })
 }
 
 func (f *fimServer) requests() []map[string]any {
@@ -80,6 +109,7 @@ type completeItems struct {
 	Disabled string           `json:"disabled"`
 	Refused  string           `json:"refused"`
 	Limited  string           `json:"limited"`
+	Cancel   string           `json:"cancelled"`
 }
 
 // §7.10: the code around the cursor, bounded, goes to the completion model's
@@ -88,6 +118,7 @@ type completeItems struct {
 func TestStudioCompletes(t *testing.T) {
 	fim := newFIMServer(t, "return a + b")
 	r := completionRig(t, fim.URL, "")
+	noHold(t)
 	id := r.open()
 	uri := "file://" + r.ws + "/add.go"
 	var res completeItems
@@ -133,6 +164,7 @@ func TestStudioCompletes(t *testing.T) {
 func TestStudioCompletionsOff(t *testing.T) {
 	fim := newFIMServer(t, "x")
 	r := completionRig(t, fim.URL, `,"completion":{"enabled":false}`)
+	noHold(t)
 	id := r.open()
 	var res completeItems
 	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x", "suffix": ""}, &res)
@@ -148,19 +180,26 @@ func TestStudioCompletionsOff(t *testing.T) {
 	}
 }
 
-// A newer request replaces the one in flight, and the rate limit holds.
-func TestStudioCompletionsSupersedeAndLimit(t *testing.T) {
+// A newer request replaces the one in flight: the first is cancelled once it
+// has reached the model, and only the newer one's text comes back.
+func TestStudioCompletionsSupersede(t *testing.T) {
 	fim := newFIMServer(t, "y")
-	fim.delay = 500 * time.Millisecond
 	r := completionRig(t, fim.URL, "")
+	noHold(t)
 	id := r.open()
 	params := func(p string) map[string]any {
 		return map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": p, "suffix": ""}
 	}
+	fim.mu.Lock()
+	fim.gate = make(chan struct{})
+	fim.mu.Unlock()
 	from := r.cl.mark()
 	first, _ := json.Marshal(params("a"))
 	r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"c1"`), Method: "_abhed/complete", Params: first})
-	time.Sleep(150 * time.Millisecond)
+	<-fim.arrived
+	fim.mu.Lock()
+	fim.gate = nil
+	fim.mu.Unlock()
 	var res completeItems
 	r.cl.ok("_abhed/complete", params("ab"), &res)
 	if len(res.Items) != 1 {
@@ -170,13 +209,354 @@ func TestStudioCompletionsSupersedeAndLimit(t *testing.T) {
 	if !strings.Contains(string(old.Result), "cancelled") {
 		t.Fatalf("the replaced request: %s", old.Result)
 	}
-	fim.delay = 0
-	limited := false
-	for range 10 {
-		r.cl.ok("_abhed/complete", params("abc"), &res)
-		limited = limited || res.Limited != ""
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	sum, _ := r.recorded(id, agent.EvCompletionSummary)
+	if len(sum) != 1 || sum[0]["requests"] != float64(2) || sum[0]["cancelled"] != float64(1) || sum[0]["superseded"] != float64(0) {
+		t.Fatalf("completion.summary %v", sum)
 	}
-	if !limited {
-		t.Fatal("ten requests at once were not limited")
+}
+
+// A request replaced before it went is superseded, not sent, and does not
+// record completion.enabled; the one that goes records it first.
+func TestStudioCompletionsSupersededBeforeSending(t *testing.T) {
+	fim := newFIMServer(t, "z")
+	r := completionRig(t, fim.URL, "")
+	held := make(chan struct{})
+	var once sync.Once
+	old := completeHold
+	completeHold = func(ctx context.Context) error {
+		first := false
+		once.Do(func() { first = true })
+		if !first {
+			return nil
+		}
+		close(held)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { completeHold = old })
+	id := r.open()
+	params := func(p string) map[string]any {
+		return map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": p, "suffix": ""}
+	}
+	from := r.cl.mark()
+	first, _ := json.Marshal(params("a"))
+	r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"c1"`), Method: "_abhed/complete", Params: first})
+	<-held
+	enabled, _ := r.recorded(id, agent.EvCompletionEnabled)
+	if len(enabled) != 0 {
+		t.Fatalf("completion.enabled was recorded before anything was sent: %v", enabled)
+	}
+	var res completeItems
+	r.cl.ok("_abhed/complete", params("ab"), &res)
+	if len(res.Items) != 1 {
+		t.Fatalf("the newer request: %+v", res)
+	}
+	r.cl.waitFor(from, "the first answer", func(m rpcMessage) bool { return string(m.ID) == `"c1"` })
+	if n := len(fim.requests()); n != 1 {
+		t.Fatalf("%d requests reached the model; want 1", n)
+	}
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	enabled, _ = r.recorded(id, agent.EvCompletionEnabled)
+	sum, _ := r.recorded(id, agent.EvCompletionSummary)
+	if len(enabled) != 1 || len(sum) != 1 || sum[0]["superseded"] != float64(1) || sum[0]["requests"] != float64(1) {
+		t.Fatalf("completion.enabled %v, summary %v", enabled, sum)
+	}
+}
+
+// Studio's seq orders requests: an older one arriving after a newer one is dropped.
+func TestStudioCompletionsSeq(t *testing.T) {
+	fim := newFIMServer(t, "s")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "ab", "seq": 7}, &res)
+	if len(res.Items) != 1 {
+		t.Fatalf("seq 7: %+v", res)
+	}
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "a", "seq": 6}, &res)
+	if res.Cancel == "" || len(fim.requests()) != 1 {
+		t.Fatalf("seq 6 after 7 was sent: %+v", res)
+	}
+}
+
+// The token bucket refills with the clock it is given, never past its burst.
+func TestCompletionBucket(t *testing.T) {
+	l := rateLimit{burst: 3, every: time.Second}
+	var b bucket
+	at := time.Unix(1000, 0)
+	for i := range 3 {
+		if !b.take(l, at) {
+			t.Fatalf("take %d of the burst was refused", i)
+		}
+	}
+	if b.take(l, at) {
+		t.Fatal("a fourth take at once was allowed")
+	}
+	if b.take(l, at.Add(900*time.Millisecond)) {
+		t.Fatal("a take before a token refilled was allowed")
+	}
+	if !b.take(l, at.Add(1100*time.Millisecond)) {
+		t.Fatal("a refilled token was refused")
+	}
+	later, took := at.Add(time.Hour), 0
+	for range 5 {
+		if b.take(l, later) {
+			took++
+		}
+	}
+	if took != 3 {
+		t.Fatalf("an hour refilled %d tokens; want the burst of 3", took)
+	}
+}
+
+// With the clock stopped, a session gets its burst and then is limited; the
+// connection's own limit holds across its sessions.
+func TestStudioCompletionsLimit(t *testing.T) {
+	fim := newFIMServer(t, "y")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	at := time.Unix(5000, 0)
+	old := completeNow
+	completeNow = func() time.Time { return at }
+	t.Cleanup(func() { completeNow = old })
+	ids := []string{r.open(), r.open(), r.open()}
+	served := 0
+	for _, id := range ids {
+		limited := 0
+		for range int(sessionRate.burst) + 2 {
+			var res completeItems
+			r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+			if res.Limited != "" {
+				limited++
+			} else {
+				served++
+			}
+		}
+		if limited == 0 {
+			t.Fatalf("session %s was not limited", id)
+		}
+	}
+	if served != int(connectionRate.burst) {
+		t.Fatalf("%d served over three sessions; want the connection's burst of %v", served, connectionRate.burst)
+	}
+}
+
+// The provider's own api_key_env is what goes; an ambient OPENAI_API_KEY never does.
+func TestStudioCompletionsUseTheNamedKey(t *testing.T) {
+	fim := newFIMServer(t, "k")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	cfg := filepath.Join(os.Getenv("HOME"), ".abhed", "config.json")
+	b, _ := os.ReadFile(cfg)
+	b = []byte(strings.Replace(string(b), `"model":"qwen2.5-coder"`, `"model":"qwen2.5-coder","api_key_env":"CODER_KEY"`, 1))
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODER_KEY", "coder-key-value")
+	t.Setenv("OPENAI_API_KEY", "ambient-key-value")
+	id := r.open()
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+	fim.mu.Lock()
+	auth := append([]string(nil), fim.auth...)
+	fim.mu.Unlock()
+	if len(res.Items) != 1 || len(auth) != 1 || auth[0] != "Bearer coder-key-value" {
+		t.Fatalf("items %+v, authorization sent %d times, named key used: %v", res, len(auth), len(auth) == 1 && auth[0] == "Bearer coder-key-value")
+	}
+
+	// Without a named key, no ambient one is borrowed.
+	bare := newFIMServer(t, "k")
+	r2 := completionRig(t, bare.URL, "")
+	noHold(t)
+	t.Setenv("OPENAI_API_KEY", "ambient-key-value")
+	id2 := r2.open()
+	r2.cl.ok("_abhed/complete", map[string]any{"sessionId": id2, "uri": "file://" + r2.ws + "/a.go", "prefix": "x"}, &res)
+	bare.mu.Lock()
+	defer bare.mu.Unlock()
+	for _, a := range bare.auth {
+		if strings.Contains(a, "ambient-key-value") {
+			t.Fatal("the ambient OPENAI_API_KEY was sent")
+		}
+	}
+}
+
+// A managed model.default pins completions too, unless the managed file
+// names the completion model itself.
+func TestStudioCompletionsUnderAManagedPin(t *testing.T) {
+	fim := newFIMServer(t, "p")
+	for _, tc := range []struct {
+		managed string
+		off     bool
+	}{
+		{`{"model":{"default":"m"}}`, true},
+		{`{"model":{"default":"m","completion":"coder"}}`, false},
+	} {
+		r := completionRig(t, fim.URL, "")
+		noHold(t)
+		path := filepath.Join(t.TempDir(), "managed.json")
+		if err := os.WriteFile(path, []byte(tc.managed), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		managed.ConfigFile = path // acpModelsEnv restores it
+		id := r.open()
+		var res completeItems
+		r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+		if off := strings.Contains(res.Disabled, "managed"); off != tc.off {
+			t.Fatalf("managed %s: %+v", tc.managed, res)
+		}
+	}
+}
+
+// A file reached through a link is checked in every form: a link out of the
+// workspace, a link to a key file, and Abhed's own state are not sent, as
+// the document or as context.
+func TestStudioCompletionsFollowLinks(t *testing.T) {
+	fim := newFIMServer(t, "l")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	outside := t.TempDir()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(os.WriteFile(filepath.Join(outside, "notes.go"), []byte("package x"), 0o600))
+	must(os.WriteFile(filepath.Join(r.ws, "id_ed25519"), []byte("key"), 0o600))
+	must(os.Symlink(filepath.Join(outside, "notes.go"), filepath.Join(r.ws, "out.go")))
+	must(os.Symlink(filepath.Join(r.ws, "id_ed25519"), filepath.Join(r.ws, "key.go")))
+	must(os.MkdirAll(filepath.Join(r.ws, ".abhed"), 0o700))
+	must(os.WriteFile(filepath.Join(r.ws, ".abhed", "settings.go"), []byte("x"), 0o600))
+	id := r.open()
+	for _, name := range []string{"out.go", "key.go", ".abhed/settings.go"} {
+		var res completeItems
+		r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/" + name, "prefix": "x"}, &res)
+		if res.Refused == "" {
+			t.Fatalf("%s was sent as the document: %+v", name, res)
+		}
+	}
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x",
+		"context": []map[string]string{
+			{"uri": "file://" + r.ws + "/out.go", "text": "OUTSIDE-TEXT"},
+			{"uri": "file://" + r.ws + "/key.go", "text": "KEY-TEXT"},
+			{"uri": "file://" + r.ws + "/.abhed/settings.go", "text": "STATE-TEXT"},
+		}}, &res)
+	seen := fim.requests()
+	if len(res.Items) != 1 || len(seen) != 1 {
+		t.Fatalf("items %+v, %d requests", res, len(seen))
+	}
+	prompt, _ := seen[0]["prompt"].(string)
+	for _, s := range []string{"OUTSIDE-TEXT", "KEY-TEXT", "STATE-TEXT"} {
+		if strings.Contains(prompt, s) {
+			t.Fatalf("%s was sent as context", s)
+		}
+	}
+}
+
+// A stored secret's value, and anything shaped like a key, is withheld from
+// what is sent and from what comes back.
+func TestStudioCompletionsWithholdSecrets(t *testing.T) {
+	fim := newFIMServer(t, "token := \"stored-secret-value-123\"")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	store := filepath.Join(os.Getenv("HOME"), ".abhed", "secrets.json")
+	if err := os.WriteFile(store, []byte(`{"FAKE_TOKEN":"stored-secret-value-123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABHED_SECRETS_FILE", store)
+	id := r.open()
+	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go",
+		"prefix": "x := \"stored-secret-value-123\"\naws := \"" + key + "\"\n", "suffix": "// stored-secret-value-123",
+		"context": []map[string]string{{"uri": "file://" + r.ws + "/b.go", "text": "y := \"stored-secret-value-123\""}}}, &res)
+	seen := fim.requests()
+	if len(seen) != 1 {
+		t.Fatalf("%d requests", len(seen))
+	}
+	sent := fmt.Sprint(seen[0]["prompt"], seen[0]["suffix"])
+	if strings.Contains(sent, "stored-secret-value-123") || strings.Contains(sent, key) {
+		t.Fatalf("a secret was sent: %q", sent)
+	}
+	if len(res.Items) != 1 || strings.Contains(fmt.Sprint(res.Items[0]["text"]), "stored-secret-value-123") {
+		t.Fatalf("a secret came back: %+v", res)
+	}
+}
+
+// Context is capped in bytes per file and in all, on character boundaries,
+// and the prefix and suffix in characters.
+func TestStudioCompletionsCaps(t *testing.T) {
+	fim := newFIMServer(t, "c")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	wide := strings.Repeat("é", completeFileBytes) // two bytes each
+	var ctx []map[string]string
+	for i := range completeFiles {
+		ctx = append(ctx, map[string]string{"uri": fmt.Sprintf("file://%s/f%d.go", r.ws, i), "text": wide})
+	}
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go",
+		"prefix": strings.Repeat("ü", completePrefix+50), "suffix": strings.Repeat("ö", completeSuffix+50), "context": ctx}, &res)
+	seen := fim.requests()
+	if len(seen) != 1 {
+		t.Fatalf("%d requests", len(seen))
+	}
+	prompt, _ := seen[0]["prompt"].(string)
+	suffix, _ := seen[0]["suffix"].(string)
+	if !utf8.ValidString(prompt) || !utf8.ValidString(suffix) {
+		t.Fatal("a cap cut through a character")
+	}
+	if n := utf8.RuneCountInString(suffix); n != completeSuffix {
+		t.Fatalf("suffix %d characters", n)
+	}
+	lead := strings.TrimRight(prompt, "ü")
+	if n := utf8.RuneCountInString(prompt) - utf8.RuneCountInString(lead); n != completePrefix {
+		t.Fatalf("prefix %d characters", n)
+	}
+	if len(lead) > completeAllFiles {
+		t.Fatalf("context %d bytes; cap %d", len(lead), completeAllFiles)
+	}
+	for _, part := range strings.Split(lead, "// f")[1:] {
+		if len(part) > completeFileBytes+16 {
+			t.Fatalf("one file sent %d bytes", len(part))
+		}
+	}
+}
+
+// Once a session has closed, its completions are refused.
+func TestStudioCompletionsAfterClose(t *testing.T) {
+	fim := newFIMServer(t, "c")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	res := r.cl.call("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"})
+	if res.Error == nil || len(fim.requests()) != 0 {
+		t.Fatalf("a closed session completed: %+v", res)
+	}
+}
+
+// A provider without fill in the middle is asked by chat, once it has said so.
+func TestStudioCompletionsFallBackToChat(t *testing.T) {
+	fim := newFIMServer(t, "chat text")
+	fim.status = http.StatusNotFound
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	for range 2 {
+		var res completeItems
+		r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+		if len(res.Items) != 1 || res.Items[0]["text"] != "chat text" {
+			t.Fatalf("%+v", res)
+		}
+	}
+	fim.mu.Lock()
+	defer fim.mu.Unlock()
+	if fmt.Sprint(fim.paths) != "[/v1/completions /v1/chat/completions /v1/chat/completions]" {
+		t.Fatalf("paths %v", fim.paths)
 	}
 }

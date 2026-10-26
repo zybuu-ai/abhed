@@ -81,10 +81,10 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 			// An OpenAI-shaped endpoint authenticates with a bearer token
 			// either way, so a subscription token and an API key take the same
 			// path here. Only the source differs.
-			key = firstNonEmptyString(
-				s.Get("oauth_token"),
-				os.Getenv("OPENAI_API_KEY"),
-			)
+			key = s.Get("oauth_token")
+			if key == "" && !s.NoAmbientKey {
+				key = os.Getenv("OPENAI_API_KEY")
+			}
 		}
 		a := NewOpenAICompatible(base, key, s.Model, profile)
 		a.Defaults = s.Params
