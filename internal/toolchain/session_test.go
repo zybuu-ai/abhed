@@ -145,3 +145,30 @@ func TestToolOpensRegistries(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// A workspace needs a language by its marker files and by loose source
+// files; dependency folders are not looked in.
+func TestNeeds(t *testing.T) {
+	ws := t.TempDir()
+	write := func(rel string) {
+		p := filepath.Join(ws, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("tools/fix.py")
+	write("main.go")
+	write("pom.xml")
+	write("node_modules/x/index.js")
+	write(".tool-versions")
+	_ = os.WriteFile(filepath.Join(ws, ".tool-versions"), []byte("ruby 3.3\n"), 0o644)
+	var got []string
+	for _, n := range Needs(ws) {
+		got = append(got, n.Lang+":"+n.Why)
+	}
+	want := "go:*.go files python:*.py files java:pom.xml maven:pom.xml ruby:.tool-versions"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("needs %v, want %s", got, want)
+	}
+}
