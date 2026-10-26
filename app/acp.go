@@ -23,6 +23,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -167,7 +168,10 @@ type acpSession struct {
 	undo *agent.UndoLog
 	// readOnly says why the session takes no prompt: its record failed verification.
 	readOnly string
-	cancel   context.CancelFunc
+	// raConfigs is the session's last rust-analyzer.toml check, dropped on
+	// any action and whenever a watch fires.
+	raConfigs lsprelay.RustAnalyzerConfigCache
+	cancel    context.CancelFunc
 	// mcpRestart is set while the person's MCP restart runs: no prompt or
 	// other restart starts until it ends, since they share the connection.
 	mcpRestart bool

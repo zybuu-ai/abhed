@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
 // A person's language server for Studio (studio-acp-contract.md §7.9): the
@@ -76,6 +78,13 @@ var lspCommand = func(b tools.Bash, ctx context.Context, cwd, command string) *e
 }
 
 var lspTier = debugTier
+
+// lspToolchainRoot is Abhed's toolchain cache, which the sandbox only
+// reads: a TypeScript there is taken though it is under the home folder.
+var lspToolchainRoot = func() string {
+	root, _ := toolchain.DefaultRoot()
+	return root
+}
 
 // lspBackoff is the wait before restart n (from 0) after a crash.
 var lspBackoff = func(n int) time.Duration { return time.Second << n }
@@ -221,11 +230,13 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
 	// A workspace rust-analyzer.toml overrides the engine's settings, so the
 	// person is asked, told what it can do.
+	// A walk that stopped at a bound asks too: a file may have gone unseen.
 	var why string
+	var raFiles []string
 	if l.language == "rust" {
-		if files := lsprelay.RustAnalyzerConfigs(l.filter.Roots); len(files) > 0 {
-			why = lsprelay.RustAnalyzerConfigWhy(files)
-		}
+		var incomplete string
+		raFiles, incomplete = s.raConfigs.Get(l.filter.Roots, raStamp(loop))
+		why = lsprelay.RustAnalyzerConfigWhy(raFiles, incomplete)
 	}
 	_, refused, err := loop.ManualAuthorizeAsking(ctx, "bash", callID, args, c.manualAsk(s, callID, "lsp", command), why)
 	if err != nil {
@@ -237,7 +248,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		_ = loop.ManualObserve(callID, "bash", *refused, 0)
 		return nil, refusal(errPolicy, "%s", refused.Content)
 	}
-	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, lsprelay.Script(l.argv))
+	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, lsprelay.Script(l.argv, lspToolchainRoot()))
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
@@ -270,8 +281,9 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	// typescript-language-server is given the TypeScript beside it, which
 	// the script names, so it never runs the workspace's own.
 	// Without it the server is never initialized: it would take the
-	// workspace's own. No name in time, the process gone first, or one
-	// under a session folder or home, ends the start.
+	// workspace's own. No name in time, the process gone first, or one where
+	// a command could have put it (a session folder, or the home folder
+	// outside Abhed's toolchain cache) ends the start.
 	var tsserver string
 	var initErr error
 	if filepath.Base(l.argv[0]) == "typescript-language-server" {
@@ -284,7 +296,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		switch {
 		case tsserver == "":
 			initErr = errNoTSServer
-		case lsprelay.WithinAny(tsserver, append(append([]string{}, l.filter.Roots...), home)):
+		case lsprelay.TSServerRefused(tsserver, l.filter.Roots, home, lspToolchainRoot()):
 			initErr = errTSServerInWorkspace
 		}
 		if initErr != nil {
@@ -299,6 +311,9 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		served, initErr = c.lspInitialize(l, br, options)
 	}
 	ended := make(chan struct{})
+	if initErr == nil && l.language == "rust" {
+		go c.lspWatchConfig(s, l, lsprelay.NewRustAnalyzerWatch(l.filter.Roots, raFiles), ended)
+	}
 	go func() {
 		defer close(ended)
 		if initErr == nil {
@@ -354,10 +369,10 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	if initErr != nil {
 		<-ended
 		if errors.Is(initErr, errTSServerInWorkspace) {
-			return nil, &rpcError{Code: errRefused, Message: "the only TypeScript beside typescript-language-server is in the workspace or a home folder, which Abhed does not run",
+			return nil, &rpcError{Code: errRefused, Message: "the only TypeScript beside typescript-language-server is where a command could have put it, which Abhed does not run",
 				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
-					"message": "typescript-language-server's TypeScript was found under a session folder or a home folder, where a command could have put it",
-					"steps": []string{"Install typescript-language-server with its TypeScript outside the workspace and home: abhed toolchain install -lsp node, or a sandbox image that has both",
+					"message": "typescript-language-server's TypeScript was found under a session folder, or under a home or temporary folder outside Abhed's toolchain cache, where a command could have put it",
+					"steps": []string{"Install typescript-language-server with its TypeScript through Abhed: abhed toolchain install -lsp node, or use a sandbox image that has both",
 						"Start the language server again"}}}}
 		}
 		if errors.Is(initErr, errNoTSServer) || bytes.Contains(stderr.Bytes(), []byte("abhed-lsp: no TypeScript")) {
@@ -382,10 +397,88 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	return served, nil
 }
 
+// lspConfigChanged is the reason a rust-analyzer is stopped when a
+// rust-analyzer.toml appears or changes while it runs: its settings may no
+// longer be the engine's, and the next start asks again.
+const lspConfigChanged = "workspace-config-changed"
+
+// lspWatchConfig stops rust-analyzer when its watch sees a
+// rust-analyzer.toml appear, change or go, until the process ends.
+func (c *acpConn) lspWatchConfig(s *acpSession, l *acpLSP, w *lsprelay.RustAnalyzerWatch, ended <-chan struct{}) {
+	t := time.NewTicker(lsprelay.RustAnalyzerWatchEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ended:
+			return
+		case <-t.C:
+			if w.Changed() {
+				s.raConfigs.Invalidate()
+				l.stop(lspConfigChanged)
+				return
+			}
+		}
+	}
+}
+
+// raStamp is what a cached rust-analyzer.toml check holds under: the
+// session record's last event, which moves with every action.
+func raStamp(loop *agent.Loop) string {
+	if loop == nil || loop.Recorder == nil {
+		return ""
+	}
+	return strconv.FormatInt(loop.Recorder.LastAppended(), 10)
+}
+
+// lspWorkspaceConfig stops the session's rust-analyzer servers: a
+// rust-analyzer.toml is being written, by the agent or reported by Studio.
+func (c *acpConn) lspWorkspaceConfig(sessionID string) {
+	c.lspMu.Lock()
+	var mine []*acpLSP
+	for _, l := range c.lsps {
+		if l.session == sessionID && l.language == "rust" {
+			mine = append(mine, l)
+		}
+	}
+	c.lspMu.Unlock()
+	for _, l := range mine {
+		l.stop(lspConfigChanged)
+	}
+}
+
+// lspNoteAction keeps the session's rust-analyzer.toml check current with
+// what the agent does: any action may write to the workspace, so the cached
+// walk is dropped, and a write or edit of a rust-analyzer.toml stops
+// rust-analyzer before it can read it.
+func (c *acpConn) lspNoteAction(s *acpSession, ev abhed.Event) {
+	if ev.Type == agent.EvSubagentAction {
+		s.raConfigs.Invalidate()
+		var p agent.SubagentAction
+		if json.Unmarshal(ev.Payload, &p) == nil && (p.Tool == "write" || p.Tool == "edit") && lsprelay.IsRustAnalyzerConfig(p.Subject) {
+			c.lspWorkspaceConfig(s.id)
+		}
+		return
+	}
+	if ev.Type != agent.EvActionRequested {
+		return
+	}
+	s.raConfigs.Invalidate()
+	var p agent.ActionRequested
+	if json.Unmarshal(ev.Payload, &p) != nil || (p.Tool != "write" && p.Tool != "edit") {
+		return
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(p.Args, &a) == nil && lsprelay.IsRustAnalyzerConfig(a.Path) {
+		c.lspWorkspaceConfig(s.id)
+	}
+}
+
 // The typescript-language-server start's failures before initialize.
 var (
 	errNoTSServer          = errors.New("typescript-language-server's start did not name the TypeScript beside it")
-	errTSServerInWorkspace = errors.New("the TypeScript beside typescript-language-server is under a session folder or a home folder")
+	errTSServerInWorkspace = errors.New("the TypeScript beside typescript-language-server is under a session folder, or under the home folder outside Abhed's toolchain cache")
 )
 
 // lspMissingSteps are what to do when a language's server is not on PATH:
@@ -590,7 +683,7 @@ func lspRuns(language string) string {
 	case "go":
 		return "gopls runs go list (and, for packages that use cgo, the cgo tool and the C compiler) to load packages, but no project code"
 	case "rust":
-		return "rust-analyzer runs cargo metadata, which reads the workspace's .cargo/config.toml and can run a rustc or rustc-wrapper it names; build scripts, proc macros and cargo check are off, and a workspace rust-analyzer.toml, which would override that, is put to the person"
+		return "rust-analyzer runs cargo metadata, which reads the workspace's .cargo/config.toml and can run a rustc or rustc-wrapper it names; build scripts, proc macros and cargo check are off. A workspace rust-analyzer.toml would override that: one found at the start is put to the person, and one that appears or changes while it runs stops it"
 	case "typescript", "javascript":
 		return "typescript-language-server runs the TypeScript installed with it, never the workspace's node_modules/typescript"
 	case "python":
@@ -672,6 +765,16 @@ func (c *acpConn) lspSend(l *acpLSP, msg rpcMessage) {
 	}
 	if err := json.Unmarshal(msg.Params, &p); err != nil || len(p.Message) == 0 {
 		c.reply(msg.ID, nil, refusal(errParams, "message is required"))
+		return
+	}
+	// Studio reporting a rust-analyzer.toml means the server would read it:
+	// it is stopped instead, and its next start asks again.
+	if l.language == "rust" && lsprelay.NamesRustAnalyzerConfig(p.Message) {
+		if s := c.session(l.session); s != nil {
+			s.raConfigs.Invalidate()
+		}
+		l.stop(lspConfigChanged)
+		c.reply(msg.ID, map[string]any{"refused": "a rust-analyzer.toml would override Abhed's rust-analyzer settings, so the server was stopped; start it again to be asked"}, nil)
 		return
 	}
 	out, err := l.filter.FromEditor(p.Message)

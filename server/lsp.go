@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -38,19 +40,23 @@ type lspRun struct {
 	// roots are the session's folders: the workspace, its added folders
 	// and skill folders, any of which the editor may have open.
 	roots []string
-	// options and settings are the engine's settings for the server
-	// (lsprelay.SafeSettings): its initializationOptions, and its answers to
-	// workspace/configuration, which the engine gives it itself.
-	options  json.RawMessage
+	// settings are the engine's answers to the server's
+	// workspace/configuration (lsprelay.SafeSettings), which it gives the
+	// server itself.
 	settings map[string]json.RawMessage
 	cancel   context.CancelFunc
 	stdin    io.WriteCloser
 	writeMu  sync.Mutex
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// options are the engine's initializationOptions for the server, set
+	// once the start has named a typescript-language-server's TypeScript.
+	options  json.RawMessage
 	subs     map[*lspSub]struct{}
 	lastRead time.Time
-	done     chan struct{}
+	// reason is why the engine stopped the server, for the record.
+	reason string
+	done   chan struct{}
 }
 
 // lspSub is one page reading a language server. queued is the bytes handed
@@ -196,9 +202,14 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 
 	// A workspace rust-analyzer.toml overrides the engine's settings, and
 	// the workbench has no one to ask on the spot, so the start is refused.
+	// A walk that stopped at a bound is refused too: a file may have gone
+	// unseen. The check is kept while nothing new is on the session's record.
+	var raFiles []string
 	if req.Language == "rust" {
-		if files := lsprelay.RustAnalyzerConfigs(sess.PolicyRoots()); len(files) > 0 {
-			WriteError(w, http.StatusConflict, "not started: "+lsprelay.RustAnalyzerConfigWhy(files)+"; start it from Abhed Studio, which asks you, or remove the file")
+		var incomplete string
+		raFiles, incomplete = live.raConfigs.Get(sess.PolicyRoots(), strconv.FormatInt(live.Loop.Recorder.LastAppended(), 10))
+		if why := lsprelay.RustAnalyzerConfigWhy(raFiles, incomplete); why != "" {
+			WriteError(w, http.StatusConflict, "not started: "+why+"; start it from Abhed Studio, which asks you, or remove the file")
 			return
 		}
 	}
@@ -222,7 +233,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
-	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Script(argv))
+	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Script(argv, lspToolchainRoot()))
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
@@ -269,6 +280,16 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		idle := time.NewTicker(15 * time.Second)
 		defer idle.Stop()
+		// rust-analyzer is stopped when a rust-analyzer.toml appears or
+		// changes while it runs.
+		var watch *lsprelay.RustAnalyzerWatch
+		var watchC <-chan time.Time
+		if req.Language == "rust" {
+			watch = lsprelay.NewRustAnalyzerWatch(run.roots, raFiles)
+			t := time.NewTicker(lsprelay.RustAnalyzerWatchEvery)
+			defer t.Stop()
+			watchC = t.C
+		}
 		waited := make(chan error, 1)
 		go func() { waited <- cmd.Wait() }()
 		var err error
@@ -277,6 +298,11 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 			select {
 			case err = <-waited:
 				break loop
+			case <-watchC:
+				if watch.Changed() {
+					live.raConfigs.Invalidate()
+					run.stopFor(lspConfigChanged)
+				}
 			case <-idle.C:
 				run.mu.Lock()
 				gone := len(run.subs) == 0 && time.Since(run.lastRead) > lspIdle
@@ -291,7 +317,13 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			code = -1
 		}
-		res := tools.Result{Content: fmt.Sprintf("exit %d · language server for %s ended\n%s", code, req.Language, stderr.String()), ExitCode: &code}
+		ended := "ended"
+		run.mu.Lock()
+		if run.reason != "" {
+			ended = "stopped: " + run.reason
+		}
+		run.mu.Unlock()
+		res := tools.Result{Content: fmt.Sprintf("exit %d · language server for %s %s\n%s", code, req.Language, ended, stderr.String()), ExitCode: &code}
 		s.unrecorded(nil, live, live.Loop.ManualObserve(id, "bash", res, time.Since(start)))
 		// Only now: closing the session waits on done for this end to be recorded.
 		close(run.done)
@@ -306,13 +338,16 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(lspTSWait):
 		}
 		home, _ := os.UserHomeDir()
-		if ts == "" || lsprelay.WithinAny(ts, append(append([]string{}, run.roots...), home)) {
+		if lsprelay.TSServerRefused(ts, run.roots, home, lspToolchainRoot()) {
 			cancel()
 			<-run.done
-			WriteError(w, http.StatusConflict, "typescript-language-server was not started: no TypeScript installed beside it outside the workspace and home folders, and the workspace's own is not used")
+			WriteError(w, http.StatusConflict, "typescript-language-server was not started: no TypeScript is installed beside it where commands cannot write (Abhed's toolchain cache, or outside the session's folders, home and temporary folders), and the workspace's own is not used")
 			return
 		}
-		run.options, _ = lsprelay.SafeSettings(req.Language, ts)
+		options, _ := lsprelay.SafeSettings(req.Language, ts)
+		run.mu.Lock()
+		run.options = options
+		run.mu.Unlock()
 	}
 	WriteJSON(w, http.StatusOK, lspStartResponse{ID: id, Root: sess.Root})
 }
@@ -369,6 +404,27 @@ func (l *lspRun) configurationAnswer(msg []byte) []byte {
 	return b
 }
 
+// lspConfigChanged is why a rust-analyzer is stopped when a
+// rust-analyzer.toml appears or changes while it runs.
+const lspConfigChanged = "workspace-config-changed"
+
+// stopFor ends the server, noting why for the record of its end.
+func (l *lspRun) stopFor(reason string) {
+	l.mu.Lock()
+	if l.reason == "" {
+		l.reason = reason
+	}
+	l.mu.Unlock()
+	l.cancel()
+}
+
+// lspToolchainRoot is Abhed's toolchain cache, which the sandbox only
+// reads: a TypeScript there is taken though it is under the home folder.
+var lspToolchainRoot = func() string {
+	root, _ := toolchain.DefaultRoot()
+	return root
+}
+
 // lspTSWait bounds the wait for typescript-language-server's start to name
 // the TypeScript beside it; tests shorten it.
 var lspTSWait = 15 * time.Second
@@ -408,7 +464,17 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the message is not JSON")
 		return
 	}
-	body, ok = lspAllowedIn(body, run.root, run.roots, run.options)
+	// A rust-analyzer.toml the page opens or saves would be read by the
+	// server, overriding the engine's settings: the server is stopped.
+	if run.language == "rust" && lsprelay.NamesRustAnalyzerConfig(body) {
+		run.stopFor(lspConfigChanged)
+		WriteError(w, http.StatusConflict, "a rust-analyzer.toml would override Abhed's rust-analyzer settings, so the language server was stopped")
+		return
+	}
+	run.mu.Lock()
+	options := run.options
+	run.mu.Unlock()
+	body, ok = lspAllowedIn(body, run.root, run.roots, options)
 	if !ok {
 		WriteError(w, http.StatusForbidden, "the workbench sends a language server only editor requests")
 		return

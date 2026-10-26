@@ -315,15 +315,15 @@ func TestScriptRunsUnderTheShells(t *testing.T) {
 			}
 			return so.String(), se.String(), code
 		}
-		out, errOut, code := run(Script([]string{"gopls"}))
+		out, errOut, code := run(Script([]string{"gopls"}, ""))
 		if code != 0 || !strings.Contains(out, "GOTOOLCHAIN=local GOFLAGS=[] GOENV=off") {
 			t.Fatalf("%s gopls: %d %q %q", shell, code, out, errOut)
 		}
-		out, errOut, code = run(Script([]string{"typescript-language-server", "--stdio"}))
+		out, errOut, code = run(Script([]string{"typescript-language-server", "--stdio"}, ""))
 		if code != 0 || !strings.Contains(out, "ts argv=--stdio") || !strings.Contains(errOut, TSServerMarker+realTS) {
 			t.Fatalf("%s typescript: %d %q %q", shell, code, out, errOut)
 		}
-		if _, _, code = run(Script([]string{"rust-analyzer"})); code != ExitNoServer {
+		if _, _, code = run(Script([]string{"rust-analyzer"}, "")); code != ExitNoServer {
 			t.Fatalf("%s missing server exited %d", shell, code)
 		}
 	}
@@ -336,7 +336,7 @@ func TestScriptRunsUnderTheShells(t *testing.T) {
 	planted := filepath.Join(home, ".node_modules", "typescript", "lib", "tsserver.js")
 	_ = os.MkdirAll(filepath.Dir(planted), 0o755)
 	_ = os.WriteFile(planted, nil, 0o644)
-	cmd := exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}))
+	cmd := exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}, ""))
 	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home, "NODE_PATH=" + filepath.Join(home, ".node_modules")}
 	var se strings.Builder
 	cmd.Stderr = &se
@@ -354,7 +354,7 @@ func TestScriptRunsUnderTheShells(t *testing.T) {
 		_ = os.WriteFile(f, []byte("#!/bin/sh\n"), 0o755)
 	}
 	_ = os.Symlink(filepath.Join(homePkg, "typescript-language-server", "lib", "cli.mjs"), filepath.Join(homeBin, "typescript-language-server"))
-	cmd = exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}))
+	cmd = exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}, ""))
 	cmd.Env = []string{"PATH=" + homeBin + ":/usr/bin:/bin", "HOME=" + home}
 	err = cmd.Run()
 	if !errors.As(err, &ee) || ee.ExitCode() != ExitNoTypeScript {
@@ -468,4 +468,24 @@ func TestWorkspaceEditsAreWholeOrNothing(t *testing.T) {
 	if got := result(fwd); got != `[{"uri":"file:///w/a.go"}]` {
 		t.Errorf("references: %s", got)
 	}
+}
+
+// A command's arguments are positional: a command naming any outside file
+// is dropped whole, with what carries it, never trimmed; and sourceUri is
+// checked like any URI.
+func TestCommandsAreWholeOrNothing(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	fwd, _ := f.FromServer([]byte(`{"jsonrpc":"2.0","id":1,"result":[` +
+		`{"title":"fix","command":{"title":"fix","command":"gopls.apply_fix","arguments":[{"URI":"file:///etc/x.go"},{"URI":"file:///w/a.go"}]}},` +
+		`{"title":"ok","command":{"title":"ok","command":"gopls.apply_fix","arguments":[{"URI":"file:///w/a.go"}]}}]}`))
+	var m map[string]json.RawMessage
+	if json.Unmarshal(fwd, &m) != nil || strings.Contains(string(m["result"]), "/etc/") || !strings.Contains(string(m["result"]), `"title":"ok"`) {
+		t.Fatalf("code actions: %s", fwd)
+	}
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":2,"result":{"title":"t","command":"_typescript.applyWorkspaceEdit","arguments":[{"changes":{"file:///etc/x":[]}}]}}`))
+	if json.Unmarshal(fwd, &m) != nil || string(m["result"]) != "null" {
+		t.Fatalf("a lone command: %s", fwd)
+	}
+	_, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"gopls.organize_imports","arguments":[{"sourceUri":"file:///etc/x.ts"}]}}`))
+	refusal(t, err)
 }

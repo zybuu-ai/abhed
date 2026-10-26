@@ -19,6 +19,7 @@ func (c *acpConn) forward(s *acpSession, ev abhed.Event) {
 		c.sessionUpdate(s.id, u)
 	}
 	c.taskEvent(s, ev)
+	c.lspNoteAction(s, ev)
 }
 
 // replay sends a recorded conversation as the updates a live run would have,

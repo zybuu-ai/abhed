@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/monitor"
+	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
 // TestLSPFakeServer is a language server the LSP tests run in place of
@@ -432,7 +433,7 @@ func TestStudioTypeScriptStartFailsClosed(t *testing.T) {
 	}{
 		{"no name", nil, "TypeScript"},
 		{"exits first", []string{"ABHED_FAKE_LSP_EXIT=1"}, "TypeScript"},
-		{"in the workspace", []string{"WS"}, "workspace or a home folder"},
+		{"in the workspace", []string{"WS"}, "where a command could have put it"},
 	} {
 		r := newStudioRig(t, `,"monitor":{"enabled":false}`)
 		env := c.env
@@ -522,4 +523,144 @@ func TestStudioRustAnalyzerConfigAsksThePerson(t *testing.T) {
 		t.Fatal("a rust start with no rust-analyzer.toml did not start")
 	}
 	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
+}
+
+// When the supervisor asks about a rust-analyzer start too, the person gets
+// one question carrying both reasons, and both are recorded.
+func TestStudioRustAnalyzerConfigAndSupervisorAskOnce(t *testing.T) {
+	r := newStudioRig(t, "")
+	asked := fakeLSP(t, r.ws)
+	r.write("rust-analyzer.toml", "[procMacro]\nenable = true\n")
+	id := r.open()
+	withSupervisor(t, r, id, &monitor.Guard{Monitor: judging(policy.Ask, "unknown-program", nil)})
+	var reasons []string
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method != "session/request_permission" {
+			return map[string]any{}
+		}
+		var p struct {
+			ToolCall struct {
+				ToolCallID string                    `json:"toolCallId"`
+				Meta       map[string]map[string]any `json:"_meta"`
+			} `json:"toolCall"`
+		}
+		_ = json.Unmarshal(params, &p)
+		reasons = append(reasons, fmt.Sprint(p.ToolCall.Meta[acpMetaKey]["reason"], " step=", p.ToolCall.Meta[acpMetaKey]["step"]))
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "once:" + p.ToolCall.ToolCallID}}
+	})
+	var res struct {
+		LSPID string `json:"lspId"`
+	}
+	r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "rust"}, &res)
+	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "the judge's reason") || !strings.Contains(reasons[0], "rust-analyzer.toml") || !strings.Contains(reasons[0], "step=monitor") {
+		t.Fatalf("asked %v", reasons)
+	}
+	if len(*asked) != 1 {
+		t.Fatalf("started %v", *asked)
+	}
+	reqs, _ := r.recorded(id, agent.EvActionRequested)
+	last := fmt.Sprint(reqs[len(reqs)-1]["reason"])
+	if !strings.Contains(last, "the judge's reason") || !strings.Contains(last, "rust-analyzer.toml") {
+		t.Fatalf("recorded reason %q", last)
+	}
+}
+
+// A rust-analyzer.toml that appears while rust-analyzer runs stops it, as
+// workspace-config-changed, recorded, so the next start asks again: found
+// by the watch, written by the agent, or reported by Studio.
+func TestStudioRustAnalyzerStopsOnConfigChange(t *testing.T) {
+	oldEvery := lsprelay.RustAnalyzerWatchEvery
+	lsprelay.RustAnalyzerWatchEvery = 50 * time.Millisecond
+	t.Cleanup(func() { lsprelay.RustAnalyzerWatchEvery = oldEvery })
+	start := func(r *studioRig, id string) string {
+		var res struct {
+			LSPID string `json:"lspId"`
+		}
+		r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "rust"}, &res)
+		return res.LSPID
+	}
+	ended := func(r *studioRig, id string, from int) {
+		r.cl.waitFor(from, "ended as workspace-config-changed", func(m rpcMessage) bool {
+			return m.Method == "_abhed/lsp/status" && strings.Contains(string(m.Params), `"ended"`) && strings.Contains(string(m.Params), "workspace-config-changed")
+		})
+		var stopped []map[string]any
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if stopped, _ = r.recorded(id, agent.EvLSPStopped); len(stopped) > 0 {
+				break
+			}
+		}
+		if len(stopped) == 0 || stopped[len(stopped)-1]["reason"] != "workspace-config-changed" {
+			t.Fatalf("lsp.stopped %v", stopped)
+		}
+	}
+
+	// The watch.
+	r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+	fakeLSP(t, r.ws)
+	id := r.open()
+	from := r.cl.mark()
+	start(r, id)
+	r.write("rust-analyzer.toml", "[cargo.buildScripts]\nenable = true\n")
+	ended(r, id, from)
+
+	// The agent's write.
+	r = newStudioRig(t, `,"monitor":{"enabled":false}`)
+	fakeLSP(t, r.ws)
+	id = r.open()
+	from = r.cl.mark()
+	start(r, id)
+	args, _ := json.Marshal(map[string]any{"path": r.ws + "/crates/b/rust-analyzer.toml", "content": "x"})
+	payload, _ := json.Marshal(agent.ActionRequested{CallID: "w1", Tool: "write", Args: args})
+	r.cl.conn.lspNoteAction(r.cl.conn.session(id), abhed.Event{Type: agent.EvActionRequested, Payload: payload})
+	ended(r, id, from)
+
+	// Studio's report of one.
+	r = newStudioRig(t, `,"monitor":{"enabled":false}`)
+	fakeLSP(t, r.ws)
+	id = r.open()
+	from = r.cl.mark()
+	lspID := start(r, id)
+	var out map[string]any
+	r.cl.ok("_abhed/lsp/send", map[string]any{"lspId": lspID, "message": json.RawMessage(`{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"file://` + r.ws + `/crates/c/.rust-analyzer.toml"}}}`)}, &out)
+	if out["refused"] == nil {
+		t.Fatalf("the report was passed to the server: %v", out)
+	}
+	ended(r, id, from)
+}
+
+// The TypeScript Abhed's toolchain installs sits in its cache under the home
+// folder: Studio takes it there, and refuses one elsewhere under home.
+func TestStudioTypeScriptFromTheToolchainCache(t *testing.T) {
+	old := lspTSWait
+	lspTSWait = 2 * time.Second
+	t.Cleanup(func() { lspTSWait = old })
+	for _, c := range []struct {
+		name, ts string
+		ok       bool
+	}{
+		{"in the cache", ".cache/abhed/toolchains/darwin-arm64/node/22.20.0/lib/node_modules/typescript/lib/tsserver.js", true},
+		{"elsewhere under home", "npm/lib/node_modules/typescript/lib/tsserver.js", false},
+	} {
+		r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+		home, _ := os.UserHomeDir()
+		oldRoot := lspToolchainRoot
+		lspToolchainRoot = func() string { return home + "/.cache/abhed/toolchains" }
+		ts := home + "/" + c.ts
+		t.Setenv("ABHED_FAKE_LSP_TS", ts)
+		fakeLSP(t, r.ws, "ABHED_FAKE_LSP_TS="+ts)
+		id := r.open()
+		m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "typescript"})
+		if (m.Error == nil) != c.ok {
+			t.Fatalf("%s: %+v %s", c.name, m.Error, m.Result)
+		}
+		if c.ok {
+			var res struct {
+				LSPID string `json:"lspId"`
+			}
+			_ = json.Unmarshal(m.Result, &res)
+			r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
+		}
+		lspToolchainRoot = oldRoot
+	}
 }
