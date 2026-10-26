@@ -73,9 +73,17 @@ func commandKind(words []string) string {
 		if sub == "-m" && (third == "pytest" || third == "unittest") {
 			return "test"
 		}
-	case "tsc", "javac", "gcc", "clang":
+	case "tsc":
+		// tsc --noEmit type-checks without building.
+		for _, w := range words[1:] {
+			if w == "--noEmit" {
+				return "lint"
+			}
+		}
 		return "build"
-	case "eslint", "ruff", "mypy", "flake8", "pylint", "golangci-lint", "shellcheck":
+	case "javac", "gcc", "clang":
+		return "build"
+	case "eslint", "ruff", "mypy", "flake8", "pylint", "golangci-lint", "shellcheck", "rubocop", "staticcheck":
 		return "lint"
 	case "mvn", "gradle", "./gradlew", "gradlew", "dotnet":
 		switch sub {
@@ -199,6 +207,32 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 			return nil, false // what follows reaches the script as filters
 		}
 		return whole, true
+	case "tsc":
+		for _, a := range words[1:] {
+			if a != "--noEmit" && a != "-p" && a != "." && a != "--pretty" {
+				return nil, false
+			}
+		}
+		return whole, true
+	case "golangci-lint", "ruff", "eslint", "flake8", "pylint", "mypy", "shellcheck", "rubocop", "staticcheck":
+		start := 1
+		if prog == "golangci-lint" || prog == "ruff" {
+			start = 2 // golangci-lint run, ruff check
+		}
+		for _, a := range words[start:] {
+			switch {
+			case strings.HasPrefix(a, "-"):
+				return nil, false
+			case a == "." || a == "./..." || a == "...":
+				pats = append(pats, scopePat{dir: dir, rec: true})
+			default:
+				pats = append(pats, scopePat{dir: filepath.Join(dir, strings.TrimSuffix(strings.TrimSuffix(a, "..."), "/")), rec: true})
+			}
+		}
+		if len(pats) == 0 {
+			return whole, true
+		}
+		return pats, true
 	}
 	// make, tsc, mvn, gradle, dotnet and the rest: the bare run only.
 	if len(words) <= 2 {
