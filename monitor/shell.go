@@ -34,6 +34,9 @@ type command struct {
 	// readsPipe is set when a pipe feeds this command and it reads its stdin
 	// as code (a bare shell or interpreter), so the pipe's output is code.
 	readsPipe bool
+	// feeds is set when its output reaches a command other than a plain reader
+	// (head, sort, wc …): through a pipe, or a command or process substitution.
+	feeds bool
 	// dir is the directory the command runs in; dirKnown says the rules may
 	// rely on it. It is known only along a plain top-level && chain (see
 	// chainDirs); everywhere else it is unknown.
@@ -90,19 +93,38 @@ func parseScriptAt(src, start string) (script, bool) {
 func collect(src string, f *syntax.File, s *script) {
 	pipeReaders := map[*syntax.CallExpr]bool{}
 	pipedText := map[*syntax.CallExpr]string{}
+	feeds := map[*syntax.CallExpr]bool{}
+	markFeeds := func(n syntax.Node) {
+		syntax.Walk(n, func(m syntax.Node) bool {
+			if call, ok := m.(*syntax.CallExpr); ok {
+				feeds[call] = true
+			}
+			return true
+		})
+	}
 	syntax.Walk(f, func(n syntax.Node) bool {
 		switch x := n.(type) {
+		case *syntax.CmdSubst, *syntax.ProcSubst:
+			markFeeds(x) // its output becomes words or a file another command reads
 		case *syntax.BinaryCmd:
 			if (x.Op == syntax.Pipe || x.Op == syntax.PipeAll) && x.Y != nil {
+				if x.X != nil && !onlyReaders(x.Y) {
+					markFeeds(x.X)
+				}
 				if call, ok := x.Y.Cmd.(*syntax.CallExpr); ok && readsPipedCode(call) {
 					pipeReaders[call] = true
 					// When the left side only prints a literal, that text is the
 					// code the reader runs; keep it so it can be judged. A cat with
-					// no file reading a heredoc or here-string prints that body.
-					if lx, ok := x.X.Cmd.(*syntax.CallExpr); ok {
+					// no file reading a heredoc or here-string prints that body. A
+					// searcher or sed passes on lines its pattern or script picks,
+					// so that text is judged as what the reader is given.
+					if lx := lastCall(x.X); lx != nil {
 						pipedText[call] = printedLiteral(src, lx)
 						if pipedText[call] == "" {
 							pipedText[call] = catBody(src, x.X, lx)
+						}
+						if pipedText[call] == "" {
+							pipedText[call] = filterText(src, lx)
 						}
 					}
 				}
@@ -146,7 +168,7 @@ func collect(src string, f *syntax.File, s *script) {
 			if !ok {
 				return true
 			}
-			c := command{call: call, literal: readLeaf(x), readsPipe: pipeReaders[call]}
+			c := command{call: call, literal: readLeaf(x), readsPipe: pipeReaders[call], feeds: feeds[call]}
 			if t := pipedText[call]; t != "" {
 				c.stdin = append(c.stdin, t)
 			}
@@ -500,6 +522,72 @@ func printedLiteral(src string, call *syntax.CallExpr) string {
 	return ""
 }
 
+// lastCall is the simple command whose output a pipe's left side gives: the
+// statement itself, or the last stage of a pipeline.
+func lastCall(st *syntax.Stmt) *syntax.CallExpr {
+	for st != nil {
+		switch x := st.Cmd.(type) {
+		case *syntax.CallExpr:
+			return x
+		case *syntax.BinaryCmd:
+			if x.Op != syntax.Pipe && x.Op != syntax.PipeAll {
+				return nil
+			}
+			st = x.Y
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// filterText is a searcher's or sed's operands, one per line, when it is the
+// left side of a pipe: the lines it passes on are the ones they pick.
+func filterText(src string, call *syntax.CallExpr) string {
+	var words []string
+	for _, w := range call.Args {
+		words = append(words, wordText(src, w))
+	}
+	prog, rest := (command{words: words}).program()
+	switch b := path.Base(prog); {
+	case searcher[b], b == "sed", b == "gsed":
+		return strings.Join(operands(rest), "\n")
+	}
+	return ""
+}
+
+// onlyReaders reports a pipe's right side made only of plain readers (head,
+// sort, wc …) and searchers that run nothing, all plain words.
+func onlyReaders(st *syntax.Stmt) bool {
+	switch x := st.Cmd.(type) {
+	case *syntax.CallExpr:
+		if len(st.Redirs) > 0 || len(x.Assigns) > 0 {
+			return false
+		}
+		var words []string
+		for _, w := range x.Args {
+			v, ok := plainWord(w)
+			if !ok {
+				return false
+			}
+			words = append(words, v)
+		}
+		prog, rest := (command{words: words}).program()
+		if len(words) == 0 || prog != words[0] {
+			return false // a wrapper
+		}
+		b := path.Base(prog)
+		return pipeReader[b] || pureSearch(b, rest)
+	case *syntax.BinaryCmd:
+		return (x.Op == syntax.Pipe || x.Op == syntax.PipeAll) && onlyReaders(x.X) && onlyReaders(x.Y)
+	}
+	return false
+}
+
+// pipeReader are programs that only read, filter or show what is piped to them.
+var pipeReader = map[string]bool{"head": true, "tail": true, "wc": true, "sort": true, "uniq": true, "less": true,
+	"more": true, "cut": true, "tr": true, "column": true, "nl": true, "cat": true}
+
 // catBody is the heredoc or here-string body a bare cat prints, or "".
 func catBody(src string, st *syntax.Stmt, call *syntax.CallExpr) string {
 	if len(call.Args) != 1 {
@@ -523,10 +611,14 @@ func catBody(src string, st *syntax.Stmt, call *syntax.CallExpr) string {
 // a bare shell or interpreter with no script or -c of its own.
 func readsPipedCode(call *syntax.CallExpr) bool {
 	var words []string
-	for _, w := range call.Args {
+	plain := true
+	for i, w := range call.Args {
 		v, ok := plainWord(w)
 		if !ok {
-			return false
+			if i == 0 {
+				return false
+			}
+			plain, v = false, "$" // an expanded operand (psql "$DATABASE_URL")
 		}
 		words = append(words, v)
 	}
@@ -534,6 +626,9 @@ func readsPipedCode(call *syntax.CallExpr) bool {
 	base := path.Base(prog)
 	if sqlClient[base] {
 		return true // a SQL client reads its piped stdin as a query
+	}
+	if !plain {
+		return false
 	}
 	// A container exec/run whose command is a SQL client passes the pipe on.
 	if base == "docker" || base == "podman" || base == "nerdctl" || base == "kubectl" {
@@ -912,6 +1007,10 @@ func (c command) program() (string, []string) {
 			// env -S "cmd args" carries the command line as its value.
 			if wrap == "env" && (w[0] == "-S" || w[0] == "--split-string") && len(w) > 1 {
 				w = append(strings.Fields(w[1]), w[2:]...)
+				break
+			}
+			if v, ok := strings.CutPrefix(w[0], "-S"); ok && wrap == "env" && v != "" {
+				w = append(strings.Fields(v), w[1:]...) // -S'cmd args' attached
 				break
 			}
 			if v, ok := strings.CutPrefix(w[0], "--split-string="); ok && wrap == "env" {

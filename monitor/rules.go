@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sedscript"
 )
 
 // The codes a verdict names its concern by.
@@ -351,6 +352,14 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// interpreter, a protected root, an operand outside own ground — the
 	// person is asked.
 	if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+		// env -S splits a command out of one word: judge the command it runs.
+		if p, a := cmd.program(); p != "" && envSplits(cmd.words) {
+			sub := command{words: append([]string{p}, a...), argsLiteral: cmd.argsLiteral, stdin: cmd.stdin,
+				writes: cmd.writes, reads: cmd.reads, env: cmd.env}
+			if v := r.judgeCommand(k, c, sub, where, depth+1, container); v != nil {
+				return v
+			}
+		}
 		if looksDestructive(cmd.words) || (!container && r.strayOperand(k, c, cmd.words)) {
 			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
 				Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
@@ -530,10 +539,16 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 			}
 		}
 	}
+	// sed's e command and s///e flag run text as a shell command.
+	if prog == "sed" || prog == "gsed" {
+		if v := r.sedVerdict(k, c, args, where, depth, container); v != nil {
+			return v
+		}
+	}
 	// General pass: any other command not fully read has its code-ish arguments
 	// and its stdin parsed and judged, so a quote-split or variable-built delete
 	// is seen however it is spelled.
-	if unknownRunner(prog) && !r.cmdFullyRead(cmd) && !pureSearch(prog, args) {
+	if unknownRunner(prog) && !r.cmdFullyRead(cmd) && !searchData(cmd) {
 		handed := handedArgs(cmd, args)
 		if !sqlClient[prog] {
 			handed = append(handed, cmd.stdin...) // a SQL client's stdin is its query, judged above
@@ -1048,11 +1063,11 @@ func commandText(cmd command) []string {
 func dangerWords(cmd command) []string {
 	prog, args := cmd.program()
 	base := progBase(prog)
-	if pureSearch(base, args) {
+	if searchData(cmd) {
 		return cmd.words[:len(cmd.words)-len(args)] // a searcher's operands are patterns
 	}
 	skipVal := map[string]bool{"-m": true, "--message": true, "-b": true, "--body": true, "--title": true, "-t": true}
-	sed := base == "sed" || base == "gsed"
+	sed := (base == "sed" || base == "gsed") && textOnly(cmd) && sedInert(args)
 	head := append([]string(nil), cmd.words[:len(cmd.words)-len(args)]...)
 	var out []string
 	sawScript := false
@@ -2328,6 +2343,23 @@ var sshValueOpts = map[string]bool{"-b": true, "-c": true, "-D": true, "-E": tru
 	"-I": true, "-i": true, "-J": true, "-L": true, "-l": true, "-m": true, "-O": true, "-o": true, "-p": true,
 	"-Q": true, "-R": true, "-S": true, "-W": true, "-w": true}
 
+// sshTakesNext reports an ssh option whose value is the next word: a value
+// option alone, or a cluster whose first value letter is its last (-tp 2222).
+func sshTakesNext(a string) bool {
+	if sshValueOpts[a] {
+		return true
+	}
+	if len(a) < 3 || a[1] == '-' {
+		return false
+	}
+	for j := 1; j < len(a); j++ {
+		if sshValueOpts["-"+a[j:j+1]] {
+			return j == len(a)-1 // a later letter is the attached value
+		}
+	}
+	return false
+}
+
 // herokuValueOpts are `heroku run` options that take a value.
 var herokuValueOpts = map[string]bool{"-a": true, "--app": true, "-r": true, "--remote": true, "-s": true,
 	"--size": true, "-e": true, "--env": true, "--type": true}
@@ -2344,7 +2376,7 @@ func remoteCommand(prog string, args []string) []string {
 				continue
 			}
 			if strings.HasPrefix(a, "-") {
-				if sshValueOpts[a] {
+				if sshTakesNext(a) {
 					i++
 				}
 				continue
@@ -2416,13 +2448,28 @@ func quoteWords(words []string) string {
 // infrastructure, container, cluster and git checks, past any sudo or
 // package runner on the far side, plus a remote file truncation.
 func (r Rules) subFamily(words, stdin []string) (string, bool) {
-	if len(words) == 0 {
+	return r.subFamilyAt(words, stdin, 0)
+}
+
+func (r Rules) subFamilyAt(words, stdin []string, depth int) (string, bool) {
+	if len(words) == 0 || depth > maxHandDepth {
 		return "", false
 	}
 	line := quoteWords(words)
 	if len(words) == 1 {
 		line = words[0] // one quoted word is itself the command line
 	}
+	// ssh joins its words with spaces for the far shell to parse again, so
+	// that reading is judged too.
+	if joined := strings.Join(words, " "); joined != line {
+		if what, ok := r.subLine(joined, stdin, depth); ok {
+			return what, true
+		}
+	}
+	return r.subLine(line, stdin, depth)
+}
+
+func (r Rules) subLine(line string, stdin []string, depth int) (string, bool) {
 	if bareTruncate.MatchString(line) {
 		return "overwrite a remote file", true // > FILE or : > FILE truncates it
 	}
@@ -2444,6 +2491,14 @@ func (r Rules) subFamily(words, stdin []string) (string, bool) {
 		w := packageRunner(append([]string{plain}, plainArgs...))
 		p, a := command{words: w}.program()
 		p = progBase(p)
+		// A shell's -c code on the far side is judged as its own line.
+		if shellNames[p] {
+			if code, ok := shellDashC(a); ok && code != "" {
+				if what, ok := r.subFamilyAt([]string{code}, cmd.stdin, depth+1); ok {
+					return what, true
+				}
+			}
+		}
 		for _, fn := range []func() (string, bool){
 			func() (string, bool) { return stdinDestructive(p, cmd.stdin) },
 			func() (string, bool) { return dataInfraDestructive(p, a) },
@@ -2469,11 +2524,29 @@ func (r Rules) subFamily(words, stdin []string) (string, bool) {
 			return "overwrite a remote file", true
 		case p == "cp" && len(operands(a)) > 0 && operands(a)[0] == "/dev/null":
 			return "overwrite a remote file", true
+		case len(cmd.writes) > 0 && emptyOutput(p, a):
+			return "overwrite a remote file", true // echo > f, printf '' > f, cat /dev/null > f
 		case p == "truncate":
 			return "overwrite a remote file", true
 		}
 	}
 	return "", false
+}
+
+// emptyOutput reports a command that prints nothing or one empty line (echo
+// with only flags, printf with an empty format, cat /dev/null), so redirecting
+// it to a file empties the file.
+func emptyOutput(prog string, args []string) bool {
+	ops := operands(args)
+	switch prog {
+	case "echo":
+		return len(ops) == 0
+	case "printf":
+		return len(ops) == 0 || ops[0] == ""
+	case "cat":
+		return len(ops) == 1 && ops[0] == "/dev/null"
+	}
+	return false
 }
 
 // remoteExec runs its command on another host or in a container, so the paths
@@ -2487,17 +2560,98 @@ func remoteExec(prog string) bool {
 }
 
 // pureSearch reports a searcher whose operands are only patterns and paths:
-// rg/ag --pre CMD runs CMD, so that is not a pure search.
+// rg --pre CMD and ack/ag --pager CMD run CMD, so those are not pure searches.
 func pureSearch(prog string, args []string) bool {
 	if !searcher[prog] {
 		return false
 	}
 	for _, a := range args {
-		if a == "--pre" || strings.HasPrefix(a, "--pre=") {
+		if a == "--pre" || a == "--pager" || strings.HasPrefix(a, "--pre=") || strings.HasPrefix(a, "--pager=") {
 			return false
 		}
 	}
 	return true
+}
+
+// textOnly reports a command whose output stays text: it is not piped on to
+// anything but a plain reader, not substituted into another command, and not
+// redirected to a file other than /dev/null. Only then are a searcher's
+// patterns or a sed script data.
+func textOnly(cmd command) bool {
+	if cmd.feeds {
+		return false
+	}
+	for _, w := range cmd.writes {
+		if w != "/dev/null" {
+			return false
+		}
+	}
+	return true
+}
+
+// envSplits reports a wrapper chain with env -S/--split-string, whose value
+// program() splits into the command line env runs.
+func envSplits(words []string) bool {
+	inEnv := false
+	for _, w := range wrapperPrefix(words) {
+		switch {
+		case path.Base(w) == "env":
+			inEnv = true
+		case inEnv && (strings.HasPrefix(w, "-S") || strings.HasPrefix(w, "--split-string")):
+			return true
+		}
+	}
+	return false
+}
+
+// sedVerdict asks when a sed script runs the edited input as a command (a
+// bare e or s///e), and judges the command of each `e CMD` as handed code.
+func (r Rules) sedVerdict(k *given, c Case, args []string, where string, depth int, container bool) *Verdict {
+	src, ok := sedscript.Scripts(args)
+	if !ok {
+		return nil
+	}
+	sc, err := sedscript.Parse(src)
+	if err != nil {
+		return nil
+	}
+	if sc.RunsInput {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("sed runs the lines it edits as shell commands (e), which the check cannot read; %s", remit(c)),
+			Advice:    "run the commands plainly so they can be checked, or confirm this is meant"}
+	}
+	for _, f := range sc.Files {
+		if f != "/dev/null" && f != "/dev/stdout" && f != "/dev/stderr" && !container && r.strayOperand(k, c, []string{f}) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("sed writes (w) %s, outside own ground, replacing what it holds; %s", f, remit(c)),
+				Advice:    "write inside the workspace, or confirm this is meant"}
+		}
+	}
+	for _, code := range sc.Runs {
+		if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("sed runs a command (e) that looks like it deletes or shells out; %s", remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
+	}
+	return nil
+}
+
+// searchData reports a searcher whose operands are data: a pure search whose output stays text.
+func searchData(cmd command) bool {
+	prog, args := cmd.program()
+	return pureSearch(progBase(prog), args) && textOnly(cmd)
+}
+
+// sedInert reports a sed command whose script is all on its command line,
+// only edits text (no e command, s///e or w write) and whose output stays text.
+func sedInert(args []string) bool {
+	src, ok := sedscript.Scripts(args)
+	if !ok {
+		return false
+	}
+	sc, err := sedscript.Parse(src)
+	return err == nil && sc.Inert()
 }
 
 // searcher reads or matches patterns in its arguments; they are data.
@@ -3459,6 +3613,11 @@ func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []
 			}
 			sub := command{words: cc, argsLiteral: !hostBind, stdin: cmd.stdin}
 			if r.judgeCommand(k, c, sub, where, depth+1, !hostBind) != nil {
+				return ask()
+			}
+			// A data-store, infrastructure or truncating command in the
+			// container (sh -c ': > /data/app.db') is judged as one run elsewhere.
+			if _, ok := r.subFamily(cc, cmd.stdin); ok {
 				return ask()
 			}
 		}

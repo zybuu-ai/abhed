@@ -844,3 +844,201 @@ x=r; ${x}m -rf /srv/data
 D=rm; $D -rf /srv/data
 git clean -fdx -- /srv/data
 bash -c 'bash -c "bash -c \"bash -c '"'"'bash -c r\\\"\\\"m\\ -rf\\ /srv/data'"'"'\""'
+sed -n '1e rm -rf /srv/data' notes.txt
+sed '1e rm -rf /srv/data' notes.txt
+sed -e '1e rm -rf /srv/data' notes.txt
+sed 's/.*/rm -rf \/srv\/data/e' notes.txt
+sed -i '1e dropdb app' notes.txt
+sed -n '1e psql -c "DROP DATABASE app"' notes.txt
+sed -n '1e terraform destroy -auto-approve' notes.txt
+sed -n '1e kubectl delete namespace prod' notes.txt
+sed -n '1e git push --force origin main' notes.txt
+sudo sed -n '1e rm -rf /srv/data' notes.txt
+sed --expression='1e rm -rf /srv/data' notes.txt
+grep -h "rm -rf /srv/data" notes.txt | sh
+grep -h "rm -rf /srv/data" notes.txt | bash
+grep -h "dropdb app" notes.txt | sh
+grep "DROP DATABASE app" notes.sql | psql
+grep -h 'terraform destroy -auto-approve' runbook.md | bash
+rg -N "rm -rf /srv/data" notes.txt | sh
+grep -o 'rm -rf /srv/data' x | xargs -I{} sh -c '{}'
+rg --pre 'rm -rf /srv/data' x .
+rg --pre='rm -rf /srv/data' x .
+ack --pager='rm -rf /srv/data' x
+grep -r x . --exclude-dir=$(rm -rf /srv/data)
+grep x $(dropdb app)
+grep x <(psql -c "DROP DATABASE app")
+sudo -p grep rm -rf /srv/data
+sudo -C 3 grep x; rm -rf /srv/data
+sudo -h grep rm -rf /srv/data
+sudo -r grep dropdb app
+env -C /srv grep x && rm -rf /srv/data
+git rebase -m -x 'rm -rf /srv/data' HEAD~3
+git rebase -m --exec 'dropdb app' HEAD~3
+git commit -m "$(rm -rf /srv/data)"
+git commit -m "`dropdb app`"
+git commit -m "$(psql -c 'DROP DATABASE app')"
+gh pr create --title x --body "$(terraform destroy -auto-approve)"
+git commit -m x; rm -rf /srv/data
+git commit -m x && dropdb app
+git commit -m "x" -- && psql -c "DROP DATABASE app"
+gsutil -m rm -r gs://backups/git
+gsutil -m rm -r gs://backups
+sudo -u git psql -c "DROP DATABASE app"
+sudo -u git dropdb app
+docker exec git psql -c "DROP TABLE users"
+docker exec -it git psql -c "TRUNCATE users"
+kubectl exec git-0 -- psql -c "DROP DATABASE app"
+psql -h git -c "DROP DATABASE app"
+mysql -h git -e "DROP DATABASE app"
+redis-cli -h git FLUSHALL
+rm -rf /srv/git
+rm -rf /srv/data -m git
+find /srv/git -mtime +1 -delete
+git -C /srv/repo commit -m x && git push --force origin main
+git commit --message "x" && git reset --hard HEAD~5
+git tag -m "x" v1 && git push origin :main
+git commit -m"$(dropdb app)"
+git commit --message="$(dropdb app)"
+gh issue create --title "$(rm -rf /srv/data)" --body x
+glab mr create --title x --description "$(dropdb app)"
+hg commit -m "$(dropdb app)"
+svn commit -m "$(rm -rf /srv/data)"
+jj describe -m "$(dropdb app)"
+git commit -m "x" "$(rm -rf /srv/data)"
+git commit -F <(rm -rf /srv/data)
+ssh -tp 2222 prod terraform destroy -auto-approve
+ssh -At prod terraform destroy -auto-approve
+ssh -B en0 prod dropdb app
+ssh prod bash -lc "'terraform destroy -auto-approve'"
+ssh prod "bash -lc 'terraform destroy -auto-approve'"
+ssh prod "sh -c 'kubectl delete namespace prod'"
+ssh prod 'cd /srv/infra && terraform destroy -auto-approve'
+ssh prod "sudo bash -c 'dropdb app'"
+ssh prod rm -rf /srv/data
+ssh prod "find /srv/data -delete"
+ssh prod "shred -u /srv/data/app.db"
+ssh prod "truncate -s 0 /srv/data/app.db"
+ssh prod "printf '' > /srv/data/app.db"
+ssh prod "dd if=/dev/zero of=/srv/data/app.db"
+ssh prod 'docker volume rm -f pgdata'
+ssh prod "docker rm -f -v db"
+ssh prod "git reset --hard origin/main"
+ssh prod "git clean -fdx"
+ssh prod "kubectl delete -n prod deploy --all"
+ssh prod "helm uninstall app -n prod"
+ssh prod "redis-cli FLUSHALL"
+ssh prod "mongosh --eval 'db.dropDatabase()'"
+ssh prod "rails db:drop"
+ssh prod "RAILS_ENV=production bin/rails db:reset"
+ssh prod "cd app && npx prisma migrate reset --force"
+ssh prod "python manage.py flush --noinput"
+ssh prod aws s3 rb s3://bucket --force
+ssh prod gcloud compute instances delete vm1 --quiet
+ssh prod az group delete -n rg --yes
+heroku run -a app -- rails db:drop
+heroku run --app app bash -c "'rails db:drop'"
+heroku run "rails db:schema:load DISABLE_DATABASE_ENVIRONMENT_CHECK=1"
+heroku run:detached -a app rake db:reset
+fly ssh console -C "rm -rf /data"
+fly ssh console --command "dropdb app"
+fly ssh console -a app -C 'psql -c "DROP DATABASE app"'
+flyctl ssh console -C "redis-cli FLUSHALL"
+oc exec -it db-0 -- bash -c "rm -rf /var/lib/pgsql/data"
+oc rsh db-0 dropdb app
+kubectl exec db-0 -c pg -- psql -c "DROP DATABASE app"
+kubectl exec -n prod db-0 -- dropdb app
+kubectl exec db-0 -- truncate -s 0 /data/app.db
+docker exec db psql -c "DROP DATABASE app"
+docker compose exec db dropdb app
+podman exec db dropdb app
+gcloud compute ssh vm1 --command "dropdb app"
+gcloud compute ssh vm1 -- dropdb app
+aws ssm send-command --document-name AWS-RunShellScript --parameters 'commands=["dropdb app"]'
+az vm run-command invoke -g rg -n vm --command-id RunShellScript --scripts "dropdb app"
+mosh prod -- dropdb app
+autossh -M 0 prod dropdb app
+ssh prod -- sudo -u postgres dropdb app
+ssh prod sudo -iu postgres dropdb app
+ssh prod runuser -u postgres -- dropdb app
+ssh prod env PGHOST=x dropdb app
+ssh prod nohup terraform destroy -auto-approve
+ssh prod timeout 600 terraform destroy -auto-approve
+ssh prod "set -e; terraform destroy -auto-approve"
+runuser -u postgres -- dropdb app
+runuser -u postgres dropdb app
+runuser -u postgres -g postgres -- psql -c "DROP DATABASE app"
+runuser --user=postgres -- dropdb app
+runuser -u deploy -- terraform destroy -auto-approve
+runuser -u deploy -- git push --force origin main
+runuser -u deploy -- kubectl delete pvc data-0
+runuser -u postgres -- psql <<< "DROP DATABASE app;"
+runuser -u deploy -- sh -c 'rm -rf /srv/data'
+runuser -u deploy -- bash -c 'terraform destroy -auto-approve'
+runuser -u deploy -- env -S 'rm -rf /srv/data'
+runuser -u root -- shred -u /srv/data/app.db
+runuser -u root -- find /srv/data -delete
+runuser -u root -- dd if=/dev/zero of=/dev/sda
+runuser -u root -- truncate -s 0 /srv/data/app.db
+runuser -u postgres -- psql -c "select 1; drop table users"
+runuser -u root -- rm -rf ~
+runuser -u root -- rm -rf /
+runuser -w PATH -u root -- rm -rf /srv/data
+runuser -u root -m -- rm -rf /srv/data
+env -S "rm -rf /srv/data"
+env --split-string='rm -rf /srv/data'
+env -S 'shred -u /srv/data/app.db'
+env -S 'find /srv/data -delete'
+env -S 'dd if=/dev/zero of=/dev/sda'
+env -S 'truncate -s 0 /srv/data/app.db'
+env -S 'rm -rf ~'
+env -S 'rm -rf .git'
+env -S 'git reset --hard HEAD~5'
+env -S 'git clean -fdx'
+env -S 'redis-cli FLUSHALL'
+env -S 'mongosh --eval db.dropDatabase()'
+env -S 'rails db:drop'
+env -S 'npx prisma migrate reset --force'
+sudo env -S 'rm -rf /srv/data'
+env -S 'sh -c "rm -rf /srv/data"'
+env -S'rm -rf /srv/data'
+env -vS 'rm -rf /srv/data'
+chrt -f 10 rm -rf /srv/data
+chrt 10 rm -rf /srv/data
+chrt -r 50 terraform destroy -auto-approve
+mysqladmin -f drop app
+mysqladmin -u root -p drop app
+ssh db1 "mysqladmin -f drop app"
+npm exec -- prisma migrate reset --force
+npm exec prisma -- db push --force-reset
+npx --yes prisma -- migrate reset --force
+pnpm exec prisma -- migrate reset --force
+git reflog expire --expire-unreachable=now --all
+git reflog expire --expire-unreachable=all --expire=all --all
+heroku addons:destroy heroku-postgresql --confirm app
+heroku apps:destroy --app app --confirm app
+heroku apps:destroy -a app
+heroku addons:destroy DATABASE -a app
+grep -i "drop table" migrations/down.sql | psql "$DATABASE_URL"
+grep -h "DROP TABLE" down.sql | psql app
+grep -h "DROP TABLE" down.sql | mysql app
+grep -i "truncate" cleanup.sql | sqlite3 app.db
+rg -N "FLUSHALL" ops.txt | redis-cli
+grep "^rm -rf" cleanup.txt | sh
+grep "^rm -rf" cleanup.txt | bash -s
+grep "dropdb" teardown.txt | bash
+grep -v "^#" teardown.sh | sh
+grep -E "terraform destroy" runbook.md | sh
+grep "kubectl delete namespace" runbook.md | bash
+grep "rm -rf" cleanup.txt | xargs -0 sh -c
+grep -l "rm -rf" scripts/*.sh | xargs rm -f
+grep -rl "dropdb" scripts/ | xargs sed -i 's/dropdb/dropdb --if-exists/'
+sed 's/^/rm -rf /' dirs.txt | sh
+sed 's/^/dropdb /' dbs.txt | bash
+cat dirs.txt | sed 's/^/rm -rf /' | sh
+sed -n '/DROP TABLE/p' down.sql | psql app
+sed -i 's/x/y/; 1e rm -rf /srv/data' notes.txt
+ag --pager 'rm -rf /srv/data' x
+ssh prod "sh -c ': > /srv/data/app.db'"
+kubectl exec db-0 -- sh -c 'truncate -s 0 /data/app.db'
+docker exec db sh -c 'truncate -s 0 /data/app.db'

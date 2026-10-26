@@ -18,6 +18,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sedscript"
 )
 
 // ExitStatus is a process's exit code, or for one ended by a signal the
@@ -325,20 +326,15 @@ func runsClient(command string, clients map[string]bool) bool {
 		}
 		// A bare echo/printf command prints its arguments, and a searcher's
 		// operands are patterns, not programs; a client named there is text.
-		switch strings.TrimSuffix(CommandName(path.Base(words[0])), ".exe") {
-		case "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag":
+		first := strings.TrimSuffix(CommandName(path.Base(words[0])), ".exe")
+		if first == "echo" || first == "printf" || searcherProg[first] && !searcherRuns(words[1:]) {
 			continue
 		}
 		// A client counts when it is a whole word anywhere in the command,
-		// except as the value of a message flag (so a commit, tag or PR message
-		// naming a client is not read as running it).
-		msgProg := false
-		for _, w0 := range words {
-			switch strings.TrimSuffix(CommandName(path.Base(w0)), ".exe") {
-			case "git", "gh", "glab", "hg", "svn", "jj":
-				msgProg = true
-			}
-		}
+		// except as the value of a message flag of a git-family program (so a
+		// commit, tag or PR message naming a client is not read as running it).
+		_, prog := simpleProgram(words)
+		msgProg := msgProgram[prog]
 		for i := 0; i < len(words); i++ {
 			if msgProg && msgFlagWord(words[i]) {
 				if !strings.Contains(words[i], "=") && (len(words[i]) <= 2 || !strings.HasPrefix(words[i], "-m")) {
@@ -530,77 +526,40 @@ func destructiveText(command string, gitExtensions map[string]bool) (string, boo
 }
 
 // sanitizeData returns the line with each commit/tag/PR message value (for
-// git/gh/glab/hg/jj/svn) and each searcher's operands (grep/rg/ag/ack)
-// removed, so text that only names a deleter or a client is not matched.
+// git/gh/glab/hg/jj/svn), each searcher's operands (grep/rg/ag/ack) and each
+// inert sed script removed, so text that only names a deleter or a client is
+// not matched. Searcher and sed text is data only when it is proven inert: no
+// rg --pre or ack/ag --pager, no sed e command, s///e flag or w write, the
+// output not redirected to a file and not piped into anything but a reader
+// (head, sort, wc …), and no substitution or group in the line.
 func sanitizeData(command string) string {
 	out := command
-	for _, part := range splitSimple(command) {
+	stages := splitStages(command)
+	opaque := lineHasSubst(command)
+	for k, st := range stages {
+		part := st.text
 		fields := fieldsOutsideQuotes(part)
-		if len(fields) == 0 {
+		pi, first := simpleProgram(fields)
+		if pi < 0 {
 			continue
 		}
-		// The program, past sudo/doas/env and their options.
-		pi := 0
-		for pi < len(fields) {
-			b := strings.TrimSuffix(CommandName(path.Base(fields[pi])), ".exe")
-			if b == "sudo" || b == "doas" || b == "env" || strings.HasPrefix(fields[pi], "-") || strings.Contains(fields[pi], "=") {
-				if (fields[pi] == "-u" || fields[pi] == "-g") && pi+1 < len(fields) {
-					pi++
-				}
-				pi++
-				continue
-			}
-			break
-		}
-		if pi >= len(fields) {
-			continue
-		}
-		first := strings.TrimSuffix(CommandName(path.Base(fields[pi])), ".exe")
+		textOK := !opaque && !redirectsOut(part) && !feedsRunner(stages, k)
 		var kept []string
 		changed := false
-		switch first {
-		case "grep", "egrep", "fgrep", "rg", "ag", "ack":
-			// Patterns are text; a preprocessor (rg --pre CMD) still runs.
-			kept = append(kept, fields[:pi+1]...)
-			for i := pi + 1; i < len(fields); i++ {
-				switch {
-				case fields[i] == "--pre" && i+1 < len(fields):
-					kept = append(kept, fields[i], fields[i+1])
-					i++
-				case strings.HasPrefix(fields[i], "--pre="):
-					kept = append(kept, fields[i])
-				default:
-					changed = true
-				}
-			}
-		case "sed", "gsed":
-			// The first script (or each -e value) is an edit expression, not a command.
-			kept = append(kept, fields[:pi+1]...)
-			script := false
-			for i := pi + 1; i < len(fields); i++ {
-				f := fields[i]
-				switch {
-				case (f == "-e" || f == "--expression") && i+1 < len(fields):
-					i, changed, script = i+1, true, true
-				case !script && !strings.HasPrefix(f, "-"):
-					changed, script = true, true
-				default:
-					kept = append(kept, f)
-				}
-			}
-		default:
-			msgProg := false
-			for _, f := range fields {
-				switch strings.TrimSuffix(CommandName(path.Base(f)), ".exe") {
-				case "git", "gh", "glab", "hg", "svn", "jj":
-					msgProg = true
-				}
-			}
-			if !msgProg {
+		switch {
+		case searcherProg[first]:
+			if !textOK || searcherRuns(fields[pi+1:]) {
 				continue
 			}
+			kept, changed = fields[:pi+1], len(fields) > pi+1
+		case first == "sed" || first == "gsed":
+			if !textOK {
+				continue
+			}
+			kept, changed = sedWithoutScript(fields, pi)
+		case msgProgram[first]:
 			for i := 0; i < len(fields); i++ {
-				if msgFlagWord(fields[i]) {
+				if i > pi && msgFlagWord(fields[i]) {
 					changed = true
 					if !strings.Contains(fields[i], "=") && (len(fields[i]) <= 2 || !strings.HasPrefix(fields[i], "-m")) {
 						i++
@@ -615,6 +574,212 @@ func sanitizeData(command string) string {
 		}
 	}
 	return out
+}
+
+// msgProgram are the programs whose -m/--message/--title/--body value is prose.
+var msgProgram = map[string]bool{"git": true, "gh": true, "glab": true, "hg": true, "svn": true, "jj": true}
+
+// searcherProg are the searchers whose operands are patterns and paths.
+var searcherProg = map[string]bool{"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true}
+
+// pipeReader are programs that only read, filter or show what is piped to them.
+var pipeReader = map[string]bool{"head": true, "tail": true, "wc": true, "sort": true, "uniq": true, "less": true,
+	"more": true, "cut": true, "tr": true, "column": true, "nl": true, "cat": true}
+
+// simpleProgram is the index and base name of a simple command's program, past
+// sudo/doas/env, their options and NAME=value assignments; -1 when there is none.
+func simpleProgram(fields []string) (int, string) {
+	pi := 0
+	for pi < len(fields) {
+		b := strings.TrimSuffix(CommandName(path.Base(fields[pi])), ".exe")
+		if b == "sudo" || b == "doas" || b == "env" || strings.HasPrefix(fields[pi], "-") || strings.Contains(fields[pi], "=") {
+			if (fields[pi] == "-u" || fields[pi] == "-g") && pi+1 < len(fields) {
+				pi++
+			}
+			pi++
+			continue
+		}
+		return pi, b
+	}
+	return -1, ""
+}
+
+// searcherRuns reports a searcher option that runs a command: rg --pre, ack/ag --pager.
+func searcherRuns(args []string) bool {
+	for _, a := range args {
+		if a == "--pre" || a == "--pager" || strings.HasPrefix(a, "--pre=") || strings.HasPrefix(a, "--pager=") {
+			return true
+		}
+	}
+	return false
+}
+
+// sedWithoutScript drops sed's script words when the script is all on the
+// command line and only edits text; otherwise it reports no change.
+func sedWithoutScript(fields []string, pi int) ([]string, bool) {
+	args := fields[pi+1:]
+	src, ok := sedscript.Scripts(args)
+	if !ok {
+		return nil, false
+	}
+	if s, err := sedscript.Parse(src); err != nil || !s.Inert() {
+		return nil, false
+	}
+	kept := append([]string(nil), fields[:pi+1]...)
+	sawExpr := false
+	for _, a := range args {
+		if a == "-e" || a == "--expression" || strings.HasPrefix(a, "--expression=") {
+			sawExpr = true
+		}
+	}
+	script := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case (a == "-e" || a == "--expression") && i+1 < len(args):
+			i++
+		case strings.HasPrefix(a, "--expression="):
+		case !sawExpr && !script && !strings.HasPrefix(a, "-"):
+			script = true
+		default:
+			kept = append(kept, a)
+		}
+	}
+	return kept, true
+}
+
+// stage is one simple command of a line and whether a pipe sends its output on.
+type stage struct {
+	text  string
+	piped bool
+}
+
+// splitStages splits a line like splitSimple, recording for each simple
+// command whether a single | or |& (not ||) follows it.
+func splitStages(line string) []stage {
+	var out []stage
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(line):
+			b.WriteByte(c)
+			b.WriteByte(line[i+1])
+			i++
+			continue
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case strings.IndexByte(";&|()\n", c) >= 0:
+			piped := false
+			if c == '|' {
+				if i+1 < len(line) && line[i+1] == '|' {
+					i++
+				} else {
+					piped = true
+					if i+1 < len(line) && line[i+1] == '&' {
+						i++
+					}
+				}
+			} else if c == '&' && i+1 < len(line) && line[i+1] == '&' {
+				i++
+			}
+			out = append(out, stage{text: b.String(), piped: piped})
+			b.Reset()
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return append(out, stage{text: b.String()})
+}
+
+// feedsRunner reports a stage whose output is piped on to anything but a
+// reader (or a searcher that runs nothing).
+func feedsRunner(stages []stage, k int) bool {
+	for j := k; j+1 < len(stages) && stages[j].piped; j++ {
+		fields := fieldsOutsideQuotes(stages[j+1].text)
+		pi, prog := simpleProgram(fields)
+		if pi < 0 {
+			return true
+		}
+		if pipeReader[prog] {
+			continue
+		}
+		if searcherProg[prog] && !searcherRuns(fields[pi+1:]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// lineHasSubst reports a command or process substitution, a subshell or a
+// brace group anywhere in the line, where a searcher's output could reach a
+// runner without a plain pipe.
+func lineHasSubst(line string) bool {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(line):
+			i++
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '`' || (c == '$' && i+1 < len(line) && line[i+1] == '('):
+			return true
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(' || c == ')' || c == '{' || c == '}':
+			return true
+		}
+	}
+	return false
+}
+
+// redirectsOut reports a simple command whose output is redirected to a file
+// (other than /dev/null or another descriptor).
+func redirectsOut(part string) bool {
+	var quote byte
+	for i := 0; i < len(part); i++ {
+		c := part[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(part):
+			i++
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '>':
+			j := i + 1
+			for j < len(part) && (part[j] == '>' || part[j] == '|') {
+				j++
+			}
+			if j < len(part) && part[j] == '&' {
+				i = j
+				continue // >&2: another descriptor
+			}
+			for j < len(part) && (part[j] == ' ' || part[j] == '\t') {
+				j++
+			}
+			if !strings.HasPrefix(part[j:], "/dev/null") {
+				return true
+			}
+			i = j
+		}
+	}
+	return false
 }
 
 // rmForced finds rm's recursive or force flags anywhere among its words, as
