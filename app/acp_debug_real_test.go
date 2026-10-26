@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
-	"github.com/zybuu-ai/abhed/internal/dapbridge"
 )
 
 // A real Go debug session: Delve in the container tier, through the shipped
@@ -21,17 +20,16 @@ func TestStudioDebugsGoForReal(t *testing.T) {
 	if img == "" || os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
 		t.Skip("set ABHED_DEBUG_REAL_IMAGE and ABHED_REQUIRE_CONTAINER=1 to debug Go in a real container")
 	}
-	// The bridge, built for the container's architecture, beside this binary as beside the engine.
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	bridge := filepath.Join(filepath.Dir(exe), dapbridge.Name(runtime.GOARCH))
-	build := exec.Command("go", "build", "-o", bridge, "github.com/zybuu-ai/abhed/cmd/abhed-dapbridge") // #nosec G204 -- this module's own command
+	// The bridge is the engine's Linux build, as the bundled helper is.
+	helper := filepath.Join(t.TempDir(), "abhed-linux-"+runtime.GOARCH)
+	build := exec.Command("go", "build", "-o", helper, "github.com/zybuu-ai/abhed/cmd/abhed") // #nosec G204 -- this module's own command
 	build.Env = append(withoutGOROOTEnv(os.Environ()), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+runtime.GOARCH)
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build the bridge: %v\n%s", err, out)
+		t.Fatalf("build the Linux helper: %v\n%s", err, out)
 	}
+	old := linuxHelper
+	linuxHelper = fixedHelper(helper)
+	t.Cleanup(func() { linuxHelper = old })
 	r := newStudioRig(t, `,"sandbox":{"min_tier":"container","image":"`+img+`"}`)
 	id := r.open()
 	r.write("go.mod", "module dbg\n\ngo 1.24\n")
@@ -80,3 +78,7 @@ func withoutGOROOTEnv(env []string) []string {
 	}
 	return out
 }
+
+type fixedHelper string
+
+func (h fixedHelper) Find(string) (string, bool, error) { return string(h), false, nil }

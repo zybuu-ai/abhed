@@ -15,12 +15,12 @@ func TestWithReadOnlyPathsMountsThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := WithReadOnlyPaths(context.Background(), "/opt/abhed/abhed-dapbridge-linux-arm64")
+	ctx := WithReadOnlyPaths(context.Background(), "/opt/abhed/abhed-linux-arm64")
 	with, err := mountArgs(ctx, p, "container", &gitMemory{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/opt/abhed/abhed-dapbridge-linux-arm64:/opt/abhed/abhed-dapbridge-linux-arm64:ro"
+	want := "/opt/abhed/abhed-linux-arm64:/opt/abhed/abhed-linux-arm64:ro"
 	if slices.Contains(plain, want) || !slices.Contains(with, want) {
 		t.Fatalf("plain %v\nwith %v", plain, with)
 	}

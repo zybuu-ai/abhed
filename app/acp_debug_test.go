@@ -185,9 +185,9 @@ func TestStudioDebugProblems(t *testing.T) {
 	if !strings.Contains(string(st.Params), "debugpy") || !strings.Contains(string(st.Params), "adapter-missing") {
 		t.Fatalf("status %s", st.Params)
 	}
-	// Go needs the shipped bridge beside the engine; the test binary has none.
+	// Go needs the bundled Linux helper as its bridge; this build has none.
 	bmsg := r.cl.refused(errRefused, "_abhed/debug/launch", map[string]any{"sessionId": id, "language": "go", "program": "."})
-	if !strings.Contains(bmsg, "abhed-dapbridge-linux-") {
+	if !strings.Contains(bmsg, "Linux build of Abhed") {
 		t.Fatalf("bridge refusal %q", bmsg)
 	}
 	// The none tier has no sandbox to debug in (nor, on macOS, the process tier).

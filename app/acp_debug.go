@@ -91,23 +91,41 @@ func debugRefusal(p *debugrelay.Problem) *rpcError {
 	return &rpcError{Code: code, Message: p.Message, Data: map[string]any{"problem": p}}
 }
 
+// LinuxHelper finds the bundled Linux build of the engine for a sandbox's
+// architecture: the binary that serves as the egress relay and the debug
+// bridge inside a sandbox, beside the engine and checksum-pinned by a release
+// build. pinned says whether the pin held.
+type LinuxHelper interface {
+	Find(arch string) (path string, pinned bool, err error)
+}
+
+// linuxHelper is the lookup the debug bridge uses. The toolchain work ships
+// the helper and its lookup; until it is wired here, none is found.
+var linuxHelper LinuxHelper = noLinuxHelper{}
+
+type noLinuxHelper struct{}
+
+func (noLinuxHelper) Find(string) (string, bool, error) {
+	return "", false, errors.New("this build has no bundled Linux helper")
+}
+
 // debugBridge is the command that carries Delve's socket over stdio inside
-// the sandbox, the host file it is, and whether the build pinned it: the
-// configured relay_binary when set, else the shipped bridge beside the engine.
+// the sandbox, the host file it runs, and whether the build pinned it: the
+// configured relay_binary when set, else the bundled Linux helper. Both are
+// builds of the engine, run in their bridge mode.
 func debugBridge(relayBinary string) (command, path string, pinned bool, p *debugrelay.Problem) {
-	if relayBinary != "" {
-		return debugrelay.Quote(relayBinary) + " " + dapbridge.Arg, relayBinary, false, nil
+	path = relayBinary
+	if path == "" {
+		var err error
+		if path, pinned, err = linuxHelper.Find(runtime.GOARCH); err != nil {
+			return "", "", false, &debugrelay.Problem{Kind: debugrelay.KindBridge, Retry: true,
+				Message: "Go debugging needs the Linux build of Abhed for " + runtime.GOARCH + " to bridge Delve's socket inside the sandbox: " + err.Error(),
+				Steps: []string{"Install Abhed from its release archive or with Studio, which ship the Linux helper beside abhed",
+					"Or have your administrator set relay_binary (a Linux build of Abhed for the sandbox's architecture) in the managed configuration",
+					"Start the debug session again"}}
+		}
 	}
-	arch := dapbridge.Arch()
-	path, pinned, err := dapbridge.Find(arch)
-	if err != nil {
-		return "", "", false, &debugrelay.Problem{Kind: debugrelay.KindBridge, Retry: true,
-			Message: "Go debugging needs " + dapbridge.Name(arch) + " beside the abhed binary: " + err.Error(),
-			Steps: []string{"Install Abhed from its release archive or Studio, which put " + dapbridge.Name(arch) + " beside abhed",
-				"Or build it there: CGO_ENABLED=0 GOOS=linux GOARCH=" + arch + " go build -o <abhed's folder>/" + dapbridge.Name(arch) + " ./cmd/abhed-dapbridge",
-				"Start the debug session again"}}
-	}
-	return debugrelay.Quote(path), path, pinned, nil
+	return debugrelay.Quote(path) + " " + dapbridge.Arg, path, pinned, nil
 }
 
 func (c *acpConn) debugLaunch(msg rpcMessage) {

@@ -13,7 +13,7 @@ import (
 
 func TestPlan(t *testing.T) {
 	ws := "/w"
-	s, err := Plan(Request{Language: Go, Program: "cmd/app", Args: []string{"-v", "a b"}, Env: map[string]string{"B": "2", "A": "x y"}}, ws, "/opt/abhed-dapbridge-linux-arm64")
+	s, err := Plan(Request{Language: Go, Program: "cmd/app", Args: []string{"-v", "a b"}, Env: map[string]string{"B": "2", "A": "x y"}}, ws, "/opt/abhed/abhed-linux-arm64 __abhed_dap_bridge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestPlan(t *testing.T) {
 	if s.Launch["mode"] != "debug" || s.Launch["program"] != "/w/cmd/app" || s.Launch["console"] != "internalConsole" || s.Launch["request"] != "launch" {
 		t.Errorf("launch %v", s.Launch)
 	}
-	if !strings.Contains(s.Command, "dlv dap --listen") || !strings.Contains(s.Command, "exec /opt/abhed-dapbridge-linux-arm64 ") {
+	if !strings.Contains(s.Command, "dlv dap --listen") || !strings.Contains(s.Command, "exec /opt/abhed/abhed-linux-arm64 __abhed_dap_bridge ") {
 		t.Errorf("command %q", s.Command)
 	}
 	s, err = Plan(Request{Language: Python, Test: "tests/test_a.py", Cwd: "sub"}, ws, "")

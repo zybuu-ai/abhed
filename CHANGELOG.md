@@ -127,9 +127,8 @@ All notable changes to Abhed are recorded here. The format follows
   itself: the debuggee's command line is judged by policy and the
   supervisor as your bash call and recorded, Studio's own launch or attach
   is refused, and the adapter's requests to run something in Studio's
-  terminal are answered with an error. Go runs through `abhed-dapbridge`, a
-  static Linux bridge shipped beside the binary in every release archive
-  and pinned by checksum. Each session is recorded as `debug.launched` and
+  terminal are answered with an error. Delve's socket is carried by a bridge
+  mode of the bundled Linux build of Abhed (or `relay_binary`). Each session is recorded as `debug.launched` and
   `debug.stopped`. Node is not supported yet
   ([Debugging](docs/guide/31-debugging.md)).
 - Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)

@@ -46,19 +46,18 @@ missing and these steps.
 
 Delve does not speak DAP over standard input and output; it listens on a
 socket. On a Mac the container runs in a VM, where a socket cannot be reached
-from the host, so the engine runs Delve on a socket inside the sandbox with
-a small bridge, `abhed-dapbridge`, that carries the socket over the
-command's standard input and output and does nothing else.
+from the host, so the engine runs Delve on a socket inside the sandbox and a
+bridge beside it that carries the socket over the command's standard input
+and output and does nothing else.
 
-The bridge is a static Linux program for `amd64` and `arm64`. The release
-archives and Abhed Studio put `abhed-dapbridge-linux-amd64` and
-`abhed-dapbridge-linux-arm64` beside the `abhed` binary, and a release build
-of the engine is built with their checksums and refuses a bridge that does
-not match (a development build takes it unpinned, and the record says so).
+The bridge is a mode of Abhed itself (`abhed __abhed_dap_bridge
+unix:PATH`), run from the Linux build of Abhed that the release archives and
+Abhed Studio ship beside the binary for the sandbox's architecture, the same
+helper that serves as the egress relay. A release build checks it against
+the checksum it was built with, and the record says whether it was pinned.
 It is mounted read-only into the sandbox for the session, at the path it has
-on the host. Where the managed `relay_binary` is set (a Linux build of Abhed
-for the container's architecture), that is used as the bridge instead. A Go
-launch without either is refused with the steps to install it.
+on the host. Where the managed `relay_binary` is set, that build is used
+instead. A Go launch without either is refused with the steps to get one.
 
 ## What is judged and recorded
 

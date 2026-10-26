@@ -1066,7 +1066,7 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
 - Listed under the `debug` feature. The adapter runs in the session's sandbox
   (container or `vm` tier, or the Linux process tier); elsewhere `launch`
   fails with `-32000` and `data.problem` `{kind: "tier-unsupported", message,
-  steps, retry}`. Go also needs the shipped bridge (`kind: "bridge-missing"`);
+  steps, retry}`. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
   bad params are `-32602` with `kind: "invalid-request"`.
 - The program or test, its args, cwd and env make the debuggee's command line
   (`dlv debug|test …`, `python3 …`, `python3 -m pytest …`), which is put to
