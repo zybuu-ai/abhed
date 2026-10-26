@@ -167,7 +167,9 @@ func (s *Server) getOllamaStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rep := a.Report(r.Context(), t)
+	// Only this machine unless the card asks for a step's size (detail=1),
+	// which it does when the person opens that step.
+	rep := a.Report(r.Context(), t, r.URL.Query().Get("detail") == "1")
 	rep.Status = shown(a.Admin, rep.Status)
 	WriteJSON(w, http.StatusOK, rep)
 }

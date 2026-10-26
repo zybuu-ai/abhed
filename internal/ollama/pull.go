@@ -101,6 +101,29 @@ type Fit struct {
 // diskMargin is room kept free beyond the download.
 const diskMargin = 2 << 30
 
+// LocalFit is what this machine says of a download without asking any
+// host: the free disk where Ollama keeps models, the memory, and a curated
+// model's size from Abhed's own list (SizeKnown stays false: the registry
+// was not asked).
+func (e Env) LocalFit(t Target) Fit {
+	f := Fit{}
+	if c, ok := Lookup(t.Model); ok {
+		f.Bytes = c.Bytes
+	}
+	if e.DiskFree != nil {
+		if free, err := e.DiskFree(e.ModelsDir); err == nil {
+			f.DiskFree = free
+		}
+	}
+	f.RAMNeededGB, f.RAMEstimate = RAMNeededGB(t.Model, f.Bytes)
+	if e.MemTotal != nil {
+		if mem, err := e.MemTotal(); err == nil {
+			f.MemTotal = mem
+		}
+	}
+	return f
+}
+
 // CheckFit asks the registry for the tag's size and compares it, and the
 // memory the model wants, with this machine. Too little disk is a Problem;
 // too little memory is a warning with a smaller curated model suggested.

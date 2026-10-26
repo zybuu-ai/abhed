@@ -47,6 +47,7 @@ func ollamaCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 	fs := flag.NewFlagSet("ollama "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print the report as JSON (status)")
+	detail := fs.Bool("detail", false, "also ask the registry or download host for sizes (status)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -91,7 +92,7 @@ func ollamaCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 	defer stop()
 	if verb == "status" {
 		a := toolset.OllamaAssist(cfg, ollamaEnv(), "cli", true, inAgentCommand(), nil)
-		r := a.Report(ctx, t)
+		r := a.Report(ctx, t, *detail)
 		switch {
 		case *asJSON:
 			enc := json.NewEncoder(stdout)
@@ -118,7 +119,7 @@ func ollamaCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 	// Only at a terminal is anything offered; from a pipe, a script or a job
 	// it says what is wrong and the steps, and runs nothing.
 	terminal := ollamaTerminal(stdin, stdout)
-	f := ollamaFlow{ui: sf, a: a, terminal: terminal, out: stdout, tell: !terminal}
+	f := ollamaFlow{ui: sf, a: a, terminal: terminal, out: stdout, tell: !terminal, lookup: true}
 	if f.ensure(ctx, t) {
 		fmt.Fprintf(stdout, "%s (%s) is ready at %s.\n", name, t.Model, t.API)
 		return 0

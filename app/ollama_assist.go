@@ -51,6 +51,25 @@ type ollamaFlow struct {
 	// input meant for the session: the problem and the steps are shown, and
 	// nothing is offered.
 	tell bool
+	// lookup is set when the person asked for the check themselves (/ollama,
+	// abhed ollama check): an install's or a pull's size is fetched from its
+	// host at once. Otherwise (the session's start, a model switch) the
+	// person is first asked whether to look it up, so an automatic check
+	// makes no request off this machine.
+	lookup bool
+}
+
+// mayLookUp asks, when the check was automatic, whether to ask host for a
+// size; an explicit check needs no question.
+func (f ollamaFlow) mayLookUp(ctx context.Context, st ollama.Status, what, host string) bool {
+	if f.lookup {
+		return true
+	}
+	id, err := f.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: what,
+		Body:    []ui.Block{{Kind: ui.BlockNotice, Text: st.Problem.Message}},
+		Ask:     "Look up its size at " + host + " and show what it would run? Nothing is downloaded yet.",
+		Choices: []ui.Choice{{ID: "look", Label: "Look it up"}, {ID: ui.ChoiceNo, Label: "Not now"}}})
+	return err == nil && id == "look"
 }
 
 // ensure checks t and offers each next step until the model is ready, the
@@ -163,7 +182,13 @@ func (f ollamaFlow) install(ctx context.Context, t ollama.Target, st ollama.Stat
 		f.ui.Append(ui.Block{Kind: ui.BlockError, Text: st.Problem.Message + " " + why + "\n" + (&ollama.Problem{Steps: f.a.Env.Steps(t, st)}).Text()})
 		return f.retry(ctx, "Check again once it is installed?")
 	}
-	f.a.Env.InstallSize(ctx, &plan)
+	if plan.SizeURL != "" && plan.SizeNote == "" {
+		if !f.mayLookUp(ctx, st, "Install Ollama?", hostOf(plan.SizeURL)) {
+			f.manual(st)
+			return false
+		}
+		f.a.Env.InstallSize(ctx, &plan)
+	}
 	body := []ui.Block{{Kind: ui.BlockNotice, Text: st.Problem.Message},
 		{Kind: ui.BlockNotice, Text: "Command: " + plan.Display},
 		{Kind: ui.BlockNotice, Text: "Source: " + plan.Source},
@@ -203,6 +228,10 @@ func (f ollamaFlow) install(ctx context.Context, t ollama.Target, st ollama.Stat
 func (f ollamaFlow) pull(ctx context.Context, t ollama.Target, st ollama.Status) bool {
 	if p := f.a.May(ollama.OpPull, t, st); p != nil {
 		return f.refused(ctx, ollama.OpPull, t, st, p)
+	}
+	if !f.mayLookUp(ctx, st, "Download "+t.Model+"?", hostOf(f.a.Env.Registry)) {
+		f.manual(st)
+		return false
 	}
 	fit, p := f.a.Env.CheckFit(ctx, t, st)
 	if p != nil {
@@ -314,13 +343,15 @@ func (st *cliState) surfaceName() string {
 // ensureOllamaFor runs the flow for a configured provider name, when a
 // local Ollama serves it, and reports whether it is ready (true when it is
 // not an Ollama model at all).
-func (st *cliState) ensureOllamaFor(ctx context.Context, sf ui.Surface, name string) bool {
+// explicit is set for /ollama, which the person ran to check; the start of
+// a session and a model switch are automatic.
+func (st *cliState) ensureOllamaFor(ctx context.Context, sf ui.Surface, name string, explicit bool) bool {
 	t, ok := toolset.OllamaTarget(st.appCfg, name)
 	if !ok {
 		return true
 	}
 	tell := st.surfaceReadsLines && !term.IsTerminal(int(os.Stdin.Fd()))
-	return ollamaFlow{ui: sf, a: st.cliOllama(st.surfaceName()), tell: tell}.ensure(ctx, t)
+	return ollamaFlow{ui: sf, a: st.cliOllama(st.surfaceName()), tell: tell, lookup: explicit}.ensure(ctx, t)
 }
 
 // slashOllama is /ollama: check the current model's Ollama and offer what
@@ -341,7 +372,7 @@ func slashOllama(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: name + " is not served by a local Ollama."})
 		return false, nil
 	}
-	if e.st.ensureOllamaFor(ctx, e.ui, name) {
+	if e.st.ensureOllamaFor(ctx, e.ui, name, true) {
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: name + " is ready."})
 	}
 	return false, nil

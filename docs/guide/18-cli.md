@@ -133,7 +133,7 @@ prompt, and a managed `model.default` is not switched.
 `abhed ollama check [provider]` does the same from a shell before any
 session, and offers a step only at a terminal: from a pipe or a script it
 prints the problem and the steps and runs nothing. Abhed never runs the
-official Linux install script; it prints it for you. `abhed ollama status [-json]` only reports,
+official Linux install script; it prints it for you. `abhed ollama status [-json] [-detail]` only reports, asking nothing off this machine unless `-detail` asks the registry for sizes,
 `abhed ollama models` lists the curated models with their sizes, and `abhed
 ollama forget` takes back "always start". With input piped in, a session
 does not ask: it prints what is wrong and the steps, so a piped line is never
