@@ -19,6 +19,31 @@ at "go: command not found".
 | Ruby | `ruby` | ruby/ruby-builder (github.com/ruby/ruby-builder), the builds ruby/setup-ruby uses | digests **pinned in Abhed**, as the project publishes no checksum list; a version not in Abhed's table is refused |
 | .NET SDK | `dotnet` | Microsoft's release metadata (builds.dotnet.microsoft.com) | its published sha512 |
 
+## What is checked against what
+
+Every download is over HTTPS from the hosts below only (a redirect anywhere
+else is refused), and its size and digest are checked as it arrives. For
+most languages the digest comes from the **same origin as the archive**: it
+catches a corrupted or truncated download and a tampered mirror or cache,
+not a compromised project origin, which could change both. Only Ruby's,
+Delve's, debugpy's and libyaml's are pinned in Abhed or checked by a
+separate service.
+
+| Language | Archive from | Digest from | Trust rests on |
+|---|---|---|---|
+| Go | dl.google.com (listed by go.dev/dl) | go.dev/dl's JSON release list, sha256 | go.dev's TLS; same origin |
+| Python | github.com release assets of astral-sh/python-build-standalone (listed by api.github.com) | the same release's `SHA256SUMS` asset | GitHub's TLS and the project's release; same origin |
+| Node.js | nodejs.org/dist | the release's `SHASUMS256.txt` (its GPG signature is not checked) | nodejs.org's TLS; same origin |
+| Rust | static.rust-lang.org | the channel manifest there, sha256 | static.rust-lang.org's TLS; same origin |
+| Java | github.com (Adoptium's releases) | api.adoptium.net, sha256 | Adoptium's API and GitHub, two hosts of one project |
+| Maven | repo.maven.apache.org | the artifact's `.sha512` beside it | Maven Central's TLS; same origin |
+| Gradle | services.gradle.org, downloads.gradle.org | services.gradle.org's checksum, sha256 | Gradle's TLS; same origin |
+| .NET SDK | builds.dotnet.microsoft.com and Microsoft's CDNs | Microsoft's release metadata, sha512 | Microsoft's TLS; same origin |
+| Ruby | github.com (ruby/ruby-builder releases) | **pinned in Abhed** per version and platform, as the project publishes no checksum list | the pin, which moves with Abhed's releases |
+| libyaml (Linux Ruby) | deb.debian.org | **pinned in Abhed**, as packages.debian.org lists it | the pin |
+| Delve | proxy.golang.org (every module) | **sum.golang.org**, the Go checksum database, a separate transparency log; the built binary's sha256 is recorded | the checksum database |
+| debugpy | files.pythonhosted.org | **pinned in Abhed**, and PyPI's listing must agree | the pin |
+
 ## Where it comes from and where it goes
 
 A download goes only to the language's own release hosts; a redirect to any
@@ -37,7 +62,8 @@ installer script runs: Rust's components are laid out from their manifests,
 and Ruby's scripts have the build machine's `ruby` path replaced with
 `/usr/bin/env ruby`. Ruby's builds name the build machine's folders, so its
 commands get `RUBYLIB` and `GEM_PATH` pointing at its own standard library
-and gems, and on Linux `LD_LIBRARY_PATH` at its own `libruby` and at
+and gems, and on Linux a small `ruby` wrapper first on `PATH` that gives Ruby,
+and only Ruby and what it starts, `LD_LIBRARY_PATH` to its own `libruby` and to
 libyaml 0.2.5, which a Linux Ruby bundles from Debian 12's package
 (`deb.debian.org`, its sha256 pinned in Abhed as packages.debian.org lists
 it), since `debian:bookworm-slim` has none and YAML, RubyGems and Bundler
@@ -54,7 +80,7 @@ sandbox's own, as before.
 
 1. The version asked for: "use Go 1.22", `go@1.22`, `python 3.11`.
 2. Else the version the project pins, from the nearest folder at or above the
-   command's that has one of `go.mod` (its `toolchain`, else its `go`
+   command's, up to the workspace root and never above it, that has one of `go.mod` (its `toolchain`, else its `go`
    line), `.python-version`, `.nvmrc`, `.node-version`,
    `rust-toolchain.toml` or `rust-toolchain`, `.java-version`,
    `.ruby-version`, `global.json` (its `sdk.version`) or `.tool-versions`.
@@ -110,15 +136,21 @@ the language needs one.
 
 | Key | Default | |
 |---|---|---|
-| `toolchains` | `ask` | `ask`: the toolchain call is an ordinary ask, once per language and major version: its "always allow" is `toolchain(go@1.22)`. `auto`: installs without asking. `off`: nothing is installed, the tool is not offered, and a command missing a program is told installs are off. A workspace file may only make it stricter (auto, then ask, then off) |
+| `toolchains` | `ask` | `ask`: the toolchain call is an ordinary ask, once per language and major version (the minor series for Go, Python, Ruby, .NET, Maven and Rust: `go@1.22`, `rust@1.82`; the major for Node, Java and Gradle: `node@22`): its "always allow" is `toolchain(go@1.22)`. `auto`: installs without asking. `off`: nothing is installed, the tool is not offered, and a command missing a program is told installs are off. A workspace file may only make it stricter (auto, then ask, then off) |
 | `toolchains_preapproved` | none | installs that need no ask: `go` (any version) or `python@3.12` (that major). Not from a workspace file until it is trusted |
 | `toolchains_registries` | `ask` | see below. A workspace file may only set `off` |
 
 Deny rules hold as always: `deny: ["toolchain"]` refuses every install, and
-`deny: ["toolchain(rust@*)"]` refuses Rust. Where the managed file sets the
-permissions, `auto` and `toolchains_preapproved` add no allow rules unless
-the managed file sets them itself. The managed file can set `toolchains`
-to `off` and lock it.
+`deny: ["toolchain(rust@*)"]` refuses Rust, with or without its debugger
+(`toolchain(go@*)` also refuses `go+debugger@…`). Where the managed file sets
+the permissions, `auto` adds no allow rule unless the managed file sets
+`toolchains` itself, and `toolchains_preapproved` none unless it sets that
+key itself. The managed file can set `toolchains` to `off` and lock it.
+
+Permissions govern the agent's `toolchain` tool. A person's own install, at
+`abhed toolchain install` or through Studio's offer, is their act and does
+not consult allow, ask or deny rules; to stop people installing too, an
+organisation sets `toolchains: off` in the managed file.
 
 ## Package registries
 
@@ -141,8 +173,11 @@ language's official package registries:
 Where the network is off, commands go through the session's egress proxy
 ([Network policy](21-network-policy.md)), which refuses everything until you
 agree to a language's toolchain; that agreement also opens the language's
-registries, on port 443, and the approval names them. With `allow` every
-registry is open from the start; with `off` none. The proxy fails closed:
+registries, on port 443, and the approval names them, as does Studio's
+offer (`registries`). With `allow` every
+registry is open from the start, recorded as a `toolchain.registry` with
+`consent: allow` when each session starts; with `off` none. An opening lasts
+for the sandbox's life: it is not closed again within it. The proxy fails closed:
 only those hosts, only HTTPS, every connection recorded as an
 `egress.decision`, and every opening as a `toolchain.registry`.
 
@@ -215,8 +250,14 @@ it for the platform commands run on.
   through their driver rather than the local sandbox.
 - On a server, the registries are opened for the server's sandbox, which
   sessions sharing it share.
-- Node.js downloads are checked against `SHASUMS256.txt` fetched over HTTPS
-  from nodejs.org; its GPG signature is not checked.
+- The fence tier's stdio MCP servers and a server's MCP servers in containers
+  do not see read-only paths under your home, so they do not get the cache's
+  toolchains; give such a server an image or a host that has its language.
+- Every installed language is on `PATH` for every workspace's commands (the
+  one a project pins first); a Linux Ruby's libraries reach only Ruby and
+  what it starts, through its wrapper.
+- Most digests come from the same origin as the archive (see "What is
+  checked against what"); Node's `SHASUMS256.txt` GPG signature is not checked.
 - A Linux Ruby links the image's OpenSSL 3 (`libssl.so.3`), which
   `debian:bookworm-slim` lacks, so there `require "openssl"` fails, and with
   it `gem install` and `bundle install` from rubygems.org; Abhed does not
