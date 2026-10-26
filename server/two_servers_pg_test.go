@@ -95,9 +95,9 @@ func TestTwoServersOnePostgresLiveChildNotReconciled(t *testing.T) {
 // row back, its child is stopped, it drops the session, and it writes
 // nothing more to the session's record.
 func TestTwoServersOnePostgresFencesTheOldHolder(t *testing.T) {
-	old := nodeHeartbeat
-	nodeHeartbeat = 100 * time.Millisecond
-	defer func() { nodeHeartbeat = old }()
+	old := nodeHeartbeat.Get()
+	nodeHeartbeat.Set(100 * time.Millisecond)
+	defer func() { nodeHeartbeat.Set(old) }()
 	a := newBGServer(t, openSharedPG(t), "one")
 	b := newBGServer(t, openSharedPG(t))
 	id := a.start("bg:one", false)
@@ -117,7 +117,7 @@ func TestTwoServersOnePostgresFencesTheOldHolder(t *testing.T) {
 		t.Fatal("B could not take the stale session")
 	}
 	waitUntil(t, "A to let go", func() bool { return a.live(id) == nil && aLive.Loop.Background.Live() == 0 })
-	time.Sleep(3 * nodeHeartbeat)
+	time.Sleep(3 * nodeHeartbeat.Get())
 	if h := pgHolder(t, id); h == a.s.holder {
 		t.Fatalf("A's heartbeat took the row back: holder %q", h)
 	}
@@ -150,9 +150,9 @@ func TestTwoServersOnePostgresSweepSparesAFreshNoHolderSession(t *testing.T) {
 // writes nothing into the record: the store refuses each append on the
 // lease, takes no seq, and the refusal fences the session there.
 func TestTwoServersOnePostgresStaleWritesAreRefused(t *testing.T) {
-	old := nodeHeartbeat
-	nodeHeartbeat = time.Hour // A is paused: no heartbeat before it writes
-	defer func() { nodeHeartbeat = old }()
+	old := nodeHeartbeat.Get()
+	nodeHeartbeat.Set(time.Hour) // A is paused: no heartbeat before it writes
+	defer func() { nodeHeartbeat.Set(old) }()
 	a := newBGServer(t, openSharedPG(t), "one")
 	b := newBGServer(t, openSharedPG(t))
 	id := a.start("bg:one", false)
@@ -278,9 +278,9 @@ func TestOnePostgresWithATapEveryMessageRuns(t *testing.T) {
 // A workbench hold on a session this process created runs from the last
 // manual write, not the first: a write late in the hold extends it.
 func TestOnePostgresWorkbenchHoldRunsFromTheLastWrite(t *testing.T) {
-	hold := manualHold
-	manualHold = 1200 * time.Millisecond
-	t.Cleanup(func() { manualHold = hold })
+	hold := manualHold.Get()
+	manualHold.Set(1200 * time.Millisecond)
+	t.Cleanup(func() { manualHold.Set(hold) })
 	a := newBGServer(t, openSharedPG(t))
 	id := a.start("hello", false)
 	<-a.ended
@@ -298,11 +298,11 @@ func TestOnePostgresWorkbenchHoldRunsFromTheLastWrite(t *testing.T) {
 	if live.unclaimed.Load() {
 		t.Fatal("a workbench write did not claim the session")
 	}
-	time.Sleep(manualHold * 3 / 4) // t+90s of a two-minute hold
+	time.Sleep(manualHold.Get() * 3 / 4) // t+90s of a two-minute hold
 	write()
-	time.Sleep(manualHold / 2) // past the first write's hold, inside the second's
+	time.Sleep(manualHold.Get() / 2) // past the first write's hold, inside the second's
 	if n := ends(); n != before {
-		t.Fatalf("the hold was released %v after the first write, before the last one's ran out", manualHold*5/4)
+		t.Fatalf("the hold was released %v after the first write, before the last one's ran out", manualHold.Get()*5/4)
 	}
 	waitUntil(t, "the release", func() bool { return ends() == before+1 && live.unclaimed.Load() })
 }

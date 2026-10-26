@@ -58,7 +58,7 @@ const (
 
 // streamQuiet is how long a client may send nothing, pongs included,
 // before its stream is taken to be gone.
-var streamQuiet = 3 * streamPing
+var streamQuiet = newTunable(3 * streamPing)
 
 // streamLimits bound what a client sends on a stream, and how long one
 // that stops reading may hold a write before its stream is closed.
@@ -262,7 +262,7 @@ func (s *Server) watchStream(ctx context.Context, cancel context.CancelCauseFunc
 	every := min(s.streamRecheck(), streamPing)
 	tick := time.NewTicker(every)
 	deadline := time.NewTimer(b.max)
-	shutdown, quiet := s.cpStreams.ending(), streamQuiet
+	shutdown, quiet := s.cpStreams.ending(), streamQuiet.Get()
 	lost := s.opts.ControlPlane.OwnershipLost(ctx, sb.ID)
 	var why error
 	done := make(chan struct{})

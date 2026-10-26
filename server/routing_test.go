@@ -104,7 +104,9 @@ func TestElsewhereEmptyWhenNoNodeHoldsIt(t *testing.T) {
 // taken over as a crashed one while it runs here.
 func TestClaimFailureFailsTheHold(t *testing.T) {
 	f := &fakeRouter{err: errors.New("write failed")}
-	s := &Server{store: f, opts: Options{NodeID: "node-a"}, holder: "node-a", log: discardLogger()}
+	// The retry bound is this server's own, set before anything runs, so no
+	// goroutine reads a value the test changes.
+	s := &Server{store: f, opts: Options{NodeID: "node-a"}, holder: "node-a", log: discardLogger(), releaseRetry: 300 * time.Millisecond}
 	if err := s.claimNode(context.Background(), "s-1"); err == nil {
 		t.Fatal("a failed claim was reported as held")
 	}
@@ -112,9 +114,6 @@ func TestClaimFailureFailsTheHold(t *testing.T) {
 	if err := s.holdNode(live); err == nil || live.beatStop != nil {
 		t.Fatalf("hold with a failed claim: err %v, heartbeat started %v", err, live.beatStop != nil)
 	}
-	retry := releaseRetry
-	releaseRetry = 300 * time.Millisecond
-	defer func() { releaseRetry = retry }()
 	s.releaseNode("s-1") // tried again, then logged, not fatal
 	if len(f.claimed) != 2 || len(f.released) < 2 {
 		t.Fatalf("claimed %v released %v", f.claimed, f.released)
@@ -421,9 +420,9 @@ func (f *fencingRouter) RenewNode(context.Context, string, string) (bool, error)
 // the lease at once; failing beats lose it only once the claim would read
 // as stale to others. Either way it is lost once, and the beating ends.
 func TestHeartbeatLosesTheLease(t *testing.T) {
-	oldStale := nodeStale
-	nodeStale = 300 * time.Millisecond
-	defer func() { nodeStale = oldStale }()
+	oldStale := nodeStale.Get()
+	nodeStale.Set(300 * time.Millisecond)
+	defer func() { nodeStale.Set(oldStale) }()
 	s := &Server{log: discardLogger(), running: map[string]*liveSession{}, holder: "me"}
 
 	f := &fencingRouter{}
@@ -446,7 +445,7 @@ func TestHeartbeatLosesTheLease(t *testing.T) {
 	defer stop2()
 	select {
 	case at := <-lost:
-		if at.Sub(start) < nodeStale-40*time.Millisecond {
+		if at.Sub(start) < nodeStale.Get()-40*time.Millisecond {
 			t.Fatalf("lost after %v of failures, before the claim could read as stale", at.Sub(start))
 		}
 	case <-time.After(5 * time.Second):

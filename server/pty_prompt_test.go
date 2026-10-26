@@ -24,7 +24,7 @@ func TestWorkbenchLineTypedAheadOfThePrompt(t *testing.T) {
 	if _, err := tty.Read(make([]byte, 64)); err != nil {
 		t.Fatal(err)
 	}
-	fg, canonical, ok := ttyNow(tty)
+	fg, canonical, ok := ttyNow.Get()(tty)
 	if !ok || canonical {
 		t.Skipf("the terminal cannot be asked here (ok=%v canonical=%v)", ok, canonical)
 	}
@@ -52,8 +52,8 @@ func TestWorkbenchLineTypedAheadOfThePrompt(t *testing.T) {
 // Where asking the terminal fails, a line cannot be confirmed as typed at the
 // prompt with echo on, so it counts as typed ahead.
 func TestWorkbenchLineIsAheadWhenTheAskFails(t *testing.T) {
-	ttyNow = func(*os.File) (int, bool, bool) { return 0, false, false }
-	t.Cleanup(func() { ttyNow = termline.TTYNow })
+	ttyNow.Set(func(*os.File) (int, bool, bool) { return 0, false, false })
+	t.Cleanup(func() { ttyNow.Set(termline.TTYNow) })
 	run := &ptyRun{local: true, prompt: termline.NewPrompt()}
 	run.prompt.Output([]byte("$ "), true, false)
 	e := &enteredLine{Line: "hunter22", Whole: true}

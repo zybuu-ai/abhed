@@ -107,9 +107,9 @@ func newFakeOllama(t *testing.T) *fakeOllama {
 		},
 		Listening: func(context.Context, string) bool { return false },
 	}
-	old := ollamaEnv
-	ollamaEnv = func() ollama.Env { return env }
-	t.Cleanup(func() { ollamaEnv = old })
+	old := ollamaEnv.Get()
+	ollamaEnv.Set(func() ollama.Env { return env })
+	t.Cleanup(func() { ollamaEnv.Set(old) })
 	return f
 }
 
@@ -214,7 +214,7 @@ func refusedEverywhere(t *testing.T, s *Server, f *fakeOllama, c who) {
 	if len(f.launched) != 0 {
 		t.Fatalf("launched %v", f.launched)
 	}
-	if _, err := os.Stat(filepath.Join(ollamaEnv().StateDir, "ollama.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(ollamaEnv.Get()().StateDir, "ollama.json")); err == nil {
 		t.Fatal("a refused caller wrote the always-start choice")
 	}
 }
