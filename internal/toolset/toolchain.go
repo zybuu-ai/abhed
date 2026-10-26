@@ -152,15 +152,17 @@ func withToolchains(b tools.Bash, tc *toolchain.Session) tools.Bash {
 // ToolchainAllows are the allow rules sandbox.toolchains auto and
 // sandbox.toolchains_preapproved add: an install they cover needs no ask.
 func ToolchainAllows(cfg config.Config) []string {
-	// Where the managed file holds the permissions, only its own say widens them.
-	if cfg.AllowLocked() && !cfg.ManagedSets("sandbox.toolchains") && !cfg.ManagedSets("sandbox.toolchains_preapproved") {
+	if cfg.Sandbox.Toolchains == "off" {
 		return nil
 	}
-	switch cfg.Sandbox.Toolchains {
-	case "off":
-		return nil
-	case "auto":
+	// Where the managed file holds the permissions, each key widens them only
+	// when the managed file sets that key itself.
+	locked := cfg.AllowLocked()
+	if cfg.Sandbox.Toolchains == "auto" && (!locked || cfg.ManagedSets("sandbox.toolchains")) {
 		return []string{toolchain.ToolName}
+	}
+	if locked && !cfg.ManagedSets("sandbox.toolchains_preapproved") {
+		return nil
 	}
 	var out []string
 	for _, p := range cfg.Sandbox.ToolchainsPreapproved {

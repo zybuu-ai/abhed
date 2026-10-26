@@ -36,6 +36,11 @@ func TestToolchainPolicy(t *testing.T) {
 		{config.Config{Sandbox: config.SandboxConfig{Toolchains: "off", ToolchainsPreapproved: []string{"go"}}}, ""},
 		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow"}, Sandbox: config.SandboxConfig{Toolchains: "auto"}}, ""},
 		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow", "sandbox.toolchains"}, Sandbox: config.SandboxConfig{Toolchains: "auto"}}, "toolchain"},
+		// Each key widens a locked allow list only when the managed file sets that key.
+		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow", "sandbox.toolchains_preapproved"},
+			Sandbox: config.SandboxConfig{Toolchains: "auto", ToolchainsPreapproved: []string{"go"}}}, "toolchain(go@*)"},
+		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow", "sandbox.toolchains"},
+			Sandbox: config.SandboxConfig{Toolchains: "ask", ToolchainsPreapproved: []string{"go"}}}, ""},
 	} {
 		if got := strings.Join(ToolchainAllows(c.cfg), " "); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.cfg.Sandbox, got, c.want)
