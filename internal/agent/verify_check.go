@@ -512,11 +512,26 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		kind = KindObserved
 	}
 	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}
-	// "Set `DEBUG` to `true`" in a session that changed nothing is advice.
-	if f.imperative && !ix.changedAny() && len(c.Evidence) == 0 {
-		v.Kind, v.Verdict = KindStatement, ClaimUnverified
-		v.Reason = "it reads as advice, and this session changed nothing"
-		return v
+	// "Set `DEBUG` to `true`" is advice in a session that changed nothing,
+	// with a condition or purpose ("when you're ready", "to apply it"), or
+	// with a verb no call of this session showed ("Restart the server").
+	if f.imperative && len(c.Evidence) == 0 {
+		why := ""
+		low := normText(backtickRe.ReplaceAllString(c.Text, " "))
+		switch {
+		case !ix.changedAny():
+			why = "it reads as advice, and this session changed nothing"
+		case adviceTailRe.MatchString(low):
+			why = "it reads as advice: it says when or what for"
+		default:
+			if m := unshownVerbRe.FindStringSubmatch(low); m != nil && !ix.ranWord(m[1]) {
+				why = "it reads as advice: no call this session did " + m[1]
+			}
+		}
+		if why != "" {
+			v.Kind, v.Verdict, v.Reason = KindStatement, ClaimUnverified, why
+			return v
+		}
 	}
 	if kind == KindKnowledge || kind == KindStatement {
 		v.Verdict = ClaimUnverified
@@ -640,7 +655,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 					fd = nfd
 				} else {
 					for _, t := range f.tokens {
-						atLine[normText(t)] = true
+						markToken(atLine, t)
 					}
 					changedText = put
 				}
@@ -657,7 +672,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			findings = append(findings, fd)
 			if fd.out == matched {
 				for _, t := range f.tokens {
-					atLine[normText(t)] = true
+					markToken(atLine, t)
 				}
 				changedText = put
 			}
@@ -674,7 +689,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				atLine[normText(p)] = true
 			}
 			for _, t := range f.tokens {
-				atLine[normText(t)] = true
+				markToken(atLine, t)
 			}
 		}
 	}
@@ -1165,6 +1180,33 @@ func (ix *recordIndex) changedPath(p string) finding {
 		return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, hit.seq), seq: hit.seq}
 	}
 	return finding{out: missing, why: "no call this session made is read as a change to " + p}
+}
+
+// markToken marks code a call showed, as the literal check keys it.
+func markToken(atLine map[string]bool, t string) {
+	atLine[normText(t)] = true
+	lit := normText(strings.Trim(t, ",;:!?()[]{}'\""))
+	if !strings.HasSuffix(lit, "...") {
+		lit = strings.TrimRight(lit, ".")
+	}
+	atLine[lit] = true
+}
+
+// adviceTailRe is a condition or a purpose that makes an imperative advice.
+var adviceTailRe = regexp.MustCompile(`\b(when|once|if|before|after|later|whenever|next time|as needed|when you're ready)\b|\bto (?:apply|pick up|take effect|confirm|verify|check|see|mention|make sure|keep|avoid|test|run|reflect|document|match|cover|get|try|ship|release|publish|review|deploy)\b`)
+
+// unshownVerbRe are imperatives no change call shows: they are advice
+// unless a command of that kind ran.
+var unshownVerbRe = regexp.MustCompile(`^\W*(restart|install|deploy|commit|push|apply|configure|open|merge|publish|release|tag|review|run|test|document)\b`)
+
+// ranWord reports a command this session ran that holds the word.
+func (ix *recordIndex) ranWord(w string) bool {
+	for _, o := range ix.obs {
+		if (o.tool == "bash" || o.tool == "ssh") && o.usable() && prepareEvidence(o.command, false).hasLiteral(w) {
+			return true
+		}
+	}
+	return false
 }
 
 // changedAny reports a change of the agent's in this session that succeeded.
