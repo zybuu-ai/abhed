@@ -101,7 +101,12 @@ All notable changes to Abhed are recorded here. The format follows
   hold on the permissions, `toolchains: auto` and `toolchains_preapproved`
   each add allow rules only when the managed file sets that key itself.
   Studio's toolchain offer names the package registries an install opens,
-  and its install refuses one that changed since the offer.
+  and its install refuses one that changed since the offer, registries
+  included; an install that sends no agreement is recorded as unconfirmed
+  and opens no registries. Every link in a toolchain must resolve to a path
+  that exists inside it, no link's target may pass through another link, and
+  the install's own files are created exclusively, so a dangling link
+  cannot carry Abhed's marker write outside the cache.
 
 - `ssh` rules matched the remote command as plain text. A deny rule such
   as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,

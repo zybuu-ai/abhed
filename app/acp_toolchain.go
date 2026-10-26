@@ -53,6 +53,9 @@ type toolchainAgreed struct {
 	Digest          string `json:"digest"`
 	DebuggerVersion string `json:"debugger_version"`
 	DebuggerDigest  string `json:"debugger_digest"`
+	// Registries are the registry hosts the modal showed; only an install
+	// that lists them, as status offers them, opens them.
+	Registries []string `json:"registries"`
 }
 
 // toolchainProblem is an error's data, as the Ollama assist's is.
@@ -90,6 +93,23 @@ func registriesOffer(tc *toolchain.Session, lang string) ([]string, string) {
 		hosts = []string{}
 	}
 	return hosts, ""
+}
+
+// sameHosts reports whether two host lists name the same hosts.
+func sameHosts(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, h := range a {
+		seen[h] = true
+	}
+	for _, h := range b {
+		if !seen[h] {
+			return false
+		}
+	}
+	return true
 }
 
 // debuggerPlan is the plan for the debugger of plan's language.
@@ -301,11 +321,20 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		if ep != nil {
 			changed = changed || a.DebuggerVersion != ep.Extra.Version || a.DebuggerDigest != "" && a.DebuggerDigest != ep.Digest
 		}
+		if hosts, _ := registriesOffer(tc, plan.Spec.Lang); !sameHosts(hosts, a.Registries) {
+			changed = true
+		}
 		if changed {
 			c.reply(msg.ID, nil, toolchainError(errRefused, "changed",
 				"what would be installed has changed since it was offered, so nothing was installed; ask for the offer again"))
 			return
 		}
+	}
+	// An install that does not say what the person saw is still made, for an
+	// older Studio, but recorded as unconfirmed and opens no registries.
+	consent := "studio"
+	if p.Agreed == nil {
+		consent = "studio-unconfirmed"
 	}
 	progress := func(status string) toolchain.Progress {
 		return func(done, total int64) {
@@ -320,14 +349,14 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		}
 		c.reply(msg.ID, nil, toolchainError(errRefused, kind, err.Error()))
 	}
-	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", "studio", progress("downloading"))
+	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", consent, progress("downloading"))
 	if err != nil {
 		failed(err)
 		return
 	}
 	res := map[string]any{"language": in.Lang, "available": true, "version": in.Version, "dir": in.Dir, "bin": toolchain.BinDirs(in)}
 	if ep != nil {
-		x, err := tc.InstallExtra(ctx, *ep, in, agent.ByUser, "acp", "studio", progress("debugger"))
+		x, err := tc.InstallExtra(ctx, *ep, in, agent.ByUser, "acp", consent, progress("debugger"))
 		if err != nil {
 			failed(err)
 			return
@@ -335,7 +364,11 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		bin, py := toolchain.ExtraEnv(x)
 		res["debugger"] = map[string]any{"name": x.Name, "version": x.Version, "dir": x.Dir, "bin": bin, "pythonpath": py}
 	}
-	res["registries"] = tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
+	if p.Agreed != nil {
+		res["registries"] = tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
+	} else {
+		res["registries"] = "Its package registries were not opened: the install did not confirm them (agreed.registries)."
+	}
 	c.reply(msg.ID, res, nil)
 }
 

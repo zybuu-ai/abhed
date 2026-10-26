@@ -55,8 +55,11 @@ the per-user cache,
 ~/.cache/abhed/toolchains/<os>-<arch>/<language>/<version>
 ```
 
-(under `XDG_CACHE_HOME` when that is set), refusing any entry or link that
-would leave that folder and any device or special file, and then made
+(under `XDG_CACHE_HOME` when that is set), refusing any entry made through
+a link, any hard link to anything but a file already unpacked, any link that
+does not resolve to a path existing inside the toolchain or whose target
+passes through another link, and any device or special file; Abhed's own
+files in it are created only where nothing is, and it is then made
 read-only. Nothing is installed system-wide, nothing runs with `sudo`, and no
 installer script runs: Rust's components are laid out from their manifests,
 and Ruby's scripts have the build machine's `ruby` path replaced with
