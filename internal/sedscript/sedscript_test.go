@@ -17,7 +17,7 @@ func TestParse(t *testing.T) {
 	}
 	runs := []string{
 		"1e rm -rf /srv/data", "s/.*/rm -rf \\/srv\\/data/e", "s/x/y/; 1e rm -rf /srv/data", "e",
-		"$e date", "/x/e", "s/a/b/ge", "s/foo/bar/w /srv/data/app.db", "w out", "1!e x", "/a/{e x\n}",
+		"$e date", "/x/e", ":a e x", "v 4.2 e x", "b end e x\n:end", "1r f\\\ne x", "t x;e y", "b x}e y", "s/a/b/ge", "s/foo/bar/w /srv/data/app.db", "w out", "1!e x", "/a/{e x\n}",
 	}
 	for _, src := range runs {
 		s, err := Parse(src)

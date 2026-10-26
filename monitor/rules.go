@@ -3205,7 +3205,11 @@ func written(prog string, args []string) []string {
 		if len(ops) > 1 {
 			return ops[len(ops)-1:]
 		}
-	case "sed", "perl":
+	case "sed":
+		if hasFlag(args, "-i") || hasPrefix(args, "-i") {
+			return sedFiles(args)
+		}
+	case "perl":
 		if hasFlag(args, "-i") || hasPrefix(args, "-i") {
 			if len(ops) > 1 {
 				return ops[1:]
@@ -3224,6 +3228,33 @@ func written(prog string, args []string) []string {
 		return out
 	}
 	return nil
+}
+
+// sedFiles are the files sed edits: its operands past the script, where each
+// -e/--expression value (or -f file) is a script, not a file it writes.
+func sedFiles(args []string) []string {
+	var ops []string
+	script := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			ops = append(ops, args[i+1:]...)
+			i = len(args)
+		case a == "-e" || a == "--expression" || a == "-f" || a == "--file":
+			script = true
+			i++
+		case strings.HasPrefix(a, "--expression=") || strings.HasPrefix(a, "--file="):
+			script = true
+		case strings.HasPrefix(a, "-") && a != "-":
+		default:
+			ops = append(ops, a)
+		}
+	}
+	if !script && len(ops) > 0 {
+		ops = ops[1:] // the first operand is the script
+	}
+	return ops
 }
 
 func hasPrefix(args []string, p string) bool {

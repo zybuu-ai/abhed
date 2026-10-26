@@ -63,8 +63,10 @@ func Parse(src string) (Script, error) {
 			}
 		case ':', 'b', 't', 'T', 'v':
 			p.label()
-		case 'a', 'i', 'c', 'r', 'R':
-			p.text() // appended/inserted text or a file it reads
+		case 'a', 'i', 'c':
+			p.text() // appended or inserted text
+		case 'r', 'R':
+			p.toEOL() // the file it reads: the rest of the line, no continuation
 		case 'e':
 			if t := strings.TrimSpace(p.toEOL()); t != "" {
 				s.Runs = append(s.Runs, t)
@@ -116,7 +118,7 @@ func Parse(src string) (Script, error) {
 		}
 		// A command ends at ;, a newline, } or a comment; anything else is not understood.
 		p.skip(" \t")
-		if !p.end() && strings.IndexByte(";\n}#", p.peek()) < 0 && c != '{' {
+		if !p.end() && strings.IndexByte(";\n}#", p.peek()) < 0 && c != '{' && strings.IndexByte(":btTv", c) < 0 {
 			return s, errSyntax
 		}
 	}
@@ -147,14 +149,16 @@ func (p *parser) toEOL() string {
 	return t
 }
 
-// label reads a branch label or version, which ends at ; or a newline.
+// label reads a branch label or version, which ends, as in GNU sed, at a
+// blank, ;, a newline, } or #; a command may follow it on the same line.
 func (p *parser) label() {
-	for !p.end() && p.peek() != ';' && p.peek() != '\n' {
+	p.skip(" \t")
+	for !p.end() && strings.IndexByte(" \t;\n}#", p.peek()) < 0 {
 		p.i++
 	}
 }
 
-// text reads a/i/c text or an r/R file name: the rest of the line, and the
+// text reads a/i/c text: the rest of the line, and the
 // lines after a trailing backslash.
 func (p *parser) text() {
 	for !p.end() {
