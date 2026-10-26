@@ -1217,9 +1217,13 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
 - From the server: `window/showDocument` for a non-file or outside URI is
   answered by the engine (`success: false`); in notifications and answers
   each array item naming an outside file (and each outside key of
-  `relatedDocuments` or `changes`) is dropped and the rest passes; a
+  `relatedDocuments`) is dropped and the rest passes; a
   notification outside as a whole is dropped, such an answer (or error
-  answer) reaches Studio as `null` (a `null` result); a request
+  answer) reaches Studio as `null` (a `null` result). A WorkspaceEdit (an
+  object with `changes` or `documentChanges`) is never trimmed: with any
+  file or file operation outside or in `.abhed`, it is outside as a whole,
+  so a rename's answer is `null` and a code action carrying it is dropped
+  from its list; an edit is applied whole or not at all. A request
   naming one, a `workspace/applyEdit` whose create, rename, delete or edit
   is outside or in `.abhed` included, is answered with an error and never
   reaches Studio; a request reusing an id still waiting for Studio's answer

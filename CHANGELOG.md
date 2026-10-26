@@ -175,7 +175,8 @@ All notable changes to Abhed are recorded here. The format follows
   programs, and no file URIs outside the session's folders or in `.abhed`,
   links followed; the server's requests to open a page or edit an outside
   file are answered by the engine, and from its notifications and answers
-  each item naming an outside file is dropped. A crashed server is restarted with a
+  each item naming an outside file is dropped; an edit it proposes that
+  touches an outside file is dropped whole, never applied in part. A crashed server is restarted with a
   backoff. Starts and ends are recorded as `lsp.started` and `lsp.stopped`,
   with message counts, and counted in the metrics. The workbench's editor
   shares the same relay: what its page sends a server is now kept to the

@@ -105,7 +105,11 @@ After that, what passes:
   diagnostic's related information in a dependency leaves the diagnostic,
   and a related document outside leaves the report. A notification that is
   about an outside file as a whole is dropped; such an answer reaches
-  Studio as `null`. Edits the server proposes (`workspace/applyEdit`) go to Studio,
+  Studio as `null`. A proposed edit is never trimmed: a rename, or a code
+  action's edit, that touches any file outside the session's folders or in
+  a `.abhed` folder is dropped whole (the rename's answer is `null`, the
+  code action leaves the list), since an edit applied in part would leave
+  the code broken. Edits the server proposes (`workspace/applyEdit`) go to Studio,
   which applies them to your buffers, unless one creates, renames, deletes
   or edits a file outside the session's folders or in a `.abhed` folder,
   which the engine refuses before Studio sees it; saving them is your

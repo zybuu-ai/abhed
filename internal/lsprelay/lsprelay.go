@@ -450,7 +450,10 @@ func (c *checker) inside(v any) bool {
 // prune drops from v's arrays each element that names something outside:
 // a location in a dependency, a related piece of information in GOROOT. An
 // object with anything outside, not inside an array, is outside as a whole,
-// except that a URI-keyed map's outside keys are dropped.
+// except that relatedDocuments loses only its outside keys. A workspace edit
+// (changes or documentChanges) with anything outside is outside as a whole,
+// so an edit is never applied in part: a lone one is null, and a code
+// action carrying one is dropped from its list.
 // changed says whether anything was dropped.
 func (c *checker) prune(v any) (out any, outside, changed bool) {
 	switch x := v.(type) {
@@ -467,9 +470,17 @@ func (c *checker) prune(v any) (out any, outside, changed bool) {
 		}
 		return kept, false, changed
 	case map[string]any:
-		// A map keyed by URI (relatedDocuments) loses its outside keys.
+		// A workspace edit is applied whole or not at all: a rename that
+		// skipped its outside files would leave the code broken.
+		if isWorkspaceEdit(x) {
+			if !c.inside(x) {
+				return nil, true, false
+			}
+			return x, false, false
+		}
+		// A report's relatedDocuments loses its outside keys.
 		for k, e := range x {
-			if mm, ok := e.(map[string]any); ok && uriMapKeys[k] {
+			if mm, ok := e.(map[string]any); ok && k == "relatedDocuments" {
 				for u := range mm {
 					if !c.uri(u) {
 						delete(mm, u)
@@ -493,6 +504,13 @@ func (c *checker) prune(v any) (out any, outside, changed bool) {
 		return x, false, changed
 	}
 	return v, false, false
+}
+
+// isWorkspaceEdit reports whether m is an LSP WorkspaceEdit.
+func isWorkspaceEdit(m map[string]any) bool {
+	_, changes := m["changes"]
+	_, docs := m["documentChanges"]
+	return changes || docs
 }
 
 // root is a session folder as given and with its links resolved.
