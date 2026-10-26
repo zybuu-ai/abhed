@@ -51,9 +51,10 @@ type facts struct {
 	// "off" for "enabled" or "disabled" and the like.
 	imperative, saysTest, repoWide bool
 	// overclaim: it says the work is clean ("no issues", "looks good");
-	// overKind is "lint" for a lint claim, "works" for a working one.
+	// overKind is "lint", "build" (a build or compile named) or "works".
 	overclaim bool
 	overKind  string
+	compiles  bool
 	// changeEvent: it says something is now so or new ("now", "gets").
 	changeEvent                  bool
 	oldNamed, inNamed, toolNamed map[string]bool
@@ -102,7 +103,7 @@ var (
 	keyedRe    = regexp.MustCompile(`\b([a-z][a-z\-]{1,24})\s+((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b`)
 	countRe    = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
 	// What a claim says when it reports success; negRe undoes it.
-	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly|compiles|(?:it|code|project|everything|module|package|app|binary|tree|\x60) (?:still |now )?builds)\b`)
+	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b|\b(?:compiles|(?:it|code|project|everything|module|package|app|binary|tree|\x60) (?:still |now )?builds)(?:\s*(?:$|[.,;:!)])|\s+(?:now|again|fine|cleanly|successfully|without|with|and|too)\b)`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
 	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:one\s+)?(?:of\s+)?(?:the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
 	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
@@ -404,6 +405,7 @@ func extractFacts(claim string) facts {
 			f.testish = "test"
 		case buildRe.MatchString(plain):
 			f.testish = "build"
+			f.compiles = strings.Contains(plain, "compil")
 		}
 	}
 	// A change claim may name a folder (internal/auth), which the file-path
@@ -430,6 +432,8 @@ func extractFacts(claim string) facts {
 	case !f.overclaim:
 	case regexp.MustCompile(`\b(lint|linter|linters|vet|clippy|eslint|ruff|golangci-lint)\b`).MatchString(ol):
 		f.overKind = "lint"
+	case regexp.MustCompile(`\b(build|builds|built|compiles?|compiled)\b`).MatchString(ol):
+		f.overKind = "build"
 	case regexp.MustCompile(`\b(works|working|work)\b`).MatchString(ol):
 		f.overKind = "works"
 	}

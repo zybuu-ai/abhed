@@ -528,9 +528,9 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 545 planted wrong claims none is shown as verified and 30 are
-  contradicted (all from cited, conflicting evidence), all 142 true controls
-  are verified, and none of the 238 true or neutral claims is contradicted;
+  -v`): of 552 planted wrong claims none is shown as verified and 30 are
+  contradicted (all from cited, conflicting evidence), all 153 true controls
+  are verified, and none of the 249 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
@@ -568,7 +568,9 @@ All notable changes to Abhed are recorded here. The format follows
   by a passing lint or test run of the whole workspace or of every changed
   file (`golangci-lint run ./...`, `ruff check .` and the like, a check
   whose output reports no problems; never `fmt`, `format` or `--version`), a
-  contrast never taking it back, and "it compiles" needs a passing build; a
+  contrast never taking it back, and "it compiles" needs a passing build or
+  whole test run ("`buildIndex` builds a map" describes code, and "no
+  errors" beside a build is a build claim); a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
   change that names no file is verified only by an edit, a write or a

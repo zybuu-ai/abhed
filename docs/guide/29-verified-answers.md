@@ -242,7 +242,11 @@ counts (`12 tests`, `replicas: 3`). Then:
   "reports" in such a sentence is the run's. A contrast after it ("LGTM,
   but consider a test") never takes the claim back; a denial ("does not
   look correct") is no such claim. "It compiles" and "the project builds"
-  need a build run that passed.
+  need a build run that passed; a whole test run that passed also shows
+  "it compiles" (not "the build succeeds"), and "no errors" in a sentence
+  that names a build or a compile is shown by either. "Builds" and
+  "compiles" with an object ("`buildIndex` builds a map",
+  "`regexp.MustCompile` compiles the pattern") describe code, not a build.
 - **An event is shown only by the calls.** Output (a read, a run's text)
   can verify only a sentence that describes content as it stands. A
   sentence that reports an event is shown only by the record's calls,
@@ -272,7 +276,7 @@ counts (`12 tests`, `replicas: 3`). Then:
   declares `Sum`. Apart from "checked" or "reviewed" with a file, which are
   looks, a check or a release (tested, verified, reviewed, deployed,
   shipped, merged and the like) is never shown, and a look never shows a
-  build, a compile or a test ("I checked: it compiles" needs a build run). Three things are left out
+  build, a compile or a test ("I checked: it compiles" needs a build or whole test run). Three things are left out
   before a sentence is read as an event:
   - a count with its own outcome ("3 tests failed", "3 files changed"),
     which the count check compares with the output's;
@@ -610,7 +614,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 545 plant a wrong claim. Some cite the result that shows them wrong
+session. 552 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -702,10 +706,10 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 545
+tail, a port not listening, a file not in a response). Today none of the 552
 planted claims is shown as verified (30 are contradicted, all from cited,
-conflicting evidence; the rest unverified), all 142 controls are verified,
-and none of the 238 true or neutral claims is contradicted. 19 of the
+conflicting evidence; the rest unverified), all 153 controls are verified,
+and none of the 249 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -715,7 +719,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 74 strict-mode
+control, by name and by a hash of its text and calls, and 80 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -751,3 +755,9 @@ makes them.
   what was read before it, and claims about files it may have changed, are
   left open. Use `write` and `edit` for changes the answer will claim, and
   run tests as the last command of their line.
+- Known gaps, left for 1.2.10: with the anchor on both sides of an
+  addition, the nearest occurrence decides even when the stated side has
+  another ("after `step()`" can be unverified when it is true); "everything
+  works" is verified by a passing build, which shows only that it builds;
+  and "the script ran with no errors" after a passing script is unverified,
+  with a reason about clean work that does not fit it.
