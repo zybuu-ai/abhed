@@ -131,6 +131,8 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			setup: "printf '#!/bin/sh\\necho ok calc 0.01s\\n' > go && chmod +x go", bash: "./go test ./..."},
 		"build-go": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
 			setup: "printf '#!/bin/sh\\nexit 0\\n' > go && chmod +x go", bash: "./go build ./..."},
+		"build-cargo-warn": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho \"warning: unused variable: x\"\\necho \"warning: calc (lib) generated 1 warning\"\\necho \"Finished dev target(s) in 0.52s\"\\n' > cargo && chmod +x cargo", bash: "./cargo build"},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},

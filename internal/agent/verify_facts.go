@@ -55,6 +55,8 @@ type facts struct {
 	overclaim bool
 	overKind  string
 	compiles  bool
+	// noWarnings: it says a run had no warnings ("no errors or warnings").
+	noWarnings bool
 	// changeEvent: it says something is now so or new ("now", "gets").
 	changeEvent                  bool
 	oldNamed, inNamed, toolNamed map[string]bool
@@ -103,7 +105,8 @@ var (
 	keyedRe    = regexp.MustCompile(`\b([a-z][a-z\-]{1,24})\s+((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b`)
 	countRe    = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
 	// What a claim says when it reports success; negRe undoes it.
-	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b|\b(?:compiles|(?:it|code|project|everything|module|package|app|binary|tree|\x60) (?:still |now )?builds)(?:\s*(?:$|[.,;:!)])|\s+(?:now|again|fine|cleanly|successfully|without|with|and|too)\b)`)
+	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b|\b(?:compiles|(?:it|code|project|everything|module|package|app|binary|tree|\x60) (?:still |now )?builds)(?:\s*(?:$|[.,;:!)])|\s+(?:now|again|fine|cleanly|successfully|without|with|and|too|on|in|for|against|across|under|as|after|before|from|via|through|within|locally|everywhere|correctly|properly|ok|okay|here|there)\b)`)
+	noWarnClaimRe    = regexp.MustCompile(`\b(?:no|without|zero|0)\b[^.;]{0,40}\bwarnings?\b|\bwarning-free\b`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
 	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:one\s+)?(?:of\s+)?(?:the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
 	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
@@ -427,6 +430,7 @@ func extractFacts(claim string) facts {
 	f.imperative = imperativeRe.MatchString(normText(claim))
 	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
 	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
+	f.noWarnings = noWarnClaimRe.MatchString(strings.ToLower(claim))
 	f.overclaim = overclaims(normText(backtickRe.ReplaceAllString(claim, " ")))
 	switch ol := normText(backtickRe.ReplaceAllString(claim, " ")); {
 	case !f.overclaim:

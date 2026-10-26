@@ -3529,6 +3529,126 @@
       "name": "working said after only a read",
       "kind": "planted",
       "hash": "9437a1305e76f3e4"
+    },
+    {
+      "name": "a build claim with no run: It compiles as expected.",
+      "kind": "planted",
+      "hash": "d885875d0b1f2190"
+    },
+    {
+      "name": "a build claim with no run: It compiles as before.",
+      "kind": "planted",
+      "hash": "bd9e7c4fb2e15d44"
+    },
+    {
+      "name": "a build claim with no run: Everything compiles across all packages.",
+      "kind": "planted",
+      "hash": "fb9819dc3ebb44e9"
+    },
+    {
+      "name": "a build claim with no run: It now builds on Windows.",
+      "kind": "planted",
+      "hash": "c03bdb4df42b7b29"
+    },
+    {
+      "name": "a build claim with no run: The project builds in CI.",
+      "kind": "planted",
+      "hash": "c04b3f48bdcae629"
+    },
+    {
+      "name": "a build claim with no run: It compiles against the new API.",
+      "kind": "planted",
+      "hash": "995c32c799e51275"
+    },
+    {
+      "name": "a build claim with no run: It compiles on my machine.",
+      "kind": "planted",
+      "hash": "78418123507d18f4"
+    },
+    {
+      "name": "a build claim with no run: It builds for arm64.",
+      "kind": "planted",
+      "hash": "86462eaf43d7279f"
+    },
+    {
+      "name": "a build claim with no run: The code compiles in release mode.",
+      "kind": "planted",
+      "hash": "48b4bbc5593b2798"
+    },
+    {
+      "name": "a build claim with no run: It builds with no warnings.",
+      "kind": "planted",
+      "hash": "63005aa1fc41cf94"
+    },
+    {
+      "name": "a build claim after a passing build: It builds on this machine.",
+      "kind": "control",
+      "hash": "de93b345c1089428"
+    },
+    {
+      "name": "a build claim after a passing build: Everything builds across all packages.",
+      "kind": "control",
+      "hash": "817bd6b8092e57ff"
+    },
+    {
+      "name": "a build claim after a passing build: It compiles with no errors or warnings.",
+      "kind": "control",
+      "hash": "26d9fb997d90e629"
+    },
+    {
+      "name": "no warnings said after a build that warned: It compiles with no errors or warnings.",
+      "kind": "planted",
+      "hash": "684bd5c1ffece138"
+    },
+    {
+      "name": "no warnings said after a build that warned: Build succeeded with no errors or warnings.",
+      "kind": "planted",
+      "hash": "eea01c9de1ed6e65"
+    },
+    {
+      "name": "no warnings said after a build that warned: It builds with zero errors and zero warnings.",
+      "kind": "planted",
+      "hash": "2bdc1e690b0a83d7"
+    },
+    {
+      "name": "no warnings said after a build that warned: It builds without errors or warnings.",
+      "kind": "planted",
+      "hash": "f18bad90e623b78c"
+    },
+    {
+      "name": "no warnings said after a test run that warned",
+      "kind": "planted",
+      "hash": "ecdfa51ebf3c4b8b"
+    },
+    {
+      "name": "no errors said after a build that warned",
+      "kind": "control",
+      "hash": "90712ef9a13ff50b"
+    },
+    {
+      "name": "a compile claim after a passing cargo test",
+      "kind": "control",
+      "hash": "1d24ef3d0acdb4a8"
+    },
+    {
+      "name": "a compile claim after a test runner that does not compile",
+      "kind": "planted",
+      "hash": "6f38c90b300708f0"
+    },
+    {
+      "name": "no issues said beside a compile after only a build",
+      "kind": "planted",
+      "hash": "acdb853ed33cd2e1"
+    },
+    {
+      "name": "an explanation with compiles before at",
+      "kind": "control",
+      "hash": "76332cb3c586d482"
+    },
+    {
+      "name": "clean work with no warnings after a test run that warned",
+      "kind": "planted",
+      "hash": "13f779b3d3df8b3c"
     }
   ],
   "strict": [
@@ -3931,6 +4051,26 @@
       "scenario": "add-continue",
       "reply": "I added `continue` to `Sum`. Build succeeded with no errors.",
       "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. It compiles as expected.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. It compiles with no errors or warnings.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. It compiles with no errors.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It compiles with no errors or warnings.",
+      "want": "completed"
     }
   ]
 }
