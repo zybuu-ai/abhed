@@ -83,6 +83,7 @@ type Abhed struct {
 	fenceDenied   *Counter
 	ollama        *Counter
 	toolchains    *Counter
+	registries    *Counter
 
 	mu      sync.Mutex
 	calls   map[string]*call
@@ -167,6 +168,8 @@ func New() *Abhed {
 			"System calls the fence refused fenced commands, by source (seccomp) and call.", "source", "call"),
 		toolchains: r.Counter("abhed_toolchain_installs_total",
 			"Language toolchain installs for sessions' commands, by language and outcome (ok, failed, declined, refused, cancelled).", "lang", "outcome"),
+		registries: r.Counter("abhed_toolchain_registries_opened_total",
+			"Package registries opened to sessions' commands with a toolchain, by language.", "lang"),
 		ollama: r.Counter("abhed_ollama_actions_total",
 			"A person's attempts to start, install or pull a local Ollama, by op (start, install, pull) and outcome (ok, failed, declined, refused, cancelled, manual).", "op", "outcome"),
 		calls: map[string]*call{},
@@ -337,6 +340,10 @@ func (m *Abhed) Observe(ev agent.Event) {
 		var p agent.ToolchainAction
 		_ = json.Unmarshal(ev.Payload, &p)
 		m.toolchains.Inc(oneOf(p.Lang, toolchainLangs), oneOf(p.Outcome, ToolchainOutcomes))
+	case string(agent.EvToolchainRegistry):
+		var p agent.ToolchainRegistry
+		_ = json.Unmarshal(ev.Payload, &p)
+		m.registries.Inc(oneOf(p.Lang, toolchainLangs))
 	case string(agent.EvOllamaStart), string(agent.EvOllamaInstall), string(agent.EvOllamaPull):
 		var p agent.OllamaAction
 		_ = json.Unmarshal(ev.Payload, &p)

@@ -70,6 +70,9 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		// The allowlist replaces allow_network: the proxy is the only way out.
 		p.Egress, p.AllowNetwork = pol, false
 	}
+	if err := registryEgress(cfg, &p); err != nil {
+		return sandbox.Policy{}, err
+	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
 	// The toolchain cache, which commands read and never write: a container
 	// mounts it read-only, so the toolchains Abhed installed are there.
@@ -511,4 +514,41 @@ func toolchainCache(cfg config.Config) string {
 		return ""
 	}
 	return root
+}
+
+// RegistriesOpenable reports whether a person may open package registries
+// to commands: sandbox.toolchains_registries is not off, and where the
+// managed file holds the network, it names the setting itself.
+func RegistriesOpenable(cfg config.Config) bool {
+	if cfg.Sandbox.ToolchainsRegistries == "off" || cfg.Sandbox.Toolchains == "off" {
+		return false
+	}
+	managedNet := cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
+	return !managedNet || cfg.ManagedSets("sandbox.toolchains_registries")
+}
+
+// registryEgress gives p the proxy package registries are opened through:
+// under the managed allowlist, its own policy, which the registries join
+// only where the managed file names them; where the network is off, a
+// proxy that denies everything until a registry is opened, used where the
+// tier can hold one. With "allow", every registry is open from the start.
+func registryEgress(cfg config.Config, p *sandbox.Policy) error {
+	if !RegistriesOpenable(cfg) {
+		return nil
+	}
+	pol := p.Egress
+	if pol == nil {
+		if p.AllowNetwork {
+			return nil // the network is open already
+		}
+		var err error
+		if pol, err = egress.Compile(egress.Config{}); err != nil {
+			return err
+		}
+		p.OptionalEgress = pol
+	}
+	if cfg.Sandbox.ToolchainsRegistries == "allow" {
+		return pol.Grant("sandbox.toolchains_registries allow", toolchain.AllRegistries())
+	}
+	return nil
 }

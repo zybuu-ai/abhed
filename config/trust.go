@@ -683,6 +683,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.read_only_paths":        {nil, "mounts more of the host into the sandbox"},
 	"sandbox.toolchains":             {stricterToolchains, "only stricter: auto, then ask, then off"},
 	"sandbox.toolchains_preapproved": {nil, "an install that needs no ask"},
+	"sandbox.toolchains_registries":  {onlyRegistriesOff, "only off"},
 	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.language_servers":       {nil, "a language server is a process"},
 	"sandbox.image":                  {nil, "chooses the image commands run in"},
@@ -877,6 +878,16 @@ func onlyTrue(field func(*Config) *bool) func(dst, ws *Config) bool {
 
 // modeRank orders the modes from narrowest to widest.
 var modeRank = map[string]int{"plan": 0, "default": 1, "accept-edits": 2, "auto": 3, "bypass": 4}
+
+// onlyRegistriesOff applies a workspace's sandbox.toolchains_registries only
+// when it turns the registries off.
+func onlyRegistriesOff(dst, ws *Config) bool {
+	if ws.Sandbox.ToolchainsRegistries != "off" {
+		return false
+	}
+	dst.Sandbox.ToolchainsRegistries = "off"
+	return true
+}
 
 // toolchainRank orders sandbox.toolchains from loosest to strictest.
 var toolchainRank = map[string]int{"auto": 0, "": 1, "ask": 1, "off": 2}

@@ -1389,6 +1389,14 @@ type SandboxConfig struct {
 	// ToolchainsPreapproved are installs that need no ask, such as "go" or
 	// "python@3.12". Not from a workspace file until it is trusted.
 	ToolchainsPreapproved []string `json:"toolchains_preapproved,omitempty"`
+	// ToolchainsRegistries is whether commands may reach a language's
+	// official package registries through the session's egress proxy where
+	// the network is otherwise off: "ask" (the default) opens a language's
+	// registries with the person's agreement to its toolchain, "allow" opens
+	// them all, "off" none. The one way egress opens outside the managed
+	// file; under a managed network it adds nothing unless the managed file
+	// names it. A workspace file may only set off.
+	ToolchainsRegistries string `json:"toolchains_registries,omitempty"`
 	// MaxMemoryMB applies on every tier but none and the macOS process tier;
 	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
@@ -1828,6 +1836,11 @@ func (c Config) Validate() error {
 	case "", "ask", "auto", "off":
 	default:
 		return fmt.Errorf("sandbox.toolchains is %q; use ask, auto or off", c.Sandbox.Toolchains)
+	}
+	switch c.Sandbox.ToolchainsRegistries {
+	case "", "ask", "allow", "off":
+	default:
+		return fmt.Errorf("sandbox.toolchains_registries is %q; use ask, allow or off", c.Sandbox.ToolchainsRegistries)
 	}
 	for _, p := range c.Sandbox.ToolchainsPreapproved {
 		if _, err := toolchain.ParseSpec(p); err != nil {

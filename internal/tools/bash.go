@@ -68,6 +68,9 @@ type Bash struct {
 	// NotFound, when set, says what a command run in dir that could not
 	// find program can do about it, such as install the toolchain; "" says nothing.
 	NotFound func(dir, program string) string
+	// NetworkNote, when set, is added to the note a command that could not
+	// reach the network gets, such as how to open a package registry.
+	NetworkNote string
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -671,7 +674,7 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	if missing := b.notFoundNote(s.Cwd, content, exitCode); missing != "" {
 		content = withNote(content, missing)
 	} else if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
-		content = withNote(content, networkHint)
+		content = withNote(content, strings.TrimSpace(networkHint+" "+b.NetworkNote))
 	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)

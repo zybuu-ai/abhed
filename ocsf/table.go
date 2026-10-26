@@ -52,6 +52,7 @@ var table = map[agent.EventType]rule{
 	agent.EvMCPStatus:            {fn: mapMCPStatus, classes: []int{6003}},
 	agent.EvOllamaPull:           {fn: mapOllama, classes: []int{6003}},
 	agent.EvToolchainInstall:     {fn: mapToolchain, classes: []int{6003}},
+	agent.EvToolchainRegistry:    {fn: apiOther("Open registries"), classes: []int{6003}},
 	agent.EvTerminalInput:        {fn: apiOther("Terminal input"), classes: []int{6003}},
 	agent.EvCommandInvoked:       {fn: apiOther("Command"), classes: []int{6003}},
 	agent.EvMemoryLoaded:         {fn: apiActivity(2, "Read"), classes: []int{6003}},

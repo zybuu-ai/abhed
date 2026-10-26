@@ -2,12 +2,15 @@ package toolset
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -24,13 +27,65 @@ func Toolchains(cfg config.Config, workspace string, sb sandbox.Sandbox) *toolch
 	if err != nil {
 		return nil
 	}
-	return &toolchain.Session{
+	tc := &toolchain.Session{
 		Cache:     toolchain.Cache{Root: root},
 		Source:    &toolchain.Source{Endpoints: ToolchainEndpoints, UserAgent: "abhed"},
 		Workspace: workspace,
 		Platform:  func() toolchain.Platform { return PlatformOf(sb) },
 		Off:       cfg.Sandbox.Toolchains == "off",
 	}
+	if sandboxconfig.RegistriesOpenable(cfg) {
+		tc.Registries = func(lang string) ([]string, string) { return registriesFor(cfg, sb, lang) }
+		tc.Open = func(lang string) ([]string, error) {
+			hosts, why := registriesFor(cfg, sb, lang)
+			if why != "" {
+				return nil, errors.New(why)
+			}
+			if len(hosts) == 0 {
+				return nil, nil
+			}
+			return hosts, sandbox.EgressOf(resolved(sb)).Grant("toolchain "+lang, hosts)
+		}
+	}
+	return tc
+}
+
+// registriesFor are a language's registries not yet open to the sandbox's
+// commands, or why none can be opened.
+func registriesFor(cfg config.Config, sb sandbox.Sandbox, lang string) ([]string, string) {
+	if !sandboxconfig.RegistriesOpenable(cfg) {
+		if cfg.Sandbox.ToolchainsRegistries == "off" {
+			return nil, "sandbox.toolchains_registries is off"
+		}
+		return nil, "the managed configuration holds the network and does not name sandbox.toolchains_registries"
+	}
+	if cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network == "" {
+		return nil, "" // the network is open already
+	}
+	pol := sandbox.EgressOf(resolved(sb))
+	if pol == nil {
+		return nil, "this sandbox cannot hold the egress proxy they are reached through (a container tier on a VM needs control_plane relay_binary), so commands have no network"
+	}
+	var need []string
+	for _, h := range toolchain.Registries[lang] {
+		if !pol.Granted(h) {
+			need = append(need, h)
+		}
+	}
+	return need, ""
+}
+
+// resolved is the sandbox a lazy one chose, waiting for the choice.
+func resolved(sb sandbox.Sandbox) sandbox.Sandbox {
+	if l, ok := sb.(interface {
+		Resolve() (sandbox.Sandbox, error)
+	}); ok {
+		if r, err := l.Resolve(); err == nil {
+			return r
+		}
+		return nil
+	}
+	return sb
 }
 
 // PlatformOf is the platform a sandbox's commands run on: Linux for a
@@ -53,6 +108,10 @@ func withToolchains(b tools.Bash, tc *toolchain.Session) tools.Bash {
 		return b
 	}
 	b.NotFound = tc.NotFound
+	if tc.Registries != nil && tc.Open != nil && !tc.Off {
+		b.NetworkNote = "If it was a language's package registry (" + strings.Join(toolchain.AllRegistries()[:6], ", ") +
+			"…), call the toolchain tool with that language: the user is asked, and its registries are opened to commands where this sandbox allows."
+	}
 	if tc.Off || b.Sandbox == nil {
 		return b
 	}

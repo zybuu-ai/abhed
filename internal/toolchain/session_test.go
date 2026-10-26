@@ -116,3 +116,32 @@ func TestToolResolvesInstallsAndRecords(t *testing.T) {
 		t.Fatal("an unknown language resolved")
 	}
 }
+
+// Agreeing to a toolchain opens its language's registries where the
+// session allows it, recorded, and the approval names them; where it does
+// not, the model is told why.
+func TestToolOpensRegistries(t *testing.T) {
+	s, _ := session(t)
+	var opened []string
+	s.Registries = func(lang string) ([]string, string) { return Registries[lang], "" }
+	s.Open = func(lang string) ([]string, error) { opened = Registries[lang]; return opened, nil }
+	tool := Tool{S: s}
+	ts, _ := tools.NewSession(s.Workspace)
+	out, _, err := tool.ResolveArgs(ts, json.RawMessage(`{"name":"go"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg := tool.Target(ts, out); !strings.Contains(tg, "proxy.golang.org, sum.golang.org") {
+		t.Fatalf("target %q", tg)
+	}
+	res := tool.Run(context.Background(), ts, out)
+	if res.IsError || len(opened) != 2 || len(res.Events) != 2 || res.Events[1].Type != string(agent.EvToolchainRegistry) ||
+		!strings.Contains(res.Content, "Commands can reach its package registries") {
+		t.Fatalf("%+v", res)
+	}
+	s.Registries = func(string) ([]string, string) { return nil, "sandbox.toolchains_registries is off" }
+	res = tool.Run(context.Background(), ts, out)
+	if !strings.Contains(res.Content, "not open to commands: sandbox.toolchains_registries is off") || len(res.Events) != 1 {
+		t.Fatalf("%+v", res)
+	}
+}

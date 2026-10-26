@@ -4,7 +4,21 @@ package agent
 const (
 	// EvToolchainInstall is an attempt to install a toolchain; see ToolchainAction.
 	EvToolchainInstall EventType = "toolchain.install"
+	// EvToolchainRegistry is package registries opened to commands; see ToolchainRegistry.
+	EvToolchainRegistry EventType = "toolchain.registry"
 )
+
+// ToolchainRegistry is the payload of toolchain.registry: a language's
+// package registries opened to the session's commands through its egress
+// proxy, with the person's agreement to the language's toolchain.
+type ToolchainRegistry struct {
+	Lang  string   `json:"lang"`
+	Hosts []string `json:"hosts"`
+	// Consent is as ToolchainAction's; allow for sandbox.toolchains_registries allow.
+	Consent string `json:"consent,omitempty"`
+	By      string `json:"by"`
+	Surface string `json:"surface,omitempty"`
+}
 
 // Outcomes of a ToolchainAction.
 const (

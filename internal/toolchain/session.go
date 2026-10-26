@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // Session is the toolchains of one session's commands: the cache, the
@@ -22,6 +23,11 @@ type Session struct {
 	Off bool
 	// Record writes a toolchain.install event; nil records nothing.
 	Record func(agent.ToolchainAction)
+	// Registries says which of a language's package registries an agreement
+	// to its toolchain would open to commands, and why none would; nil opens none.
+	Registries func(lang string) (hosts []string, why string)
+	// Open opens them; it returns what it opened.
+	Open func(lang string) ([]string, error)
 }
 
 func (s *Session) platform() Platform {
@@ -182,4 +188,40 @@ func (s *Session) NotFound(dir, program string) string {
 	return fmt.Sprintf("%s is not installed in this sandbox. Abhed can install %s (%s) from its official release source, "+
 		"checked against its published checksum: call the toolchain tool with name %q (the user is asked first), "+
 		"then run the command again.", program, what, why, spec.String())
+}
+
+// openRegistries opens a language's package registries after its toolchain
+// was agreed to, recording it, and says what commands can now reach.
+func (s *Session) openRegistries(lang, by, surface, consent string, events *[]tools.Event) string {
+	if s.Registries == nil || s.Open == nil {
+		return ""
+	}
+	if _, why := s.Registries(lang); why != "" {
+		return " Its package registries are not open to commands: " + why + "."
+	}
+	opened, err := s.Open(lang)
+	if err != nil {
+		return " Its package registries could not be opened: " + err.Error() + "."
+	}
+	if len(opened) > 0 && events != nil {
+		*events = append(*events, tools.Event{Type: string(agent.EvToolchainRegistry),
+			Payload: agent.ToolchainRegistry{Lang: lang, Hosts: opened, Consent: consent, By: by, Surface: surface}})
+	}
+	if hosts := Registries[lang]; len(hosts) > 0 {
+		return " Commands can reach its package registries (" + strings.Join(hosts, ", ") + ") through the session's egress proxy."
+	}
+	return ""
+}
+
+// OpenRegistriesFor is openRegistries for a person's own install, recorded
+// through record.
+func (s *Session) OpenRegistriesFor(lang, surface string, record func(agent.ToolchainRegistry)) string {
+	var events []tools.Event
+	note := s.openRegistries(lang, agent.ByUser, surface, surface, &events)
+	for _, e := range events {
+		if r, ok := e.Payload.(agent.ToolchainRegistry); ok && record != nil {
+			record(r)
+		}
+	}
+	return strings.TrimSpace(note)
 }

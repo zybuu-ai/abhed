@@ -126,14 +126,20 @@ func (t Tool) Target(_ *tools.Session, raw json.RawMessage) string {
 	}
 	r := a.Resolved
 	l, _ := Find(strings.SplitN(a.Name, "@", 2)[0])
+	opens := ""
+	if t.S.Registries != nil {
+		if hosts, _ := t.S.Registries(l.Name); len(hosts) > 0 {
+			opens = "; and opens its package registries to commands: " + strings.Join(hosts, ", ")
+		}
+	}
 	if r.Cached {
-		return fmt.Sprintf("%s %s, installed already", l.Display, r.Version)
+		return fmt.Sprintf("%s %s, installed already%s", l.Display, r.Version, opens)
 	}
 	size := "size not published"
 	if r.Size > 0 {
 		size = fmt.Sprintf("%.1f MB", float64(r.Size)/1e6)
 	}
-	return fmt.Sprintf("%s %s (%s) from %s: %s · %s · %s", l.Display, r.Version, r.Why, r.Source, r.URL, size, r.Digest)
+	return fmt.Sprintf("%s %s (%s) from %s: %s · %s · %s%s", l.Display, r.Version, r.Why, r.Source, r.URL, size, r.Digest, opens)
 }
 
 // at is the session for a call: its workspace, and its events gathered
@@ -182,8 +188,9 @@ func (t Tool) Run(ctx context.Context, ts *tools.Session, raw json.RawMessage) t
 	if plan.Installed != nil {
 		how = "already installed"
 	}
-	return tools.Result{Content: fmt.Sprintf("%s %s is installed (%s) and on PATH for the session's commands: %s. Run the command again.",
-		l.Display, in.Version, how, strings.Join(BinDirs(in), ":")), Events: events}
+	reach := s.openRegistries(l.Name, "agent", "tool", "call", &events)
+	return tools.Result{Content: fmt.Sprintf("%s %s is installed (%s) and on PATH for the session's commands: %s.%s Run the command again.",
+		l.Display, in.Version, how, strings.Join(BinDirs(in), ":"), reach), Events: events}
 }
 
 func (t Tool) list(s *Session) string {
