@@ -42,6 +42,17 @@ type toolchainParams struct {
 	// Debugger asks for the language's debugger too (Delve for Go, debugpy
 	// for Python), offered and agreed to with it.
 	Debugger bool `json:"debugger"`
+	// Agreed is what the person agreed to from status's offer; an install
+	// that would now fetch something else is refused.
+	Agreed *toolchainAgreed `json:"agreed"`
+}
+
+// toolchainAgreed is the offer's version and digests the modal showed.
+type toolchainAgreed struct {
+	Version         string `json:"version"`
+	Digest          string `json:"digest"`
+	DebuggerVersion string `json:"debugger_version"`
+	DebuggerDigest  string `json:"debugger_digest"`
 }
 
 // toolchainProblem is an error's data, as the Ollama assist's is.
@@ -60,8 +71,25 @@ func toolchainError(code int, kind, message string) *rpcError {
 var problemSteps = map[string][]string{
 	"toolchains_off": {"Set sandbox.toolchains to ask in your own configuration, where the managed file allows it"},
 	"no_build":       {"Name another version, or set sandbox.image to an image that has the toolchain"},
+	"changed":        {"Ask for the offer again (_abhed/toolchain/status) and show it before installing"},
 	"no_debugger": {"Debug in a Linux sandbox (the container tier, or the process tier on Linux)",
 		"For Go, use Go 1.25 or later; for Python, 3.10 or later", "Or use a sandbox image that has the debugger"},
+}
+
+// registriesOffer is what an install of lang would open to commands, or why
+// it would open none.
+func registriesOffer(tc *toolchain.Session, lang string) ([]string, string) {
+	if tc.Registries == nil || tc.Open == nil {
+		return []string{}, "this session opens no package registries"
+	}
+	hosts, why := tc.Registries(lang)
+	if why != "" {
+		return []string{}, why
+	}
+	if hosts == nil {
+		hosts = []string{}
+	}
+	return hosts, ""
 }
 
 // debuggerPlan is the plan for the debugger of plan's language.
@@ -129,6 +157,11 @@ type toolchainOffer struct {
 	Digest string `json:"digest,omitempty"`
 	// Title names everything the offer installs, for the modal's heading.
 	Title string `json:"title"`
+	// Registries are the package registry hosts the install opens to the
+	// session's commands through the egress proxy; RegistriesNote says why
+	// none are opened, when that is so. The modal shows both.
+	Registries     []string `json:"registries"`
+	RegistriesNote string   `json:"registries_note,omitempty"`
 	// Debugger is the debugger installed with it, when asked for.
 	Debugger *debuggerOffer `json:"debugger,omitempty"`
 }
@@ -184,6 +217,7 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 		if plan.Installed != nil {
 			o.Source, o.URL, o.Digest = "installed already", plan.Installed.URL, plan.Installed.Digest
 		}
+		o.Registries, o.RegistriesNote = registriesOffer(tc, plan.Spec.Lang)
 		if p.Debugger {
 			ep, err := debuggerPlan(c.root(), tc, plan)
 			if err != nil {
@@ -257,6 +291,21 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 			return
 		}
 		ep = &d
+	}
+	if a := p.Agreed; a != nil {
+		digest := plan.Artifact.Digest
+		if plan.Installed != nil {
+			digest = plan.Installed.Digest
+		}
+		changed := a.Version != plan.Version() || a.Digest != "" && a.Digest != digest
+		if ep != nil {
+			changed = changed || a.DebuggerVersion != ep.Extra.Version || a.DebuggerDigest != "" && a.DebuggerDigest != ep.Digest
+		}
+		if changed {
+			c.reply(msg.ID, nil, toolchainError(errRefused, "changed",
+				"what would be installed has changed since it was offered, so nothing was installed; ask for the offer again"))
+			return
+		}
 	}
 	progress := func(status string) toolchain.Progress {
 		return func(done, total int64) {

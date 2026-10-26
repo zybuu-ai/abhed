@@ -132,6 +132,8 @@ func TestStudioToolchains(t *testing.T) {
 		Offer     struct {
 			Command, Source, Version, Into, Why, Digest string
 			Size                                        int64
+			Registries                                  []string `json:"registries"`
+			RegistriesNote                              string   `json:"registries_note"`
 		} `json:"offer"`
 	}
 	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "gofmt"}, &st)
@@ -139,15 +141,32 @@ func TestStudioToolchains(t *testing.T) {
 		!strings.HasPrefix(st.Offer.Digest, "sha256:") || st.Offer.Size == 0 || !strings.HasSuffix(st.Offer.Into, filepath.Join("go", "1.22.5")) {
 		t.Fatalf("status %+v", st)
 	}
-	r.cl.refused(errParams, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go"})
-	var done struct {
-		Version string   `json:"version"`
-		Dir     string   `json:"dir"`
-		Bin     []string `json:"bin"`
+	t.Logf("offer registries %v note %q", st.Offer.Registries, st.Offer.RegistriesNote)
+	if st.Offer.Registries == nil || len(st.Offer.Registries) == 0 && st.Offer.RegistriesNote == "" {
+		t.Fatalf("the offer does not say which registries the install opens: %+v", st.Offer)
 	}
-	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i1"}, &done)
+	r.cl.refused(errParams, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go"})
+	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i0",
+		"agreed": map[string]any{"version": "1.22.4", "digest": st.Offer.Digest}})
+	var done struct {
+		Version    string   `json:"version"`
+		Dir        string   `json:"dir"`
+		Bin        []string `json:"bin"`
+		Registries string   `json:"registries"`
+	}
+	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i1",
+		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}}, &done)
 	if done.Version != "1.22.5" || len(done.Bin) != 1 {
 		t.Fatalf("install %+v", done)
+	}
+	// What the offer named is what the install opened.
+	for _, h := range st.Offer.Registries {
+		if !strings.Contains(done.Registries, h) {
+			t.Fatalf("the install opened %q, the offer named %v", done.Registries, st.Offer.Registries)
+		}
+	}
+	if got, _ := r.recorded(id, "toolchain.registry"); len(st.Offer.Registries) > 0 && len(got) != 1 {
+		t.Fatalf("registry opening recorded %v", got)
 	}
 	got, _ := r.recorded(id, "toolchain.install")
 	if len(got) != 1 || got[0]["outcome"] != "ok" || got[0]["surface"] != "acp" || got[0]["consent"] != "studio" {
