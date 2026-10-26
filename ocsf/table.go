@@ -63,6 +63,8 @@ var table = map[agent.EventType]rule{
 	agent.EvPlanStep:             {fn: apiOther("Plan step"), classes: []int{6003}},
 	agent.EvChangeAccepted:       {fn: apiOther("Accept"), classes: []int{6003}},
 	agent.EvWorktreeTaken:        {fn: apiOther("Take"), classes: []int{6003}},
+	agent.EvDebugLaunched:        {fn: apiOther("Debug launch"), classes: []int{6003}},
+	agent.EvDebugStopped:         {fn: apiOther("Debug stop"), classes: []int{6003}},
 	agent.EvTaskCancelled:        {fn: apiOther("Cancel"), classes: []int{6003}},
 	agent.EvMessageDropped:       {fn: apiOther("Drop"), classes: []int{6003}},
 	agent.EvSessionRenamed:       {fn: apiActivity(3, "Update"), classes: []int{6003}},

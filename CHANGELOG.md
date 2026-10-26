@@ -119,6 +119,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Debugging in the sandbox for Abhed Studio: the editor protocol's
+  `_abhed/debug/launch`, `/send` and `/stop` (the `debug` feature) run Delve
+  (Go) or debugpy (Python) inside the session's container tier, or the Linux
+  process tier, and carry its Debug Adapter Protocol messages to Studio over
+  the connection, with no port on the host. The engine builds the launch
+  itself: the debuggee's command line is judged by policy and the
+  supervisor as your bash call and recorded, Studio's own launch or attach
+  is refused, and the adapter's requests to run something in Studio's
+  terminal are answered with an error. Delve's socket is carried by a bridge
+  mode of the bundled Linux build of Abhed (or `relay_binary`). Each session is recorded as `debug.launched` and
+  `debug.stopped`. Node is not supported yet
+  ([Debugging](docs/guide/31-debugging.md)).
 - Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)
   with Maven and Gradle, Ruby and the .NET SDK, installed for the sandbox's
   commands at the version asked for, else the one the project pins (go.mod,

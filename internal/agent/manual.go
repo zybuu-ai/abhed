@@ -126,6 +126,33 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	return tool, nil, nil
 }
 
+// ManualAuthorizeReviewed is ManualAuthorize with the supervisor's review
+// after policy, for a person's action that starts something the agent's own
+// call would, such as a debug session: it may only make the decision
+// stricter, and its verdict is in the record. An ask is taken as answered.
+func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, args json.RawMessage) (tools.Tool, *tools.Result, error) {
+	tool, found := l.Tools.Get(call)
+	if !found {
+		return nil, nil, fmt.Errorf("unknown tool %q", call)
+	}
+	if call == "bash" {
+		_ = l.noteTrustedStartup()
+	}
+	mutates := tools.MutatesCall(tool, args)
+	decision := l.Policy.Evaluate(call, mutates, args)
+	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	if l.Monitor != nil && decision.Decision != policy.Deny {
+		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
+	}
+	refused, err := l.manualDecide(call, id, args, decision, Unanswered)
+	if err != nil || refused != nil {
+		return nil, refused, err
+	}
+	return tool, nil, nil
+}
+
 // namesSecret applies the file-name secret check to the name an explorer
 // action creates: a new folder's path, or a rename's new path.
 func (l *Loop) namesSecret(action string, args json.RawMessage) string {

@@ -40,66 +40,68 @@
 2026-10-19T11:58:41.123Z s-1#40 API:Plan step INFO plan.step
 2026-10-19T11:58:42.123Z s-1#41 API:Accept INFO change.accepted
 2026-10-19T11:58:43.123Z s-1#42 API:Take INFO worktree.taken
-2026-10-19T11:58:44.123Z s-1#43 API:Cancel INFO task.cancelled
-2026-10-19T11:58:45.123Z s-1#44 API:Drop INFO message.dropped
-2026-10-19T11:58:46.123Z s-1#45 API:Update INFO session.renamed
-2026-10-19T11:58:47.123Z s-1#46 API:Update INFO session.named
-2026-10-19T11:58:48.123Z s-1#47 API:Create INFO session.branched
-2026-10-19T11:58:49.123Z s-1#48 API:Create INFO conversation.forked
-2026-10-19T11:58:50.123Z s-1#49 API:Continue INFO turn.continued
-2026-10-19T11:58:51.123Z s-1#50 API:Create INFO sandbox.snapshot
-2026-10-19T11:58:52.123Z s-1#51 API:Update INFO sandbox.restore
-2026-10-19T11:58:53.123Z s-1#52 FILE:Read INFO input.mention /w/README.md
-2026-10-19T11:58:54.123Z s-1#53 FILE:Update INFO memory.written /home/u/.abhed/memory/note.md
-2026-10-19T11:58:55.123Z s-1#54 FILE:Update INFO manual.edit /w/main.go
-2026-10-19T11:58:56.123Z s-1#55 FILE:Update INFO file.restored /w/a.go
-2026-10-19T11:58:57.123Z s-1#56 FILE:Create INFO file.restored /w/new.go
-2026-10-19T11:58:58.123Z s-1#57 FILE:Delete INFO file.restored /w/gone.go
-2026-10-19T11:58:59.123Z s-1#58 FILE:Checkpoint INFO checkpoint.saved /w/main.go
-2026-10-19T11:59:00.123Z s-1#59 PROC:Launch INFO process.launched for c-1
-2026-10-19T11:59:01.123Z s-1#60 PROC:Launch INFO shell.started for c-1
-2026-10-19T11:59:02.123Z s-1#61 PROC:Terminate INFO shell.ended for c-1
-2026-10-19T11:59:03.123Z s-1#62 NET:Open INFO ALLOWED connect proxy.golang.org allow
-2026-10-19T11:59:04.123Z s-1#63 NET:Refuse MED DENIED connect evil.example deny
-2026-10-19T11:59:05.123Z s-1#64 HTTP:Get LOW ALLOWED http example.org would_deny
-2026-10-19T11:59:06.123Z s-1#65 NET:Traffic MED DENIED summary example.org deny
-2026-10-19T11:59:07.123Z s-1#66 NET:Listen INFO sandbox.forward open
-2026-10-19T11:59:08.123Z s-1#67 NET:Listen INFO sandbox.forward_listen listen
-2026-10-19T11:59:09.123Z s-1#68 NET:Close INFO sandbox.expose close
-2026-10-19T11:59:10.123Z s-1#69 CONF:Log INFO mode.changed plan
-2026-10-19T11:59:11.123Z s-1#70 CONF:Log INFO permission.changed
-2026-10-19T11:59:12.123Z s-1#71 CONF:Log INFO policy.layer
-2026-10-19T11:59:13.123Z s-1#72 CONF:Log INFO policy.startup_trusted
-2026-10-19T11:59:14.123Z s-1#73 CONF:Log LOW config.refused record.dir: set_aside
-2026-10-19T11:59:15.123Z s-1#74 CONF:Log INFO config.narrowed web_search.enabled: narrowed
-2026-10-19T11:59:16.123Z s-1#75 CONF:Log INFO approval.scope_granted
-2026-10-19T11:59:17.123Z s-1#76 CONF:Log INFO workspace.dir_added
-2026-10-19T11:59:18.123Z s-1#77 CONF:Log INFO sandbox.bound
-2026-10-19T11:59:19.123Z s-1#78 CONF:Log INFO fence.qualified
-2026-10-19T11:59:20.123Z s-1#79 CONF:Log INFO session.wake_set
-2026-10-19T11:59:21.123Z s-1#80 FIND:Create MED supervisor exfil: allow -> ask
-2026-10-19T11:59:22.123Z s-1#81 FIND:Create INFO supervisor ok: allow -> allow
-2026-10-19T11:59:23.123Z s-1#82 FIND:Create MED answer unverified
-2026-10-19T11:59:24.123Z s-1#83 FIND:Create LOW Supervisor correction
-2026-10-19T11:59:25.123Z s-1#84 FIND:Create LOW Supervisor replan
-2026-10-19T11:59:26.123Z s-1#85 FIND:Create LOW Fence limit
-2026-10-19T11:59:27.123Z s-1#86 FIND:Create MED DENIED fence refused ptrace, socket(unix) for c-1
-2026-10-19T11:59:28.123Z s-1#87 FIND:Create HIGH State planted in the workspace
-2026-10-19T11:59:29.123Z s-1#88 FIND:Create HIGH Git folder planted
-2026-10-19T11:59:30.123Z s-1#89 FIND:Create MED Git folder linked
-2026-10-19T11:59:31.123Z s-1#90 FIND:Create LOW Git walk bounded
-2026-10-19T11:59:32.123Z s-1#91 FIND:Create LOW Record repaired
-2026-10-19T11:59:33.123Z s-1#92 BASE:Other INFO compaction.started
-2026-10-19T11:59:34.123Z s-1#93 BASE:Other INFO compaction.completed
-2026-10-19T11:59:35.123Z s-1#94 BASE:Other INFO context.offloaded
-2026-10-19T11:59:36.123Z s-1#95 BASE:Other INFO plan.updated
-2026-10-19T11:59:37.123Z s-1#96 BASE:Other INFO todo.updated
-2026-10-19T11:59:38.123Z s-1#97 BASE:Other INFO suggestion.offered
-2026-10-19T11:59:41.123Z s-1#100 PROC:Launch INFO ollama start qwen3:8b: ok
-2026-10-19T11:59:42.123Z s-1#101 PROC:Launch INFO ollama install qwen3:8b: failed
-2026-10-19T11:59:43.123Z s-1#102 PROC:Launch INFO ollama install: manual
-2026-10-19T11:59:44.123Z s-1#103 API:Create INFO ollama pull qwen3:8b: ok
-2026-10-19T11:59:45.123Z s-1#104 API:Create INFO toolchain install go 1.22.5: ok
-2026-10-19T11:59:46.123Z s-1#105 API:Create INFO toolchain install python 3.12: refused
-2026-10-19T11:59:47.123Z s-1#106 API:Open registries INFO toolchain.registry
-2026-10-19T11:59:48.123Z s-1#107 API:Create INFO ollama pull qwen3:8b: refused
+2026-10-19T11:58:44.123Z s-1#43 API:Debug launch INFO debug.launched
+2026-10-19T11:58:45.123Z s-1#44 API:Debug stop INFO debug.stopped
+2026-10-19T11:58:46.123Z s-1#45 API:Cancel INFO task.cancelled
+2026-10-19T11:58:47.123Z s-1#46 API:Drop INFO message.dropped
+2026-10-19T11:58:48.123Z s-1#47 API:Update INFO session.renamed
+2026-10-19T11:58:49.123Z s-1#48 API:Update INFO session.named
+2026-10-19T11:58:50.123Z s-1#49 API:Create INFO session.branched
+2026-10-19T11:58:51.123Z s-1#50 API:Create INFO conversation.forked
+2026-10-19T11:58:52.123Z s-1#51 API:Continue INFO turn.continued
+2026-10-19T11:58:53.123Z s-1#52 API:Create INFO sandbox.snapshot
+2026-10-19T11:58:54.123Z s-1#53 API:Update INFO sandbox.restore
+2026-10-19T11:58:55.123Z s-1#54 FILE:Read INFO input.mention /w/README.md
+2026-10-19T11:58:56.123Z s-1#55 FILE:Update INFO memory.written /home/u/.abhed/memory/note.md
+2026-10-19T11:58:57.123Z s-1#56 FILE:Update INFO manual.edit /w/main.go
+2026-10-19T11:58:58.123Z s-1#57 FILE:Update INFO file.restored /w/a.go
+2026-10-19T11:58:59.123Z s-1#58 FILE:Create INFO file.restored /w/new.go
+2026-10-19T11:59:00.123Z s-1#59 FILE:Delete INFO file.restored /w/gone.go
+2026-10-19T11:59:01.123Z s-1#60 FILE:Checkpoint INFO checkpoint.saved /w/main.go
+2026-10-19T11:59:02.123Z s-1#61 PROC:Launch INFO process.launched for c-1
+2026-10-19T11:59:03.123Z s-1#62 PROC:Launch INFO shell.started for c-1
+2026-10-19T11:59:04.123Z s-1#63 PROC:Terminate INFO shell.ended for c-1
+2026-10-19T11:59:05.123Z s-1#64 NET:Open INFO ALLOWED connect proxy.golang.org allow
+2026-10-19T11:59:06.123Z s-1#65 NET:Refuse MED DENIED connect evil.example deny
+2026-10-19T11:59:07.123Z s-1#66 HTTP:Get LOW ALLOWED http example.org would_deny
+2026-10-19T11:59:08.123Z s-1#67 NET:Traffic MED DENIED summary example.org deny
+2026-10-19T11:59:09.123Z s-1#68 NET:Listen INFO sandbox.forward open
+2026-10-19T11:59:10.123Z s-1#69 NET:Listen INFO sandbox.forward_listen listen
+2026-10-19T11:59:11.123Z s-1#70 NET:Close INFO sandbox.expose close
+2026-10-19T11:59:12.123Z s-1#71 CONF:Log INFO mode.changed plan
+2026-10-19T11:59:13.123Z s-1#72 CONF:Log INFO permission.changed
+2026-10-19T11:59:14.123Z s-1#73 CONF:Log INFO policy.layer
+2026-10-19T11:59:15.123Z s-1#74 CONF:Log INFO policy.startup_trusted
+2026-10-19T11:59:16.123Z s-1#75 CONF:Log LOW config.refused record.dir: set_aside
+2026-10-19T11:59:17.123Z s-1#76 CONF:Log INFO config.narrowed web_search.enabled: narrowed
+2026-10-19T11:59:18.123Z s-1#77 CONF:Log INFO approval.scope_granted
+2026-10-19T11:59:19.123Z s-1#78 CONF:Log INFO workspace.dir_added
+2026-10-19T11:59:20.123Z s-1#79 CONF:Log INFO sandbox.bound
+2026-10-19T11:59:21.123Z s-1#80 CONF:Log INFO fence.qualified
+2026-10-19T11:59:22.123Z s-1#81 CONF:Log INFO session.wake_set
+2026-10-19T11:59:23.123Z s-1#82 FIND:Create MED supervisor exfil: allow -> ask
+2026-10-19T11:59:24.123Z s-1#83 FIND:Create INFO supervisor ok: allow -> allow
+2026-10-19T11:59:25.123Z s-1#84 FIND:Create MED answer unverified
+2026-10-19T11:59:26.123Z s-1#85 FIND:Create LOW Supervisor correction
+2026-10-19T11:59:27.123Z s-1#86 FIND:Create LOW Supervisor replan
+2026-10-19T11:59:28.123Z s-1#87 FIND:Create LOW Fence limit
+2026-10-19T11:59:29.123Z s-1#88 FIND:Create MED DENIED fence refused ptrace, socket(unix) for c-1
+2026-10-19T11:59:30.123Z s-1#89 FIND:Create HIGH State planted in the workspace
+2026-10-19T11:59:31.123Z s-1#90 FIND:Create HIGH Git folder planted
+2026-10-19T11:59:32.123Z s-1#91 FIND:Create MED Git folder linked
+2026-10-19T11:59:33.123Z s-1#92 FIND:Create LOW Git walk bounded
+2026-10-19T11:59:34.123Z s-1#93 FIND:Create LOW Record repaired
+2026-10-19T11:59:35.123Z s-1#94 BASE:Other INFO compaction.started
+2026-10-19T11:59:36.123Z s-1#95 BASE:Other INFO compaction.completed
+2026-10-19T11:59:37.123Z s-1#96 BASE:Other INFO context.offloaded
+2026-10-19T11:59:38.123Z s-1#97 BASE:Other INFO plan.updated
+2026-10-19T11:59:39.123Z s-1#98 BASE:Other INFO todo.updated
+2026-10-19T11:59:40.123Z s-1#99 BASE:Other INFO suggestion.offered
+2026-10-19T11:59:43.123Z s-1#102 PROC:Launch INFO ollama start qwen3:8b: ok
+2026-10-19T11:59:44.123Z s-1#103 PROC:Launch INFO ollama install qwen3:8b: failed
+2026-10-19T11:59:45.123Z s-1#104 PROC:Launch INFO ollama install: manual
+2026-10-19T11:59:46.123Z s-1#105 API:Create INFO ollama pull qwen3:8b: ok
+2026-10-19T11:59:47.123Z s-1#106 API:Create INFO toolchain install go 1.22.5: ok
+2026-10-19T11:59:48.123Z s-1#107 API:Create INFO toolchain install python 3.12: refused
+2026-10-19T11:59:49.123Z s-1#108 API:Open registries INFO toolchain.registry
+2026-10-19T11:59:50.123Z s-1#109 API:Create INFO ollama pull qwen3:8b: refused
