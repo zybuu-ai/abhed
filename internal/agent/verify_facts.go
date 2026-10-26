@@ -239,7 +239,7 @@ func extractFacts(claim string) facts {
 		rest := observeChainRe.ReplaceAllString(observeRe.ReplaceAllString(normText(backtickRe.ReplaceAllString(text, " ")), " "), " ")
 		f.observeOnly = len(eventWords(rest)) == 0 && !saysDeed(rest) && !bareDeedRe.MatchString(rest)
 	}
-	f.proof = (f.deed || f.event != "") && !f.observe && proofRe.MatchString(nlow)
+	f.proof = (f.deed || f.event != "") && !f.observe && proofRe.MatchString(normText(backtickRe.ReplaceAllString(text, " ")))
 	switch {
 	case removeRe.MatchString(normText(backtickRe.ReplaceAllString(text, " "))):
 		f.dir = "remove"
@@ -1028,10 +1028,30 @@ var leadRe = regexp.MustCompile(`^(?:in summary|in short|to summarize|to sum up|
 // or what the agent will do next. It says nothing of what was done.
 var intentRe = regexp.MustCompile(`^(?:please |you (?:can|could|may|might|should|will|need|want|would)|you'd|i(?:'ll| will| can| could| would| might| suggest| recommend|'d (?:suggest|recommend|like))|we(?:'ll| will| can| could| should| might)|next[,:]|next step|as a next step|then,? you|consider|try |if you|feel free|make sure|ensure|let me know|it would be|it may be worth|optionally|run |rerun |re-run |use |check |verify |test |look at |see |open |review )`)
 
+// labelLeadRe is a short label and a colon: "Test results:", "Check:".
+var labelLeadRe = regexp.MustCompile("^[\\w`./'\\- ]{1,40}?:\\s+")
+
+// workLeadRe is a lead that reports work, which stays in the claim.
+var workLeadRe = regexp.MustCompile(`^(?:done|all done|update|updates|changes|changes made|summary of changes|fixed|fix|the fix|implemented|here(?:'s| is) what (?:i|we) (?:changed|did)|what (?:i|we) (?:changed|did))\b`)
+
+// stepLeadRe is a step's place in a told order: "Next, I …".
+var stepLeadRe = regexp.MustCompile(`^(?:next|then|first|second|third|finally|after that|afterwards|lastly),?\s+`)
+
+// reportLeadRe says a clause is reported: "I can confirm", "you can see".
+var reportLeadRe = regexp.MustCompile(`^(?:(?:i|we) (?:can|could) (?:confirm|see|verify|report|say|tell)|(?:i'll|i will|we'll|we will) (?:note|mention|add|point out)|you can see|you'll see|you will see|you'll notice|you will notice|as you can see)(?: that)?,?\s+|^if you look at [^,]+,\s+`)
+
+// cantRe is a report of what could not be found or done.
+var cantRe = regexp.MustCompile(`^(?:i|we) (?:can't|cannot|can not|couldn't|could not|wasn't able to|was not able to)\b`)
+
+// lookVerbRe and finiteRe tell "Run `go test`" (advice) from "Test
+// coverage is 92%" (a report): the latter has a verb of its own.
+var lookVerbRe = regexp.MustCompile(`^(?:run|rerun|re-run|test|check|see|use|verify|look at|open|review) `)
+var finiteRe = regexp.MustCompile(`\b(is|are|was|were|has|have|had|passes|pass|passed|fails|failed|shows|showed|reports|reported|covers|ran|returned|runs|finished|succeeded)\b`)
+
 // imperativeRe is a bare change verb leading a sentence: "Set `DEBUG` to
 // `true` in `config/app.env`." In a session that changed something it is a
 // deed; in one that changed nothing it is advice.
-var imperativeRe = regexp.MustCompile(`^\W*(?:set|add|remove|enable|disable|edit|replace|install|restart|create|apply|configure|deploy|commit|push|update|change|delete|rename|move|fix|bump|revert|switch|turn)\s`)
+var imperativeRe = regexp.MustCompile(`^\W*(?:set|add|remove|enable|disable|edit|replace|install|restart|create|apply|configure|deploy|commit|push|update|change|delete|rename|move|fix|bump|revert|switch|turn|open|merge|publish|release|tag|document)\s`)
 
 // bareDoneRe is a sign-off that says only that the turn is over ("Done.",
 // "All done!"): it names nothing, and a contract, when there is one, is
@@ -1051,13 +1071,37 @@ func claimOf(s string) (string, bool) {
 		}
 		t = strings.TrimSpace(t[m[1]:])
 	}
+	// A short label before a colon ("Test results:", "See `sum.go`:") is a
+	// lead too, unless it reports work ("Done:"), which stays.
+	if m := labelLeadRe.FindStringIndex(strings.ToLower(t)); m != nil && !workLeadRe.MatchString(strings.ToLower(t)) &&
+		len(strings.Fields(t[:m[1]])) <= 3 && len(strings.Fields(t[m[1]:])) >= 3 {
+		t = strings.TrimSpace(t[m[1]:])
+	}
+	// "Next, I set …" tells a step done: the step is the claim.
+	if m := stepLeadRe.FindStringIndex(strings.ToLower(t)); m != nil {
+		rest := strings.ToLower(t[m[1]:])
+		if strings.HasPrefix(rest, "i ") || strings.HasPrefix(rest, "we ") {
+			t = strings.TrimSpace(t[m[1]:])
+		}
+	}
+	// "I can confirm X", "you can see X", "if you look at Y, X": X is said.
+	if m := reportLeadRe.FindStringIndex(strings.ToLower(t)); m != nil && m[1] < len(t) {
+		t = strings.TrimSpace(t[m[1]:])
+	}
 	low := strings.ToLower(t)
 	if strings.HasSuffix(low, "?") || strings.HasSuffix(low, ":") || low == "" || bareDoneRe.MatchString(low) {
 		return "", false
 	}
+	// "I couldn't find …" reports what was looked for.
+	if cantRe.MatchString(low) {
+		return t, true
+	}
 	// Advice and intentions are left out unless they also report a past
-	// event ("You can see I added ..."): they say what may be done.
-	if intentRe.MatchString(low) && !imperativeRe.MatchString(low) && !saysPast(t) {
+	// event: they say what may be done. "Run", "test" or "check" opening a
+	// sentence is advice only when no verb of its own follows ("Test
+	// coverage is now 92%" is a report).
+	if intentRe.MatchString(low) && !imperativeRe.MatchString(low) && !saysPast(t) &&
+		(!lookVerbRe.MatchString(low) || !finiteRe.MatchString(low)) {
 		return "", false
 	}
 	if len(strings.Fields(low)) < 3 || courtesyRe.MatchString(low) || adviceRe.MatchString(low) && !imperativeRe.MatchString(low) {

@@ -316,7 +316,7 @@ func mountArgs(ctx context.Context, p Policy, backend string, mem *gitMemory) ([
 	// The workspace is the only writable host path. Mounted at the same path
 	// inside so the model's absolute paths stay valid across the boundary.
 	args = append(args, "-v", p.Workspace+":"+p.Workspace)
-	for _, ro := range p.ReadOnlyPaths {
+	for _, ro := range append(p.ReadOnlyPaths[:len(p.ReadOnlyPaths):len(p.ReadOnlyPaths)], readOnlyPathsOf(ctx)...) {
 		args = append(args, "-v", ro+":"+ro+":ro")
 	}
 	// Mounted over the workspace's own, so only the paths that exist can be.

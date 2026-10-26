@@ -225,7 +225,7 @@ func (ix *recordIndex) before(path string, pos float64, writes []changeText) (st
 	text, at, ok := "", -1.0, false
 	for _, o := range ix.obs {
 		if o.tool == "read" && !o.isError && o.pos < pos && o.pos > at && samePathAs(o.path, path) {
-			text, at, ok = o.content, o.pos, true
+			text, at, ok = stripGutter(o.content), o.pos, true
 		}
 	}
 	for _, w := range writes {
@@ -334,12 +334,14 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 			continue
 		}
 		oldE, newE := prepareEvidence(codeLines(ct.old, ct.path), false), prepareEvidence(codeLines(ct.new, ct.path), false)
-		var afterE *evidenceText
+		// The place a change was made: the changed text and the lines that
+		// enclose it in the file as it stands after the change.
+		var placeE *evidenceText
 		after := func(nt string) bool {
-			if afterE == nil {
-				afterE = prepareEvidence(ix.fileAfter(ct), false)
+			if placeE == nil {
+				placeE = prepareEvidence(codeLines(enclosing(ix.fileAfter(ct), ct.new, ct.old), ct.path), false)
 			}
-			return afterE.hasLiteral(nt)
+			return placeE.hasLiteral(nt)
 		}
 		isFile := func(nt string) bool {
 			return ct.path != "" && (nt == normText(filepath.Base(ct.path)) || nt == normText(ct.path) || strings.HasSuffix(normText(ct.path), "/"+nt))
@@ -371,7 +373,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 			switch {
 			case t == hit || isFile(nt) || inNew:
 			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
-			case (added || f.inNamed[nt]) && after(nt):
+			case (added || f.inNamed[nt]) && !inOld && after(nt):
 			default:
 				ok = false
 			}
@@ -412,20 +414,89 @@ func onOffShown(want string, newE *evidenceText) bool {
 	return false
 }
 
-// codeLines drops the comment lines of a change's text: a comment that
-// names code adds none.
+// codeLines drops the comment lines of a change's text, by the file's
+// language: a comment that names code adds none.
 func codeLines(text, path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	base := strings.ToLower(filepath.Base(path))
+	hash := map[string]bool{".sh": true, ".bash": true, ".zsh": true, ".py": true, ".rb": true, ".yaml": true, ".yml": true,
+		".toml": true, ".env": true, ".conf": true, ".cfg": true, ".pl": true, ".r": true, ".tf": true, ".ps1": true}[ext] ||
+		base == "makefile" || base == "dockerfile" || strings.HasPrefix(base, ".env")
+	slashes := map[string]bool{".go": true, ".js": true, ".mjs": true, ".ts": true, ".tsx": true, ".jsx": true, ".java": true,
+		".c": true, ".h": true, ".cc": true, ".cpp": true, ".hpp": true, ".rs": true, ".swift": true, ".kt": true, ".cs": true,
+		".php": true, ".scala": true, ".css": true, ".scss": true, ".dart": true, ".proto": true}[ext] || ext == ""
+	dashes := map[string]bool{".sql": true, ".lua": true, ".hs": true}[ext]
 	var keep []string
+	block := false
 	for _, l := range strings.Split(text, "\n") {
 		t := strings.TrimSpace(l)
-		if strings.HasPrefix(t, "//") || strings.HasPrefix(t, "/*") || strings.HasPrefix(t, "*") ||
-			strings.HasPrefix(t, "--") && !strings.HasPrefix(t, "---") ||
-			strings.HasPrefix(t, "#") && !strings.HasSuffix(path, ".md") && !strings.HasPrefix(t, "#include") && !strings.HasPrefix(t, "#!") {
+		switch {
+		case block:
+			if strings.Contains(t, "*/") {
+				block = false
+			}
+			continue
+		case slashes && strings.HasPrefix(t, "/*"):
+			block = !strings.Contains(t, "*/")
+			continue
+		case slashes && strings.HasPrefix(t, "//"), hash && strings.HasPrefix(t, "#") && !strings.HasPrefix(t, "#!"), dashes && strings.HasPrefix(t, "--"):
 			continue
 		}
 		keep = append(keep, l)
 	}
 	return strings.Join(keep, "\n")
+}
+
+// enclosing is a change's text with the lines that enclose it in the file
+// after the change: from where its text sits, each earlier line indented
+// less than the last one taken (the loop, then the function, around a
+// line). With the file or the change's place unknown, the change's text.
+func enclosing(file, new, old string) string {
+	hunk := new + "\n" + old
+	lines := strings.Split(file, "\n")
+	at := -1
+	for _, l := range strings.Split(new, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			for i, fl := range lines {
+				if strings.TrimSpace(fl) == t {
+					at = i
+					break
+				}
+			}
+			break
+		}
+	}
+	if at < 0 {
+		return hunk
+	}
+	out := []string{hunk}
+	depth := indentOf(lines[at])
+	for i := at - 1; i >= 0 && depth > 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		if d := indentOf(lines[i]); d < depth {
+			out = append(out, lines[i])
+			depth = d
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// indentOf is a line's leading white space, a tab as four spaces.
+func indentOf(l string) int {
+	n := 0
+	for _, r := range l {
+		switch r {
+		case ' ':
+			n++
+		case '\t':
+			n += 4
+		default:
+			return n
+		}
+	}
+	return n
 }
 
 // fileAfter is a changed file as it stood after the change: a write's text,
@@ -448,11 +519,26 @@ func (ix *recordIndex) fileAfter(ct changeText) string {
 	}
 	switch {
 	case cur != nil:
-		return cur.content
+		return stripGutter(cur.content)
 	case earlier != nil && ct.old != "":
-		return strings.Replace(earlier.content, ct.old, ct.new, 1)
+		return strings.Replace(stripGutter(earlier.content), ct.old, ct.new, 1)
 	}
 	return ""
+}
+
+// gutterRe is the read tool's line number before each line.
+var gutterRe = regexp.MustCompile(`(?m)^ *\d+\t`)
+
+// stripGutter takes the read tool's line numbers off a read's text, when
+// every line has one.
+func stripGutter(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for _, l := range lines {
+		if l != "" && !gutterRe.MatchString(l) {
+			return s
+		}
+	}
+	return gutterRe.ReplaceAllString(s, "")
 }
 
 // observed checks what the agent says it looked at against its reads,
@@ -518,7 +604,9 @@ func (ix *recordIndex) observed(f facts) finding {
 			case !search && o.evidence().hasLiteral(nt):
 				// "I read `calc`" names no file: a read is of a file. Code
 				// is found in the file it names, or by a search.
-				inPath := f.found && isSearch(o)
+				// A code name the read file declares is the file's: "I read
+				// the `Sum` function".
+				inPath := f.found && isSearch(o) || len(f.paths) == 0 && o.tool == "read" && declares(o.content, t)
 				for _, p := range f.paths {
 					inPath = inPath || pathNamed(o, p) || isSearch(o)
 				}
@@ -533,6 +621,12 @@ func (ix *recordIndex) observed(f facts) finding {
 		}
 	}
 	return finding{out: matched, call: true, what: "the reads and searches it names"}
+}
+
+// declares reports a declaration of name in a file's text.
+func declares(content, name string) bool {
+	re, err := regexp.Compile(`(?m)\b(?:func|def|class|function|type|struct|fn|interface|enum|trait|const|var|let)\s+(?:\([^)]*\)\s*)?` + regexp.QuoteMeta(name) + `\b`)
+	return err == nil && re.MatchString(content)
 }
 
 // pathIs reports a call's path a that is the path p a claim names: the same

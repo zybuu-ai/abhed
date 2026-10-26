@@ -52,3 +52,17 @@ func Release(cmd *exec.Cmd) {
 		r.(func())()
 	}
 }
+
+type readOnlyKey struct{}
+
+// WithReadOnlyPaths adds host paths one command sees read-only at the same
+// path, on the container and Linux process tiers: the engine's own files a
+// command needs, such as the debug bridge. Only the engine sets it.
+func WithReadOnlyPaths(ctx context.Context, paths ...string) context.Context {
+	return context.WithValue(ctx, readOnlyKey{}, append(readOnlyPathsOf(ctx), paths...))
+}
+
+func readOnlyPathsOf(ctx context.Context) []string {
+	p, _ := ctx.Value(readOnlyKey{}).([]string)
+	return append([]string(nil), p...)
+}

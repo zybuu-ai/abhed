@@ -767,6 +767,9 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		for _, p := range append(s.policy.ReadOnlyPaths[:len(s.policy.ReadOnlyPaths):len(s.policy.ReadOnlyPaths)], protected...) {
 			args = append(args, "--ro-bind-try", p, p)
 		}
+		for _, p := range readOnlyPathsOf(ctx) {
+			args = append(args, "--ro-bind", p, p)
+		}
 		// State kept outside .abhed is hidden where a bind above would show
 		// it: a folder by an empty one, a file by /dev/null.
 		for _, p := range s.statePaths() {

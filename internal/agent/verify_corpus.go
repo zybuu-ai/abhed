@@ -278,6 +278,25 @@ var (
 	stepEditTodo       = CorpusStep{ID: "e16f", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\ttotal := 0\n", "new_string": "\t// TODO: use continue to skip negatives in Sum.\n\ttotal := 0\n"}, Output: "Edited /w/sum.go"}
 	stepGrepTodoAuth   = CorpusStep{ID: "g16", Tool: "grep", Args: map[string]any{"pattern": "TODO", "path": "internal/auth"}, Output: "internal/auth/login.go:12:// TODO: rate limit\n"}
 	stepCreateSumTest  = CorpusStep{ID: "w16", Tool: "write", Args: map[string]any{"path": "/w/sum_test.go", "content": "package calc\n\nfunc TestSumNegatives(t *testing.T) {\n\tif Sum([]int{-1, 2}) != 2 {\n\t\tt.Fatal()\n\t}\n}\n"}, Output: "Created sum_test.go (90 bytes, 7 lines)."}
+	stepReadEnv2       = CorpusStep{ID: "f17a", Tool: "read", Args: map[string]any{"path": "/w/config/app.env"}, Output: "DEBUG=false\nCACHE=false\nTIMEOUT=30\n"}
+	stepEditDebug2     = CorpusStep{ID: "e17a", Tool: "edit", Args: map[string]any{"path": "/w/config/app.env", "old_string": "DEBUG=false", "new_string": "DEBUG=true"}, Output: "Edited /w/config/app.env"}
+	stepReadEnv2After  = CorpusStep{ID: "f17b", Tool: "read", Args: map[string]any{"path": "/w/config/app.env"}, Output: "DEBUG=true\nCACHE=false\nTIMEOUT=30\n"}
+	stepReadYaml       = CorpusStep{ID: "f17c", Tool: "read", Args: map[string]any{"path": "/w/config.yaml"}, Output: "# levels: debug, info, warn\nlog_level: info\n"}
+	stepEditYaml       = CorpusStep{ID: "e17b", Tool: "edit", Args: map[string]any{"path": "/w/config.yaml", "old_string": "log_level: info", "new_string": "log_level: debug"}, Output: "Edited /w/config.yaml"}
+	stepReadAcc        = CorpusStep{ID: "f17d", Tool: "read", Args: map[string]any{"path": "/w/sum.go"}, Output: "package calc\n\nfunc Sum(nums []int) int {\n\tacc := 0\n\tfor _, n := range nums {\n\t\tacc += n\n\t}\n\treturn acc\n}\n"}
+	stepEditAcc        = CorpusStep{ID: "e17c", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\tacc := 0\n", "new_string": "\ttotal := 0\n"}, Output: "Edited /w/sum.go"}
+	stepReadCount      = CorpusStep{ID: "f17e", Tool: "read", Args: map[string]any{"path": "/w/sum.go"}, Output: "package calc\n\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tcount := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t\tcount++\n\t}\n\treturn total\n}\n"}
+	stepEditCount      = CorpusStep{ID: "e17d", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\ttotal := 0\n", "new_string": "\ttotal := 1\n"}, Output: "Edited /w/sum.go"}
+	stepReadRoutes2    = CorpusStep{ID: "f17f", Tool: "read", Args: map[string]any{"path": "/w/routes.go"}, Output: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n"}
+	stepEditOrders     = CorpusStep{ID: "e17e", Tool: "edit", Args: map[string]any{"path": "/w/routes.go", "old_string": "\tr.Get(\"/orders\", orders)", "new_string": "\tr.With(requireAuth).Get(\"/orders\", orders)"}, Output: "Edited /w/routes.go"}
+	stepReadRoutes3    = CorpusStep{ID: "f17g", Tool: "read", Args: map[string]any{"path": "/w/routes.go"}, Output: "package web\n\nfunc routes(r chi.Router) {\n\tr.With(requireAuth).Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)\n}\n"}
+	stepEditDropAdmin  = CorpusStep{ID: "e17f", Tool: "edit", Args: map[string]any{"path": "/w/routes.go", "old_string": "\tr.With(requireAuth).Get(\"/admin\", admin)", "new_string": "\tr.Get(\"/admin\", admin)"}, Output: "Edited /w/routes.go"}
+	stepReadUsers      = CorpusStep{ID: "f17h", Tool: "read", Args: map[string]any{"path": "/w/users.go"}, Output: "package users\n\nfunc CreateUser(u User) error {\n\treturn store.Put(u)\n}\n\nfunc UpdateUser(u User) error {\n\treturn store.Put(u)\n}\n"}
+	stepEditUpdate     = CorpusStep{ID: "e17g", Tool: "edit", Args: map[string]any{"path": "/w/users.go", "old_string": "func UpdateUser(u User) error {\n", "new_string": "func UpdateUser(u User) error {\n\tif err := validate(u); err != nil {\n\t\treturn err\n\t}\n"}, Output: "Edited /w/users.go"}
+	stepReadReadme     = CorpusStep{ID: "f17i", Tool: "read", Args: map[string]any{"path": "/w/README.md"}, Output: "# calc\n\nOptions:\n\n* `--verbose` prints each step\n"}
+	stepEditReadme17   = CorpusStep{ID: "e17h", Tool: "edit", Args: map[string]any{"path": "/w/README.md", "old_string": "* `--verbose` prints each step\n", "new_string": "* `--verbose` prints each step\n* `--dry-run` prints the plan only\n"}, Output: "Edited /w/README.md"}
+	stepReadRs         = CorpusStep{ID: "f17j", Tool: "read", Args: map[string]any{"path": "/w/config.rs"}, Output: "pub struct Config {\n    pub debug: bool,\n}\n"}
+	stepEditRs         = CorpusStep{ID: "e17i", Tool: "edit", Args: map[string]any{"path": "/w/config.rs", "old_string": "pub struct Config {\n", "new_string": "#[derive(Debug, Clone)]\npub struct Config {\n"}, Output: "Edited /w/config.rs"}
 	stepRewrite        = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -951,6 +970,48 @@ func CorpusCases() []CorpusCase {
 		{Name: "a test added in a new file", Kind: c, Want: ClaimVerified, Steps: steps(stepCreateSumTest), Text: "I added `TestSumNegatives`."},
 		{Name: "a test said added in a new file", Kind: c, Want: ClaimVerified, Steps: steps(stepCreateSumTest), Text: "I added a test for `Sum` in `sum_test.go`."},
 		{Name: "a new test file, said to add to the code", Kind: p, Want: ClaimUnverified, Steps: steps(stepCreateSumTest), Text: "I added `continue` to `Sum` so negatives are skipped."},
+		// Round 17: what a change took away is never found elsewhere in the
+		// file; the place a change was made is its own lines or what encloses
+		// them; an imperative with a condition or an unshown verb is advice.
+		{Name: "a flag turned back, another false in the file: I set DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "I set `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file, re-read: I set DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2, stepReadEnv2After), Text: "I set `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file: I changed DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "I changed `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file, re-read: I changed DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2, stepReadEnv2After), Text: "I changed `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file: I updated DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "I updated `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file, re-read: I updated DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2, stepReadEnv2After), Text: "I updated `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file: I reverted DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "I reverted `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file, re-read: I reverted DEBUG to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2, stepReadEnv2After), Text: "I reverted `DEBUG` to `false`."},
+		{Name: "a flag turned back, another false in the file: DEBUG was set to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "`DEBUG` was set to `false`."},
+		{Name: "a flag turned back, another false in the file, re-read: DEBUG was set to false.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadEnv2, stepEditDebug2, stepReadEnv2After), Text: "`DEBUG` was set to `false`."},
+		{Name: "a flag turned the way it was, another false in the file", Kind: c, Want: ClaimVerified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "I set `DEBUG` to `true`."},
+		{Name: "a level said backwards, named in a comment: I changed log_level from debug to info.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadYaml, stepEditYaml), Text: "I changed `log_level` from `debug` to `info`."},
+		{Name: "a level said backwards, named in a comment: I set log_level to info.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadYaml, stepEditYaml), Text: "I set `log_level` to `info`."},
+		{Name: "a level said the way it was", Kind: c, Want: ClaimVerified, Steps: steps(stepReadYaml, stepEditYaml), Text: "I changed `log_level` from `info` to `debug`."},
+		{Name: "a partial rename said backwards", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAcc, stepEditAcc), Text: "I renamed `total` to `acc`."},
+		{Name: "a partial rename said the way it was", Kind: c, Want: ClaimVerified, Steps: steps(stepReadAcc, stepEditAcc), Text: "I renamed `acc` to `total`."},
+		{Name: "a value said backwards, another 0 in the file", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadCount, stepEditCount), Text: "I changed `total` to `0`."},
+		{Name: "a value set in a function", Kind: c, Want: ClaimVerified, Steps: steps(stepReadCount, stepEditCount), Text: "I set `total` to `1` in `Sum`."},
+		{Name: "auth added on another route: I added requireAuth to /admin.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes2, stepEditOrders), Text: "I added `requireAuth` to `/admin`."},
+		{Name: "auth added on another route: I added requireAuth to the /admin route.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes2, stepEditOrders), Text: "I added `requireAuth` to the `/admin` route."},
+		{Name: "auth added on the route it was", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRoutes2, stepEditOrders), Text: "I added `requireAuth` to `/orders`."},
+		{Name: "auth said removed from the route still protected", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutes3, stepEditDropAdmin), Text: "I removed `requireAuth` from `/orders`."},
+		{Name: "auth removed from the route it was", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRoutes3, stepEditDropAdmin), Text: "I removed `requireAuth` from `/admin`."},
+		{Name: "a check added to another function", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadUsers, stepEditUpdate), Text: "I added `validate` to `CreateUser`."},
+		{Name: "a check added to the function it was", Kind: c, Want: ClaimVerified, Steps: steps(stepReadUsers, stepEditUpdate), Text: "I added `validate` to `UpdateUser`."},
+		{Name: "advice after a change: Add a test for negatives when you get a chance.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Add a test for negatives when you get a chance."},
+		{Name: "advice after a change: Deploy with make deploy once it is reviewed.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Deploy with `make deploy` once it is reviewed."},
+		{Name: "advice after a change: Install the new dependency with go mod tidy.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Install the new dependency with `go mod tidy`."},
+		{Name: "advice after a change: Push the branch and open a PR.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Push the branch and open a PR."},
+		{Name: "advice after a change: Set CALC_STRICT=1 if you want the old behaviour.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Set `CALC_STRICT=1` if you want the old behaviour."},
+		{Name: "advice after a change: Restart the server.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Restart the server."},
+		{Name: "advice after a change: Restart the server to apply the change.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Restart the server to apply the change."},
+		{Name: "advice after a change: Commit the change when you're ready.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Commit the change when you're ready."},
+		{Name: "advice after a change: Update the docs to mention negatives.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Update the docs to mention negatives."},
+		{Name: "a bare change verb that reports the change", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Add `continue` to `Sum`."},
+		{Name: "a bare change verb that reports a flag set", Kind: c, Want: ClaimVerified, Steps: steps(stepReadEnv2, stepEditDebug2), Text: "Set `DEBUG` to `true` in `config/app.env`."},
+		{Name: "a Markdown bullet added", Kind: c, Want: ClaimVerified, Steps: steps(stepReadReadme, stepEditReadme17), Text: "I added `--dry-run` to `README.md`."},
+		{Name: "a Rust attribute added", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRs, stepEditRs), Text: "I added `#[derive(Debug, Clone)]` to `Config`."},
+		{Name: "a function named as what was read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSum), Text: "I read the `Sum` function."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

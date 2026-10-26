@@ -171,11 +171,11 @@ neither `relay_binary` nor a matching helper, `Create` fails with
 
 The helper does three things and nothing else: the relay in front of a
 command (`__abhed_egress_relay`), the relay over an exec
-(`__abhed_egress_relay_stdio`), and a debug bridge
-(`__abhed_dap_bridge --connect 127.0.0.1:PORT [--wait 10s]`) that joins its
-own input and output to a debug adapter on the container's loopback, so a
-debugger outside reaches it through an `exec` with no published port; it
-refuses any address off the loopback. `scripts/build-helpers.sh` builds the
+(`__abhed_egress_relay_stdio`), and the debugger's bridge
+(`__abhed_dap_bridge unix:PATH`), which joins its own input and output to a
+debug adapter's socket inside the container, so the engine reaches it
+through an `exec` with no published port
+([Debugging](31-debugging.md)). `scripts/build-helpers.sh` builds the
 helpers reproducibly and prints the `-ldflags` that pin them into an engine
 build.
 

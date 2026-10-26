@@ -1,12 +1,11 @@
-// Package dapbridge is the helper's debug bridge: inside a sandbox, it joins
-// its own stdin and stdout to a debug adapter listening on the sandbox's
-// loopback, so a debugger outside talks DAP over the engine's exec stream
-// and the sandbox needs no published port.
+// Package dapbridge carries a debug adapter's unix socket over stdio, inside
+// a session's sandbox: the adapter (dlv dap) listens on a socket there, and
+// the engine, which may be outside a VM the container runs in, reaches it
+// only through the bridge's stdin and stdout. It is a mode of the engine's
+// own binary, run from its bundled Linux build, and does nothing else.
 package dapbridge
 
 import (
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -15,70 +14,55 @@ import (
 	"time"
 )
 
-// Arg is the helper's first argument for the bridge:
-//
-//	abhed-helper __abhed_dap_bridge --connect 127.0.0.1:PORT [--wait 10s]
+// Arg makes an Abhed binary, its bundled Linux build or the configured
+// relay_binary, the bridge: `abhed Arg unix:PATH`.
 const Arg = "__abhed_dap_bridge"
 
-// Run bridges stdin and stdout to the adapter at --connect, waiting up to
-// --wait for it to listen. It returns the process's exit code.
-func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
-	fs := flag.NewFlagSet(Arg, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	addr := fs.String("connect", "", "the adapter's loopback address, host:port")
-	wait := fs.Duration("wait", 10*time.Second, "how long to wait for the adapter to listen")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if err := checkLoopback(*addr); err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", Arg, err)
-		return 2
+// Run dials addr (unix:PATH), waiting up to wait for the adapter to make the
+// socket, and copies stdin to it and it to stdout until either side ends.
+func Run(addr string, in io.Reader, out io.Writer, wait time.Duration) error {
+	path, ok := strings.CutPrefix(addr, "unix:")
+	if !ok || path == "" {
+		return fmt.Errorf("dapbridge: %q is not unix:PATH", addr)
 	}
 	var conn net.Conn
 	var err error
-	for deadline := time.Now().Add(*wait); ; time.Sleep(100 * time.Millisecond) {
-		if conn, err = net.DialTimeout("tcp", *addr, time.Second); err == nil || time.Now().After(deadline) {
+	for deadline := time.Now().Add(wait); ; time.Sleep(20 * time.Millisecond) {
+		if conn, err = net.Dial("unix", path); err == nil {
 			break
 		}
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: the adapter at %s did not answer: %v\n", Arg, *addr, err)
-		return 1
+		if time.Now().After(deadline) {
+			return fmt.Errorf("dapbridge: the adapter's socket %s: %w", path, err)
+		}
 	}
 	defer func() { _ = conn.Close() }()
-	// The end of stdin half-closes the connection so the adapter's last
-	// answer still arrives; the adapter closing ends the bridge.
+	// Input ending closes the socket's writing half, and the adapter's answers
+	// still come back; the bridge ends when the adapter's side does.
 	go func() {
-		_, _ = io.Copy(conn, stdin)
-		if tc, ok := conn.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
+		_, _ = io.Copy(conn, in)
+		if uc, ok := conn.(*net.UnixConn); ok {
+			_ = uc.CloseWrite()
 		}
 	}()
-	if _, err := io.Copy(stdout, conn); err != nil && !errors.Is(err, net.ErrClosed) {
-		fmt.Fprintf(stderr, "%s: %v\n", Arg, err)
+	_, err = io.Copy(out, conn)
+	return err
+}
+
+// Main runs the bridge with os.Args[1] as its address.
+func Main(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: abhed "+Arg+" unix:PATH")
+		return 2
+	}
+	if err := Run(args[0], os.Stdin, os.Stdout, 30*time.Second); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	return 0
 }
 
-// checkLoopback refuses an address off the sandbox's own loopback: the
-// bridge reaches only an adapter inside it.
-func checkLoopback(addr string) error {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil || port == "" || strings.ContainsAny(port, " /") {
-		return fmt.Errorf("--connect is host:port, not %q", addr)
-	}
-	ip := net.ParseIP(host)
-	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return fmt.Errorf("--connect reaches only the loopback, not %q", host)
-	}
-	return nil
-}
-
-// init serves the bridge when a binary that links this package, the engine
-// on a Linux host or the helper, is run with Arg.
 func init() {
-	if len(os.Args) > 1 && os.Args[1] == Arg {
-		os.Exit(Run(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	if len(os.Args) == 3 && os.Args[1] == Arg {
+		os.Exit(Main(os.Args[2:]))
 	}
 }

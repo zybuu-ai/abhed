@@ -1049,6 +1049,46 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 
 ---
 
+### 7.8 Debugging (Run and Debug)
+
+```ts
+_abhed/debug/launch { sessionId, language: "go" | "python",
+                      program?: string, test?: string,   // exactly one; inside the workspace
+                      args?: string[], cwd?: string,      // cwd inside the workspace
+                      env?: { [name]: string } } → { debugId }
+_abhed/debug/send   { debugId, message: DapRequest } → {}
+_abhed/debug/stop   { debugId } → {}
+// notifications
+_abhed/debug/message { debugId, message: DapMessage }    // every adapter message Studio is meant to see
+_abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended", message?, problem? }
+```
+
+- Listed under the `debug` feature. The adapter runs in the session's sandbox
+  (container or `vm` tier, or the Linux process tier); elsewhere `launch`
+  fails with `-32000` and `data.problem` `{kind: "tier-unsupported", message,
+  steps, retry}`. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
+  bad params are `-32602` with `kind: "invalid-request"`.
+- The program or test, its args, cwd and env make the debuggee's command line
+  (`dlv debug|test …`, `python3 …`, `python3 -m pytest …`), which is put to
+  policy and the supervisor as the person's `bash` call and recorded through
+  the manual path (`action.requested` by user, its decision, and an
+  `observation` when the session ends); a refusal is `-32001`. Then
+  `debug.launched` and, at the end, `debug.stopped` are recorded.
+- Studio sends DAP requests with `send`: `initialize` first, then breakpoints,
+  `configurationDone`, stepping and the rest. The engine sends the adapter's
+  `launch` itself once `initialize` is answered and keeps its response:
+  Studio sees `status: launched` or `status: failed` instead. Studio's own
+  `launch`, `attach`, and a `restart` with arguments are answered with a
+  failed DAP response in a `message`; a non-request is `-32602`.
+- The adapter's `runInTerminal` and `startDebugging` never reach Studio: the
+  engine answers them with an error (`status: note`); `console` is always
+  `internalConsole`.
+- A missing debugger ends the session at once with `status: failed` and
+  `problem.kind: "adapter-missing"` and its steps. `stop` sends `disconnect`
+  (`terminateDebuggee`) and ends the adapter after three seconds; closing the
+  session or the connection stops its debug sessions.
+- At most four per connection; each ends after eight hours.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1169,6 +1209,7 @@ table.
 | Subagents | `tool_call` cards + events | spec + meta | done |
 | Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
 | Worktree take-back | `_abhed/worktrees/list`, `_abhed/worktrees/take` | ext | done in the engine (1.2.9; `worktrees` in `features`); Studio's view not yet |
+| Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |

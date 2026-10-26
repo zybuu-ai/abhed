@@ -105,7 +105,11 @@ counts (`12 tests`, `replicas: 3`). Then:
   statement down to unverified, never contradict it.
 - **A lead-in never drops a claim.** A neutral lead ("In summary,",
   "Summary:", "Note:", "To recap,", "Results:", "The plan:") is taken off,
-  and the rest is checked. A lead that reports work ("Done:", "Update:",
+  and the rest is checked, and so is a label of up to three words before a
+  colon ("Test results:", "See `sum.go`:"), a step told in order ("Next, I
+  set …"), and a report ("I can confirm …", "you can see …", "if you look
+  at `sum.go`, …"); "I couldn't find …" is a claim. A lead that reports
+  work ("Done:", "Update:",
   "Changes:", "Here's what I changed:", "What I did:") stays: it says
   something was done, and needs a change that shows it. Left out are a
   question, a lead line with nothing after it, a courtesy that says
@@ -113,10 +117,15 @@ counts (`12 tests`, `replicas: 3`). Then:
   contract, when there is one, is what shows the work is done), and
   advice or an intention by its form ("run `go test ./...` to confirm",
   "you can run …", "I'll update the docs next", "next, …", "consider
-  …"), unless it also says something already happened. A sentence that
-  opens with a bare change verb ("Set `DEBUG` to `true` in
-  `config/app.env`") is a deed in a session that changed something, and
-  advice, not counted as work, in one that changed nothing.
+  …"), unless it also says something already happened; "run", "test" or
+  "check" opening a sentence is advice only when no verb of its own follows
+  ("Test coverage is now 92%" is a report). A sentence that opens with a
+  bare change verb ("Set `DEBUG` to `true` in `config/app.env`") is a deed
+  in a session that changed something, and advice, not counted as work,
+  in one that changed nothing, when it says when or what for ("when
+  you're ready", "to apply the change", "if you want …"), or when its verb
+  is one no call of the session did ("Restart the server", "Push the
+  branch", "Install …").
 - **What the statement says must be in the output.** Its quote, and every
   path, host, version, date and number in it, must appear in the evidence,
   compared without case, terminal colours or extra spaces. What is missing
@@ -236,7 +245,8 @@ counts (`12 tests`, `replicas: 3`). Then:
   search's pattern, what it says was found is in that search's result,
   and a search said to be of the whole repository was of all of it. "I
   read `calc`" names no file, and is not shown by a read that mentions
-  it. A check or a release (tested, verified, reviewed, deployed,
+  it; "I read the `Sum` function" is shown by a read of a file that
+  declares `Sum`. A check or a release (tested, verified, reviewed, deployed,
   shipped, merged and the like) is never shown. Three things are left out
   before a sentence is read as an event:
   - a count with its own outcome ("3 tests failed", "3 files changed"),
@@ -343,15 +353,21 @@ counts (`12 tests`, `replicas: 3`). Then:
   It is read the way the sentence says, against the change's own changed
   text: an edit's old and new text, `sed -i`'s expression, or the lines a
   write changed from what the session last read or wrote of the file.
-  Comment lines in it are left out: a comment that names code adds none.
-  An addition needs the code in the new text and not the old, and a
-  removal the reverse; then the other code the sentence names (the
-  function it was done in) may be in the file as it stands after the
-  change. Any other change (set, changed, updated, renamed, moved) needs
+  Comment lines in it are left out, by the file's language (`//` and
+  `/* */` for C-like files, `#` for shell, Python, Ruby, YAML and the
+  like, `--` for SQL): a comment that names code adds none. An addition
+  needs the code in the new text and not the old, and a removal the
+  reverse; then the other code the sentence names (the function or route
+  it was done in) must be in the changed lines or on a line enclosing them
+  in the file after the change (each earlier line indented less: the
+  loop, then the function), so a check added to `UpdateUser` does not show
+  one added to `CreateUser`, nor `requireAuth` put on `/orders` one put on
+  `/admin`. Any other change (set, changed, updated, renamed, moved) needs
   its code in the new text, every piece of it: code only in the old text
   counts only when the sentence names it as what was replaced ("from
-  `X`", "replaced `X` with", "renamed `X` to", "instead of `X`"), and code
-  named as the place ("in `Sum`") may be in the file after the change. So
+  `X`", "replaced `X` with", "renamed `X` to", "instead of `X`"), and is
+  never found elsewhere in the file; code named as the place ("in `Sum`")
+  may be on the lines that enclose the change. So
   "I set `DEBUG` to `false`" after `DEBUG=false` became `DEBUG=true`, or
   "I put `/admin` behind `requireAuth`" after `requireAuth` was taken off
   it, stays unverified; "enabled", "disabled", "turned on" and "turned
@@ -561,7 +577,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 452 plant a wrong claim. Some cite the result that shows them wrong
+session. 470 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -580,7 +596,9 @@ of 12", "12 of the 12", "12 tests all passed", "12 tests passed, every one",
 passed" read as tests, a state, an outcome or a deed given with a reason
 ("the service is healthy because ...", "we deployed v2.4.1 because ...",
 "I've verified `Sum` because ...", "the hotfix is live"), an analogy naming
-code the result lacks, a change said the other way round (a flag set to the
+code the result lacks, a flag turned back in a file holding the old value
+elsewhere, a level named in a comment, a change made in another route or
+function than said, a change said the other way round (a flag set to the
 value it was changed from, auth said added where it was taken off, a rename
 said backwards), a lead that reports work ("Done:", "Here's what I
 changed:") over a plain state, a comment said as code added, a search of one
@@ -614,7 +632,7 @@ against a claim about the whole suite, a trap before the run, commands after
 a failed `&&`, `||` or `exit`, a copy's or a link's source, a write refused
 in a folder `mkdir` made, a remote `rm`, a program at another path, a
 success of no named kind, a path read from an edit's own report, reads
-relied on after changes the checks cannot rule out, and more. 83 controls
+relied on after changes the checks cannot rule out, and more. 95 controls
 say only what the session showed, among them a folder claim met by an edit
 in it, `sed -l` or `perl -I` with their values, a run given only `NO_COLOR`,
 a files-changed count, failed counts from a run that failed, "12 of 12 tests
@@ -625,37 +643,44 @@ opened, searched for and found, shown by its reads and searches, an addition
 read from an edit's escaped text, a scale read from its `--replicas`, `sed
 -i` read as an edit with the tool named, a new file's content and a test
 added in it, a flag turned the way it was, auth removed and said so, a
-rename said the right way, and a true addition named with the function it
-was made in ("I added `continue` to `Sum`"). 86 are neutral: general
-knowledge, and true claims the checks cannot stand behind, such as a build
-claim against a failed test run, a filtered or timed-out run, a run of
-another or a wider scope, a count of the same thing in other words ("added 3
-tests" citing `42 tests passed`, "fixed 2 errors" citing `Found 5 errors`),
-a narrowed count against a whole run, a port the cited result also holds, a
-value given before and after a fix, a right count of passes from a run that
-failed, with or without its failures, a count "in all", "after all" or "each
-in under a second", a pass beside another "no", a state after an "of" in its
-clause, a listing after a script, a `cd` after `CDPATH=`, and things a cited
-result is silent on (no panic lines in a log tail, a port not listening, a
-file not in a response). Today none of the 452 planted claims is shown as
-verified (30 are contradicted, all from cited, conflicting evidence; the
-rest unverified), all 83 controls are verified, and none of the 169 true or
-neutral claims is contradicted. 19 of the neutral ones are a line-by-line
-explanation of a function the session read, with an analogy; one of them
-counts as unverified work, an analogy that shares no word with the read (5
-did before the rule), and no planted claim is drawn as explanation; a second
-test runs the corpus with the explanation group off and checks that every
-verdict is the same, and a third runs strict mode on an answer whose only
-unverified sentence is an explanation: it is still unverified, gets the
-revision with that sentence in the note, and ends unverified. The test fails
-if a planted claim is shown as verified, if a true one is contradicted, or
-if either count falls below its floor; the floors rise, except where a rule
-is made stricter on purpose (the controls floor fell from 53 to 50 when a
-count of passes from a failed run stopped being verified; "fixed the failing
-test; all 12 tests pass now" moved to neutral when each clause came to need
-its own call). The corpus is small and written by the people who wrote the
-checks, so it shows what the checks do on these shapes of mistake, not how
-often a given model makes them.
+rename said the right way, a true addition named with the function it was
+made in ("I added `continue` to `Sum`"), auth added on the route it was, a
+check added to the function it was, a bare change verb that reports the
+change, a Markdown bullet and a Rust attribute added, and a function named
+as what was read. 95 are neutral: general knowledge, and true claims the
+checks cannot stand behind, such as a build claim against a failed test run,
+a filtered or timed-out run, a run of another or a wider scope, a count of
+the same thing in other words ("added 3 tests" citing `42 tests passed`,
+"fixed 2 errors" citing `Found 5 errors`), a narrowed count against a whole
+run, a port the cited result also holds, a value given before and after a
+fix, a right count of passes from a run that failed, with or without its
+failures, a count "in all", "after all" or "each in under a second", a pass
+beside another "no", a state after an "of" in its clause, a listing after a
+script, a `cd` after `CDPATH=`, and things a cited result is silent on (no
+panic lines in a log tail, a port not listening, a file not in a response).
+Today none of the 470 planted claims is shown as verified (30 are
+contradicted, all from cited, conflicting evidence; the rest unverified),
+all 95 controls are verified, and none of the 190 true or neutral claims is
+contradicted. 19 of the neutral ones are a line-by-line explanation of a
+function the session read, with an analogy; one of them counts as unverified
+work, an analogy that shares no word with the read (5 did before the rule),
+and no planted claim is drawn as explanation; a second test runs the corpus
+with the explanation group off and checks that every verdict is the same,
+and a third runs strict mode on an answer whose only unverified sentence is
+an explanation: it is still unverified, gets the revision with that sentence
+in the note, and ends unverified. A regression pin (`TestRegressionPin`,
+`internal/agent/testdata/verify_pin.json`) freezes every planted case and
+control and 25 strict-mode answers from the reviews: it fails if a planted
+claim ever verifies, a control stops verifying, or a strict answer ends
+otherwise than pinned. The test fails if a planted claim is shown as
+verified, if a true one is contradicted, or if either count falls below its
+floor; the floors rise, except where a rule is made stricter on purpose (the
+controls floor fell from 53 to 50 when a count of passes from a failed run
+stopped being verified; "fixed the failing test; all 12 tests pass now"
+moved to neutral when each clause came to need its own call). The corpus is
+small and written by the people who wrote the checks, so it shows what the
+checks do on these shapes of mistake, not how often a given model makes
+them.
 
 ## Limits
 
