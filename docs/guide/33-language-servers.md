@@ -27,33 +27,67 @@ toolchain, or in the sandbox image.
 
 It runs on every sandbox tier but `none`, the macOS process tier included:
 unlike a debugger, a language server needs no loopback. Each runs with
-`GOTOOLCHAIN=local`, so a `go.mod` cannot have it fetch another Go.
+`GOTOOLCHAIN=local GOFLAGS= GOENV=off`, so a `go.mod` cannot have it fetch
+another Go and no flag such as `-toolexec` reaches its go commands from the
+environment or a go env file.
+
+## What a server may still run
+
+A language server reads the workspace, and some read it by running
+programs. Inside the sandbox, under its mounts, network rules and limits,
+with the engine's settings:
+
+| Server | Settings the engine sends | What it may still run |
+|---|---|---|
+| gopls | its defaults | `go list`, to load packages (and, for packages that use cgo, the cgo tool and the C compiler); no project code |
+| rust-analyzer | build scripts, proc macros, check on save and cargo's autoreload off | `cargo metadata`, which reads the workspace's `.cargo/config.toml` and can run a `rustc` or `rustc-wrapper` it names; no `build.rs`, proc macro or `cargo check` |
+| typescript-language-server | `tsserver.path` set to the TypeScript installed beside the server | that TypeScript; never the workspace's `node_modules/typescript` (with none beside the server, starting it fails and says to install one) |
+| basedpyright | its defaults | the Python interpreter it finds (the sandbox's `python3`, or one a `pyrightconfig.json` names) to read its import paths |
+
+The engine sends these as the server's initialization options and as its
+answers whenever the server asks for its settings, whatever Studio answers.
+A command your operator names in `sandbox.language_servers` is the
+operator's choice; the settings above still apply by language.
 
 ## What is judged and recorded
 
 Starting a server is your `bash` call: its command line is put to policy and
 the supervisor, and recorded with its decision; its end is the call's
 observation. The engine then initializes the server itself, with the
-workspace as its only folder, the editor's capabilities and no
-initialization options (which can set a server's environment or tools), and
-hands Studio the server's capabilities.
+workspace as its only folder, the editor's capabilities and the engine's own
+initialization options (above; Studio's are never used, since they can set
+a server's environment or tools), and hands Studio the server's
+capabilities. A question the supervisor raises about the start is put to
+you in Studio as a permission request, and the server starts only if you
+allow it.
 
 After that, what passes:
 
-- **Studio's messages** go to the server except an `initialize` of its own,
-  a settings change (`workspace/didChangeConfiguration`; the server keeps its
-  defaults), a `workspace/executeCommand` whose command is not on the
-  server's known-safe list (a command can have a server run programs), and
-  anything naming a file outside the session's folders. A refused request
+- **Studio's messages** go to the server only when they are standard LSP
+  requests and notifications: a server's own methods, such as
+  rust-analyzer's `experimental/runTest` or `rust-analyzer/runFlycheck`,
+  which run tests, `cargo check` or build scripts, are refused. Also refused:
+  an `initialize` of Studio's own, a settings change
+  (`workspace/didChangeConfiguration`), a `workspace/executeCommand` whose
+  command is not on the server's known-safe list, and anything naming a
+  file outside the session's folders. A refused request
   gets an error answer, as from the server; each refusal is counted.
 - **The server's messages** go to Studio except a request to open a page or a
   file outside the workspace (`window/showDocument`), which the engine
   answers itself with `success: false`; notifications about files outside the
   workspace, which are dropped; and answers naming them, which reach Studio
   as `null`. Edits the server proposes (`workspace/applyEdit`) go to Studio,
-  which applies them to your buffers; saving them is your write, as any save
-  is. When the server asks for its settings, it is answered with its
-  defaults whatever Studio replies.
+  which applies them to your buffers, unless one creates, renames, deletes
+  or edits a file outside the session's folders or in a `.abhed` folder,
+  which the engine refuses before Studio sees it; saving them is your
+  write, as any save is. When the server asks for its settings, it is
+  answered with the engine's whatever Studio replies.
+
+A file counts as inside only when its URI is an absolute `file:` URI under
+one of the session's folders, outside any `.abhed` folder, and still inside
+with links followed: a bare or percent-encoded path, another scheme, or a
+link in the workspace that leads out is outside. Only URI positions are
+checked; a document whose text starts with `file:` is just text.
 
 Everything a server sends is treated as untrusted: it runs on the
 workspace's code. Each message is read by its exact keys, and one with a key
@@ -72,8 +106,10 @@ requests are not recorded: there are too many. The metrics count them
 A server that ends on its own is started again after a short wait (one
 second, then two, four, eight and sixteen), up to five times, each start
 judged and recorded again. Studio is told with `status: restarted` and the
-server's capabilities, and opens its documents again. After the fifth, or
-when a restart is refused, Studio gets `status: ended`.
+server's capabilities, and opens its documents again. Until then Studio's
+messages are refused as "restarting" rather than lost. After the fifth, or
+when a restart is refused, Studio gets `status: ended`. Closing the session
+records `closed`.
 
 ## Network
 

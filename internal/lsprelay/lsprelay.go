@@ -28,13 +28,48 @@ import (
 // Bounds on what a server or an editor may send.
 const (
 	MaxMessage = 8 << 20
+	// MaxDepth bounds how deeply a message nests: far past any real LSP
+	// message (a document symbol tree or selection range chain), far short
+	// of a stack a deep message could exhaust.
+	MaxDepth   = 256
 	maxHeader  = 1 << 10
 	maxHeaders = 16
 )
 
-// Env is set for every language server: a go.mod's toolchain line cannot
-// have the go command fetch and run another Go.
-const Env = "GOTOOLCHAIN=local "
+// Env is set for every language server, as assignments in front of its
+// command: a go.mod's toolchain line cannot have the go command fetch and
+// run another Go, and neither GOFLAGS nor a go env file (GOENV) can add
+// flags such as -toolexec to the go commands gopls runs.
+const Env = "GOTOOLCHAIN=local GOFLAGS= GOENV=off "
+
+// exitNoServer and exitNoTypeScript are the codes Script exits with when
+// the server, or a TypeScript of its own, is missing.
+const (
+	ExitNoServer     = 96
+	ExitNoTypeScript = 95
+)
+
+// TSServerMarker starts the line Script writes to stderr naming the
+// tsserver.js beside typescript-language-server, which the engine gives it
+// as tsserver.path so it never runs the workspace's own TypeScript.
+const TSServerMarker = "abhed-lsp-tsserver:"
+
+// Script is the shell the server runs under in the sandbox: it fails with
+// ExitNoServer when argv[0] is not on PATH, and execs the server with Env
+// through env, since after exec an assignment would be taken as the
+// program. For typescript-language-server it first finds the TypeScript
+// installed with it (never one under the workspace) and names it on stderr.
+func Script(argv []string) string {
+	name := argv[0]
+	script := "command -v " + CommandLine(argv[:1]) + " >/dev/null 2>&1 || { echo 'abhed-lsp: " + strings.ReplaceAll(name, "'", "") +
+		" is not on PATH' >&2; exit " + strconv.Itoa(ExitNoServer) + "; }; "
+	if filepath.Base(name) == "typescript-language-server" {
+		script += `ts=$(node -e 'const p=require("path"),f=require("fs");try{process.stdout.write(require.resolve("typescript/lib/tsserver.js",{paths:[p.dirname(f.realpathSync(process.argv[1]))]}))}catch(e){}' "$(command -v ` + CommandLine(argv[:1]) + `)" 2>/dev/null); ` +
+			`[ -n "$ts" ] || { echo 'abhed-lsp: no TypeScript is installed beside typescript-language-server, and the workspace'"'"'s own is not used' >&2; exit ` + strconv.Itoa(ExitNoTypeScript) + "; }; " +
+			`echo "` + TSServerMarker + `$ts" >&2; `
+	}
+	return script + "exec env " + Env + CommandLine(argv)
+}
 
 // Read reads one Content-Length framed message, its headers bounded in
 // length and number.
@@ -107,20 +142,51 @@ func URI(root string) string {
 }
 
 // InitParams are the initialize params a server gets for the workspace at
-// root with the editor's capabilities: no initializationOptions, which can
-// set a server's environment or tools, and no process id.
-func InitParams(root string, capabilities json.RawMessage) json.RawMessage {
+// root with the editor's capabilities: the engine's own
+// initializationOptions (SafeSettings), never the editor's, which can set a
+// server's environment or tools, and no process id.
+func InitParams(root string, capabilities, options json.RawMessage) json.RawMessage {
 	uri := URI(root)
 	name := root[strings.LastIndex(root, "/")+1:]
 	if len(capabilities) == 0 {
 		capabilities = json.RawMessage(`{}`)
 	}
-	b, _ := json.Marshal(map[string]any{
+	params := map[string]any{
 		"processId": nil, "rootUri": uri,
 		"workspaceFolders": []map[string]string{{"uri": uri, "name": name}},
 		"capabilities":     capabilities,
-	})
+	}
+	if len(options) > 0 && string(options) != "null" {
+		params["initializationOptions"] = options
+	}
+	b, _ := json.Marshal(params)
 	return b
+}
+
+// SafeSettings are what the engine tells a known server, both as its
+// initializationOptions and as its answer to workspace/configuration for
+// the sections named: what turns off its running of workspace code where a
+// setting can. tsserver is the tsserver.js beside typescript-language-server.
+//
+//   - rust-analyzer: build scripts, proc macros, check on save and cargo's
+//     autoreload off, so it runs no build.rs, no proc macro and no cargo check.
+//   - typescript-language-server: tsserver.path pinned to its own TypeScript,
+//     never the workspace's node_modules.
+//   - gopls and basedpyright: their defaults (null); gopls's go commands get
+//     Env, which clears GOFLAGS and go env files.
+func SafeSettings(language, tsserver string) (options json.RawMessage, sections map[string]json.RawMessage) {
+	switch language {
+	case "rust":
+		ra := json.RawMessage(`{"cargo":{"buildScripts":{"enable":false},"autoreload":false},"procMacro":{"enable":false},"checkOnSave":false}`)
+		return ra, map[string]json.RawMessage{"rust-analyzer": ra}
+	case "typescript", "javascript":
+		if tsserver == "" {
+			return nil, nil
+		}
+		b, _ := json.Marshal(map[string]any{"tsserver": map[string]string{"path": tsserver}})
+		return b, nil
+	}
+	return nil, nil
 }
 
 // Nulls reports whether an answer is null or a list of nulls.
@@ -140,32 +206,54 @@ func Nulls(raw json.RawMessage) bool {
 	return string(bytes.TrimSpace(raw)) == "null"
 }
 
-// Inside reports whether every file URI in raw names a path under one of
-// roots; a URI of another scheme passes, and so does text with none.
+// uriKeys are the keys whose string value is a URI in the LSP: a
+// document, a location, a file operation, a folder. Only these are checked:
+// text that happens to start with "file:" is a document's content.
+var uriKeys = map[string]bool{"uri": true, "oldUri": true, "newUri": true, "targetUri": true,
+	"rootUri": true, "scopeUri": true, "baseUri": true}
+
+// Inside reports whether every URI in a URI position of raw (uriKeys, the
+// keys of a WorkspaceEdit's changes, and rootPath) names a file under one
+// of roots. A URI there that is not an absolute file URI is outside, as is
+// one under a root's .abhed folder, or one whose real path, links followed,
+// is outside the roots' real paths. Other strings are not looked at.
 func Inside(raw []byte, roots []string) bool {
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
 		return false
 	}
-	return walkURIs(v, func(u string) bool { return fileInside(u, roots) })
+	rs := resolveRoots(roots)
+	return walkURIs(v, func(u string) bool { return fileInside(u, rs) }, func(p string) bool { return pathInside(p, rs) })
 }
 
-func walkURIs(v any, ok func(string) bool) bool {
+func walkURIs(v any, uri, path func(string) bool) bool {
 	switch x := v.(type) {
-	case string:
-		if strings.HasPrefix(strings.ToLower(x), "file:") {
-			return ok(x)
-		}
 	case []any:
 		for _, e := range x {
-			if !walkURIs(e, ok) {
+			if !walkURIs(e, uri, path) {
 				return false
 			}
 		}
 	case map[string]any:
-		// A WorkspaceEdit's changes name their files as keys.
 		for k, e := range x {
-			if !walkURIs(k, ok) || !walkURIs(e, ok) {
+			if s, ok := e.(string); ok {
+				switch {
+				case uriKeys[k] && !uri(s):
+					return false
+				case k == "rootPath" && !path(s):
+					return false
+				}
+				continue
+			}
+			// A WorkspaceEdit's changes name their files as keys.
+			if c, ok := e.(map[string]any); ok && k == "changes" {
+				for f := range c {
+					if !uri(f) {
+						return false
+					}
+				}
+			}
+			if !walkURIs(e, uri, path) {
 				return false
 			}
 		}
@@ -173,20 +261,75 @@ func walkURIs(v any, ok func(string) bool) bool {
 	return true
 }
 
-// fileInside reports whether a file URI names a path under one of roots.
-func fileInside(u string, roots []string) bool {
+// root is a session folder as given and with its links resolved.
+type root struct{ given, real string }
+
+func resolveRoots(roots []string) []root {
+	out := make([]root, 0, len(roots))
+	for _, r := range roots {
+		c := filepath.Clean(r)
+		// Resolved as a path in it is, so a root that does not exist here
+		// (a container's) is compared alike.
+		out = append(out, root{c, realPath(c)})
+	}
+	return out
+}
+
+// fileInside reports whether u is an absolute file URI, on no other host,
+// whose path is under one of roots.
+func fileInside(u string, roots []root) bool {
 	p, err := url.Parse(u)
-	if err != nil || !strings.EqualFold(p.Scheme, "file") || (p.Host != "" && p.Host != "localhost") {
+	if err != nil || !strings.EqualFold(p.Scheme, "file") || p.Opaque != "" || (p.Host != "" && p.Host != "localhost") {
 		return false
 	}
-	path := filepath.Clean(p.Path)
+	return pathInside(p.Path, roots)
+}
+
+// pathInside reports whether the absolute path p (already percent-decoded)
+// is under a root, not in its .abhed folder, and still under it with links
+// followed.
+func pathInside(p string, roots []root) bool {
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	p = filepath.Clean(p)
+	real := realPath(p)
 	for _, r := range roots {
-		rel, err := filepath.Rel(filepath.Clean(r), path)
-		if err == nil && (rel == "." || filepath.IsLocal(rel)) {
+		if under(r.given, p) && under(r.real, real) {
 			return true
 		}
 	}
 	return false
+}
+
+// under reports whether p is base or below it, and not in base's .abhed.
+func under(base, p string) bool {
+	rel, err := filepath.Rel(base, p)
+	if err != nil || rel != "." && !filepath.IsLocal(rel) {
+		return false
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(seg, ".abhed") {
+			return false
+		}
+	}
+	return true
+}
+
+// realPath is p with the links in its deepest existing ancestor followed.
+func realPath(p string) string {
+	rest := ""
+	for cur := p; ; {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(real, rest)
+		}
+		up := filepath.Dir(cur)
+		if up == cur {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = up
+	}
 }
 
 // SafeCommands are the workspace/executeCommand commands each known server
@@ -209,10 +352,23 @@ type Filter struct {
 	// Language picks the commands in SafeCommands.
 	Language string
 
+	// Settings are the engine's answer to workspace/configuration, by
+	// section (SafeSettings); a section not here is answered null.
+	Settings map[string]json.RawMessage
+	// Methods are the server's own requests and notifications an editor may
+	// send besides the standard ones (EditorMethods).
+	Methods []string
+
 	mu sync.Mutex
-	// asked are the server's requests waiting for the editor, by id, with
-	// their method: only those may be answered, and how depends on it.
-	asked map[string]string
+	// asked are the server's requests waiting for the editor, by id: only
+	// those may be answered, and how depends on the request.
+	asked map[string]pending
+}
+
+// pending is one of the server's requests waiting for the editor.
+type pending struct {
+	method string
+	params json.RawMessage
 }
 
 // Refusal is an editor message the filter did not pass, with why.
@@ -292,10 +448,21 @@ func stringField(obj json.RawMessage, key string) string {
 // for case under Unicode simple folding (as Go's encoding/json matches
 // them), at any depth.
 func UniqueKeys(body []byte) error {
+	// Valid first: it bounds nesting itself, and walk below never sees what
+	// it refuses. walk bounds its own depth too, so its recursion cannot
+	// overflow the stack whatever reaches it.
+	if !json.Valid(body) {
+		return errors.New("not a JSON-RPC message: not valid JSON")
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
+	depth := 0
 	var walk func() error
 	walk = func() error {
+		if depth++; depth > MaxDepth {
+			return fmt.Errorf("nested deeper than %d", MaxDepth)
+		}
+		defer func() { depth-- }()
 		tok, err := dec.Token()
 		if err != nil {
 			return err
@@ -341,13 +508,42 @@ func UniqueKeys(body []byte) error {
 	return nil
 }
 
-// refusedFromEditor are methods an editor may not send: the engine has
-// already initialized the server, and settings can set its environment.
-var refusedFromEditor = map[string]string{
-	"initialize":                       "the engine has already initialized the server",
-	"initialized":                      "the engine has already initialized the server",
-	"workspace/didChangeConfiguration": "settings can set a server's environment or tools; it keeps its defaults",
+// EditorMethods are the standard LSP 3.17 methods an editor may send a
+// server. Anything else, a server's own extension such as rust-analyzer's
+// experimental/runTest or rust-analyzer/runFlycheck, is refused unless it is
+// in the Filter's Methods. initialize and initialized are the engine's, and
+// workspace/didChangeConfiguration is refused: settings can set a server's
+// environment or tools.
+var EditorMethods = map[string]bool{
+	"shutdown": true, "exit": true, "$/cancelRequest": true, "$/setTrace": true, "$/progress": true,
+	"window/workDoneProgress/cancel": true,
+	"textDocument/didOpen":           true, "textDocument/didChange": true, "textDocument/didClose": true,
+	"textDocument/didSave": true, "textDocument/willSave": true, "textDocument/willSaveWaitUntil": true,
+	"textDocument/completion": true, "completionItem/resolve": true, "textDocument/hover": true,
+	"textDocument/signatureHelp": true, "textDocument/declaration": true, "textDocument/definition": true,
+	"textDocument/typeDefinition": true, "textDocument/implementation": true, "textDocument/references": true,
+	"textDocument/documentHighlight": true, "textDocument/documentSymbol": true,
+	"textDocument/codeAction": true, "codeAction/resolve": true, "textDocument/codeLens": true, "codeLens/resolve": true,
+	"textDocument/documentLink": true, "documentLink/resolve": true, "textDocument/documentColor": true,
+	"textDocument/colorPresentation": true, "textDocument/formatting": true, "textDocument/rangeFormatting": true,
+	"textDocument/onTypeFormatting": true, "textDocument/rename": true, "textDocument/prepareRename": true,
+	"textDocument/foldingRange": true, "textDocument/selectionRange": true,
+	"textDocument/semanticTokens/full": true, "textDocument/semanticTokens/full/delta": true, "textDocument/semanticTokens/range": true,
+	"textDocument/linkedEditingRange": true, "textDocument/moniker": true, "textDocument/inlayHint": true, "inlayHint/resolve": true,
+	"textDocument/inlineValue": true, "textDocument/diagnostic": true, "workspace/diagnostic": true,
+	"textDocument/prepareCallHierarchy": true, "callHierarchy/incomingCalls": true, "callHierarchy/outgoingCalls": true,
+	"textDocument/prepareTypeHierarchy": true, "typeHierarchy/supertypes": true, "typeHierarchy/subtypes": true,
+	"workspace/symbol": true, "workspaceSymbol/resolve": true, "workspace/executeCommand": true,
+	"workspace/didChangeWorkspaceFolders": true, "workspace/didChangeWatchedFiles": true,
+	"workspace/willCreateFiles": true, "workspace/didCreateFiles": true, "workspace/willRenameFiles": true,
+	"workspace/didRenameFiles": true, "workspace/willDeleteFiles": true, "workspace/didDeleteFiles": true,
 }
+
+// ServerMethods are each known server's own methods reviewed as running no
+// program: none yet. rust-analyzer's experimental/runTest,
+// rust-analyzer/runFlycheck, rebuildProcMacros and reloadWorkspace run
+// cargo, build scripts or tests, so they stay refused.
+var ServerMethods = map[string][]string{}
 
 // FromEditor returns the editor's message rebuilt for the server, or a
 // Refusal: a method the engine keeps, a command not in SafeCommands, an
@@ -364,8 +560,13 @@ func (f *Filter) FromEditor(body []byte) ([]byte, error) {
 		return nil, &Refusal{ID: m.ID, Reason: "a file outside the session's workspace"}
 	}
 	if m.Method != "" {
-		if why, ok := refusedFromEditor[m.Method]; ok {
-			return nil, &Refusal{ID: m.ID, Reason: why}
+		switch {
+		case m.Method == "initialize" || m.Method == "initialized":
+			return nil, &Refusal{ID: m.ID, Reason: "the engine has already initialized the server"}
+		case m.Method == "workspace/didChangeConfiguration":
+			return nil, &Refusal{ID: m.ID, Reason: "settings can set a server's environment or tools; it keeps the engine's"}
+		case !EditorMethods[m.Method] && !slices.Contains(f.Methods, m.Method):
+			return nil, &Refusal{ID: m.ID, Reason: fmt.Sprintf("%q is not a standard LSP method, and not one reviewed for this server; a server's own methods can have it run programs", m.Method)}
 		}
 		if m.Method == "workspace/executeCommand" {
 			command := stringField(m.Params, "command")
@@ -377,30 +578,38 @@ func (f *Filter) FromEditor(body []byte) ([]byte, error) {
 	}
 	id := string(m.ID)
 	f.mu.Lock()
-	method, asked := f.asked[id]
+	req, asked := f.asked[id]
 	delete(f.asked, id)
 	f.mu.Unlock()
 	if !asked {
 		return nil, &Refusal{Reason: "an answer to nothing the server asked"}
 	}
-	// Settings the server asks for stay its defaults: one such as env or
-	// build flags can have it run programs, so only nulls are passed.
-	if method == "workspace/configuration" && (m.Error != nil || !Nulls(m.Result)) {
-		m.Result, m.Error = configurationNulls(m.Result), nil
+	// The server's settings are the engine's, whatever the editor answers:
+	// one such as env or build flags can have it run programs.
+	if req.method == "workspace/configuration" {
+		m.Result, m.Error = f.configuration(req.params), nil
 	}
 	return rebuild(message{JSONRPC: "2.0", ID: m.ID, Result: m.Result, Error: m.Error})
 }
 
-func configurationNulls(result json.RawMessage) json.RawMessage {
-	var list []json.RawMessage
-	if json.Unmarshal(result, &list) != nil {
-		return json.RawMessage(`null`)
+// configuration is the engine's answer to a workspace/configuration: per
+// item, the Settings for its section, else null.
+func (f *Filter) configuration(params json.RawMessage) json.RawMessage {
+	var p struct {
+		Items []struct {
+			Section string `json:"section"`
+		} `json:"items"`
 	}
-	out := make([]string, len(list))
-	for i := range out {
-		out[i] = "null"
+	_ = json.Unmarshal(params, &p)
+	out := make([]json.RawMessage, len(p.Items))
+	for i, it := range p.Items {
+		out[i] = json.RawMessage(`null`)
+		if v, ok := f.Settings[it.Section]; ok {
+			out[i] = v
+		}
 	}
-	return json.RawMessage("[" + strings.Join(out, ",") + "]")
+	b, _ := json.Marshal(out)
+	return b
 }
 
 func rebuild(m message) ([]byte, error) {
@@ -437,12 +646,21 @@ func (f *Filter) FromServer(body []byte) (forward, reply []byte) {
 		}
 		f.mu.Lock()
 		if f.asked == nil {
-			f.asked = map[string]string{}
+			f.asked = map[string]pending{}
 		}
-		if len(f.asked) < 1024 {
-			f.asked[string(m.ID)] = m.Method
+		_, dup := f.asked[string(m.ID)]
+		full := len(f.asked) >= 1024
+		if !dup && !full {
+			f.asked[string(m.ID)] = pending{method: m.Method, params: m.Params}
 		}
 		f.mu.Unlock()
+		if dup || full {
+			// An id still waiting for an answer is not reused: the editor's
+			// answer to one request must not be taken as the other's.
+			b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID,
+				"error": map[string]any{"code": -32600, "message": "a request id still waiting for an answer, or too many waiting"}})
+			return nil, b
+		}
 		return body, nil
 	case m.Method != "": // a notification
 		if !inside {

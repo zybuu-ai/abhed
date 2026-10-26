@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,10 +19,12 @@ func TestInside(t *testing.T) {
 		`{"textDocument":{"uri":"file:///etc/passwd"}}`:                      false,
 		`{"textDocument":{"uri":"file:///w/../etc/passwd"}}`:                 false,
 		`{"textDocument":{"uri":"file://evil.host/w/a.go"}}`:                 false,
-		`{"changes":{"file:///w/a.go":[]},"x":["FILE:///root/.ssh/id_rsa"]}`: false,
-		`{"uri":"https://example.com"}`:                                      true,
+		`{"changes":{"file:///w/a.go":[]},"x":["FILE:///root/.ssh/id_rsa"]}`: true, // x is not a URI position
+		`{"changes":{"file:///etc/passwd":[]}}`:                              false,
+		`{"uri":"https://example.com"}`:                                      false, // not a file
 		`{"text":"hello"}`:                                                   true,
-		`not json`:                                                           false,
+		`{"text":"file:///etc/passwd is where it starts"}`:                   true, // document text, not a URI
+		`not json`: false,
 	} {
 		if Inside([]byte(body), roots) != want {
 			t.Errorf("%s: %v", body, !want)
@@ -142,5 +147,176 @@ func TestKeysThatRepeatButForCase(t *testing.T) {
 		if fwd, reply := f.FromServer([]byte(body)); fwd != nil {
 			t.Fatalf("a server message with a folded twin key was passed: %s %s", fwd, reply)
 		}
+	}
+}
+
+// URI positions: a schemeless, relative or percent-encoded path, a URI of
+// another scheme, one in a root's .abhed, and one through a link that
+// leads out are all outside, both ways and in every file operation.
+func TestURIPositions(t *testing.T) {
+	ws := t.TempDir()
+	out := t.TempDir()
+	if err := os.Symlink(out, filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := &Filter{Roots: []string{ws}, Language: "typescript"}
+	in := URI(ws)
+	for _, uri := range []string{"/etc/passwd", "%2Fetc%2Fpasswd", "etc/passwd", "file:etc/passwd", "untitled:x",
+		in + "/.abhed/state.json", in + "/.ABHED/x", in + "/sub/../.abhed/x", in + "/link/secret", in + "/link/new/file"} {
+		if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":1,"method":"textDocument/definition","params":{"textDocument":{"uri":"` + uri + `"},"position":{"line":0,"character":0}}}`)); err == nil {
+			t.Errorf("Studio's %s was passed", uri)
+		}
+	}
+	for _, edit := range []string{
+		`{"documentChanges":[{"kind":"create","uri":"/etc/x"}]}`,
+		`{"documentChanges":[{"kind":"rename","oldUri":"` + in + `/sub/a.ts","newUri":"/Users/x/.zshrc"}]}`,
+		`{"documentChanges":[{"kind":"rename","oldUri":"` + in + `/sub/a.ts","newUri":"` + in + `/.abhed/a.ts"}]}`,
+		`{"documentChanges":[{"kind":"delete","uri":"` + in + `/.abhed/state.json"}]}`,
+		`{"documentChanges":[{"kind":"create","uri":"` + in + `/link/x.ts"}]}`,
+		`{"changes":{"%2Fetc%2Fpasswd":[]}}`,
+	} {
+		fwd, reply := f.FromServer([]byte(`{"jsonrpc":"2.0","id":7,"method":"workspace/applyEdit","params":{"edit":` + edit + `}}`))
+		if fwd != nil || !strings.Contains(string(reply), `"error"`) {
+			t.Errorf("applyEdit %s: forwarded %s", edit, fwd)
+		}
+	}
+	ok := `{"documentChanges":[{"kind":"create","uri":"` + in + `/sub/new.ts"},{"kind":"rename","oldUri":"` + in + `/sub/new.ts","newUri":"` + in + `/sub/b.ts"}]}`
+	if fwd, _ := f.FromServer([]byte(`{"jsonrpc":"2.0","id":8,"method":"workspace/applyEdit","params":{"edit":` + ok + `}}`)); fwd == nil {
+		t.Fatal("an edit inside the workspace was refused")
+	}
+}
+
+// Only standard methods, and a server's reviewed own ones, pass from Studio.
+func TestEditorMethodsAreAnAllowList(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "rust"}
+	for _, m := range []string{"experimental/runTest", "rust-analyzer/runFlycheck", "rust-analyzer/rebuildProcMacros",
+		"rust-analyzer/reloadWorkspace", "gopls/whatever", "textDocument/madeUp"} {
+		if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + m + `","params":{}}`)); err == nil {
+			t.Errorf("%s was passed", m)
+		}
+	}
+	for _, m := range []string{"textDocument/completion", "workspace/symbol", "$/cancelRequest", "shutdown"} {
+		if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":2,"method":"` + m + `","params":{}}`)); err != nil {
+			t.Errorf("%s was refused: %v", m, err)
+		}
+	}
+	f.Methods = []string{"rust-analyzer/analyzerStatus"}
+	if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":3,"method":"rust-analyzer/analyzerStatus","params":{}}`)); err != nil {
+		t.Fatalf("a reviewed server method was refused: %v", err)
+	}
+}
+
+// The server's settings are the engine's: rust-analyzer's build scripts,
+// proc macros and check on save are off whatever Studio answers.
+func TestConfigurationIsTheEngines(t *testing.T) {
+	opts, sections := SafeSettings("rust", "")
+	f := &Filter{Roots: []string{"/w"}, Language: "rust", Settings: sections}
+	if !strings.Contains(string(opts), `"buildScripts":{"enable":false}`) || !strings.Contains(string(opts), `"procMacro":{"enable":false}`) || !strings.Contains(string(opts), `"checkOnSave":false`) {
+		t.Fatalf("options %s", opts)
+	}
+	f.FromServer([]byte(`{"jsonrpc":"2.0","id":"c1","method":"workspace/configuration","params":{"items":[{"section":"rust-analyzer"},{"section":"other"}]}}`))
+	out, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":"c1","result":[{"procMacro":{"enable":true}},{"x":1}]}`))
+	if err != nil || !strings.Contains(string(out), `"procMacro":{"enable":false}`) || !strings.Contains(string(out), `,null]`) {
+		t.Fatalf("answer %s %v", out, err)
+	}
+	if o, _ := SafeSettings("typescript", "/opt/ts/lib/tsserver.js"); !strings.Contains(string(o), `"tsserver":{"path":"/opt/ts/lib/tsserver.js"}`) {
+		t.Fatalf("typescript options %s", o)
+	}
+	if p := InitParams("/w", nil, opts); !strings.Contains(string(p), `"initializationOptions":{"cargo"`) {
+		t.Fatalf("init params %s", p)
+	}
+}
+
+// A request id still waiting is not taken again: Studio's answer to the
+// first cannot reach the second.
+func TestPendingRequestIDIsNotReused(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	if fwd, _ := f.FromServer([]byte(`{"jsonrpc":"2.0","id":5,"method":"workspace/configuration","params":{"items":[{"section":"gopls"}]}}`)); fwd == nil {
+		t.Fatal("the first request was not passed")
+	}
+	fwd, reply := f.FromServer([]byte(`{"jsonrpc":"2.0","id":5,"method":"workspace/applyEdit","params":{"edit":{}}}`))
+	if fwd != nil || !strings.Contains(string(reply), "still waiting") {
+		t.Fatalf("a reused id: %s %s", fwd, reply)
+	}
+	out, _ := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":5,"result":[{"build":{"env":{"GOFLAGS":"-toolexec=x"}}}]}`))
+	if strings.Contains(string(out), "toolexec") {
+		t.Fatalf("Studio's settings reached the server: %s", out)
+	}
+}
+
+// A message nested past the bound, under the size limit, is refused without
+// a stack overflow, from the server and from Studio; ſ twins are refused.
+func TestDeepAndFoldedMessages(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	deep := `{"jsonrpc":"2.0","method":"x","params":` + strings.Repeat("[", 4<<20-64) + strings.Repeat("]", 4<<20-64) + `}`
+	if len(deep) > MaxMessage {
+		t.Fatalf("%d bytes", len(deep))
+	}
+	if fwd, reply := f.FromServer([]byte(deep)); fwd != nil || reply != nil {
+		t.Fatal("a deep message was passed")
+	}
+	if _, err := f.FromEditor([]byte(deep)); err == nil {
+		t.Fatal("a deep message from Studio was passed")
+	}
+	if UniqueKeys([]byte(`{"a":`+strings.Repeat("[", MaxDepth+5)+strings.Repeat("]", MaxDepth+5)+`}`)) == nil {
+		t.Fatal("past MaxDepth passed")
+	}
+	if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///w/a.go"},"textDocument\u017f":{"uri":"file:///etc/passwd"}}}`)); err == nil {
+		t.Fatal("a folded twin key was passed")
+	}
+}
+
+// The script the server runs under works through bash -c and sh -c: the
+// variables reach the server, a missing server exits ExitNoServer, and
+// typescript-language-server gets the TypeScript beside it named.
+func TestScriptRunsUnderTheShells(t *testing.T) {
+	bin := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("gopls", `echo "argv=$* GOTOOLCHAIN=$GOTOOLCHAIN GOFLAGS=[$GOFLAGS] GOENV=$GOENV"`)
+	write("typescript-language-server", `echo "ts argv=$*"`)
+	write("node", `printf /opt/ts/lib/tsserver.js`)
+	for _, shell := range []string{"/bin/bash", "/bin/sh"} {
+		if _, err := os.Stat(shell); err != nil {
+			continue
+		}
+		run := func(script string) (string, string, int) {
+			cmd := exec.Command(shell, "-c", script)
+			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "GOFLAGS=-toolexec=/evil", "GOENV=/evil"}
+			var so, se strings.Builder
+			cmd.Stdout, cmd.Stderr = &so, &se
+			err := cmd.Run()
+			code := 0
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				code = ee.ExitCode()
+			}
+			return so.String(), se.String(), code
+		}
+		out, errOut, code := run(Script([]string{"gopls"}))
+		if code != 0 || !strings.Contains(out, "GOTOOLCHAIN=local GOFLAGS=[] GOENV=off") {
+			t.Fatalf("%s gopls: %d %q %q", shell, code, out, errOut)
+		}
+		out, errOut, code = run(Script([]string{"typescript-language-server", "--stdio"}))
+		if code != 0 || !strings.Contains(out, "ts argv=--stdio") || !strings.Contains(errOut, TSServerMarker+"/opt/ts/lib/tsserver.js") {
+			t.Fatalf("%s typescript: %d %q %q", shell, code, out, errOut)
+		}
+		if _, _, code = run(Script([]string{"rust-analyzer"})); code != ExitNoServer {
+			t.Fatalf("%s missing server exited %d", shell, code)
+		}
+	}
+	write("node", `exit 0`)
+	cmd := exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}))
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != ExitNoTypeScript {
+		t.Fatalf("no TypeScript beside the server: %v", err)
 	}
 }

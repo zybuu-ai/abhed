@@ -109,6 +109,12 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	if m.tokens.Value("m1", "in") != 10 || m.tokens.Value("m1", "out") != 5 || m.modelTime.Count("m1", "turn") != 2 {
 		t.Error("model tokens or latency not counted")
 	}
+	m.Observe(ev(agent.EvLSPStarted, agent.LSPStarted{Language: "go"}))
+	m.Observe(ev(agent.EvLSPStarted, agent.LSPStarted{Language: "cobol"}))
+	m.Observe(ev(agent.EvLSPStopped, agent.LSPStopped{Language: "rust", Requests: 7, Refused: 2}))
+	if m.lspStarts.Value("go") != 1 || m.lspStarts.Value(Other) != 1 || m.lspRequests.Value("rust", "passed") != 7 || m.lspRequests.Value("rust", "refused") != 2 {
+		t.Error("language-server starts or messages not counted")
+	}
 	m.Observe(ev(agent.EvOllamaStart, agent.OllamaAction{Op: "start", Outcome: agent.OllamaOK, Command: "/secret/path/ollama serve"}))
 	m.Observe(ev(agent.EvOllamaPull, agent.OllamaAction{Op: "pull", Outcome: agent.OllamaRefused, Model: "qwen3:8b"}))
 	m.Observe(ev(agent.EvOllamaInstall, agent.OllamaAction{Op: "install", Outcome: "made up"}))

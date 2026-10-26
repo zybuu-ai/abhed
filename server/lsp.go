@@ -33,9 +33,12 @@ const (
 type lspRun struct {
 	id, language string
 	root         string
-	cancel       context.CancelFunc
-	stdin        io.WriteCloser
-	writeMu      sync.Mutex
+	// roots are the session's folders: the workspace, its added folders
+	// and skill folders, any of which the editor may have open.
+	roots   []string
+	cancel  context.CancelFunc
+	stdin   io.WriteCloser
+	writeMu sync.Mutex
 
 	mu       sync.Mutex
 	subs     map[*lspSub]struct{}
@@ -79,6 +82,12 @@ const lspCapabilities = `{"textDocument":{"hover":{"contentFormat":["markdown","
 // lspAllowed returns, rebuilt, the page's message that may reach the server:
 // one of lspMethods, or a null answer to the server's own request.
 func lspAllowed(body []byte, root string) ([]byte, bool) {
+	return lspAllowedIn(body, root, []string{root})
+}
+
+// lspAllowedIn is lspAllowed with the session's folders as the roots a file
+// may be in.
+func lspAllowedIn(body []byte, root string, roots []string) ([]byte, bool) {
 	// Read by exact keys, as the server reads it: a key twice, or but for case, is refused.
 	if lsprelay.UniqueKeys(body) != nil {
 		return nil, false
@@ -104,7 +113,7 @@ func lspAllowed(body []byte, root string) ([]byte, bool) {
 		case "initialize":
 			// initializationOptions and the like can set a server's environment
 			// or tools, so the server is told only the workspace and capabilities.
-			m["params"] = lsprelay.InitParams(root, json.RawMessage(lspCapabilities))
+			m["params"] = lsprelay.InitParams(root, json.RawMessage(lspCapabilities), nil)
 		case "initialized":
 			m["params"] = json.RawMessage(`{}`)
 		}
@@ -121,7 +130,7 @@ func lspAllowed(body []byte, root string) ([]byte, bool) {
 	}
 	out, err := json.Marshal(m)
 	// A file outside the workspace is not the server's to read.
-	return out, err == nil && lsprelay.Inside(out, []string{root})
+	return out, err == nil && lsprelay.Inside(out, roots)
 }
 
 // startLSP starts the session's language server for one language, or names
@@ -218,7 +227,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusInternalServerError, "the language server could not be started: "+err.Error())
 		return
 	}
-	run := &lspRun{id: id, language: req.Language, root: sess.Root, cancel: cancel, stdin: stdin,
+	run := &lspRun{id: id, language: req.Language, root: sess.Root, roots: sess.PolicyRoots(), cancel: cancel, stdin: stdin,
 		subs: map[*lspSub]struct{}{}, lastRead: time.Now(), done: make(chan struct{})}
 	// Listed before it starts, so a session closing from here on waits for its end.
 	live.mu.Lock()
@@ -333,7 +342,7 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 		badBody(w, err, "the message is not JSON")
 		return
 	}
-	body, ok = lspAllowed(body, run.root)
+	body, ok = lspAllowedIn(body, run.root, run.roots)
 	if !ok {
 		WriteError(w, http.StatusForbidden, "the workbench sends a language server only editor requests")
 		return

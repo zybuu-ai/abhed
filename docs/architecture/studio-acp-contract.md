@@ -1146,37 +1146,78 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
 ```
 
 - Listed under the `lsp` feature. One server per session and language: a
-  second `start` returns the running one. At most four per connection.
+  second `start` returns the running one, waiting for it to initialize (or
+  failing as it did). At most four per connection.
 - The server runs in the session's sandbox on any tier but `none`; its
   command (operator-named, else the language's default) is judged as the
   person's `bash` call (`-32001` when refused) and recorded as `lsp.started`;
   a missing server is `-32000` with `data.problem.kind: "server-missing"`.
-- The engine sends `initialize` (workspace folder, the given capabilities, no
-  `initializationOptions`) and `initialized`; Studio must not. File URIs are
-  the host's paths: the sandbox shows the workspace at its own path.
-- `send` passes Studio's message through the filter: refused with
-  `{refused}` (and, for a request, an LSP error answer in a `message`) for
-  `initialize`, `initialized`, `workspace/didChangeConfiguration`, a
-  `workspace/executeCommand` not on the server's safe list, a file URI
-  outside the session's roots, or an answer to nothing the server asked.
-  Answers to `workspace/configuration` reach the server as nulls.
+  A supervisor's ask on the start goes to Studio as a normal
+  `session/request_permission` (`meta.lsp: true`, `meta.step: "monitor"`,
+  Allow once or Deny); it starts only on Allow. The server runs as
+  `exec env GOTOOLCHAIN=local GOFLAGS= GOENV=off <command>`.
+- The engine sends `initialize` (workspace folder, the given capabilities,
+  and the engine's own `initializationOptions`, never Studio's) and
+  `initialized`; Studio must not. File URIs are the host's paths: the sandbox
+  shows the workspace at its own path. The engine's settings, sent there and
+  as its answers to `workspace/configuration` whatever Studio replies:
+  - rust-analyzer: `cargo.buildScripts.enable`, `procMacro.enable`,
+    `checkOnSave` and `cargo.autoreload` off;
+  - typescript-language-server: `tsserver.path` set to the TypeScript
+    installed beside the server (found in the sandbox before it starts;
+    without one the start fails, `server-missing`), never the workspace's;
+  - gopls, basedpyright: their defaults (`null`).
+  What each may still run inside the sandbox: gopls runs `go list` (and, for
+  cgo packages, the cgo tool and the C compiler), no project code;
+  rust-analyzer runs `cargo metadata`, which reads the workspace's
+  `.cargo/config.toml` and can run a `rustc` or `rustc-wrapper` it names;
+  typescript-language-server runs its own TypeScript; basedpyright runs the
+  Python interpreter it finds (the sandbox's, or one a `pyrightconfig.json`
+  names) to read import paths. An operator's `sandbox.language_servers`
+  command is the operator's choice; the engine's settings still apply by
+  language.
+- `send` passes Studio's message through the filter, which takes only the
+  standard LSP 3.17 client methods (and a server's own methods reviewed as
+  running nothing; none yet): refused with `{refused}` (and, for a request,
+  an LSP error answer in a `message`) for any other method (rust-analyzer's
+  `experimental/runTest`, `rust-analyzer/runFlycheck`,
+  `rust-analyzer/rebuildProcMacros` and `rust-analyzer/reloadWorkspace`
+  among them), `initialize`, `initialized`,
+  `workspace/didChangeConfiguration`, a `workspace/executeCommand` not on
+  the server's safe list, a URI outside the session's roots, or an answer to
+  nothing the server asked. Answers to `workspace/configuration` reach the
+  server as the engine's settings above.
+- URIs are checked in URI positions only (`uri`, `oldUri`, `newUri`,
+  `targetUri`, `rootUri`, `scopeUri`, `baseUri`, the keys of a
+  WorkspaceEdit's `changes`, and `rootPath`): one there that is not an
+  absolute `file:` URI (a bare or percent-encoded path, another scheme), is
+  under a root's `.abhed` folder, or leads out of the roots through a link
+  (the deepest existing part of its path resolved) is outside. Document text
+  that starts with `file:` is content, not a URI.
 - From the server: `window/showDocument` for a non-file or outside URI is
   answered by the engine (`success: false`); notifications naming outside
-  files are dropped; answers naming them reach Studio as `null`;
-  `workspace/applyEdit` and everything else pass to Studio.
+  files are dropped; answers naming them reach Studio as `null`; a request
+  naming one, a `workspace/applyEdit` whose create, rename, delete or edit
+  is outside or in `.abhed` included, is answered with an error and never
+  reaches Studio; a request reusing an id still waiting for Studio's answer
+  is answered with an error. Everything else passes to Studio.
 - A crash restarts the server (backoff 1, 2, 4, 8, 16 s, at most five), judged
   and initialized again: `status: restarted` with its capabilities, after
-  which Studio opens its documents again. `stop` sends `shutdown` and `exit`
-  and ends it after three seconds. `lsp.stopped` records the reason and the
-  counts of messages passed and refused; requests are not recorded singly.
+  which Studio opens its documents again. Between the crash and the restart
+  a `send` is `-32002` ("restarting"), not queued. `stop` sends `shutdown`
+  and `exit` and ends it after three seconds. `lsp.stopped` records the
+  reason (`stopped`, `closed` with its session or connection, `crashed`,
+  `failed`) and the counts of messages passed and refused; requests are not
+  recorded singly.
 - Messages are read by their exact keys: one with a key twice, or two keys
   equal under Unicode case folding (`ſ` is `s`, `K` is `k`, as Go's
   encoding/json matches them), anywhere in it, is refused from Studio and
-  dropped from the server. Header lines and their number are bounded, and a
-  message is at most 8 MiB.
+  dropped from the server. Header lines and their number are bounded, a
+  message is at most 8 MiB and nests at most 256 deep.
 - Studio's `send`s reach the server in the order they were read, through one
-  queue per server (at most 256 waiting; past that `-32002`, busy) and one
-  writer; a server that stops reading its input is ended.
+  queue per server (at most 256 messages or 32 MiB waiting; past that
+  `-32002`, busy) and one writer; a server with more than 1,024 messages or
+  32 MiB it has not read is ended.
 
 ## 8. Health, setup and memory
 

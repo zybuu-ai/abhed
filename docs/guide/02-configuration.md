@@ -1195,6 +1195,8 @@ wrote:
 | `abhed_sandbox_operations_total`, `abhed_sandbox_bound_total` | `action`, `outcome`; `driver`, `tier` |
 | `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
 | `abhed_fence_denied_total` | `source` (the fence tier's system-call profile, as its `fence.denied` names it), `call` (a system call that profile refuses) |
+| `abhed_lsp_starts_total` | `language` (`go`, `python`, `typescript`, `javascript`, `rust`, or `other`): language servers started for editors; a restart after a crash counts again — [Language servers](33-language-servers.md) |
+| `abhed_lsp_messages_total` | `language`, `outcome` (`passed`, `refused`): editors' messages to language servers, counted when each server ends |
 | `abhed_ollama_actions_total` | `op` (`start`, `install`, `pull`), `outcome` (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`): a person's attempts to get a local Ollama model working — [A local Ollama model](03-providers.md#a-local-ollama-model) |
 | `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |
 | `abhed_audit_events_total` | `source` (api, sandbox), `outcome` |
