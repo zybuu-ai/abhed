@@ -35,8 +35,9 @@ marked, and only the text of its reply is used.
 
 The provider is resolved as a session's model is: the key its `api_key_env`
 names is the only key sent, never an `OPENAI_API_KEY` or other key from the
-environment, and it must be one the configuration offers. Under
-`local_only`, a redirect from the endpoint to another machine is refused.
+environment, and it must be one the configuration offers. Each request is
+sent once, never retried. Under `local_only`, a redirect from the endpoint
+to another machine is refused, whatever the provider's type.
 
 The managed configuration can turn completions off or keep them local, and a
 lower layer cannot undo it. A managed `model.default` pins completions as it
@@ -57,9 +58,12 @@ context; the request is answered with nothing. A file reached through a link
 is checked both as named and where the link leads, so a link out of the
 workspace or to a key file is refused too.
 
-What is sent, and the text that comes back, has every stored secret's value
-withheld, as the agent's own messages do, and anything shaped like a key (a
-private key block, a cloud or forge access token) replaced. Requests to the
+What is sent has every stored secret's value withheld, as the agent's own
+messages do, and anything shaped like a key replaced: a private key block,
+a cloud, forge, chat or payment token, a JWT, a password in a URL, a
+`*_TOKEN=` or `*_PASSWORD=` line. This happens before the text is cut to
+size, so a cut cannot leave part of a secret. A suggestion that carries one
+is dropped rather than offered. Requests to the
 model go through the same egress path as the agent's, so under the allowlist
 the rules apply.
 
@@ -67,16 +71,19 @@ The engine keeps the requests reasonable: one in flight per session (a newer
 one replaces it, and Studio's `seq` decides which is newer when requests
 cross), a short wait before asking so that a burst of keystrokes sends one
 request, at most five a second per session and ten a second over all of an
-editor's sessions. A provider whose completions endpoint answers 404 or 400
-is asked through chat from then on in that session. A closed session's
-requests are refused.
+editor's sessions. A provider whose completions endpoint answers 404, 405 or
+501, or a 400 that says the endpoint or its `suffix` is not supported, is
+asked through chat from then on in that session; any other 400 is a failure.
+A closed session's requests are refused.
 
 ## What is recorded
 
 Not each completion: there are too many. The record holds
 `completion.enabled` just before a session first sends code to the provider,
 naming it, its model, whether it is on this machine, and whether it was asked
-by fill-in-the-middle or chat. If that cannot be recorded, nothing is sent.
+by fill-in-the-middle or chat. It is recorded again, with `chat`, before the
+first chat request of a session that fell back to chat. If it cannot be
+recorded, nothing is sent.
 `completion.summary`, when the session closes, counts the requests sent and
 how many were answered, failed or cancelled after sending, and those refused
 or superseded (replaced by a newer one) before anything went, with the tokens

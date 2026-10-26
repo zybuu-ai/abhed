@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
@@ -29,6 +31,7 @@ type fimServer struct {
 	paths   []string
 	gate    chan struct{} // when set, a request waits for it to close
 	status  int           // when set, /v1/completions answers with it
+	body    string        // and with this body
 	arrived chan struct{}
 }
 
@@ -42,7 +45,7 @@ func newFIMServer(t *testing.T, text string) *fimServer {
 		f.mu.Lock()
 		f.paths = append(f.paths, r.URL.Path)
 		f.auth = append(f.auth, r.Header.Get("Authorization"))
-		gate, status := f.gate, f.status
+		gate, status, body := f.gate, f.status, f.body
 		if r.URL.Path == "/v1/completions" && status == 0 {
 			f.seen = append(f.seen, m)
 		}
@@ -57,7 +60,7 @@ func newFIMServer(t *testing.T, text string) *fimServer {
 		}
 		switch {
 		case r.URL.Path == "/v1/completions" && status != 0:
-			http.Error(w, "no fill in the middle", status)
+			http.Error(w, body, status)
 		case r.URL.Path == "/v1/completions":
 			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"text": text}}, "usage": map[string]any{"prompt_tokens": 30, "completion_tokens": 4}})
 			_, _ = w.Write(out)
@@ -457,7 +460,7 @@ func TestStudioCompletionsFollowLinks(t *testing.T) {
 }
 
 // A stored secret's value, and anything shaped like a key, is withheld from
-// what is sent and from what comes back.
+// what is sent, and a reply carrying one is dropped.
 func TestStudioCompletionsWithholdSecrets(t *testing.T) {
 	fim := newFIMServer(t, "token := \"stored-secret-value-123\"")
 	r := completionRig(t, fim.URL, "")
@@ -481,8 +484,8 @@ func TestStudioCompletionsWithholdSecrets(t *testing.T) {
 	if strings.Contains(sent, "stored-secret-value-123") || strings.Contains(sent, key) {
 		t.Fatalf("a secret was sent: %q", sent)
 	}
-	if len(res.Items) != 1 || strings.Contains(fmt.Sprint(res.Items[0]["text"]), "stored-secret-value-123") {
-		t.Fatalf("a secret came back: %+v", res)
+	if len(res.Items) != 0 {
+		t.Fatalf("a reply with a secret was offered: %+v", res)
 	}
 }
 
@@ -543,7 +546,7 @@ func TestStudioCompletionsAfterClose(t *testing.T) {
 // A provider without fill in the middle is asked by chat, once it has said so.
 func TestStudioCompletionsFallBackToChat(t *testing.T) {
 	fim := newFIMServer(t, "chat text")
-	fim.status = http.StatusNotFound
+	fim.status, fim.body = http.StatusNotFound, "404 page not found"
 	r := completionRig(t, fim.URL, "")
 	noHold(t)
 	id := r.open()
@@ -555,8 +558,165 @@ func TestStudioCompletionsFallBackToChat(t *testing.T) {
 		}
 	}
 	fim.mu.Lock()
-	defer fim.mu.Unlock()
-	if fmt.Sprint(fim.paths) != "[/v1/completions /v1/chat/completions /v1/chat/completions]" {
-		t.Fatalf("paths %v", fim.paths)
+	paths := fmt.Sprint(fim.paths)
+	fim.mu.Unlock()
+	if paths != "[/v1/completions /v1/chat/completions /v1/chat/completions]" {
+		t.Fatalf("paths %v", paths)
+	}
+	// The record says chat before the first chat request went.
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	enabled, _ := r.recorded(id, agent.EvCompletionEnabled)
+	if len(enabled) != 2 || enabled[0]["mode"] != "fim" || enabled[1]["mode"] != "chat" {
+		t.Fatalf("completion.enabled %v", enabled)
+	}
+}
+
+// A 400 for another reason, such as a prompt too long, is a failure, not a
+// sign the endpoint has no fill in the middle.
+func TestStudioCompletionsBadRequestIsNotFallback(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		chat bool
+	}{
+		{`{"error":"This model's maximum context length is 2048 tokens"}`, false},
+		{`{"error":"suffix is not currently supported"}`, true},
+		{`{"error":"registry.ollama.ai/library/llama3 does not support insert"}`, true},
+	} {
+		fim := newFIMServer(t, "c")
+		fim.status, fim.body = http.StatusBadRequest, tc.body
+		r := completionRig(t, fim.URL, "")
+		noHold(t)
+		id := r.open()
+		res := r.cl.call("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"})
+		fim.mu.Lock()
+		paths := fmt.Sprint(fim.paths)
+		fim.mu.Unlock()
+		if chat := strings.Contains(paths, "chat"); chat != tc.chat || (!tc.chat && res.Error == nil) {
+			t.Fatalf("%s: paths %s, reply %+v %s", tc.body, paths, res.Error, res.Result)
+		}
+	}
+}
+
+// A stored secret or a token straddling the cut is withheld whole: no
+// fragment of it is sent.
+func TestStudioCompletionsWithholdAcrossTheCut(t *testing.T) {
+	fim := newFIMServer(t, "ok")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	secret := "stored-secret-value-0123456789abcdef"
+	store := filepath.Join(os.Getenv("HOME"), ".abhed", "secrets.json")
+	if err := os.WriteFile(store, []byte(`{"FAKE_TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABHED_SECRETS_FILE", store)
+	id := r.open()
+	tok := "ghp_" + strings.Repeat("Z", 40)
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go",
+		"prefix": secret + strings.Repeat("x", completePrefix-20), "suffix": strings.Repeat("y", completeSuffix-20) + tok,
+		"context": []map[string]string{{"uri": "file://" + r.ws + "/b.go", "text": strings.Repeat("z", completeFileBytes-10) + tok}}}, &res)
+	seen := fim.requests()
+	if len(seen) != 1 {
+		t.Fatalf("%d requests", len(seen))
+	}
+	sent := fmt.Sprint(seen[0]["prompt"], seen[0]["suffix"])
+	if strings.Contains(sent, secret[len(secret)-12:]) || strings.Contains(sent, "ghp_ZZZZ") {
+		t.Fatalf("a fragment of a secret was sent: %.80q ... %.80q", sent, sent[len(sent)-80:])
+	}
+}
+
+// A reply carrying a secret is dropped, not edited into the code.
+func TestStudioCompletionsDropASecretReply(t *testing.T) {
+	fim := newFIMServer(t, "key := \"ghp_"+strings.Repeat("Q", 40)+"\"")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+	if len(res.Items) != 0 {
+		t.Fatalf("a reply with a token was offered: %+v", res)
+	}
+}
+
+// A record that cannot be written stops the send; once it can, the next
+// request records completion.enabled and goes.
+func TestStudioCompletionsRecordFailureSendsNothing(t *testing.T) {
+	fim := newFIMServer(t, "ok")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	rec := r.cl.conn.session(id).parts.Loop.Recorder
+	rec.Gate = func() error { return errors.New("the record is gone") }
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+	if len(fim.requests()) != 0 || res.Refused == "" {
+		t.Fatalf("code went out with no record: %+v", res)
+	}
+	rec.Gate = nil
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "x"}, &res)
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	enabled, _ := r.recorded(id, agent.EvCompletionEnabled)
+	if len(fim.requests()) != 1 || len(enabled) != 1 || len(res.Items) != 1 {
+		t.Fatalf("after the record came back: %d requests, %d records, %+v", len(fim.requests()), len(enabled), res)
+	}
+}
+
+// A request that reaches the send after its session closed is not sent.
+func TestCompletionNotSentAfterClose(t *testing.T) {
+	k := &acpCompleter{closed: true}
+	if why := (&acpConn{}).completeEnabled(nil, k, config.ProviderConfig{}, "fim"); why == "" {
+		t.Fatal("a closed session's completion would be sent")
+	}
+}
+
+// Under local_only no adapter follows a redirect off this machine; without
+// it the redirect is followed as any is.
+func TestStudioCompletionsRedirectsUnderLocalOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name, typ, extra string
+		follows          bool
+	}{
+		{"openai-compatible local_only", "openai-compatible", `,"completion":{"local_only":true}`, false},
+		{"openai-compatible", "openai-compatible", "", true},
+		{"anthropic local_only", "anthropic", `,"completion":{"local_only":true}`, false},
+		{"gemini local_only", "gemini", `,"completion":{"local_only":true}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var far []string
+			dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				far = append(far, r.URL.Path)
+				mu.Unlock()
+				http.Error(w, "nope", http.StatusInternalServerError)
+			}))
+			t.Cleanup(dst.Close)
+			// localhost. reaches loopback but is not counted as this machine.
+			to := strings.Replace(dst.URL, "127.0.0.1", "localhost.", 1)
+			red := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, to+r.URL.Path, http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(red.Close)
+			r := completionRig(t, red.URL, tc.extra)
+			noHold(t)
+			if tc.typ != "openai-compatible" {
+				cfg := filepath.Join(os.Getenv("HOME"), ".abhed", "config.json")
+				b, _ := os.ReadFile(cfg)
+				s := strings.Replace(string(b), `"type":"openai-compatible","base_url":"`+red.URL+`/v1"`, `"type":"`+tc.typ+`","api_key":"k","base_url":"`+red.URL+`"`, 1)
+				if err := os.WriteFile(cfg, []byte(s), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id := r.open()
+			res := r.cl.call("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "CODE"})
+			mu.Lock()
+			defer mu.Unlock()
+			if followed := len(far) > 0; followed != tc.follows {
+				t.Fatalf("far host got %v; reply %+v %s", far, res.Error, res.Result)
+			}
+			if len(far) > 1 {
+				t.Fatalf("a completion was sent %d times: %v", len(far), far)
+			}
+		})
 	}
 }
