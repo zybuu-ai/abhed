@@ -187,7 +187,7 @@ func completionAdapter(p config.ProviderConfig, localOnly bool) (model.Adapter, 
 
 // noFIM matches a 400's body that says the endpoint or a parameter is not
 // supported, as opposed to a bad request of another kind.
-var noFIM = regexp.MustCompile(`(?i)not (?:currently )?supported|unsupported|does not support|unrecogni[sz]ed|unknown (?:field|param|argument)|extra (?:fields|inputs) not permitted|suffix`)
+var noFIM = regexp.MustCompile(`(?i)not (?:currently )?supported|unsupported|does not support|unrecogni[sz]ed|unknown (?:field|param|argument)|extra (?:fields|inputs) not permitted`)
 
 // fimRefused reports an answer that says the endpoint does not fill in the middle.
 func fimRefused(err error) bool {
@@ -239,6 +239,24 @@ func sendable(uri string, roots []string) (string, string) {
 		}
 	}
 	return path, ""
+}
+
+// withheldAround cleans the text on both sides of the cursor as one, so a
+// secret the cursor splits is withheld whole, and splits it back: the
+// suffix is what the cleaned whole ends with in common with the cleaned
+// suffix, and the prefix is the rest. Everything returned comes from the
+// cleaned whole.
+func withheldAround(clean func(string) string, prefix, suffix string) (string, string) {
+	whole, after := clean(prefix+suffix), clean(suffix)
+	n := 0
+	for n < len(after) && n < len(whole) && whole[len(whole)-1-n] == after[len(after)-1-n] {
+		n++
+	}
+	cut := len(whole) - n
+	for cut < len(whole) && !utf8.RuneStart(whole[cut]) {
+		cut++
+	}
+	return whole[:cut], whole[cut:]
 }
 
 // headRunes is s cut to at most n characters from its start; tailRunes from its end.
@@ -347,37 +365,6 @@ func (c *acpConn) complete(msg rpcMessage) {
 		return
 	}
 
-	// Stored secrets, and anything shaped like a key, never leave: withheld
-	// from the whole text before it is cut, so a cut cannot split one.
-	clean := func(text string) string {
-		text = parts.Loop.Withheld(text)
-		text, _ = secretfiles.RedactContent(text)
-		return text
-	}
-	// Only what is near the cursor goes, and other open files only as far as given.
-	prefix := tailRunes(clean(req.Prefix), completePrefix)
-	suffix := headRunes(clean(req.Suffix), completeSuffix)
-	var lead strings.Builder
-	used := 0
-	for _, f := range req.Context {
-		if used == completeFiles || lead.Len() >= completeAllFiles {
-			break
-		}
-		fp, why := sendable(f.URI, roots)
-		if why != "" || fp == path || readDenied(parts.Loop.Policy, fp) {
-			continue
-		}
-		lines := strings.SplitN(clean(f.Text), "\n", completeFileLines+1)
-		if len(lines) > completeFileLines {
-			lines = lines[:completeFileLines]
-		}
-		rel, _ := filepath.Rel(parts.Session.Root, fp)
-		part := "// " + filepath.ToSlash(rel) + "\n" + headBytes(strings.Join(lines, "\n"), completeFileBytes) + "\n\n"
-		lead.WriteString(headBytes(part, completeAllFiles-lead.Len()))
-		used++
-	}
-	sentPrefix, sentSuffix := lead.String()+prefix, suffix
-
 	k.mu.Lock()
 	if k.closed {
 		k.mu.Unlock()
@@ -427,6 +414,44 @@ func (c *acpConn) complete(msg rpcMessage) {
 	defer cancel()
 
 	if completeHold(ctx) != nil {
+		k.count(func(s *agent.CompletionSummary) { s.Superseded++ })
+		empty("cancelled", "a newer completion replaced it")
+		return
+	}
+
+	// Stored secrets, and anything shaped like a key, never leave: withheld
+	// from the whole text before it is cut, so a cut cannot split one, and
+	// across the cursor, so neither side keeps part of one.
+	clean := func(text string) string {
+		text = parts.Loop.Withheld(text)
+		text, _ = secretfiles.RedactContent(text)
+		return text
+	}
+	// Only what is near the cursor goes, and other open files only as far as given.
+	before, after := withheldAround(clean, req.Prefix, req.Suffix)
+	prefix := tailRunes(before, completePrefix)
+	suffix := headRunes(after, completeSuffix)
+	var lead strings.Builder
+	used := 0
+	for _, f := range req.Context {
+		if used == completeFiles || lead.Len() >= completeAllFiles {
+			break
+		}
+		fp, why := sendable(f.URI, roots)
+		if why != "" || fp == path || readDenied(parts.Loop.Policy, fp) {
+			continue
+		}
+		lines := strings.SplitN(clean(f.Text), "\n", completeFileLines+1)
+		if len(lines) > completeFileLines {
+			lines = lines[:completeFileLines]
+		}
+		rel, _ := filepath.Rel(parts.Session.Root, fp)
+		part := "// " + filepath.ToSlash(rel) + "\n" + headBytes(strings.Join(lines, "\n"), completeFileBytes) + "\n\n"
+		lead.WriteString(headBytes(part, completeAllFiles-lead.Len()))
+		used++
+	}
+	sentPrefix, sentSuffix := lead.String()+prefix, suffix
+	if ctx.Err() != nil {
 		k.count(func(s *agent.CompletionSummary) { s.Superseded++ })
 		empty("cancelled", "a newer completion replaced it")
 		return

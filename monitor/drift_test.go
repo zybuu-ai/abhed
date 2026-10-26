@@ -19,7 +19,7 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 1631 || rep.Benign < 561 {
+	if rep.Drift < 1631 || rep.Benign < 567 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {

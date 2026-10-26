@@ -53,3 +53,50 @@ func TestContentPatterns(t *testing.T) {
 		}
 	}
 }
+
+// A placeholder stands for a secret and is not one; nor is ordinary code
+// that handles tokens and passwords.
+func TestContentPlaceholdersAreNotSecrets(t *testing.T) {
+	for _, ok := range []string{
+		`dsn := fmt.Sprintf("postgres://%s:%s@%s/%s", u, p, h, d)`,
+		`url = "redis://:${REDIS_PASSWORD}@cache:6379/0"`,
+		"const url = `${base}?access_token=${this.accessToken}`;",
+		`DATABASE_URL: postgres://postgres:postgres@db:5432/app`,
+		`DATABASE_URL: postgres://app:$DB_PASSWORD@db:5432/app`,
+		`dsn = "mysql://root:<password>@localhost/app"`,
+		`amqp://guest:{password}@rabbit/`,
+		`postgres://user:***@db/app`,
+		`postgres://user:xxx@db/app`,
+		`postgres://admin:changeme@db/app`,
+		`https://user:@example.com/`,
+		"API_TOKEN=${API_TOKEN}",
+		"export DB_PASSWORD=$DB_PASSWORD",
+		`SECRET_KEY = "%s"`,
+		`GITHUB_TOKEN: "<your token>"`,
+		"PASSWORD=changeme",
+		"PASSWORD=xxxxxxxx",
+		"    token = get_token()",
+		"token = lexer.Next()",
+		`password = request.form["password"]`,
+		`refresh_token = response.json()["refresh_token"]`,
+		`TOKEN_TYPE = "bearer"`,
+		"PASSWORD_MIN_LENGTH = validators.MinLength(8)",
+		"MAX_TOKENS = 100000000",
+		"API_KEY = settings.API_KEY",
+		"aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}",
+	} {
+		if out, found := RedactContent(ok); found || out != ok || HasKeyMaterial(ok) {
+			t.Errorf("a placeholder or ordinary code was taken for a secret: %q -> %q", ok, out)
+		}
+	}
+	for in, secret := range map[string]string{
+		`SECRET_KEY = "a8f5f167f44f4964e6c998dee827110c"`: "a8f5f167f44f",
+		`GITHUB_TOKEN: 'Zx81kLm0Pw7xQr2'`:                 "Zx81kLm0Pw7x",
+		"STRIPE_KEY=Xk9fQ2mPz8Lw4Rt7 # live":              "Xk9fQ2mPz8Lw",
+		`postgres://app:Hunter2SuperSecret@db/app`:        "Hunter2Super",
+	} {
+		if out, found := RedactContent(in); !found || strings.Contains(out, secret) {
+			t.Errorf("%q -> %q", in, out)
+		}
+	}
+}

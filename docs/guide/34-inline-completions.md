@@ -60,10 +60,16 @@ workspace or to a key file is refused too.
 
 What is sent has every stored secret's value withheld, as the agent's own
 messages do, and anything shaped like a key replaced: a private key block,
-a cloud, forge, chat or payment token, a JWT, a password in a URL, a
-`*_TOKEN=` or `*_PASSWORD=` line. This happens before the text is cut to
-size, so a cut cannot leave part of a secret. A suggestion that carries one
-is dropped rather than offered. Requests to the
+a cloud, forge, chat or payment token, a JWT, a password in a URL, an
+upper-case `*_TOKEN`, `*_PASSWORD` or `*_KEY` given a literal value. A
+placeholder is not a secret and is sent as written: a format verb (`%s`),
+`${…}`, `$NAME`, `{…}`, `<…>`, `***`, `xxx`, `changeme`, or a URL whose
+password is its user name (`postgres:postgres`). This happens before the
+text is cut to size, and over the code on both sides of the cursor as one,
+so neither a cut nor the cursor can leave part of a secret. A suggestion
+that carries one is dropped rather than offered. A token you are still
+typing cannot be recognised until enough of it is there to match its shape;
+a stored secret's value is withheld once it is complete. Requests to the
 model go through the same egress path as the agent's, so under the allowlist
 the rules apply.
 
