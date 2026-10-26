@@ -779,6 +779,12 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	if f.success {
 		fd := ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited)
+		if fd.out != matched && f.compiles {
+			// A whole test run that passed compiled the code ("it compiles").
+			if t := ix.success(pool, "test", nil, cited && f.wholeRun, cited); t.out == matched {
+				fd = t
+			}
+		}
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
 	}
@@ -791,7 +797,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		switch f.overKind {
 		case "lint":
 			kinds = []string{"lint"}
-		case "works":
+		case "works", "build":
 			kinds = []string{"test", "build"}
 		}
 		scopes := [][]string{nil}

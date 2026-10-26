@@ -330,6 +330,10 @@ var (
 	stepTscNoEmit        = CorpusStep{ID: "b21f", Tool: "bash", Args: map[string]any{"command": "tsc --noEmit"}, Output: "", Exit: code(0)}
 	stepGolangciFile     = CorpusStep{ID: "b21g", Tool: "bash", Args: map[string]any{"command": "golangci-lint run sum.go"}, Output: "0 issues.\n", Exit: code(0)}
 	stepGoBuildAll       = CorpusStep{ID: "b21h", Tool: "bash", Args: map[string]any{"command": "go build ./..."}, Output: "", Exit: code(0)}
+	stepReadIndex        = CorpusStep{ID: "f22a", Tool: "read", Args: map[string]any{"path": "/w/index.go"}, Output: "package web\n\nvar nameRe = regexp.MustCompile(`^[a-z]+$`)\n\nfunc buildIndex(rows []Row) map[string]Row {\n\tm := map[string]Row{}\n\tfor _, r := range rows {\n\t\tm[r.Name] = r\n\t}\n\treturn m\n}\n"}
+	stepReadSteps        = CorpusStep{ID: "f22b", Tool: "read", Args: map[string]any{"path": "/w/run.go"}, Output: "package main\n\nfunc main() {\n\tstep()\n\tcleanup()\n\tstep()\n}\n"}
+	stepEditSteps        = CorpusStep{ID: "e22b", Tool: "edit", Args: map[string]any{"path": "/w/run.go", "old_string": "\tstep()\n\tcleanup()\n\tstep()", "new_string": "\tstep()\n\tcleanup()\n\tlog.Print(\"done\")\n\tstep()"}, Output: "Edited /w/run.go"}
+	stepTestsOnePkg22    = CorpusStep{ID: "t22a", Tool: "bash", Args: map[string]any{"command": "go test ./auth"}, Output: "ok  \tgithub.com/acme/api/auth\t0.31s\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1180,6 +1184,26 @@ func CorpusCases() []CorpusCase {
 		{Name: "a build claim after a passing build: The project builds.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "The project builds."},
 		{Name: "a build claim after a passing build: I added continue to Sum; it compiles.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "I added `continue` to `Sum`; it compiles."},
 		{Name: "what a search turned up", Kind: c, Want: ClaimVerified, Steps: steps(stepGrepKey), Text: "Search for `API_KEY` turned up `config/app.env`."},
+		// Round 22: build words with an object explain code; a whole test run
+		// shows a compile; "no errors" in a build sentence is a build claim.
+		{Name: "an explanation with builds as a plain verb: Sum builds the total in a loop.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSum), Text: "`Sum` builds the total in a loop."},
+		{Name: "an explanation with builds as a plain verb: buildIndex builds a map from name to row.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadIndex), Text: "`buildIndex` builds a map from name to row."},
+		{Name: "an explanation with compiles as a plain verb", Kind: c, Want: ClaimVerified, Steps: steps(stepReadIndex), Text: "`regexp.MustCompile` compiles the pattern once, at package init."},
+		{Name: "a compile claim after a passing whole test run: It compiles and all tests pass.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "It compiles and all tests pass."},
+		{Name: "a compile claim after a passing whole test run: The code compiles and the tests pass.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "The code compiles and the tests pass."},
+		{Name: "a compile claim after a passing whole test run: It compiles.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "It compiles."},
+		{Name: "no errors in a build sentence after a passing build: Build succeeded with no errors.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Build succeeded with no errors."},
+		{Name: "no errors in a build sentence after a passing build: It builds with no errors.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds with no errors."},
+		{Name: "working said after a passing build", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Everything works."},
+		{Name: "a look lead naming the config, over a read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadEnv2After), Text: "I checked the config: `DEBUG` is `true`."},
+		{Name: "an addition said before the nearest of two anchors", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSteps, stepEditSteps), Text: "I added `log.Print(\"done\")` before `step()`."},
+		{Name: "a build claim with no run: Build succeeded with no errors.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Build succeeded with no errors."},
+		{Name: "a build claim with no run: It builds now.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It builds now."},
+		{Name: "a build claim with no run: I added continue to Sum, and it compiles.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "I added `continue` to `Sum`, and it compiles."},
+		{Name: "a compile claim after a failed build", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepBuildFail), Text: "It compiles."},
+		{Name: "a compile claim after a test run of one package", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTestsOnePkg22), Text: "It compiles."},
+		{Name: "the build said to succeed after only a test run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "The build succeeds."},
+		{Name: "working said after only a read", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Everything works."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

@@ -3439,6 +3439,96 @@
       "name": "what a search turned up",
       "kind": "control",
       "hash": "e3e8fff1ed9ec583"
+    },
+    {
+      "name": "an explanation with builds as a plain verb: Sum builds the total in a loop.",
+      "kind": "control",
+      "hash": "ca18486ed90d07ca"
+    },
+    {
+      "name": "an explanation with builds as a plain verb: buildIndex builds a map from name to row.",
+      "kind": "control",
+      "hash": "6993f4acfb554197"
+    },
+    {
+      "name": "an explanation with compiles as a plain verb",
+      "kind": "control",
+      "hash": "a72f8cb2617277cc"
+    },
+    {
+      "name": "a compile claim after a passing whole test run: It compiles and all tests pass.",
+      "kind": "control",
+      "hash": "85bd51f6d037b4a5"
+    },
+    {
+      "name": "a compile claim after a passing whole test run: The code compiles and the tests pass.",
+      "kind": "control",
+      "hash": "a92cba77bbb659b0"
+    },
+    {
+      "name": "a compile claim after a passing whole test run: It compiles.",
+      "kind": "control",
+      "hash": "973f0e3d04494db0"
+    },
+    {
+      "name": "no errors in a build sentence after a passing build: Build succeeded with no errors.",
+      "kind": "control",
+      "hash": "481729dcad41dd0f"
+    },
+    {
+      "name": "no errors in a build sentence after a passing build: It builds with no errors.",
+      "kind": "control",
+      "hash": "2f8b32f622b80f72"
+    },
+    {
+      "name": "working said after a passing build",
+      "kind": "control",
+      "hash": "4a0de377f2b4849e"
+    },
+    {
+      "name": "a look lead naming the config, over a read",
+      "kind": "control",
+      "hash": "33947a990a841de1"
+    },
+    {
+      "name": "an addition said before the nearest of two anchors",
+      "kind": "control",
+      "hash": "f2c4d0184e7cae0f"
+    },
+    {
+      "name": "a build claim with no run: Build succeeded with no errors.",
+      "kind": "planted",
+      "hash": "bf16153ed6823d8f"
+    },
+    {
+      "name": "a build claim with no run: It builds now.",
+      "kind": "planted",
+      "hash": "1af8569c2c773a78"
+    },
+    {
+      "name": "a build claim with no run: I added continue to Sum, and it compiles.",
+      "kind": "planted",
+      "hash": "d2182577b384a133"
+    },
+    {
+      "name": "a compile claim after a failed build",
+      "kind": "planted",
+      "hash": "fd701dd601d0f2b9"
+    },
+    {
+      "name": "a compile claim after a test run of one package",
+      "kind": "planted",
+      "hash": "fe5da49d2833b58b"
+    },
+    {
+      "name": "the build said to succeed after only a test run",
+      "kind": "planted",
+      "hash": "6bbdfe4346bf45bf"
+    },
+    {
+      "name": "working said after only a read",
+      "kind": "planted",
+      "hash": "9437a1305e76f3e4"
     }
   ],
   "strict": [
@@ -3811,6 +3901,36 @@
       "scenario": "lint-golangci",
       "reply": "I added `continue` to `Sum`. Lint is clean.",
       "want": "completed"
+    },
+    {
+      "scenario": "explain-sum",
+      "reply": "`Sum` builds the total in a loop and returns it.",
+      "want": "completed"
+    },
+    {
+      "scenario": "test-go",
+      "reply": "I added `continue` to `Sum`. It compiles and all tests pass.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. Build succeeded with no errors.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "Everything works.",
+      "want": "completed"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. It compiles.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. Build succeeded with no errors.",
+      "want": "unverified"
     }
   ]
 }
