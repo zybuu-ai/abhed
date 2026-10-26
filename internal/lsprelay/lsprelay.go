@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -59,13 +58,14 @@ const TSServerMarker = "abhed-lsp-tsserver:"
 // ExitNoServer when argv[0] is not on PATH, and execs the server with Env
 // through env, since after exec an assignment would be taken as the
 // program. For typescript-language-server it first finds the TypeScript
-// installed with it (never one under the workspace) and names it on stderr.
-func Script(argv []string) string {
+// installed with it (TSServerLookup) and names it on stderr. toolchainRoot
+// is Abhed's toolchain cache, which the sandbox only reads.
+func Script(argv []string, toolchainRoot string) string {
 	name := argv[0]
 	script := "command -v " + CommandLine(argv[:1]) + " >/dev/null 2>&1 || { echo 'abhed-lsp: " + strings.ReplaceAll(name, "'", "") +
 		" is not on PATH' >&2; exit " + strconv.Itoa(ExitNoServer) + "; }; "
 	if filepath.Base(name) == "typescript-language-server" {
-		script += TSServerLookup(CommandLine(argv[:1])) +
+		script += TSServerLookup(CommandLine(argv[:1]), toolchainRoot) +
 			`[ -n "$ts" ] || { echo 'abhed-lsp: no TypeScript is installed beside typescript-language-server, and no other is used' >&2; exit ` + strconv.Itoa(ExitNoTypeScript) + "; }; " +
 			`echo "` + TSServerMarker + `$ts" >&2; `
 	}
@@ -85,77 +85,43 @@ func Script(argv []string) string {
 //     lib/cli.mjs, so the package is two folders above the link's target.
 //
 // In each package it takes <pkg>/node_modules/typescript or the sibling
-// <pkg>/../typescript, links resolved, and never one under HOME. The
-// engine refuses one under a session root as well.
-func TSServerLookup(command string) string {
+// <pkg>/../typescript, links resolved. A result where a command in the
+// sandbox can write is dropped: under the sandbox's HOME or TMPDIR, /tmp or
+// /var/tmp, unless it is under toolchainRoot, Abhed's toolchain cache,
+// which commands only read. The engine refuses one under a session root
+// (TSServerRefused) as well.
+func TSServerLookup(command, toolchainRoot string) string {
 	return `b=$(command -v ` + command + `); r=$(readlink -f "$b" 2>/dev/null) || r=$b; ts=; ` +
 		`for p in "$(dirname "$b")/../lib/node_modules/typescript-language-server" "$(dirname "$(dirname "$r")")"; do ` +
 		`for c in "$p/node_modules/typescript/lib/tsserver.js" "$p/../typescript/lib/tsserver.js"; do ` +
 		`if [ -f "$c" ]; then ts=$(readlink -f "$c" 2>/dev/null) || ts=$c; break 2; fi; done; done; ` +
-		`if [ -n "$HOME" ]; then h=$(cd "$HOME" 2>/dev/null && pwd -P) || h=$HOME; case "$ts" in "$HOME"/*|"$h"/*) ts=;; esac; fi; `
+		`tc=` + CommandLine([]string{orDot(toolchainRoot)}) + `; tcr=$(cd "$tc" 2>/dev/null && pwd -P) || tcr=$tc; ` +
+		`case "$ts" in "$tc"/*|"$tcr"/*) ;; *) ` +
+		`for d in "$HOME" "${TMPDIR:-}" /tmp /var/tmp; do ` +
+		`[ -n "$d" ] && [ "$d" != / ] || continue; dr=$(cd "$d" 2>/dev/null && pwd -P) || dr=$d; ` +
+		`case "$ts" in "$d"/*|"$dr"/*) ts=;; esac; done;; esac; `
 }
 
-// RustAnalyzerConfigNames are the workspace files rust-analyzer reads its
-// settings from ahead of the editor's (and so the engine's).
-var RustAnalyzerConfigNames = []string{"rust-analyzer.toml", ".rust-analyzer.toml"}
-
-// RustAnalyzerConfigs are the rust-analyzer.toml files that would override
-// the engine's settings for a server on roots: in each root's folders, a
-// bounded walk that skips target, node_modules and .git and follows no
-// link, and in each root's ancestors, which rust-analyzer also reads.
-func RustAnalyzerConfigs(roots []string) []string {
-	var found []string
-	seen := map[string]bool{}
-	add := func(p string) {
-		if !seen[p] && len(found) < 16 {
-			seen[p] = true
-			found = append(found, p)
-		}
+// orDot is p, or a relative name no absolute path is under when p is empty.
+func orDot(p string) string {
+	if p == "" || !filepath.IsAbs(p) {
+		return "./-no-toolchain-root-"
 	}
-	isFile := func(p string) bool {
-		fi, err := os.Lstat(p)
-		return err == nil && !fi.IsDir()
-	}
-	for _, r := range roots {
-		r = filepath.Clean(r)
-		for dir := filepath.Dir(r); ; dir = filepath.Dir(dir) {
-			for _, n := range RustAnalyzerConfigNames {
-				if p := filepath.Join(dir, n); isFile(p) {
-					add(p)
-				}
-			}
-			if filepath.Dir(dir) == dir {
-				break
-			}
-		}
-		entries := 0
-		_ = filepath.WalkDir(r, func(p string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil //nolint:nilerr // an unreadable folder is one the server cannot read either
-			}
-			if entries++; entries > 50000 {
-				return filepath.SkipAll
-			}
-			if d.IsDir() {
-				rel, _ := filepath.Rel(r, p)
-				if rel != "." && (strings.Count(filepath.ToSlash(rel), "/") >= 8 || slices.Contains([]string{"target", "node_modules", ".git"}, d.Name())) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if slices.Contains(RustAnalyzerConfigNames, d.Name()) && d.Type().IsRegular() {
-				add(p)
-			}
-			return nil
-		})
-	}
-	return found
+	return filepath.Clean(p)
 }
 
-// RustAnalyzerConfigWhy is what the person is told about such files.
-func RustAnalyzerConfigWhy(files []string) string {
-	return "the workspace's " + strings.Join(files, ", ") + " overrides Abhed's rust-analyzer settings: it can turn build scripts, proc macros and " +
-		"check on save back on, and name commands to run (cargo.buildScripts.overrideCommand, check.overrideCommand), inside the sandbox"
+// TSServerRefused reports whether the engine refuses the tsserver.js a
+// start named: one under a session root, or under the host's home folder
+// outside Abhed's toolchain cache (toolchainRoot), where a command could
+// have put it.
+func TSServerRefused(ts string, roots []string, home, toolchainRoot string) bool {
+	if ts == "" || !filepath.IsAbs(ts) || WithinAny(ts, roots) {
+		return true
+	}
+	if toolchainRoot != "" && WithinAny(ts, []string{toolchainRoot}) {
+		return false
+	}
+	return home != "" && WithinAny(ts, []string{home})
 }
 
 // WithinAny reports whether p, or p with links followed, is in or below
@@ -322,7 +288,7 @@ func Nulls(raw json.RawMessage) bool {
 // arguments ("URI"). Only these are checked: text that happens to start
 // with "file:" is a document's content.
 var uriKeys = map[string]bool{"uri": true, "oldUri": true, "newUri": true, "targetUri": true,
-	"rootUri": true, "scopeUri": true, "baseUri": true, "URI": true}
+	"rootUri": true, "scopeUri": true, "baseUri": true, "sourceUri": true, "URI": true}
 
 // linkKeys are links a person may follow (DocumentLink.target, a
 // diagnostic's codeDescription.href): http and https pass, to the editor's
@@ -453,7 +419,9 @@ func (c *checker) inside(v any) bool {
 // except that relatedDocuments loses only its outside keys. A workspace edit
 // (changes or documentChanges) with anything outside is outside as a whole,
 // so an edit is never applied in part: a lone one is null, and a code
-// action carrying one is dropped from its list.
+// action carrying one is dropped from its list. A Command (its arguments
+// positional) is likewise kept or dropped whole, with the code action, code
+// lens or completion item that carries it.
 // changed says whether anything was dropped.
 func (c *checker) prune(v any) (out any, outside, changed bool) {
 	switch x := v.(type) {
@@ -471,8 +439,9 @@ func (c *checker) prune(v any) (out any, outside, changed bool) {
 		return kept, false, changed
 	case map[string]any:
 		// A workspace edit is applied whole or not at all: a rename that
-		// skipped its outside files would leave the code broken.
-		if isWorkspaceEdit(x) {
+		// skipped its outside files would leave the code broken. A command's
+		// arguments are positional, so a command is kept or dropped whole too.
+		if isWorkspaceEdit(x) || isCommand(x) {
 			if !c.inside(x) {
 				return nil, true, false
 			}
@@ -511,6 +480,14 @@ func isWorkspaceEdit(m map[string]any) bool {
 	_, changes := m["changes"]
 	_, docs := m["documentChanges"]
 	return changes || docs
+}
+
+// isCommand reports whether m is an LSP Command: a command name with its
+// arguments.
+func isCommand(m map[string]any) bool {
+	_, named := m["command"].(string)
+	_, args := m["arguments"]
+	return named && args
 }
 
 // root is a session folder as given and with its links resolved.

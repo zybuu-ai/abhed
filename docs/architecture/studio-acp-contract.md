@@ -1162,7 +1162,20 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   it or a folder above it overrides the engine's settings, so the start is
   put to the person the same way (`meta.step: "workspace"`, the reason
   naming the files; no answer is Deny) even when policy would allow it, and
-  the answer is recorded. The server runs as
+  the answer is recorded. When the supervisor asks too, there is one
+  question (`meta.step: "monitor"`) whose reason carries both, recorded
+  together. The walk counts any non-folder entry with the name (links
+  included), skips `target`, `node_modules` and `.git`, and a walk stopped at
+  its bounds (50,000 entries, 12 levels) asks as if a file were found, saying
+  so. The result is kept per session while the record has no new event.
+  While it runs, rust-analyzer is stopped (`status: ended`,
+  `reason: "workspace-config-changed"`, `lsp.stopped` with that reason) when
+  an agent or subagent write or edit names such a file, when a Studio
+  `send` reports one (didOpen, didSave, didChange, didChangeWatchedFiles,
+  didCreateFiles, didRenameFiles; the send is answered `{refused}`), or when
+  a check every 10 s finds one new, changed or gone in a root or a folder
+  above it, or a file found at the start changed. The next start asks
+  again. The server runs as
   `exec env GOTOOLCHAIN=local GOFLAGS= GOENV=off <command>`.
 - The engine sends `initialize` (workspace folder, the given capabilities,
   and the engine's own `initializationOptions`, never Studio's) and
@@ -1178,10 +1191,14 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
     and the package two folders above the command's link target, npm's),
     at `<pkg>/node_modules/typescript/lib/tsserver.js` and
     `<pkg>/../typescript/lib/tsserver.js`, links resolved; no module
-    search, `HOME` or `NODE_PATH`, and a result under `HOME` is dropped.
-    The engine refuses a result under a session root or the host's home
-    folder. No result within 15 s, or the process ending first: it is
-    killed and the start fails, `server-missing`;
+    search, `HOME` or `NODE_PATH`. A result where a command could write is
+    dropped: in the script, under the sandbox's `$HOME`, `$TMPDIR`, `/tmp`
+    or `/var/tmp`; in the engine, under a session root or the host's home
+    folder. Both exempt Abhed's toolchain cache (`toolchain.DefaultRoot()`,
+    mounted read-only at its host path in containers), so the toolchain's
+    own TypeScript is taken on every tier. No result within 15 s, or the
+    process ending first: it is killed and the start fails,
+    `server-missing`;
   - gopls, basedpyright: their defaults (`null`).
   What each may still run inside the sandbox: gopls runs `go list` (and, for
   cgo packages, the cgo tool and the C compiler), no project code;
@@ -1205,7 +1222,7 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   server as the engine's settings above. A refused answer to a request the
   server is waiting on also sends the server an error answer for that id.
 - URIs are checked in URI positions only (`uri`, `oldUri`, `newUri`,
-  `targetUri`, `rootUri`, `scopeUri`, `baseUri`, gopls's `URI` command
+  `targetUri`, `rootUri`, `scopeUri`, `baseUri`, `sourceUri`, gopls's `URI` command
   argument, the keys of a WorkspaceEdit's `changes` and of a report's
   `relatedDocuments`, and `rootPath`): one there that is not an absolute
   `file:` URI (a bare or percent-encoded path, another scheme), is under a
@@ -1223,7 +1240,10 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   object with `changes` or `documentChanges`) is never trimmed: with any
   file or file operation outside or in `.abhed`, it is outside as a whole,
   so a rename's answer is `null` and a code action carrying it is dropped
-  from its list; an edit is applied whole or not at all. A request
+  from its list; an edit is applied whole or not at all. A Command (a
+  `command` name with `arguments`) is the same: its arguments are
+  positional, so one naming anything outside is dropped whole, with the code
+  action, code lens or completion item carrying it. A request
   naming one, a `workspace/applyEdit` whose create, rename, delete or edit
   is outside or in `.abhed` included, is answered with an error and never
   reaches Studio; a request reusing an id still waiting for Studio's answer
@@ -1234,7 +1254,7 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   a `send` is `-32002` ("restarting"), not queued. `stop` sends `shutdown`
   and `exit` and ends it after three seconds. `lsp.stopped` records the
   reason (`stopped`, `closed` with its session or connection, `crashed`,
-  `failed`) and the counts of messages passed and refused; requests are not
+  `failed`, `workspace-config-changed`) and the counts of messages passed and refused; requests are not
   recorded singly.
 - Messages are read by their exact keys: one with a key twice, or two keys
   equal under Unicode case folding (`ſ` is `s`, `K` is `k`, as Go's

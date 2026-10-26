@@ -859,12 +859,16 @@ keep their defaults. Set a server's other options on its command line in
 settings for its language.
 
 typescript-language-server starts only once the TypeScript installed beside
-it is found (in the server's own install, never the home folder or the
-workspace); without one the start is refused with 409. A
+it is found (in the server's own install, never where a command could have
+put it: the workspace, or a home or temporary folder outside Abhed's
+toolchain cache); without one the start is refused with 409. A
 `rust-analyzer.toml` or `.rust-analyzer.toml` in or above the session's
 folders would override rust-analyzer's settings, and the workbench has no
 one to ask on the spot, so rust-analyzer is not started (409, naming the
-file): start it from Abhed Studio, which asks you, or remove the file.
+file, or saying the check could not look at every folder): start it from
+Abhed Studio, which asks you, or remove the file. One that appears or
+changes while it runs (checked every 10 seconds in the session's folders
+and the folders above them), or that the editor opens or saves, stops it.
 Every language server runs with `GOTOOLCHAIN=local`, which the record of its
 start notes, so a `toolchain` line in a `go.mod`, saved or only typed in the
 editor, cannot have the go command fetch and run another Go; whatever else

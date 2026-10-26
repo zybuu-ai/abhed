@@ -146,7 +146,9 @@ func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, arg
 // policy and the supervisor would let it run: for an action the engine
 // knows a workspace file can change, such as a rust-analyzer.toml that
 // overrides the engine's settings. It is recorded as an ask at step
-// "workspace"; no ask, an error or no answer refuses it.
+// "workspace"; no ask, an error or no answer refuses it. When the
+// supervisor asks about it too, the one question it puts carries both
+// reasons, and both are recorded with it.
 func (l *Loop) ManualAuthorizeAsking(ctx context.Context, call, id string, args json.RawMessage, ask ManualAsk, why string) (tools.Tool, *tools.Result, error) {
 	tool, found := l.Tools.Get(call)
 	if !found {
@@ -164,6 +166,11 @@ func (l *Loop) ManualAuthorizeAsking(ctx context.Context, call, id string, args 
 	if l.Monitor != nil && decision.Decision != policy.Deny {
 		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
 		if decision.Decision == policy.Ask && decision.Step == "monitor" {
+			// One question carries both reasons: the person answering the
+			// supervisor also hears what the workspace changes.
+			if why != "" {
+				decision.Reason += "; and " + why
+			}
 			var ok bool
 			err := errors.New("no one to ask")
 			if ask != nil {

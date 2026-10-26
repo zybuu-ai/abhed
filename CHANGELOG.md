@@ -171,18 +171,23 @@ All notable changes to Abhed are recorded here. The format follows
   permission request); the engine initializes it with its own settings,
   which turn off rust-analyzer's build scripts, proc macros and check on
   save and pin typescript-language-server to the TypeScript installed
-  beside it (looked for only in the server's own install, never the home
-  folder, `NODE_PATH` or the workspace; without one the start fails), and
-  the guide says what each server may still run in the sandbox. A workspace
+  beside it (looked for only in the server's own install, never
+  `NODE_PATH`, the workspace or a home or temporary folder outside Abhed's
+  toolchain cache; without one the start fails), and the guide says what
+  each server may still run in the sandbox. A workspace
   `rust-analyzer.toml`, which would override those settings, makes
-  rust-analyzer's start a question to you in Studio (no answer is no). Only standard
+  rust-analyzer's start a question to you in Studio (no answer is no; a
+  check that could not look everywhere asks too, and a supervisor's
+  question on the same start is folded into it), and one that appears or
+  changes while it runs stops it, so the next start asks again. Only standard
   LSP methods pass from Studio (rust-analyzer's own methods that run cargo
   are refused), as do no settings changes, no commands that could run
   programs, and no file URIs outside the session's folders or in `.abhed`,
   links followed; the server's requests to open a page or edit an outside
   file are answered by the engine, and from its notifications and answers
-  each item naming an outside file is dropped; an edit it proposes that
-  touches an outside file is dropped whole, never applied in part. A crashed server is restarted with a
+  each item naming an outside file is dropped; an edit or command it
+  proposes that names an outside file is dropped whole, never applied or
+  run in part. A crashed server is restarted with a
   backoff. Starts and ends are recorded as `lsp.started` and `lsp.stopped`,
   with message counts, and counted in the metrics. The workbench's editor
   shares the same relay: what its page sends a server is now kept to the

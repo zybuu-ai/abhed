@@ -636,7 +636,13 @@ func TestLSPTypeScriptPinned(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 not installed")
 	}
-	top := t.TempDir()
+	// Abhed's toolchain cache, under the home folder as it really is.
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache", "abhed", "toolchains")
+	oldRoot := lspToolchainRoot
+	lspToolchainRoot = func() string { return cache }
+	t.Cleanup(func() { lspToolchainRoot = oldRoot })
+	top := filepath.Join(cache, "darwin-arm64", "node", "22.20.0")
 	bin := filepath.Join(top, "bin", "typescript-language-server")
 	script := filepath.Join(top, "fake.py")
 	for path, body := range map[string]string{
@@ -670,7 +676,70 @@ func TestLSPTypeScriptPinned(t *testing.T) {
 	if err := os.WriteFile(ts, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HOME", home)
 	if rec := start(); rec.Code != http.StatusOK {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	// Under the home folder but outside the cache, it is refused.
+	lspToolchainRoot = func() string { return filepath.Join(home, "elsewhere") }
+	if rec := start(); rec.Code != http.StatusConflict {
+		t.Fatalf("a TypeScript under home outside the cache was taken: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A rust-analyzer.toml that appears while rust-analyzer runs, or that the
+// page opens or saves, stops it; the next start is refused while it is there.
+func TestLSPRustAnalyzerStopsOnConfigChange(t *testing.T) {
+	oldEvery := lsprelay.RustAnalyzerWatchEvery
+	lsprelay.RustAnalyzerWatchEvery = 50 * time.Millisecond
+	t.Cleanup(func() { lsprelay.RustAnalyzerWatchEvery = oldEvery })
+	script := filepath.Join(t.TempDir(), "fake_lsp.py")
+	if err := os.WriteFile(script, []byte(fakeLSP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bench := func() *workbench {
+		wb, _ := lspBench(t, "process", func(c *config.Config) {
+			py, _ := exec.LookPath("python3")
+			c.Sandbox.LanguageServers["rust"] = []string{py, script}
+		})
+		return wb
+	}
+	stoppedFor := func(wb *workbench) bool {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			for _, e := range wb.events() {
+				if e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "stopped: workspace-config-changed") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	// The watch.
+	wb := bench()
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"}); rec.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	if err := os.WriteFile(filepath.Join(wb.workspace, "rust-analyzer.toml"), []byte("[procMacro]\nenable = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !stoppedFor(wb) {
+		t.Fatal("a new rust-analyzer.toml did not stop the server")
+	}
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"}); rec.Code != http.StatusConflict {
+		t.Fatalf("restarted with the file there: %d %s", rec.Code, rec.Body)
+	}
+	// The page saving one.
+	wb = bench()
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"})
+	var start lspStartResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	save := map[string]any{"jsonrpc": "2.0", "method": "textDocument/didSave", "params": map[string]any{"textDocument": map[string]any{"uri": "file://" + wb.workspace + "/crates/a/rust-analyzer.toml"}}}
+	if rec := wb.send("acme", "POST", "lsp/"+start.ID, save); rec.Code != http.StatusConflict {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	if !stoppedFor(wb) {
+		t.Fatal("saving a rust-analyzer.toml did not stop the server")
 	}
 }

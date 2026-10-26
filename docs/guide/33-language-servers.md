@@ -44,7 +44,7 @@ with the engine's settings:
 | Server | Settings the engine sends | What it may still run |
 |---|---|---|
 | gopls | its defaults | `go list`, to load packages (and, for packages that use cgo, the cgo tool and the C compiler); no project code |
-| rust-analyzer | build scripts, proc macros, check on save and cargo's autoreload off | `cargo metadata`, which reads the workspace's `.cargo/config.toml` and can run a `rustc` or `rustc-wrapper` it names; no `build.rs`, proc macro or `cargo check` |
+| rust-analyzer | build scripts, proc macros, check on save and cargo's autoreload off | `cargo metadata`, which reads the workspace's `.cargo/config.toml` and can run a `rustc` or `rustc-wrapper` it names; no `build.rs`, proc macro or `cargo check` unless a workspace `rust-analyzer.toml` you allowed turns them on (below) |
 | typescript-language-server | `tsserver.path` set to the TypeScript installed beside the server | that TypeScript; never the workspace's `node_modules/typescript` (with none beside the server, starting it fails and says to install one) |
 | basedpyright | its defaults | the Python interpreter it finds (the sandbox's `python3`, or one a `pyrightconfig.json` names) to read its import paths |
 
@@ -61,9 +61,14 @@ server's own install, and nowhere else: Abhed's toolchain layout
 package's `lib/cli.mjs`). In each it takes the package's own
 `node_modules/typescript` or the `typescript` package beside it. There is
 no module search, so neither the home folder's node folders, `NODE_PATH`
-nor the workspace can supply it, and one under the home folder or a session
-folder is refused. If none is found within 15 seconds, or the server ends
-first, it is stopped and the start fails with `server-missing`.
+nor the workspace can supply it. One where a command could have put it is
+refused: under a session folder, the sandbox's home or temporary folder
+(`$HOME`, `$TMPDIR`, `/tmp`, `/var/tmp`), or the host's home folder. Abhed's
+toolchain cache (`~/.cache/abhed/toolchains`, or under `XDG_CACHE_HOME`) is
+the exception: commands only read it, so the TypeScript that
+`abhed toolchain install -lsp node` puts there is used, on every tier. If
+none is found within 15 seconds, or the server ends first, it is stopped and
+the start fails with `server-missing`.
 
 **A workspace `rust-analyzer.toml`.** rust-analyzer reads
 `rust-analyzer.toml` and `.rust-analyzer.toml` ahead of the editor's
@@ -72,7 +77,25 @@ above it) could turn build scripts and proc macros back on. When there is
 one, starting rust-analyzer is put to you as a permission request that names
 the files and says they override Abhed's settings: Allow once starts it,
 Deny or no answer does not. The question and your answer are recorded with
-the start (step `workspace`).
+the start (step `workspace`). When the supervisor has its own question about
+the start, you get one question with both reasons, recorded together.
+
+The check walks each session folder (skipping `target`, `node_modules` and
+`.git`), counting links with the name too. If the walk stops at its bounds
+(50,000 entries, or folders more than 12 levels deep), Abhed could not look
+everywhere, and asks you as if it had found one, saying so.
+
+The check is repeated while rust-analyzer runs. It is stopped (status
+`ended`, reason `workspace-config-changed`, recorded) when:
+
+- the agent or a subagent writes or edits a `rust-analyzer.toml`;
+- Studio reports one opened, saved, changed, created or renamed;
+- every 10 seconds, a `rust-analyzer.toml` appears, changes or goes in a
+  session folder or a folder above it, or one found at the start changes.
+
+Its next start asks you again. A file a command writes deeper in the tree,
+which Studio does not report, is seen at the next start; until then the
+running server may read it.
 
 ## What is judged and recorded
 

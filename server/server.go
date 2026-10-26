@@ -36,6 +36,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/metrics"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -509,6 +510,8 @@ type liveSession struct {
 	// time closeTerminals stops them.
 	lsps   map[string]*lspRun
 	lspGen int
+	// raConfigs is the last rust-analyzer.toml check for the editor.
+	raConfigs lsprelay.RustAnalyzerConfigCache
 	// unclaimed is a finished session opened from its record to view: its
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
