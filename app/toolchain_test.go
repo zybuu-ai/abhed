@@ -163,3 +163,26 @@ func TestStudioToolchains(t *testing.T) {
 		t.Fatal("cancelled an install that was not running")
 	}
 }
+
+// Studio's lines terminal, which its Run and Test buttons use, finds the
+// installed toolchains as the agent's commands do, and a missing program's
+// line says which language Abhed installs.
+func TestStudioLinesTerminalGetsTheToolchains(t *testing.T) {
+	fakeGoSource(t)
+	r := newStudioRig(t, "")
+	id := r.open()
+	var done struct {
+		Version string `json:"version"`
+	}
+	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i1"}, &done)
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "go version\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "go1.22.5")
+	from = r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cargo build\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "toolchain tool")
+}

@@ -225,3 +225,29 @@ func (s *Session) OpenRegistriesFor(lang, surface string, record func(agent.Tool
 	}
 	return strings.TrimSpace(note)
 }
+
+// ShellSetup is bash run once in an interactive terminal before its first
+// prompt: the active toolchains on PATH, as a command gets them, and a
+// command_not_found_handle that says which language Abhed can install for a
+// missing program. It still exits 127, which a client reads as "missing".
+func (s *Session) ShellSetup(dir string) string {
+	var b strings.Builder
+	b.WriteString(s.Prelude(dir))
+	b.WriteString("command_not_found_handle() { case \"$1\" in ")
+	for _, l := range Langs {
+		note := s.personNote(dir, l)
+		fmt.Fprintf(&b, "%s) printf '%%s\\n' %s >&2;; ", strings.Join(l.Programs, "|"), shellQuote(note))
+	}
+	b.WriteString("esac; printf 'bash: %s: command not found\\n' \"$1\" >&2; return 127; }; ")
+	return b.String()
+}
+
+// personNote is what a person at a terminal is told of a missing program.
+func (s *Session) personNote(dir string, l Lang) string {
+	if s.Off {
+		return "abhed: " + l.Display + " is not installed in this sandbox, and installing toolchains is turned off here (sandbox.toolchains off)."
+	}
+	spec, why := Choose(Spec{Lang: l.Name}, PinsFrom(dir))
+	return fmt.Sprintf("abhed: %s is not installed in this sandbox. Abhed installs %s (%s) from its official source: ask the agent, "+
+		"or run `abhed toolchain install %s` in your own terminal, then open a new terminal.", l.Display, spec.String(), why, spec.String())
+}
