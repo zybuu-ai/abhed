@@ -138,6 +138,16 @@ type ManualAsk func(ctx context.Context, decision policy.Result) (bool, error)
 // raised is put to the person with ask, and the action goes ahead only on
 // their approval. No ask, an error or no answer refuses it.
 func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, args json.RawMessage, ask ManualAsk) (tools.Tool, *tools.Result, error) {
+	return l.ManualAuthorizeAsking(ctx, call, id, args, ask, "")
+}
+
+// ManualAuthorizeAsking is ManualAuthorizeReviewed that also puts the
+// action to the person, with why as the reason, whenever why is set and
+// policy and the supervisor would let it run: for an action the engine
+// knows a workspace file can change, such as a rust-analyzer.toml that
+// overrides the engine's settings. It is recorded as an ask at step
+// "workspace"; no ask, an error or no answer refuses it.
+func (l *Loop) ManualAuthorizeAsking(ctx context.Context, call, id string, args json.RawMessage, ask ManualAsk, why string) (tools.Tool, *tools.Result, error) {
 	tool, found := l.Tools.Get(call)
 	if !found {
 		return nil, nil, fmt.Errorf("unknown tool %q", call)
@@ -167,6 +177,22 @@ func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, arg
 			default:
 				answer = Declined
 			}
+		}
+	}
+	if why != "" && decision.Decision != policy.Deny && answer == Unanswered {
+		decision = policy.Result{Decision: policy.Ask, Reason: why, Step: "workspace"}
+		var ok bool
+		err := errors.New("no one to ask")
+		if ask != nil {
+			ok, err = ask(ctx, decision)
+		}
+		switch {
+		case err != nil:
+			decision = policy.Result{Decision: policy.Deny, Reason: why + "; not answered", Step: "unanswered"}
+		case ok:
+			answer = Confirmed
+		default:
+			answer = Declined
 		}
 	}
 	refused, err := l.manualDecide(call, id, args, decision, answer)
@@ -232,7 +258,7 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 }
 
 func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
-	asked := answer != Unanswered && decision.Decision == policy.Ask && (decision.Step == "destructive" || decision.Step == "monitor")
+	asked := answer != Unanswered && decision.Decision == policy.Ask && (decision.Step == "destructive" || decision.Step == "monitor" || decision.Step == "workspace")
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
 		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Offer(), RequiresApproval: asked,
 	}); err != nil {

@@ -53,6 +53,27 @@ answers whenever the server asks for its settings, whatever Studio answers.
 A command your operator names in `sandbox.language_servers` is the
 operator's choice; the settings above still apply by language.
 
+**The TypeScript beside the server.** Before typescript-language-server
+starts, the engine looks for `tsserver.js` in two explicit places under the
+server's own install, and nowhere else: Abhed's toolchain layout
+(`<top>/bin/typescript-language-server`, with the packages in
+`<top>/lib/node_modules`) and npm's global layout (the command links to the
+package's `lib/cli.mjs`). In each it takes the package's own
+`node_modules/typescript` or the `typescript` package beside it. There is
+no module search, so neither the home folder's node folders, `NODE_PATH`
+nor the workspace can supply it, and one under the home folder or a session
+folder is refused. If none is found within 15 seconds, or the server ends
+first, it is stopped and the start fails with `server-missing`.
+
+**A workspace `rust-analyzer.toml`.** rust-analyzer reads
+`rust-analyzer.toml` and `.rust-analyzer.toml` ahead of the editor's
+settings, so one in a session folder (any folder under it, or any folder
+above it) could turn build scripts and proc macros back on. When there is
+one, starting rust-analyzer is put to you as a permission request that names
+the files and says they override Abhed's settings: Allow once starts it,
+Deny or no answer does not. The question and your answer are recorded with
+the start (step `workspace`).
+
 ## What is judged and recorded
 
 Starting a server is your `bash` call: its command line is put to policy and
@@ -78,20 +99,30 @@ After that, what passes:
   gets an error answer, as from the server; each refusal is counted.
 - **The server's messages** go to Studio except a request to open a page or a
   file outside the workspace (`window/showDocument`), which the engine
-  answers itself with `success: false`; notifications about files outside the
-  workspace, which are dropped; and answers naming them, which reach Studio
-  as `null`. Edits the server proposes (`workspace/applyEdit`) go to Studio,
+  answers itself with `success: false`. In notifications and answers, each
+  item naming a file outside the workspace is dropped and the rest kept: a
+  definition in the standard library leaves the workspace's results, a
+  diagnostic's related information in a dependency leaves the diagnostic,
+  and a related document outside leaves the report. A notification that is
+  about an outside file as a whole is dropped; such an answer reaches
+  Studio as `null`. Edits the server proposes (`workspace/applyEdit`) go to Studio,
   which applies them to your buffers, unless one creates, renames, deletes
   or edits a file outside the session's folders or in a `.abhed` folder,
   which the engine refuses before Studio sees it; saving them is your
   write, as any save is. When the server asks for its settings, it is
-  answered with the engine's whatever Studio replies.
+  answered with the engine's whatever Studio replies. When Studio's answer
+  to a request of the server's names a file outside, the server gets an
+  error answer instead, so it does not wait.
 
 A file counts as inside only when its URI is an absolute `file:` URI under
 one of the session's folders, outside any `.abhed` folder, and still inside
 with links followed: a bare or percent-encoded path, another scheme, or a
 link in the workspace that leads out is outside. Only URI positions are
-checked; a document whose text starts with `file:` is just text.
+checked (`uri` and its kin, gopls's `URI` command arguments, the keys of
+`changes` and `relatedDocuments`); a document whose text starts with `file:`
+is just text. A link (a document link's `target`, a diagnostic's
+`codeDescription.href`) may also be `http` or `https`; a `file:` link must be
+inside, and any other scheme is outside.
 
 Everything a server sends is treated as untrusted: it runs on the
 workspace's code. Each message is read by its exact keys, and one with a key

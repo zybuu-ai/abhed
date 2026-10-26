@@ -95,9 +95,14 @@ func TestFromServer(t *testing.T) {
 	if fwd, reply = f.FromServer([]byte(`{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///usr/lib/go/x.go","diagnostics":[]}}`)); fwd != nil || reply != nil {
 		t.Fatalf("outside diagnostics: %s %s", fwd, reply)
 	}
-	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":3,"result":[{"uri":"file:///usr/lib/go/src/fmt/print.go"}]}`))
+	// An outside entry is dropped from a list; a lone outside answer is null.
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":3,"result":[{"uri":"file:///usr/lib/go/src/fmt/print.go"},{"uri":"file:///w/a.go"}]}`))
 	var m map[string]json.RawMessage
-	if json.Unmarshal(fwd, &m) != nil || string(m["result"]) != "null" || string(m["id"]) != "3" {
+	if json.Unmarshal(fwd, &m) != nil || string(m["result"]) != `[{"uri":"file:///w/a.go"}]` || string(m["id"]) != "3" {
+		t.Fatalf("outside entry: %s", fwd)
+	}
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":5,"result":{"uri":"file:///usr/lib/go/src/fmt/print.go"}}`))
+	if json.Unmarshal(fwd, &m) != nil || string(m["result"]) != "null" {
 		t.Fatalf("outside answer: %s", fwd)
 	}
 	if fwd, reply = f.FromServer([]byte(`{"jsonrpc":"2.0","id":4,"result":{"contents":"ok"}}`)); string(fwd) == "" || reply != nil {
@@ -280,8 +285,19 @@ func TestScriptRunsUnderTheShells(t *testing.T) {
 		}
 	}
 	write("gopls", `echo "argv=$* GOTOOLCHAIN=$GOTOOLCHAIN GOFLAGS=[$GOFLAGS] GOENV=$GOENV"`)
-	write("typescript-language-server", `echo "ts argv=$*"`)
-	write("node", `printf /opt/ts/lib/tsserver.js`)
+	// npm's global layout: bin links to the package's lib/cli.mjs, with
+	// TypeScript beside the package.
+	prefix := t.TempDir()
+	pkg := filepath.Join(prefix, "lib", "node_modules", "typescript-language-server")
+	ts := filepath.Join(prefix, "lib", "node_modules", "typescript", "lib", "tsserver.js")
+	for _, f := range []string{filepath.Join(pkg, "lib", "cli.mjs"), ts} {
+		_ = os.MkdirAll(filepath.Dir(f), 0o755)
+		_ = os.WriteFile(f, []byte("#!/bin/sh\necho \"ts argv=$*\"\n"), 0o755)
+	}
+	if err := os.Symlink(filepath.Join(pkg, "lib", "cli.mjs"), filepath.Join(bin, "typescript-language-server")); err != nil {
+		t.Fatal(err)
+	}
+	realTS, _ := filepath.EvalSymlinks(ts)
 	for _, shell := range []string{"/bin/bash", "/bin/sh"} {
 		if _, err := os.Stat(shell); err != nil {
 			continue
@@ -304,19 +320,106 @@ func TestScriptRunsUnderTheShells(t *testing.T) {
 			t.Fatalf("%s gopls: %d %q %q", shell, code, out, errOut)
 		}
 		out, errOut, code = run(Script([]string{"typescript-language-server", "--stdio"}))
-		if code != 0 || !strings.Contains(out, "ts argv=--stdio") || !strings.Contains(errOut, TSServerMarker+"/opt/ts/lib/tsserver.js") {
+		if code != 0 || !strings.Contains(out, "ts argv=--stdio") || !strings.Contains(errOut, TSServerMarker+realTS) {
 			t.Fatalf("%s typescript: %d %q %q", shell, code, out, errOut)
 		}
 		if _, _, code = run(Script([]string{"rust-analyzer"})); code != ExitNoServer {
 			t.Fatalf("%s missing server exited %d", shell, code)
 		}
 	}
-	write("node", `exit 0`)
+	// With nothing beside the server, no other TypeScript is taken: not one
+	// planted in HOME's node folders, nor one NODE_PATH names.
+	if err := os.RemoveAll(filepath.Join(prefix, "lib", "node_modules", "typescript")); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	planted := filepath.Join(home, ".node_modules", "typescript", "lib", "tsserver.js")
+	_ = os.MkdirAll(filepath.Dir(planted), 0o755)
+	_ = os.WriteFile(planted, nil, 0o644)
 	cmd := exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}))
-	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home, "NODE_PATH=" + filepath.Join(home, ".node_modules")}
+	var se strings.Builder
+	cmd.Stderr = &se
 	err := cmd.Run()
 	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != ExitNoTypeScript || strings.Contains(se.String(), TSServerMarker) {
+		t.Fatalf("no TypeScript beside the server: %v %q", err, se.String())
+	}
+	// One beside the server but under HOME is refused too.
+	homeBin := filepath.Join(home, "npm", "bin")
+	homePkg := filepath.Join(home, "npm", "lib", "node_modules")
+	_ = os.MkdirAll(homeBin, 0o755)
+	for _, f := range []string{filepath.Join(homePkg, "typescript-language-server", "lib", "cli.mjs"), filepath.Join(homePkg, "typescript", "lib", "tsserver.js")} {
+		_ = os.MkdirAll(filepath.Dir(f), 0o755)
+		_ = os.WriteFile(f, []byte("#!/bin/sh\n"), 0o755)
+	}
+	_ = os.Symlink(filepath.Join(homePkg, "typescript-language-server", "lib", "cli.mjs"), filepath.Join(homeBin, "typescript-language-server"))
+	cmd = exec.Command("/bin/sh", "-c", Script([]string{"typescript-language-server", "--stdio"}))
+	cmd.Env = []string{"PATH=" + homeBin + ":/usr/bin:/bin", "HOME=" + home}
+	err = cmd.Run()
 	if !errors.As(err, &ee) || ee.ExitCode() != ExitNoTypeScript {
-		t.Fatalf("no TypeScript beside the server: %v", err)
+		t.Fatalf("a TypeScript under HOME was taken: %v", err)
+	}
+}
+
+// Links, related documents and gopls's command arguments are checked like
+// any URI, and an outside item is dropped while the rest of the message is
+// kept.
+func TestLinksRelatedAndArguments(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	result := func(fwd []byte) string {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(fwd, &m) != nil {
+			t.Fatalf("not a message: %s", fwd)
+		}
+		return string(m["result"])
+	}
+	fwd, _ := f.FromServer([]byte(`{"jsonrpc":"2.0","id":1,"result":[` +
+		`{"range":{},"target":"https://pkg.go.dev/fmt"},` +
+		`{"range":{},"target":"file:///etc/passwd"},` +
+		`{"range":{},"target":"vscode://x"},` +
+		`{"range":{},"target":"file:///w/b.go"}]}`))
+	if got := result(fwd); got != `[{"range":{},"target":"https://pkg.go.dev/fmt"},{"range":{},"target":"file:///w/b.go"}]` {
+		t.Errorf("document links: %s", got)
+	}
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":2,"result":{"kind":"full","items":[],"relatedDocuments":{"file:///usr/lib/x.go":{"kind":"full","items":[]},"file:///w/c.go":{"kind":"full","items":[]}}}}`))
+	if got := result(fwd); strings.Contains(got, "/usr/lib") || !strings.Contains(got, "file:///w/c.go") {
+		t.Errorf("related documents: %s", got)
+	}
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///w/a.go","diagnostics":[` +
+		`{"message":"a","codeDescription":{"href":"file:///etc/shadow"}},` +
+		`{"message":"b","relatedInformation":[{"location":{"uri":"file:///usr/lib/go/x.go"},"message":"r1"},{"location":{"uri":"file:///w/d.go"},"message":"r2"}]}]}}`))
+	if s := string(fwd); strings.Contains(s, "/etc/shadow") || strings.Contains(s, "/usr/lib") || !strings.Contains(s, `"r2"`) || !strings.Contains(s, `"message":"b"`) {
+		t.Errorf("diagnostics: %s", s)
+	}
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"gopls.organize_imports","arguments":[{"URI":"file:///etc/passwd"}]}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///w/a.go"},"x":{"target":"file:///etc/passwd"}}}`,
+	} {
+		_, err := f.FromEditor([]byte(body))
+		refusal(t, err)
+	}
+	if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":5,"method":"workspace/executeCommand","params":{"command":"gopls.organize_imports","arguments":[{"URI":"file:///w/a.go"}]}}`)); err != nil {
+		t.Errorf("an inside argument was refused: %v", err)
+	}
+}
+
+// A refused answer to the server's own request still answers it, with an
+// error, so the server does not wait for ever.
+func TestRefusedAnswerAnswersTheServer(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	f.FromServer([]byte(`{"jsonrpc":"2.0","id":"s7","method":"workspace/applyEdit","params":{"edit":{"changes":{"file:///w/a.go":[]}}}}`))
+	_, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":"s7","result":{"applied":false,"failureReason":"see file:///etc/passwd","uri":"file:///etc/passwd"}}`))
+	var r *Refusal
+	if !errors.As(err, &r) || !strings.Contains(string(r.ToServer), `"id":"s7"`) || !strings.Contains(string(r.ToServer), `"error"`) {
+		t.Fatalf("refusal: %#v", err)
+	}
+	if _, err := f.FromEditor([]byte(`{"jsonrpc":"2.0","id":"s7","result":null}`)); err == nil {
+		t.Fatal("the request was still pending after its refused answer")
+	}
+	// An answer to nothing the server asked gets no error answer.
+	_, err = f.FromEditor([]byte(`{"jsonrpc":"2.0","id":"s8","result":{"uri":"file:///etc/passwd"}}`))
+	if !errors.As(err, &r) || r.ToServer != nil {
+		t.Fatalf("unasked: %#v", err)
 	}
 }

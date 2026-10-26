@@ -124,7 +124,9 @@ while the ask waited), `unanswered` (no one answered: the wait timed out, input 
 client could not ask, or the approver failed) or
 `withheld` (the ask's record could not be redacted, so no one was asked) or
 `owner` (the session's owner lost access). `handover` asks again about a
-call a stopped process may already have run.
+call a stopped process may already have run. `workspace` asks about a start
+a workspace file would change, such as rust-analyzer's with a
+`rust-analyzer.toml` ([Language servers](33-language-servers.md)).
 A call a policy layer's rule decided also names the rule and the layer.
 
 ## Findings

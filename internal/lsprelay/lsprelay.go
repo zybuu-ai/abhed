@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -64,11 +65,121 @@ func Script(argv []string) string {
 	script := "command -v " + CommandLine(argv[:1]) + " >/dev/null 2>&1 || { echo 'abhed-lsp: " + strings.ReplaceAll(name, "'", "") +
 		" is not on PATH' >&2; exit " + strconv.Itoa(ExitNoServer) + "; }; "
 	if filepath.Base(name) == "typescript-language-server" {
-		script += `ts=$(node -e 'const p=require("path"),f=require("fs");try{process.stdout.write(require.resolve("typescript/lib/tsserver.js",{paths:[p.dirname(f.realpathSync(process.argv[1]))]}))}catch(e){}' "$(command -v ` + CommandLine(argv[:1]) + `)" 2>/dev/null); ` +
-			`[ -n "$ts" ] || { echo 'abhed-lsp: no TypeScript is installed beside typescript-language-server, and the workspace'"'"'s own is not used' >&2; exit ` + strconv.Itoa(ExitNoTypeScript) + "; }; " +
+		script += TSServerLookup(CommandLine(argv[:1])) +
+			`[ -n "$ts" ] || { echo 'abhed-lsp: no TypeScript is installed beside typescript-language-server, and no other is used' >&2; exit ` + strconv.Itoa(ExitNoTypeScript) + "; }; " +
 			`echo "` + TSServerMarker + `$ts" >&2; `
 	}
 	return script + "exec env " + Env + CommandLine(argv)
+}
+
+// TSServerLookup is shell that sets ts to the tsserver.js installed with the
+// typescript-language-server that command names, or to nothing. It looks
+// only at explicit places under the server's own install, with no module
+// search, so neither HOME's node folders, NODE_PATH nor the workspace can
+// supply it:
+//
+//   - Abhed's toolchain layout: <top>/bin/<server> is a wrapper and the
+//     packages are in <top>/lib/node_modules, so the package is
+//     <bin>/../lib/node_modules/typescript-language-server;
+//   - npm's global layout: <bin>/<server> links to the package's
+//     lib/cli.mjs, so the package is two folders above the link's target.
+//
+// In each package it takes <pkg>/node_modules/typescript or the sibling
+// <pkg>/../typescript, links resolved, and never one under HOME. The
+// engine refuses one under a session root as well.
+func TSServerLookup(command string) string {
+	return `b=$(command -v ` + command + `); r=$(readlink -f "$b" 2>/dev/null) || r=$b; ts=; ` +
+		`for p in "$(dirname "$b")/../lib/node_modules/typescript-language-server" "$(dirname "$(dirname "$r")")"; do ` +
+		`for c in "$p/node_modules/typescript/lib/tsserver.js" "$p/../typescript/lib/tsserver.js"; do ` +
+		`if [ -f "$c" ]; then ts=$(readlink -f "$c" 2>/dev/null) || ts=$c; break 2; fi; done; done; ` +
+		`if [ -n "$HOME" ]; then h=$(cd "$HOME" 2>/dev/null && pwd -P) || h=$HOME; case "$ts" in "$HOME"/*|"$h"/*) ts=;; esac; fi; `
+}
+
+// RustAnalyzerConfigNames are the workspace files rust-analyzer reads its
+// settings from ahead of the editor's (and so the engine's).
+var RustAnalyzerConfigNames = []string{"rust-analyzer.toml", ".rust-analyzer.toml"}
+
+// RustAnalyzerConfigs are the rust-analyzer.toml files that would override
+// the engine's settings for a server on roots: in each root's folders, a
+// bounded walk that skips target, node_modules and .git and follows no
+// link, and in each root's ancestors, which rust-analyzer also reads.
+func RustAnalyzerConfigs(roots []string) []string {
+	var found []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] && len(found) < 16 {
+			seen[p] = true
+			found = append(found, p)
+		}
+	}
+	isFile := func(p string) bool {
+		fi, err := os.Lstat(p)
+		return err == nil && !fi.IsDir()
+	}
+	for _, r := range roots {
+		r = filepath.Clean(r)
+		for dir := filepath.Dir(r); ; dir = filepath.Dir(dir) {
+			for _, n := range RustAnalyzerConfigNames {
+				if p := filepath.Join(dir, n); isFile(p) {
+					add(p)
+				}
+			}
+			if filepath.Dir(dir) == dir {
+				break
+			}
+		}
+		entries := 0
+		_ = filepath.WalkDir(r, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil //nolint:nilerr // an unreadable folder is one the server cannot read either
+			}
+			if entries++; entries > 50000 {
+				return filepath.SkipAll
+			}
+			if d.IsDir() {
+				rel, _ := filepath.Rel(r, p)
+				if rel != "." && (strings.Count(filepath.ToSlash(rel), "/") >= 8 || slices.Contains([]string{"target", "node_modules", ".git"}, d.Name())) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if slices.Contains(RustAnalyzerConfigNames, d.Name()) && d.Type().IsRegular() {
+				add(p)
+			}
+			return nil
+		})
+	}
+	return found
+}
+
+// RustAnalyzerConfigWhy is what the person is told about such files.
+func RustAnalyzerConfigWhy(files []string) string {
+	return "the workspace's " + strings.Join(files, ", ") + " overrides Abhed's rust-analyzer settings: it can turn build scripts, proc macros and " +
+		"check on save back on, and name commands to run (cargo.buildScripts.overrideCommand, check.overrideCommand), inside the sandbox"
+}
+
+// WithinAny reports whether p, or p with links followed, is in or below
+// one of dirs (their links followed too).
+func WithinAny(p string, dirs []string) bool {
+	if p == "" || !filepath.IsAbs(p) {
+		return false
+	}
+	p = filepath.Clean(p)
+	rp := realPath(p)
+	in := func(base, q string) bool {
+		rel, err := filepath.Rel(base, q)
+		return err == nil && (rel == "." || filepath.IsLocal(rel))
+	}
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		d = filepath.Clean(d)
+		if in(d, p) || in(realPath(d), rp) {
+			return true
+		}
+	}
+	return false
 }
 
 // Read reads one Content-Length framed message, its headers bounded in
@@ -207,58 +318,181 @@ func Nulls(raw json.RawMessage) bool {
 }
 
 // uriKeys are the keys whose string value is a URI in the LSP: a
-// document, a location, a file operation, a folder. Only these are checked:
-// text that happens to start with "file:" is a document's content.
+// document, a location, a file operation, a folder, and gopls's command
+// arguments ("URI"). Only these are checked: text that happens to start
+// with "file:" is a document's content.
 var uriKeys = map[string]bool{"uri": true, "oldUri": true, "newUri": true, "targetUri": true,
-	"rootUri": true, "scopeUri": true, "baseUri": true}
+	"rootUri": true, "scopeUri": true, "baseUri": true, "URI": true}
 
-// Inside reports whether every URI in a URI position of raw (uriKeys, the
-// keys of a WorkspaceEdit's changes, and rootPath) names a file under one
-// of roots. A URI there that is not an absolute file URI is outside, as is
-// one under a root's .abhed folder, or one whose real path, links followed,
-// is outside the roots' real paths. Other strings are not looked at.
+// linkKeys are links a person may follow (DocumentLink.target, a
+// diagnostic's codeDescription.href): http and https pass, to the editor's
+// link handling; a file: link must be inside; anything else is outside.
+var linkKeys = map[string]bool{"target": true, "href": true}
+
+// uriMapKeys are objects whose keys are URIs: a WorkspaceEdit's changes,
+// and a diagnostic report's relatedDocuments.
+var uriMapKeys = map[string]bool{"changes": true, "relatedDocuments": true}
+
+// Inside reports whether every URI position of raw (uriKeys, linkKeys,
+// the keys of uriMapKeys objects, and rootPath) is inside the roots. A URI
+// there that is not an absolute file URI is outside (a link may also be
+// http or https), as is one under a root's .abhed folder, or one whose real
+// path, links followed, is outside the roots' real paths.
 func Inside(raw []byte, roots []string) bool {
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
+	v, err := decode(raw)
+	if err != nil {
 		return false
 	}
-	rs := resolveRoots(roots)
-	return walkURIs(v, func(u string) bool { return fileInside(u, rs) }, func(p string) bool { return pathInside(p, rs) })
+	return newChecker(resolveRoots(roots)).inside(v)
 }
 
-func walkURIs(v any, uri, path func(string) bool) bool {
+func decode(raw []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	err := dec.Decode(&v)
+	return v, err
+}
+
+// checker judges URIs against roots, each path's links resolved once.
+type checker struct {
+	roots []root
+	real  map[string]string
+}
+
+func newChecker(roots []root) *checker { return &checker{roots: roots, real: map[string]string{}} }
+
+func (c *checker) uri(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil || !strings.EqualFold(p.Scheme, "file") || p.Opaque != "" || (p.Host != "" && p.Host != "localhost") {
+		return false
+	}
+	return c.path(p.Path)
+}
+
+func (c *checker) link(u string) bool {
+	low := strings.ToLower(u)
+	switch {
+	case strings.HasPrefix(low, "http://"), strings.HasPrefix(low, "https://"):
+		return true
+	case strings.HasPrefix(low, "file:"):
+		return c.uri(u)
+	}
+	return false
+}
+
+// path reports whether the absolute path p (already percent-decoded) is
+// under a root, not in its .abhed folder, and still under it with links
+// followed.
+func (c *checker) path(p string) bool {
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	p = filepath.Clean(p)
+	real, ok := c.real[p]
+	if !ok {
+		real = realPath(p)
+		if len(c.real) < 4096 {
+			c.real[p] = real
+		}
+	}
+	for _, r := range c.roots {
+		if under(r.given, p) && under(r.real, real) {
+			return true
+		}
+	}
+	return false
+}
+
+// self reports whether an object's own URI positions are inside.
+func (c *checker) self(m map[string]any) bool {
+	for k, e := range m {
+		if s, ok := e.(string); ok {
+			switch {
+			case uriKeys[k] && !c.uri(s), linkKeys[k] && !c.link(s), k == "rootPath" && !c.path(s):
+				return false
+			}
+			continue
+		}
+		if mm, ok := e.(map[string]any); ok && uriMapKeys[k] {
+			for f := range mm {
+				if !c.uri(f) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// inside reports whether every object in v is inside.
+func (c *checker) inside(v any) bool {
 	switch x := v.(type) {
 	case []any:
 		for _, e := range x {
-			if !walkURIs(e, uri, path) {
+			if !c.inside(e) {
 				return false
 			}
 		}
 	case map[string]any:
-		for k, e := range x {
-			if s, ok := e.(string); ok {
-				switch {
-				case uriKeys[k] && !uri(s):
-					return false
-				case k == "rootPath" && !path(s):
-					return false
-				}
-				continue
-			}
-			// A WorkspaceEdit's changes name their files as keys.
-			if c, ok := e.(map[string]any); ok && k == "changes" {
-				for f := range c {
-					if !uri(f) {
-						return false
-					}
-				}
-			}
-			if !walkURIs(e, uri, path) {
+		if !c.self(x) {
+			return false
+		}
+		for _, e := range x {
+			if !c.inside(e) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// prune drops from v's arrays each element that names something outside:
+// a location in a dependency, a related piece of information in GOROOT. An
+// object with anything outside, not inside an array, is outside as a whole,
+// except that a URI-keyed map's outside keys are dropped.
+// changed says whether anything was dropped.
+func (c *checker) prune(v any) (out any, outside, changed bool) {
+	switch x := v.(type) {
+	case []any:
+		kept := x[:0:0]
+		for _, e := range x {
+			pe, eo, ec := c.prune(e)
+			if eo {
+				changed = true
+				continue
+			}
+			changed = changed || ec
+			kept = append(kept, pe)
+		}
+		return kept, false, changed
+	case map[string]any:
+		// A map keyed by URI (relatedDocuments) loses its outside keys.
+		for k, e := range x {
+			if mm, ok := e.(map[string]any); ok && uriMapKeys[k] {
+				for u := range mm {
+					if !c.uri(u) {
+						delete(mm, u)
+						changed = true
+					}
+				}
+			}
+		}
+		if !c.self(x) {
+			return nil, true, false
+		}
+		for k, e := range x {
+			pe, eo, ec := c.prune(e)
+			if eo {
+				return nil, true, false
+			}
+			if ec {
+				x[k], changed = pe, true
+			}
+		}
+		return x, false, changed
+	}
+	return v, false, false
 }
 
 // root is a session folder as given and with its links resolved.
@@ -273,33 +507,6 @@ func resolveRoots(roots []string) []root {
 		out = append(out, root{c, realPath(c)})
 	}
 	return out
-}
-
-// fileInside reports whether u is an absolute file URI, on no other host,
-// whose path is under one of roots.
-func fileInside(u string, roots []root) bool {
-	p, err := url.Parse(u)
-	if err != nil || !strings.EqualFold(p.Scheme, "file") || p.Opaque != "" || (p.Host != "" && p.Host != "localhost") {
-		return false
-	}
-	return pathInside(p.Path, roots)
-}
-
-// pathInside reports whether the absolute path p (already percent-decoded)
-// is under a root, not in its .abhed folder, and still under it with links
-// followed.
-func pathInside(p string, roots []root) bool {
-	if !filepath.IsAbs(p) {
-		return false
-	}
-	p = filepath.Clean(p)
-	real := realPath(p)
-	for _, r := range roots {
-		if under(r.given, p) && under(r.real, real) {
-			return true
-		}
-	}
-	return false
 }
 
 // under reports whether p is base or below it, and not in base's .abhed.
@@ -363,6 +570,21 @@ type Filter struct {
 	// asked are the server's requests waiting for the editor, by id: only
 	// those may be answered, and how depends on the request.
 	asked map[string]pending
+	// resolved are Roots with their links followed, worked out once.
+	resolved     []root
+	resolvedOnce sync.Once
+}
+
+// check is a checker for one message, the roots resolved once per Filter.
+func (f *Filter) check() *checker {
+	f.resolvedOnce.Do(func() { f.resolved = resolveRoots(f.Roots) })
+	return newChecker(f.resolved)
+}
+
+// inside is Inside with the Filter's roots.
+func (f *Filter) inside(raw []byte) bool {
+	v, err := decode(raw)
+	return err == nil && f.check().inside(v)
 }
 
 // pending is one of the server's requests waiting for the editor.
@@ -371,10 +593,13 @@ type pending struct {
 	params json.RawMessage
 }
 
-// Refusal is an editor message the filter did not pass, with why.
+// Refusal is an editor message the filter did not pass, with why. ToServer,
+// when set, is the error answer the server gets in place of the editor's
+// refused answer to its request.
 type Refusal struct {
-	ID     json.RawMessage
-	Reason string
+	ID       json.RawMessage
+	Reason   string
+	ToServer []byte
 }
 
 func (r *Refusal) Error() string { return r.Reason }
@@ -556,7 +781,20 @@ func (f *Filter) FromEditor(body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, &Refusal{Reason: err.Error()}
 	}
-	if !Inside(body, f.Roots) {
+	if !f.inside(body) {
+		if m.Method == "" {
+			// A refused answer still answers the server, with an error, so
+			// its request does not wait for ever.
+			f.mu.Lock()
+			_, asked := f.asked[string(m.ID)]
+			delete(f.asked, string(m.ID))
+			f.mu.Unlock()
+			if asked {
+				b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID,
+					"error": map[string]any{"code": -32600, "message": "the editor's answer named a file outside the session's workspace"}})
+				return nil, &Refusal{Reason: "a file outside the session's workspace", ToServer: b}
+			}
+		}
 		return nil, &Refusal{ID: m.ID, Reason: "a file outside the session's workspace"}
 	}
 	if m.Method != "" {
@@ -595,6 +833,12 @@ func (f *Filter) FromEditor(body []byte) ([]byte, error) {
 // configuration is the engine's answer to a workspace/configuration: per
 // item, the Settings for its section, else null.
 func (f *Filter) configuration(params json.RawMessage) json.RawMessage {
+	return Configuration(f.Settings, params)
+}
+
+// Configuration is the answer to a workspace/configuration request's
+// params: per item, settings for its section, else null.
+func Configuration(settings map[string]json.RawMessage, params json.RawMessage) json.RawMessage {
 	var p struct {
 		Items []struct {
 			Section string `json:"section"`
@@ -604,7 +848,7 @@ func (f *Filter) configuration(params json.RawMessage) json.RawMessage {
 	out := make([]json.RawMessage, len(p.Items))
 	for i, it := range p.Items {
 		out[i] = json.RawMessage(`null`)
-		if v, ok := f.Settings[it.Section]; ok {
+		if v, ok := settings[it.Section]; ok {
 			out[i] = v
 		}
 	}
@@ -629,9 +873,10 @@ func (f *Filter) FromServer(body []byte) (forward, reply []byte) {
 	if err != nil {
 		return nil, nil
 	}
-	inside := Inside(body, f.Roots)
 	switch {
 	case m.Method != "" && len(m.ID) > 0: // a request of the server's
+		// Whole or not at all: part of an edit would be the wrong edit.
+		inside := f.inside(body)
 		if m.Method == "window/showDocument" {
 			if uri := stringField(m.Params, "uri"); !strings.HasPrefix(strings.ToLower(uri), "file:") || !inside {
 				// An external page or file is not opened for it.
@@ -662,16 +907,87 @@ func (f *Filter) FromServer(body []byte) (forward, reply []byte) {
 			return nil, b
 		}
 		return body, nil
-	case m.Method != "": // a notification
-		if !inside {
+	case m.Method != "": // a notification: outside entries dropped, or all of it
+		params, ok := f.pruned(m.Params)
+		if !ok {
 			return nil, nil
 		}
-		return body, nil
-	default: // an answer to the editor's request
-		if !inside {
+		if params == nil {
+			return body, nil
+		}
+		m.Params = params
+		b, _ := rebuild(m)
+		return b, nil
+	default: // an answer to the editor's request: outside entries dropped, or null
+		if len(m.Error) > 0 {
+			if f.inside(m.Error) {
+				return body, nil
+			}
 			b, _ := json.Marshal(message{JSONRPC: "2.0", ID: m.ID, Result: json.RawMessage(`null`)})
 			return b, nil
 		}
-		return body, nil
+		result, ok := f.pruned(m.Result)
+		switch {
+		case !ok:
+			result = json.RawMessage(`null`)
+		case result == nil:
+			return body, nil
+		}
+		b, _ := json.Marshal(message{JSONRPC: "2.0", ID: m.ID, Result: result})
+		return b, nil
 	}
+}
+
+// pruned is raw with its outside entries dropped: nil when nothing was,
+// and ok false when raw as a whole is outside.
+func (f *Filter) pruned(raw json.RawMessage) (out json.RawMessage, ok bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	v, err := decode(raw)
+	if err != nil {
+		return nil, false
+	}
+	p, outside, changed := f.check().prune(v)
+	if outside {
+		return nil, false
+	}
+	if !changed {
+		return nil, true
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
+// MarkerWriter passes what it is written to W, and sends the rest of the
+// first line that starts with Marker to Found (buffered, sent once).
+type MarkerWriter struct {
+	W      io.Writer
+	Marker string
+	Found  chan<- string
+	line   []byte
+	sent   bool
+}
+
+func (m *MarkerWriter) Write(p []byte) (int, error) {
+	if !m.sent {
+		for _, c := range p {
+			if c != '\n' {
+				if len(m.line) < 4096 {
+					m.line = append(m.line, c)
+				}
+				continue
+			}
+			if v, ok := strings.CutPrefix(string(m.line), m.Marker); ok {
+				m.Found <- strings.TrimSpace(v)
+				m.sent = true
+				break
+			}
+			m.line = m.line[:0]
+		}
+	}
+	return m.W.Write(p)
 }

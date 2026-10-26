@@ -838,17 +838,33 @@ changing and closing a file, hover, definition, `shutdown`, `exit`,
 such as `workspace/executeCommand`, which can have a server run programs the
 policy never judged, is refused with 403. The server's `initialize` is made by
 Abhed from the workspace and the editor's capabilities, whatever the page
-sent, so `initializationOptions` (where a server such as gopls takes its
-environment and build flags) never reach it, and an answer to the server's
+sent, so the page's `initializationOptions` (where a server such as gopls
+takes its environment and build flags) never reach it; Abhed sends its own
+for the language, as for Abhed Studio
+([Language servers](33-language-servers.md#what-a-server-may-still-run)):
+rust-analyzer's build scripts, proc macros, check on save and autoreload
+off, and typescript-language-server pinned to the TypeScript installed
+beside it. And an answer to the server's
 own requests must be `null` or a list of nulls; any other answer is refused
 with 403. On a tier this version does not
 know, as on none, no server starts. A server's header lines are bounded, and
 a page that falls 16 MiB behind its messages has its stream ended. What
 it says is untrusted: the editor shows hovers and diagnostics as plain
 markdown with hidden characters marked. A definition in another workspace
-file opens it in a tab; one outside the workspace is not offered. Settings a
-server asks the editor for are left at the server's defaults; set a server's
-options in its own files or on its command line in `language_servers`.
+file opens it in a tab; one outside the workspace is not offered. When a
+server asks for its settings (`workspace/configuration`), Abhed answers it
+with the same settings and the page never sees the question; other servers
+keep their defaults. Set a server's other options on its command line in
+`language_servers`; a command the operator names there still gets the
+settings for its language.
+
+typescript-language-server starts only once the TypeScript installed beside
+it is found (in the server's own install, never the home folder or the
+workspace); without one the start is refused with 409. A
+`rust-analyzer.toml` or `.rust-analyzer.toml` in or above the session's
+folders would override rust-analyzer's settings, and the workbench has no
+one to ask on the spot, so rust-analyzer is not started (409, naming the
+file): start it from Abhed Studio, which asks you, or remove the file.
 Every language server runs with `GOTOOLCHAIN=local`, which the record of its
 start notes, so a `toolchain` line in a `go.mod`, saved or only typed in the
 editor, cannot have the go command fetch and run another Go; whatever else
