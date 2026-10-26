@@ -1089,17 +1089,25 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   `launch` itself once `initialize` is answered and keeps its response:
   Studio sees `status: launched` or `status: failed` instead; a failed one's
   `message` carries the adapter's error, its `body.error.format` with the
-  variables filled in, up to 2,000 characters, as untrusted text. Studio's own
+  variables filled in, up to 2,000 bytes, as untrusted text. Every `status`
+  `message` is bounded the same way. Only the first response to the
+  engine's launch is taken as its verdict. Studio's own
   `launch`, `attach`, and a `restart` with arguments are answered with a
   failed DAP response in a `message`; a non-request is `-32602`. The
   engine reads `seq`, `type`, `command`, `request_seq`, `success`,
   `message`, `arguments`, `event` and `body` by their exact keys: a message
-  that repeats one, or has a key differing from one only in case, is
+  that repeats one, or has a key equal to one under Unicode case folding
+  without being it (`Command`, or `argumentſ` with U+017F, which Go's
+  encoding/json in Delve would read as `arguments`), is
   `-32602` from Studio, and from the adapter is dropped, never passed on,
   and counted (`dropped` in the final `status` and in `debug.stopped`).
   `send`s are passed to the adapter in the order the engine read them;
-  Studio need not wait for each reply. A header line over 1 KiB or a header
-  over 8 KiB from the adapter ends the session.
+  Studio need not wait for each reply, and every `send` is answered, those
+  still queued when the session ends with an error. A header line over 1 KiB
+  or a header over 8 KiB from the adapter, or a message it cannot read, ends
+  the session at once: the adapter is ended, `status: failed` says why and
+  `debug.stopped` records `failed`. A launch whose supervisor question is
+  answered after its session closed is not started (`-32000`).
 - The adapter's `runInTerminal` and `startDebugging` never reach Studio: the
   engine answers them with an error (`status: note`); `console` is always
   `internalConsole`.
@@ -1162,7 +1170,8 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   and ends it after three seconds. `lsp.stopped` records the reason and the
   counts of messages passed and refused; requests are not recorded singly.
 - Messages are read by their exact keys: one with a key twice, or two keys
-  that differ only in case, anywhere in it, is refused from Studio and
+  equal under Unicode case folding (`ſ` is `s`, `K` is `k`, as Go's
+  encoding/json matches them), anywhere in it, is refused from Studio and
   dropped from the server. Header lines and their number are bounded, and a
   message is at most 8 MiB.
 - Studio's `send`s reach the server in the order they were read, through one

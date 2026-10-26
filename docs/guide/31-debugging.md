@@ -98,9 +98,12 @@ While the session runs, Studio's messages pass to the adapter, except:
   launched, which Studio gets back as a failed response;
 - anything but requests: the adapter's own requests are the engine's to answer;
 - a message that repeats a key the engine decides on (`type`, `command`,
-  `arguments` and the like) or has one differing only in case: programs
-  differ on which of two such keys they read, so the engine refuses to
-  guess. From the adapter such a message is dropped and counted.
+  `arguments` and the like) or has one equal to it under Unicode case
+  folding without being it (`Command`, or `argumentſ`, which Go's JSON reader
+  in Delve takes as `arguments`): programs differ on which of two such keys
+  they read, so the engine refuses to guess. From the adapter such a message
+  is dropped and counted. Output from the adapter the engine cannot read at
+  all ends the session.
 
 Studio's messages reach the adapter in the order Studio sent them.
 

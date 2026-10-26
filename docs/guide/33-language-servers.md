@@ -57,7 +57,8 @@ After that, what passes:
 
 Everything a server sends is treated as untrusted: it runs on the
 workspace's code. Each message is read by its exact keys, and one with a key
-written twice, or twice but for case, is dropped (from Studio, refused), so
+written twice, or twice but for case (Unicode case folding included, as Go's
+JSON reader matches keys: `ſ` is `s`, `K` is `k`), is dropped (from Studio, refused), so
 the filter and the reader cannot see two different messages. Studio's
 messages reach the server in the order Studio sent them.
 
