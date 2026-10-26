@@ -24,14 +24,23 @@ sandbox with a network of its own:
 
 - **The container tier** (Docker or Podman; on a Mac, the engine's VM) and the
   `vm` tier.
-- **The Linux process tier**, where bubblewrap gives each command its own
-  network namespace.
+- **The Linux process tier, with the sandbox's network closed or
+  allowlisted.** Bubblewrap then gives each command its own network
+  namespace (`--unshare-net`). With the network open
+  (`sandbox.allow_network: true` and no allowlist) it does not, and the
+  adapter's loopback would be the host's, so a launch is refused with steps:
+  close the network, use the allowlist, or use the container tier.
 
 Not the macOS process tier: its loopback is the host's, and opening it would
 let the sandboxed program reach the services on your machine. A launch there
 is refused with a problem that says to use the container tier: start a
 container engine (`podman machine start`), set `"sandbox": {"min_tier":
 "container"}`, and open a new session.
+
+On the Linux process tier the session's commands share one `/tmp`, so
+Delve's socket is put in a folder only the debug command sees (an empty
+filesystem in its own mount namespace, named afresh for each launch), not
+where the agent's other commands could connect to it first.
 
 The debugger must be in the sandbox: Delve for Go, `debugpy` for Python.
 The simplest way is to have Abhed install the language with its debugger
@@ -77,14 +86,23 @@ folder (inside the workspace) and environment you gave. That command line,
 such as `dlv debug /work/cmd/app -- -v` or `python3 -m pytest tests/test_api.py`,
 with any variables in front of it, is put to policy and the supervisor as
 your `bash` call: a deny rule on it refuses the launch, and the supervisor
-may refuse it too. It is recorded as your action, with its decision, and the
-session's end as its observation.
+may refuse it too. A policy question is taken as answered, since you asked
+for the launch; a question the supervisor raises is put to you in Studio as
+a normal permission request, and the session starts only if you allow it.
+It is recorded as your action, with its decision, and the session's end as
+its observation.
 
 While the session runs, Studio's messages pass to the adapter, except:
 
 - a `launch` or `attach` of Studio's own, or a `restart` that changes what was
   launched, which Studio gets back as a failed response;
-- anything but requests: the adapter's own requests are the engine's to answer.
+- anything but requests: the adapter's own requests are the engine's to answer;
+- a message that repeats a key the engine decides on (`type`, `command`,
+  `arguments` and the like) or has one differing only in case: programs
+  differ on which of two such keys they read, so the engine refuses to
+  guess. From the adapter such a message is dropped and counted.
+
+Studio's messages reach the adapter in the order Studio sent them.
 
 The adapter's requests to run something in Studio's terminal
 (`runInTerminal`, `startDebugging`) never reach Studio: they would start a
@@ -93,19 +111,29 @@ an error, and starts the program in the adapter's own console. Breakpoints,
 stepping, variables and `evaluate` work as usual; `evaluate` runs code in the
 program, which is in the sandbox.
 
+A launch the adapter refuses ends with `status: failed` and the adapter's own
+reason, such as Delve's "Go version … is too new", shown as text.
+
 Each session is recorded as `debug.launched` (its id, the person's call id,
 the language, the command line, the tier, and for Go the bridge and whether
-its checksum was pinned) and `debug.stopped` (why it ended, the adapter's exit
-code and how long it ran). Both are in the OCSF export as API activity
+its checksum was pinned) and `debug.stopped` (why it ended: `stopped`,
+`ended`, `failed`, `adapter-missing`, or `closed` with its session; the
+adapter's exit code, how long it ran, and how many of the adapter's messages
+were dropped). Both are in the OCSF export as API activity
 ([OCSF events and logs](30-ocsf-and-logs.md)).
 
 ## Limits
 
 - One connection holds at most four debug sessions; each ends after eight
   hours.
+- One connection counts a launch still being judged against the four.
 - A Go program built for debugging needs a writable build cache in the
   sandbox; pass `GOCACHE=/tmp/gocache` in the environment if the image's home
   folder is read-only.
+- The container tier mounts `/tmp` `noexec`, so a debuggee built into `/tmp`
+  cannot run there. Delve 1.27 builds the program in its working folder,
+  which is fine; an older Delve, or a build you point at `/tmp`, fails at
+  launch.
 - Stopping a session asks the adapter to end the program, and ends the adapter
   if it has not gone within three seconds. Disconnecting from Studio's own
   debug toolbar, or terminating the program, ends the session the same way:

@@ -1,6 +1,6 @@
 package agent
 
-// Events a person's debug session records (docs/guide/16-workbench.md and
+// Events a person's debug session records (docs/guide/31-debugging.md and
 // the editor protocol's _abhed/debug methods). The launch itself is the
 // person's bash call before it, with its decision and observation.
 const (
@@ -31,4 +31,7 @@ type DebugStopped struct {
 	Reason     string `json:"reason"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
+	// Dropped counts the adapter's messages not passed to the editor because
+	// they could not be read unambiguously.
+	Dropped int `json:"dropped,omitempty"`
 }

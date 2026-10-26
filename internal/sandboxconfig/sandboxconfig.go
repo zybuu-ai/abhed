@@ -108,11 +108,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
 	p.MemoryRequired = cfg.Sets("sandbox.max_memory_mb")
 	p.SharedCaches = cfg.Sandbox.SharedCaches
-	// The container tier picks its engine later; either engine's relay serves.
-	p.RelayBinary = cfg.ControlPlane.Podman.RelayBinary
-	if p.RelayBinary == "" {
-		p.RelayBinary = cfg.ControlPlane.Docker.RelayBinary
-	}
+	p.RelayBinary = RelayBinary(cfg)
 	p.ReadableHome = cfg.Sandbox.ReadableHome
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
@@ -480,6 +476,18 @@ func under(spellings, dirs []string) bool {
 		}
 	}
 	return false
+}
+
+// RelayBinary is the Linux build of Abhed a session's sandbox runs inside
+// itself, as the egress relay and the debug bridge: the managed Podman
+// relay_binary, else Docker's. The container tier picks its engine later,
+// and both are managed-only builds of the engine, so either serves; the
+// sandbox and the debug bridge use this one rule.
+func RelayBinary(cfg config.Config) string {
+	if b := cfg.ControlPlane.Podman.RelayBinary; b != "" {
+		return b
+	}
+	return cfg.ControlPlane.Docker.RelayBinary
 }
 
 // NetworkOpen reports whether cfg gives commands the network with no

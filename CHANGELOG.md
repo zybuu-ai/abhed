@@ -132,12 +132,14 @@ All notable changes to Abhed are recorded here. The format follows
 - Debugging in the sandbox for Abhed Studio: the editor protocol's
   `_abhed/debug/launch`, `/send` and `/stop` (the `debug` feature) run Delve
   (Go) or debugpy (Python) inside the session's container tier, or the Linux
-  process tier, and carry its Debug Adapter Protocol messages to Studio over
+  process tier with its network closed or allowlisted, and carry its Debug Adapter Protocol messages to Studio over
   the connection, with no port on the host. The engine builds the launch
   itself: the debuggee's command line is judged by policy and the
-  supervisor as your bash call and recorded, Studio's own launch or attach
-  is refused, and the adapter's requests to run something in Studio's
-  terminal are answered with an error. Delve's socket is carried by a bridge
+  supervisor as your bash call and recorded (a supervisor's question goes
+  to you as a permission request), Studio's own launch or attach is
+  refused, the adapter's requests to run something in Studio's terminal are
+  answered with an error, and a message whose decisive keys repeat or vary
+  in case is refused either way. Delve's socket is carried by a bridge
   mode of the bundled Linux build of Abhed (or `relay_binary`). A session
   ends when the adapter answers Studio's disconnect, or reports the program
   ended after a terminate, as well as on stop. Each session is recorded as `debug.launched` and

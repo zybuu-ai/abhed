@@ -16,8 +16,11 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/dapbridge"
 	"github.com/zybuu-ai/abhed/internal/debugrelay"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
 // A person's debug session (studio-acp-contract.md §7.8): the debug adapter
@@ -29,8 +32,9 @@ func init() {
 	liveFeatures = append(liveFeatures, "debug")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/debug/launch": (*acpConn).debugLaunch,
-		"_abhed/debug/send":   (*acpConn).debugSend,
-		"_abhed/debug/stop":   (*acpConn).debugStop,
+		// _abhed/debug/send is taken in order by serve (debugEnqueue).
+		"_abhed/debug/send": (*acpConn).debugEnqueue,
+		"_abhed/debug/stop": (*acpConn).debugStop,
 	})
 }
 
@@ -65,19 +69,33 @@ type acpDebug struct {
 	cancel              context.CancelFunc
 	started             time.Time
 	done                chan struct{}
-	mu                  sync.Mutex
-	stopped             bool
+	// sends are Studio's messages for the adapter, in the order the
+	// connection read them; one goroutine passes them on.
+	sends   chan rpcMessage
+	mu      sync.Mutex
+	stopped bool
+	// reason is how a stop ended it: stopped, or closed with its session.
+	reason string
 }
 
 // debugTierProblem is why a tier cannot host a debug session, or nil. Only
-// one with its own network namespace can: an adapter talks to its debuggee
-// over loopback, and on the macOS process tier that would be the host's.
-func debugTierProblem(tier string) *debugrelay.Problem {
+// one where the adapter's loopback is not the host's can: an adapter talks
+// to its debuggee over loopback. The container and vm tiers have their own
+// network; the Linux process tier has its own namespace only when the
+// network is closed or allowlisted (bubblewrap's --unshare-net), not when
+// it is open; the macOS process tier never does.
+func debugTierProblem(tier string, iso tools.Isolation) *debugrelay.Problem {
 	switch {
 	case tier == string(sandbox.TierContainer) || tier == string(sandbox.TierVM):
 		return nil
-	case tier == string(sandbox.TierProcess) && runtime.GOOS == "linux":
+	case tier == string(sandbox.TierProcess) && runtime.GOOS == "linux" && !iso.Network:
 		return nil
+	case tier == string(sandbox.TierProcess) && runtime.GOOS == "linux":
+		return &debugrelay.Problem{Kind: debugrelay.KindTier, Retry: true,
+			Message: "a debug session on the Linux process tier needs the sandbox's network closed or allowlisted; with it open the adapter's loopback would be the host's",
+			Steps: []string{"Set \"sandbox\": {\"allow_network\": false} in ~/.abhed/config.json, or use the egress allowlist (\"sandbox\": {\"network\": \"allowlist\"})",
+				"Or use the container tier: set \"sandbox\": {\"min_tier\": \"container\"} with an image that has your debugger",
+				"Open a new session and start the debug session again"}}
 	}
 	return &debugrelay.Problem{Kind: debugrelay.KindTier, Retry: true,
 		Message: fmt.Sprintf("a debug session needs the container tier here; this session's commands run under the %s tier", orDefault(tier, "unknown")),
@@ -152,38 +170,45 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.debugMu.Lock()
-	n := len(c.debugs)
-	c.debugMu.Unlock()
-	if n >= maxDebugs {
+	// A slot is held from here, so parallel launches cannot pass the bound
+	// while one is being judged; every refusal below gives it back.
+	if !c.reserveDebug() {
 		c.reply(msg.ID, nil, refusal(errRefused, "%d debug sessions are open; stop one first", maxDebugs))
 		return
 	}
+	reserved := true
+	defer func() {
+		if reserved {
+			c.releaseDebug()
+		}
+	}()
 	tool, ok := parts.Loop.Tools.Get("bash")
 	b, isBash := tool.(tools.Bash)
 	if !ok || !isBash || b.Sandbox == nil {
-		c.reply(msg.ID, nil, debugRefusal(debugTierProblem("none")))
+		c.reply(msg.ID, nil, debugRefusal(debugTierProblem("none", tools.Isolation{})))
 		return
 	}
 	tier := debugTier(b)
-	if p := debugTierProblem(tier); p != nil {
+	if p := debugTierProblem(tier, b.Isolation); p != nil {
 		c.reply(msg.ID, nil, debugRefusal(p))
 		return
 	}
 	var bridge, bridgePath string
 	var pinned bool
 	if req.Language == debugrelay.Go {
-		relayBin := parts.Config.ControlPlane.Podman.RelayBinary
-		if relayBin == "" {
-			relayBin = parts.Config.ControlPlane.Docker.RelayBinary
-		}
 		var p *debugrelay.Problem
-		if bridge, bridgePath, pinned, p = debugBridge(relayBin); p != nil {
+		if bridge, bridgePath, pinned, p = debugBridge(sandboxconfig.RelayBinary(parts.Config)); p != nil {
 			c.reply(msg.ID, nil, debugRefusal(p))
 			return
 		}
 	}
-	spec, err := debugrelay.Plan(req, parts.Session.Root, bridge)
+	// On the Linux process tier the session's commands share one /tmp, so
+	// Delve's socket goes in a folder only this command sees.
+	var sockDir string
+	if tier == string(sandbox.TierProcess) && req.Language == debugrelay.Go {
+		sockDir = "/run/abhed-dap-" + acpID()
+	}
+	spec, err := debugrelay.Plan(req, parts.Session.Root, bridge, sockDir)
 	var problem *debugrelay.Problem
 	if errors.As(err, &problem) {
 		c.reply(msg.ID, nil, debugRefusal(problem))
@@ -199,7 +224,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	callID := "u" + acpID()
 	args, _ := json.Marshal(map[string]any{"command": spec.Display, "description": "debug a " + req.Language + " program in the session sandbox"})
 	ctx, cancel := context.WithTimeout(context.Background(), debugLife)
-	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args)
+	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args, c.debugAsk(s, callID, spec.Display))
 	if err != nil {
 		cancel()
 		c.reply(msg.ID, nil, refusal(errRecord, "the debug session could not be recorded, so it was not started: %v", err))
@@ -214,6 +239,9 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	lctx := loop.LaunchContext(ctx, callID)
 	if bridgePath != "" {
 		lctx = sandbox.WithReadOnlyPaths(lctx, bridgePath)
+	}
+	if sockDir != "" {
+		lctx = sandbox.WithPrivateDirs(lctx, sockDir)
 	}
 	cmd := debugCommand(b, lctx, spec.Cwd, spec.Command)
 	stdin, err1 := cmd.StdinPipe()
@@ -230,7 +258,8 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "the debug adapter could not start: %v", err))
 		return
 	}
-	d := &acpDebug{id: "dbg-" + acpID(), callID: callID, session: s.id, cancel: cancel, started: time.Now(), done: make(chan struct{})}
+	d := &acpDebug{id: "dbg-" + acpID(), callID: callID, session: s.id, cancel: cancel, started: time.Now(), done: make(chan struct{}),
+		sends: make(chan rpcMessage, debugQueue)}
 	d.relay = debugrelay.New(stdin,
 		spec.Launch,
 		func(m json.RawMessage) {
@@ -256,7 +285,10 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		c.debugs = map[string]*acpDebug{}
 	}
 	c.debugs[d.id] = d
+	c.debugReserved--
+	reserved = false
 	c.debugMu.Unlock()
+	go c.debugSends(d)
 	launched := agent.DebugLaunched{DebugID: d.id, CallID: callID, Language: req.Language, Command: spec.Display, Tier: tier, BridgePinned: pinned}
 	if bridgePath != "" {
 		launched.Bridge = bridgePath
@@ -284,7 +316,7 @@ func (c *acpConn) debugRun(s *acpSession, d *acpDebug, cmd *exec.Cmd, stdout io.
 	d.mu.Lock()
 	reason := "ended"
 	if d.stopped {
-		reason = "stopped"
+		reason = orDefault(d.reason, "stopped")
 	}
 	d.mu.Unlock()
 	state := map[string]any{"debugId": d.id, "state": "ended"}
@@ -296,8 +328,12 @@ func (c *acpConn) debugRun(s *acpSession, d *acpDebug, cmd *exec.Cmd, stdout io.
 		state["state"], state["message"] = "failed", redacted(lastLines(stderr.String(), 20))
 	}
 	exit := code
+	dropped := d.relay.Dropped()
+	if dropped > 0 {
+		state["dropped"] = dropped
+	}
 	s.record(agent.EvDebugStopped, agent.DebugStopped{DebugID: d.id, CallID: d.callID, Reason: reason, ExitCode: &exit,
-		DurationMS: time.Since(d.started).Milliseconds()})
+		DurationMS: time.Since(d.started).Milliseconds(), Dropped: dropped})
 	if s.inner {
 		res := tools.Result{Content: fmt.Sprintf("debug session %s: exit %d", reason, code), ExitCode: &exit, IsError: code != 0 && reason != "stopped", Tier: tier}
 		if tail := lastLines(stderr.String(), 20); tail != "" {
@@ -325,12 +361,57 @@ func (c *acpConn) debugOf(params json.RawMessage) (*acpDebug, *rpcError) {
 	return d, nil
 }
 
-func (c *acpConn) debugSend(msg rpcMessage) {
+// debugQueue bounds the sends one debug session holds while the adapter
+// takes them.
+const debugQueue = 256
+
+// debugEnqueue takes a _abhed/debug/send in the order the connection read
+// it: requests otherwise run on goroutines of their own and could reach the
+// adapter out of order. It does not wait for the adapter.
+func (c *acpConn) debugEnqueue(msg rpcMessage) {
 	d, e := c.debugOf(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
+	select {
+	case <-d.done:
+		c.reply(msg.ID, nil, refusal(errParams, "the debug session has ended"))
+		return
+	default:
+	}
+	c.inflight.Add(1)
+	select {
+	case d.sends <- msg:
+	default:
+		c.inflight.Done()
+		c.reply(msg.ID, nil, refusal(errBusy, "%d messages for this debug session are waiting for the adapter; wait for their replies", debugQueue))
+	}
+}
+
+// debugSends passes a session's messages to the adapter one at a time,
+// and answers those still queued when it ends.
+func (c *acpConn) debugSends(d *acpDebug) {
+	for {
+		select {
+		case msg := <-d.sends:
+			c.debugSend(d, msg)
+			c.inflight.Done()
+		case <-d.done:
+			for {
+				select {
+				case msg := <-d.sends:
+					c.reply(msg.ID, nil, refusal(errParams, "the debug session has ended"))
+					c.inflight.Done()
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *acpConn) debugSend(d *acpDebug, msg rpcMessage) {
 	var p struct {
 		Message json.RawMessage `json:"message"`
 	}
@@ -345,38 +426,92 @@ func (c *acpConn) debugSend(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
+// reserveDebug holds one of the connection's debug slots, or reports that
+// none is free.
+func (c *acpConn) reserveDebug() bool {
+	c.debugMu.Lock()
+	defer c.debugMu.Unlock()
+	if len(c.debugs)+c.debugReserved >= maxDebugs {
+		return false
+	}
+	c.debugReserved++
+	return true
+}
+
+func (c *acpConn) releaseDebug() {
+	c.debugMu.Lock()
+	c.debugReserved--
+	c.debugMu.Unlock()
+}
+
+// debugAsk puts a supervisor's ask about a debug launch to the person, as a
+// permission request Studio shows like any other, and reports whether they
+// allowed it. Only a person's click on Allow allows it.
+func (c *acpConn) debugAsk(s *acpSession, callID, display string) agent.ManualAsk {
+	return func(ctx context.Context, d policy.Result) (bool, error) {
+		once, reject := "once:"+callID, "reject:"+callID
+		meta := map[string]any{"tool": "bash", "step": d.Step, "reason": redacted(d.Reason), "debug": true}
+		title := ui.VisibleLine("debug: " + display)
+		if ui.HasHidden(display) || anyHidden(d.Reason) {
+			title += " (contains hidden or control characters)"
+		}
+		res, err := c.call(ctx, "session/request_permission", map[string]any{
+			"sessionId": s.id,
+			"toolCall": map[string]any{"toolCallId": callID, "title": title, "kind": "execute", "status": "pending",
+				"rawInput": map[string]any{"command": display}, "_meta": map[string]any{acpMetaKey: meta}},
+			"options": []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"},
+				{"optionId": reject, "name": "Deny", "kind": "reject_once"}},
+		})
+		if err != nil {
+			return false, err
+		}
+		var out struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		}
+		if json.Unmarshal(res, &out) != nil || out.Outcome.Outcome != "selected" {
+			return false, errors.New("not answered")
+		}
+		return out.Outcome.OptionID == once, nil
+	}
+}
+
 func (c *acpConn) debugStop(msg rpcMessage) {
 	d, e := c.debugOf(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	d.stop()
+	d.stop("stopped")
 	c.reply(msg.ID, map[string]any{}, nil)
 }
 
 // stop asks the adapter to end the program, and ends the adapter if it has
-// not gone within a few seconds.
-func (d *acpDebug) stop() {
+// not gone within a few seconds. The timer is armed first and the
+// disconnect sent aside, so an adapter that has stopped reading cannot hold
+// the stop, or the session's close, waiting on its input.
+func (d *acpDebug) stop(reason string) {
 	d.mu.Lock()
 	already := d.stopped
-	d.stopped = true
+	d.stopped, d.reason = true, reason
 	d.mu.Unlock()
 	if already {
 		return
 	}
-	_ = d.relay.Disconnect()
 	go func() {
 		select {
 		case <-d.done:
-		case <-time.After(3 * time.Second):
+		case <-time.After(debugEndGrace):
 			d.cancel()
 		}
 	}()
+	go func() { _ = d.relay.Disconnect() }()
 }
 
-// killDebugs stops a session's debug sessions, or every one for "", and
-// waits a moment for them to be recorded.
+// killDebugs stops a session's debug sessions, or every one for "", as
+// closed with it, and waits a moment for them to be recorded.
 func (c *acpConn) killDebugs(sessionID string) {
 	c.debugMu.Lock()
 	var mine []*acpDebug
@@ -387,7 +522,7 @@ func (c *acpConn) killDebugs(sessionID string) {
 	}
 	c.debugMu.Unlock()
 	for _, d := range mine {
-		d.stop()
+		d.stop("closed")
 	}
 	for _, d := range mine {
 		select {

@@ -770,6 +770,9 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		for _, p := range readOnlyPathsOf(ctx) {
 			args = append(args, "--ro-bind", p, p)
 		}
+		for _, p := range privateDirsOf(ctx) {
+			args = append(args, "--tmpfs", p)
+		}
 		// State kept outside .abhed is hidden where a bind above would show
 		// it: a folder by an empty one, a file by /dev/null.
 		for _, p := range s.statePaths() {

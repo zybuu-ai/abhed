@@ -100,8 +100,10 @@ type Spec struct {
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Plan checks r against the workspace and plans its session. bridge is the
-// command that carries Delve's socket over stdio (Go only).
-func Plan(r Request, workspace, bridge string) (Spec, error) {
+// command that carries Delve's socket over stdio (Go only). sockDir is a
+// folder only this command sees, for Delve's socket; "" makes one in the
+// command's /tmp, which on the container tier is its own.
+func Plan(r Request, workspace, bridge, sockDir string) (Spec, error) {
 	bad := func(format string, a ...any) error {
 		return &Problem{Kind: KindArgs, Message: fmt.Sprintf(format, a...)}
 	}
@@ -161,9 +163,13 @@ func Plan(r Request, workspace, bridge string) (Spec, error) {
 		if len(args) == 0 {
 			display = display[:3]
 		}
+		mkdir := "d=$(mktemp -d /tmp/abhed-dap.XXXXXX) || exit 1; "
+		if sockDir != "" {
+			mkdir = "d=" + shellQuote(sockDir) + "; mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; "
+		}
 		return Spec{Cwd: cwd, Launch: launch, Display: strings.TrimSpace(strings.Join(prefix, " ") + " " + quoteAll(display)),
 			Command: "command -v dlv >/dev/null 2>&1 || { echo 'abhed-debug: dlv is not on PATH' >&2; exit " + strconv.Itoa(exitNoDelve) + "; }; " +
-				"d=$(mktemp -d /tmp/abhed-dap.XXXXXX) || exit 1; dlv dap --check-go-version=false --listen \"unix:$d/dap.sock\" >&2 & exec " + bridge + " \"unix:$d/dap.sock\""}, nil
+				mkdir + "dlv dap --check-go-version=false --listen \"unix:$d/dap.sock\" >&2 & exec " + bridge + " \"unix:$d/dap.sock\""}, nil
 	case Python:
 		launch["justMyCode"] = true
 		if r.Program != "" {
@@ -174,6 +180,11 @@ func Plan(r Request, workspace, bridge string) (Spec, error) {
 			launch["program"] = p
 			display = append([]string{"python3", p}, args...)
 		} else {
+			// The path part of a pytest node id (before ::) is in the workspace too.
+			path, _, _ := strings.Cut(r.Test, "::")
+			if _, err := inside(workspace, resolve(cwd, path)); err != nil {
+				return Spec{}, bad("%v", err)
+			}
 			launch["module"] = "pytest"
 			launch["args"] = append([]string{r.Test}, args...)
 			display = append([]string{"python3", "-m", "pytest", r.Test}, args...)
@@ -240,7 +251,11 @@ type Relay struct {
 	toEditor func(json.RawMessage)
 	status   func(state, message string)
 
+	// wmu orders writes to the adapter; mu guards the rest, and is never
+	// held while writing, so a stalled adapter blocks no state change.
+	wmu       sync.Mutex
 	mu        sync.Mutex
+	dropped   int
 	seq       int
 	launchSeq int
 	launched  bool
@@ -275,16 +290,113 @@ func New(adapter io.Writer, launch map[string]any, toEditor func(json.RawMessage
 	return &Relay{adapter: adapter, launch: launch, toEditor: toEditor, status: status, seq: engineSeq}
 }
 
-// header is the part of a DAP message the relay reads.
+// header is the part of a DAP message the relay reads, each field taken by
+// its exact key as the editor (JSON.parse) and the adapters (Python's dict,
+// Go's exact readers) read them.
 type header struct {
-	Seq        int             `json:"seq"`
-	Type       string          `json:"type"`
-	Command    string          `json:"command"`
-	RequestSeq int             `json:"request_seq"`
-	Success    bool            `json:"success"`
-	Message    string          `json:"message"`
-	Arguments  json.RawMessage `json:"arguments"`
-	Event      string          `json:"event"`
+	Seq        int
+	Type       string
+	Command    string
+	RequestSeq int
+	Success    bool
+	Message    string
+	Arguments  json.RawMessage
+	Event      string
+	Body       json.RawMessage
+}
+
+// headerKeys are the keys the relay decides on. A message that holds one
+// twice, or a key that differs from one only in case, is refused: readers
+// differ on which of two they take, and the relay must judge the one the
+// other side acts on.
+var headerKeys = map[string]bool{"seq": true, "type": true, "command": true, "request_seq": true,
+	"success": true, "message": true, "arguments": true, "event": true, "body": true}
+
+// ErrAmbiguous is a message whose decisive keys repeat or differ in case.
+var ErrAmbiguous = errors.New("the message repeats a key, or has one that differs only in case from seq, type, command, request_seq, success, message, arguments, event or body")
+
+// parseHeader reads a message's top-level keys exactly, refusing an ambiguous one.
+func parseHeader(raw []byte) (header, error) {
+	var h header
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	tok, err := dec.Token()
+	if err != nil {
+		return h, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return h, errors.New("not a JSON object")
+	}
+	vals := map[string]json.RawMessage{}
+	folded := map[string]string{}
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return h, err
+		}
+		k, _ := kt.(string)
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return h, err
+		}
+		low := strings.ToLower(k)
+		if _, dup := vals[k]; dup && headerKeys[low] {
+			return h, ErrAmbiguous
+		}
+		if headerKeys[low] {
+			if prev, ok := folded[low]; ok && prev != k || k != low {
+				return h, ErrAmbiguous
+			}
+			folded[low] = k
+		}
+		vals[k] = v
+	}
+	if _, err := dec.Token(); err != nil {
+		return h, err
+	}
+	if dec.More() {
+		return h, errors.New("trailing data")
+	}
+	str := func(k string) (string, error) {
+		v, ok := vals[k]
+		if !ok || string(v) == "null" {
+			return "", nil
+		}
+		var out string
+		if err := json.Unmarshal(v, &out); err != nil {
+			return "", fmt.Errorf("%s is not a string", k)
+		}
+		return out, nil
+	}
+	num := func(k string) (int, error) {
+		v, ok := vals[k]
+		if !ok || string(v) == "null" {
+			return 0, nil
+		}
+		var out int
+		if err := json.Unmarshal(v, &out); err != nil {
+			return 0, fmt.Errorf("%s is not a number", k)
+		}
+		return out, nil
+	}
+	var errs []error
+	var e error
+	h.Type, e = str("type")
+	errs = append(errs, e)
+	h.Command, e = str("command")
+	errs = append(errs, e)
+	h.Message, e = str("message")
+	errs = append(errs, e)
+	h.Event, e = str("event")
+	errs = append(errs, e)
+	h.Seq, e = num("seq")
+	errs = append(errs, e)
+	h.RequestSeq, e = num("request_seq")
+	errs = append(errs, e)
+	if v, ok := vals["success"]; ok {
+		errs = append(errs, json.Unmarshal(v, &h.Success))
+	}
+	h.Arguments, h.Body = vals["arguments"], vals["body"]
+	return h, errors.Join(errs...)
 }
 
 // Refused editor requests: the engine starts the program itself, and nothing
@@ -302,9 +414,9 @@ func (r *Relay) FromEditor(raw json.RawMessage) error {
 	if len(raw) > maxMessage {
 		return errors.New("the message is too large")
 	}
-	var h header
-	if err := json.Unmarshal(raw, &h); err != nil {
-		return fmt.Errorf("not a DAP message: %w", err)
+	h, err := parseHeader(raw)
+	if err != nil {
+		return fmt.Errorf("not a DAP message Abhed can read unambiguously: %w", err)
 	}
 	if h.Type != "request" {
 		return fmt.Errorf("the editor may send only requests, not %q", h.Type)
@@ -338,8 +450,13 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			}
 			return err
 		}
-		var h header
-		if json.Unmarshal(raw, &h) != nil {
+		h, err := parseHeader(raw)
+		if err != nil {
+			// Not passed on: an ambiguous message could reach the editor as a
+			// request the relay never judged. Counted, not shown to anyone.
+			r.mu.Lock()
+			r.dropped++
+			r.mu.Unlock()
 			continue
 		}
 		switch {
@@ -352,7 +469,15 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			if h.Success {
 				r.status("launched", "")
 			} else {
-				r.status("failed", orElse(h.Message, "the adapter did not launch the program"))
+				msg := orElse(h.Message, "the adapter did not launch the program")
+				switch detail := errorDetail(h.Body); {
+				case detail == "" || detail == msg:
+				case strings.HasPrefix(detail, msg):
+					msg = detail
+				default:
+					msg += ": " + detail
+				}
+				r.status("failed", msg)
 			}
 			continue
 		}
@@ -420,9 +545,43 @@ func (r *Relay) editor(v any) {
 }
 
 func (r *Relay) write(body []byte) error {
+	r.wmu.Lock()
+	defer r.wmu.Unlock()
+	return Write(r.adapter, body)
+}
+
+// Dropped is how many of the adapter's messages were not passed on because
+// they could not be read unambiguously.
+func (r *Relay) Dropped() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return Write(r.adapter, body)
+	return r.dropped
+}
+
+// maxDetail bounds the adapter's error text a failed launch carries.
+const maxDetail = 2000
+
+// errorDetail renders a failed response's body.error as DAP defines it:
+// format with each {name} replaced by its variable. It is the adapter's
+// text, untrusted, bounded in length.
+func errorDetail(body json.RawMessage) string {
+	var b struct {
+		Error struct {
+			Format    string            `json:"format"`
+			Variables map[string]string `json:"variables"`
+		} `json:"error"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &b) != nil || b.Error.Format == "" {
+		return ""
+	}
+	out := b.Error.Format
+	for k, v := range b.Error.Variables {
+		out = strings.ReplaceAll(out, "{"+k+"}", v)
+	}
+	if len(out) > maxDetail {
+		out = out[:maxDetail] + "…"
+	}
+	return strings.ToValidUTF8(out, "")
 }
 
 // Write frames one message as DAP does.
@@ -431,15 +590,34 @@ func Write(w io.Writer, body []byte) error {
 	return err
 }
 
-// Read reads one framed message.
+// Header bounds: a line, and the whole header block. What comes from the
+// sandbox is untrusted, so a stream with no newline must not grow the
+// engine's memory.
+const (
+	maxHeaderLine  = 1 << 10
+	maxHeaderBlock = 8 << 10
+)
+
+// ErrHeader is a header line or block past its bound.
+var ErrHeader = errors.New("debugrelay: a header line or block is too long")
+
+// Read reads one framed message. br's buffer must be at least
+// maxHeaderLine bytes (bufio.NewReader's default is 4 KiB).
 func Read(br *bufio.Reader) (json.RawMessage, error) {
 	n := -1
+	total := 0
 	for {
-		line, err := br.ReadString('\n')
+		raw, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) || len(raw) > maxHeaderLine {
+			return nil, ErrHeader
+		}
 		if err != nil {
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
+		if total += len(raw); total > maxHeaderBlock {
+			return nil, ErrHeader
+		}
+		line := strings.TrimRight(string(raw), "\r\n")
 		if line == "" {
 			break
 		}
