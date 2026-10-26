@@ -339,16 +339,24 @@ func unpack(archive, format, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	var err error
 	switch format {
 	case "tar.gz":
-		return untarGz(archive, dir)
+		err = untarGz(archive, dir)
 	case "zip":
-		return unzip(archive, dir)
+		err = unzip(archive, dir)
+	default:
+		return fmt.Errorf("unknown archive format %q", format)
 	}
-	return fmt.Errorf("unknown archive format %q", format)
+	if err != nil {
+		return err
+	}
+	return linksStayWithin(dir)
 }
 
-// within resolves name under dir, refusing one that escapes it.
+// within resolves name under dir, refusing one that escapes it as text or
+// that passes through a symbolic link: nothing is created or linked through
+// a link, so a chain of links cannot carry an entry out of dir.
 func within(dir, name string) (string, error) {
 	name = filepath.FromSlash(name)
 	if filepath.IsAbs(name) || name == "" {
@@ -358,7 +366,62 @@ func within(dir, name string) (string, error) {
 	if p != dir && !strings.HasPrefix(p, dir+string(filepath.Separator)) {
 		return "", fmt.Errorf("refused the entry %q, which leaves the toolchain", name)
 	}
+	if err := noLinkParents(dir, p); err != nil {
+		return "", fmt.Errorf("refused the entry %q: %w", name, err)
+	}
 	return p, nil
+}
+
+// noLinkParents refuses p when a folder between dir and p is a symbolic
+// link or not a folder. A part that does not exist yet is made a real folder.
+func noLinkParents(dir, p string) error {
+	rel, err := filepath.Rel(dir, filepath.Dir(p))
+	if err != nil {
+		return err
+	}
+	cur := dir
+	for _, c := range strings.Split(rel, string(filepath.Separator)) {
+		if c == "." || c == "" {
+			continue
+		}
+		cur = filepath.Join(cur, c)
+		info, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("it passes through the link %s", strings.TrimPrefix(cur, dir+string(filepath.Separator)))
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a folder", strings.TrimPrefix(cur, dir+string(filepath.Separator)))
+		}
+	}
+	return nil
+}
+
+// linksStayWithin checks, once everything is unpacked, that every link that
+// resolves lands inside dir, so a chain made in any order is refused too.
+func linksStayWithin(dir string) error {
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.Type()&fs.ModeSymlink == 0 {
+			return err
+		}
+		r, err := filepath.EvalSymlinks(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // dangling, and nothing is written through it
+		}
+		if err != nil || r != real && !strings.HasPrefix(r, real+string(filepath.Separator)) {
+			return fmt.Errorf("refused the link %s, which leaves the toolchain", strings.TrimPrefix(p, dir+string(filepath.Separator)))
+		}
+		return nil
+	})
 }
 
 // linkWithin reports whether a link at path pointing at target stays in dir.
@@ -425,6 +488,10 @@ func untarGz(archive, dir string) error {
 			src, err := within(dir, hdr.Linkname)
 			if err != nil {
 				return err
+			}
+			// Only a regular file already unpacked here may be hard-linked.
+			if info, err := os.Lstat(src); err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("refused the hard link %q -> %q, which is not a file of the toolchain", hdr.Name, hdr.Linkname)
 			}
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return err
