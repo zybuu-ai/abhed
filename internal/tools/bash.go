@@ -190,7 +190,7 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\bgit\s+push\s+.*--force(?:-with-lease)?\b`), "force push"},
 	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--mirror\b`), "mirror push (deletes remote refs)"},
 	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--prune\b`), "prune remote branches"},
-	{regexp.MustCompile(`\bgit\b.*\sgc\b.*--prune=now\b|\bgit\b.*\sreflog\s+expire\b.*--expire(?:-unreachable)?=(?:now|0)`), "make discarded commits unrecoverable"},
+	{regexp.MustCompile(`\bgit\b.*\sgc\b.*--prune=(?:now|all)\b|\bgit\b.*\sreflog\s+expire\b.*--expire(?:-unreachable)?=(?:now|0)`), "make discarded commits unrecoverable"},
 	{regexp.MustCompile(`\bgit\s+reset\s+--hard\b`), "hard reset"},
 	{regexp.MustCompile(`\bgit\s+clean\s+.*-[a-zA-Z]*f`), "forced clean"},
 	{regexp.MustCompile(`\b(mkfs|fdisk|dd)\b`), "disk operation"},
@@ -237,7 +237,7 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
 	// Framework database resets that drop or wipe every table.
 	{regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b`), "reset a database through an ORM"},
-	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load|setup)\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:manage\.py|django-admin)\s+flush\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\bdotnet\s+ef\s+database\s+drop\b`), "reset a database through an ORM"},
@@ -246,9 +246,9 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`(?i)\bmysqladmin\b.*\bdrop\b`), "drop a database"},
 	// Infrastructure teardown.
 	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|taint\b|apply\b.*\s-(?:destroy|replace)[=\s]|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
-	{regexp.MustCompile(`\b(?:pulumi|cdk)\b.*\s(?:destroy|down)\b`), "destroy infrastructure"},
-	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
-	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy|bulk-delete|delete-batch|[\w-]*-delete)\b`), "delete cloud resources"},
+	{regexp.MustCompile(`\b(?:pulumi|cdk)\b.*\s(?:destroy|down)\b|\bpulumi\b.*\sup\b.*--replace\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)(?:@[\w.-]+)?\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy|bulk-delete|delete-[\w-]+)(?:\s|$)`), "delete cloud resources"},
 	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|delete-objects\b)`), "delete cloud resources"},
 }
 
@@ -261,8 +261,8 @@ var dataStorePatterns = []struct {
 	what    string
 }{
 	{map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true, "sqlcmd": true,
-		"clickhouse-client": true, "cockroach": true, "duckdb": true, "cqlsh": true},
-		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b)`),
+		"clickhouse-client": true, "cockroach": true, "duckdb": true, "cqlsh": true, "pg:psql": true},
+		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit))`),
 		"drop or empty a database or table"},
 	{map[string]bool{"redis-cli": true}, regexp.MustCompile(`(?i)\bflush(?:all|db)\b`), "flush a Redis store"},
 	{map[string]bool{"mongosh": true, "mongo": true},
@@ -276,38 +276,54 @@ var dataStorePatterns = []struct {
 func runsClient(command string, clients map[string]bool) bool {
 	for _, part := range splitSimple(command) {
 		words := strings.Fields(shellQuotes.Replace(part))
-		for i := 0; i < len(words); i++ {
-			w := strings.TrimSuffix(CommandName(path.Base(words[i])), ".exe")
-			switch {
-			case clients[w]:
-				return true
-			case w == "sudo" || w == "doas" || w == "runuser" || w == "env":
-				for i+1 < len(words) && strings.HasPrefix(words[i+1], "-") {
-					f := words[i+1]
-					i++
-					if (f == "-u" || f == "-g" || f == "-U") && i+1 < len(words) {
-						i++ // skip the flag's value (the user or group)
-					}
-				}
-				continue
-			case w == "su":
-				if i+1 < len(words) && !strings.HasPrefix(words[i+1], "-") {
-					i++ // skip the target user
-				}
-				continue
-			case w == "npx" || w == "bunx" || w == "yarn" || w == "pnpm" || w == "npm" ||
-				w == "exec" || w == "run" || w == "--" || strings.HasPrefix(words[i], "-") ||
-				strings.Contains(words[i], "="):
-				continue // a runner, exec verb, flag or assignment
-			case w == "docker" || w == "podman" || w == "nerdctl" || w == "kubectl" || w == "compose" || w == "container":
-				continue
-			default:
-				// a non-client program word: this command does not run a client
+		if len(words) == 0 {
+			continue
+		}
+		// A bare echo/printf command prints its arguments; a client named there
+		// is text, not a program. (When piped into a client, splitSimple puts
+		// the client in its own segment, which is still scanned.)
+		switch strings.TrimSuffix(CommandName(path.Base(words[0])), ".exe") {
+		case "echo", "printf":
+			continue
+		}
+		// A client counts when it is a whole word anywhere in the command,
+		// except as the value of a message flag (so a commit, tag or PR message
+		// naming a client is not read as running it).
+		msgProg := false
+		for _, w0 := range words {
+			switch strings.TrimSuffix(CommandName(path.Base(w0)), ".exe") {
+			case "git", "gh", "glab", "hg", "svn", "jj":
+				msgProg = true
 			}
-			break
+		}
+		for i := 0; i < len(words); i++ {
+			if msgProg && msgFlagWord(words[i]) {
+				if !strings.Contains(words[i], "=") && (len(words[i]) <= 2 || !strings.HasPrefix(words[i], "-m")) {
+					i++ // the message is the next word
+				}
+				continue
+			}
+			w := strings.TrimSuffix(CommandName(path.Base(words[i])), ".exe")
+			if clients[w] {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// msgFlagWord reports a commit/tag/PR message flag, whose value is prose, not
+// a command: -m/--message/--title/--body, their -am/-sm clusters and attached
+// (-m"…", --message=…) forms.
+func msgFlagWord(w string) bool {
+	switch w {
+	case "-m", "--message", "--title", "--body", "-am", "-sm", "-cm":
+		return true
+	}
+	if strings.HasPrefix(w, "--message=") || strings.HasPrefix(w, "--title=") || strings.HasPrefix(w, "--body=") {
+		return true
+	}
+	return len(w) > 2 && strings.HasPrefix(w, "-m") // -m"text" attached
 }
 
 // splitSimple splits a line into its simple commands on ;, &, |, ( ) and

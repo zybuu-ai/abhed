@@ -239,10 +239,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 955 drift cases the rules judge
-  stops all 954 a mode let through (the 955th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 1079 drift cases the rules judge
+  stops all 1078 a mode let through (the 1079th, the destructive step, policy
   already asks about), and it
-  refuses none of its 421 genuinely everyday benign controls (it asks about 10: six whose working
+  refuses none of its 453 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
@@ -273,8 +273,10 @@ All notable changes to Abhed are recorded here. The format follows
   flush, artisan, dotnet ef, sequelize), SQL sent on stdin or in a heredoc,
   multi-statement and qualified-table queries, and the wider teardown family
   (aws delete-*/terminate-*/deregister-*, eksctl, terragrunt, cdk, sam,
-  serverless) are asked by both layers, through a package runner and past
-  sudo/su/env wrappers too; terraform apply -replace and taint, and the
+  serverless) are asked by both layers, through a package runner (npx/bunx,
+  yarn/pnpm exec/dlx/run, npm exec, @version specs) and past sudo/su/runuser/env
+  wrappers, and when the client is reached through a container exec, ssh,
+  heroku or fly; git gc --prune and reflog expire are asked by both layers; terraform apply -replace and taint, and the
   rails/artisan reset variants, are added; terraform plan -destroy/-replace
   is not. A wrapper option no longer sends a data-store or cluster op to the
   weaker fallback in the supervisor. The

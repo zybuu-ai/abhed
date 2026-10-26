@@ -499,6 +499,11 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 			Rationale: fmt.Sprintf("%s would %s, which cannot be undone; %s", prog, what, remit(c)),
 			Advice:    "confirm this is meant, or narrow it to what the task names"}
 	}
+	if what, ok := r.embeddedDataStore(cmd); ok {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("the command would %s, which cannot be undone; %s", what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
 	// Code handed to a runner that is not a shell -c/eval/stdin call — git's
 	// foreach/exec/run/filter/alias, a container exec/run, xargs, man -P — is
 	// parsed and judged like any other handed code, not word-searched.
@@ -2060,6 +2065,46 @@ func prodScope(args []string) bool {
 	return false
 }
 
+// stripGitGlobals drops git's own value-taking options (-c k=v, -C dir,
+// --git-dir=, --work-tree=) so the subcommand is the first operand.
+func stripGitGlobals(args []string) []string {
+	for len(args) > 0 {
+		switch {
+		case args[0] == "-c" || args[0] == "-C" || args[0] == "--namespace":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+		case strings.HasPrefix(args[0], "-"):
+			args = args[1:]
+		default:
+			return args
+		}
+	}
+	return args
+}
+
+// gitPruneHistory reports git gc --prune=now and reflog expire --expire=now,
+// which make reset or discarded commits unrecoverable.
+func gitPruneHistory(args []string) (string, bool) {
+	ops := operands(stripGitGlobals(args))
+	if len(ops) == 0 {
+		return "", false
+	}
+	switch ops[0] {
+	case "gc":
+		if hasFlag(args, "--prune=now") || hasFlag(args, "--prune=all") {
+			return "prune unreachable commits for good", true
+		}
+	case "reflog":
+		if len(ops) > 1 && ops[1] == "expire" && (hasPrefix(args, "--expire=now") || hasPrefix(args, "--expire-unreachable=now") || hasFlag(args, "--expire=0")) {
+			return "expire the reflog, losing the way back to discarded commits", true
+		}
+	}
+	return "", false
+}
+
 // gitPushDestructive reports a push that deletes a remote branch (--delete,
 // -d, :branch) or force-pushes a shared branch (main, master, release*, prod*).
 func gitPushDestructive(args []string) (string, bool) {
@@ -2120,32 +2165,53 @@ func gitPushDestructive(args []string) (string, bool) {
 // family check sees cdk/serverless/prisma rather than npx/yarn/pnpm. aws-cdk
 // is read as cdk.
 func packageRunner(words []string) []string {
+	// Runner options that take the next word as their value.
+	valued := map[string]bool{"-p": true, "--package": true, "--filter": true, "-F": true,
+		"-C": true, "--dir": true, "--cwd": true, "--prefix": true, "-w": true, "--workspace": true}
+	skipOpts := func(w []string) []string {
+		for len(w) > 0 && strings.HasPrefix(w[0], "-") && w[0] != "--" {
+			if valued[w[0]] && len(w) > 1 {
+				w = w[1:]
+			}
+			w = w[1:]
+		}
+		return w
+	}
 	for len(words) > 0 {
 		switch progBase(words[0]) {
-		case "npx", "bunx":
-			words = words[1:]
+		case "npx", "bunx", "pnpx":
+			words = skipOpts(words[1:])
 		case "bun":
 			if len(words) > 1 && words[1] == "x" {
-				words = words[2:]
+				words = skipOpts(words[2:])
 				continue
 			}
 			return words
-		case "yarn", "pnpm":
-			words = words[1:]
-			if len(words) > 0 && (words[0] == "exec" || words[0] == "dlx") {
+		case "yarn", "pnpm", "npm":
+			runner := progBase(words[0])
+			words = skipOpts(words[1:])
+			if runner == "yarn" && len(words) > 1 && words[0] == "workspace" {
+				words = skipOpts(words[2:]) // yarn workspace NAME cmd
+			}
+			if len(words) > 0 {
+				switch words[0] {
+				case "exec", "dlx", "x", "run", "run-script":
+					words = skipOpts(words[1:])
+				default:
+					if runner == "npm" {
+						return words // npm runs a bin only through exec/run
+					}
+				}
+			}
+			if len(words) > 0 && words[0] == "--" {
 				words = words[1:]
 			}
-		case "npm":
-			if len(words) > 1 && words[1] == "exec" {
-				words = words[2:]
-				if len(words) > 0 && words[0] == "--" {
-					words = words[1:]
-				}
-				continue
-			}
-			return words
 		default:
-			if len(words) > 0 && progBase(words[0]) == "aws-cdk" {
+			// A package spec names its program: aws-cdk@2 is cdk, serverless@3 is serverless.
+			if i := strings.LastIndex(words[0], "@"); i > 0 {
+				words[0] = words[0][:i]
+			}
+			if progBase(words[0]) == "aws-cdk" {
 				words[0] = "cdk"
 			}
 			return words
@@ -2164,9 +2230,10 @@ func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth 
 			Rationale: fmt.Sprintf("the command would %s, which cannot be undone; %s", what, remit(c)),
 			Advice:    "confirm this is meant, or narrow it to what the task names"}
 	}
-	w := packageRunner(cmd.words)
-	plain, _ := cmd.program()
-	stripped := len(w) != len(cmd.words)
+	plain, plainArgs := cmd.program()
+	inner := append([]string{plain}, plainArgs...)
+	w := packageRunner(append([]string(nil), inner...))
+	stripped := len(w) != len(inner) || (len(w) > 0 && w[0] != plain)
 	optWrap := optioned(wrapperPrefix(cmd.words))
 	suWrap := progBase(plain) == "su" || progBase(plain) == "runuser"
 	if !stripped && !optWrap && !suWrap {
@@ -2201,6 +2268,52 @@ func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth 
 	return nil
 }
 
+// embeddedDataStore finds a data-store client run through a command the
+// container model does not cover — ssh HOST, oc/docker-compose exec, heroku
+// pg:psql/run, fly ssh console -C — and judges the drop or flush it carries.
+// A client named only in a message value or printed by echo/printf is skipped.
+func (r Rules) embeddedDataStore(cmd command) (string, bool) {
+	prog, _ := cmd.program()
+	switch progBase(prog) {
+	case "echo", "printf":
+		return "", false
+	}
+	var tok []string
+	for _, w := range cmd.words {
+		tok = append(tok, strings.Fields(w)...)
+	}
+	for i := 0; i < len(tok); i++ {
+		if msgFlag(tok[i]) {
+			if !strings.Contains(tok[i], "=") {
+				i++
+			}
+			continue
+		}
+		base := progBase(tok[i])
+		if base == prog || !sqlClient[base] && base != "redis-cli" && base != "mongosh" && base != "mongo" {
+			continue
+		}
+		rest := tok[i+1:]
+		if what, ok := dataInfraDestructive(base, rest); ok {
+			return what, true
+		}
+		if what, ok := stdinDestructive(base, cmd.stdin); ok {
+			return what, true
+		}
+	}
+	return "", false
+}
+
+// msgFlag reports a commit/tag/PR message flag whose value is prose.
+func msgFlag(w string) bool {
+	switch w {
+	case "-m", "--message", "--title", "--body", "-am", "-sm":
+		return true
+	}
+	return strings.HasPrefix(w, "--message=") || strings.HasPrefix(w, "--title=") ||
+		strings.HasPrefix(w, "--body=") || (len(w) > 2 && strings.HasPrefix(w, "-m"))
+}
+
 func dataInfraDestructive(prog string, args []string) (string, bool) {
 	text := strings.Join(splitAttachedFlags(args), " ")
 	low := strings.ToLower(text)
@@ -2225,7 +2338,8 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 			return "destroy infrastructure", true
 		}
 	case prog == "pulumi" || prog == "cdk":
-		if slices.Contains(args, "destroy") || prog == "pulumi" && slices.Contains(args, "down") {
+		if slices.Contains(args, "destroy") || prog == "pulumi" && slices.Contains(args, "down") ||
+			prog == "pulumi" && slices.Contains(args, "up") && (slices.Contains(args, "--replace") || hasPrefix(args, "--replace=")) {
 			return "destroy infrastructure", true
 		}
 	case prog == "sam" && slices.Contains(args, "delete"),
@@ -2234,8 +2348,7 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 		return "destroy infrastructure", true
 	case prog == "gcloud" || prog == "az" || prog == "doctl" || prog == "hcloud":
 		for _, a := range args {
-			if a == "delete" || a == "destroy" || strings.HasPrefix(a, "delete-") ||
-				a == "bulk-delete" || strings.HasSuffix(a, "-delete") {
+			if a == "delete" || a == "destroy" || strings.HasPrefix(a, "delete-") || a == "bulk-delete" {
 				return "delete cloud resources", true
 			}
 		}
@@ -2316,14 +2429,14 @@ func tfDestroyOp(args []string) bool {
 	return false
 }
 
-var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b)`)
+var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit))`)
 var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
 var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`)
 var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bs3\s+sync\b.*--delete\b|\b(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|\bdelete-objects\b`)
 
 // ormReset matches the framework commands that drop or wipe every table.
 var ormReset = regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b|` +
-	`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load)\b|` +
+	`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load|setup)\b|` +
 	`\b(?:manage\.py|django-admin)\s+flush\b|` +
 	`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b|` +
 	`\bdotnet\s+ef\s+database\s+drop\b|\bsequelize(?:-cli)?\s+db:drop\b`)
@@ -2335,6 +2448,9 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 	}
 	if prog == "git" {
 		if what, ok := gitPushDestructive(args); ok {
+			return what, true
+		}
+		if what, ok := gitPruneHistory(args); ok {
 			return what, true
 		}
 	}
@@ -2366,7 +2482,7 @@ func clusterDestructive(prog string, args []string) (string, bool) {
 			return "remove every container image", true
 		case (verb == "rmi" || verb == "image" && (first == "rm" || first == "remove")) && forced:
 			return "force-remove container images", true
-		case (verb == "rm" || verb == "container" && first == "rm") && forced && shortFlag(rest, 'v'):
+		case (verb == "rm" || verb == "container" && first == "rm") && forced && (shortFlag(rest, 'v') || hasFlag(rest, "--volumes")):
 			return "force-remove a container and its anonymous volumes", true
 		}
 	case "helm":
@@ -2999,7 +3115,7 @@ func sqlShellEscape(v string) (string, bool) {
 }
 
 // sqlClient runs a query, not a shell command, from -c/-e, so that value is data.
-var sqlClient = map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true,
+var sqlClient = map[string]bool{"psql": true, "pg:psql": true, "mysql": true, "mariadb": true, "sqlite3": true,
 	"mongosh": true, "mongo": true, "redis-cli": true, "clickhouse-client": true, "cqlsh": true,
 	"duckdb": true, "sqlcmd": true, "cockroach": true}
 
