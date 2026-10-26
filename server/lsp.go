@@ -10,12 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -27,11 +26,6 @@ const (
 	maxLSPs = 4
 	// lspIdle ends a language server no page has listened to for this long.
 	lspIdle = 2 * time.Minute
-	// lspMaxMessage bounds one message either way.
-	lspMaxMessage = 8 << 20
-	// lspMaxHeader bounds one header line, and lspMaxHeaders their count.
-	lspMaxHeader  = 1 << 10
-	lspMaxHeaders = 16
 	// lspQueue bounds what one reader may have waiting; a reader past it is ended.
 	lspQueue = 16 << 20
 )
@@ -66,10 +60,6 @@ type lspStartResponse struct {
 	// Root is the workspace's path as the server sees it, for its file URIs.
 	Root string `json:"root"`
 }
-
-// lspEnv is set for every language server: a go.mod's toolchain line, saved
-// or only in the editor, cannot have the go command fetch and run another Go.
-const lspEnv = "GOTOOLCHAIN=local "
 
 // lspTiers are the sandboxes a language server may run in; an empty or
 // unknown tier is not one of them.
@@ -110,7 +100,7 @@ func lspAllowed(body []byte, root string) ([]byte, bool) {
 		case "initialize":
 			// initializationOptions and the like can set a server's environment
 			// or tools, so the server is told only the workspace and capabilities.
-			m["params"] = lspInitParams(root)
+			m["params"] = lsprelay.InitParams(root, json.RawMessage(lspCapabilities))
 		case "initialized":
 			m["params"] = json.RawMessage(`{}`)
 		}
@@ -120,72 +110,14 @@ func lspAllowed(body []byte, root string) ([]byte, bool) {
 		}
 		// Settings the server asks for stay its defaults: a setting such as env
 		// or build flags can have it run programs, so only nulls are passed.
-		if _, failed := m["error"]; failed || !lspNulls(m["result"]) {
+		if _, failed := m["error"]; failed || !lsprelay.Nulls(m["result"]) {
 			return nil, false
 		}
 		m = map[string]json.RawMessage{"jsonrpc": json.RawMessage(`"2.0"`), "id": m["id"], "result": m["result"]}
 	}
 	out, err := json.Marshal(m)
-	return out, err == nil
-}
-
-// lspNulls reports whether an answer is null or a list of nulls.
-func lspNulls(raw json.RawMessage) bool {
-	if raw == nil {
-		return false
-	}
-	var list []json.RawMessage
-	if json.Unmarshal(raw, &list) == nil {
-		for _, v := range list {
-			if string(v) != "null" {
-				return false
-			}
-		}
-		return true
-	}
-	return string(bytes.TrimSpace(raw)) == "null"
-}
-
-// lspInitParams are the initialize params the server gets for the workspace at root.
-func lspInitParams(root string) json.RawMessage {
-	uri := lspURI(root)
-	name := root[strings.LastIndex(root, "/")+1:]
-	b, _ := json.Marshal(map[string]any{
-		"processId": nil, "rootUri": uri,
-		"workspaceFolders": []map[string]string{{"uri": uri, "name": name}},
-		"capabilities":     json.RawMessage(lspCapabilities),
-	})
-	return b
-}
-
-// lspURI is root's file URI, escaped as the editor's encodeURIComponent does.
-func lspURI(root string) string {
-	var b strings.Builder
-	b.WriteString("file://")
-	for i := 0; i < len(root); i++ {
-		c := root[i]
-		if c == '/' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("-_.!~*'()", c) >= 0 {
-			b.WriteByte(c)
-		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	return b.String()
-}
-
-var safeWord = regexp.MustCompile(`^[A-Za-z0-9_./=:@%+,-]+$`)
-
-// commandLine is argv as the policy reads a bash command.
-func commandLine(argv []string) string {
-	words := make([]string, len(argv))
-	for i, a := range argv {
-		if safeWord.MatchString(a) {
-			words[i] = a
-		} else {
-			words[i] = shellQuote(a)
-		}
-	}
-	return strings.Join(words, " ")
+	// A file outside the workspace is not the server's to read.
+	return out, err == nil && lsprelay.Inside(out, []string{root})
 }
 
 // startLSP starts the session's language server for one language, or names
@@ -243,8 +175,8 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := "u" + newSessionID()
-	command := commandLine(argv)
-	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + req.Language + " in the workbench editor, run with " + strings.TrimSpace(lspEnv)})
+	command := lsprelay.CommandLine(argv)
+	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + req.Language + " in the workbench editor, run with " + strings.TrimSpace(lsprelay.Env)})
 	if _, refused, err := live.Loop.ManualAuthorize("bash", id, args); err != nil {
 		writeUnrecorded(w, err, "the language server could not be recorded, so it was not started")
 		return
@@ -262,7 +194,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shellMax)
-	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lspEnv+command)
+	cmd := b.Sandbox(live.Loop.LaunchContext(ctx, id), sess.Root, lsprelay.Env+command)
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
@@ -340,7 +272,7 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 func (l *lspRun) read(out io.Reader) {
 	br := bufio.NewReaderSize(out, 64<<10)
 	for {
-		msg, err := readLSPMessage(br)
+		msg, err := lsprelay.Read(br)
 		if err != nil {
 			l.cancel()
 			return
@@ -369,40 +301,6 @@ func (l *lspRun) drop(sub *lspSub) {
 	close(sub.behind)
 }
 
-// readLSPMessage reads one Content-Length framed message. The server is
-// untrusted, so its header lines are bounded in length and number.
-func readLSPMessage(br *bufio.Reader) ([]byte, error) {
-	size := -1
-	for headers := 0; ; headers++ {
-		raw, err := br.ReadSlice('\n')
-		if errors.Is(err, bufio.ErrBufferFull) || len(raw) > lspMaxHeader || headers >= lspMaxHeaders {
-			return nil, errors.New("language server header too long")
-		}
-		if err != nil {
-			return nil, err
-		}
-		line := strings.TrimRight(string(raw), "\r\n")
-		if line == "" {
-			break
-		}
-		if k, v, ok := strings.Cut(line, ":"); ok && strings.EqualFold(strings.TrimSpace(k), "Content-Length") {
-			n, err := strconv.Atoi(strings.TrimSpace(v))
-			if err != nil || n < 0 || n > lspMaxMessage {
-				return nil, errors.New("bad Content-Length")
-			}
-			size = n
-		}
-	}
-	if size < 0 {
-		return nil, errors.New("no Content-Length")
-	}
-	msg := make([]byte, size)
-	if _, err := io.ReadFull(br, msg); err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
 func (s *Server) lspFor(w http.ResponseWriter, r *http.Request) (*lspRun, bool) {
 	id := r.PathValue("id")
 	live, found := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
@@ -426,7 +324,7 @@ func (s *Server) sendLSP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, lspMaxMessage))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, lsprelay.MaxMessage))
 	if err != nil || !json.Valid(body) {
 		badBody(w, err, "the message is not JSON")
 		return
