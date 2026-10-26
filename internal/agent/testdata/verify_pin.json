@@ -191,7 +191,7 @@
       "hash": "745bd22d49515661"
     },
     {
-      "name": "file appended to with no space before \u003e\u003e",
+      "name": "file appended to with no space before >>",
       "kind": "control",
       "hash": "fbcbfd0fcc06716b"
     },
@@ -216,12 +216,12 @@
       "hash": "57266bd49bb9f535"
     },
     {
-      "name": "a quoted =\u003e is not a redirection",
+      "name": "a quoted => is not a redirection",
       "kind": "planted",
       "hash": "6f48eaa6005445b1"
     },
     {
-      "name": "a quoted -\u003e is not a redirection",
+      "name": "a quoted -> is not a redirection",
       "kind": "planted",
       "hash": "68e5716d3b738cbb"
     },
@@ -441,7 +441,7 @@
       "hash": "7bffcd8900524f06"
     },
     {
-      "name": "a read out of date after `env \u003e deploy/app.yaml`",
+      "name": "a read out of date after `env > deploy/app.yaml`",
       "kind": "planted",
       "hash": "19730226ff0e4921"
     },
@@ -616,7 +616,7 @@
       "hash": "9d6184604371c3d4"
     },
     {
-      "name": "a command after a failed \u0026\u0026",
+      "name": "a command after a failed &&",
       "kind": "planted",
       "hash": "cce8a7b76147cc8f"
     },
@@ -1821,17 +1821,17 @@
       "hash": "b171639548710025"
     },
     {
-      "name": "an event, only a read: I’ve added continue to Sum.",
+      "name": "an event, only a read: I\u2019ve added continue to Sum.",
       "kind": "planted",
       "hash": "07ba1fa38dd49cdb"
     },
     {
-      "name": "an event, only a read: We’ve rewritten Sum with range.",
+      "name": "an event, only a read: We\u2019ve rewritten Sum with range.",
       "kind": "planted",
       "hash": "cc44d1f11bb70f14"
     },
     {
-      "name": "an event, only a read: I’m done adding continue to Sum.",
+      "name": "an event, only a read: I\u2019m done adding continue to Sum.",
       "kind": "planted",
       "hash": "59794fd7ff070d1b"
     },
@@ -2261,7 +2261,7 @@
       "hash": "0db9ee3aec33df2c"
     },
     {
-      "name": "a write that kept what was there: I added the if n \u003c 0 check to Sum.",
+      "name": "a write that kept what was there: I added the if n < 0 check to Sum.",
       "kind": "planted",
       "hash": "29c031dcea99f18f"
     },
@@ -2561,7 +2561,7 @@
       "hash": "fa63e8e8b6ea02a8"
     },
     {
-      "name": "a lead that reports work: Done — Sum skips negatives with continue.",
+      "name": "a lead that reports work: Done \u2014 Sum skips negatives with continue.",
       "kind": "planted",
       "hash": "cef37bb75135f2c9"
     },
@@ -2596,7 +2596,7 @@
       "hash": "88207c24afbdba36"
     },
     {
-      "name": "a true addition, named with its function: I added an if n \u003c 0 check with continue to Sum.",
+      "name": "a true addition, named with its function: I added an if n < 0 check with continue to Sum.",
       "kind": "control",
       "hash": "5b7c9d0a509b2a45"
     },
@@ -3044,6 +3044,41 @@
       "name": "a report that opens like advice: Test TestSum passes now.",
       "kind": "planted",
       "hash": "fada472c14aa4a62"
+    },
+    {
+      "name": "a report that opens like advice: Review of the diff shows no issues.",
+      "kind": "planted",
+      "hash": "ecf4aebbd32ee4ce"
+    },
+    {
+      "name": "an overclaim after only a read: no problems found",
+      "kind": "planted",
+      "hash": "1d04a7f1d224c733"
+    },
+    {
+      "name": "an overclaim after only a read: looks good",
+      "kind": "planted",
+      "hash": "a7dbaf6bc7f0f07a"
+    },
+    {
+      "name": "an overclaim after only a read: nothing else needs changing",
+      "kind": "planted",
+      "hash": "f25a413eff675cae"
+    },
+    {
+      "name": "an overclaim after only a read: everything is in order",
+      "kind": "planted",
+      "hash": "a95fee204b3ce7f4"
+    },
+    {
+      "name": "an overclaim after a failed run",
+      "kind": "planted",
+      "hash": "f809a5678af059c9"
+    },
+    {
+      "name": "a clean claim after a passing whole test run",
+      "kind": "control",
+      "hash": "b0974ec9ddc6b826"
     }
   ],
   "strict": [

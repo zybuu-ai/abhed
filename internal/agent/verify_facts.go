@@ -50,6 +50,8 @@ type facts struct {
 	// toolNamed, the tool it says it used ("with `sed`"). onOff is "on" or
 	// "off" for "enabled" or "disabled" and the like.
 	imperative, saysTest, repoWide bool
+	// overclaim: it says the work is clean ("no issues", "looks good").
+	overclaim bool
 	// changeEvent: it says something is now so or new ("now", "gets").
 	changeEvent                               bool
 	oldNamed, inNamed, toolNamed, anchorNamed map[string]bool
@@ -106,7 +108,7 @@ var (
 	// ", all of them", "- every one", "(each of the 12)"; not "in all",
 	// "after all" or "each in under a second".
 	backRefRe = regexp.MustCompile(`^\s*[,:(-]?\s*(?:all|every|each)(?:\s+(?:one|single one|one of them|of them|of the \d+))?\s*\)?\s*[,]?\s*$`)
-	noFailRe  = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed)\b`)
+	noFailRe  = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed|issues|problems|regressions|bugs)\b`)
 	testRe    = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
 	buildRe   = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
 	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
@@ -420,6 +422,7 @@ func extractFacts(claim string) facts {
 	f.imperative = imperativeRe.MatchString(normText(claim))
 	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
 	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
+	f.overclaim = overclaimRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
 	if f.imperative && !f.changed {
 		f.deed = true
 	}
@@ -448,6 +451,8 @@ func extractFacts(claim string) facts {
 }
 
 var (
+	// overclaimRe says the work has nothing wrong left in it.
+	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed)\b`)
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
