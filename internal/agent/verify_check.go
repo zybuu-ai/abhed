@@ -140,6 +140,8 @@ type mutation struct {
 	// the call was in, "" for this one's.
 	covers []string
 	child  string
+	// created: a write that made its file ("Created …").
+	created bool
 	// text is what the call was given (an edit's text, a command), where a
 	// change that names no file looks for the code it names.
 	text string
@@ -270,7 +272,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			// about its file is left open; a failed command may have changed things.
 			if mut || o.OutcomeUnknown {
 				m := mutation{seq: seq, pos: pos, tool: o.Tool, command: args.Command, person: r.person, failed: o.IsError || o.OutcomeUnknown || (o.ExitCode != nil && *o.ExitCode != 0),
-					text: string(r.a.Args)}
+					text: string(r.a.Args), created: o.Tool == "write" && strings.HasPrefix(o.Content, "Created ")}
 				switch {
 				case fileTool:
 					m.path, m.known, m.targets, m.writer = args.Path, args.Path != "", []string{args.Path}, true
@@ -510,6 +512,12 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		kind = KindObserved
 	}
 	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}
+	// "Set `DEBUG` to `true`" in a session that changed nothing is advice.
+	if f.imperative && !ix.changedAny() && len(c.Evidence) == 0 {
+		v.Kind, v.Verdict = KindStatement, ClaimUnverified
+		v.Reason = "it reads as advice, and this session changed nothing"
+		return v
+	}
 	if kind == KindKnowledge || kind == KindStatement {
 		v.Verdict = ClaimUnverified
 		v.Reason = "general knowledge; not checked against this session"
@@ -611,7 +619,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if (f.changed || f.changeWord || f.changeAct && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && !f.success && len(f.ran) == 0 && !f.negated {
+	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && !f.success && len(f.ran) == 0 && !f.negated {
 		// A change, in any wording, is read from the calls: by the change to
 		// the file it names, whose own changed text must hold the code it
 		// names; or, naming none, by a change whose text holds that code.
@@ -1157,6 +1165,16 @@ func (ix *recordIndex) changedPath(p string) finding {
 		return finding{out: matched, what: fmt.Sprintf("a change to %s at #%d", p, hit.seq), seq: hit.seq}
 	}
 	return finding{out: missing, why: "no call this session made is read as a change to " + p}
+}
+
+// changedAny reports a change of the agent's in this session that succeeded.
+func (ix *recordIndex) changedAny() bool {
+	for _, m := range ix.mutations {
+		if !m.person && !m.failed {
+			return true
+		}
+	}
+	return false
 }
 
 // namedByChange says which call of the agent's, failed or not, may have

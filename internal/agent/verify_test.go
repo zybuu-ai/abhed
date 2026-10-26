@@ -286,7 +286,9 @@ func TestKnowledgeAndStatements(t *testing.T) {
 func TestLeadInsNeverDropAClaim(t *testing.T) {
 	for in, want := range map[string]string{
 		"In summary, I rewrote `Sum` to use `range`.":                      "I rewrote `Sum` to use `range`.",
-		"Here is what I changed: I removed the overflow check from `Sum`.": "I removed the overflow check from `Sum`.",
+		"Here is what I changed: I removed the overflow check from `Sum`.": "Here is what I changed: I removed the overflow check from `Sum`.",
+		"Done: `Sum` skips negatives with `continue`.":                     "Done: `Sum` skips negatives with `continue`.",
+		"Here's what I changed: `Sum` skips negatives with `continue`.":    "Here's what I changed: `Sum` skips negatives with `continue`.",
 		"Summary: I removed `continue` from `Sum`.":                        "I removed `continue` from `Sum`.",
 		"Note: I removed the hard-coded `API_KEY` from `config/app.env`.":  "I removed the hard-coded `API_KEY` from `config/app.env`.",
 		"Set `DEBUG` to `true` in `config/app.env`.":                       "Set `DEBUG` to `true` in `config/app.env`.",
@@ -297,11 +299,17 @@ func TestLeadInsNeverDropAClaim(t *testing.T) {
 			t.Errorf("%q: got %q, want %q", in, got, want)
 		}
 	}
-	for _, s := range []string{"Let me know if you need more.", "Hope this helps!", "Happy to help with anything else.", "Feel free to ask."} {
+	for _, s := range []string{"Let me know if you need more.", "Hope this helps!", "Happy to help with anything else.", "Feel free to ask.",
+		"Run `go test ./...` to confirm.", "You can run `go test ./...` to check it.", "I'll update the docs next.", "Next, I would refactor `Sum` to use `range`.",
+		"You may want to add a test for `Sum`.", "Consider adding `continue` to `Sum`."} {
 		if got := splitClaims(s); len(got) != 0 {
 			t.Errorf("%q: kept %q", s, got)
 		}
-		if f := extractFacts(s); f.any() || f.event != "" || f.changed || f.deed || len(f.counted) > 0 || len(f.paths) > 0 || stateRe.MatchString(normText(s)) {
+		if f := extractFacts(s); intentRe.MatchString(strings.ToLower(s)) {
+			if saysPast(s) {
+				t.Errorf("%q was dropped as advice but reports a past event", s)
+			}
+		} else if f.any() || f.event != "" || f.changed || f.deed || len(f.counted) > 0 || len(f.paths) > 0 || stateRe.MatchString(normText(s)) {
 			t.Errorf("%q was dropped but says something about the work", s)
 		}
 	}
@@ -310,9 +318,8 @@ func TestLeadInsNeverDropAClaim(t *testing.T) {
 func TestSplitClaims(t *testing.T) {
 	text := "Here is what I found:\n\n- The service listens on port 8080.\n- 3 replicas are configured. They use v1.2.8.\n\n```\nnot a claim 42\n```\nRun `go test ./...` to confirm. I'll update the docs next.\nWould you like me to change it?\nLet me know if you need more."
 	got := splitClaims(text)
-	// Advice and intentions that name work are kept: only courtesy saying
-	// nothing about the work is dropped.
-	want := []string{"The service listens on port 8080.", "3 replicas are configured.", "They use v1.2.8.", "Run `go test ./...` to confirm.", "I'll update the docs next."}
+	// Advice and intentions say what may be done, not what was: left out.
+	want := []string{"The service listens on port 8080.", "3 replicas are configured.", "They use v1.2.8."}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("got %q", got)
 	}
