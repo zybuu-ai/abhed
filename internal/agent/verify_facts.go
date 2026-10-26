@@ -53,12 +53,13 @@ type facts struct {
 	// overclaim: it says the work is clean ("no issues", "looks good").
 	overclaim bool
 	// changeEvent: it says something is now so or new ("now", "gets").
-	changeEvent                               bool
-	oldNamed, inNamed, toolNamed, anchorNamed map[string]bool
-	onOff                                     string
-	eventKinds                                []string // the kinds of call its events need
-	scope                                     []string // packages or folders a test claim names, such as internal/auth
-	ran                                       []string // commands the claim says were run
+	changeEvent                  bool
+	oldNamed, inNamed, toolNamed map[string]bool
+	anchorNamed                  map[string]string
+	onOff                        string
+	eventKinds                   []string // the kinds of call its events need
+	scope                        []string // packages or folders a test claim names, such as internal/auth
+	ran                          []string // commands the claim says were run
 }
 
 type countFact struct {
@@ -422,7 +423,7 @@ func extractFacts(claim string) facts {
 	f.imperative = imperativeRe.MatchString(normText(claim))
 	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
 	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
-	f.overclaim = overclaimRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
+	f.overclaim = overclaims(normText(backtickRe.ReplaceAllString(claim, " ")))
 	if f.imperative && !f.changed {
 		f.deed = true
 	}
@@ -430,9 +431,9 @@ func extractFacts(claim string) facts {
 	for _, m := range oldNamedRe.FindAllStringSubmatch(claim, -1) {
 		f.oldNamed[normText(m[1]+m[2]+m[3])] = true
 	}
-	f.anchorNamed = map[string]bool{}
+	f.anchorNamed = map[string]string{}
 	for _, m := range anchorNamedRe.FindAllStringSubmatch(claim, -1) {
-		f.anchorNamed[normText(m[1])] = true
+		f.anchorNamed[normText(m[2])] = strings.ToLower(m[1])
 	}
 	for _, m := range inNamedRe.FindAllStringSubmatch(claim, -1) {
 		f.inNamed[normText(m[1])] = true
@@ -450,14 +451,26 @@ func extractFacts(claim string) facts {
 	return f
 }
 
+// overclaims reports a claim that the work is clean: not one that denies it
+// ("does not look correct") or praises a part ("looks good, but …").
+func overclaims(low string) bool {
+	m := overclaimRe.FindStringIndex(low)
+	if m == nil {
+		return false
+	}
+	return !overNegRe.MatchString(clauseHead(low[:m[0]])) && !overButRe.MatchString(low[m[1]:])
+}
+
 var (
+	overNegRe = regexp.MustCompile(`\b(not|never|hardly)\b|n't\b`)
+	overButRe = regexp.MustCompile(`\b(but|except|however|though|although|apart from|other than)\b`)
 	// overclaimRe says the work has nothing wrong left in it.
-	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed)\b`)
+	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix) is clean)\b`)
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
 	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replaced|swapped|renamed|changed|switched|converted|turned|moved)\\s+`([^`]+)`\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
-	anchorNamedRe = regexp.MustCompile("(?i)\\b(?:after|before|above|below|beneath|under|next to|beside|following)\\s+(?:the\\s+)?`([^`]+)`")
+	anchorNamedRe = regexp.MustCompile("(?i)\\b(after|before|above|below|beneath|under|next to|beside|following)\\s+(?:the\\s+)?`([^`]+)`")
 	// inNamedRe is code named as where a change was made: "in `Sum`".
 	inNamedRe = regexp.MustCompile("(?i)\\b(?:in|inside|within|into|to)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+(?:function|method|file|type|struct|package))?(?:[.,;:]|\\s+(?:so|to|with|because|and|for|which)\\b|$)")
 	// toolNamedRe is the tool a change was made with: "with `sed`".
@@ -1061,7 +1074,7 @@ var adviceLabelRe = regexp.MustCompile(`^(?:next steps?|recommendations?|suggest
 
 // reportSubjectRe is "test" or "run" as the subject of a report: "Test
 // coverage is", "Run results:".
-var reportSubjectRe = regexp.MustCompile("^(?:(?:review|inspection|scan|search|audit|check)s? (?:of|for)\\b|(?:test|run|build)s? (?:coverage|suite|results?|run|output|status|logs?)\\b|(?:tests?|builds?|checks?)(?: `[^`]+`)? (?:now )?(?:pass(?:es|ed)?|fail(?:s|ed)?|succeed(?:s|ed)?|is|are|was|were)\\b)")
+var reportSubjectRe = regexp.MustCompile("^(?:(?:review|inspection|scan|search|audit|check)s? (?:of|for)\\b.*\\b(?:shows?|showed|found|finds|turned up|came back|returned|reports?|reported)\\b|(?:test|run|build)s? (?:coverage|suite|results?|run|output|status|logs?)\\b|(?:tests?|builds?|checks?)(?: `[^`]+`)? (?:now )?(?:pass(?:es|ed)?|fail(?:s|ed)?|succeed(?:s|ed)?|is|are|was|were)\\b)")
 
 var lookLabelRe = regexp.MustCompile(`^(?:see|check|review|look at)\b[^:]{0,60}:\s+`)
 
@@ -1163,5 +1176,5 @@ func saysPast(s string) bool {
 // saysWork reports a sentence with something in it about the work.
 func saysWork(s string) bool {
 	f := extractFacts(s)
-	return f.any() || f.changed || f.deed || f.event != "" || stateRe.MatchString(normText(s))
+	return f.any() || f.changed || f.deed || f.overclaim || f.event != "" || stateRe.MatchString(normText(s))
 }

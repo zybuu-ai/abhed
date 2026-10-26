@@ -107,6 +107,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 	scenarios := map[string]struct {
 		file, text string
 		edit       *edit
+		setup      string // a command run after the edit, before bash
 		bash       string
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
@@ -122,6 +123,10 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		"go-header":   {file: "sum.go", text: plain, edit: &edit{"func Sum(nums []int) int {\n\ttotal := 0\n", "func Sum(nums []int) int {\n\tif len(nums) == 0 {\n\t\treturn 0\n\t}\n\ttotal := 0\n"}},
 		"py-decorator": {file: "views.py", text: "@app.route('/admin')\ndef admin():\n    pass\n\n@app.route('/orders')\ndef orders():\n    pass\n",
 			edit: &edit{"@app.route('/orders')\ndef orders():", "@app.route('/orders')\n@login_required\ndef orders():"}},
+		"lint-golangci": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho 0 issues.\\n' > golangci-lint && chmod +x golangci-lint", bash: "./golangci-lint run ./..."},
+		"lint-ruff": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho All checks passed!\\n' > ruff && chmod +x ruff", bash: "./ruff check ."},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
@@ -141,6 +146,9 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		if sc.edit != nil {
 			turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("edit", map[string]string{"path": path, "old_string": sc.edit.old, "new_string": sc.edit.new})}})
 		}
+	}
+	if sc.setup != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.setup})}})
 	}
 	if sc.bash != "" {
 		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.bash})}})
@@ -180,7 +188,8 @@ func TestReportsAreKept(t *testing.T) {
 		"Verify the build passes in CI.", "Use `go test -run TestSum` to see that it passes.",
 		"Next steps: add tests for negatives and update the docs.", "Recommendation: add a test for negatives.",
 		"Follow-up: add a test for the negative case.", "I'll point out the change in the release notes.",
-		"Test it with `go test ./...`; it should pass.", "Check that `TestSum` passes after you pull.", "TODO: add a test for negatives."} {
+		"Test it with `go test ./...`; it should pass.", "Check that `TestSum` passes after you pull.", "TODO: add a test for negatives.",
+		"Check for nil slices before calling `Sum`."} {
 		if got := splitClaims(s); len(got) != 0 {
 			t.Errorf("%q: kept %q", s, got)
 		}
