@@ -651,6 +651,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A command's egress relay container (`abhed-egr-…`) outlived an Abhed
+  that was killed. It now runs attached, its main process ending when the
+  input Abhed holds closes, so it exits and removes itself however Abhed
+  ends; it is labelled with its owner (`abhed.egress.owner`), and the first
+  such command after a start removes any an ended Abhed on this host left,
+  by that label and name only.
+
 - Toolchains: Ruby could not load its standard library or RubyGems, nor on
   Linux its own `libruby`, because its builds name the build machine's
   folders; its commands now get `RUBYLIB` and `GEM_PATH` for where it is,

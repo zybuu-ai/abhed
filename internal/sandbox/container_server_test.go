@@ -276,8 +276,9 @@ func TestContainerServerSweepAfterKillOnARealEngine(t *testing.T) {
 		time.Sleep(2 * time.Minute)
 		return
 	}
-	// Outside the allowlist the server runs in its own container; under it,
-	// in a detached one behind the relay, which outlives the engine client.
+	// Outside the allowlist the server runs in its own container, which the
+	// sweep removes; under it, in one behind the relay that runs attached to
+	// the killed process and so removes itself.
 	for _, allowlist := range []string{"", "1"} {
 		t.Run("allowlist="+allowlist, func(t *testing.T) {
 			t.Setenv("ABHED_TEST_SERVER_ALLOWLIST", allowlist)
@@ -305,6 +306,14 @@ func sweepAfterKill(t *testing.T) {
 	}
 	_ = helper.Process.Signal(syscall.SIGKILL)
 	_ = helper.Wait()
+	if os.Getenv("ABHED_TEST_SERVER_ALLOWLIST") == "1" {
+		for deadline := time.Now().Add(60 * time.Second); containerExists(c, name); time.Sleep(500 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the killed helper's egress container %s outlived it", name)
+			}
+		}
+		return
+	}
 	if !containerExists(c, name) {
 		t.Fatal("the killed helper's container is already gone; the test proves nothing")
 	}
