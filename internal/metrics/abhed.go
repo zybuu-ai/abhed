@@ -54,41 +54,43 @@ var EgressKinds = []string{"auth", "connect", "dns", "http", "https", "import", 
 type Abhed struct {
 	Registry *Registry
 
-	decisions     *Counter
-	approvals     *Counter
-	verdicts      *Counter
-	verdictTime   *Histogram
-	egress        *Counter
-	egressBytes   *Counter
-	toolTime      *Histogram
-	modelCalls    *Counter
-	modelTime     *Histogram
-	firstToken    *Histogram
-	tokens        *Counter
-	sessions      *Counter
-	sessionsEnded *Counter
-	bound         *Counter
-	fenceLimits   *Counter
-	sandboxOps    *Counter
-	recordTime    *Histogram
-	recordErrors  *Counter
-	requests      *Counter
-	requestTime   *Histogram
-	auditEvents   *Counter
-	plans         *Counter
-	scopes        *Counter
-	claims        *Counter
-	corrections   *Counter
-	replans       *Counter
-	repairs       *Counter
-	refused       *Counter
-	planted       *Counter
-	fenceDenied   *Counter
-	ollama        *Counter
-	lspStarts     *Counter
-	lspRequests   *Counter
-	toolchains    *Counter
-	registries    *Counter
+	decisions        *Counter
+	approvals        *Counter
+	verdicts         *Counter
+	verdictTime      *Histogram
+	egress           *Counter
+	egressBytes      *Counter
+	toolTime         *Histogram
+	modelCalls       *Counter
+	modelTime        *Histogram
+	firstToken       *Histogram
+	tokens           *Counter
+	sessions         *Counter
+	sessionsEnded    *Counter
+	bound            *Counter
+	fenceLimits      *Counter
+	sandboxOps       *Counter
+	recordTime       *Histogram
+	recordErrors     *Counter
+	requests         *Counter
+	requestTime      *Histogram
+	auditEvents      *Counter
+	plans            *Counter
+	scopes           *Counter
+	claims           *Counter
+	corrections      *Counter
+	replans          *Counter
+	repairs          *Counter
+	refused          *Counter
+	planted          *Counter
+	fenceDenied      *Counter
+	ollama           *Counter
+	lspStarts        *Counter
+	completions      *Counter
+	completionTokens *Counter
+	lspRequests      *Counter
+	toolchains       *Counter
+	registries       *Counter
 
 	mu      sync.Mutex
 	calls   map[string]*call
@@ -175,6 +177,10 @@ func New() *Abhed {
 			"Language toolchain installs for sessions' commands, by language and outcome (ok, failed, declined, refused, cancelled).", "lang", "outcome"),
 		registries: r.Counter("abhed_toolchain_registries_opened_total",
 			"Package registries opened to sessions' commands with a toolchain, by language.", "lang"),
+		completions: r.Counter("abhed_completions_total",
+			"Editor inline completions by outcome (served, refused, failed, cancelled, empty), counted when each session closes.", "outcome"),
+		completionTokens: r.Counter("abhed_completion_tokens_total",
+			"Tokens editor inline completions used, by kind (in, out).", "kind"),
 		lspStarts: r.Counter("abhed_lsp_starts_total",
 			"Language servers started for editors, by language; a restart after a crash counts again.", "language"),
 		lspRequests: r.Counter("abhed_lsp_messages_total",
@@ -264,6 +270,17 @@ func (m *Abhed) Observe(ev agent.Event) {
 		var p agent.Observation
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			m.observed(ev.SessionID, p)
+		}
+	case string(agent.EvCompletionSummary):
+		var p agent.CompletionSummary
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			m.completions.Add(float64(p.Served), "served")
+			m.completions.Add(float64(p.Refused), "refused")
+			m.completions.Add(float64(p.Failed), "failed")
+			m.completions.Add(float64(p.Cancelled), "cancelled")
+			m.completions.Add(float64(max(0, p.Requests-p.Served-p.Failed-p.Cancelled)), "empty")
+			m.completionTokens.Add(float64(p.TokensIn), "in")
+			m.completionTokens.Add(float64(p.TokensOut), "out")
 		}
 	case string(agent.EvLSPStarted):
 		var p agent.LSPStarted

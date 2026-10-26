@@ -242,6 +242,9 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 	low := normText(text)
 	words := append(stateRe.FindAllString(low, -1), outcomeRe.FindAllString(low, -1)...)
 	for _, w := range append(words, verdictRe.FindAllString(low, -1)...) {
+		if f.observe && (w == "reviewed" || w == "checked") {
+			continue // a look, shown by its read
+		}
 		if w == "now" || w == "again" {
 			continue // a time, not a thing an output says
 		}

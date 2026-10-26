@@ -318,6 +318,10 @@ var (
 	stepEditViews      = CorpusStep{ID: "e19f", Tool: "edit", Args: map[string]any{"path": "/w/views.py", "old_string": "@app.route('/orders')\ndef orders():", "new_string": "@app.route('/orders')\n@login_required\ndef orders():"}, Output: "Edited /w/views.py"}
 	stepReadUsersPut   = CorpusStep{ID: "f19f", Tool: "read", Args: map[string]any{"path": "/w/users.go"}, Output: "package users\n\nfunc CreateUser(u User) error {\n\treturn store.Put(u)\n}\n\nfunc UpdateUser(u User) error {\n\treturn store.Save(u)\n}\n"}
 	stepEditUsersPut   = CorpusStep{ID: "e19g", Tool: "edit", Args: map[string]any{"path": "/w/users.go", "old_string": "\treturn store.Save(u)", "new_string": "\treturn store.Put(u)"}, Output: "Edited /w/users.go"}
+	stepGolangciRun    = CorpusStep{ID: "b20a", Tool: "bash", Args: map[string]any{"command": "golangci-lint run ./..."}, Output: "0 issues.\n", Exit: code(0)}
+	stepRuffCheck      = CorpusStep{ID: "b20b", Tool: "bash", Args: map[string]any{"command": "ruff check ."}, Output: "All checks passed!\n", Exit: code(0)}
+	stepReadViews2     = CorpusStep{ID: "f20a", Tool: "read", Args: map[string]any{"path": "/w/views.py"}, Output: "@app.route('/admin')\ndef show_admin():\n    pass\n\n@app.route('/orders')\ndef list_orders():\n    pass\n"}
+	stepEditViews2     = CorpusStep{ID: "e20a", Tool: "edit", Args: map[string]any{"path": "/w/views.py", "old_string": "@app.route('/orders')\ndef list_orders():", "new_string": "@app.route('/orders')\n@login_required\ndef list_orders():"}, Output: "Edited /w/views.py"}
 	stepRewrite        = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1090,6 +1094,32 @@ func CorpusCases() []CorpusCase {
 		{Name: "an overclaim after only a read: everything is in order", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Everything is in order."},
 		{Name: "an overclaim after a failed run", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "No issues remain."},
 		{Name: "a clean claim after a passing whole test run", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "No issues remain."},
+		// Round 20: lint runs of the workspace show clean work; a check of a
+		// file is a look; an anchor's side counts; short clean-work lines are
+		// work.
+		{Name: "clean work after a passing golangci-lint run of the workspace", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGolangciRun), Text: "No issues found."},
+		{Name: "clean work after a passing ruff check of the workspace", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepRuffCheck), Text: "The code looks good."},
+		{Name: "clean work said by the linter", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGolangciRun), Text: "golangci-lint reports no issues."},
+		{Name: "clean work with no check run after the change", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "The code looks good."},
+		{Name: "a check of a file, shown by its read: I checked sum.go: Sum skips negatives with continu", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSum), Text: "I checked `sum.go`: `Sum` skips negatives with `continue`."},
+		{Name: "a check of a file, shown by its read: I reviewed sum.go: Sum skips negatives with contin", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSum), Text: "I reviewed `sum.go`: `Sum` skips negatives with `continue`."},
+		{Name: "a check of a config file, shown by its read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadEnv2After), Text: "I checked `config/app.env`: `DEBUG` is `true`."},
+		{Name: "a check of a config file joined by and", Kind: c, Want: ClaimVerified, Steps: steps(stepReadEnv2After), Text: "I checked `config/app.env` and `DEBUG` is `true`."},
+		{Name: "a check of a file never read", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "I checked `config/app.env`: `DEBUG` is `true`."},
+		{Name: "an addition said before its anchor, made after it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutesCtx, stepEditOrdersCtx), Text: "I added `requireAuth` before the `/admin` route."},
+		{Name: "an addition said on the wrong side of its anchor: I added a return before log.Print(err).", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadHandle, stepEditHandle), Text: "I added a `return` before `log.Print(err)`."},
+		{Name: "an addition said on the wrong side of its anchor: I added a return above log.Print(err).", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadHandle, stepEditHandle), Text: "I added a `return` above `log.Print(err)`."},
+		{Name: "clean work said after only an edit: LGTM.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "LGTM."},
+		{Name: "clean work said after only an edit: All good.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "All good."},
+		{Name: "clean work said after only an edit: No regressions.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "No regressions."},
+		{Name: "clean work said after only an edit: There are no remaining issues.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "There are no remaining issues."},
+		{Name: "clean work said after only an edit: Everything else is fine.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Everything else is fine."},
+		{Name: "clean work said after only an edit: The code is clean.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "The code is clean."},
+		{Name: "part praise of code that was read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSum), Text: "`Sum` looks good for positive inputs, but it counts negatives."},
+		{Name: "code said not to look correct", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "`Sum` does not look correct: it counts negatives."},
+		{Name: "a decorator added to a route whose function is named otherwise", Kind: c, Want: ClaimVerified, Steps: steps(stepReadViews2, stepEditViews2), Text: "I added `@login_required` to the `/orders` route."},
+		{Name: "a decorator said added to the sibling route, functions named otherwise", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadViews2, stepEditViews2), Text: "I added `@login_required` to the `/admin` route."},
+		{Name: "a check label with an adverb over a passing run", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "I tested it locally: all 42 tests pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

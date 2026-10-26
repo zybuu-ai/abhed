@@ -40,7 +40,7 @@ var (
 	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
 	// outputSaysRe is a tool's output said as such: "pytest reported 2
 	// skipped" describes the output, which the checks compare it with.
-	outputSaysRe = regexp.MustCompile(`\b(?:pytest|jest|vitest|mocha|go test|go vet|npm|pnpm|yarn|cargo|kubectl|git|gofmt|(?:the|its|this|that)\s+(?:\w+'s\s+)?(?:output|run|tool|command|log|logs|result|results|test run|tests|suite|build|linter|summary|read|search|grep|listing|file|job|pipeline|scan))\s+(?:reported|printed|showed|said|returned|gave|listed|logged|reads|read|ran|counted|found|collected|matched)\b`)
+	outputSaysRe = regexp.MustCompile(`\b(?:pytest|jest|vitest|mocha|go test|go vet|npm|pnpm|yarn|cargo|kubectl|git|gofmt|golangci-lint|ruff|eslint|flake8|pylint|mypy|rubocop|staticcheck|shellcheck|clippy|tsc|(?:the|its|this|that)\s+(?:\w+'s\s+)?(?:output|run|tool|command|log|logs|result|results|test run|tests|suite|build|linter|summary|read|search|grep|listing|file|job|pipeline|scan))\s+(?:reported|reports|printed|prints|showed|shows|said|says|returned|gave|listed|logged|reads|read|ran|counted|found|finds|collected|matched)\b`)
 	// eventWordRe are other words that report something new or different.
 	eventWordRe = regexp.MustCompile(`\b(now|new|newly|gets|gains|all set|per your request|as requested|going forward|from here on|thanks to me|no longer|any ?more|post-change|pre-change|change|changes|edit|edits|diff|diffs|patch|patches|fix|fixes|commit|commits|pr|refactor|hotfix|update|updates)\b`)
 	// countOutcomeRe is a count with its outcome word, which the count check
@@ -48,7 +48,7 @@ var (
 	countOutcomeRe = regexp.MustCompile(`\b\d[\d,.]*\s+(?:[a-z\-]+\s+)?(?:passed|failed|skipped|deselected|errored|succeeded|changed|inserted|deleted|xfailed|xpassed)\b`)
 	wordsRe        = regexp.MustCompile(`[a-z]+`)
 	// observeRe is the agent saying it looked at something.
-	observeRe = regexp.MustCompile(`(?:^|\b(?:i|we|i've|we've|i have|we have|the agent|abhed)\s+(?:\w+ly\s+|also\s+|then\s+|first\s+|just\s+)*)(read|opened|looked (?:at|through|into)|viewed|listed|searched|grepped|found|inspected|fetched|scanned|examined)\b`)
+	observeRe = regexp.MustCompile(`(?:^|\b(?:i|we|i've|we've|i have|we have|the agent|abhed)\s+(?:\w+ly\s+|also\s+|then\s+|first\s+|just\s+)*)(read|opened|looked (?:at|through|into)|viewed|listed|searched|grepped|found|inspected|fetched|scanned|examined|checked|double-checked|reviewed)\b`)
 	// addRe and removeRe give a change's direction.
 	addRe    = regexp.MustCompile(`\b(add|adds|added|adding|introduc\w*|insert\w*|new|newly|now)\b`)
 	removeRe = regexp.MustCompile(`\b(remov\w*|delet\w*|drop\w*|strip\w*)\b`)
@@ -388,7 +388,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 			case t == hit || isFile(nt) || inNew:
 			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
 			case (added || f.inNamed[nt]) && !inOld && after(nt):
-			case !inOld && ctxE.hasLiteral(nt) && (f.anchorNamed[nt] || after(nt)):
+			case !inOld && ctxE.hasLiteral(nt) && (anchorSide(f.anchorNamed[nt], nt, ct.new, put) || after(nt)):
 			default:
 				ok = false
 			}
@@ -405,6 +405,35 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		where = "no change this session to " + path
 	}
 	return finding{out: missing, why: "it says what was changed, and " + where + " changed " + fmt.Sprintf("%q", clipRunes(tokens[0], 40)) + " the way it says"}, nil
+}
+
+// anchorSide reports an anchor line on the side of the put-in lines the
+// claim says: "after X" needs X above them, "before X" below.
+func anchorSide(prep, nt, text, put string) bool {
+	if prep == "" {
+		return false
+	}
+	first := firstCodeLine(put)
+	lines := strings.Split(text, "\n")
+	at, pi := -1, -1
+	for i, l := range lines {
+		if pi < 0 && first != "" && strings.TrimSpace(l) == first {
+			pi = i
+		}
+		if at < 0 && strings.Contains(normText(l), nt) {
+			at = i
+		}
+	}
+	if at < 0 || pi < 0 {
+		return false
+	}
+	switch prep {
+	case "after", "below", "beneath", "under", "following":
+		return at < pi
+	case "before", "above":
+		return at > pi
+	}
+	return at == pi-1 || at == pi+1
 }
 
 // isTestFile reports a file of tests.
@@ -742,7 +771,7 @@ func eventKinds(text string, f facts) []string {
 	}
 	for _, w := range eventWords(rest) {
 		switch {
-		case passWords[w] && aboutRuns(low, f) || f.success && w == "done":
+		case passWords[w] && aboutRuns(low, f) || f.success && w == "done" || f.overclaim && (w == "found" || w == "checked" || w == "reviewed" || w == "reported"):
 			need["run"] = true
 		case w == "now" && f.success && !f.changeAct && !strings.Contains(low, "now that"):
 			need["run"] = true // "the tests pass now": a time of the run
@@ -812,6 +841,9 @@ func clauses(text string) []string {
 			held = piece // a lead with no verb goes with what follows
 		case len(out) > 0 && !has:
 			out[len(out)-1] += " " + piece
+		case len(out) > 0 && contrastRe.MatchString(strings.ToLower(piece)):
+			// "looks good for positives, but it counts negatives" is one claim.
+			out[len(out)-1] += ", " + piece
 		case len(out) > 0 && checkLeadRe.MatchString(normText(out[len(out)-1])):
 			// "I tested it: all 12 tests pass" is one claim: what was tested.
 			out[len(out)-1] += ": " + piece
@@ -832,8 +864,11 @@ func clauses(text string) []string {
 	return out
 }
 
+// contrastRe opens a clause that qualifies the one before it.
+var contrastRe = regexp.MustCompile(`^(?:but|except|however|though|although|apart from|other than)\b`)
+
 // checkLeadRe is a check said with nothing after it: "I tested it".
-var checkLeadRe = regexp.MustCompile(`^(?:(?:i|we|i've|we've) )?(?:\w+ly )?(?:tested|verified|checked|confirmed|ran the tests)(?: (?:it|this|that|them|everything|all|the change|the fix))?[.:]?$`)
+var checkLeadRe = regexp.MustCompile(`^(?:(?:i|we|i've|we've) )?(?:\w+ly )?(?:tested|verified|checked|confirmed|ran the tests)(?: (?:it|this|that|them|everything|all|the change|the fix))?(?: (?:locally|again|manually|myself|here|too|as well))?[.:]?$`)
 
 // lookOnly reports a clause that only says what was looked at.
 func lookOnly(s string) bool {

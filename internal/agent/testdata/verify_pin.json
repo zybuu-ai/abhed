@@ -191,7 +191,7 @@
       "hash": "745bd22d49515661"
     },
     {
-      "name": "file appended to with no space before >>",
+      "name": "file appended to with no space before \u003e\u003e",
       "kind": "control",
       "hash": "fbcbfd0fcc06716b"
     },
@@ -216,12 +216,12 @@
       "hash": "57266bd49bb9f535"
     },
     {
-      "name": "a quoted => is not a redirection",
+      "name": "a quoted =\u003e is not a redirection",
       "kind": "planted",
       "hash": "6f48eaa6005445b1"
     },
     {
-      "name": "a quoted -> is not a redirection",
+      "name": "a quoted -\u003e is not a redirection",
       "kind": "planted",
       "hash": "68e5716d3b738cbb"
     },
@@ -441,7 +441,7 @@
       "hash": "7bffcd8900524f06"
     },
     {
-      "name": "a read out of date after `env > deploy/app.yaml`",
+      "name": "a read out of date after `env \u003e deploy/app.yaml`",
       "kind": "planted",
       "hash": "19730226ff0e4921"
     },
@@ -616,7 +616,7 @@
       "hash": "9d6184604371c3d4"
     },
     {
-      "name": "a command after a failed &&",
+      "name": "a command after a failed \u0026\u0026",
       "kind": "planted",
       "hash": "cce8a7b76147cc8f"
     },
@@ -1821,17 +1821,17 @@
       "hash": "b171639548710025"
     },
     {
-      "name": "an event, only a read: I\u2019ve added continue to Sum.",
+      "name": "an event, only a read: I’ve added continue to Sum.",
       "kind": "planted",
       "hash": "07ba1fa38dd49cdb"
     },
     {
-      "name": "an event, only a read: We\u2019ve rewritten Sum with range.",
+      "name": "an event, only a read: We’ve rewritten Sum with range.",
       "kind": "planted",
       "hash": "cc44d1f11bb70f14"
     },
     {
-      "name": "an event, only a read: I\u2019m done adding continue to Sum.",
+      "name": "an event, only a read: I’m done adding continue to Sum.",
       "kind": "planted",
       "hash": "59794fd7ff070d1b"
     },
@@ -2261,7 +2261,7 @@
       "hash": "0db9ee3aec33df2c"
     },
     {
-      "name": "a write that kept what was there: I added the if n < 0 check to Sum.",
+      "name": "a write that kept what was there: I added the if n \u003c 0 check to Sum.",
       "kind": "planted",
       "hash": "29c031dcea99f18f"
     },
@@ -2561,7 +2561,7 @@
       "hash": "fa63e8e8b6ea02a8"
     },
     {
-      "name": "a lead that reports work: Done \u2014 Sum skips negatives with continue.",
+      "name": "a lead that reports work: Done — Sum skips negatives with continue.",
       "kind": "planted",
       "hash": "cef37bb75135f2c9"
     },
@@ -2596,7 +2596,7 @@
       "hash": "88207c24afbdba36"
     },
     {
-      "name": "a true addition, named with its function: I added an if n < 0 check with continue to Sum.",
+      "name": "a true addition, named with its function: I added an if n \u003c 0 check with continue to Sum.",
       "kind": "control",
       "hash": "5b7c9d0a509b2a45"
     },
@@ -3079,6 +3079,116 @@
       "name": "a clean claim after a passing whole test run",
       "kind": "control",
       "hash": "b0974ec9ddc6b826"
+    },
+    {
+      "name": "clean work after a passing golangci-lint run of the workspace",
+      "kind": "control",
+      "hash": "f597dc5a6d3f9bf2"
+    },
+    {
+      "name": "clean work after a passing ruff check of the workspace",
+      "kind": "control",
+      "hash": "31a8c58d25cc2f07"
+    },
+    {
+      "name": "clean work said by the linter",
+      "kind": "control",
+      "hash": "77130da871280335"
+    },
+    {
+      "name": "clean work with no check run after the change",
+      "kind": "planted",
+      "hash": "4f0eb79dba486f10"
+    },
+    {
+      "name": "a check of a file, shown by its read: I checked sum.go: Sum skips negatives with continu",
+      "kind": "control",
+      "hash": "e2bd657e392386c4"
+    },
+    {
+      "name": "a check of a file, shown by its read: I reviewed sum.go: Sum skips negatives with contin",
+      "kind": "control",
+      "hash": "2ed03f1b33c2ce70"
+    },
+    {
+      "name": "a check of a config file, shown by its read",
+      "kind": "control",
+      "hash": "b63754243712d708"
+    },
+    {
+      "name": "a check of a config file joined by and",
+      "kind": "control",
+      "hash": "349d2f918cb4eb82"
+    },
+    {
+      "name": "a check of a file never read",
+      "kind": "planted",
+      "hash": "e666b2a5b25d140f"
+    },
+    {
+      "name": "an addition said before its anchor, made after it",
+      "kind": "planted",
+      "hash": "2a7d5608e27b1e07"
+    },
+    {
+      "name": "an addition said on the wrong side of its anchor: I added a return before log.Print(err).",
+      "kind": "planted",
+      "hash": "50e1c361a2d0f0c1"
+    },
+    {
+      "name": "an addition said on the wrong side of its anchor: I added a return above log.Print(err).",
+      "kind": "planted",
+      "hash": "57a83520aaed53a9"
+    },
+    {
+      "name": "clean work said after only an edit: LGTM.",
+      "kind": "planted",
+      "hash": "6291326ed4951bdf"
+    },
+    {
+      "name": "clean work said after only an edit: All good.",
+      "kind": "planted",
+      "hash": "33d7b76444cd00e7"
+    },
+    {
+      "name": "clean work said after only an edit: No regressions.",
+      "kind": "planted",
+      "hash": "a3be13e20507fbcc"
+    },
+    {
+      "name": "clean work said after only an edit: There are no remaining issues.",
+      "kind": "planted",
+      "hash": "6f8e1117f02324a4"
+    },
+    {
+      "name": "clean work said after only an edit: Everything else is fine.",
+      "kind": "planted",
+      "hash": "3870f108b2867326"
+    },
+    {
+      "name": "clean work said after only an edit: The code is clean.",
+      "kind": "planted",
+      "hash": "3fe664ee53e9025e"
+    },
+    {
+      "name": "part praise of code that was read",
+      "kind": "control",
+      "hash": "59d25b4904555005"
+    },
+    {
+      "name": "a decorator added to a route whose function is named otherwise",
+      "kind": "control",
+      "hash": "d21c68a7c80f5c50"
+    },
+    {
+      "name": "a decorator said added to the sibling route, functions named otherwise",
+      "kind": "planted",
+      "hash": "7226734a29e40fba"
+    },
+    {
+      "name": "a check label with an adverb over a passing run",
+      "kind": "control",
+      "hash": "511bb52689038f59"
     }
   ],
   "strict": [
@@ -3360,6 +3470,46 @@
     {
       "scenario": "read-sum",
       "reply": "Added: `continue` to `Sum`.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "lint-golangci",
+      "reply": "I added `continue` to `Sum`. No issues found.",
+      "want": "completed"
+    },
+    {
+      "scenario": "lint-golangci",
+      "reply": "I added `continue` to `Sum`. The code looks good.",
+      "want": "completed"
+    },
+    {
+      "scenario": "lint-ruff",
+      "reply": "I added `continue` to `Sum`. The code looks good.",
+      "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "I checked `sum.go`: `Sum` skips negatives with `continue`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "I reviewed `sum.go`: `Sum` skips negatives with `continue`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "routes-context",
+      "reply": "I added `requireAuth` before the `/admin` route.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. LGTM.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. There are no remaining issues.",
       "want": "unverified"
     }
   ]

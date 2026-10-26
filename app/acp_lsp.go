@@ -331,7 +331,11 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 					"steps": []string{"Install " + l.language + "'s toolchain with its language server through Abhed's toolchain manager, or use a sandbox image that has " + l.argv[0],
 						"Or name another server in sandbox.language_servers in ~/.abhed/config.json", "Start the language server again"}}}}
 		}
-		return nil, refusal(errRefused, "the language server did not initialize: %v", initErr)
+		why := initErr.Error()
+		if tail := lastLines(stderr.String(), 8); tail != "" {
+			why += "; it said: " + redacted(tail)
+		}
+		return nil, refusal(errRefused, "the language server did not initialize: %s", why)
 	}
 	return served, nil
 }
