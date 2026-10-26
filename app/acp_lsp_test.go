@@ -118,7 +118,7 @@ func TestStudioRunsALanguageServer(t *testing.T) {
 	if res.LSPID == "" || res.Capabilities["hoverProvider"] != true || res.Capabilities["fakeOptions"] != false {
 		t.Fatalf("start %+v", res)
 	}
-	if len(*asked) != 1 || !strings.Contains((*asked)[0], "exec GOTOOLCHAIN=local gopls") {
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "GOTOOLCHAIN=local exec gopls") {
 		t.Fatalf("command %v", *asked)
 	}
 	r.cl.waitFor(from, "the engine's showDocument answer", func(m rpcMessage) bool {

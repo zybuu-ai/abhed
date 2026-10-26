@@ -134,6 +134,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Inline completions for Abhed Studio: `_abhed/complete` (the `complete`
+  feature) sends the code around the cursor, bounded, to the provider
+  `model.completion` names, by fill in the middle on a local coding model
+  (Ollama, vLLM, llama.cpp and other OpenAI-compatible servers) or through
+  a chat turn otherwise, and returns text only. Files outside the
+  workspace, ones a read rule keeps and ones of keys are never sent; one
+  request is in flight per session, with a debounce and a rate limit.
+  `completion.enabled` and `completion.local_only` turn them off or keep
+  them on this machine, from the managed file down; a workspace file may only
+  tighten them. The first use is recorded as `completion.enabled` and each
+  session's use as `completion.summary`, not each completion
+  ([Inline completions](docs/guide/34-inline-completions.md)).
 - Language servers for Abhed Studio: the editor protocol's `_abhed/lsp/start`,
   `/send` and `/stop` (the `lsp` feature) run gopls, basedpyright,
   typescript-language-server or rust-analyzer (or the server

@@ -336,6 +336,9 @@ type acpConn struct {
 	// lsps are the person's language servers, by id (§7.9).
 	lspMu sync.Mutex
 	lsps  map[string]*acpLSP
+	// comps are each session's inline completions (§7.10).
+	compMu sync.Mutex
+	comps  map[string]*acpCompleter
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -601,6 +604,7 @@ func (c *acpConn) shut(s *acpSession) {
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)
 	c.killLSPs(s.id)
+	c.completionSummary(s)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
