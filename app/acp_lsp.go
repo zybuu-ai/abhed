@@ -231,11 +231,14 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	// A workspace rust-analyzer.toml overrides the engine's settings, so the
 	// person is asked, told what it can do.
 	// A walk that stopped at a bound asks too: a file may have gone unseen.
+	// The watch is made before the check, so a file written between them
+	// is still seen.
 	var why string
-	var raFiles []string
+	var raWatch *lsprelay.RustAnalyzerWatch
 	if l.language == "rust" {
-		var incomplete string
-		raFiles, incomplete = s.raConfigs.Get(l.filter.Roots, raStamp(loop))
+		raWatch = lsprelay.NewRustAnalyzerWatch(l.filter.Roots, nil)
+		raFiles, incomplete := s.raConfigs.Get(l.filter.Roots, raStamp(loop))
+		raWatch.Add(raFiles)
 		why = lsprelay.RustAnalyzerConfigWhy(raFiles, incomplete)
 	}
 	_, refused, err := loop.ManualAuthorizeAsking(ctx, "bash", callID, args, c.manualAsk(s, callID, "lsp", command), why)
@@ -312,7 +315,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	}
 	ended := make(chan struct{})
 	if initErr == nil && l.language == "rust" {
-		go c.lspWatchConfig(s, l, lsprelay.NewRustAnalyzerWatch(l.filter.Roots, raFiles), ended)
+		go c.lspWatchConfig(s, l, raWatch, lsprelay.RustAnalyzerWatchEvery, ended)
 	}
 	go func() {
 		defer close(ended)
@@ -404,8 +407,8 @@ const lspConfigChanged = "workspace-config-changed"
 
 // lspWatchConfig stops rust-analyzer when its watch sees a
 // rust-analyzer.toml appear, change or go, until the process ends.
-func (c *acpConn) lspWatchConfig(s *acpSession, l *acpLSP, w *lsprelay.RustAnalyzerWatch, ended <-chan struct{}) {
-	t := time.NewTicker(lsprelay.RustAnalyzerWatchEvery)
+func (c *acpConn) lspWatchConfig(s *acpSession, l *acpLSP, w *lsprelay.RustAnalyzerWatch, every time.Duration, ended <-chan struct{}) {
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {

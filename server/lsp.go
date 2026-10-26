@@ -204,10 +204,13 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	// the workbench has no one to ask on the spot, so the start is refused.
 	// A walk that stopped at a bound is refused too: a file may have gone
 	// unseen. The check is kept while nothing new is on the session's record.
-	var raFiles []string
+	// The watch is made before the check, so a file written between them
+	// is still seen.
+	var watch *lsprelay.RustAnalyzerWatch
 	if req.Language == "rust" {
-		var incomplete string
-		raFiles, incomplete = live.raConfigs.Get(sess.PolicyRoots(), strconv.FormatInt(live.Loop.Recorder.LastAppended(), 10))
+		watch = lsprelay.NewRustAnalyzerWatch(sess.PolicyRoots(), nil)
+		raFiles, incomplete := live.raConfigs.Get(sess.PolicyRoots(), strconv.FormatInt(live.Loop.Recorder.LastAppended(), 10))
+		watch.Add(raFiles)
 		if why := lsprelay.RustAnalyzerConfigWhy(raFiles, incomplete); why != "" {
 			WriteError(w, http.StatusConflict, "not started: "+why+"; start it from Abhed Studio, which asks you, or remove the file")
 			return
@@ -276,17 +279,16 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	watchEvery := lsprelay.RustAnalyzerWatchEvery
 	go run.read(stdout)
 	go func() {
 		idle := time.NewTicker(15 * time.Second)
 		defer idle.Stop()
 		// rust-analyzer is stopped when a rust-analyzer.toml appears or
 		// changes while it runs.
-		var watch *lsprelay.RustAnalyzerWatch
 		var watchC <-chan time.Time
-		if req.Language == "rust" {
-			watch = lsprelay.NewRustAnalyzerWatch(run.roots, raFiles)
-			t := time.NewTicker(lsprelay.RustAnalyzerWatchEvery)
+		if watch != nil {
+			t := time.NewTicker(watchEvery)
 			defer t.Stop()
 			watchC = t.C
 		}

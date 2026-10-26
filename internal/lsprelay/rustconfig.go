@@ -199,6 +199,20 @@ func (w *RustAnalyzerWatch) state() map[string]string {
 	return out
 }
 
+// Add watches files too, as they are now: the ones a check found after
+// the watch was made, so nothing written between the two goes unseen.
+func (w *RustAnalyzerWatch) Add(files []string) {
+	for _, f := range files {
+		if slices.Contains(w.paths, f) {
+			continue
+		}
+		w.paths = append(w.paths, f)
+		if fi, err := os.Lstat(f); err == nil && !fi.IsDir() {
+			w.seen[f] = fmt.Sprintf("%d|%s|%d", fi.ModTime().UnixNano(), fi.Mode(), fi.Size())
+		}
+	}
+}
+
 // Changed reports whether any watched path is new, changed or gone.
 func (w *RustAnalyzerWatch) Changed() bool {
 	now := w.state()
