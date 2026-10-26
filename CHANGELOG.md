@@ -159,7 +159,7 @@ All notable changes to Abhed are recorded here. The format follows
   `sandbox.toolchains_preapproved` set the consent. Every install is
   recorded as `toolchain.install`, counted, mapped to OCSF and listed by
   HawkEYE, and `abhed doctor` lists what the workspace needs, by marker and by
-  loose source file ([Toolchains](docs/guide/29-toolchains.md)).
+  loose source file ([Toolchains](docs/guide/32-toolchains.md)).
 - `sandbox.toolchains_registries` (ask by default): where the network is off,
   agreeing to a language's toolchain also opens its official package
   registries to commands, through the session's egress proxy, on 443 only,
@@ -167,7 +167,7 @@ All notable changes to Abhed are recorded here. The format follows
   outside the managed file; under a managed network it adds nothing unless
   the managed file names it, and a workspace file may only set it off. Each
   opening is recorded as `toolchain.registry`
-  ([Toolchains](docs/guide/29-toolchains.md#package-registries)).
+  ([Toolchains](docs/guide/32-toolchains.md#package-registries)).
 - A key written twice in a configuration file is reported. encoding/json
   keeps the last one without a word, so a second provider of the same name
   in `model.providers` used to replace the first silently. Loading now warns

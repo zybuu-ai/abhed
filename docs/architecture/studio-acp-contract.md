@@ -282,7 +282,7 @@ modal says the app listens where its own settings say.
 ### 3.2b Language toolchains
 
 The agent's commands get the language toolchains Abhed installed, first on
-`PATH` ([Toolchains](../guide/29-toolchains.md)). The agent installs one with
+`PATH` ([Toolchains](../guide/32-toolchains.md)). The agent installs one with
 its `toolchain` tool, as an ordinary ask. Studio offers the same from its own
 UI, for instance when its Run or Test button's command exits 127, with these
 methods (`toolchain` in the session's `_meta` features). `language` is a
