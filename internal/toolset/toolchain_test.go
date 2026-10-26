@@ -166,3 +166,30 @@ func TestStartupRegistries(t *testing.T) {
 		}
 	}
 }
+
+// A deny or ask rule on a language holds for it with its language server,
+// alone or with the debugger; an allow for the language covers neither.
+func TestToolchainRulesHoldWithTheLanguageServer(t *testing.T) {
+	for _, lang := range []string{"go", "python", "node", "rust"} {
+		for _, name := range []string{lang + "+lsp@1.2", lang + "+debugger+lsp@1.2"} {
+			call := json.RawMessage(`{"name":"` + name + `","lsp":true}`)
+			deny := policy.New(policy.ModeDefault)
+			_ = deny.AddAllow(toolchain.ToolName)
+			_ = deny.AddDeny(toolchain.ToolName + "(" + lang + "@*)")
+			if d := deny.Evaluate(toolchain.ToolName, true, call); d.Decision != policy.Deny {
+				t.Errorf("%s: deny %s@* with auto: %+v", name, lang, d)
+			}
+			ask := policy.New(policy.ModeDefault)
+			_ = ask.AddAllow(toolchain.ToolName)
+			_ = ask.AddAsk(toolchain.ToolName + "(" + lang + "@*)")
+			if d := ask.Evaluate(toolchain.ToolName, true, call); d.Decision != policy.Ask {
+				t.Errorf("%s: ask rule: %+v", name, d)
+			}
+			allow := policy.New(policy.ModeDefault)
+			_ = allow.AddAllow(toolchain.ToolName + "(" + lang + "@*)")
+			if d := allow.Evaluate(toolchain.ToolName, true, call); d.Decision != policy.Ask {
+				t.Errorf("%s: an allow for the language covered its server: %+v", name, d)
+			}
+		}
+	}
+}

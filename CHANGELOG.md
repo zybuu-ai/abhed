@@ -173,6 +173,17 @@ All notable changes to Abhed are recorded here. The format follows
   ended after a terminate, as well as on stop. Each session is recorded as `debug.launched` and
   `debug.stopped`. Node is not supported yet
   ([Debugging](docs/guide/31-debugging.md)).
+- Language servers with their language: gopls 0.23.0 with Go (built by
+  Abhed with the cached Go, checked by sum.golang.org), basedpyright 1.40.2
+  with Python and typescript-language-server 6.0.2 with TypeScript 5.9.3 for
+  Node.js (npm packages pinned by their sha512 integrity, which the registry
+  must agree with; basedpyright's Node.js is installed first where missing,
+  and the offer says so), and rust-analyzer with Rust (the Rust release's own
+  component, else a GitHub release asset pinned by its sha256). Offered with
+  the language through the toolchain tool's `lsp`, `abhed toolchain install
+  -lsp` and Studio's `lsp: true`, under the scope `<lang>+lsp@<major>`;
+  Studio's language servers find them on `PATH`, and a missing server's
+  steps point at this route ([Toolchains](docs/guide/32-toolchains.md#language-servers)).
 - Debuggers with their language: Delve 1.27.2 with Go (1.25 or later) and
   debugpy 1.8.22 with Python (3.10 or later), offered and agreed to with the
   language ("Go 1.27.3 + Delve debugger 1.27.2") through the toolchain
@@ -695,7 +706,9 @@ All notable changes to Abhed are recorded here. The format follows
   on the default image; OpenSSL is not bundled (see the Toolchains guide).
 - Toolchains: a Linux build unpacked on macOS (for the container tier) failed
   when its archive held names differing only in case, as Python's terminfo
-  does; the second of such a pair is now skipped on a case-insensitive disk.
+  does; the second of such a pair is now skipped on a case-insensitive disk,
+  except that a file takes the place of a link, which would otherwise point
+  at itself.
 - Postgres: an event appended while its session was being deleted could be
   written into the deleted session, because the insert's check ran before it
   waited for the session's chain lock. The chain trigger now refuses the row

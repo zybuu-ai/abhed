@@ -21,9 +21,13 @@ language's toolchain:
 | `typescript`, `javascript` | `typescript-language-server --stdio` |
 | `rust` | `rust-analyzer` |
 
-The server must be on the sandbox's `PATH`. When it is not, starting it fails
-with a problem that names it and says how to install it, with the language's
-toolchain, or in the sandbox image.
+The server must be on the sandbox's `PATH`. Abhed installs each of these with
+its language ([Toolchains: Language servers](32-toolchains.md#language-servers)):
+accept Studio's offer, or run `abhed toolchain install -lsp go` (`python`,
+`node`, `rust`; add `-platform linux` for the container tier). When it is
+not there, starting it fails with `server-missing`, a problem that names it
+and gives that route first, then the sandbox image or
+`sandbox.language_servers`.
 
 It runs on every sandbox tier but `none`, the macOS process tier included:
 unlike a debugger, a language server needs no loopback. Each runs with

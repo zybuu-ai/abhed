@@ -471,7 +471,7 @@ func untarGz(archive, dir string) error {
 			if total > maxUnpacked {
 				return errors.New("the archive unpacks to more than Abhed allows")
 			}
-			if err := writeFile(p, tr, hdr.Size, hdr.FileInfo().Mode()); err != nil && !caseCollision(p, err) {
+			if err := writeFileOverLink(p, tr, hdr.Size, hdr.FileInfo().Mode()); err != nil && !caseCollision(p, err) {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -505,6 +505,23 @@ func untarGz(archive, dir string) error {
 			return fmt.Errorf("refused the entry %q of type %c", hdr.Name, hdr.Typeflag)
 		}
 	}
+}
+
+// writeFileOverLink is writeFile, except that where a link already holds
+// the name in another case, as on a case-insensitive disk, the file takes
+// its place: a link to the file's own name would otherwise point at itself.
+func writeFileOverLink(p string, r io.Reader, size int64, mode fs.FileMode) error {
+	err := writeFile(p, r, size, mode)
+	if err == nil || !caseCollision(p, err) {
+		return err
+	}
+	if info, lerr := os.Lstat(p); lerr == nil && info.Mode()&fs.ModeSymlink != 0 {
+		if rerr := os.Remove(p); rerr != nil {
+			return rerr
+		}
+		return writeFile(p, r, size, mode)
+	}
+	return err
 }
 
 func writeFile(p string, r io.Reader, size int64, mode fs.FileMode) error {
@@ -575,7 +592,7 @@ func unzip(archive, dir string) error {
 			if err != nil {
 				return err
 			}
-			err = writeFile(p, rc, int64(zf.UncompressedSize64), mode) // #nosec G115 -- bounded by maxUnpacked above
+			err = writeFileOverLink(p, rc, int64(zf.UncompressedSize64), mode) // #nosec G115 -- bounded by maxUnpacked above
 			_ = rc.Close()
 			if err != nil && !caseCollision(p, err) {
 				return err

@@ -86,3 +86,18 @@ func TestUnpackRefusesLinkChains(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// On a case-insensitive disk a link and a file whose names differ only in
+// case collide; the file wins, so no link is left pointing at itself.
+func TestUnpackFileWinsOverALinkDifferingInCase(t *testing.T) {
+	base := t.TempDir()
+	archive := filepath.Join(base, "a.tar.gz")
+	_ = os.WriteFile(archive, tarGz(t, entry{name: "t/N/NCR", typ: tar.TypeSymlink, link: "../n/ncr"}, entry{name: "t/n/ncr", body: "real"}), 0o600)
+	out := filepath.Join(base, "out")
+	if err := unpack(archive, "tar.gz", out); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(out, "t", "n", "ncr")); err != nil || string(b) != "real" {
+		t.Fatalf("%q %v", b, err)
+	}
+}

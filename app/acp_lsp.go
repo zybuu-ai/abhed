@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -266,12 +267,38 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 			return nil, &rpcError{Code: errRefused, Message: l.argv[0] + " is not installed in the sandbox",
 				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
 					"message": l.argv[0] + " is not on the sandbox's PATH, so " + l.language + " has no language server there",
-					"steps": []string{"Install " + l.language + "'s toolchain with its language server through Abhed's toolchain manager, or use a sandbox image that has " + l.argv[0],
-						"Or name another server in sandbox.language_servers in ~/.abhed/config.json", "Start the language server again"}}}}
+					"steps":   lspMissingSteps(l.language, l.argv[0])}}}
 		}
 		return nil, refusal(errRefused, "the language server did not initialize: %v", initErr)
 	}
 	return served, nil
+}
+
+// lspMissingSteps are what to do when a language's server is not on PATH:
+// install it with its language through the toolchain route, where Abhed
+// installs one, else use an image or another server.
+func lspMissingSteps(language, program string) []string {
+	lang := language
+	if l, ok := toolchain.Find(language); ok {
+		lang = l.Name
+	}
+	var steps []string
+	if e, ok := toolchain.LSPFor(lang); ok && e.Name == lspServerPackage(program) {
+		steps = append(steps, "Install "+lang+" with its language server: accept the toolchain offer with the language server (_abhed/toolchain/install with lsp true), "+
+			"or run `abhed toolchain install -lsp "+lang+"` in your own terminal (add `-platform linux` for the container tier)")
+		steps = append(steps, "Or use a sandbox image that has "+program)
+	} else {
+		steps = append(steps, "Use a sandbox image that has "+program)
+	}
+	return append(steps, "Or name another server in sandbox.language_servers in ~/.abhed/config.json", "Start the language server again")
+}
+
+// lspServerPackage is the extra a server's program comes from.
+func lspServerPackage(program string) string {
+	if program == "basedpyright-langserver" {
+		return "basedpyright"
+	}
+	return program
 }
 
 // lspRestart starts the server again after a crash, once its backoff has passed.

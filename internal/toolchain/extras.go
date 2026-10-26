@@ -19,13 +19,20 @@ import (
 )
 
 // Extra is a tool installed beside a language's toolchain on request, as
-// part of the same agreement: today, the language's debugger.
+// part of the same agreement: its debugger, or its language server.
 type Extra struct {
 	Name    string
 	Lang    string
+	Kind    string // KindDebugger or KindLSP
 	Display string
 	Version string
 }
+
+// The kinds of extra.
+const (
+	KindDebugger = "debugger"
+	KindLSP      = "lsp"
+)
 
 // The pinned debuggers. Delve is built from its module, checked by the Go
 // checksum database; debugpy's wheel is pinned by its sha256 as PyPI lists it.
@@ -43,19 +50,29 @@ var debugpyWheelSHA256 = "a9e9d3550e15ca479c59333e90845029190531f0cacfedab3b815a
 
 // Extras are the extras Abhed installs.
 var Extras = []Extra{
-	{Name: "delve", Lang: "go", Display: "Delve debugger", Version: delveVersion},
-	{Name: "debugpy", Lang: "python", Display: "debugpy debugger", Version: debugpyVersion},
+	{Name: "delve", Lang: "go", Kind: KindDebugger, Display: "Delve debugger", Version: delveVersion},
+	{Name: "debugpy", Lang: "python", Kind: KindDebugger, Display: "debugpy debugger", Version: debugpyVersion},
+	{Name: "gopls", Lang: "go", Kind: KindLSP, Display: "gopls language server", Version: goplsVersion},
+	{Name: "basedpyright", Lang: "python", Kind: KindLSP, Display: "basedpyright language server", Version: bpyrVersion},
+	{Name: "typescript-language-server", Lang: "node", Kind: KindLSP, Display: "typescript-language-server (with TypeScript " + tsVersion + ")", Version: tslsVersion},
+	{Name: "rust-analyzer", Lang: "rust", Kind: KindLSP, Display: "rust-analyzer language server", Version: raVersion},
 }
 
-// DebuggerFor is the debugger installed with lang, if Abhed installs one.
-func DebuggerFor(lang string) (Extra, bool) {
+// ExtraFor is the extra of kind installed with lang, if Abhed installs one.
+func ExtraFor(lang, kind string) (Extra, bool) {
 	for _, e := range Extras {
-		if e.Lang == lang {
+		if e.Lang == lang && e.Kind == kind {
 			return e, true
 		}
 	}
 	return Extra{}, false
 }
+
+// DebuggerFor is the debugger installed with lang, if Abhed installs one.
+func DebuggerFor(lang string) (Extra, bool) { return ExtraFor(lang, KindDebugger) }
+
+// LSPFor is the language server installed with lang, if Abhed installs one.
+func LSPFor(lang string) (Extra, bool) { return ExtraFor(lang, KindLSP) }
 
 // extraMarker records what an installed extra holds.
 const extraMarker = ".abhed-extra.json"
@@ -99,10 +116,10 @@ func (c Cache) LookupExtra(p Platform, e Extra) (ExtraInstalled, bool) {
 // folder Python imports it from, for PYTHONPATH.
 func ExtraEnv(x ExtraInstalled) (bin []string, pythonPath string) {
 	switch x.Name {
-	case "delve":
-		return []string{filepath.Join(x.Dir, "bin")}, ""
 	case "debugpy":
 		return nil, filepath.Join(x.Dir, "site")
+	case "delve", "gopls", "basedpyright", "typescript-language-server", "rust-analyzer":
+		return []string{filepath.Join(x.Dir, "bin")}, ""
 	}
 	return nil, ""
 }
@@ -116,9 +133,12 @@ type ExtraPlan struct {
 	URL    string `json:"url"`
 	Digest string `json:"digest"`
 	Size   int64  `json:"size,omitempty"`
-	// Builder is the Go toolchain for this host Delve is built with, when
-	// it is not the session's own; it is installed first if not cached.
+	// Builder is the Go toolchain for this host Delve or gopls is built
+	// with, when it is not the session's own; it is installed first if not cached.
 	Builder *Plan `json:"builder,omitempty"`
+	// Needs is another language it runs on, Node.js for basedpyright, when
+	// that is not installed; it is installed first.
+	Needs *Plan `json:"needs,omitempty"`
 	// Note says how it is made, for a person.
 	Note string `json:"note,omitempty"`
 }
@@ -136,27 +156,78 @@ func (s *Session) PlanExtra(ctx context.Context, e Extra, lang Plan) (ExtraPlan,
 		return ep, nil
 	}
 	switch e.Name {
-	case "delve":
-		if p.OS != "linux" || p.Arch != "amd64" && p.Arch != "arm64" {
-			return ExtraPlan{}, fmt.Errorf("the Delve debugger is installed only for Linux sandboxes on amd64 or arm64, where the debugger runs, not %s", p)
+	case "delve", "gopls":
+		t := goTools[e.Name]
+		if !t.platforms(p) {
+			return ExtraPlan{}, fmt.Errorf("the %s is installed only for %s, not %s", e.Display, t.where, p)
 		}
-		if compareVersions(lang.Version(), delveMinGo) < 0 {
-			return ExtraPlan{}, fmt.Errorf("the Delve debugger %s is built with Go %s or later; ask for go@%s or later to debug", delveVersion, delveMinGo, delveMinGo)
+		if compareVersions(lang.Version(), t.minGo) < 0 {
+			return ExtraPlan{}, fmt.Errorf("the %s %s is built with Go %s or later; ask for go@%s or later", e.Display, e.Version, t.minGo, t.minGo)
 		}
 		ep.Source = "proxy.golang.org, checked by sum.golang.org"
-		ep.URL = strings.TrimSuffix(s.Source.Endpoints.goProxy(), "/") + "/" + delveModule + "/@v/v" + delveVersion + ".zip"
+		ep.URL = strings.TrimSuffix(s.Source.Endpoints.goProxy(), "/") + "/" + t.module + "/@v/v" + e.Version + ".zip"
 		ep.Digest = "go.sum, checked by " + s.Source.Endpoints.goSumDB()
 		ep.Note = "built here with Go " + lang.Version() + " for " + p.String()
 		if h := Host(); h != p {
 			b, err := s.planFor(ctx, Spec{Lang: "go", Version: lang.Version()}, h)
 			if err != nil {
-				return ExtraPlan{}, fmt.Errorf("the Delve debugger is built with Go %s for this host (%s): %w", lang.Version(), h, err)
+				return ExtraPlan{}, fmt.Errorf("the %s is built with Go %s for this host (%s): %w", e.Display, lang.Version(), h, err)
 			}
 			if b.Installed == nil {
 				ep.Note += fmt.Sprintf(", which first installs Go %s for this host (%s) to build it", b.Version(), h)
 			}
 			ep.Builder = &b
 		}
+	case "basedpyright", "typescript-language-server":
+		node := lang
+		// The Node.js the session's commands have, else one installed first.
+		var active *Installed
+		for _, in := range s.Active(s.Workspace) {
+			if in.Lang == "node" {
+				active = &in
+			}
+		}
+		if e.Lang != "node" && active != nil {
+			node = Plan{Spec: Spec{Lang: "node"}, Installed: active}
+		} else if e.Lang != "node" {
+			np, err := s.Plan(ctx, Spec{Lang: "node"})
+			if err != nil {
+				return ExtraPlan{}, fmt.Errorf("the %s runs on Node.js, which cannot be had here: %w", e.Display, err)
+			}
+			node = np
+			if np.Installed == nil {
+				ep.Needs = &np
+				ep.Note = fmt.Sprintf("runs on Node.js, so Node.js %s is installed first", np.Version())
+			}
+		}
+		minNode := bpyrMinNode
+		if e.Name == "typescript-language-server" {
+			minNode = tslsMinNode
+		}
+		if compareVersions(node.Version(), minNode) < 0 {
+			return ExtraPlan{}, fmt.Errorf("the %s needs Node.js %s or later, not %s", e.Display, minNode, node.Version())
+		}
+		a, err := s.Source.resolveNPM(ctx, npmPins[e.Name][0])
+		if err != nil {
+			return ExtraPlan{}, err
+		}
+		ep.Source, ep.URL, ep.Digest = a.Source, a.URL, a.Digest
+		if len(npmPins[e.Name]) > 1 {
+			ep.Note = strings.TrimPrefix(ep.Note+"; with typescript "+tsVersion+", also pinned", "; ")
+		}
+	case "rust-analyzer":
+		// A Rust release ships its own rust-analyzer, matched to it.
+		if in := lang.Installed; in != nil && shipsRustAnalyzer(in.Dir) {
+			ep.Source = "Rust " + in.Version + "'s own rust-analyzer component, checked with its release"
+			ep.URL, ep.Digest, ep.Note = in.URL, in.Digest, "Rust "+in.Version+" ships it, so nothing more is downloaded"
+			break
+		}
+		a, err := s.Source.raArtifact(p)
+		if err != nil {
+			return ExtraPlan{}, err
+		}
+		ep.Source, ep.URL, ep.Digest, ep.Size = a.Source, a.URL, a.Digest, a.Size
+		ep.Note = "the pinned release, unless the Rust build ships its own"
 	case "debugpy":
 		if compareVersions(lang.Version(), debugpyMinPython) < 0 {
 			return ExtraPlan{}, fmt.Errorf("debugpy %s needs Python %s or later", debugpyVersion, debugpyMinPython)
@@ -214,7 +285,7 @@ func (s *Session) InstallExtra(ctx context.Context, ep ExtraPlan, lang Installed
 	var x ExtraInstalled
 	var err error
 	switch ep.Extra.Name {
-	case "delve":
+	case "delve", "gopls":
 		goroot := lang.Dir
 		if ep.Builder != nil && ep.Builder.Installed != nil {
 			goroot = ep.Builder.Installed.Dir
@@ -226,7 +297,20 @@ func (s *Session) InstallExtra(ctx context.Context, ep ExtraPlan, lang Installed
 		}
 		if err == nil {
 			ev.BuiltWith = "go " + lang.Version
-			x, err = s.Cache.installDelve(ctx, s.Source.Endpoints, goroot, lang.Version, p)
+			x, err = s.Cache.installGoTool(ctx, s.Source.Endpoints, ep.Extra, goroot, lang.Version, p)
+		}
+	case "basedpyright", "typescript-language-server":
+		if ep.Needs != nil {
+			_, err = s.Install(ctx, *ep.Needs, by, surface, consent, progress)
+		}
+		if err == nil {
+			x, err = s.Cache.installNPM(ctx, s.Source, ep.Extra, p, progress)
+		}
+	case "rust-analyzer":
+		if shipsRustAnalyzer(lang.Dir) {
+			x, err = s.Cache.linkRustAnalyzer(ep.Extra, lang, p)
+		} else {
+			x, err = s.Cache.installRustAnalyzer(ctx, s.Source, ep.Extra, p, progress)
 		}
 	case "debugpy":
 		var a Artifact
@@ -279,16 +363,34 @@ var goBuild = func(ctx context.Context, goBin string, env []string, dir string, 
 	return cmd.CombinedOutput()
 }
 
-// delveBuildTimeout bounds building Delve.
-const delveBuildTimeout = 15 * time.Minute
+// goBuildTimeout bounds building a Go tool.
+const goBuildTimeout = 15 * time.Minute
 
-// installDelve builds the pinned Delve with the Go at goroot for p, from the
-// module proxy with every module checked by the checksum database, and
-// places it read-only. Nothing from the person's own Go setup is used.
-func (c Cache) installDelve(ctx context.Context, ep Endpoints, goroot, goVersion string, p Platform) (ExtraInstalled, error) {
-	e, _ := DebuggerFor("go")
+// goTool is an extra Abhed builds from a Go module.
+type goTool struct {
+	module, pkg, bin, minGo, where string
+	platforms                      func(Platform) bool
+}
+
+// goTools are the extras built with go install.
+var goTools = map[string]goTool{
+	"delve": {module: delveModule, pkg: delveModule + "/cmd/dlv", bin: "dlv", minGo: delveMinGo,
+		where:     "Linux sandboxes on amd64 or arm64, where the debugger runs",
+		platforms: func(p Platform) bool { return p.OS == "linux" && (p.Arch == "amd64" || p.Arch == "arm64") }},
+	"gopls": {module: goplsModule, pkg: goplsModule, bin: "gopls", minGo: goplsMinGo,
+		where: "Linux and macOS on amd64 or arm64, and Linux on s390x",
+		platforms: func(p Platform) bool {
+			return (p.OS == "linux" || p.OS == "darwin") && (p.Arch == "amd64" || p.Arch == "arm64") || p == Platform{"linux", "s390x"}
+		}},
+}
+
+// installGoTool builds the pinned Go tool e with the Go at goroot for p,
+// from the module proxy with every module checked by the checksum database,
+// and places it read-only. Nothing from the person's own Go setup is used.
+func (c Cache) installGoTool(ctx context.Context, ep Endpoints, e Extra, goroot, goVersion string, p Platform) (ExtraInstalled, error) {
+	t := goTools[e.Name]
 	return c.placeExtra(e, p, func(tmp, top string) (ExtraInstalled, error) {
-		ctx, cancel := context.WithTimeout(ctx, delveBuildTimeout)
+		ctx, cancel := context.WithTimeout(ctx, goBuildTimeout)
 		defer cancel()
 		gopath := filepath.Join(tmp, "gopath")
 		env := []string{
@@ -299,23 +401,23 @@ func (c Cache) installDelve(ctx context.Context, ep Endpoints, goroot, goVersion
 			"GOINSECURE=", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOOS=" + p.OS, "GOARCH=" + p.Arch,
 		}
 		out, err := goBuild(ctx, filepath.Join(goroot, "bin", "go"), env, tmp,
-			"install", "-trimpath", delveModule+"/cmd/dlv@v"+delveVersion)
+			"install", "-trimpath", t.pkg+"@v"+e.Version)
 		if err != nil {
-			return ExtraInstalled{}, fmt.Errorf("building Delve %s: %w: %s", delveVersion, err, lastLine(string(out)))
+			return ExtraInstalled{}, fmt.Errorf("building %s %s: %w: %s", e.Name, e.Version, err, lastLine(string(out)))
 		}
-		built := filepath.Join(gopath, "bin", "dlv")
+		built := filepath.Join(gopath, "bin", t.bin)
 		if h := Host(); h != p {
-			built = filepath.Join(gopath, "bin", p.OS+"_"+p.Arch, "dlv")
+			built = filepath.Join(gopath, "bin", p.OS+"_"+p.Arch, t.bin)
 		}
 		if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil {
 			return ExtraInstalled{}, err
 		}
-		digest, n, err := copyHashed(built, filepath.Join(top, "bin", "dlv"))
+		digest, n, err := copyHashed(built, filepath.Join(top, "bin", t.bin))
 		if err != nil {
-			return ExtraInstalled{}, fmt.Errorf("the Delve build is not where expected: %w", err)
+			return ExtraInstalled{}, fmt.Errorf("the %s build is not where expected: %w", e.Name, err)
 		}
 		return ExtraInstalled{Source: "proxy.golang.org, checked by sum.golang.org",
-			URL:    strings.TrimSuffix(ep.goProxy(), "/") + "/" + delveModule + "/@v/v" + delveVersion + ".zip",
+			URL:    strings.TrimSuffix(ep.goProxy(), "/") + "/" + t.module + "/@v/v" + e.Version + ".zip",
 			Digest: "sha256:" + digest, BuiltWith: "go " + goVersion, Bytes: n}, nil
 	})
 }

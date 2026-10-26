@@ -201,6 +201,19 @@ func TestStudioToolchains(t *testing.T) {
 		t.Fatalf("debugger status %+v", dbg)
 	}
 	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "debugger": true, "installId": "i2"})
+	// The language server likewise: gopls needs Go 1.26 to build, so Go 1.22's is refused.
+	var lsp struct {
+		CanAct bool `json:"can_act"`
+		LSP    struct {
+			Name string `json:"name"`
+		} `json:"lsp"`
+		Refusal struct{ Kind, Message string } `json:"refusal"`
+	}
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go", "lsp": true}, &lsp)
+	if lsp.CanAct || lsp.LSP.Name != "gopls" || lsp.Refusal.Kind != "no_lsp" || !strings.Contains(lsp.Refusal.Message, "gopls") {
+		t.Fatalf("lsp status %+v", lsp)
+	}
+	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "lsp": true, "installId": "i3"})
 	if got, _ := r.recorded(id, "toolchain.install"); len(got) != 1 {
 		t.Fatalf("a refused debugger was recorded as an install: %v", got)
 	}

@@ -230,3 +230,21 @@ func TestStudioLanguageServerKeepsOrder(t *testing.T) {
 	}
 	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
 }
+
+// A missing server Abhed installs points at the toolchain route; another
+// server, at an image or sandbox.language_servers.
+func TestLSPMissingStepsPointAtTheInstall(t *testing.T) {
+	for lang, prog := range map[string]string{"go": "gopls", "python": "basedpyright-langserver", "typescript": "typescript-language-server", "rust": "rust-analyzer"} {
+		steps := strings.Join(lspMissingSteps(lang, prog), " | ")
+		want := "abhed toolchain install -lsp "
+		if !strings.Contains(steps, want) || !strings.Contains(steps, "lsp true") {
+			t.Errorf("%s: %s", lang, steps)
+		}
+		if lang == "typescript" && !strings.Contains(steps, "-lsp node") {
+			t.Errorf("typescript's server comes with node: %s", steps)
+		}
+	}
+	if steps := strings.Join(lspMissingSteps("go", "my-gopls-fork"), " | "); strings.Contains(steps, "toolchain install") {
+		t.Errorf("a server Abhed does not install pointed at the install: %s", steps)
+	}
+}
