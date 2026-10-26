@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
 
       # The process tier is bubblewrap on Linux. Without it the sandbox tests
       # skip, and the filesystem, egress and credential boundaries the trust
@@ -244,7 +244,7 @@ jobs:
     name: Linux sandbox boundaries
     runs-on: ubuntu-latest
     container:
-      image: golang:1.26.9
+      image: golang:1.26.10
       options: --privileged
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -335,7 +335,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       # The process tier's per-command cgroup is tested here, in a delegated
       # scope; musl-tools builds the static musl resolver helper the fence's
       # name test runs, so a resolver that sends UDP alone is covered.
@@ -373,7 +373,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: Install python3-venv
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv
       - name: Build the test binaries
@@ -415,7 +415,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: The runner offers KVM
         run: |
           if [ ! -c /dev/kvm ]; then
@@ -479,7 +479,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: Install qemu-user for s390x
         run: |
           sudo apt-get update && sudo apt-get install -y qemu-user-static
@@ -535,7 +535,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       # The process tier's per-command cgroup is tested here, in a delegated scope.
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
@@ -568,7 +568,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
 
       # Each case-folding test runs alone by name, and `go test -json`
       # decides: any skip or a named test missing fails, whatever its message.
@@ -607,7 +607,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: go build and vet
         run: go build ./... && go vet ./...
       - name: golangci-lint
@@ -647,7 +647,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
@@ -665,7 +665,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: Pull the sandbox image
         run: docker pull docker.io/library/debian:bookworm-slim
       - name: The container tier's boundaries hold on Docker
@@ -706,7 +706,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: Pull the sandbox image
         run: ${{ matrix.engine }} pull docker.io/library/debian:bookworm-slim
       - name: The drivers' boundaries hold on ${{ matrix.engine }}
@@ -751,7 +751,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
 
       - name: Embed the documentation
         run: python3 scripts/docsite/build.py --embed-only
@@ -825,7 +825,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
       - name: Build without warnings, then build and sign ad hoc
         run: |
           set -euo pipefail

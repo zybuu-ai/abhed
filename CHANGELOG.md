@@ -88,6 +88,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Built with Go 1.26.10 (`go.mod`, CI, the release workflow and the image),
+  which fixes GO-2026-6809 in `crypto/x509`; 1.26.9 is affected.
 - `ssh` rules matched the remote command as plain text. A deny rule such
   as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,
   an allow rule such as `ssh(web1/openssl x509 *)` also approved anything
