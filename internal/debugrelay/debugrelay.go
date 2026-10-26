@@ -163,7 +163,7 @@ func Plan(r Request, workspace, bridge string) (Spec, error) {
 		}
 		return Spec{Cwd: cwd, Launch: launch, Display: strings.TrimSpace(strings.Join(prefix, " ") + " " + quoteAll(display)),
 			Command: "command -v dlv >/dev/null 2>&1 || { echo 'abhed-debug: dlv is not on PATH' >&2; exit " + strconv.Itoa(exitNoDelve) + "; }; " +
-				"d=$(mktemp -d /tmp/abhed-dap.XXXXXX) || exit 1; dlv dap --listen \"unix:$d/dap.sock\" >&2 & exec " + bridge + " \"unix:$d/dap.sock\""}, nil
+				"d=$(mktemp -d /tmp/abhed-dap.XXXXXX) || exit 1; dlv dap --check-go-version=false --listen \"unix:$d/dap.sock\" >&2 & exec " + bridge + " \"unix:$d/dap.sock\""}, nil
 	case Python:
 		launch["justMyCode"] = true
 		if r.Program != "" {

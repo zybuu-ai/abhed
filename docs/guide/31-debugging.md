@@ -46,6 +46,12 @@ with `RUN pip install debugpy`) and name it in `sandbox.image` (see
 A session started without it ends at once with a problem naming what is
 missing and these steps.
 
+Delve is started with `--check-go-version=false`: a Delve release refuses, by
+default, a program built with a Go newer than those it was tested with, and
+the Go a session builds with can be newer than the Delve beside it. A program
+built with a Go that Delve truly cannot read fails at launch with Delve's own
+message.
+
 ## The bridge for Go
 
 Delve does not speak DAP over standard input and output; it listens on a
