@@ -331,6 +331,9 @@ type acpConn struct {
 	// debugs are the person's debug sessions, by id (§7.8).
 	debugMu sync.Mutex
 	debugs  map[string]*acpDebug
+	// lsps are the person's language servers, by id (§7.9).
+	lspMu sync.Mutex
+	lsps  map[string]*acpLSP
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -571,6 +574,7 @@ func (c *acpConn) closeAll() {
 	}
 	c.killTerminals("")
 	c.killDebugs("")
+	c.killLSPs("")
 }
 
 // shut ends a session's hold: its prompt and review window stop, its
@@ -588,6 +592,7 @@ func (c *acpConn) shut(s *acpSession) {
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
 	c.killDebugs(s.id)
+	c.killLSPs(s.id)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()

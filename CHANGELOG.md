@@ -119,6 +119,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Language servers for Abhed Studio: the editor protocol's `_abhed/lsp/start`,
+  `/send` and `/stop` (the `lsp` feature) run gopls, basedpyright,
+  typescript-language-server or rust-analyzer (or the server
+  `sandbox.language_servers` names) inside the session's sandbox and carry
+  its messages to Studio, with no port on the host. Starting one is judged
+  and recorded as your bash call; the engine initializes it with no
+  initialization options; Studio's settings changes, commands that could run
+  programs and files outside the workspace are refused, and the server's
+  requests to open a page are answered by the engine. A crashed server is
+  restarted with a backoff. Starts and ends are recorded as `lsp.started` and
+  `lsp.stopped`, with message counts, and counted in the metrics. The
+  workbench's editor shares the same relay and now keeps file URIs inside
+  the workspace too ([Language servers](docs/guide/33-language-servers.md)).
 - The Linux helper: releases ship `abhed-helper-linux-<arch>` beside the
   `abhed` binary (in each archive and as a bare download), with its sha256
   pinned into the binary. Where the container engine is in a VM or

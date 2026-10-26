@@ -62,6 +62,8 @@ var samples = []sample{
 	{agent.EvWorktreeTaken, agent.ActorUser, `{"worktree":".abhed-worktrees/1","branch":"b","taken":["a.go"]}`},
 	{agent.EvDebugLaunched, agent.ActorUser, `{"debug_id":"dbg-1","call_id":"u-1","language":"go","command":"dlv debug /w/cmd/app","tier":"container","bridge":"/opt/abhed/abhed-linux-arm64"}`},
 	{agent.EvDebugStopped, agent.ActorUser, `{"debug_id":"dbg-1","call_id":"u-1","reason":"stopped","exit_code":0,"duration_ms":1200}`},
+	{agent.EvLSPStarted, agent.ActorUser, `{"lsp_id":"lsp-1","call_id":"u-2","language":"go","command":"gopls","tier":"container"}`},
+	{agent.EvLSPStopped, agent.ActorUser, `{"lsp_id":"lsp-1","call_id":"u-2","language":"go","reason":"stopped","exit_code":0,"requests":42,"refused":1,"duration_ms":60000}`},
 	{agent.EvTaskCancelled, agent.ActorUser, `{"task_id":"s-child","by":"user"}`},
 	{agent.EvMessageDropped, agent.ActorSystem, `{"queue_id":"q1","text":"later","queued_at":"2026-10-19T10:00:00Z","reason":"shutdown"}`},
 	{agent.EvSessionRenamed, agent.ActorUser, `{"title":"build fix","by":"user"}`},

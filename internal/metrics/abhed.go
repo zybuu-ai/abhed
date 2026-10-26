@@ -27,6 +27,9 @@ var ToolchainOutcomes = []string{agent.ToolchainOK, agent.ToolchainFailed, agent
 var toolchainLangs = []string{"go", "python", "node", "rust", "java", "maven", "gradle", "ruby", "dotnet"}
 
 // OllamaOutcomes are how a person's start, install or pull of Ollama ended.
+// lspLangs are the languages the language-server counters name.
+var lspLangs = []string{"go", "python", "typescript", "javascript", "rust"}
+
 var OllamaOutcomes = []string{agent.OllamaOK, agent.OllamaFailed, agent.OllamaDeclined, agent.OllamaRefused, agent.OllamaCancelled, agent.OllamaManual}
 
 // Methods are the HTTP methods a request is counted by; any other is Other.
@@ -82,6 +85,8 @@ type Abhed struct {
 	planted       *Counter
 	fenceDenied   *Counter
 	ollama        *Counter
+	lspStarts   *Counter
+	lspRequests *Counter
 	toolchains    *Counter
 	registries    *Counter
 
@@ -170,6 +175,10 @@ func New() *Abhed {
 			"Language toolchain installs for sessions' commands, by language and outcome (ok, failed, declined, refused, cancelled).", "lang", "outcome"),
 		registries: r.Counter("abhed_toolchain_registries_opened_total",
 			"Package registries opened to sessions' commands with a toolchain, by language.", "lang"),
+		lspStarts: r.Counter("abhed_lsp_starts_total",
+			"Language servers started for editors, by language; a restart after a crash counts again.", "language"),
+		lspRequests: r.Counter("abhed_lsp_messages_total",
+			"Editor messages to language servers, by language and outcome (passed, refused), counted when each server ends.", "language", "outcome"),
 		ollama: r.Counter("abhed_ollama_actions_total",
 			"A person's attempts to start, install or pull a local Ollama, by op (start, install, pull) and outcome (ok, failed, declined, refused, cancelled, manual).", "op", "outcome"),
 		calls: map[string]*call{},
@@ -255,6 +264,17 @@ func (m *Abhed) Observe(ev agent.Event) {
 		var p agent.Observation
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			m.observed(ev.SessionID, p)
+		}
+	case string(agent.EvLSPStarted):
+		var p agent.LSPStarted
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			m.lspStarts.Add(1, oneOf(p.Language, lspLangs))
+		}
+	case string(agent.EvLSPStopped):
+		var p agent.LSPStopped
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			m.lspRequests.Add(float64(p.Requests), oneOf(p.Language, lspLangs), "passed")
+			m.lspRequests.Add(float64(p.Refused), oneOf(p.Language, lspLangs), "refused")
 		}
 	case string(agent.EvMonitorVerdict):
 		var p agent.MonitorVerdict
