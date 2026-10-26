@@ -492,7 +492,8 @@ func printedLiteral(src string, call *syntax.CallExpr) string {
 		return strings.Join(out, " ")
 	case "printf":
 		if len(rest) > 0 {
-			return rest[0] // the format string
+			// The format and its operands are all printed text (printf '%s' "DROP …").
+			return strings.Join(rest, " ")
 		}
 	}
 	return ""
@@ -864,7 +865,8 @@ func raw(src string, w *syntax.Word) string {
 
 // wrappers run the program named after them.
 var wrappers = map[string]bool{"sudo": true, "env": true, "command": true, "nohup": true, "time": true, "nice": true,
-	"timeout": true, "exec": true, "builtin": true, "stdbuf": true, "ionice": true, "chrt": true, "doas": true}
+	"timeout": true, "exec": true, "builtin": true, "stdbuf": true, "ionice": true, "chrt": true, "doas": true,
+	"runuser": true}
 
 // wrapperValueFlags are a wrapper's flags that take the next word as their value.
 var wrapperValueFlags = map[string]bool{"-u": true, "-g": true, "-n": true, "-s": true, "-k": true, "-C": true,
@@ -893,13 +895,22 @@ func (c command) program() (string, []string) {
 			continue
 		}
 		for len(w) > 0 && strings.HasPrefix(w[0], "-") {
-			if wrapperValueFlags[w[0]] && len(w) > 1 {
+			if (wrapperValueFlags[w[0]] || clusterTakesValue(w[0])) && len(w) > 1 {
 				w = w[1:]
 			}
 			w = w[1:]
 		}
 	}
 	return "", nil
+}
+
+// clusterTakesValue reports a short-option cluster whose last letter takes a
+// value (sudo -iu postgres, -Hu user, runuser -lu x).
+func clusterTakesValue(f string) bool {
+	if len(f) < 3 || f[0] != '-' || f[1] == '-' || strings.Contains(f, "=") {
+		return false
+	}
+	return strings.ContainsRune("ugUC", rune(f[len(f)-1]))
 }
 
 // plainProgram reports whether the program a command resolves to, past any
