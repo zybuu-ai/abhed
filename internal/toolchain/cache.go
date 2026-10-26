@@ -60,6 +60,23 @@ type Installed struct {
 	Dir string `json:"-"`
 }
 
+// Prepare makes the cache, readable to every user: a container's commands
+// run as this user's id, which a VM's shared folders may not map, and read
+// the toolchains through it. Abhed's own folders above it are opened too.
+func (c Cache) Prepare() error {
+	if err := os.MkdirAll(c.Root, 0o755); err != nil {
+		return err
+	}
+	for _, d := range []string{c.Root, filepath.Dir(c.Root)} {
+		if filepath.Base(d) == "toolchains" || filepath.Base(d) == "abhed" {
+			if err := os.Chmod(d, 0o755); err != nil { // #nosec G302 -- the cache holds public toolchains, read-only
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Dir is where a toolchain is, or would be.
 func (c Cache) Dir(p Platform, lang, version string) string {
 	return filepath.Join(c.Root, p.String(), lang, version)
@@ -143,6 +160,9 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 	dir := c.Dir(a.Platform, a.Lang, a.Version)
 	if in, ok := readMarker(dir); ok {
 		return in, nil
+	}
+	if err := c.Prepare(); err != nil {
+		return Installed{}, err
 	}
 	if err := os.MkdirAll(filepath.Join(c.Root, ".partial"), 0o700); err != nil {
 		return Installed{}, err

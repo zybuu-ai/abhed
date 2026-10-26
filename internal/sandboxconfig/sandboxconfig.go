@@ -510,7 +510,7 @@ func toolchainCache(cfg config.Config) string {
 		return ""
 	}
 	root, err := toolchain.DefaultRoot()
-	if err != nil || os.MkdirAll(root, 0o755) != nil {
+	if err != nil || (toolchain.Cache{Root: root}).Prepare() != nil {
 		return ""
 	}
 	return root

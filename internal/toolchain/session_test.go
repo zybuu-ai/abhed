@@ -172,3 +172,21 @@ func TestNeeds(t *testing.T) {
 		t.Fatalf("needs %v, want %s", got, want)
 	}
 }
+
+// The cache is readable to every user, as a container's commands run as an
+// id a VM's shared folder may not map; nothing in it is writable.
+func TestCacheIsReadableToAll(t *testing.T) {
+	c := testCache(t)
+	c.Root = filepath.Join(c.Root, "abhed", "toolchains")
+	if err := os.MkdirAll(filepath.Dir(c.Root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{c.Root, filepath.Dir(c.Root)} {
+		if info, err := os.Stat(d); err != nil || info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s: %v %v", d, info.Mode(), err)
+		}
+	}
+}
