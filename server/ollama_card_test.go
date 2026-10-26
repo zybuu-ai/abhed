@@ -16,7 +16,9 @@ El.prototype.addEventListener = function(type, fn){ this['on' + type] = fn; };
 El.prototype.remove = function(){ const p = this.parentNode; if(p){ p.childNodes.splice(p.childNodes.indexOf(this), 1); this.parentNode = null; } };
 globalThis.__posted = []; globalThis.__asked = []; globalThis.__confirm = false; globalThis.__replies = {}; globalThis.__stream = [];
 globalThis.confirm = q => { __asked.push(q); return __confirm; };
+globalThis.__fetched = [];
 globalThis.fetch = async (url, opts) => {
+  __fetched.push(url);
   const body = opts && opts.body ? JSON.parse(opts.body) : null;
   if(opts && opts.method === 'POST') __posted.push({url, body});
   if(url === '/v1/ollama/pull'){

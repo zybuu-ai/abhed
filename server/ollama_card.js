@@ -61,6 +61,7 @@ const abhedOllama = (() => {
     steps(card, rep.problem && rep.problem.steps);
     const res = mk('p', 'res'), row = mk('div', 'row');
     const body = extra => JSON.stringify(Object.assign({provider: o.provider, session_id: o.session || undefined}, extra || {}));
+    const detail = async () => { const d = await call('/v1/ollama/status?provider=' + encodeURIComponent(o.provider) + '&detail=1'); return d.ok ? d.body : {}; };
     const buttons = [];
     const button = (label, cls, fn) => { const b = mk('button', cls, label); b.type = 'button'; b.addEventListener('click', fn); row.appendChild(b); buttons.push(b); return b; };
     const busy = on => { for(const b of buttons) b.disabled = on; };
@@ -86,19 +87,25 @@ const abhedOllama = (() => {
     } else if(rep.can_act && rep.install){
       const p = rep.install;
       card.appendChild(mk('p', '', 'Install command: ')).appendChild(mk('code', '', p.command));
-      card.appendChild(mk('p', 'res', 'Source: ' + p.source + ' · size: ' + (p.size || 'not known until the download starts')));
-      button(p.kind === 'open' ? 'Open the download page' : 'Install Ollama', 'go', () => {
-        if(confirm('Install Ollama on the server host?\n\nCommand: ' + p.command + '\nSource: ' + p.source + '\nSize: ' + (p.size || 'not known until the download starts') + '\n\nIt runs as the server\'s user, without sudo.')) act('/v1/ollama/install');
+      card.appendChild(mk('p', 'res', 'Source: ' + p.source + ' · size: ' + (p.size || 'looked up when you choose to install')));
+      button(p.kind === 'open' ? 'Open the download page' : 'Install Ollama', 'go', async () => {
+        // The size is asked of its host only now, when the person opens the step.
+        const d = (await detail()).install || p;
+        if(confirm('Install Ollama on the server host?\n\nCommand: ' + d.command + '\nSource: ' + d.source + '\nSize: ' + (d.size || 'not known until the download starts') + '\n\nIt runs as the server\'s user, without sudo.')) act('/v1/ollama/install');
       });
     } else if(rep.can_act && rep.pull){
       const p = rep.pull;
       card.appendChild(mk('p', '', 'Download command: ')).appendChild(mk('code', '', p.command));
-      card.appendChild(mk('p', 'res', 'Source: ' + p.source + ' · size: ' + size(p.bytes) + (p.disk_free ? ' · free on the host: ' + size(p.disk_free) : '')));
+      card.appendChild(mk('p', 'res', 'Source: ' + p.source + ' · size: ' + (p.bytes ? 'about ' + size(p.bytes) + ' (looked up when you choose to download)' : 'looked up when you choose to download') + (p.disk_free ? ' · free on the host: ' + size(p.disk_free) : '')));
       for(const w of (p.warnings || [])) card.appendChild(mk('p', 'warn', w));
       let ctl = null;
       const stop = mk('button', '', 'Stop'); stop.type = 'button'; stop.hidden = true;
-      button('Download ' + size(p.bytes), 'go', async () => {
-        if(!confirm('Download ' + rep.model + ' to the server host?\n\nCommand: ' + p.command + '\nSource: ' + p.source + '\nSize: ' + size(p.bytes) + (p.warnings && p.warnings.length ? '\n\n' + p.warnings.join('\n') : ''))) return;
+      button('Download', 'go', async () => {
+        // The registry is asked for the size only now, when the person opens the step.
+        const full = await detail();
+        if(full.refusal){ problem(res, full.refusal); return; }
+        const d = full.pull || p;
+        if(!confirm('Download ' + rep.model + ' to the server host?\n\nCommand: ' + d.command + '\nSource: ' + d.source + '\nSize: ' + size(d.bytes) + (d.warnings && d.warnings.length ? '\n\n' + d.warnings.join('\n') : ''))) return;
         ctl = new AbortController(); busy(true); stop.hidden = false; res.className = 'res'; res.textContent = 'starting the download…';
         let r2;
         try{ r2 = await fetch('/v1/ollama/pull', {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: body(), signal: ctl.signal}); }

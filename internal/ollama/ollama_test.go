@@ -507,7 +507,7 @@ func TestNoPullOfferedWithoutOllamasOwnAPI(t *testing.T) {
 	env := testEnv(t, t.TempDir())
 	tg, _ := Resolve("p", "ollama", srv.URL+"/v1", "qwen3:8b", "")
 	a := Assist{Env: env, Mode: ModeAsk, Admin: true}
-	r := a.Report(context.Background(), tg)
+	r := a.Report(context.Background(), tg, true)
 	if r.CanAct || r.Pull != nil || r.Refusal == nil || r.Refusal.Kind != KindNotOllama {
 		t.Fatalf("report %+v", r)
 	}
@@ -713,7 +713,7 @@ func TestReportAsksNothingOfTheNetworkWhenAssistIsOff(t *testing.T) {
 	env.Registry = reg.URL
 	tg := api.target("qwen3:8b")
 	for _, mode := range []string{ModeOff, ModeLocal} {
-		r := Assist{Env: env, Mode: mode, Admin: true}.Report(context.Background(), tg)
+		r := Assist{Env: env, Mode: mode, Admin: true}.Report(context.Background(), tg, true)
 		if r.CanAct || r.Refusal == nil || r.Pull != nil || r.Problem == nil || r.Next != "pull" {
 			t.Fatalf("%s: %+v", mode, r)
 		}
@@ -721,8 +721,15 @@ func TestReportAsksNothingOfTheNetworkWhenAssistIsOff(t *testing.T) {
 	if hits.Load() != 0 {
 		t.Fatalf("the registry was asked %d times with assist off or local", hits.Load())
 	}
-	r := Assist{Env: env, Mode: ModeAsk, Admin: true}.Report(context.Background(), tg)
-	if !r.CanAct || r.Pull == nil || r.Pull.Bytes != 11 || hits.Load() != 1 {
+	// The automatic status (session start, model switch, polling) asks only
+	// this machine, whatever the mode: a curated model's size is Abhed's own.
+	r := Assist{Env: env, Mode: ModeAsk, Admin: true}.Report(context.Background(), tg, false)
+	if !r.CanAct || r.Pull == nil || r.Pull.SizeKnown || r.Pull.Bytes != 5225388164 || r.Detail || hits.Load() != 0 {
+		t.Fatalf("status without detail: %+v, registry asked %d times", r, hits.Load())
+	}
+	// Opening the step asks the registry for the size as it is now.
+	r = Assist{Env: env, Mode: ModeAsk, Admin: true}.Report(context.Background(), tg, true)
+	if !r.CanAct || r.Pull == nil || r.Pull.Bytes != 11 || !r.Detail || hits.Load() != 1 {
 		t.Fatalf("ask: %+v", r)
 	}
 	if b, _ := json.Marshal(r); !strings.Contains(string(b), `"next":"pull"`) || !strings.Contains(string(b), `"catalog"`) {

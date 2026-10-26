@@ -104,7 +104,7 @@ func switchModel(ctx context.Context, e *cmdEnv, name string) error {
 	}
 	// A model a local Ollama serves is checked, and what it lacks offered,
 	// before the session moves to it.
-	if !st.ensureOllamaFor(ctx, e.ui, name) {
+	if !st.ensureOllamaFor(ctx, e.ui, name, false) {
 		id, _ := e.ui.Dialog(ctx, ui.DialogSpec{Kind: ui.DialogConfirm, Title: "Switch the model?",
 			Ask:     name + " is not ready. Switch to it anyway?",
 			Choices: []ui.Choice{{ID: "switch", Label: "Switch anyway"}, {ID: ui.ChoiceNo, Label: "Stay on " + st.appCfg.Model.Default}}})

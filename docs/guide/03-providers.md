@@ -173,7 +173,15 @@ the workbench and console pickers, and in Abhed Studio's model selector. It
 looks for three things, in order: is Ollama installed (`ollama` on `PATH`, or
 `/Applications/Ollama.app` on macOS), is its server answering at the
 provider's address (`/api/version`), and is the model pulled (`/api/tags`).
-Checking only reads; it never starts, installs or downloads anything.
+Checking only reads; it never starts, installs or downloads anything, and
+it asks nothing off this machine: the automatic checks (a session's start,
+a model switch, the workbench card and Studio's status) report only what is
+local, whether the server is up and the model present, with a curated
+model's size from Abhed's own list. The registry
+(`registry.ollama.ai`) or the download host is asked for the size as it is
+now only when you open the install or download step: in a session Abhed
+first asks whether to look it up, and `/ollama` and `abhed ollama check`,
+which you run to check, look it up at once.
 
 **What it offers.** Whatever is missing, it says what is wrong in one line,
 then the numbered steps you can run yourself, for example:
@@ -280,6 +288,8 @@ session or not; attempts in the CLI, `abhed ollama` and Studio are not
 counted there, since those processes export no metrics.
 
 **The API.** The workbench and console use `GET /v1/ollama/status?provider=<name>`
+(local only; `&detail=1`, sent when you open the install or download step,
+also asks the registry or download host for the size)
 (what was found, the next step's exact command, size and source, or why it is
 not offered, and the steps), `POST /v1/ollama/start` (`{"provider", "session_id"?,
 "always"?}`), `POST /v1/ollama/install`, `POST /v1/ollama/pull` (a stream of

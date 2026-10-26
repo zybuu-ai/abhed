@@ -36,6 +36,7 @@ type fakeOllama struct {
 	mu       sync.Mutex
 	pulled   []string
 	launched []string
+	regHits  atomic.Int32
 }
 
 func newFakeOllama(t *testing.T) *fakeOllama {
@@ -78,6 +79,7 @@ func newFakeOllama(t *testing.T) *fakeOllama {
 		}
 	})
 	f.reg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.regHits.Add(1)
 		fmt.Fprint(w, `{"config":{"size":10},"layers":[{"size":5000}]}`)
 	}))
 	t.Cleanup(f.reg.Close)
@@ -357,5 +359,23 @@ func TestOllamaAttemptsAreCountedOnce(t *testing.T) {
 	}
 	if n != 1 || len(f.launched) != 1 {
 		t.Fatalf("pull events %d, launched %v", n, f.launched)
+	}
+}
+
+// The card's status, as polled and on a session's start, asks only the
+// host's Ollama: the registry only with detail=1, when a step is opened.
+func TestOllamaStatusMakesNoRegistryRequest(t *testing.T) {
+	s, _, f := ollamaServer(t, "", "proxy", nil)
+	f.start(t)
+	for range 3 {
+		if w := callWho(t, s, admin, "GET", "/v1/ollama/status?provider=olm", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"next":"pull"`) {
+			t.Fatalf("status: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if f.regHits.Load() != 0 {
+		t.Fatalf("status asked the registry %d times", f.regHits.Load())
+	}
+	if w := callWho(t, s, admin, "GET", "/v1/ollama/status?provider=olm&detail=1", ""); !strings.Contains(w.Body.String(), `"size_known":true`) || f.regHits.Load() != 1 {
+		t.Fatalf("detail: %s, registry asked %d times", w.Body.String(), f.regHits.Load())
 	}
 }

@@ -36,7 +36,9 @@ type appOllama struct {
 	mu       sync.Mutex
 	pulled   []string
 	launched []string
-	env      ollama.Env
+	// regHits counts requests to the fake registry.
+	regHits atomic.Int32
+	env     ollama.Env
 	// program is the fake ollama's resolved path.
 	program string
 }
@@ -80,6 +82,7 @@ func newAppOllama(t *testing.T) *appOllama {
 		}
 	})
 	f.reg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.regHits.Add(1)
 		fmt.Fprint(w, `{"config":{"size":10},"layers":[{"size":5000}]}`)
 	}))
 	t.Cleanup(f.reg.Close)
@@ -170,7 +173,7 @@ func outcomes(acts []agent.OllamaAction) string {
 func TestOllamaFlowAsksThenStartsAndPulls(t *testing.T) {
 	f := newAppOllama(t)
 	env, surface, acts := ollamaEnvFor(t, f, "", "start", ui.ChoiceYes)
-	if !env.st.ensureOllamaFor(context.Background(), surface, "olm") {
+	if !env.st.ensureOllamaFor(context.Background(), surface, "olm", true) {
 		t.Fatalf("not ready:\n%s", surface.text())
 	}
 	if got := outcomes(acts()); got != "start:ok,pull:ok" {
@@ -203,7 +206,7 @@ func dialogText(d ui.DialogSpec) string {
 func TestOllamaFlowDeclinedRunsNothing(t *testing.T) {
 	f := newAppOllama(t)
 	env, surface, acts := ollamaEnvFor(t, f, "")
-	if env.st.ensureOllamaFor(context.Background(), surface, "olm") {
+	if env.st.ensureOllamaFor(context.Background(), surface, "olm", true) {
 		t.Fatal("ready without starting")
 	}
 	if len(f.launched) != 0 || outcomes(acts()) != "start:declined" {
@@ -218,7 +221,7 @@ func TestOllamaFlowDeclinedRunsNothing(t *testing.T) {
 func TestOllamaFlowAlwaysStartIsKeptAndForgotten(t *testing.T) {
 	f := newAppOllama(t)
 	env, surface, acts := ollamaEnvFor(t, f, "local", "always")
-	if env.st.ensureOllamaFor(context.Background(), surface, "olm") {
+	if env.st.ensureOllamaFor(context.Background(), surface, "olm", true) {
 		t.Fatal("ready without the model")
 	}
 	// The pull refused under local is recorded, as the server and Studio record it.
@@ -241,7 +244,7 @@ func TestOllamaFlowAlwaysStartIsKeptAndForgotten(t *testing.T) {
 func TestOllamaFlowAssistOffOffersNothing(t *testing.T) {
 	f := newAppOllama(t)
 	env, surface, acts := ollamaEnvFor(t, f, "off", "start", ui.ChoiceYes)
-	if env.st.ensureOllamaFor(context.Background(), surface, "olm") {
+	if env.st.ensureOllamaFor(context.Background(), surface, "olm", true) {
 		t.Fatal("ready")
 	}
 	for _, d := range surface.asked {
@@ -302,7 +305,7 @@ func TestOllamaSubcommandIsRefusedInAnAgentsCommand(t *testing.T) {
 	t.Cleanup(func() { inAgentCommand = old })
 	f := newAppOllama(t)
 	env, surface, _ := ollamaEnvFor(t, f, "", "start")
-	if env.st.ensureOllamaFor(context.Background(), surface, "olm") || len(f.launched) != 0 {
+	if env.st.ensureOllamaFor(context.Background(), surface, "olm", true) || len(f.launched) != 0 {
 		t.Fatalf("an agent's command started Ollama: %v", f.launched)
 	}
 }
@@ -394,6 +397,17 @@ func TestStudioOllama(t *testing.T) {
 		t.Fatalf("status %+v", rep)
 	}
 	cl.ok("_abhed/ollama/start", map[string]any{"sessionId": id}, nil)
+	// Studio's automatic status asks only this machine; detail, when the
+	// person opens the download, asks the registry.
+	var local, full ollama.Report
+	cl.ok("_abhed/ollama/status", map[string]any{"sessionId": id}, &local)
+	if local.Next != "pull" || local.Pull == nil || local.Pull.SizeKnown || f.regHits.Load() != 0 {
+		t.Fatalf("status %+v, registry asked %d times", local, f.regHits.Load())
+	}
+	cl.ok("_abhed/ollama/status", map[string]any{"sessionId": id, "detail": true}, &full)
+	if full.Pull == nil || !full.Pull.SizeKnown || f.regHits.Load() != 1 {
+		t.Fatalf("detail %+v, registry asked %d times", full, f.regHits.Load())
+	}
 	from := cl.mark()
 	cl.ok("_abhed/ollama/pull", map[string]any{"sessionId": id, "pullId": "p1"}, nil)
 	var sawProgress bool
@@ -430,4 +444,26 @@ func mustRecord(t *testing.T, cl *studioClient) interface {
 		t.Fatal(err)
 	}
 	return rec
+}
+
+// The session's own check (its start, a model switch) asks nothing off
+// this machine: before a pull it asks whether to look the size up, and a
+// No sends no request to the registry. A Yes then shows the size and asks.
+func TestOllamaAutomaticCheckMakesNoRegistryRequest(t *testing.T) {
+	f := newAppOllama(t)
+	f.start(t)
+	env, surface, _ := ollamaEnvFor(t, f, "")
+	if env.st.ensureOllamaFor(context.Background(), surface, "olm", false) {
+		t.Fatal("ready without the model")
+	}
+	if f.regHits.Load() != 0 {
+		t.Fatalf("an automatic check asked the registry %d times", f.regHits.Load())
+	}
+	if len(surface.asked) != 1 || !strings.Contains(surface.asked[0].Ask, "Look up its size at") {
+		t.Fatalf("asked %+v", surface.asked)
+	}
+	env, surface, _ = ollamaEnvFor(t, f, "", "look", ui.ChoiceYes)
+	if !env.st.ensureOllamaFor(context.Background(), surface, "olm", false) || f.regHits.Load() != 1 {
+		t.Fatalf("after looking it up: registry asked %d times", f.regHits.Load())
+	}
 }

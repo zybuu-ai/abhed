@@ -41,17 +41,22 @@ check('a person who may not act sees why and no action', text(card.card).include
 // A pull shows its size and streams progress; a failure shows the problem.
 const pull = Object.assign({}, notReady, {next:'pull', start:undefined, pull:{command:'ollama pull qwen3:8b', source:'https://registry.ollama.ai', bytes:5225388164, disk_free:100e9, warnings:['qwen3:8b wants about 8 GB of memory']}});
 __replies['/v1/ollama/status?provider=local'] = [pull, {ready:true}];
+__replies['/v1/ollama/status?provider=local&detail=1'] = [pull];
 __stream = ['{"progress":{"status":"downloading","completed":50,"total":100}}', '{"status":{"ready":true}}'];
+__fetched.length = 0;
 await abhedOllama.show(card);
-check('the pull shows its size, source and warnings', text(card.card).includes('5.2 GB') && text(card.card).includes('registry.ollama.ai') && text(card.card).includes('8 GB of memory'));
+check('the pull shows its source, size from the list and warnings', text(card.card).includes('5.2 GB') && text(card.card).includes('registry.ollama.ai') && text(card.card).includes('8 GB of memory'));
+check('showing the card asks for no size', !__fetched.some(u => u.includes('detail=1')));
 __asked.length = 0;
 await button(card.card, 'Download').onclick();
 await new Promise(r => setTimeout(r, 10));
+check('opening the download asks for the size', __fetched.some(u => u.includes('detail=1')));
 check('the pull confirm names the size', __asked[0] && __asked[0].includes('5.2 GB'));
 check('the pull is posted', __posted.some(p => p.url === '/v1/ollama/pull'));
 check('the card goes after a pull that ends ready', card.card === null);
 
 __replies['/v1/ollama/status?provider=local'] = [pull];
+__replies['/v1/ollama/status?provider=local&detail=1'] = [pull];
 __stream = ['{"problem":{"kind":"disk_short","message":"Not enough disk <b>space</b>","steps":["free 20 GB"]}}'];
 await abhedOllama.show(card);
 await button(card.card, 'Download').onclick();

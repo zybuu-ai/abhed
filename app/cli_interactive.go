@@ -209,7 +209,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		return loop
 	}
 	defer sessionState.endBackground()
-	if viaOllama && !sessionState.ensureOllamaFor(ctx, sessionState.surface, appCfg.Model.Default) {
+	if viaOllama && !sessionState.ensureOllamaFor(ctx, sessionState.surface, appCfg.Model.Default, false) {
 		sessionState.surface.Append(ui.Block{Kind: ui.BlockNotice, Text: appCfg.Model.Default + " is not ready; /ollama checks it again, /model chooses another"})
 	}
 	// -c, -r and --fork-session choose the conversation before the first prompt.

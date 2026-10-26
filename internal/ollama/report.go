@@ -26,14 +26,20 @@ type Report struct {
 	// says what is wrong.
 	Refusal *Problem  `json:"refusal,omitempty"`
 	Catalog []Curated `json:"catalog"`
+	// Detail is set when the registry or download host was asked for the
+	// size; otherwise sizes are Abhed's own list's or unknown.
+	Detail bool `json:"detail"`
 }
 
-// Report checks t and plans its next step. The registry and download
-// hosts are asked for sizes only when that step may be offered, so with
-// assist off or local nothing leaves the machine.
-func (a Assist) Report(ctx context.Context, t Target) Report {
+// Report checks t and plans its next step. Only this machine is asked
+// unless detail is set: the local Ollama, the disk and the memory, with a
+// curated model's size from Abhed's own list. detail, for when the person
+// opens the install or pull step, also asks the registry or the download
+// host for the size as it is now; never when that step may not be offered,
+// so with assist off or local nothing leaves the machine.
+func (a Assist) Report(ctx context.Context, t Target, detail bool) Report {
 	st := a.Env.Check(ctx, t)
-	r := Report{Status: st, Assist: a.Mode, Catalog: Catalog}
+	r := Report{Status: st, Assist: a.Mode, Catalog: Catalog, Detail: detail}
 	if st.Next == "" {
 		return r
 	}
@@ -54,13 +60,19 @@ func (a Assist) Report(ctx context.Context, t Target) Report {
 		r.StartAlways = a.Env.StartAlways(plan.Program)
 	case OpInstall:
 		plan := a.Env.PlanInstall()
-		a.Env.InstallSize(ctx, &plan)
+		if detail {
+			a.Env.InstallSize(ctx, &plan)
+		}
 		r.Install = &plan
 		if plan.Kind == InstallManual {
 			r.CanAct = false
 		}
 	case OpPull:
-		fit, p := a.Env.CheckFit(ctx, t, st)
+		fit := a.Env.LocalFit(t)
+		var p *Problem
+		if detail {
+			fit, p = a.Env.CheckFit(ctx, t, st)
+		}
 		if p != nil {
 			r.CanAct, r.Refusal = false, p
 			return r

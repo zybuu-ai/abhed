@@ -38,6 +38,9 @@ type ollamaParams struct {
 	Always bool `json:"always"`
 	// PullID names a pull, for its progress and _abhed/ollama/cancel.
 	PullID string `json:"pullId"`
+	// Detail, on status, asks the registry or download host for the next
+	// step's size: for when the person opens that step, never automatically.
+	Detail bool `json:"detail"`
 }
 
 // ollamaTarget finds the session and the Ollama target its request names.
@@ -89,12 +92,12 @@ func ollamaRefusal(p *ollama.Problem, st ollama.Status) *rpcError {
 }
 
 func (c *acpConn) ollamaStatus(msg rpcMessage) {
-	_, _, a, t, e := c.ollamaTarget(msg)
+	_, p, a, t, e := c.ollamaTarget(msg)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.reply(msg.ID, a.Report(c.root(), t), nil)
+	c.reply(msg.ID, a.Report(c.root(), t, p.Detail), nil)
 }
 
 func (c *acpConn) ollamaStart(msg rpcMessage) {

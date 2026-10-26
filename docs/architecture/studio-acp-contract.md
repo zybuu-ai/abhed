@@ -233,6 +233,7 @@ interface OllamaStatus {
 interface OllamaReport extends OllamaStatus {
   assist: "ask" | "local" | "off";  // model.ollama.assist
   can_act: boolean;                 // the next step may be offered
+  detail: boolean;                  // sizes were asked of the registry or download host
   start_always: boolean;            // the person said "always start"
   start?: { command: string; log?: string; program?: string; app_binds?: boolean };
   install?: { kind: "run" | "open" | "manual"; command: string; source: string;
@@ -247,7 +248,7 @@ interface OllamaReport extends OllamaStatus {
 
 | Method | Params → result |
 |---|---|
-| `_abhed/ollama/status` | `{sessionId, provider?}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only; asks the registry or download host for a size only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
+| `_abhed/ollama/status` | `{sessionId, provider?, detail?: boolean}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only, and without `detail` asks nothing off this machine: the local Ollama, the disk and the memory, with a curated model's size from Abhed's list (`pull.size_known: false`). Studio's automatic status (after `session/new`, on a model switch, when polling) must not set `detail`. With `detail: true`, sent only when the person opens the install or download step, it also asks the registry or download host for the size as it is now (`detail: true` in the report), and only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
 | `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?}, status: OllamaStatus}`, or `{status}` when it was already running. `always` keeps "always start without asking" (only after the person ticked it). Recorded `ollama.start` |
 | `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs `sudo`, nor the official Linux install script, which does: both are `manual_steps`, printed with their source. Recorded `ollama.install` |
 | `_abhed/ollama/pull` | `{sessionId, provider?, pullId}` → `{status}` when it ends ready. While it runs, notifications `_abhed/ollama/progress {sessionId, pullId, status, completed?, total?}`. Disk short, model not in the registry or no network fail before any download. Recorded `ollama.pull` |
