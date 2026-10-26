@@ -97,3 +97,25 @@ func TestContainerRelayFallsBackToTheShippedHelper(t *testing.T) {
 		t.Fatalf("relay_binary did not win over the helper: %q", got)
 	}
 }
+
+// The shipped helper is used for this machine's engine, in its VM, never for
+// an engine on another host, which is refused with what to do.
+func TestShippedHelperOnlyForThisMachinesEngine(t *testing.T) {
+	stubHelper(t, "helper v1", v1Sum)
+	old, oldArch := containerHostOS, helperArch
+	t.Cleanup(func() { containerHostOS, helperArch = old, oldArch })
+	containerHostOS, helperArch = "darwin", "arm64"
+	t.Setenv("DOCKER_HOST", "")
+	for v, remote := range map[string]bool{"": false, "unix:///run/podman.sock": false, "ssh://core@127.0.0.1:55001/run/podman.sock": false,
+		"tcp://10.0.0.2:2375": true, "ssh://ops@build.example.com/run/podman.sock": true} {
+		t.Setenv("CONTAINER_HOST", v)
+		if got := EngineOnAnotherHost(); got != remote {
+			t.Errorf("%q: on another host %v", v, got)
+		}
+		c := &Container{policy: Policy{Workspace: t.TempDir()}}
+		relay, why := c.containerRelay()
+		if remote && (relay != "" || !strings.Contains(why, "relay_binary")) || !remote && relay == "" {
+			t.Errorf("%q: relay %q why %q", v, relay, why)
+		}
+	}
+}

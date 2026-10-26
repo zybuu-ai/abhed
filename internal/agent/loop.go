@@ -1491,7 +1491,15 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	var resolved []string
 	var unresolvable error
 	if r, ok := tool.(tools.ArgResolver); ok {
-		out, which, err := r.ResolveArgs(l.Session, canon)
+		var out json.RawMessage
+		var which []string
+		var err error
+		// One that reaches the network stops with the turn.
+		if cr, ok := tool.(tools.ContextArgResolver); ok {
+			out, which, err = cr.ResolveArgsContext(ctx, l.Session, canon)
+		} else {
+			out, which, err = r.ResolveArgs(l.Session, canon)
+		}
 		switch {
 		case err != nil:
 			unresolvable = err

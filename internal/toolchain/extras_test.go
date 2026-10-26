@@ -304,3 +304,63 @@ func TestUnpackNamesDifferingInCase(t *testing.T) {
 		t.Fatal("a name given twice unpacked")
 	}
 }
+
+// An approved install of the latest stable installs the latest patch, though
+// an older patch of the same minor is cached, and records why it was chosen;
+// resolving the resolved call again changes nothing.
+func TestLatestWithAnOlderPatchInstalled(t *testing.T) {
+	s, f := session(t)
+	f.goRelease("1.22.7", true, goArchive(t, "1.22.7"), linuxAMD64)
+	installedMarker(t, s.Cache, linuxAMD64, "go", "1.22.5")
+	tool := Tool{S: s}
+	ts, err := tools.NewSession(s.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := tool.ResolveArgs(ts, json.RawMessage(`{"name":"go"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := tool.ResolveArgs(ts, out)
+	if err != nil || string(again) != string(out) {
+		t.Fatalf("resolving again: %s, was %s (%v)", again, out, err)
+	}
+	var a toolArgs
+	_ = json.Unmarshal(out, &a)
+	if a.Name != "go@1.22" || a.Resolved.Version != "1.22.7" || a.Resolved.Why != "latest stable" {
+		t.Fatalf("resolved %s", out)
+	}
+	res := tool.Run(context.Background(), ts, out)
+	if res.IsError || !strings.Contains(res.Content, "Go 1.22.7 is installed") {
+		t.Fatalf("run %+v", res)
+	}
+	var recorded []string
+	for _, e := range res.Events {
+		if x, ok := e.Payload.(agent.ToolchainAction); ok {
+			recorded = append(recorded, x.Version+" "+x.Why)
+		}
+	}
+	if len(recorded) != 1 || recorded[0] != "1.22.7 latest stable" {
+		t.Fatalf("recorded %v", recorded)
+	}
+	// Asked for by its minor, the cached patch is what is planned and run.
+	out, _, _ = tool.ResolveArgs(ts, json.RawMessage(`{"name":"go","version":"1.21"}`))
+	if res := tool.Run(context.Background(), ts, out); res.IsError || !strings.Contains(res.Content, "1.21.13") {
+		t.Fatalf("explicit minor %+v", res)
+	}
+}
+
+// Resolving a call within a cancelled turn asks the release source nothing.
+func TestResolveStopsWithTheTurn(t *testing.T) {
+	s, f := session(t)
+	tool := Tool{S: s}
+	ts, _ := tools.NewSession(s.Workspace)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := tool.ResolveArgsContext(ctx, ts, json.RawMessage(`{"name":"go"}`)); err == nil {
+		t.Fatal("resolved in a cancelled turn")
+	}
+	if len(f.asked) != 0 {
+		t.Fatalf("the source was asked %v", f.asked)
+	}
+}

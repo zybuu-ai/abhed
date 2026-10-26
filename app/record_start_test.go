@@ -27,13 +27,13 @@ func TestRecordStartFailsClosed(t *testing.T) {
 	attempts := []agent.ConfigAttempt{{Layer: "user", Key: "web_search.enabled", Value: "true", Decision: "set_aside"}}
 	for _, typ := range []agent.EventType{agent.EvSessionStarted, agent.EvConfigRefused} {
 		rec := agent.NewRecorder(failOn{agent.NewMemStore(), typ}, "s", "")
-		err := recordStart(rec, map[string]any{"surface": "cli"}, attempts, nil)
+		err := recordStart(rec, map[string]any{"surface": "cli"}, attempts, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "disk full") {
 			t.Fatalf("%s not recorded: %v", typ, err)
 		}
 	}
 	rec := agent.NewRecorder(agent.NewMemStore(), "s", "")
-	if err := recordStart(rec, map[string]any{"surface": "cli"}, attempts, nil); err != nil {
+	if err := recordStart(rec, map[string]any{"surface": "cli"}, attempts, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 }

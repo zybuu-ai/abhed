@@ -49,6 +49,11 @@ exec)
     while IFS= read -r l; do export "$l"; done < "$envfile"
   fi
   exec env $envs "$@" ;;
+run)
+  # Attached, as a container runs: it ends when its input closes.
+  cat >/dev/null; exit 0 ;;
+inspect)
+  echo true; exit 0 ;;
 esac
 exit 0
 `, log, relayInside, self)
@@ -96,7 +101,7 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	calls := string(b)
-	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none",
+	for _, want := range []string{"run --rm -i", "--label " + egressOwnerLabel + "=", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none",
 		"--env-file ", "exec -i --user " + stdiorelay.User(os.Getuid()) + " " + egressPrefix} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("no %q in the engine's calls:\n%s", want, calls)
@@ -321,7 +326,7 @@ func TestContainerCloseWaitsForACallStillStarting(t *testing.T) {
 		_, _ = c.Command(WithLaunch(context.Background(), Launch{CallID: "call-starting"}), ws, "echo ran").CombinedOutput()
 	}()
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if b, _ := os.ReadFile(log); strings.Contains(string(b), "run --rm -d") {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "run --rm -i") {
 			break
 		}
 		if time.Now().After(deadline) {

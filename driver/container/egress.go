@@ -77,6 +77,9 @@ func (d *Driver) relayFor(eng engineInfo) (string, string) {
 	if !stdioEgress(eng) || d.opts.RelayBinary != "" {
 		return d.opts.RelayBinary, ""
 	}
+	if sandbox.EngineOnAnotherHost() {
+		return "", sandbox.RemoteHelperRefusal + ", so the sandbox is not created"
+	}
 	helper, why := bundledHelper(runtime.GOARCH)
 	if helper != "" {
 		return helper, ""

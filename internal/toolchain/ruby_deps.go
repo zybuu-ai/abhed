@@ -61,6 +61,35 @@ func (l debianLib) artifact(e Endpoints, p Platform) (Artifact, bool) {
 		Digest: "sha256:" + sum, Size: l.size[p.Arch], Format: "deb", Source: "Debian 12 (deb.debian.org)", Hosts: debianHosts}, true
 }
 
+// rubyWrapper runs a Linux Ruby with its own libraries found: only Ruby and
+// what it starts get LD_LIBRARY_PATH, not every command of the session.
+const rubyWrapper = `#!/bin/sh
+d=$(cd "$(dirname "$0")/.." && pwd) || exit 1
+LD_LIBRARY_PATH="$d/lib:$d/lib/abhed-deps${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$d/bin/ruby" "$@"
+`
+
+// rubyWrapperDir is where the wrapper is, first on PATH before bin.
+const rubyWrapperDir = "abhed-bin"
+
+// rubyLinux finishes a Linux Ruby: libyaml bundled, and the wrapper that
+// finds its libraries. A macOS build needs neither.
+func rubyLinux(ctx context.Context, src *Source, top, tmp string, a Artifact) ([]Bundled, error) {
+	if a.Platform.OS != "linux" {
+		return nil, nil
+	}
+	got, err := bundleLibyaml(ctx, src, top, tmp, a)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(top, rubyWrapperDir), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(top, rubyWrapperDir, "ruby"), []byte(rubyWrapper), 0o755); err != nil { // #nosec G306 -- an executable for the sandbox
+		return nil, err
+	}
+	return got, nil
+}
+
 // bundleLibyaml puts libyaml in a Linux Ruby's lib/abhed-deps, where its
 // LD_LIBRARY_PATH finds it.
 func bundleLibyaml(ctx context.Context, src *Source, top, tmp string, a Artifact) ([]Bundled, error) {

@@ -126,18 +126,26 @@ func Pins(workspace string) map[string]Pin {
 var pinFiles = []string{"go.mod", ".python-version", ".nvmrc", ".node-version", "rust-toolchain.toml", "rust-toolchain",
 	".java-version", ".ruby-version", "global.json", ".tool-versions"}
 
-// PinsFrom are the pins of the nearest folder at or above dir that has a
-// pin file, as a command run in dir would find its project's.
-func PinsFrom(dir string) map[string]Pin {
-	d := filepath.Clean(dir)
-	for i := 0; i < 32 && d != ""; i++ {
+// PinsFrom are the pins of dir itself, a workspace's root.
+func PinsFrom(dir string) map[string]Pin { return PinsWithin(dir, dir) }
+
+// PinsWithin are the pins of the nearest folder at or above dir, up to the
+// workspace root, that has a pin file, as a command run in dir would find
+// its project's. A file above the root, in a home or a shared folder, is
+// not the project's and is never read.
+func PinsWithin(dir, root string) map[string]Pin {
+	d, root := filepath.Clean(dir), filepath.Clean(root)
+	if d != root && !strings.HasPrefix(d, root+string(filepath.Separator)) {
+		root = d
+	}
+	for i := 0; i < 64 && d != ""; i++ {
 		for _, f := range pinFiles {
 			if info, err := os.Lstat(filepath.Join(d, f)); err == nil && info.Mode().IsRegular() {
 				return Pins(d)
 			}
 		}
 		up := filepath.Dir(d)
-		if up == d {
+		if up == d || d == root {
 			break
 		}
 		d = up

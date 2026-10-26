@@ -1712,6 +1712,12 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		s.forgetUnstarted(sessionID)
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	for _, g := range toolset.StartupRegistries(s.opts.Config, "server") {
+		if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
+			s.forgetUnstarted(sessionID)
+			return "", fmt.Errorf("record session start: %w", err)
+		}
+	}
 	if err := recordLayer(rec, live.layer); err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", err
@@ -1853,6 +1859,11 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 			_ = del.DeleteSession(sessionID)
 		}
 		return "", fmt.Errorf("record session start: %w", err)
+	}
+	for _, g := range toolset.StartupRegistries(s.opts.Config, "server") {
+		if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
+			return "", fmt.Errorf("record session start: %w", err)
+		}
 	}
 	if err := recordLayer(rec, live.layer); err != nil {
 		if del, ok := s.under().(agent.SessionDeleter); ok {

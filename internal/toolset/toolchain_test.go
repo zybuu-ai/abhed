@@ -36,6 +36,11 @@ func TestToolchainPolicy(t *testing.T) {
 		{config.Config{Sandbox: config.SandboxConfig{Toolchains: "off", ToolchainsPreapproved: []string{"go"}}}, ""},
 		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow"}, Sandbox: config.SandboxConfig{Toolchains: "auto"}}, ""},
 		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow", "sandbox.toolchains"}, Sandbox: config.SandboxConfig{Toolchains: "auto"}}, "toolchain"},
+		// Each key widens a locked allow list only when the managed file sets that key.
+		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow", "sandbox.toolchains_preapproved"},
+			Sandbox: config.SandboxConfig{Toolchains: "auto", ToolchainsPreapproved: []string{"go"}}}, "toolchain(go@*)"},
+		{config.Config{Managed: true, ManagedKeys: []string{"permissions.allow", "sandbox.toolchains"},
+			Sandbox: config.SandboxConfig{Toolchains: "ask", ToolchainsPreapproved: []string{"go"}}}, ""},
 	} {
 		if got := strings.Join(ToolchainAllows(c.cfg), " "); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.cfg.Sandbox, got, c.want)
@@ -110,5 +115,54 @@ func TestTerminalGetsTheToolchains(t *testing.T) {
 	// macOS's own bash, 3.2, has no command_not_found_handle; bash 4 and later do.
 	if !strings.Contains(got, "bash-3.") && !strings.Contains(got, "abhed: Rust is not installed in this sandbox") {
 		t.Fatalf("no note for a missing program, or not 127:\n%s", got)
+	}
+}
+
+// A deny or ask rule on a language holds for that language with its
+// debugger, in every mode; an allow for the language alone does not cover
+// the debugger.
+func TestToolchainRulesHoldWithTheDebugger(t *testing.T) {
+	for _, lang := range []string{"go", "python"} {
+		plain := json.RawMessage(`{"name":"` + lang + `@3.12"}`)
+		dbg := json.RawMessage(`{"name":"` + lang + `+debugger@3.12","debugger":true}`)
+		deny := policy.New(policy.ModeDefault)
+		_ = deny.AddAllow(toolchain.ToolName)
+		_ = deny.AddDeny(toolchain.ToolName + "(" + lang + "@*)")
+		for _, a := range []json.RawMessage{plain, dbg} {
+			if d := deny.Evaluate(toolchain.ToolName, true, a); d.Decision != policy.Deny {
+				t.Errorf("%s: deny %s@* with auto: %s %+v", lang, lang, a, d)
+			}
+		}
+		ask := policy.New(policy.ModeDefault)
+		_ = ask.AddAllow(toolchain.ToolName)
+		_ = ask.AddAsk(toolchain.ToolName + "(" + lang + "@*)")
+		if d := ask.Evaluate(toolchain.ToolName, true, dbg); d.Decision != policy.Ask {
+			t.Errorf("%s: ask rule with the debugger: %+v", lang, d)
+		}
+		allow := policy.New(policy.ModeDefault)
+		_ = allow.AddAllow(toolchain.ToolName + "(" + lang + "@*)")
+		if d := allow.Evaluate(toolchain.ToolName, true, plain); d.Decision != policy.Allow {
+			t.Errorf("%s: allow %s@*: %+v", lang, lang, d)
+		}
+		if d := allow.Evaluate(toolchain.ToolName, true, dbg); d.Decision != policy.Ask {
+			t.Errorf("%s: an allow for the language covered its debugger: %+v", lang, d)
+		}
+	}
+}
+
+// Registries open from the start are named for the record, and only then.
+func TestStartupRegistries(t *testing.T) {
+	if g := StartupRegistries(config.Config{Sandbox: config.SandboxConfig{ToolchainsRegistries: "allow"}}, "cli"); len(g) != 1 ||
+		g[0].Consent != "allow" || len(g[0].Hosts) == 0 || g[0].Surface != "cli" {
+		t.Fatalf("allow: %+v", g)
+	}
+	for _, cfg := range []config.Config{
+		{Sandbox: config.SandboxConfig{ToolchainsRegistries: "ask"}},
+		{Sandbox: config.SandboxConfig{ToolchainsRegistries: "off"}},
+		{Sandbox: config.SandboxConfig{ToolchainsRegistries: "allow", AllowNetwork: true}},
+	} {
+		if g := StartupRegistries(cfg, "cli"); g != nil {
+			t.Errorf("%+v: %+v", cfg.Sandbox, g)
+		}
 	}
 }

@@ -16,6 +16,9 @@ type Session struct {
 	Cache     Cache
 	Source    *Source
 	Workspace string
+	// Root is the workspace's root, above which no pin file is read; empty
+	// is Workspace.
+	Root string
 	// Platform is where commands run now: a container sees Linux builds.
 	Platform func() Platform
 	// Off is sandbox.toolchains off: nothing is installed, and the cache is
@@ -28,6 +31,15 @@ type Session struct {
 	Registries func(lang string) (hosts []string, why string)
 	// Open opens them; it returns what it opened.
 	Open func(lang string) ([]string, error)
+}
+
+// pins are the pins a command in dir finds, up to the workspace root.
+func (s *Session) pins(dir string) map[string]Pin {
+	root := s.Root
+	if root == "" {
+		root = s.Workspace
+	}
+	return PinsWithin(dir, root)
 }
 
 func (s *Session) platform() Platform {
@@ -60,7 +72,7 @@ func (s *Session) Plan(ctx context.Context, requested Spec) (Plan, error) {
 	if s.Off {
 		return Plan{}, ErrOff
 	}
-	spec, why := Choose(requested, PinsFrom(s.Workspace))
+	spec, why := Choose(requested, s.pins(s.Workspace))
 	p := s.platform()
 	if in, ok := s.Cache.Best(p, spec); ok && spec.Version != "" {
 		return Plan{Spec: spec, Why: why, Installed: &in}, nil
@@ -122,7 +134,7 @@ func (s *Session) Active(dir string) []Installed {
 		return nil
 	}
 	p := s.platform()
-	pins := PinsFrom(dir)
+	pins := s.pins(dir)
 	var out []Installed
 	for _, l := range Langs {
 		spec := Spec{Lang: l.Name}
@@ -203,7 +215,7 @@ func (s *Session) NotFound(dir, program string) string {
 	if s.Off {
 		return fmt.Sprintf("%s is not installed in this sandbox, and installing toolchains is turned off here (sandbox.toolchains off). Tell the user.", program)
 	}
-	spec, why := Choose(Spec{Lang: l.Name}, PinsFrom(dir))
+	spec, why := Choose(Spec{Lang: l.Name}, s.pins(dir))
 	what := l.Display
 	if spec.Version != "" {
 		what += " " + spec.Version
@@ -270,7 +282,7 @@ func (s *Session) personNote(dir string, l Lang) string {
 	if s.Off {
 		return "abhed: " + l.Display + " is not installed in this sandbox, and installing toolchains is turned off here (sandbox.toolchains off)."
 	}
-	spec, why := Choose(Spec{Lang: l.Name}, PinsFrom(dir))
+	spec, why := Choose(Spec{Lang: l.Name}, s.pins(dir))
 	return fmt.Sprintf("abhed: %s is not installed in this sandbox. Abhed installs %s (%s) from its official source: ask the agent, "+
 		"or run `abhed toolchain install %s` in your own terminal, then open a new terminal.", l.Display, spec.String(), why, spec.String())
 }

@@ -1,6 +1,7 @@
 package toolchain
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -12,6 +13,10 @@ func BinDirs(in Installed) []string {
 		return []string{filepath.Join(javaHome(in), "bin")}
 	case "dotnet":
 		return []string{in.Dir}
+	case "ruby":
+		if hasRubyWrapper(in) {
+			return []string{filepath.Join(in.Dir, rubyWrapperDir), filepath.Join(in.Dir, "bin")}
+		}
 	}
 	return []string{filepath.Join(in.Dir, "bin")}
 }
@@ -32,10 +37,18 @@ func SearchPaths(in Installed) map[string][]string {
 		return nil
 	}
 	out := rubyPaths(in)
-	if strings.HasPrefix(in.Platform, "linux-") {
+	// A Ruby installed before its wrapper existed finds its libraries this way.
+	if strings.HasPrefix(in.Platform, "linux-") && !hasRubyWrapper(in) {
 		out["LD_LIBRARY_PATH"] = []string{filepath.Join(in.Dir, "lib"), filepath.Join(in.Dir, "lib", "abhed-deps")}
 	}
 	return out
+}
+
+// hasRubyWrapper reports whether a Linux Ruby has the wrapper that gives it
+// its libraries.
+func hasRubyWrapper(in Installed) bool {
+	info, err := os.Lstat(filepath.Join(in.Dir, rubyWrapperDir, "ruby"))
+	return err == nil && info.Mode().IsRegular()
 }
 
 // rubyPaths are a Ruby build's library and gem folders where it is: the

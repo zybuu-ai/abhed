@@ -651,6 +651,20 @@ func subjectOf(args json.RawMessage) (key, subject string, err error) {
 	return "", "", nil
 }
 
+// toolchainLanguage is the language scope of a toolchain scope that adds
+// the debugger: go+debugger@1.27 is go@1.27.
+func toolchainLanguage(subject string) (string, bool) {
+	name, version, ok := strings.Cut(subject, "@")
+	lang, debugger := strings.CutSuffix(name, "+debugger")
+	if !debugger || lang == "" {
+		return "", false
+	}
+	if !ok {
+		return lang, true
+	}
+	return lang + "@" + version, true
+}
+
 // errNonStringSubject marks a subject argument of another kind than text.
 var errNonStringSubject = errors.New("malformed arguments")
 
@@ -874,6 +888,14 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			subjects = append(subjects, subject)
 		}
 		subject, narrowAllows = target, !strings.ContainsAny(target, "\n\r")
+	}
+	// An install of a language with its debugger installs the language too:
+	// deny and ask rules on toolchain(go@…) see it, while an allow for the
+	// language alone does not cover the debugger.
+	if tool == "toolchain" {
+		if plain, ok := toolchainLanguage(subject); ok {
+			subjects = append(subjects, plain)
+		}
 	}
 	// An ssh command runs through the remote shell, so it is read as bash's is.
 	var remote *remoteRead

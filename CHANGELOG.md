@@ -90,6 +90,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 - Built with Go 1.26.10 (`go.mod`, CI, the release workflow and the image),
   which fixes GO-2026-6809 in `crypto/x509`; 1.26.9 is affected.
+- Toolchains, before release: archive extraction refuses any entry made
+  through a symbolic link, a hard link to anything but a file already
+  unpacked, and any link that resolves outside the toolchain, so a chain of
+  links cannot write outside the cache. The macOS process tier denies writes
+  to the toolchain cache and the Linux helper's copies even with
+  `shared_caches`, and the helper is hashed in full before each bind and
+  never used for an engine on another host. Deny and ask rules on
+  `toolchain(<lang>@…)` also hold for `<lang>+debugger@…`. Under a managed
+  hold on the permissions, `toolchains: auto` and `toolchains_preapproved`
+  each add allow rules only when the managed file sets that key itself.
+  Studio's toolchain offer names the package registries an install opens,
+  and its install refuses one that changed since the offer.
+
 - `ssh` rules matched the remote command as plain text. A deny rule such
   as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,
   an allow rule such as `ssh(web1/openssl x509 *)` also approved anything
@@ -666,10 +679,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A command's egress relay container (`abhed-egr-…`) outlived an Abhed
+  that was killed. It now runs attached, its main process ending when the
+  input Abhed holds closes, so it exits and removes itself however Abhed
+  ends; it is labelled with its owner (`abhed.egress.owner`), and the first
+  such command after a start removes any an ended Abhed on this host left,
+  by that label and name only.
+
 - Toolchains: Ruby could not load its standard library or RubyGems, nor on
   Linux its own `libruby`, because its builds name the build machine's
-  folders; its commands now get `RUBYLIB`, `GEM_PATH` and, on Linux,
-  `LD_LIBRARY_PATH` for where it is. A Linux Ruby bundles libyaml 0.2.5 from
+  folders; its commands now get `RUBYLIB` and `GEM_PATH` for where it is,
+  and a Linux Ruby a wrapper first on `PATH` that gives Ruby alone its
+  `LD_LIBRARY_PATH`. A Linux Ruby bundles libyaml 0.2.5 from
   Debian 12's package, its sha256 pinned, so YAML, RubyGems and Bundler work
   on the default image; OpenSSL is not bundled (see the Toolchains guide).
 - Toolchains: a Linux build unpacked on macOS (for the container tier) failed

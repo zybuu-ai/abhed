@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -17,6 +19,34 @@ var (
 	helperSHA256LinuxARM64 string
 	helperSHA256LinuxS390X string
 )
+
+// EngineOnAnotherHost reports whether DOCKER_HOST or CONTAINER_HOST names an
+// engine on another machine (tcp://, or ssh:// to a host not this one),
+// whose file system does not hold the helper's local copy. A unix socket,
+// such as a Podman machine's, is this machine's VM.
+func EngineOnAnotherHost() bool {
+	for _, k := range []string{"DOCKER_HOST", "CONTAINER_HOST"} {
+		v := os.Getenv(k)
+		if v == "" || strings.HasPrefix(v, "unix://") || strings.HasPrefix(v, "npipe://") {
+			continue
+		}
+		u, err := url.Parse(v)
+		if err != nil {
+			return true
+		}
+		h := u.Hostname()
+		if h != "localhost" && h != "127.0.0.1" && h != "::1" {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoteHelperRefusal is why the shipped helper is not used for an engine
+// on another host, and what to do.
+const RemoteHelperRefusal = "the container engine is on another host (DOCKER_HOST or CONTAINER_HOST), where the Linux helper shipped " +
+	"with Abhed is not, so it is not used as the egress relay there; have your administrator set control_plane.<engine>.relay_binary " +
+	"to a Linux build of Abhed or abhed-helper on that host, or use a local engine"
 
 // HelperName is the helper's file name beside the engine for arch.
 func HelperName(arch string) string { return "abhed-helper-linux-" + arch }
@@ -55,10 +85,10 @@ var helperCacheRoot = func() (string, error) {
 
 var helperMu sync.Mutex
 
-// helperChecked keeps each verified copy's size and time, so it is hashed
-// again only when it changes.
-var helperChecked = map[string]os.FileInfo{}
-
+// BundledHelper is hashed in full on every call, each time before it is
+// bound into a container, so a copy changed since, even with its size and
+// time put back, is replaced from the shipped file before it is used.
+//
 // BundledHelper is the Linux helper shipped beside this engine for arch,
 // when this build pins its checksum: a copy under the user's cache folder,
 // which a container engine in a VM can see, checked against the pin. A file
@@ -97,9 +127,6 @@ func matches(path, want string) (bool, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return false, err
 	}
-	if prev, ok := helperChecked[path]; ok && prev.Size() == info.Size() && prev.ModTime().Equal(info.ModTime()) {
-		return true, nil
-	}
 	f, err := os.Open(path) // #nosec G304 -- the helper's own cache copy
 	if err != nil {
 		return false, err
@@ -109,11 +136,7 @@ func matches(path, want string) (bool, error) {
 	if _, err := io.Copy(h, f); err != nil {
 		return false, err
 	}
-	if hex.EncodeToString(h.Sum(nil)) != want {
-		return false, nil
-	}
-	helperChecked[path] = info
-	return true, nil
+	return hex.EncodeToString(h.Sum(nil)) == want, nil
 }
 
 // copyHelper copies src to dst, hashing as it copies, and keeps the copy
