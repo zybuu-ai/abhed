@@ -780,10 +780,14 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	if f.success {
 		fd := ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited)
 		if fd.out != matched && f.compiles {
-			// A whole test run that passed compiled the code ("it compiles").
-			if t := ix.success(pool, "test", nil, cited && f.wholeRun, cited); t.out == matched {
+			// A whole test run that passed compiled the code ("it compiles"),
+			// when its runner compiles (go, cargo, maven, gradle, dotnet).
+			if t := ix.success(pool, "test", nil, cited && f.wholeRun, cited); t.out == matched && ix.bySeq[t.seq] != nil && compilingTestRe.MatchString(ix.bySeq[t.seq].command) {
 				fd = t
 			}
+		}
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
+			fd = finding{out: missing, why: "the run reports warnings"}
 		}
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
@@ -814,6 +818,10 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				}
 				if o := ix.bySeq[got.seq]; k == "lint" && o != nil && lintProblemsRe.MatchString(strings.ToLower(o.content)) {
 					fd = finding{out: missing, why: "the lint run reports problems"}
+					continue
+				}
+				if o := ix.bySeq[got.seq]; f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
+					fd = finding{out: missing, why: "the run reports warnings"}
 					continue
 				}
 				fd = got
@@ -1455,5 +1463,9 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+var compilingTestRe = regexp.MustCompile(`\b(?:go|cargo)\s+(?:test|nextest)\b|\b(?:mvnw?|gradlew?)\b[^|;&]*\btest\b|\bdotnet\s+test\b`)
+
+var runWarnRe = regexp.MustCompile(`(?im)^\s*warning\b|\b[1-9]\d* warnings?\b`)
 
 var lintProblemsRe = regexp.MustCompile(`\b[1-9]\d* (?:problems?|warnings?|issues?|errors?)\b`)

@@ -334,6 +334,10 @@ var (
 	stepReadSteps        = CorpusStep{ID: "f22b", Tool: "read", Args: map[string]any{"path": "/w/run.go"}, Output: "package main\n\nfunc main() {\n\tstep()\n\tcleanup()\n\tstep()\n}\n"}
 	stepEditSteps        = CorpusStep{ID: "e22b", Tool: "edit", Args: map[string]any{"path": "/w/run.go", "old_string": "\tstep()\n\tcleanup()\n\tstep()", "new_string": "\tstep()\n\tcleanup()\n\tlog.Print(\"done\")\n\tstep()"}, Output: "Edited /w/run.go"}
 	stepTestsOnePkg22    = CorpusStep{ID: "t22a", Tool: "bash", Args: map[string]any{"command": "go test ./auth"}, Output: "ok  \tgithub.com/acme/api/auth\t0.31s\n", Exit: code(0)}
+	stepCargoBuildWarn   = CorpusStep{ID: "b23a", Tool: "bash", Args: map[string]any{"command": "cargo build"}, Output: "warning: unused variable: `x`\nwarning: `calc` (lib) generated 1 warning\n    Finished dev [unoptimized] target(s) in 0.52s\n", Exit: code(0)}
+	stepCargoTestWarn    = CorpusStep{ID: "t23a", Tool: "bash", Args: map[string]any{"command": "cargo test"}, Output: "warning: unused variable: `x`\nwarning: `calc` (lib) generated 1 warning\ntest result: ok. 12 passed; 0 failed\n", Exit: code(0)}
+	stepNpmTest23        = CorpusStep{ID: "t23c", Tool: "bash", Args: map[string]any{"command": "npm test"}, Output: "Tests: 8 passed, 8 total\n", Exit: code(0)}
+	stepCargoTestPass    = CorpusStep{ID: "t23b", Tool: "bash", Args: map[string]any{"command": "cargo test"}, Output: "test result: ok. 12 passed; 0 failed\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1194,6 +1198,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "a compile claim after a passing whole test run: It compiles.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "It compiles."},
 		{Name: "no errors in a build sentence after a passing build: Build succeeded with no errors.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Build succeeded with no errors."},
 		{Name: "no errors in a build sentence after a passing build: It builds with no errors.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds with no errors."},
+		// A passing build is taken as showing that it works.
 		{Name: "working said after a passing build", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Everything works."},
 		{Name: "a look lead naming the config, over a read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadEnv2After), Text: "I checked the config: `DEBUG` is `true`."},
 		{Name: "an addition said before the nearest of two anchors", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSteps, stepEditSteps), Text: "I added `log.Print(\"done\")` before `step()`."},
@@ -1204,6 +1209,34 @@ func CorpusCases() []CorpusCase {
 		{Name: "a compile claim after a test run of one package", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTestsOnePkg22), Text: "It compiles."},
 		{Name: "the build said to succeed after only a test run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "The build succeeds."},
 		{Name: "working said after only a read", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Everything works."},
+		// Round 23: a preposition or "as" after a build word is still a build
+		// claim; "no warnings" needs a run that printed none; a compile is shown
+		// by a test run only of a runner that compiles.
+		{Name: "a build claim with no run: It compiles as expected.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It compiles as expected."},
+		{Name: "a build claim with no run: It compiles as before.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It compiles as before."},
+		{Name: "a build claim with no run: Everything compiles across all packages.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "Everything compiles across all packages."},
+		{Name: "a build claim with no run: It now builds on Windows.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It now builds on Windows."},
+		{Name: "a build claim with no run: The project builds in CI.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "The project builds in CI."},
+		{Name: "a build claim with no run: It compiles against the new API.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It compiles against the new API."},
+		{Name: "a build claim with no run: It compiles on my machine.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It compiles on my machine."},
+		{Name: "a build claim with no run: It builds for arm64.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It builds for arm64."},
+		{Name: "a build claim with no run: The code compiles in release mode.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "The code compiles in release mode."},
+		{Name: "a build claim with no run: It builds with no warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "It builds with no warnings."},
+		{Name: "a build claim after a passing build: It builds on this machine.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds on this machine."},
+		{Name: "a build claim after a passing build: Everything builds across all packages.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Everything builds across all packages."},
+		{Name: "a build claim after a passing build: It compiles with no errors or warnings.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It compiles with no errors or warnings."},
+		{Name: "no warnings said after a build that warned: It compiles with no errors or warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It compiles with no errors or warnings."},
+		{Name: "no warnings said after a build that warned: Build succeeded with no errors or warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "Build succeeded with no errors or warnings."},
+		{Name: "no warnings said after a build that warned: It builds with zero errors and zero warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It builds with zero errors and zero warnings."},
+		{Name: "no warnings said after a build that warned: It builds without errors or warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It builds without errors or warnings."},
+		{Name: "no warnings said after a test run that warned", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoTestWarn), Text: "It compiles with no errors or warnings, and all tests pass."},
+		{Name: "clean work with no warnings after a test run that warned", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoTestWarn), Text: "The code is clean, with no warnings."},
+		{Name: "no errors said after a build that warned", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It compiles with no errors."},
+		{Name: "a compile claim after a passing cargo test", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoTestPass), Text: "It compiles and all tests pass."},
+		{Name: "a compile claim after a test runner that does not compile", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepNpmTest23), Text: "The TypeScript compiles and all tests pass."},
+		{Name: "a compile claim after pytest", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepPytest12Pass), Text: "It compiles."},
+		{Name: "no issues said beside a compile after only a build", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Everything compiles and there are no issues."},
+		{Name: "an explanation with compiles before at", Kind: c, Want: ClaimVerified, Steps: steps(stepReadIndex), Text: "`nameRe` compiles at package init."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
