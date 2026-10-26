@@ -84,23 +84,37 @@ func TestContentPlaceholdersAreNotSecrets(t *testing.T) {
 		"MAX_TOKENS = 100000000",
 		"API_KEY = settings.API_KEY",
 		"aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}",
+		`GITHUB_TOKEN = "{{ .Token }}"`,
+		"API_TOKEN=[REDACTED]",
+		`SECRET_KEY = "{api_key}"`,
+		"API_TOKEN=your_token_here",
+		"API_TOKEN=YOUR_TOKEN_HERE",
+		`export DB_PASSWORD="$(cat /run/secrets/db_password)"`,
 	} {
 		if out, found := RedactContent(ok); found || out != ok || HasKeyMaterial(ok) {
 			t.Errorf("a placeholder or ordinary code was taken for a secret: %q -> %q", ok, out)
 		}
 	}
 	for in, secret := range map[string]string{
-		`SECRET_KEY = "a8f5f167f44f4964e6c998dee827110c"`: "a8f5f167f44f",
-		`GITHUB_TOKEN: 'Zx81kLm0Pw7xQr2'`:                 "Zx81kLm0Pw7x",
-		"STRIPE_KEY=Xk9fQ2mPz8Lw4Rt7 # live":              "Xk9fQ2mPz8Lw",
-		`postgres://app:Hunter2SuperSecret@db/app`:        "Hunter2Super",
-		"DB_PASSWORD=p@ss.word.2024":                      "p@ss.word",
-		"DB_PASSWORD=Tr0ub4dor&3xyz":                      "Tr0ub4dor",
-		"API_TOKEN=abc,def,ghi,jkl":                       "abc,def",
-		"MY_SECRET=abc:def:ghijk":                         "abc:def",
-		"DATABASE_PASSWORD = s3cr3t-value; # comment":     "s3cr3t-value",
-		"DB_PASSWORD=12345678901":                         "12345678901",
-		`PASSWORD="correct horse battery staple"`:         "correct horse",
+		`SECRET_KEY = "a8f5f167f44f4964e6c998dee827110c"`:            "a8f5f167f44f",
+		`GITHUB_TOKEN: 'Zx81kLm0Pw7xQr2'`:                            "Zx81kLm0Pw7x",
+		"STRIPE_KEY=Xk9fQ2mPz8Lw4Rt7 # live":                         "Xk9fQ2mPz8Lw",
+		`postgres://app:Hunter2SuperSecret@db/app`:                   "Hunter2Super",
+		"DB_PASSWORD=p@ss.word.2024":                                 "p@ss.word",
+		"DB_PASSWORD=Tr0ub4dor&3xyz":                                 "Tr0ub4dor",
+		"API_TOKEN=abc,def,ghi,jkl":                                  "abc,def",
+		"MY_SECRET=abc:def:ghijk":                                    "abc:def",
+		"DATABASE_PASSWORD = s3cr3t-value; # comment":                "s3cr3t-value",
+		"DB_PASSWORD=12345678901":                                    "12345678901",
+		`PASSWORD="correct horse battery staple"`:                    "correct horse",
+		"DB_PASSWORD=${POSTGRES_PASSWORD:-Sup3rS3cretPw}":            "Sup3rS3cretPw",
+		`API_TOKEN="${API_TOKEN:-Zq81kLm0Pw7xYb2c}"`:                 "Zq81kLm0Pw7x",
+		`API_TOKEN={"db":"Zq81kLm0Pw7xYb2c","s":"Ab12Cd34Ef56Gh78"}`: "Zq81kLm0Pw7x",
+		`API_TOKEN=["Zq81kLm0Pw7xYb2c","Ab12Cd34Ef56Gh78"]`:          "Zq81kLm0Pw7x",
+		"API_TOKEN=<Zq81kLm0Pw7xYb2c>":                               "Zq81kLm0Pw7x",
+		"API_TOKEN={Zq81kLm0Pw7xYb2c}":                               "Zq81kLm0Pw7x",
+		"API_TOKEN=[Zq81kLm0Pw7xYb2c]":                               "Zq81kLm0Pw7x",
+		"DB_PASSWORD=YourDogIsRexTheGreat":                           "YourDogIsRex",
 	} {
 		if out, found := RedactContent(in); !found || strings.Contains(out, secret) {
 			t.Errorf("%q -> %q", in, out)

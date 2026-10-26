@@ -30,7 +30,7 @@ func TestCredentialSeen(t *testing.T) {
 }
 
 // Output the monitor counted as credential content before the shared list
-// still counts, and only a placeholder value is let through.
+// still counts.
 func TestKeyMaterialKeepsTheEarlierShapes(t *testing.T) {
 	for _, line := range []string{
 		`api_key = "3f9a2b7c4d1e8f6a0b5c9d2e"`, `password = "hunter2hunter2"`, `secret_key = 'django-insecure-abc123xyz789'`,
@@ -43,9 +43,17 @@ func TestKeyMaterialKeepsTheEarlierShapes(t *testing.T) {
 			t.Errorf("no longer counted: %q", line)
 		}
 	}
-	for _, line := range []string{"API_TOKEN=${API_TOKEN}", "DB_PASSWORD=changeme", `SECRET_KEY="%s"`, "export TOKEN=$TOKEN", "package main"} {
-		if keyMaterial(line + "\n") {
-			t.Errorf("a placeholder counted: %q", line)
+	// What looks like a placeholder is counted as it was before; nothing is let through.
+	for _, line := range []string{"API_TOKEN=${API_TOKEN}", "DB_PASSWORD=changeme", "export TOKEN=$TOKEN_VALUE",
+		"DB_PASSWORD=${POSTGRES_PASSWORD:-Sup3rS3cretPw}", `API_TOKEN="${API_TOKEN:-Zq81kLm0Pw7xYb2c}"`,
+		`API_TOKEN={"db":"Zq81kLm0Pw7xYb2c","stripe":"Ab12Cd34Ef56Gh78"}`, `API_TOKEN=["Zq81kLm0Pw7xYb2c","Ab12Cd34Ef56Gh78"]`,
+		"API_TOKEN=<Zq81kLm0Pw7xYb2c>", "API_TOKEN={Zq81kLm0Pw7xYb2c}", "API_TOKEN=[Zq81kLm0Pw7xYb2c]", "DB_PASSWORD=YourDogIsRexTheGreat",
+	} {
+		if !keyMaterial(line + "\n") {
+			t.Errorf("no longer counted: %q", line)
 		}
+	}
+	if keyMaterial("package main\n") {
+		t.Error("ordinary code counted")
 	}
 }

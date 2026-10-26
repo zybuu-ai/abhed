@@ -31,9 +31,7 @@ All notable changes to Abhed are recorded here. The format follows
 - The supervisor counts more output as credential content: JWTs, Slack
   webhook URLs, Stripe live keys, passwords in URLs and secret-named URL
   parameters, and tokens run into other text, besides every shape it counted
-  before. The one exception is a secret-named assignment whose value is a
-  placeholder (`%s`, `${…}`, `$NAME`, `{…}`, `<…>`, `***`, `changeme`),
-  which is no longer counted.
+  before, which it still counts as it did.
 - Answers are checked and labelled by default in the terminal, the workbench
   and console, and Abhed Studio. A reply with a statement the record
   contradicts gets one more model call, the agent's revision turn, and an

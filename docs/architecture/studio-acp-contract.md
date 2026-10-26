@@ -1295,8 +1295,8 @@ _abhed/complete/cancel { sessionId } → {}
   (as named, links followed) is checked. Stored secrets and key-shaped text
   are withheld from the whole of each text before it is cut, and from
   `prefix`+`suffix` as one so a secret the cursor splits is withheld on both
-  sides; placeholders (`%s`, `${…}`, `$NAME`, `{…}`, `<…>`, masks) are not
-  secrets. A reply that carries one is dropped (empty `items`).
+  sides; placeholders (`%s`, `${NAME}` with no default, `$NAME`, a bracketed
+  name, masks) are not secrets. A reply that carries one is dropped (empty `items`).
 - One request in flight per session: a newer one cancels it (`cancelled`).
   `seq`, increasing per session, orders requests; one at or below the newest
   seen is dropped (`cancelled`). Without it, arrival order. A short debounce;
