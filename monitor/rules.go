@@ -504,6 +504,13 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 			Rationale: fmt.Sprintf("the command would %s, which cannot be undone; %s", what, remit(c)),
 			Advice:    "confirm this is meant, or narrow it to what the task names"}
 	}
+	if sub := remoteCommand(prog, args); len(sub) > 0 {
+		if what, ok := r.subFamily(sub, cmd.stdin); ok {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+				Rationale: fmt.Sprintf("the command %s runs elsewhere would %s, which cannot be undone; %s", prog, what, remit(c)),
+				Advice:    "confirm this is meant, or narrow it to what the task names"}
+		}
+	}
 	// Code handed to a runner that is not a shell -c/eval/stdin call — git's
 	// foreach/exec/run/filter/alias, a container exec/run, xargs, man -P — is
 	// parsed and judged like any other handed code, not word-searched.
@@ -526,7 +533,7 @@ func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth i
 	// General pass: any other command not fully read has its code-ish arguments
 	// and its stdin parsed and judged, so a quote-split or variable-built delete
 	// is seen however it is spelled.
-	if unknownRunner(prog) && !r.cmdFullyRead(cmd) && !searcher[prog] {
+	if unknownRunner(prog) && !r.cmdFullyRead(cmd) && !pureSearch(prog, args) {
 		handed := handedArgs(cmd, args)
 		if !sqlClient[prog] {
 			handed = append(handed, cmd.stdin...) // a SQL client's stdin is its query, judged above
@@ -1041,6 +1048,9 @@ func commandText(cmd command) []string {
 func dangerWords(cmd command) []string {
 	prog, args := cmd.program()
 	base := progBase(prog)
+	if pureSearch(base, args) {
+		return cmd.words[:len(cmd.words)-len(args)] // a searcher's operands are patterns
+	}
 	skipVal := map[string]bool{"-m": true, "--message": true, "-b": true, "--body": true, "--title": true, "-t": true}
 	sed := base == "sed" || base == "gsed"
 	head := append([]string(nil), cmd.words[:len(cmd.words)-len(args)]...)
@@ -2101,7 +2111,7 @@ func gitPruneHistory(args []string) (string, bool) {
 			return "prune unreachable commits for good", true
 		}
 	case "reflog":
-		if len(ops) > 1 && ops[1] == "expire" && (hasPrefix(args, "--expire=now") || hasPrefix(args, "--expire=all") || hasPrefix(args, "--expire-unreachable=now") || hasFlag(args, "--expire=0")) {
+		if len(ops) > 1 && ops[1] == "expire" && (hasPrefix(args, "--expire=now") || hasPrefix(args, "--expire=all") || hasPrefix(args, "--expire-unreachable=now") || hasPrefix(args, "--expire-unreachable=all") || hasFlag(args, "--expire=0")) {
 			return "expire the reflog, losing the way back to discarded commits", true
 		}
 	}
@@ -2203,7 +2213,10 @@ func packageRunner(words []string) []string {
 			if len(words) > 0 {
 				switch words[0] {
 				case "exec", "dlx", "x":
-					words = skipOpts(words[1:])
+					words = skipOpts(words[1:]) // words[0] is now the program
+					if len(words) > 1 && words[1] == "--" {
+						words = append(words[:1:1], words[2:]...) // npm exec prisma -- migrate
+					}
 				case "run", "run-script":
 					words = skipOpts(words[1:]) // words[0] is now the script
 					if len(words) > 1 && words[1] == "--" {
@@ -2242,6 +2255,9 @@ func packageRunner(words []string) []string {
 			if progBase(words[0]) == "aws-cdk" {
 				words[0] = "cdk"
 			}
+			if len(words) > 1 && words[1] == "--" {
+				words = append(words[:1:1], words[2:]...) // npx prisma -- migrate reset
+			}
 			return words
 		}
 	}
@@ -2279,18 +2295,8 @@ func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth 
 				}
 			}
 			if a == "--" {
-				sub := command{words: args[i+1:], stdin: cmd.stdin}
-				sp, sa := sub.program()
-				sp = progBase(sp)
-				for _, fn := range []func() (string, bool){
-					func() (string, bool) { return stdinDestructive(sp, sub.stdin) },
-					func() (string, bool) { return dataInfraDestructive(sp, sa) },
-					func() (string, bool) { return clusterDestructive(sp, sa) },
-					func() (string, bool) { return r.embeddedDataStore(sub) },
-				} {
-					if what, ok := fn(); ok {
-						return ask(what)
-					}
+				if what, ok := r.subFamily(args[i+1:], cmd.stdin); ok {
+					return ask(what)
 				}
 				break
 			}
@@ -2317,6 +2323,159 @@ func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth 
 // container model does not cover — ssh HOST, oc/docker-compose exec, heroku
 // pg:psql/run, fly ssh console -C — and judges the drop or flush it carries.
 // A client named only in a message value or printed by echo/printf is skipped.
+// sshValueOpts are ssh options that take the next word as their value.
+var sshValueOpts = map[string]bool{"-b": true, "-c": true, "-D": true, "-E": true, "-e": true, "-F": true,
+	"-I": true, "-i": true, "-J": true, "-L": true, "-l": true, "-m": true, "-O": true, "-o": true, "-p": true,
+	"-Q": true, "-R": true, "-S": true, "-W": true, "-w": true}
+
+// herokuValueOpts are `heroku run` options that take a value.
+var herokuValueOpts = map[string]bool{"-a": true, "--app": true, "-r": true, "--remote": true, "-s": true,
+	"--size": true, "-e": true, "--env": true, "--type": true}
+
+// remoteCommand returns the words of the command a transport runs elsewhere:
+// ssh HOST CMD…, heroku run [opts] CMD…, fly ssh console -C CMD, and
+// oc/kubectl exec … -- CMD. nil when the command runs nothing remote.
+func remoteCommand(prog string, args []string) []string {
+	switch prog {
+	case "ssh":
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			if a == "--" {
+				continue
+			}
+			if strings.HasPrefix(a, "-") {
+				if sshValueOpts[a] {
+					i++
+				}
+				continue
+			}
+			rest := args[i+1:] // a is the host
+			if len(rest) > 0 && rest[0] == "--" {
+				rest = rest[1:]
+			}
+			return rest
+		}
+	case "heroku":
+		if len(args) == 0 || (args[0] != "run" && args[0] != "run:detached") {
+			return nil
+		}
+		for i := 1; i < len(args); i++ {
+			a := args[i]
+			if a == "--" {
+				return args[i+1:]
+			}
+			if strings.HasPrefix(a, "-") {
+				if herokuValueOpts[a] {
+					i++
+				}
+				continue
+			}
+			return args[i:]
+		}
+	case "fly", "flyctl":
+		for i, a := range args {
+			if (a == "-C" || a == "--command") && i+1 < len(args) {
+				return []string{args[i+1]}
+			}
+			if v, ok := strings.CutPrefix(a, "--command="); ok {
+				return []string{v}
+			}
+		}
+	case "oc", "kubectl":
+		if !slices.Contains(args, "exec") && !slices.Contains(args, "rsh") {
+			return nil
+		}
+		for i, a := range args {
+			if a == "--" {
+				return args[i+1:]
+			}
+		}
+	}
+	return nil
+}
+
+// bareTruncate matches a line (or statement) that only truncates a file.
+var bareTruncate = regexp.MustCompile(`(?:^|[;&|]\s*)(?::\s*)?>\s*[^\s>&]`)
+
+// quoteWords joins words into one shell line, quoting any word that holds
+// whitespace or a quote, so a quoted remote command keeps its boundaries.
+func quoteWords(words []string) string {
+	out := make([]string, len(words))
+	for i, w := range words {
+		if strings.ContainsAny(w, " \t\n'\"") {
+			out[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+		} else {
+			out[i] = w
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// subFamily runs the destructive family checks over a command run elsewhere
+// (a remote or exec transport, or runuser -- CMD): the data-store,
+// infrastructure, container, cluster and git checks, past any sudo or
+// package runner on the far side, plus a remote file truncation.
+func (r Rules) subFamily(words, stdin []string) (string, bool) {
+	if len(words) == 0 {
+		return "", false
+	}
+	line := quoteWords(words)
+	if len(words) == 1 {
+		line = words[0] // one quoted word is itself the command line
+	}
+	if bareTruncate.MatchString(line) {
+		return "overwrite a remote file", true // > FILE or : > FILE truncates it
+	}
+	s, ok := parseScript(line)
+	if !ok {
+		return "", false
+	}
+	for _, cmd := range s.cmds {
+		if len(cmd.stdin) == 0 {
+			cmd.stdin = stdin
+		}
+		plain, plainArgs := cmd.program()
+		if plain == "" {
+			if len(cmd.writes) > 0 {
+				return "overwrite a remote file", true // a bare > FILE truncates it
+			}
+			continue
+		}
+		w := packageRunner(append([]string{plain}, plainArgs...))
+		p, a := command{words: w}.program()
+		p = progBase(p)
+		for _, fn := range []func() (string, bool){
+			func() (string, bool) { return stdinDestructive(p, cmd.stdin) },
+			func() (string, bool) { return dataInfraDestructive(p, a) },
+			func() (string, bool) { return clusterDestructive(p, a) },
+			func() (string, bool) { return r.embeddedDataStore(cmd) },
+		} {
+			if what, ok := fn(); ok {
+				return what, true
+			}
+		}
+		if p == "git" {
+			if what, ok := gitPushDestructive(a); ok {
+				return what, true
+			}
+			if what, ok := gitPruneHistory(a); ok {
+				return what, true
+			}
+		}
+		// Truncating or zeroing a file on the far side: `: > f`, `true > f`,
+		// cp /dev/null f, truncate.
+		switch {
+		case (p == "" || p == ":" || p == "true") && len(cmd.writes) > 0:
+			return "overwrite a remote file", true
+		case p == "cp" && len(operands(a)) > 0 && operands(a)[0] == "/dev/null":
+			return "overwrite a remote file", true
+		case p == "truncate":
+			return "overwrite a remote file", true
+		}
+	}
+	return "", false
+}
+
 // remoteExec runs its command on another host or in a container, so the paths
 // it names are not host ground.
 func remoteExec(prog string) bool {
@@ -2325,6 +2484,20 @@ func remoteExec(prog string) bool {
 		return true
 	}
 	return false
+}
+
+// pureSearch reports a searcher whose operands are only patterns and paths:
+// rg/ag --pre CMD runs CMD, so that is not a pure search.
+func pureSearch(prog string, args []string) bool {
+	if !searcher[prog] {
+		return false
+	}
+	for _, a := range args {
+		if a == "--pre" || strings.HasPrefix(a, "--pre=") {
+			return false
+		}
+	}
+	return true
 }
 
 // searcher reads or matches patterns in its arguments; they are data.
@@ -2357,7 +2530,7 @@ func (r Rules) embeddedDataStore(cmd command) (string, bool) {
 	for i := 0; i < len(tok); i++ {
 		base := progBase(tok[i])
 		if base == prog || !sqlClient[base] && base != "redis-cli" && base != "mongosh" &&
-			base != "mongo" && base != "dropdb" && base != "dropuser" {
+			base != "mongo" && base != "dropdb" && base != "dropuser" && base != "mysqladmin" {
 			continue
 		}
 		rest := tok[i+1:]
@@ -2371,6 +2544,21 @@ func (r Rules) embeddedDataStore(cmd command) (string, bool) {
 	return "", false
 }
 
+// dropMessages removes each message flag and its value from args.
+func dropMessages(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if msgFlag(args[i]) {
+			if !strings.Contains(args[i], "=") && (len(args[i]) <= 2 || !strings.HasPrefix(args[i], "-m")) {
+				i++
+			}
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
 // msgFlag reports a commit/tag/PR message flag whose value is prose.
 func msgFlag(w string) bool {
 	switch w {
@@ -2382,6 +2570,14 @@ func msgFlag(w string) bool {
 }
 
 func dataInfraDestructive(prog string, args []string) (string, bool) {
+	switch prog {
+	case "git", "gh", "glab", "hg", "jj", "svn":
+		args = dropMessages(args) // a commit/tag/PR message is prose, not a command
+	case "grep", "egrep", "fgrep", "rg", "ag", "ack":
+		if pureSearch(prog, args) {
+			return "", false // a searcher's operands are patterns
+		}
+	}
 	text := strings.Join(splitAttachedFlags(args), " ")
 	low := strings.ToLower(text)
 	if ormReset.MatchString(prog + " " + text) {
@@ -2425,8 +2621,11 @@ func dataInfraDestructive(prog string, args []string) (string, bool) {
 		}
 	case prog == "heroku":
 		for _, a := range args {
-			if a == "pg:reset" {
+			switch a {
+			case "pg:reset":
 				return "reset a Heroku database", true
+			case "addons:destroy", "apps:destroy":
+				return "destroy a Heroku add-on or app", true
 			}
 		}
 	}
@@ -2502,7 +2701,7 @@ func tfDestroyOp(args []string) bool {
 	return false
 }
 
-var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit))`)
+var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit|['"]))`)
 var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
 var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`)
 var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bs3\s+sync\b.*--delete\b|\b(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|\bdelete-objects\b`)

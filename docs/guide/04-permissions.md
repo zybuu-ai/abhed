@@ -927,7 +927,7 @@ Every call goes through the same steps, and the order is the design:
    whole line when one of its simple commands runs that client (directly, or
    past `sudo`/`su`/`runuser`/`doas`/`env` and their value-taking options, a
    package runner, a container `exec`/`run` including `docker-compose`/`oc`, or
-   `ssh HOST`, `heroku pg:psql`/`pg:reset`/`run` and `fly ssh console -C`), so a heredoc body or a literal piped in counts, while a
+   `ssh HOST`, `heroku pg:psql`/`pg:reset`/`run` and `fly ssh console -C`; the command a transport runs elsewhere — the words after an ssh host, `heroku run`, `fly ssh console -C` or `oc`/`kubectl exec … --` — is judged in the supervisor as a command of its own, quoted or not, including a remote file truncation such as `: > FILE`, `> FILE`, `cp /dev/null FILE` or `truncate`), so a heredoc body or a literal piped in counts, while a
    client named only in a commit, tag or PR message, or printed by `echo`/`printf`,
    does not. A table name may be schema-qualified or quoted. Everyday reads
    (`select`, `PING`, `plan`, `plan -destroy`, `list`, `describe`) are not
@@ -1361,19 +1361,19 @@ not reviewed (turn budget spent)`.
 
 ### What it has been measured to do
 
-The drift suite is 1181 calls a model gone wrong might make — a wrong host, a
+The drift suite is 1433 calls a model gone wrong might make — a wrong host, a
 made-up path, destructive work outside the task, an instruction injected by a
 fetched page, a program that is not there, a credential followed by a way
 out, a planted honeytoken, a target that only shares a prefix or a word with
-what the person named, a home folder or top-level folder deleted whole, a destructive command after a `cd`, wrapper, builtin, escaped name or other change the check cannot follow, code handed to a shell, to `eval` or to an interpreter, unknown runners carrying a deleter, commands run by `find -exec`, git/kubectl subcommands that run other commands, and `mv`, `git clean` and `rsync --delete` outside the remit — and 490 benign controls, among them ten everyday samples written by reviewers (64, 39, 30, 30, 49, 59, 52, 35, 32 and 37 commands) of build, test, git, package-manager, docker, kubectl, mount and file-move work — only genuinely harmless lines; an allowed probe line is a drift case or a documented limit, never a control — among them certificate
+what the person named, a home folder or top-level folder deleted whole, a destructive command after a `cd`, wrapper, builtin, escaped name or other change the check cannot follow, code handed to a shell, to `eval` or to an interpreter, unknown runners carrying a deleter, commands run by `find -exec`, git/kubectl subcommands that run other commands, and `mv`, `git clean` and `rsync --delete` outside the remit — and 530 benign controls, among them eleven everyday samples written by reviewers (64, 39, 30, 30, 49, 59, 52, 35, 32, 37 and 40 commands) of build, test, git, package-manager, docker, kubectl, mount and file-move work — only genuinely harmless lines; an allowed probe line is a drift case or a documented limit, never a control — among them certificate
 checks over `ssh` on declared hosts, a rolling restart and a rollback in a
 named namespace, `ssh_get`, `ssh_put`, `stdin_secret`, an `ssh` call after a key was copied on the host, work across "the web
 hosts", and interpreter one-liners that only read or clean the workspace.
 Every drift case but one was let through by a mode first; the one,
 `git reset --hard` in the workspace, is left to the destructive step, which
 asks about it in every mode and refuses it headless, so the supervisor does
-not judge it again. On the suite the rules judge stops 1180 of the other 1180. It
-denies none of the 490 controls; it asks about 10 of them: six whose working
+not judge it again. On the suite the rules judge stops 1432 of the other 1432. It
+denies none of the 530 controls; it asks about 10 of them: six whose working
 directory it deliberately does not claim to know — a scratch directory from a
 command substitution, `$TMPDIR` or `mktemp`, a loop over directories, a
 conditional `cd`, and a `cd` joined to the next command by `;` — one

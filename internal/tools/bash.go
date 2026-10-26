@@ -254,7 +254,8 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|taint\b|apply\b.*\s-(?:destroy|replace)[=\s]|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
 	{regexp.MustCompile(`\b(?:pulumi|cdk)(?:@[\w.-]+)?\b.*\s(?:destroy|down)\b|\bpulumi\b.*\sup\b.*--(?:target-)?replace\b`), "destroy infrastructure"},
 	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)(?:@[\w.-]+)?\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
-	{regexp.MustCompile(`\bheroku\b.*\spg:reset\b`), "reset a Heroku database"},
+	{regexp.MustCompile(`\bheroku\b.*\s(?:pg:reset|addons:destroy|apps:destroy)\b`), "reset or destroy a Heroku database, add-on or app"},
+	{regexp.MustCompile(`\bssh\b.*(?:[\s'"]:\s*>|['"]\s*>\s*\S|\bcp\s+/dev/null\s)`), "overwrite a remote file"},
 	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy|bulk-delete|delete-[\w-]+)(?:\s|$)`), "delete cloud resources"},
 	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|delete-objects\b)`), "delete cloud resources"},
 }
@@ -269,7 +270,7 @@ var dataStorePatterns = []struct {
 }{
 	{map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true, "sqlcmd": true,
 		"clickhouse-client": true, "cockroach": true, "duckdb": true, "cqlsh": true, "pg:psql": true},
-		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit))`),
+		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit|['"]))`),
 		"drop or empty a database or table"},
 	{map[string]bool{"redis-cli": true}, regexp.MustCompile(`(?i)\bflush(?:all|db)\b`), "flush a Redis store"},
 	{map[string]bool{"mongosh": true, "mongo": true},
@@ -347,6 +348,10 @@ func runsClient(command string, clients map[string]bool) bool {
 			}
 			w := strings.TrimSuffix(CommandName(path.Base(words[i])), ".exe")
 			if clients[w] {
+				return true
+			}
+			// A quoted command line (ssh HOST '…', -c '…', fly -C '…') is read too.
+			if strings.ContainsAny(words[i], " \t\n") && runsClient(words[i], clients) {
 				return true
 			}
 		}
@@ -499,6 +504,10 @@ func (c Canonical) Unreadable() string {
 }
 
 func destructiveText(command string, gitExtensions map[string]bool) (string, bool) {
+	raw := command
+	// A commit/tag/PR message value and a searcher's patterns are text, not a
+	// command: drop them before the patterns read the line.
+	command = sanitizeData(command)
 	// Where case is ignored, the program names are lowered too; that only adds a match.
 	folded := foldProgramNames(command)
 	for _, d := range destructivePatterns {
@@ -517,7 +526,95 @@ func destructiveText(command string, gitExtensions map[string]bool) (string, boo
 			return what, true
 		}
 	}
-	return gitDestructive(command, gitExtensions)
+	return gitDestructive(raw, gitExtensions)
+}
+
+// sanitizeData returns the line with each commit/tag/PR message value (for
+// git/gh/glab/hg/jj/svn) and each searcher's operands (grep/rg/ag/ack)
+// removed, so text that only names a deleter or a client is not matched.
+func sanitizeData(command string) string {
+	out := command
+	for _, part := range splitSimple(command) {
+		fields := fieldsOutsideQuotes(part)
+		if len(fields) == 0 {
+			continue
+		}
+		// The program, past sudo/doas/env and their options.
+		pi := 0
+		for pi < len(fields) {
+			b := strings.TrimSuffix(CommandName(path.Base(fields[pi])), ".exe")
+			if b == "sudo" || b == "doas" || b == "env" || strings.HasPrefix(fields[pi], "-") || strings.Contains(fields[pi], "=") {
+				if (fields[pi] == "-u" || fields[pi] == "-g") && pi+1 < len(fields) {
+					pi++
+				}
+				pi++
+				continue
+			}
+			break
+		}
+		if pi >= len(fields) {
+			continue
+		}
+		first := strings.TrimSuffix(CommandName(path.Base(fields[pi])), ".exe")
+		var kept []string
+		changed := false
+		switch first {
+		case "grep", "egrep", "fgrep", "rg", "ag", "ack":
+			// Patterns are text; a preprocessor (rg --pre CMD) still runs.
+			kept = append(kept, fields[:pi+1]...)
+			for i := pi + 1; i < len(fields); i++ {
+				switch {
+				case fields[i] == "--pre" && i+1 < len(fields):
+					kept = append(kept, fields[i], fields[i+1])
+					i++
+				case strings.HasPrefix(fields[i], "--pre="):
+					kept = append(kept, fields[i])
+				default:
+					changed = true
+				}
+			}
+		case "sed", "gsed":
+			// The first script (or each -e value) is an edit expression, not a command.
+			kept = append(kept, fields[:pi+1]...)
+			script := false
+			for i := pi + 1; i < len(fields); i++ {
+				f := fields[i]
+				switch {
+				case (f == "-e" || f == "--expression") && i+1 < len(fields):
+					i, changed, script = i+1, true, true
+				case !script && !strings.HasPrefix(f, "-"):
+					changed, script = true, true
+				default:
+					kept = append(kept, f)
+				}
+			}
+		default:
+			msgProg := false
+			for _, f := range fields {
+				switch strings.TrimSuffix(CommandName(path.Base(f)), ".exe") {
+				case "git", "gh", "glab", "hg", "svn", "jj":
+					msgProg = true
+				}
+			}
+			if !msgProg {
+				continue
+			}
+			for i := 0; i < len(fields); i++ {
+				if msgFlagWord(fields[i]) {
+					changed = true
+					if !strings.Contains(fields[i], "=") && (len(fields[i]) <= 2 || !strings.HasPrefix(fields[i], "-m")) {
+						i++
+					}
+					continue
+				}
+				kept = append(kept, fields[i])
+			}
+		}
+		if changed && strings.Contains(out, part) {
+			out = strings.Replace(out, part, " "+joinQuoted(kept)+" ", 1)
+		}
+	}
+	return out
 }
 
 // rmForced finds rm's recursive or force flags anywhere among its words, as

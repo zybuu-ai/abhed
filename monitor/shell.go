@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"path"
+	"strconv"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -892,6 +893,15 @@ func (c command) program() (string, []string) {
 			w = w[1:] // NAME=value before a program
 			continue
 		}
+		if path.Base(head) == "runuser" {
+			// runuser -u USER [-g G] [--] CMD runs CMD as given; every other
+			// shape (-l USER -c CODE) is su-like and stays the program.
+			if inner, ok := runuserCommand(w[1:]); ok {
+				w = inner
+				continue
+			}
+			return head, w[1:]
+		}
 		if !wrappers[path.Base(head)] {
 			return head, w[1:]
 		}
@@ -899,10 +909,24 @@ func (c command) program() (string, []string) {
 		w = w[1:]
 		flags := wrapperFlags[wrap]
 		for len(w) > 0 && strings.HasPrefix(w[0], "-") && w[0] != "--" {
+			// env -S "cmd args" carries the command line as its value.
+			if wrap == "env" && (w[0] == "-S" || w[0] == "--split-string") && len(w) > 1 {
+				w = append(strings.Fields(w[1]), w[2:]...)
+				break
+			}
+			if v, ok := strings.CutPrefix(w[0], "--split-string="); ok && wrap == "env" {
+				w = append(strings.Fields(v), w[1:]...)
+				break
+			}
 			if (flags[w[0]] || clusterTakesValue(wrap, w[0])) && len(w) > 1 {
 				w = w[1:]
 			}
 			w = w[1:]
+		}
+		if wrap == "chrt" && len(w) > 0 && !strings.HasPrefix(w[0], "-") {
+			if _, err := strconv.Atoi(w[0]); err == nil {
+				w = w[1:] // the priority positional
+			}
 		}
 		if len(w) > 0 && w[0] == "--" {
 			w = w[1:]
@@ -965,4 +989,36 @@ func hasFlag(args []string, flags ...string) bool {
 		}
 	}
 	return false
+}
+
+// runuserCommand reads runuser's -u USER form: only -u/--user/-g/--group with
+// their values, then an optional --, then the command. ok is false for any
+// other shape (a -c, -l, a bare user), which is read like su.
+func runuserCommand(args []string) ([]string, bool) {
+	sawUser := false
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-u" || a == "--user" || a == "-g" || a == "--group":
+			if i+1 >= len(args) {
+				return nil, false
+			}
+			sawUser = sawUser || a == "-u" || a == "--user"
+			i++
+		case strings.HasPrefix(a, "--user=") || strings.HasPrefix(a, "--group="):
+			sawUser = sawUser || strings.HasPrefix(a, "--user=")
+		case a == "--":
+			if !sawUser || i+1 >= len(args) {
+				return nil, false
+			}
+			return args[i+1:], true
+		case strings.HasPrefix(a, "-"):
+			return nil, false
+		default:
+			if !sawUser {
+				return nil, false
+			}
+			return args[i:], true
+		}
+	}
+	return nil, false
 }
