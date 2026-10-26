@@ -283,27 +283,31 @@ modal says the app listens where its own settings say.
 
 The agent's commands get the language toolchains Abhed installed, first on
 `PATH` ([Toolchains](../guide/29-toolchains.md)). The agent installs one with
-its `toolchain` tool, as an ordinary ask. Studio may offer the same from its
-own UI, for instance when the workspace needs a language that is missing, with
-these methods (`toolchains` in the session's `_meta` features):
+its `toolchain` tool, as an ordinary ask. Studio offers the same from its own
+UI, for instance when its Run or Test button's command exits 127, with these
+methods (`toolchain` in the session's `_meta` features). `language` is a
+language (`go`, `python`, `node`, `rust`, `java`, `maven`, `gradle`, `ruby`,
+`dotnet`) or a program one provides, as the failed command named it
+(`cargo` is rust, `mvn` maven, `python3` python, `gofmt` go).
 
 | Method | |
 |---|---|
-| `_abhed/toolchain/status` | `{sessionId}` → `{enabled, platform, active: Installed[], installed: Installed[], pins}`: what the session's commands get now (one toolchain per language), everything installed for the platform the commands run on (`linux-<arch>` under a container), and the versions the workspace pins, by language (`{spec: {Lang, Version}, file}`). Reads only. Not recorded |
-| `_abhed/toolchain/offer` | `{sessionId, lang, version?}` → `{version, plan: {spec, why, artifact: {version, url, digest, size, format, source}, installed?}}`: what an install would fetch and why that version (`requested`, `pinned by <file>`, `latest stable`). Asks the official release source; installs nothing. Not recorded |
-| `_abhed/toolchain/install` | `{sessionId, lang, version?, installId}` → `{installed, dir, bin}` once it is verified and in place. While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"` |
-| `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 and nothing partial is left |
+| `_abhed/toolchain/status` | `{sessionId, language, version?}` → `{language, available, version?, can_act, offer?: {command, source, size?, version?, into?, why, url, digest}, refusal?: problem}`. `available` and `version`: the session's commands have the language now (`into` is where an install would go, for the platform commands run on). `offer` is what an install would fetch: the version and `why` (`requested`, `pinned by <file>`, `latest stable`), the release `source`, the download `url`, its `size` and the published `digest` it is checked against; `command` is the same install from a terminal. `can_act` is false, with `refusal`, when `sandbox.toolchains` is off, inside an agent's command, or when the source has no such build. Asks the release source; installs nothing. Not recorded |
+| `_abhed/toolchain/install` | `{sessionId, language, version?, installId}` → `{language, available: true, version, dir, bin, registries}` once it is verified and in place; `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"`, and `toolchain.registry` for registries opened |
+| `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 with `kind: "cancelled"`, and nothing partial is left |
 
-**Errors.** `sandbox.toolchains: "off"` and an install from inside an agent's
-command are -32001; an unknown language or a version that is not plain
-numbers is -32602; a source that has no such build, a download that fails or
-does not match its published checksum is -32000 with the reason.
+**Errors.** `data` is `{problem: {kind, message, steps?}}`, as the Ollama
+assist's. `toolchains_off`, `in_agent` and `unavailable` are -32001;
+`unknown_language`, `bad_version`, `no_install_id` and `duplicate` are
+-32602; `no_build`, `install_failed` (including a download that does not
+match its published checksum) and `cancelled` are -32000.
 
 **Studio's side.** Before `install`, a modal showing the language, version and
-why, the source, the URL, the size and the checksum from `offer`, default No.
-The modal is the person's consent; the engine records it as such. A *Stop*
-button sends `_abhed/toolchain/cancel`. After an install, the next command
-of the agent or the terminal finds the toolchain on `PATH`.
+why, the source, the URL, the size and the checksum from `status.offer`,
+default No. The modal is the person's consent; the engine records it as such.
+A *Stop* button sends `_abhed/toolchain/cancel`. After an install, the next
+command of the agent finds the toolchain on `PATH`; Studio's own Run and Test
+buttons may run again.
 
 | | |
 |---|---|

@@ -115,52 +115,50 @@ func TestToolchainCommand(t *testing.T) {
 	}
 }
 
-// Over ACP: status says what the session's commands have, offer what an
-// install would fetch, and install fetches it after Studio's own ask,
-// recorded in the session's record.
+// Over ACP: status says whether the session's commands have a language,
+// named as a program too, and what an install would fetch; install fetches
+// it after Studio's own ask, recorded in the session's record.
 func TestStudioToolchains(t *testing.T) {
 	fakeGoSource(t)
 	r := newStudioRig(t, "")
 	id := r.open()
 	var st struct {
-		Enabled  bool   `json:"enabled"`
-		Platform string `json:"platform"`
+		Language  string `json:"language"`
+		Available bool   `json:"available"`
+		CanAct    bool   `json:"can_act"`
+		Offer     struct {
+			Command, Source, Version, Into, Why, Digest string
+			Size                                        int64
+		} `json:"offer"`
 	}
-	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id}, &st)
-	if !st.Enabled || st.Platform == "" {
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "gofmt"}, &st)
+	if st.Language != "go" || st.Available || !st.CanAct || st.Offer.Version != "1.22.5" || st.Offer.Command != "abhed toolchain install go@1.22.5" ||
+		!strings.HasPrefix(st.Offer.Digest, "sha256:") || st.Offer.Size == 0 || !strings.HasSuffix(st.Offer.Into, filepath.Join("go", "1.22.5")) {
 		t.Fatalf("status %+v", st)
 	}
-	var offer struct {
-		Version string `json:"version"`
-		Plan    struct {
-			Why      string `json:"why"`
-			Artifact struct {
-				URL, Digest, Source string
-			} `json:"artifact"`
-		} `json:"plan"`
-	}
-	r.cl.ok("_abhed/toolchain/offer", map[string]any{"sessionId": id, "lang": "go"}, &offer)
-	if offer.Version != "1.22.5" || !strings.HasPrefix(offer.Plan.Artifact.Digest, "sha256:") || offer.Plan.Why != "latest stable" {
-		t.Fatalf("offer %+v", offer)
-	}
-	r.cl.refused(errParams, "_abhed/toolchain/install", map[string]any{"sessionId": id, "lang": "go"})
+	r.cl.refused(errParams, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go"})
 	var done struct {
-		Dir string   `json:"dir"`
-		Bin []string `json:"bin"`
+		Version string   `json:"version"`
+		Dir     string   `json:"dir"`
+		Bin     []string `json:"bin"`
 	}
-	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "lang": "go", "installId": "i1"}, &done)
-	if !strings.HasSuffix(done.Dir, filepath.Join("go", "1.22.5")) || len(done.Bin) != 1 {
+	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i1"}, &done)
+	if done.Version != "1.22.5" || len(done.Bin) != 1 {
 		t.Fatalf("install %+v", done)
 	}
 	got, _ := r.recorded(id, "toolchain.install")
 	if len(got) != 1 || got[0]["outcome"] != "ok" || got[0]["surface"] != "acp" || got[0]["consent"] != "studio" {
 		t.Fatalf("recorded %v", got)
 	}
-	r.cl.refused(errParams, "_abhed/toolchain/offer", map[string]any{"sessionId": id, "lang": "cobol"})
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go"}, &st)
+	if !st.Available {
+		t.Fatalf("after the install %+v", st)
+	}
+	r.cl.refused(errParams, "_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "cobol"})
 	var c struct {
 		Cancelled bool `json:"cancelled"`
 	}
-	r.cl.ok("_abhed/toolchain/cancel", map[string]any{"sessionId": id, "installId": "none"}, &c)
+	r.cl.ok("_abhed/toolchain/cancel", map[string]any{"installId": "none"}, &c)
 	if c.Cancelled {
 		t.Fatal("cancelled an install that was not running")
 	}

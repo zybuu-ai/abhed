@@ -19,10 +19,9 @@ import (
 // the official sources, verified, and records every attempt.
 
 func init() {
-	liveFeatures = append(liveFeatures, "toolchains")
+	liveFeatures = append(liveFeatures, "toolchain")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/toolchain/status":  (*acpConn).toolchainStatus,
-		"_abhed/toolchain/offer":   (*acpConn).toolchainOffer,
 		"_abhed/toolchain/install": (*acpConn).toolchainInstall,
 		"_abhed/toolchain/cancel":  (*acpConn).toolchainCancel,
 	})
@@ -31,17 +30,39 @@ func init() {
 // toolchainParams are what every _abhed/toolchain method takes.
 type toolchainParams struct {
 	SessionID string `json:"sessionId"`
-	// Lang is go, python, node, rust, java, maven, gradle, ruby or dotnet.
-	Lang string `json:"lang"`
-	// Version is the person's own version, or "" for the project's pin or
+	// Language is a language (go, python, node, rust, java, maven, gradle,
+	// ruby, dotnet) or a program one provides (cargo, python3, mvn…), as a
+	// command that exited 127 named it.
+	Language string `json:"language"`
+	// Version is the person's own version; "" is the project's pin, else
 	// the latest stable.
 	Version string `json:"version"`
 	// InstallID names an install, for its progress and cancel.
 	InstallID string `json:"installId"`
 }
 
+// toolchainProblem is an error's data, as the Ollama assist's is.
+type toolchainProblem struct {
+	Kind    string   `json:"kind"`
+	Message string   `json:"message"`
+	Steps   []string `json:"steps,omitempty"`
+}
+
+func toolchainError(code int, kind, message string, steps ...string) *rpcError {
+	return &rpcError{Code: code, Message: message, Data: map[string]any{
+		"problem": toolchainProblem{Kind: kind, Message: message, Steps: steps}}}
+}
+
+// toolchainLang is the language a name or a program means.
+func toolchainLang(name string) (toolchain.Lang, bool) {
+	if l, ok := toolchain.Find(name); ok {
+		return l, true
+	}
+	return toolchain.ForProgram(name)
+}
+
 // toolchainSession finds the session's toolchains and the request's spec.
-func (c *acpConn) toolchainSession(msg rpcMessage, needLang bool) (*acpSession, toolchainParams, *toolchain.Session, toolchain.Spec, *rpcError) {
+func (c *acpConn) toolchainSession(msg rpcMessage) (*acpSession, toolchainParams, *toolchain.Session, toolchain.Spec, *rpcError) {
 	var p toolchainParams
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
 		return nil, p, nil, toolchain.Spec{}, badParams("params", err)
@@ -55,53 +76,75 @@ func (c *acpConn) toolchainSession(msg rpcMessage, needLang bool) (*acpSession, 
 		return nil, p, nil, toolchain.Spec{}, e
 	}
 	if parts.Set == nil || parts.Set.Toolchains == nil {
-		return nil, p, nil, toolchain.Spec{}, refusal(errPolicy, "toolchains are not available in this session")
+		return nil, p, nil, toolchain.Spec{}, toolchainError(errPolicy, "unavailable", "toolchains are not available in this session")
 	}
 	tc := *parts.Set.Toolchains
 	if parts.Session != nil {
 		tc.Workspace = parts.Session.WorkDir()
 	}
 	tc.Record = func(a agent.ToolchainAction) { s.record(agent.EvToolchainInstall, a) }
-	var spec toolchain.Spec
-	if needLang {
-		var err error
-		if spec, err = toolchain.ParseSpec(p.Lang); err != nil {
-			return nil, p, nil, spec, refusal(errParams, "%s", err.Error())
-		}
-		if spec.Version, err = toolchain.NormalizeVersion(spec.Lang, p.Version); err != nil {
-			return nil, p, nil, spec, refusal(errParams, "%s", err.Error())
-		}
+	l, ok := toolchainLang(p.Language)
+	if !ok {
+		return nil, p, nil, toolchain.Spec{}, toolchainError(errParams, "unknown_language",
+			"Abhed does not install a toolchain for "+p.Language+"; it installs "+toolchain.Names())
 	}
-	return s, p, &tc, spec, nil
-}
-
-// toolchainStatus is what the session's commands have, what the workspace
-// pins, and whether installs are on.
-func (c *acpConn) toolchainStatus(msg rpcMessage) {
-	_, _, tc, _, e := c.toolchainSession(msg, false)
-	if e != nil {
-		c.reply(msg.ID, nil, e)
-		return
-	}
-	p := tc.Platform()
-	c.reply(msg.ID, map[string]any{"enabled": !tc.Off, "platform": p.String(), "active": tc.Active(tc.Workspace),
-		"installed": tc.Cache.List(p, ""), "pins": toolchain.PinsFrom(tc.Workspace)}, nil)
-}
-
-// toolchainOffer is what an install would fetch: the version and why, the
-// source, the download, its size and published checksum. It installs nothing.
-func (c *acpConn) toolchainOffer(msg rpcMessage) {
-	_, _, tc, spec, e := c.toolchainSession(msg, true)
-	if e != nil {
-		c.reply(msg.ID, nil, e)
-		return
-	}
-	plan, err := tc.Plan(c.root(), spec)
+	v, err := toolchain.NormalizeVersion(l.Name, p.Version)
 	if err != nil {
-		c.reply(msg.ID, nil, refusal(errRefused, "%s", err.Error()))
+		return nil, p, nil, toolchain.Spec{}, toolchainError(errParams, "bad_version", err.Error())
+	}
+	return s, p, &tc, toolchain.Spec{Lang: l.Name, Version: v}, nil
+}
+
+// toolchainOffer is what an install would do, for Studio's modal.
+type toolchainOffer struct {
+	Command string `json:"command"`
+	Source  string `json:"source"`
+	Size    int64  `json:"size,omitempty"`
+	Version string `json:"version,omitempty"`
+	Into    string `json:"into,omitempty"`
+	// Why the version: requested, pinned by a file, or latest stable.
+	Why string `json:"why,omitempty"`
+	// URL and Digest are the download and the checksum it is checked against.
+	URL    string `json:"url,omitempty"`
+	Digest string `json:"digest,omitempty"`
+}
+
+// toolchainStatus says whether the session's commands have the language,
+// and what an install would fetch. It installs nothing and is not recorded.
+func (c *acpConn) toolchainStatus(msg rpcMessage) {
+	_, _, tc, spec, e := c.toolchainSession(msg)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.reply(msg.ID, map[string]any{"plan": plan, "version": plan.Version()}, nil)
+	out := map[string]any{"language": spec.Lang, "available": false, "can_act": !tc.Off && inAgentCommand() == ""}
+	for _, in := range tc.Active(tc.Workspace) {
+		if in.Lang == spec.Lang {
+			out["available"], out["version"] = true, in.Version
+		}
+	}
+	switch {
+	case tc.Off:
+		out["refusal"] = toolchainProblem{Kind: "toolchains_off", Message: toolchain.ErrOff.Error(),
+			Steps: []string{"Set sandbox.toolchains to ask in your own configuration, where the managed file allows it"}}
+	case inAgentCommand() != "":
+		out["refusal"] = toolchainProblem{Kind: "in_agent", Message: "installing a toolchain is refused inside an agent's command"}
+	default:
+		plan, err := tc.Plan(c.root(), spec)
+		if err != nil {
+			out["can_act"] = false
+			out["refusal"] = toolchainProblem{Kind: "no_build", Message: err.Error()}
+			break
+		}
+		o := toolchainOffer{Command: "abhed toolchain install " + plan.Spec.Lang + "@" + plan.Version(), Version: plan.Version(), Why: plan.Why,
+			Source: plan.Artifact.Source, Size: plan.Artifact.Size, URL: plan.Artifact.URL, Digest: plan.Artifact.Digest,
+			Into: tc.Cache.Dir(tc.Platform(), plan.Spec.Lang, plan.Version())}
+		if plan.Installed != nil {
+			o.Source, o.URL, o.Digest = "installed already", plan.Installed.URL, plan.Installed.Digest
+		}
+		out["offer"] = o
+	}
+	c.reply(msg.ID, out, nil)
 }
 
 // toolchainInstalls are the installs running, by installId, for cancel.
@@ -112,17 +155,17 @@ var (
 
 // toolchainInstall installs after the person agreed in Studio.
 func (c *acpConn) toolchainInstall(msg rpcMessage) {
-	s, p, tc, spec, e := c.toolchainSession(msg, true)
+	s, p, tc, spec, e := c.toolchainSession(msg)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
 	if why := inAgentCommand(); why != "" {
-		c.reply(msg.ID, nil, refusal(errPolicy, "installing a toolchain is refused inside an agent's command (%s)", why))
+		c.reply(msg.ID, nil, toolchainError(errPolicy, "in_agent", "installing a toolchain is refused inside an agent's command ("+why+")"))
 		return
 	}
 	if p.InstallID == "" {
-		c.reply(msg.ID, nil, refusal(errParams, "an install needs an installId, for its progress and its cancel"))
+		c.reply(msg.ID, nil, toolchainError(errParams, "no_install_id", "an install needs an installId, for its progress and its cancel"))
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
@@ -130,7 +173,7 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 	toolchainInstallsMu.Lock()
 	if _, dup := toolchainInstalls[p.InstallID]; dup {
 		toolchainInstallsMu.Unlock()
-		c.reply(msg.ID, nil, refusal(errParams, "an install with that installId is running"))
+		c.reply(msg.ID, nil, toolchainError(errParams, "duplicate", "an install with that installId is running"))
 		return
 	}
 	toolchainInstalls[p.InstallID] = cancel
@@ -142,23 +185,29 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 	}()
 	plan, err := tc.Plan(ctx, spec)
 	if err != nil {
-		code := errRefused
 		if errors.Is(err, toolchain.ErrOff) {
-			code = errPolicy
 			tc.Record(agent.ToolchainAction{Lang: spec.Lang, Version: spec.Version, Outcome: agent.ToolchainRefused, Error: err.Error(), By: agent.ByUser, Surface: "acp"})
+			c.reply(msg.ID, nil, toolchainError(errPolicy, "toolchains_off", err.Error()))
+			return
 		}
-		c.reply(msg.ID, nil, refusal(code, "%s", err.Error()))
+		c.reply(msg.ID, nil, toolchainError(errRefused, "no_build", err.Error()))
 		return
 	}
 	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", "studio", func(done, total int64) {
 		c.notification("_abhed/toolchain/progress", map[string]any{"sessionId": s.id, "installId": p.InstallID,
-			"completed": done, "total": total})
+			"status": "downloading", "completed": done, "total": total})
 	})
 	if err != nil {
-		c.reply(msg.ID, nil, refusal(errRefused, "%s", err.Error()))
+		kind := "install_failed"
+		if ctx.Err() != nil {
+			kind = "cancelled"
+		}
+		c.reply(msg.ID, nil, toolchainError(errRefused, kind, err.Error()))
 		return
 	}
-	c.reply(msg.ID, map[string]any{"installed": in, "dir": in.Dir, "bin": toolchain.BinDirs(in)}, nil)
+	reach := tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
+	c.reply(msg.ID, map[string]any{"language": in.Lang, "available": true, "version": in.Version, "dir": in.Dir,
+		"bin": toolchain.BinDirs(in), "registries": reach}, nil)
 }
 
 func (c *acpConn) toolchainCancel(msg rpcMessage) {
