@@ -121,11 +121,25 @@ func (s *Session) debuggerPlan(ctx context.Context, plan Plan, want bool) (*Extr
 // planTimeout bounds asking a release source what to install.
 const planTimeout = time.Minute
 
+// orLatest is a request's version as a resolved call carries it: "latest"
+// for none, which reads back as the project's pin or the latest stable, so
+// the scope's version is never taken for the request's.
+func orLatest(v string) string {
+	if v == "" {
+		return "latest"
+	}
+	return v
+}
+
+// request is the spec a call asks for. Once resolved, name is the approval's
+// scope (go@1.22 for any 1.22) and version alone is what was asked, empty
+// for the project's pin or the latest stable, so it is never read back from
+// the scope.
 func (t Tool) request(a toolArgs) (Spec, error) {
 	name, ver := a.Name, a.Version
 	if n, v, ok := strings.Cut(name, "@"); ok {
 		name = n
-		if ver == "" {
+		if ver == "" && a.Resolved == nil {
 			ver = v
 		}
 	}
@@ -150,6 +164,7 @@ func (t Tool) ResolveArgs(ts *tools.Session, raw json.RawMessage) (json.RawMessa
 	if a.List {
 		return json.RawMessage(`{"list":true}`), nil, nil
 	}
+	a.Resolved = nil // the model's, if any; ResolveArgs reads the request as written
 	spec, err := t.request(a)
 	if err != nil {
 		return nil, nil, err
@@ -169,7 +184,7 @@ func (t Tool) ResolveArgs(ts *tools.Session, raw json.RawMessage) (json.RawMessa
 	if ep != nil {
 		r.Debugger = resolvedOf(*ep)
 	}
-	out, err := json.Marshal(toolArgs{Name: ScopeName(plan.Spec.Lang, plan.Version(), a.Debugger), Version: plan.Spec.Version,
+	out, err := json.Marshal(toolArgs{Name: ScopeName(plan.Spec.Lang, plan.Version(), a.Debugger), Version: orLatest(spec.Version),
 		Debugger: a.Debugger, Resolved: r})
 	return out, []string{"name", "resolved"}, err
 }
