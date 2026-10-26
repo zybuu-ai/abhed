@@ -429,6 +429,15 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 		s.privateTempRules(&b, readable)
 	}
 
+	// Read-only paths (the toolchain cache) and the Linux helper's copies stay
+	// unwritable whatever shared_caches, a temp area or a cache area allows.
+	if ro := s.readOnlyWriteDenies(); len(ro) > 0 {
+		b.WriteString("\n;; Read-only paths: the toolchain cache and the Linux helper.\n")
+		for _, p := range ro {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
+		}
+	}
+
 	// Other sandboxes' folders: after the temp, cache and read-only allows,
 	// which may hold them, and before the state denies, which win in turn.
 	hidden := formsOf(s.policy.Hidden)
@@ -875,6 +884,27 @@ func (s *Process) procLimit() uint64 {
 
 // workspaces are the workspace as given and with its links resolved.
 func (s *Process) workspaces() []string { return PathForms(s.policy.Workspace) }
+
+// readOnlyWriteDenies are the forms of the read-only paths and the helper's
+// cache folder that no command may write; one holding the workspace is left
+// out, as denying it would take the workspace away.
+func (s *Process) readOnlyWriteDenies() []string {
+	paths := append([]string(nil), s.policy.ReadOnlyPaths...)
+	if root, err := helperCacheRoot(); err == nil {
+		paths = append(paths, root)
+	}
+	var out []string
+	for _, p := range formsOf(paths) {
+		holds := false
+		for _, ws := range s.workspaces() {
+			holds = holds || insideAny(ws, []string{p})
+		}
+		if !holds {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // protectedInside are the write-protected paths, in both forms, that lie in
 // the workspace; a mount for one outside it would only show it to the command.

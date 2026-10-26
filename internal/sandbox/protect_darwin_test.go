@@ -4,6 +4,7 @@ package sandbox
 // these are built on macOS alone, so Linux CI has no skip to account for.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,5 +308,47 @@ func TestProcessSandboxDeniesTheClipboard(t *testing.T) {
 	out, _ := runIn(t, s, ws, "pbpaste >/dev/null 2>&1; echo status=$?")
 	if strings.Contains(out, "status=0") {
 		t.Fatalf("pbpaste ran: %s", out)
+	}
+}
+
+// With shared_caches the real caches are writable, but never the toolchain
+// cache nor the Linux helper's copies, which other sessions run.
+func TestSharedCachesLeaveToolchainsAndHelperReadOnly(t *testing.T) {
+	home, err := os.MkdirTemp(".", "home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home, err = filepath.Abs(home); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", "")
+	tc := filepath.Join(home, ".cache", "abhed", "toolchains")
+	writeFiles(t, home, map[string]string{
+		".cache/abhed/toolchains/linux-arm64/go/1.27.3/bin/go":     "real",
+		"Library/Caches/abhed/helper/abc/abhed-helper-linux-arm64": "real",
+		".cache/other/x": "x",
+	})
+	ws := workspace(t)
+	s := NewProcess(Policy{Workspace: ws, MinTier: TierProcess, SharedCaches: true, ReadOnlyPaths: []string{tc}})
+	available(t, s)
+	goBin := filepath.Join(tc, "linux-arm64", "go", "1.27.3", "bin", "go")
+	helper := filepath.Join(home, "Library", "Caches", "abhed", "helper", "abc", "abhed-helper-linux-arm64")
+	out, _ := runIn(t, s, ws, fmt.Sprintf(`echo EVIL > %q 2>/dev/null; rm -f %q 2>/dev/null; echo EVIL > %q 2>/dev/null; `+
+		`echo EVIL > %q/planted 2>/dev/null; echo ok > %q && echo shared-ok`,
+		goBin, helper, helper+".new", filepath.Dir(goBin), filepath.Join(home, ".cache", "other", "y")))
+	if !strings.Contains(out, "shared-ok") {
+		t.Fatalf("shared_caches no longer writes the real caches: %s", out)
+	}
+	for _, p := range []string{goBin, helper} {
+		if b, err := os.ReadFile(p); err != nil || string(b) != "real" {
+			t.Errorf("%s was changed: %q %v", p, b, err)
+		}
+	}
+	for _, p := range []string{helper + ".new", filepath.Join(filepath.Dir(goBin), "planted")} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("a command created %s", p)
+		}
 	}
 }

@@ -62,6 +62,9 @@ func (c *Container) containerRelay() (string, string) {
 		}
 		return exe, ""
 	}
+	if c.policy.RelayBinary == "" && EngineOnAnotherHost() {
+		return "", RemoteHelperRefusal + ", so the " + string(c.Tier()) + " tier is not used rather than given the network"
+	}
 	if c.policy.RelayBinary == "" {
 		// The helper shipped beside the engine, verified against its pin.
 		if helper, why := BundledHelper(helperArch); helper != "" {
