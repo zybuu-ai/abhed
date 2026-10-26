@@ -349,3 +349,18 @@ func TestLatestWithAnOlderPatchInstalled(t *testing.T) {
 		t.Fatalf("explicit minor %+v", res)
 	}
 }
+
+// Resolving a call within a cancelled turn asks the release source nothing.
+func TestResolveStopsWithTheTurn(t *testing.T) {
+	s, f := session(t)
+	tool := Tool{S: s}
+	ts, _ := tools.NewSession(s.Workspace)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := tool.ResolveArgsContext(ctx, ts, json.RawMessage(`{"name":"go"}`)); err == nil {
+		t.Fatal("resolved in a cancelled turn")
+	}
+	if len(f.asked) != 0 {
+		t.Fatalf("the source was asked %v", f.asked)
+	}
+}

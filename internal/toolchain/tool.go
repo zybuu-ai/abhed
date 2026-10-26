@@ -157,6 +157,11 @@ func (t Tool) request(a toolArgs) (Spec, error) {
 // language@major, and resolved what will be installed, whatever the model
 // wrote there.
 func (t Tool) ResolveArgs(ts *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
+	return t.ResolveArgsContext(context.Background(), ts, raw)
+}
+
+// ResolveArgsContext is ResolveArgs within the turn's ctx.
+func (t Tool) ResolveArgsContext(ctx context.Context, ts *tools.Session, raw json.RawMessage) (json.RawMessage, []string, error) {
 	var a toolArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, nil, err
@@ -169,7 +174,7 @@ func (t Tool) ResolveArgs(ts *tools.Session, raw json.RawMessage) (json.RawMessa
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), planTimeout)
+	ctx, cancel := context.WithTimeout(ctx, planTimeout)
 	defer cancel()
 	plan, err := t.at(ts, nil).Plan(ctx, spec)
 	if err != nil {
@@ -230,7 +235,7 @@ func (t Tool) Target(_ *tools.Session, raw json.RawMessage) string {
 func (t Tool) at(ts *tools.Session, events *[]tools.Event) *Session {
 	s := *t.S
 	if ts != nil && ts.Root != "" {
-		s.Workspace = ts.WorkDir()
+		s.Workspace, s.Root = ts.WorkDir(), ts.Root
 	}
 	if events != nil {
 		s.Record = func(a agent.ToolchainAction) {
@@ -307,7 +312,7 @@ func (t Tool) list(s *Session) string {
 	for _, in := range act {
 		fmt.Fprintf(&b, "%s %s (on PATH)\n", in.Lang, in.Version)
 	}
-	for lang, p := range PinsFrom(s.Workspace) {
+	for lang, p := range s.pins(s.Workspace) {
 		fmt.Fprintf(&b, "%s pins %s %s\n", p.File, lang, p.Spec.Version)
 	}
 	return strings.TrimSpace(b.String())

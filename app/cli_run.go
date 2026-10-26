@@ -323,7 +323,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 
 	if headless {
-		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start, fence: fenceOf(sb), attempts: attempts,
+		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start, fence: fenceOf(sb), attempts: attempts, grants: toolset.StartupRegistries(cfg, "cli"),
 			providerName: cfg.Model.Default, provider: provider, fallback: fallback}
 		if f.runbook != "" {
 			if o.runbook, err = loadRunbookFile(f.runbook, f.runbookHash); err != nil {
@@ -352,7 +352,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 			// Said, not fatal: the person is at the prompt already. The fence is
 			// closed, and a record that cannot be written ends the first turn
 			// before the model is asked, as Loop.Run refuses on it.
-			if err := recordStart(rec, resumedStart(start, after), attempts, fenceOf(sb)); err != nil {
+			if err := recordStart(rec, resumedStart(start, after), attempts, toolset.StartupRegistries(cfg, "tui"), fenceOf(sb)); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			}
 		}, onOpen: func(rec *agent.Recorder) {

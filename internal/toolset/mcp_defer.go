@@ -214,6 +214,13 @@ func (d *deferredTool) ResolveArgs(sess *tools.Session, args json.RawMessage) (j
 	return nil, nil, nil
 }
 
+func (d *deferredTool) ResolveArgsContext(ctx context.Context, sess *tools.Session, args json.RawMessage) (json.RawMessage, []string, error) {
+	if r, ok := d.Tool.(tools.ContextArgResolver); ok {
+		return r.ResolveArgsContext(ctx, sess, args)
+	}
+	return d.ResolveArgs(sess, args)
+}
+
 func (d *deferredTool) FilesRead(args json.RawMessage) []string {
 	if f, ok := d.Tool.(tools.FileArgs); ok {
 		return f.FilesRead(args)

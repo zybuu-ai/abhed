@@ -128,7 +128,7 @@ func (c *acpConn) toolchainSession(msg rpcMessage) (*acpSession, toolchainParams
 	}
 	tc := *parts.Set.Toolchains
 	if parts.Session != nil {
-		tc.Workspace = parts.Session.WorkDir()
+		tc.Workspace, tc.Root = parts.Session.WorkDir(), parts.Session.Root
 	}
 	tc.Record = func(a agent.ToolchainAction) { s.record(agent.EvToolchainInstall, a) }
 	l, ok := toolchainLang(p.Language)

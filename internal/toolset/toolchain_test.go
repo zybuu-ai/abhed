@@ -149,3 +149,20 @@ func TestToolchainRulesHoldWithTheDebugger(t *testing.T) {
 		}
 	}
 }
+
+// Registries open from the start are named for the record, and only then.
+func TestStartupRegistries(t *testing.T) {
+	if g := StartupRegistries(config.Config{Sandbox: config.SandboxConfig{ToolchainsRegistries: "allow"}}, "cli"); len(g) != 1 ||
+		g[0].Consent != "allow" || len(g[0].Hosts) == 0 || g[0].Surface != "cli" {
+		t.Fatalf("allow: %+v", g)
+	}
+	for _, cfg := range []config.Config{
+		{Sandbox: config.SandboxConfig{ToolchainsRegistries: "ask"}},
+		{Sandbox: config.SandboxConfig{ToolchainsRegistries: "off"}},
+		{Sandbox: config.SandboxConfig{ToolchainsRegistries: "allow", AllowNetwork: true}},
+	} {
+		if g := StartupRegistries(cfg, "cli"); g != nil {
+			t.Errorf("%+v: %+v", cfg.Sandbox, g)
+		}
+	}
+}

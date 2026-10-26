@@ -231,7 +231,7 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 // bundles add to a language's tree the libraries its builds link that
 // images may lack, before it is moved in place.
 var bundles = map[string]func(ctx context.Context, src *Source, top, tmp string, a Artifact) ([]Bundled, error){
-	"ruby": bundleLibyaml,
+	"ruby": rubyLinux,
 }
 
 // postInstall finishes a language's unpacked tree before it is moved in place.

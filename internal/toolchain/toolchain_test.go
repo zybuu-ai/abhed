@@ -298,3 +298,33 @@ func TestPins(t *testing.T) {
 		t.Fatal(s, why)
 	}
 }
+
+// A command in a subfolder finds the project's pin at the workspace root,
+// never a pin file above the root.
+func TestPinsStopAtTheWorkspaceRoot(t *testing.T) {
+	above := t.TempDir()
+	if err := os.WriteFile(filepath.Join(above, ".tool-versions"), []byte("ruby 2.7.8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(above, "ws")
+	sub := filepath.Join(root, "pkg", "x")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if p := PinsWithin(sub, root); len(p) != 0 {
+		t.Fatalf("a pin above the root was read: %v", p)
+	}
+	if p := PinsFrom(root); len(p) != 0 {
+		t.Fatalf("a pin above the root was read: %v", p)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".python-version"), []byte("3.12\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if p := PinsWithin(sub, root); p["python"].Spec.Version != "3.12" {
+		t.Fatalf("the root's pin from a subfolder: %v", p)
+	}
+	s := &Session{Workspace: sub, Root: root}
+	if _, why := Choose(Spec{Lang: "ruby"}, s.pins(sub)); why != "latest stable" {
+		t.Fatalf("ruby %s", why)
+	}
+}

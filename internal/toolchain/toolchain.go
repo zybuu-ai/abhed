@@ -146,11 +146,12 @@ func Matches(version, want string) bool {
 }
 
 // Major is a version's first number, or its first two for languages whose
-// majors move slowly (go 1.22, python 3.11): the unit consent is asked for.
+// majors move slowly (go 1.22, python 3.11, rust 1.82): the unit consent is
+// asked for.
 func Major(lang, version string) string {
 	parts := strings.Split(version, ".")
 	switch lang {
-	case "go", "python", "ruby", "dotnet", "maven":
+	case "go", "python", "ruby", "dotnet", "maven", "rust":
 		if len(parts) >= 2 {
 			return parts[0] + "." + parts[1]
 		}

@@ -89,6 +89,13 @@ type ArgResolver interface {
 	ResolveArgs(sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
 }
 
+// ContextArgResolver is an ArgResolver whose resolving reaches the network,
+// such as a release source. The loop gives it the turn's context, so a
+// cancelled turn stops it.
+type ContextArgResolver interface {
+	ResolveArgsContext(ctx context.Context, sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
+}
+
 // Targeter names where a call sends what it carries, such as the server a
 // credential goes to, when the arguments alone do not show it. The person
 // approving the call and the record both get it.

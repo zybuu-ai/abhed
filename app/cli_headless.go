@@ -44,6 +44,8 @@ type headlessOpts struct {
 	// attempts are the configuration changes that did not take effect,
 	// recorded after the start.
 	attempts []agent.ConfigAttempt
+	// grants are the package registries open from the start.
+	grants []agent.ToolchainRegistry
 	// provider names the model, for an error that says what to do.
 	providerName string
 	provider     config.ProviderConfig
@@ -349,11 +351,16 @@ func recordResumedMode(rec *agent.Recorder, events []agent.Event, now, via strin
 // qualified it and gives it the record. Any of these that cannot be recorded
 // is an error, as the SDK refuses to build the agent, and closes the fence so
 // no command runs.
-func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.ConfigAttempt, fence *sandbox.Fence) error {
+func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.ConfigAttempt, grants []agent.ToolchainRegistry, fence *sandbox.Fence) error {
 	var err error
 	if start != nil {
 		if _, e := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); e != nil {
 			err = fmt.Errorf("recording the session start: %w", e)
+		}
+		for _, g := range grants {
+			if _, e := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); e != nil && err == nil {
+				err = fmt.Errorf("recording the registries open from the start: %w", e)
+			}
 		}
 	}
 	if err == nil {
@@ -469,7 +476,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
 	}
-	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.fence); err != nil {
+	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.grants, o.fence); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}

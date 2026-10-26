@@ -580,6 +580,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
 			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
 		}
+		for _, g := range toolset.StartupRegistries(cfg, x.Surface) {
+			if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
+				return fail(fmt.Errorf("abhed: recording the registries open from the start: %w", err))
+			}
+		}
 	}
 	// Every agent under the fence records what qualified it, a plain SDK
 	// caller's included, and gives it the record before any command runs.

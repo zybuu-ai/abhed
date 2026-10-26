@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -32,6 +33,7 @@ func Toolchains(cfg config.Config, workspace string, sb sandbox.Sandbox) *toolch
 		Cache:     toolchain.Cache{Root: root},
 		Source:    &toolchain.Source{Endpoints: ToolchainEndpoints, UserAgent: "abhed"},
 		Workspace: workspace,
+		Root:      workspace,
 		Platform:  func() toolchain.Platform { return PlatformOf(sb) },
 		Off:       cfg.Sandbox.Toolchains == "off",
 	}
@@ -147,6 +149,17 @@ func withToolchains(b tools.Bash, tc *toolchain.Session) tools.Bash {
 		return inner(ctx, cwd, tc.Prelude(cwd)+line)
 	}
 	return b
+}
+
+// StartupRegistries are the package registries open to commands from the
+// start, under sandbox.toolchains_registries allow, for the record; none
+// where they are opened only on agreement or the network is open already.
+func StartupRegistries(cfg config.Config, surface string) []agent.ToolchainRegistry {
+	if cfg.Sandbox.ToolchainsRegistries != "allow" || !sandboxconfig.RegistriesOpenable(cfg) ||
+		cfg.Sandbox.AllowNetwork && cfg.Sandbox.Network == "" && !cfg.ManagedSets("sandbox.network") && !cfg.ManagedSets("egress") {
+		return nil
+	}
+	return []agent.ToolchainRegistry{{Lang: "*", Hosts: toolchain.AllRegistries(), Consent: "allow", By: string(agent.ActorSystem), Surface: surface}}
 }
 
 // ToolchainAllows are the allow rules sandbox.toolchains auto and
