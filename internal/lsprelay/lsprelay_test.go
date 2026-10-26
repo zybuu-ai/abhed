@@ -113,3 +113,22 @@ func TestReadAndCommandLine(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A key twice, or twice but for case, anywhere in a message, is refused one
+// way and dropped the other: the filter and the reader must see one message.
+func TestKeysThatRepeatButForCase(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","params":{"command":"gopls.organize_imports","Command":"gopls.run_go_work_command"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","Method":"workspace/executeCommand","params":{}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///w/a.go","URI":"file:///etc/passwd"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"x","params":{},"params":{}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"x"} {"jsonrpc":"2.0"}`,
+	} {
+		_, err := f.FromEditor([]byte(body))
+		refusal(t, err)
+	}
+	if fwd, reply := f.FromServer([]byte(`{"jsonrpc":"2.0","id":1,"method":"window/showDocument","params":{"uri":"file:///w/a.go","URI":"https://evil.example"}}`)); fwd != nil || reply != nil {
+		t.Fatalf("a server message with a case-twin key was passed: %s %s", fwd, reply)
+	}
+}

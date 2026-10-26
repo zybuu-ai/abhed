@@ -85,8 +85,8 @@ type Abhed struct {
 	planted       *Counter
 	fenceDenied   *Counter
 	ollama        *Counter
-	lspStarts   *Counter
-	lspRequests *Counter
+	lspStarts     *Counter
+	lspRequests   *Counter
 	toolchains    *Counter
 	registries    *Counter
 

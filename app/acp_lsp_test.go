@@ -57,6 +57,10 @@ func TestLSPFakeServer(t *testing.T) {
 			send(map[string]any{"method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": "file://" + root + "/a.go", "diagnostics": []any{}}})
 		case m["id"] == "s1" && method == "":
 			send(map[string]any{"method": "window/logMessage", "params": map[string]any{"type": 3, "message": fmt.Sprintf("showDocument answered %v", m["result"])}})
+		case method == "textDocument/didChange":
+			params, _ := m["params"].(map[string]any)
+			doc, _ := params["textDocument"].(map[string]any)
+			send(map[string]any{"method": "window/logMessage", "params": map[string]any{"type": 4, "message": fmt.Sprintf("version %v", doc["version"])}})
 		case method == "textDocument/hover":
 			send(map[string]any{"id": m["id"], "result": map[string]any{"contents": "fake hover"}})
 		case method == "workspace/executeCommand":
@@ -191,4 +195,38 @@ func TestStudioLanguageServerRestartsAndIsJudged(t *testing.T) {
 		t.Fatalf("a refused server started: %v", *asked)
 	}
 	d.cl.refused(errParams, "_abhed/lsp/start", map[string]any{"sessionId": did, "language": "cobol"})
+}
+
+// Studio's messages reach the server in the order they were sent, however
+// fast they come.
+func TestStudioLanguageServerKeepsOrder(t *testing.T) {
+	r := newStudioRig(t, "")
+	fakeLSP(t, r.ws)
+	id := r.open()
+	var res struct {
+		LSPID string `json:"lspId"`
+	}
+	r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "go"}, &res)
+	from := r.cl.mark()
+	const n = 60
+	for i := 1; i <= n; i++ {
+		params, _ := json.Marshal(map[string]any{"lspId": res.LSPID, "message": map[string]any{"jsonrpc": "2.0", "method": "textDocument/didChange",
+			"params": map[string]any{"textDocument": map[string]any{"uri": "file://" + r.ws + "/a.go", "version": i}, "contentChanges": []any{}}}})
+		r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(fmt.Sprint(1000 + i)), Method: "_abhed/lsp/send", Params: params})
+	}
+	r.cl.waitFor(from, "the last version", func(m rpcMessage) bool {
+		return m.Method == "_abhed/lsp/message" && strings.Contains(string(m.Params), fmt.Sprintf("version %d\"", n))
+	})
+	next := 1
+	for _, m := range lspMessages(r.cl.since(from)) {
+		if i := strings.Index(m, "version "); i >= 0 {
+			var v int
+			fmt.Sscanf(m[i+len("version "):], "%d", &v)
+			if v != next {
+				t.Fatalf("version %d arrived where %d was due", v, next)
+			}
+			next++
+		}
+	}
+	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
 }

@@ -231,21 +231,110 @@ type message struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
+// strictMessage reads a message by its exact keys. One with a key twice,
+// or two keys that differ only in case, anywhere in it, is refused: Go's
+// decoding of a struct matches keys without case and keeps the last, while
+// a server or an editor reads the exact key, so the filter and the reader
+// could see different messages.
 func strictMessage(body []byte) (message, error) {
+	if err := UniqueKeys(body); err != nil {
+		return message{}, err
+	}
 	var keys map[string]json.RawMessage
 	if json.Unmarshal(body, &keys) != nil {
 		return message{}, errors.New("not a JSON-RPC message (a batch, or not an object)")
 	}
-	for k := range keys {
+	var m message
+	for k, v := range keys {
 		switch k {
-		case "jsonrpc", "id", "method", "params", "result", "error":
+		case "jsonrpc":
+			if json.Unmarshal(v, &m.JSONRPC) != nil {
+				return message{}, errors.New("jsonrpc is not a string")
+			}
+		case "id":
+			m.ID = v
+		case "method":
+			if json.Unmarshal(v, &m.Method) != nil {
+				return message{}, errors.New("method is not a string")
+			}
+		case "params":
+			m.Params = v
+		case "result":
+			m.Result = v
+		case "error":
+			m.Error = v
 		default:
 			return message{}, fmt.Errorf("a JSON-RPC message has no %q", k)
 		}
 	}
-	var m message
-	_ = json.Unmarshal(body, &m)
 	return m, nil
+}
+
+// field is one key of a JSON object, read by its exact name.
+func field(obj json.RawMessage, key string) json.RawMessage {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(obj, &keys) != nil {
+		return nil
+	}
+	return keys[key]
+}
+
+// stringField is field read as a string; "" when it is absent or not one.
+func stringField(obj json.RawMessage, key string) string {
+	var v string
+	_ = json.Unmarshal(field(obj, key), &v)
+	return v
+}
+
+// UniqueKeys refuses JSON with an object whose keys repeat, exactly or but
+// for case, at any depth.
+func UniqueKeys(body []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var walk func() error
+	walk = func() error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch tok {
+		case json.Delim('{'):
+			seen := map[string]bool{}
+			for dec.More() {
+				kt, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				k, _ := kt.(string)
+				fold := strings.ToLower(k)
+				if seen[fold] {
+					return fmt.Errorf("the key %q appears twice, or twice but for case", k)
+				}
+				seen[fold] = true
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token()
+			return err
+		case json.Delim('['):
+			for dec.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token()
+			return err
+		}
+		return nil
+	}
+	if err := walk(); err != nil {
+		return fmt.Errorf("not a JSON-RPC message: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("not a JSON-RPC message: more than one value")
+	}
+	return nil
 }
 
 // refusedFromEditor are methods an editor may not send: the engine has
@@ -275,12 +364,9 @@ func (f *Filter) FromEditor(body []byte) ([]byte, error) {
 			return nil, &Refusal{ID: m.ID, Reason: why}
 		}
 		if m.Method == "workspace/executeCommand" {
-			var p struct {
-				Command string `json:"command"`
-			}
-			_ = json.Unmarshal(m.Params, &p)
-			if !slices.Contains(SafeCommands[f.Language], p.Command) {
-				return nil, &Refusal{ID: m.ID, Reason: fmt.Sprintf("the command %q could have the server run programs, so it is not sent", p.Command)}
+			command := stringField(m.Params, "command")
+			if !slices.Contains(SafeCommands[f.Language], command) {
+				return nil, &Refusal{ID: m.ID, Reason: fmt.Sprintf("the command %q could have the server run programs, so it is not sent", command)}
 			}
 		}
 		return rebuild(m)
@@ -334,11 +420,7 @@ func (f *Filter) FromServer(body []byte) (forward, reply []byte) {
 	switch {
 	case m.Method != "" && len(m.ID) > 0: // a request of the server's
 		if m.Method == "window/showDocument" {
-			var p struct {
-				URI string `json:"uri"`
-			}
-			_ = json.Unmarshal(m.Params, &p)
-			if !strings.HasPrefix(strings.ToLower(p.URI), "file:") || !inside {
+			if uri := stringField(m.Params, "uri"); !strings.HasPrefix(strings.ToLower(uri), "file:") || !inside {
 				// An external page or file is not opened for it.
 				b, _ := json.Marshal(message{JSONRPC: "2.0", ID: m.ID, Result: json.RawMessage(`{"success":false}`)})
 				return nil, b

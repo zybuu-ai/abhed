@@ -55,6 +55,12 @@ After that, what passes:
   is. When the server asks for its settings, it is answered with its
   defaults whatever Studio replies.
 
+Everything a server sends is treated as untrusted: it runs on the
+workspace's code. Each message is read by its exact keys, and one with a key
+written twice, or twice but for case, is dropped (from Studio, refused), so
+the filter and the reader cannot see two different messages. Studio's
+messages reach the server in the order Studio sent them.
+
 A start and an end are recorded as `lsp.started` and `lsp.stopped`, the end
 with how many of Studio's messages passed and how many were refused. Single
 requests are not recorded: there are too many. The metrics count them

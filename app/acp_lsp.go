@@ -28,7 +28,7 @@ func init() {
 	liveFeatures = append(liveFeatures, "lsp")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/lsp/start": (*acpConn).lspStart,
-		"_abhed/lsp/send":  (*acpConn).lspSend,
+		"_abhed/lsp/send":  (*acpConn).lspEnqueue,
 		"_abhed/lsp/stop":  (*acpConn).lspStop,
 	})
 }
@@ -79,7 +79,7 @@ type acpLSP struct {
 	filter                *lsprelay.Filter
 
 	mu       sync.Mutex
-	stdin    io.WriteCloser
+	out      chan []byte // the running process's input, written in order by one writer
 	cancel   context.CancelFunc
 	stopped  bool
 	restarts int
@@ -87,8 +87,17 @@ type acpLSP struct {
 	requests int
 	refused  int
 	done     chan struct{} // closed when the server is gone for good
-	writeMu  sync.Mutex
+	// in holds Studio's messages in the order they were read, for one worker.
+	in chan rpcMessage
 }
+
+// Queue bounds: Studio's messages waiting for the filter, and messages
+// waiting for the server to read them; past the second the server is not
+// reading, and is ended.
+const (
+	lspInQueue  = 256
+	lspOutQueue = 1024
+)
 
 func (c *acpConn) lspStart(msg rpcMessage) {
 	var p struct {
@@ -145,12 +154,13 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 	}
 	l := &acpLSP{id: "lsp-" + acpID(), language: p.Language, session: s.id, argv: argv, caps: caps,
 		filter: &lsprelay.Filter{Roots: append([]string{parts.Session.Root}, s.roots()...), Language: p.Language},
-		done:   make(chan struct{})}
+		done:   make(chan struct{}), in: make(chan rpcMessage, lspInQueue)}
 	if c.lsps == nil {
 		c.lsps = map[string]*acpLSP{}
 	}
 	c.lsps[l.id] = l
 	c.lspMu.Unlock()
+	go c.lspWork(l)
 	served, e := c.lspRun(s, l, b, 0)
 	if e != nil {
 		c.lspMu.Lock()
@@ -198,8 +208,10 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the language server could not start: " + err.Error(), IsError: true}, 0)
 		return nil, refusal(errRefused, "the language server could not start: %v", err)
 	}
+	out := make(chan []byte, lspOutQueue)
+	go lspWriter(stdin, out, cancel)
 	l.mu.Lock()
-	l.stdin, l.cancel, l.restarts = stdin, cancel, restart
+	l.out, l.cancel, l.restarts = out, cancel, restart
 	l.mu.Unlock()
 	s.record(agent.EvLSPStarted, agent.LSPStarted{LSPID: l.id, CallID: callID, Language: l.language, Command: command, Tier: lspTier(b), Restart: restart})
 
@@ -379,14 +391,34 @@ func (c *acpConn) lspPump(l *acpLSP, br *bufio.Reader) {
 
 func (l *acpLSP) write(body []byte) error {
 	l.mu.Lock()
-	w := l.stdin
+	out := l.out
 	l.mu.Unlock()
-	if w == nil {
+	if out == nil {
 		return errors.New("the language server is not running")
 	}
-	l.writeMu.Lock()
-	defer l.writeMu.Unlock()
-	return lsprelay.Write(w, body)
+	select {
+	case out <- body:
+		return nil
+	default:
+		// It has stopped reading what it is sent.
+		l.kill()
+		return errors.New("the language server is not reading its input; it was ended")
+	}
+}
+
+// lspWriter writes a process's input in the order it was queued, and closes
+// it at the nil the stop queues; a failed write ends the process.
+func lspWriter(stdin io.WriteCloser, out <-chan []byte, cancel context.CancelFunc) {
+	defer func() { _ = stdin.Close() }()
+	for body := range out {
+		if body == nil {
+			return
+		}
+		if err := lsprelay.Write(stdin, body); err != nil {
+			cancel()
+			return
+		}
+	}
 }
 
 func (l *acpLSP) kill() {
@@ -412,12 +444,45 @@ func (c *acpConn) lspOf(params json.RawMessage) (*acpLSP, *rpcError) {
 	return l, nil
 }
 
-func (c *acpConn) lspSend(msg rpcMessage) {
+// lspEnqueue takes Studio's _abhed/lsp/send as it is read, so a server gets
+// Studio's messages in their order; the server's worker answers it.
+func (c *acpConn) lspEnqueue(msg rpcMessage) {
 	l, e := c.lspOf(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
+	c.inflight.Add(1)
+	select {
+	case l.in <- msg:
+	default:
+		c.inflight.Done()
+		c.reply(msg.ID, nil, refusal(errBusy, "the language server has %d messages waiting; try again", lspInQueue))
+	}
+}
+
+// lspWork passes Studio's queued messages to the server, one at a time.
+func (c *acpConn) lspWork(l *acpLSP) {
+	for {
+		select {
+		case msg := <-l.in:
+			c.lspSend(l, msg)
+			c.inflight.Done()
+		case <-l.done:
+			for {
+				select {
+				case msg := <-l.in:
+					c.reply(msg.ID, nil, refusal(errParams, "no language server %q", l.id))
+					c.inflight.Done()
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *acpConn) lspSend(l *acpLSP, msg rpcMessage) {
 	var p struct {
 		Message json.RawMessage `json:"message"`
 	}
@@ -465,16 +530,12 @@ func (l *acpLSP) stop() {
 	l.mu.Lock()
 	already := l.stopped
 	l.stopped = true
-	w := l.stdin
+	out := l.out
 	l.mu.Unlock()
 	if already {
 		return
 	}
-	_ = l.write([]byte(`{"jsonrpc":"2.0","id":"abhed-shutdown","method":"shutdown"}`))
-	_ = l.write([]byte(`{"jsonrpc":"2.0","method":"exit"}`))
-	if w != nil {
-		_ = w.Close()
-	}
+	// The bound starts first: nothing below may hold the stop past it.
 	go func() {
 		select {
 		case <-l.done:
@@ -482,6 +543,14 @@ func (l *acpLSP) stop() {
 			l.kill()
 		}
 	}()
+	_ = l.write([]byte(`{"jsonrpc":"2.0","id":"abhed-shutdown","method":"shutdown"}`))
+	_ = l.write([]byte(`{"jsonrpc":"2.0","method":"exit"}`))
+	if out != nil {
+		select {
+		case out <- nil: // the writer closes the input after what is queued
+		default:
+		}
+	}
 }
 
 // killLSPs stops a session's language servers, or every one for "", and

@@ -1132,6 +1132,13 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   which Studio opens its documents again. `stop` sends `shutdown` and `exit`
   and ends it after three seconds. `lsp.stopped` records the reason and the
   counts of messages passed and refused; requests are not recorded singly.
+- Messages are read by their exact keys: one with a key twice, or two keys
+  that differ only in case, anywhere in it, is refused from Studio and
+  dropped from the server. Header lines and their number are bounded, and a
+  message is at most 8 MiB.
+- Studio's `send`s reach the server in the order they were read, through one
+  queue per server (at most 256 waiting; past that `-32002`, busy) and one
+  writer; a server that stops reading its input is ended.
 
 ## 8. Health, setup and memory
 

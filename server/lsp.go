@@ -79,6 +79,10 @@ const lspCapabilities = `{"textDocument":{"hover":{"contentFormat":["markdown","
 // lspAllowed returns, rebuilt, the page's message that may reach the server:
 // one of lspMethods, or a null answer to the server's own request.
 func lspAllowed(body []byte, root string) ([]byte, bool) {
+	// Read by exact keys, as the server reads it: a key twice, or but for case, is refused.
+	if lsprelay.UniqueKeys(body) != nil {
+		return nil, false
+	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
 		return nil, false // a batch, or not an object

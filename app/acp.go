@@ -428,6 +428,9 @@ func (c *acpConn) serve(in io.Reader) error {
 			c.answer(msg)
 		case msg.ID == nil:
 			c.notify(msg)
+		case msg.Method == "_abhed/lsp/send":
+			// Queued as read: a language server needs Studio's edits in order.
+			c.lspEnqueue(msg)
 		default:
 			// A prompt runs for as long as the model does; the loop must keep
 			// reading for the cancel and the permission answers meanwhile.
