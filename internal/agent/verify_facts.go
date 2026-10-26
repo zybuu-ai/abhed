@@ -55,8 +55,10 @@ type facts struct {
 	overclaim bool
 	overKind  string
 	compiles  bool
-	// noWarnings: it says a run had no warnings ("no errors or warnings").
+	// noWarnings: it says a run had no warnings ("no warnings", "cleanly").
 	noWarnings bool
+	// buildTarget: a platform or mode it says it builds for ("on Windows").
+	buildTarget string
 	// changeEvent: it says something is now so or new ("now", "gets").
 	changeEvent                  bool
 	oldNamed, inNamed, toolNamed map[string]bool
@@ -106,7 +108,8 @@ var (
 	countRe    = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
 	// What a claim says when it reports success; negRe undoes it.
 	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b|\b(?:compiles|(?:it|code|project|everything|module|package|app|binary|tree|\x60) (?:still |now )?builds)(?:\s*(?:$|[.,;:!)])|\s+(?:now|again|fine|cleanly|successfully|without|with|and|too|on|in|for|against|across|under|as|after|before|from|via|through|within|locally|everywhere|correctly|properly|ok|okay|here|there)\b)`)
-	noWarnClaimRe    = regexp.MustCompile(`\b(?:no|without|zero|0)\b[^.;]{0,40}\bwarnings?\b|\bwarning-free\b`)
+	noWarnClaimRe    = regexp.MustCompile(`\b(?:no|without|zero|0)\s+(?:(?:compiler|build)\s+)?(?:errors?\s+(?:or|and|nor)\s+(?:(?:no|zero|0)\s+)?)?(?:new\s+)?warnings?\b|\bwarning-free\b|\b(?:builds?|compiles?) cleanly\b|\bclean (?:build|compile)\b`)
+	buildTargetRe    = regexp.MustCompile(`\b(?:compiles|builds?|compiled|built)\b[^.;]*?\b(?:on|for|in|under|targeting)\s+(?:the\s+)?(windows|linux|macos|mac|darwin|freebsd|ios|android|wasm|arm64|amd64|aarch64|x86_64|riscv64|s390x|ppc64le|release|ci|production)\b`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
 	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:one\s+)?(?:of\s+)?(?:the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
 	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
@@ -114,11 +117,12 @@ var (
 	// backRefRe is what may follow a pass count and say it was every test:
 	// ", all of them", "- every one", "(each of the 12)"; not "in all",
 	// "after all" or "each in under a second".
-	backRefRe = regexp.MustCompile(`^\s*[,:(-]?\s*(?:all|every|each)(?:\s+(?:one|single one|one of them|of them|of the \d+))?\s*\)?\s*[,]?\s*$`)
-	noFailRe  = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed|issues|problems|regressions|bugs)\b`)
-	testRe    = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
-	buildRe   = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
-	changedRe = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
+	backRefRe  = regexp.MustCompile(`^\s*[,:(-]?\s*(?:all|every|each)(?:\s+(?:one|single one|one of them|of them|of the \d+))?\s*\)?\s*[,]?\s*$`)
+	noFailRe   = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed|issues|problems|regressions|bugs)\b`)
+	testRe     = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
+	lintWordRe = regexp.MustCompile(`\b(?:lint|linter|linting|vet)\b`)
+	buildRe    = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
+	changedRe  = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
 	negationRe = regexp.MustCompile(`\b(not|never|no|none|nobody|no one|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
@@ -406,6 +410,8 @@ func extractFacts(claim string) facts {
 		switch {
 		case testRe.MatchString(plain):
 			f.testish = "test"
+		case lintWordRe.MatchString(plain) && !regexp.MustCompile(`\b(?:build|builds|compiles?)\b`).MatchString(plain):
+			f.testish = "lint"
 		case buildRe.MatchString(plain):
 			f.testish = "build"
 			f.compiles = strings.Contains(plain, "compil")
@@ -431,6 +437,9 @@ func extractFacts(claim string) facts {
 	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
 	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
 	f.noWarnings = noWarnClaimRe.MatchString(strings.ToLower(claim))
+	if m := buildTargetRe.FindStringSubmatch(strings.ToLower(claim)); m != nil {
+		f.buildTarget = m[1]
+	}
 	f.overclaim = overclaims(normText(backtickRe.ReplaceAllString(claim, " ")))
 	switch ol := normText(backtickRe.ReplaceAllString(claim, " ")); {
 	case !f.overclaim:
@@ -482,7 +491,7 @@ func overclaims(low string) bool {
 var (
 	overNegRe = regexp.MustCompile(`\b(not|never|hardly)\b|n't\b`)
 	// overclaimRe says the work has nothing wrong left in it.
-	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix) is clean|(?:could|did|do)(?:n't|n’t|n t| not) (?:find|see|spot|notice) any (?:other |more |further |remaining )?(?:issues|problems|bugs|errors)|everything (?:else )?(?:works|is working|looks great|checks out)|looks? great|(?:the )?(?:lint|linter|vet) is (?:clean|happy)|no (?:lint )?errors)\b`)
+	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix|build) is clean|(?:could|did|do)(?:n't|n’t|n t| not) (?:find|see|spot|notice) any (?:other |more |further |remaining )?(?:issues|problems|bugs|errors)|everything (?:else )?(?:works|is working|looks great|checks out)|looks? great|(?:the )?(?:lint|linter|vet) is (?:clean|happy)|no (?:lint )?errors)\b`)
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.

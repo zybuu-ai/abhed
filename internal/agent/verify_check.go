@@ -786,8 +786,14 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				fd = t
 			}
 		}
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.testish == "lint" && o != nil && lintProblemsRe.MatchString(strings.ToLower(o.content)) {
+			fd = finding{out: missing, why: "the lint run reports problems"}
+		}
 		if o := ix.bySeq[fd.seq]; fd.out == matched && f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
 			fd = finding{out: missing, why: "the run reports warnings"}
+		}
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command)) {
+			fd = finding{out: missing, why: "the run does not build for " + f.buildTarget}
 		}
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
@@ -822,6 +828,10 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				}
 				if o := ix.bySeq[got.seq]; f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
 					fd = finding{out: missing, why: "the run reports warnings"}
+					continue
+				}
+				if o := ix.bySeq[got.seq]; f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command)) {
+					fd = finding{out: missing, why: "the run does not build for " + f.buildTarget}
 					continue
 				}
 				fd = got
@@ -1466,6 +1476,23 @@ func firstLine(s string) string {
 
 var compilingTestRe = regexp.MustCompile(`\b(?:go|cargo)\s+(?:test|nextest)\b|\b(?:mvnw?|gradlew?)\b[^|;&]*\btest\b|\bdotnet\s+test\b`)
 
-var runWarnRe = regexp.MustCompile(`(?im)^\s*warning\b|\b[1-9]\d* warnings?\b`)
+var runWarnRe = regexp.MustCompile(`(?im)^\s*(?:\[warn(?:ing)?\]|warning\b)|:\s*warning\b|\b[1-9]\d* warnings?\b`)
+
+// targetShown: a claim of building for a platform, architecture or mode is
+// shown only by a run whose command names it ("in CI" never is).
+func targetShown(target, command string) bool {
+	alias := map[string][]string{"mac": {"darwin", "macos"}, "macos": {"darwin", "macos"}, "darwin": {"darwin"}, "x86_64": {"amd64", "x86_64"}, "amd64": {"amd64", "x86_64"}, "aarch64": {"arm64", "aarch64"}, "arm64": {"arm64", "aarch64"}, "release": {"release"}, "ci": nil, "production": {"prod"}}
+	words, ok := alias[target]
+	if !ok {
+		words = []string{target}
+	}
+	low := strings.ToLower(command)
+	for _, w := range words {
+		if strings.Contains(low, w) {
+			return true
+		}
+	}
+	return false
+}
 
 var lintProblemsRe = regexp.MustCompile(`\b[1-9]\d* (?:problems?|warnings?|issues?|errors?)\b`)

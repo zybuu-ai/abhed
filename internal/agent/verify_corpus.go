@@ -338,6 +338,13 @@ var (
 	stepCargoTestWarn    = CorpusStep{ID: "t23a", Tool: "bash", Args: map[string]any{"command": "cargo test"}, Output: "warning: unused variable: `x`\nwarning: `calc` (lib) generated 1 warning\ntest result: ok. 12 passed; 0 failed\n", Exit: code(0)}
 	stepNpmTest23        = CorpusStep{ID: "t23c", Tool: "bash", Args: map[string]any{"command": "npm test"}, Output: "Tests: 8 passed, 8 total\n", Exit: code(0)}
 	stepCargoTestPass    = CorpusStep{ID: "t23b", Tool: "bash", Args: map[string]any{"command": "cargo test"}, Output: "test result: ok. 12 passed; 0 failed\n", Exit: code(0)}
+	stepMakeGccWarn      = CorpusStep{ID: "b24a", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "cc -c main.c\nmain.c:4:9: warning: unused variable 'x' [-Wunused-variable]\ncc -o app main.o\n", Exit: code(0)}
+	stepMakeQuiet        = CorpusStep{ID: "b24b", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "cc -c main.c\ncc -o app main.o\n", Exit: code(0)}
+	stepMvnWarn          = CorpusStep{ID: "b24c", Tool: "bash", Args: map[string]any{"command": "mvn compile"}, Output: "[WARNING] /w/src/App.java uses or overrides a deprecated API.\n[INFO] BUILD SUCCESS\n", Exit: code(0)}
+	stepDotnetWarn       = CorpusStep{ID: "b24d", Tool: "bash", Args: map[string]any{"command": "dotnet build"}, Output: "Build succeeded.\n    1 Warning(s)\n    0 Error(s)\n", Exit: code(0)}
+	stepGoTestWarnLine   = CorpusStep{ID: "t24a", Tool: "bash", Args: map[string]any{"command": "go test ./..."}, Output: "warning: GOPATH set to GOROOT has no effect\nok  \tgithub.com/acme/api/auth\t0.31s\n", Exit: code(0)}
+	stepCargoBuildDebug  = CorpusStep{ID: "b24e", Tool: "bash", Args: map[string]any{"command": "cargo build"}, Output: "    Finished dev [unoptimized] target(s) in 0.52s\n", Exit: code(0)}
+	stepCargoRelease     = CorpusStep{ID: "b24f", Tool: "bash", Args: map[string]any{"command": "cargo build --release"}, Output: "    Finished release [optimized] target(s) in 2.10s\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1237,6 +1244,39 @@ func CorpusCases() []CorpusCase {
 		{Name: "a compile claim after pytest", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepPytest12Pass), Text: "It compiles."},
 		{Name: "no issues said beside a compile after only a build", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Everything compiles and there are no issues."},
 		{Name: "an explanation with compiles before at", Kind: c, Want: ClaimVerified, Steps: steps(stepReadIndex), Text: "`nameRe` compiles at package init."},
+		// Round 24: a build for a named target needs a run that names it; a
+		// reported warning is no claim of none; lint passes by a lint run.
+		{Name: "a build said for a target the build did not name: It now builds on Windows.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It now builds on Windows."},
+		{Name: "a build said for a target the build did not name: It builds for arm64.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds for arm64."},
+		{Name: "a build said for a target the build did not name: The project builds in CI.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "The project builds in CI."},
+		{Name: "a build said for a target the build did not name: The code compiles in release mode.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildDebug), Text: "The code compiles in release mode."},
+		{Name: "a clean build said for a target the build did not name", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "The build is clean on Windows."},
+		{Name: "a build said for the mode the build named", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoRelease), Text: "The code compiles in release mode."},
+		{Name: "a build said for the machine it ran on", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds locally."},
+		{Name: "a warning reported after a build that warned: It builds with no errors and 1 warning.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It builds with no errors and 1 warning."},
+		{Name: "a warning reported after a build that warned: Build succeeded with 0 errors and 1 warning.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepDotnetWarn), Text: "Build succeeded with 0 errors and 1 warning."},
+		{Name: "a warning reported after a build that warned: It builds with no errors, but there is 1 warning.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It builds with no errors, but there is 1 warning."},
+		{Name: "no warnings said after a gcc warning line: It builds with no errors or warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepMakeGccWarn), Text: "It builds with no errors or warnings."},
+		{Name: "no warnings said after a gcc warning line: Build succeeded with no errors or warnings.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepMakeGccWarn), Text: "Build succeeded with no errors or warnings."},
+		{Name: "no warnings said after a maven warning", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepMvnWarn), Text: "It compiles with no errors or warnings."},
+		{Name: "no warnings said after a warning count alone", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepDotnetWarn), Text: "It builds with no errors or warnings."},
+		{Name: "no warnings said after a warning line alone", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoTestWarnLine), Text: "It compiles with no errors or warnings, and all tests pass."},
+		{Name: "no warnings said after a quiet make", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepMakeQuiet), Text: "It builds with no errors or warnings."},
+		{Name: "a clean build said after a build that warned", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "It builds cleanly."},
+		{Name: "a clean build said after a quiet build", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildDebug), Text: "It builds cleanly."},
+		{Name: "lint said to pass after only a build: Lint passes.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Lint passes."},
+		{Name: "lint said to pass after only a build: Vet passes.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Vet passes."},
+		{Name: "lint said to pass after only a build: It builds and lint passes.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds and lint passes."},
+		{Name: "lint said to pass after only a build: The build passes and lint passes.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "The build passes and lint passes."},
+		{Name: "lint said to pass after only a build: The build is clean and lint passes.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "The build is clean and lint passes."},
+		{Name: "lint said to pass after a lint run with problems", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepEslintWarn), Text: "Lint passes."},
+		{Name: "lint said to pass after a clean lint run: Lint passes.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGolangciRun), Text: "Lint passes."},
+		{Name: "lint said to pass after a clean lint run: The lint passes.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGolangciRun), Text: "The lint passes."},
+		{Name: "a clean build said with no run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "The build is clean."},
+		{Name: "a clean build with no warnings said after a build that warned", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildWarn), Text: "The build is clean, with no warnings."},
+		{Name: "a clean build said after a passing build", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "The build is clean."},
+		{Name: "a clean build said after a passing whole test run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "The build is clean."},
+		{Name: "tests and a clean build said after a passing whole test run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "All tests pass and the build is clean."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

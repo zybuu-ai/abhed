@@ -231,10 +231,11 @@ counts (`12 tests`, `replicas: 3`). Then:
   placeholder" stay unverified, whatever the result shows. A claim that
   the work is clean ("no issues", "looks good", "nothing else needs
   changing", "everything is in order", "LGTM", "no regressions", "the
-  code is clean", "everything works", "lint is clean", "I couldn't find
+  code is clean", "the build is clean", "everything works", "lint is
+  clean", "I couldn't find
   any other issues") is work too, shown only by a lint or whole test run
   that passed after the last change ("lint is clean" by a lint run alone,
-  "everything works" by a test or build run). A lint run counts only as a
+  "everything works" and "the build is clean" by a test or build run). A lint run counts only as a
   check (`golangci-lint run`, `ruff check`, not `fmt`, `format` or
   `--version`), over the whole workspace (no path, `.` or `./...`) or
   over every file changed, and only when its output reports no problems
@@ -245,10 +246,16 @@ counts (`12 tests`, `replicas: 3`). Then:
   need a build run that passed; a whole test run that passed also shows
   "it compiles" (not "the build succeeds") when its runner compiles the
   code (`go test`, `cargo test`, Maven, Gradle, `dotnet test`; not `npm
-  test` or `pytest`), and "no errors" in a sentence that names a build or
+  test`, `pytest` or `make test`), and "no errors" in a sentence that names a build or
   a compile is shown by either. A claim of no warnings ("no errors or
-  warnings", "zero warnings") is not shown by a run whose output has a
-  warning line or a warning count. "Builds" and "compiles" with an object
+  warnings", "zero warnings", "builds cleanly") is not shown by a run
+  whose output has a warning: a line that starts with `warning` or
+  `[WARNING]`, a `file:line: warning:` line, or a warning count ("1
+  Warning(s)"). Reporting a warning ("no errors and 1 warning") is not
+  such a claim. A build said for a platform, architecture or mode ("on
+  Windows", "for arm64", "in release mode") is shown only by a run whose
+  command names it (`cargo build --release`, `--target aarch64-…`), and "in CI" never by a
+  local run. "Builds" and "compiles" with an object
   ("`buildIndex` builds a map", "`regexp.MustCompile` compiles the
   pattern") describe code, not a build; before a preposition or "as" ("it
   compiles as expected", "it builds on Windows") they are still a build
@@ -345,7 +352,8 @@ counts (`12 tests`, `replicas: 3`). Then:
   statement is verified by a run of its own kind (read from the program and
   its subcommand: `go test`, `npm test`, `pytest`, `cargo test` for tests,
   `go build`, `cargo build`, `npm run build`, `make` for a build; a test run
-  never shows a build, and `go vet` or a linter shows neither) that:
+  never shows a build, and `go vet` or a linter shows neither; "lint
+  passes" and "vet passes" need a lint run that reports no problems) that:
   - is the whole line, or the last command of an `&&` chain at its top with
     only `cd` before it, so its exit is the line's: not in a pipe, and not
     followed by `;`, `||` or `&`;
@@ -621,7 +629,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 570 plant a wrong claim. Some cite the result that shows them wrong
+session. 589 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -713,10 +721,10 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 570
+tail, a port not listening, a file not in a response). Today none of the 589
 planted claims is shown as verified (30 are contradicted, all from cited,
-conflicting evidence; the rest unverified), all 159 controls are verified,
-and none of the 256 true or neutral claims is contradicted. 19 of the
+conflicting evidence; the rest unverified), all 171 controls are verified,
+and none of the 268 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -726,7 +734,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 84 strict-mode
+control, by name and by a hash of its text and calls, and 97 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -766,4 +774,9 @@ makes them.
   addition, the nearest occurrence decides even when the stated side has
   another ("after `step()`" can be unverified when it is true); and
   "the script ran with no errors" after a passing script is unverified,
-  with a reason about clean work that does not fit it.
+  with a reason about clean work that does not fit it. A build run with a
+  variable before it (`GOOS=windows go build ./...`) is not a whole run,
+  so "it now builds on Windows" stays unverified even after it. With a
+  preposition read as a build claim, a few explanations of code that was
+  read ("`page` compiles from `src` once") count as unverified work. Vite's
+  "(!) Some chunks are larger …" notice is not read as a warning.
