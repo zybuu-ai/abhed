@@ -138,7 +138,9 @@ All notable changes to Abhed are recorded here. The format follows
   supervisor as your bash call and recorded, Studio's own launch or attach
   is refused, and the adapter's requests to run something in Studio's
   terminal are answered with an error. Delve's socket is carried by a bridge
-  mode of the bundled Linux build of Abhed (or `relay_binary`). Each session is recorded as `debug.launched` and
+  mode of the bundled Linux build of Abhed (or `relay_binary`). A session
+  ends when the adapter answers Studio's disconnect, or reports the program
+  ended after a terminate, as well as on stop. Each session is recorded as `debug.launched` and
   `debug.stopped`. Node is not supported yet
   ([Debugging](docs/guide/31-debugging.md)).
 - Debuggers with their language: Delve 1.27.2 with Go (1.25 or later) and

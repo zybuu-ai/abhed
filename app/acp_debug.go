@@ -40,6 +40,9 @@ const maxDebugs = 4
 // debugLife bounds one debug session.
 const debugLife = 8 * time.Hour
 
+// debugEndGrace is how long an adapter has to exit once its session is over.
+var debugEndGrace = 3 * time.Second
+
 // debugCommand starts the adapter command in the session's sandbox; tests
 // replace it with an adapter of their own.
 var debugCommand = func(b tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
@@ -236,6 +239,18 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		func(state, message string) {
 			c.notification("_abhed/debug/status", map[string]any{"debugId": d.id, "state": state, "message": redacted(message)})
 		})
+	// Over by the protocol: the adapter's input closes, as debugpy's needs to
+	// exit, and it is ended if it has not gone within the grace.
+	d.relay.OnEnd(func() {
+		_ = stdin.Close()
+		go func() {
+			select {
+			case <-d.done:
+			case <-time.After(debugEndGrace):
+				d.cancel()
+			}
+		}()
+	})
 	c.debugMu.Lock()
 	if c.debugs == nil {
 		c.debugs = map[string]*acpDebug{}

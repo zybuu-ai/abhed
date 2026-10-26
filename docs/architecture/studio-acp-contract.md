@@ -1087,6 +1087,12 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   `problem.kind: "adapter-missing"` and its steps. `stop` sends `disconnect`
   (`terminateDebuggee`) and ends the adapter after three seconds; closing the
   session or the connection stops its debug sessions.
+- The session also ends by the protocol: once the adapter answers a
+  `disconnect` Studio sent, or reports `terminated` or `exited` after Studio's
+  `terminate`, the engine closes the adapter's input (debugpy's adapter waits
+  for that), ends it if it has not gone within three seconds, sends
+  `status: ended` and records `debug.stopped` with `reason: "ended"`. Output
+  events pass as the adapter sends them; nothing is merged or held back.
 - At most four per connection; each ends after eight hours.
 
 ## 8. Health, setup and memory

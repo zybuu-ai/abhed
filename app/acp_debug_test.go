@@ -52,7 +52,10 @@ func TestDebugFakeAdapter(t *testing.T) {
 			send(map[string]any{"type": "event", "event": "output", "body": map[string]any{"output": fmt.Sprintf("runInTerminal answered success=%v", m["success"])}})
 		case m["type"] == "request" && cmd == "disconnect":
 			send(map[string]any{"type": "response", "request_seq": m["seq"], "command": cmd, "success": true})
-			os.Exit(0)
+			// As debugpy's adapter does: it goes when its input closes, not before.
+			if os.Getenv("ABHED_FAKE_DAP_WAIT") == "" {
+				os.Exit(0)
+			}
 		case m["type"] == "request":
 			send(map[string]any{"type": "response", "request_seq": m["seq"], "command": cmd, "success": true})
 		}
@@ -61,7 +64,7 @@ func TestDebugFakeAdapter(t *testing.T) {
 
 // fakeDebugger runs the fake adapter for every debug session, on a tier that
 // can host one, and notes the command lines it was asked to run.
-func fakeDebugger(t *testing.T, missing int) *[]string {
+func fakeDebugger(t *testing.T, missing int, env ...string) *[]string {
 	t.Helper()
 	var asked []string
 	oldCmd, oldTier := debugCommand, debugTier
@@ -72,7 +75,7 @@ func fakeDebugger(t *testing.T, missing int) *[]string {
 			return exec.CommandContext(ctx, "/bin/sh", "-c", fmt.Sprintf("echo 'abhed-debug: missing' >&2; exit %d", missing)) // #nosec G204 -- a test's own script
 		}
 		c := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestDebugFakeAdapter$") // #nosec G204 -- the test binary
-		c.Env = append(os.Environ(), "ABHED_FAKE_DAP=1")
+		c.Env = append(append(os.Environ(), "ABHED_FAKE_DAP=1"), env...)
 		c.Dir = cwd
 		return c
 	}
@@ -204,4 +207,36 @@ func TestDebugTierProblem(t *testing.T) {
 			t.Errorf("%q: problem %v", tier, debugTierProblem(tier))
 		}
 	}
+}
+
+// An adapter that waits for its input to close after answering disconnect,
+// as debugpy's does, ends with the session: the engine closes its input, and
+// the session is ended and recorded without a stop.
+func TestStudioDebugEndsOnDisconnect(t *testing.T) {
+	fakeDebugger(t, 0, "ABHED_FAKE_DAP_WAIT=1")
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("app.py", "print('hi')\n")
+	var res struct {
+		DebugID string `json:"debugId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"}, &res)
+	send := func(m string) {
+		r.cl.ok("_abhed/debug/send", map[string]any{"debugId": res.DebugID, "message": json.RawMessage(m)}, nil)
+	}
+	send(`{"seq":1,"type":"request","command":"initialize","arguments":{"adapterID":"python"}}`)
+	r.cl.waitFor(from, "launched", func(m rpcMessage) bool {
+		return m.Method == "_abhed/debug/status" && strings.Contains(string(m.Params), `"launched"`)
+	})
+	send(`{"seq":2,"type":"request","command":"disconnect","arguments":{"terminateDebuggee":true}}`)
+	r.cl.waitFor(from, "ended", func(m rpcMessage) bool {
+		return m.Method == "_abhed/debug/status" && strings.Contains(string(m.Params), `"ended"`)
+	})
+	stopped, _ := r.recorded(id, agent.EvDebugStopped)
+	if len(stopped) != 1 || stopped[0]["reason"] != "ended" || stopped[0]["exit_code"] != float64(0) {
+		t.Fatalf("debug.stopped %v", stopped)
+	}
+	// The session is gone: nothing more is taken for it.
+	r.cl.refused(errParams, "_abhed/debug/send", map[string]any{"debugId": res.DebugID, "message": json.RawMessage(`{"seq":3,"type":"request","command":"threads"}`)})
 }
