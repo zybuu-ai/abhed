@@ -448,10 +448,15 @@ func (c *acpConn) releaseDebug() {
 // permission request Studio shows like any other, and reports whether they
 // allowed it. Only a person's click on Allow allows it.
 func (c *acpConn) debugAsk(s *acpSession, callID, display string) agent.ManualAsk {
+	return c.manualAsk(s, callID, "debug", display)
+}
+
+// manualAsk puts a supervisor ask about a person's debug or language-server start to them.
+func (c *acpConn) manualAsk(s *acpSession, callID, kind, display string) agent.ManualAsk {
 	return func(ctx context.Context, d policy.Result) (bool, error) {
 		once, reject := "once:"+callID, "reject:"+callID
-		meta := map[string]any{"tool": "bash", "step": d.Step, "reason": redacted(d.Reason), "debug": true}
-		title := ui.VisibleLine("debug: " + display)
+		meta := map[string]any{"tool": "bash", "step": d.Step, "reason": redacted(d.Reason), kind: true}
+		title := ui.VisibleLine(kind + ": " + display)
 		if ui.HasHidden(display) || anyHidden(d.Reason) {
 			title += " (contains hidden or control characters)"
 		}

@@ -182,7 +182,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	callID := "u" + acpID()
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " + lsprelay.Env})
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
-	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args)
+	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args, c.manualAsk(s, callID, "lsp", command))
 	if err != nil {
 		cancel()
 		return nil, refusal(errRecord, "the language server could not be recorded, so it was not started: %v", err)
