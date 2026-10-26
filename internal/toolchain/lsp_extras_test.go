@@ -288,27 +288,68 @@ func TestToolInstallsTheLanguageServer(t *testing.T) {
 	}
 }
 
-// A Rust release that ships its own rust-analyzer is used as it is, and
-// nothing more is downloaded.
+// A Rust release that ships its own rust-analyzer is used as it is,
+// belonging to that Rust: nothing more is downloaded or placed, and it goes
+// when that Rust is removed.
 func TestRustShipsItsOwnAnalyzer(t *testing.T) {
 	c := testCache(t)
+	var events []agent.ToolchainAction
 	s := &Session{Cache: c, Source: &Source{Endpoints: Endpoints{RustAnalyzerDownload: "https://unreachable.invalid/"}}, Workspace: t.TempDir(),
-		Platform: func() Platform { return linuxAMD64 }}
-	rust := installedMarker(t, c, linuxAMD64, "rust", "1.99.1")
+		Platform: func() Platform { return linuxAMD64 }, Record: func(a agent.ToolchainAction) { events = append(events, a) }}
+	rust := installedMarker(t, c, linuxAMD64, "rust", "1.80.1")
 	if err := os.WriteFile(filepath.Join(rust.Dir, "bin", "rust-analyzer"), []byte("ELF"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	e, _ := LSPFor("rust")
 	ep, err := s.PlanExtra(context.Background(), e, Plan{Installed: &rust})
-	if err != nil || !strings.Contains(ep.Note, "nothing more is downloaded") || ep.Digest != rust.Digest {
+	if err != nil || ep.Installed == nil || ep.Installed.Dir != rust.Dir || ep.Digest != rust.Digest || !strings.Contains(ep.Note, "nothing more is downloaded") {
 		t.Fatalf("%+v %v", ep, err)
 	}
 	x, err := s.InstallExtra(context.Background(), ep, rust, agent.ByUser, "cli", "cli", nil)
-	if err != nil {
+	if err != nil || x.Dir != rust.Dir || x.Version != "rust-1.80.1" {
+		t.Fatalf("%+v %v", x, err)
+	}
+	if len(events) != 1 || !events[0].Cached || events[0].Version != "rust-1.80.1" {
+		t.Fatalf("events %+v", events)
+	}
+	if _, err := os.Stat(c.ExtraDir(linuxAMD64, e.Name, e.Version)); err == nil {
+		t.Fatal("a folder was placed for Rust's own rust-analyzer")
+	}
+	if !c.ExtraAvailable(linuxAMD64, e, s.Active(s.Workspace)) {
+		t.Fatal("Rust's own rust-analyzer is not counted as there")
+	}
+	if err := os.Chmod(rust.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	w, _ := os.ReadFile(filepath.Join(x.Dir, "bin", "rust-analyzer"))
-	if !strings.Contains(string(w), filepath.Join(rust.Dir, "bin", "rust-analyzer")) {
-		t.Fatalf("command %s", w)
+	if err := c.Remove(linuxAMD64, "rust", "1.80.1"); err != nil {
+		t.Fatal(err)
+	}
+	if c.ExtraAvailable(linuxAMD64, e, s.Active(s.Workspace)) {
+		t.Fatal("rust-analyzer outlived the Rust it came with")
+	}
+}
+
+// For a Rust not yet installed, the offer names its own release as the
+// source, and nothing else is fetched in its place should it lack one.
+func TestRustAnalyzerOfferedFromTheRustToCome(t *testing.T) {
+	c := testCache(t)
+	s := &Session{Cache: c, Source: &Source{Endpoints: Endpoints{RustAnalyzerDownload: "https://unreachable.invalid/"}}, Workspace: t.TempDir(),
+		Platform: func() Platform { return linuxAMD64 }}
+	e, _ := LSPFor("rust")
+	plan := Plan{Spec: Spec{Lang: "rust"}, Artifact: Artifact{Version: "1.99.1", URL: "https://static.rust-lang.org/dist/rust-1.99.1.tar.gz", Digest: "sha256:ab"}}
+	ep, err := s.PlanExtra(context.Background(), e, plan)
+	if err != nil || !ep.FromLanguage || ep.URL != plan.Artifact.URL || ep.Digest != "sha256:ab" || strings.Contains(ep.Source, "GitHub") {
+		t.Fatalf("%+v %v", ep, err)
+	}
+	with := installedMarker(t, c, linuxAMD64, "rust", "1.99.1")
+	if err := os.WriteFile(filepath.Join(with.Dir, "bin", "rust-analyzer"), []byte("ELF"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if x, err := s.InstallExtra(context.Background(), ep, with, agent.ByUser, "cli", "cli", nil); err != nil || x.Dir != with.Dir {
+		t.Fatalf("%+v %v", x, err)
+	}
+	without := installedMarker(t, c, linuxAMD64, "rust", "1.98.0")
+	if _, err := s.InstallExtra(context.Background(), ep, without, agent.ByUser, "cli", "cli", nil); err == nil || !strings.Contains(err.Error(), "carries no rust-analyzer") {
+		t.Fatalf("a Rust without its own: %v", err)
 	}
 }

@@ -58,6 +58,10 @@ type toolchainAgreed struct {
 	DebuggerDigest  string `json:"debugger_digest"`
 	LSPVersion      string `json:"lsp_version"`
 	LSPDigest       string `json:"lsp_digest"`
+	// NeedsVersion and NeedsDigest are the language the server runs on, as
+	// the modal showed it (Node.js for basedpyright), when it comes first.
+	NeedsVersion string `json:"needs_version"`
+	NeedsDigest  string `json:"needs_digest"`
 	// Registries are the registry hosts the modal showed; only an install
 	// that lists them, as status offers them, opens them.
 	Registries []string `json:"registries"`
@@ -130,6 +134,29 @@ func extraOffer(ep toolchain.ExtraPlan) *debuggerOffer {
 			Source: ep.Needs.Artifact.Source, URL: ep.Needs.Artifact.URL, Digest: ep.Needs.Artifact.Digest, Size: ep.Needs.Artifact.Size}
 	}
 	return o
+}
+
+// changedFrom reports whether what an install would do now differs from
+// what the person agreed to: the language, each extra, a language an extra
+// runs on that comes first, and the registries it opens.
+func (a *toolchainAgreed) changedFrom(plan toolchain.Plan, ep, lp *toolchain.ExtraPlan, hosts []string) bool {
+	digest := plan.Artifact.Digest
+	if plan.Installed != nil {
+		digest = plan.Installed.Digest
+	}
+	changed := a.Version != plan.Version() || a.Digest != "" && a.Digest != digest
+	if ep != nil {
+		changed = changed || a.DebuggerVersion != ep.Extra.Version || a.DebuggerDigest != "" && a.DebuggerDigest != ep.Digest
+	}
+	if lp != nil {
+		changed = changed || a.LSPVersion != lp.Extra.Version || a.LSPDigest != "" && a.LSPDigest != lp.Digest
+		if n := lp.Needs; n != nil {
+			changed = changed || a.NeedsVersion != n.Version() || a.NeedsDigest != "" && a.NeedsDigest != n.Artifact.Digest
+		} else {
+			changed = changed || a.NeedsVersion != ""
+		}
+	}
+	return changed || !sameHosts(hosts, a.Registries)
 }
 
 // sameHosts reports whether two host lists name the same hosts.
@@ -260,7 +287,8 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 		return
 	}
 	out := map[string]any{"language": spec.Lang, "available": false, "can_act": !tc.Off && inAgentCommand() == ""}
-	for _, in := range tc.Active(tc.Workspace) {
+	active := tc.Active(tc.Workspace)
+	for _, in := range active {
 		if in.Lang == spec.Lang {
 			out["available"], out["version"] = true, in.Version
 		}
@@ -270,7 +298,7 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 		out["debugger"] = map[string]any{"name": e.Name, "version": e.Version, "available": has && out["available"] == true}
 	}
 	if e, ok := toolchain.LSPFor(spec.Lang); ok {
-		_, has := tc.Cache.LookupExtra(tc.Platform(), e)
+		has := tc.Cache.ExtraAvailable(tc.Platform(), e, active)
 		out["lsp"] = map[string]any{"name": e.Name, "version": e.Version, "available": has && out["available"] == true}
 	}
 	switch {
@@ -389,20 +417,8 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		lp = &d
 	}
 	if a := p.Agreed; a != nil {
-		digest := plan.Artifact.Digest
-		if plan.Installed != nil {
-			digest = plan.Installed.Digest
-		}
-		changed := a.Version != plan.Version() || a.Digest != "" && a.Digest != digest
-		if ep != nil {
-			changed = changed || a.DebuggerVersion != ep.Extra.Version || a.DebuggerDigest != "" && a.DebuggerDigest != ep.Digest
-		}
-		if lp != nil {
-			changed = changed || a.LSPVersion != lp.Extra.Version || a.LSPDigest != "" && a.LSPDigest != lp.Digest
-		}
-		if hosts, _ := registriesOffer(tc, plan.Spec.Lang); !sameHosts(hosts, a.Registries) {
-			changed = true
-		}
+		hosts, _ := registriesOffer(tc, plan.Spec.Lang)
+		changed := a.changedFrom(plan, ep, lp, hosts)
 		if changed {
 			c.reply(msg.ID, nil, toolchainError(errRefused, "changed",
 				"what would be installed has changed since it was offered, so nothing was installed; ask for the offer again"))

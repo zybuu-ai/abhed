@@ -139,6 +139,9 @@ type ExtraPlan struct {
 	// Needs is another language it runs on, Node.js for basedpyright, when
 	// that is not installed; it is installed first.
 	Needs *Plan `json:"needs,omitempty"`
+	// FromLanguage is set when it comes in the language's own release, as
+	// rust-analyzer does in Rust's, to be installed with it.
+	FromLanguage bool `json:"from_language,omitempty"`
 	// Note says how it is made, for a person.
 	Note string `json:"note,omitempty"`
 }
@@ -216,10 +219,19 @@ func (s *Session) PlanExtra(ctx context.Context, e Extra, lang Plan) (ExtraPlan,
 			ep.Note = strings.TrimPrefix(ep.Note+"; with typescript "+tsVersion+", also pinned", "; ")
 		}
 	case "rust-analyzer":
-		// A Rust release ships its own rust-analyzer, matched to it.
+		// A Rust release carries its own rust-analyzer, matched to it: that
+		// one is used, belonging to that Rust, and nothing more is fetched.
 		if in := lang.Installed; in != nil && shipsRustAnalyzer(in.Dir) {
-			ep.Source = "Rust " + in.Version + "'s own rust-analyzer component, checked with its release"
-			ep.URL, ep.Digest, ep.Note = in.URL, in.Digest, "Rust "+in.Version+" ships it, so nothing more is downloaded"
+			x := providedRustAnalyzer(e, *in)
+			ep.Installed, ep.Source, ep.URL, ep.Digest = &x, x.Source, x.URL, x.Digest
+			ep.Note = "Rust " + in.Version + " ships it, so nothing more is downloaded"
+			break
+		}
+		if lang.Installed == nil && lang.Spec.Lang == "rust" {
+			ep.FromLanguage = true
+			ep.Source = "Rust " + lang.Version() + "'s own rust-analyzer component, in its release"
+			ep.URL, ep.Digest = lang.Artifact.URL, lang.Artifact.Digest
+			ep.Note = "Rust " + lang.Version() + "'s release carries it, so nothing more is downloaded"
 			break
 		}
 		a, err := s.Source.raArtifact(p)
@@ -227,7 +239,7 @@ func (s *Session) PlanExtra(ctx context.Context, e Extra, lang Plan) (ExtraPlan,
 			return ExtraPlan{}, err
 		}
 		ep.Source, ep.URL, ep.Digest, ep.Size = a.Source, a.URL, a.Digest, a.Size
-		ep.Note = "the pinned release, unless the Rust build ships its own"
+		ep.Note = "the pinned release, as this Rust build ships none"
 	case "debugpy":
 		if compareVersions(lang.Version(), debugpyMinPython) < 0 {
 			return ExtraPlan{}, fmt.Errorf("debugpy %s needs Python %s or later", debugpyVersion, debugpyMinPython)
@@ -279,6 +291,7 @@ func (s *Session) InstallExtra(ctx context.Context, ep ExtraPlan, lang Installed
 	}
 	if ep.Installed != nil {
 		ev.Cached, ev.Digest, ev.Bytes, ev.BuiltWith = true, ep.Installed.Digest, ep.Installed.Bytes, ep.Installed.BuiltWith
+		ev.Version, ev.Source, ev.URL = ep.Installed.Version, ep.Installed.Source, ep.Installed.URL
 		record(agent.ToolchainOK, nil)
 		return *ep.Installed, nil
 	}
@@ -307,9 +320,13 @@ func (s *Session) InstallExtra(ctx context.Context, ep ExtraPlan, lang Installed
 			x, err = s.Cache.installNPM(ctx, s.Source, ep.Extra, p, progress)
 		}
 	case "rust-analyzer":
-		if shipsRustAnalyzer(lang.Dir) {
-			x, err = s.Cache.linkRustAnalyzer(ep.Extra, lang, p)
-		} else {
+		switch {
+		case ep.FromLanguage && shipsRustAnalyzer(lang.Dir):
+			x = providedRustAnalyzer(ep.Extra, lang)
+		case ep.FromLanguage:
+			// What was agreed was Rust's own; nothing else is fetched in its place.
+			err = fmt.Errorf("the release of Rust %s carries no rust-analyzer, so none was installed; ask for it again to be offered the pinned release", lang.Version)
+		default:
 			x, err = s.Cache.installRustAnalyzer(ctx, s.Source, ep.Extra, p, progress)
 		}
 	case "debugpy":
