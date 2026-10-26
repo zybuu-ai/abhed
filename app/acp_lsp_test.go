@@ -729,3 +729,99 @@ func TestStudioRustAnalyzerStopDuringTheQuestion(t *testing.T) {
 		}
 	}
 }
+
+// stopRig gives the helpers for a stop that comes as the server's process
+// is being started: a wrapped lspCommand that stops the session's
+// rust-analyzer on its call-th use, a wait for Studio's ended, and the
+// count of servers listed.
+func stopRig() (func(r *studioRig, id string, call int), func(r *studioRig, from int), func(r *studioRig) int) {
+	stopWhenStarting := func(r *studioRig, id string, call int) {
+		inner := lspCommand
+		n := 0
+		lspCommand = func(b tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
+			n++
+			if n == call {
+				r.cl.conn.lspWorkspaceConfig(id)
+			}
+			return inner(b, ctx, cwd, command)
+		}
+	}
+	ended := func(r *studioRig, from int) {
+		r.cl.waitFor(from, "ended as workspace-config-changed", func(m rpcMessage) bool {
+			return m.Method == "_abhed/lsp/status" && strings.Contains(string(m.Params), `"ended"`) && strings.Contains(string(m.Params), "workspace-config-changed")
+		})
+	}
+	listed := func(r *studioRig) int {
+		r.cl.conn.lspMu.Lock()
+		defer r.cl.conn.lspMu.Unlock()
+		return len(r.cl.conn.lsps)
+	}
+	return stopWhenStarting, ended, listed
+}
+
+// A stop that comes as the process is being started, after the check made
+// before it, is caught where the process is set up: it is ended at once and
+// never initialized, recorded once with the stop's reason, and Studio is
+// told it ended. The same holds for a restart a stop overtakes.
+func TestStudioRustAnalyzerStopCaughtUnderTheLock(t *testing.T) {
+	stopWhenStarting, ended, listed := stopRig()
+	r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+	fakeLSP(t, r.ws)
+	id := r.open()
+	from := r.cl.mark()
+	stopWhenStarting(r, id, 1)
+	if m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "rust"}); m.Error == nil {
+		t.Fatalf("the start went ahead: %s", m.Result)
+	}
+	ended(r, from)
+	stopped, _ := r.recorded(id, agent.EvLSPStopped)
+	if len(stopped) != 1 || stopped[0]["reason"] != "workspace-config-changed" {
+		t.Fatalf("lsp.stopped %v", stopped)
+	}
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/lsp/status" && strings.Contains(string(m.Params), `"restarted"`) {
+			t.Fatalf("it was restarted: %s", m.Params)
+		}
+	}
+	if n := listed(r); n != 0 {
+		t.Fatalf("%d servers still listed", n)
+	}
+}
+
+// A restart after a crash that a stop overtakes ends with the stop's
+// reason, not restarted and not as a crash.
+func TestStudioRustAnalyzerRestartOvertakenByAStop(t *testing.T) {
+	stopWhenStarting, ended, listed := stopRig()
+	r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+	fakeLSP(t, r.ws, "ABHED_FAKE_LSP_CRASH="+r.ws+"/../crashed-before-stop")
+	id := r.open()
+	from := r.cl.mark()
+	stopWhenStarting(r, id, 2)
+	var res struct {
+		LSPID string `json:"lspId"`
+	}
+	r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "rust"}, &res)
+	ended(r, from)
+	var reasons []any
+	var stopped []map[string]any
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		stopped, _ = r.recorded(id, agent.EvLSPStopped)
+		if len(stopped) >= 2 {
+			break
+		}
+	}
+	for _, s := range stopped {
+		reasons = append(reasons, s["reason"])
+	}
+	if len(stopped) != 2 || stopped[0]["reason"] != "crashed" || stopped[1]["reason"] != "workspace-config-changed" {
+		t.Fatalf("lsp.stopped reasons %v", reasons)
+	}
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/lsp/status" && strings.Contains(string(m.Params), `"restarted"`) {
+			t.Fatalf("it was restarted: %s", m.Params)
+		}
+	}
+	if n := listed(r); n != 0 {
+		t.Fatalf("%d servers still listed", n)
+	}
+}
