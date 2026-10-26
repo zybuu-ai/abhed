@@ -277,7 +277,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 			c.notification("_abhed/debug/message", map[string]any{"debugId": d.id, "message": m})
 		},
 		func(state, message string) {
-			c.notification("_abhed/debug/status", map[string]any{"debugId": d.id, "state": state, "message": redacted(debugrelay.Bounded(message, 2000))})
+			c.notification("_abhed/debug/status", map[string]any{"debugId": d.id, "state": state, "message": debugrelay.Bounded(redacted(message), 2000)})
 		})
 	// Over by the protocol: the adapter's input closes, as debugpy's needs to
 	// exit, and it is ended if it has not gone within the grace.
@@ -357,7 +357,7 @@ func (c *acpConn) debugRun(s *acpSession, d *acpDebug, cmd *exec.Cmd, stdout io.
 		state["state"], state["message"], state["problem"] = "failed", p.Message, p
 	} else if pumpErr != nil && reason == "ended" {
 		reason = "failed"
-		state["state"], state["message"] = "failed", "the adapter's output could not be read, so the session was ended: "+redacted(debugrelay.Bounded(pumpErr.Error(), 500))
+		state["state"], state["message"] = "failed", "the adapter's output could not be read, so the session was ended: "+debugrelay.Bounded(redacted(pumpErr.Error()), 500)
 	} else if code != 0 && reason == "ended" {
 		reason = "failed"
 		state["state"], state["message"] = "failed", redacted(lastLines(stderr.String(), 20))
