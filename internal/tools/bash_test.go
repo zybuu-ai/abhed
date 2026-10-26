@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -693,40 +694,65 @@ func TestDataStoreDestructive(t *testing.T) {
 		"kubectl delete PVC data-0":                        true,
 		"git push --mirror origin":                         true,
 
-		"terraform apply -replace=aws_db_instance.main -auto-approve": true,
-		"terraform taint aws_db_instance.main":                        true,
-		"tofu apply -replace module.db -auto-approve":                 true,
-		"bin/rails db:migrate:reset":                                  true,
-		"rails db:purge":                                              true,
-		"rails db:truncate_all":                                       true,
-		"bin/rails db:schema:load":                                    true,
-		"php artisan migrate:refresh --seed":                          true,
-		"php artisan migrate:rollback":                                true,
-		"git push --prune origin":                                     true,
-		"git reflog expire --expire=now --all && git gc --prune=now":  true,
-		"git gc --prune=now":                                          true,
-		"gcloud firestore bulk-delete --collection-ids=users":         true,
-		"aws ec2 deregister-image --image-id ami-1":                   true,
-		"aws s3api delete-objects --bucket b --delete file://k.json":  true,
-		"docker rm -fv db":                                            true,
-		"psql -c 'DELETE FROM users WHERE true'":                      true,
-		"npx cdk destroy --force":                                     true,
-		"npx serverless remove":                                       true,
-		"sudo -u postgres psql -c 'DROP DATABASE app'":                true,
-		"terraform plan -replace=aws_db_instance.main":                false,
-		"git commit -m \"psql: fix drop table bug\"":                  false,
-		"php artisan migrate":                                         false,
-		"rails db:migrate":                                            false,
-		"echo 'select 1' | psql":                                      false,
-		"psql app <<'SQL'\nselect count(*) from users;\nSQL":          false,
-		`psql -c "select 1; select 2"`:                                false,
-		"psql -c 'delete from users where id = 1'":                    false,
-		"npx prisma migrate dev":                                      false,
-		"npx prisma generate":                                         false,
-		"python manage.py migrate":                                    false,
-		"terraform plan -destroy":                                     false,
-		"aws ec2 describe-instances":                                  false,
-		"mongosh app --eval 'db.users.find({})'":                      false,
+		"terraform apply -replace=aws_db_instance.main -auto-approve":                  true,
+		"terraform taint aws_db_instance.main":                                         true,
+		"tofu apply -replace module.db -auto-approve":                                  true,
+		"bin/rails db:migrate:reset":                                                   true,
+		"rails db:purge":                                                               true,
+		"rails db:truncate_all":                                                        true,
+		"bin/rails db:schema:load":                                                     true,
+		"php artisan migrate:refresh --seed":                                           true,
+		"php artisan migrate:rollback":                                                 true,
+		"git push --prune origin":                                                      true,
+		"git reflog expire --expire=now --all && git gc --prune=now":                   true,
+		"git gc --prune=now":                                                           true,
+		"gcloud firestore bulk-delete --collection-ids=users":                          true,
+		"aws ec2 deregister-image --image-id ami-1":                                    true,
+		"aws s3api delete-objects --bucket b --delete file://k.json":                   true,
+		"docker rm -fv db":                                                             true,
+		"psql -c 'DELETE FROM users WHERE true'":                                       true,
+		"npx cdk destroy --force":                                                      true,
+		"npx serverless remove":                                                        true,
+		"sudo -u postgres psql -c 'DROP DATABASE app'":                                 true,
+		`docker exec db psql -U postgres -c "DROP DATABASE app"`:                       true,
+		`docker exec -it -u postgres db psql -c "TRUNCATE users"`:                      true,
+		`docker-compose exec db psql -c "DROP TABLE users"`:                            true,
+		`docker compose -f prod.yml exec -T db mysql -e "drop database app"`:           true,
+		`podman exec -i db mysql -uroot <<< "DROP DATABASE app"`:                       true,
+		`kubectl exec -i postgres-0 -- psql -U postgres -c "DROP DATABASE app"`:        true,
+		`kubectl exec -n prod -c db postgres-0 -- psql -c "DROP TABLE t"`:              true,
+		`oc exec postgres-0 -- psql -c "DROP DATABASE app"`:                            true,
+		`kubectl exec redis-0 -- redis-cli FLUSHALL`:                                   true,
+		`docker exec cache redis-cli flushall`:                                         true,
+		`docker exec mongo mongosh app --eval "db.dropDatabase()"`:                     true,
+		`ssh db1 'psql -c "DROP DATABASE app"'`:                                        true,
+		`ssh db1 psql -c "'DROP TABLE users'"`:                                         true,
+		`heroku pg:psql -a app -c "DROP TABLE users"`:                                  true,
+		`heroku run -a app psql -c "DROP TABLE users"`:                                 true,
+		`fly ssh console -C "psql -c 'DROP TABLE users'"`:                              true,
+		"npx serverless@3 remove":                                                      true,
+		"pulumi up --replace urn:pulumi:dev::app::aws:rds/instance:Instance::db --yes": true,
+		"bin/rails db:setup":                                                           true,
+		`mysql -e "DELETE FROM users WHERE 1"`:                                         true,
+		`echo "psql -c 'DROP TABLE users'"`:                                            false,
+		`git tag -m "psql: drop table support" v1.2`:                                   false,
+		`gh pr create --title "psql drop table fix" --body "x"`:                        false,
+		"gcloud compute instances create web --boot-disk-auto-delete":                  false,
+		"gcloud compute instances set-disk-auto-delete web --auto-delete":              false,
+		"terraform plan -replace=aws_db_instance.main":                                 false,
+		"git commit -m \"psql: fix drop table bug\"":                                   false,
+		"php artisan migrate":                                                          false,
+		"rails db:migrate":                                                             false,
+		"echo 'select 1' | psql":                                                       false,
+		"psql app <<'SQL'\nselect count(*) from users;\nSQL":                           false,
+		`psql -c "select 1; select 2"`:                                                 false,
+		"psql -c 'delete from users where id = 1'":                                     false,
+		"npx prisma migrate dev":                                                       false,
+		"npx prisma generate":                                                          false,
+		"python manage.py migrate":                                                     false,
+		"terraform plan -destroy":                                                      false,
+		"aws ec2 describe-instances":                                                   false,
+		"mongosh app --eval 'db.users.find({})'":                                       false,
 	}
 	for cmd, want := range cases {
 		what, got := IsDestructive(cmd)
@@ -734,4 +760,67 @@ func TestDataStoreDestructive(t *testing.T) {
 			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
 		}
 	}
+}
+
+// TestDestructiveStaysAsked guards against a narrowing that silently drops a
+// command the destructive step used to ask about: every line in the file must
+// still ask.
+func TestDestructiveStaysAsked(t *testing.T) {
+	data, err := os.ReadFile("testdata/destructive_asked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		n++
+		cmd := strings.ReplaceAll(line, "⏎", "\n")
+		if _, ok := IsDestructive(cmd); !ok {
+			t.Errorf("no longer asked: %q", cmd)
+		}
+	}
+	if n < 800 {
+		t.Fatalf("only %d lines read", n)
+	}
+}
+
+// A command that cannot find a program is told what NotFound says of it,
+// whichever shell said it was missing; a command that succeeded is not.
+func TestBashSaysHowToGetAMissingProgram(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewSession(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	b := Bash{NotFound: func(d, p string) string {
+		asked = append(asked, p)
+		if p == "go" {
+			return "install go with the toolchain tool"
+		}
+		return ""
+	}}
+	for cmd, want := range map[string]bool{
+		`echo "bash: go: command not found" >&2; exit 127`:      true,
+		`echo "sh: 1: go: not found" >&2; exit 127`:             true,
+		`echo "env: 'go': No such file or directory"; exit 127`: true,
+		`echo "bash: zork: command not found"; exit 127`:        false,
+		`echo "bash: go: command not found"; exit 0`:            false,
+	} {
+		res := b.Run(context.Background(), s, mustJSONArgs(t, map[string]string{"command": cmd}))
+		if got := strings.Contains(res.Content, "install go with the toolchain tool"); got != want {
+			t.Errorf("%s: %v\n%s", cmd, got, res.Content)
+		}
+	}
+}
+
+func mustJSONArgs(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

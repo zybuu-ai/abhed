@@ -67,6 +67,11 @@ func selfAdmin(rest []string) string {
 		if verb == "check" || verb == "install" || verb == "forget" {
 			return "abhed ollama " + verb
 		}
+	case "toolchain":
+		// An install is the person's to agree to; inside a command it would skip the ask.
+		if verb == "install" || verb == "remove" || verb == "rm" {
+			return "abhed toolchain " + verb
+		}
 	case "migrate":
 		return "abhed migrate"
 	case "admin":

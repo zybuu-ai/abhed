@@ -21,6 +21,11 @@ func shown(r Report) Report {
 		return c
 	})
 	r.RemoteChanges = shownRemote(r.RemoteChanges)
+	r.Toolchains = each(r.Toolchains, func(t ToolchainStep) ToolchainStep {
+		t.Lang, t.Version, t.Platform, t.Outcome, t.Why = v(t.Lang), v(t.Version), v(t.Platform), v(t.Outcome), v(t.Why)
+		t.Source, t.URL, t.Digest, t.Consent, t.Error, t.By, t.Surface = v(t.Source), v(t.URL), v(t.Digest), v(t.Consent), v(t.Error), v(t.By), v(t.Surface)
+		return t
+	})
 	if r.Policy.ByStep != nil {
 		by := make(map[string]int, len(r.Policy.ByStep))
 		for k, n := range r.Policy.ByStep {

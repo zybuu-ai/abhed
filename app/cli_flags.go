@@ -407,6 +407,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return providersCmd()
 	case "ollama":
 		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
+	case "toolchain":
+		return toolchainCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "record":
 		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "logs":

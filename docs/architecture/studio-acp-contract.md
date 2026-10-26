@@ -279,6 +279,40 @@ modal says the app listens where its own settings say.
 |---|---|
 | Security | The engine acts only on a loopback Ollama, as the engine's user with a minimal environment, never with `sudo`. A server it starts with `ollama serve` (always, when the program is found) is bound to `127.0.0.1`; the macOS app, opened by its path only when the program is missing, binds where its own settings say, which the engine does not control. `model.ollama.assist` (managed-lockable) is applied whatever Studio sends; inside an agent's command every action is refused. No tool exposes any of this, so the agent cannot start, install or pull. A server it started keeps running when the engine exits. Every attempt and outcome is recorded with `by: "user"` and `surface: "acp"`. |
 
+### 3.2b Language toolchains
+
+The agent's commands get the language toolchains Abhed installed, first on
+`PATH` ([Toolchains](../guide/29-toolchains.md)). The agent installs one with
+its `toolchain` tool, as an ordinary ask. Studio offers the same from its own
+UI, for instance when its Run or Test button's command exits 127, with these
+methods (`toolchain` in the session's `_meta` features). `language` is a
+language (`go`, `python`, `node`, `rust`, `java`, `maven`, `gradle`, `ruby`,
+`dotnet`) or a program one provides, as the failed command named it
+(`cargo` is rust, `mvn` maven, `python3` python, `gofmt` go).
+
+| Method | |
+|---|---|
+| `_abhed/toolchain/status` | `{sessionId, language, version?}` → `{language, available, version?, can_act, offer?: {command, source, size?, version?, into?, why, url, digest}, refusal?: problem}`. `available` and `version`: the session's commands have the language now (`into` is where an install would go, for the platform commands run on). `offer` is what an install would fetch: the version and `why` (`requested`, `pinned by <file>`, `latest stable`), the release `source`, the download `url`, its `size` and the published `digest` it is checked against; `command` is the same install from a terminal. `can_act` is false, with `refusal`, when `sandbox.toolchains` is off, inside an agent's command, or when the source has no such build. Asks the release source; installs nothing. Not recorded |
+| `_abhed/toolchain/install` | `{sessionId, language, version?, installId}` → `{language, available: true, version, dir, bin, registries}` once it is verified and in place; `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"`, and `toolchain.registry` for registries opened |
+| `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 with `kind: "cancelled"`, and nothing partial is left |
+
+**Errors.** `data` is `{problem: {kind, message, steps?}}`, as the Ollama
+assist's. `toolchains_off`, `in_agent` and `unavailable` are -32001;
+`unknown_language`, `bad_version`, `no_install_id` and `duplicate` are
+-32602; `no_build`, `install_failed` (including a download that does not
+match its published checksum) and `cancelled` are -32000.
+
+**Studio's side.** Before `install`, a modal showing the language, version and
+why, the source, the URL, the size and the checksum from `status.offer`,
+default No. The modal is the person's consent; the engine records it as such.
+A *Stop* button sends `_abhed/toolchain/cancel`. After an install, the next
+command of the agent finds the toolchain on `PATH`; Studio's own Run and Test
+buttons may run again.
+
+| | |
+|---|---|
+| Security | Downloads go only to each language's official release hosts, redirects included, and are checked against the checksum the project publishes (Ruby's against digests pinned in Abhed). A toolchain is unpacked into the per-user cache, refusing any entry or link that leaves it, and made read-only; commands can read it, never change it. Nothing is installed system-wide or with `sudo`. `sandbox.toolchains` (managed-lockable) is applied whatever Studio sends. |
+
 ### 3.3 Slash commands
 
 `available_commands_update` (spec), sent after `session/new` and

@@ -150,6 +150,16 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
 </section>
 {{end}}
 
+{{if .Toolchains}}
+<section>
+  <h2>Toolchains installed</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>language</th><th>version</th><th>platform</th><th>outcome</th><th>source · checksum</th><th>by · consent</th></tr>
+    {{range .Toolchains}}<tr><td class="seq">#{{.Seq}}</td><td>{{.Lang}}</td><td>{{.Version}}</td><td>{{.Platform}}</td><td{{if or (eq .Outcome "failed") (eq .Outcome "refused")}} class="err"{{end}}>{{.Outcome}}{{if .Cached}} · installed already{{end}}{{if .Error}} · {{.Error}}{{end}}</td><td class="wide">{{.Source}}<br><code>{{.URL}}</code><br><code>{{.Digest}}</code></td><td>{{.By}}{{if .Consent}} · {{.Consent}}{{end}}</td></tr>{{end}}
+  </table></div>
+</section>
+{{end}}
+
 {{if .LocalModel}}
 <section>
   <h2>Local model (Ollama)</h2>

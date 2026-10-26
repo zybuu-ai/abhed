@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 )
 
@@ -35,5 +36,21 @@ func TestDoctorToolchainWarnings(t *testing.T) {
 	}
 	if andList([]string{"a", "b", "c"}) != "a, b and c" {
 		t.Fatal(andList([]string{"a", "b", "c"}))
+	}
+}
+
+// The doctor's toolchains lines say what the workspace needs, by loose files
+// too, and whether the cache has it for the platform commands run on.
+func TestDoctorToolchainLines(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "hello.py"), []byte("print(1)"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(toolchainLines(config.Default(), ws, nil), "\n")
+	for _, want := range []string{"installs ask", "Python · not installed, needed by *.py files", "abhed toolchain install python"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
 	}
 }

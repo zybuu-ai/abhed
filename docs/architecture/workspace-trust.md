@@ -123,6 +123,9 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `sandbox.max_memory_mb`, `max_procs`, `terminal_idle_minutes` | **applied** only when lower than the value in effect; zero means the default (4096, 512 and 30) |
 | `sandbox.terminal` | **applied** only for `lines` |
 | `sandbox.read_only_paths` | ignored: it mounts more of the host into the sandbox |
+| `sandbox.toolchains` | **applied** only when stricter: auto, then ask, then off |
+| `sandbox.toolchains_preapproved` | ignored: an install that needs no ask |
+| `sandbox.toolchains_registries` | **applied** only for `off` |
 | `limits.max_tokens`, `max_budget_tokens`, `max_subagents` | **applied** only when lower; zero means unlimited, so any positive value is lower |
 | `limits.max_turns` | **applied** only when lower; zero means no turns, so nothing is lower |
 | `limits.max_parallel_subagents` | **applied** only when lower; zero means the tool's cap of 8 |

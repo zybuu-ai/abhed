@@ -204,6 +204,7 @@ var subcommands = []subcommand{
 	{name: "trust", about: "show, grant or revoke trust in the workspace's .abhed/config.json"},
 	{name: "doctor", about: "check the configuration, the model endpoint and the sandbox", trust: true},
 	{name: "providers", about: "list the model provider types this build supports"},
+	{name: "toolchain", about: "language toolchains for the agent's commands: install, list, remove", trust: true},
 	{name: "ollama", about: "check a local Ollama model and offer what it lacks: check, status, models, forget", trust: true},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},

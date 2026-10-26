@@ -150,6 +150,15 @@ type Result struct {
 	// SandboxNote is the kind of refusal bash put a sandbox note in Content
 	// for (see sandboxHint), "" when it put none; recorded with the result.
 	SandboxNote string
+	// Events are recorded after the result, as the system's, such as a
+	// toolchain install the call made.
+	Events []Event
+}
+
+// Event is one event a tool's result asks the loop to record.
+type Event struct {
+	Type    string
+	Payload any
 }
 
 func ok(format string, a ...any) Result {

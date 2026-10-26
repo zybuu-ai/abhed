@@ -30,6 +30,12 @@ model client, `web_fetch`, `web_search`, MCP servers over HTTP, and the
 network of stdio MCP servers. See "Abhed's own requests" below. Outside the
 allowlist none of this changes how they connect.
 
+Outside the managed file, one setting opens the proxy too, to package
+registries only: `sandbox.toolchains_registries` lets a person's agreement to
+a language's toolchain open that language's official registries to commands
+where the network is otherwise off ([Toolchains](29-toolchains.md#package-registries)).
+Under the allowlist it adds nothing unless the managed file names it.
+
 ## Configuration
 
 ```json

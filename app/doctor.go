@@ -27,6 +27,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/store"
@@ -121,6 +122,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 			for _, w := range toolchainWarnings(c, workspace) {
 				fmt.Printf("            ⚠ %s\n", w)
 			}
+		}
+		for _, line := range toolchainLines(cfg, workspace, sb) {
+			fmt.Printf("toolchains  %s\n", line)
 		}
 		// MCP servers' containers a killed Abhed left, removed as a session
 		// would; only when one is set to run in a container.
@@ -819,18 +823,66 @@ func toolchainWarnings(c *sandbox.Container, workspace string) []string {
 	if err != nil || len(missing) == 0 {
 		return nil
 	}
+	// A toolchain Abhed installed is on commands' PATH, whatever the image has.
+	root, _ := toolchain.DefaultRoot()
+	cache := toolchain.Cache{Root: root}
+	linux := toolset.PlatformOf(c)
 	var kinds, progs, images []string
 	for _, tc := range need {
+		l, _ := toolchain.ForProgram(tc.Program)
+		if _, have := cache.Best(linux, toolchain.Spec{Lang: l.Name}); have && root != "" {
+			continue
+		}
 		if slices.Contains(missing, tc.Program) {
 			kinds, progs, images = append(kinds, tc.Name), append(progs, tc.Program), append(images, tc.Image)
 		}
+	}
+	if len(kinds) == 0 {
+		return nil
 	}
 	suggest := "such as " + images[0]
 	if len(images) > 1 {
 		suggest = "an image of your own with all of them"
 	}
-	return []string{fmt.Sprintf("the workspace looks like a %s project, but the sandbox image %s has no %s, so its builds and tests fail under the %s tier; set sandbox.image or ABHED_SANDBOX_IMAGE to an image that has it, %s (docs/guide/02-configuration.md#the-container-tiers-image)",
-		andList(kinds), img, andList(progs), c.Tier(), suggest)}
+	return []string{fmt.Sprintf("the workspace looks like a %s project, but the sandbox image %s has no %s; Abhed installs it on demand when a command needs it (sandbox.toolchains, docs/guide/29-toolchains.md), or set sandbox.image or ABHED_SANDBOX_IMAGE to an image that has it, %s (docs/guide/02-configuration.md#the-container-tiers-image)",
+		andList(kinds), img, andList(progs), suggest)}
+}
+
+// toolchainLines say, for each language the workspace looks like it needs,
+// whether the toolchain cache has it for the platform commands run on.
+func toolchainLines(cfg config.Config, workspace string, sb sandbox.Sandbox) []string {
+	root, err := toolchain.DefaultRoot()
+	if err != nil {
+		return nil
+	}
+	cache := toolchain.Cache{Root: root}
+	p := toolset.PlatformOf(sb)
+	mode := orDefault(cfg.Sandbox.Toolchains, "ask")
+	out := []string{fmt.Sprintf("installs %s; cache %s (%s)", mode, root, p)}
+	pins := toolchain.PinsFrom(workspace)
+	for _, n := range toolchain.Needs(workspace) {
+		l, _ := toolchain.Find(n.Lang)
+		spec := toolchain.Spec{Lang: n.Lang}
+		if pin, ok := pins[n.Lang]; ok {
+			spec = pin.Spec
+		}
+		if in, ok := cache.Best(p, spec); ok {
+			out = append(out, fmt.Sprintf("%s ✓ %s, needed by %s", l.Display, in.Version, n.Why))
+			continue
+		}
+		hint := "the agent asks to install it when a command needs it"
+		switch mode {
+		case "off":
+			hint = "sandbox.toolchains is off, so it is not installed"
+		case "auto":
+			hint = "installed when a command needs it"
+		}
+		out = append(out, fmt.Sprintf("%s · not installed, needed by %s: %s, or run abhed toolchain install %s -platform %s", l.Display, n.Why, hint, spec, p))
+	}
+	for _, in := range cache.List(p, "") {
+		out = append(out, fmt.Sprintf("cached %s %s", in.Lang, in.Version))
+	}
+	return out
 }
 
 // andList joins words as a sentence does: "a", "a and b", "a, b and c".

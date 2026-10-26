@@ -132,6 +132,33 @@ All notable changes to Abhed are recorded here. The format follows
   and pinned by checksum. Each session is recorded as `debug.launched` and
   `debug.stopped`. Node is not supported yet
   ([Debugging](docs/guide/31-debugging.md)).
+- Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)
+  with Maven and Gradle, Ruby and the .NET SDK, installed for the sandbox's
+  commands at the version asked for, else the one the project pins (go.mod,
+  .python-version, .nvmrc, rust-toolchain, .tool-versions, .java-version,
+  global.json, .ruby-version), else the latest stable. Each comes only from
+  its project's own release source, is checked against the checksum that
+  source publishes (Ruby's against digests pinned in Abhed), and is unpacked
+  read-only into ~/.cache/abhed/toolchains/<os>-<arch>/<language>/<version>;
+  nothing is installed system-wide or with sudo. Commands get the installed
+  toolchains first on PATH, a container mounts the cache read-only, and a
+  command that cannot find go, python3, node, cargo, java, mvn, gradle, ruby
+  or dotnet is told how to install it. The agent's `toolchain` tool asks once
+  per language and major version, showing the source, size and checksum;
+  `abhed toolchain install|list|remove` and Studio's `_abhed/toolchain/*`
+  methods do the same for a person; `sandbox.toolchains` (ask, auto, off) and
+  `sandbox.toolchains_preapproved` set the consent. Every install is
+  recorded as `toolchain.install`, counted, mapped to OCSF and listed by
+  HawkEYE, and `abhed doctor` lists what the workspace needs, by marker and by
+  loose source file ([Toolchains](docs/guide/29-toolchains.md)).
+- `sandbox.toolchains_registries` (ask by default): where the network is off,
+  agreeing to a language's toolchain also opens its official package
+  registries to commands, through the session's egress proxy, on 443 only,
+  where the sandbox's tier can hold the proxy. It is the one way egress opens
+  outside the managed file; under a managed network it adds nothing unless
+  the managed file names it, and a workspace file may only set it off. Each
+  opening is recorded as `toolchain.registry`
+  ([Toolchains](docs/guide/29-toolchains.md#package-registries)).
 - A key written twice in a configuration file is reported. encoding/json
   keeps the last one without a word, so a second provider of the same name
   in `model.providers` used to replace the first silently. Loading now warns
@@ -252,10 +279,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 955 drift cases the rules judge
-  stops all 954 a mode let through (the 955th, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 1079 drift cases the rules judge
+  stops all 1078 a mode let through (the 1079th, the destructive step, policy
   already asks about), and it
-  refuses none of its 421 genuinely everyday benign controls (it asks about 10: six whose working
+  refuses none of its 453 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
@@ -286,8 +313,10 @@ All notable changes to Abhed are recorded here. The format follows
   flush, artisan, dotnet ef, sequelize), SQL sent on stdin or in a heredoc,
   multi-statement and qualified-table queries, and the wider teardown family
   (aws delete-*/terminate-*/deregister-*, eksctl, terragrunt, cdk, sam,
-  serverless) are asked by both layers, through a package runner and past
-  sudo/su/env wrappers too; terraform apply -replace and taint, and the
+  serverless) are asked by both layers, through a package runner (npx/bunx,
+  yarn/pnpm exec/dlx/run, npm exec, @version specs) and past sudo/su/runuser/env
+  wrappers, and when the client is reached through a container exec, ssh,
+  heroku or fly; git gc --prune and reflog expire are asked by both layers; terraform apply -replace and taint, and the
   rails/artisan reset variants, are added; terraform plan -destroy/-replace
   is not. A wrapper option no longer sends a data-store or cluster op to the
   weaker fallback in the supervisor. The
@@ -680,6 +709,9 @@ out):
   and the type `ChainReport`.
 - For a local Ollama model: `config.OllamaConfig`, `ModelConfig.Ollama` and
   `Config.OllamaAssist`; `hawkeye.LocalModelStep` and `Report.LocalModel`.
+- For toolchains on demand: `config.SandboxConfig.Toolchains`,
+  `ToolchainsPreapproved` and `ToolchainsRegistries`; `hawkeye.ToolchainStep`
+  and `Report.Toolchains`.
 
 ## [1.2.8] - 2026-10-14
 

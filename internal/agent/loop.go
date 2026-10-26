@@ -1924,6 +1924,9 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}); err != nil {
 		return result, TermError
 	}
+	for _, e := range result.Events {
+		l.record(EventType(e.Type), ActorSystem, e.Payload)
+	}
 	return result, ""
 }
 
