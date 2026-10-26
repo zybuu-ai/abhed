@@ -81,10 +81,11 @@ func rubyLinux(ctx context.Context, src *Source, top, tmp string, a Artifact) ([
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(top, rubyWrapperDir), 0o755); err != nil {
-		return nil, err
+	// A folder of its own: one the archive made, or a link, refuses the install.
+	if err := os.Mkdir(filepath.Join(top, rubyWrapperDir), 0o755); err != nil { // #nosec G301 -- read by the sandbox's commands
+		return nil, fmt.Errorf("the Ruby wrapper's folder: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(top, rubyWrapperDir, "ruby"), []byte(rubyWrapper), 0o755); err != nil { // #nosec G306 -- an executable for the sandbox
+	if err := writeExclusive(filepath.Join(top, rubyWrapperDir, "ruby"), []byte(rubyWrapper), 0o755); err != nil {
 		return nil, err
 	}
 	return got, nil
@@ -101,8 +102,8 @@ func bundleLibyaml(ctx context.Context, src *Source, top, tmp string, a Artifact
 	if _, err := src.download(ctx, art, deb, nil); err != nil {
 		return nil, fmt.Errorf("libyaml for Ruby: %w", err)
 	}
-	dest := filepath.Join(top, "lib", "abhed-deps")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	dest, err := realDir(top, filepath.Join("lib", "abhed-deps"))
+	if err != nil {
 		return nil, err
 	}
 	if err := debLibs(deb, dest, libyaml.files); err != nil {

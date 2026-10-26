@@ -1712,6 +1712,8 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		s.forgetUnstarted(sessionID)
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	// The server's configuration, as its sandbox, which sessions share, was
+	// granted the registries from it, whatever a workspace file says.
 	for _, g := range toolset.StartupRegistries(s.opts.Config, "server") {
 		if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
 			s.forgetUnstarted(sessionID)
@@ -1860,6 +1862,8 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 		}
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	// The server's configuration, as its sandbox, which sessions share, was
+	// granted the registries from it, whatever a workspace file says.
 	for _, g := range toolset.StartupRegistries(s.opts.Config, "server") {
 		if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
 			return "", fmt.Errorf("record session start: %w", err)

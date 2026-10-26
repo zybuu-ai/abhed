@@ -47,6 +47,9 @@ type Endpoints struct {
 	GoSumDB      string // the checksum database that checks it; "" is sum.golang.org
 	PyPIAPI      string // PyPI's JSON API, for debugpy; "" is pypi.org/pypi/
 	DebianPool   string // Debian's package pool, for libraries a toolchain bundles; "" is deb.debian.org
+	NPMRegistry  string // the npm registry, for npm language servers; "" is registry.npmjs.org
+	// RustAnalyzerDownload is rust-analyzer's release downloads; "" is GitHub's.
+	RustAnalyzerDownload string
 	// Extra hosts a download may reach, for a test's fake.
 	ExtraHosts []string
 }

@@ -170,8 +170,11 @@ func (s *Session) Prelude(dir string) string {
 		for k, v := range SearchPaths(in) {
 			search[k] = append(search[k], v...)
 		}
-		// The language's debugger, where it was installed with it.
-		if e, ok := DebuggerFor(in.Lang); ok {
+		// The language's debugger and language server, where installed with it.
+		for _, e := range Extras {
+			if e.Lang != in.Lang {
+				continue
+			}
 			if x, ok := s.Cache.LookupExtra(p, e); ok {
 				bin, py := ExtraEnv(x)
 				path = append(path, bin...)

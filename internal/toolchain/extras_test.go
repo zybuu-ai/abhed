@@ -275,7 +275,7 @@ func TestToolInstallsTheDebuggerWithTheLanguage(t *testing.T) {
 	if _, _, err := tool.ResolveArgs(ts, json.RawMessage(`{"name":"node","debugger":true}`)); err == nil {
 		t.Fatal("a debugger for node resolved")
 	}
-	if got := ScopeName("go", "1.26.3", false); got != "go@1.26" {
+	if got := ScopeName("go", "1.26.3", false, false); got != "go@1.26" {
 		t.Fatalf("scope %s", got)
 	}
 }

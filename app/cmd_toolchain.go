@@ -27,6 +27,10 @@ const toolchainUsage = `usage: abhed toolchain <command> [flags] [lang[@version]
   -platform host|linux|os-arch   whose builds: this host (the process tier), or
                                  linux (the container tier); default host
   -yes                           install without asking (install)
+  -lsp                           also install the language's language server:
+                                 gopls (go), basedpyright (python, on Node.js,
+                                 installed first if missing), typescript-language-server
+                                 (node), rust-analyzer (rust)
   -debugger                      also install the language's debugger: Delve
                                  for go (Linux builds only), debugpy for python
 
@@ -48,6 +52,7 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 	plat := fs.String("platform", "host", "host, linux, or os-arch")
 	yes := fs.Bool("yes", false, "install without asking")
 	debugger := fs.Bool("debugger", false, "also install the language's debugger (install)")
+	lsp := fs.Bool("lsp", false, "also install the language's language server (install)")
 	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
@@ -79,7 +84,7 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 			fmt.Fprintf(stderr, "abhed: toolchain install is refused inside an agent's command (%s); the agent asks with its toolchain tool\n", why)
 			return 1
 		}
-		return toolchainInstall(cfg, tc, fs.Args(), *yes, *debugger, stdin, stdout, stderr)
+		return toolchainInstall(cfg, tc, fs.Args(), *yes, *debugger, *lsp, stdin, stdout, stderr)
 	case "remove", "rm":
 		if why := inAgentCommand(); why != "" {
 			fmt.Fprintf(stderr, "abhed: toolchain remove is refused inside an agent's command (%s)\n", why)
@@ -147,7 +152,7 @@ func toolchainList(tc *toolchain.Session, p toolchain.Platform, asJSON bool, std
 	return 0
 }
 
-func toolchainInstall(cfg config.Config, tc *toolchain.Session, specs []string, yes, debugger bool, stdin io.Reader, stdout, stderr io.Writer) int {
+func toolchainInstall(cfg config.Config, tc *toolchain.Session, specs []string, yes, debugger, lsp bool, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signalContext()
 	defer stop()
 	rec := &toolchainRecord{ctx: ctx, cfg: cfg, out: stderr}
@@ -169,17 +174,32 @@ func toolchainInstall(cfg config.Config, tc *toolchain.Session, specs []string, 
 			continue
 		}
 		l, _ := toolchain.Find(plan.Spec.Lang)
-		var ep *toolchain.ExtraPlan
-		if debugger {
-			d, err := debuggerPlan(ctx, tc, plan)
-			if err != nil {
-				fmt.Fprintf(stderr, "abhed: %s: %v\n", spec, err)
-				code = 1
+		var extras []*toolchain.ExtraPlan
+		failed := false
+		for _, want := range []struct {
+			on   bool
+			plan func(context.Context, *toolchain.Session, toolchain.Plan) (toolchain.ExtraPlan, error)
+		}{{debugger, debuggerPlan}, {lsp, lspPlan}} {
+			if !want.on {
 				continue
 			}
-			ep = &d
+			d, err := want.plan(ctx, tc, plan)
+			if err != nil {
+				fmt.Fprintf(stderr, "abhed: %s: %v\n", spec, err)
+				failed = true
+				break
+			}
+			extras = append(extras, &d)
 		}
-		if plan.Installed != nil && (ep == nil || ep.Installed != nil) {
+		if failed {
+			code = 1
+			continue
+		}
+		allThere := plan.Installed != nil
+		for _, ep := range extras {
+			allThere = allThere && ep.Installed != nil
+		}
+		if allThere {
 			fmt.Fprintf(stdout, "%s %s is installed already (%s).\n", l.Display, plan.Version(), plan.Installed.Dir)
 			continue
 		}
@@ -189,7 +209,15 @@ func toolchainInstall(cfg config.Config, tc *toolchain.Session, specs []string, 
 		} else {
 			fmt.Fprintf(stdout, "%s %s (%s)\n  from   %s\n  url    %s\n  size   %s\n  check  %s\n", l.Display, a.Version, plan.Why, a.Source, a.URL, sizeText(a.Size), a.Digest)
 		}
-		if ep != nil && ep.Installed == nil {
+		for _, ep := range extras {
+			if ep.Installed != nil {
+				continue
+			}
+			if n := ep.Needs; n != nil {
+				nl, _ := toolchain.Find(n.Spec.Lang)
+				fmt.Fprintf(stdout, "+ %s %s, which it runs on\n  from   %s\n  url    %s\n  size   %s\n  check  %s\n",
+					nl.Display, n.Version(), n.Artifact.Source, n.Artifact.URL, sizeText(n.Artifact.Size), n.Artifact.Digest)
+			}
 			fmt.Fprintf(stdout, "+ %s %s\n  from   %s\n  url    %s\n  check  %s\n", ep.Extra.Display, ep.Extra.Version, ep.Source, ep.URL, ep.Digest)
 			if ep.Note != "" {
 				fmt.Fprintf(stdout, "  how    %s\n", ep.Note)
@@ -232,12 +260,12 @@ func toolchainInstall(cfg config.Config, tc *toolchain.Session, specs []string, 
 		if plan.Installed == nil {
 			fmt.Fprintf(stdout, "Installed %s %s, verified, in %s.\n", l.Display, in.Version, in.Dir)
 		}
-		if ep != nil {
+		for _, ep := range extras {
 			x, err := tc.InstallExtra(ctx, *ep, in, agent.ByUser, "cli", consent, nil)
 			if err != nil {
 				fmt.Fprintf(stderr, "abhed: %s %s: %v\n", ep.Extra.Name, ep.Extra.Version, err)
 				code = 1
-				continue
+				break
 			}
 			fmt.Fprintf(stdout, "Installed %s %s (%s) in %s.\n", ep.Extra.Display, x.Version, x.Digest, x.Dir)
 		}

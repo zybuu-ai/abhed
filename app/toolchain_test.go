@@ -154,8 +154,11 @@ func TestStudioToolchains(t *testing.T) {
 		Bin        []string `json:"bin"`
 		Registries string   `json:"registries"`
 	}
+	// An agreement that does not list the registries the install would open is not one.
+	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i0b",
+		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}})
 	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i1",
-		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}}, &done)
+		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest, "registries": st.Offer.Registries}}, &done)
 	if done.Version != "1.22.5" || len(done.Bin) != 1 {
 		t.Fatalf("install %+v", done)
 	}
@@ -201,6 +204,19 @@ func TestStudioToolchains(t *testing.T) {
 		t.Fatalf("debugger status %+v", dbg)
 	}
 	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "debugger": true, "installId": "i2"})
+	// The language server likewise: gopls needs Go 1.26 to build, so Go 1.22's is refused.
+	var lsp struct {
+		CanAct bool `json:"can_act"`
+		LSP    struct {
+			Name string `json:"name"`
+		} `json:"lsp"`
+		Refusal struct{ Kind, Message string } `json:"refusal"`
+	}
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go", "lsp": true}, &lsp)
+	if lsp.CanAct || lsp.LSP.Name != "gopls" || lsp.Refusal.Kind != "no_lsp" || !strings.Contains(lsp.Refusal.Message, "gopls") {
+		t.Fatalf("lsp status %+v", lsp)
+	}
+	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "lsp": true, "installId": "i3"})
 	if got, _ := r.recorded(id, "toolchain.install"); len(got) != 1 {
 		t.Fatalf("a refused debugger was recorded as an install: %v", got)
 	}
@@ -227,4 +243,27 @@ func TestStudioLinesTerminalGetsTheToolchains(t *testing.T) {
 	from = r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cargo build\r"}, nil)
 	waitOutput(r.cl, from, term.TerminalID, "toolchain tool")
+}
+
+// An install from an older Studio that sends no agreement is made, recorded
+// as unconfirmed, and opens no registries.
+func TestStudioToolchainInstallWithoutAgreement(t *testing.T) {
+	fakeGoSource(t)
+	r := newStudioRig(t, "")
+	id := r.open()
+	var done struct {
+		Version    string `json:"version"`
+		Registries string `json:"registries"`
+	}
+	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "u1"}, &done)
+	if done.Version != "1.22.5" || !strings.Contains(done.Registries, "not opened") {
+		t.Fatalf("install %+v", done)
+	}
+	if got, _ := r.recorded(id, "toolchain.registry"); len(got) != 0 {
+		t.Fatalf("an unconfirmed install opened registries: %v", got)
+	}
+	got, _ := r.recorded(id, "toolchain.install")
+	if len(got) != 1 || got[0]["consent"] != "studio-unconfirmed" {
+		t.Fatalf("recorded %v", got)
+	}
 }

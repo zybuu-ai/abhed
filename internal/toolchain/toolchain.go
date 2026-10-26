@@ -41,7 +41,7 @@ type Lang struct {
 var Langs = []Lang{
 	{Name: "go", Display: "Go", Programs: []string{"go", "gofmt"}, Aliases: []string{"golang"}},
 	{Name: "python", Display: "Python", Programs: []string{"python3", "python", "pip3", "pip"}, Aliases: []string{"py", "cpython"}},
-	{Name: "node", Display: "Node.js", Programs: []string{"node", "npm", "npx", "corepack"}, Aliases: []string{"nodejs", "node.js"}},
+	{Name: "node", Display: "Node.js", Programs: []string{"node", "npm", "npx", "corepack"}, Aliases: []string{"nodejs", "node.js", "typescript", "javascript", "ts", "js"}},
 	{Name: "rust", Display: "Rust", Programs: []string{"cargo", "rustc", "rustdoc", "rustfmt"}, Aliases: []string{"cargo"}},
 	{Name: "java", Display: "Java (Eclipse Temurin)", Programs: []string{"java", "javac", "jar", "jshell"}, Aliases: []string{"jdk", "temurin", "openjdk"}},
 	{Name: "maven", Display: "Apache Maven", Programs: []string{"mvn"}, Aliases: []string{"mvn"}},

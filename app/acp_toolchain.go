@@ -42,6 +42,9 @@ type toolchainParams struct {
 	// Debugger asks for the language's debugger too (Delve for Go, debugpy
 	// for Python), offered and agreed to with it.
 	Debugger bool `json:"debugger"`
+	// LSP asks for the language's language server too (gopls, basedpyright,
+	// typescript-language-server, rust-analyzer), offered and agreed to with it.
+	LSP bool `json:"lsp"`
 	// Agreed is what the person agreed to from status's offer; an install
 	// that would now fetch something else is refused.
 	Agreed *toolchainAgreed `json:"agreed"`
@@ -53,6 +56,11 @@ type toolchainAgreed struct {
 	Digest          string `json:"digest"`
 	DebuggerVersion string `json:"debugger_version"`
 	DebuggerDigest  string `json:"debugger_digest"`
+	LSPVersion      string `json:"lsp_version"`
+	LSPDigest       string `json:"lsp_digest"`
+	// Registries are the registry hosts the modal showed; only an install
+	// that lists them, as status offers them, opens them.
+	Registries []string `json:"registries"`
 }
 
 // toolchainProblem is an error's data, as the Ollama assist's is.
@@ -74,6 +82,8 @@ var problemSteps = map[string][]string{
 	"changed":        {"Ask for the offer again (_abhed/toolchain/status) and show it before installing"},
 	"no_debugger": {"Debug in a Linux sandbox (the container tier, or the process tier on Linux)",
 		"For Go, use Go 1.25 or later; for Python, 3.10 or later", "Or use a sandbox image that has the debugger"},
+	"no_lsp": {"For Go, use Go 1.26 or later; TypeScript's server needs Node.js 22.22.2 or later",
+		"Or name a server the image has in sandbox.language_servers"},
 }
 
 // registriesOffer is what an install of lang would open to commands, or why
@@ -90,6 +100,53 @@ func registriesOffer(tc *toolchain.Session, lang string) ([]string, string) {
 		hosts = []string{}
 	}
 	return hosts, ""
+}
+
+// flagIf is flag when on.
+func flagIf(on bool, flag string) string {
+	if on {
+		return flag
+	}
+	return ""
+}
+
+// lspPlan is the plan for the language server of plan's language.
+func lspPlan(ctx context.Context, tc *toolchain.Session, plan toolchain.Plan) (toolchain.ExtraPlan, error) {
+	e, ok := toolchain.LSPFor(plan.Spec.Lang)
+	if !ok {
+		return toolchain.ExtraPlan{}, errors.New("no language server is installed with " + plan.Spec.Lang +
+			"; Abhed installs one with Go (gopls), Python (basedpyright), Node.js (typescript-language-server) and Rust (rust-analyzer)")
+	}
+	return tc.PlanExtra(ctx, e, plan)
+}
+
+// extraOffer is an extra's part of an offer.
+func extraOffer(ep toolchain.ExtraPlan) *debuggerOffer {
+	o := &debuggerOffer{Name: ep.Extra.Name, Display: ep.Extra.Display, Version: ep.Extra.Version, Source: ep.Source,
+		URL: ep.URL, Digest: ep.Digest, Size: ep.Size, Note: ep.Note, Installed: ep.Installed != nil}
+	if ep.Needs != nil {
+		l, _ := toolchain.Find(ep.Needs.Spec.Lang)
+		o.Needs = &neededOffer{Language: ep.Needs.Spec.Lang, Display: l.Display, Version: ep.Needs.Version(),
+			Source: ep.Needs.Artifact.Source, URL: ep.Needs.Artifact.URL, Digest: ep.Needs.Artifact.Digest, Size: ep.Needs.Artifact.Size}
+	}
+	return o
+}
+
+// sameHosts reports whether two host lists name the same hosts.
+func sameHosts(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, h := range a {
+		seen[h] = true
+	}
+	for _, h := range b {
+		if !seen[h] {
+			return false
+		}
+	}
+	return true
 }
 
 // debuggerPlan is the plan for the debugger of plan's language.
@@ -164,9 +221,22 @@ type toolchainOffer struct {
 	RegistriesNote string   `json:"registries_note,omitempty"`
 	// Debugger is the debugger installed with it, when asked for.
 	Debugger *debuggerOffer `json:"debugger,omitempty"`
+	// LSP is the language server installed with it, when asked for.
+	LSP *debuggerOffer `json:"lsp,omitempty"`
 }
 
-// debuggerOffer is the debugger part of an offer.
+// neededOffer is a language an extra runs on that is installed first.
+type neededOffer struct {
+	Language string `json:"language"`
+	Display  string `json:"display"`
+	Version  string `json:"version"`
+	Source   string `json:"source"`
+	URL      string `json:"url,omitempty"`
+	Digest   string `json:"digest,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+}
+
+// debuggerOffer is the debugger's or language server's part of an offer.
 type debuggerOffer struct {
 	Name      string `json:"name"`
 	Display   string `json:"display"`
@@ -177,6 +247,8 @@ type debuggerOffer struct {
 	Size      int64  `json:"size,omitempty"`
 	Note      string `json:"note,omitempty"`
 	Installed bool   `json:"installed"`
+	// Needs is the language it runs on, installed first (Node.js for basedpyright).
+	Needs *neededOffer `json:"needs,omitempty"`
 }
 
 // toolchainStatus says whether the session's commands have the language,
@@ -196,6 +268,10 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 	if e, ok := toolchain.DebuggerFor(spec.Lang); ok {
 		_, has := tc.Cache.LookupExtra(tc.Platform(), e)
 		out["debugger"] = map[string]any{"name": e.Name, "version": e.Version, "available": has && out["available"] == true}
+	}
+	if e, ok := toolchain.LSPFor(spec.Lang); ok {
+		_, has := tc.Cache.LookupExtra(tc.Platform(), e)
+		out["lsp"] = map[string]any{"name": e.Name, "version": e.Version, "available": has && out["available"] == true}
 	}
 	switch {
 	case tc.Off:
@@ -225,11 +301,23 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 				out["refusal"] = toolchainProblem{Kind: "no_debugger", Message: err.Error(), Steps: problemSteps["no_debugger"]}
 				break
 			}
-			o.Command = "abhed toolchain install -debugger " + plan.Spec.Lang + "@" + plan.Version()
 			o.Title += " + " + ep.Extra.Display + " " + ep.Extra.Version
-			o.Debugger = &debuggerOffer{Name: ep.Extra.Name, Display: ep.Extra.Display, Version: ep.Extra.Version, Source: ep.Source,
-				URL: ep.URL, Digest: ep.Digest, Size: ep.Size, Note: ep.Note, Installed: ep.Installed != nil}
+			o.Debugger = extraOffer(ep)
 		}
+		if p.LSP {
+			lp, err := lspPlan(c.root(), tc, plan)
+			if err != nil {
+				out["can_act"] = false
+				out["refusal"] = toolchainProblem{Kind: "no_lsp", Message: err.Error(), Steps: problemSteps["no_lsp"]}
+				break
+			}
+			o.Title += " + " + lp.Extra.Display + " " + lp.Extra.Version
+			if lp.Needs != nil {
+				o.Title += " (installs Node.js " + lp.Needs.Version() + " first)"
+			}
+			o.LSP = extraOffer(lp)
+		}
+		o.Command = "abhed toolchain install" + flagIf(p.Debugger, " -debugger") + flagIf(p.LSP, " -lsp") + " " + plan.Spec.Lang + "@" + plan.Version()
 		out["offer"] = o
 	}
 	c.reply(msg.ID, out, nil)
@@ -281,9 +369,9 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		c.reply(msg.ID, nil, toolchainError(errRefused, "no_build", err.Error()))
 		return
 	}
-	// The debugger is planned before anything is installed, so a debugger
-	// that cannot be had there installs nothing.
-	var ep *toolchain.ExtraPlan
+	// The extras are planned before anything is installed, so one that
+	// cannot be had there installs nothing.
+	var ep, lp *toolchain.ExtraPlan
 	if p.Debugger {
 		d, err := debuggerPlan(ctx, tc, plan)
 		if err != nil {
@@ -291,6 +379,14 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 			return
 		}
 		ep = &d
+	}
+	if p.LSP {
+		d, err := lspPlan(ctx, tc, plan)
+		if err != nil {
+			c.reply(msg.ID, nil, toolchainError(errRefused, "no_lsp", err.Error()))
+			return
+		}
+		lp = &d
 	}
 	if a := p.Agreed; a != nil {
 		digest := plan.Artifact.Digest
@@ -301,11 +397,23 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		if ep != nil {
 			changed = changed || a.DebuggerVersion != ep.Extra.Version || a.DebuggerDigest != "" && a.DebuggerDigest != ep.Digest
 		}
+		if lp != nil {
+			changed = changed || a.LSPVersion != lp.Extra.Version || a.LSPDigest != "" && a.LSPDigest != lp.Digest
+		}
+		if hosts, _ := registriesOffer(tc, plan.Spec.Lang); !sameHosts(hosts, a.Registries) {
+			changed = true
+		}
 		if changed {
 			c.reply(msg.ID, nil, toolchainError(errRefused, "changed",
 				"what would be installed has changed since it was offered, so nothing was installed; ask for the offer again"))
 			return
 		}
+	}
+	// An install that does not say what the person saw is still made, for an
+	// older Studio, but recorded as unconfirmed and opens no registries.
+	consent := "studio"
+	if p.Agreed == nil {
+		consent = "studio-unconfirmed"
 	}
 	progress := func(status string) toolchain.Progress {
 		return func(done, total int64) {
@@ -320,14 +428,14 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		}
 		c.reply(msg.ID, nil, toolchainError(errRefused, kind, err.Error()))
 	}
-	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", "studio", progress("downloading"))
+	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", consent, progress("downloading"))
 	if err != nil {
 		failed(err)
 		return
 	}
 	res := map[string]any{"language": in.Lang, "available": true, "version": in.Version, "dir": in.Dir, "bin": toolchain.BinDirs(in)}
 	if ep != nil {
-		x, err := tc.InstallExtra(ctx, *ep, in, agent.ByUser, "acp", "studio", progress("debugger"))
+		x, err := tc.InstallExtra(ctx, *ep, in, agent.ByUser, "acp", consent, progress("debugger"))
 		if err != nil {
 			failed(err)
 			return
@@ -335,7 +443,20 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		bin, py := toolchain.ExtraEnv(x)
 		res["debugger"] = map[string]any{"name": x.Name, "version": x.Version, "dir": x.Dir, "bin": bin, "pythonpath": py}
 	}
-	res["registries"] = tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
+	if lp != nil {
+		x, err := tc.InstallExtra(ctx, *lp, in, agent.ByUser, "acp", consent, progress("lsp"))
+		if err != nil {
+			failed(err)
+			return
+		}
+		bin, _ := toolchain.ExtraEnv(x)
+		res["lsp"] = map[string]any{"name": x.Name, "version": x.Version, "dir": x.Dir, "bin": bin}
+	}
+	if p.Agreed != nil {
+		res["registries"] = tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
+	} else {
+		res["registries"] = "Its package registries were not opened: the install did not confirm them (agreed.registries)."
+	}
 	c.reply(msg.ID, res, nil)
 }
 

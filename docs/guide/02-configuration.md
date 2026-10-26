@@ -227,7 +227,10 @@ workspace and a few shared folders, not only the workspace:
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can
   leave a file a program outside the sandbox later reads; a workspace file
-  can only turn it off.
+  can only turn it off. Even then, the toolchain cache, the Linux helper's
+  copies and every `read_only_paths` folder stay unwritable, except a
+  `read_only_paths` folder that holds the workspace: it gets no write deny,
+  so where a temp or cache area lies inside it, that part stays writable.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command
