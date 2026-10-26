@@ -443,7 +443,7 @@ func checkClaims(env checkEnv, claims []Claim) ([]ClaimVerdict, *recordIndex) {
 // so, is never verified: output showing the thing does not show its absence.
 func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	shown := c.Text
-	c.Text = pastLabeled(c.Text)
+	c.Text = lookLed(pastLabeled(c.Text))
 	v := checkWhole(env, ix, c)
 	v.Text = shown
 	// Each clause is judged on its own too, and the claim is verified only
@@ -639,7 +639,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && !f.success && len(f.ran) == 0 && !f.negated {
+	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && (!f.success || f.changed || f.deed) && len(f.ran) == 0 && !f.negated {
 		// A change, in any wording, is read from the calls: by the change to
 		// the file it names, whose own changed text must hold the code it
 		// names; or, naming none, by a change whose text holds that code.
@@ -784,12 +784,35 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	// "No issues", "looks good": only a check run that passed shows it.
 	if f.overclaim {
-		fd := ix.success(pool, "lint", nil, false, cited)
-		if fd.out != matched {
-			fd = ix.success(pool, "test", nil, false, cited)
+		// "Lint is clean" needs a lint run; "everything works" a test or a
+		// build; anything else a lint or a test run. A run covers the whole
+		// workspace or every file changed; a lint run must report no problems.
+		kinds := []string{"lint", "test"}
+		switch f.overKind {
+		case "lint":
+			kinds = []string{"lint"}
+		case "works":
+			kinds = []string{"test", "build"}
 		}
-		if fd.out != matched {
-			fd = finding{out: missing, why: "it says the work is clean, which only a lint or test run that passed after the last change shows"}
+		scopes := [][]string{nil}
+		if changed := ix.changedFiles(); len(changed) > 0 {
+			scopes = append(scopes, changed)
+		}
+		fd := finding{out: missing, why: "it says the work is clean, which only a " + strings.Join(kinds, " or ") + " run that passed after the last change shows"}
+	search:
+		for _, k := range kinds {
+			for _, sc := range scopes {
+				got := ix.success(pool, k, sc, false, cited)
+				if got.out != matched {
+					continue
+				}
+				if o := ix.bySeq[got.seq]; k == "lint" && o != nil && lintProblemsRe.MatchString(strings.ToLower(o.content)) {
+					fd = finding{out: missing, why: "the lint run reports problems"}
+					continue
+				}
+				fd = got
+				break search
+			}
 		}
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
@@ -1226,6 +1249,17 @@ func (ix *recordIndex) ranWord(w string) bool {
 	return false
 }
 
+// changedFiles are the files the agent's successful changes named.
+func (ix *recordIndex) changedFiles() []string {
+	var out []string
+	for _, m := range ix.mutations {
+		if !m.person && !m.failed && m.known {
+			out = append(out, m.targets...)
+		}
+	}
+	return out
+}
+
 // changedAny reports a change of the agent's in this session that succeeded.
 func (ix *recordIndex) changedAny() bool {
 	for _, m := range ix.mutations {
@@ -1415,3 +1449,5 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+var lintProblemsRe = regexp.MustCompile(`\b[1-9]\d* (?:problems?|warnings?|issues?|errors?)\b`)

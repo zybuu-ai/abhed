@@ -521,9 +521,9 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 511 planted wrong claims none is shown as verified and 30 are
-  contradicted (all from cited, conflicting evidence), all 127 true controls
-  are verified, and none of the 223 true or neutral claims is contradicted;
+  -v`): of 545 planted wrong claims none is shown as verified and 30 are
+  contradicted (all from cited, conflicting evidence), all 142 true controls
+  are verified, and none of the 238 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
@@ -558,30 +558,32 @@ All notable changes to Abhed are recorded here. The format follows
   outcome or a judgement ("the hotfix is live", "`API_KEY` is a
   placeholder") the matched output does not say is not verified, and a claim
   that the work is clean ("no issues", "looks good", "LGTM") is shown only
-  by a passing lint or test run of the whole workspace (`golangci-lint run
-  ./...`, `ruff check .` and the like); a sentence that reports an event, in
-  any wording or person (a past form or participle, "now", "new", a change
-  noun), is shown only by the calls; a change that names no file is verified
-  only by an edit, a write or a resource command given the code it names,
-  read the way the sentence says from the change's own changed lines (an
-  addition or a removal by its direction, then its place on the lines that
-  enclose its changed lines, a context line the edit carried counting only
-  when it encloses them or is named as an anchor on the side the sentence
-  says, never a sibling route or function, a replacement located by where
-  its old text sat and a deletion placed where it sat before; any other
-  change only by its new text, its old text only where named as replaced and
-  never found elsewhere in the file, so a flag turned the other way or auth
-  taken off and said added stays unverified) (an edit, `sed -i`, or a write
-  against what the session last read of the file), with any count it gives
-  read from what the change was given, never by a memory note, a commit
-  message or a formatter; a change that names a file is shown only by that
-  file's change; and what the agent read or searched for is verified by a
-  call of its own for each path it names; and a sentence that explains what
-  a read or a search showed is drawn apart, as an explanation, and left out
-  of the unverified-work count, but changes no outcome and no revision, so
-  it can never make an answer verified. On a line-by-line explanation of a
-  function, the sentences counted as unverified work went from 5 to the 2
-  that were about the work.
+  by a passing lint or test run of the whole workspace or of every changed
+  file (`golangci-lint run ./...`, `ruff check .` and the like, a check
+  whose output reports no problems; never `fmt`, `format` or `--version`), a
+  contrast never taking it back, and "it compiles" needs a passing build; a
+  sentence that reports an event, in any wording or person (a past form or
+  participle, "now", "new", a change noun), is shown only by the calls; a
+  change that names no file is verified only by an edit, a write or a
+  resource command given the code it names, read the way the sentence says
+  from the change's own changed lines (an addition or a removal by its
+  direction, then its place on the lines that enclose its changed lines, a
+  context line the edit carried counting only when it encloses them or is
+  named as an anchor on the side the sentence says, never a sibling route or
+  function, a replacement located by where its old text sat and a deletion
+  placed where it sat before; any other change only by its new text, its old
+  text only where named as replaced and never found elsewhere in the file,
+  so a flag turned the other way or auth taken off and said added stays
+  unverified) (an edit, `sed -i`, or a write against what the session last
+  read of the file), with any count it gives read from what the change was
+  given, never by a memory note, a commit message or a formatter; a change
+  that names a file is shown only by that file's change; and what the agent
+  read or searched for is verified by a call of its own for each path it
+  names; and a sentence that explains what a read or a search showed is
+  drawn apart, as an explanation, and left out of the unverified-work count,
+  but changes no outcome and no revision, so it can never make an answer
+  verified. On a line-by-line explanation of a function, the sentences
+  counted as unverified work went from 5 to the 2 that were about the work.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.

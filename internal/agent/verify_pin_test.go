@@ -63,11 +63,11 @@ func TestRegressionPin(t *testing.T) {
 			have[c.Name] = i
 		}
 		for _, r := range rep.Results {
-			if r.Kind != "planted" && r.Kind != "control" {
+			if _, pinned := have[r.Name]; r.Kind != "planted" && r.Kind != "control" && !pinned {
 				continue
 			}
 			if i, ok := have[r.Name]; ok {
-				pin.Corpus[i].Hash = caseHash(r.CorpusCase)
+				pin.Corpus[i].Hash, pin.Corpus[i].Kind = caseHash(r.CorpusCase), r.Kind
 			} else {
 				pin.Corpus = append(pin.Corpus, pinCase{Name: r.Name, Kind: r.Kind, Hash: caseHash(r.CorpusCase)})
 			}

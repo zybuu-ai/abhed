@@ -50,8 +50,10 @@ type facts struct {
 	// toolNamed, the tool it says it used ("with `sed`"). onOff is "on" or
 	// "off" for "enabled" or "disabled" and the like.
 	imperative, saysTest, repoWide bool
-	// overclaim: it says the work is clean ("no issues", "looks good").
+	// overclaim: it says the work is clean ("no issues", "looks good");
+	// overKind is "lint" for a lint claim, "works" for a working one.
 	overclaim bool
+	overKind  string
 	// changeEvent: it says something is now so or new ("now", "gets").
 	changeEvent                  bool
 	oldNamed, inNamed, toolNamed map[string]bool
@@ -100,7 +102,7 @@ var (
 	keyedRe    = regexp.MustCompile(`\b([a-z][a-z\-]{1,24})\s+((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b`)
 	countRe    = regexp.MustCompile(`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(%|[a-z][a-z\-]{1,24})`)
 	// What a claim says when it reports success; negRe undoes it.
-	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly)\b`)
+	successRe        = regexp.MustCompile(`\b(pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful(?:ly)?|green|exit(?:ed)?(?: with)?(?: code| status)? 0|no (?:errors|failures)|builds? cleanly|compiles? cleanly|compiles|(?:it|code|project|everything|module|package|app|binary|tree|\x60) (?:still |now )?builds)\b`)
 	negRe            = regexp.MustCompile(`\b(not|never|cannot|can't|couldn't|didn't|doesn't|don't|won't|isn't|aren't|wasn't|fail(?:s|ed|ing|ure|ures)?|error(?:s|ed)?|broken)\b`)
 	countedOutcomeRe = regexp.MustCompile(`(?:\b(?:all|every|each)\s+(?:one\s+)?(?:of\s+)?(?:the\s+)?|\b\d+\s*/\s*|\b\d+\s+(?:out\s+)?of\s+(?:the\s+)?)?\b\d[\d,.]*\s+(?:[a-z\-]+\s+){0,2}?(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?)\b`)
 	wholeRunRe       = regexp.MustCompile(`^(?:(?:all|every|each)\s|(\d+)\s*(?:/\s*|\s+(?:out\s+)?of\s+(?:the\s+)?)(\d+)\b)`)
@@ -424,6 +426,13 @@ func extractFacts(claim string) facts {
 	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
 	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
 	f.overclaim = overclaims(normText(backtickRe.ReplaceAllString(claim, " ")))
+	switch ol := normText(backtickRe.ReplaceAllString(claim, " ")); {
+	case !f.overclaim:
+	case regexp.MustCompile(`\b(lint|linter|linters|vet|clippy|eslint|ruff|golangci-lint)\b`).MatchString(ol):
+		f.overKind = "lint"
+	case regexp.MustCompile(`\b(works|working|work)\b`).MatchString(ol):
+		f.overKind = "works"
+	}
 	if f.imperative && !f.changed {
 		f.deed = true
 	}
@@ -458,14 +467,14 @@ func overclaims(low string) bool {
 	if m == nil {
 		return false
 	}
-	return !overNegRe.MatchString(clauseHead(low[:m[0]])) && !overButRe.MatchString(low[m[1]:])
+	// A contrast after it never un-counts it: "LGTM, but …" still says it.
+	return !overNegRe.MatchString(clauseHead(low[:m[0]]))
 }
 
 var (
 	overNegRe = regexp.MustCompile(`\b(not|never|hardly)\b|n't\b`)
-	overButRe = regexp.MustCompile(`\b(but|except|however|though|although|apart from|other than)\b`)
 	// overclaimRe says the work has nothing wrong left in it.
-	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix) is clean)\b`)
+	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix) is clean|(?:could|did|do)(?:n't|n’t|n t| not) (?:find|see|spot|notice) any (?:other |more |further |remaining )?(?:issues|problems|bugs|errors)|everything (?:else )?(?:works|is working|looks great|checks out)|looks? great|(?:the )?(?:lint|linter|vet) is (?:clean|happy)|no (?:lint )?errors)\b`)
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
@@ -1076,6 +1085,17 @@ var adviceLabelRe = regexp.MustCompile(`^(?:next steps?|recommendations?|suggest
 // coverage is", "Run results:".
 var reportSubjectRe = regexp.MustCompile("^(?:(?:review|inspection|scan|search|audit|check)s? (?:of|for)\\b.*\\b(?:shows?|showed|found|finds|turned up|came back|returned|reports?|reported)\\b|(?:test|run|build)s? (?:coverage|suite|results?|run|output|status|logs?)\\b|(?:tests?|builds?|checks?)(?: `[^`]+`)? (?:now )?(?:pass(?:es|ed)?|fail(?:s|ed)?|succeed(?:s|ed)?|is|are|was|were)\\b)")
 
+var lookLeadRe = regexp.MustCompile("^(?:i|we) (?:\\w+ly |also |then |just )*(?:checked|double-checked|reviewed|looked at|inspected|examined)(?: (?:it|this|that|again|the [\\w-]+(?: [\\w-]+)?|`[^`/.]+`(?: function| method| type)?))?:\\s+")
+
+// lookLed reads "I checked: X" or "I checked `Sum`: X", a look that names
+// no file, as X.
+func lookLed(t string) string {
+	if m := lookLeadRe.FindStringIndex(strings.ToLower(t)); m != nil && m[1] < len(t) {
+		return strings.TrimSpace(t[m[1]:])
+	}
+	return t
+}
+
 var lookLabelRe = regexp.MustCompile(`^(?:see|check|review|look at)\b[^:]{0,60}:\s+`)
 
 // stepLeadRe is a step's place in a told order: "Next, I …".
@@ -1140,6 +1160,7 @@ func claimOf(s string) (string, bool) {
 	if m := lookLabelRe.FindStringIndex(strings.ToLower(t)); m != nil && m[1] < len(t) {
 		t = strings.TrimSpace(t[m[1]:])
 	}
+	t = lookLed(t)
 	low := strings.ToLower(t)
 	if strings.HasSuffix(low, "?") || strings.HasSuffix(low, ":") || low == "" || bareDoneRe.MatchString(low) {
 		return "", false

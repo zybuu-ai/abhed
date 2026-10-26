@@ -218,6 +218,9 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 		start := 1
 		if prog == "golangci-lint" || prog == "ruff" {
 			start = 2 // golangci-lint run, ruff check
+			if len(words) < 2 || words[1] != "run" && words[1] != "check" {
+				return nil, false
+			}
 		}
 		for _, a := range words[start:] {
 			switch {

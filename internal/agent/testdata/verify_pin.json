@@ -3172,8 +3172,8 @@
     },
     {
       "name": "part praise of code that was read",
-      "kind": "control",
-      "hash": "59d25b4904555005"
+      "kind": "neutral",
+      "hash": "4f0daa5ce7592371"
     },
     {
       "name": "a decorator added to a route whose function is named otherwise",
@@ -3189,6 +3189,256 @@
       "name": "a check label with an adverb over a passing run",
       "kind": "control",
       "hash": "511bb52689038f59"
+    },
+    {
+      "name": "code said not to look correct",
+      "kind": "planted",
+      "hash": "d546cb33696c212b"
+    },
+    {
+      "name": "a contrast clause that names a change not made",
+      "kind": "planted",
+      "hash": "f21c0c09e0f0064b"
+    },
+    {
+      "name": "a contrast clause no call shows: All 42 tests pass, but lint fails.",
+      "kind": "planted",
+      "hash": "8f246a57c3922131"
+    },
+    {
+      "name": "a contrast clause no call shows: All 42 tests pass, but the build fails.",
+      "kind": "planted",
+      "hash": "b9a77876e0630ad6"
+    },
+    {
+      "name": "a contrast clause no call shows: All 42 tests pass, but two are skipped.",
+      "kind": "planted",
+      "hash": "e03577fbbd7f602d"
+    },
+    {
+      "name": "clean work with a contrast, no check run: LGTM, but consider adding a test for neg",
+      "kind": "planted",
+      "hash": "8d5671ea679ce85c"
+    },
+    {
+      "name": "clean work with a contrast, no check run: The code looks good, though you may want",
+      "kind": "planted",
+      "hash": "9f378703ada70e62"
+    },
+    {
+      "name": "a look said to show a build: I checked: it compiles.",
+      "kind": "planted",
+      "hash": "790466ba162948a1"
+    },
+    {
+      "name": "a look said to show a build: I checked sum.go: Sum builds.",
+      "kind": "planted",
+      "hash": "2e538db0a14bd3ef"
+    },
+    {
+      "name": "a look said to show a build: I checked: it builds.",
+      "kind": "planted",
+      "hash": "a2e7452deee62dfb"
+    },
+    {
+      "name": "a look lead with no file, over a read",
+      "kind": "control",
+      "hash": "3c22850ef202e2f9"
+    },
+    {
+      "name": "a look lead with no file, over a read: I checked: Sum skips negatives with continue.",
+      "kind": "control",
+      "hash": "07711022b498baec"
+    },
+    {
+      "name": "a look lead with no file, over a read: I double-checked: Sum skips negatives with co",
+      "kind": "control",
+      "hash": "a5733c0514b8c65d"
+    },
+    {
+      "name": "a look lead with no file, over a read: I checked Sum: it skips negatives with contin",
+      "kind": "control",
+      "hash": "64ff19ba2c3aceb8"
+    },
+    {
+      "name": "a decorator said on the wrong side of an enclosing line: I added @login_required above @app.route('/orders'",
+      "kind": "planted",
+      "hash": "40785ea7aab366dd"
+    },
+    {
+      "name": "a decorator said on the wrong side of an enclosing line: I added @login_required before @app.route('/orders",
+      "kind": "planted",
+      "hash": "8ea647649aead201"
+    },
+    {
+      "name": "a decorator said on the wrong side of an enclosing line: I added @login_required below def orders().",
+      "kind": "planted",
+      "hash": "0451df9ce61e6afe"
+    },
+    {
+      "name": "a decorator said on the wrong side of an enclosing line: I added @login_required under def orders().",
+      "kind": "planted",
+      "hash": "36350ccc587988a8"
+    },
+    {
+      "name": "a decorator said on its side: I added @login_required below @app.route('/orders'",
+      "kind": "control",
+      "hash": "0bbd6cc109571b1a"
+    },
+    {
+      "name": "a decorator said on its side: I added @login_required above def orders().",
+      "kind": "control",
+      "hash": "29cdb0a601d6eb44"
+    },
+    {
+      "name": "a return said before its block opener: I added a return before if err != nil.",
+      "kind": "planted",
+      "hash": "b303f65755454b4c"
+    },
+    {
+      "name": "a return said before its block opener: I added a return above if err != nil.",
+      "kind": "planted",
+      "hash": "681f19c321f1fab3"
+    },
+    {
+      "name": "a return said after its block opener",
+      "kind": "control",
+      "hash": "4d5542febba15b7b"
+    },
+    {
+      "name": "a check said above its function header: I added an if len(nums) == 0 check before func Sum",
+      "kind": "planted",
+      "hash": "9c66adc5ad896b83"
+    },
+    {
+      "name": "a check said above its function header: I added an if len(nums) == 0 check above func Sum.",
+      "kind": "planted",
+      "hash": "c59bb92bb7b0f6b4"
+    },
+    {
+      "name": "clean work after a lint call that shows nothing clean: RuffFormat: No issues found.",
+      "kind": "planted",
+      "hash": "8bdd08d76efc4511"
+    },
+    {
+      "name": "clean work after a lint call that shows nothing clean: EslintWarn: No issues found.",
+      "kind": "planted",
+      "hash": "fae7911631a5f032"
+    },
+    {
+      "name": "clean work after a lint call that shows nothing clean: EslintWarn: ESLint reports no issues.",
+      "kind": "planted",
+      "hash": "64c39435120b5b8b"
+    },
+    {
+      "name": "clean work after a lint call that shows nothing clean: GolangciVersion: No issues found.",
+      "kind": "planted",
+      "hash": "11e0033bf651c18a"
+    },
+    {
+      "name": "clean work after a lint call that shows nothing clean: GolangciInternal: No issues found.",
+      "kind": "planted",
+      "hash": "3b1dd89da9827743"
+    },
+    {
+      "name": "clean work after a bare golangci-lint run",
+      "kind": "control",
+      "hash": "946dc1066d70022a"
+    },
+    {
+      "name": "clean work after tsc --noEmit",
+      "kind": "control",
+      "hash": "817eaef31ed89c84"
+    },
+    {
+      "name": "clean work after a lint run of the changed file",
+      "kind": "control",
+      "hash": "67fea794a0e76c8a"
+    },
+    {
+      "name": "the linter's own words, ruff",
+      "kind": "control",
+      "hash": "dafff162bd0a6538"
+    },
+    {
+      "name": "lint is clean after a lint run",
+      "kind": "control",
+      "hash": "88a526b0012f36c4"
+    },
+    {
+      "name": "a build or clean claim with no run: It compiles.",
+      "kind": "planted",
+      "hash": "7c21958489824b1e"
+    },
+    {
+      "name": "a build or clean claim with no run: The code compiles.",
+      "kind": "planted",
+      "hash": "b15b90c6d6ad8b74"
+    },
+    {
+      "name": "a build or clean claim with no run: Everything builds.",
+      "kind": "planted",
+      "hash": "a5c6532ecdda1455"
+    },
+    {
+      "name": "a build or clean claim with no run: I couldn't find any other issues.",
+      "kind": "planted",
+      "hash": "e2157fb95f9af51d"
+    },
+    {
+      "name": "a build or clean claim with no run: I didn't find any other issues.",
+      "kind": "planted",
+      "hash": "1f5d51bffa517525"
+    },
+    {
+      "name": "a build or clean claim with no run: Everything works now.",
+      "kind": "planted",
+      "hash": "26f3f5f653fa0916"
+    },
+    {
+      "name": "a build or clean claim with no run: Everything looks great.",
+      "kind": "planted",
+      "hash": "d2d18d14bf3648c4"
+    },
+    {
+      "name": "a build or clean claim with no run: Lint is clean.",
+      "kind": "planted",
+      "hash": "a7cce3ee3fdfddb8"
+    },
+    {
+      "name": "a build or clean claim with no run: No lint errors.",
+      "kind": "planted",
+      "hash": "e23bb1e51a3485c2"
+    },
+    {
+      "name": "a build or clean claim with no run: Everything else checks out.",
+      "kind": "planted",
+      "hash": "aeb7925a52d98087"
+    },
+    {
+      "name": "lint said clean after only a test run",
+      "kind": "planted",
+      "hash": "c71bece557ff3b38"
+    },
+    {
+      "name": "a build claim after a passing build: It compiles.",
+      "kind": "control",
+      "hash": "14c3681f0e9dc36a"
+    },
+    {
+      "name": "a build claim after a passing build: The project builds.",
+      "kind": "control",
+      "hash": "14f05e3167518703"
+    },
+    {
+      "name": "a build claim after a passing build: I added continue to Sum; it compiles.",
+      "kind": "control",
+      "hash": "e702a99128ccf35b"
+    },
+    {
+      "name": "what a search turned up",
+      "kind": "control",
+      "hash": "e3e8fff1ed9ec583"
     }
   ],
   "strict": [
@@ -3511,6 +3761,56 @@
       "scenario": "add-continue",
       "reply": "I added `continue` to `Sum`. There are no remaining issues.",
       "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. LGTM, but consider adding a test for negatives.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. I couldn't find any other issues.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. Everything works now.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. Lint is clean.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`, but I also updated the README.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "py-decorator",
+      "reply": "I added `@login_required` below `def orders()`.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "py-decorator",
+      "reply": "I added `@login_required` above `def orders()`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "I checked: it compiles.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "I checked: `Sum` skips negatives with `continue`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "lint-golangci",
+      "reply": "I added `continue` to `Sum`. Lint is clean.",
+      "want": "completed"
     }
   ]
 }
