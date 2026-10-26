@@ -242,6 +242,29 @@ type Relay struct {
 	seq       int
 	launchSeq int
 	launched  bool
+	// terminating is set once the editor asked the adapter to terminate.
+	terminating bool
+	onEnd       func()
+	endOnce     sync.Once
+}
+
+// OnEnd sets what runs once the session is over by the protocol: the adapter
+// answered disconnect, or reported the program terminated or exited after a
+// terminate. An adapter such as debugpy's waits for its input to close, so
+// the caller closes it, and ends the adapter if it does not go.
+func (r *Relay) OnEnd(f func()) {
+	r.mu.Lock()
+	r.onEnd = f
+	r.mu.Unlock()
+}
+
+func (r *Relay) end() {
+	r.mu.Lock()
+	f := r.onEnd
+	r.mu.Unlock()
+	if f != nil {
+		r.endOnce.Do(f)
+	}
 }
 
 // New is a relay writing to the adapter's stdin; toEditor receives every
@@ -259,6 +282,7 @@ type header struct {
 	Success    bool            `json:"success"`
 	Message    string          `json:"message"`
 	Arguments  json.RawMessage `json:"arguments"`
+	Event      string          `json:"event"`
 }
 
 // Refused editor requests: the engine starts the program itself, and nothing
@@ -290,6 +314,11 @@ func (r *Relay) FromEditor(raw json.RawMessage) error {
 	if refused {
 		r.editor(map[string]any{"type": "response", "request_seq": h.Seq, "success": false, "command": h.Command, "message": why})
 		return nil
+	}
+	if h.Command == "terminate" {
+		r.mu.Lock()
+		r.terminating = true
+		r.mu.Unlock()
 	}
 	return r.write(raw)
 }
@@ -326,6 +355,12 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			continue
 		}
 		r.editor(raw)
+		r.mu.Lock()
+		terminating := r.terminating
+		r.mu.Unlock()
+		if h.Type == "response" && h.Command == "disconnect" || h.Type == "event" && terminating && (h.Event == "terminated" || h.Event == "exited") {
+			r.end()
+		}
 		if h.Type == "response" && h.Command == "initialize" && h.Success {
 			if err := r.sendLaunch(); err != nil {
 				return err

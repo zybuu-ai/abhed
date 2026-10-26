@@ -97,4 +97,7 @@ code and how long it ran). Both are in the OCSF export as API activity
   sandbox; pass `GOCACHE=/tmp/gocache` in the environment if the image's home
   folder is read-only.
 - Stopping a session asks the adapter to end the program, and ends the adapter
-  if it has not gone within three seconds.
+  if it has not gone within three seconds. Disconnecting from Studio's own
+  debug toolbar, or terminating the program, ends the session the same way:
+  once the adapter has answered, the engine closes its input and ends it after
+  three seconds if it is still there.

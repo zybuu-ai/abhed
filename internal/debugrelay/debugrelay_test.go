@@ -206,3 +206,48 @@ func TestMissingAdapter(t *testing.T) {
 		t.Fatal("an ordinary exit is a problem")
 	}
 }
+
+// The session is over when the adapter answers disconnect, or reports the
+// program ended after a terminate; a program that just ends is not.
+func TestRelayEndsOnDisconnectOrTerminate(t *testing.T) {
+	f := newFake(t)
+	ended := make(chan struct{}, 4)
+	f.relay.OnEnd(func() { ended <- struct{}{} })
+	f.send(t, map[string]any{"seq": 1, "type": "event", "event": "exited", "body": map[string]any{"exitCode": 0}})
+	f.editor(t)
+	select {
+	case <-ended:
+		t.Fatal("an exited event alone ended the session")
+	default:
+	}
+	go func() { _ = f.relay.FromEditor(json.RawMessage(`{"seq":7,"type":"request","command":"terminate"}`)) }()
+	if m := f.read(t); m["command"] != "terminate" {
+		t.Fatalf("adapter got %v", m)
+	}
+	f.send(t, map[string]any{"seq": 2, "type": "event", "event": "terminated"})
+	f.editor(t)
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminate then terminated did not end the session")
+	}
+	// Once only, however many ends follow.
+	f.send(t, map[string]any{"seq": 3, "type": "response", "request_seq": 8, "command": "disconnect", "success": true})
+	f.editor(t)
+	select {
+	case <-ended:
+		t.Fatal("the session ended twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	g := newFake(t)
+	gEnded := make(chan struct{}, 1)
+	g.relay.OnEnd(func() { gEnded <- struct{}{} })
+	g.send(t, map[string]any{"seq": 1, "type": "response", "request_seq": 3, "command": "disconnect", "success": true})
+	g.editor(t)
+	select {
+	case <-gEnded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a disconnect answer did not end the session")
+	}
+}
