@@ -219,7 +219,7 @@ offers when a server ends `server-missing`.
 | Go 1.26 or later | gopls 0.23.0 | built by Abhed itself, as Delve is: `go install golang.org/x/tools/gopls@v0.23.0` with the cached Go, from `proxy.golang.org` only, every module checked by `sum.golang.org`, none of your own Go settings; Linux and macOS on amd64 and arm64, and Linux on s390x |
 | Python | basedpyright 1.40.2 (`basedpyright-langserver`) | its npm package, refused unless the registry's `integrity` is the sha512 Abhed pins. It runs on Node.js: where none is installed, Studio's offer and the CLI install Node.js first and say so; the agent's tool asks for Node.js on its own instead, under its own rules |
 | Node.js 22.22.2 or later | typescript-language-server 6.0.2, with TypeScript 5.9.3 (the last with the `tsserver` it drives) | both npm packages, each refused unless its `integrity` is the pinned sha512 |
-| Rust | rust-analyzer | the Rust release's own component where it ships one (Abhed's Rust installs do), so nothing more is downloaded; else the 2026-10-12 release asset from GitHub, refused unless its sha256 is the pinned one |
+| Rust | rust-analyzer | the Rust release's own component where it ships one (Abhed's Rust installs do): it belongs to that Rust, in its folder, and goes when that Rust is removed, and the offer for a Rust not yet installed names that release as its source; else, for a Rust build without it, the 2026-10-12 release asset from GitHub, refused unless its sha256 is the pinned one |
 
 They are kept read-only in the cache like the debuggers, recorded as their
 own `toolchain.install` with `extra`, and are on `PATH` whenever their

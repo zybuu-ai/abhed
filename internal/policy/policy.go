@@ -655,14 +655,11 @@ func subjectOf(args json.RawMessage) (key, subject string, err error) {
 // the debugger or the language server: go+debugger+lsp@1.27 is go@1.27.
 func toolchainLanguage(subject string) (string, bool) {
 	name, version, ok := strings.Cut(subject, "@")
-	lang, extras, plus := strings.Cut(name, "+")
+	// Any suffix: the tool reads the language as the part before the first
+	// "+", whatever follows, so deny and ask rules see that language too.
+	lang, _, plus := strings.Cut(name, "+")
 	if !plus || lang == "" {
 		return "", false
-	}
-	for _, e := range strings.Split(extras, "+") {
-		if e != "debugger" && e != "lsp" {
-			return "", false
-		}
 	}
 	if !ok {
 		return lang, true

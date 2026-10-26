@@ -267,3 +267,30 @@ func TestStudioToolchainInstallWithoutAgreement(t *testing.T) {
 		t.Fatalf("recorded %v", got)
 	}
 }
+
+// An agreement covers the language a language server runs on that comes
+// first: a newer Node.js than the one shown is a change.
+func TestAgreementCoversWhatComesFirst(t *testing.T) {
+	plan := toolchain.Plan{Spec: toolchain.Spec{Lang: "python"}, Installed: &toolchain.Installed{Version: "3.12.7", Digest: "sha256:py"}}
+	node := toolchain.Plan{Spec: toolchain.Spec{Lang: "node"}, Artifact: toolchain.Artifact{Version: "24.9.0", Digest: "sha256:n1"}}
+	lp := &toolchain.ExtraPlan{Extra: toolchain.Extra{Version: "1.40.2"}, Digest: "sha512:b", Needs: &node}
+	a := &toolchainAgreed{Version: "3.12.7", Digest: "sha256:py", LSPVersion: "1.40.2", LSPDigest: "sha512:b",
+		NeedsVersion: "24.9.0", NeedsDigest: "sha256:n1", Registries: []string{"pypi.org"}}
+	if a.changedFrom(plan, nil, lp, []string{"pypi.org"}) {
+		t.Fatal("what was shown is a change")
+	}
+	moved := node
+	moved.Artifact = toolchain.Artifact{Version: "24.10.0", Digest: "sha256:n2"}
+	lp.Needs = &moved
+	if !a.changedFrom(plan, nil, lp, []string{"pypi.org"}) {
+		t.Fatal("a newer Node.js than shown was not a change")
+	}
+	lp.Needs = nil
+	if !a.changedFrom(plan, nil, lp, []string{"pypi.org"}) {
+		t.Fatal("an agreement to install Node.js first matched a plan without it")
+	}
+	a.NeedsVersion, a.NeedsDigest = "", ""
+	if a.changedFrom(plan, nil, lp, []string{"pypi.org"}) || !a.changedFrom(plan, nil, lp, []string{"pypi.org", "files.pythonhosted.org"}) {
+		t.Fatal("registries")
+	}
+}

@@ -193,3 +193,16 @@ func TestToolchainRulesHoldWithTheLanguageServer(t *testing.T) {
 		}
 	}
 }
+
+// Deny and ask rules on a language see it whatever follows its "+", as the
+// tool reads the language before the first "+".
+func TestToolchainRulesHoldWithAnySuffix(t *testing.T) {
+	deny := policy.New(policy.ModeDefault)
+	_ = deny.AddAllow(toolchain.ToolName)
+	_ = deny.AddDeny(toolchain.ToolName + "(go@*)")
+	for _, name := range []string{"go+bogus+lsp@1.27", "go+other@1.27"} {
+		if d := deny.Evaluate(toolchain.ToolName, true, json.RawMessage(`{"name":"`+name+`"}`)); d.Decision != policy.Deny {
+			t.Errorf("%s: %+v", name, d)
+		}
+	}
+}

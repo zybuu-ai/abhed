@@ -168,7 +168,7 @@ func (c Cache) installNPM(ctx context.Context, src *Source, e Extra, p Platform,
 				if _, err := os.Lstat(filepath.Join(dest, filepath.FromSlash(script))); err != nil {
 					return ExtraInstalled{}, fmt.Errorf("%s has no %s", pkg.name, script)
 				}
-				if err := os.WriteFile(filepath.Join(top, "bin", cmd), []byte(nodeWrapper(pkg.name, script)), 0o755); err != nil { // #nosec G306 -- a command for the sandbox
+				if err := writeExclusive(filepath.Join(top, "bin", cmd), []byte(nodeWrapper(pkg.name, script)), 0o755); err != nil {
 					return ExtraInstalled{}, err
 				}
 			}
@@ -226,20 +226,26 @@ func shipsRustAnalyzer(dir string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// linkRustAnalyzer records the Rust toolchain's own rust-analyzer as the
-// extra, with a command that runs it, so nothing more is downloaded.
-func (c Cache) linkRustAnalyzer(e Extra, lang Installed, p Platform) (ExtraInstalled, error) {
-	return c.placeExtra(e, p, func(_, top string) (ExtraInstalled, error) {
-		if err := os.MkdirAll(filepath.Join(top, "bin"), 0o755); err != nil {
-			return ExtraInstalled{}, err
+// providedRustAnalyzer is the Rust toolchain's own rust-analyzer as the
+// extra: it is that Rust's, in its folder, and goes when it does.
+func providedRustAnalyzer(e Extra, lang Installed) ExtraInstalled {
+	return ExtraInstalled{Name: e.Name, Lang: e.Lang, Version: "rust-" + lang.Version, Platform: lang.Platform,
+		Source: "Rust " + lang.Version + "'s own rust-analyzer component, checked with its release",
+		URL:    lang.URL, Digest: lang.Digest, Bytes: lang.Bytes, InstalledAt: lang.InstalledAt, Dir: lang.Dir}
+}
+
+// ExtraAvailable reports whether e is there for commands that have the
+// installed languages active: in the cache, or carried by the language.
+func (c Cache) ExtraAvailable(p Platform, e Extra, active []Installed) bool {
+	if _, ok := c.LookupExtra(p, e); ok {
+		return true
+	}
+	for _, in := range active {
+		if in.Lang == e.Lang && e.Name == "rust-analyzer" && shipsRustAnalyzer(in.Dir) {
+			return true
 		}
-		run := "#!/bin/sh\nexec " + shellQuote(filepath.Join(lang.Dir, "bin", "rust-analyzer")) + " \"$@\"\n"
-		if err := os.WriteFile(filepath.Join(top, "bin", "rust-analyzer"), []byte(run), 0o755); err != nil { // #nosec G306 -- a command for the sandbox
-			return ExtraInstalled{}, err
-		}
-		return ExtraInstalled{Source: "Rust " + lang.Version + "'s own rust-analyzer component, checked with its release",
-			URL: lang.URL, Digest: lang.Digest}, nil
-	})
+	}
+	return false
 }
 
 // maxBinary bounds a single unpacked binary.
