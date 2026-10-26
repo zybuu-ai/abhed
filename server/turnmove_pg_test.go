@@ -94,7 +94,7 @@ func (m *testMover) park(context.Context, string, string) (bool, error) {
 }
 
 func (m *testMover) claim(ctx context.Context, id, holder string) (bool, error) {
-	return m.pg.ClaimOrphan(ctx, id, holder, nodeStale)
+	return m.pg.ClaimOrphan(ctx, id, holder, nodeStale.Get())
 }
 
 func (m *testMover) HandOver(ctx context.Context, s *Server) int {

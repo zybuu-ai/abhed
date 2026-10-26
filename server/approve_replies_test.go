@@ -35,9 +35,9 @@ func TestApproveBadBodyToUnknownSessionIs404(t *testing.T) {
 // An answer that arrives before its request's row is written is told to
 // come back, with Retry-After.
 func TestApproveWhileStillRecordingSaysWhenToRetry(t *testing.T) {
-	wait := approvalReadyWait
-	approvalReadyWait = 200 * time.Millisecond
-	t.Cleanup(func() { approvalReadyWait = wait })
+	wait := approvalReadyWait.Get()
+	approvalReadyWait.Set(200 * time.Millisecond)
+	t.Cleanup(func() { approvalReadyWait.Set(wait) })
 	h, live, rows, id := approvalSession(t, true)
 	gate, entered := make(chan struct{}), make(chan struct{}, 1)
 	// Held past the reply's wait, whatever the write's own deadline.

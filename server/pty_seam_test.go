@@ -200,16 +200,16 @@ func TestEngineForegroundAsksTheHostNotTheContainer(t *testing.T) {
 	stat := "4242 (bash) S 1 4242 4242 34816 4242 0\n"
 	// engineHostProc and engineAskWait are package globals this test swaps:
 	// it must never be made t.Parallel().
-	old, wait := engineHostProc, engineAskWait
-	t.Cleanup(func() { engineHostProc, engineAskWait = old, wait })
+	old, wait := engineHostProc.Get(), engineAskWait.Get()
+	t.Cleanup(func() { engineHostProc.Set(old); engineAskWait.Set(wait) })
 	// The fake engine is a shell script; a loaded machine can take seconds to start one.
-	engineAskWait = time.Minute
-	engineHostProc = func(_ context.Context, _ string, paths ...string) ([]byte, error) {
+	engineAskWait.Set(time.Minute)
+	engineHostProc.Set(func(_ context.Context, _ string, paths ...string) ([]byte, error) {
 		if len(paths) != 2 || paths[0] != "/proc/4242/cgroup" || paths[1] != "/proc/4242/stat" {
 			t.Fatalf("read %v", paths)
 		}
 		return []byte(cgroup + stat), nil
-	}
+	})
 	ask := engineForeground(exec.Command(engine, "run", "--rm", "--name", "abhed-term-x", "img"))
 	if ask == nil {
 		t.Fatal("no probe for a named container")

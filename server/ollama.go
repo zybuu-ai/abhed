@@ -36,7 +36,7 @@ func withOllamaCard(page string) string {
 }
 
 // ollamaEnv is the host the assist acts on; tests replace it.
-var ollamaEnv = ollama.DefaultEnv
+var ollamaEnv = newTunable(ollama.DefaultEnv)
 
 // ollamaRequest is the body of the actions.
 type ollamaRequest struct {
@@ -77,7 +77,7 @@ func (s *Server) ollamaAssist(w http.ResponseWriter, r *http.Request, req ollama
 		return ollama.Assist{}, ollama.Target{}, false
 	}
 	user := UserOf(r.Context())
-	a := toolset.OllamaAssist(cfg, ollamaEnv(), "server", s.ollamaAdmin(r), sandbox.InAgentCommand(), func(typ agent.EventType, ev agent.OllamaAction) {
+	a := toolset.OllamaAssist(cfg, ollamaEnv.Get()(), "server", s.ollamaAdmin(r), sandbox.InAgentCommand(), func(typ agent.EventType, ev agent.OllamaAction) {
 		ev.By = agent.ByUser
 		s.log.Info("ollama "+ev.Op, "outcome", ev.Outcome, "provider", ev.Provider, "model", ev.Model, "user", user, "problem", ev.Problem)
 		s.adminAudit(r, "ollama."+ev.Op, ev.Provider, map[string]any{"outcome": ev.Outcome, "model": ev.Model, "command": ev.Command, "problem": ev.Problem})
@@ -302,7 +302,7 @@ func (s *Server) postOllamaForget(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, "only an administrator of this server can change that")
 		return
 	}
-	if err := ollamaEnv().SetStartAlways(false, ""); err != nil {
+	if err := ollamaEnv.Get()().SetStartAlways(false, ""); err != nil {
 		WriteError(w, http.StatusInternalServerError, "the choice could not be forgotten")
 		return
 	}
