@@ -865,12 +865,23 @@ func raw(src string, w *syntax.Word) string {
 
 // wrappers run the program named after them.
 var wrappers = map[string]bool{"sudo": true, "env": true, "command": true, "nohup": true, "time": true, "nice": true,
-	"timeout": true, "exec": true, "builtin": true, "stdbuf": true, "ionice": true, "chrt": true, "doas": true,
-	"runuser": true}
+	"timeout": true, "exec": true, "builtin": true, "stdbuf": true, "ionice": true, "chrt": true, "doas": true}
 
-// wrapperValueFlags are a wrapper's flags that take the next word as their value.
-var wrapperValueFlags = map[string]bool{"-u": true, "-g": true, "-n": true, "-s": true, "-k": true, "-C": true,
-	"-o": true, "-e": true, "-i": true, "-c": true, "-p": true, "-D": true, "--chdir": true}
+// wrapperFlags are, per wrapper, the options that take the next word as their
+// value. A flag absent here (sudo -n/-i/-s/-k/-E/-H/-b) takes no value, so the
+// program is the next word.
+var wrapperFlags = map[string]map[string]bool{
+	"sudo": {"-u": true, "-g": true, "-C": true, "-D": true, "-h": true, "-p": true, "-r": true, "-t": true,
+		"-U": true, "-R": true, "-T": true, "--user": true, "--group": true, "--chdir": true, "--prompt": true,
+		"--role": true, "--type": true, "--close-from": true, "--host": true, "--command-timeout": true, "--other-user": true},
+	"doas":    {"-u": true, "-C": true},
+	"env":     {"-u": true, "-C": true, "-S": true, "--unset": true, "--chdir": true, "--split-string": true},
+	"nice":    {"-n": true, "--adjustment": true},
+	"timeout": {"-s": true, "-k": true, "--signal": true, "--kill-after": true},
+	"stdbuf":  {"-i": true, "-o": true, "-e": true},
+	"ionice":  {"-c": true, "-n": true, "-p": true, "--class": true, "--classdata": true, "--pid": true},
+	"chrt":    {"-p": true},
+}
 
 // program is the program a command runs and the words after it.
 func (c command) program() (string, []string) {
@@ -884,21 +895,20 @@ func (c command) program() (string, []string) {
 		if !wrappers[path.Base(head)] {
 			return head, w[1:]
 		}
+		wrap := path.Base(head)
 		w = w[1:]
-		if path.Base(head) == "timeout" {
-			for len(w) > 0 && strings.HasPrefix(w[0], "-") {
-				w = w[1:]
-			}
-			if len(w) > 0 {
-				w = w[1:] // the duration
-			}
-			continue
-		}
-		for len(w) > 0 && strings.HasPrefix(w[0], "-") {
-			if (wrapperValueFlags[w[0]] || clusterTakesValue(w[0])) && len(w) > 1 {
+		flags := wrapperFlags[wrap]
+		for len(w) > 0 && strings.HasPrefix(w[0], "-") && w[0] != "--" {
+			if (flags[w[0]] || clusterTakesValue(wrap, w[0])) && len(w) > 1 {
 				w = w[1:]
 			}
 			w = w[1:]
+		}
+		if len(w) > 0 && w[0] == "--" {
+			w = w[1:]
+		}
+		if wrap == "timeout" && len(w) > 0 {
+			w = w[1:] // the duration positional
 		}
 	}
 	return "", nil
@@ -906,11 +916,11 @@ func (c command) program() (string, []string) {
 
 // clusterTakesValue reports a short-option cluster whose last letter takes a
 // value (sudo -iu postgres, -Hu user, runuser -lu x).
-func clusterTakesValue(f string) bool {
+func clusterTakesValue(wrap, f string) bool {
 	if len(f) < 3 || f[0] != '-' || f[1] == '-' || strings.Contains(f, "=") {
 		return false
 	}
-	return strings.ContainsRune("ugUC", rune(f[len(f)-1]))
+	return wrapperFlags[wrap]["-"+f[len(f)-1:]]
 }
 
 // plainProgram reports whether the program a command resolves to, past any

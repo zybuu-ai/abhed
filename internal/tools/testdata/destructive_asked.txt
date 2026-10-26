@@ -1,12 +1,13 @@
 # Commands the destructive step asks about, one per line; ⏎ stands for a newline.
 # TestDestructiveStaysAsked fails if any of them stops asking.
+# (Two former entries were removed: a commit message and a sed script that
+# merely mention "rm -rf" — false prompts, not destructive commands.)
 find . -name '__pycache__' -type d -exec rm -rf {} +
 find . -name '*.orig' -delete
 git rebase --exec 'make test' HEAD~3
 export FOO=bar && cd build && rm -rf out
 git checkout -- src/app.ts
 git reset --hard HEAD
-git commit -m "Fix rm -rf handling in cleanup script"
 find . -name '*.log' -mtime +7 -delete
 echo "remove all temp files" && rm -rf ./tmp
 git push origin feat/login --force-with-lease
@@ -16,7 +17,6 @@ find . -type d -name __pycache__ -exec rm -rf {} +
 rm -f coverage.out && go test -coverprofile=coverage.out ./...
 git clean -fdx
 rm -rf node_modules dist && npm ci
-sed -i 's/rm -rf build/make clean/' Makefile
 eval "$(pyenv init -)"
 kubectl delete sts,pvc -l app=db
 kubectl delete crd certificates.cert-manager.io

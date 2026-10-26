@@ -196,7 +196,7 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\bgit\s+push\s+.*--force(?:-with-lease)?\b`), "force push"},
 	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--mirror\b`), "mirror push (deletes remote refs)"},
 	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--prune\b`), "prune remote branches"},
-	{regexp.MustCompile(`\bgit\b.*\sgc\b.*--prune=(?:now|all)\b|\bgit\b.*\sreflog\s+expire\b.*--expire(?:-unreachable)?=(?:now|0)`), "make discarded commits unrecoverable"},
+	{regexp.MustCompile(`\bgit\b.*\sgc\b.*--prune=(?:now|all)\b|\bgit\b.*\sreflog\s+expire\b.*--expire(?:-unreachable)?=(?:now|all|0)`), "make discarded commits unrecoverable"},
 	{regexp.MustCompile(`\bgit\s+reset\s+--hard\b`), "hard reset"},
 	{regexp.MustCompile(`\bgit\s+clean\s+.*-[a-zA-Z]*f`), "forced clean"},
 	{regexp.MustCompile(`\b(mkfs|fdisk|dd)\b`), "disk operation"},
@@ -242,18 +242,19 @@ var segmentPatterns = []struct {
 	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
 	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
 	// Framework database resets that drop or wipe every table.
-	{regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bprisma(?:@[\w.-]+)?\s+(?:--\s+)?migrate\s+reset\b|\bprisma(?:@[\w.-]+)?\s+(?:--\s+)?db\s+push\b.*--force-reset\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load|setup)\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:manage\.py|django-admin)\s+flush\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\bdotnet\s+ef\s+database\s+drop\b`), "reset a database through an ORM"},
-	{regexp.MustCompile(`\bsequelize(?:-cli)?\s+db:drop\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bsequelize(?:-cli)?(?:@[\w.-]+)?\s+(?:--\s+)?db:drop\b`), "reset a database through an ORM"},
 	{regexp.MustCompile(`\b(?:dropdb|dropuser)\b`), "drop a database"},
 	{regexp.MustCompile(`(?i)\bmysqladmin\b.*\bdrop\b`), "drop a database"},
 	// Infrastructure teardown.
 	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|taint\b|apply\b.*\s-(?:destroy|replace)[=\s]|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
-	{regexp.MustCompile(`\b(?:pulumi|cdk)\b.*\s(?:destroy|down)\b|\bpulumi\b.*\sup\b.*--replace\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:pulumi|cdk)(?:@[\w.-]+)?\b.*\s(?:destroy|down)\b|\bpulumi\b.*\sup\b.*--(?:target-)?replace\b`), "destroy infrastructure"},
 	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)(?:@[\w.-]+)?\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\bheroku\b.*\spg:reset\b`), "reset a Heroku database"},
 	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy|bulk-delete|delete-[\w-]+)(?:\s|$)`), "delete cloud resources"},
 	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|delete-objects\b)`), "delete cloud resources"},
 }
@@ -276,20 +277,55 @@ var dataStorePatterns = []struct {
 		"drop or empty a Mongo database or collection"},
 }
 
+// fieldsOutsideQuotes splits on whitespace that sits outside single or double
+// quotes, so a quoted argument (a commit message, a query) is one field; the
+// quotes are then removed.
+func fieldsOutsideQuotes(s string) []string {
+	var out []string
+	var b strings.Builder
+	var q byte
+	flush := func() {
+		if b.Len() > 0 {
+			out = append(out, b.String())
+			b.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case q != 0:
+			if c == q {
+				q = 0
+			} else {
+				b.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			q = c
+		case c == ' ' || c == '\t' || c == '\n':
+			flush()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	flush()
+	return out
+}
+
 // runsClient reports a line in which one of the given programs is the program
 // word of a simple command — its first word, or the word after sudo/doas/su/env
 // options, a package runner, or a docker/kubectl exec/run and its --.
 func runsClient(command string, clients map[string]bool) bool {
 	for _, part := range splitSimple(command) {
-		words := strings.Fields(shellQuotes.Replace(part))
+		// Split on whitespace outside quotes, so a quoted message or query stays
+		// one token; quotes are then stripped from each token.
+		words := fieldsOutsideQuotes(part)
 		if len(words) == 0 {
 			continue
 		}
-		// A bare echo/printf command prints its arguments; a client named there
-		// is text, not a program. (When piped into a client, splitSimple puts
-		// the client in its own segment, which is still scanned.)
+		// A bare echo/printf command prints its arguments, and a searcher's
+		// operands are patterns, not programs; a client named there is text.
 		switch strings.TrimSuffix(CommandName(path.Base(words[0])), ".exe") {
-		case "echo", "printf":
+		case "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag":
 			continue
 		}
 		// A client counts when it is a whole word anywhere in the command,
