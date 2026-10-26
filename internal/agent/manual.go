@@ -126,11 +126,18 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	return tool, nil, nil
 }
 
+// ManualAsk puts a supervisor's ask about a person's own action to the
+// person, and reports whether they approved it.
+type ManualAsk func(ctx context.Context, decision policy.Result) (bool, error)
+
 // ManualAuthorizeReviewed is ManualAuthorize with the supervisor's review
 // after policy, for a person's action that starts something the agent's own
 // call would, such as a debug session: it may only make the decision
-// stricter, and its verdict is in the record. An ask is taken as answered.
-func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, args json.RawMessage) (tools.Tool, *tools.Result, error) {
+// stricter, and its verdict is in the record. A policy ask is taken as
+// answered, since the person asked for the action; an ask the supervisor
+// raised is put to the person with ask, and the action goes ahead only on
+// their approval. No ask, an error or no answer refuses it.
+func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, args json.RawMessage, ask ManualAsk) (tools.Tool, *tools.Result, error) {
 	tool, found := l.Tools.Get(call)
 	if !found {
 		return nil, nil, fmt.Errorf("unknown tool %q", call)
@@ -143,10 +150,26 @@ func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, arg
 	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
 	}
+	answer := Unanswered
 	if l.Monitor != nil && decision.Decision != policy.Deny {
 		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
+		if decision.Decision == policy.Ask && decision.Step == "monitor" {
+			var ok bool
+			err := errors.New("no one to ask")
+			if ask != nil {
+				ok, err = ask(ctx, decision)
+			}
+			switch {
+			case err != nil:
+				decision = policy.Result{Decision: policy.Deny, Reason: decision.Reason + "; not answered", Step: "unanswered"}
+			case ok:
+				answer = Confirmed
+			default:
+				answer = Declined
+			}
+		}
 	}
-	refused, err := l.manualDecide(call, id, args, decision, Unanswered)
+	refused, err := l.manualDecide(call, id, args, decision, answer)
 	if err != nil || refused != nil {
 		return nil, refused, err
 	}
@@ -209,7 +232,7 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 }
 
 func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
-	asked := answer != Unanswered && decision.Decision == policy.Ask && decision.Step == "destructive"
+	asked := answer != Unanswered && decision.Decision == policy.Ask && (decision.Step == "destructive" || decision.Step == "monitor")
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
 		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Offer(), RequiresApproval: asked,
 	}); err != nil {

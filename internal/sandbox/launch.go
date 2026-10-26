@@ -66,3 +66,19 @@ func readOnlyPathsOf(ctx context.Context) []string {
 	p, _ := ctx.Value(readOnlyKey{}).([]string)
 	return append([]string(nil), p...)
 }
+
+type privateDirKey struct{}
+
+// WithPrivateDirs gives one command, on the Linux process tier, empty
+// folders at these paths that only it sees: each is a tmpfs in the
+// command's own mount namespace, so the session's other commands, which
+// share its /tmp under PrivateTemp, cannot reach what is in them, such as a
+// debugger's socket. Only the engine sets it.
+func WithPrivateDirs(ctx context.Context, paths ...string) context.Context {
+	return context.WithValue(ctx, privateDirKey{}, append(privateDirsOf(ctx), paths...))
+}
+
+func privateDirsOf(ctx context.Context) []string {
+	p, _ := ctx.Value(privateDirKey{}).([]string)
+	return append([]string(nil), p...)
+}

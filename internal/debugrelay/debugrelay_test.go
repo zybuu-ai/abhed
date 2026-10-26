@@ -13,7 +13,7 @@ import (
 
 func TestPlan(t *testing.T) {
 	ws := "/w"
-	s, err := Plan(Request{Language: Go, Program: "cmd/app", Args: []string{"-v", "a b"}, Env: map[string]string{"B": "2", "A": "x y"}}, ws, "/opt/abhed/abhed-linux-arm64 __abhed_dap_bridge")
+	s, err := Plan(Request{Language: Go, Program: "cmd/app", Args: []string{"-v", "a b"}, Env: map[string]string{"B": "2", "A": "x y"}}, ws, "/opt/abhed/abhed-linux-arm64 __abhed_dap_bridge", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestPlan(t *testing.T) {
 	if !strings.Contains(s.Command, "dlv dap --check-go-version=false --listen") || !strings.Contains(s.Command, "exec /opt/abhed/abhed-linux-arm64 __abhed_dap_bridge ") {
 		t.Errorf("command %q", s.Command)
 	}
-	s, err = Plan(Request{Language: Python, Test: "tests/test_a.py", Cwd: "sub"}, ws, "")
+	s, err = Plan(Request{Language: Python, Test: "tests/test_a.py", Cwd: "sub"}, ws, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,12 +39,12 @@ func TestPlan(t *testing.T) {
 		{Language: Python, Program: "a", Env: map[string]string{"BAD NAME": "1"}},
 	} {
 		var p *Problem
-		if _, err := Plan(bad, ws, "/b"); !errors.As(err, &p) || p.Kind != KindArgs {
+		if _, err := Plan(bad, ws, "/b", ""); !errors.As(err, &p) || p.Kind != KindArgs {
 			t.Errorf("%+v: %v", bad, err)
 		}
 	}
 	var p *Problem
-	if _, err := Plan(Request{Language: Go, Program: "a"}, ws, ""); !errors.As(err, &p) || p.Kind != KindBridge {
+	if _, err := Plan(Request{Language: Go, Program: "a"}, ws, "", ""); !errors.As(err, &p) || p.Kind != KindBridge {
 		t.Errorf("no bridge: %v", err)
 	}
 }
@@ -249,5 +249,122 @@ func TestRelayEndsOnDisconnectOrTerminate(t *testing.T) {
 	case <-gEnded:
 	case <-time.After(5 * time.Second):
 		t.Fatal("a disconnect answer did not end the session")
+	}
+}
+
+// Each decisive key is read exactly. Studio's message that repeats one, or
+// has one differing only in case, is refused before the adapter sees it,
+// whichever reader would have won: the reviewer's probes included.
+func TestFromEditorRefusesAmbiguousKeys(t *testing.T) {
+	f := newFake(t)
+	for _, raw := range []string{
+		`{"seq":1,"type":"request","command":"launch","Command":"threads","arguments":{"program":"/etc/evil"}}`,
+		`{"seq":1,"type":"request","command":"attach","COMMAND":"threads","arguments":{"processId":1}}`,
+		`{"seq":1,"type":"request","Command":"threads","command":"launch","arguments":{}}`,
+		`{"seq":1,"type":"request","command":"threads","command":"launch","arguments":{}}`,
+		`{"seq":1,"type":"request","command":"restart","arguments":{"arguments":{"program":"/x"}},"Arguments":null}`,
+		`{"seq":1,"type":"request","command":"restart","Arguments":null,"arguments":{"arguments":{"program":"/x"}}}`,
+		`{"seq":1,"type":"request","Type":"event","command":"threads"}`,
+		`{"seq":1,"TYPE":"request","command":"threads"}`,
+		`{"seq":1,"Seq":2,"type":"request","command":"threads"}`,
+		`[1]`, `{"seq":1,"type":"request","command":"threads"} {}`,
+	} {
+		if err := f.relay.FromEditor(json.RawMessage(raw)); err == nil {
+			t.Errorf("%s was taken", raw)
+		}
+	}
+	// A key the relay does not decide on may repeat.
+	go func() {
+		_ = f.relay.FromEditor(json.RawMessage(`{"seq":1,"type":"request","command":"threads","x":1,"x":2}`))
+	}()
+	if m := f.read(t); m["command"] != "threads" {
+		t.Fatalf("adapter got %v", m)
+	}
+}
+
+// The adapter's messages are read the same way: one that repeats a key or
+// varies its case is dropped and counted, never passed to the editor, so a
+// runInTerminal or startDebugging cannot reach Studio disguised.
+func TestPumpDropsAmbiguousAdapterMessages(t *testing.T) {
+	f := newFake(t)
+	for _, raw := range []string{
+		`{"seq":1,"type":"request","command":"runInTerminal","Command":"x","arguments":{"args":["sh","-c","id"],"cwd":"/"}}`,
+		`{"seq":2,"type":"request","Type":"event","command":"startDebugging","arguments":{}}`,
+		`{"seq":3,"type":"event","type":"request","command":"runInTerminal","arguments":{"args":["sh"]}}`,
+		`{"seq":4,"type":"request","command":"x","command":"runInTerminal"}`,
+	} {
+		if err := Write(f.adapterOut, []byte(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.send(t, map[string]any{"seq": 5, "type": "event", "event": "stopped"})
+	if m := f.editor(t); m["event"] != "stopped" {
+		t.Fatalf("editor got %v first", m)
+	}
+	select {
+	case m := <-f.editorGot:
+		t.Fatalf("the editor also got %s", m)
+	default:
+	}
+	if f.relay.Dropped() != 4 {
+		t.Fatalf("dropped %d", f.relay.Dropped())
+	}
+}
+
+// A header line or block past its bound fails without growing: what comes
+// from the sandbox has no newline it must send.
+func TestReadBoundsTheHeader(t *testing.T) {
+	endless := io.MultiReader(strings.NewReader("Content-Length: 2"), strings.NewReader(strings.Repeat("x", 1<<20)))
+	if _, err := Read(bufio.NewReader(endless)); !errors.Is(err, ErrHeader) {
+		t.Fatalf("a newline-free header: %v", err)
+	}
+	if _, err := Read(bufio.NewReader(strings.NewReader("X: " + strings.Repeat("y", 2000) + "\r\n\r\n{}"))); !errors.Is(err, ErrHeader) {
+		t.Fatalf("a long line: %v", err)
+	}
+	many := strings.Repeat("X: "+strings.Repeat("z", 500)+"\r\n", 20) + "Content-Length: 2\r\n\r\n{}"
+	if _, err := Read(bufio.NewReader(strings.NewReader(many))); !errors.Is(err, ErrHeader) {
+		t.Fatalf("a long block: %v", err)
+	}
+}
+
+// A pytest node id's path is in the workspace too.
+func TestPlanConfinesAPythonTest(t *testing.T) {
+	for _, bad := range []string{"/etc/x.py::test_a", "../out/test_x.py", "/tmp/t.py"} {
+		var p *Problem
+		if _, err := Plan(Request{Language: Python, Test: bad}, "/w", "", ""); !errors.As(err, &p) || p.Kind != KindArgs {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	if _, err := Plan(Request{Language: Python, Test: "tests/test_a.py::TestX::test_y"}, "/w", "", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Delve's socket goes in the folder given, when one is.
+func TestPlanUsesTheSocketFolder(t *testing.T) {
+	s, err := Plan(Request{Language: Go, Program: "."}, "/w", "/b __abhed_dap_bridge", "/run/abhed-dap-1f")
+	if err != nil || !strings.Contains(s.Command, "d=/run/abhed-dap-1f; mkdir -p") || strings.Contains(s.Command, "mktemp") {
+		t.Fatalf("%q %v", s.Command, err)
+	}
+}
+
+// A failed launch's status carries the adapter's error, its format filled
+// from its variables and bounded, so Studio can show why.
+func TestFailedLaunchCarriesTheAdaptersError(t *testing.T) {
+	f := newFake(t)
+	go func() {
+		_ = f.relay.FromEditor(json.RawMessage(`{"seq":1,"type":"request","command":"initialize"}`))
+	}()
+	f.read(t)
+	f.send(t, map[string]any{"seq": 1, "type": "response", "request_seq": 1, "command": "initialize", "success": true})
+	f.editor(t)
+	l := f.read(t)
+	f.send(t, map[string]any{"seq": 2, "type": "response", "request_seq": l["seq"], "command": "launch", "success": false, "message": "Failed to launch",
+		"body": map[string]any{"error": map[string]any{"id": 3000, "format": "Failed to launch: {e}", "variables": map[string]string{"e": "Go version 1.27 is too new"}}}})
+	if s := <-f.statusGot; s != "failed:Failed to launch: Go version 1.27 is too new" {
+		t.Fatalf("status %q", s)
+	}
+	if d := errorDetail(json.RawMessage(`{"error":{"format":"` + strings.Repeat("a", 5000) + `"}}`)); len(d) > maxDetail+4 {
+		t.Fatalf("detail %d bytes", len(d))
 	}
 }

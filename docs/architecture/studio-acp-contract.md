@@ -1056,15 +1056,17 @@ _abhed/debug/launch { sessionId, language: "go" | "python",
                       program?: string, test?: string,   // exactly one; inside the workspace
                       args?: string[], cwd?: string,      // cwd inside the workspace
                       env?: { [name]: string } } → { debugId }
-_abhed/debug/send   { debugId, message: DapRequest } → {}
+_abhed/debug/send   { debugId, message: DapRequest } → {}   // passed on in the order sent
 _abhed/debug/stop   { debugId } → {}
 // notifications
 _abhed/debug/message { debugId, message: DapMessage }    // every adapter message Studio is meant to see
-_abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended", message?, problem? }
+_abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended", message?, problem?, dropped? }
 ```
 
 - Listed under the `debug` feature. The adapter runs in the session's sandbox
-  (container or `vm` tier, or the Linux process tier); elsewhere `launch`
+  (container or `vm` tier, or the Linux process tier with its network closed
+  or allowlisted, where bubblewrap gives it its own network namespace; with
+  the network open its loopback would be the host's); elsewhere `launch`
   fails with `-32000` and `data.problem` `{kind: "tier-unsupported", message,
   steps, retry}`. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
   bad params are `-32602` with `kind: "invalid-request"`.
@@ -1072,14 +1074,30 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   (`dlv debug|test …`, `python3 …`, `python3 -m pytest …`), which is put to
   policy and the supervisor as the person's `bash` call and recorded through
   the manual path (`action.requested` by user, its decision, and an
-  `observation` when the session ends); a refusal is `-32001`. Then
+  `observation` when the session ends); a refusal is `-32001`. A policy ask
+  is taken as answered, since the person asked for the launch; an ask the
+  supervisor raises is sent to Studio as a normal
+  `session/request_permission` (`toolCall.title` `debug: <command line>`,
+  `meta.step: "monitor"`, `meta.debug: true`, options Allow once and Deny,
+  no "always"), and the launch goes ahead only on Allow; Deny, a cancel or no
+  answer is `-32001`. Then
   `debug.launched` and, at the end, `debug.stopped` are recorded.
 - Studio sends DAP requests with `send`: `initialize` first, then breakpoints,
   `configurationDone`, stepping and the rest. The engine sends the adapter's
   `launch` itself once `initialize` is answered and keeps its response:
-  Studio sees `status: launched` or `status: failed` instead. Studio's own
+  Studio sees `status: launched` or `status: failed` instead; a failed one's
+  `message` carries the adapter's error, its `body.error.format` with the
+  variables filled in, up to 2,000 characters, as untrusted text. Studio's own
   `launch`, `attach`, and a `restart` with arguments are answered with a
-  failed DAP response in a `message`; a non-request is `-32602`.
+  failed DAP response in a `message`; a non-request is `-32602`. The
+  engine reads `seq`, `type`, `command`, `request_seq`, `success`,
+  `message`, `arguments`, `event` and `body` by their exact keys: a message
+  that repeats one, or has a key differing from one only in case, is
+  `-32602` from Studio, and from the adapter is dropped, never passed on,
+  and counted (`dropped` in the final `status` and in `debug.stopped`).
+  `send`s are passed to the adapter in the order the engine read them;
+  Studio need not wait for each reply. A header line over 1 KiB or a header
+  over 8 KiB from the adapter ends the session.
 - The adapter's `runInTerminal` and `startDebugging` never reach Studio: the
   engine answers them with an error (`status: note`); `console` is always
   `internalConsole`.
@@ -1093,7 +1111,16 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   for that), ends it if it has not gone within three seconds, sends
   `status: ended` and records `debug.stopped` with `reason: "ended"`. Output
   events pass as the adapter sends them; nothing is merged or held back.
-- At most four per connection; each ends after eight hours.
+- At most four per connection, counting launches still being judged; each
+  ends after eight hours. A session closed with its ACP session or the
+  connection records `debug.stopped` with `reason: "closed"`; `stop` gives
+  `stopped`.
+- **Studio treats every `_abhed/debug/message` as untrusted sandbox output.**
+  The adapter's output can be written by the debuggee, which is workspace
+  code. Studio never acts on a reverse request or a custom event from it
+  (`runInTerminal`, `startDebugging`, `debugpyAttach` or any other), even
+  though the engine already refuses and filters these; it renders text as
+  text and opens no path or URL from it without the person's action.
 
 ## 8. Health, setup and memory
 

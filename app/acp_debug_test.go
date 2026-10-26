@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/debugrelay"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // TestDebugFakeAdapter is a debug adapter the debug tests run in place of
@@ -42,6 +45,10 @@ func TestDebugFakeAdapter(t *testing.T) {
 		switch {
 		case m["type"] == "request" && cmd == "initialize":
 			send(map[string]any{"type": "response", "request_seq": m["seq"], "command": cmd, "success": true})
+		case m["type"] == "request" && cmd == "launch" && os.Getenv("ABHED_FAKE_DAP_FAIL") != "":
+			// As Delve does: a short message, and the reason in body.error.
+			send(map[string]any{"type": "response", "request_seq": m["seq"], "command": cmd, "success": false, "message": "Failed to launch",
+				"body": map[string]any{"error": map[string]any{"id": 3000, "format": "Failed to launch: {e}", "variables": map[string]string{"e": "Go version go1.27 is too new for this Delve"}}}})
 		case m["type"] == "request" && cmd == "launch":
 			args, _ := m["arguments"].(map[string]any)
 			fmt.Fprintf(os.Stderr, "launched %v console=%v\n", args["program"], args["console"])
@@ -202,11 +209,199 @@ func TestStudioDebugProblems(t *testing.T) {
 }
 
 func TestDebugTierProblem(t *testing.T) {
-	for tier, ok := range map[string]bool{"container": true, "vm": true, "process": runtime.GOOS == "linux", "none": false, "fence": false, "": false} {
-		if (debugTierProblem(tier) == nil) != ok {
-			t.Errorf("%q: problem %v", tier, debugTierProblem(tier))
+	closed, open, allow := tools.Isolation{}, tools.Isolation{Network: true}, tools.Isolation{Allowlist: true}
+	for _, c := range []struct {
+		tier string
+		iso  tools.Isolation
+		ok   bool
+	}{
+		{"container", open, true}, {"vm", open, true},
+		{"process", closed, runtime.GOOS == "linux"}, {"process", allow, runtime.GOOS == "linux"},
+		// Open, bubblewrap shares the host's network namespace: refused everywhere.
+		{"process", open, false},
+		{"none", closed, false}, {"fence", closed, false}, {"", closed, false},
+	} {
+		if (debugTierProblem(c.tier, c.iso) == nil) != c.ok {
+			t.Errorf("%q %+v: problem %v", c.tier, c.iso, debugTierProblem(c.tier, c.iso))
 		}
 	}
+	if runtime.GOOS == "linux" {
+		if p := debugTierProblem("process", open); p == nil || !strings.Contains(p.Message, "network closed or allowlisted") || len(p.Steps) == 0 {
+			t.Fatalf("open network on the Linux process tier: %+v", p)
+		}
+	}
+}
+
+// withSupervisor gives the session's loop a judge.
+func withSupervisor(t *testing.T, r *studioRig, id string, g *monitor.Guard) {
+	t.Helper()
+	s := r.cl.conn.session(id)
+	if s == nil || !s.inner {
+		t.Fatal("no inner session")
+	}
+	s.parts.Loop.Monitor = g
+}
+
+func judging(d policy.Decision, code string, err error) monitor.Func {
+	return func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		if err != nil {
+			return monitor.Verdict{}, err
+		}
+		return monitor.Verdict{Decision: d, Code: code, Rationale: "the judge's reason"}, nil
+	}
+}
+
+// The supervisor may refuse a launch: refused as policy, no adapter
+// started, and its verdict in the record for the person's call. A judge
+// that cannot answer under a fail-closed setting refuses too.
+func TestStudioDebugLaunchSupervisorRefuses(t *testing.T) {
+	for _, g := range []*monitor.Guard{
+		{Monitor: judging(policy.Deny, "out-of-remit", nil)},
+		{Monitor: judging("", "", errors.New("judge down")), OnUnavailable: policy.Deny},
+	} {
+		asked := fakeDebugger(t, 0)
+		r := newStudioRig(t, "")
+		id := r.open()
+		r.write("app.py", "print('hi')\n")
+		withSupervisor(t, r, id, g)
+		r.cl.refused(errPolicy, "_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"})
+		if len(*asked) != 0 {
+			t.Fatalf("an adapter started: %v", *asked)
+		}
+		verdicts, _ := r.recorded(id, agent.EvMonitorVerdict)
+		if len(verdicts) != 1 || !strings.HasPrefix(fmt.Sprint(verdicts[0]["call_id"]), "u") || verdicts[0]["after"] != "deny" {
+			t.Fatalf("verdicts %v", verdicts)
+		}
+		if launched, _ := r.recorded(id, agent.EvDebugLaunched); len(launched) != 0 {
+			t.Fatalf("debug.launched %v", launched)
+		}
+	}
+}
+
+// A supervisor's ask is put to the person as a permission request; the
+// launch goes ahead only on Allow, and a Deny or no answer refuses it.
+func TestStudioDebugLaunchSupervisorAsksThePerson(t *testing.T) {
+	for _, c := range []struct {
+		answer string // optionId prefix, or "" to cancel
+		ok     bool
+	}{{"once:", true}, {"reject:", false}, {"", false}} {
+		asked := fakeDebugger(t, 0)
+		r := newStudioRig(t, "")
+		id := r.open()
+		r.write("app.py", "print('hi')\n")
+		withSupervisor(t, r, id, &monitor.Guard{Monitor: judging(policy.Ask, "unknown-program", nil)})
+		var perms []string
+		r.cl.answering(func(method string, params json.RawMessage) any {
+			if method != "session/request_permission" {
+				return map[string]any{}
+			}
+			var p struct {
+				ToolCall struct {
+					ToolCallID string `json:"toolCallId"`
+					Title      string `json:"title"`
+				} `json:"toolCall"`
+			}
+			_ = json.Unmarshal(params, &p)
+			perms = append(perms, p.ToolCall.Title)
+			if c.answer == "" {
+				return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+			}
+			return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": c.answer + p.ToolCall.ToolCallID}}
+		})
+		params := map[string]any{"sessionId": id, "language": "python", "program": "app.py"}
+		if c.ok {
+			r.cl.ok("_abhed/debug/launch", params, nil)
+		} else {
+			r.cl.refused(errPolicy, "_abhed/debug/launch", params)
+		}
+		if len(perms) != 1 || !strings.Contains(perms[0], "debug: python3 ") {
+			t.Fatalf("%q: permission requests %v", c.answer, perms)
+		}
+		if (len(*asked) == 1) != c.ok {
+			t.Fatalf("%q: adapters %v", c.answer, *asked)
+		}
+		approved, _ := r.recorded(id, agent.EvActionApproved)
+		if c.ok && (len(approved) != 1 || approved[0]["confirmed"] != "true" || approved[0]["step"] != "monitor") {
+			t.Fatalf("approval %v", approved)
+		}
+		if c.ok {
+			r.cl.ok("session/close", map[string]any{"sessionId": id}, nil)
+		}
+	}
+}
+
+// Parallel launches cannot pass the bound while one is being judged.
+func TestDebugSlotsAreReserved(t *testing.T) {
+	c := &acpConn{}
+	for i := range maxDebugs {
+		if !c.reserveDebug() {
+			t.Fatalf("slot %d refused", i)
+		}
+	}
+	if c.reserveDebug() {
+		t.Fatal("a fifth slot was given")
+	}
+	c.releaseDebug()
+	if !c.reserveDebug() {
+		t.Fatal("a released slot was not given again")
+	}
+}
+
+// Studio's sends reach the adapter in the order they were sent, without
+// waiting for each reply; a session closed with its session says closed.
+func TestStudioDebugSendsInOrderAndCloses(t *testing.T) {
+	fakeDebugger(t, 0, "ABHED_FAKE_DAP_WAIT=1")
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("app.py", "print('hi')\n")
+	var res struct {
+		DebugID string `json:"debugId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"}, &res)
+	for i := 1; i <= 30; i++ {
+		raw, _ := json.Marshal(map[string]any{"debugId": res.DebugID, "message": json.RawMessage(fmt.Sprintf(`{"seq":%d,"type":"request","command":"threads"}`, i))})
+		r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(fmt.Sprintf(`"s%d"`, i)), Method: "_abhed/debug/send", Params: raw})
+	}
+	r.cl.waitFor(from, "the last answer", func(m rpcMessage) bool {
+		return m.Method == "_abhed/debug/message" && strings.Contains(string(m.Params), `"request_seq":30`)
+	})
+	next := 1
+	for _, m := range debugMessages(r.cl.since(from), "_abhed/debug/message") {
+		msg, _ := m["message"].(map[string]any)
+		if msg["command"] == "threads" {
+			if int(msg["request_seq"].(float64)) != next {
+				t.Fatalf("answer %v came out of order, wanted %d", msg["request_seq"], next)
+			}
+			next++
+		}
+	}
+	r.cl.ok("session/close", map[string]any{"sessionId": id}, nil)
+	stopped, _ := r.recorded(id, agent.EvDebugStopped)
+	if len(stopped) != 1 || stopped[0]["reason"] != "closed" {
+		t.Fatalf("debug.stopped %v", stopped)
+	}
+}
+
+// A launch Delve refuses says why: the status carries body.error, filled in.
+func TestStudioDebugFailedLaunchSaysWhy(t *testing.T) {
+	fakeDebugger(t, 0, "ABHED_FAKE_DAP_FAIL=1")
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("app.py", "print('hi')\n")
+	var res struct {
+		DebugID string `json:"debugId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"}, &res)
+	r.cl.ok("_abhed/debug/send", map[string]any{"debugId": res.DebugID, "message": json.RawMessage(`{"seq":1,"type":"request","command":"initialize"}`)}, nil)
+	st := r.cl.waitFor(from, "failed", func(m rpcMessage) bool {
+		return m.Method == "_abhed/debug/status" && strings.Contains(string(m.Params), `"failed"`)
+	})
+	if !strings.Contains(string(st.Params), "Go version go1.27 is too new for this Delve") {
+		t.Fatalf("status %s", st.Params)
+	}
+	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
 }
 
 // An adapter that waits for its input to close after answering disconnect,

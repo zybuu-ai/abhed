@@ -331,6 +331,8 @@ type acpConn struct {
 	// debugs are the person's debug sessions, by id (§7.8).
 	debugMu sync.Mutex
 	debugs  map[string]*acpDebug
+	// debugReserved are slots held by launches still being judged.
+	debugReserved int
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -425,6 +427,9 @@ func (c *acpConn) serve(in io.Reader) error {
 			c.answer(msg)
 		case msg.ID == nil:
 			c.notify(msg)
+		case msg.Method == "_abhed/debug/send":
+			// In the order read, so the adapter gets Studio's messages in order.
+			c.debugEnqueue(msg)
 		default:
 			// A prompt runs for as long as the model does; the loop must keep
 			// reading for the cancel and the permission answers meanwhile.
