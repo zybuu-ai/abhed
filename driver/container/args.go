@@ -116,9 +116,9 @@ func (d *Driver) runArgs(in *instance) []string {
 	}
 	switch {
 	case in.egress != nil && in.egress.stdio:
-		// The operator's Linux build, on the engine's host, is the relay. It is
-		// never relabelled: that would change the label of the operator's file.
-		args = append(args, "-v", d.opts.RelayBinary+":"+egressRelay+":ro")
+		// The operator's Linux build, or the helper shipped with the engine, is
+		// the relay. It is never relabelled: that would change the file's label.
+		args = append(args, "-v", in.relay+":"+egressRelay+":ro")
 		if in.egress.proxy.Inspecting() {
 			ca := "ro"
 			if eng.selinux {

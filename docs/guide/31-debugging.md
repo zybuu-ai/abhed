@@ -33,8 +33,12 @@ is refused with a problem that says to use the container tier: start a
 container engine (`podman machine start`), set `"sandbox": {"min_tier":
 "container"}`, and open a new session.
 
-The debugger must be in the sandbox image: Delve for Go, `debugpy` for
-Python. The default image has neither; build one from your toolchain's image
+The debugger must be in the sandbox: Delve for Go, `debugpy` for Python.
+The simplest way is to have Abhed install the language with its debugger
+([Toolchains: Debuggers](32-toolchains.md#debuggers)): accept Studio's
+offer, or run `abhed toolchain install -debugger -platform linux go` (or
+`python`), and the next session finds it on `PATH`. Or build an image from
+your toolchain's image
 (`FROM golang:1.26-bookworm` with `RUN go install
 github.com/go-delve/delve/cmd/dlv@latest`, or `FROM python:3.12-slim-bookworm`
 with `RUN pip install debugpy`) and name it in `sandbox.image` (see

@@ -3,12 +3,16 @@ package toolset
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -67,5 +71,44 @@ func TestBashGetsTheToolchains(t *testing.T) {
 	off := withToolchains(tools.Bash{Sandbox: b.Sandbox}, &toolchain.Session{Off: true})
 	if off.NotFound == nil || !strings.Contains(off.NotFound("", "go"), "turned off") {
 		t.Fatal("off says so")
+	}
+}
+
+// An interactive terminal gets the active toolchains on PATH as commands
+// do, and a missing program there says which language Abhed installs.
+func TestTerminalGetsTheToolchains(t *testing.T) {
+	ws := t.TempDir()
+	root := t.TempDir()
+	dir := filepath.Join(root, toolchain.Host().String(), "go", "1.22.5")
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "bin", "go"), []byte("#!/bin/sh\necho fake-go-1.22.5\n"), 0o755)
+	marker, _ := json.Marshal(toolchain.Installed{Lang: "go", Version: "1.22.5", Platform: toolchain.Host().String()})
+	_ = os.WriteFile(filepath.Join(dir, ".abhed-toolchain.json"), marker, 0o644)
+	p := sandbox.DefaultPolicy(ws)
+	p.ReadOnlyPaths = []string{root}
+	sb := sandbox.NewProcess(p)
+	if ok, why := sb.Available(); !ok {
+		t.Skip(why)
+	}
+	defer sandbox.Close(sb)
+	tc := &toolchain.Session{Cache: toolchain.Cache{Root: root}, Platform: toolchain.Host}
+	b := withToolchains(tools.Bash{Sandbox: sb.Command, Shell: sb.Shell}, tc)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := b.Shell(ctx, ws)
+	cmd.Stdin = strings.NewReader("go version\nrustc --version; echo rc=$?\nexit\n")
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+	if !strings.Contains(got, "fake-go-1.22.5") {
+		t.Fatalf("the terminal did not find go:\n%s", got)
+	}
+	if !strings.Contains(got, "rc=127") {
+		t.Fatalf("a missing program did not exit 127:\n%s", got)
+	}
+	// macOS's own bash, 3.2, has no command_not_found_handle; bash 4 and later do.
+	if !strings.Contains(got, "bash-3.") && !strings.Contains(got, "abhed: Rust is not installed in this sandbox") {
+		t.Fatalf("no note for a missing program, or not 127:\n%s", got)
 	}
 }

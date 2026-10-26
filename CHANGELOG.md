@@ -119,6 +119,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The Linux helper: releases ship `abhed-helper-linux-<arch>` beside the
+  `abhed` binary (in each archive and as a bare download), with its sha256
+  pinned into the binary. Where the container engine is in a VM or
+  elsewhere and `control_plane.<engine>.relay_binary` is not set, a checked
+  copy of it is bound in read-only as the egress relay, so the network
+  allowlist and toolchain registries work on Podman and Docker Desktop on a
+  Mac with no configuration. A helper that does not match the pin is never
+  used. It also carries the debugger's bridge (`__abhed_dap_bridge
+  unix:PATH`). `scripts/build-helpers.sh` builds the helpers reproducibly
+  and prints the ldflags that pin them.
 - Debugging in the sandbox for Abhed Studio: the editor protocol's
   `_abhed/debug/launch`, `/send` and `/stop` (the `debug` feature) run Delve
   (Go) or debugpy (Python) inside the session's container tier, or the Linux
@@ -131,6 +141,17 @@ All notable changes to Abhed are recorded here. The format follows
   mode of the bundled Linux build of Abhed (or `relay_binary`). Each session is recorded as `debug.launched` and
   `debug.stopped`. Node is not supported yet
   ([Debugging](docs/guide/31-debugging.md)).
+- Debuggers with their language: Delve 1.27.2 with Go (1.25 or later) and
+  debugpy 1.8.22 with Python (3.10 or later), offered and agreed to with the
+  language ("Go 1.27.3 + Delve debugger 1.27.2") through the toolchain
+  tool's `debugger`, `abhed toolchain install -debugger` and Studio's
+  `debugger: true`. Abhed builds Delve itself with the cached Go, cross-built
+  for the Linux sandbox, from proxy.golang.org with every module checked by
+  sum.golang.org and none of your own Go settings; debugpy's wheel comes from
+  PyPI, refused unless its listed sha256 is the pinned one. Both are kept
+  read-only in the cache and are on `PATH` or `PYTHONPATH` wherever their
+  language is, so Studio's debugging finds them
+  ([Toolchains](docs/guide/32-toolchains.md#debuggers)).
 - Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)
   with Maven and Gradle, Ruby and the .NET SDK, installed for the sandbox's
   commands at the version asked for, else the one the project pins (go.mod,
@@ -149,7 +170,7 @@ All notable changes to Abhed are recorded here. The format follows
   `sandbox.toolchains_preapproved` set the consent. Every install is
   recorded as `toolchain.install`, counted, mapped to OCSF and listed by
   HawkEYE, and `abhed doctor` lists what the workspace needs, by marker and by
-  loose source file ([Toolchains](docs/guide/29-toolchains.md)).
+  loose source file ([Toolchains](docs/guide/32-toolchains.md)).
 - `sandbox.toolchains_registries` (ask by default): where the network is off,
   agreeing to a language's toolchain also opens its official package
   registries to commands, through the session's egress proxy, on 443 only,
@@ -157,7 +178,7 @@ All notable changes to Abhed are recorded here. The format follows
   outside the managed file; under a managed network it adds nothing unless
   the managed file names it, and a workspace file may only set it off. Each
   opening is recorded as `toolchain.registry`
-  ([Toolchains](docs/guide/29-toolchains.md#package-registries)).
+  ([Toolchains](docs/guide/32-toolchains.md#package-registries)).
 - A key written twice in a configuration file is reported. encoding/json
   keeps the last one without a word, so a second provider of the same name
   in `model.providers` used to replace the first silently. Loading now warns
@@ -615,6 +636,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Toolchains: Ruby could not load its standard library or RubyGems, nor on
+  Linux its own `libruby`, because its builds name the build machine's
+  folders; its commands now get `RUBYLIB`, `GEM_PATH` and, on Linux,
+  `LD_LIBRARY_PATH` for where it is. A Linux Ruby bundles libyaml 0.2.5 from
+  Debian 12's package, its sha256 pinned, so YAML, RubyGems and Bundler work
+  on the default image; OpenSSL is not bundled (see the Toolchains guide).
+- Toolchains: a Linux build unpacked on macOS (for the container tier) failed
+  when its archive held names differing only in case, as Python's terminfo
+  does; the second of such a pair is now skipped on a case-insensitive disk.
 - Postgres: an event appended while its session was being deleted could be
   written into the deleted session, because the insert's check ran before it
   waited for the session's chain lock. The chain trigger now refuses the row
