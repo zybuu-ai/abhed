@@ -751,20 +751,22 @@ var workspaceRules = map[string]fieldRule{
 	"monitor.honeytokens":    {union(func(c *Config) *[]string { return &c.Monitor.Honeytokens }), "added to the honeytokens"},
 	"monitor":                {nil, "a judge endpoint receives the conversation"},
 
-	"additional_dirs":     {nil, "widens the directories the agent may reach"},
-	"model.ollama.assist": {tighterAssist, "only tighter: off < local < ask"},
-	"model":               {nil, "a provider and its base_url receive the code"},
-	"custom_providers":    {nil, "a provider and its base_url receive the code"},
-	"context":             {nil, "memory_files are read into the prompt; the rest waits for trust"},
-	"rag":                 {nil, "a corpus URL and headers are egress"},
-	"mcp":                 {nil, "an MCP server is a process or endpoint"},
-	"retrieval":           {nil, "embed_base_url receives the code"},
-	"extensions":          {nil, "an extension is a process"},
-	"storage":             {nil, "where the record goes and with which credentials"},
-	"server":              {nil, "deployment settings for serve"},
-	"control_plane":       {nil, "turns on an API that runs commands, and sets its limits"},
-	"schedules":           {nil, "prompts the server runs on its own"},
-	"auth":                {nil, "who may sign in"},
+	"additional_dirs":       {nil, "widens the directories the agent may reach"},
+	"model.ollama.assist":   {tighterAssist, "only tighter: off < local < ask"},
+	"completion.enabled":    {completionOff, "only false"},
+	"completion.local_only": {onlyTrue(func(c *Config) *bool { return &c.Completion.LocalOnly }), "only true"},
+	"model":                 {nil, "a provider and its base_url receive the code"},
+	"custom_providers":      {nil, "a provider and its base_url receive the code"},
+	"context":               {nil, "memory_files are read into the prompt; the rest waits for trust"},
+	"rag":                   {nil, "a corpus URL and headers are egress"},
+	"mcp":                   {nil, "an MCP server is a process or endpoint"},
+	"retrieval":             {nil, "embed_base_url receives the code"},
+	"extensions":            {nil, "an extension is a process"},
+	"storage":               {nil, "where the record goes and with which credentials"},
+	"server":                {nil, "deployment settings for serve"},
+	"control_plane":         {nil, "turns on an API that runs commands, and sets its limits"},
+	"schedules":             {nil, "prompts the server runs on its own"},
+	"auth":                  {nil, "who may sign in"},
 
 	"control_plane.kubernetes":   {nil, "only the managed configuration sets it"},
 	"control_plane.interceptors": {nil, "only the managed configuration sets it"},
@@ -864,6 +866,15 @@ func onlyFalse(field func(*Config) *bool) func(dst, ws *Config) bool {
 		*field(dst) = false
 		return true
 	}
+}
+
+func completionOff(dst, ws *Config) bool {
+	if e := ws.Completion.Enabled; e == nil || *e {
+		return false
+	}
+	off := false
+	dst.Completion.Enabled = &off
+	return true
 }
 
 func onlyTrue(field func(*Config) *bool) func(dst, ws *Config) bool {

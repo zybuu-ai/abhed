@@ -152,7 +152,9 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `monitor.max_per_turn` | **applied** only when more calls are reviewed; zero means no bound, so it is the most |
 | `monitor.honeytokens` | **applied**, added to the ones already there |
 | `monitor` (other keys: `judge`, `endpoint`, `model`, `api_key_env`, `timeout_ms`) | ignored: a judge endpoint receives the conversation |
-| `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
+| `model` (`default`, `providers`, `completion`, any `base_url`) | ignored: the provider receives the code |
+| `completion.enabled` | **applied** only when false |
+| `completion.local_only` | **applied** only when true |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
 | `mcp` | ignored: a server is a process or an endpoint |

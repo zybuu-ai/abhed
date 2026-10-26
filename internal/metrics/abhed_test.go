@@ -164,7 +164,7 @@ var uncounted = []string{
 	"session.resumed", "session.wake_set", "session.woken", "shell.ended", "shell.started", "subagent.action",
 	"subagent.ask", "subagent.backgrounded", "subagent.message", "subagent.notice", "subagent.returned",
 	"subagent.spawned", "suggestion.offered", "task.cancelled", "terminal.input", "todo.updated",
-	"turn.continued", "user.message", "workspace.dir_added", "worktree.taken", "debug.launched", "debug.stopped",
+	"turn.continued", "user.message", "workspace.dir_added", "worktree.taken", "debug.launched", "debug.stopped", "completion.enabled",
 	"sandbox.git_walk_bounded", "sandbox.git_linked",
 }
 

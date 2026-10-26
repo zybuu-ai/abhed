@@ -1169,6 +1169,32 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   queue per server (at most 256 waiting; past that `-32002`, busy) and one
   writer; a server that stops reading its input is ended.
 
+### 7.10 Inline completions
+
+```ts
+_abhed/complete { sessionId, uri, position: { line, character }, prefix: string, suffix: string,
+                  language?: string, trigger?: "auto" | "invoked",
+                  context?: { uri, text }[] }        // other open files, optional
+  → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string }
+_abhed/complete/cancel { sessionId } → {}
+```
+
+- Listed under the `complete` feature; whether completions are on is in each
+  answer: `disabled` names why not (no `model.completion`,
+  `completion.enabled: false`, or `completion.local_only` with a remote
+  model). Nothing is sent then.
+- The engine sends at most the last 6,000 characters of `prefix`, the first
+  2,000 of `suffix`, and the first 60 lines of up to three `context` files. A
+  document or context file outside the session's roots, one a read rule
+  denies, or one that looks like keys is not sent (`refused`).
+- One request in flight per session: a newer one cancels it (`cancelled`); a
+  short debounce; at most five a second (`limited`). A model error is
+  `-32000`.
+- Fill-in-the-middle on the completions endpoint for local server types and
+  `openai-compatible`, else a chat turn; text only, no tools.
+- Recorded as `completion.enabled` on first use and `completion.summary` when
+  the session closes; single completions are not recorded.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1291,6 +1317,7 @@ table.
 | Worktree take-back | `_abhed/worktrees/list`, `_abhed/worktrees/take` | ext | done in the engine (1.2.9; `worktrees` in `features`); Studio's view not yet |
 | Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
 | Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
+| Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |

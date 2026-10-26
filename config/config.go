@@ -82,6 +82,8 @@ type Config struct {
 	Suggest SuggestConfig `json:"suggest,omitempty"`
 	// Verify governs answer verification and the completion contract.
 	Verify VerifyConfig `json:"verify,omitempty"`
+	// Completion bounds an editor's inline completions (model.completion names the provider).
+	Completion CompletionConfig `json:"completion,omitzero"`
 	// Monitor governs the supervisor, which may only tighten a decision.
 	Monitor MonitorConfig `json:"monitor,omitempty"`
 	// Plan governs what an accepted plan may carry.
@@ -583,6 +585,47 @@ type ModelConfig struct {
 	// Ollama is what Abhed may do when a person chooses a model that a
 	// local Ollama serves and it is not working yet.
 	Ollama OllamaConfig `json:"ollama,omitzero"`
+	// Completion names the provider an editor's inline completions use;
+	// none turns them off.
+	Completion string `json:"completion,omitempty"`
+}
+
+// CompletionConfig bounds editor inline completions. A layer below the
+// managed file, and a workspace file, may only turn them off or keep them
+// to this machine.
+type CompletionConfig struct {
+	// Enabled false turns completions off; unset leaves them on when
+	// model.completion names a provider.
+	Enabled *bool `json:"enabled,omitempty"`
+	// LocalOnly keeps completions to a provider on this machine: the code
+	// around the cursor goes nowhere else.
+	LocalOnly bool `json:"local_only,omitempty"`
+}
+
+// CompletionsOn reports whether completions are configured and not turned off.
+func (c Config) CompletionsOn() bool {
+	return c.Model.Completion != "" && (c.Completion.Enabled == nil || *c.Completion.Enabled)
+}
+
+// localTypes are the provider types whose default endpoint is on this machine.
+var localTypes = map[string]bool{"ollama": true, "vllm": true, "llamacpp": true, "tgi": true, "sglang": true}
+
+// OnThisMachine reports whether the provider's endpoint is on this machine:
+// a loopback address or localhost, or a local server type left at its default.
+func (p ProviderConfig) OnThisMachine() bool {
+	if p.BaseURL == "" {
+		return localTypes[p.Type]
+	}
+	u, err := url.Parse(p.BaseURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }
 
 // OllamaConfig governs getting a chosen Ollama model working.
@@ -1999,6 +2042,11 @@ func (c Config) Validate() error {
 	case "", "refuse", "report", "off":
 	default:
 		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
+	}
+	if n := c.Model.Completion; n != "" {
+		if _, ok := c.Model.Providers[n]; !ok {
+			return fmt.Errorf("model.completion names %q, which is not one of model.providers", n)
+		}
 	}
 	switch c.Tools.BashCheckpoints {
 	case "", "on", "off", "required":

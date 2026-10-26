@@ -67,6 +67,8 @@ var table = map[agent.EventType]rule{
 	agent.EvDebugStopped:         {fn: apiOther("Debug stop"), classes: []int{6003}},
 	agent.EvLSPStarted:           {fn: apiOther("Language server start"), classes: []int{6003}},
 	agent.EvLSPStopped:           {fn: apiOther("Language server stop"), classes: []int{6003}},
+	agent.EvCompletionEnabled:    {fn: apiOther("Completion enabled"), classes: []int{6003}},
+	agent.EvCompletionSummary:    {fn: apiOther("Completion summary"), classes: []int{6003}},
 	agent.EvTaskCancelled:        {fn: apiOther("Cancel"), classes: []int{6003}},
 	agent.EvMessageDropped:       {fn: apiOther("Drop"), classes: []int{6003}},
 	agent.EvSessionRenamed:       {fn: apiActivity(3, "Update"), classes: []int{6003}},
