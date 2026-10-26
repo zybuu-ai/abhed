@@ -27,13 +27,12 @@ func TestInside(t *testing.T) {
 	}
 }
 
-func refusal(t *testing.T, err error) *Refusal {
+func refusal(t *testing.T, err error) {
 	t.Helper()
 	var r *Refusal
-	if !errors.As(err, &r) {
+	if !errors.As(err, &r) || r.Reason == "" {
 		t.Fatalf("not a refusal: %v", err)
 	}
-	return r
 }
 
 // The editor's requests pass, rebuilt; initialize, settings, an unsafe
