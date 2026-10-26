@@ -423,3 +423,49 @@ func TestRefusedAnswerAnswersTheServer(t *testing.T) {
 		t.Fatalf("unasked: %#v", err)
 	}
 }
+
+// A workspace edit is never applied in part: one with any outside file, or
+// one in .abhed, is dropped whole, while read-only results lose only their
+// outside items.
+func TestWorkspaceEditsAreWholeOrNothing(t *testing.T) {
+	f := &Filter{Roots: []string{"/w"}, Language: "go"}
+	result := func(fwd []byte) string {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(fwd, &m) != nil {
+			t.Fatalf("not a message: %s", fwd)
+		}
+		return string(m["result"])
+	}
+	for _, edit := range []string{
+		`{"changes":{"file:///w/a.go":[{"range":{},"newText":"B"}],"file:///usr/lib/go/x.go":[{"range":{},"newText":"B"}]}}`,
+		`{"documentChanges":[{"textDocument":{"uri":"file:///w/a.go","version":1},"edits":[]},{"textDocument":{"uri":"file:///etc/x","version":1},"edits":[]}]}`,
+		`{"documentChanges":[{"kind":"rename","oldUri":"file:///w/a.go","newUri":"file:///w/.abhed/a.go"}]}`,
+	} {
+		fwd, _ := f.FromServer([]byte(`{"jsonrpc":"2.0","id":1,"result":` + edit + `}`))
+		if got := result(fwd); got != "null" {
+			t.Errorf("rename answer was applied in part: %s", got)
+		}
+		fwd, reply := f.FromServer([]byte(`{"jsonrpc":"2.0","id":2,"method":"workspace/applyEdit","params":{"edit":` + edit + `}}`))
+		if fwd != nil || !strings.Contains(string(reply), `"error"`) {
+			t.Errorf("applyEdit passed: %s %s", fwd, reply)
+		}
+	}
+	// A code action carrying an outside edit is dropped whole; the others stay.
+	fwd, _ := f.FromServer([]byte(`{"jsonrpc":"2.0","id":3,"result":[` +
+		`{"title":"bad","edit":{"changes":{"file:///w/a.go":[],"file:///usr/lib/x.go":[]}}},` +
+		`{"title":"good","edit":{"changes":{"file:///w/a.go":[],"file:///w/b.go":[]}}}]}`))
+	if got := result(fwd); got != `[{"edit":{"changes":{"file:///w/a.go":[],"file:///w/b.go":[]}},"title":"good"}]` {
+		t.Errorf("code actions: %s", got)
+	}
+	// An edit wholly inside passes unchanged.
+	in := `{"changes":{"file:///w/a.go":[{"newText":"B","range":{}}],"file:///w/b.go":[]}}`
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":4,"result":` + in + `}`))
+	if got := result(fwd); got != in {
+		t.Errorf("inside rename: %s", got)
+	}
+	// Read-only results still lose only their outside items.
+	fwd, _ = f.FromServer([]byte(`{"jsonrpc":"2.0","id":5,"result":[{"uri":"file:///usr/lib/x.go"},{"uri":"file:///w/a.go"}]}`))
+	if got := result(fwd); got != `[{"uri":"file:///w/a.go"}]` {
+		t.Errorf("references: %s", got)
+	}
+}
