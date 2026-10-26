@@ -455,18 +455,19 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 476 planted wrong claims none is shown as verified and 30 are
-  contradicted (all from cited, conflicting evidence), all 100 true controls
-  are verified, and none of the 195 true or neutral claims is contradicted;
+  -v`): of 499 planted wrong claims none is shown as verified and 30 are
+  contradicted (all from cited, conflicting evidence), all 117 true controls
+  are verified, and none of the 212 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
   is judged on its own, a neutral lead-in ("In summary,") is taken off and
-  the rest checked, a lead that reports work ("Done:", "Tested:", "Here's
-  what I changed:") keeps its event, advice and intentions ("run `go test
-  ./...` to confirm", "Next steps: …", "I'll update the docs next") are left
-  out while reports worded like them ("Test results:", "I can confirm", "I
-  couldn't find", "Next, I set") are checked, and an imperative after a
+  the rest checked, a lead that reports work ("Done:", "Tested:", "I tested
+  it:", "Here's what I changed:") keeps its event, a past work label
+  ("Changed: X") reads as "I changed X", advice and intentions ("run `go
+  test ./...` to confirm", "Next steps: …", "I'll update the docs next") are
+  left out while reports worded like them ("Test results:", "I can confirm",
+  "I couldn't find", "Next, I set") are checked, and an imperative after a
   change is advice when it says when or what for or names a step no call
   did. A fact a cited result is silent on leaves a statement unverified,
   never contradicted; counts are compared by a fixed list of outcome, action
@@ -489,28 +490,30 @@ All notable changes to Abhed are recorded here. The format follows
   or about any workspace file after a call whose files cannot be told, other
   than that it changed, is never verified by output naming it; a state, an
   outcome or a judgement ("the hotfix is live", "`API_KEY` is a
-  placeholder") the matched output does not say is not verified; a sentence
-  that reports an event, in any wording or person (a past form or
-  participle, "now", "new", a change noun), is shown only by the calls; a
-  change that names no file is verified only by an edit, a write or a
-  resource command given the code it names, read the way the sentence says
-  from the change's own changed lines (an addition or a removal by its
-  direction, then its place on the lines that enclose its changed lines,
-  never a sibling route or function or a context line the edit carried, a
-  deletion placed where it sat before; any other change only by its new
-  text, its old text only where named as replaced and never found elsewhere
-  in the file, so a flag turned the other way or auth taken off and said
-  added stays unverified) (an edit, `sed -i`, or a write against what the
-  session last read of the file), with any count it gives read from what the
-  change was given, never by a memory note, a commit message or a formatter;
-  a change that names a file is shown only by that file's change; and what
-  the agent read or searched for is verified by a call of its own for each
-  path it names; and a sentence that explains what a read or a search showed
-  is drawn apart, as an explanation, and left out of the unverified-work
-  count, but changes no outcome and no revision, so it can never make an
-  answer verified. On a line-by-line explanation of a function, the
-  sentences counted as unverified work went from 5 to the 2 that were about
-  the work.
+  placeholder") the matched output does not say is not verified, and a claim
+  that the work is clean ("no issues", "looks good") is shown only by a
+  passing lint or test run; a sentence that reports an event, in any wording
+  or person (a past form or participle, "now", "new", a change noun), is
+  shown only by the calls; a change that names no file is verified only by
+  an edit, a write or a resource command given the code it names, read the
+  way the sentence says from the change's own changed lines (an addition or
+  a removal by its direction, then its place on the lines that enclose its
+  changed lines, a context line the edit carried counting only when it
+  encloses them or is named as an anchor, never a sibling route or function,
+  a replacement located by where its old text sat and a deletion placed
+  where it sat before; any other change only by its new text, its old text
+  only where named as replaced and never found elsewhere in the file, so a
+  flag turned the other way or auth taken off and said added stays
+  unverified) (an edit, `sed -i`, or a write against what the session last
+  read of the file), with any count it gives read from what the change was
+  given, never by a memory note, a commit message or a formatter; a change
+  that names a file is shown only by that file's change; and what the agent
+  read or searched for is verified by a call of its own for each path it
+  names; and a sentence that explains what a read or a search showed is
+  drawn apart, as an explanation, and left out of the unverified-work count,
+  but changes no outcome and no revision, so it can never make an answer
+  verified. On a line-by-line explanation of a function, the sentences
+  counted as unverified work went from 5 to the 2 that were about the work.
 - An optional critic (`verify.critic`) has a model, ideally of another
   family, check each verified statement against its evidence. It can only
   downgrade, and fails closed to unverified.

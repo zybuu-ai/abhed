@@ -442,7 +442,10 @@ func checkClaims(env checkEnv, claims []Claim) ([]ClaimVerdict, *recordIndex) {
 // checkOne checks a claim. One that says a thing did not happen, or is not
 // so, is never verified: output showing the thing does not show its absence.
 func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
+	shown := c.Text
+	c.Text = pastLabeled(c.Text)
 	v := checkWhole(env, ix, c)
+	v.Text = shown
 	// Each clause is judged on its own too, and the claim is verified only
 	// when every one is: "I read `sum.go` and inserted `continue`" needs the
 	// read and the change.
@@ -500,7 +503,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		// A sentence that says something was done or changed is about the work
 		// even with nothing else in it; a participle alone ("a compiled
 		// language") is not.
-		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != ""
+		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim
 		if !f.any() && !workEvent && c.Quote == "" && len(c.Evidence) == 0 {
 			kind = KindStatement
 		}
@@ -521,7 +524,9 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		switch {
 		case !ix.changedAny():
 			why = "it reads as advice, and this session changed nothing"
-		case adviceTailRe.MatchString(low) && !saysPast(c.Text):
+		case adviceTailRe.MatchString(low) && !saysPast(low[:adviceTailRe.FindStringIndex(low)[0]]):
+			// A past form before the tail ("Update `Sum`, which I changed, to
+			// …") reports work; one in the tail ("once this is deployed") does not.
 			why = "it reads as advice: it says when or what for"
 		default:
 			if m := unshownVerbRe.FindStringSubmatch(low); m != nil && !ix.ranWord(m[1]) {
@@ -774,6 +779,18 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	if f.success {
 		fd := ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited)
+		fd.call, fd.kind = fd.out == matched, "run"
+		findings = append(findings, fd)
+	}
+	// "No issues", "looks good": only a check run that passed shows it.
+	if f.overclaim {
+		fd := ix.success(pool, "lint", nil, false, cited)
+		if fd.out != matched {
+			fd = ix.success(pool, "test", nil, false, cited)
+		}
+		if fd.out != matched {
+			fd = finding{out: missing, why: "it says the work is clean, which only a lint or test run that passed after the last change shows"}
+		}
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
 	}
