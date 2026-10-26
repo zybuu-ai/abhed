@@ -333,13 +333,16 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		if ct.created && isTestFile(ct.path) && !f.saysTest {
 			continue
 		}
-		oldE, newE := prepareEvidence(codeLines(ct.old, ct.path), false), prepareEvidence(codeLines(ct.new, ct.path), false)
+		// Only the lines the change changed: context an edit carries is not it.
+		gone, put := lineDiff(ct.old, ct.new)
+		oldE, newE := prepareEvidence(codeLines(gone, ct.path), false), prepareEvidence(codeLines(put, ct.path), false)
 		// The place a change was made: the changed text and the lines that
 		// enclose it in the file as it stands after the change.
 		var placeE *evidenceText
 		after := func(nt string) bool {
 			if placeE == nil {
-				placeE = prepareEvidence(codeLines(enclosing(ix.fileAfter(ct), ct.new, ct.old), ct.path), false)
+				before, _ := ix.before(ct.path, ct.pos, nil)
+				placeE = prepareEvidence(codeLines(enclosing(ix.fileAfter(ct), before, ct.new, ct.old), ct.path), false)
 			}
 			return placeE.hasLiteral(nt)
 		}
@@ -447,29 +450,48 @@ func codeLines(text, path string) string {
 	return strings.Join(keep, "\n")
 }
 
-// enclosing is a change's text with the lines that enclose it in the file
-// after the change: from where its text sits, each earlier line indented
-// less than the last one taken (the loop, then the function, around a
-// line). With the file or the change's place unknown, the change's text.
-func enclosing(file, new, old string) string {
-	hunk := new + "\n" + old
+// enclosing is a change's changed lines and the lines enclosing them: each
+// earlier line, from where they sit, indented less than the last one taken.
+func enclosing(after, before, new, old string) string {
+	gone, put := lineDiff(old, new)
+	hunk := put + "\n" + gone
+	file, block, first := after, new, firstCodeLine(put)
+	if first == "" {
+		// A deletion: where its first line sat in the file before.
+		file, block, first = before, old, firstCodeLine(gone)
+	}
 	lines := strings.Split(file, "\n")
 	at := -1
-	for _, l := range strings.Split(new, "\n") {
-		if t := strings.TrimSpace(l); t != "" {
-			for i, fl := range lines {
-				if strings.TrimSpace(fl) == t {
-					at = i
-					break
-				}
+	if i := strings.Index(file, block); block != "" && i >= 0 {
+		start := strings.Count(file[:i], "\n")
+		for k, l := range strings.Split(block, "\n") {
+			if strings.TrimSpace(l) == first && start+k < len(lines) {
+				at = start + k
+				break
 			}
+		}
+	}
+	for i, fl := range lines {
+		if at >= 0 {
 			break
+		}
+		if first != "" && strings.TrimSpace(fl) == first {
+			at = i
 		}
 	}
 	if at < 0 {
 		return hunk
 	}
 	out := []string{hunk}
+	// An attribute or a decorator belongs to the item after it.
+	if strings.HasPrefix(first, "#[") || strings.HasPrefix(first, "@") {
+		for i := at + 1; i < len(lines); i++ {
+			if t := strings.TrimSpace(lines[i]); t != "" && !strings.HasPrefix(t, "#[") && !strings.HasPrefix(t, "@") {
+				out = append(out, lines[i])
+				break
+			}
+		}
+	}
 	depth := indentOf(lines[at])
 	for i := at - 1; i >= 0 && depth > 0; i-- {
 		if strings.TrimSpace(lines[i]) == "" {
@@ -481,6 +503,16 @@ func enclosing(file, new, old string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// firstCodeLine is a text's first line with anything on it, trimmed.
+func firstCodeLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // indentOf is a line's leading white space, a tab as four spaces.

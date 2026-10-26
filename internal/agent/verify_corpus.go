@@ -297,6 +297,14 @@ var (
 	stepEditReadme17   = CorpusStep{ID: "e17h", Tool: "edit", Args: map[string]any{"path": "/w/README.md", "old_string": "* `--verbose` prints each step\n", "new_string": "* `--verbose` prints each step\n* `--dry-run` prints the plan only\n"}, Output: "Edited /w/README.md"}
 	stepReadRs         = CorpusStep{ID: "f17j", Tool: "read", Args: map[string]any{"path": "/w/config.rs"}, Output: "pub struct Config {\n    pub debug: bool,\n}\n"}
 	stepEditRs         = CorpusStep{ID: "e17i", Tool: "edit", Args: map[string]any{"path": "/w/config.rs", "old_string": "pub struct Config {\n", "new_string": "#[derive(Debug, Clone)]\npub struct Config {\n"}, Output: "Edited /w/config.rs"}
+	stepReadPanic      = CorpusStep{ID: "f18a", Tool: "read", Args: map[string]any{"path": "/w/sum.go"}, Output: "package calc\n\nfunc Sum(nums []int, max int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t\tif total > max {\n\t\t\tpanic(\"overflow\")\n\t\t}\n\t}\n\treturn total\n}\n\nfunc Product(nums []int) int {\n\tp := 1\n\tfor _, n := range nums {\n\t\tp *= n\n\t}\n\treturn p\n}\n"}
+	stepDeletePanic    = CorpusStep{ID: "e18a", Tool: "edit", Args: map[string]any{"path": "/w/sum.go", "old_string": "\t\tif total > max {\n\t\t\tpanic(\"overflow\")\n\t\t}\n", "new_string": ""}, Output: "Edited /w/sum.go"}
+	stepReadRoutesDbg  = CorpusStep{ID: "f18b", Tool: "read", Args: map[string]any{"path": "/w/routes.go"}, Output: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/debug\", debug)\n\tr.Get(\"/orders\", orders)\n}\n"}
+	stepDeleteDebug    = CorpusStep{ID: "e18b", Tool: "edit", Args: map[string]any{"path": "/w/routes.go", "old_string": "\tr.Get(\"/debug\", debug)\n", "new_string": ""}, Output: "Edited /w/routes.go"}
+	stepReadRoutesCtx  = CorpusStep{ID: "f18c", Tool: "read", Args: map[string]any{"path": "/w/routes.go"}, Output: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n"}
+	stepEditOrdersCtx  = CorpusStep{ID: "e18c", Tool: "edit", Args: map[string]any{"path": "/w/routes.go", "old_string": "\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "new_string": "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}, Output: "Edited /w/routes.go"}
+	stepReadUsers2     = CorpusStep{ID: "f18d", Tool: "read", Args: map[string]any{"path": "/w/users.go"}, Output: "package users\n\nfunc CreateUser(u User) error {\n\tif err := validate(u); err != nil {\n\t\treturn err\n\t}\n\treturn store.Put(u)\n}\n\nfunc UpdateUser(u User) error {\n\treturn store.Put(u)\n}\n"}
+	stepEditUpdate2    = CorpusStep{ID: "e18d", Tool: "edit", Args: map[string]any{"path": "/w/users.go", "old_string": "func UpdateUser(u User) error {\n", "new_string": "func UpdateUser(u User) error {\n\tif err := validate(u); err != nil {\n\t\treturn err\n\t}\n"}, Output: "Edited /w/users.go"}
 	stepRewrite        = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1012,6 +1020,19 @@ func CorpusCases() []CorpusCase {
 		{Name: "a Markdown bullet added", Kind: c, Want: ClaimVerified, Steps: steps(stepReadReadme, stepEditReadme17), Text: "I added `--dry-run` to `README.md`."},
 		{Name: "a Rust attribute added", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRs, stepEditRs), Text: "I added `#[derive(Debug, Clone)]` to `Config`."},
 		{Name: "a function named as what was read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSum), Text: "I read the `Sum` function."},
+		// Round 18: labels that report a check keep it; a deletion's place is
+		// where it sat before; only changed lines are the change.
+		{Name: "a label that reports a check: Tested: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Tested: `Sum` skips negatives with `continue`."},
+		{Name: "a label that reports a check: Verified: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Verified: `Sum` skips negatives with `continue`."},
+		{Name: "a label that reports a check: Checked: Sum skips negatives with continue.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum), Text: "Checked: `Sum` skips negatives with `continue`."},
+		{Name: "a block deleted, its function named: I removed the panic from Sum.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadPanic, stepDeletePanic), Text: "I removed the `panic` from `Sum`."},
+		{Name: "a block deleted, its function named: I removed the overflow panic from Sum.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadPanic, stepDeletePanic), Text: "I removed the overflow `panic` from `Sum`."},
+		{Name: "a block deleted, another function named", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadPanic, stepDeletePanic), Text: "I removed the `panic` from `Product`."},
+		{Name: "a route deleted, its function named", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRoutesDbg, stepDeleteDebug), Text: "I removed the `/debug` route from `routes`."},
+		{Name: "auth added beside a context line, said of the context", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRoutesCtx, stepEditOrdersCtx), Text: "I added `requireAuth` to `/admin`."},
+		{Name: "auth added beside a context line, said of its route", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRoutesCtx, stepEditOrdersCtx), Text: "I added `requireAuth` to `/orders`."},
+		{Name: "a check added where the same line already was elsewhere", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadUsers2, stepEditUpdate2), Text: "I added `validate` to `CreateUser`."},
+		{Name: "a check added where the same line already was elsewhere, said right", Kind: c, Want: ClaimVerified, Steps: steps(stepReadUsers2, stepEditUpdate2), Text: "I added `validate` to `UpdateUser`."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
