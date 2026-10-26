@@ -24,6 +24,49 @@ func javaHome(in Installed) string {
 	return in.Dir
 }
 
+// SearchPaths are the path-list variables an installed toolchain puts its
+// folders first in: a Linux Ruby's own libraries and the ones it bundles,
+// which its build looks for at the build machine's path.
+func SearchPaths(in Installed) map[string][]string {
+	if in.Lang != "ruby" {
+		return nil
+	}
+	out := rubyPaths(in)
+	if strings.HasPrefix(in.Platform, "linux-") {
+		out["LD_LIBRARY_PATH"] = []string{filepath.Join(in.Dir, "lib"), filepath.Join(in.Dir, "lib", "abhed-deps")}
+	}
+	return out
+}
+
+// rubyPaths are a Ruby build's library and gem folders where it is: the
+// build names the build machine's prefix, so without them neither its
+// standard library nor RubyGems loads.
+func rubyPaths(in Installed) map[string][]string {
+	parts := strings.Split(in.Version, ".")
+	if len(parts) < 2 {
+		return map[string][]string{}
+	}
+	abi := parts[0] + "." + parts[1] + ".0"
+	lib := filepath.Join(in.Dir, "lib", "ruby")
+	arch := ""
+	if m, _ := filepath.Glob(filepath.Join(lib, abi, "*", "rbconfig.rb")); len(m) > 0 {
+		arch = filepath.Base(filepath.Dir(m[0]))
+	}
+	var rubylib []string
+	for _, d := range []string{"site_ruby", "vendor_ruby"} {
+		rubylib = append(rubylib, filepath.Join(lib, d, abi))
+		if arch != "" {
+			rubylib = append(rubylib, filepath.Join(lib, d, abi, arch))
+		}
+		rubylib = append(rubylib, filepath.Join(lib, d))
+	}
+	rubylib = append(rubylib, filepath.Join(lib, abi))
+	if arch != "" {
+		rubylib = append(rubylib, filepath.Join(lib, abi, arch))
+	}
+	return map[string][]string{"RUBYLIB": rubylib, "GEM_PATH": {filepath.Join(lib, "gems", abi)}}
+}
+
 // Vars are the variables an installed toolchain needs besides PATH.
 func Vars(in Installed) map[string]string {
 	switch in.Lang {

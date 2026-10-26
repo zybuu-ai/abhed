@@ -115,7 +115,7 @@ func (wb *workbench) waitTerminal(id, what string, want func(*ptyRun, int, bool)
 		if run == nil || !run.local {
 			wb.t.Skip("the terminal cannot be asked here")
 		}
-		if fg, canonical, ok := ttyNow(run.tty); ok && want(run, fg, canonical) {
+		if fg, canonical, ok := ttyNow.Get()(run.tty); ok && want(run, fg, canonical) {
 			return
 		}
 	}
@@ -838,7 +838,7 @@ func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
 	if got := st.holderOf(wb.session); got != second.holder {
 		t.Fatalf("holder during a workbench hold: %q, want %q", got, second.holder)
 	}
-	if ok, _ := st.ClaimOrphan(context.Background(), wb.session, "another", nodeStale); ok {
+	if ok, _ := st.ClaimOrphan(context.Background(), wb.session, "another", nodeStale.Get()); ok {
 		t.Fatal("a held session was taken as an orphan")
 	}
 	second.drain()
@@ -848,9 +848,9 @@ func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
 
 	// Deleted while held: the hold's liveness goes with it, and its timer
 	// writes nothing into the deleted record.
-	hold := manualHold
-	manualHold = 300 * time.Millisecond
-	t.Cleanup(func() { manualHold = hold })
+	hold := manualHold.Get()
+	manualHold.Set(300 * time.Millisecond)
+	t.Cleanup(func() { manualHold.Set(hold) })
 	third := New(opts)
 	wb.h = third.Handler()
 	if rec := wb.send("acme", "POST", "exec", execRequest{Command: "echo held"}); rec.Code != http.StatusOK {
@@ -869,7 +869,7 @@ func TestWorkbenchHoldKeepsLiveness(t *testing.T) {
 	if got := st.holderOf(wb.session); got != "" {
 		t.Fatalf("a deleted session is still held by %q", got)
 	}
-	time.Sleep(3 * manualHold)
+	time.Sleep(3 * manualHold.Get())
 	if evs, _ := st.Events(wb.session); len(evs) != 0 {
 		t.Fatalf("the hold wrote %d events after the delete", len(evs))
 	}

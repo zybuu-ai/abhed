@@ -143,11 +143,11 @@ const approvalPoll = 2 * time.Second
 // nodeStale is how long a claim survives without being refreshed. Longer than
 // any turn boundary, short enough that a node which died does not strand its
 // sessions for long. The store's own claims use the same window.
-var nodeStale = store.HolderStale
+var nodeStale = newTunable(store.HolderStale)
 
 // nodeHeartbeat refreshes the claim well inside nodeStale, so a slow write or
 // a missed tick does not make a healthy node look dead.
-var nodeHeartbeat = 30 * time.Second
+var nodeHeartbeat = newTunable(30 * time.Second)
 
 // Mount registers routes on the server's mux. It runs after the built-in
 // routes and before the middleware wraps the mux, so the handlers it
@@ -385,6 +385,9 @@ type Options struct {
 // Server holds live sessions and serves the API.
 type Server struct {
 	opts Options
+	// releaseRetry, when set before the server starts, bounds giving a claim
+	// back in place of the package default; tests shorten it.
+	releaseRetry time.Duration
 	// muxes are the pages' shared streams; see streams.go.
 	muxes streamMuxes
 	// searching counts the workspace searches running per session, under searchMu.
@@ -2429,7 +2432,7 @@ func (s *Server) recordedProvider(id string, events []agent.Event, rowModel stri
 
 // manualHold is how long a claim taken for workbench work alone is kept
 // after its last write, before the session is released as it was found.
-var manualHold = 2 * time.Minute
+var manualHold = newTunable(2 * time.Minute)
 
 // priorEnd is the end a session was opened with, recorded again on release.
 func priorEnd(events []agent.Event, rec store.SessionRecord) json.RawMessage {
@@ -2465,7 +2468,7 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 	if !live.unclaimed.Load() {
 		live.holdMu.Lock()
 		if live.held {
-			live.release.Reset(manualHold)
+			live.release.Reset(manualHold.Get())
 		}
 		live.holdMu.Unlock()
 		return nil
@@ -2512,9 +2515,9 @@ func (s *Server) holdClaim(id string, live *liveSession) {
 	defer live.holdMu.Unlock()
 	live.held = true
 	if live.release == nil {
-		live.release = time.AfterFunc(manualHold, func() { s.releaseHeld(id, live, false) })
+		live.release = time.AfterFunc(manualHold.Get(), func() { s.releaseHeld(id, live, false) })
 	} else {
-		live.release.Reset(manualHold)
+		live.release.Reset(manualHold.Get())
 	}
 }
 
@@ -2620,7 +2623,7 @@ func (s *Server) releaseHeld(id string, live *liveSession, now bool) {
 	live.mu.Unlock()
 	live.holdMu.Lock()
 	if busy && !now {
-		live.release.Reset(manualHold)
+		live.release.Reset(manualHold.Get())
 		live.holdMu.Unlock()
 		return
 	}
@@ -3573,7 +3576,7 @@ func (s *Server) recoverOrphan(ctx context.Context, id string, events []agent.Ev
 	if !ok || !agent.Orphaned(events) {
 		return false
 	}
-	claimed, err := oc.ClaimOrphan(ctx, id, s.holder, nodeStale)
+	claimed, err := oc.ClaimOrphan(ctx, id, s.holder, nodeStale.Get())
 	if err != nil || !claimed {
 		return false
 	}
@@ -3635,7 +3638,7 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 }
 
 // sweepPage is how many open sessions the sweep reads at a time.
-var sweepPage = 500
+var sweepPage = newTunable(500)
 
 // OpenSessionLister is implemented by stores that can page through every
 // session not yet ended, however old, for the orphan sweep.
@@ -3647,16 +3650,16 @@ type OpenSessionLister interface {
 // by page where the store has it, otherwise from its session list.
 func (s *Server) eachOpenSession(ctx context.Context, f func(id string)) error {
 	if l, ok := s.sessions.(OpenSessionLister); ok {
-		after := ""
+		after, page := "", sweepPage.Get()
 		for ctx.Err() == nil {
-			ids, err := l.OpenSessions(ctx, after, sweepPage)
+			ids, err := l.OpenSessions(ctx, after, page)
 			if err != nil {
 				return err
 			}
 			for _, id := range ids {
 				f(id)
 			}
-			if len(ids) < sweepPage {
+			if len(ids) < page {
 				return nil
 			}
 			after = ids[len(ids)-1]
@@ -4899,7 +4902,7 @@ func holderID(nodeID string) string {
 // The returned function stops the heartbeat and waits for a beat in flight;
 // it is safe to call more than once.
 func (s *Server) heartbeatNode(ctx context.Context, sessionID string, lost func()) func() {
-	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat, lost)
+	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat.Get(), lost)
 }
 
 // heartbeatNodeEvery refreshes the claim every interval. A renewal the store
@@ -4941,7 +4944,7 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 				case err == nil && held:
 					lastOK = sent
 					continue
-				case err != nil && time.Since(lastOK) < nodeStale-every:
+				case err != nil && time.Since(lastOK) < nodeStale.Get()-every:
 					continue // logged; the next beat tries again while the claim still reads as live
 				}
 				lostIt = ctx.Err() == nil
@@ -4981,7 +4984,7 @@ func (s *Server) releaseNode(sessionID string) {
 	}
 	// Tried again within one budget: a claim left behind holds the session
 	// from every other node until it goes stale.
-	ctx, cancel := context.WithTimeout(context.Background(), releaseRetry)
+	ctx, cancel := context.WithTimeout(context.Background(), s.releaseBudget())
 	defer cancel()
 	var err error
 	for wait := 200 * time.Millisecond; ; wait *= 2 {
@@ -4991,15 +4994,24 @@ func (s *Server) releaseNode(sessionID string) {
 		select {
 		case <-ctx.Done():
 			s.log.Warn("could not release session claim; it lapses once stale", "session", sessionID,
-				"err", err, "stale_after", nodeStale)
+				"err", err, "stale_after", nodeStale.Get())
 			return
 		case <-time.After(wait):
 		}
 	}
 }
 
-// releaseRetry bounds the tries at giving a claim back; a variable for tests.
-var releaseRetry = 10 * time.Second
+// releaseRetry bounds the tries at giving a claim back, unless the server's
+// own releaseRetry, set before it starts, is shorter (tests).
+const releaseRetry = 10 * time.Second
+
+// releaseBudget is the server's own bound on giving a claim back, or releaseRetry.
+func (s *Server) releaseBudget() time.Duration {
+	if s.releaseRetry > 0 {
+		return s.releaseRetry
+	}
+	return releaseRetry
+}
 
 // answerElsewhere records a decision for a session this node is not running,
 // and reports whether it did. The node that is waiting polls for the result,
@@ -5224,7 +5236,7 @@ func (s *Server) elsewhere(ctx context.Context, sessionID string) string {
 	if !ok {
 		return ""
 	}
-	node, err := r.NodeFor(ctx, sessionID, nodeStale)
+	node, err := r.NodeFor(ctx, sessionID, nodeStale.Get())
 	if err != nil || node == "" || node == s.opts.NodeID {
 		return ""
 	}
@@ -5336,7 +5348,7 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 		return err
 	}
 	srv.Addr = ln.Addr().String()
-	go s.sweepOrphans(ctx, nodeStale)
+	go s.sweepOrphans(ctx, nodeStale.Get())
 	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	srv.RegisterOnShutdown(s.endStreams)
 	stopped := make(chan struct{})

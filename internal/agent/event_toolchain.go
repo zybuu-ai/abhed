@@ -33,7 +33,10 @@ const (
 // where, checked against which published checksum, who agreed and how it
 // ended.
 type ToolchainAction struct {
-	Lang     string `json:"lang"`
+	Lang string `json:"lang"`
+	// Extra is set for a tool installed beside the language, such as its
+	// debugger (delve, debugpy); Version is then the extra's.
+	Extra    string `json:"extra,omitempty"`
 	Version  string `json:"version,omitempty"`
 	Platform string `json:"platform,omitempty"`
 	Outcome  string `json:"outcome"`
@@ -45,6 +48,8 @@ type ToolchainAction struct {
 	URL    string `json:"url,omitempty"`
 	Digest string `json:"digest,omitempty"`
 	Bytes  int64  `json:"bytes,omitempty"`
+	// BuiltWith names the toolchain an extra was built with here.
+	BuiltWith string `json:"built_with,omitempty"`
 	// Cached is set when it was installed already and nothing was downloaded.
 	Cached bool `json:"cached,omitempty"`
 	// Consent is how it was agreed: asked (an approval), session (an

@@ -56,11 +56,13 @@ func MissingAdapter(code int, image string) *Problem {
 	switch code {
 	case exitNoDelve:
 		return &Problem{Kind: KindAdapter, Retry: true, Message: "Delve (dlv) is not on the sandbox's PATH, so Go cannot be debugged there",
-			Steps: []string{"Use a sandbox image with Go and Delve: build one FROM " + orElse(image, "golang:1.26-bookworm") + " with `RUN go install github.com/go-delve/delve/cmd/dlv@latest`",
+			Steps: []string{"Install Go with its debugger: accept the toolchain offer with the debugger (_abhed/toolchain/install with debugger true), or run `abhed toolchain install -debugger -platform linux go` in your own terminal",
+				"Or use a sandbox image with Go and Delve: build one FROM " + orElse(image, "golang:1.26-bookworm") + " with `RUN go install github.com/go-delve/delve/cmd/dlv@latest`",
 				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
 	case exitNoDebugpy:
 		return &Problem{Kind: KindAdapter, Retry: true, Message: "debugpy is not installed for the sandbox's python3, so Python cannot be debugged there",
-			Steps: []string{"Use a sandbox image with Python and debugpy: build one FROM " + orElse(image, "python:3.12-slim-bookworm") + " with `RUN pip install debugpy`",
+			Steps: []string{"Install Python with its debugger: accept the toolchain offer with the debugger (_abhed/toolchain/install with debugger true), or run `abhed toolchain install -debugger python` in your own terminal",
+				"Or use a sandbox image with Python and debugpy: build one FROM " + orElse(image, "python:3.12-slim-bookworm") + " with `RUN pip install debugpy`",
 				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
 	}
 	return nil

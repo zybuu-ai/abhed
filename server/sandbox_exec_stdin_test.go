@@ -15,12 +15,12 @@ import (
 // While the command is not reading its stdin, the stream still answers the
 // client's pings; once it reads, it gets every byte, in order, none dropped.
 func TestSandboxExecStdinDoesNotBlockPings(t *testing.T) {
-	quiet := streamQuiet
+	quiet := streamQuiet.Get()
 	// Short, so the stream would end in the waits below were a full queue
 	// taken for a quiet client; long enough for an emulated client to mask
 	// and send a 1 MiB message between reads.
-	streamQuiet = 500 * time.Millisecond
-	t.Cleanup(func() { streamQuiet = quiet })
+	streamQuiet.Set(500 * time.Millisecond)
+	t.Cleanup(func() { streamQuiet.Set(quiet) })
 	r := newWSRig(t, nil, nil, func(o *Options) { o.Config.Permissions.Deny, o.Config.Permissions.Ask = nil, nil })
 	sb := r.ready(t, "alice")
 	reading := make(chan struct{})
@@ -68,7 +68,7 @@ func TestSandboxExecStdinDoesNotBlockPings(t *testing.T) {
 	// The command takes nothing yet: the stream must outlive the quiet bound,
 	// first with stdin queued, then with the queue full.
 	_ = ws.WriteMessage(wsconn.Binary, data[:64<<10])
-	time.Sleep(3 * streamQuiet)
+	time.Sleep(3 * streamQuiet.Get())
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
@@ -76,7 +76,7 @@ func TestSandboxExecStdinDoesNotBlockPings(t *testing.T) {
 			_ = ws.WriteMessage(wsconn.Binary, data[off:min(off+1<<20, len(data))])
 		}
 	}()
-	time.Sleep(3 * streamQuiet)
+	time.Sleep(3 * streamQuiet.Get())
 	select {
 	case m := <-msgs:
 		t.Fatalf("the stream ended while the command was not reading: %s", m[1:])

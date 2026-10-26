@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/zybuu-ai/abhed/internal/dapbridge" // the debug bridge, when this binary is bound into a container
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/enginecli"
 	"github.com/zybuu-ai/abhed/internal/stdiorelay"
@@ -43,6 +44,10 @@ var relayPort = func(proxy uint16) uint16 { return proxy }
 // containerHostOS is runtime.GOOS; tests set it to check another host.
 var containerHostOS = runtime.GOOS
 
+// helperArch is the shipped helper's architecture, the engine's own: an
+// engine's VM runs the host's. Tests set it.
+var helperArch = runtime.GOARCH
+
 // containerRelay is the Linux relay binary run in a container: this one on a
 // Linux host, else the configured relay_binary; "" with why when none.
 func (c *Container) containerRelay() (string, string) {
@@ -58,9 +63,14 @@ func (c *Container) containerRelay() (string, string) {
 		return exe, ""
 	}
 	if c.policy.RelayBinary == "" {
-		return "", "sandbox.network allowlist with the engine in a VM or on another host needs a Linux build of Abhed to run " +
-			"inside each container as the relay (control_plane.<engine>.relay_binary), which is not set, so the " + string(c.Tier()) +
-			" tier is not used rather than given the network"
+		// The helper shipped beside the engine, verified against its pin.
+		if helper, why := BundledHelper(helperArch); helper != "" {
+			return helper, ""
+		} else if why != "" {
+			return "", "the egress proxy with the engine in a VM or on another host needs a Linux build of Abhed, or the abhed-helper " +
+				"shipped with it, to run inside each container as the relay (control_plane.<engine>.relay_binary); " + why + ", so the " +
+				string(c.Tier()) + " tier is not used rather than given the network"
+		}
 	}
 	return c.policy.RelayBinary, ""
 }

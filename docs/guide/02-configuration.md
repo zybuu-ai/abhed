@@ -35,7 +35,7 @@ configuration](#trusting-the-workspace-configuration).
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
-| `sandbox` | process isolation and network access; `toolchains`, `toolchains_preapproved` and `toolchains_registries`: languages installed on demand for commands and their package registries — [Toolchains](29-toolchains.md); `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
+| `sandbox` | process isolation and network access; `toolchains`, `toolchains_preapproved` and `toolchains_registries`: languages installed on demand for commands and their package registries — [Toolchains](32-toolchains.md); `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
 | `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall`, and the managed `egress_port_only` and `allow_root` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |

@@ -49,7 +49,7 @@ type pendingApproval struct {
 }
 
 // approvalReadyWait bounds how long an answer waits for its request's row.
-var approvalReadyWait = 30 * time.Second
+var approvalReadyWait = newTunable(30 * time.Second)
 
 const (
 	// requestWait is how long an answer naming a request waits for the turn
@@ -170,7 +170,7 @@ func (s *Server) answerHere(w http.ResponseWriter, r *http.Request, live *liveSe
 	case <-p.final:
 	case <-r.Context().Done():
 		return
-	case <-time.After(approvalReadyWait):
+	case <-time.After(approvalReadyWait.Get()):
 		w.Header().Set("Retry-After", "1")
 		WriteError(w, http.StatusServiceUnavailable, "the approval is still being recorded; retry")
 		return
@@ -340,7 +340,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 		go func() {
 			// Not cut short by the interrupt: a write cancelled mid-flight may
 			// still commit, and then nothing would know to close its row.
-			wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalReadyWait)
+			wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), approvalReadyWait.Get())
 			defer cancel()
 			id, err := l.durable.AskApproval(wctx, store.Approval{
 				ID: rowID, SessionID: l.ID, RequestID: p.RequestID, Tool: tool, Args: args,

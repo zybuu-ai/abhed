@@ -39,6 +39,9 @@ type toolchainParams struct {
 	Version string `json:"version"`
 	// InstallID names an install, for its progress and cancel.
 	InstallID string `json:"installId"`
+	// Debugger asks for the language's debugger too (Delve for Go, debugpy
+	// for Python), offered and agreed to with it.
+	Debugger bool `json:"debugger"`
 }
 
 // toolchainProblem is an error's data, as the Ollama assist's is.
@@ -57,6 +60,17 @@ func toolchainError(code int, kind, message string) *rpcError {
 var problemSteps = map[string][]string{
 	"toolchains_off": {"Set sandbox.toolchains to ask in your own configuration, where the managed file allows it"},
 	"no_build":       {"Name another version, or set sandbox.image to an image that has the toolchain"},
+	"no_debugger": {"Debug in a Linux sandbox (the container tier, or the process tier on Linux)",
+		"For Go, use Go 1.25 or later; for Python, 3.10 or later", "Or use a sandbox image that has the debugger"},
+}
+
+// debuggerPlan is the plan for the debugger of plan's language.
+func debuggerPlan(ctx context.Context, tc *toolchain.Session, plan toolchain.Plan) (toolchain.ExtraPlan, error) {
+	e, ok := toolchain.DebuggerFor(plan.Spec.Lang)
+	if !ok {
+		return toolchain.ExtraPlan{}, errors.New("no debugger is installed with " + plan.Spec.Lang + "; Abhed installs one with Go (Delve) and Python (debugpy)")
+	}
+	return tc.PlanExtra(ctx, e, plan)
 }
 
 // toolchainLang is the language a name or a program means.
@@ -113,12 +127,29 @@ type toolchainOffer struct {
 	// URL and Digest are the download and the checksum it is checked against.
 	URL    string `json:"url,omitempty"`
 	Digest string `json:"digest,omitempty"`
+	// Title names everything the offer installs, for the modal's heading.
+	Title string `json:"title"`
+	// Debugger is the debugger installed with it, when asked for.
+	Debugger *debuggerOffer `json:"debugger,omitempty"`
+}
+
+// debuggerOffer is the debugger part of an offer.
+type debuggerOffer struct {
+	Name      string `json:"name"`
+	Display   string `json:"display"`
+	Version   string `json:"version"`
+	Source    string `json:"source"`
+	URL       string `json:"url,omitempty"`
+	Digest    string `json:"digest,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Installed bool   `json:"installed"`
 }
 
 // toolchainStatus says whether the session's commands have the language,
 // and what an install would fetch. It installs nothing and is not recorded.
 func (c *acpConn) toolchainStatus(msg rpcMessage) {
-	_, _, tc, spec, e := c.toolchainSession(msg)
+	_, p, tc, spec, e := c.toolchainSession(msg)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
@@ -128,6 +159,10 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 		if in.Lang == spec.Lang {
 			out["available"], out["version"] = true, in.Version
 		}
+	}
+	if e, ok := toolchain.DebuggerFor(spec.Lang); ok {
+		_, has := tc.Cache.LookupExtra(tc.Platform(), e)
+		out["debugger"] = map[string]any{"name": e.Name, "version": e.Version, "available": has && out["available"] == true}
 	}
 	switch {
 	case tc.Off:
@@ -142,11 +177,24 @@ func (c *acpConn) toolchainStatus(msg rpcMessage) {
 			out["refusal"] = toolchainProblem{Kind: "no_build", Message: err.Error()}
 			break
 		}
+		l, _ := toolchain.Find(plan.Spec.Lang)
 		o := toolchainOffer{Command: "abhed toolchain install " + plan.Spec.Lang + "@" + plan.Version(), Version: plan.Version(), Why: plan.Why,
 			Source: plan.Artifact.Source, Size: plan.Artifact.Size, URL: plan.Artifact.URL, Digest: plan.Artifact.Digest,
-			Into: tc.Cache.Dir(tc.Platform(), plan.Spec.Lang, plan.Version())}
+			Into: tc.Cache.Dir(tc.Platform(), plan.Spec.Lang, plan.Version()), Title: l.Display + " " + plan.Version()}
 		if plan.Installed != nil {
 			o.Source, o.URL, o.Digest = "installed already", plan.Installed.URL, plan.Installed.Digest
+		}
+		if p.Debugger {
+			ep, err := debuggerPlan(c.root(), tc, plan)
+			if err != nil {
+				out["can_act"] = false
+				out["refusal"] = toolchainProblem{Kind: "no_debugger", Message: err.Error(), Steps: problemSteps["no_debugger"]}
+				break
+			}
+			o.Command = "abhed toolchain install -debugger " + plan.Spec.Lang + "@" + plan.Version()
+			o.Title += " + " + ep.Extra.Display + " " + ep.Extra.Version
+			o.Debugger = &debuggerOffer{Name: ep.Extra.Name, Display: ep.Extra.Display, Version: ep.Extra.Version, Source: ep.Source,
+				URL: ep.URL, Digest: ep.Digest, Size: ep.Size, Note: ep.Note, Installed: ep.Installed != nil}
 		}
 		out["offer"] = o
 	}
@@ -199,21 +247,47 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		c.reply(msg.ID, nil, toolchainError(errRefused, "no_build", err.Error()))
 		return
 	}
-	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", "studio", func(done, total int64) {
-		c.notification("_abhed/toolchain/progress", map[string]any{"sessionId": s.id, "installId": p.InstallID,
-			"status": "downloading", "completed": done, "total": total})
-	})
-	if err != nil {
+	// The debugger is planned before anything is installed, so a debugger
+	// that cannot be had there installs nothing.
+	var ep *toolchain.ExtraPlan
+	if p.Debugger {
+		d, err := debuggerPlan(ctx, tc, plan)
+		if err != nil {
+			c.reply(msg.ID, nil, toolchainError(errRefused, "no_debugger", err.Error()))
+			return
+		}
+		ep = &d
+	}
+	progress := func(status string) toolchain.Progress {
+		return func(done, total int64) {
+			c.notification("_abhed/toolchain/progress", map[string]any{"sessionId": s.id, "installId": p.InstallID,
+				"status": status, "completed": done, "total": total})
+		}
+	}
+	failed := func(err error) {
 		kind := "install_failed"
 		if ctx.Err() != nil {
 			kind = "cancelled"
 		}
 		c.reply(msg.ID, nil, toolchainError(errRefused, kind, err.Error()))
+	}
+	in, err := tc.Install(ctx, plan, agent.ByUser, "acp", "studio", progress("downloading"))
+	if err != nil {
+		failed(err)
 		return
 	}
-	reach := tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
-	c.reply(msg.ID, map[string]any{"language": in.Lang, "available": true, "version": in.Version, "dir": in.Dir,
-		"bin": toolchain.BinDirs(in), "registries": reach}, nil)
+	res := map[string]any{"language": in.Lang, "available": true, "version": in.Version, "dir": in.Dir, "bin": toolchain.BinDirs(in)}
+	if ep != nil {
+		x, err := tc.InstallExtra(ctx, *ep, in, agent.ByUser, "acp", "studio", progress("debugger"))
+		if err != nil {
+			failed(err)
+			return
+		}
+		bin, py := toolchain.ExtraEnv(x)
+		res["debugger"] = map[string]any{"name": x.Name, "version": x.Version, "dir": x.Dir, "bin": bin, "pythonpath": py}
+	}
+	res["registries"] = tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
+	c.reply(msg.ID, res, nil)
 }
 
 func (c *acpConn) toolchainCancel(msg rpcMessage) {

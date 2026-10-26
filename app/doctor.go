@@ -844,7 +844,7 @@ func toolchainWarnings(c *sandbox.Container, workspace string) []string {
 	if len(images) > 1 {
 		suggest = "an image of your own with all of them"
 	}
-	return []string{fmt.Sprintf("the workspace looks like a %s project, but the sandbox image %s has no %s; Abhed installs it on demand when a command needs it (sandbox.toolchains, docs/guide/29-toolchains.md), or set sandbox.image or ABHED_SANDBOX_IMAGE to an image that has it, %s (docs/guide/02-configuration.md#the-container-tiers-image)",
+	return []string{fmt.Sprintf("the workspace looks like a %s project, but the sandbox image %s has no %s; Abhed installs it on demand when a command needs it (sandbox.toolchains, docs/guide/32-toolchains.md), or set sandbox.image or ABHED_SANDBOX_IMAGE to an image that has it, %s (docs/guide/02-configuration.md#the-container-tiers-image)",
 		andList(kinds), img, andList(progs), suggest)}
 }
 

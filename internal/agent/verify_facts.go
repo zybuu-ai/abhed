@@ -1032,21 +1032,23 @@ var intentRe = regexp.MustCompile(`^(?:please |you (?:can|could|may|might|should
 var labelLeadRe = regexp.MustCompile("^[\\w`./'\\- ]{1,40}?:\\s+")
 
 // workLeadRe is a lead that reports work, which stays in the claim.
-var workLeadRe = regexp.MustCompile(`^(?:done|all done|update|updates|changes|changes made|summary of changes|fixed|fix|the fix|implemented|here(?:'s| is) what (?:i|we) (?:changed|did)|what (?:i|we) (?:changed|did))\b`)
+var workLeadRe = regexp.MustCompile(`^(?:done|all done|update|updates|changes|changes made|summary of changes|fixed|fix|the fix|implemented|tested|verified|checked|ran|added|removed|changed|edited|modified|updated|deployed|built|here(?:'s| is) what (?:i|we) (?:changed|did)|what (?:i|we) (?:changed|did))\b`)
+
+// adviceLabelRe leads advice: what is left to do.
+var adviceLabelRe = regexp.MustCompile(`^(?:next steps?|recommendations?|suggestions?|follow[- ]ups?|todo|to do|optional|tip|nit)\s*:`)
+
+// reportSubjectRe is "test" or "run" as the subject of a report: "Test
+// coverage is", "Run results:".
+var reportSubjectRe = regexp.MustCompile(`^(?:test|run|build)s? (?:coverage|suite|results?|run|output|status|logs?)\b`)
 
 // stepLeadRe is a step's place in a told order: "Next, I …".
 var stepLeadRe = regexp.MustCompile(`^(?:next|then|first|second|third|finally|after that|afterwards|lastly),?\s+`)
 
 // reportLeadRe says a clause is reported: "I can confirm", "you can see".
-var reportLeadRe = regexp.MustCompile(`^(?:(?:i|we) (?:can|could) (?:confirm|see|verify|report|say|tell)|(?:i'll|i will|we'll|we will) (?:note|mention|add|point out)|you can see|you'll see|you will see|you'll notice|you will notice|as you can see)(?: that)?,?\s+|^if you look at [^,]+,\s+`)
+var reportLeadRe = regexp.MustCompile(`^(?:(?:(?:i|we) (?:can|could) (?:confirm|see|verify|report|say|tell)|you can see|you'll see|you will see|you'll notice|you will notice|as you can see)(?: that)?|(?:i'll|i will|we'll|we will) (?:note|mention|add|point out) that),?\s+|^if you look at [^,]+,\s+`)
 
 // cantRe is a report of what could not be found or done.
 var cantRe = regexp.MustCompile(`^(?:i|we) (?:can't|cannot|can not|couldn't|could not|wasn't able to|was not able to)\b`)
-
-// lookVerbRe and finiteRe tell "Run `go test`" (advice) from "Test
-// coverage is 92%" (a report): the latter has a verb of its own.
-var lookVerbRe = regexp.MustCompile(`^(?:run|rerun|re-run|test|check|see|use|verify|look at|open|review) `)
-var finiteRe = regexp.MustCompile(`\b(is|are|was|were|has|have|had|passes|pass|passed|fails|failed|shows|showed|reports|reported|covers|ran|returned|runs|finished|succeeded)\b`)
 
 // imperativeRe is a bare change verb leading a sentence: "Set `DEBUG` to
 // `true` in `config/app.env`." In a session that changed something it is a
@@ -1071,8 +1073,12 @@ func claimOf(s string) (string, bool) {
 		}
 		t = strings.TrimSpace(t[m[1]:])
 	}
+	// A label that leads advice ("Next steps:", "TODO:") leads no claim.
+	if adviceLabelRe.MatchString(strings.ToLower(t)) {
+		return "", false
+	}
 	// A short label before a colon ("Test results:", "See `sum.go`:") is a
-	// lead too, unless it reports work ("Done:"), which stays.
+	// lead too, unless it reports work ("Done:", "Tested:"), which stays.
 	if m := labelLeadRe.FindStringIndex(strings.ToLower(t)); m != nil && !workLeadRe.MatchString(strings.ToLower(t)) &&
 		len(strings.Fields(t[:m[1]])) <= 3 && len(strings.Fields(t[m[1]:])) >= 3 {
 		t = strings.TrimSpace(t[m[1]:])
@@ -1100,8 +1106,7 @@ func claimOf(s string) (string, bool) {
 	// event: they say what may be done. "Run", "test" or "check" opening a
 	// sentence is advice only when no verb of its own follows ("Test
 	// coverage is now 92%" is a report).
-	if intentRe.MatchString(low) && !imperativeRe.MatchString(low) && !saysPast(t) &&
-		(!lookVerbRe.MatchString(low) || !finiteRe.MatchString(low)) {
+	if intentRe.MatchString(low) && !imperativeRe.MatchString(low) && !saysPast(t) && !reportSubjectRe.MatchString(low) {
 		return "", false
 	}
 	if len(strings.Fields(low)) < 3 || courtesyRe.MatchString(low) || adviceRe.MatchString(low) && !imperativeRe.MatchString(low) {

@@ -12,7 +12,7 @@ model you point it at, and records everything it does.
 | [Models and providers](03-providers.md) | the twenty providers, a local Ollama model, sampling parameters, subscriptions |
 | [Permissions and safety](04-permissions.md) | what the agent may do, and how you decide |
 | [Runbooks](28-runbooks.md) | approve a plan's exact calls once; each step then runs without asking, and anything else asks |
-| [Toolchains](29-toolchains.md) | Go, Python, Node, Rust, Java with Maven and Gradle, Ruby and .NET installed on demand, verified, for the sandbox's commands |
+| [Toolchains](32-toolchains.md) | Go, Python, Node, Rust, Java with Maven and Gradle, Ruby and .NET installed on demand, verified, for the sandbox's commands |
 | [Network policy](21-network-policy.md) | the egress allowlist: which destinations commands reach, and the record of each |
 | [The microVM driver](24-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM, or Virtualization.framework VMs on macOS; what is and is not isolated |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |

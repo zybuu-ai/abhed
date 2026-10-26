@@ -35,7 +35,13 @@ would leave that folder and any device or special file, and then made
 read-only. Nothing is installed system-wide, nothing runs with `sudo`, and no
 installer script runs: Rust's components are laid out from their manifests,
 and Ruby's scripts have the build machine's `ruby` path replaced with
-`/usr/bin/env ruby`.
+`/usr/bin/env ruby`. Ruby's builds name the build machine's folders, so its
+commands get `RUBYLIB` and `GEM_PATH` pointing at its own standard library
+and gems, and on Linux `LD_LIBRARY_PATH` at its own `libruby` and at
+libyaml 0.2.5, which a Linux Ruby bundles from Debian 12's package
+(`deb.debian.org`, its sha256 pinned in Abhed as packages.debian.org lists
+it), since `debian:bookworm-slim` has none and YAML, RubyGems and Bundler
+need it.
 
 Commands read the cache and never write it. Under the process tier they get
 the builds for this machine (`darwin-arm64`…); under the container tier the
@@ -143,8 +149,8 @@ only those hosts, only HTTPS, every connection recorded as an
 The proxy is used only where the chosen tier can hold it, and **never in
 exchange for a weaker tier**. The process tier on macOS and Linux holds it; a
 container tier whose engine is in a VM (podman or Docker Desktop on a Mac)
-holds it only with a Linux build of Abhed as the relay
-(`control_plane.<engine>.relay_binary`). Where it cannot be held the network
+holds it with the Linux helper a release ships beside the binary as the
+relay, or a Linux build named in `control_plane.<engine>.relay_binary`. Where it cannot be held the network
 stays off, and the agent is told why when it tries.
 
 With `allow_network: true` the network is open already and nothing changes.
@@ -157,6 +163,30 @@ Why it exists: an agent that can install Go but not fetch a module stops at
 the next command, and turning the whole network on to fix that would let
 every command reach anywhere. Opening exactly the registries of the
 languages you agreed to keeps the sandbox closed to everything else.
+
+## Debuggers
+
+Go and Python can come with their debugger, as part of the same agreement:
+the offer reads "Go 1.27.3 + Delve debugger 1.27.2". Ask for it with the
+toolchain tool's `debugger`, `abhed toolchain install -debugger go`, or
+Studio's `_abhed/toolchain/install` with `debugger: true`, which its Run and
+Debug offers when a debug session ends `adapter-missing`
+([Debugging](31-debugging.md)).
+
+| Language | Debugger | Where it comes from |
+|---|---|---|
+| Go 1.25 or later | Delve 1.27.2 (`dlv`) | built by Abhed itself, not in the sandbox: `go install github.com/go-delve/delve/cmd/dlv@v1.27.2` with the cached Go of the same version for this host (installed first, and offered, when the sandbox is Linux and this host is not), cross-built for the sandbox's Linux architecture with cgo off, from `proxy.golang.org` only, every module checked by `sum.golang.org`, with `GOFLAGS=-mod=mod`, `GOTOOLCHAIN=local` and none of your own Go settings (`GOPRIVATE`, `GOFLAGS`, `GOPROXY`…). Linux amd64 and arm64 only, where the debugger runs |
+| Python 3.10 or later | debugpy 1.8.22 | its universal wheel from PyPI (`files.pythonhosted.org`), refused unless PyPI's listed sha256 is the one Abhed pins, unpacked where `PYTHONPATH` finds it |
+
+Each is kept read-only in the cache beside the toolchains
+(`<cache>/<platform>/extras/<name>/<version>`) and is on `PATH` (Delve) or
+`PYTHONPATH` (debugpy) whenever its language is, for the agent's commands,
+the terminal and the debugger. The tool's approval for a language and its
+debugger is its own scope, `toolchain(go+debugger@1.27)`, so agreeing to Go
+alone, or `toolchains_preapproved: ["go"]`, never agrees to building Delve;
+`toolchains: auto` installs both. Each is recorded as its own
+`toolchain.install` with `extra` (`delve`, `debugpy`), and Delve's with
+`built_with` and the built binary's sha256.
 
 ## The record
 
@@ -172,12 +202,29 @@ it for the platform commands run on.
 
 ## What it does not do
 
-- The workbench's interactive terminal does not get the toolchains on `PATH`
-  yet; the agent's commands do.
-- The microVM tier does not mount the cache yet.
+- The workbench's interactive terminal gets the toolchains on `PATH` and a
+  note naming the language for a missing program, through bash's
+  `command_not_found_handle`; an image whose shell is not bash 4 or later
+  gets `PATH` without the note.
+- The microVM driver (`abhed-microvm`) gives its guest only block devices,
+  the root filesystem and the workspace image, and shares no host folder, so
+  the cache cannot be mounted there, read-only or otherwise, and commands
+  there do not get the cache's toolchains on `PATH`. Put the toolchains a microVM needs in
+  the root filesystem you build with `scripts/microvm/build-rootfs.sh`. The
+  same holds for a server's per-session driver sandboxes, which run commands
+  through their driver rather than the local sandbox.
 - On a server, the registries are opened for the server's sandbox, which
   sessions sharing it share.
 - Node.js downloads are checked against `SHASUMS256.txt` fetched over HTTPS
   from nodejs.org; its GPG signature is not checked.
-- Ruby's builds link the system's libraries (OpenSSL, libyaml); the default
-  `debian:bookworm-slim` image lacks libyaml, so `require "yaml"` fails there.
+- A Linux Ruby links the image's OpenSSL 3 (`libssl.so.3`), which
+  `debian:bookworm-slim` lacks, so there `require "openssl"` fails, and with
+  it `gem install` and `bundle install` from rubygems.org; Abhed does not
+  bundle OpenSSL, as a copy it pins would miss its security fixes. Use an
+  image that has it (`sandbox.image`, for example `buildpack-deps:bookworm-curl`
+  or your own `FROM debian:bookworm-slim` with `RUN apt-get install -y
+  libssl3 ca-certificates`). `gem install` also writes to the build's own
+  gem folder, which is read-only: install gems with Bundler into the
+  workspace (`bundle config set path vendor/bundle`).
+- Native gem extensions are built against the build machine's paths that
+  `RbConfig` names, so gems with C extensions may not build.

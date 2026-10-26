@@ -521,7 +521,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		switch {
 		case !ix.changedAny():
 			why = "it reads as advice, and this session changed nothing"
-		case adviceTailRe.MatchString(low):
+		case adviceTailRe.MatchString(low) && !saysPast(c.Text):
 			why = "it reads as advice: it says when or what for"
 		default:
 			if m := unshownVerbRe.FindStringSubmatch(low); m != nil && !ix.ranWord(m[1]) {

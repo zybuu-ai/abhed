@@ -554,7 +554,8 @@ reaches the proxy only through a relay in its own network namespace and on
 macOS Seatbelt allows only the proxy's port; the fence in `mount_namespace`
 mode, or otherwise with the managed `fence.egress_port_only`; and
 the container and vm tiers through a relay, refused where the engine is
-remote and no `relay_binary` is set), the model client, `web_fetch`,
+remote and neither `relay_binary` nor a helper matching the build's pinned
+checksum is there), the model client, `web_fetch`,
 `web_search`, MCP servers over HTTP, `ssh_connect`, the `k8s_*` tools, `rag`
 over HTTP and `abhed resolve`'s forge API and push (judged in Abhed's
 process, request by request), and stdio MCP servers' direct sockets

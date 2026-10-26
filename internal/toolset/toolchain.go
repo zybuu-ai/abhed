@@ -3,6 +3,7 @@ package toolset
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -111,6 +112,29 @@ func withToolchains(b tools.Bash, tc *toolchain.Session) tools.Bash {
 	if tc.Registries != nil && tc.Open != nil && !tc.Off {
 		b.NetworkNote = "If it was a language's package registry (" + strings.Join(toolchain.AllRegistries()[:6], ", ") +
 			"…), call the toolchain tool with that language: the user is asked, and its registries are opened to commands where this sandbox allows."
+	}
+	if b.Shell != nil {
+		shell := b.Shell
+		forward := b.Forward
+		b.Shell = func(ctx context.Context, cwd string) *exec.Cmd {
+			cmd := shell(ctx, cwd)
+			if cmd.Err != nil {
+				return cmd
+			}
+			if cmd.Env == nil {
+				cmd.Env = os.Environ()
+			}
+			// bash runs PROMPT_COMMAND before its first prompt, after any start-up file.
+			cmd.Env = append(cmd.Env, "ABHED_SHELL_SETUP="+tc.ShellSetup(cwd),
+				`PROMPT_COMMAND=eval "$ABHED_SHELL_SETUP"; unset ABHED_SHELL_SETUP PROMPT_COMMAND`)
+			names := []string{"ABHED_SHELL_SETUP", "PROMPT_COMMAND"}
+			if forward != nil {
+				forward(cmd, names)
+			} else {
+				sandbox.ForwardEnv(cmd, names)
+			}
+			return cmd
+		}
 	}
 	if tc.Off || b.Sandbox == nil {
 		return b
