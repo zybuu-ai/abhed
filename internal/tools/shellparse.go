@@ -607,7 +607,7 @@ func (f *shellFacts) call(c *syntax.CallExpr, st *syntax.Stmt, depth int) {
 					f.tooLong = true
 				}
 			}
-			f.command(strings.Join(words[i:], " "))
+			f.command(joinQuoted(words[i:]))
 			if lits[i] && !strings.Contains(reading, "/") {
 				f.bareProgram(reading)
 			}
@@ -1617,4 +1617,19 @@ func partText(b *strings.Builder, part syntax.WordPart) {
 	default:
 		b.WriteString("$EXPANSION")
 	}
+}
+
+// joinQuoted joins parsed words back into one command line, re-quoting a word
+// that holds whitespace or a quote so its boundaries survive (a commit message
+// stays one argument rather than turning back into loose words).
+func joinQuoted(words []string) string {
+	out := make([]string, len(words))
+	for i, w := range words {
+		if strings.ContainsAny(w, " \t\n'\"") {
+			out[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+		} else {
+			out[i] = w
+		}
+	}
+	return strings.Join(out, " ")
 }
