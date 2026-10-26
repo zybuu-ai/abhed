@@ -3,10 +3,13 @@ package lsprelay
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -147,6 +150,19 @@ func (c *RustAnalyzerConfigCache) Get(roots []string, stamp string) ([]string, s
 	return files, incomplete
 }
 
+// Appender is a session record that counts what it has appended.
+type Appender interface{ LastAppended() int64 }
+
+// RecordStamp is the stamp a session's check is kept under: its record's
+// last appended event. A missing record gives a stamp that never matches,
+// so nothing is kept.
+func RecordStamp(rec Appender) string {
+	if v := reflect.ValueOf(rec); rec == nil || v.Kind() == reflect.Pointer && v.IsNil() {
+		return "none:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return strconv.FormatInt(rec.LastAppended(), 10)
+}
+
 // Invalidate makes the next Get walk again.
 func (c *RustAnalyzerConfigCache) Invalidate() {
 	c.mu.Lock()
@@ -228,7 +244,14 @@ func (w *RustAnalyzerWatch) Changed() bool {
 }
 
 // IsRustAnalyzerConfig reports whether p names a rust-analyzer.toml.
+// A file: URI is read by its decoded path, as rust-analyzer reads it, and a
+// percent-encoded path is decoded too.
 func IsRustAnalyzerConfig(p string) bool {
+	if u, err := url.Parse(p); err == nil && strings.EqualFold(u.Scheme, "file") {
+		p = u.Path
+	} else if d, err := url.PathUnescape(p); err == nil {
+		p = d
+	}
 	return slices.Contains(RustAnalyzerConfigNames, path.Base(filepath.ToSlash(p)))
 }
 
@@ -241,9 +264,6 @@ var raEditorMethods = map[string]bool{"textDocument/didOpen": true, "textDocumen
 // rust-analyzer.toml opened, saved, changed, created or renamed: once the
 // server has seen it, its settings may no longer be the engine's.
 func NamesRustAnalyzerConfig(body []byte) bool {
-	if !strings.Contains(string(body), "rust-analyzer.toml") {
-		return false
-	}
 	var m struct {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`

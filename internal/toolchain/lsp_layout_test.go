@@ -43,7 +43,9 @@ func TestTSServerLookupFindsAbhedsLayout(t *testing.T) {
 		if _, err := os.Stat(shell); err != nil {
 			continue
 		}
-		cmd := exec.Command(shell, "-c", lsprelay.Script([]string{"typescript-language-server", "--stdio"}, ""))
+		// The layout is named as the toolchain root, as the cache is, so the
+		// test does not depend on where its temporary folder lives.
+		cmd := exec.Command(shell, "-c", lsprelay.Script([]string{"typescript-language-server", "--stdio"}, top))
 		cmd.Env = []string{"PATH=" + filepath.Join(top, "bin") + ":" + stub + ":/usr/bin:/bin", "HOME=" + t.TempDir()}
 		var so, se strings.Builder
 		cmd.Stdout, cmd.Stderr = &so, &se

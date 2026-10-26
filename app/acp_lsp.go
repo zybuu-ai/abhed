@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	abhed "github.com/zybuu-ai/abhed/sdk"
@@ -79,12 +79,11 @@ var lspCommand = func(b tools.Bash, ctx context.Context, cwd, command string) *e
 
 var lspTier = debugTier
 
-// lspToolchainRoot is Abhed's toolchain cache, which the sandbox only
-// reads: a TypeScript there is taken though it is under the home folder.
-var lspToolchainRoot = func() string {
-	root, _ := toolchain.DefaultRoot()
-	return root
-}
+// lspToolchainRoot is Abhed's toolchain cache when the sandbox mounts it
+// read-only (sandbox.toolchains not off): a TypeScript there is taken
+// though it is under the home folder. Otherwise it is "" and nothing is
+// exempt.
+var lspToolchainRoot = sandboxconfig.ToolchainCache
 
 // lspBackoff is the wait before restart n (from 0) after a crash.
 var lspBackoff = func(n int) time.Duration { return time.Second << n }
@@ -207,6 +206,9 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 	l.startErr = e
 	l.mu.Unlock()
 	close(l.ready)
+	if reason, stopped := l.stopReason(); e != nil && stopped {
+		c.notification("_abhed/lsp/status", map[string]any{"lspId": l.id, "state": "ended", "reason": reason})
+	}
 	if e != nil {
 		c.lspMu.Lock()
 		delete(c.lsps, l.id)
@@ -251,7 +253,15 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		_ = loop.ManualObserve(callID, "bash", *refused, 0)
 		return nil, refusal(errPolicy, "%s", refused.Content)
 	}
-	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, lsprelay.Script(l.argv, lspToolchainRoot()))
+	// A stop while the start was being decided (a rust-analyzer.toml written
+	// during the question, or the person's own stop) holds: nothing starts.
+	if reason, stopped := l.stopReason(); stopped {
+		cancel()
+		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the language server was not started: it was stopped (" + reason + ") before it started", IsError: true}, 0)
+		s.record(agent.EvLSPStopped, agent.LSPStopped{LSPID: l.id, CallID: callID, Language: l.language, Reason: reason})
+		return nil, lspStoppedRefusal(reason)
+	}
+	cmd := lspCommand(b, loop.LaunchContext(ctx, callID), parts.Session.Root, lsprelay.Script(l.argv, lspToolchainRoot(parts.Config)))
 	stdin, err1 := cmd.StdinPipe()
 	stdout, err2 := cmd.StdoutPipe()
 	var stderr bytes.Buffer
@@ -276,8 +286,11 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	out := make(chan []byte, lspOutQueue)
 	outBytes := &atomic.Int64{}
 	go lspWriter(stdin, out, outBytes, cancel)
+	// A stop that came after the check above and before l.cancel was set
+	// found no process to end; it is applied here, under the same lock.
 	l.mu.Lock()
 	l.out, l.outBytes, l.cancel, l.restarts, l.restarting = out, outBytes, cancel, restart, false
+	stoppedEarly := l.stopped
 	l.mu.Unlock()
 	s.record(agent.EvLSPStarted, agent.LSPStarted{LSPID: l.id, CallID: callID, Language: l.language, Command: command, Tier: lspTier(b), Restart: restart})
 
@@ -289,7 +302,11 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	// outside Abhed's toolchain cache) ends the start.
 	var tsserver string
 	var initErr error
-	if filepath.Base(l.argv[0]) == "typescript-language-server" {
+	if stoppedEarly {
+		cancel()
+		initErr = errLSPStopped
+	}
+	if initErr == nil && filepath.Base(l.argv[0]) == "typescript-language-server" {
 		select {
 		case tsserver = <-tsLine:
 		case <-stderrDone:
@@ -299,7 +316,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 		switch {
 		case tsserver == "":
 			initErr = errNoTSServer
-		case lsprelay.TSServerRefused(tsserver, l.filter.Roots, home, lspToolchainRoot()):
+		case lsprelay.TSServerRefused(tsserver, l.filter.Roots, home, lspToolchainRoot(parts.Config)):
 			initErr = errTSServerInWorkspace
 		}
 		if initErr != nil {
@@ -371,6 +388,10 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	}()
 	if initErr != nil {
 		<-ended
+		if errors.Is(initErr, errLSPStopped) {
+			reason, _ := l.stopReason()
+			return nil, lspStoppedRefusal(reason)
+		}
 		if errors.Is(initErr, errTSServerInWorkspace) {
 			return nil, &rpcError{Code: errRefused, Message: "the only TypeScript beside typescript-language-server is where a command could have put it, which Abhed does not run",
 				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
@@ -427,10 +448,10 @@ func (c *acpConn) lspWatchConfig(s *acpSession, l *acpLSP, w *lsprelay.RustAnaly
 // raStamp is what a cached rust-analyzer.toml check holds under: the
 // session record's last event, which moves with every action.
 func raStamp(loop *agent.Loop) string {
-	if loop == nil || loop.Recorder == nil {
-		return ""
+	if loop == nil {
+		return lsprelay.RecordStamp(nil)
 	}
-	return strconv.FormatInt(loop.Recorder.LastAppended(), 10)
+	return lsprelay.RecordStamp(loop.Recorder)
 }
 
 // lspWorkspaceConfig stops the session's rust-analyzer servers: a
@@ -476,6 +497,24 @@ func (c *acpConn) lspNoteAction(s *acpSession, ev abhed.Event) {
 	if json.Unmarshal(p.Args, &a) == nil && lsprelay.IsRustAnalyzerConfig(a.Path) {
 		c.lspWorkspaceConfig(s.id)
 	}
+}
+
+// stopReason is why the server was stopped, and whether it was.
+func (l *acpLSP) stopReason() (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return orDefault(l.reason, "stopped"), l.stopped
+}
+
+// errLSPStopped ends a start that a stop overtook.
+var errLSPStopped = errors.New("the language server was stopped before it started")
+
+func lspStoppedRefusal(reason string) *rpcError {
+	why := "it was stopped"
+	if reason == lspConfigChanged {
+		why = "a rust-analyzer.toml was written or changed while the start was decided; start it again to be asked"
+	}
+	return refusal(errRefused, "the language server was not started: %s", why)
 }
 
 // The typescript-language-server start's failures before initialize.
@@ -531,6 +570,10 @@ func (c *acpConn) lspRestart(s *acpSession, l *acpLSP, b tools.Bash, n int) {
 	}
 	served, e := c.lspRun(s, l, b, n)
 	if e != nil {
+		if reason, stopped := l.stopReason(); stopped {
+			c.lspEnd(l, reason)
+			return
+		}
 		c.notification("_abhed/lsp/status", map[string]any{"lspId": l.id, "state": "ended", "message": e.Message})
 		c.lspEnd(l, "crashed")
 		return
@@ -770,6 +813,10 @@ func (c *acpConn) lspSend(l *acpLSP, msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errParams, "message is required"))
 		return
 	}
+	if reason, stopped := l.stopReason(); stopped {
+		c.reply(msg.ID, nil, refusal(errRefused, "the language server was stopped (%s)", reason))
+		return
+	}
 	// Studio reporting a rust-analyzer.toml means the server would read it:
 	// it is stopped instead, and its next start asks again.
 	if l.language == "rust" && lsprelay.NamesRustAnalyzerConfig(p.Message) {
@@ -833,6 +880,9 @@ func (l *acpLSP) stop(reason string) {
 	}
 	l.mu.Unlock()
 	if already {
+		// Stopped before, perhaps before its process existed: whatever runs
+		// now is ended.
+		l.kill()
 		return
 	}
 	// The bound starts first: nothing below may hold the stop past it.

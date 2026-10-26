@@ -640,7 +640,7 @@ func TestLSPTypeScriptPinned(t *testing.T) {
 	home := t.TempDir()
 	cache := filepath.Join(home, ".cache", "abhed", "toolchains")
 	oldRoot := lspToolchainRoot
-	lspToolchainRoot = func() string { return cache }
+	lspToolchainRoot = func(config.Config) string { return cache }
 	t.Cleanup(func() { lspToolchainRoot = oldRoot })
 	top := filepath.Join(cache, "darwin-arm64", "node", "22.20.0")
 	bin := filepath.Join(top, "bin", "typescript-language-server")
@@ -681,7 +681,7 @@ func TestLSPTypeScriptPinned(t *testing.T) {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body)
 	}
 	// Under the home folder but outside the cache, it is refused.
-	lspToolchainRoot = func() string { return filepath.Join(home, "elsewhere") }
+	lspToolchainRoot = func(config.Config) string { return filepath.Join(home, "elsewhere") }
 	if rec := start(); rec.Code != http.StatusConflict {
 		t.Fatalf("a TypeScript under home outside the cache was taken: %d %s", rec.Code, rec.Body)
 	}

@@ -1175,7 +1175,11 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   didCreateFiles, didRenameFiles; the send is answered `{refused}`), or when
   a check every 10 s finds one new, changed or gone in a root or a folder
   above it, or a file found at the start changed. The next start asks
-  again. The server runs as
+  again. A stop that comes while the start is still being decided (during
+  its permission question) holds: the server is not started, `lsp.stopped`
+  records the stop's reason, the start fails and `status: ended` follows;
+  once stopped, a `send` is refused, and a second `stop` ends whatever
+  process is running. The server runs as
   `exec env GOTOOLCHAIN=local GOFLAGS= GOENV=off <command>`.
 - The engine sends `initialize` (workspace folder, the given capabilities,
   and the engine's own `initializationOptions`, never Studio's) and
@@ -1194,9 +1198,10 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
     search, `HOME` or `NODE_PATH`. A result where a command could write is
     dropped: in the script, under the sandbox's `$HOME`, `$TMPDIR`, `/tmp`
     or `/var/tmp`; in the engine, under a session root or the host's home
-    folder. Both exempt Abhed's toolchain cache (`toolchain.DefaultRoot()`,
-    mounted read-only at its host path in containers), so the toolchain's
-    own TypeScript is taken on every tier. No result within 15 s, or the
+    folder. Both exempt Abhed's toolchain cache only while the sandbox
+    mounts it read-only (`sandboxconfig.ToolchainCache`: any tier, unless
+    `sandbox.toolchains` is `off`, at its host path in containers), so the
+    toolchain's own TypeScript is taken there. No result within 15 s, or the
     process ending first: it is killed and the start fails,
     `server-missing`;
   - gopls, basedpyright: their defaults (`null`).
