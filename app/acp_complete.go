@@ -242,21 +242,25 @@ func sendable(uri string, roots []string) (string, string) {
 }
 
 // withheldAround cleans the text on both sides of the cursor as one, so a
-// secret the cursor splits is withheld whole, and splits it back: the
-// suffix is what the cleaned whole ends with in common with the cleaned
-// suffix, and the prefix is the rest. Everything returned comes from the
-// cleaned whole.
+// secret the cursor splits is withheld whole, and splits it back. Where the
+// cleaned whole starts with the cleaned prefix, the cursor is exactly there;
+// otherwise a redaction spans it, and the suffix is what the cleaned whole
+// ends with in common with the cleaned suffix. Each side is cleaned again,
+// so what one side alone shows as a secret is withheld too.
 func withheldAround(clean func(string) string, prefix, suffix string) (string, string) {
-	whole, after := clean(prefix+suffix), clean(suffix)
-	n := 0
-	for n < len(after) && n < len(whole) && whole[len(whole)-1-n] == after[len(after)-1-n] {
-		n++
+	whole, before, after := clean(prefix+suffix), clean(prefix), clean(suffix)
+	cut := len(before)
+	if !strings.HasPrefix(whole, before) {
+		n := 0
+		for n < len(after) && n < len(whole) && whole[len(whole)-1-n] == after[len(after)-1-n] {
+			n++
+		}
+		cut = len(whole) - n
+		for cut < len(whole) && !utf8.RuneStart(whole[cut]) {
+			cut++
+		}
 	}
-	cut := len(whole) - n
-	for cut < len(whole) && !utf8.RuneStart(whole[cut]) {
-		cut++
-	}
-	return whole[:cut], whole[cut:]
+	return clean(whole[:cut]), clean(whole[cut:])
 }
 
 // headRunes is s cut to at most n characters from its start; tailRunes from its end.

@@ -1,6 +1,9 @@
 package secretfiles
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // contentPattern is one shape of secret written into text; value is the
 // submatch that is the secret itself (0 for the whole match). A literal
@@ -9,6 +12,7 @@ type contentPattern struct {
 	re      *regexp.Regexp
 	value   int
 	literal bool
+	bare    bool // an unquoted value, which is not a secret when it is code
 }
 
 // contentPatterns are the shapes of keys and tokens written into text, the
@@ -33,10 +37,10 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`(?i)[?&][a-z0-9_]*(?:token|secret|password|passwd|api_?key|signature)[a-z0-9_]*=([^\s&#"'` + "`" + `]{8,})`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?i)\baws_secret_access_key["']?\s*[=:]\s*["']?([^\s"']{20,})`), value: 1, literal: true},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
-	// words, given a literal: quoted, or a bare run to the end of the line.
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\s]{8,})"`), value: 1, literal: true},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*'([^'\s]{8,})'`), value: 1, literal: true},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([A-Za-z0-9_+/=~!@#$%^*-]*[A-Za-z_+/=~!@#$%^*-][A-Za-z0-9_+/=~!@#$%^*-]*)[ \t]*(?:#.*)?$`), value: 1, literal: true},
+	// words, given a literal: quoted, or a bare run that is not code.
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*'([^'\n]{8,})'`), value: 1, literal: true},
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([^\s"'` + "`" + `]{8,})`), value: 1, literal: true, bare: true},
 }
 
 // secretName is an ALL_CAPS identifier one of whose words names a secret.
@@ -49,6 +53,19 @@ var placeholder = regexp.MustCompile(`(?i)^(?:` +
 	`%[-+# 0-9.*]*[a-z]|\$\{[^}]*\}|\$\([^)]*\)|\$[a-z_][a-z0-9_]*|\{\{?[^}]*\}?\}|<[^>]*>|\[[^\]]*\]|` +
 	`\*+|x+|\.{3}|…|changeme|change_me|change-me|password|secret|redacted|example|placeholder|your[_-]?[a-z_-]*)$`)
 
+// identChain is a dotted chain of identifiers: code, not a value.
+var identChain = regexp.MustCompile(`^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$`)
+
+// IsPlaceholder reports a value that stands for a secret rather than being
+// one, quoted or not.
+func IsPlaceholder(v string) bool {
+	v = strings.TrimRight(v, ";,")
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		v = v[1 : len(v)-1]
+	}
+	return v == "" || placeholder.MatchString(v)
+}
+
 // counts reports whether one match of p is a secret: for a literal pattern,
 // its value is not a placeholder, and in a URL not the user's own name.
 func (p contentPattern) counts(text string, loc []int) bool {
@@ -56,8 +73,11 @@ func (p contentPattern) counts(text string, loc []int) bool {
 		return true
 	}
 	v := text[loc[2*p.value]:loc[2*p.value+1]]
-	if v == "" || placeholder.MatchString(v) {
+	if IsPlaceholder(v) {
 		return false
+	}
+	if p.bare && (strings.ContainsAny(v, "([") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
+		return false // a call, an index or a field such as settings.API_KEY
 	}
 	if p.value == 2 && loc[2] >= 0 && text[loc[2]:loc[3]] == v {
 		return false // a stock default such as postgres:postgres
