@@ -746,6 +746,24 @@ func TestDataStoreDestructive(t *testing.T) {
 		`ssh prod ": > /srv/data/app.db"`:                                              true,
 		`ssh prod "> /srv/data/app.db"`:                                                true,
 		`ssh prod "cp /dev/null /srv/data/app.db"`:                                     true,
+		"sed -n '1e rm -rf /srv/data' notes.txt":                                       true,
+		`sed 's/.*/rm -rf \/srv\/data/e' notes.txt`:                                    true,
+		"sed -i 's/x/y/; 1e rm -rf /srv/data' notes.txt":                               true,
+		"sed -ne '1e dropdb app' notes.txt":                                            true,
+		`sed -n '/DROP TABLE/p' down.sql | psql app`:                                   true,
+		`grep -h "DROP TABLE" down.sql | psql app`:                                     true,
+		`grep "^rm -rf" cleanup.txt | sh`:                                              true,
+		`grep "rm -rf" cleanup.txt | xargs -0 sh -c`:                                   true,
+		`grep "rm -rf" cleanup.txt | tee run.sh | sh`:                                  true,
+		`grep "rm -rf" cleanup.txt > run.sh`:                                           true,
+		`sh -c "$(grep 'rm -rf' cleanup.txt)"`:                                         true,
+		"ack --pager='rm -rf /srv/data' x":                                             true,
+		"ag --pager 'rm -rf /srv/data' x":                                              true,
+		"gsutil -m rm -r gs://backups/git":                                             true,
+		`grep -rn "DROP TABLE" migrations/`:                                            false,
+		`grep -rn "rm -rf" scripts/ | head`:                                            false,
+		`grep -rn "DROP TABLE" db/ | wc -l`:                                            false,
+		"sed -i '/dropdb/d' scripts/teardown.sh":                                       false,
 		`git commit -m "Run psql migrations; drop table guard added"`:                  false,
 		`git commit -m "docs: explain how psql handles DROP TABLE"`:                    false,
 		`git commit -am "mysql -e DROP DATABASE wrapper removed"`:                      false,
@@ -806,7 +824,7 @@ func TestDestructiveStaysAsked(t *testing.T) {
 			t.Errorf("no longer asked: %q", cmd)
 		}
 	}
-	if n < 800 {
+	if n < 1000 {
 		t.Fatalf("only %d lines read", n)
 	}
 }

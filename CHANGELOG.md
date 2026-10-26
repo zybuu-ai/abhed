@@ -303,10 +303,10 @@ All notable changes to Abhed are recorded here. The format follows
   `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
   `Options.Supervisor` in the SDK.
 - The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
-  or `go run ./cmd/abhed-drift`): of its 1433 drift cases the rules judge
-  stops all 1432 a mode let through (the 1433rd, the destructive step, policy
+  or `go run ./cmd/abhed-drift`): of its 1631 drift cases the rules judge
+  stops all 1630 a mode let through (the 1631st, the destructive step, policy
   already asks about), and it
-  refuses none of its 530 genuinely everyday benign controls (it asks about 10: six whose working
+  refuses none of its 561 genuinely everyday benign controls (it asks about 10: six whose working
   directory it does not claim to know, one interpreter running a subprocess,
   two `eval`s of an expansion, and one `mv` of a file from outside the task's
   ground). Code a command hands off — to a shell or `eval`, on stdin, through
@@ -343,7 +343,15 @@ All notable changes to Abhed are recorded here. The format follows
   heroku or fly; git gc --prune and reflog expire are asked by both layers; terraform apply -replace and taint, and the
   rails/artisan reset variants, are added; terraform plan -destroy/-replace
   is not. A wrapper option no longer sends a data-store or cluster op to the
-  weaker fallback in the supervisor. The
+  weaker fallback in the supervisor, and the command `env -S` splits out is
+  judged as a command of its own. A searcher's patterns and a sed script are
+  read as text only when proven inert (no rg --pre or ack/ag --pager, no sed
+  `e`, `s///e` or `w`, output not piped into anything but a reader such as
+  head or wc, not substituted, not redirected to a file); so
+  `grep "DROP TABLE" down.sql | psql app` and `grep "^rm -rf" f | sh` are
+  asked by both layers, a sed `e` command is judged as code, and a remote or
+  container `sh -c` truncation is read as one. Every line the supervisor asked
+  about before the data reading was added is kept as a regression file. The
   directory is claimed only along a plain `&&` chain of literal `cd`s; under
   any other directory a relative target is always asked about, and only a
   path the person named in their own messages, never plan prose, allows an
