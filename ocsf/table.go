@@ -51,6 +51,8 @@ var table = map[agent.EventType]rule{
 	agent.EvHookFired:            {fn: mapHook, classes: []int{6003}},
 	agent.EvMCPStatus:            {fn: mapMCPStatus, classes: []int{6003}},
 	agent.EvOllamaPull:           {fn: mapOllama, classes: []int{6003}},
+	agent.EvToolchainInstall:     {fn: mapToolchain, classes: []int{6003}},
+	agent.EvToolchainRegistry:    {fn: apiOther("Open registries"), classes: []int{6003}},
 	agent.EvTerminalInput:        {fn: apiOther("Terminal input"), classes: []int{6003}},
 	agent.EvCommandInvoked:       {fn: apiOther("Command"), classes: []int{6003}},
 	agent.EvMemoryLoaded:         {fn: apiActivity(2, "Read"), classes: []int{6003}},
@@ -423,6 +425,23 @@ func mapOllama(b *builder) {
 		msg += " " + m
 	}
 	b.set("message", msg+": "+b.str("outcome"))
+}
+
+// mapToolchain is a language toolchain installed for a session's commands:
+// API Activity (Create) of the toolchain, with the download and its
+// published checksum; declined, refused and failed as a failure.
+func mapToolchain(b *builder) {
+	b.classify(6003, 1, "Create")
+	b.api("toolchain.install", "")
+	b.set("resources", []any{map[string]any{"name": b.str("lang") + " " + b.str("version"), "type": "toolchain",
+		"uid": b.str("digest"), "data": map[string]any{"url": b.str("url"), "platform": b.str("platform"), "source": b.str("source")}}})
+	b.actor(b.str("by"))
+	if outcome := b.str("outcome"); outcome == "ok" {
+		b.status(1, "", "")
+	} else {
+		b.status(2, outcome, b.str("error"))
+	}
+	b.set("message", "toolchain install "+b.str("lang")+" "+b.str("version")+": "+b.str("outcome"))
 }
 
 func firstOf(vals ...string) string {

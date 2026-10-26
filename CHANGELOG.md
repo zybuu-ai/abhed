@@ -119,6 +119,33 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)
+  with Maven and Gradle, Ruby and the .NET SDK, installed for the sandbox's
+  commands at the version asked for, else the one the project pins (go.mod,
+  .python-version, .nvmrc, rust-toolchain, .tool-versions, .java-version,
+  global.json, .ruby-version), else the latest stable. Each comes only from
+  its project's own release source, is checked against the checksum that
+  source publishes (Ruby's against digests pinned in Abhed), and is unpacked
+  read-only into ~/.cache/abhed/toolchains/<os>-<arch>/<language>/<version>;
+  nothing is installed system-wide or with sudo. Commands get the installed
+  toolchains first on PATH, a container mounts the cache read-only, and a
+  command that cannot find go, python3, node, cargo, java, mvn, gradle, ruby
+  or dotnet is told how to install it. The agent's `toolchain` tool asks once
+  per language and major version, showing the source, size and checksum;
+  `abhed toolchain install|list|remove` and Studio's `_abhed/toolchain/*`
+  methods do the same for a person; `sandbox.toolchains` (ask, auto, off) and
+  `sandbox.toolchains_preapproved` set the consent. Every install is
+  recorded as `toolchain.install`, counted, mapped to OCSF and listed by
+  HawkEYE, and `abhed doctor` lists what the workspace needs, by marker and by
+  loose source file ([Toolchains](docs/guide/29-toolchains.md)).
+- `sandbox.toolchains_registries` (ask by default): where the network is off,
+  agreeing to a language's toolchain also opens its official package
+  registries to commands, through the session's egress proxy, on 443 only,
+  where the sandbox's tier can hold the proxy. It is the one way egress opens
+  outside the managed file; under a managed network it adds nothing unless
+  the managed file names it, and a workspace file may only set it off. Each
+  opening is recorded as `toolchain.registry`
+  ([Toolchains](docs/guide/29-toolchains.md#package-registries)).
 - A key written twice in a configuration file is reported. encoding/json
   keeps the last one without a word, so a second provider of the same name
   in `model.providers` used to replace the first silently. Loading now warns
@@ -669,6 +696,9 @@ out):
   and the type `ChainReport`.
 - For a local Ollama model: `config.OllamaConfig`, `ModelConfig.Ollama` and
   `Config.OllamaAssist`; `hawkeye.LocalModelStep` and `Report.LocalModel`.
+- For toolchains on demand: `config.SandboxConfig.Toolchains`,
+  `ToolchainsPreapproved` and `ToolchainsRegistries`; `hawkeye.ToolchainStep`
+  and `Report.Toolchains`.
 
 ## [1.2.8] - 2026-10-14
 

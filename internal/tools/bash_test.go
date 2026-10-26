@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -783,4 +784,43 @@ func TestDestructiveStaysAsked(t *testing.T) {
 	if n < 800 {
 		t.Fatalf("only %d lines read", n)
 	}
+}
+
+// A command that cannot find a program is told what NotFound says of it,
+// whichever shell said it was missing; a command that succeeded is not.
+func TestBashSaysHowToGetAMissingProgram(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewSession(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	b := Bash{NotFound: func(d, p string) string {
+		asked = append(asked, p)
+		if p == "go" {
+			return "install go with the toolchain tool"
+		}
+		return ""
+	}}
+	for cmd, want := range map[string]bool{
+		`echo "bash: go: command not found" >&2; exit 127`:      true,
+		`echo "sh: 1: go: not found" >&2; exit 127`:             true,
+		`echo "env: 'go': No such file or directory"; exit 127`: true,
+		`echo "bash: zork: command not found"; exit 127`:        false,
+		`echo "bash: go: command not found"; exit 0`:            false,
+	} {
+		res := b.Run(context.Background(), s, mustJSONArgs(t, map[string]string{"command": cmd}))
+		if got := strings.Contains(res.Content, "install go with the toolchain tool"); got != want {
+			t.Errorf("%s: %v\n%s", cmd, got, res.Content)
+		}
+	}
+}
+
+func mustJSONArgs(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

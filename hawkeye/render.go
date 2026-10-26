@@ -91,6 +91,18 @@ func Text(r Report) string {
 		}
 		b.WriteString("\n")
 	}
+	for _, t := range r.Toolchains {
+		fmt.Fprintf(&b, "  toolchain #%d %s %s %s: %s", t.Seq, t.Lang, t.Version, t.Platform, t.Outcome)
+		if t.Cached {
+			b.WriteString(" (installed already)")
+		} else if t.Digest != "" {
+			fmt.Fprintf(&b, " (%s, %s)", clip(t.URL, 100), clip(t.Digest, 23))
+		}
+		if t.Error != "" {
+			fmt.Fprintf(&b, " — %s", clip(t.Error, 160))
+		}
+		b.WriteString("\n")
+	}
 	for _, l := range r.LocalModel {
 		fmt.Fprintf(&b, "  ollama    #%d %s %s: %s", l.Seq, l.Op, l.Model, l.Outcome)
 		if l.Command != "" {

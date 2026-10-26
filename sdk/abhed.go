@@ -390,6 +390,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("abhed: ask rule: %w", err)
 	}
 	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
+	if err := pol.AddAllow(toolset.ToolchainAllows(cfg)...); err != nil {
+		return nil, fmt.Errorf("abhed: sandbox.toolchains: %w", err)
+	}
 	if err := pol.AddAllow(cfg.Permissions.Allow...); err != nil {
 		return nil, fmt.Errorf("abhed: allow rule: %w", err)
 	}

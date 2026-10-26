@@ -671,24 +671,27 @@ var workspaceRules = map[string]fieldRule{
 	"permissions.allow":          {nil, "an allow rule widens what runs unasked"},
 	"permissions.git_extensions": {nil, "a git extension opted in runs unasked"},
 
-	"sandbox.min_tier":              {raiseTier, "only a stronger tier"},
-	"sandbox.allow_network":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
-	"sandbox.max_memory_mb":         {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
-	"sandbox.max_procs":             {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
-	"sandbox.readable_home":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.ReadableHome }), "only false"},
-	"sandbox.shared_caches":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.SharedCaches }), "only false"},
-	"sandbox.max_cpu_percent":       {lower(func(c *Config) *int { return &c.Sandbox.MaxCPUPercent }, zeroIs(200)), "only lower"},
-	"sandbox.terminal":              {onlyLines, "only lines"},
-	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
-	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
-	"sandbox.protect_git":           {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
-	"sandbox.language_servers":      {nil, "a language server is a process"},
-	"sandbox.image":                 {nil, "chooses the image commands run in"},
-	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
-	"fence":                         {nil, "tunes the fence tier's limits"},
-	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
-	"sandbox.microvm_socket":        {nil, "managed only: names the microVM driver"},
-	"egress":                        {nil, "managed only: names the destinations commands reach"},
+	"sandbox.min_tier":               {raiseTier, "only a stronger tier"},
+	"sandbox.allow_network":          {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
+	"sandbox.max_memory_mb":          {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
+	"sandbox.max_procs":              {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
+	"sandbox.readable_home":          {onlyFalse(func(c *Config) *bool { return &c.Sandbox.ReadableHome }), "only false"},
+	"sandbox.shared_caches":          {onlyFalse(func(c *Config) *bool { return &c.Sandbox.SharedCaches }), "only false"},
+	"sandbox.max_cpu_percent":        {lower(func(c *Config) *int { return &c.Sandbox.MaxCPUPercent }, zeroIs(200)), "only lower"},
+	"sandbox.terminal":               {onlyLines, "only lines"},
+	"sandbox.terminal_idle_minutes":  {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
+	"sandbox.read_only_paths":        {nil, "mounts more of the host into the sandbox"},
+	"sandbox.toolchains":             {stricterToolchains, "only stricter: auto, then ask, then off"},
+	"sandbox.toolchains_preapproved": {nil, "an install that needs no ask"},
+	"sandbox.toolchains_registries":  {onlyRegistriesOff, "only off"},
+	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
+	"sandbox.language_servers":       {nil, "a language server is a process"},
+	"sandbox.image":                  {nil, "chooses the image commands run in"},
+	"sandbox.tier":                   {nil, "chooses what confines commands, in place of the strongest available"},
+	"fence":                          {nil, "tunes the fence tier's limits"},
+	"sandbox.network":                {nil, "managed only: turns on the egress allowlist"},
+	"sandbox.microvm_socket":         {nil, "managed only: names the microVM driver"},
+	"egress":                         {nil, "managed only: names the destinations commands reach"},
 
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
@@ -875,6 +878,30 @@ func onlyTrue(field func(*Config) *bool) func(dst, ws *Config) bool {
 
 // modeRank orders the modes from narrowest to widest.
 var modeRank = map[string]int{"plan": 0, "default": 1, "accept-edits": 2, "auto": 3, "bypass": 4}
+
+// onlyRegistriesOff applies a workspace's sandbox.toolchains_registries only
+// when it turns the registries off.
+func onlyRegistriesOff(dst, ws *Config) bool {
+	if ws.Sandbox.ToolchainsRegistries != "off" {
+		return false
+	}
+	dst.Sandbox.ToolchainsRegistries = "off"
+	return true
+}
+
+// toolchainRank orders sandbox.toolchains from loosest to strictest.
+var toolchainRank = map[string]int{"auto": 0, "": 1, "ask": 1, "off": 2}
+
+// stricterToolchains applies a workspace's sandbox.toolchains only when it is
+// stricter than what is set.
+func stricterToolchains(dst, ws *Config) bool {
+	v, ok := toolchainRank[ws.Sandbox.Toolchains]
+	if !ok || v <= toolchainRank[dst.Sandbox.Toolchains] {
+		return false
+	}
+	dst.Sandbox.Toolchains = ws.Sandbox.Toolchains
+	return true
+}
 
 func narrowMode(dst, ws *Config) bool {
 	m := ws.Permissions.Mode

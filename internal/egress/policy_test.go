@@ -316,3 +316,35 @@ func TestDecideHostForAnInspectedTunnel(t *testing.T) {
 		t.Fatalf("a narrowed rule allowed an uninspected tunnel: %+v", v)
 	}
 }
+
+// A granted host is allowed on 443 only; a deny rule still wins over it.
+func TestGrantAddsAllowRules(t *testing.T) {
+	p, err := Compile(Config{Rules: []Rule{{Host: "pypi.org", Decision: "deny", Paths: nil}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Decide(Request{Host: "proxy.golang.org", Port: 443, Tunnel: true}).Allowed() {
+		t.Fatal("allowed before the grant")
+	}
+	if err := p.Grant("toolchain go", []string{"proxy.golang.org", "pypi.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if v := p.Decide(Request{Host: "proxy.golang.org", Port: 443, Tunnel: true}); !v.Allowed() || !strings.Contains(v.Rule, "toolchain go") {
+		t.Fatalf("%+v", v)
+	}
+	if p.Decide(Request{Host: "proxy.golang.org", Port: 80}).Allowed() {
+		t.Fatal("a grant opened port 80")
+	}
+	if p.Decide(Request{Host: "pypi.org", Port: 443, Tunnel: true}).Allowed() {
+		t.Fatal("a grant beat a deny rule")
+	}
+	if !p.Granted("proxy.golang.org") || p.Granted("example.com") {
+		t.Fatal("Granted")
+	}
+	if p.DecideName("proxy.golang.org").Decision != Allow {
+		t.Fatal("the resolver does not answer a granted host")
+	}
+	if err := p.Grant("x", []string{"*.example.com"}); err == nil {
+		t.Fatal("granted a wildcard")
+	}
+}

@@ -99,4 +99,7 @@
 2026-10-19T11:59:42.123Z s-1#101 PROC:Launch INFO ollama install qwen3:8b: failed
 2026-10-19T11:59:43.123Z s-1#102 PROC:Launch INFO ollama install: manual
 2026-10-19T11:59:44.123Z s-1#103 API:Create INFO ollama pull qwen3:8b: ok
-2026-10-19T11:59:45.123Z s-1#104 API:Create INFO ollama pull qwen3:8b: refused
+2026-10-19T11:59:45.123Z s-1#104 API:Create INFO toolchain install go 1.22.5: ok
+2026-10-19T11:59:46.123Z s-1#105 API:Create INFO toolchain install python 3.12: refused
+2026-10-19T11:59:47.123Z s-1#106 API:Open registries INFO toolchain.registry
+2026-10-19T11:59:48.123Z s-1#107 API:Create INFO ollama pull qwen3:8b: refused

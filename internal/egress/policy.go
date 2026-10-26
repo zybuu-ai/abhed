@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -79,7 +81,11 @@ type rule struct {
 
 // Policy is a compiled egress configuration.
 type Policy struct {
-	rules        []rule
+	rules []rule
+	// granted are allow rules added while sessions run, such as a package
+	// registry a person opened; a deny rule still wins over them.
+	granted      atomic.Pointer[[]rule]
+	grantMu      sync.Mutex
 	defaultAllow bool
 	audit        bool
 	hidePaths    bool
@@ -229,14 +235,14 @@ func (v Verdict) Allowed() bool { return v.Decision != Deny }
 func (p *Policy) Audit() bool { return p.audit }
 
 // Rules is how many rules the policy holds.
-func (p *Policy) Rules() int { return len(p.rules) }
+func (p *Policy) Rules() int { return len(p.all()) }
 
 // PathDenies names the deny rules narrowed by a path: each is a speed bump,
 // since a server may route a spelling the rule does not match (/ADMIN, /admin/,
 // /admin.json) to the same place.
 func (p *Policy) PathDenies() []string {
 	var out []string
-	for _, ru := range p.rules {
+	for _, ru := range p.all() {
 		if !ru.allow && len(ru.paths) > 0 {
 			out = append(out, ru.name)
 		}
@@ -261,7 +267,7 @@ func (p *Policy) InspectTLS() bool { return p.inspect }
 func (p *Policy) DecideHost(r Request) Verdict {
 	var ips []netip.Prefix
 	allowed, denied := "", ""
-	for _, ru := range p.rules {
+	for _, ru := range p.all() {
 		if !HostMatches(ru.host, ru.wildcard, r.Host) || !slices.Contains(ru.ports, r.Port) {
 			continue
 		}
@@ -291,6 +297,56 @@ func (p *Policy) DecideHost(r Request) Verdict {
 	return p.deny("default", "no rule allows it")
 }
 
+// all are the compiled rules and the ones granted since.
+func (p *Policy) all() []rule {
+	g := p.granted.Load()
+	if g == nil || len(*g) == 0 {
+		return p.rules
+	}
+	return append(p.rules[:len(p.rules):len(p.rules)], *g...)
+}
+
+// Grant adds an allow rule for each host on port 443, named by name, to
+// the policy in force: a package registry a person opened for commands.
+// Deny rules still win, and nothing is ever taken back but by a new policy.
+func (p *Policy) Grant(name string, hosts []string) error {
+	var add []rule
+	for _, h := range hosts {
+		r, err := compileRule(Rule{Host: h, Ports: []int{443}, Decision: string(Allow)})
+		if err != nil {
+			return err
+		}
+		if r.wildcard {
+			return fmt.Errorf("a granted host is exact, not %q", h)
+		}
+		r.name = name + " " + h
+		add = append(add, r)
+	}
+	p.grantMu.Lock()
+	defer p.grantMu.Unlock()
+	var cur []rule
+	if g := p.granted.Load(); g != nil {
+		cur = *g
+	}
+	next := append(append([]rule(nil), cur...), add...)
+	p.granted.Store(&next)
+	return nil
+}
+
+// Granted reports whether host has an allow rule granted on port 443.
+func (p *Policy) Granted(host string) bool {
+	g := p.granted.Load()
+	if g == nil {
+		return false
+	}
+	for _, r := range *g {
+		if HostMatches(r.host, false, host) {
+			return true
+		}
+	}
+	return false
+}
+
 // Idle is how long a connection may carry no bytes before it is closed.
 func (p *Policy) Idle() time.Duration {
 	if p.idle == 0 {
@@ -303,7 +359,7 @@ func (p *Policy) Idle() time.Duration {
 // the model where its commands may go.
 func (p *Policy) AllowedHosts() []string {
 	var out []string
-	for _, ru := range p.rules {
+	for _, ru := range p.all() {
 		if !ru.allow {
 			continue
 		}
@@ -328,7 +384,7 @@ func (p *Policy) Decide(r Request) Verdict {
 	}
 	var allowedBy []rule
 	denied := ""
-	for _, ru := range p.rules {
+	for _, ru := range p.all() {
 		if !ru.matches(r) {
 			continue
 		}
@@ -362,7 +418,7 @@ func (p *Policy) Decide(r Request) Verdict {
 // DecideName says whether the in-sandbox resolver answers name: an allow rule's
 // host matches it, or the default is allow; ports and deny rules are the proxy's.
 func (p *Policy) DecideName(name string) Verdict {
-	for _, ru := range p.rules {
+	for _, ru := range p.all() {
 		if ru.allow && HostMatches(ru.host, ru.wildcard, name) {
 			return Verdict{Decision: Allow, Rule: ru.name, Reason: "an allow rule names this host"}
 		}

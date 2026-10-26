@@ -37,6 +37,9 @@ type Report struct {
 	// LocalModel are the person's attempts to start, install or pull a
 	// local Ollama for the session's model, as ollama.* events recorded them.
 	LocalModel []LocalModelStep `json:"local_model,omitempty"`
+	// Toolchains are the language toolchains installed for the session's
+	// commands, as toolchain.install events recorded them.
+	Toolchains []ToolchainStep `json:"toolchains,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
@@ -177,6 +180,12 @@ type PolicyStats struct {
 }
 
 // PolicyLayer is one policy.layer event: the rules an edition added.
+// ToolchainStep is one toolchain.install.
+type ToolchainStep struct {
+	Seq int64 `json:"seq"`
+	agent.ToolchainAction
+}
+
 // LocalModelStep is one ollama.start, ollama.install or ollama.pull.
 type LocalModelStep struct {
 	Seq int64 `json:"seq"`
