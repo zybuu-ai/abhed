@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -268,6 +269,15 @@ func TestFromEditorRefusesAmbiguousKeys(t *testing.T) {
 		`{"seq":1,"TYPE":"request","command":"threads"}`,
 		`{"seq":1,"Seq":2,"type":"request","command":"threads"}`,
 		`[1]`, `{"seq":1,"type":"request","command":"threads"} {}`,
+		// Unicode folds encoding/json (go-dap, Delve) matches: ſ (U+017F) is s.
+		`{"seq":2,"type":"request","command":"restart","arguments":{},"argument\u017f":{"arguments":{"program":"/x"}}}`,
+		`{"seq":2,"type":"request","command":"restart","argument\u017f":{"arguments":{"program":"/x"}},"arguments":{}}`,
+		"{\"seq\":2,\"type\":\"request\",\"command\":\"restart\",\"argumentſ\":{\"arguments\":{\"program\":\"/x\"}}}",
+		`{"seq":2,"\u017feq":3,"type":"request","command":"threads"}`,
+		`{"\u017feq":3,"seq":2,"type":"request","command":"threads"}`,
+		`{"seq":2,"type":"request","command":"threads","reque\u017ft_seq":1}`,
+		`{"seq":2,"type":"request","command":"threads","succe\u017fs":true}`,
+		`{"seq":2,"type":"request","command":"threads","me\u017f\u017fage":"x"}`,
 	} {
 		if err := f.relay.FromEditor(json.RawMessage(raw)); err == nil {
 			t.Errorf("%s was taken", raw)
@@ -292,12 +302,15 @@ func TestPumpDropsAmbiguousAdapterMessages(t *testing.T) {
 		`{"seq":2,"type":"request","Type":"event","command":"startDebugging","arguments":{}}`,
 		`{"seq":3,"type":"event","type":"request","command":"runInTerminal","arguments":{"args":["sh"]}}`,
 		`{"seq":4,"type":"request","command":"x","command":"runInTerminal"}`,
+		`{"seq":5,"type":"event","event":"output","body":{},"requeſt_seq":1}`,
+		`{"seq":6,"type":"response","request_seq":1,"command":"threads","succeſs":true,"meſſage":"x"}`,
+		`{"ſeq":7,"seq":7,"type":"event","event":"output"}`,
 	} {
 		if err := Write(f.adapterOut, []byte(raw)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f.send(t, map[string]any{"seq": 5, "type": "event", "event": "stopped"})
+	f.send(t, map[string]any{"seq": 8, "type": "event", "event": "stopped"})
 	if m := f.editor(t); m["event"] != "stopped" {
 		t.Fatalf("editor got %v first", m)
 	}
@@ -306,7 +319,7 @@ func TestPumpDropsAmbiguousAdapterMessages(t *testing.T) {
 		t.Fatalf("the editor also got %s", m)
 	default:
 	}
-	if f.relay.Dropped() != 4 {
+	if f.relay.Dropped() != 7 {
 		t.Fatalf("dropped %d", f.relay.Dropped())
 	}
 }
@@ -366,5 +379,61 @@ func TestFailedLaunchCarriesTheAdaptersError(t *testing.T) {
 	}
 	if d := errorDetail(json.RawMessage(`{"error":{"format":"` + strings.Repeat("a", 5000) + `"}}`)); len(d) > maxDetail+4 {
 		t.Fatalf("detail %d bytes", len(d))
+	}
+}
+
+// A format of many placeholders and a large variable builds no more than
+// the budget: the result is bounded and the work is in proportion to the
+// body, not to placeholders times the variable.
+func TestErrorDetailIsBuiltWithinItsBudget(t *testing.T) {
+	format := strings.Repeat("{a}", 1000)
+	v := strings.Repeat("v", 1<<20)
+	body, _ := json.Marshal(map[string]any{"error": map[string]any{"format": format, "variables": map[string]string{"a": v}}})
+	var d string
+	allocs := testing.AllocsPerRun(5, func() { d = errorDetail(body) })
+	if len(d) > maxDetail+len("…") || !strings.HasPrefix(d, "vvv") {
+		t.Fatalf("detail of %d bytes", len(d))
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_ = errorDetail(body)
+	runtime.ReadMemStats(&after)
+	// The body is about 1 MiB; decoding it is the cost, not 1000 copies of v.
+	if got := after.TotalAlloc - before.TotalAlloc; got > 4<<20 {
+		t.Fatalf("allocated %d bytes for a %d-byte body (%v allocations)", got, len(body), allocs)
+	}
+	big := strings.Repeat("m", 1<<20)
+	if b := Bounded(big, maxDetail); len(b) > maxDetail+len("…") {
+		t.Fatalf("message bounded to %d", len(b))
+	}
+	if b := Bounded("aé", 2); b != "a…" {
+		t.Fatalf("cut mid-rune: %q", b)
+	}
+}
+
+// The launch's response is taken once; a later response with its seq goes
+// to the editor, and a failed launch's message is bounded.
+func TestLaunchResponseIsOneShot(t *testing.T) {
+	f := newFake(t)
+	go func() {
+		_ = f.relay.FromEditor(json.RawMessage(`{"seq":1,"type":"request","command":"initialize"}`))
+	}()
+	f.read(t)
+	f.send(t, map[string]any{"seq": 1, "type": "response", "request_seq": 1, "command": "initialize", "success": true})
+	f.editor(t)
+	l := f.read(t)
+	f.send(t, map[string]any{"seq": 2, "type": "response", "request_seq": l["seq"], "command": "launch", "success": false, "message": strings.Repeat("x", 1<<20)})
+	if s := <-f.statusGot; !strings.HasPrefix(s, "failed:") || len(s) > len("failed:")+maxDetail+len("…") {
+		t.Fatalf("status of %d bytes", len(s))
+	}
+	f.send(t, map[string]any{"seq": 3, "type": "response", "request_seq": l["seq"], "command": "launch", "success": false, "message": "again"})
+	if m := f.editor(t); m["message"] != "again" {
+		t.Fatalf("editor got %v", m)
+	}
+	select {
+	case s := <-f.statusGot:
+		t.Fatalf("a second launch verdict: %q", s)
+	default:
 	}
 }

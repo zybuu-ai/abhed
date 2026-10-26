@@ -43,6 +43,11 @@ func TestDebugFakeAdapter(t *testing.T) {
 		_ = json.Unmarshal(raw, &m)
 		cmd, _ := m["command"].(string)
 		switch {
+		case m["type"] == "request" && cmd == "initialize" && os.Getenv("ABHED_FAKE_DAP_JUNK") != "":
+			// A header line with no end, as a debuggee writing to the adapter's
+			// stdout could send; then it stays, holding its pipe.
+			_, _ = os.Stdout.WriteString("Content-Length: 2" + strings.Repeat("x", 4096))
+			select {}
 		case m["type"] == "request" && cmd == "initialize":
 			send(map[string]any{"type": "response", "request_seq": m["seq"], "command": cmd, "success": true})
 		case m["type"] == "request" && cmd == "launch" && os.Getenv("ABHED_FAKE_DAP_FAIL") != "":
@@ -434,4 +439,82 @@ func TestStudioDebugEndsOnDisconnect(t *testing.T) {
 	}
 	// The session is gone: nothing more is taken for it.
 	r.cl.refused(errParams, "_abhed/debug/send", map[string]any{"debugId": res.DebugID, "message": json.RawMessage(`{"seq":3,"type":"request","command":"threads"}`)})
+}
+
+// Output the relay cannot read ends the session at once, as §7.8 says,
+// rather than leaving the adapter blocked on a pipe nobody reads.
+func TestStudioDebugUnreadableOutputEndsTheSession(t *testing.T) {
+	fakeDebugger(t, 0, "ABHED_FAKE_DAP_JUNK=1")
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("app.py", "print('hi')\n")
+	var res struct {
+		DebugID string `json:"debugId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"}, &res)
+	r.cl.ok("_abhed/debug/send", map[string]any{"debugId": res.DebugID, "message": json.RawMessage(`{"seq":1,"type":"request","command":"initialize"}`)}, nil)
+	st := r.cl.waitFor(from, "failed", func(m rpcMessage) bool {
+		return m.Method == "_abhed/debug/status" && strings.Contains(string(m.Params), `"failed"`)
+	})
+	if !strings.Contains(string(st.Params), "could not be read") {
+		t.Fatalf("status %s", st.Params)
+	}
+	stopped, _ := r.recorded(id, agent.EvDebugStopped)
+	if len(stopped) != 1 || stopped[0]["reason"] != "failed" {
+		t.Fatalf("debug.stopped %v", stopped)
+	}
+}
+
+// Every send is answered, those queued as the session ends included.
+func TestStudioDebugEverySendIsAnswered(t *testing.T) {
+	fakeDebugger(t, 0, "ABHED_FAKE_DAP_WAIT=1")
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("app.py", "print('hi')\n")
+	var res struct {
+		DebugID string `json:"debugId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"}, &res)
+	const n = 40
+	for i := 1; i <= n; i++ {
+		raw, _ := json.Marshal(map[string]any{"debugId": res.DebugID, "message": json.RawMessage(fmt.Sprintf(`{"seq":%d,"type":"request","command":"threads"}`, i))})
+		r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(fmt.Sprintf(`"q%d"`, i)), Method: "_abhed/debug/send", Params: raw})
+		if i == n/2 {
+			stop, _ := json.Marshal(map[string]any{"debugId": res.DebugID})
+			r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"stop"`), Method: "_abhed/debug/stop", Params: stop})
+		}
+	}
+	for i := 1; i <= n; i++ {
+		want := fmt.Sprintf(`"q%d"`, i)
+		r.cl.waitFor(from, "the answer to send "+want, func(m rpcMessage) bool { return m.Method == "" && string(m.ID) == want })
+	}
+}
+
+// A session closed while the supervisor's ask waits does not start the
+// launch once the person answers.
+func TestStudioDebugClosedWhileAskingDoesNotStart(t *testing.T) {
+	asked := fakeDebugger(t, 0)
+	r := newStudioRig(t, "")
+	id := r.open()
+	r.write("app.py", "print('hi')\n")
+	withSupervisor(t, r, id, &monitor.Guard{Monitor: judging(policy.Ask, "unknown-program", nil)})
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method != "session/request_permission" {
+			return map[string]any{}
+		}
+		var p struct {
+			ToolCall struct {
+				ToolCallID string `json:"toolCallId"`
+			} `json:"toolCall"`
+		}
+		_ = json.Unmarshal(params, &p)
+		r.cl.ok("session/close", map[string]any{"sessionId": id}, nil)
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "once:" + p.ToolCall.ToolCallID}}
+	})
+	r.cl.refused(errRefused, "_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"})
+	if len(*asked) != 0 {
+		t.Fatalf("an adapter started after its session closed: %v", *asked)
+	}
 }

@@ -123,11 +123,24 @@ func TestKeysThatRepeatButForCase(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///w/a.go","URI":"file:///etc/passwd"}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"x","params":{},"params":{}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"x"} {"jsonrpc":"2.0"}`,
+		// Unicode folds Go's encoding/json matches: ſ (U+017F) is s, K (U+212A) is k.
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction","params":{"context":{"only":["quickfix"],"\u212aind":"x","kind":"y"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction","params":{"context":{"kind":"y","\u212aind":"x"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","params":{"command":"gopls.organize_imports","argument\u017f":[1],"arguments":[]}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"workspace/executeCommand","params":{"arguments":[],"argumentſ":[1],"command":"gopls.organize_imports"}}`,
 	} {
 		_, err := f.FromEditor([]byte(body))
 		refusal(t, err)
 	}
 	if fwd, reply := f.FromServer([]byte(`{"jsonrpc":"2.0","id":1,"method":"window/showDocument","params":{"uri":"file:///w/a.go","URI":"https://evil.example"}}`)); fwd != nil || reply != nil {
 		t.Fatalf("a server message with a case-twin key was passed: %s %s", fwd, reply)
+	}
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":2,"method":"workspace/applyEdit","params":{"edit":{"changes":{}},"edits":0,"edit\u017f":1,"label":"x"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"window/showMessage","params":{"\u212aind":1,"kind":2,"message":"x"}}`,
+	} {
+		if fwd, reply := f.FromServer([]byte(body)); fwd != nil {
+			t.Fatalf("a server message with a folded twin key was passed: %s %s", fwd, reply)
+		}
 	}
 }
