@@ -71,7 +71,7 @@ func init() {
 		bin := filepath.Join(dir, "bin")
 		entries, err := os.ReadDir(bin)
 		if err != nil {
-			return dir, nil
+			return dir, nil //nolint:nilerr // a build with no bin folder has no scripts to fix
 		}
 		for _, e := range entries {
 			p := filepath.Join(bin, e.Name())

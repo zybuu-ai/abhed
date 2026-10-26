@@ -96,7 +96,7 @@ func (s *Source) client(hosts []string) *http.Client {
 }
 
 func hostAllowed(u *url.URL, hosts []string) bool {
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Hostname())) {
+	if u.Scheme != "https" && (u.Scheme != "http" || !isLoopback(u.Hostname())) {
 		return false
 	}
 	h := u.Host

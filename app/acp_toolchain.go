@@ -48,9 +48,15 @@ type toolchainProblem struct {
 	Steps   []string `json:"steps,omitempty"`
 }
 
-func toolchainError(code int, kind, message string, steps ...string) *rpcError {
+func toolchainError(code int, kind, message string) *rpcError {
 	return &rpcError{Code: code, Message: message, Data: map[string]any{
-		"problem": toolchainProblem{Kind: kind, Message: message, Steps: steps}}}
+		"problem": toolchainProblem{Kind: kind, Message: message, Steps: problemSteps[kind]}}}
+}
+
+// problemSteps are what a person can do about a problem.
+var problemSteps = map[string][]string{
+	"toolchains_off": {"Set sandbox.toolchains to ask in your own configuration, where the managed file allows it"},
+	"no_build":       {"Name another version, or set sandbox.image to an image that has the toolchain"},
 }
 
 // toolchainLang is the language a name or a program means.

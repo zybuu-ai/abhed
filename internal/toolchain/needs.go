@@ -55,7 +55,7 @@ func Needs(workspace string) []Need {
 	root := filepath.Clean(workspace)
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // a folder that cannot be read is left out of the look
 		}
 		if n++; n > needsEntries {
 			return filepath.SkipAll

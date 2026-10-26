@@ -367,12 +367,12 @@ func untarGz(archive, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	var total int64
 	for n := 0; ; n++ {
 		hdr, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
@@ -451,7 +451,7 @@ func unzip(archive, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	if len(zr.File) > maxEntries {
 		return errors.New("the archive has too many entries")
 	}

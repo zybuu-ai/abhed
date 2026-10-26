@@ -3,6 +3,7 @@ package toolchain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,7 +59,7 @@ func TestSessionPreludeAndNotFound(t *testing.T) {
 	if s.Prelude(sub) != "" || !strings.Contains(s.NotFound(sub, "go"), "turned off") {
 		t.Fatal("off")
 	}
-	if _, err := s.Plan(ctx, Spec{Lang: "go"}); err != ErrOff {
+	if _, err := s.Plan(ctx, Spec{Lang: "go"}); !errors.Is(err, ErrOff) {
 		t.Fatalf("plan when off: %v", err)
 	}
 }

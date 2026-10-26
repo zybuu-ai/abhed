@@ -158,7 +158,7 @@ func (s *Source) resolveMaven(ctx context.Context, want string, p Platform) (Art
 		Versions []string `xml:"versioning>versions>version"`
 	}
 	if err := xml.Unmarshal(data, &meta); err != nil {
-		return Artifact{}, fmt.Errorf("Maven's metadata cannot be read: %w", err)
+		return Artifact{}, fmt.Errorf("the Maven metadata cannot be read: %w", err)
 	}
 	v, ok := newest(meta.Versions, want)
 	if !ok {
@@ -171,7 +171,7 @@ func (s *Source) resolveMaven(ctx context.Context, want string, p Platform) (Art
 	}
 	sum := strings.Fields(string(sumText))
 	if len(sum) == 0 || len(sum[0]) != 128 || !isHex(sum[0]) {
-		return Artifact{}, fmt.Errorf("Maven %s's sha512 cannot be read", v)
+		return Artifact{}, fmt.Errorf("the sha512 of Maven %s cannot be read", v)
 	}
 	return Artifact{Version: v, URL: file, Digest: "sha512:" + strings.ToLower(sum[0]), Format: "tar.gz",
 		Source: "Apache Maven from Maven Central (repo.maven.apache.org)", Hosts: hosts}, nil
@@ -219,7 +219,7 @@ func (s *Source) resolveGradle(ctx context.Context, want string, p Platform) (Ar
 		sum = strings.TrimSpace(string(b))
 	}
 	if len(sum) != 64 || !isHex(sum) {
-		return Artifact{}, fmt.Errorf("Gradle %s has no sha256 Abhed can read", r.Version)
+		return Artifact{}, fmt.Errorf("no sha256 Abhed can read was published for Gradle %s", r.Version)
 	}
 	return Artifact{Version: r.Version, URL: r.DownloadURL, Digest: "sha256:" + strings.ToLower(sum), Format: "zip",
 		Source: "Gradle from services.gradle.org", Hosts: hosts}, nil
