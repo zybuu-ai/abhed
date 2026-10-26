@@ -87,6 +87,9 @@ func TestToolchainCommand(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, toolchain.Host().String(), "go", "1.22.5", "bin", "go")); err != nil {
 		t.Fatal(err)
 	}
+	if code, _, errb := run("", "install", "-yes", "-debugger", "-platform", "linux", "go@1.22"); code != 1 || !strings.Contains(errb, "1.25 or later") {
+		t.Fatalf("a debugger Go 1.22 cannot build: %d %q", code, errb)
+	}
 	if code, out, _ := run("", "list", "-json"); code != 0 || !strings.Contains(out, `"version": "1.22.5"`) {
 		t.Fatalf("list: %d %s", code, out)
 	}
@@ -161,6 +164,26 @@ func TestStudioToolchains(t *testing.T) {
 	r.cl.ok("_abhed/toolchain/cancel", map[string]any{"installId": "none"}, &c)
 	if c.Cancelled {
 		t.Fatal("cancelled an install that was not running")
+	}
+
+	// The debugger is offered with its language, or refused with why; an
+	// install asking for one that cannot be had installs nothing.
+	var dbg struct {
+		CanAct   bool `json:"can_act"`
+		Debugger struct {
+			Name      string `json:"name"`
+			Available bool   `json:"available"`
+		} `json:"debugger"`
+		Refusal struct{ Kind, Message string } `json:"refusal"`
+	}
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go", "debugger": true}, &dbg)
+	if dbg.CanAct || dbg.Debugger.Name != "delve" || dbg.Debugger.Available || dbg.Refusal.Kind != "no_debugger" ||
+		!strings.Contains(dbg.Refusal.Message, "Delve") {
+		t.Fatalf("debugger status %+v", dbg)
+	}
+	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "debugger": true, "installId": "i2"})
+	if got, _ := r.recorded(id, "toolchain.install"); len(got) != 1 {
+		t.Fatalf("a refused debugger was recorded as an install: %v", got)
 	}
 }
 

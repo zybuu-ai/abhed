@@ -146,12 +146,23 @@ func (s *Session) Prelude(dir string) string {
 	if len(act) == 0 {
 		return ""
 	}
-	var path []string
+	var path, pythonPath []string
 	vars := map[string]string{}
+	p := s.platform()
 	for _, in := range act {
 		path = append(path, BinDirs(in)...)
 		for k, v := range Vars(in) {
 			vars[k] = v
+		}
+		// The language's debugger, where it was installed with it.
+		if e, ok := DebuggerFor(in.Lang); ok {
+			if x, ok := s.Cache.LookupExtra(p, e); ok {
+				bin, py := ExtraEnv(x)
+				path = append(path, bin...)
+				if py != "" {
+					pythonPath = append(pythonPath, py)
+				}
+			}
 		}
 	}
 	var b strings.Builder
@@ -162,6 +173,9 @@ func (s *Session) Prelude(dir string) string {
 	sort.Strings(keys)
 	for _, k := range keys {
 		fmt.Fprintf(&b, "export %s=%s; ", k, shellQuote(vars[k]))
+	}
+	if len(pythonPath) > 0 {
+		fmt.Fprintf(&b, "export PYTHONPATH=%s\"${PYTHONPATH:+:$PYTHONPATH}\"; ", shellQuote(strings.Join(pythonPath, ":")))
 	}
 	fmt.Fprintf(&b, "export PATH=%s\"${PATH:+:$PATH}\"; ", shellQuote(strings.Join(path, ":")))
 	return b.String()

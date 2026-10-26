@@ -158,6 +158,30 @@ the next command, and turning the whole network on to fix that would let
 every command reach anywhere. Opening exactly the registries of the
 languages you agreed to keeps the sandbox closed to everything else.
 
+## Debuggers
+
+Go and Python can come with their debugger, as part of the same agreement:
+the offer reads "Go 1.27.3 + Delve debugger 1.27.2". Ask for it with the
+toolchain tool's `debugger`, `abhed toolchain install -debugger go`, or
+Studio's `_abhed/toolchain/install` with `debugger: true`, which its Run and
+Debug offers when a debug session ends `adapter-missing`
+([Debugging](31-debugging.md)).
+
+| Language | Debugger | Where it comes from |
+|---|---|---|
+| Go 1.25 or later | Delve 1.27.2 (`dlv`) | built by Abhed itself, not in the sandbox: `go install github.com/go-delve/delve/cmd/dlv@v1.27.2` with the cached Go of the same version for this host (installed first, and offered, when the sandbox is Linux and this host is not), cross-built for the sandbox's Linux architecture with cgo off, from `proxy.golang.org` only, every module checked by `sum.golang.org`, with `GOFLAGS=-mod=mod`, `GOTOOLCHAIN=local` and none of your own Go settings (`GOPRIVATE`, `GOFLAGS`, `GOPROXY`…). Linux amd64 and arm64 only, where the debugger runs |
+| Python 3.10 or later | debugpy 1.8.22 | its universal wheel from PyPI (`files.pythonhosted.org`), refused unless PyPI's listed sha256 is the one Abhed pins, unpacked where `PYTHONPATH` finds it |
+
+Each is kept read-only in the cache beside the toolchains
+(`<cache>/<platform>/extras/<name>/<version>`) and is on `PATH` (Delve) or
+`PYTHONPATH` (debugpy) whenever its language is, for the agent's commands,
+the terminal and the debugger. The tool's approval for a language and its
+debugger is its own scope, `toolchain(go+debugger@1.27)`, so agreeing to Go
+alone, or `toolchains_preapproved: ["go"]`, never agrees to building Delve;
+`toolchains: auto` installs both. Each is recorded as its own
+`toolchain.install` with `extra` (`delve`, `debugpy`), and Delve's with
+`built_with` and the built binary's sha256.
+
 ## The record
 
 Every install, by the agent or a person, is recorded as `toolchain.install`
@@ -172,9 +196,17 @@ it for the platform commands run on.
 
 ## What it does not do
 
-- The workbench's interactive terminal does not get the toolchains on `PATH`
-  yet; the agent's commands do.
-- The microVM tier does not mount the cache yet.
+- The workbench's interactive terminal gets the toolchains on `PATH` and a
+  note naming the language for a missing program, through bash's
+  `command_not_found_handle`; an image whose shell is not bash 4 or later
+  gets `PATH` without the note.
+- The microVM driver (`abhed-microvm`) gives its guest only block devices,
+  the root filesystem and the workspace image, and shares no host folder, so
+  the cache cannot be mounted there, read-only or otherwise, and commands
+  there do not get the cache's toolchains on `PATH`. Put the toolchains a microVM needs in
+  the root filesystem you build with `scripts/microvm/build-rootfs.sh`. The
+  same holds for a server's per-session driver sandboxes, which run commands
+  through their driver rather than the local sandbox.
 - On a server, the registries are opened for the server's sandbox, which
   sessions sharing it share.
 - Node.js downloads are checked against `SHASUMS256.txt` fetched over HTTPS

@@ -395,7 +395,7 @@ func untarGz(archive, dir string) error {
 			if total > maxUnpacked {
 				return errors.New("the archive unpacks to more than Abhed allows")
 			}
-			if err := writeFile(p, tr, hdr.Size, hdr.FileInfo().Mode()); err != nil {
+			if err := writeFile(p, tr, hdr.Size, hdr.FileInfo().Mode()); err != nil && !caseCollision(p, err) {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -405,7 +405,7 @@ func untarGz(archive, dir string) error {
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return err
 			}
-			if err := os.Symlink(hdr.Linkname, p); err != nil {
+			if err := os.Symlink(hdr.Linkname, p); err != nil && !caseCollision(p, err) {
 				return err
 			}
 		case tar.TypeLink:
@@ -416,7 +416,7 @@ func untarGz(archive, dir string) error {
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return err
 			}
-			if err := os.Link(src, p); err != nil {
+			if err := os.Link(src, p); err != nil && !caseCollision(p, err) {
 				return err
 			}
 		case tar.TypeXGlobalHeader, tar.TypeXHeader:
@@ -483,7 +483,7 @@ func unzip(archive, dir string) error {
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return err
 			}
-			if err := os.Symlink(string(target), p); err != nil {
+			if err := os.Symlink(string(target), p); err != nil && !caseCollision(p, err) {
 				return err
 			}
 		case mode.IsRegular():
@@ -497,7 +497,7 @@ func unzip(archive, dir string) error {
 			}
 			err = writeFile(p, rc, int64(zf.UncompressedSize64), mode) // #nosec G115 -- bounded by maxUnpacked above
 			_ = rc.Close()
-			if err != nil {
+			if err != nil && !caseCollision(p, err) {
 				return err
 			}
 		default:
@@ -505,6 +505,27 @@ func unzip(archive, dir string) error {
 		}
 	}
 	return nil
+}
+
+// caseCollision reports whether creating p failed only because a name that
+// differs from it in case exists, as on macOS's case-insensitive disks, where
+// a Linux build's terminfo holds such pairs; the second of a pair is skipped.
+func caseCollision(p string, err error) bool {
+	if !errors.Is(err, fs.ErrExist) {
+		return false
+	}
+	entries, rerr := os.ReadDir(filepath.Dir(p))
+	if rerr != nil {
+		return false
+	}
+	base, folded := filepath.Base(p), false
+	for _, e := range entries {
+		if e.Name() == base {
+			return false
+		}
+		folded = folded || strings.EqualFold(e.Name(), base)
+	}
+	return folded
 }
 
 // topDir is the single directory an archive unpacked to, or dir itself when
