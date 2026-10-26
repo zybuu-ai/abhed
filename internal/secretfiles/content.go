@@ -40,25 +40,28 @@ var contentPatterns = []contentPattern{
 	// words, given a literal: quoted, or a bare run that is not code.
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*'([^'\n]{8,})'`), value: 1, literal: true},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([^\s"'` + "`" + `]{8,})`), value: 1, literal: true, bare: true},
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([^\s"'` + "`" + `][^\s'` + "`" + `]{7,})`), value: 1, literal: true, bare: true},
 }
 
 // secretName is an ALL_CAPS identifier one of whose words names a secret.
 const secretName = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIALS?)(?:_[A-Z0-9]+)*`
 
 // placeholder is a value that stands for a secret rather than being one: a
-// format verb, a template or shell expansion, an angle-bracket name, a mask
-// or a stock word.
-var placeholder = regexp.MustCompile(`(?i)^(?:` +
-	`%[-+# 0-9.*]*[a-z]|\$\{[^}]*\}|\$\([^)]*\)|\$[a-z_][a-z0-9_]*|\{\{?[^}]*\}?\}|<[^>]*>|\[[^\]]*\]|` +
-	`\*+|x+|\.{3}|…|changeme|change_me|change-me|password|secret|redacted|example|placeholder|your[_-]?[a-z_-]*)$`)
+// format verb, an expansion or template naming a variable (no default text),
+// a bracketed name, a mask, or a stock word. Brackets hold only a name:
+// letters, spaces, '_', '-' and '.', so a bracketed literal or JSON counts.
+var placeholder = regexp.MustCompile(`^(?:` +
+	`%[-+# 0-9.*]*[a-zA-Z]|\$\{[A-Za-z_][A-Za-z0-9_.]*\}|\$\([A-Za-z_ ./-]+\)|\$[A-Z_][A-Z0-9_]*|` +
+	`\{\{[A-Za-z_ .-]+\}\}|\{[A-Za-z_ .-]+\}|<[A-Za-z_ .-]+>|\[[A-Za-z_ .-]+\]|` +
+	`\*+|x+|X+|\.{3}|…|(?i:changeme|change_me|change-me|password|secret|redacted|example|placeholder)|` +
+	`your[_-][a-z_-]+|YOUR[_-][A-Z_-]+)$`)
 
 // identChain is a dotted chain of identifiers: code, not a value.
 var identChain = regexp.MustCompile(`^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$`)
 
-// IsPlaceholder reports a value that stands for a secret rather than being
+// isPlaceholder reports a value that stands for a secret rather than being
 // one, quoted or not.
-func IsPlaceholder(v string) bool {
+func isPlaceholder(v string) bool {
 	v = strings.TrimRight(v, ";,")
 	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
 		v = v[1 : len(v)-1]
@@ -73,10 +76,10 @@ func (p contentPattern) counts(text string, loc []int) bool {
 		return true
 	}
 	v := text[loc[2*p.value]:loc[2*p.value+1]]
-	if IsPlaceholder(v) {
+	if isPlaceholder(v) {
 		return false
 	}
-	if p.bare && (strings.ContainsAny(v, "([") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
+	if p.bare && (strings.Contains(v, "(") || strings.Contains(v[1:], "[") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
 		return false // a call, an index or a field such as settings.API_KEY
 	}
 	if p.value == 2 && loc[2] >= 0 && text[loc[2]:loc[3]] == v {

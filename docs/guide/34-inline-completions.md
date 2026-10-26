@@ -64,8 +64,12 @@ a cloud, forge, chat or payment token, a JWT, a password in a URL, an
 upper-case `*_TOKEN`, `*_PASSWORD` or `*_KEY` given a literal value (quoted,
 or bare and not code such as a call or `settings.API_KEY`). A
 placeholder is not a secret and is sent as written: a format verb (`%s`),
-`${…}`, `$NAME`, `{…}`, `<…>`, `***`, `xxx`, `changeme`, or a URL whose
-password is its user name (`postgres:postgres`). This happens before the
+an expansion naming a variable with no default (`${NAME}`, `$NAME` in
+capitals), a bracketed name (`{api_key}`, `<your key>`, `[REDACTED]`,
+`{{ .Token }}`), `***`, `xxx`, `changeme`, `your_token_here`, or a URL
+whose password is its user name (`postgres:postgres`). A default inside an
+expansion (`${PASSWORD:-…}`), a bracketed value or JSON is treated as a
+secret. This happens before the
 text is cut to size, and over the code on both sides of the cursor as one,
 so neither a cut nor the cursor can leave part of a secret. A suggestion
 that carries one is dropped rather than offered. A token you are still
