@@ -60,6 +60,8 @@ var samples = []sample{
 	{agent.EvPlanStep, agent.ActorSystem, `{"call_id":"c-1","plan_hash":"ef","step":1,"of":2,"tool":"bash","by":"plan"}`},
 	{agent.EvChangeAccepted, agent.ActorUser, `{"path":"/w/main.go","by":"user"}`},
 	{agent.EvWorktreeTaken, agent.ActorUser, `{"worktree":".abhed-worktrees/1","branch":"b","taken":["a.go"]}`},
+	{agent.EvDebugLaunched, agent.ActorUser, `{"debug_id":"dbg-1","call_id":"u-1","language":"go","command":"dlv debug /w/cmd/app","tier":"container","bridge":"abhed-dapbridge-linux-arm64"}`},
+	{agent.EvDebugStopped, agent.ActorUser, `{"debug_id":"dbg-1","call_id":"u-1","reason":"stopped","exit_code":0,"duration_ms":1200}`},
 	{agent.EvTaskCancelled, agent.ActorUser, `{"task_id":"s-child","by":"user"}`},
 	{agent.EvMessageDropped, agent.ActorSystem, `{"queue_id":"q1","text":"later","queued_at":"2026-10-19T10:00:00Z","reason":"shutdown"}`},
 	{agent.EvSessionRenamed, agent.ActorUser, `{"title":"build fix","by":"user"}`},

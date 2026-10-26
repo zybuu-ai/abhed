@@ -2,6 +2,8 @@
 # Build the Community Edition release artefacts: one archive per platform
 # holding the binary, the licence, the README and the changelog, the
 # microVM driver's two binaries (abhed-microvm and abhed-guest) for Linux,
+# the debug bridge (abhed-dapbridge) for linux/amd64 and linux/arm64 in every
+# archive beside the binary, whose checksums each engine is built to pin,
 # with -s an SPDX SBOM beside each bare binary (needs syft), plus a checksum
 # file over every abhed-* file in OUTDIR. What the release workflow runs;
 # runs the same on a laptop. Signing happens in the workflow, which has the
@@ -46,6 +48,19 @@ echo "Abhed ${VERSION}"
 echo "  embedding documentation"
 python3 "$ROOT/scripts/docsite/build.py" --embed-only >/dev/null
 
+# The debug bridge runs inside a session's sandbox, which is Linux whatever the
+# host; each engine pins the checksums of the two it ships beside it.
+mkdir -p "$STAGE/bridge"
+pins=""
+for arch in amd64 arm64; do
+  b="$STAGE/bridge/abhed-dapbridge-linux-$arch"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w -buildid=" -o "$b" "$ROOT/cmd/abhed-dapbridge"
+  if command -v sha256sum >/dev/null; then sum="$(sha256sum "$b" | cut -d' ' -f1)"; else sum="$(shasum -a 256 "$b" | cut -d' ' -f1)"; fi
+  case $arch in amd64) pins="$pins -X github.com/zybuu-ai/abhed/internal/dapbridge.PinnedAmd64=$sum" ;; arm64) pins="$pins -X github.com/zybuu-ai/abhed/internal/dapbridge.PinnedArm64=$sum" ;; esac
+  cp "$b" "$OUTDIR/abhed-dapbridge-${VERSION}-linux-${arch}"
+  echo "  abhed-dapbridge-${VERSION}-linux-${arch}"
+done
+
 for platform in $PLATFORMS; do
   os="${platform%/*}"; arch="${platform#*/}"
   name="abhed-${VERSION}-${os}-${arch}"
@@ -61,9 +76,9 @@ for platform in $PLATFORMS; do
     cgo=(CGO_ENABLED=1 "CC=clang -arch $carch" "MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-12.0}")
   fi
   env "${cgo[@]}" GOOS="$os" GOARCH="$arch" go build \
-    -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}" \
+    -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}${pins}" \
     -o "$dir/abhed" "$ROOT/cmd/abhed"
-  cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$dir/"
+  cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$STAGE"/bridge/abhed-dapbridge-linux-* "$dir/"
   tar -czf "$OUTDIR/$name.tar.gz" -C "$STAGE" "$name"
   # The bare binary too, for a one-line install with curl.
   cp "$dir/abhed" "$OUTDIR/$name"

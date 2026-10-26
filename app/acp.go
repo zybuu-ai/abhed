@@ -328,6 +328,9 @@ type acpConn struct {
 	// terms are the sandboxed terminals, by id (§7.1).
 	termMu sync.Mutex
 	terms  map[string]*acpTerminal
+	// debugs are the person's debug sessions, by id (§7.8).
+	debugMu sync.Mutex
+	debugs  map[string]*acpDebug
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -567,6 +570,7 @@ func (c *acpConn) closeAll() {
 		c.shut(s)
 	}
 	c.killTerminals("")
+	c.killDebugs("")
 }
 
 // shut ends a session's hold: its prompt and review window stop, its
@@ -583,6 +587,7 @@ func (c *acpConn) shut(s *acpSession) {
 	}
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
+	c.killDebugs(s.id)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()

@@ -1,6 +1,7 @@
 # A release is a tag. Pushing v<major>.<minor>.<patch> builds one archive per
 # platform with the documentation embedded, the microVM driver's
-# abhed-microvm and abhed-guest for Linux, a checksum file covering all of
+# abhed-microvm and abhed-guest for Linux, the debug bridge abhed-dapbridge
+# for linux/amd64 and linux/arm64, a checksum file covering all of
 # them, and a multi-arch container image, and publishes them as a GitHub
 # Release. Nothing is built by hand: a release is built from its tag by this
 # workflow, with actions pinned by commit, Go by version, the macOS runner by

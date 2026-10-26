@@ -152,7 +152,9 @@ func Plan(r Request, workspace, bridge string) (Spec, error) {
 		if r.Test != "" {
 			mode = "test"
 		}
-		launch["mode"], launch["program"] = mode, p
+		// The program's output comes to the editor as output events, not to
+		// dlv's own stdout, which the bridge does not carry.
+		launch["mode"], launch["program"], launch["outputMode"] = mode, p, "remote"
 		display = append(append([]string{"dlv", mode, p}, "--"), args...)
 		if len(args) == 0 {
 			display = display[:3]
@@ -201,6 +203,9 @@ func inside(base, p string) (string, error) {
 	}
 	return p, nil
 }
+
+// Quote is s as one shell word.
+func Quote(s string) string { return shellQuote(s) }
 
 func shellQuote(s string) string {
 	if s != "" && strings.IndexFunc(s, func(r rune) bool {

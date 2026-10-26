@@ -119,6 +119,19 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Debugging in the sandbox for Abhed Studio: the editor protocol's
+  `_abhed/debug/launch`, `/send` and `/stop` (the `debug` feature) run Delve
+  (Go) or debugpy (Python) inside the session's container tier, or the Linux
+  process tier, and carry its Debug Adapter Protocol messages to Studio over
+  the connection, with no port on the host. The engine builds the launch
+  itself: the debuggee's command line is judged by policy and the
+  supervisor as your bash call and recorded, Studio's own launch or attach
+  is refused, and the adapter's requests to run something in Studio's
+  terminal are answered with an error. Go runs through `abhed-dapbridge`, a
+  static Linux bridge shipped beside the binary in every release archive
+  and pinned by checksum. Each session is recorded as `debug.launched` and
+  `debug.stopped`. Node is not supported yet
+  ([Debugging](docs/guide/31-debugging.md)).
 - A key written twice in a configuration file is reported. encoding/json
   keeps the last one without a word, so a second provider of the same name
   in `model.providers` used to replace the first silently. Loading now warns
