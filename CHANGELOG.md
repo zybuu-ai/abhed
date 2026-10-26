@@ -633,6 +633,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Toolchains: Ruby could not load its standard library or RubyGems, nor on
+  Linux its own `libruby`, because its builds name the build machine's
+  folders; its commands now get `RUBYLIB`, `GEM_PATH` and, on Linux,
+  `LD_LIBRARY_PATH` for where it is. A Linux Ruby bundles libyaml 0.2.5 from
+  Debian 12's package, its sha256 pinned, so YAML, RubyGems and Bundler work
+  on the default image; OpenSSL is not bundled (see the Toolchains guide).
 - Toolchains: a Linux build unpacked on macOS (for the container tier) failed
   when its archive held names differing only in case, as Python's terminfo
   does; the second of such a pair is now skipped on a case-insensitive disk.

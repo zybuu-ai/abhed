@@ -57,8 +57,18 @@ func (s *Source) resolveRuby(_ context.Context, want string, p Platform) (Artifa
 	b := rubyBuilds[v][p.String()]
 	return Artifact{Version: v, URL: s.Endpoints.RubyDownload + "ruby-" + v + "-" + b.asset + ".tar.gz",
 		Digest: "sha256:" + b.sha256, Size: b.size, Format: "tar.gz",
-		Source: "ruby/ruby-builder (github.com/ruby/ruby-builder), the builds ruby/setup-ruby uses, with digests pinned in Abhed",
+		Source: rubySource(p),
 		Hosts:  append([]string(nil), githubHosts...)}, nil
+}
+
+// rubySource names where a Ruby build comes from, with the library a Linux
+// build bundles.
+func rubySource(p Platform) string {
+	s := "ruby/ruby-builder (github.com/ruby/ruby-builder), the builds ruby/setup-ruby uses, with digests pinned in Abhed"
+	if _, ok := libyaml.artifact(Endpoints{}, p); ok {
+		s += "; with libyaml " + libyaml.version + " from Debian 12 (deb.debian.org), its digest pinned too"
+	}
+	return s
 }
 
 // rubyShebang is the build machine's path ruby-builder's scripts start with.

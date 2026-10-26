@@ -46,6 +46,7 @@ type Endpoints struct {
 	GoProxy      string // the Go module proxy Delve is built from; "" is proxy.golang.org
 	GoSumDB      string // the checksum database that checks it; "" is sum.golang.org
 	PyPIAPI      string // PyPI's JSON API, for debugpy; "" is pypi.org/pypi/
+	DebianPool   string // Debian's package pool, for libraries a toolchain bundles; "" is deb.debian.org
 	// Extra hosts a download may reach, for a test's fake.
 	ExtraHosts []string
 }

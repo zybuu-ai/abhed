@@ -35,7 +35,13 @@ would leave that folder and any device or special file, and then made
 read-only. Nothing is installed system-wide, nothing runs with `sudo`, and no
 installer script runs: Rust's components are laid out from their manifests,
 and Ruby's scripts have the build machine's `ruby` path replaced with
-`/usr/bin/env ruby`.
+`/usr/bin/env ruby`. Ruby's builds name the build machine's folders, so its
+commands get `RUBYLIB` and `GEM_PATH` pointing at its own standard library
+and gems, and on Linux `LD_LIBRARY_PATH` at its own `libruby` and at
+libyaml 0.2.5, which a Linux Ruby bundles from Debian 12's package
+(`deb.debian.org`, its sha256 pinned in Abhed as packages.debian.org lists
+it), since `debian:bookworm-slim` has none and YAML, RubyGems and Bundler
+need it.
 
 Commands read the cache and never write it. Under the process tier they get
 the builds for this machine (`darwin-arm64`…); under the container tier the
@@ -211,5 +217,14 @@ it for the platform commands run on.
   sessions sharing it share.
 - Node.js downloads are checked against `SHASUMS256.txt` fetched over HTTPS
   from nodejs.org; its GPG signature is not checked.
-- Ruby's builds link the system's libraries (OpenSSL, libyaml); the default
-  `debian:bookworm-slim` image lacks libyaml, so `require "yaml"` fails there.
+- A Linux Ruby links the image's OpenSSL 3 (`libssl.so.3`), which
+  `debian:bookworm-slim` lacks, so there `require "openssl"` fails, and with
+  it `gem install` and `bundle install` from rubygems.org; Abhed does not
+  bundle OpenSSL, as a copy it pins would miss its security fixes. Use an
+  image that has it (`sandbox.image`, for example `buildpack-deps:bookworm-curl`
+  or your own `FROM debian:bookworm-slim` with `RUN apt-get install -y
+  libssl3 ca-certificates`). `gem install` also writes to the build's own
+  gem folder, which is read-only: install gems with Bundler into the
+  workspace (`bundle config set path vendor/bundle`).
+- Native gem extensions are built against the build machine's paths that
+  `RbConfig` names, so gems with C extensions may not build.

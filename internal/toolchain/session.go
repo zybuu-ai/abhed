@@ -146,7 +146,8 @@ func (s *Session) Prelude(dir string) string {
 	if len(act) == 0 {
 		return ""
 	}
-	var path, pythonPath []string
+	var path []string
+	search := map[string][]string{}
 	vars := map[string]string{}
 	p := s.platform()
 	for _, in := range act {
@@ -154,13 +155,16 @@ func (s *Session) Prelude(dir string) string {
 		for k, v := range Vars(in) {
 			vars[k] = v
 		}
+		for k, v := range SearchPaths(in) {
+			search[k] = append(search[k], v...)
+		}
 		// The language's debugger, where it was installed with it.
 		if e, ok := DebuggerFor(in.Lang); ok {
 			if x, ok := s.Cache.LookupExtra(p, e); ok {
 				bin, py := ExtraEnv(x)
 				path = append(path, bin...)
 				if py != "" {
-					pythonPath = append(pythonPath, py)
+					search["PYTHONPATH"] = append(search["PYTHONPATH"], py)
 				}
 			}
 		}
@@ -174,8 +178,13 @@ func (s *Session) Prelude(dir string) string {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "export %s=%s; ", k, shellQuote(vars[k]))
 	}
-	if len(pythonPath) > 0 {
-		fmt.Fprintf(&b, "export PYTHONPATH=%s\"${PYTHONPATH:+:$PYTHONPATH}\"; ", shellQuote(strings.Join(pythonPath, ":")))
+	names := make([]string, 0, len(search))
+	for k := range search {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		fmt.Fprintf(&b, "export %s=%s\"${%s:+:$%s}\"; ", k, shellQuote(strings.Join(search[k], ":")), k, k)
 	}
 	fmt.Fprintf(&b, "export PATH=%s\"${PATH:+:$PATH}\"; ", shellQuote(strings.Join(path, ":")))
 	return b.String()

@@ -56,6 +56,8 @@ type Installed struct {
 	Digest      string    `json:"digest"`
 	Bytes       int64     `json:"bytes"`
 	InstalledAt time.Time `json:"installed_at"`
+	// Bundled are libraries installed inside it, each checked against its pin.
+	Bundled []Bundled `json:"bundled,omitempty"`
 	// Dir is where it is, filled in when read.
 	Dir string `json:"-"`
 }
@@ -201,6 +203,11 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 			return Installed{}, err
 		}
 	}
+	if bundle, ok := bundles[a.Lang]; ok {
+		if in.Bundled, err = bundle(ctx, src, top, tmp, a); err != nil {
+			return Installed{}, err
+		}
+	}
 	marker, _ := json.MarshalIndent(in, "", "  ")
 	if err := os.WriteFile(filepath.Join(top, markerFile), marker, 0o444); err != nil {
 		return Installed{}, err
@@ -219,6 +226,12 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 	}
 	in.Dir = dir
 	return in, nil
+}
+
+// bundles add to a language's tree the libraries its builds link that
+// images may lack, before it is moved in place.
+var bundles = map[string]func(ctx context.Context, src *Source, top, tmp string, a Artifact) ([]Bundled, error){
+	"ruby": bundleLibyaml,
 }
 
 // postInstall finishes a language's unpacked tree before it is moved in place.
