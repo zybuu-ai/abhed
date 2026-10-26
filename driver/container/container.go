@@ -73,6 +73,7 @@ type instance struct {
 	git    *sandbox.ContainerMounts
 	mounts []string // the sandbox's mount arguments the container was started with
 	egress *egressState
+	relay  string // the Linux relay bound in on an engine in a VM or elsewhere
 
 	// life serialises start, stop and delete of the instance.
 	life    sync.Mutex
@@ -242,9 +243,11 @@ func (d *Driver) build(ctx context.Context, in *instance) (driver.Status, error)
 		return driver.Status{}, err
 	}
 	if pol.Egress != nil {
-		if why := egressRefusal(eng, d.opts.RelayBinary); why != "" {
+		relay, why := d.relayFor(eng)
+		if why != "" {
 			return driver.Status{}, driver.Errorf(driver.ErrUnavailable, "%s", why)
 		}
+		in.relay = relay
 	}
 	req, err := d.opts.admit(in.spec, pol, denied(pol))
 	if err != nil {

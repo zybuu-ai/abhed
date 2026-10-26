@@ -95,8 +95,18 @@ jobs:
           path: dist
       # The Linux builds join the macOS ones in dist; the SBOMs and the
       # checksum file then cover every binary and archive there.
+      - name: Keep the macOS job's helpers
+        run: mkdir -p "$RUNNER_TEMP/darwin-helpers" && cp dist/abhed-helper-* "$RUNNER_TEMP/darwin-helpers/"
       - name: Build
         run: scripts/build-release.sh -v "$GITHUB_REF_NAME" -o dist -p "linux/amd64 linux/arm64 linux/s390x" -s
+      # The macOS binaries pin the helpers their job built; the published
+      # ones are this job's, so the two builds must be byte for byte the same.
+      - name: The helpers are reproducible across both jobs
+        run: |
+          set -euo pipefail
+          for f in "$RUNNER_TEMP"/darwin-helpers/*; do
+            cmp "$f" "dist/$(basename "$f")" || { echo "::error::$(basename "$f") differs between the macOS and Linux builds"; exit 1; }
+          done
       # SHA256SUMS names every binary, archive and SBOM, so one signature
       # over it covers the release.
       - name: Sign the checksum file

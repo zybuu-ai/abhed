@@ -14,6 +14,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/driver"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/stdiorelay"
 )
 
@@ -59,11 +60,28 @@ func egressRefusal(eng engineInfo, relayBinary string) string {
 		return ""
 	}
 	if hostOS != "linux" {
-		return "sandbox.network allowlist with the engine in a VM needs a Linux build of Abhed to run inside as the relay " +
+		return "sandbox.network allowlist with the engine in a VM needs a Linux build of Abhed, or the abhed-helper shipped with it, to run inside as the relay " +
 			"(control_plane.<engine>.relay_binary), which is not set, so the sandbox is not created rather than given the network"
 	}
-	return "sandbox.network allowlist with DOCKER_HOST or CONTAINER_HOST pointing elsewhere needs a Linux build of Abhed " +
-		"to run inside as the relay (control_plane.<engine>.relay_binary), which is not set, so the sandbox is not created"
+	return "sandbox.network allowlist with DOCKER_HOST or CONTAINER_HOST pointing elsewhere needs a Linux build of Abhed, or the " +
+		"abhed-helper shipped with it, to run inside as the relay (control_plane.<engine>.relay_binary), which is not set, so the sandbox is not created"
+}
+
+// bundledHelper is sandbox.BundledHelper; tests set it.
+var bundledHelper = sandbox.BundledHelper
+
+// relayFor is the relay bound into a container on an engine in a VM or
+// elsewhere: the operator's relay_binary, else the helper shipped with the
+// engine and checked against its pin; "" and why when there is neither.
+func (d *Driver) relayFor(eng engineInfo) (string, string) {
+	if !stdioEgress(eng) || d.opts.RelayBinary != "" {
+		return d.opts.RelayBinary, ""
+	}
+	helper, why := bundledHelper(runtime.GOARCH)
+	if helper != "" {
+		return helper, ""
+	}
+	return "", egressRefusal(eng, "") + " (" + why + ")"
 }
 
 // startEgress starts a proxy for one container under pol and places the

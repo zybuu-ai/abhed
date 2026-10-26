@@ -119,6 +119,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The Linux helper: releases ship `abhed-helper-linux-<arch>` beside the
+  `abhed` binary (in each archive and as a bare download), with its sha256
+  pinned into the binary. Where the container engine is in a VM or
+  elsewhere and `control_plane.<engine>.relay_binary` is not set, a checked
+  copy of it is bound in read-only as the egress relay, so the network
+  allowlist and toolchain registries work on Podman and Docker Desktop on a
+  Mac with no configuration. A helper that does not match the pin is never
+  used. It also carries a debug bridge, `__abhed_dap_bridge --connect
+  127.0.0.1:PORT`, joining an exec's input and output to a debug adapter on
+  the sandbox's loopback. `scripts/build-helpers.sh` builds the helpers
+  reproducibly and prints the ldflags that pin them.
 - Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)
   with Maven and Gradle, Ruby and the .NET SDK, installed for the sandbox's
   commands at the version asked for, else the one the project pins (go.mod,

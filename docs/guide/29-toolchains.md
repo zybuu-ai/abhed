@@ -143,8 +143,8 @@ only those hosts, only HTTPS, every connection recorded as an
 The proxy is used only where the chosen tier can hold it, and **never in
 exchange for a weaker tier**. The process tier on macOS and Linux holds it; a
 container tier whose engine is in a VM (podman or Docker Desktop on a Mac)
-holds it only with a Linux build of Abhed as the relay
-(`control_plane.<engine>.relay_binary`). Where it cannot be held the network
+holds it with the Linux helper a release ships beside the binary as the
+relay, or a Linux build named in `control_plane.<engine>.relay_binary`. Where it cannot be held the network
 stays off, and the agent is told why when it tries.
 
 With `allow_network: true` the network is open already and nothing changes.
