@@ -111,10 +111,23 @@ func TestStderrRedactsSecretArguments(t *testing.T) {
 	if strings.Contains(out, "opaque") || !strings.Contains(out, "plainvalue") {
 		t.Fatalf("redacted %q", out)
 	}
-	if got, _ := secretfiles.RedactContent("Authorization: Bearer abc123def456ghi"); strings.Contains(got, "abc123def456ghi") {
+	if got, _ := secretfiles.RedactContent("Authorization: Bearer abc123def456ghi789"); strings.Contains(got, "abc123def456ghi789") {
 		t.Fatalf("bearer shape %q", got)
 	}
 	if got, _ := secretfiles.RedactContent("uses Bearer authentication"); got != "uses Bearer authentication" {
 		t.Fatalf("a word was taken for a token: %q", got)
+	}
+}
+
+// Header arguments in their joined forms, PASS names, and a value printed
+// URL-encoded or JSON-escaped are hidden too; a path after a flag that only
+// mentions auth is not.
+func TestStderrRedactsJoinedForms(t *testing.T) {
+	tr := &StdioTransport{argv: []string{"mcp-remote", "--header=Authorization: Bearer opaqueBearerTok", "-HX-Api-Key: opaqueHKeyVal",
+		"-e", "PGPASS=opaquePgPass", "DB_PASS=opaqueDbPass", "--no-auth", "/Users/me/project"},
+		env: []string{"TICKETS_SECRET=ab+cd/ef\"gh"}}
+	out := tr.redact(`sent opaqueBearerTok opaqueHKeyVal opaquePgPass opaqueDbPass ab%2Bcd%2Fef%22gh "ab+cd/ef\"gh" at /Users/me/project`)
+	if strings.Contains(out, "opaque") || strings.Contains(out, "ab%2B") || strings.Contains(out, `ab+cd/ef\"gh`) || !strings.Contains(out, "/Users/me/project") {
+		t.Fatalf("redacted %q", out)
 	}
 }

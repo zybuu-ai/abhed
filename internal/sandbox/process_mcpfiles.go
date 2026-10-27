@@ -135,12 +135,14 @@ const (
 	showFolder         // a folder of its own: all of it, read-only
 )
 
-// homeShown is how much of dir, under home, a server may read. Nothing in
-// a credential folder or Abhed's state, nor in home or another folder that
+// homeShown is how much of dir, under home, a server may read: nothing in a
+// credential folder or Abhed's state, nor in home or another folder that
 // holds one of them (a file named there may be a credential); only the file
-// itself a folder directly in it (~/Downloads, ~/Projects,
-// ~/.local), ~/Library, iCloud Drive's root or one directly in it, and
-// ~/.local/bin; otherwise the folder.
+// itself in a folder directly in home (~/Downloads, ~/Projects, ~/bin,
+// ~/.local), in ~/.local/bin or ~/.cargo/bin, and in a cloud drive's root
+// or one folder below it (iCloud Drive and other apps' iCloud folders in
+// ~/Library/Mobile Documents, ~/Library/CloudStorage's drives); otherwise
+// the folder. Paths are compared without case, as macOS's disk does.
 func homeShown(home, dir string) int {
 	state := filepath.Join(home, stateDir)
 	if insideAny(dir, []string{state}) {
@@ -155,13 +157,20 @@ func homeShown(home, dir string) int {
 		holds = holds || insideAny(sec, []string{dir})
 	}
 	if holds {
-		return showNothing // home, or a folder holding credentials or state: a file named there may be one
+		return showNothing
 	}
-	icloud := filepath.Join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
+	below := func(root string, max int) bool {
+		rest, ok := Within(dir, root)
+		return ok && len(rest) <= max
+	}
 	switch {
-	case dir == home, filepath.Dir(dir) == home, dir == filepath.Join(home, "Library"),
-		dir == icloud, filepath.Dir(dir) == icloud, dir == filepath.Join(home, "Library", "Mobile Documents"),
-		dir == filepath.Join(home, ".local", "bin"), dir == filepath.Join(home, ".cargo", "bin"):
+	case below(home, 1),
+		below(filepath.Join(home, ".local", "bin"), 0), below(filepath.Join(home, ".cargo", "bin"), 0),
+		// A cloud drive's root and the folders directly in it: a drive
+		// (CloudStorage/<drive>) or an app's iCloud folder (Mobile
+		// Documents/<container>), and one level below.
+		below(filepath.Join(home, "Library", "Mobile Documents"), 2),
+		below(filepath.Join(home, "Library", "CloudStorage"), 2):
 		return showFile
 	}
 	return showFolder
