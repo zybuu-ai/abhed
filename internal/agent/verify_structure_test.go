@@ -15,14 +15,20 @@ func TestStructureLinesAreNotClaims(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("claims = %q, want %q", got, want)
 	}
-	for _, s := range []string{"Go test run", "Cited source", "Verification", "Key findings", "Cited sources"} {
+	for _, s := range []string{"Go test run", "Cited source", "Verification", "Key findings", "Cited sources",
+		"Related files", "Suggested next steps", "Affected packages", "Expected output"} {
 		if c, ok := claimOf(s); ok {
 			t.Errorf("heading %q kept as a claim %q", s, c)
 		}
 	}
 	for _, s := range []string{"Files changed: 3", "Exit code: `0`", "Tests pass", "`go test ./...` passes", "`sum.go`: added `continue`", "Fixed `sum.go`",
 		"Created: `sum_test.go`", "Files changed: `main.go`", "Tests pass: `sum_test.go`", "Modified: `main.go`", "New file: `sum_test.go`",
-		"Tests added", "All tests pass", "Build passes", "What I changed", "No issues found"} {
+		"Tests added", "All tests pass", "Build passes", "What I changed", "No issues found",
+		"Fixed the login bug", "Removed the secret", "Patched the vulnerability", "Fixed It", "Committed the fix",
+		"Migrated the database", "Updated the config", "Upgraded Go", "Deleted the branch", "Merged into main",
+		"Rolled back the release", "No Breaking Changes", "Deployed to staging", "Pushed the branch", "Verified the fix",
+		"Tested Locally", "We Ship Today", "Coverage At 85 Percent", "The handler returns a clean response body",
+		"go test run", "Sum is fine.", "Expected"} {
 		if _, ok := claimOf(s); !ok {
 			t.Errorf("%q was dropped as structure", s)
 		}

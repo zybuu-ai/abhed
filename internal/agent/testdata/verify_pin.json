@@ -5276,6 +5276,31 @@
       "scenario": "test-go",
       "reply": "**Go test run**\n\nI added `continue` to `Sum`. All tests pass.\n\n**Cited source**\n\n- `sum.go`",
       "want": "completed"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Fixed the login bug",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Removed the secret",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Patched the vulnerability",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "Fixed It",
+      "want": "unverified"
+    },
+    {
+      "scenario": "read-sum",
+      "reply": "I read `sum.go`.\nFixed the login bug",
+      "want": "unverified"
     }
   ]
 }

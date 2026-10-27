@@ -66,7 +66,11 @@ word such as "Summary" or "Files changed", a file name alone or after a
 label of heading nouns, as in "Changes: `sum.go`"; a label that says what
 happened, as in "Created: `sum_test.go`" or "Files changed: `main.go`", stays
 a claim; a short title with nothing about the work in it, such as "Go test
-run" or "Cited source", whether bold or plain), questions, courtesies ("let me know if…"), advice
+run" or "Cited source", whether bold or plain: a past form opens a title
+only as one of a few adjectives ("Cited", "Related", "Suggested",
+"Expected" and the like) with a noun after it, so "Fixed the login bug",
+"Deployed" and "No breaking changes" stay claims), questions, courtesies
+("let me know if…"), advice
 ("run `make test` to confirm") and stated intentions ("I'll update the docs")
 are left out, and at most 40 statements are checked. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
@@ -425,11 +429,17 @@ counts (`12 tests`, `replicas: 3`). Then:
     run is not one of a known kind;
   - covers, by path, the packages or folders the statement names, or the
     whole workspace (`./...` from the workspace) when it names none. A
-    statement that names no folder answers the person's latest message:
-    when that message names folders (`services/orders`) and does not ask
-    about the whole workspace ("all", "every", "whole", "repo"), a run
-    over every folder it names covers it. A cached run (`ok … (cached)`)
-    counts like any other;
+    pass said of the tests, the build or the lint alone ("All tests
+    passed", "Result: all tests passed", "The build passes") answers what
+    the person typed since the last checked answer, attachments left out:
+    when that names folders (`services/orders`), asks about nothing wider
+    ("all", "every", "whole", "repo", "project", "full", "complete",
+    "other", "rest", "nothing else", "globally", "CI" and the like), and
+    every known change lies inside those folders, a run over every one of
+    them covers it. A claim that names a scope or another part ("the whole
+    build", "tests pass in all services", "everything works") keeps the
+    whole-workspace rule, and a subagent's task never counts as what the
+    person asked. A cached run (`ok … (cached)`) counts like any other;
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -793,7 +803,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 143 strict-mode
+control, by name and by a hash of its text and calls, and 148 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -882,4 +892,7 @@ makes them.
   are not read as conflicts git reported, and a synthetic progress line
   that puts a status code after a carriage return (`\rUU `) counts as
   one. "The pull was clean" is not read as a merge claim, so it is not
-  checked at all.
+  checked at all. A covering test run that passed, followed by a narrower run of
+  the same kind that failed, still shows "all tests pass", and "Run all
+  the tests in services/orders" turns the asked-folder rule off, since it
+  says "all".

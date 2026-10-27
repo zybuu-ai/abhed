@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -115,6 +116,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		then       string // a second command after bash
 		before     string // a command run before the read
 		asked      string // the person's message, "do it" when unset
+		prep       string // a shell line run in the workspace before the session
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
 		"explain-sum":  {file: "sum.go", text: plain},
@@ -186,10 +188,10 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			bash: "./git rebase --abort", then: "./git rebase -s ours main"},
 		"pull-autostash": {before: `printf '%s\n' '#!/bin/sh' 'echo Fast-forward' 'echo Applying autostash resulted in conflicts.' 'echo Your changes are safe in the stash.' > git && chmod +x git`,
 			bash: "./git pull"},
-		"sub-tests-asked": {setup: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > go && chmod +x go",
-			bash: "cd services/orders && ../../go test ./...", asked: "Run the Go tests for services/orders and tell me how many pass."},
-		"sub-tests": {setup: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > go && chmod +x go",
-			bash: "cd services/orders && ../../go test ./..."},
+		"sub-tests-asked": {prep: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > services/orders/go && chmod +x services/orders/go",
+			bash: "cd services/orders && ./go test ./...", asked: "Run the Go tests for services/orders and tell me how many pass."},
+		"sub-tests": {prep: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > services/orders/go && chmod +x services/orders/go",
+			bash: "cd services/orders && ./go test ./..."},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
@@ -199,6 +201,13 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		t.Fatalf("no scenario %q", scenario)
 	}
 	l, _, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
+	if sc.prep != "" {
+		cmd := exec.Command("sh", "-c", sc.prep)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("prep: %v: %s", err, out)
+		}
+	}
 	var turns []scriptedTurn
 	if sc.before != "" {
 		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.before})}})
