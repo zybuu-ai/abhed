@@ -23,6 +23,8 @@ import (
 type Process struct {
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
+	// listen is SetListen's: commands may listen on loopback from now on.
+	listen atomic.Bool
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -552,6 +554,20 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 			}
 			b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
 			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+		} else if busy, ok := s.listenable(); ok {
+			// A dev server the person opens in their browser: it listens and
+			// accepts on loopback, connects to nothing there, and binds
+			// neither Abhed's reserved ports nor one the Mac listens on.
+			b.WriteString(";; Listening on loopback, for a dev server; no loopback connection out.\n")
+			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+			b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
+			lo, hi := reservedLoopback()
+			for p := lo; p > 0 && p <= hi; p++ {
+				fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+			}
+			for _, p := range busy {
+				fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+			}
 		}
 		// Nor a view of the host's network: its interfaces, addresses and
 		// routes, as bwrap's --unshare-net gives on Linux.
@@ -586,6 +602,31 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		}
 	}
 	return b.String()
+}
+
+// listenable is the Mac's busy ports when commands may listen on loopback.
+func (s *Process) listenable() ([]int, bool) {
+	if !s.policy.ListenLoopback && !s.listen.Load() {
+		return nil, false
+	}
+	return hostListeners()
+}
+
+// SetListen lets sb's commands listen on loopback from their next start, or
+// with on false no longer; false where sb is not the macOS process tier.
+func SetListen(sb Sandbox, on bool) bool {
+	p, ok := sb.(*Process)
+	if !ok || p.backend != "sandbox-exec" {
+		return false
+	}
+	p.listen.Store(on)
+	return true
+}
+
+// Listens reports whether sb's commands may listen on loopback now.
+func Listens(sb Sandbox) bool {
+	p, ok := sb.(*Process)
+	return ok && p.backend == "sandbox-exec" && (p.policy.ListenLoopback || p.listen.Load())
 }
 
 // HomeSecrets are the files and folders under home that hold credentials,

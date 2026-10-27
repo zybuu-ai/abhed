@@ -734,7 +734,7 @@ interface AskMeta {
   managed configuration holds the permissions. Each is recorded as
   `approval.scope_granted {scope, by, command?, family?, folder?, session?}`.
   An "always" grant is kept for the workspace in Abhed's state
-  (`~/.abhed/state/bash-grants.json`, out of every command's reach) and
+  (`~/.abhed/state/workspace-grants.json`, out of every command's reach) and
   loaded by every new or continued session of the workspace, each recorded
   at the start as `approval.scope_granted` with `kept: "workspace"` and
   `granted_at`; one for the session alone is never kept, and one that
@@ -1038,6 +1038,7 @@ through policy; a step needing approval in a headless run is refused.
 _abhed/terminal/create { sessionId, mode: "lines" | "interactive", cols, rows }
   → { terminalId, tier: string, network: boolean, recorded: true,
       registries: string[], networkNote: string,    // 1.2.9: for the header
+      serves: boolean,                              // 1.2.9: a loopback server opens from the Mac
       venv?: { path: string, inUse: boolean } }     // 1.2.9: the project's Python venv
 _abhed/terminal/input  { terminalId, data: string }     → {}
 _abhed/terminal/resize { terminalId, cols, rows }       → {}
@@ -1047,6 +1048,10 @@ _abhed/terminal/output { terminalId, data: string }     // base64 of the bytes
 _abhed/terminal/exit   { terminalId, code?: number, signal?: string }
 // 1.2.9: a command there was refused a package registry; offer its opening
 _abhed/toolchain/registry_refused { sessionId, terminalId, language, hosts, canOpen, why?, message }
+// 1.2.9: a command there printed the loopback address a server listens on
+_abhed/terminal/serving { sessionId, terminalId, url }
+// 1.2.9: a server there was refused its port; offer _abhed/sandbox/listen
+_abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
@@ -1062,6 +1067,23 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   terminal, a line in the terminal naming the registry and how to open it,
   and Studio gets `_abhed/toolchain/registry_refused` to offer the one-click
   opening (`_abhed/toolchain/registries`, §3.2b), or to say why it cannot.
+- **Dev servers (1.2.9, feature `listen`).** Where `serves` is true (no
+  sandbox, or the macOS process tier with `sandbox.listen` allow or the
+  person's agreement for the workspace), a command may listen on loopback
+  and the person's browser reaches it; the first time a terminal's output
+  shows a loopback address (`http://localhost:5173/`), up to 16 per
+  terminal, Studio gets `_abhed/terminal/serving` to offer opening it.
+  Where it is false, a server refused its port (`listen EPERM`, `bind:
+  operation not permitted`) gets one line in the terminal and
+  `_abhed/terminal/listen_refused {sessionId, terminalId, canAllow, why?,
+  message}`. `_abhed/sandbox/listen {sessionId, allow}` → `{listens}` is the
+  person's agreement, or taking it back: kept for the workspace with the
+  kept grants, applied to this process's open sessions of it and every
+  later one, recorded `permission.changed {op, list: "allow", rule:
+  "sandbox(listen loopback)", scope: "workspace"}` (and at a session's start
+  where it applies); refused inside an agent's command, under
+  `sandbox.listen` off, and off the macOS process tier. An interactive
+  terminal keeps the rules it started with.
 - **Python venv (1.2.9).** `venv` is the project's virtual environment for
   the terminal's folder, if any. In `lines` mode its python and pip are
   used (`inUse`); in `interactive` mode only once the person types

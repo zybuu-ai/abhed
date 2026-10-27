@@ -110,6 +110,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.SharedCaches = cfg.Sandbox.SharedCaches
 	p.RelayBinary = RelayBinary(cfg)
 	p.ReadableHome = cfg.Sandbox.ReadableHome
+	p.ListenLoopback = cfg.Sandbox.Listen == "allow"
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall

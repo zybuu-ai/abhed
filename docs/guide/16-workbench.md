@@ -450,7 +450,10 @@ whose output shows a known registry refused, such as `npm install` or `go
 get`, prints a line naming the registry and how to open it, and Abhed Studio
 offers to open it. A project's Python virtual environment is named in the
 header but not used until you type `abhed_venv`
-([Toolchains](32-toolchains.md#the-projects-virtual-environment)). A shell on the host, with the host's
+([Toolchains](32-toolchains.md#the-projects-virtual-environment)). On macOS a dev server started there can
+listen once you agree for the workspace ([`sandbox.listen`](02-configuration.md)):
+Abhed Studio offers it when a server is refused its port, then offers to
+open the address the server prints in your browser. A shell on the host, with the host's
 network and no sandbox, is Abhed Studio's *New Host Terminal*; the
 prompt itself is the shell's own. On the macOS process tier the shell is
 your own where it can run there: `zsh` when your login shell (`SHELL`) is

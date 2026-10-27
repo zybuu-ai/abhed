@@ -1295,7 +1295,7 @@ rule, the destructive check, the supervisor and the screens still decide
 first, and where the managed configuration holds the permissions none is
 offered. Each is recorded as `approval.scope_granted` with what it covers.
 An "always" scope is kept for the workspace in Abhed's own state
-(`~/.abhed/state/bash-grants.json`, which no command can read or write), so
+(`~/.abhed/state/workspace-grants.json`, which no command can read or write), so
 every new session there starts with it; the session's record lists them at
 its start (`approval.scope_granted` with `kept: workspace` and when each was
 chosen), and a call one lets through is recorded `by: workspace-grant`.

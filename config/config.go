@@ -1495,6 +1495,14 @@ type SandboxConfig struct {
 	// file; under a managed network it adds nothing unless the managed file
 	// names it. A workspace file may only set off.
 	ToolchainsRegistries string `json:"toolchains_registries,omitempty"`
+	// Listen is whether commands on the macOS process tier may listen on
+	// loopback and accept there, so a dev server opens in the person's
+	// browser: "ask" (the default) once the person agrees for the
+	// workspace, "allow" always, "off" never. A listener there is reachable
+	// from the network when bound to every address. Never on Abhed's
+	// reserved ports or one the Mac listens on. A workspace file may only
+	// make it stricter.
+	Listen string `json:"listen,omitempty"`
 	// MaxMemoryMB applies on every tier but none and the macOS process tier;
 	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
@@ -1939,6 +1947,11 @@ func (c Config) Validate() error {
 	case "", "ask", "allow", "off":
 	default:
 		return fmt.Errorf("sandbox.toolchains_registries is %q; use ask, allow or off", c.Sandbox.ToolchainsRegistries)
+	}
+	switch c.Sandbox.Listen {
+	case "", "ask", "allow", "off":
+	default:
+		return fmt.Errorf("sandbox.listen is %q; use ask, allow or off", c.Sandbox.Listen)
 	}
 	for _, p := range c.Sandbox.ToolchainsPreapproved {
 		if _, err := toolchain.ParseSpec(p); err != nil {

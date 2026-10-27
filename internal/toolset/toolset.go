@@ -112,6 +112,10 @@ type Set struct {
 	// Toolchains are the toolchains commands get and the toolchain tool
 	// installs; nil when the cache has no home.
 	Toolchains *toolchain.Session
+	// SetListen lets commands listen on loopback from now on, or no longer;
+	// false where the sandbox has no such switch. Listens says whether they may.
+	SetListen func(on bool) bool
+	Listens   func() bool
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -147,6 +151,8 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.TodoTool{},
 		),
 		Toolchains: tc,
+		SetListen:  func(on bool) bool { return sandbox.SetListen(resolved(o.Sandbox), on) },
+		Listens:    func() bool { return sandbox.Listens(resolved(o.Sandbox)) },
 		Skills:     skills.NewRegistry(),
 		Agents:     agent.BuiltinDefinitions(),
 	}

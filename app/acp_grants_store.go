@@ -31,7 +31,7 @@ var grantsFile = func() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".abhed", "state", "bash-grants.json")
+	return filepath.Join(home, ".abhed", "state", "workspace-grants.json")
 }
 
 // grantsMu orders this process's changes; the file's lock orders processes'.
@@ -49,6 +49,8 @@ type keptGrant struct {
 type keptWorkspace struct {
 	Folder string      `json:"folder,omitempty"`
 	Grants []keptGrant `json:"grants"`
+	// ListenAgreedAt is when the person let commands listen on loopback here.
+	ListenAgreedAt *time.Time `json:"listen_agreed_at,omitempty"`
 }
 
 type keptGrants struct {
@@ -110,7 +112,7 @@ func changeKeptGrants(change func(*keptGrants) bool) error {
 		warnf("the unreadable %s was moved to %s", f, aside)
 	}
 	b, _ := json.MarshalIndent(k, "", "  ")
-	tmp, err := os.CreateTemp(filepath.Dir(f), ".bash-grants-*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(f), ".workspace-grants-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -129,15 +131,57 @@ func changeKeptGrants(change func(*keptGrants) bool) error {
 	return os.Rename(tmp.Name(), f)
 }
 
-// workspaceGrants are the grants kept for workspace, none where the folder
-// there is not the one they were kept for.
-func workspaceGrants(workspace string) []keptGrant {
+// keptFor is what is kept for workspace, nil where the folder there is not
+// the one it was kept for.
+func keptFor(workspace string) *keptWorkspace {
 	k, _ := readKeptGrants()
 	w := k.Workspaces[grantsKey(workspace)]
 	if w == nil || w.Folder != "" && w.Folder != folderID(workspace) {
 		return nil
 	}
-	return w.Grants
+	return w
+}
+
+// workspaceGrants are the grants kept for workspace.
+func workspaceGrants(workspace string) []keptGrant {
+	if w := keptFor(workspace); w != nil {
+		return w.Grants
+	}
+	return nil
+}
+
+// listenAgreed is when the person let commands listen on loopback in
+// workspace, or nil.
+func listenAgreed(workspace string) *time.Time {
+	if w := keptFor(workspace); w != nil {
+		return w.ListenAgreedAt
+	}
+	return nil
+}
+
+// setListenAgreed keeps, or with on false forgets, that agreement.
+func setListenAgreed(workspace string, on bool) error {
+	key, folder := grantsKey(workspace), folderID(workspace)
+	return changeKeptGrants(func(k *keptGrants) bool {
+		w := k.Workspaces[key]
+		if w == nil || w.Folder != folder {
+			if !on {
+				return false
+			}
+			w = &keptWorkspace{Folder: folder}
+			k.Workspaces[key] = w
+		}
+		if on {
+			now := time.Now().UTC()
+			w.ListenAgreedAt = &now
+		} else {
+			w.ListenAgreedAt = nil
+			if len(w.Grants) == 0 {
+				delete(k.Workspaces, key)
+			}
+		}
+		return true
+	})
 }
 
 // stillKept reports whether g is kept for workspace now, as another
@@ -181,7 +225,7 @@ func dropGrant(workspace, id string) (bashGrant, bool, error) {
 			if g.id() == id {
 				gone, found = g.bashGrant, true
 				w.Grants = append(w.Grants[:i:i], w.Grants[i+1:]...)
-				if len(w.Grants) == 0 {
+				if len(w.Grants) == 0 && w.ListenAgreedAt == nil {
 					delete(k.Workspaces, key)
 				}
 				return true
@@ -205,6 +249,17 @@ func (s *acpSession) addGrant(g bashGrant) {
 	if !slices.Contains(s.grants, g) {
 		s.grants = append(s.grants, g)
 	}
+}
+
+// openSessions are the connection's sessions now.
+func (c *acpConn) openSessions() []*acpSession {
+	c.sessMu.Lock()
+	defer c.sessMu.Unlock()
+	open := make([]*acpSession, 0, len(c.sessions))
+	for _, other := range c.sessions {
+		open = append(open, other)
+	}
+	return open
 }
 
 // grantFor is the grant that covers command in the session's folder. One
@@ -317,13 +372,7 @@ func (c *acpConn) grantsRevoke(msg rpcMessage) {
 	// Gone from this process's open sessions of the workspace at once; one in
 	// another process finds it gone before the grant would next answer.
 	root := grantsKey(parts.Session.Root)
-	c.sessMu.Lock()
-	open := make([]*acpSession, 0, len(c.sessions))
-	for _, other := range c.sessions {
-		open = append(open, other)
-	}
-	c.sessMu.Unlock()
-	for _, other := range open {
+	for _, other := range c.openSessions() {
 		if !other.inner || other.parts.Session == nil || grantsKey(other.parts.Session.Root) != root {
 			continue
 		}

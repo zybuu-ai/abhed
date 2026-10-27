@@ -992,6 +992,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	s.agent = a
 	s.parts, s.inner = embedded.Of(a)
 	s.loadKeptGrants()
+	s.loadListen()
 	if s.inner {
 		s.undo = agent.NewUndoLog(s.parts.Session.RestoreFile, s.parts.Session.RemoveFile)
 		loop := s.parts.Loop

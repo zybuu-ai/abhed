@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
@@ -499,4 +500,84 @@ func TestRegistriesOpenWithoutAToolchain(t *testing.T) {
 			t.Fatalf("header %+v lacks %s", term, h)
 		}
 	}
+}
+
+// A server refused its port in Studio's terminal is named, with the offer
+// to let commands listen; once the person agrees for the workspace, a new
+// terminal's server is reachable, its address sent to Studio once, and a
+// new session starts with it, until the person takes it back.
+func TestTerminalLetsAServerListen(t *testing.T) {
+	r := newStudioRig(t, "")
+	id := r.open()
+	type termReply struct {
+		TerminalID string `json:"terminalId"`
+		Tier       string `json:"tier"`
+		Serves     bool   `json:"serves"`
+	}
+	term := func(id string) termReply {
+		var tr termReply
+		r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &tr)
+		return tr
+	}
+	first := term(id)
+	if runtime.GOOS != "darwin" || first.Tier != "process" {
+		t.Skipf("listening is switched only on the macOS process tier, not %s", first.Tier)
+	}
+	if first.Serves {
+		t.Fatal("commands listen before the person agreed")
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": first.TerminalID,
+		"data": `printf 'Error: listen %s: operation not permitted 127.0.0.1:5173\n' EPERM` + "\r"}, nil)
+	r.cl.waitFor(from, "the listen offer", func(m rpcMessage) bool {
+		return m.Method == "_abhed/terminal/listen_refused" && strings.Contains(string(m.Params), `"canAllow":true`)
+	})
+	r.cl.refused(errParams, "_abhed/sandbox/listen", map[string]any{"sessionId": id})
+	var got struct {
+		Listens bool `json:"listens"`
+	}
+	r.cl.ok("_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true}, &got)
+	if !got.Listens {
+		t.Fatal("not listening after the person agreed")
+	}
+	if changed, _ := r.recorded(id, agent.EvPermissionChanged); len(changed) != 1 || changed[0]["rule"] != listenRule || changed[0]["op"] != "add" {
+		t.Fatalf("recorded %v", changed)
+	}
+	second := term(id)
+	if !second.Serves {
+		t.Fatal("a new terminal does not serve")
+	}
+	from = r.cl.mark()
+	// Split, so the typed line's echo holds no address.
+	line := `printf '  Local:   http://%s:5173/app\n' localhost; printf 'again http://localhost:5173/app\n'`
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": second.TerminalID, "data": line + "\r"}, nil)
+	r.cl.waitFor(from, "the serving address", func(m rpcMessage) bool {
+		return m.Method == "_abhed/terminal/serving" && strings.Contains(string(m.Params), `"url":"http://localhost:5173/app"`)
+	})
+	time.Sleep(200 * time.Millisecond)
+	n := 0
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/terminal/serving" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("sent %d times", n)
+	}
+	// Kept for the workspace: a new session starts listening, recorded.
+	id2 := r.open()
+	if !term(id2).Serves {
+		t.Fatal("a new session of the workspace does not listen")
+	}
+	if changed, actors := r.recorded(id2, agent.EvPermissionChanged); len(changed) != 1 || actors[0] != agent.ActorSystem {
+		t.Fatalf("recorded at the start %v %v", changed, actors)
+	}
+	r.cl.ok("_abhed/sandbox/listen", map[string]any{"sessionId": id2, "allow": false}, &got)
+	if got.Listens || term(id).Serves || term(r.open()).Serves {
+		t.Fatal("still listening after the person took it back")
+	}
+	old := inAgentCommand
+	inAgentCommand = func() string { return "ABHED_SESSION is set" }
+	defer func() { inAgentCommand = old }()
+	r.cl.refused(errPolicy, "_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true})
 }

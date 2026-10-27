@@ -290,7 +290,7 @@ func TestBashGrantsAreKeptForTheWorkspace(t *testing.T) {
 	if len(list.Grants) != 1 || list.Grants[0].Command != "go version" {
 		t.Fatalf("kept %+v", list)
 	}
-	if b, err := os.ReadFile(filepath.Join(r.home, ".abhed", "state", "bash-grants.json")); err != nil || !strings.Contains(string(b), "go version") {
+	if b, err := os.ReadFile(filepath.Join(r.home, ".abhed", "state", "workspace-grants.json")); err != nil || !strings.Contains(string(b), "go version") {
 		t.Fatalf("state file %s %v", b, err)
 	}
 	// A new session in the workspace is not asked.
@@ -361,7 +361,7 @@ func TestKeptGrantsTwoWriters(t *testing.T) {
 		return
 	}
 	ws := t.TempDir()
-	file := filepath.Join(t.TempDir(), "state", "bash-grants.json")
+	file := filepath.Join(t.TempDir(), "state", "workspace-grants.json")
 	var cmds []*exec.Cmd
 	for _, who := range []string{"a", "b"} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestKeptGrantsTwoWriters$", "-test.count=1")
@@ -382,7 +382,7 @@ func TestKeptGrantsTwoWriters(t *testing.T) {
 	if got := len(workspaceGrants(ws)); got != 50 {
 		t.Fatalf("%d grants kept of 50", got)
 	}
-	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(file), ".bash-grants-*")); len(left) != 0 {
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(file), ".workspace-grants-*")); len(left) != 0 {
 		t.Fatalf("temporary files left: %v", left)
 	}
 }
@@ -391,7 +391,7 @@ func TestKeptGrantsTwoWriters(t *testing.T) {
 // folder made again at the same path starts with no grants.
 func TestKeptGrantsFollowTheFolder(t *testing.T) {
 	old := grantsFile
-	file := filepath.Join(t.TempDir(), "bash-grants.json")
+	file := filepath.Join(t.TempDir(), "workspace-grants.json")
 	grantsFile = func() string { return file }
 	defer func() { grantsFile = old }()
 	parent := t.TempDir()

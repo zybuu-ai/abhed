@@ -158,6 +158,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Dev servers in the sandbox: on the macOS process tier a command may
+  listen on loopback once the person agrees for the workspace
+  (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its
+  port in Studio's terminal brings the offer
+  (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio
+  then offers the address the server prints (`_abhed/terminal/serving`).
+  Commands still connect to nothing on loopback, and cannot bind Abhed's
+  reserved ports nor a port one of your programs listens on, so a
+  sandboxed server never takes connections meant for a local service. A
+  server bound to `0.0.0.0` is reachable from the network; bind
+  `127.0.0.1`.
+
 - Studio can manage installed toolchains (feature `toolchain.manage`):
   `_abhed/toolchain/remove`, `_abhed/toolchain/clean`, which asks the person
   in the engine's own permission request before removing the whole cache,

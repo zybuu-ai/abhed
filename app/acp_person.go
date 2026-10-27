@@ -84,6 +84,12 @@ type acpTerminal struct {
 	done chan struct{}
 	// reg watches the output for a package registry the sandbox refused.
 	reg registryWatch
+	// serves is whether a server it starts on loopback can be opened from
+	// the Mac; serving watches the output for the address one prints.
+	serves  bool
+	serving servingWatch
+	// tier is the sandbox tier its commands run in.
+	tier string
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
@@ -127,7 +133,8 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{}),
+		serves: servesLoopback(iso, parts), tier: iso.Tier}
 	if p.Mode == "interactive" {
 		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
 			cancel()
@@ -151,7 +158,7 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 	}
 	open, note := terminalNetwork(parts, iso.Network)
 	reply := map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true,
-		"registries": open, "networkNote": note}
+		"registries": open, "networkNote": note, "serves": t.serves}
 	if parts.Set != nil && parts.Set.Toolchains != nil {
 		if v := parts.Set.Toolchains.Venv(t.sess.Cwd); v != "" {
 			// Lines use its python and pip; an interactive shell only once the person types abhed_venv.
@@ -184,6 +191,7 @@ func (c *acpConn) terminal(params json.RawMessage) (*acpTerminal, *rpcError) {
 func (c *acpConn) output(t *acpTerminal, b []byte) {
 	c.show(t, b)
 	c.watchRegistries(t, b)
+	c.watchServing(t, b)
 }
 
 // show sends bytes to the terminal's view, base64 as the contract says:

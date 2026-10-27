@@ -163,6 +163,11 @@ type Policy struct {
 	// cgroup per command, else each process's data); on macOS MaxProcs alone.
 	MaxMemoryMB int
 	MaxProcs    int
+	// ListenLoopback lets commands on the macOS process tier listen and
+	// accept, outside Abhed's reserved ports and the Mac's busy ones, without
+	// connecting to loopback: a dev server the person opens in their
+	// browser (sandbox.listen allow; SetListen turns it on later).
+	ListenLoopback bool
 	// ReadableHome lets the macOS process tier read all of home but the
 	// HomeSecrets; otherwise only the toolchain folders there are readable.
 	ReadableHome bool

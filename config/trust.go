@@ -684,6 +684,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.toolchains":             {stricterToolchains, "only stricter: auto, then ask, then off"},
 	"sandbox.toolchains_preapproved": {nil, "an install that needs no ask"},
 	"sandbox.toolchains_registries":  {onlyRegistriesOff, "only off"},
+	"sandbox.listen":                 {stricterListen, "only stricter: allow, then ask, then off"},
 	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.language_servers":       {nil, "a language server is a process"},
 	"sandbox.image":                  {nil, "chooses the image commands run in"},
@@ -898,6 +899,17 @@ func onlyRegistriesOff(dst, ws *Config) bool {
 		return false
 	}
 	dst.Sandbox.ToolchainsRegistries = "off"
+	return true
+}
+
+// stricterListen applies a workspace's sandbox.listen only when it is
+// stricter: allow, then ask, then off.
+func stricterListen(dst, ws *Config) bool {
+	rank := map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}
+	if rank[ws.Sandbox.Listen] <= rank[dst.Sandbox.Listen] {
+		return false
+	}
+	dst.Sandbox.Listen = ws.Sandbox.Listen
 	return true
 }
 
