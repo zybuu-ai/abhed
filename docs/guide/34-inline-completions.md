@@ -68,8 +68,10 @@ an expansion naming a variable with no default (`${NAME}`, `$NAME` in
 capitals), a bracketed name (`{api_key}`, `<your key>`, `[REDACTED]`,
 `{{ .Token }}`), `***`, `xxx`, `changeme`, `your_token_here`, or a URL
 whose password is its user name (`postgres:postgres`). A default inside an
-expansion (`${PASSWORD:-…}`), a bracketed value or JSON is treated as a
-secret. This happens before the
+expansion (`${PASSWORD:-…}`) or a bracketed value is treated as a secret,
+and so is a JSON object or list under such a name, plural too
+(`APP_SECRETS={"db": "…"}`, `API_TOKENS=[…]`), when one of its strings is a
+literal of eight or more characters. This happens before the
 text is cut to size, and over the code on both sides of the cursor as one,
 so neither a cut nor the cursor can leave part of a secret. A suggestion
 that carries one is dropped rather than offered. A token you are still

@@ -13,6 +13,9 @@ type contentPattern struct {
 	value   int
 	literal bool
 	bare    bool // an unquoted value, which is not a secret when it is code
+	// structured is a JSON or list value, a secret when one of its quoted
+	// strings is a literal and not a placeholder.
+	structured bool
 }
 
 // contentPatterns are the shapes of keys and tokens written into text, the
@@ -41,10 +44,20 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*'([^'\n]{8,})'`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([^\s"'` + "`" + `][^\s'` + "`" + `]{7,})`), value: 1, literal: true, bare: true},
+	// A JSON or list value under such a name, plural too (APP_SECRETS), to
+	// the end of the line: a secret when it holds a quoted literal.
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretNames + `[ \t]*[=:][ \t]*['"]?([{\[].*?)['"]?[ \t]*$`), value: 1, literal: true, structured: true},
 }
 
-// secretName is an ALL_CAPS identifier one of whose words names a secret.
-const secretName = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIALS?)(?:_[A-Z0-9]+)*`
+// secretName is an ALL_CAPS identifier one of whose words names a secret;
+// secretNames allows the word plural, for a value that holds several.
+const (
+	secretName  = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIALS?)(?:_[A-Z0-9]+)*`
+	secretNames = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIAL)S?(?:_[A-Z0-9]+)*`
+)
+
+// jsonString is one JSON string, read left to right so quotes pair up.
+var jsonString = regexp.MustCompile(`"((?:[^"\\\n]|\\.)*)"`)
 
 // placeholder is a value that stands for a secret rather than being one: a
 // format verb, an expansion or template naming a variable (no default text),
@@ -77,6 +90,14 @@ func (p contentPattern) counts(text string, loc []int) bool {
 	}
 	v := text[loc[2*p.value]:loc[2*p.value+1]]
 	if isPlaceholder(v) {
+		return false
+	}
+	if p.structured {
+		for _, m := range jsonString.FindAllStringSubmatch(v, -1) {
+			if len(m[1]) >= 8 && !isPlaceholder(m[1]) {
+				return true
+			}
+		}
 		return false
 	}
 	if p.bare && (strings.Contains(v, "(") || strings.Contains(v[1:], "[") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
