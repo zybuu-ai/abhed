@@ -80,9 +80,13 @@ func rubyPaths(in Installed) map[string][]string {
 	return map[string][]string{"RUBYLIB": rubylib, "GEM_PATH": {filepath.Join(lib, "gems", abi)}}
 }
 
-// Vars are the variables an installed toolchain needs besides PATH.
+// Vars are the variables an installed toolchain needs besides PATH. They
+// override the host's, which commands inherit: a host GOROOT with this Go
+// first on PATH mixes two Go versions in one build.
 func Vars(in Installed) map[string]string {
 	switch in.Lang {
+	case "go":
+		return map[string]string{"GOROOT": in.Dir, "GOTOOLCHAIN": "local"}
 	case "java":
 		return map[string]string{"JAVA_HOME": javaHome(in)}
 	case "dotnet":
@@ -91,6 +95,26 @@ func Vars(in Installed) map[string]string {
 		return map[string]string{"MAVEN_HOME": in.Dir}
 	case "gradle":
 		return map[string]string{"GRADLE_HOME": in.Dir}
+	}
+	return nil
+}
+
+// Unsets are the host's variables that would make an installed toolchain
+// use another installation's files, removed while it is active.
+func Unsets(in Installed) []string {
+	switch in.Lang {
+	case "python":
+		return []string{"PYTHONHOME"}
+	case "ruby":
+		return []string{"GEM_HOME", "RUBYOPT", "RUBYLIB_PREFIX"}
+	case "rust":
+		return []string{"RUSTC", "RUSTDOC", "RUSTUP_TOOLCHAIN", "RUSTC_WRAPPER"}
+	case "node":
+		return []string{"NODE_PATH"}
+	case "java", "maven", "gradle":
+		return []string{"JDK_HOME"}
+	case "dotnet":
+		return []string{"DOTNET_HOST_PATH"}
 	}
 	return nil
 }

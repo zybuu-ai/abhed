@@ -103,6 +103,20 @@ func TestToolchainCommand(t *testing.T) {
 	if code, out, errb := run("", "remove", "go@1.22"); code != 0 || !strings.Contains(out, "removed go 1.22.5") {
 		t.Fatalf("remove: %d %q %q", code, out, errb)
 	}
+	// Flags may follow the language, as abhed doctor writes them.
+	if code, out, errb := run("", "install", "go@1.22", "-yes"); code != 0 || !strings.Contains(out, "Installed Go 1.22.5") {
+		t.Fatalf("flags after the language: %d %q %q", code, out, errb)
+	}
+	// clean removes the whole cache, read-only as it is; it asks unless -yes.
+	if code, _, errb := run("", "clean"); code != 1 || !strings.Contains(errb, "add -yes") {
+		t.Fatalf("clean not at a terminal: %d %q", code, errb)
+	}
+	if code, out, errb := run("", "clean", "-yes"); code != 0 || !strings.Contains(out, "removed the toolchain cache") {
+		t.Fatalf("clean: %d %q %q", code, out, errb)
+	}
+	if _, err := os.Stat(root); err == nil {
+		t.Fatal("the cache outlived clean")
+	}
 	old := inAgentCommand
 	inAgentCommand = func() string { return "ABHED_SESSION is set" }
 	if code, _, errb := run("", "install", "-yes", "go"); code != 1 || !strings.Contains(errb, "inside an agent's command") {
@@ -154,9 +168,9 @@ func TestStudioToolchains(t *testing.T) {
 		Bin        []string `json:"bin"`
 		Registries string   `json:"registries"`
 	}
-	// An agreement that does not list the registries the install would open is not one.
+	// An agreement naming other registries than offered is not one.
 	r.cl.refused(errRefused, "_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i0b",
-		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}})
+		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest, "registries": []string{"evil.example"}}})
 	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "i1",
 		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest, "registries": st.Offer.Registries}}, &done)
 	if done.Version != "1.22.5" || len(done.Bin) != 1 {
@@ -275,7 +289,7 @@ func TestAgreementCoversWhatComesFirst(t *testing.T) {
 	node := toolchain.Plan{Spec: toolchain.Spec{Lang: "node"}, Artifact: toolchain.Artifact{Version: "24.9.0", Digest: "sha256:n1"}}
 	lp := &toolchain.ExtraPlan{Extra: toolchain.Extra{Version: "1.40.2"}, Digest: "sha512:b", Needs: &node}
 	a := &toolchainAgreed{Version: "3.12.7", Digest: "sha256:py", LSPVersion: "1.40.2", LSPDigest: "sha512:b",
-		NeedsVersion: "24.9.0", NeedsDigest: "sha256:n1", Registries: []string{"pypi.org"}}
+		NeedsVersion: "24.9.0", NeedsDigest: "sha256:n1", Registries: &[]string{"pypi.org"}}
 	if a.changedFrom(plan, nil, lp, []string{"pypi.org"}) {
 		t.Fatal("what was shown is a change")
 	}
@@ -292,5 +306,36 @@ func TestAgreementCoversWhatComesFirst(t *testing.T) {
 	a.NeedsVersion, a.NeedsDigest = "", ""
 	if a.changedFrom(plan, nil, lp, []string{"pypi.org"}) || !a.changedFrom(plan, nil, lp, []string{"pypi.org", "files.pythonhosted.org"}) {
 		t.Fatal("registries")
+	}
+}
+
+// Studio's agreement as it sends it today: version and digest, no
+// registries. The install is made, the same offer is not "changed", and no
+// registries open without being agreed to.
+func TestStudioToolchainAgreementWithoutRegistries(t *testing.T) {
+	fakeGoSource(t)
+	r := newStudioRig(t, "")
+	id := r.open()
+	var st struct {
+		Offer struct {
+			Version, Digest string
+		} `json:"offer"`
+	}
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go"}, &st)
+	var done struct {
+		Version    string `json:"version"`
+		Registries any    `json:"registries"`
+	}
+	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "s1",
+		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}}, &done)
+	if done.Version != st.Offer.Version {
+		t.Fatalf("install %+v", done)
+	}
+	if got, _ := r.recorded(id, "toolchain.registry"); len(got) != 0 {
+		t.Fatalf("registries opened without agreement: %v", got)
+	}
+	got, _ := r.recorded(id, "toolchain.install")
+	if len(got) != 1 || got[0]["consent"] != "studio" {
+		t.Fatalf("recorded %v", got)
 	}
 }

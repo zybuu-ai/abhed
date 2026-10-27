@@ -774,6 +774,34 @@ All notable changes to Abhed are recorded here. The format follows
   configured arguments name is now readable to it, and a server that fails
   to start shows the end of its stderr in the error.
 
+- `abhed toolchain clean` removes the whole toolchain cache, which a plain
+  `rm -rf` cannot, as installed toolchains are read-only; and `abhed
+  toolchain` takes its flags after the languages too, as `abhed doctor`
+  writes them.
+- A command the sandbox refused a package registry (`go get`, `pip
+  install`, `npm install` through the egress proxy) got a bare 403 or
+  Forbidden. It is now told which language's registry was refused and to
+  call the toolchain tool for it, which asks the person and opens it.
+
+- Studio's toolchain install looped on "The offer changed" with the same
+  offer: the engine required `agreed.registries`, which Studio does not
+  send, and the fields of an extra installed already. Those are no longer
+  required; an agreement without `registries` installs and opens none.
+
+- macOS process tier: every Node program failed with `EPERM ... lstat` on
+  a folder above the workspace, as Node's realpath stats each one and home
+  was closed to that too. The folders on the way to the workspace, the
+  read-only paths and the toolchains can now be stat'ed, not listed or read.
+- Toolchains: with a `GOROOT` set on the host, an installed Go first on
+  `PATH` mixed two Go versions and every build failed. An active Go now sets
+  its own `GOROOT` and `GOTOOLCHAIN=local`, and the host's `PYTHONHOME`,
+  `GEM_HOME`, `RUBYOPT`, `RUSTC`, `NODE_PATH` and the like are unset while
+  their toolchain is active.
+- The macOS process tier's own caches and temp folders (`abhed-caches-…`,
+  `abhed-tmp-…`) piled up in `$TMPDIR` when an Abhed process ended without
+  closing its sandbox. Each now records its owner, and the next sandbox
+  removes those whose owner has ended, by that record and name only; folders
+  left by earlier builds carry no record and are not touched.
 - Abhed Studio's Go, Python and Rust language servers never started: the
   supervisor looked for the server on the engine's own `PATH`, without the
   toolchains Abhed installs for the sandbox, and refused it as an unknown

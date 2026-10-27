@@ -242,6 +242,23 @@ var bundles = map[string]func(ctx context.Context, src *Source, top, tmp string,
 // It returns the directory that becomes the toolchain.
 var postInstall = map[string]func(dir string, a Artifact) (string, error){}
 
+// Clean deletes the whole cache: every toolchain and extra, for every
+// platform, read-only as they are. It refuses a root not named toolchains.
+func (c Cache) Clean() error {
+	if filepath.Base(c.Root) != "toolchains" || !filepath.IsAbs(c.Root) {
+		return fmt.Errorf("refused to clean %s, which is not a toolchain cache", c.Root)
+	}
+	if info, err := os.Lstat(c.Root); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	} else if !info.IsDir() {
+		return fmt.Errorf("refused to clean %s, which is not a folder", c.Root)
+	}
+	return removeTree(c.Root)
+}
+
 // Remove deletes an installed toolchain.
 func (c Cache) Remove(p Platform, lang, version string) error {
 	if !versionRE.MatchString(version) {

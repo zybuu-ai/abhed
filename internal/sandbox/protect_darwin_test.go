@@ -352,3 +352,55 @@ func TestSharedCachesLeaveToolchainsAndHelperReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// The folders between home and a workspace inside it can be stat'ed, as
+// Node's realpath does to each, but not listed or read.
+func TestAncestorsOfTheWorkspaceCanBeStatted(t *testing.T) {
+	home, err := os.MkdirTemp(".", "home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home, err = filepath.Abs(home); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	writeFiles(t, home, map[string]string{"qa/p/secret.txt": "private", "qa/p/ws/web/server.mjs": "x"})
+	ws := filepath.Join(home, "qa", "p", "ws")
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	out, err := runIn(t, s, filepath.Join(ws, "web"), `stat -f %N "`+filepath.Join(home, "qa", "p")+`" "`+filepath.Join(home, "qa")+`" && echo STAT-OK; `+
+		`ls "`+filepath.Join(home, "qa", "p")+`" >/dev/null 2>&1 && echo LISTED; cat "`+filepath.Join(home, "qa", "p", "secret.txt")+`" 2>/dev/null; true`)
+	if err != nil || !strings.Contains(out, "STAT-OK") {
+		t.Fatalf("the workspace's ancestors cannot be stat'ed: %v %s", err, out)
+	}
+	if strings.Contains(out, "LISTED") || strings.Contains(out, "private") {
+		t.Fatalf("an ancestor was listed or read: %s", out)
+	}
+	// With a Node from the toolchain cache, a script in the workspace runs.
+	if src := os.Getenv("ABHED_TEST_NODE"); src != "" {
+		// In a toolchain cache under home, as Abhed keeps it.
+		cache := filepath.Join(home, ".cache", "abhed", "toolchains")
+		node := filepath.Join(cache, "darwin-arm64", "node", "1", "bin", "node")
+		b, err := os.ReadFile(src) // #nosec G304 -- the test's own Node
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(node), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(node, b, 0o755); err != nil { // #nosec G306 -- an executable for the test
+			t.Fatal(err)
+		}
+		s := NewProcess(Policy{Workspace: ws, MinTier: TierProcess, ReadOnlyPaths: []string{cache}})
+		writeFiles(t, ws, map[string]string{"web/app.js": `console.log("app " + require("path").basename(__filename))`,
+			"web/mod.mjs": `import { basename } from "node:path"; console.log("mod " + basename(import.meta.url))`})
+		out, err := runIn(t, s, filepath.Join(ws, "web"), node+` -e 'console.log(require("fs").realpathSync("server.mjs"))' && `+node+` app.js && `+node+` mod.mjs`)
+		if err != nil || !strings.Contains(out, "server.mjs") || !strings.Contains(out, "app app.js") || !strings.Contains(out, "mod mod.mjs") {
+			t.Fatalf("node: %v %s", err, out)
+		}
+	}
+}

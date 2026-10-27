@@ -251,6 +251,13 @@ alone, or `toolchains_preapproved: ["go"]`, never agrees to building Delve;
 `toolchain.install` with `extra` (`delve`, `debugpy`), and Delve's with
 `built_with` and the built binary's sha256.
 
+## Removing them
+
+Installed toolchains are read-only, so a plain `rm -rf` of the cache fails.
+`abhed toolchain remove go@1.22.5` removes one, and `abhed toolchain clean`
+the whole cache, every toolchain and extra for every platform (asked first,
+or with `-yes`).
+
 ## The record
 
 Every install, by the agent or a person, is recorded as `toolchain.install`

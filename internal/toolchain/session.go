@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -161,6 +162,10 @@ func (s *Session) Prelude(dir string) string {
 		return ""
 	}
 	var b strings.Builder
+	// The host's settings that would point a toolchain at another install.
+	if unset := s.unsets(dir); len(unset) > 0 {
+		fmt.Fprintf(&b, "unset %s; ", strings.Join(unset, " "))
+	}
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
 		keys = append(keys, k)
@@ -179,6 +184,21 @@ func (s *Session) Prelude(dir string) string {
 	}
 	fmt.Fprintf(&b, "export PATH=%s\"${PATH:+:$PATH}\"; ", shellQuote(strings.Join(path, ":")))
 	return b.String()
+}
+
+// unsets are the host's variables the active toolchains for dir remove,
+// sorted, each once.
+func (s *Session) unsets(dir string) []string {
+	var out []string
+	for _, in := range s.Active(dir) {
+		for _, k := range Unsets(in) {
+			if !slices.Contains(out, k) {
+				out = append(out, k)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // environment is what the active toolchains for dir add: the folders put

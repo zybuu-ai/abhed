@@ -206,3 +206,96 @@ func TestToolchainRulesHoldWithAnySuffix(t *testing.T) {
 		}
 	}
 }
+
+// A command with an installed Go gets that Go's GOROOT, whatever the host's
+// is, and the host's settings that would point a toolchain elsewhere go.
+func TestToolchainOverridesTheHostsSettings(t *testing.T) {
+	ws := t.TempDir()
+	root := t.TempDir()
+	dir := filepath.Join(root, toolchain.Host().String(), "go", "1.26.0")
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "bin", "go"), []byte("#!/bin/sh\necho \"goroot=$GOROOT toolchain=$GOTOOLCHAIN pythonhome=${PYTHONHOME:-unset}\"\n"), 0o755)
+	marker, _ := json.Marshal(toolchain.Installed{Lang: "go", Version: "1.26.0", Platform: toolchain.Host().String()})
+	_ = os.WriteFile(filepath.Join(dir, ".abhed-toolchain.json"), marker, 0o644)
+	pdir := filepath.Join(root, toolchain.Host().String(), "python", "3.12.7")
+	_ = os.MkdirAll(filepath.Join(pdir, "bin"), 0o755)
+	pmarker, _ := json.Marshal(toolchain.Installed{Lang: "python", Version: "3.12.7", Platform: toolchain.Host().String()})
+	_ = os.WriteFile(filepath.Join(pdir, ".abhed-toolchain.json"), pmarker, 0o644)
+	t.Setenv("GOROOT", "/usr/local/go")
+	t.Setenv("GOTOOLCHAIN", "auto")
+	t.Setenv("PYTHONHOME", "/opt/host-python")
+	var line string
+	b := withToolchains(tools.Bash{Sandbox: func(ctx context.Context, cwd, l string) *exec.Cmd {
+		line = l
+		return exec.CommandContext(ctx, "/bin/sh", "-c", l) // #nosec G204 -- the test's own line
+	}}, &toolchain.Session{Cache: toolchain.Cache{Root: root}, Platform: toolchain.Host})
+	out, err := b.Sandbox(context.Background(), ws, "go version").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "goroot="+dir+" toolchain=local pythonhome=unset") {
+		t.Fatalf("%v %s\n%s", err, out, line)
+	}
+}
+
+// An opt-in check with a real Go in a toolchain cache: with another Go's
+// GOROOT on the host, a build in the process sandbox uses the cache's.
+// ABHED_TEST_TOOLCHAIN_CACHE names the cache; ABHED_TEST_HOST_GOROOT the other Go.
+func TestRealGoBuildsWithAHostGOROOT(t *testing.T) {
+	root, other := os.Getenv("ABHED_TEST_TOOLCHAIN_CACHE"), os.Getenv("ABHED_TEST_HOST_GOROOT")
+	if root == "" || other == "" {
+		t.Skip("set ABHED_TEST_TOOLCHAIN_CACHE and ABHED_TEST_HOST_GOROOT to build with a real Go")
+	}
+	ws := t.TempDir()
+	_ = os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module hello\n\ngo 1.22\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(ws, "main.go"), []byte("package main\n\nfunc main() { println(\"built\") }\n"), 0o644)
+	t.Setenv("GOROOT", other)
+	p := sandbox.DefaultPolicy(ws)
+	p.ReadOnlyPaths = []string{root}
+	sb := sandbox.NewProcess(p)
+	if ok, why := sb.Available(); !ok {
+		t.Skip(why)
+	}
+	defer sandbox.Close(sb)
+	b := withToolchains(tools.Bash{Sandbox: sb.Command}, &toolchain.Session{Cache: toolchain.Cache{Root: root}, Platform: toolchain.Host})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, err := b.Sandbox(ctx, ws, "go env GOROOT && go run .").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "built") || strings.Contains(string(out), other) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	t.Logf("%s", out)
+}
+
+// An opt-in check with a real Rust in a toolchain cache: a crate builds and
+// its tests run in the process sandbox. ABHED_TEST_TOOLCHAIN_CACHE names the cache.
+func TestRealRustBuildsInTheSandbox(t *testing.T) {
+	root := os.Getenv("ABHED_TEST_TOOLCHAIN_CACHE")
+	if root == "" || len(toolchainsIn(root, "rust")) == 0 {
+		t.Skip("set ABHED_TEST_TOOLCHAIN_CACHE to a cache with Rust to build with it")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ws := filepath.Join(home, "code", "rustcalc")
+	_ = os.MkdirAll(filepath.Join(ws, "src"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "Cargo.toml"), []byte("[package]\nname = \"rustcalc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(ws, "src", "lib.rs"), []byte("pub fn f(n: u64) -> u64 { (1..=n).product() }\n#[cfg(test)]\nmod t { #[test] fn five() { assert_eq!(super::f(5), 120); } }\n"), 0o644)
+	p := sandbox.DefaultPolicy(ws)
+	p.ReadOnlyPaths = []string{root}
+	sb := sandbox.NewProcess(p)
+	if ok, why := sb.Available(); !ok {
+		t.Skip(why)
+	}
+	defer sandbox.Close(sb)
+	b := withToolchains(tools.Bash{Sandbox: sb.Command}, &toolchain.Session{Cache: toolchain.Cache{Root: root}, Platform: toolchain.Host})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, err := b.Sandbox(ctx, ws, "cargo test --offline 2>&1").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "test result: ok") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// toolchainsIn are the installed versions of lang for this host in root.
+func toolchainsIn(root, lang string) []toolchain.Installed {
+	return toolchain.Cache{Root: root}.List(toolchain.Host(), lang)
+}
