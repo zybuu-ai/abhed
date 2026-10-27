@@ -852,8 +852,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 - Commands, Studio's Run and Test among them, did not use the project's
   Python virtual environment, so pytest installed in `.venv` was "not
-  installed". The nearest `.venv` or `venv` in the workspace now comes first
-  on `PATH`, with `VIRTUAL_ENV` set, as its activate script would.
+  installed". The nearest `.venv` or `venv` in the workspace is now used,
+  with `VIRTUAL_ENV` set. As the agent can write it, only its python and pip
+  come first; its `bin` goes after the rest of `PATH`, so nothing placed
+  there (a `git`, a `node`) replaces a program found elsewhere, and a venv
+  linked from outside the workspace is not used. An interactive terminal
+  names the venv and uses it only once you type `abhed_venv`.
 
 - A command in Studio's terminal refused a package registry (`npm install`,
   `go get`) showed only a 403. It now prints which language's registry was
@@ -861,7 +865,8 @@ All notable changes to Abhed are recorded here. The format follows
   a language's registries no longer needs Abhed's toolchain for it, so the
   host's own Node or Go on the process tier can use them. The terminal's
   header says what it can reach: the agent's network, with the registries
-  opened to the session.
+  open to the session by agreement or by configured egress rules. Only what
+  commands print is watched, not the typed line's echo.
 
 - Generate Commit Message in Abhed Studio could end with nothing shown:
   with nothing staged it answered only "nothing is staged", and a model that

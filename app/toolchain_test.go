@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -428,8 +429,18 @@ func TestTerminalNamesARefusedRegistry(t *testing.T) {
 	if term.Registries == nil || !strings.Contains(term.NetworkNote, "network:") {
 		t.Fatalf("header %+v", term)
 	}
+	// The typed line, echoed back, is not watched: only what commands print.
 	from := r.cl.mark()
-	refuse := `echo "npm error 403 403 Forbidden - GET https://registry.npmjs.org/left-pad"; exit 1`
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": `: 403 Forbidden - GET https://registry.npmjs.org/x` + "\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "$")
+	time.Sleep(200 * time.Millisecond)
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/toolchain/registry_refused" {
+			t.Fatal("offered for the echo of a typed line")
+		}
+	}
+	from = r.cl.mark()
+	refuse := `printf '%s 403 Forbidden - GET https://%s/left-pad\n' "npm error" registry.npmjs.org; exit 1`
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": refuse + "\r"}, nil)
 	waitOutput(r.cl, from, term.TerminalID, "Node.js's package registry (registry.npmjs.org) is closed")
 	r.cl.waitFor(from, "the registry offer", func(m rpcMessage) bool {
@@ -443,6 +454,49 @@ func TestTerminalNamesARefusedRegistry(t *testing.T) {
 	for _, m := range r.cl.since(from) {
 		if m.Method == "_abhed/toolchain/registry_refused" {
 			t.Fatal("offered twice")
+		}
+	}
+}
+
+// A language's registries open on the person's agreement with no toolchain
+// installed, as the host's own tools need: the opening is recorded, and a
+// new terminal's header names them.
+func TestRegistriesOpenWithoutAToolchain(t *testing.T) {
+	fakeGoSource(t)
+	r := newStudioRig(t, "")
+	id := r.open()
+	var st struct {
+		Available bool `json:"available"`
+		Offer     struct {
+			Registries []string `json:"registries"`
+		} `json:"offer"`
+	}
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go"}, &st)
+	if st.Available {
+		t.Fatal("go installed before the test")
+	}
+	if len(st.Offer.Registries) == 0 {
+		t.Skip("this sandbox opens no registries")
+	}
+	var opened struct {
+		Hosts []string `json:"hosts"`
+	}
+	r.cl.ok("_abhed/toolchain/registries", map[string]any{"sessionId": id, "language": "go", "registries": st.Offer.Registries}, &opened)
+	if !slices.Equal(opened.Hosts, st.Offer.Registries) {
+		t.Fatalf("opened %v, offered %v", opened.Hosts, st.Offer.Registries)
+	}
+	got, _ := r.recorded(id, "toolchain.registry")
+	if len(got) != 1 || got[0]["lang"] != "go" || got[0]["by"] != "user" || got[0]["surface"] != "acp" {
+		t.Fatalf("recorded %v", got)
+	}
+	var term struct {
+		Registries  []string `json:"registries"`
+		NetworkNote string   `json:"networkNote"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	for _, h := range st.Offer.Registries {
+		if !slices.Contains(term.Registries, h) || !strings.Contains(term.NetworkNote, h) {
+			t.Fatalf("header %+v lacks %s", term, h)
 		}
 	}
 }

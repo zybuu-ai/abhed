@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
@@ -323,5 +324,58 @@ func TestCommandsUseTheProjectsVenv(t *testing.T) {
 	real, _ := filepath.EvalSymlinks(filepath.Join(ws, ".venv"))
 	if err != nil || (!strings.Contains(string(out), filepath.Join(ws, ".venv")) && !strings.Contains(string(out), real)) {
 		t.Fatalf("%v\n%s", err, out)
+	}
+
+	// The venv is the agent's to write: a git planted in it is never run, a
+	// program only it has is, and its python reaches a bash the command starts.
+	planted := "#!/bin/sh\necho PLANTED \"$0\"\n"
+	for _, name := range []string{"git", "ls", "venvonly"} {
+		if err := os.WriteFile(filepath.Join(ws, ".venv", "bin", name), []byte(planted), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err = b.Sandbox(ctx, ws, `echo start; git --version; ls -d .; venvonly; bash -c 'python3 -c "import sys; print(sys.prefix)"'`).CombinedOutput()
+	got := string(out)
+	if err != nil || strings.Contains(got, "PLANTED "+filepath.Join(real, "bin", "git")) || strings.Contains(got, "bin/ls") ||
+		!strings.Contains(got, "git version") || !strings.Contains(got, "PLANTED") || strings.Count(got, real) < 2 {
+		t.Fatalf("%v\n%s", err, got)
+	}
+
+	// A person's terminal is told of the venv and uses it only on abhed_venv.
+	tc := &toolchain.Session{Cache: toolchain.Cache{Root: t.TempDir()}, Workspace: ws, Root: ws, Platform: toolchain.Host}
+	line := `eval "$1"; echo "ve=[$VIRTUAL_ENV]"; type python3 | head -1; abhed_venv; echo "ve=[$VIRTUAL_ENV]"; git --version`
+	out, err = exec.CommandContext(ctx, "bash", "-c", line, "bash", tc.ShellSetup(ws)).CombinedOutput()
+	got = string(out)
+	if err != nil || !strings.Contains(got, "ve=[]") || strings.Contains(got, "python3 is a function") ||
+		!strings.Contains(got, "ve=["+real+"]") || !strings.Contains(got, "Type abhed_venv") || strings.Contains(got, "PLANTED") {
+		t.Fatalf("%v\n%s", err, got)
+	}
+}
+
+// A terminal's header counts the registries commands can reach, whether a
+// person opened them or the configuration's egress rules allow them.
+func TestReachableRegistries(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "registry.npmjs.org", Ports: []int{443}, Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	p := sandbox.DefaultPolicy(ws)
+	p.Egress = pol
+	sb := sandbox.NewProcess(p)
+	defer sandbox.Close(sb)
+	t.Setenv("HOME", t.TempDir())
+	tc := Toolchains(config.Default(), ws, sb)
+	if tc == nil || tc.Reachable == nil {
+		t.Fatal("no reachability")
+	}
+	if !tc.Reachable("registry.npmjs.org") || tc.Reachable("pypi.org") {
+		t.Fatal("reachability does not follow the egress rules")
+	}
+	if err := pol.Grant("toolchain python", []string{"pypi.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if !tc.Reachable("pypi.org") {
+		t.Fatal("a granted registry is not reachable")
 	}
 }

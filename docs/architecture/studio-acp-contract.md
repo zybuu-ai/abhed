@@ -1029,7 +1029,8 @@ through policy; a step needing approval in a headless run is refused.
 ```ts
 _abhed/terminal/create { sessionId, mode: "lines" | "interactive", cols, rows }
   → { terminalId, tier: string, network: boolean, recorded: true,
-      registries: string[], networkNote: string }   // 1.2.9: for the header
+      registries: string[], networkNote: string,    // 1.2.9: for the header
+      venv?: { path: string, inUse: boolean } }     // 1.2.9: the project's Python venv
 _abhed/terminal/input  { terminalId, data: string }     → {}
 _abhed/terminal/resize { terminalId, cols, rows }       → {}
 _abhed/terminal/kill   { terminalId }                   → {}
@@ -1043,15 +1044,20 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
 ```
 
 - **Network (1.2.9).** The terminal has the network the agent's commands
-  have: off but for the package registries the person opened to the
-  session (through the egress proxy), unless the session's policy opens it.
-  `registries` lists those open now and `networkNote` says it in a line for
-  the terminal's header. A command whose output shows the egress proxy
+  have: off but for the package registries open to the session through
+  the egress proxy, by the person's agreement or by configured egress rules,
+  unless the session's policy opens it. `registries` lists those open now
+  and `networkNote` says it in a line for the terminal's header. Abhed's own
+  echo, prompts and notes are not watched; a command whose output shows the egress proxy
   refusing a known registry (`npm install` with registry.npmjs.org closed,
   `go get` with proxy.golang.org closed) gets, once per language and
   terminal, a line in the terminal naming the registry and how to open it,
   and Studio gets `_abhed/toolchain/registry_refused` to offer the one-click
   opening (`_abhed/toolchain/registries`, §3.2b), or to say why it cannot.
+- **Python venv (1.2.9).** `venv` is the project's virtual environment for
+  the terminal's folder, if any. In `lines` mode its python and pip are
+  used (`inUse`); in `interactive` mode only once the person types
+  `abhed_venv`. Show it in the header. Its `bin` never comes before `PATH`.
 - The shell runs in the engine's sandbox tier for the session. In `lines`
   mode each line is a `bash` call through policy; in `interactive` mode the
   shell runs whole under the sandbox and each entered line is recorded

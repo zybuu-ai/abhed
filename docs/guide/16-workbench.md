@@ -443,11 +443,14 @@ and the like work as in any shell, within what the tier allows. The first lines
 of each tab say what contains it, for example
 `sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`. The
 terminal has the network the agent's commands have: off unless the session's
-policy opens it, but for the package registries you opened to the session
-(from Toolchains in Abhed Studio, or by agreeing when the agent asks), which
-the header then names. A command refused a known registry, such as `npm
-install` or `go get`, prints a line naming the registry and how to open it,
-and Abhed Studio offers to open it. A shell on the host, with the host's
+policy opens it, but for the package registries open to the session, by
+your agreement (from Toolchains in Abhed Studio, or when the agent asks) or
+by the configuration's egress rules, which the header then names. A command
+whose output shows a known registry refused, such as `npm install` or `go
+get`, prints a line naming the registry and how to open it, and Abhed Studio
+offers to open it. A project's Python virtual environment is named in the
+header but not used until you type `abhed_venv`
+([Toolchains](32-toolchains.md#the-projects-virtual-environment)). A shell on the host, with the host's
 network and no sandbox, is Abhed Studio's *New Host Terminal*; the
 prompt itself is the shell's own. On the macOS process tier the shell is
 your own where it can run there: `zsh` when your login shell (`SHELL`) is

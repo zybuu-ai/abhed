@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -49,10 +50,10 @@ func Toolchains(cfg config.Config, workspace string, sb sandbox.Sandbox) *toolch
 			}
 			return hosts, sandbox.EgressOf(resolved(sb)).Grant("toolchain "+lang, hosts)
 		}
-		tc.Granted = func(host string) bool {
-			pol := sandbox.EgressOf(resolved(sb))
-			return pol != nil && pol.Granted(host)
-		}
+	}
+	tc.Reachable = func(host string) bool {
+		pol := sandbox.EgressOf(resolved(sb))
+		return pol != nil && pol.DecideHost(egress.Request{Host: host, Port: 443, Tunnel: true}).Decision == egress.Allow
 	}
 	return tc
 }

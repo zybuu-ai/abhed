@@ -25,14 +25,8 @@ type registryWatch struct {
 	offered map[string]bool
 }
 
-// registryNoteMark starts the terminal's own note, which is not watched.
-const registryNoteMark = "\r\nabhed: "
-
 // watchRegistries looks at a chunk of t's output for a refused registry.
 func (c *acpConn) watchRegistries(t *acpTerminal, chunk []byte) {
-	if strings.HasPrefix(string(chunk), registryNoteMark) {
-		return
-	}
 	w := &t.reg
 	w.mu.Lock()
 	text := w.tail + termline.PlainText(chunk)
@@ -77,28 +71,28 @@ func (c *acpConn) watchRegistries(t *acpTerminal, chunk []byte) {
 	} else {
 		note += " It cannot be opened here: " + why + "."
 	}
-	c.output(t, []byte(registryNoteMark+note+"\r\n"))
+	c.show(t, []byte("\r\nabhed: "+note+"\r\n"))
 	c.notification("_abhed/toolchain/registry_refused", map[string]any{"sessionId": t.session.id, "terminalId": t.id,
 		"language": lang, "hosts": hosts, "canOpen": canOpen, "why": why, "message": note})
 }
 
 // terminalNetwork is what a terminal can reach, for its header: the
-// package registries open to the session's commands now, and a line that
-// says so, the same network the agent's commands have.
+// package registries open to the session's commands now, by agreement or by
+// configuration, and a line that says so, the network the agent's commands have.
 func terminalNetwork(parts embedded.Parts, network bool) ([]string, string) {
 	if network {
 		return []string{}, "network: on, as the session's commands have it"
 	}
 	open := []string{}
-	if parts.Set != nil && parts.Set.Toolchains != nil && parts.Set.Toolchains.Granted != nil {
+	if parts.Set != nil && parts.Set.Toolchains != nil && parts.Set.Toolchains.Reachable != nil {
 		for _, h := range toolchain.AllRegistries() {
-			if parts.Set.Toolchains.Granted(h) {
+			if parts.Set.Toolchains.Reachable(h) {
 				open = append(open, h)
 			}
 		}
 	}
 	if len(open) > 0 {
-		return open, "network: off but the package registries opened to this session (" + strings.Join(open, ", ") + "), as the agent's commands have it"
+		return open, "network: off but the package registries open to this session (" + strings.Join(open, ", ") + "), as the agent's commands have it"
 	}
 	return open, "network: off, as the agent's commands have it; a language's package registries open to both once you agree (Toolchains, or when the agent asks)"
 }

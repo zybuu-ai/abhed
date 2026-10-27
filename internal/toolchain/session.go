@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -34,9 +35,9 @@ type Session struct {
 	Registries func(lang string) (hosts []string, why string)
 	// Open opens them; it returns what it opened.
 	Open func(lang string) ([]string, error)
-	// Granted reports whether commands can reach host through the egress
-	// proxy now; nil reaches none.
-	Granted func(host string) bool
+	// Reachable reports whether commands can reach host on 443 through the
+	// egress proxy now, opened by agreement or by configuration; nil reaches none.
+	Reachable func(host string) bool
 }
 
 // pins are the pins a command in dir finds, up to the workspace root.
@@ -159,17 +160,43 @@ func (s *Session) Prelude(dir string) string {
 	return s.toolchainPrelude(dir) + s.venvPrelude(dir)
 }
 
-// venvPrelude puts the project's Python virtual environment first, as its
-// activate script would: the nearest .venv or venv at or above dir, up to
-// the workspace root, that holds a pyvenv.cfg and a bin/python. After the
-// toolchains', so the project's own python and pytest are found first.
+// venvPrelude gives a command the project's Python virtual environment, the
+// nearest .venv or venv at or above dir up to the workspace root.
 func (s *Session) venvPrelude(dir string) string {
 	v := ProjectVenv(dir, s.root())
 	if v == "" {
 		return ""
 	}
-	return fmt.Sprintf("unset PYTHONHOME; export VIRTUAL_ENV=%s; export PATH=%s\"${PATH:+:$PATH}\"; ",
-		shellQuote(v), shellQuote(filepath.Join(v, "bin")))
+	return VenvActivate(v)
+}
+
+// venvFirst are the venv programs that come before PATH: its interpreter
+// and pip, under the names a venv gives them.
+var venvFirst = regexp.MustCompile(`^(python|pip)(3(\.[0-9]+)?)?$`)
+
+// VenvActivate is the shell lines that use the venv at v. The venv is
+// writable by the agent, so its bin goes after PATH: its own console scripts
+// are found, but nothing found elsewhere is shadowed. Only its python and
+// pip come first, as shell functions, which bash commands it starts inherit.
+func VenvActivate(v string) string {
+	bin := filepath.Join(v, "bin")
+	var b strings.Builder
+	fmt.Fprintf(&b, "unset PYTHONHOME; export VIRTUAL_ENV=%s; export PATH=\"${PATH:+$PATH:}\"%s; ", shellQuote(v), shellQuote(bin))
+	var names []string
+	if entries, err := os.ReadDir(bin); err == nil {
+		for _, e := range entries {
+			if venvFirst.MatchString(e.Name()) && !e.IsDir() {
+				names = append(names, e.Name())
+			}
+		}
+	}
+	for _, n := range names {
+		fmt.Fprintf(&b, "%s() { %s \"$@\"; }; ", n, shellQuote(filepath.Join(bin, n)))
+	}
+	if len(names) > 0 {
+		fmt.Fprintf(&b, "[ -n \"${BASH_VERSION-}\" ] && export -f %s; ", strings.Join(names, " "))
+	}
+	return b.String()
 }
 
 // root is the workspace root pin files and a venv are looked for up to.
@@ -182,8 +209,9 @@ func (s *Session) root() string {
 
 // ProjectVenv is the project's virtual environment for commands in dir, or
 // "": the nearest .venv or venv at or above dir, no higher than root, that
-// is one (a pyvenv.cfg and a bin/python beside it). Poetry's and uv's
-// in-project environments are .venv.
+// is one (a pyvenv.cfg and a bin/python beside it), as its real path. The
+// venv and its bin must resolve inside root: a link out of it is not one.
+// Poetry's and uv's in-project environments are .venv.
 func ProjectVenv(dir, root string) string {
 	if dir == "" {
 		return ""
@@ -192,13 +220,13 @@ func ProjectVenv(dir, root string) string {
 	if root == "." || d != root && !strings.HasPrefix(d, root+string(filepath.Separator)) {
 		root = d
 	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return ""
+	}
 	for i := 0; i < 64; i++ {
 		for _, name := range []string{".venv", "venv"} {
-			v := filepath.Join(d, name)
-			if cfg, err := os.Lstat(filepath.Join(v, "pyvenv.cfg")); err != nil || !cfg.Mode().IsRegular() {
-				continue
-			}
-			if _, err := os.Stat(filepath.Join(v, "bin", "python")); err == nil {
+			if v, ok := venvAt(filepath.Join(d, name), realRoot); ok {
 				return v
 			}
 		}
@@ -209,6 +237,31 @@ func ProjectVenv(dir, root string) string {
 		d = up
 	}
 	return ""
+}
+
+// venvAt is v's real path when it is a venv inside realRoot.
+func venvAt(v, realRoot string) (string, bool) {
+	real, err := filepath.EvalSymlinks(v)
+	if err != nil || !inside(real, realRoot) {
+		return "", false
+	}
+	if cfg, err := os.Lstat(filepath.Join(real, "pyvenv.cfg")); err != nil || !cfg.Mode().IsRegular() {
+		return "", false
+	}
+	bin, err := filepath.EvalSymlinks(filepath.Join(real, "bin"))
+	if err != nil || bin != filepath.Join(real, "bin") {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(bin, "python")); err != nil {
+		return "", false
+	}
+	return real, true
+}
+
+// inside reports whether p is dir or under it.
+func inside(p, dir string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != "." && filepath.IsLocal(rel)
 }
 
 // toolchainPrelude is the active toolchains' part of the prelude.
@@ -368,9 +421,15 @@ func (s *Session) OpenRegistriesFor(lang, surface string, record func(agent.Tool
 // prompt: the active toolchains on PATH, as a command gets them, and a
 // command_not_found_handle that says which language Abhed can install for a
 // missing program. It still exits 127, which a client reads as "missing".
+// A project venv is not used until the person types abhed_venv.
 func (s *Session) ShellSetup(dir string) string {
 	var b strings.Builder
-	b.WriteString(s.Prelude(dir))
+	b.WriteString(s.toolchainPrelude(dir))
+	if v := ProjectVenv(dir, s.root()); v != "" {
+		fmt.Fprintf(&b, "abhed_venv() { %s printf '%%s\\n' %s; }; printf '%%s\\n' %s; ", VenvActivate(v),
+			shellQuote("abhed: using "+v+": its python and pip come first; its other programs only where nothing else on PATH has them."),
+			shellQuote("abhed: this project has a Python virtual environment ("+v+"). Type abhed_venv to use its python and pip in this terminal."))
+	}
 	b.WriteString("command_not_found_handle() { case \"$1\" in ")
 	for _, l := range Langs {
 		note := s.personNote(dir, l)
@@ -389,3 +448,6 @@ func (s *Session) personNote(dir string, l Lang) string {
 	return fmt.Sprintf("abhed: %s is not installed in this sandbox. Abhed installs %s (%s) from its official source: ask the agent, "+
 		"or run `abhed toolchain install %s` in your own terminal, then open a new terminal.", l.Display, spec.String(), why, spec.String())
 }
+
+// Venv is the project venv commands in dir use, or "".
+func (s *Session) Venv(dir string) string { return ProjectVenv(dir, s.root()) }
