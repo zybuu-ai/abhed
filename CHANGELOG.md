@@ -688,9 +688,11 @@ All notable changes to Abhed are recorded here. The format follows
   headings and lines that only arrange the reply ("Summary", "Changes:
   `sum.go`") are not claims, while a label that says what happened
   ("Created: `sum_test.go`") is, and a short title ("Go test run", "Cited
-  source") is not; a pass claim that names no folder is covered by a run
-  of the folders the person's message named, unless it asked about the
-  whole workspace; a test result with no test run behind it says "no test
+  source") is not, though a past form opens a title only as a few
+  adjectives ("Cited", "Related"); a bare pass claim ("All tests passed")
+  is covered by a run of the folders the person typed since the last
+  checked answer, attachments aside, when they asked about nothing wider
+  and every change lies inside those folders; a test result with no test run behind it says "no test
   run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
