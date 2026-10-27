@@ -61,7 +61,9 @@ default: an untrusted workspace cannot turn labels off.
 ## How each statement is checked
 
 The answer is split into statements: one per sentence, list item or table
-row. Code blocks, headings, questions, courtesies ("let me know if…"), advice
+row. Code blocks, headings and lines that only arrange the reply (a heading
+word such as "Summary" or "Files changed", a file name alone or after a
+label, as in "Changes: `sum.go`"), questions, courtesies ("let me know if…"), advice
 ("run `make test` to confirm") and stated intentions ("I'll update the docs")
 are left out, and at most 40 statements are checked. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
@@ -258,8 +260,9 @@ counts (`12 tests`, `replicas: 3`). Then:
   Windows", "for both Linux and Windows", "the Windows build", "the
   release build", "in release mode") is shown only by a run whose
   command names it (`cargo build --release`, `--target aarch64-…`), or
-  for "production" one whose output says so (Vite's "building for
-  production"); "in CI", "on all platforms" and "the cross-platform
+  for "production" one whose output says "for production" or "production
+  build" (Vite's "building for production"), not "not a production
+  build"; "in CI", "on all platforms" and "the cross-platform
   build" are never shown by one local run, while "cross-platform" said of
   the code is no target. "Builds" and "compiles" with an object
   ("`buildIndex` builds a map", "`regexp.MustCompile` compiles the
@@ -354,22 +357,33 @@ counts (`12 tests`, `replicas: 3`). Then:
   starts at 0" after an edit, "`STRIPE_KEY` is not sensitive because
   `sk_prod_9f8e7d` is a sandbox key" after a grep, and "login works now
   because the token check runs first" citing a failed run all stay work.
-- **"Tests pass" and "the build succeeds" need a whole run.** Such a
-  statement is verified by a run of its own kind (read from the program and
+- **A resolved merge is never verified.** "I resolved the merge
+  conflicts", "the merge is clean" and "no conflict markers remain" are
+  contradicted when a current read, diff or search in the session still
+  shows conflict markers (`<<<<<<<` and `>>>>>>>` lines, not ones a diff
+  removes), and are unverified otherwise. A read made before the edit that
+  removed them does not count.
+- **"Tests pass" and "the build succeeds" need a whole run.** With no
+  run of that kind in the session at all, the reason says so ("no test run
+  in this session"). Such a statement is verified by a run of its own kind (read from the program and
   its subcommand: `go test`, `npm test`, `pytest`, `cargo test` for tests,
   `go build`, `cargo build`, `npm run build`, `make` for a build; a test run
   never shows a build, and `go vet` or a linter shows neither; "lint
   passes" and "vet passes" need a lint run that reports no problems, and
-  so does lint named beside a build or tests, by name or idiom ("tests and
-  go vet pass", "and so does lint", "lints cleanly"): "build and lint
+  so does lint or a type check named beside a build or tests, by name or
+  idiom ("tests and go vet pass", "tests and mypy pass", "build and
+  typecheck pass", "and so does lint", "lints cleanly"): "build and lint
   pass" needs both runs. A lint run that only reports, by a tool whose
   config cannot turn fixing on (`eslint`, `mypy`, `tsc --noEmit`,
-  `staticcheck`, `cargo clippy`, `go vet`, with no `--fix` or output file),
+  `staticcheck`, `cargo clippy` (with or without `-- -D warnings`), `go
+  vet`, with no `--fix` or output file),
   changes nothing, so the build or test run before it stays current; one
   with `--fix`, one whose output says it fixed something, and any
   `golangci-lint` or `ruff` run (their config can turn fixing on) is a
-  change, so "build and lint pass" after a build and then `golangci-lint
-  run` stays unverified: run the linter first) that:
+  change, so "build and lint pass" with `golangci-lint` stays unverified
+  in either order. Run the build or tests first, then a read-only linter:
+  a test runner other than `go test` is itself a possible change, so a
+  lint run before it goes out of date) that:
   - is the whole line, or the last command of an `&&` chain at its top with
     only `cd` before it, so its exit is the line's: not in a pipe, and not
     followed by `;`, `||` or `&`;
@@ -645,7 +659,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 631 plant a wrong claim. Some cite the result that shows them wrong
+session. 645 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -737,10 +751,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 631
-planted claims is shown as verified (30 are contradicted, all from cited,
-conflicting evidence; the rest unverified), all 182 controls are verified,
-and none of the 279 true or neutral claims is contradicted. 19 of the
+tail, a port not listening, a file not in a response). Today none of the 645
+planted claims is shown as verified (32 are contradicted: 30 from cited,
+conflicting evidence and 2 by conflict markers a current read or diff still
+shows; the rest unverified), all 189 controls are verified,
+and none of the 291 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -750,7 +765,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 120 strict-mode
+control, by name and by a hash of its text and calls, and 125 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -782,7 +797,8 @@ makes them.
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test
-  runners other than `go test`, linters that fix) counts as a possible
+  runners other than `go test`, `golangci-lint`, `ruff`, and linters run
+  with `--fix`) counts as a possible
   change with unknown files, so
   what was read before it, and claims about files it may have changed, are
   left open. Use `write` and `edit` for changes the answer will claim, and
@@ -807,4 +823,8 @@ makes them.
   builds cross-platform" is not read as a build claim, `dotnet build -c
   Release` is not read as a whole build run, and lint idioms other than
   "so does lint" or "lint too" ("lint is happy too") are not read beside
-  a build or tests.
+  a build or tests. A build named beside tests ("tests and build pass", "the
+  build and all tests pass") is not checked for its build half, since an
+  `&&` chain counts only its last command; earlier members of a chain that
+  exited 0 do not count as runs of their kind ("tests and vet pass" after
+  `go vet ./... && go test ./...` stays unverified).

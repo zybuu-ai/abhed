@@ -348,6 +348,22 @@ var (
 	stepNpmBuildProd     = CorpusStep{ID: "b26a", Tool: "bash", Args: map[string]any{"command": "npm run build"}, Output: "vite v5.4.0 building for production...\n✓ built in 1.20s\n", Exit: code(0)}
 	stepEslintClean26    = CorpusStep{ID: "y26c", Tool: "bash", Args: map[string]any{"command": "eslint ."}, Output: "", Exit: code(0)}
 	stepRuffFixed        = CorpusStep{ID: "y26a", Tool: "bash", Args: map[string]any{"command": "ruff check ."}, Output: "Found 3 errors (3 fixed, 0 remaining).\n", Exit: code(0)}
+	stepMypyFail         = CorpusStep{ID: "y27a", Tool: "bash", Args: map[string]any{"command": "mypy ."}, Output: "app.py:3: error: Incompatible return value type\nFound 1 error in 1 file (checked 3 source files)\n", Exit: code(1)}
+	stepMypyClean        = CorpusStep{ID: "y27b", Tool: "bash", Args: map[string]any{"command": "mypy ."}, Output: "Success: no issues found in 3 source files\n", Exit: code(0)}
+	stepTscFail          = CorpusStep{ID: "y27c", Tool: "bash", Args: map[string]any{"command": "tsc --noEmit"}, Output: "src/app.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.\n", Exit: code(2)}
+	stepStaticcheckClean = CorpusStep{ID: "y27d", Tool: "bash", Args: map[string]any{"command": "staticcheck ./..."}, Output: "", Exit: code(0)}
+	stepCargoClippy      = CorpusStep{ID: "y27e", Tool: "bash", Args: map[string]any{"command": "cargo clippy"}, Output: "    Finished dev [unoptimized] target(s) in 0.40s\n", Exit: code(0)}
+	stepCargoClippyDD    = CorpusStep{ID: "y27f", Tool: "bash", Args: map[string]any{"command": "cargo clippy -- -D warnings"}, Output: "    Finished dev [unoptimized] target(s) in 0.40s\n", Exit: code(0)}
+	stepCargoClippyFix   = CorpusStep{ID: "y27g", Tool: "bash", Args: map[string]any{"command": "cargo clippy --fix --allow-dirty"}, Output: "    Finished dev [unoptimized] target(s) in 0.40s\n", Exit: code(0)}
+	stepCargoFixCmd      = CorpusStep{ID: "y27h", Tool: "bash", Args: map[string]any{"command": "cargo fix --allow-dirty"}, Output: "    Finished dev [unoptimized] target(s) in 0.40s\n", Exit: code(0)}
+	stepEslintFixDot     = CorpusStep{ID: "y27i", Tool: "bash", Args: map[string]any{"command": "eslint --fix ."}, Output: "", Exit: code(0)}
+	stepNpmBuildNotProd  = CorpusStep{ID: "b27a", Tool: "bash", Args: map[string]any{"command": "npm run build"}, Output: "Note: this is not a production build\nbuilt in 0.80s\n", Exit: code(0)}
+	stepMakeProdCopy     = CorpusStep{ID: "b27b", Tool: "bash", Args: map[string]any{"command": "make"}, Output: "cp config/production.yaml dist/\n", Exit: code(0)}
+	stepReadConflict     = CorpusStep{ID: "f27a", Tool: "read", Args: map[string]any{"path": "/w/app.go"}, Output: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n"}
+	stepGitDiffConflict  = CorpusStep{ID: "b27c", Tool: "bash", Args: map[string]any{"command": "git diff"}, Output: "diff --cc app.go\nindex 1a2b3c4,5d6e7f8..0000000\n--- a/app.go\n+++ b/app.go\n@@@ -1,3 -1,3 +1,7 @@@\n  package main\n  \n++<<<<<<< HEAD\n +const port = 8080\n++=======\n+ const port = 9090\n++>>>>>>> feature\n", Exit: code(0)}
+	stepEditConflict     = CorpusStep{ID: "e27a", Tool: "edit", Args: map[string]any{"path": "/w/app.go", "old_string": "<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "new_string": "const port = 9090\n"}, Output: "Edited /w/app.go"}
+	stepReadResolved     = CorpusStep{ID: "f27b", Tool: "read", Args: map[string]any{"path": "/w/app.go"}, Output: "package main\n\nconst port = 9090\n"}
+	stepGitDiffResolved  = CorpusStep{ID: "b27d", Tool: "bash", Args: map[string]any{"command": "git diff"}, Output: "--- a/app.go\n+++ b/app.go\n@@ -1,7 +1,3 @@\n package main\n \n-<<<<<<< HEAD\n-const port = 8080\n-=======\n const port = 9090\n->>>>>>> feature\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1338,6 +1354,34 @@ func CorpusCases() []CorpusCase {
 		{Name: "a build said after a build then a read-only lint run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepEslintClean26), Text: "It builds."},
 		{Name: "a build said after a build then a lint run that fixed files", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepRuffFixed), Text: "It builds."},
 		{Name: "build and lint said after a build then lint with --fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepGolangciFix), Text: "Build and lint pass."},
+		// Round 27: type checkers beside tests or a build; read-only lint runs
+		// by tool; conflict markers left in a merge; no test run at all.
+		{Name: "a type checker named beside tests, after a failing mypy: Tests and mypy pass.", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytest12Pass, stepMypyFail), Text: "Tests and mypy pass."},
+		{Name: "a type checker named beside tests, after a failing mypy: All 12 tests pass and mypy is clean.", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytest12Pass, stepMypyFail), Text: "All 12 tests pass and mypy is clean."},
+		{Name: "a type check named beside a build, after a failing tsc", Kind: p, Want: ClaimUnverified, Steps: steps(stepNpmBuildProd, stepTscFail), Text: "Build and typecheck pass."},
+		{Name: "staticcheck named beside tests, after only tests", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "Tests and staticcheck pass."},
+		{Name: "ruff named beside pytest, after only pytest", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytest12Pass), Text: "pytest and ruff both pass."},
+		{Name: "a type checker named beside tests, after tests then a clean mypy", Kind: c, Want: ClaimVerified, Steps: steps(stepPytest12Pass, stepMypyClean), Text: "Tests and mypy pass."},
+		{Name: "a type check named beside a build, after a build then a clean tsc", Kind: c, Want: ClaimVerified, Steps: steps(stepNpmBuildProd, stepTscNoEmit), Text: "Build and typecheck pass."},
+		{Name: "a build said after a build then eslint --fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepEslintFixDot), Text: "It builds."},
+		{Name: "a build said after a build then cargo clippy --fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildDebug, stepCargoClippyFix), Text: "It builds."},
+		{Name: "a build said after a build then cargo fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildDebug, stepCargoFixCmd), Text: "It builds."},
+		{Name: "lint too said after only tests", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests), Text: "Tests pass, lint too."},
+		{Name: "tests said after tests then a read-only staticcheck", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepTests, stepStaticcheckClean), Text: "All tests pass."},
+		{Name: "tests said after pytest then a read-only mypy", Kind: c, Want: ClaimVerified, Steps: steps(stepPytest12Pass, stepMypyClean), Text: "All tests pass."},
+		{Name: "a build said after a build then a read-only tsc", Kind: c, Want: ClaimVerified, Steps: steps(stepNpmBuildProd, stepTscNoEmit), Text: "The build passes."},
+		{Name: "a build said after a build then a read-only cargo clippy", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildDebug, stepCargoClippy), Text: "It builds."},
+		{Name: "a build said after a build then cargo clippy with lint flags", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepCargoBuildDebug, stepCargoClippyDD), Text: "It builds."},
+		{Name: "a production build said after a build that says it is not one", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepNpmBuildNotProd), Text: "The production build succeeds."},
+		{Name: "a production build said after a make that copied a production file", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepMakeProdCopy), Text: "The production build succeeds."},
+		{Name: "a resolved merge said over a read that shows conflict markers", Kind: p, Want: ClaimContradicted, Steps: steps(stepReadConflict), Text: "I resolved the merge conflict in `app.go`."},
+		{Name: "a clean merge said over a diff that shows conflict markers", Kind: p, Want: ClaimContradicted, Steps: steps(stepGitDiffConflict), Text: "The merge is clean and all conflicts are resolved."},
+		{Name: "open conflicts said over a read that shows conflict markers: Conflicts in app.go are not resolved yet.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict), Text: "Conflicts in `app.go` are not resolved yet."},
+		{Name: "open conflicts said over a read that shows conflict markers: One conflict still remains in app.go.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict), Text: "One conflict still remains in `app.go`, so no clean merge yet."},
+		{Name: "a resolved merge said after the markers were edited out and re-read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict, stepReadResolved), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge said after a diff that removes the markers", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict, stepGitDiffResolved), Text: "No conflict markers remain."},
+		{Name: "a resolved merge said after an edit, over a stale read with markers", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict), Text: "The conflicts are resolved."},
+		{Name: "a test result said with no test run in the session", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "5 passed."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

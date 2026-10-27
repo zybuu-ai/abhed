@@ -254,7 +254,8 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			switch {
 			case readers[o.Tool]:
 			case o.Tool == "bash":
-				// A lint run that says it fixed something changed files.
+				// A lint run that says it fixed something changed files, even
+				// with no fix flag the reader list would refuse.
 				mut = !rec.inspect || (lintFixerRe.MatchString(args.Command) && lintFixedRe.MatchString(o.Content))
 			case env.mutates != nil:
 				mut = env.mutates(o.Tool, r.a.Args)
@@ -504,7 +505,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		// A sentence that says something was done or changed is about the work
 		// even with nothing else in it; a participle alone ("a compiled
 		// language") is not.
-		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim
+		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean
 		if !f.any() && !workEvent && c.Quote == "" && len(c.Evidence) == 0 {
 			kind = KindStatement
 		}
@@ -869,8 +870,37 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			}
 		}
 	}
+	if f.mergeClean {
+		findings = append(findings, ix.mergeMarkers(pool))
+	}
 	return findings
 }
+
+// mergeMarkers judges "the conflicts are resolved": contradicted by a current
+// result that still shows conflict markers, and never verified otherwise.
+func (ix *recordIndex) mergeMarkers(pool []*obsRec) finding {
+	for _, o := range pool {
+		if o.tool == "write" || o.tool == "edit" {
+			continue
+		}
+		if m := conflictMarkerRe.FindString(o.content); m != "" && conflictEndRe.MatchString(o.content) {
+			what := "#" + itoa(o.seq)
+			if o.path != "" {
+				what = o.path
+			}
+			return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("%s still shows conflict markers (#%d)", what, o.seq),
+				conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: strings.TrimSpace(m)}}
+		}
+	}
+	return finding{out: missing, why: "a resolved merge is not shown by the calls; a read with no conflict markers left is not proof"}
+}
+
+// A conflict marker line as a read (with its gutter), a diff (added or
+// context, not removed) or grep shows it.
+var (
+	conflictMarkerRe = regexp.MustCompile(`(?m)^(?:\s*\d+\t|[^\s:]+:(?:\d+:)?)?[+ ]{0,2}<{7}(?: .*)?$`)
+	conflictEndRe    = regexp.MustCompile(`(?m)^(?:\s*\d+\t|[^\s:]+:(?:\d+:)?)?[+ ]{0,2}>{7}(?: .*)?$`)
+)
 
 // oneValueMet: a statement that gives one unit or key more than one value
 // ("3 tests failed before the fix, 0 after", "from port 8080 to port 9090")
@@ -1191,9 +1221,37 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 		return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
 	}
 	if testish == "" {
+		if !ix.ranKind("test") && !ix.ranKind("build") && !ix.ranKind("lint") {
+			return finding{out: missing, why: "no test run in this session"}
+		}
 		return finding{out: missing, why: "a success of no named kind is not read from a run"}
 	}
+	if !ix.ranKind(testish) {
+		return finding{out: missing, why: "no " + testish + " run in this session"}
+	}
 	return finding{out: missing, why: "no whole " + testish + " run covering it succeeded after the last change"}
+}
+
+// ranKind reports any command of this kind in the session's own runs.
+func (ix *recordIndex) ranKind(kind string) bool {
+	for _, o := range ix.obs {
+		if o.tool != "bash" || o.child != "" {
+			continue
+		}
+		for _, c := range o.line.cmds {
+			for i := range c.words {
+				if commandKind(c.words[i:]) == kind {
+					return true // under a runner too (uv run pytest)
+				}
+			}
+		}
+	}
+	for _, m := range ix.mutations {
+		if m.tool == "bash" && m.child == "" && m.failed {
+			return true // a run whose outcome is not known may have been one
+		}
+	}
+	return false
 }
 
 func inPool(pool []*obsRec, o *obsRec) bool {
@@ -1488,6 +1546,11 @@ var (
 	lintFixedRe = regexp.MustCompile(`(?i)\b\d+ fixed\b|\bfixed \d+\b|\bfix(?:es)? applied\b`)
 )
 
+var (
+	prodOutRe = regexp.MustCompile(`(?i)\bfor production\b|\bproduction build\b`)
+	notProdRe = regexp.MustCompile(`(?i)\bnot (?:an? )?(?:optimized )?(?:for )?production\b`)
+)
+
 var compilingTestRe = regexp.MustCompile(`\b(?:go|cargo)\s+(?:test|nextest)\b|\b(?:mvnw?|gradlew?)\b[^|;&]*\btest\b|\bdotnet\s+test\b`)
 
 var runWarnRe = regexp.MustCompile(`(?im)^\s*(?:\[warn(?:ing)?\]|warning\b)|:\s*warning\b|\b[1-9]\d* warnings?\b`)
@@ -1495,7 +1558,7 @@ var runWarnRe = regexp.MustCompile(`(?im)^\s*(?:\[warn(?:ing)?\]|warning\b)|:\s*
 // targetShown: a claim of building for a platform, architecture or mode is
 // shown only by a run whose command names it ("in CI" never is).
 func targetShown(target, command, output string) bool {
-	if target == "production" && strings.Contains(strings.ToLower(output), "production") {
+	if target == "production" && prodOutRe.MatchString(output) && !notProdRe.MatchString(output) {
 		return true // vite build, next build: "building for production"
 	}
 	alias := map[string][]string{"mac": {"darwin", "macos"}, "macos": {"darwin", "macos"}, "darwin": {"darwin"}, "x86_64": {"amd64", "x86_64"}, "amd64": {"amd64", "x86_64"}, "aarch64": {"arm64", "aarch64"}, "arm64": {"arm64", "aarch64"}, "release": {"release"}, "ci": nil, "production": {"prod"}}
