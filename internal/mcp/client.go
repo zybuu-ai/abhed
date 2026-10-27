@@ -573,7 +573,7 @@ func (t *StdioTransport) redact(text string) string {
 			// --api-token VALUE, --token=VALUE; not a following flag
 			if _, v, ok := strings.Cut(a, "="); ok {
 				values = append(values, v)
-			} else if !strings.HasPrefix(next, "-") {
+			} else if !flagLike.MatchString(next) {
 				values = append(values, next)
 			}
 		default:
@@ -598,12 +598,17 @@ func (t *StdioTransport) redact(text string) string {
 	return text
 }
 
+// flagLike is an argument that is itself a flag, not a flag's value.
+var flagLike = regexp.MustCompile(`^--?[A-Za-z][A-Za-z0-9-]*$`)
+
 // headerSecret is what to hide of an HTTP header argument ("Name: value"):
-// for an Authorization header or one named as a secret, its value and the
-// credential after its scheme (Bearer, Basic, Token).
+// for Authorization, Proxy-Authorization, Cookie, Set-Cookie, a session
+// header or one named as a secret (X-Api-Key, X-Auth-Token), its value and
+// the credential after its scheme (Bearer, Basic, Token).
 func headerSecret(h string) []string {
 	k, v, ok := strings.Cut(h, ":")
-	secret := namesSecret(strings.ToLower(k)) || strings.EqualFold(strings.TrimSpace(k), "authorization")
+	name := strings.ToLower(strings.TrimSpace(k))
+	secret := namesSecret(name) || name == "authorization" || strings.Contains(name, "cookie") || strings.Contains(name, "session")
 	if !ok || !secret {
 		return nil
 	}
