@@ -160,3 +160,38 @@ func TestStudioCommitMessageUnstagedAndEmpty(t *testing.T) {
 		t.Fatalf("%+v %s", got.Error, got.Result)
 	}
 }
+
+// The QA case: a gitignored file force-added is left out, and a lower-case
+// secret-named JSON key in a file that is sent has its value withheld.
+func TestStudioCommitMessageLeavesOutIgnoredAndNamedSecrets(t *testing.T) {
+	model := newFIMServer(t, "Configure the service")
+	r := completionRig(t, model.URL, "")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	r.write(".gitignore", "secrets.local.json\n")
+	r.write("secrets.local.json", `{"note":"IGNORED-CONTENT"}`+"\n")
+	r.write("config/app.json", `{"name":"svc","internal_api_key":"internal-9f8e7d6c5b4a"}`+"\n")
+	git("add", ".gitignore", "config/app.json")
+	git("add", "-f", "secrets.local.json")
+	id := r.open()
+	var res struct {
+		Message  string `json:"message"`
+		Excluded int    `json:"excluded"`
+	}
+	r.cl.ok("_abhed/commitMessage", map[string]any{"sessionId": id}, &res)
+	if res.Message != "Configure the service" || res.Excluded != 1 {
+		t.Fatalf("%+v", res)
+	}
+	model.mu.Lock()
+	sent := strings.Join(model.bodies, "\n")
+	model.mu.Unlock()
+	if strings.Contains(sent, "IGNORED-CONTENT") || strings.Contains(sent, "internal-9f8e7d6c5b4a") || !strings.Contains(sent, "internal_api_key") {
+		t.Fatalf("sent %.600s", sent)
+	}
+}

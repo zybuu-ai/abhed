@@ -218,8 +218,24 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 		return nil, "the suggestion carried a secret"
 	}
 	next := linediff.SplitLines(rewrite)
-	if len(shown) > 0 && !strings.HasSuffix(shown[len(shown)-1], "\n") && len(next) > 0 {
-		next[len(next)-1] = strings.TrimSuffix(next[len(next)-1], "\n")
+	// The model's rewrite takes the window's line ends: no spaces it added at
+	// a line's end, and the window's own last newline, there or not.
+	for i, l := range next {
+		body, nl := strings.CutSuffix(l, "\n")
+		next[i] = strings.TrimRight(body, " \t")
+		if nl {
+			next[i] += "\n"
+		}
+	}
+	if n := len(next); n > 0 && len(shown) > 0 {
+		last := strings.HasSuffix(shown[len(shown)-1], "\n")
+		if strings.HasSuffix(next[n-1], "\n") != last {
+			if last {
+				next[n-1] += "\n"
+			} else {
+				next[n-1] = strings.TrimSuffix(next[n-1], "\n")
+			}
+		}
 	}
 	edits := []suggestedEdit{}
 	skipped := false
@@ -286,7 +302,9 @@ func rootRel(path string, roots []string) string {
 }
 
 // sameBarTrailingSpace reports whether two runs of lines differ only in the
-// whitespace at the ends of their lines.
+// whitespace at the ends of their lines. Line endings count as that
+// whitespace, so a suggestion that only adds the window's missing final
+// newline, or turns CRLF into LF, is dropped as no change too.
 func sameBarTrailingSpace(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

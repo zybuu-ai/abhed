@@ -38,8 +38,10 @@ Studio's chat attaches the same way. A file, a range of lines, a symbol or
 a folder you add is read by the engine as an `@` mention, under the same
 rules and recorded the same way. A web page you link is read as your own
 `web_fetch` call, even when the agent's `web_fetch` is off, under the same
-deny rules and checks; you are asked first when a rule asks. Only an
-organisation's managed configuration that turns `web_fetch` off refuses it. An image goes
+deny rules and checks; you are asked first when a rule asks, or when no
+`allowed_hosts` names the site. Turning `web_fetch` off in your own or the
+workspace's configuration does not stop a page you link; only an
+organisation's managed configuration that turns it off refuses it. An image goes
 to the model with the message when the model reads images (set
 `"extra": {"vision": "true"}` on a provider that does), at most four of 5 MB
 each and 10 MB in all; with a model that does not, the message is refused. Images are kept in

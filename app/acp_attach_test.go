@@ -261,9 +261,11 @@ func TestStudioLinkedPageIsThePersonsFetch(t *testing.T) {
 	r.cl = newStudioClient(t, ws, true)
 	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
 	var asked atomic.Int32
+	var lastAsk atomic.Value
 	r.cl.answering(func(method string, params json.RawMessage) any {
 		if method == "session/request_permission" {
 			asked.Add(1)
+			lastAsk.Store(string(params))
 			return chosen(params, "reject_once")
 		}
 		return map[string]any{}
@@ -282,8 +284,17 @@ func TestStudioLinkedPageIsThePersonsFetch(t *testing.T) {
 	if why := link("https://ask.example/doc"); asked.Load() != 1 || strings.Contains(why, "web_fetch, which is off") {
 		t.Fatalf("ask: %s (asked %d)", why, asked.Load())
 	}
-	if why := link("http://127.0.0.1:1/x"); strings.Contains(why, "web_fetch, which is off") || !strings.Contains(strings.ToLower(why), "not fetched") {
-		t.Fatalf("internal: %s", why)
+	// An internal address is refused by the address check itself, before anyone is asked.
+	if why := link("http://127.0.0.1:1/x"); !strings.Contains(why, "which web_fetch never reaches") || strings.Contains(why, "secrets store") || asked.Load() != 1 {
+		t.Fatalf("internal: %s (asked %d)", why, asked.Load())
+	}
+	// A public page passes every check (the secrets store read, the address
+	// check) and, with no allowed hosts, is put to the person, who refuses it here.
+	if why := link("https://public.example/doc"); asked.Load() != 2 || strings.Contains(why, "secrets store") {
+		t.Fatalf("public: %s (asked %d)", why, asked.Load())
+	}
+	if ask, _ := lastAsk.Load().(string); !strings.Contains(ask, `"tool":"web_fetch"`) || !strings.Contains(ask, `"kind":"fetch"`) || !strings.Contains(ask, `"url":"https://public.example/doc"`) {
+		t.Fatalf("the fetch was not shown as a fetch: %s", ask)
 	}
 
 	// A managed configuration that turns web_fetch off refuses it plainly.

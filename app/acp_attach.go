@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
+	"github.com/zybuu-ai/abhed/internal/webfetch"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -221,21 +222,27 @@ func (c *acpConn) attachLinkedFile(ctx context.Context, s *acpSession, u *url.UR
 func (c *acpConn) fetchLinked(ctx context.Context, s *acpSession, uri string) (string, string, error) {
 	loop, cfg := s.parts.Loop, s.parts.Config
 	var tool tools.Tool
+	why := ""
 	if t, ok := loop.Tools.Get("web_fetch"); ok {
 		tool = t
 	} else {
-		if cfg.ManagedSets("web_fetch.enabled") {
+		if cfg.ManagedWebFetchOff() {
 			return "", "the organisation's managed configuration turns web_fetch off, so a linked page cannot be read", nil
 		}
 		on := cfg
 		on.WebFetch.Enabled = true
-		f := toolset.WebFetchTool(on, nil)
+		f := toolset.WebFetchTool(on, openVault())
 		f.Guard = s.parts.Set.Guard()
 		tool = f
+		// The tool's own ask, which policy carries only while it is on: with no
+		// allowed hosts, any public site would get what the URL carries.
+		if askOf := webfetch.AskReadOnly(true, cfg.WebFetch.AllowedHosts)["web_fetch"]; askOf != nil {
+			why = askOf(uri)
+		}
 	}
 	id := personCallID("link")
 	res, err := loop.ManualRunTool(ctx, s.parts.Session, tool, id, argsJSON(map[string]string{"url": uri}),
-		c.manualAsk(s, id, "fetch", "Read the linked page "+redacted(uri)))
+		c.manualToolAsk(s, id, "web_fetch", "fetch", "Read the linked page "+redacted(uri), map[string]any{"url": redacted(uri)}), why)
 	if err != nil {
 		return "", "", err
 	}

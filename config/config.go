@@ -104,6 +104,8 @@ type Config struct {
 	// ManagedKeys are the settings the managed file made, as sorted dotted
 	// paths such as permissions.mode. See ManagedSets and Apply.
 	ManagedKeys []string `json:"-"`
+	// managedFetchOff is the managed file's own web_fetch.enabled false.
+	managedFetchOff bool
 	// Unknown lists the keys in the files that no setting reads.
 	Unknown []UnknownKey `json:"-"`
 	// Duplicates are keys written twice in one object of a file read; the last one wins.

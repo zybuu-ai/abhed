@@ -617,6 +617,18 @@ func (c *acpConn) manualAsk(s *acpSession, callID, kind, display string) agent.M
 // (allow_always, named alwaysName) whose choice sets *always: for an
 // agreement kept beyond this action, which "Allow once" must not give.
 func (c *acpConn) manualAskWith(s *acpSession, callID, kind, display, alwaysName string, always *bool) agent.ManualAsk {
+	return c.manualAskFor(s, callID, "bash", "execute", kind, display, map[string]any{"command": display}, alwaysName, always)
+}
+
+// manualToolAsk is manualAsk for a person's call of another tool than bash,
+// shown as that tool with its ACP kind and input, as a fetch is.
+func (c *acpConn) manualToolAsk(s *acpSession, callID, tool, acpKind, display string, input map[string]any) agent.ManualAsk {
+	return c.manualAskFor(s, callID, tool, acpKind, acpKind, display, input, "", nil)
+}
+
+// manualAskFor puts a person's own action to them as tool, of ACP kind
+// acpKind, with input as its rawInput.
+func (c *acpConn) manualAskFor(s *acpSession, callID, tool, acpKind, kind, display string, input map[string]any, alwaysName string, always *bool) agent.ManualAsk {
 	return func(ctx context.Context, d policy.Result) (bool, error) {
 		once, reject, keep := "once:"+callID, "reject:"+callID, "always:"+callID
 		options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
@@ -624,15 +636,15 @@ func (c *acpConn) manualAskWith(s *acpSession, callID, kind, display, alwaysName
 			options = append(options, map[string]any{"optionId": keep, "name": alwaysName, "kind": "allow_always"})
 		}
 		options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
-		meta := map[string]any{"tool": "bash", "step": d.Step, "reason": redacted(d.Reason), kind: true}
+		meta := map[string]any{"tool": tool, "step": d.Step, "reason": redacted(d.Reason), kind: true}
 		title := ui.VisibleLine(kind + ": " + display)
 		if ui.HasHidden(display) || anyHidden(d.Reason) {
 			title += " (contains hidden or control characters)"
 		}
 		res, err := c.call(ctx, "session/request_permission", map[string]any{
 			"sessionId": s.id,
-			"toolCall": map[string]any{"toolCallId": callID, "title": title, "kind": "execute", "status": "pending",
-				"rawInput": map[string]any{"command": display}, "_meta": map[string]any{acpMetaKey: meta}},
+			"toolCall": map[string]any{"toolCallId": callID, "title": title, "kind": acpKind, "status": "pending",
+				"rawInput": input, "_meta": map[string]any{acpMetaKey: meta}},
 			"options": options,
 		})
 		if err != nil {

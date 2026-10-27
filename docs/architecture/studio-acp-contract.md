@@ -163,7 +163,7 @@ relax them.
 ### 3.1a Attached context
 
 `session/prompt` takes `text`, `resource_link`, `resource` and `image`
-blocks (`embeddedContext: true`, `image: true`). A `text` block is the
+blocks (`embeddedContext: true`; `image` per model, §3.5). A `text` block is the
 person's own words. A `resource_link` is read by the engine before the
 prompt runs, as an `@` mention is, as the person's own call through the
 session's policy and recorded so:
@@ -172,10 +172,12 @@ session's policy and recorded so:
   as its file and range) or a folder, given as a bounded listing;
 - an `http:` or `https:` URI is read as the person's own `web_fetch` call,
   even while the agent's `web_fetch` tool is off: under the same deny rules,
-  egress and address checks, and an ask (a rule's, the supervisor's, or
-  `web_fetch`'s own when it has no allowed hosts) is put to the person. Only
-  a managed configuration that sets `web_fetch.enabled: false` refuses it,
-  saying so;
+  egress, address and secret-in-URL checks (a URL that can never be read is
+  refused before anyone is asked), and an ask (a rule's, the supervisor's,
+  or `web_fetch`'s own when it has no allowed hosts) is put to the person as
+  a `fetch` of `web_fetch`. Only a managed configuration whose own file sets
+  `web_fetch.enabled: false` refuses it, saying so; a user's or workspace's
+  `false` does not;
 - any other URI is passed as a note naming it.
 
 A link that may not be read refuses the whole prompt (`-32001`), each reason
@@ -427,10 +429,7 @@ connection goes on. The id is looked for only as the top-level `"id"` within
 the message's first 64 KiB and 16 levels of nesting; a message whose id is
 not there is refused with a null id.
 
-Known limits, left for 1.2.10: a linked web page is read as the person's
-call, so a `web_fetch` ask (no `allowed_hosts`, a user `ask` rule, a managed
-ask) is taken as answered by the person sending the link rather than put to
-them; images stay in the conversation and are sent with every later
+Known limits, left for 1.2.10: images stay in the conversation and are sent with every later
 request, with no session-wide budget, so a long session with many images
 can reach the provider's request limit; and with many parallel tool
 results in the last turn, the Anthropic history markers can fall on
@@ -1541,7 +1540,8 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   the confined git (no external diff, no textconv, no filter or merge driver,
   inside the sandbox where one is registered).
 - A staged file outside the roots, one a read rule denies, one that looks
-  like keys, or Abhed's state is left out (`excluded` counts them). The rest
+  like keys, Abhed's state, or one the repository's ignore rules name (even
+  force-added) is left out (`excluded` counts them). The rest
   is cleaned of stored secrets and key-shaped text and cut to 32 KiB
   (`truncated`).
 - The model is `model.commit`, or `model.completion` when unset, under the
@@ -1551,8 +1551,8 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   one still waiting, and closing the session cancels it.
 - Recorded as `commit_message.requested` before the diff goes (if it cannot
   be recorded, nothing is sent) and `commit_message.generated` with the
-  outcome. A message that carries a secret is `dropped`; nothing staged, or
-  only files that may not be read, is `empty`.
+  outcome. A message that carries a secret is a JSON-RPC error; nothing
+  staged or changed, or only files that may not be read, is `empty`.
 - It always ends with a `message` or a JSON-RPC error saying why (the model
   gave no message, it did not answer within 90 s, the changes could not be
   read), never an empty `message` alone; `empty` is only for nothing staged

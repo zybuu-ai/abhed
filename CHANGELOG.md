@@ -850,6 +850,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A page linked in Abhed Studio while the agent's `web_fetch` is off was
+  refused every time (its fetch had no secrets store). It is now read, with
+  `web_fetch`'s own ask when no `allowed_hosts` names the site, a URL that
+  can never be read refused before the person is asked, and the ask shown
+  as a fetch; only the managed file's own `web_fetch.enabled: false` refuses
+  it.
+- Commit messages leave out a file the repository's ignore rules name even
+  when it is force-added, and withhold the value of a JSON or YAML key whose
+  name says secret in any case (`internal_api_key`, `clientSecret`,
+  `password:`).
+- An agent that makes the same read-only call with the same answer again
+  and again is told so after three and stopped after six, with the reason
+  named (`retry_exhausted`); the next message goes on. A call that can
+  change things starts the count again.
+- Next-edit suggestions take the window's line ends (no added trailing
+  spaces, the last line's newline as it was), and the model is asked to
+  apply a rename to every use in the window.
+- The SDK's `Model` gains `Images` (whether the model reads images). For
+  Studio builds that read it: `_abhed/commitMessage` now answers a reply
+  with no message, or one carrying a secret, with an error rather than
+  `dropped`.
 - Commands, Studio's Run and Test among them, did not use the project's
   Python virtual environment, so pytest installed in `.venv` was "not
   installed". The nearest `.venv` or `venv` in the workspace now comes first

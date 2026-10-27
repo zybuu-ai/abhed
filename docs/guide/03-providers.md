@@ -320,3 +320,17 @@ which are different things and are not measured by the same benchmark.
 
 Decode speed tracks *active* parameters, not total: a 27B dense model can be far
 slower than a 30B mixture-of-experts.
+
+### Prompt caching through a proxy
+
+Abhed keeps each request's prefix stable so a provider can cache it: the
+system prompt carries the date, not the time, the tools are always in the
+same order, and history is only appended to (until a compaction or an
+offload rewrites it). Anthropic is told where to cache; an
+OpenAI-compatible endpoint caches on its own, if it does at all, and says
+so in `usage.prompt_tokens_details.cached_tokens`, which Abhed records as
+`tokens_cached`. A proxy such as LiteLLM in front of a model that does not
+cache (gpt-oss on watsonx, for one) reports nothing, so `tokens_cached`
+stays 0: that is the provider, not the request. A loopback proxy also makes
+`completion.local_only` and a recorded `local: true` describe the proxy's
+address, not where the model runs.

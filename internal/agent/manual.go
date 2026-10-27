@@ -214,13 +214,24 @@ func (l *Loop) ManualAuthorizeAsking(ctx context.Context, call, id string, args 
 // agent may not have, such as reading a page they link while the agent's
 // web_fetch is off. Policy, the secret checks and the supervisor judge it as
 // any call: a deny refuses it, and any ask, a rule's included, is put to the
-// person with ask; no ask, an error or no answer refuses it.
-func (l *Loop) ManualRunTool(ctx context.Context, sess *tools.Session, tool tools.Tool, id string, args json.RawMessage, ask ManualAsk) (tools.Result, error) {
+// person with ask; no ask, an error or no answer refuses it. why, when set,
+// is an ask of the tool's own (such as web_fetch's with no allowed hosts),
+// put to the person where policy would let the call run unasked. A call the
+// tool's Precheck refuses is refused before anyone is asked.
+func (l *Loop) ManualRunTool(ctx context.Context, sess *tools.Session, tool tools.Tool, id string, args json.RawMessage, ask ManualAsk, why string) (tools.Result, error) {
 	call := tool.Name()
 	mutates := tools.MutatesCall(tool, args)
 	decision := l.Policy.Evaluate(call, mutates, args)
+	if decision.Decision == policy.Allow && why != "" {
+		decision = policy.Result{Decision: policy.Ask, Reason: why, Step: "ask"}
+	}
 	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
 		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	if decision.Decision != policy.Deny {
+		if err := tools.Precheck(ctx, tool, sess, args); err != nil {
+			decision = policy.Result{Decision: policy.Deny, Reason: err.Error(), Step: "precheck"}
+		}
 	}
 	if l.Monitor != nil && decision.Decision != policy.Deny {
 		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
@@ -310,6 +321,11 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 	return tool, nil, "", nil
 }
 
+// manualDecide records a person's action as the policy, and the person's
+// answer, decided it. answer must be what the person said to the very ask
+// decision names (Confirmed or Declined), or Unanswered when nothing was put
+// to them: an answered ask is recorded requires_approval and confirmed, so a
+// caller must never pass Confirmed for an ask the person did not see.
 func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
 	asked := answer != Unanswered && decision.Decision == policy.Ask
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
