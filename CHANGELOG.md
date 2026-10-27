@@ -848,6 +848,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Commands, Studio's Run and Test among them, did not use the project's
+  Python virtual environment, so pytest installed in `.venv` was "not
+  installed". The nearest `.venv` or `venv` in the workspace now comes first
+  on `PATH`, with `VIRTUAL_ENV` set, as its activate script would.
+
 - A command in Studio's terminal refused a package registry (`npm install`,
   `go get`) showed only a 403. It now prints which language's registry was
   refused and how to open it, and Studio is sent an offer to open it; opening

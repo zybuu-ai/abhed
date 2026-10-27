@@ -251,6 +251,20 @@ alone, or `toolchains_preapproved: ["go"]`, never agrees to building Delve;
 `toolchain.install` with `extra` (`delve`, `debugpy`), and Delve's with
 `built_with` and the built binary's sha256.
 
+## The project's virtual environment
+
+A Python project's own virtual environment comes first for every command,
+the agent's, Abhed Studio's Run and Test and the terminal's: the nearest
+`.venv` or `venv` at or above the command's folder, no higher than the
+workspace, that holds a `pyvenv.cfg` and a `bin/python`. Commands get
+`VIRTUAL_ENV` and its `bin` first on `PATH`, as its activate script would
+set, so `python3 -m pytest` runs the pytest installed there. uv's and
+Poetry's in-project environments are `.venv`; one Poetry keeps in its own
+cache under your home is not seen, as home is closed to commands
+(`poetry config virtualenvs.in-project true` puts it in the project). On the
+container tier a venv made on the host points at the host's Python, so make
+it inside the sandbox.
+
 ## Removing them
 
 Installed toolchains are read-only, so a plain `rm -rf` of the cache fails.

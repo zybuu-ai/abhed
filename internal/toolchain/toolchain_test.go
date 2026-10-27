@@ -328,3 +328,41 @@ func TestPinsStopAtTheWorkspaceRoot(t *testing.T) {
 		t.Fatalf("ruby %s", why)
 	}
 }
+
+// The project's virtual environment, the nearest .venv or venv at or above
+// the command's folder within the workspace, comes first on PATH.
+func TestProjectVenv(t *testing.T) {
+	root := t.TempDir()
+	mkVenv := func(v string) {
+		_ = os.MkdirAll(filepath.Join(v, "bin"), 0o755)
+		_ = os.WriteFile(filepath.Join(v, "pyvenv.cfg"), []byte("home = /usr/bin\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(v, "bin", "python"), []byte("#!/bin/sh\n"), 0o755)
+	}
+	sub := filepath.Join(root, "pkg", "x")
+	_ = os.MkdirAll(sub, 0o755)
+	if ProjectVenv(sub, root) != "" {
+		t.Fatal("a venv where there is none")
+	}
+	// A folder named .venv that is not one is passed by.
+	_ = os.MkdirAll(filepath.Join(root, ".venv"), 0o755)
+	if ProjectVenv(sub, root) != "" {
+		t.Fatal("an empty .venv taken for a venv")
+	}
+	mkVenv(filepath.Join(root, ".venv"))
+	if got := ProjectVenv(sub, root); got != filepath.Join(root, ".venv") {
+		t.Fatalf("venv %q", got)
+	}
+	s := &Session{Workspace: sub, Root: root}
+	pre := s.Prelude(sub)
+	if !strings.Contains(pre, "export VIRTUAL_ENV="+shellQuote(filepath.Join(root, ".venv"))) || !strings.Contains(pre, "unset PYTHONHOME") {
+		t.Fatalf("prelude %q", pre)
+	}
+	// Never above the workspace root.
+	above := t.TempDir()
+	mkVenv(filepath.Join(above, "venv"))
+	inner := filepath.Join(above, "ws")
+	_ = os.MkdirAll(inner, 0o755)
+	if ProjectVenv(inner, inner) != "" {
+		t.Fatal("a venv above the root was taken")
+	}
+}
