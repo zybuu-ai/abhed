@@ -258,7 +258,13 @@ guidance. An untrusted workspace file may only turn it down (`off` < `local`
 
 **Who may act.** Only you, choosing the model. No tool reaches any of this,
 so the agent cannot start, install or pull anything this way, and inside an
-agent's command `abhed ollama check`, `install` and `forget` are refused. On
+agent's command `abhed ollama check`, `install` and `forget` are refused.
+Nor does Abhed act when its home folder is in a temporary folder (`/tmp`,
+`/var/tmp`, `/private/tmp`, `/var/folders` or `$TMPDIR`), as a test or a
+harness that drives Abhed or Studio with a scratch `HOME` gives it: the
+check still reports, but nothing is started, installed or downloaded
+(`temp_home`), so such a run never starts an Ollama that reads the scratch
+home's empty models folder. On
 `abhed serve` the steps act on the server's host, so only a signed-in
 administrator may take them. Where nobody signs in, nobody may: a request
 from the host itself could be the agent's own command or a page rebound to

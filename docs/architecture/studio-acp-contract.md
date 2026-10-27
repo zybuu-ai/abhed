@@ -216,7 +216,7 @@ interface OllamaProblem {
   kind: "not_installed" | "not_running" | "not_pulled" | "port_busy" | "not_ready" | "start_failed"
       | "install_failed" | "no_network" | "disk_short" | "pull_failed" | "model_not_found"
       | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "not_ollama" | "manual_steps"
-      | "other_models_folder";  // downloaded here, but the server answering reads another models folder; no pull is offered
+      | "other_models_folder" | "temp_home";  // temp_home: the engine's HOME is a temporary folder, so it acts on nothing  // downloaded here, but the server answering reads another models folder; no pull is offered
   message: string;      // one plain sentence
   steps: string[];      // numbered manual steps, in order: commands or sentences
   retry: boolean;       // checking again may work once the steps are done
@@ -258,7 +258,7 @@ interface OllamaReport extends OllamaStatus {
 | `_abhed/ollama/forget` | `{}` → `{}`: forget "always start" |
 
 **Errors.** A refusal by configuration or place (`assist_off`, `not_admin`,
-`in_agent`, `remote`) is -32001; a failure (`start_failed`, `not_ready`,
+`in_agent`, `temp_home`, `remote`) is -32001; a failure (`start_failed`, `not_ready`,
 `port_busy`, `install_failed`, `pull_failed`, `disk_short`, `no_network`,
 `model_not_found`, `cancelled`, `manual_steps`, and `not_ollama` for a pull asked of a server that answers only the OpenAI API) is
 -32000. Either way `data` is `{problem: OllamaProblem, status:

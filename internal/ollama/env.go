@@ -64,6 +64,10 @@ type Env struct {
 	Listening func(ctx context.Context, addr string) bool
 	// Run runs a program to its end, for an install.
 	Run func(ctx context.Context, path string, args []string, env []string, stdin io.Reader, stdout, stderr io.Writer) error
+	// TempHome is the home folder when it is a temporary one, as a test or a
+	// harness that drives Abhed gives it; then nothing is started, installed
+	// or downloaded, whoever answers.
+	TempHome string
 }
 
 // testMarker is testenv.Marker: set in an isolated test binary and in
@@ -73,6 +77,39 @@ type Env struct {
 const testMarker = "ABHED_TESTENV"
 
 var errUnderTest = errors.New("a test may not run a real program; give the test an Env of its own")
+
+var errTempHome = errors.New("the home folder is a temporary one, as under a test, so no Ollama program is run")
+
+// tempRoots are the folders temporary files go in; a home folder in one is
+// a test's or a harness's, never a person's.
+func tempRoots() []string {
+	return []string{os.TempDir(), "/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders"}
+}
+
+// isTempHome reports whether home, links followed, is in a temporary folder.
+func isTempHome(home string) bool {
+	real := home
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		real = r
+	}
+	for _, root := range tempRoots() {
+		if root == "" {
+			continue
+		}
+		roots := []string{filepath.Clean(root)}
+		if r, err := filepath.EvalSymlinks(root); err == nil {
+			roots = append(roots, r)
+		}
+		for _, r := range roots {
+			for _, h := range []string{filepath.Clean(home), real} {
+				if rel, err := filepath.Rel(r, h); err == nil && rel != "." && filepath.IsLocal(rel) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // DefaultEnv is this machine.
 func DefaultEnv() Env {
@@ -85,8 +122,13 @@ func DefaultEnv() Env {
 	if runtime.GOOS == "darwin" {
 		app = MacApp
 	}
+	temp := ""
+	if home != "" && isTempHome(home) {
+		temp = home
+	}
 	return Env{
-		GOOS: runtime.GOOS, LookPath: exec.LookPath, AppPath: app, Programs: standardPrograms(runtime.GOOS),
+		TempHome: temp,
+		GOOS:     runtime.GOOS, LookPath: exec.LookPath, AppPath: app, Programs: standardPrograms(runtime.GOOS),
 		HTTP:     &http.Client{Timeout: 0},
 		Web:      &http.Client{Timeout: 30 * time.Second},
 		Registry: Registry,
@@ -101,9 +143,16 @@ func DefaultEnv() Env {
 	}.underTest()
 }
 
-// underTest takes away every program when the test marker is set.
+// underTest takes away every program when the test marker is set, and the
+// means to start or install one under a temporary home.
 func (e Env) underTest() Env {
 	if os.Getenv(testMarker) == "" {
+		if e.TempHome != "" {
+			e.Launch = func(string, []string, []string, *os.File) (int, <-chan error, error) { return 0, nil, errTempHome }
+			e.Run = func(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error {
+				return errTempHome
+			}
+		}
 		return e
 	}
 	e.AppPath, e.Programs = "", nil

@@ -480,6 +480,9 @@ func (h *run) writeFiles() {
 		podman = "exit 1"
 	}
 	write(filepath.Join(h.root, "bin", "podman"), "#!/bin/sh\n"+podman+"\n", 0o755)
+	// An ollama first on PATH only notes that it ran, so a run that reached
+	// for one never starts the developer's real Ollama.
+	write(filepath.Join(h.root, "bin", "ollama"), "#!/bin/sh\necho \"$@\" >> \"$HOME/ollama-ran\"\nexit 1\n", 0o755)
 	// A browser opener only notes what it was asked to open, so a test can
 	// never start the developer's browser.
 	for _, opener := range []string{"open", "xdg-open"} {
@@ -556,6 +559,9 @@ func (h *run) env() []string {
 		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=127.0.0.1",
 		"OLLAMA_HOST=127.0.0.1:9",
 		managedEnv + "=" + filepath.Join(h.root, "etc", "abhed"),
+		// The binary is under test: it finds, starts, installs and pulls no
+		// real Ollama, whatever its PATH or the standard install folders hold.
+		"ABHED_TESTENV=1",
 	}
 	switch h.o.Theme {
 	case "light":

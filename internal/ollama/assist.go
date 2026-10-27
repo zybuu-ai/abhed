@@ -69,6 +69,8 @@ var evOf = map[string]agent.EventType{OpStart: agent.EvOllamaStart, OpInstall: a
 func (a Assist) May(op string, t Target, st Status) *Problem {
 	steps := a.Env.Steps(t, st)
 	switch {
+	case a.Env.TempHome != "":
+		return &Problem{Kind: KindTempHome, Message: "Abhed runs with a temporary home folder (" + a.Env.TempHome + "), as a test or a harness gives it, so it will not start, install or download Ollama.", Steps: steps}
 	case a.InAgent != "":
 		return &Problem{Kind: KindInAgent, Message: "This runs inside an agent's command (" + a.InAgent + "), so Abhed will not start, install or download anything from here.", Steps: steps}
 	case !t.Loopback:
