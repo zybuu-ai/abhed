@@ -200,6 +200,19 @@ func TestLoopbackEphemeral(t *testing.T) {
 	if out, err := run("nc -z -G 2 127.0.0.1 " + inside); err == nil {
 		t.Fatalf("a listener inside the reserved range was reached: %s", out)
 	}
+	// A listener asked for on any port (a port forward, abhed serve on :0)
+	// takes one of the range too, and is out of reach.
+	fwd, err := loopport.ListenAddr("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwd.Close()
+	accept(fwd)
+	if p := fwd.Addr().(*net.TCPAddr).Port; !loopport.In(p) {
+		t.Fatalf("an any-port listener took %d, outside the range", p)
+	} else if out, err := run("nc -z -G 2 127.0.0.1 " + strconv.Itoa(p)); err == nil {
+		t.Fatalf("an any-port listener was reached: %s", out)
+	}
 	if len(lns) == 2 {
 		if out, err := run("nc -6 -z -G 2 ::1 " + inside); err == nil {
 			t.Fatalf("an [::1] listener inside the reserved range was reached: %s", out)
@@ -212,9 +225,5 @@ func TestLoopbackEphemeral(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(own, "profile.sb")); err != nil {
 		t.Fatalf("the long profile was not put in the command's own folder: %v", err)
-	}
-	// Without a folder of its own, the long profile has nowhere to go.
-	if cmd := sb.Command(WithLoopbackEphemeral(context.Background()), t.TempDir(), "true"); cmd.Err == nil {
-		t.Fatal("ran without a folder for its profile")
 	}
 }

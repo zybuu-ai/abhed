@@ -2,8 +2,11 @@ package loopport
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -70,5 +73,31 @@ func TestListenInRangeAndExhausted(t *testing.T) {
 		if In(p) {
 			t.Fatalf("%d is in the range", p)
 		}
+	}
+}
+
+// A value that is not a range is warned about, not dropped silently.
+func TestRangeWarnsOnABadValue(t *testing.T) {
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	warnOnce = sync.Once{}
+	t.Setenv(Env, "40000-40005")
+	if lo, _ := Range(); lo != DefaultLow || !strings.Contains(buf.String(), "ignoring "+Env) {
+		t.Fatalf("lo %d, log %q", lo, buf.String())
+	}
+}
+
+// Any port on a Mac is a port of the range; a named port is as named.
+func TestListenAddr(t *testing.T) {
+	onMac(t)
+	ln, err := ListenAddr("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if !In(ln.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("port %d", ln.Addr().(*net.TCPAddr).Port)
 	}
 }

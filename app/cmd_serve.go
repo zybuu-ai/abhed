@@ -21,6 +21,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
@@ -420,7 +421,8 @@ func (a *App) serveCmd(workspace, addr string) int {
 	var ln net.Listener
 	shown := addr
 	if _, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
-		if ln, err = net.Listen("tcp", addr); err != nil {
+		// On a Mac, a port of Abhed's reserved range (internal/loopport).
+		if ln, err = loopport.ListenAddr(addr); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}

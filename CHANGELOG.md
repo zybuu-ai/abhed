@@ -20,6 +20,16 @@ All notable changes to Abhed are recorded here. The format follows
   another program on the Mac uses those ports, set `ABHED_LOOPBACK_PORTS`
   to another range (`lo-hi`, at least 16 ports above 1024), the same for
   every Abhed process there.
+- On a Mac, Abhed's own listeners that do not name their port (egress
+  proxies, each command's proxy port, `abhed sandbox forward` without a
+  local port, `abhed serve`, `server.metrics.listen` and `abhed
+  egress-proxy` on port 0, the sign-in callback) now take their ports from
+  47600 to 47855 only, 256 ports shared by every Abhed on the Mac, and
+  fail, saying so, when that range is full. If another program on the Mac
+  uses those ports, or a large parallel run needs more, set
+  `ABHED_LOOPBACK_PORTS` to another range (`lo-hi`, at least 16 ports above
+  1024), the same for every Abhed process there; a value that is not valid
+  is warned about and the default used.
 - A confined MCP stdio server whose program or script sits directly in a
   top-level folder of your home (`~/Downloads`, `~/bin`, `~/Projects`),
   in `~/.local/bin` or `~/.cargo/bin`, now sees only that file, where 1.2.8
@@ -940,16 +950,21 @@ All notable changes to Abhed are recorded here. The format follows
   go out through Abhed's egress proxy (the allowlist, or the package-registry
   proxy every session has unless `sandbox.toolchains_registries` is off),
   and loopback was refused to the debug command there. Every Abhed listener
-  on a Mac (egress proxies, each command's proxy port, port forwards, the
-  sign-in callback) now takes its port from a reserved range, 47600 to
-  47855 or `ABHED_LOOPBACK_PORTS`, and a debug command may never reach that
-  range: the rule was "never every loopback port", it is now "never the
-  reserved range". Python's adapter listens on ports chosen outside the
-  range before it starts, which it holds on every address for its whole
-  life, and only those are opened to it; Go may reach each port the system
-  hands out to listeners (49152 to 65535) but the range, one rule each, and
-  a Go program being debugged can listen where the network reaches (the
-  consent says so). Both debug on the macOS process tier in the default
+  on a Mac that does not name its port (egress proxies, each command's
+  proxy port, port forwards, `abhed serve`, metrics and `abhed
+  egress-proxy` on port 0, the sign-in callback) now takes its port from a
+  reserved range, 47600 to 47855 or `ABHED_LOOPBACK_PORTS`, and a debug
+  command may never reach that range: the rule was "never every loopback
+  port", it is now "never the reserved range". Python's adapter listens on
+  five ports chosen outside the range before it starts, which it holds on
+  the wildcard and loopback addresses for its whole life, and only those
+  are opened to it; the program may listen on those five on any of the
+  Mac's addresses, and on no other port (a dev server cannot be debugged
+  this way; use the container tier). Go may reach each port the system
+  hands out to listeners (49152 to 65535) but the range, one rule each,
+  older Abhed releases' proxies on the Mac included, and a Go program being
+  debugged can listen where the network reaches, the reserved range too
+  (the consent and the guide say so). Both debug on the macOS process tier in the default
   configuration. Delve is built for macOS too, offered and installed with
   Go like any debugger; a Go launch without Delve offers the install before
   anything is judged. A workspace agreement to debug on this Mac is kept

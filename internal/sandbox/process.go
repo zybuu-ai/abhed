@@ -851,11 +851,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		// this command alone, in .abhed, which sandbox-exec reads before the
 		// command runs and no other command can reach.
 		args := []string{"-p", profile}
-		if len(profile) > 128<<10 {
-			dirs := privateDirsOf(ctx)
-			if len(dirs) == 0 {
-				return &exec.Cmd{Err: errors.New("sandbox: the command was not run: its profile is too long for the command line, and it has no folder of its own")}
-			}
+		if dirs := privateDirsOf(ctx); len(profile) > 128<<10 && len(dirs) > 0 {
 			f := filepath.Join(dirs[0], "profile.sb")
 			if err := os.WriteFile(f, []byte(profile), 0o600); err != nil {
 				return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its profile: %w", err)}

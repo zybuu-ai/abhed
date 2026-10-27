@@ -5,13 +5,13 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -71,7 +71,7 @@ func (sm *serveMetrics) handler() http.Handler {
 
 // run serves the separate listener until ctx ends; it returns once listening.
 func (sm *serveMetrics) run(ctx context.Context) (string, error) {
-	ln, err := net.Listen("tcp", sm.listen)
+	ln, err := loopport.ListenAddr(sm.listen) // port 0: on a Mac, of Abhed's reserved range
 	if err != nil {
 		return "", fmt.Errorf("server.metrics.listen: %w", err)
 	}

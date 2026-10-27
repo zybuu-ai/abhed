@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/loopport"
+
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
@@ -348,6 +350,11 @@ func TestForward(t *testing.T) {
 	}
 	if ip := addr.(*net.TCPAddr).IP; !ip.IsLoopback() {
 		t.Fatalf("listening on %s", addr)
+	}
+	// Any local port: on a Mac, one of Abhed's reserved range, which a debug
+	// session never reaches.
+	if loopport.Applies() && !loopport.In(addr.(*net.TCPAddr).Port) {
+		t.Fatalf("the forward's port %d is outside Abhed's reserved range", addr.(*net.TCPAddr).Port)
 	}
 	for range 2 {
 		c, err := net.Dial("tcp", addr.String())

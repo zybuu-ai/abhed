@@ -1,8 +1,11 @@
 // Package loopport is the loopback port range Abhed's own listeners on a
-// Mac take their ports from: the egress proxies and each call's own proxy
-// port, port forwards and the sign-in callback. A debug session on the
-// macOS process tier may reach loopback but this range, so it reaches no
-// Abhed listener of any engine on the Mac (docs/guide/31-debugging.md).
+// Mac take their ports from when they do not name one: the egress proxies
+// and each call's own proxy port, port forwards, abhed serve, the metrics
+// listener and abhed egress-proxy on port 0, and the sign-in callback. A
+// debug session on the macOS process tier never reaches this range, so it
+// reaches no Abhed listener of any engine on the Mac but one whose port a
+// person named (docs/guide/31-debugging.md). The range holds 256 ports by
+// default, shared by every Abhed on the Mac.
 //
 // The range is the same for every Abhed on the Mac: 47600 to 47855 unless
 // ABHED_LOOPBACK_PORTS names another ("lo-hi"), which every Abhed process
@@ -13,12 +16,14 @@ package loopport
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Env names the range ("lo-hi") in place of the default.
@@ -37,7 +42,10 @@ var goos = runtime.GOOS
 func Applies() bool { return goos == "darwin" }
 
 // Range is the reserved range, inclusive: the default, or Env's when it
-// names a valid one of at least 16 ports above 1024.
+// names a valid one of at least 16 ports above 1024. One Env names that is
+// not valid is warned about, once, and the default used: every Abhed on
+// the Mac must use the same range, and a process that silently fell back
+// would put its listeners where another's debug session may reach.
 func Range() (lo, hi int) {
 	if v := os.Getenv(Env); v != "" {
 		a, b, ok := strings.Cut(v, "-")
@@ -46,8 +54,27 @@ func Range() (lo, hi int) {
 		if ok && e1 == nil && e2 == nil && l > 1024 && h <= 65535 && h-l >= 15 {
 			return l, h
 		}
+		warnOnce.Do(func() {
+			slog.Warn("ignoring "+Env+": it must be lo-hi, at least 16 ports above 1024; using the default, which every Abhed on this Mac must then use too",
+				"value", v, "default", strconv.Itoa(DefaultLow)+"-"+strconv.Itoa(DefaultHigh))
+		})
 	}
 	return DefaultLow, DefaultHigh
+}
+
+var warnOnce sync.Once
+
+// ListenAddr is net.Listen("tcp", addr), but for any port (port 0) on a
+// Mac: a port of the range then, on addr's host, so a listener a person
+// or a configuration asked for on any port (a port forward, abhed serve on
+// :0, a metrics or egress-proxy listener) is never one a debug session on
+// the Mac may reach. A port named explicitly is taken as named.
+func ListenAddr(addr string) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port != "0" || !Applies() {
+		return net.Listen("tcp", addr)
+	}
+	return Listen(host)
 }
 
 // In reports whether port is in the reserved range, where the rule applies.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // egressProxyOptions are `abhed egress-proxy`'s settings.
@@ -70,7 +71,7 @@ func egressProxyCmd(args []string, out, errOut io.Writer) int {
 			"set default deny, or pass -open once a network policy decides who reaches it\n", o.listen)
 		return 1
 	}
-	ln, err := net.Listen("tcp", o.listen)
+	ln, err := loopport.ListenAddr(o.listen) // port 0: on a Mac, of Abhed's reserved range
 	if err != nil {
 		fmt.Fprintf(errOut, "abhed egress-proxy: %v\n", err)
 		return 1
