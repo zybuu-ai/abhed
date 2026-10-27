@@ -211,6 +211,9 @@ type scriptModel struct {
 	suggestion string
 	// bodies are the requests the model was sent.
 	bodies []string
+	// hold, when set, is called with each scripted request's number before
+	// it is answered, outside the lock.
+	hold func(n int)
 }
 
 func newScriptModel(t *testing.T, frames ...string) *scriptModel {
@@ -230,7 +233,11 @@ func newScriptModel(t *testing.T, frames ...string) *scriptModel {
 			}
 			m.n++
 		}
+		hold, n := m.hold, m.n
 		m.mu.Unlock()
+		if hold != nil && !bytes.Contains(body, []byte("predict the next message")) {
+			hold(n)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\n", frame)
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n")

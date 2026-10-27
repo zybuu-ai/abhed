@@ -72,6 +72,10 @@ var heldAskWait = 30 * time.Minute
 // reviewLinger is how long a review window stays open after its last answer.
 var reviewLinger = 5 * time.Minute
 
+// promptExit runs as a prompt's handler returns, after its reply; tests use
+// it to hold that moment.
+var promptExit = func() {}
+
 // previewWrites reads previewWrites from a prompt's _meta. Read loosely,
 // since it can only tighten what the prompt may do.
 func previewWrites(meta map[string]json.RawMessage) bool {
@@ -1212,7 +1216,18 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}
 	// The turn ends before its reply, so the next prompt never finds it open.
 	var endOnce sync.Once
-	end := func() { endOnce.Do(func() { cancel(); s.endTurn() }) }
+	// What this prompt set on the session is undone as its turn ends, before
+	// the reply lets the next prompt in, so it can never undo the next one's.
+	var undo []func()
+	end := func() {
+		endOnce.Do(func() {
+			for i := len(undo) - 1; i >= 0; i-- {
+				undo[i]()
+			}
+			cancel()
+			s.endTurn()
+		})
+	}
 	defer end()
 
 	text, attached, mentions := promptText(p.Prompt)
@@ -1263,7 +1278,7 @@ func (c *acpConn) prompt(msg rpcMessage) {
 			return
 		}
 		s.parts.Loop.PreviewWrites(true)
-		defer s.parts.Loop.PreviewWrites(false)
+		undo = append(undo, func() { s.parts.Loop.PreviewWrites(false) })
 	}
 	// The images go with this prompt's run, whichever runs it, and no later one.
 	if err := attachImages(s.agent, links.images); err != nil {
@@ -1271,7 +1286,8 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
 		return
 	}
-	defer func() { _ = attachImages(s.agent, nil) }()
+	undo = append(undo, func() { _ = attachImages(s.agent, nil) })
+	defer promptExit()
 	s.undo.BeginTurn()
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
