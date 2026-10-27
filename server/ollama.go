@@ -143,7 +143,7 @@ func ollamaFailure(w http.ResponseWriter, admin bool, p *ollama.Problem, st olla
 	st = shown(admin, st)
 	code := http.StatusBadGateway
 	switch p.Kind {
-	case ollama.KindNotAdmin, ollama.KindAssistOff, ollama.KindInAgent, ollama.KindRemote:
+	case ollama.KindNotAdmin, ollama.KindAssistOff, ollama.KindInAgent, ollama.KindTempHome, ollama.KindRemote:
 		code = http.StatusForbidden
 	case ollama.KindNotInstalled, ollama.KindNotOllama, ollama.KindManual, ollama.KindDiskShort, ollama.KindPortBusy, ollama.KindModelNotFound:
 		code = http.StatusConflict

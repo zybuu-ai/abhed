@@ -999,3 +999,47 @@ func TestStartUsesTheCheckedModelsFolder(t *testing.T) {
 		t.Fatalf("plan %+v", plan)
 	}
 }
+
+// A home folder in a temporary folder is a test's or a harness's, such as
+// an audit that drives the Studio app with a scratch HOME: nothing is
+// started, installed or downloaded there, by policy and by the programs
+// being taken away, even without the test marker.
+func TestTempHomeStartsNothing(t *testing.T) {
+	if !isTempHome(t.TempDir()) || !isTempHome("/private/tmp/claude-501/abna.T9WjfN/h") || !isTempHome("/tmp/x/h") {
+		t.Fatal("a temporary home was not seen as one")
+	}
+	for _, h := range []string{"/Users/me", "/home/me", "/root", "/tmp"} {
+		if isTempHome(h) {
+			t.Errorf("%s was taken for a temporary home", h)
+		}
+	}
+	srv := realOllama(t, false)
+	tg, _ := Resolve("local", "ollama", srv.URL+"/v1", "gemma4:26b", "")
+	env := testEnv(t, t.TempDir())
+	env.TempHome = "/private/tmp/claude-501/abna.T9WjfN/h"
+	a := Assist{Env: env, Mode: ModeAsk, Admin: true}
+	st := env.Check(context.Background(), tg)
+	for _, op := range []string{OpStart, OpInstall, OpPull} {
+		if p := a.May(op, tg, st); p == nil || p.Kind != KindTempHome {
+			t.Errorf("%s: %+v", op, p)
+		}
+	}
+	if r := a.Report(context.Background(), tg, false); r.CanAct || r.Pull != nil || r.Refusal == nil || r.Refusal.Kind != KindTempHome {
+		t.Errorf("report %+v", r)
+	}
+	// Without the marker, the programs are taken away too.
+	t.Setenv(testMarker, "")
+	ran := false
+	e := Env{TempHome: "/tmp/x/h",
+		Launch: func(string, []string, []string, *os.File) (int, <-chan error, error) { ran = true; return 0, nil, nil },
+		Run: func(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error {
+			ran = true
+			return nil
+		}}.underTest()
+	if _, _, err := e.Launch("/opt/homebrew/bin/ollama", []string{"serve"}, nil, nil); err == nil || ran {
+		t.Fatal("a temporary home could launch ollama")
+	}
+	if err := e.Run(context.Background(), "/bin/sh", nil, nil, nil, nil, nil); err == nil || ran {
+		t.Fatal("a temporary home could run an install")
+	}
+}

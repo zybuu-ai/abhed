@@ -750,6 +750,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A run with a temporary home folder, as a test or a harness that drives
+  Abhed or Studio with a scratch `HOME` gives it, could start a real
+  `ollama serve` that then held port 11434 reading the scratch home's empty
+  models folder. Abhed now starts, installs and downloads nothing when its
+  home is in a temporary folder (`temp_home`), and the CLI test harness
+  marks the binaries it runs as under test and puts a stand-in `ollama`
+  first on their `PATH`.
+
 - A local Ollama model that is downloaded was offered for download again
   when the server answering on its port had been started with another
   models folder (another `HOME` or `OLLAMA_MODELS`). The check now looks in

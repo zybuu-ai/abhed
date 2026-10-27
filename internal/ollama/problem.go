@@ -24,6 +24,7 @@ const (
 	KindAssistOff     = "assist_off"
 	KindNotAdmin      = "not_admin"
 	KindInAgent       = "in_agent"
+	KindTempHome      = "temp_home"
 	KindCancelled     = "cancelled"
 	KindNotOllama     = "not_ollama"
 	KindManual        = "manual_steps"

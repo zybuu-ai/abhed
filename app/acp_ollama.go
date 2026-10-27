@@ -85,7 +85,7 @@ func (c *acpConn) ollamaTarget(msg rpcMessage) (*acpSession, ollamaParams, ollam
 func ollamaRefusal(p *ollama.Problem, st ollama.Status) *rpcError {
 	code := errRefused
 	switch p.Kind {
-	case ollama.KindAssistOff, ollama.KindNotAdmin, ollama.KindInAgent, ollama.KindRemote:
+	case ollama.KindAssistOff, ollama.KindNotAdmin, ollama.KindInAgent, ollama.KindTempHome, ollama.KindRemote:
 		code = errPolicy
 	}
 	return &rpcError{Code: code, Message: p.Message, Data: map[string]any{"problem": p, "status": st}}
