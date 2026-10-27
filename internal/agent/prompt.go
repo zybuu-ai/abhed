@@ -71,7 +71,7 @@ say so and say which you trust.
 ## Tool use
 - Use read/glob/grep for inspection; they are cheaper and safer than shell equivalents.
 - Batch independent tool calls in one turn. Sequential calls are only for dependent work.
-- Paths are absolute, or relative to the workspace root (not to where a cd left bash).{{tools}}
+- Prefer absolute paths.{{tools}}
 
 ## Communication
 - Match the answer to the question. A request to change code gets a short report of

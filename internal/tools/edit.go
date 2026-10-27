@@ -33,7 +33,7 @@ func (Edit) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "path":{"type":"string","description":"Absolute path, or relative to the workspace root."},
+    "path":{"type":"string","description":"Absolute path."},
     "old_string":{"type":"string","description":"Exact text to replace, including indentation. Must be unique in the file unless replace_all is true."},
     "new_string":{"type":"string","description":"Replacement text. Must differ from old_string."},
     "replace_all":{"type":"boolean","description":"Replace every occurrence. Default false."}
