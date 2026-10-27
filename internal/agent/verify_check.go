@@ -914,10 +914,11 @@ func (ix *recordIndex) mergeMarkers(pool []*obsRec, work bool) (finding, func(st
 
 // gitConflictRe: a file git reports as conflicted, from a merge's output or
 // from git status (long or short form).
-var gitConflictRe = regexp.MustCompile(`(?m)^(?:CONFLICT \([^)]*\): Merge conflict in |\s*both (?:modified|added):\s+|(?:UU|AA|DU|UD|AU|UA|DD) )(.*\S)\s*$`)
+var gitConflictRe = regexp.MustCompile(`(?m)(?:^|\r)(?:CONFLICT \([^)]*\): Merge conflict in |\s*both (?:modified|added):\s+|(?:UU|AA|DU|UD|AU|UA|DD) )(.*\S)\s*$`)
 
-// gitConflictSeenRe: any conflict git reports, whether or not its path is read.
-var gitConflictSeenRe = regexp.MustCompile(`(?m)^(?:CONFLICT \(|Automatic merge failed|\s*(?:both (?:modified|added|deleted)|deleted by (?:us|them)|added by (?:us|them)):|(?:UU|AA|DU|UD|AU|UA|DD) )`)
+// gitConflictSeenRe: any conflict git reports, whether or not its path is read;
+// a rebase prints its first one after its progress line and a \r.
+var gitConflictSeenRe = regexp.MustCompile(`(?m)(?:^|\r)(?:CONFLICT \(|Automatic merge failed|\s*(?:both (?:modified|added|deleted)|deleted by (?:us|them)|added by (?:us|them)):|(?:UU|AA|DU|UD|AU|UA|DD) )`)
 
 // partialRead: a read that shows only part of the file (a range, or cut).
 func partialRead(s string) bool {
