@@ -226,3 +226,24 @@ func TestCarriedApprovalNeedsTheSameReplaceAll(t *testing.T) {
 		t.Fatalf("asked %d; file %q", counter.asked, got)
 	}
 }
+
+// Spaces at the end of old_string's last line, which no newline follows,
+// are part of the change: "if a " does not carry to "if a", which would
+// match inside "if admin".
+func TestCarryKeyKeepsTheLastLinesSpaces(t *testing.T) {
+	dir := tempDir(t)
+	p := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(p, []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := harnessIn(t, dir, []scriptedTurn{{text: "done"}}, policy.ModeDefault, true)
+	edit := func(old string) model.ToolCall {
+		return call("edit", map[string]string{"path": p, "old_string": old, "new_string": "if b"})
+	}
+	if l.carryKey(edit("if a ")) == l.carryKey(edit("if a")) {
+		t.Fatal(`"if a " carries to "if a"`)
+	}
+	if l.carryKey(edit("if a  \nx")) != l.carryKey(edit("if a\nx")) {
+		t.Fatal("spaces at the end of a line a newline follows still count")
+	}
+}
