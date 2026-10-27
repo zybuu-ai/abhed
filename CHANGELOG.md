@@ -172,8 +172,11 @@ All notable changes to Abhed are recorded here. The format follows
   `-count`, `-p 4` for `go test`; `-p crate`, `--release` for `cargo`), never
   one that names another program, script, settings file, project or output
   path (`-vettool`, `--init-script`, `-s`, `--manifest-path`, `--prefix`,
-  `-o`); no grant covers a line with a chain, expansion, assignment, `~`, an
-  absolute path, a `..` step or a `module@version`. None is offered where the
+  `-o`), with go's `-mod` only as `readonly` or `vendor`, go packages only
+  in the module, and for Maven and Gradle no further goal or task. No scope,
+  exact or family, is offered for or covers a line with a chain, expansion,
+  assignment, `~`, or a word with an absolute path or a `..` step in any part
+  split at `=` or `:`, or a `module@version`. None is offered where the
   managed configuration holds the permissions. Grants are recorded, and
   `session/load` restores all but those for the session alone.
 

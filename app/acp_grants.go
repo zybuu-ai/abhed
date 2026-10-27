@@ -34,7 +34,8 @@ var shellWords = regexp.MustCompile("[;&|<>()`$~\\\\\n\r*?{}\\[\\]'\"]")
 
 // familySubs are the programs a family grant may name, with the subcommands
 // that build, check or test a project. They run the project's own code, as
-// a test does, inside the sandbox; nothing here deletes or publishes.
+// a test does, inside the sandbox; nothing here deletes or publishes, as no
+// further Maven goal or Gradle task is covered with them.
 var familySubs = map[string][]string{
 	"go":      {"test", "build", "vet", "fmt", "run", "list"},
 	"cargo":   {"test", "build", "check", "clippy", "fmt", "run"},
@@ -60,12 +61,12 @@ var pythonModules = map[string]bool{"pytest": true, "unittest": true, "mypy": tr
 // listed flag, given after = or as the next word, is held to the same path
 // rules as every word.
 var familyFlags = map[string][]string{
-	"go test":   {"-v", "-run", "-count", "-race", "-short", "-cover", "-covermode", "-coverpkg", "-timeout", "-p", "-parallel", "-bench", "-benchmem", "-benchtime", "-failfast", "-json", "-cpu", "-tags", "-list", "-skip", "-shuffle", "-vet", "-trimpath", "-mod"},
-	"go build":  {"-v", "-race", "-tags", "-trimpath", "-p", "-a", "-n", "-x", "-mod"},
-	"go vet":    {"-v", "-tags", "-json", "-mod"},
+	"go test":   {"-v", "-run", "-count", "-race", "-short", "-cover", "-covermode", "-coverpkg", "-timeout", "-p", "-parallel", "-bench", "-benchmem", "-benchtime", "-failfast", "-json", "-cpu", "-tags", "-list", "-skip", "-shuffle", "-vet", "-trimpath"},
+	"go build":  {"-v", "-race", "-tags", "-trimpath", "-p", "-a", "-n", "-x"},
+	"go vet":    {"-v", "-tags", "-json"},
 	"go fmt":    {"-n", "-x"},
-	"go run":    {"-race", "-tags", "-trimpath", "-mod"},
-	"go list":   {"-m", "-json", "-deps", "-test", "-e", "-u", "-versions", "-f", "-mod"},
+	"go run":    {"-race", "-tags", "-trimpath"},
+	"go list":   {"-m", "-json", "-deps", "-test", "-e", "-u", "-versions", "-f"},
 	"cargo":     {"-p", "--package", "--release", "--all-features", "--features", "-F", "--no-default-features", "--workspace", "--lib", "--bins", "--bin", "--tests", "--test", "--examples", "--example", "--all-targets", "--doc", "--no-fail-fast", "-q", "--quiet", "-v", "--verbose", "-j", "--jobs", "--locked", "--offline", "--frozen", "--all", "--check", "--no-run"},
 	"npm":       {"-s", "--silent", "-q", "--quiet", "--if-present"},
 	"dotnet":    {"-c", "--configuration", "-f", "--framework", "--no-restore", "--no-build", "--filter", "-v", "--verbosity", "--nologo"},
@@ -77,6 +78,24 @@ var familyFlags = map[string][]string{
 	"ruff":      {"check", "format", "--fix", "--diff", "--select", "--ignore", "--statistics", "--quiet", "-q"},
 	"node test": {"--test-name-pattern", "--test-only", "--test-concurrency", "--experimental-test-coverage"},
 }
+
+// grantValueFlags are listed flags whose value may come as the next word; that
+// word is then the flag's value, held to the path rules, not a goal, task or
+// package.
+var grantValueFlags = map[string]bool{"-run": true, "-count": true, "-covermode": true, "-coverpkg": true, "-timeout": true, "-p": true,
+	"-parallel": true, "-bench": true, "-benchtime": true, "-cpu": true, "-tags": true, "-list": true, "-skip": true, "-shuffle": true,
+	"-vet": true, "--package": true, "--features": true, "-F": true, "--bin": true, "--test": true, "--example": true, "-j": true,
+	"--jobs": true, "-c": true, "--configuration": true, "-f": true, "--framework": true, "--filter": true, "--verbosity": true,
+	"-T": true, "-pl": true, "--projects": true, "-P": true, "--tests": true, "--exclude-task": true, "-k": true,
+	"--maxfail": true, "--tb": true, "--durations": true, "--select": true, "--ignore": true, "--test-name-pattern": true,
+	"--test-concurrency": true, "--module": true}
+
+// gradleValueFlags are gradle's flags whose next word is a value, where -x
+// names a task to leave out.
+var gradleValueFlags = map[string]bool{"-x": true, "--exclude-task": true, "--tests": true}
+
+// goodModValues are the -mod settings that fetch nothing.
+var goodModValues = map[string]bool{"readonly": true, "vendor": true}
 
 // passThrough are the families whose words after `--` go to the project's
 // own program (the test binary, the script), not the tool: those words are
@@ -101,32 +120,58 @@ func flagsFor(prog, sub string) (string, []string) {
 }
 
 // safeWord reports a word, or a flag's value, that names nothing outside
-// the session's folder: no absolute path, no home, no step out with "..",
-// and no module@version, which fetches code.
+// the session's folder: in no part of it, split at each "=" and ":", an
+// absolute path or a step out with "..", and no module@version anywhere,
+// which fetches code.
 func safeWord(w string) bool {
-	if _, v, ok := strings.Cut(w, "="); ok && strings.HasPrefix(w, "-") {
-		w = v
-	}
-	if strings.HasPrefix(w, "/") || strings.Contains(w, "@") {
+	if strings.Contains(w, "@") {
 		return false
 	}
-	for _, part := range strings.Split(w, "/") {
-		if part == ".." {
+	for _, seg := range strings.FieldsFunc(w, func(r rune) bool { return r == '=' || r == ':' }) {
+		if strings.HasPrefix(seg, "/") {
 			return false
+		}
+		for _, part := range strings.Split(seg, "/") {
+			if part == ".." {
+				return false
+			}
 		}
 	}
 	return true
 }
 
+// goPackage reports a go package argument that stays in the module: ".",
+// a relative path (./x, ./...), or a pattern whose first element has no dot,
+// such as all or std; never an import path that names a host.
+func goPackage(w string) bool {
+	if w == "." || strings.HasPrefix(w, "./") {
+		return true
+	}
+	first, _, _ := strings.Cut(w, "/")
+	return first != "" && !strings.Contains(first, ".")
+}
+
 // flagsAllowed reports whether every word of args is a listed flag (or one
-// with a listed name and a value) or a safe word, honouring `--`.
+// with a listed name and a value) or a safe word, honouring `--`. For go a
+// word that is not a flag's value is a package, kept to the module; for
+// mvn and gradle it would be another goal or task, so none is covered.
 func flagsAllowed(key string, allowed, args []string) bool {
+	prog := strings.Fields(key)[0]
+	values := grantValueFlags
+	if prog == "gradle" {
+		values = gradleValueFlags
+	}
+	expectValue := false
 	for i, a := range args {
 		if !safeWord(a) {
 			return false
 		}
+		// Maven reads a word with a colon as a plugin goal to fetch and run.
+		if prog == "mvn" && strings.Contains(a, ":") {
+			return false
+		}
 		if a == "--" {
-			if !passThrough[strings.Fields(key)[0]] {
+			if !passThrough[prog] {
 				return false
 			}
 			for _, rest := range args[i+1:] {
@@ -137,17 +182,31 @@ func flagsAllowed(key string, allowed, args []string) bool {
 			return true
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
+			switch {
+			case expectValue:
+				expectValue = false
+			case prog == "mvn" || prog == "gradle":
+				return false
+			case prog == "go" && !goPackage(a):
+				return false
+			}
 			continue
 		}
-		name, _, _ := strings.Cut(a, "=")
+		expectValue = false
+		name, value, hasValue := strings.Cut(a, "=")
 		listed := false
 		for _, f := range allowed {
 			// -Dtest=Foo is listed as -Dtest; -run=X as -run.
 			listed = listed || f == name
 		}
 		if !listed {
-			return false
+			// -mod is covered only where it fetches nothing.
+			if prog != "go" || name != "-mod" || !hasValue || !goodModValues[value] {
+				return false
+			}
+			continue
 		}
+		expectValue = !hasValue && values[name]
 	}
 	return true
 }
@@ -163,6 +222,13 @@ func commandFields(command string) []string {
 	// An assignment in front, such as LD_PRELOAD=, can make any program run code.
 	if len(fields) == 0 || strings.Contains(fields[0], "=") || strings.Contains(fields[0], "/") {
 		return nil
+	}
+	// No scope, exact or family, for a line naming a path outside the
+	// folder or a module@version: it asks every time.
+	for _, a := range fields[1:] {
+		if !safeWord(a) {
+			return nil
+		}
 	}
 	return fields
 }
@@ -205,7 +271,8 @@ func familyOf(command string) string {
 		return strings.Join(fields[:3], " ")
 	case sub == "run" && (fields[0] == "npm" || fields[0] == "pnpm" || fields[0] == "yarn"):
 		// npm run lint: the script is the family, not every script.
-		if len(fields) < 3 || strings.HasPrefix(fields[2], "-") || !safeWord(fields[2]) || !flagsAllowed("npm", familyFlags["npm"], fields[3:]) {
+		// npm run env prints the command's environment, which is no project's check.
+		if len(fields) < 3 || strings.HasPrefix(fields[2], "-") || fields[2] == "env" || !safeWord(fields[2]) || !flagsAllowed("npm", familyFlags["npm"], fields[3:]) {
 			return ""
 		}
 		return strings.Join(fields[:3], " ")

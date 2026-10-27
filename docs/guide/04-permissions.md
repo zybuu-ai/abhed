@@ -1259,7 +1259,8 @@ offers more than *Allow once*:
 A family is a program and its subcommand: `go test`, `go build`, `go vet`,
 `go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),
 `npm test`, `npm run <script>` (the script is part of it: `npm run lint` is
-not `npm run deploy`), `pnpm` and `yarn` alike, `python -m pytest` (and
+not `npm run deploy`; `npm run env`, which prints the environment, is none),
+`pnpm` and `yarn` alike, `python -m pytest` (and
 `unittest`, `mypy`, `ruff`), `pytest`, `dotnet test`, `mvn test`, `gradle
 test`, `node --test`. A family grant covers only the flags that select,
 filter, repeat or report for that tool (`-run`, `-count`, `-p 4`, `-race`
@@ -1267,10 +1268,18 @@ for `go test`; `-p crate`, `--release`, `--features` for `cargo`; `-k`,
 `-q`, `-x` for pytest). A flag that names another program, script, settings
 file, project or output path (`-exec`, `-toolexec`, `-vettool`, `-o`,
 `--manifest-path`, `--prefix`, `--init-script`, Maven's `-s` or `-f`,
-pytest's `-p` or `-c`) is on no list, so that line asks again. No scope is
-offered for, or covers, a line with a chain, a redirect, an expansion, a
-quote, `~`, an assignment in front such as `CGO_ENABLED=0`, a program named
-by a path, an absolute path, a `..` step or a `module@version`.
+pytest's `-p` or `-c`) is on no list, so that line asks again. Go's `-mod`
+is covered only as `-mod=readonly` or `-mod=vendor`, which fetch nothing, and
+a go package only as `.`, a relative path (`./x`, `./...`) or a pattern such
+as `all` or `std`, never an import path naming a host. For `mvn` and `gradle`
+the family is the one goal or task named: a further goal or task (`mvn test
+deploy`, `gradle test publish`), and for Maven any word with a `:` (a plugin
+goal such as `exec:exec`, or `-pl :core`), asks again. No scope, exact or
+family, is offered for or covers a line with a chain, a redirect, an
+expansion, a quote, `~`, an assignment in front such as `CGO_ENABLED=0`, a
+program named by a path, or a word with, in any part split at `=` or `:`,
+an absolute path or a `..` step, or with a `module@version`: such a line asks
+every time.
 
 A scope answers only a later ask of the same default kind: a deny or ask
 rule, the destructive check, the supervisor and the screens still decide

