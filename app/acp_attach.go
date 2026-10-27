@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -71,7 +73,7 @@ func (c *acpConn) linkedAttachments(ctx context.Context, s *acpSession, blocks [
 		}
 		return out, nil
 	}
-	loop, sess := s.parts.Loop, s.parts.Session
+	loop := s.parts.Loop
 	var parts, refused []string
 	imageBytes := 0
 	for _, raw := range blocks {
@@ -145,19 +147,15 @@ func (c *acpConn) linkedAttachments(ctx context.Context, s *acpSession, blocks [
 				parts = append(parts, block)
 				out.mentions = append(out.mentions, m)
 			case "http", "https":
-				if !s.parts.Config.WebFetch.Enabled {
-					refused = append(refused, blk.URI+": a linked web page is read with web_fetch, which is off (only the managed configuration turns it on)")
-					continue
-				}
-				res, err := loop.Manual(ctx, sess, "web_fetch", personCallID("link"), argsJSON(map[string]string{"url": blk.URI}))
+				content, why, err := c.fetchLinked(ctx, s, blk.URI)
 				if err != nil {
 					return out, err
 				}
-				if res.IsError {
-					refused = append(refused, blk.URI+": "+strings.TrimSpace(res.Content))
+				if why != "" {
+					refused = append(refused, blk.URI+": "+why)
 					continue
 				}
-				content, truncated := capText(res.Content, room)
+				content, truncated := capText(content, room)
 				room = max(0, room-len(content))
 				sum := sha256.Sum256([]byte(content))
 				out.mentions = append(out.mentions, agent.InputMention{Path: redacted(blk.URI), SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(content)), Truncated: truncated})
@@ -213,4 +211,36 @@ func (c *acpConn) attachLinkedFile(ctx context.Context, s *acpSession, u *url.UR
 		return "", agent.InputMention{}, why, err
 	}
 	return block, att.Mention(), "", nil
+}
+
+// fetchLinked reads a page the person linked, as their own call: with the
+// agent's web_fetch when it has one, else with one made for this read alone,
+// under the same policy, deny rules, egress and address checks; an ask is put
+// to the person. Only a managed configuration that turns web_fetch off
+// refuses it outright.
+func (c *acpConn) fetchLinked(ctx context.Context, s *acpSession, uri string) (string, string, error) {
+	loop, cfg := s.parts.Loop, s.parts.Config
+	var tool tools.Tool
+	if t, ok := loop.Tools.Get("web_fetch"); ok {
+		tool = t
+	} else {
+		if cfg.ManagedSets("web_fetch.enabled") {
+			return "", "the organisation's managed configuration turns web_fetch off, so a linked page cannot be read", nil
+		}
+		on := cfg
+		on.WebFetch.Enabled = true
+		f := toolset.WebFetchTool(on, nil)
+		f.Guard = s.parts.Set.Guard()
+		tool = f
+	}
+	id := personCallID("link")
+	res, err := loop.ManualRunTool(ctx, s.parts.Session, tool, id, argsJSON(map[string]string{"url": uri}),
+		c.manualAsk(s, id, "fetch", "Read the linked page "+redacted(uri)))
+	if err != nil {
+		return "", "", err
+	}
+	if res.IsError {
+		return "", strings.TrimSpace(res.Content), nil
+	}
+	return res.Content, "", nil
 }

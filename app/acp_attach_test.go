@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // visionRig is a Studio rig whose model reads images when vision is set.
@@ -67,9 +69,9 @@ func TestStudioPromptReadsLinkedFiles(t *testing.T) {
 	if len(m) != 2 || m[0]["range"] != "2-3" {
 		t.Fatalf("mentions %v", m)
 	}
-	// Abhed's state, and a page while web_fetch is off, refuse the prompt.
+	// Abhed's state refuses the prompt.
 	r.write(".abhed/notes.md", "x")
-	for _, uri := range []string{"file://" + r.ws + "/.abhed/notes.md", "https://example.com/doc"} {
+	for _, uri := range []string{"file://" + r.ws + "/.abhed/notes.md"} {
 		res := r.promptBlocks(id, map[string]any{"type": "resource_link", "name": "x", "uri": uri})
 		if res.Error == nil {
 			t.Fatalf("%s was attached", uri)
@@ -208,5 +210,90 @@ func TestStudioImagesGoWithTheCommandAndNoFurther(t *testing.T) {
 	}
 	if strings.Count(last(), command) != 1 {
 		t.Fatalf("the command's image was attached again: %d", strings.Count(last(), command))
+	}
+}
+
+// Whether images may be sent is said per model, in the model list Studio
+// reads as the model changes; promptCapabilities.image is false.
+func TestStudioSaysWhichModelsReadImages(t *testing.T) {
+	for _, vision := range []bool{false, true} {
+		v := visionRig(t, vision)
+		var res struct {
+			ConfigOptions []struct {
+				Options []struct {
+					Meta map[string]struct {
+						Image bool `json:"image"`
+					} `json:"_meta"`
+				} `json:"options"`
+			} `json:"configOptions"`
+		}
+		v.cl.ok("session/new", map[string]any{"cwd": v.ws, "mcpServers": []any{}}, &res)
+		if len(res.ConfigOptions) == 0 || len(res.ConfigOptions[0].Options) != 1 || res.ConfigOptions[0].Options[0].Meta[acpMetaKey].Image != vision {
+			t.Fatalf("vision %v: %+v", vision, res)
+		}
+	}
+	m := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","providers":{"m":`+stubProvider(m.URL, "m-1")+`}}}`)
+	cl := newStudioClient(t, t.TempDir(), true)
+	var init struct {
+		AgentCapabilities struct {
+			PromptCapabilities struct {
+				Image bool `json:"image"`
+			} `json:"promptCapabilities"`
+		} `json:"agentCapabilities"`
+	}
+	cl.ok("initialize", map[string]any{"protocolVersion": 1}, &init)
+	if init.AgentCapabilities.PromptCapabilities.Image {
+		t.Fatal("promptCapabilities.image is true")
+	}
+}
+
+// A linked page is read as the person's own call even while the agent's
+// web_fetch is off: deny rules still refuse it, an ask rule puts it to the
+// person, internal addresses stay refused, and only a managed configuration
+// that turns web_fetch off refuses it outright.
+func TestStudioLinkedPageIsThePersonsFetch(t *testing.T) {
+	m := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","providers":{"m":`+stubProvider(m.URL, "m-1")+`}},`+
+		`"permissions":{"deny":["web_fetch(https://blocked.example/*)"],"ask":["web_fetch(https://ask.example/*)"]}}`)
+	ws := t.TempDir()
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: m}
+	r.cl = newStudioClient(t, ws, true)
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	var asked atomic.Int32
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method == "session/request_permission" {
+			asked.Add(1)
+			return chosen(params, "reject_once")
+		}
+		return map[string]any{}
+	})
+	id := r.open()
+	link := func(uri string) string {
+		res := r.promptBlocks(id, map[string]any{"type": "resource_link", "name": "page", "uri": uri})
+		if res.Error == nil {
+			t.Fatalf("%s was read", uri)
+		}
+		return res.Error.Message
+	}
+	if why := link("https://blocked.example/doc"); !strings.Contains(why, "Denied") || asked.Load() != 0 {
+		t.Fatalf("deny: %s (asked %d)", why, asked.Load())
+	}
+	if why := link("https://ask.example/doc"); asked.Load() != 1 || strings.Contains(why, "web_fetch, which is off") {
+		t.Fatalf("ask: %s (asked %d)", why, asked.Load())
+	}
+	if why := link("http://127.0.0.1:1/x"); strings.Contains(why, "web_fetch, which is off") || !strings.Contains(strings.ToLower(why), "not fetched") {
+		t.Fatalf("internal: %s", why)
+	}
+
+	// A managed configuration that turns web_fetch off refuses it plainly.
+	path := filepath.Join(t.TempDir(), "managed.json")
+	if err := os.WriteFile(path, []byte(`{"web_fetch":{"enabled":false}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managed.ConfigFile = path // acpModelsEnv restores it
+	id = r.open()
+	if why := link("https://example.com/doc"); !strings.Contains(why, "managed configuration turns web_fetch off") {
+		t.Fatalf("managed: %s", why)
 	}
 }

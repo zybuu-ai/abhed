@@ -170,9 +170,12 @@ session's policy and recorded so:
 
 - a `file:` URI names a file (with `#Lm-Ln`, those lines; a symbol is sent
   as its file and range) or a folder, given as a bounded listing;
-- an `http:` or `https:` URI is read with `web_fetch` as the person's call,
-  under its allowed hosts, when the managed configuration turns `web_fetch`
-  on; otherwise the prompt is refused and says so;
+- an `http:` or `https:` URI is read as the person's own `web_fetch` call,
+  even while the agent's `web_fetch` tool is off: under the same deny rules,
+  egress and address checks, and an ask (a rule's, the supervisor's, or
+  `web_fetch`'s own when it has no allowed hosts) is put to the person. Only
+  a managed configuration that sets `web_fetch.enabled: false` refuses it,
+  saying so;
 - any other URI is passed as a note naming it.
 
 A link that may not be read refuses the whole prompt (`-32001`), each reason
@@ -402,7 +405,11 @@ answer, and the checks could not verify it. `features` lists `answer-verdicts`.
 
 ### 3.5 Images
 
-`promptCapabilities.image` is `true`. An `image` block (`mimeType` png,
+`promptCapabilities.image` is `false`, since whether a model reads images
+depends on the model: each model in the session's config options (and in
+the legacy model list) carries `_meta["zybuu.ai/abhed"].image`, true for one
+that reads images, and Studio offers an image attachment only then, checking
+again when the model changes. An `image` block (`mimeType` png,
 jpeg, gif or webp; `data` base64; at most four, 5 MB each and 10 MB in all,
 so a prompt's base64 stays well under a line's 16 MiB) goes to the model
 with the prompt when the session's model reads images (a provider's
@@ -1506,12 +1513,14 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
 ### 7.12 Commit messages
 
 ```ts
-_abhed/commitMessage { sessionId } → { message: string, excluded?: number, truncated?: boolean,
-                                       disabled?: string, empty?: string, dropped?: string, limited?: string }
+_abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "unstaged", excluded?: number,
+                                       truncated?: boolean, disabled?: string, empty?: string, limited?: string }
 ```
 
 - Listed under the `commitMessage` feature. Studio sends no diff: the engine
-  reads `git diff --cached --relative` in the session's root itself, through
+  reads `git diff --cached --relative` in the session's root itself (with
+  nothing staged, the working tree's changes to tracked files: `source`
+  says which), through
   the confined git (no external diff, no textconv, no filter or merge driver,
   inside the sandbox where one is registered).
 - A staged file outside the roots, one a read rule denies, one that looks
@@ -1527,6 +1536,11 @@ _abhed/commitMessage { sessionId } → { message: string, excluded?: number, tru
   be recorded, nothing is sent) and `commit_message.generated` with the
   outcome. A message that carries a secret is `dropped`; nothing staged, or
   only files that may not be read, is `empty`.
+- It always ends with a `message` or a JSON-RPC error saying why (the model
+  gave no message, it did not answer within 90 s, the changes could not be
+  read), never an empty `message` alone; `empty` is only for nothing staged
+  or changed, `disabled` and `limited` as above. Each request is logged on
+  the engine's stderr with how it ended.
 
 ## 8. Health, setup and memory
 
