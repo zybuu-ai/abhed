@@ -109,6 +109,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		edit       *edit
 		setup      string // a command run after the edit, before bash
 		bash       string
+		then       string // a second command after bash
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
 		"explain-sum":  {file: "sum.go", text: plain},
@@ -141,6 +142,13 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			setup: "printf '#!/bin/sh\\necho \"[WARNING] App.java uses a deprecated API.\"\\necho \"[INFO] BUILD SUCCESS\"\\n' > mvn && chmod +x mvn", bash: "./mvn compile"},
 		"lint-golangci-problems": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
 			setup: "printf '#!/bin/sh\\necho \"sum.go:3:1: x is unused (unused)\"\\necho \"1 issues:\"\\n' > golangci-lint && chmod +x golangci-lint", bash: "./golangci-lint run ./..."},
+		"lint-then-test": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho 0 issues.\\n' > golangci-lint && chmod +x golangci-lint && printf '#!/bin/sh\\necho ok calc 0.01s\\n' > go && chmod +x go",
+			bash:  "./golangci-lint run ./...", then: "./go test ./..."},
+		"build-cargo-debug": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho Finished dev target in 0.52s\\n' > cargo && chmod +x cargo", bash: "./cargo build"},
+		"build-cargo-release": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho Finished release target in 2.10s\\n' > cargo && chmod +x cargo", bash: "./cargo build --release"},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
@@ -166,6 +174,9 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 	}
 	if sc.bash != "" {
 		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.bash})}})
+	}
+	if sc.then != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.then})}})
 	}
 	turns = append(turns, scriptedTurn{text: reply}, scriptedTurn{text: reply})
 	ad.turns = turns

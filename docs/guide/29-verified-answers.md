@@ -248,14 +248,17 @@ counts (`12 tests`, `replicas: 3`). Then:
   code (`go test`, `cargo test`, Maven, Gradle, `dotnet test`; not `npm
   test`, `pytest` or `make test`), and "no errors" in a sentence that names a build or
   a compile is shown by either. A claim of no warnings ("no errors or
-  warnings", "zero warnings", "builds cleanly") is not shown by a run
+  warnings" or "no warnings or errors", "without any warnings", "zero
+  warnings", "warning free", "builds cleanly", "the build is clean") is
+  not shown by a run
   whose output has a warning: a line that starts with `warning` or
   `[WARNING]`, a `file:line: warning:` line, or a warning count ("1
   Warning(s)"). Reporting a warning ("no errors and 1 warning") is not
   such a claim. A build said for a platform, architecture or mode ("on
-  Windows", "for arm64", "in release mode") is shown only by a run whose
-  command names it (`cargo build --release`, `--target aarch64-…`), and "in CI" never by a
-  local run. "Builds" and "compiles" with an object
+  Windows", "for both Linux and Windows", "the Windows build", "the
+  release build", "in release mode") is shown only by a run whose
+  command names it (`cargo build --release`, `--target aarch64-…`); "in CI", "on all
+  platforms" and "cross-platform" are never shown by one local run. "Builds" and "compiles" with an object
   ("`buildIndex` builds a map", "`regexp.MustCompile` compiles the
   pattern") describe code, not a build; before a preposition or "as" ("it
   compiles as expected", "it builds on Windows") they are still a build
@@ -353,7 +356,9 @@ counts (`12 tests`, `replicas: 3`). Then:
   its subcommand: `go test`, `npm test`, `pytest`, `cargo test` for tests,
   `go build`, `cargo build`, `npm run build`, `make` for a build; a test run
   never shows a build, and `go vet` or a linter shows neither; "lint
-  passes" and "vet passes" need a lint run that reports no problems) that:
+  passes" and "vet passes" need a lint run that reports no problems, and
+  so does lint named beside a build or tests: "build and lint pass" needs
+  both runs) that:
   - is the whole line, or the last command of an `&&` chain at its top with
     only `cd` before it, so its exit is the line's: not in a pipe, and not
     followed by `;`, `||` or `&`;
@@ -629,7 +634,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 589 plant a wrong claim. Some cite the result that shows them wrong
+session. 613 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -721,10 +726,10 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 589
+tail, a port not listening, a file not in a response). Today none of the 613
 planted claims is shown as verified (30 are contradicted, all from cited,
-conflicting evidence; the rest unverified), all 171 controls are verified,
-and none of the 268 true or neutral claims is contradicted. 19 of the
+conflicting evidence; the rest unverified), all 176 controls are verified,
+and none of the 273 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -734,7 +739,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 97 strict-mode
+control, by name and by a hash of its text and calls, and 111 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -779,4 +784,11 @@ makes them.
   so "it now builds on Windows" stays unverified even after it. With a
   preposition read as a build claim, a few explanations of code that was
   read ("`page` compiles from `src` once") count as unverified work. Vite's
-  "(!) Some chunks are larger …" notice is not read as a warning.
+  "(!) Some chunks are larger …" notice is not read as a warning. "The
+  build produced no warnings" has no build verb the checks read and is
+  not counted; "it cross-compiles to arm64" is not read as a build claim;
+  targets outside the list ("under WSL", "on Apple Silicon", "for
+  32-bit") are not checked against the run; and "ESLint passes" or "Ruff
+  passes" is not read as a lint claim, so it stays unverified after a
+  clean run of that tool. A build said for the host's own OS ("it builds
+  on macOS" on a Mac) is unverified unless the command names it.

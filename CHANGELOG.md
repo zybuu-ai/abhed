@@ -540,9 +540,9 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 589 planted wrong claims none is shown as verified and 30 are
-  contradicted (all from cited, conflicting evidence), all 171 true controls
-  are verified, and none of the 268 true or neutral claims is contradicted;
+  -v`): of 613 planted wrong claims none is shown as verified and 30 are
+  contradicted (all from cited, conflicting evidence), all 176 true controls
+  are verified, and none of the 273 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
@@ -584,9 +584,11 @@ All notable changes to Abhed are recorded here. The format follows
   whole test run of a runner that compiles ("`buildIndex` builds a map"
   describes code, "it compiles as expected" does not, "no errors" beside a
   build is a build claim, "no warnings" or "cleanly" fails against a run
-  that printed a warning in any common form, and a build for a named
-  platform or mode needs a run that names it); "lint passes" needs a lint
-  run and "the build is clean" a build or test run; a
+  that printed a warning in the common compiler and build-tool forms, and
+  a build for a named platform or mode needs a run that names it, while
+  "on all platforms" is never shown by one run); "lint passes", alone or
+  beside a build or tests, needs a lint run, and "the build is clean" a
+  build or test run; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
   change that names no file is verified only by an edit, a write or a
