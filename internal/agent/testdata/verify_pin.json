@@ -4471,11 +4471,6 @@
       "hash": "7c056d149fcbf298"
     },
     {
-      "name": "no conflicts said after a rebase modify/delete conflict, an abort and -X theirs",
-      "kind": "planted",
-      "hash": "35b7d60e2d10f785"
-    },
-    {
       "name": "no conflicts said after a cherry-pick modify/delete conflict, an abort and -X theirs",
       "kind": "planted",
       "hash": "5fa1ad5dd54e7dde"
@@ -4509,6 +4504,26 @@
       "name": "a resolved merge after a rebase content conflict after a carriage return, only a.go re-read",
       "kind": "planted",
       "hash": "01199d00eddbe1d4"
+    },
+    {
+      "name": "no conflicts said after a pull whose autostash conflicted",
+      "kind": "planted",
+      "hash": "60bf911ee6669704"
+    },
+    {
+      "name": "a clean rebase said after its autostash conflicted",
+      "kind": "planted",
+      "hash": "0f405a8d7db56ad2"
+    },
+    {
+      "name": "no conflicts said after a rebase modify/delete conflict, an abort and -s ours",
+      "kind": "planted",
+      "hash": "d9dcf418141e6486"
+    },
+    {
+      "name": "no conflicts said after git status showed added by them, an abort and -s ours",
+      "kind": "planted",
+      "hash": "ac63ccb25cdd13bd"
     }
   ],
   "strict": [
@@ -5200,6 +5215,16 @@
     {
       "scenario": "rebase-moddel-x",
       "reply": "The rebase is complete.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "pull-autostash",
+      "reply": "Pulled the latest main. No merge conflicts.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "pull-autostash",
+      "reply": "The merge was clean.",
       "want": "unverified"
     }
   ]
