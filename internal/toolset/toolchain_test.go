@@ -321,7 +321,7 @@ func TestCommandsUseTheProjectsVenv(t *testing.T) {
 	defer cancel()
 	out, err := b.Sandbox(ctx, ws, `python3 -c 'import sys; print(sys.prefix)'; echo "venv=$VIRTUAL_ENV"`).CombinedOutput()
 	real, _ := filepath.EvalSymlinks(filepath.Join(ws, ".venv"))
-	if err != nil || !(strings.Contains(string(out), filepath.Join(ws, ".venv")) || strings.Contains(string(out), real)) {
+	if err != nil || (!strings.Contains(string(out), filepath.Join(ws, ".venv")) && !strings.Contains(string(out), real)) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
