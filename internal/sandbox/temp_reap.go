@@ -65,7 +65,7 @@ func reapTemps(parents []string) {
 			}
 		}
 		if removed > 0 {
-			slog.Info("removed sandbox caches and temp folders left by Abhed processes that ended", "folder", parent, "count", removed)
+			slog.Debug("removed sandbox caches and temp folders left by Abhed processes that ended", "folder", parent, "count", removed)
 		}
 	}
 }
