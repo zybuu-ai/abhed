@@ -4253,7 +4253,7 @@
     {
       "name": "a resolved merge after a diff showed markers in two files and one was re-read",
       "kind": "planted",
-      "hash": "fe96800211a998e9"
+      "hash": "1f38ae0ca40adfbc"
     },
     {
       "name": "a resolved merge after a search of another file",
@@ -4319,6 +4319,106 @@
       "name": "mypy said with so does, after a failing mypy",
       "kind": "planted",
       "hash": "0ddfbec75f1a0d29"
+    },
+    {
+      "name": "a resolved merge after a conflicted merge was aborted: I resolved the merge conflicts.",
+      "kind": "planted",
+      "hash": "10e7f6f6f9ddcb2d"
+    },
+    {
+      "name": "a resolved merge after a conflicted merge was aborted: No merge conflicts.",
+      "kind": "planted",
+      "hash": "a52710fc3c262ac3"
+    },
+    {
+      "name": "a resolved merge after a blind add and merge --continue",
+      "kind": "planted",
+      "hash": "af8bf78478f3f54e"
+    },
+    {
+      "name": "a finished rebase after a conflicted rebase was skipped",
+      "kind": "planted",
+      "hash": "11fc5eb47ca5f889"
+    },
+    {
+      "name": "a resolved merge after a conflicted merge was redone with -s ours",
+      "kind": "planted",
+      "hash": "b75e4bc7f1a6472a"
+    },
+    {
+      "name": "a resolved conflict said after a merge that ran clean",
+      "kind": "planted",
+      "hash": "796caa429ca24109"
+    },
+    {
+      "name": "resolved conflicts said after a merge that ran clean",
+      "kind": "planted",
+      "hash": "b37da6b10f45dbdc"
+    },
+    {
+      "name": "a resolved merge after git status --short named two files and one was re-read",
+      "kind": "planted",
+      "hash": "0aa3a325ecaf035f"
+    },
+    {
+      "name": "a clean merge said after a merge git refused: The merge was clean.",
+      "kind": "planted",
+      "hash": "40548f0a799dcafd"
+    },
+    {
+      "name": "a clean merge said after a merge git refused: No merge conflicts.",
+      "kind": "planted",
+      "hash": "b0812bcb4b2cd91a"
+    },
+    {
+      "name": "a resolved merge after a conflicted merge then git add",
+      "kind": "planted",
+      "hash": "770ce57a420a0e2e"
+    },
+    {
+      "name": "no conflicts said after a conflicted merge then git commit",
+      "kind": "planted",
+      "hash": "20f043c5b1e55984"
+    },
+    {
+      "name": "no conflicts said after only a git commit",
+      "kind": "planted",
+      "hash": "e6b1224819439464"
+    },
+    {
+      "name": "a resolved merge after a read from an offset past the first hunk",
+      "kind": "planted",
+      "hash": "e960e959aaf0d6b0"
+    },
+    {
+      "name": "a resolved merge after git diff --diff-filter=U named two files and one was re-read",
+      "kind": "planted",
+      "hash": "42d80c310012fe71"
+    },
+    {
+      "name": "a resolved merge after git ls-files -u named two files and one was re-read",
+      "kind": "planted",
+      "hash": "3b9b323661bfdf72"
+    },
+    {
+      "name": "a resolved merge after a search for files without markers",
+      "kind": "planted",
+      "hash": "1321501eb7ab3e3e"
+    },
+    {
+      "name": "a resolved merge after a search of the index",
+      "kind": "planted",
+      "hash": "a514b55ff3fbf305"
+    },
+    {
+      "name": "no conflicts said after a conflicted merge was redone with -s ours",
+      "kind": "planted",
+      "hash": "9d0a05da029b7bdb"
+    },
+    {
+      "name": "a clean merge said after only a merge --abort",
+      "kind": "planted",
+      "hash": "02e45195a98e60ad"
     }
   ],
   "strict": [
@@ -4981,6 +5081,16 @@
       "scenario": "test-go",
       "reply": "I added `continue` to `Sum`. All tests pass.\n\n**Changes:** `sum.go`",
       "want": "completed"
+    },
+    {
+      "scenario": "merge-abort",
+      "reply": "I resolved the merge conflicts.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "merge-abort",
+      "reply": "No merge conflicts.",
+      "want": "unverified"
     }
   ]
 }

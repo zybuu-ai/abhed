@@ -369,13 +369,17 @@ counts (`12 tests`, `replicas: 3`). Then:
   file that had markers, or a whole read or `git diff` of every such file
   shows none. The files that had markers are those a read showed with them
   and those git reported as conflicted (`CONFLICT (content): Merge
-  conflict in …`, `both modified:` or `UU` in `git status`). A ranged or
+  conflict in …`, `both modified:` or `UU` in `git status`, `git diff
+  --name-only --diff-filter=U`, `git ls-files -u`). A ranged or
   cut read is not a whole read; a search that inverts or narrows (`-v`,
   `-L`, `-x`, `-w`, `--include`, `-g`, `-t`, `--cached`) or runs in a
   subfolder does not count; and a file the claim names must itself be
   shown clean. After a `git merge`, `pull`, `rebase` or `cherry-pick` that
-  is the last change, exited 0 and reported no `CONFLICT`, "no merge
-  conflicts" and "the merge was clean" are verified. Otherwise, or with no
+  is the last change, exited 0 and reported no `CONFLICT`, in a session
+  that saw no conflict, "no merge conflicts" and "the merge was clean" are
+  verified; never after `--abort`, `--quit`, `--skip` or `--continue`, and
+  never "I resolved the conflicts", since a clean merge had none to
+  resolve. Otherwise, or with no
   change in the session, they are unverified. A read made before the edit
   that removed the markers does not count.
 - **"Tests pass" and "the build succeeds" need a whole run.** With no
@@ -674,7 +678,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 664 plant a wrong claim. Some cite the result that shows them wrong
+session. 684 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -766,7 +770,7 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 664
+tail, a port not listening, a file not in a response). Today none of the 684
 planted claims is shown as verified (32 are contradicted: 30 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
 shows; the rest unverified), all 199 controls are verified,
@@ -780,7 +784,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 132 strict-mode
+control, by name and by a hash of its text and calls, and 134 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -848,4 +852,11 @@ makes them.
   conflict markers on purpose (a tutorial, a test fixture) contradicts a
   true "the conflicts are resolved". A "Files changed" list of bare
   file-name bullets is not checked against the changes, and `git diff
-  --check` is not read as a marker search.
+  --check` is not read as a marker search. Resolving each conflicted file
+  and then running `git add` and `git commit` (or `merge --continue`)
+  leaves "I resolved the merge conflicts" unverified: those count as
+  changes after the clean reads, so search the workspace for markers as
+  the last step. A search with `--exclude-dir` (even of `node_modules` or
+  `.git`) is refused; a file named by its base name ("`a.go`") is not
+  matched to `src/a.go`; and "merged `feature` into `main` cleanly" is not
+  read as a clean-merge claim.

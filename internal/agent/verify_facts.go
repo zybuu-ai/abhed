@@ -61,6 +61,8 @@ type facts struct {
 	buildTarget string
 	// mergeClean: it says merge conflicts are resolved or the merge is clean.
 	mergeClean bool
+	// mergeWork: it says conflicts were resolved, which a clean merge never shows.
+	mergeWork bool
 	// alsoLint: it says lint passes beside a build or tests ("build and lint pass").
 	alsoLint bool
 	// changeEvent: it says something is now so or new ("now", "gets").
@@ -130,6 +132,7 @@ var (
 	lintWordRe = regexp.MustCompile(`\b(?:lints?|linter|linting|vet)\b`)
 	// mergeCleanRe says the merge conflicts are gone; mergeOpenRe says some are not.
 	mergeCleanRe = regexp.MustCompile(`\b(?:resolved|fixed|cleared) (?:the |all |all the |every )?(?:merge |git |rebase )?conflicts?\b|\bconflicts? (?:are|is|have been|has been|were|was) (?:now |all )?(?:resolved|fixed|gone|cleared)\b|\b(?:clean|successful) (?:merge|rebase)\b|\b(?:merge|rebase) (?:is|was) (?:now )?(?:clean|complete|resolved|done)\b|\bmerged cleanly\b|\bno (?:remaining |more )?(?:merge )?(?:conflicts?|conflict markers)(?: (?:remain|left|remaining))?\b`)
+	mergeWorkRe  = regexp.MustCompile(`\b(?:resolved|fixed|cleared)\b`)
 	mergeOpenRe  = regexp.MustCompile(`\b(?:not|never|unresolved|still|remain(?:s|ing)? (?:in|unresolved)|partly|partially)\b|n't\b`)
 	buildWordRe  = regexp.MustCompile(`\b(?:build|builds|compiles?)\b`)
 	buildRe      = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
@@ -452,6 +455,7 @@ func extractFacts(claim string) facts {
 	f.noWarnings = noWarnClaimRe.MatchString(strings.ToLower(claim))
 	if low := normText(backtickRe.ReplaceAllString(claim, " ")); mergeCleanRe.MatchString(low) && !mergeOpenRe.MatchString(low) {
 		f.mergeClean = true
+		f.mergeWork = mergeWorkRe.MatchString(low)
 	}
 	if m := buildTargetRe.FindStringSubmatch(strings.ToLower(claim)); m != nil {
 		f.buildTarget = m[1]
