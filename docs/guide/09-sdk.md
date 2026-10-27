@@ -162,6 +162,7 @@ so authenticate the person before you name them.
 | `By` | When |
 |---|---|
 | `BySessionScope` | allowed by a scope a person chose to always allow earlier; set `Scope` |
+| `ByWorkspaceGrant` | allowed by a bash grant kept for the workspace (Abhed Studio's); set `Scope` |
 | `ByHeadless` | nobody could be asked, and a fixed answer applied; `Reason` says why, in place of "rejected" |
 | `BySystem` | the request ended with no answer, such as a timeout; `Reason` says why |
 | `ByReviewer`, `ByUser`, `ByPolicy` | a person answered, the person made the call, or policy decided; rarely needed from an approver |

@@ -735,13 +735,21 @@ interface AskMeta {
   `approval.scope_granted {scope, by, command?, family?, folder?, session?}`.
   An "always" grant is kept for the workspace in Abhed's state
   (`~/.abhed/state/bash-grants.json`, out of every command's reach) and
-  loaded by every new or continued session of the workspace; one for the
-  session alone is never kept. The kept grants are the source: a grant in an
-  older record is not brought back once revoked.
+  loaded by every new or continued session of the workspace, each recorded
+  at the start as `approval.scope_granted` with `kept: "workspace"` and
+  `granted_at`; one for the session alone is never kept, and one that
+  cannot be kept holds for the session alone. The kept grants are the
+  source: a grant in an older record is not brought back once revoked. A
+  call a kept grant lets through is `action.approved` with `by:
+  "workspace-grant"` and its `scope`. The workspace is its real path, one
+  key for every case spelling where the disk ignores case, and its folder's
+  identity: a folder deleted and made again at the path starts with none.
 - **Kept grants (1.2.9, feature `grants`).** `_abhed/grants/list {sessionId}`
   → `{workspace, managed, grants: [{id, scope, command?, family?, folder?,
   grantedAt}]}`; `_abhed/grants/revoke {sessionId, id}` → `{revoked, scope}`,
-  forgets it and takes it from every open session of the workspace, recorded
+  forgets it and takes it from this process's open sessions of the
+  workspace at once; a session in another Abhed process (another window)
+  looks the grant up again before it would answer, and asks. Recorded
   `permission.changed {op: "remove", list: "allow", rule, scope:
   "workspace"}`; refused inside an agent's command, `-32602` for an unknown
   id. With `managed` true none is loaded or offered.

@@ -36,7 +36,7 @@ var OllamaOutcomes = []string{agent.OllamaOK, agent.OllamaFailed, agent.OllamaDe
 var Methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 
 // Approvers are who an approval or denial names as deciding.
-var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByHeadless, agent.BySystem, agent.ByCarried}
+var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByWorkspaceGrant, agent.ByHeadless, agent.BySystem, agent.ByCarried}
 
 // VerdictCodes are the supervisor's codes; Skipped and Unavailable stand for
 // a call the judge did not, or could not, answer.
@@ -355,7 +355,11 @@ func (m *Abhed) Observe(ev agent.Event) {
 		}
 		m.plans.Inc(oneOf(p.Decision, []string{"accept", "keep-planning"}), via)
 	case string(agent.EvApprovalScopeGranted):
-		m.scopes.Inc()
+		var g agent.ScopeGranted
+		// One a session starts with was counted when it was chosen.
+		if json.Unmarshal(ev.Payload, &g) != nil || g.Kept == "" {
+			m.scopes.Inc()
+		}
 	case string(agent.EvAnswerVerdict):
 		var p agent.AnswerVerdict
 		if json.Unmarshal(ev.Payload, &p) == nil {

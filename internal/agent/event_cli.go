@@ -1,5 +1,7 @@
 package agent
 
+import "time"
+
 // Events the interactive CLI records about the person's own actions: modes,
 // rules, directories, mentions, commands, memory, session names and branches,
 // restores, plans, model fallback, hooks and record repair. Rewind reuses
@@ -108,6 +110,10 @@ type ScopeGranted struct {
 	Family  string `json:"family,omitempty"`
 	Folder  string `json:"folder,omitempty"`
 	Session bool   `json:"session,omitempty"`
+	// Kept is "workspace" for a grant the session started with, kept for its
+	// workspace from an earlier session, chosen at GrantedAt.
+	Kept      string     `json:"kept,omitempty"`
+	GrantedAt *time.Time `json:"granted_at,omitempty"`
 }
 
 // ManualEdit is the payload of manual.edit: a save the person made in their

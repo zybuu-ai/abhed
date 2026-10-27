@@ -2758,7 +2758,7 @@ const byWhom = p => p.by === 'reviewer' || (!p.by && p.step === 'reviewer') ? ' 
 // put to anyone, so a prompt drawn for it goes; one a person answered keeps who and what
 // scope, and a replay draws it settled, as it was decided.
 function answered(p, c, how){
-  if(p.by === 'session-scope'){
+  if(p.by === 'session-scope' || p.by === 'workspace-grant'){
     asks.delete(p.call_id);
     for(const a of tx().querySelectorAll('.ask')) if(a.dataset.call === p.call_id && a.querySelector('.btns')) a.remove();
     return;

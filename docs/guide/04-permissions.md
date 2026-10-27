@@ -1296,10 +1296,16 @@ first, and where the managed configuration holds the permissions none is
 offered. Each is recorded as `approval.scope_granted` with what it covers.
 An "always" scope is kept for the workspace in Abhed's own state
 (`~/.abhed/state/bash-grants.json`, which no command can read or write), so
-every new session there starts with it. Abhed Studio lists the workspace's
-kept scopes and revokes any of them (`_abhed/grants/list` and `revoke`); a
-revoked scope asks again in every open session at once, and is recorded as
-`permission.changed` (`op: remove`, `scope: workspace`). Where the managed
+every new session there starts with it; the session's record lists them at
+its start (`approval.scope_granted` with `kept: workspace` and when each was
+chosen), and a call one lets through is recorded `by: workspace-grant`.
+Abhed Studio lists the workspace's kept scopes and revokes any of them
+(`_abhed/grants/list` and `revoke`); a revoked scope asks again in every
+open session, in any Abhed window, as a kept scope is looked up again
+before it answers, and the revoke is recorded as `permission.changed` (`op:
+remove`, `scope: workspace`). Scopes follow the workspace folder: every
+spelling of its path on a disk that ignores case is the same workspace,
+and a folder deleted and cloned again at the same path starts with none. Where the managed
 configuration holds the permissions, kept scopes are neither offered nor
 loaded.
 

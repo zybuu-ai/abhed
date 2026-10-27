@@ -3,13 +3,16 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -302,6 +305,15 @@ func TestBashGrantsAreKeptForTheWorkspace(t *testing.T) {
 	if asked != 0 {
 		t.Fatalf("asked %d times in a new session", asked)
 	}
+	// The session's record says where the answer came from.
+	kept, actors := r.recorded(id2, agent.EvApprovalScopeGranted)
+	if len(kept) != 1 || kept[0]["kept"] != "workspace" || kept[0]["command"] != "go version" || kept[0]["granted_at"] == nil || actors[0] != agent.ActorSystem {
+		t.Fatalf("loaded grants recorded %v %v", kept, actors)
+	}
+	approved, _ := r.recorded(id2, agent.EvActionApproved)
+	if len(approved) != 1 || approved[0]["by"] != agent.ByWorkspaceGrant || approved[0]["scope"] != "bash(go version)" {
+		t.Fatalf("approved %v", approved)
+	}
 	// Revoked, it asks again.
 	r.cl.ok("_abhed/grants/revoke", map[string]any{"sessionId": id2, "id": list.Grants[0].ID}, nil)
 	r.cl.ok("_abhed/grants/list", map[string]any{"sessionId": id2}, &list)
@@ -314,4 +326,110 @@ func TestBashGrantsAreKeptForTheWorkspace(t *testing.T) {
 		t.Fatalf("asked %d times after revoking", asked)
 	}
 	r.cl.refused(errParams, "_abhed/grants/revoke", map[string]any{"sessionId": id2, "id": "g-none"})
+
+	// Revoked by another process, which only changes the file, it asks
+	// again here before it would answer.
+	if err := keepGrant(r.ws, bashGrant{Command: "go version"}); err != nil {
+		t.Fatal(err)
+	}
+	id3 := r.open()
+	r.model.script(callTool("c4", "bash", map[string]any{"command": "go version"}), say("done"))
+	r.prompt(id3, "kept")
+	if asked != 1 {
+		t.Fatalf("asked %d times with the grant kept", asked)
+	}
+	if _, ok, err := dropGrant(r.ws, bashGrant{Command: "go version"}.id()); !ok || err != nil {
+		t.Fatalf("drop %v %v", ok, err)
+	}
+	r.model.script(callTool("c5", "bash", map[string]any{"command": "go version"}), say("done"))
+	r.prompt(id3, "revoked elsewhere")
+	if asked != 2 {
+		t.Fatalf("asked %d times after another process revoked it", asked)
+	}
+}
+
+// Two processes keeping grants at once lose none of each other's.
+func TestKeptGrantsTwoWriters(t *testing.T) {
+	if who := os.Getenv("ABHED_TEST_GRANT_WRITER"); who != "" {
+		ws := os.Getenv("ABHED_TEST_GRANT_WS")
+		grantsFile = func() string { return os.Getenv("ABHED_TEST_GRANT_FILE") }
+		for i := 0; i < 25; i++ {
+			if err := keepGrant(ws, bashGrant{Command: fmt.Sprintf("echo %s-%d", who, i)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	ws := t.TempDir()
+	file := filepath.Join(t.TempDir(), "state", "bash-grants.json")
+	var cmds []*exec.Cmd
+	for _, who := range []string{"a", "b"} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestKeptGrantsTwoWriters$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "ABHED_TEST_GRANT_WRITER="+who, "ABHED_TEST_GRANT_WS="+ws, "ABHED_TEST_GRANT_FILE="+file)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds = append(cmds, cmd)
+	}
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := grantsFile
+	grantsFile = func() string { return file }
+	defer func() { grantsFile = old }()
+	if got := len(workspaceGrants(ws)); got != 50 {
+		t.Fatalf("%d grants kept of 50", got)
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(file), ".bash-grants-*")); len(left) != 0 {
+		t.Fatalf("temporary files left: %v", left)
+	}
+}
+
+// Every spelling of a workspace on a disk that ignores case is one, and a
+// folder made again at the same path starts with no grants.
+func TestKeptGrantsFollowTheFolder(t *testing.T) {
+	old := grantsFile
+	file := filepath.Join(t.TempDir(), "bash-grants.json")
+	grantsFile = func() string { return file }
+	defer func() { grantsFile = old }()
+	parent := t.TempDir()
+	ws := filepath.Join(parent, "Proj")
+	if err := os.Mkdir(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := bashGrant{Command: "go version"}
+	if err := keepGrant(ws, g); err != nil {
+		t.Fatal(err)
+	}
+	if !stillKept(ws, g) {
+		t.Fatal("not kept")
+	}
+	if other := filepath.Join(parent, "proj"); tools.FoldsCaseAt(parent) {
+		if !stillKept(other, g) {
+			t.Fatal("another spelling of the workspace has none")
+		}
+		if _, ok, err := dropGrant(other, g.id()); !ok || err != nil {
+			t.Fatalf("revoke by another spelling %v %v", ok, err)
+		}
+		if stillKept(ws, g) {
+			t.Fatal("still kept after a revoke by another spelling")
+		}
+		if err := keepGrant(ws, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(ws); err != nil {
+		t.Fatal(err)
+	}
+	// A different folder, made after the first is gone: hold an inode so it is not reused.
+	hold := filepath.Join(parent, "hold")
+	_ = os.Mkdir(hold, 0o755)
+	if err := os.Mkdir(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if folderID(ws) != "" && len(workspaceGrants(ws)) != 0 {
+		t.Fatal("a folder made again at the path inherits its grants")
+	}
 }

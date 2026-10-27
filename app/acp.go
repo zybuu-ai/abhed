@@ -1378,18 +1378,12 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	// the destructive check's, the supervisor's or a screen's.
 	command, grantable := s.grantable(tool, args, d)
 	if grantable {
-		cwd := s.workDir()
-		s.mu.Lock()
-		var hit *bashGrant
-		for i := range s.grants {
-			if s.grants[i].covers(command, cwd) {
-				hit = &s.grants[i]
-				break
+		if g, ok := s.grantFor(command); ok {
+			by := abhed.BySessionScope
+			if !g.Session {
+				by = abhed.ByWorkspaceGrant
 			}
-		}
-		s.mu.Unlock()
-		if hit != nil {
-			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: hit.scopeOf()})
+			abhed.NoteAnswer(ctx, abhed.Answer{By: by, Scope: g.scopeOf()})
 			return true, nil
 		}
 	}
@@ -1557,13 +1551,15 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		return true, nil
 	case grantChosen(grantOpts, out.Outcome.OptionID) != nil:
 		g := *grantChosen(grantOpts, out.Outcome.OptionID)
-		s.addGrant(g)
-		// Kept for the workspace, outside every command's reach, for its next sessions.
-		if s.inner && s.parts.Session != nil {
+		// Kept for the workspace, outside every command's reach, for its next
+		// sessions; one that cannot be kept holds for this session alone.
+		if !g.Session && s.inner && s.parts.Session != nil {
 			if err := keepGrant(s.parts.Session.Root, g); err != nil {
-				warnf("the grant %s could not be kept for the workspace: %v", g.scopeOf(), err)
+				warnf("the grant %s could not be kept for the workspace, so it holds for this session alone: %v", g.scopeOf(), err)
+				g.Session = true
 			}
 		}
+		s.addGrant(g)
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: g.scopeOf()})
 		// Recorded either way; one for the session alone is not restored.
 		s.record(agent.EvApprovalScopeGranted, g.grantRecord())

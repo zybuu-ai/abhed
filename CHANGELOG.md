@@ -196,8 +196,13 @@ All notable changes to Abhed are recorded here. The format follows
   the sandbox's network policy's to say, not the grant's. None is offered
   where the managed configuration holds the permissions. "Always" grants
   are kept for the workspace in Abhed's state, outside every command's
-  reach, so every session of the workspace starts with them; Studio lists
-  and revokes them (`_abhed/grants/list`, `revoke`).
+  reach, so every session of the workspace starts with them, recorded at
+  its start (`kept: workspace`), and a call one lets through is recorded
+  `by: workspace-grant`. Studio lists and revokes them (`_abhed/grants/list`,
+  `revoke`); every Abhed process shares the file under a lock, and a kept
+  grant is looked up again before it answers, so a revoke in one window
+  holds in the others. They follow the folder: one key for every case
+  spelling, and none for a folder made again at the same path.
 
 - Previewing writes from Abhed Studio: a prompt with
   `_meta["zybuu.ai/abhed"].previewWrites` asks about each of its `edit` and
@@ -1126,7 +1131,8 @@ out):
 - `sdk`: `(*Agent).ConfigWarnings`, `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
   `Options.Verify` and `Options.VerifyByDefault`, and the types
   `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
-  `RequireResult`, `Runbook` and `RunbookStep`.
+  `RequireResult`, `Runbook` and `RunbookStep`, and the constant
+  `ByWorkspaceGrant`.
 - `server`: `APIAuditPrefix`, `Metrics` and `NewMetrics`, `Mutating`,
   `Options.APIAudit`, `Options.Metrics`, `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
   `PendingAsk.StepTools`.
