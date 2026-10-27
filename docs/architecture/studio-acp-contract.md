@@ -783,7 +783,9 @@ are sent, with `meta.hunksOnly: true`.
 A `session/prompt` whose `_meta["zybuu.ai/abhed"]` carries
 `previewWrites: true` previews every `edit` and `write` of that prompt:
 whatever the mode or a rule decided, short of a deny, it is asked (step
-`preview`, keeping an earlier ask's reason), with its diff as §5.5 gives it,
+`preview`, keeping an earlier ask's reason; the card's `rule` is
+`builtin:preview`, and the rule it replaced stays on the record), with its
+diff as §5.5 gives it,
 and nothing is written until the person accepts. The preview ask offers no
 scope, so no "always" grant, remembered or restored, answers it. Rejected,
 it is denied by the reviewer like any ask; accepted, it is approved and

@@ -100,7 +100,9 @@ func (c *acpConn) linkedAttachments(ctx context.Context, s *acpSession, blocks [
 				continue
 			}
 			// Its size is known before it is decoded, so an oversized one costs nothing.
-			if n := base64.StdEncoding.DecodedLen(len(blk.Data)) - 2; n > promptImageBytes || imageBytes+n > promptImageTotal {
+			// The decoder skips line breaks, so they are not counted as data.
+			wrapped := strings.Count(blk.Data, "\n") + strings.Count(blk.Data, "\r")
+			if n := base64.StdEncoding.DecodedLen(len(blk.Data)-wrapped) - 2; n > promptImageBytes || imageBytes+n > promptImageTotal {
 				refused = append(refused, fmt.Sprintf("an image may hold %d MB, and a prompt's images %d MB in all", promptImageBytes>>20, promptImageTotal>>20))
 				continue
 			}
