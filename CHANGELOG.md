@@ -184,8 +184,10 @@ All notable changes to Abhed are recorded here. The format follows
   in the module, and for Maven and Gradle no further goal or task. No scope,
   exact or family, is offered for or covers a line with a chain, expansion,
   assignment, `~`, or a word with an absolute path or a `..` step in any part
-  split at `=` or `:`, or a `module@version`. None is offered where the
-  managed configuration holds the permissions. Grants are recorded, and
+  split at `=` or `:`, or a word with `@`. A family grant runs the project's
+  own build or test, with whatever its files declare: what it can reach is
+  the sandbox's network policy's to say, not the grant's. None is offered
+  where the managed configuration holds the permissions. Grants are recorded, and
   `session/load` restores all but those for the session alone.
 
 - Previewing writes from Abhed Studio: a prompt with

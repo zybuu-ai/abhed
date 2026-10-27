@@ -94,13 +94,14 @@ var grantValueFlags = map[string]bool{"-run": true, "-count": true, "-covermode"
 // names a task to leave out.
 var gradleValueFlags = map[string]bool{"-x": true, "--exclude-task": true, "--tests": true}
 
-// goodModValues are the -mod settings that fetch nothing.
+// goodModValues are the -mod settings that never rewrite go.mod. They do
+// not stop the build fetching what go.mod already requires.
 var goodModValues = map[string]bool{"readonly": true, "vendor": true}
 
 // passThrough are the families whose words after `--` go to the project's
 // own program (the test binary, the script), not the tool: those words are
 // held to the path rules alone.
-var passThrough = map[string]bool{"cargo": true, "npm": true}
+var passThrough = map[string]bool{"cargo test": true, "cargo run": true, "npm": true}
 
 // flagsFor is the allowed-flag list a family key reads.
 func flagsFor(prog, sub string) (string, []string) {
@@ -108,7 +109,7 @@ func flagsFor(prog, sub string) (string, []string) {
 	case "go":
 		return "go " + sub, familyFlags["go "+sub]
 	case "cargo":
-		return "cargo", familyFlags["cargo"]
+		return "cargo " + sub, familyFlags["cargo"]
 	case "npm", "pnpm", "yarn":
 		return "npm", familyFlags["npm"]
 	case "dotnet", "mvn", "gradle", "pytest":
@@ -121,8 +122,8 @@ func flagsFor(prog, sub string) (string, []string) {
 
 // safeWord reports a word, or a flag's value, that names nothing outside
 // the session's folder: in no part of it, split at each "=" and ":", an
-// absolute path or a step out with "..", and no module@version anywhere,
-// which fetches code.
+// absolute path or a step out with "..", and no "@" anywhere, as in a
+// module@version, which fetches code.
 func safeWord(w string) bool {
 	if strings.Contains(w, "@") {
 		return false
@@ -171,7 +172,7 @@ func flagsAllowed(key string, allowed, args []string) bool {
 			return false
 		}
 		if a == "--" {
-			if !passThrough[prog] {
+			if !passThrough[key] {
 				return false
 			}
 			for _, rest := range args[i+1:] {
@@ -200,7 +201,7 @@ func flagsAllowed(key string, allowed, args []string) bool {
 			listed = listed || f == name
 		}
 		if !listed {
-			// -mod is covered only where it fetches nothing.
+			// -mod is covered only where it never rewrites go.mod.
 			if prog != "go" || name != "-mod" || !hasValue || !goodModValues[value] {
 				return false
 			}

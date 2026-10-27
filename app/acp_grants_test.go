@@ -236,3 +236,18 @@ func TestGrantsRoundTwo(t *testing.T) {
 		}
 	}
 }
+
+// Words after -- go to the project's own test binary or program only for
+// cargo test and cargo run; for clippy or fmt they go to the tool.
+func TestCargoPassThroughOnlyForTestAndRun(t *testing.T) {
+	for cmd, want := range map[string]string{
+		"cargo test -- --nocapture":   "cargo test",
+		"cargo run -- --port 8080":    "cargo run",
+		"cargo clippy -- -D warnings": "",
+		"cargo fmt -- --emit files":   "",
+	} {
+		if got := familyOf(cmd); got != want {
+			t.Errorf("%q: %q, want %q", cmd, got, want)
+		}
+	}
+}

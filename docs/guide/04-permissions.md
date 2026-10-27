@@ -1269,7 +1269,8 @@ for `go test`; `-p crate`, `--release`, `--features` for `cargo`; `-k`,
 file, project or output path (`-exec`, `-toolexec`, `-vettool`, `-o`,
 `--manifest-path`, `--prefix`, `--init-script`, Maven's `-s` or `-f`,
 pytest's `-p` or `-c`) is on no list, so that line asks again. Go's `-mod`
-is covered only as `-mod=readonly` or `-mod=vendor`, which fetch nothing, and
+is covered only as `-mod=readonly` or `-mod=vendor`, which never rewrite
+`go.mod`, and
 a go package only as `.`, a relative path (`./x`, `./...`) or a pattern such
 as `all` or `std`, never an import path naming a host. For `mvn` and `gradle`
 the family is the one goal or task named: a further goal or task (`mvn test
@@ -1278,8 +1279,14 @@ goal such as `exec:exec`, or `-pl :core`), asks again. No scope, exact or
 family, is offered for or covers a line with a chain, a redirect, an
 expansion, a quote, `~`, an assignment in front such as `CGO_ENABLED=0`, a
 program named by a path, or a word with, in any part split at `=` or `:`,
-an absolute path or a `..` step, or with a `module@version`: such a line asks
-every time.
+an absolute path or a `..` step, or a word with `@`: such a line asks every
+time.
+
+A family grant runs the project's own build or test, including the
+dependencies and plugins its files (`go.mod`, `Cargo.toml`, `package.json`,
+`pom.xml`, `build.gradle`) declare, files the agent can edit. What that
+build can fetch or reach is set by the sandbox's network policy, not by the
+grant.
 
 A scope answers only a later ask of the same default kind: a deny or ask
 rule, the destructive check, the supervisor and the screens still decide
