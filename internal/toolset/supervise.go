@@ -95,10 +95,21 @@ func hostLookPath(reg *tools.Registry) func(string) bool {
 	}
 	switch b.Isolation.Tier {
 	case "", "none", "process", "fence":
-		return func(p string) bool { _, err := exec.LookPath(p); return err == nil }
+		// The PATH commands get: the host's, with the toolchains' first.
+		return func(p string) bool {
+			if _, err := exec.LookPath(p); err == nil {
+				return true
+			}
+			return b.Provides != nil && b.Provides("", p)
+		}
 	}
 	return nil
 }
+
+// ProgramFinder reports whether a program is on the PATH the session's
+// commands get, toolchains included, or is nil where that cannot be told
+// from here (commands in a container or a VM).
+func ProgramFinder(reg *tools.Registry) func(string) bool { return hostLookPath(reg) }
 
 // SupervisorLabel says what supervises calls, for the banner, /status and doctor.
 func SupervisorLabel(cfg config.Config) string {

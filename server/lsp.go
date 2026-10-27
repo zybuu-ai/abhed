@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // Workbench language servers: an operator-named command, started as the person's
@@ -168,6 +169,14 @@ func (s *Server) startLSP(w http.ResponseWriter, r *http.Request) {
 	b, isBash := tool.(tools.Bash)
 	if in := isolationOf(tool); !isBash || b.Sandbox == nil || in == nil || !lspTiers[in.Tier] {
 		WriteError(w, http.StatusConflict, "a language server runs only inside a sandbox, and this session has none")
+		return
+	}
+
+	// A server that is not on the PATH commands get, the toolchains' folders
+	// first, cannot start; nothing is judged for it.
+	if find := toolset.ProgramFinder(live.Loop.Tools); find != nil && !strings.ContainsAny(argv[0], "/\\") && !find(argv[0]) {
+		WriteError(w, http.StatusConflict, argv[0]+" is not installed where this session's commands run: install "+req.Language+
+			" with its language server (abhed toolchain install -lsp "+req.Language+"), use a sandbox image that has it, or name another server in sandbox.language_servers")
 		return
 	}
 

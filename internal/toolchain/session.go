@@ -3,6 +3,8 @@ package toolchain
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -154,15 +156,37 @@ func (s *Session) Active(dir string) []Installed {
 // Prelude is the shell lines a command in dir starts with to find the active
 // toolchains: their programs first on PATH, and the variables they need.
 func (s *Session) Prelude(dir string) string {
-	act := s.Active(dir)
-	if len(act) == 0 {
+	path, search, vars := s.environment(dir)
+	if len(path) == 0 && len(vars) == 0 && len(search) == 0 {
 		return ""
 	}
-	var path []string
-	search := map[string][]string{}
-	vars := map[string]string{}
+	var b strings.Builder
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "export %s=%s; ", k, shellQuote(vars[k]))
+	}
+	names := make([]string, 0, len(search))
+	for k := range search {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		fmt.Fprintf(&b, "export %s=%s\"${%s:+:$%s}\"; ", k, shellQuote(strings.Join(search[k], ":")), k, k)
+	}
+	fmt.Fprintf(&b, "export PATH=%s\"${PATH:+:$PATH}\"; ", shellQuote(strings.Join(path, ":")))
+	return b.String()
+}
+
+// environment is what the active toolchains for dir add: the folders put
+// first on PATH, the search paths and the variables.
+func (s *Session) environment(dir string) (path []string, search map[string][]string, vars map[string]string) {
+	search, vars = map[string][]string{}, map[string]string{}
 	p := s.platform()
-	for _, in := range act {
+	for _, in := range s.Active(dir) {
 		path = append(path, BinDirs(in)...)
 		for k, v := range Vars(in) {
 			vars[k] = v
@@ -184,25 +208,25 @@ func (s *Session) Prelude(dir string) string {
 			}
 		}
 	}
-	var b strings.Builder
-	keys := make([]string, 0, len(vars))
-	for k := range vars {
-		keys = append(keys, k)
+	return path, search, vars
+}
+
+// Provides reports whether the active toolchains for dir (the workspace
+// when dir is "") put an executable program first on PATH.
+func (s *Session) Provides(dir, program string) bool {
+	if s.Off || program == "" || strings.ContainsAny(program, "/\\") {
+		return false
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Fprintf(&b, "export %s=%s; ", k, shellQuote(vars[k]))
+	if dir == "" {
+		dir = s.Workspace
 	}
-	names := make([]string, 0, len(search))
-	for k := range search {
-		names = append(names, k)
+	path, _, _ := s.environment(dir)
+	for _, d := range path {
+		if fi, err := os.Stat(filepath.Join(d, program)); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return true
+		}
 	}
-	sort.Strings(names)
-	for _, k := range names {
-		fmt.Fprintf(&b, "export %s=%s\"${%s:+:$%s}\"; ", k, shellQuote(strings.Join(search[k], ":")), k, k)
-	}
-	fmt.Fprintf(&b, "export PATH=%s\"${PATH:+:$PATH}\"; ", shellQuote(strings.Join(path, ":")))
-	return b.String()
+	return false
 }
 
 // shellQuote quotes s for a POSIX shell.
