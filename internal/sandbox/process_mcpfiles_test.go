@@ -2,8 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,14 +104,66 @@ func TestServerInstallFolderNeverHoldsState(t *testing.T) {
 		if err := os.WriteFile(prog, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := serverFilesIn("s", prog, nil, nil); err == nil || !strings.Contains(err.Error(), "holds Abhed's state") {
+		if _, err := serverFilesIn("s", []string{prog}, nil, nil); err == nil || !strings.Contains(err.Error(), "holds Abhed's state") {
 			t.Errorf("%s: %v", rel, err)
 		}
 	}
 	ok := filepath.Join(home, "tools", "srv", "bin", "srv")
 	_ = os.MkdirAll(filepath.Dir(ok), 0o755)
 	_ = os.WriteFile(ok, []byte("#!/bin/sh\n"), 0o755)
-	if f, err := serverFilesIn("s", ok, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
+	if f, err := serverFilesIn("s", []string{ok}, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
 		t.Fatalf("an ordinary install folder: %+v %v", f, err)
+	}
+}
+
+// A server's code named by its configured arguments, under the home, is
+// readable to it, as its install folder is; never home itself, a broad
+// folder, Abhed's state or a folder of credentials.
+func TestServerScriptFoldersReadable(t *testing.T) {
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	mk := func(rel string) string {
+		p := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("echo ok\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	script := mk(".qa/mcp/ticket.sh")
+	f, err := serverFilesIn("s", []string{"/bin/sh", script, "--flag", "relative.py"}, nil, nil)
+	if err != nil || !slices.Equal(f.scripts, []string{filepath.Dir(script)}) {
+		t.Fatalf("scripts %v %v", f.scripts, err)
+	}
+	if !strings.Contains(f.seatbeltRules(), fmt.Sprintf("(allow file-read-data (subpath %q))", filepath.Dir(script))) ||
+		!slices.Contains(f.bwrapArgs(), filepath.Dir(script)) {
+		t.Fatalf("not shown: %s %v", f.seatbeltRules(), f.bwrapArgs())
+	}
+	for _, rel := range []string{"top.py", ".ssh/x.py", ".aws/cli/x.py", ".abhed/x.py", ".config/x.py", "Library/x.py"} {
+		if got := scriptFolders(home, []string{mk(rel)}); len(got) != 0 {
+			t.Errorf("%s made %v readable", rel, got)
+		}
+	}
+	// The server runs its script from there, confined, on macOS.
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+		t.Skip("no sandbox-exec")
+	}
+	ws := t.TempDir()
+	sb := NewProcess(DefaultPolicy(ws))
+	cmd, err := sb.ServerCommand(context.Background(), "tickets", []string{"/bin/sh", script}, []string{"PATH=/usr/bin:/bin"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ok") {
+		t.Fatalf("the server could not run its own script: %v %s", err, out)
 	}
 }

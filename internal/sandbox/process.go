@@ -377,6 +377,12 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 // seatbeltProfileFor is the profile for a command whose session's egress
 // proxy holds port; 0 is none.
 func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
+	return s.seatbeltProfileWith(port, false, readable...)
+}
+
+// seatbeltProfileWith is seatbeltProfileFor, with loopback ports open when
+// loopback is set (WithLoopback) and readable also readable under home.
+func (s *Process) seatbeltProfileWith(port uint16, loopback bool, readable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
@@ -387,7 +393,7 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
 			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
 		}
-		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...)
+		allow := append(append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...), nonEmpty(readable)...)
 		for _, p := range allow {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
 		}
@@ -524,6 +530,14 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 		// only "localhost", so the proxy holds the port on both stacks.
 		if s.policy.Egress != nil && port != 0 {
 			fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", port)
+		}
+		// A debug session the person agreed to: loopback ports, both ways,
+		// and no other address.
+		if loopback {
+			b.WriteString(";; Loopback, for a debug adapter and its program, which the person agreed to.\n")
+			b.WriteString("(allow network-outbound (remote ip \"localhost:*\"))\n")
+			b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
+			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
 		}
 		// Nor a view of the host's network: its interfaces, addresses and
 		// routes, as bwrap's --unshare-net gives on Linux.
@@ -685,7 +699,7 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 				}
 			}
 		}
-		profile := s.seatbeltProfileFor(eg.portFor(egressCallOf(ctx)), eg.caFolder())
+		profile := s.seatbeltProfileWith(eg.portFor(egressCallOf(ctx)), loopbackOf(ctx), append([]string{eg.caFolder()}, readOnlyPathsOf(ctx)...)...)
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
 		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
@@ -1326,6 +1340,17 @@ func homeToolchains(home string) []string {
 			if filepath.Dir(root) != filepath.Clean(home) {
 				add(root)
 			}
+		}
+	}
+	return out
+}
+
+// nonEmpty is ps without its empty entries.
+func nonEmpty(ps []string) []string {
+	var out []string
+	for _, p := range ps {
+		if p != "" {
+			out = append(out, p)
 		}
 	}
 	return out

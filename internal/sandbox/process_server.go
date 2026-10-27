@@ -62,7 +62,7 @@ func (s *Process) serverCommand(ctx context.Context, name string, argv, env []st
 	var files serverFiles
 	if confineFiles {
 		var err error
-		if files, err = s.serverFilesFor(name, argv[0], env); err != nil {
+		if files, err = s.serverFilesFor(name, argv, env); err != nil {
 			return nil, err
 		}
 		if s.backend == "bwrap" {
@@ -225,7 +225,7 @@ func serverInHiddenTemp(program string, env []string, f serverFiles) error {
 	if path == "" {
 		return nil
 	}
-	shown := append(append([]string{f.home}, f.workspaces...), f.prefix)
+	shown := append(append([]string{f.home}, f.workspaces...), f.shown()...)
 	for _, tmp := range []string{"/tmp", os.TempDir()} {
 		if r, err := filepath.EvalSymlinks(tmp); err == nil {
 			tmp = r

@@ -371,9 +371,7 @@ func fenceSystemFor() []string {
 // of the rest of the home, the skills or the commands' temp.
 func (f *Fence) serverSpec(files serverFiles) landlock.Spec {
 	run := append(slices.Clone(fenceSystemFor()), files.outsideHome(f.policy.ReadOnlyPaths)...)
-	if files.prefix != "" {
-		run = append(run, files.prefix)
-	}
+	run = append(run, files.shown()...)
 	s := landlock.Spec{
 		Exec:    absAll(run),
 		Read:    []string{"/proc", "/sys"},
@@ -428,7 +426,7 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	if err := serverProgramMissing(argv[0], env); err != nil {
 		return nil, err
 	}
-	files, err := serverFilesIn(name, argv[0], env, PathForms(f.policy.Workspace))
+	files, err := serverFilesIn(name, argv, env, PathForms(f.policy.Workspace))
 	if err != nil {
 		return nil, err
 	}

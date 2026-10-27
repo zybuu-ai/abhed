@@ -30,9 +30,18 @@ home folder is hidden from it, but for a home of its own,
 `~/.abhed/mcp/<server>/home`, which is its `HOME`, which it may write and
 which keeps its caches (`npx`, `uv`) between runs, and the folder it was
 installed in when that is under your home (a node version's folder, a
-toolchain's, never all of `~/.local` or `~/.cargo`), read-only. A server
-whose program sits in `~/.abhed`, or directly in your home, is refused: that
-folder would show it Abhed's state. The workspace
+toolchain's, never all of `~/.local` or `~/.cargo`), read-only. So is the
+folder of each file its configured `args` name by absolute path under your
+home, such as the script an interpreter runs (`"command": "python3",
+"args": ["/Users/me/tools/mcp/tickets.py"]` shows `~/tools/mcp`), on every
+tier: never your home itself, a broad folder in it (`~/.local`, `~/.config`,
+`~/Library`, `~/bin`), `~/.abhed`, or a folder that is or holds a
+credential path. A server whose program sits in `~/.abhed`, or directly in
+your home, is refused: that folder would show it Abhed's state. A server
+that fails to start says why: the end of what it wrote to stderr (its last
+lines, up to 1,000 characters) follows the error in `/mcp`, Studio and
+`abhed doctor`, so a missing file or module is named instead of only a
+closed pipe. The workspace
 stays readable and writable, with its `.abhed` hidden. So a server cannot read
 `~/.ssh` or plant a LaunchAgent, a systemd user unit or a shell rc line.
 Files outside your home that your user can write stay writable. A server that

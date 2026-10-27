@@ -109,3 +109,4 @@
 2026-10-19T11:59:52.123Z s-1#111 API:Create INFO toolchain install python 3.12: refused
 2026-10-19T11:59:53.123Z s-1#112 API:Open registries INFO toolchain.registry
 2026-10-19T11:59:54.123Z s-1#113 API:Create INFO ollama pull qwen3:8b: refused
+2026-10-19T11:59:55.123Z s-1#114 API:Debug setup INFO debug.setup

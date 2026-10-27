@@ -752,6 +752,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Debugging without a container engine: a debug launch that needs the
+  container tier now returns a `container-setup` problem with what is
+  missing on this machine and the exact steps (install Podman, `podman
+  machine init`, `podman machine start`, put the workspace on the container
+  tier), which Studio walks through; `_abhed/debug/status-tier` reports the
+  same, and `_abhed/debug/use-container` raises the workspace's tier. Or, on
+  the person's choice and one-time agreement for the workspace (recorded as
+  `debug.setup`), the macOS process tier debugs with loopback ports open to
+  the debug command alone; the Linux process tier with an open network
+  takes the same agreement.
+- An MCP stdio server whose code lives under your home outside the
+  workspace failed with only "broken pipe": the folder of a script its
+  configured arguments name is now readable to it, and a server that fails
+  to start shows the end of its stderr in the error.
+
 - Abhed Studio's Go, Python and Rust language servers never started: the
   supervisor looked for the server on the engine's own `PATH`, without the
   toolchains Abhed installs for the sandbox, and refused it as an unknown
