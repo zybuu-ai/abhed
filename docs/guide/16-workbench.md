@@ -442,7 +442,19 @@ workspace root. Variables, aliases, functions, history, tab completion, `vim`
 and the like work as in any shell, within what the tier allows. The first lines
 of each tab say what contains it, for example
 `sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`; the
-prompt itself is the shell's own. On the `none` tier the
+prompt itself is the shell's own. On the macOS process tier the shell is
+your own where it can run there: `zsh` when your login shell (`SHELL`) is
+zsh, else the newest `bash` 4 or later installed outside your home (Homebrew's),
+else macOS's `/bin/bash`; a shell inside home is never used, as home is closed
+to commands. zsh starts with no start-up file but Abhed's own (`zsh -d -i`
+with a `.zshrc` in the sandbox's caches that commands cannot change: the
+sandbox prompt, history in memory, the toolchains on `PATH` and the note for
+a missing program), and the terminal is judged and recorded as `zsh -d -i`.
+Bash reads none (`bash --noprofile --norc -i`). Either keeps from your login
+environment only your language and time zone (`LANG`, `LC_*`, `TZ`), editor
+(`EDITOR`, `VISUAL`) and colour settings (`COLORTERM`, `CLICOLOR`,
+`LSCOLORS`, `LS_COLORS`, `LESS`, `TERM_PROGRAM`). Linux and the container
+tier run bash. On the `none` tier the
 banner says in red that commands run directly on the host, and so does the
 status bar.
 

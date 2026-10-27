@@ -427,7 +427,11 @@ func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSe
 	}
 
 	id := "u" + newSessionID()
-	args, _ := json.Marshal(map[string]any{"command": sandbox.TerminalCommand, "description": "interactive terminal in the session sandbox", "interactive": true})
+	line := sandbox.TerminalCommand
+	if b.ShellLine != nil {
+		line = b.ShellLine()
+	}
+	args, _ := json.Marshal(map[string]any{"command": line, "description": "interactive terminal in the session sandbox", "interactive": true})
 	if _, refused, err := live.Loop.ManualAuthorize("bash", id, args); err != nil {
 		writeUnrecorded(w, err, "the terminal could not be recorded, so it was not opened")
 		return
@@ -453,7 +457,7 @@ func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSe
 	if cfg.Sandbox.TerminalIdleMinutes > 0 {
 		shell.idle = time.Duration(cfg.Sandbox.TerminalIdleMinutes) * time.Minute
 	}
-	run, err := s.launch(live, sess, id, sandbox.TerminalCommand, cmd, cancel, req.Cols, req.Rows, UserOf(r.Context()), shell)
+	run, err := s.launch(live, sess, id, line, cmd, cancel, req.Cols, req.Rows, UserOf(r.Context()), shell)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return

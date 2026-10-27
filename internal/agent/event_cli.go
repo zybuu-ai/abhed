@@ -101,6 +101,13 @@ type MCPStatus struct {
 type ScopeGranted struct {
 	Scope string `json:"scope"`
 	By    string `json:"by"`
+	// A bash grant names the exact command or the family (go test) it
+	// covers, the folder it is limited to, and whether it is for this
+	// session alone, which a later load does not restore.
+	Command string `json:"command,omitempty"`
+	Family  string `json:"family,omitempty"`
+	Folder  string `json:"folder,omitempty"`
+	Session bool   `json:"session,omitempty"`
 }
 
 // ManualEdit is the payload of manual.edit: a save the person made in their

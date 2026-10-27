@@ -493,6 +493,7 @@ func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.S
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
 		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+		bash.ShellLine = func() string { return sandbox.TerminalCommandOf(sb) }
 	}
 	return cfg, sb, bash, nil
 }

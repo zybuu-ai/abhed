@@ -143,6 +143,35 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Studio can manage installed toolchains (feature `toolchain.manage`):
+  `_abhed/toolchain/remove`, `_abhed/toolchain/clean`, which asks the person
+  in the engine's own permission request before removing the whole cache,
+  and `_abhed/toolchain/registries`, which opens an installed language's
+  registries as an install's `agreed.registries` does. Each is refused
+  inside an agent's command and recorded.
+
+- The terminal on the macOS process tier runs your own shell where it can:
+  zsh when it is your login shell, else Homebrew's bash 4 or later, else
+  `/bin/bash`, with no start-up file but Abhed's own (which commands cannot
+  change), and only your language, time zone, editor and colour settings from
+  your login environment. A zsh terminal is judged and recorded as `zsh -d
+  -i`.
+
+- `mode.default`: the mode new sessions start in where `permissions.mode`
+  names none, so a workspace's Studio chats keep the mode chosen for it
+  (`plan`, `default`, `accept-edits` or `auto`, never `bypass`). An untrusted
+  workspace file may only start sessions narrower.
+
+- Studio's permission request for a bash command offers scopes the engine
+  enforces: this exact command for the session or always, and, for a known
+  command family (`go test`, `cargo test`, `npm run lint`, `python -m
+  pytest`…), that family in the current folder or anywhere. A grant answers
+  only the policy's default ask, never one a rule, the destructive check,
+  the supervisor or a screen makes, and covers no line with a chain,
+  expansion, assignment, path or code flag; none is offered where the
+  managed configuration holds the permissions. Grants are recorded, and
+  `session/load` restores all but those for the session alone.
+
 - Inline completions for Abhed Studio: `_abhed/complete` (the `complete`
   feature) sends the code around the cursor, bounded, to the provider
   `model.completion` names, by fill in the middle on a local coding model

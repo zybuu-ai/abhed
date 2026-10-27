@@ -338,6 +338,9 @@ func (c *acpConn) restore(s *acpSession, rec *local.Store, events []agent.Event)
 		case agent.EvApprovalScopeGranted:
 			// Only asks consult these, after deny rules and the destructive
 			// check, so a scope cannot outlive a rule that now refuses it.
+			if s.restoreGrant(ev.Payload) {
+				continue
+			}
 			var g agent.ScopeGranted
 			if json.Unmarshal(ev.Payload, &g) == nil && g.Scope != "" {
 				if _, err := policy.ParseRule(g.Scope); err == nil {

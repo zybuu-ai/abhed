@@ -297,12 +297,15 @@ language (`go`, `python`, `node`, `rust`, `java`, `maven`, `gradle`, `ruby`,
 |---|---|
 | `_abhed/toolchain/status` | `{sessionId, language, version?, debugger?, lsp?}` → `{language, available, version?, can_act, debugger?: {name, version, available}, lsp?: {name, version, available}, offer?: {command, title, source, size?, version?, into?, why, url, digest, registries, registries_note?, debugger?: extra, lsp?: extra}, refusal?: problem}`, where `extra` is `{name, display, version, source, url, digest, size?, note?, installed, needs?: {language, display, version, source, url, digest, size?}}`. With `lsp: true` the offer includes the language's server (gopls, basedpyright, typescript-language-server for `node`, `typescript` or `javascript`, rust-analyzer); `needs` is a language it runs on that is installed first (Node.js for basedpyright), which the modal must show, and `title` says so; `refusal.kind` is `no_lsp` where it cannot be had (Go older than 1.26, Node.js older than 22.22.2 for TypeScript's server, a platform with no build). With `debugger: true` the offer includes the language's debugger (Delve for Go, debugpy for Python; `title` names both, "Go 1.27.3 + Delve debugger 1.27.2", and `note` says how Delve is built); `refusal.kind` is `no_debugger` where it cannot be had (not a Linux amd64 or arm64 sandbox for Delve, Go older than 1.25, Python older than 3.10). `debugger` at the top says whether the session's commands have it now. `registries` are the package registry hosts the install opens to the session's commands through its egress proxy (an empty list with `registries_note` saying why none, such as `sandbox.toolchains_registries is off`); this is the one way a person opens egress outside the managed file, so **the modal must show them**. `available` and `version`: the session's commands have the language now (`into` is where an install would go, for the platform commands run on). `offer` is what an install would fetch: the version and `why` (`requested`, `pinned by <file>`, `latest stable`), the release `source`, the download `url`, its `size` and the published `digest` it is checked against; `command` is the same install from a terminal. `can_act` is false, with `refusal`, when `sandbox.toolchains` is off, inside an agent's command, or when the source has no such build. Asks the release source; installs nothing. Not recorded |
 | `_abhed/toolchain/install` | `{sessionId, language, version?, installId, debugger?, lsp?, agreed?: {version, digest, debugger_version?, debugger_digest?, lsp_version?, lsp_digest?, needs_version?, needs_digest?, registries}}`. Studio sends `agreed`: the offer's version, digests and `registries` the modal showed, and `needs_version` and `needs_digest` for a language the server runs on that comes first (`offer.lsp.needs`); if the install would now fetch anything else, or open other registries, it is refused with `changed` and nothing is installed. Fields of an extra installed already may be left out. `registries` left out opens no registries: the install is made, and its reply says they were not opened. An install without `agreed` (an older Studio) is still made, but recorded with `consent: "studio-unconfirmed"` and **opens no registries**; a later contract version will require `agreed`. → `{language, available: true, version, dir, bin, debugger?: {name, version, dir, bin, pythonpath}, lsp?: {name, version, dir, bin}, registries}` once it is verified and in place (with `debugger: true`, the debugger is planned first, and a `no_debugger` refusal installs nothing; progress for it has `status: "debugger"`); `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"` (or `"studio-unconfirmed"` without `agreed`), and `toolchain.registry` for registries opened |
+| `_abhed/toolchain/remove` | feature `toolchain.manage`. `{sessionId, language, version?}` → `{language, platform, removed: [version]}`: the version named, else every installed version for the platform the session's commands run on. `not_installed` (-32602) when there is none. Recorded `toolchain.install` with `outcome: "removed"` |
+| `_abhed/toolchain/clean` | feature `toolchain.manage`. `{sessionId}` → `{cleaned, root}`. The engine asks the person first with its own `session/request_permission` (`meta.tool: "toolchain.clean"`, `destructive: true`, options *Remove them all* and *Keep them*); only that yes removes the whole cache, every toolchain and extra for every platform. Recorded `toolchain.install {lang: "*", outcome: "removed"}`, or `declined` |
+| `_abhed/toolchain/registries` | feature `toolchain.manage`. `{sessionId, language, registries}` → `{language, hosts, registries}`: opens an installed language's package registries, as an install's `agreed.registries` does; `registries` must be the hosts `status.offer.registries` named, else `changed`. `not_installed` (-32000) for a language the session's commands do not have; `registries_closed` (-32001) where none can be opened. Recorded `toolchain.registry` |
 | `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 with `kind: "cancelled"`, and nothing partial is left |
 
 **Errors.** `data` is `{problem: {kind, message, steps?}}`, as the Ollama
 assist's. `toolchains_off`, `in_agent` and `unavailable` are -32001;
 `unknown_language`, `bad_version`, `no_install_id` and `duplicate` are
--32602; `no_build`, `no_debugger`, `no_lsp`, `changed`, `install_failed` (including a download
+-32602; `no_build`, `no_debugger`, `no_lsp`, `changed`, `not_installed`, `remove_failed`, `clean_failed`, `install_failed` (including a download
 that does not match its published checksum) and `cancelled` are -32000.
 
 **Studio's side.** Before `install`, a modal showing `status.offer`'s
@@ -636,6 +639,12 @@ sends it:
               _meta: { "zybuu.ai/abhed": AskMeta } },
   options: [ { optionId: "once:<bind>",   name: "Allow once",          kind: "allow_once" },
              { optionId: "always:<bind>", name: "Always allow <scope>", kind: "allow_always" },  // only when offered
+             // 1.2.9, bash at the default step: the scopes below, each with
+             // _meta["zybuu.ai/abhed"].grant = {command?, family?, folder?, session?}
+             { optionId: "session-exact:<bind>", name: "Allow `<command>` for this session", kind: "allow_once" },
+             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>`",   kind: "allow_always" },
+             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family only
+             { optionId: "always-family:<bind>", name: "Always allow `<family> …` commands", kind: "allow_always" },    // a family only
              { optionId: "reject:<bind>", name: "Deny",                 kind: "reject_once" } ] }
 
 interface AskMeta {
@@ -656,6 +665,21 @@ interface AskMeta {
 - Option ids are bound to the request, so an answer meant for another ask is
   refused.
 - "Always" is never offered for destructive, screen or ask-rule steps.
+- **Bash scopes (1.2.9).** For a bash call the policy asks about by default
+  (no deny or ask rule, not destructive, not flagged by the supervisor or a
+  screen), the request also offers this exact command for the session or
+  always, and, for a command in a family Abhed knows (`go test`, `go build`,
+  `cargo test`, `npm run <script>`, `npm test`, `python -m pytest`, `pytest`,
+  `dotnet test`, `mvn test`, `gradle test` and the like), that family in the
+  session's current folder or anywhere. A line with a chain, a redirect, an
+  expansion, a quote, an assignment in front, a program named by a path, or a
+  flag that hands the program code or a config (`-exec`, `-toolexec`,
+  `--config`, `-e`, `-c`…) is offered and covered by none. A grant answers
+  only a later default-step ask; every rule, the destructive check, the
+  supervisor and the screens still come first. None is offered where the
+  managed configuration holds the permissions. Each is recorded as
+  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`;
+  `session/load` restores all but those for the session alone.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a
