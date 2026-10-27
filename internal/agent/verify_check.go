@@ -159,6 +159,10 @@ type recordIndex struct {
 	subagents bool
 	// workDir is the workspace, against which a claim's relative path is read.
 	workDir string
+	// asked is the person's latest message; askedDirs the folders it names,
+	// unless it asks about the whole workspace.
+	asked     string
+	askedDirs []string
 }
 
 // readers are the built-in tools that never change anything.
@@ -173,6 +177,14 @@ const maxChildDepth = 3
 func indexRecord(env checkEnv) *recordIndex {
 	ix := &recordIndex{byCall: map[string]*obsRec{}, bySeq: map[int64]*obsRec{}, types: map[int64]EventType{}, workDir: env.workDir}
 	ix.add(env, env.events, "", nil, 0, map[string]bool{})
+	if !askedWideRe.MatchString(strings.ToLower(ix.asked)) {
+		for _, m := range askedDirRe.FindAllStringSubmatch(ix.asked, -1) {
+			if d := strings.TrimSuffix(m[1], "/"); !fileExtRe.MatchString(d) && !strings.Contains(d, "..") {
+				ix.askedDirs = append(ix.askedDirs, d)
+			}
+		}
+		ix.askedDirs = claimScope(ix.askedDirs, ix.workDir)
+	}
 	sort.SliceStable(ix.obs, func(i, j int) bool { return ix.obs[i].pos < ix.obs[j].pos })
 	sort.SliceStable(ix.mutations, func(i, j int) bool { return ix.mutations[i].pos < ix.mutations[j].pos })
 	return ix
@@ -206,6 +218,11 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			ix.types[e.Seq] = e.Type
 		}
 		switch e.Type {
+		case EvUserMessage:
+			var m Message
+			if at == nil && json.Unmarshal(e.Payload, &m) == nil {
+				ix.asked = m.Text
+			}
 		case EvActionRequested:
 			var a ActionRequested
 			if json.Unmarshal(e.Payload, &a) == nil {
@@ -1421,7 +1438,9 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 	for i := len(ix.obs) - 1; i >= 0; i-- {
 		o := ix.obs[i]
 		pats, ok := fits(o)
-		if !ok || !coversScope(pats, scopeDirs, ix.workDir) {
+		// A claim that names no folder answers what the person asked about:
+		// a run over the folders they named covers it.
+		if !ok || !coversScope(pats, scopeDirs, ix.workDir) && (len(scopeDirs) > 0 || len(ix.askedDirs) == 0 || !coversScope(pats, ix.askedDirs, ix.workDir)) {
 			continue
 		}
 		if last != nil && o.pos < last.pos {
@@ -1791,3 +1810,9 @@ func targetShown(target, command, output string) bool {
 }
 
 var lintProblemsRe = regexp.MustCompile(`\b[1-9]\d* (?:problems?|warnings?|issues?|errors?)\b`)
+
+var (
+	askedDirRe  = regexp.MustCompile("(?:^|[\\s(\x60\"'])((?:\\./)?[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_.-]+)+/?)(?:$|[\\s)\x60\"',.;:?!])")
+	askedWideRe = regexp.MustCompile(`\b(?:whole|entire|all|every|everything|repo|repository|workspace|monorepo|codebase)\b`)
+	fileExtRe   = regexp.MustCompile(`\.[A-Za-z][A-Za-z0-9]{0,5}$`)
+)

@@ -1258,6 +1258,9 @@ func structureOnly(t string) bool {
 	if pathsOnly(t) {
 		return true
 	}
+	if headingLine(t) {
+		return true
+	}
 	if strings.ContainsAny(t, ".!`") {
 		return false
 	}
@@ -1304,4 +1307,30 @@ func labelOnly(l string) bool {
 		}
 	}
 	return true
+}
+
+// headingLine: a short title with nothing about the work in it ("Go test
+// run", "Cited source", "What I changed"); a past form is a title's only as
+// its first word or after What/How/Why ("Tests added" stays a claim).
+func headingLine(t string) bool {
+	t = strings.TrimSpace(t)
+	words := strings.Fields(t)
+	if len(words) == 0 || len(words) > 5 || strings.ContainsAny(t, ".!?:;,`\"'") || strings.ContainsAny(t, "0123456789") ||
+		!unicode.IsUpper([]rune(t)[0]) {
+		return false
+	}
+	f := extractFacts(t)
+	if f.success || f.overclaim || f.changed || f.deed || f.mergeClean || len(f.literals) > 0 || len(f.paths) > 0 {
+		return false
+	}
+	lead := strings.ToLower(words[0])
+	if lead == "what" || lead == "how" || lead == "why" {
+		return true
+	}
+	for _, w := range words {
+		if lw := strings.ToLower(w); lw == "i" || lw == "we" {
+			return false
+		}
+	}
+	return !saysPast(strings.Join(words[1:], " "))
 }

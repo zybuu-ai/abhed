@@ -30,6 +30,8 @@ type CorpusCase struct {
 	// set, is given through the answer tool instead.
 	Text  string
 	Claim *Claim
+	// Asked, when set, is the person's message before the calls.
+	Asked string
 }
 
 // CorpusStep is one recorded call and its result.
@@ -423,6 +425,8 @@ var (
 	stepGitRbAutostash   = CorpusStep{ID: "b32b", Tool: "bash", Args: map[string]any{"command": "git rebase --autostash main"}, Output: "Created autostash: 2b1126d\nApplying autostash resulted in conflicts.\nYour changes are safe in the stash.\nYou can run \"git stash pop\" or \"git stash drop\" at any time.\n\r\x1b[KSuccessfully rebased and updated refs/heads/feature.\n", Exit: code(0)}
 	stepGitStatusAddThem = CorpusStep{ID: "b32c", Tool: "bash", Args: map[string]any{"command": "git status"}, Output: "Unmerged paths:\n\tadded by them:   a.go\n", Exit: code(0)}
 	stepGitRebaseContent = CorpusStep{ID: "b31k", Tool: "bash", Args: map[string]any{"command": "git rebase main"}, Output: "Rebasing (1/1)\rCONFLICT (content): Merge conflict in b.go\nerror: could not apply 4104aa2... wip\n", Exit: code(1)}
+	stepGoTestCached     = CorpusStep{ID: "tq2a", Tool: "bash", Args: map[string]any{"command": "go test ./..."}, Output: "ok  \tgithub.com/acme/api/auth\t(cached)\nok  \tgithub.com/acme/api/store\t(cached)\n", Exit: code(0)}
+	stepGoTestCachedSub  = CorpusStep{ID: "tq2b", Tool: "bash", Args: map[string]any{"command": "cd services/orders && go test ./..."}, Output: "?   \texample.com/mono/orders/cmd/orders\t[no test files]\nok  \texample.com/mono/orders/internal/store\t(cached)\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1518,6 +1522,15 @@ func CorpusCases() []CorpusCase {
 		{Name: "no conflicts said after a pull whose autostash conflicted", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitPullAutostash), Text: "Pulled the latest main; no merge conflicts."},
 		{Name: "a clean rebase said after its autostash conflicted", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRbAutostash), Text: "The rebase was clean."},
 		{Name: "a resolved merge after a rebase content conflict after a carriage return, only a.go re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRebaseContent, stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
+		// QA: a cached run counts; an answer that names no folder answers the
+		// folder the person asked about, unless they asked about everything.
+		{Name: "all tests passed after a cached whole run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoTestCached), Text: "All tests passed."},
+		{Name: "all tests passed after a run of the folder the person asked about", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestCachedSub), Asked: "Run the Go tests for services/orders (cd into it is fine) and tell me how many tests pass.", Text: "Result: all tests passed."},
+		{Name: "all tests passed after a run of one folder, with no folder asked about", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestCachedSub), Text: "Result: all tests passed."},
+		{Name: "all tests passed after a run of one folder, the whole repo asked about", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestCachedSub), Asked: "Fix services/orders and make sure the whole repo's tests pass.", Text: "All tests pass."},
+		{Name: "all tests passed after a run of another folder than the one asked about", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestCachedSub), Asked: "Run the tests for libs/pricing.", Text: "All tests pass."},
+		{Name: "tests of another folder said to pass after a run of the folder asked about", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestCachedSub), Asked: "Run the Go tests for services/orders.", Text: "All tests in services/billing pass."},
+		{Name: "all tests passed after a run of one of two folders asked about", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestCachedSub), Asked: "Run the tests for services/orders and services/billing.", Text: "All tests pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -1569,6 +1582,9 @@ func RunCorpus() CorpusReport {
 	for _, cc := range CorpusCases() {
 		store := NewMemStore()
 		rec := NewRecorder(store, "corpus", "")
+		if cc.Asked != "" {
+			_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: cc.Asked})
+		}
 		for _, s := range cc.Steps {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
