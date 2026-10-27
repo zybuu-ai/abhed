@@ -99,6 +99,11 @@ func (c *acpConn) linkedAttachments(ctx context.Context, s *acpSession, blocks [
 				refused = append(refused, fmt.Sprintf("an image of type %q cannot be sent (png, jpeg, gif or webp)", blk.MimeType))
 				continue
 			}
+			// Its size is known before it is decoded, so an oversized one costs nothing.
+			if n := base64.StdEncoding.DecodedLen(len(blk.Data)) - 2; n > promptImageBytes || imageBytes+n > promptImageTotal {
+				refused = append(refused, fmt.Sprintf("an image may hold %d MB, and a prompt's images %d MB in all", promptImageBytes>>20, promptImageTotal>>20))
+				continue
+			}
 			data, err := base64.StdEncoding.DecodeString(blk.Data)
 			if err != nil || len(data) == 0 {
 				refused = append(refused, "an image's data is not base64")

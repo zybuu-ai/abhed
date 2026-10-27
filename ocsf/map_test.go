@@ -463,3 +463,29 @@ func TestFenceDeniedWithNoCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A carried approval is Allowed, not Approved: no one reviewed the retry.
+func TestCarriedApprovalIsAllowedNotApproved(t *testing.T) {
+	for by, want := range map[string]int{"reviewer": 8, "carried": 1, "policy": 1} {
+		var l Line
+		for _, s := range sampleLines() {
+			if s.Type == agent.EvActionApproved {
+				l = s
+				break
+			}
+		}
+		l.Payload = json.RawMessage(`{"call_id":"c-9","step":"default","reason":"x","by":"` + by + `","carried_from":"c-8"}`)
+		ev, ok, err := NewMapper(testOpts).Map(l)
+		if err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		if got := dispositionOf(ev); got != want {
+			t.Errorf("by %s: disposition %d, want %d", by, got, want)
+		}
+	}
+}
+
+func dispositionOf(ev Event) int {
+	n, _ := intOf(ev["disposition_id"])
+	return n
+}

@@ -115,8 +115,13 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 	ctx, cancel := context.WithTimeout(c.root(), commitTimeout)
 	defer cancel()
 	k.mu.Lock()
+	if k.closed {
+		k.mu.Unlock()
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
 	if k.cancel != nil {
-		k.cancel()
+		k.cancel() // a newer request replaces one still waiting
 	}
 	k.cancel = cancel
 	k.mu.Unlock()

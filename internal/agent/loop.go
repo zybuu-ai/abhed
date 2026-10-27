@@ -855,17 +855,19 @@ func (l *Loop) startMessage() {
 }
 
 // carryKey names an edit or write by the file it is aimed at, the text it
-// replaces (whitespace at the end of each line aside) and the exact text it
-// puts there, "" for other calls: only a retry of the same change keeps it.
+// replaces (whitespace at the end of a line aside), whether it replaces every
+// match, and the exact text it puts there, "" for other calls: only a retry
+// of the same change keeps it.
 func (l *Loop) carryKey(call model.ToolCall) string {
 	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
 		return ""
 	}
 	var a struct {
-		Path      string `json:"path"`
-		OldString string `json:"old_string"`
-		NewString string `json:"new_string"`
-		Content   string `json:"content"`
+		Path       string `json:"path"`
+		OldString  string `json:"old_string"`
+		NewString  string `json:"new_string"`
+		ReplaceAll bool   `json:"replace_all"`
+		Content    string `json:"content"`
 	}
 	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
 		return ""
@@ -878,15 +880,15 @@ func (l *Loop) carryKey(call model.ToolCall) string {
 		return "write\x00" + path + "\x00" + a.Content
 	}
 	lines := strings.Split(a.OldString, "\n")
-	for i, ln := range lines {
-		lines[i] = strings.TrimRight(ln, " \t\r")
+	for i := range len(lines) - 1 { // only a line a newline follows: the last may end mid-line
+		lines[i] = strings.TrimRight(lines[i], " \t\r")
 	}
-	return "edit\x00" + path + "\x00" + strings.Join(lines, "\n") + "\x00" + a.NewString
+	return fmt.Sprintf("edit\x00%s\x00%s\x00%t\x00%s", path, strings.Join(lines, "\n"), a.ReplaceAll, a.NewString)
 }
 
 // takeCarried is the call whose approval this one takes, once: an earlier
-// attempt at the same file with the same new text (whitespace aside), in this
-// message, that a person approved and that failed without changing anything.
+// attempt at the same change (see carryKey), in this message, that a person
+// approved and that failed without changing anything.
 // "" when there is none.
 func (l *Loop) takeCarried(call model.ToolCall) string {
 	key := l.carryKey(call)
@@ -1685,7 +1687,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if decision.Decision == policy.Ask && decision.Reason != "" {
 			why += "; " + decision.Reason
 		}
-		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a

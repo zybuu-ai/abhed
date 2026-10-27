@@ -168,3 +168,45 @@ func TestStudioLinkedFilesStayInBounds(t *testing.T) {
 		t.Fatal("refused content reached the model")
 	}
 }
+
+// A prompt that is a slash command carries its images to the command's run,
+// and an image given with a command that runs no prompt never reaches a
+// later one.
+func TestStudioImagesGoWithTheCommandAndNoFurther(t *testing.T) {
+	v := visionRig(t, true)
+	if err := os.MkdirAll(filepath.Join(v.home, ".abhed", "commands"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v.home, ".abhed", "commands", "look.md"), []byte("Look at $ARGUMENTS"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := v.open()
+	img := func(b string) map[string]any {
+		return map[string]any{"type": "image", "mimeType": "image/png", "data": base64.StdEncoding.EncodeToString([]byte(b))}
+	}
+	prompt := func(text string, blocks ...map[string]any) {
+		all := append([]any{map[string]any{"type": "text", "text": text}}, toAny(blocks)...)
+		if res := v.cl.call("session/prompt", map[string]any{"sessionId": id, "prompt": all}); res.Error != nil {
+			t.Fatalf("%s: %+v", text, res.Error)
+		}
+	}
+	last := func() string {
+		v.model.mu.Lock()
+		defer v.model.mu.Unlock()
+		return v.model.bodies[len(v.model.bodies)-1]
+	}
+	command := base64.StdEncoding.EncodeToString([]byte("command image"))
+	prompt("/look this", img("command image"))
+	if !strings.Contains(last(), command) {
+		t.Fatal("the command's run did not carry the image")
+	}
+	builtin := base64.StdEncoding.EncodeToString([]byte("builtin image"))
+	prompt("/diff", img("builtin image"))
+	prompt("plain")
+	if strings.Contains(last(), builtin) {
+		t.Fatal("an image given with a built-in command reached a later prompt")
+	}
+	if strings.Count(last(), command) != 1 {
+		t.Fatalf("the command's image was attached again: %d", strings.Count(last(), command))
+	}
+}

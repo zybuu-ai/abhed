@@ -523,15 +523,53 @@ func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err e
 	}
 }
 
-// requestIDPattern finds a JSON-RPC id near the start of a message.
-var requestIDPattern = regexp.MustCompile(`"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)`)
-
-// requestID is the id at the head of a message too long to parse, or nil.
+// requestID is the top-level id at the head of a message too long to parse,
+// or nil: the head is walked token by token, so an "id" nested in params is
+// never taken for it.
 func requestID(head []byte) json.RawMessage {
-	if m := requestIDPattern.FindSubmatch(head); m != nil {
-		return json.RawMessage(m[1])
+	dec := json.NewDecoder(bytes.NewReader(head))
+	dec.UseNumber()
+	depth, atKey := 0, false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				depth++
+				atKey = depth == 1 && d == '{'
+			default:
+				depth--
+				atKey = depth == 1 // after a value closes, a key comes next
+			}
+			continue
+		}
+		if depth != 1 {
+			continue
+		}
+		if !atKey {
+			atKey = true
+			continue
+		}
+		atKey = false
+		if k, _ := tok.(string); k != "id" {
+			continue
+		}
+		v, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		switch x := v.(type) {
+		case string:
+			b, _ := json.Marshal(x)
+			return b
+		case json.Number:
+			return json.RawMessage(x.String())
+		}
+		return nil
 	}
-	return nil
 }
 
 func (c *acpConn) send(v any) {

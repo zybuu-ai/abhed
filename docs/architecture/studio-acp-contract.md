@@ -789,7 +789,10 @@ scope, so no "always" grant, remembered or restored, answers it. Rejected,
 it is denied by the reviewer like any ask; accepted, it is approved and
 written. A deny stays a deny. It covers the prompt's run whether it is a
 plain prompt, a custom command or a skill, and the writes of any subagent
-it starts; not `bash`. It ends with the prompt. A session that cannot
+it starts. It covers `edit` and `write` only: `bash`, MCP tools and
+`memory_write`, which can also change files, are not previewed. It ends with
+the prompt, except that a subagent started under preview keeps it for as long
+as it runs, a background one included, which only ever asks more. A session that cannot
 preview (one the engine does not run itself) refuses the prompt (`-32001`,
 "this session cannot preview writes"). An inline edit on a selection is a prompt with the selection
 attached (§3.1a) and this flag.
@@ -1488,6 +1491,8 @@ _abhed/commitMessage { sessionId } → { message: string, excluded?: number, tru
 - The model is `model.commit`, or `model.completion` when unset, under the
   same `completion.enabled`, `completion.local_only`, managed pin and key
   rules as §7.10, each request sent once.
+- One request at a time per session: a newer `_abhed/commitMessage` cancels
+  one still waiting, and closing the session cancels it.
 - Recorded as `commit_message.requested` before the diff goes (if it cannot
   be recorded, nothing is sent) and `commit_message.generated` with the
   outcome. A message that carries a secret is `dropped`; nothing staged, or
