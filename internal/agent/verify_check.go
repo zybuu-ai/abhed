@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -254,7 +255,8 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			switch {
 			case readers[o.Tool]:
 			case o.Tool == "bash":
-				// A lint run that says it fixed something changed files.
+				// A lint run that says it fixed something changed files, even
+				// with no fix flag the reader list would refuse.
 				mut = !rec.inspect || (lintFixerRe.MatchString(args.Command) && lintFixedRe.MatchString(o.Content))
 			case env.mutates != nil:
 				mut = env.mutates(o.Tool, r.a.Args)
@@ -477,13 +479,15 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 // checkWhole checks a claim as one statement.
 func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	v := checkClaim(env, ix, c)
-	if v.Verdict == ClaimVerified && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
+	// A resolved merge is judged whole by its own check, its "no" included.
+	merge := extractFacts(citeRe.ReplaceAllString(c.Text, " ")).mergeClean
+	if v.Verdict == ClaimVerified && !merge && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
 		v.Verdict = ClaimUnverified
 		v.Reason = "it says something did not happen or is not so, which a result showing the thing does not show"
 	}
 	// A state ("healthy", "down") or a deed ("we deployed") the matched
 	// output does not itself say is not shown by its other words matching.
-	if v.Verdict == ClaimVerified {
+	if v.Verdict == ClaimVerified && !merge {
 		if why := unsaid(ix, c, v); why != "" {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
@@ -504,7 +508,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		// A sentence that says something was done or changed is about the work
 		// even with nothing else in it; a participle alone ("a compiled
 		// language") is not.
-		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim
+		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean
 		if !f.any() && !workEvent && c.Quote == "" && len(c.Evidence) == 0 {
 			kind = KindStatement
 		}
@@ -640,7 +644,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && (!f.success || f.changed || f.deed) && len(f.ran) == 0 && !f.negated {
+	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.mergeClean && !f.observeOnly && !f.proof && (!f.success || f.changed || f.deed) && len(f.ran) == 0 && !f.negated {
 		// A change, in any wording, is read from the calls: by the change to
 		// the file it names, whose own changed text must hold the code it
 		// names; or, naming none, by a change whose text holds that code.
@@ -681,6 +685,17 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 					markToken(atLine, t)
 				}
 				changedText = put
+			}
+		}
+	}
+	// "I resolved the conflicts" is a change shown by a search or reads with
+	// no markers left after the last change.
+	if f.mergeClean {
+		fd := ix.mergeMarkers(pool)
+		findings = append(findings, fd)
+		if fd.out == matched {
+			for _, t := range append(append([]string(nil), f.paths...), f.tokens...) {
+				markToken(atLine, t)
 			}
 		}
 	}
@@ -871,6 +886,154 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	}
 	return findings
 }
+
+// mergeMarkers judges "the conflicts are resolved": contradicted by a current
+// result that still shows conflict markers; verified, after the last change,
+// by a search for markers over the workspace (or every file that had them)
+// that found none, or by reads of every such file that show none.
+func (ix *recordIndex) mergeMarkers(pool []*obsRec) finding {
+	for _, o := range pool {
+		if o.tool == "write" || o.tool == "edit" {
+			continue
+		}
+		if m := conflictMarkerRe.FindString(o.content); m != "" && conflictEndRe.MatchString(o.content) {
+			what := "#" + itoa(o.seq)
+			if o.path != "" {
+				what = o.path
+			}
+			return finding{out: conflicted, seq: o.seq, why: fmt.Sprintf("%s still shows conflict markers (#%d)", what, o.seq),
+				conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: strings.TrimSpace(m)}}
+		}
+	}
+	last := ix.lastChange()
+	if last == nil {
+		return finding{out: missing, why: "a resolved merge needs a change, and this session made none"}
+	}
+	marked, unknown := map[string]bool{}, false
+	for _, o := range ix.obs {
+		if o.child != "" || !o.usable() || o.tool == "write" || o.tool == "edit" || !hasMarkers(o.content) {
+			continue
+		}
+		if o.tool == "read" && o.path != "" {
+			marked[filepath.Clean(o.path)] = true
+		} else {
+			unknown = true // a diff or search: its files are not told
+		}
+	}
+	cleanRead := map[string]int64{} // a file shown without markers, by which call
+	for _, o := range ix.obs {
+		if o.child != "" || !o.usable() || o.pos < last.pos || hasMarkers(o.content) {
+			continue
+		}
+		if o.tool == "read" && o.path != "" {
+			cleanRead[filepath.Clean(o.path)] = o.seq
+		}
+		// A diff after the change shows each file it names without markers.
+		if o.tool == "bash" && len(o.line.final) > 1 && filepath.Base(o.line.final[0]) == "git" && o.line.final[1] == "diff" && o.line.finalCwd != "" {
+			for _, l := range strings.Split(o.content, "\n") {
+				if rel, ok := strings.CutPrefix(l, "+++ b/"); ok {
+					cleanRead[filepath.Join(o.line.finalCwd, strings.TrimSpace(rel))] = o.seq
+				}
+			}
+		}
+		if o.tool == "bash" && ix.markerSearch(o, marked, unknown) {
+			return finding{out: matched, what: fmt.Sprintf("no conflict markers found by #%d after the last change", o.seq), seq: o.seq, call: true, kind: "change"}
+		}
+	}
+	if len(marked) > 0 && !unknown {
+		all, seq := true, int64(0)
+		for p := range marked {
+			all = all && cleanRead[p] > 0
+			seq = max(seq, cleanRead[p])
+		}
+		if all {
+			return finding{out: matched, what: fmt.Sprintf("no conflict markers in #%d after the last change", seq), seq: seq, call: true, kind: "change"}
+		}
+	}
+	return finding{out: missing, why: "no search or read after the last change shows the conflict markers gone"}
+}
+
+// emptyRun: a run that printed nothing, its status line and the bash tool's
+// placeholder aside ("exit 1 · 59ms", "[no output]").
+func emptyRun(s string) bool {
+	s = runStatusRe.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	return s == "" || s == "[no output]"
+}
+
+var runStatusRe = regexp.MustCompile(`(?m)\Aexit \d+ · [^\n]*\n?`)
+
+func hasMarkers(s string) bool {
+	return conflictMarkerRe.MatchString(s) && conflictEndRe.MatchString(s)
+}
+
+// markerSearch: a grep, rg or git grep for a conflict marker, alone on its
+// line, over the workspace or every file that had markers, that found none.
+func (ix *recordIndex) markerSearch(o *obsRec, marked map[string]bool, unknown bool) bool {
+	lf := o.line
+	if !lf.shape || !lf.leadCd || !emptyRun(o.content) || o.exit == nil || *o.exit > 1 || len(lf.final) == 0 {
+		return false
+	}
+	w := lf.final
+	prog := filepath.Base(w[0])
+	recursive := true
+	switch {
+	case prog == "git" && len(w) > 1 && w[1] == "grep":
+		w = w[2:]
+	case prog == "rg":
+		w = w[1:]
+	case prog == "grep" || prog == "egrep":
+		recursive = slices.ContainsFunc(w[1:], func(a string) bool {
+			return strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a, "rR") || a == "--recursive"
+		})
+		w = w[1:]
+	default:
+		return false
+	}
+	var pattern string
+	var ops []string
+	for i := 0; i < len(w); i++ {
+		a := w[i]
+		switch {
+		case a == "-e" && i+1 < len(w):
+			pattern, i = w[i+1], i+1
+		case strings.HasPrefix(a, "-"):
+		case pattern == "":
+			pattern = a
+		default:
+			ops = append(ops, a)
+		}
+	}
+	if !strings.Contains(pattern, "<<<<<<<") && !strings.Contains(pattern, ">>>>>>>") {
+		return false
+	}
+	if len(ops) == 0 || slices.ContainsFunc(ops, func(a string) bool { return a == "." || a == "./" }) {
+		return recursive
+	}
+	if unknown || len(marked) == 0 {
+		return false
+	}
+	have := map[string]bool{}
+	for _, a := range ops {
+		if !filepath.IsAbs(a) {
+			a = filepath.Join(lf.finalCwd, a)
+		}
+		have[filepath.Clean(a)] = true
+	}
+	for p := range marked {
+		if !have[p] {
+			return false
+		}
+	}
+	return true
+}
+
+// A conflict marker line as a read (with its gutter), a diff (added or
+// context, not removed) or grep shows it.
+var (
+	conflictMarkerRe = regexp.MustCompile(`(?m)^(?:\s*\d+\t|[^\s:]+:(?:\d+:)?)?[+ ]{0,2}<{7}(?: .*)?$`)
+	conflictEndRe    = regexp.MustCompile(`(?m)^(?:\s*\d+\t|[^\s:]+:(?:\d+:)?)?[+ ]{0,2}>{7}(?: .*)?$`)
+)
 
 // oneValueMet: a statement that gives one unit or key more than one value
 // ("3 tests failed before the fix, 0 after", "from port 8080 to port 9090")
@@ -1191,9 +1354,37 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 		return finding{out: matched, what: fmt.Sprintf("exit 0 of #%d after the last change", o.seq), seq: o.seq, pooled: true}
 	}
 	if testish == "" {
+		if !ix.ranKind("test") && !ix.ranKind("build") && !ix.ranKind("lint") {
+			return finding{out: missing, why: "no test run in this session"}
+		}
 		return finding{out: missing, why: "a success of no named kind is not read from a run"}
 	}
+	if !ix.ranKind(testish) {
+		return finding{out: missing, why: "no " + testish + " run in this session"}
+	}
 	return finding{out: missing, why: "no whole " + testish + " run covering it succeeded after the last change"}
+}
+
+// ranKind reports any command of this kind in the session's own runs.
+func (ix *recordIndex) ranKind(kind string) bool {
+	for _, o := range ix.obs {
+		if o.tool != "bash" || o.child != "" {
+			continue
+		}
+		for _, c := range o.line.cmds {
+			for i := range c.words {
+				if commandKind(c.words[i:]) == kind {
+					return true // under a runner too (uv run pytest)
+				}
+			}
+		}
+	}
+	for _, m := range ix.mutations {
+		if m.tool == "bash" && m.child == "" && m.failed {
+			return true // a run whose outcome is not known may have been one
+		}
+	}
+	return false
 }
 
 func inPool(pool []*obsRec, o *obsRec) bool {
@@ -1488,6 +1679,11 @@ var (
 	lintFixedRe = regexp.MustCompile(`(?i)\b\d+ fixed\b|\bfixed \d+\b|\bfix(?:es)? applied\b`)
 )
 
+var (
+	prodOutRe = regexp.MustCompile(`(?i)\bfor production\b|\bproduction build\b`)
+	notProdRe = regexp.MustCompile(`(?i)\bnot (?:an? )?(?:optimized )?(?:for )?production\b`)
+)
+
 var compilingTestRe = regexp.MustCompile(`\b(?:go|cargo)\s+(?:test|nextest)\b|\b(?:mvnw?|gradlew?)\b[^|;&]*\btest\b|\bdotnet\s+test\b`)
 
 var runWarnRe = regexp.MustCompile(`(?im)^\s*(?:\[warn(?:ing)?\]|warning\b)|:\s*warning\b|\b[1-9]\d* warnings?\b`)
@@ -1495,7 +1691,7 @@ var runWarnRe = regexp.MustCompile(`(?im)^\s*(?:\[warn(?:ing)?\]|warning\b)|:\s*
 // targetShown: a claim of building for a platform, architecture or mode is
 // shown only by a run whose command names it ("in CI" never is).
 func targetShown(target, command, output string) bool {
-	if target == "production" && strings.Contains(strings.ToLower(output), "production") {
+	if target == "production" && prodOutRe.MatchString(output) && !notProdRe.MatchString(output) {
 		return true // vite build, next build: "building for production"
 	}
 	alias := map[string][]string{"mac": {"darwin", "macos"}, "macos": {"darwin", "macos"}, "darwin": {"darwin"}, "x86_64": {"amd64", "x86_64"}, "amd64": {"amd64", "x86_64"}, "aarch64": {"arm64", "aarch64"}, "arm64": {"arm64", "aarch64"}, "release": {"release"}, "ci": nil, "production": {"prod"}}

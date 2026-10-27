@@ -59,6 +59,8 @@ type facts struct {
 	noWarnings bool
 	// buildTarget: a platform or mode it says it builds for ("on Windows").
 	buildTarget string
+	// mergeClean: it says merge conflicts are resolved or the merge is clean.
+	mergeClean bool
 	// alsoLint: it says lint passes beside a build or tests ("build and lint pass").
 	alsoLint bool
 	// changeEvent: it says something is now so or new ("now", "gets").
@@ -121,14 +123,17 @@ var (
 	// backRefRe is what may follow a pass count and say it was every test:
 	// ", all of them", "- every one", "(each of the 12)"; not "in all",
 	// "after all" or "each in under a second".
-	backRefRe   = regexp.MustCompile(`^\s*[,:(-]?\s*(?:all|every|each)(?:\s+(?:one|single one|one of them|of them|of the \d+))?\s*\)?\s*[,]?\s*$`)
-	noFailRe    = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed|issues|problems|regressions|bugs)\b|\b(?:no|zero|without|0)(?:\s+(?:any|a single))?(?:\s+(?:compile|compiler|build|type|new))?\s+(?:errors?|warnings?)(?:\s+(?:or|and|nor)\s+(?:(?:no|any|zero|0)\s+)?(?:new\s+)?(?:errors?|warnings?))?\b`)
-	testRe      = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
-	coLintRe    = regexp.MustCompile(`\b(?:builds?|tests?|compiles?)\b(?:\s+(?:and|&|plus)|,)\s+(?:the\s+)?(?:go\s+)?(?:lint|linter|linting|vet|golangci-lint|eslint|ruff|clippy)\b|\b(?:lint|linter|vet)\s+(?:and|&)\s+(?:the\s+)?(?:build|tests?)\b|\blints? clean(?:ly)?\b|\b(?:so|as) (?:does|do) (?:the\s+)?(?:lint|linter|vet)\b|\b(?:lint|linter|vet),? too\b`)
-	lintWordRe  = regexp.MustCompile(`\b(?:lints?|linter|linting|vet)\b`)
-	buildWordRe = regexp.MustCompile(`\b(?:build|builds|compiles?)\b`)
-	buildRe     = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
-	changedRe   = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
+	backRefRe  = regexp.MustCompile(`^\s*[,:(-]?\s*(?:all|every|each)(?:\s+(?:one|single one|one of them|of them|of the \d+))?\s*\)?\s*[,]?\s*$`)
+	noFailRe   = regexp.MustCompile(`\b(?:no|zero|without|0) (?:errors|failures|failed tests?|tests? failed|issues|problems|regressions|bugs)\b|\b(?:no|zero|without|0)(?:\s+(?:any|a single))?(?:\s+(?:compile|compiler|build|type|new))?\s+(?:errors?|warnings?)(?:\s+(?:or|and|nor)\s+(?:(?:no|any|zero|0)\s+)?(?:new\s+)?(?:errors?|warnings?))?\b`)
+	testRe     = regexp.MustCompile(`\b(tests?|specs?|pytest|jest|unit|suite)\b`)
+	coLintRe   = regexp.MustCompile(`\b(?:builds?|tests?|compiles?|pytest|jest|vitest)\b(?:\s+(?:and|&|plus)|,)\s+(?:the\s+)?(?:go\s+)?(?:lint|linter|linting|vet|golangci-lint|eslint|ruff|clippy|mypy|pyright|tsc|staticcheck|flake8|pylint|type[- ]?check(?:s|ing)?)\b|\b(?:lint|linter|vet|mypy|pyright|tsc|staticcheck|type[- ]?checks?)\s+(?:and|&)\s+(?:the\s+)?(?:build|tests?)\b|\blints? clean(?:ly)?\b|\b(?:so|as) (?:does|do) (?:the\s+)?(?:lint|linter|vet|mypy|tsc|staticcheck)\b|\b(?:lint|linter|vet),? too\b`)
+	lintWordRe = regexp.MustCompile(`\b(?:lints?|linter|linting|vet)\b`)
+	// mergeCleanRe says the merge conflicts are gone; mergeOpenRe says some are not.
+	mergeCleanRe = regexp.MustCompile(`\b(?:resolved|fixed|cleared) (?:the |all |all the |every )?(?:merge |git |rebase )?conflicts?\b|\bconflicts? (?:are|is|have been|has been|were|was) (?:now |all )?(?:resolved|fixed|gone|cleared)\b|\b(?:clean|successful) (?:merge|rebase)\b|\b(?:merge|rebase) (?:is|was) (?:now )?(?:clean|complete|resolved|done)\b|\bmerged cleanly\b|\bno (?:remaining |more )?(?:merge )?(?:conflicts?|conflict markers)(?: (?:remain|left|remaining))?\b`)
+	mergeOpenRe  = regexp.MustCompile(`\b(?:not|never|unresolved|still|remain(?:s|ing)? (?:in|unresolved)|partly|partially)\b|n't\b`)
+	buildWordRe  = regexp.MustCompile(`\b(?:build|builds|compiles?)\b`)
+	buildRe      = regexp.MustCompile(`\b(build|builds|compiles?|compiled|vet|lint)\b`)
+	changedRe    = regexp.MustCompile(`\b(?:i|i've|i have|we|we've|we have)\s+(?:also\s+|now\s+|just\s+)?(edited|updated|changed|modified|created|wrote|written|added|fixed|deleted|removed|renamed|patched|refactored|rewrote|replaced)\b`)
 	// What a claim says when it says a thing did not happen or is not so;
 	// such a claim is never verified by output showing the thing.
 	negationRe = regexp.MustCompile(`\b(not|never|no|none|nobody|no one|nothing|without|didn't|don't|doesn't|isn't|wasn't|aren't|weren't|haven't|hasn't|cannot|can't|untouched|unchanged|unmodified|left alone|neither|nor|avoided|avoid|refrained|as it was|as is|intact|as before|unaltered|preserved|stays the same|remains the same|original)\b`)
@@ -445,6 +450,9 @@ func extractFacts(claim string) facts {
 	f.saysTest = strings.Contains(strings.ToLower(claim), "test")
 	f.repoWide = repoWideRe.MatchString(strings.ToLower(claim))
 	f.noWarnings = noWarnClaimRe.MatchString(strings.ToLower(claim))
+	if low := normText(backtickRe.ReplaceAllString(claim, " ")); mergeCleanRe.MatchString(low) && !mergeOpenRe.MatchString(low) {
+		f.mergeClean = true
+	}
 	if m := buildTargetRe.FindStringSubmatch(strings.ToLower(claim)); m != nil {
 		f.buildTarget = m[1]
 	} else if m := buildTargetAdjRe.FindStringSubmatch(strings.ToLower(claim)); m != nil {
@@ -502,12 +510,12 @@ func overclaims(low string) bool {
 
 var (
 	// What an overclaim names: lint, a build, or that it works.
-	overLintRe  = regexp.MustCompile(`\b(lint|linter|linters|vet|clippy|eslint|ruff|golangci-lint)\b`)
+	overLintRe  = regexp.MustCompile(`\b(lint|linter|linters|vet|clippy|eslint|ruff|golangci-lint|mypy|pyright|tsc|staticcheck|flake8|pylint|type[- ]?check(?:s|ing)?)\b`)
 	overBuildRe = regexp.MustCompile(`\b(build|builds|built|compiles?|compiled)\b`)
 	overWorksRe = regexp.MustCompile(`\b(works|working|work)\b`)
 	overNegRe   = regexp.MustCompile(`\b(not|never|hardly)\b|n't\b`)
 	// overclaimRe says the work has nothing wrong left in it.
-	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix|build) is clean|(?:could|did|do)(?:n't|n’t|n t| not) (?:find|see|spot|notice) any (?:other |more |further |remaining )?(?:issues|problems|bugs|errors)|everything (?:else )?(?:works|is working|looks great|checks out)|looks? great|(?:the )?(?:lint|linter|vet) is (?:clean|happy)|no (?:lint )?errors)\b`)
+	overclaimRe = regexp.MustCompile(`\b(?:no (?:issues|problems|regressions|bugs|concerns)(?: (?:found|left|remain|remaining))?|shows no (?:issues|problems)|nothing (?:wrong|broken|else (?:needs|to) (?:chang\w*|fix\w*|be done))|looks? good|looks? fine|looks? correct|everything (?:is|looks) (?:in order|good|fine|correct)|all good|lgtm|no further changes (?:are )?needed|no (?:remaining|other|outstanding) (?:issues|problems|bugs)|no regressions|everything else (?:is|looks) (?:fine|good|correct|in order)|(?:the )?(?:code|change|diff|fix|build) is clean|(?:could|did|do)(?:n't|n’t|n t| not) (?:find|see|spot|notice) any (?:other |more |further |remaining )?(?:issues|problems|bugs|errors)|everything (?:else )?(?:works|is working|looks great|checks out)|looks? great|(?:the )?(?:lint|linter|vet|mypy|pyright|tsc|staticcheck|clippy|eslint|ruff|type[- ]?check(?:s|ing)?) is (?:clean|happy)|no (?:lint )?errors)\b`)
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
@@ -1156,6 +1164,9 @@ var bareDoneRe = regexp.MustCompile(`^(?:all |still |now |and )?(?:done|finished
 // event, change, count, state, path or other fact).
 func claimOf(s string) (string, bool) {
 	t := strings.TrimSpace(s)
+	if structureOnly(t) {
+		return "", false
+	}
 	for {
 		m := leadRe.FindStringIndex(strings.ToLower(t))
 		if m == nil || m[1] >= len(t) {
@@ -1232,3 +1243,49 @@ func saysWork(s string) bool {
 	f := extractFacts(s)
 	return f.any() || f.changed || f.deed || f.overclaim || f.event != "" || stateRe.MatchString(normText(s))
 }
+
+// structureOnly: a line that only arranges the reply, a heading word
+// ("Summary", "Files changed"), a file name alone or after a label
+// ("Changes: `sum.go`"); it says nothing about the work.
+func structureOnly(t string) bool {
+	if i := strings.Index(t, ":"); i > 0 && !strings.Contains(t[:i], "`") && len(strings.Fields(t[:i])) <= 3 && pathsOnly(t[i+1:]) {
+		return true
+	}
+	if pathsOnly(t) {
+		return true
+	}
+	if strings.ContainsAny(t, ".!`") {
+		return false
+	}
+	words := strings.Fields(strings.ToLower(strings.Trim(t, " :·")))
+	if len(words) == 0 || len(words) > 5 {
+		return false
+	}
+	for _, w := range words {
+		if !headingWords[strings.Trim(w, ",;:()·")] && w != "·" {
+			return false
+		}
+	}
+	return true
+}
+
+var headingWords = map[string]bool{"summary": true, "of": true, "the": true, "change": true, "changes": true, "changed": true,
+	"made": true, "file": true, "files": true, "what": true, "result": true, "results": true, "test": true, "tests": true,
+	"testing": true, "overview": true, "details": true, "notes": true, "key": true, "verification": true, "next": true,
+	"steps": true, "status": true, "context": true, "background": true, "approach": true, "implementation": true, "and": true}
+
+// pathsOnly: code spans that each name a file or path, and nothing else.
+func pathsOnly(t string) bool {
+	spans := backtickRe.FindAllString(t, -1)
+	if len(spans) == 0 || strings.Trim(backtickRe.ReplaceAllString(t, ""), " ,;·-–()") != "" {
+		return false
+	}
+	for _, sp := range spans {
+		if !filePathSpanRe.MatchString(strings.Trim(sp, "`")) {
+			return false
+		}
+	}
+	return true
+}
+
+var filePathSpanRe = regexp.MustCompile(`^[\w.\-]*/[\w./\-]*$|^[\w\-]+(?:\.[\w\-]+)*\.[A-Za-z][A-Za-z0-9]{0,5}$`)
