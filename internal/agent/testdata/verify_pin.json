@@ -4419,6 +4419,56 @@
       "name": "a clean merge said after only a merge --abort",
       "kind": "planted",
       "hash": "02e45195a98e60ad"
+    },
+    {
+      "name": "no conflicts said after a modify/delete conflict, an abort and -s ours",
+      "kind": "planted",
+      "hash": "76d9fc45f4669d85"
+    },
+    {
+      "name": "a clean merge said after a conflict on a path with a space, an abort and -X theirs",
+      "kind": "planted",
+      "hash": "d672f58327f99790"
+    },
+    {
+      "name": "a resolved merge after a conflict on a path with a space and only another file re-read",
+      "kind": "planted",
+      "hash": "fac79cd758dcb786"
+    },
+    {
+      "name": "no conflicts said after git status showed deleted by us, an abort and -s ours",
+      "kind": "planted",
+      "hash": "0bc35341a6d51c15"
+    },
+    {
+      "name": "no conflicts said after a search showed markers, then a clean pull",
+      "kind": "planted",
+      "hash": "83ec101a6a305a83"
+    },
+    {
+      "name": "no conflicts said after only a blind add and rebase --continue",
+      "kind": "planted",
+      "hash": "13eb461c65bbebe0"
+    },
+    {
+      "name": "no conflicts said after only a rebase --skip",
+      "kind": "planted",
+      "hash": "f4899769b0763bb3"
+    },
+    {
+      "name": "a finished rebase said after only a rebase --quit",
+      "kind": "planted",
+      "hash": "ba8b9d9b27a90b02"
+    },
+    {
+      "name": "fixed conflicts said after a merge that ran clean",
+      "kind": "planted",
+      "hash": "33a76a7e7d8222ab"
+    },
+    {
+      "name": "cleared conflicts said after a merge that ran clean",
+      "kind": "planted",
+      "hash": "7c056d149fcbf298"
     }
   ],
   "strict": [
@@ -5090,6 +5140,16 @@
     {
       "scenario": "merge-abort",
       "reply": "No merge conflicts.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "merge-moddel-ours",
+      "reply": "No merge conflicts.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "merge-moddel-ours",
+      "reply": "The merge was clean.",
       "want": "unverified"
     }
   ]

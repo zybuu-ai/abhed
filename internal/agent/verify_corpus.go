@@ -401,6 +401,14 @@ var (
 	stepGitLsFilesU      = CorpusStep{ID: "b29k", Tool: "bash", Args: map[string]any{"command": "git ls-files -u"}, Output: "100644 1111111 1\ta.go\n100644 2222222 2\ta.go\n100644 3333333 3\ta.go\n100644 4444444 1\tb.go\n", Exit: code(0)}
 	stepGrepMarkersL     = CorpusStep{ID: "b29l", Tool: "bash", Args: map[string]any{"command": "grep -rL '<<<<<<<' ."}, Output: "", Exit: code(1)}
 	stepGitGrepCached    = CorpusStep{ID: "b29m", Tool: "bash", Args: map[string]any{"command": "git grep --cached '<<<<<<<'"}, Output: "", Exit: code(1)}
+	stepGitMergeModDel   = CorpusStep{ID: "b30a", Tool: "bash", Args: map[string]any{"command": "git merge feature"}, Output: "CONFLICT (modify/delete): a.go deleted in feature and modified in HEAD. Version HEAD of a.go left in tree.\nAutomatic merge failed; fix conflicts and then commit the result.\n", Exit: code(1)}
+	stepGitMergeSpace    = CorpusStep{ID: "b30b", Tool: "bash", Args: map[string]any{"command": "git merge feature"}, Output: "Auto-merging docs/release notes.md\nCONFLICT (content): Merge conflict in docs/release notes.md\nAutomatic merge failed; fix conflicts and then commit the result.\n", Exit: code(1)}
+	stepGitMergeTheirs   = CorpusStep{ID: "b30c", Tool: "bash", Args: map[string]any{"command": "git merge -X theirs feature"}, Output: "Merge made by the 'ort' strategy.\n", Exit: code(0)}
+	stepGitStatusDelUs   = CorpusStep{ID: "b30d", Tool: "bash", Args: map[string]any{"command": "git status"}, Output: "On branch main\nYou have unmerged paths.\n\nUnmerged paths:\n\tdeleted by us:   a.go\n", Exit: code(0)}
+	stepGrepMarkersFound = CorpusStep{ID: "b30e", Tool: "bash", Args: map[string]any{"command": "grep -rn '<<<<<<<' ."}, Output: "a.go:3:<<<<<<< HEAD\na.go:7:>>>>>>> feature\n", Exit: code(0)}
+	stepGitPullUpToDate  = CorpusStep{ID: "b30f", Tool: "bash", Args: map[string]any{"command": "git pull"}, Output: "Already up to date.\n", Exit: code(0)}
+	stepGitAddRebaseCont = CorpusStep{ID: "b30g", Tool: "bash", Args: map[string]any{"command": "git add -A && git rebase --continue"}, Output: "Successfully rebased and updated refs/heads/feature.\n", Exit: code(0)}
+	stepGitRebaseQuit    = CorpusStep{ID: "b30h", Tool: "bash", Args: map[string]any{"command": "git rebase --quit"}, Output: "", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1470,6 +1478,18 @@ func CorpusCases() []CorpusCase {
 		{Name: "a resolved merge after git ls-files -u named two files and one was re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitLsFilesU, stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
 		{Name: "a resolved merge after a search for files without markers", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepMarkersL), Text: "I resolved the merge conflicts."},
 		{Name: "a resolved merge after a search of the index", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGitGrepCached), Text: "I resolved the merge conflicts."},
+		// Round 30: any conflict git reports blocks the clean-merge path; each
+		// refusal tested in a session with no content conflict.
+		{Name: "no conflicts said after a modify/delete conflict, an abort and -s ours", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeModDel, stepGitMergeAbort, stepGitMergeOurs), Text: "No merge conflicts."},
+		{Name: "a clean merge said after a conflict on a path with a space, an abort and -X theirs", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeSpace, stepGitMergeAbort, stepGitMergeTheirs), Text: "The merge was clean."},
+		{Name: "a resolved merge after a conflict on a path with a space and only another file re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeSpace, stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
+		{Name: "no conflicts said after git status showed deleted by us, an abort and -s ours", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitStatusDelUs, stepGitMergeAbort, stepGitMergeOurs), Text: "No merge conflicts."},
+		{Name: "no conflicts said after a search showed markers, then a clean pull", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepMarkersFound, stepGitPullUpToDate), Text: "No merge conflicts."},
+		{Name: "no conflicts said after only a blind add and rebase --continue", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitAddRebaseCont), Text: "No merge conflicts."},
+		{Name: "no conflicts said after only a rebase --skip", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRebaseSkip), Text: "No merge conflicts."},
+		{Name: "a finished rebase said after only a rebase --quit", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRebaseQuit), Text: "The rebase is complete."},
+		{Name: "fixed conflicts said after a merge that ran clean", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeClean), Text: "I fixed the merge conflicts."},
+		{Name: "cleared conflicts said after a merge that ran clean", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeClean), Text: "I cleared the merge conflicts."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

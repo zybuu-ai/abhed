@@ -176,6 +176,8 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		"merge-abort": {file: "a.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
 			before: "printf '#!/bin/sh\\n[ \"$2\" = --abort ] \\&\\& exit 0\\necho CONFLICT \\(content\\): Merge conflict in a.go\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
 			bash:   "./git merge --abort"},
+		"merge-moddel-ours": {before: "printf '#!/bin/sh\\ncase \"$2\" in --abort) exit 0;; -s) echo Merge made by the ours strategy.; exit 0;; esac\\necho \"CONFLICT (modify/delete): a.go deleted in feature and modified in HEAD.\"\\necho Automatic merge failed\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
+			bash: "./git merge --abort", then: "./git merge -s ours feature"},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
