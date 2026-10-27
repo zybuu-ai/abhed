@@ -625,10 +625,10 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 705 planted wrong claims none is shown as verified and 32 are
+  -v`): of 710 planted wrong claims none is shown as verified and 32 are
   contradicted (30 from cited, conflicting evidence, 2 by conflict markers
-  still shown), all 199 true controls
-  are verified, and none of the 299 true or neutral claims is contradicted;
+  still shown), all 201 true controls
+  are verified, and none of the 301 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
@@ -687,8 +687,11 @@ All notable changes to Abhed are recorded here. The format follows
   included; never after `--abort`, `--quit`, `--skip` or `--continue`);
   headings and lines that only arrange the reply ("Summary", "Changes:
   `sum.go`") are not claims, while a label that says what happened
-  ("Created: `sum_test.go`") is; a test result with no test run behind it
-  says "no test run in this session"; a
+  ("Created: `sum_test.go`") is, and a short title ("Go test run", "Cited
+  source") is not; a pass claim that names no folder is covered by a run
+  of the folders the person's message named, unless it asked about the
+  whole workspace; a test result with no test run behind it says "no test
+  run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
   change that names no file is verified only by an edit, a write or a

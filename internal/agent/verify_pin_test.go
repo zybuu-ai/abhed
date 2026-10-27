@@ -32,6 +32,9 @@ func caseHash(c CorpusCase) string {
 		Claim            *Claim
 		Steps            []CorpusStep
 	}{c.Kind, c.Want, c.Text, c.Claim, c.Steps})
+	if c.Asked != "" {
+		b = append(b, c.Asked...)
+	}
 	return fmt.Sprintf("%x", sha256.Sum256(b))[:16]
 }
 
@@ -111,6 +114,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		bash       string
 		then       string // a second command after bash
 		before     string // a command run before the read
+		asked      string // the person's message, "do it" when unset
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
 		"explain-sum":  {file: "sum.go", text: plain},
@@ -182,6 +186,10 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			bash: "./git rebase --abort", then: "./git rebase -s ours main"},
 		"pull-autostash": {before: `printf '%s\n' '#!/bin/sh' 'echo Fast-forward' 'echo Applying autostash resulted in conflicts.' 'echo Your changes are safe in the stash.' > git && chmod +x git`,
 			bash: "./git pull"},
+		"sub-tests-asked": {setup: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > go && chmod +x go",
+			bash: "cd services/orders && ../../go test ./...", asked: "Run the Go tests for services/orders and tell me how many pass."},
+		"sub-tests": {setup: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > go && chmod +x go",
+			bash: "cd services/orders && ../../go test ./..."},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
@@ -216,7 +224,11 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 	}
 	turns = append(turns, scriptedTurn{text: reply}, scriptedTurn{text: reply})
 	ad.turns = turns
-	reason, _ := l.Run(context.Background(), "do it")
+	asked := "do it"
+	if sc.asked != "" {
+		asked = sc.asked
+	}
+	reason, _ := l.Run(context.Background(), asked)
 	return reason
 }
 
