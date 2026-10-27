@@ -107,9 +107,10 @@ type acpCompleter struct {
 	chatOnly bool // the provider's completions endpoint refused fill in the middle
 	rate     bucket
 	cancel   context.CancelFunc
-	latest   int64  // the newest request's sequence
-	mode     string // the mode completion.enabled last recorded
-	closed   bool   // the session has closed; nothing more is sent
+	latest   int64              // the newest request's sequence
+	mode     string             // the mode completion.enabled last recorded
+	closed   bool               // the session has closed; nothing more is sent
+	events   [2]agent.EventType // the feature's enabled and summary events
 	sum      agent.CompletionSummary
 }
 
@@ -136,26 +137,40 @@ type completeRequest struct {
 // with the provider resolved as a session's model is: its api_key_env read,
 // its settings checked, and a managed model pin honoured.
 func completeOff(cfg config.Config) (string, config.ProviderConfig) {
-	name := cfg.Model.Completion
+	return editorOff(cfg, "complete")
+}
+
+// editorFeatures names each editor model feature as its reasons say it.
+var editorFeatures = map[string]string{"complete": "completions", "next_edit": "next-edit suggestions", "commit": "commit messages"}
+
+// editorOff is completeOff for any of the editor's model features: the
+// provider its key names (next_edit and commit fall back to completion),
+// under completion.enabled, completion.local_only and a managed model pin.
+func editorOff(cfg config.Config, feature string) (string, config.ProviderConfig) {
+	what := editorFeatures[feature]
+	name, key := cfg.EditorModel(feature)
 	if name == "" {
-		return "no completion model is configured (model.completion)", config.ProviderConfig{}
+		if feature == "complete" {
+			return "no completion model is configured (model.completion)", config.ProviderConfig{}
+		}
+		return "no model is configured for " + what + " (" + key + " or model.completion)", config.ProviderConfig{}
 	}
-	if !cfg.CompletionsOn() {
-		return "completions are turned off (completion.enabled)", config.ProviderConfig{}
+	if !cfg.EditorAIOn(feature) {
+		return what + " are turned off (completion.enabled)", config.ProviderConfig{}
 	}
 	if !cfg.Offered(name) {
-		return "model.completion names " + name + ", which is not a configured provider", config.ProviderConfig{}
+		return key + " names " + name + ", which is not a configured provider", config.ProviderConfig{}
 	}
-	// A managed model pin binds completions too, unless the managed file names their model itself.
-	if cfg.ModelPinned() && name != cfg.Model.Default && !cfg.ManagedSets("model.completion") {
-		return "the managed configuration sets the model to " + cfg.Model.Default + ", and does not name a completion model", config.ProviderConfig{}
+	// A managed model pin binds these too, unless the managed file names their model itself.
+	if cfg.ModelPinned() && name != cfg.Model.Default && !cfg.ManagedSets(key) {
+		return "the managed configuration sets the model to " + cfg.Model.Default + ", and does not name a model for " + what, config.ProviderConfig{}
 	}
 	p, err := cfg.ProviderNamed(name)
 	if err != nil {
-		return "the completion model cannot be used: " + err.Error(), config.ProviderConfig{}
+		return "the model for " + what + " cannot be used: " + err.Error(), config.ProviderConfig{}
 	}
 	if cfg.Completion.LocalOnly && !p.OnThisMachine() {
-		return "completions are kept to a model on this machine (completion.local_only), and " + name + " is not one", config.ProviderConfig{}
+		return what + " are kept to a model on this machine (completion.local_only), and " + name + " is not one", config.ProviderConfig{}
 	}
 	return "", p
 }
@@ -304,6 +319,18 @@ func headBytes(s string, n int) string {
 
 // completer is the session's, or nil once the session has closed.
 func (c *acpConn) completer(s *acpSession) *acpCompleter {
+	return c.completerFor(s, "complete")
+}
+
+// editorEvents are the enabled and summary events of each per-session editor feature.
+var editorEvents = map[string][2]agent.EventType{
+	"complete":  {agent.EvCompletionEnabled, agent.EvCompletionSummary},
+	"next_edit": {agent.EvNextEditEnabled, agent.EvNextEditSummary},
+}
+
+// completerFor is the session's state for one editor feature, or nil once
+// the session has closed.
+func (c *acpConn) completerFor(s *acpSession, feature string) *acpCompleter {
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
@@ -315,10 +342,10 @@ func (c *acpConn) completer(s *acpSession) *acpCompleter {
 	if c.comps == nil {
 		c.comps = map[string]*acpCompleter{}
 	}
-	k := c.comps[s.id]
+	k := c.comps[s.id+"\x00"+feature]
 	if k == nil {
-		k = &acpCompleter{}
-		c.comps[s.id] = k
+		k = &acpCompleter{events: editorEvents[feature]}
+		c.comps[s.id+"\x00"+feature] = k
 	}
 	return k
 }
@@ -369,49 +396,12 @@ func (c *acpConn) complete(msg rpcMessage) {
 		return
 	}
 
+	ctx, cancel, a, why, field := c.admit(k, req.Seq, cfg.Model.Completion, provider, cfg.Completion.LocalOnly)
+	if why != "" {
+		c.admitRefused(msg, empty, why, field)
+		return
+	}
 	k.mu.Lock()
-	if k.closed {
-		k.mu.Unlock()
-		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
-		return
-	}
-	now := completeNow()
-	// The session's limit first, so a session over it spends none of the connection's.
-	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
-		k.sum.Refused++
-		k.mu.Unlock()
-		empty("limited", "too many completions; slow down")
-		return
-	}
-	// A newer request replaces the one in flight; an older one arriving late is dropped.
-	seq := req.Seq
-	if seq == 0 {
-		seq = k.latest + 1
-	}
-	if seq <= k.latest {
-		k.sum.Superseded++
-		k.mu.Unlock()
-		empty("cancelled", "a newer completion replaced it")
-		return
-	}
-	k.latest = seq
-	if k.cancel != nil {
-		k.cancel()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
-	k.cancel = cancel
-	if k.adapter == nil || k.provider != cfg.Model.Completion {
-		a, err := completionAdapter(provider, cfg.Completion.LocalOnly)
-		if err != nil {
-			k.mu.Unlock()
-			cancel()
-			c.reply(msg.ID, nil, refusal(errRefused, "the completion model cannot be used: %v", err))
-			return
-		}
-		k.adapter, k.provider, k.chatOnly = a, cfg.Model.Completion, false
-		k.sum.Provider, k.sum.Model = k.provider, provider.Model
-	}
-	a := k.adapter
 	_, canFIM := a.(model.Infiller)
 	fim := canFIM && fimTypes[provider.Type] && !k.chatOnly
 	k.mu.Unlock()
@@ -536,12 +526,65 @@ func (c *acpConn) completeEnabled(s *acpSession, k *acpCompleter, p config.Provi
 	if k.mode == mode {
 		return ""
 	}
-	if _, err := s.parts.Loop.Recorder.Record(agent.EvCompletionEnabled, agent.ActorUser, agent.Trusted,
+	if _, err := s.parts.Loop.Recorder.Record(k.events[0], agent.ActorUser, agent.Trusted,
 		agent.CompletionEnabled{Provider: k.provider, Model: p.Model, Local: p.OnThisMachine(), Mode: mode}); err != nil {
 		return "the record did not take the completion, so nothing was sent"
 	}
 	k.mode = mode
 	return ""
+}
+
+// admit readies one request of an editor feature: the session's and the
+// connection's rate limits, its place by seq (an older one is dropped, a
+// newer one replaces what is in flight), and the provider's adapter. why and
+// field say how a refusal is answered: field "" a closed session, "error" an
+// adapter that cannot be used, else the empty answer's field.
+func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config.ProviderConfig, localOnly bool) (context.Context, context.CancelFunc, model.Adapter, string, string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return nil, nil, nil, "the session has closed", ""
+	}
+	now := completeNow()
+	// The session's limit first, so a session over it spends none of the connection's.
+	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
+		k.sum.Refused++
+		return nil, nil, nil, "too many requests; slow down", "limited"
+	}
+	if seq == 0 {
+		seq = k.latest + 1
+	}
+	if seq <= k.latest {
+		k.sum.Superseded++
+		return nil, nil, nil, "a newer request replaced it", "cancelled"
+	}
+	k.latest = seq
+	if k.cancel != nil {
+		k.cancel()
+	}
+	if k.adapter == nil || k.provider != name {
+		a, err := completionAdapter(provider, localOnly)
+		if err != nil {
+			return nil, nil, nil, fmt.Sprintf("the model cannot be used: %v", err), "error"
+		}
+		k.adapter, k.provider, k.chatOnly = a, name, false
+		k.sum.Provider, k.sum.Model = k.provider, provider.Model
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
+	k.cancel = cancel
+	return ctx, cancel, k.adapter, "", ""
+}
+
+// admitRefused answers a request admit refused.
+func (c *acpConn) admitRefused(msg rpcMessage, empty func(field, why string), why, field string) {
+	switch field {
+	case "":
+		c.reply(msg.ID, nil, refusal(errParams, "%s", why))
+	case "error":
+		c.reply(msg.ID, nil, refusal(errRefused, "%s", why))
+	default:
+		empty(field, why)
+	}
 }
 
 // compRateTake takes one from the connection's rate limit, or gives the
@@ -580,9 +623,16 @@ func (c *acpConn) completeCancel(msg rpcMessage) {
 
 // completionSummary records the session's completions, once, as it closes.
 func (c *acpConn) completionSummary(s *acpSession) {
+	for _, feature := range []string{"complete", "next_edit"} {
+		c.featureSummary(s, feature)
+	}
+}
+
+// featureSummary records one editor feature's summary for a closing session.
+func (c *acpConn) featureSummary(s *acpSession, feature string) {
 	c.compMu.Lock()
-	k := c.comps[s.id]
-	delete(c.comps, s.id)
+	k := c.comps[s.id+"\x00"+feature]
+	delete(c.comps, s.id+"\x00"+feature)
 	c.compMu.Unlock()
 	if k == nil {
 		return
@@ -598,8 +648,8 @@ func (c *acpConn) completionSummary(s *acpSession) {
 		return
 	}
 	if s.inner {
-		if _, err := s.parts.Loop.Recorder.Record(agent.EvCompletionSummary, agent.ActorSystem, agent.Trusted, sum); err != nil {
-			warnf("the record did not take %s: %v", agent.EvCompletionSummary, err)
+		if _, err := s.parts.Loop.Recorder.Record(k.events[1], agent.ActorSystem, agent.Trusted, sum); err != nil {
+			warnf("the record did not take %s: %v", k.events[1], err)
 		}
 	}
 }

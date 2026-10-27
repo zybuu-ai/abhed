@@ -1328,6 +1328,33 @@ _abhed/complete/cancel { sessionId } → {}
   the session closes, which counts `superseded` (replaced before sending)
   apart from `cancelled` (after); single completions are not recorded.
 
+### 7.11 Next-edit suggestions
+
+```ts
+_abhed/nextEdit { sessionId, uri, cursor: { line, character },
+                  window: { startLine: number, text: string },   // the document's lines around the cursor
+                  recentEdits?: { uri, range: Range, oldText: string, newText: string }[],
+                  language?: string, seq?: number }
+  → { edits: { uri, range: Range, newText: string }[], disabled?: string, refused?: string,
+      limited?: string, cancelled?: string, dropped?: string }
+```
+
+- Listed under the `nextEdit` feature. The model is `model.next_edit`, or
+  `model.completion` when unset, under the same `completion.enabled`,
+  `completion.local_only`, managed pin and key rules as §7.10.
+- The engine sends at most 80 lines and 8 KiB of `window` and five recent
+  edits (1 KiB of text each), each cleaned of stored secrets and key-shaped
+  text; recent edits in a file it may not send are left out. The document
+  itself must be sendable (§7.10), or the request is `refused`.
+- The model is asked, in a chat turn, for the window as it would read after
+  the next edit; the engine diffs that against what it sent and answers with
+  edits by whole lines in `uri` only. A changed line that held a withheld
+  secret, a suggestion carrying one, prose, or a rewrite of more than half the
+  window is `dropped` with the reason.
+- Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
+  `next_edit.enabled` before the first request and `next_edit.summary` when
+  the session closes.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor

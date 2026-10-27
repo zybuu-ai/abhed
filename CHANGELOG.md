@@ -143,6 +143,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Next-edit suggestions for Abhed Studio: `_abhed/nextEdit` (the `nextEdit`
+  feature) sends the lines around the cursor and the recent edits, cleaned
+  of secrets and bounded, to `model.next_edit` (or the completion model) and
+  answers with line edits in the same file. It follows the completion rules:
+  `completion.enabled`, `completion.local_only`, the managed model pin, the
+  same files never sent. A line that held a withheld secret is never edited.
+  Recorded as `next_edit.enabled` and `next_edit.summary`, counted by
+  `abhed_next_edits_total`
+  ([Next-edit suggestions](docs/guide/34-inline-completions.md#next-edit-suggestions)).
 - Inline completions for Abhed Studio: `_abhed/complete` (the `complete`
   feature) sends the code around the cursor, bounded, to the provider
   `model.completion` names, by fill in the middle on a local coding model

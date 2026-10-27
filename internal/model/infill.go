@@ -215,3 +215,83 @@ func CleanInfill(text, prefix, suffix string, fim bool) (string, string) {
 	}
 	return text, ""
 }
+
+// NextEditRequest is a document's lines around the cursor and what the
+// person just changed, for a next-edit suggestion.
+type NextEditRequest struct {
+	File, Language string
+	// Recent describes the last edits, newest last; Window is the lines,
+	// CursorLine the cursor's line within it, counted from zero.
+	Recent     string
+	Window     string
+	CursorLine int
+	MaxTokens  int
+}
+
+// NextEditResult is the window as the model would leave it after the next
+// edit, and what it cost; Dropped says why an answer was not used.
+type NextEditResult struct {
+	Window       string
+	InputTokens  int
+	OutputTokens int
+	Dropped      string
+}
+
+// NextEditByChat asks any adapter, through a chat turn, how the window reads
+// after the edit the person is likely to make next. The code is untrusted
+// text in the user's turn; only the reply's text is used, cleaned of
+// reasoning and fences.
+func NextEditByChat(ctx context.Context, a Adapter, req NextEditRequest) (NextEditResult, error) {
+	sys := "You predict a developer's next edit. Given their recent edits and the lines around the cursor, " +
+		"output the same lines with the next edit applied: the whole window, nothing else. No explanation, no prose, " +
+		"no markdown, no code fences. Change only what follows from the recent edits; if nothing does, output the window unchanged."
+	lines := strings.SplitAfter(req.Window, "\n")
+	if req.CursorLine >= 0 && req.CursorLine < len(lines) {
+		lines[req.CursorLine] = strings.TrimSuffix(lines[req.CursorLine], "\n") + "  " + cursor + "\n"
+	}
+	user := "File: " + req.File + "\nLanguage: " + orElse(req.Language, "unknown") + "\nRecent edits:\n" + orElse(req.Recent, "(none)\n") +
+		"\nWindow (" + cursor + " marks the cursor's line; do not output it):\n" + strings.Join(lines, "")
+	r := Request{System: sys, Messages: []Message{{Role: RoleUser, Content: user}}, MaxTokens: orInt(req.MaxTokens, 1024)}
+	if a.Profile().Sampling.Temperature {
+		t := 0.1
+		r.Temperature = &t
+	}
+	ch, err := a.Complete(ctx, r)
+	if err != nil {
+		return NextEditResult{}, err
+	}
+	var b strings.Builder
+	var res NextEditResult
+	for c := range ch {
+		if c.Err != nil {
+			return NextEditResult{}, c.Err
+		}
+		if c.Type == ChunkText {
+			b.WriteString(c.Text)
+		}
+		if c.Usage != nil {
+			res.InputTokens, res.OutputTokens = c.Usage.InputTokens, c.Usage.OutputTokens
+		}
+		if b.Len() > maxInfillAnswer {
+			break
+		}
+	}
+	text := b.String()
+	if m := harmonyFinal.FindStringIndex(text); m != nil {
+		text = text[m[1]:]
+	}
+	text = harmonyTokens.ReplaceAllString(thinkBlock.ReplaceAllString(analysisFinal.ReplaceAllString(text, ""), ""), "")
+	if m := firstFence.FindStringSubmatch(text); m != nil {
+		text = m[1] + "\n"
+	} else if prose(strings.TrimSpace(text), false) {
+		res.Dropped = "the model answered in prose, not code"
+		return res, nil
+	}
+	text = strings.ReplaceAll(text, "  "+cursor, "")
+	text = strings.ReplaceAll(text, cursor, "")
+	res.Window = strings.TrimLeft(text, "\n")
+	if strings.TrimSpace(res.Window) == "" {
+		res.Dropped = "the model gave no window back"
+	}
+	return res, nil
+}

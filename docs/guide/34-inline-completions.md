@@ -109,3 +109,23 @@ or superseded (replaced by a newer one) before anything went, with the tokens
 used. The token totals are a lower bound: a request cancelled after it went
 may have cost tokens the provider never reported. The metrics count the same
 (`abhed_completions_total`, `abhed_completion_tokens_total`).
+
+## Next-edit suggestions
+
+After you change something, Studio can ask where the change leads: rename
+a variable on one line and the next uses are suggested as edits. Studio
+sends the lines around the cursor and your last few edits; the engine asks
+the next-edit model, in a chat turn, for those lines as they would read after
+the next edit, and turns the answer into edits of whole lines in the same
+file.
+
+The model is `model.next_edit`, or the completion model when it is unset.
+Everything above holds: `completion.enabled` and `completion.local_only`
+cover it, a managed model pin binds it, the same files are never sent, and
+stored secrets and key-shaped text are withheld. A line that held a withheld
+secret is never edited, since the model did not see what is there; a
+suggestion that rewrites most of the window, carries a secret or reads as
+prose is dropped and Studio is told why. The record holds
+`next_edit.enabled` and `next_edit.summary` as it does for completions, and
+the metrics count them as `abhed_next_edits_total` and
+`abhed_next_edit_tokens_total`.

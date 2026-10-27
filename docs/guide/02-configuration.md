@@ -31,8 +31,8 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use — [Inline completions](34-inline-completions.md) |
-| `completion` | `enabled` and `local_only`: turn inline completions off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md) |
+| `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
@@ -1488,8 +1488,9 @@ it starts, an editor over `abhed acp`, subagents, and the SDK's
 `SwitchModelNamed`, `SetModel` and `Options.Provider` all refuse another
 model. Fallbacks under a managed default are only those the managed
 `model.fallback` names. Studio's inline completions are pinned too: under a
-managed `model.default`, a `model.completion` naming another provider is
-refused unless the managed file sets `model.completion` itself
+managed `model.default`, a `model.completion` (or `model.next_edit`,
+`model.commit`) naming another provider is refused unless the managed file
+sets that key itself
 ([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default`, any provider a
 file defines may be chosen, and the SDK's `Provider` names any endpoint.
 

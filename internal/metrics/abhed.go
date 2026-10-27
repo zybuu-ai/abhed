@@ -88,6 +88,9 @@ type Abhed struct {
 	lspStarts        *Counter
 	completions      *Counter
 	completionTokens *Counter
+	nextEdits        *Counter
+	nextEditTokens   *Counter
+	commitMessages   *Counter
 	lspRequests      *Counter
 	toolchains       *Counter
 	registries       *Counter
@@ -181,6 +184,12 @@ func New() *Abhed {
 			"Editor inline completions by outcome (served, empty, failed, cancelled after sending; refused, superseded before), counted when each session closes.", "outcome"),
 		completionTokens: r.Counter("abhed_completion_tokens_total",
 			"Tokens editor inline completions used, by kind (in, out).", "kind"),
+		nextEdits: r.Counter("abhed_next_edits_total",
+			"Editor next-edit suggestions by outcome (served, empty, failed, cancelled after sending; refused, superseded before), counted when each session closes.", "outcome"),
+		nextEditTokens: r.Counter("abhed_next_edit_tokens_total",
+			"Tokens editor next-edit suggestions used, by kind (in, out).", "kind"),
+		commitMessages: r.Counter("abhed_commit_messages_total",
+			"Commit messages editors asked for, by outcome (served, empty, failed).", "outcome"),
 		lspStarts: r.Counter("abhed_lsp_starts_total",
 			"Language servers started for editors, by language; a restart after a crash counts again.", "language"),
 		lspRequests: r.Counter("abhed_lsp_messages_total",
@@ -271,17 +280,26 @@ func (m *Abhed) Observe(ev agent.Event) {
 		if json.Unmarshal(ev.Payload, &p) == nil {
 			m.observed(ev.SessionID, p)
 		}
-	case string(agent.EvCompletionSummary):
+	case string(agent.EvCompletionSummary), string(agent.EvNextEditSummary):
 		var p agent.CompletionSummary
 		if json.Unmarshal(ev.Payload, &p) == nil {
-			m.completions.Add(float64(p.Served), "served")
-			m.completions.Add(float64(p.Refused), "refused")
-			m.completions.Add(float64(p.Failed), "failed")
-			m.completions.Add(float64(p.Cancelled), "cancelled")
-			m.completions.Add(float64(p.Superseded), "superseded")
-			m.completions.Add(float64(max(0, p.Requests-p.Served-p.Failed-p.Cancelled)), "empty")
-			m.completionTokens.Add(float64(p.TokensIn), "in")
-			m.completionTokens.Add(float64(p.TokensOut), "out")
+			count, tokens := m.completions, m.completionTokens
+			if ev.Type == agent.EvNextEditSummary {
+				count, tokens = m.nextEdits, m.nextEditTokens
+			}
+			count.Add(float64(p.Served), "served")
+			count.Add(float64(p.Refused), "refused")
+			count.Add(float64(p.Failed), "failed")
+			count.Add(float64(p.Cancelled), "cancelled")
+			count.Add(float64(p.Superseded), "superseded")
+			count.Add(float64(max(0, p.Requests-p.Served-p.Failed-p.Cancelled)), "empty")
+			tokens.Add(float64(p.TokensIn), "in")
+			tokens.Add(float64(p.TokensOut), "out")
+		}
+	case string(agent.EvCommitMessage):
+		var p agent.CommitMessage
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			m.commitMessages.Add(1, oneOf(p.Outcome, []string{"served", "empty", "failed"}))
 		}
 	case string(agent.EvLSPStarted):
 		var p agent.LSPStarted
