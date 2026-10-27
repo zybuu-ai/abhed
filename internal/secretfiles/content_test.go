@@ -131,3 +131,32 @@ func TestContentPlaceholdersAreNotSecrets(t *testing.T) {
 		}
 	}
 }
+
+// A JSON or YAML key whose name says secret, in any case, has its literal
+// value withheld; code after a colon, and keys that only look alike, do not.
+func TestSecretNamedKeys(t *testing.T) {
+	for in, secret := range map[string]string{
+		`{"internal_api_key":"internal-9f8e7d6c5b4a"}`: "internal-9f8e",
+		`{"clientSecret": "s3cr3t-value-77"}`:          "s3cr3t-value",
+		`{"db": {"password": "Hunter2Hunter2"}}`:       "Hunter2",
+		"auth:\n  token: abcdef123456\n":               "abcdef123456",
+		"  private_key: 'MIIEvQIBADANBgkq'\n":          "MIIEvQ",
+		"spring.datasource.password: Sup3rS3cret\n":    "Sup3rS3cret",
+	} {
+		if out, found := RedactContent(in); !found || strings.Contains(out, secret) {
+			t.Errorf("%q -> %q", in, out)
+		}
+	}
+	for _, ok := range []string{
+		`{"tokenizer": "bert-base-uncased"}`,
+		`{"password": "${DB_PASSWORD}"}`,
+		`{"api_key": "<your key>"}`,
+		"  password: hashedPassword,\n",
+		"  token: getToken(user)\n",
+		`{"keyboard": "us-international"}`,
+	} {
+		if out, found := RedactContent(ok); found || out != ok {
+			t.Errorf("not a secret, but %q -> %q", ok, out)
+		}
+	}
+}

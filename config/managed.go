@@ -81,6 +81,8 @@ func mergeManaged(cfg *Config) error {
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	// As the managed file says it, before a lower layer's narrowing applies.
+	cfg.managedFetchOff = cfg.ManagedSets("web_fetch.enabled") && !cfg.WebFetch.Enabled
 	cfg.managedRules = managedRuleSet(data)
 	lockOCSF(cfg, data)
 	if cfg.ManagedSets("permissions.deny") {
@@ -243,6 +245,11 @@ func (c Config) ManagedSets(path string) bool {
 	}
 	return false
 }
+
+// ManagedWebFetchOff reports whether the managed file itself sets
+// web_fetch.enabled to false, as opposed to leaving it unset or a lower
+// layer turning it off.
+func (c Config) ManagedWebFetchOff() bool { return c.managedFetchOff }
 
 // AllowLocked reports whether no caller may add allow rules: the managed
 // configuration sets a permissions key, whichever one. Every surface asks this.

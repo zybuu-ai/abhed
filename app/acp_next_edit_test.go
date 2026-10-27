@@ -119,3 +119,19 @@ func TestStudioNextEditDropsNoOps(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// The QA case: a rename's rewrite with spaces added at a line's end and the
+// closing brace's newline dropped gives clean edits of the renamed lines only.
+func TestStudioNextEditTakesTheWindowsLineEnds(t *testing.T) {
+	window := "func sum(xs []int64) int64 {\n\tvar total int64\n\tfor _, x := range xs {\n\t\tt += x\n\t}\n\treturn t\n}\n"
+	model := newFIMServer(t, "func sum(xs []int64) int64 {\n\tvar total int64  \n\tfor _, x := range xs {\n\t\ttotal += x\n\t}\n\treturn total\n}")
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/s.go",
+		"cursor": map[string]int{"line": 1}, "window": map[string]any{"startLine": 0, "text": window}}, &res)
+	if len(res.Edits) != 2 || res.Edits[0].Text != "\t\ttotal += x\n" || res.Edits[1].Text != "\treturn total\n" {
+		t.Fatalf("%+v", res)
+	}
+}

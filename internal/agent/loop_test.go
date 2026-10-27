@@ -939,3 +939,55 @@ func TestRetryExhaustedDoesNotOutliveItsMessage(t *testing.T) {
 		t.Fatalf("ends %q", details)
 	}
 }
+
+// The same read with the same answer, again and again, is warned about and
+// then stopped with a reason; a change in between starts the count again.
+func TestRepeatedIdenticalSuccessIsStopped(t *testing.T) {
+	dir := tempDir(t)
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := call("read", map[string]string{"path": p})
+	var turns []scriptedTurn
+	for range 10 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{read}})
+	}
+	l, store := harnessIn(t, dir, turns, policy.ModeAuto, true)
+	l.Config.MaxTurns = 50
+	reason, err := l.Run(context.Background(), "read it")
+	if err != nil || reason != TermRetryExhausted || l.Usage().Turns != repeatedSuccessAbort {
+		t.Fatalf("%s %v after %d turns", reason, err, l.Usage().Turns)
+	}
+	if d := l.EndDetail(); !strings.Contains(d, "same answer") || !strings.Contains(d, "send a message to go on") {
+		t.Fatalf("detail %q", d)
+	}
+	evs, _ := store.Events("sess1")
+	warned := false
+	for _, ev := range evs {
+		var o Observation
+		if ev.Type == EvObservation && json.Unmarshal(ev.Payload, &o) == nil && strings.Contains(o.Content, "had the same answer each time") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatal("the model was not warned before the stop")
+	}
+
+	// A write between reads changes things: the count starts again.
+	write := call("write", map[string]string{"path": p, "content": "changed\n"})
+	turns = nil
+	for range 5 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{read}})
+	}
+	turns = append(turns, scriptedTurn{calls: []model.ToolCall{write}})
+	for range 5 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{read}})
+	}
+	turns = append(turns, scriptedTurn{text: "done"})
+	l2, _ := harnessIn(t, dir, turns, policy.ModeAuto, true)
+	l2.Config.MaxTurns = 50
+	if reason, err := l2.Run(context.Background(), "read, write, read"); err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+}

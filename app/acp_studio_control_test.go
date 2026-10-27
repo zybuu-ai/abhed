@@ -623,28 +623,34 @@ func TestStudioPreviewWrites(t *testing.T) {
 // next prompt in: undone after, they could switch off the next prompt's
 // preview (an edit then landing unasked) or drop its images.
 func TestStudioPromptUndoesItsSettingsBeforeItsReply(t *testing.T) {
-	r := visionRig(t, true)
-	id := r.open()
-	loop := r.cl.conn.session(id).parts.Loop
-	type left struct {
-		preview bool
-		images  int
-	}
-	after := make(chan left, 1)
-	old := promptExit
-	promptExit = func() { after <- left{loop.PreviewingWrites(), loop.PendingImages()} }
-	t.Cleanup(func() { promptExit = old })
-	// A built-in command runs no prompt, so the image it came with is never taken.
-	img := map[string]any{"type": "image", "mimeType": "image/png", "data": base64.StdEncoding.EncodeToString([]byte("an image"))}
-	r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "/diff"}, img},
-		"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}}, nil)
-	select {
-	case got := <-after:
-		if got.preview || got.images != 0 {
-			t.Fatalf("after the reply: preview %v, %d images waiting", got.preview, got.images)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the prompt's handler never returned")
+	// A prompt the model runs, where the race was first seen, and a built-in
+	// command that runs none, so the image it came with is never taken.
+	for _, text := range []string{"look", "/diff"} {
+		t.Run(text, func(t *testing.T) {
+			r := visionRig(t, true)
+			id := r.open()
+			loop := r.cl.conn.session(id).parts.Loop
+			type left struct {
+				preview bool
+				images  int
+			}
+			after := make(chan left, 1)
+			old := promptExit
+			promptExit = func() { after <- left{loop.PreviewingWrites(), loop.PendingImages()} }
+			t.Cleanup(func() { promptExit = old })
+			r.model.script(say("done"))
+			img := map[string]any{"type": "image", "mimeType": "image/png", "data": base64.StdEncoding.EncodeToString([]byte("an image"))}
+			r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": text}, img},
+				"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}}, nil)
+			select {
+			case got := <-after:
+				if got.preview || got.images != 0 {
+					t.Fatalf("after the reply: preview %v, %d images waiting", got.preview, got.images)
+				}
+			case <-time.After(20 * time.Second):
+				t.Fatal("the prompt's handler never returned")
+			}
+		})
 	}
 }
 
