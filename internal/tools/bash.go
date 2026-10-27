@@ -1311,12 +1311,14 @@ func (b Bash) networkNote(command, output string) string {
 }
 
 // proxyPhrases are what clients print only for a proxy's refusal: the
-// egress proxy's own text, and curl's, pip's and Go's for a refused CONNECT.
+// egress proxy's own text, and curl's, pip's, Go's, npm 9+'s and uv's for a
+// refused CONNECT.
 var proxyPhrases = regexp.MustCompile(`(?i)abhed egress:|tunnel connection failed: 403|received HTTP code 403 from proxy|` +
-	`CONNECT tunnel failed, response 403|proxyconnect tcp`)
+	`CONNECT tunnel failed, response 403|proxyconnect tcp|invalid status code .?403.? connecting to proxy|unsuccessful tunnel`)
 
-// forbiddenLine is a 403 a client reports for a URL: Go's `Get "https://…": Forbidden`, npm's `403 Forbidden - GET https://…`.
-var forbiddenLine = regexp.MustCompile(`(?i)(?:": Forbidden\b|\b403 Forbidden\b|\bE403\b)`)
+// forbiddenLine is a 403 a client reports for a URL: Go's `Get "https://…": Forbidden`, npm's `403 Forbidden - GET https://…`,
+// Gradle's `Could not GET 'https://…'. Received status code 403 from server: Forbidden`.
+var forbiddenLine = regexp.MustCompile(`(?i)(?:": Forbidden\b|\b403 Forbidden\b|\bE403\b|status code 403 from server)`)
 
 // httpsHost is the host of an https URL in a line.
 var httpsHost = regexp.MustCompile(`https://([^\s/"':]+)`)

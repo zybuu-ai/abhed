@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -461,6 +462,9 @@ type StdioTransport struct {
 	// closes when it has written all it will.
 	stderr     *tailBuffer
 	stderrDone chan struct{}
+	// env and argv are the server's own environment and command line, as
+	// configured, which its stderr is redacted against.
+	env, argv []string
 }
 
 // stderrKeep is how much of a server's stderr is kept: its last lines.
@@ -527,28 +531,60 @@ var envKept = map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "LANG"
 // ones above, an argument after a flag that names a token, key, secret or
 // password, and anything shaped like a key or token.
 func (t *StdioTransport) redact(text string) string {
+	env, args := t.env, t.argv
+	if env == nil && t.cmd != nil {
+		env = t.cmd.Env
+	}
+	if args == nil && t.cmd != nil {
+		args = t.cmd.Args
+	}
 	var values []string
-	if t.cmd != nil {
-		for _, kv := range t.cmd.Env {
-			k, v, ok := strings.Cut(kv, "=")
-			if ok && !envKept[k] && !strings.HasPrefix(k, "LC_") && len(v) >= 6 {
-				values = append(values, v)
-			}
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && !envKept[k] && !strings.HasPrefix(k, "LC_") && len(v) >= 6 {
+			values = append(values, v)
 		}
-		args := t.cmd.Args
-		for i, a := range args {
-			low := strings.ToLower(a)
-			named := strings.Contains(low, "token") || strings.Contains(low, "key") || strings.Contains(low, "secret") || strings.Contains(low, "password")
-			if !strings.HasPrefix(low, "-") || !named {
-				continue
-			}
-			if _, v, ok := strings.Cut(a, "="); ok && len(v) >= 6 {
+	}
+	for i, a := range args {
+		low := strings.ToLower(a)
+		next := ""
+		if i+1 < len(args) {
+			next = args[i+1]
+		}
+		switch {
+		case low == "-e" || low == "--env":
+			// docker run -e NAME=VALUE: the value, when NAME names a secret
+			if k, v, ok := strings.Cut(next, "="); ok && namesSecret(strings.ToLower(k)) {
 				values = append(values, v)
-			} else if i+1 < len(args) && len(args[i+1]) >= 6 {
-				values = append(values, args[i+1])
+			}
+		case strings.HasPrefix(low, "--env="):
+			if k, v, ok := strings.Cut(strings.TrimPrefix(a, "--env="), "="); ok && namesSecret(strings.ToLower(k)) {
+				values = append(values, v)
+			}
+		case strings.HasPrefix(low, "-") && namesSecret(low):
+			// --api-token VALUE, --token=VALUE
+			if _, v, ok := strings.Cut(a, "="); ok {
+				values = append(values, v)
+			} else {
+				values = append(values, next)
+			}
+		case low == "-h" || low == "--header":
+			// --header "Authorization: Bearer VALUE", "X-Api-Key: VALUE"
+			if k, v, ok := strings.Cut(next, ":"); ok && (namesSecret(strings.ToLower(k)) || strings.EqualFold(strings.TrimSpace(k), "authorization")) {
+				v = strings.TrimSpace(v)
+				if f := strings.Fields(v); len(f) == 2 {
+					values = append(values, f[1])
+				}
+				values = append(values, v)
+			}
+		default:
+			// NAME=VALUE given as an argument
+			if k, v, ok := strings.Cut(a, "="); ok && !strings.HasPrefix(k, "-") && namesSecret(strings.ToLower(k)) {
+				values = append(values, v)
 			}
 		}
 	}
+	values = slices.DeleteFunc(values, func(v string) bool { return len(v) < 6 })
 	// Longest first, so a value inside another is not left half there.
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	for _, v := range values {
@@ -558,16 +594,28 @@ func (t *StdioTransport) redact(text string) string {
 	return text
 }
 
+// namesSecret reports whether a lower-cased name says it holds a secret.
+func namesSecret(low string) bool {
+	for _, w := range []string{"token", "key", "secret", "password", "passwd", "credential", "auth"} {
+		if strings.Contains(low, w) {
+			return true
+		}
+	}
+	return false
+}
+
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
 	// Never nil, which would inherit Abhed's whole environment and its keys.
 	cmd.Env = append([]string{}, env...)
-	return startStdio(cmd, command)
+	return startStdio(cmd, command, env, append([]string{command}, args...))
 }
 
 // startStdio starts cmd, built to run the server command, and speaks to it
-// over its stdin and stdout.
-func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
+// over its stdin and stdout. env and argv are the server's own, as
+// configured: what its stderr is redacted against, whatever cmd wraps them
+// in (a container engine's command, with the environment in a file).
+func startStdio(cmd *exec.Cmd, command string, env, argv []string) (*StdioTransport, error) {
 	if cmd.Env == nil {
 		cmd.Env = []string{}
 	}
@@ -593,6 +641,7 @@ func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
 		stdin:  stdin,
 		stdout: bufio.NewReaderSize(stdout, 1<<20),
 		stderr: &tailBuffer{}, stderrDone: make(chan struct{}),
+		env: append([]string{}, env...), argv: append([]string{}, argv...),
 	}
 	go func() {
 		defer close(t.stderrDone)

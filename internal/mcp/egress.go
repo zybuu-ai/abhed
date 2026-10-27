@@ -51,7 +51,7 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	if g.Cleanup != nil {
 		cleanup = g.Cleanup(cmd)
 	}
-	t, err := startStdio(cmd, cfg.Command)
+	t, err := startStdio(cmd, cfg.Command, env, argv)
 	if err != nil {
 		if cleanup != nil {
 			cleanup()

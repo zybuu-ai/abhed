@@ -144,16 +144,25 @@ func TestServerScriptFoldersReadable(t *testing.T) {
 		!slices.Contains(f.bwrapArgs(), filepath.Dir(script)) {
 		t.Fatalf("not shown: %s %v", f.seatbeltRules(), f.bwrapArgs())
 	}
-	for _, rel := range []string{"top.py", ".ssh/x.py", ".aws/cli/x.py", ".abhed/x.py", ".config/x.py", "Library/x.py",
-		"Documents/server.py", "Desktop/server.py", "Downloads/server.py"} {
-		if got := scriptFolders(home, []string{mk(rel)}); len(got) != 0 {
-			t.Errorf("%s made %v readable", rel, got)
+	// Credentials, Abhed's state, and home or a folder holding them:
+	// nothing, not even the file.
+	for _, rel := range []string{".ssh/x.py", ".aws/cli/x.py", ".abhed/x.py", ".config/gcloud/x.py", "top.py", ".config/x.py", "Library/x.py"} {
+		if dirs, files := scriptFolders(home, []string{mk(rel)}); len(dirs)+len(files) != 0 {
+			t.Errorf("%s made %v %v readable", rel, dirs, files)
+		}
+	}
+	// A folder directly in home and iCloud Drive's root: the file alone.
+	for _, rel := range []string{"Documents/server.py", "Desktop/server.py",
+		"Downloads/server.py", "Projects/server.py", "Library/Mobile Documents/com~apple~CloudDocs/server.py"} {
+		p := mk(rel)
+		if dirs, files := scriptFolders(home, []string{p}); len(dirs) != 0 || !slices.Equal(files, []string{p}) {
+			t.Errorf("%s: folders %v files %v", rel, dirs, files)
 		}
 	}
 	// A script's own folder inside one of them is shown, and only it.
 	own := mk("Downloads/mcp-tickets/server.py")
-	if got := scriptFolders(home, []string{own}); !slices.Equal(got, []string{filepath.Dir(own)}) {
-		t.Errorf("a script's own folder in Downloads: %v", got)
+	if dirs, _ := scriptFolders(home, []string{own}); !slices.Equal(dirs, []string{filepath.Dir(own)}) {
+		t.Errorf("a script's own folder in Downloads: %v", dirs)
 	}
 	// The server runs its script from there, confined, on macOS.
 	if runtime.GOOS != "darwin" {
@@ -171,5 +180,35 @@ func TestServerScriptFoldersReadable(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "ok") {
 		t.Fatalf("the server could not run its own script: %v %s", err, out)
+	}
+}
+
+// A program's install folder follows the same rule: one directly in home
+// shows the program alone; one in a credential folder is refused.
+func TestServerInstallPrefixIsNotATopLevelFolder(t *testing.T) {
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	mk := func(rel string) string {
+		p := filepath.Join(home, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	dl := mk("Downloads/mcp-server")
+	f, err := serverFilesIn("s", []string{dl}, nil, nil)
+	if err != nil || f.prefix != "" || !slices.Equal(f.shown(), []string{dl}) {
+		t.Fatalf("a program in Downloads: %+v %v", f, err)
+	}
+	if _, err := serverFilesIn("s", []string{mk(".ssh/tool")}, nil, nil); err == nil || !strings.Contains(err.Error(), "credentials") {
+		t.Fatalf("a program in ~/.ssh: %v", err)
+	}
+	own := mk("tools/srv/bin/srv")
+	if f, err := serverFilesIn("s", []string{own}, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
+		t.Fatalf("an install folder of its own: %+v %v", f, err)
 	}
 }
