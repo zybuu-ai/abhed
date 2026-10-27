@@ -178,6 +178,8 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			bash:   "./git merge --abort"},
 		"merge-moddel-ours": {before: "printf '#!/bin/sh\\ncase \"$2\" in --abort) exit 0;; -s) echo Merge made by the ours strategy.; exit 0;; esac\\necho \"CONFLICT (modify/delete): a.go deleted in feature and modified in HEAD.\"\\necho Automatic merge failed\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
 			bash: "./git merge --abort", then: "./git merge -s ours feature"},
+		"rebase-moddel-x": {before: `printf '%s\n' '#!/bin/sh' 'case "$2" in --abort) exit 0;; -X) echo Successfully rebased and updated refs/heads/feature.; exit 0;; esac' "printf 'Rebasing (1/1)\\rCONFLICT (modify/delete): a.go deleted in HEAD and modified in 4104aa2.\\n'" 'exit 1' > git && chmod +x git && ./git rebase main`,
+			bash: "./git rebase --abort", then: "./git rebase -X theirs main"},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},

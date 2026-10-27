@@ -4469,6 +4469,46 @@
       "name": "cleared conflicts said after a merge that ran clean",
       "kind": "planted",
       "hash": "7c056d149fcbf298"
+    },
+    {
+      "name": "no conflicts said after a rebase modify/delete conflict, an abort and -X theirs",
+      "kind": "planted",
+      "hash": "35b7d60e2d10f785"
+    },
+    {
+      "name": "no conflicts said after a cherry-pick modify/delete conflict, an abort and -X theirs",
+      "kind": "planted",
+      "hash": "5fa1ad5dd54e7dde"
+    },
+    {
+      "name": "no conflicts said after a read showed markers, then a clean pull",
+      "kind": "planted",
+      "hash": "9404c4001af886a5"
+    },
+    {
+      "name": "no conflicts said after only an automatic merge failed line, an abort and -s ours",
+      "kind": "planted",
+      "hash": "1102107021e9c884"
+    },
+    {
+      "name": "no conflicts said after git status showed both deleted, an abort and -s ours",
+      "kind": "planted",
+      "hash": "a6b54ba42ef88c04"
+    },
+    {
+      "name": "no conflicts said after git status showed deleted by them, an abort and -s ours",
+      "kind": "planted",
+      "hash": "a9b60fc5af547a2e"
+    },
+    {
+      "name": "no conflicts said after git status showed added by us, an abort and -s ours",
+      "kind": "planted",
+      "hash": "163b0f6d61dfd986"
+    },
+    {
+      "name": "a resolved merge after a rebase content conflict after a carriage return, only a.go re-read",
+      "kind": "planted",
+      "hash": "01199d00eddbe1d4"
     }
   ],
   "strict": [
@@ -5150,6 +5190,16 @@
     {
       "scenario": "merge-moddel-ours",
       "reply": "The merge was clean.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "rebase-moddel-x",
+      "reply": "No merge conflicts.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "rebase-moddel-x",
+      "reply": "The rebase is complete.",
       "want": "unverified"
     }
   ]

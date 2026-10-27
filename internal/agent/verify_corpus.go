@@ -409,6 +409,17 @@ var (
 	stepGitPullUpToDate  = CorpusStep{ID: "b30f", Tool: "bash", Args: map[string]any{"command": "git pull"}, Output: "Already up to date.\n", Exit: code(0)}
 	stepGitAddRebaseCont = CorpusStep{ID: "b30g", Tool: "bash", Args: map[string]any{"command": "git add -A && git rebase --continue"}, Output: "Successfully rebased and updated refs/heads/feature.\n", Exit: code(0)}
 	stepGitRebaseQuit    = CorpusStep{ID: "b30h", Tool: "bash", Args: map[string]any{"command": "git rebase --quit"}, Output: "", Exit: code(0)}
+	stepGitRebaseModDel  = CorpusStep{ID: "b31a", Tool: "bash", Args: map[string]any{"command": "git rebase main"}, Output: "Rebasing (1/1)\rCONFLICT (modify/delete): a.go deleted in HEAD and modified in 4104aa2 (wip).  Version 4104aa2 (wip) of a.go left in tree.\nerror: could not apply 4104aa2... wip\n", Exit: code(1)}
+	stepGitRebaseAbort   = CorpusStep{ID: "b31b", Tool: "bash", Args: map[string]any{"command": "git rebase --abort"}, Output: "", Exit: code(0)}
+	stepGitRebaseTheirs  = CorpusStep{ID: "b31c", Tool: "bash", Args: map[string]any{"command": "git rebase -X theirs main"}, Output: "Rebasing (1/1)\rSuccessfully rebased and updated refs/heads/feature.\n", Exit: code(0)}
+	stepGitPickModDel    = CorpusStep{ID: "b31d", Tool: "bash", Args: map[string]any{"command": "git cherry-pick 4104aa2"}, Output: "CONFLICT (modify/delete): a.go deleted in HEAD and modified in 4104aa2 (wip).  Version 4104aa2 (wip) of a.go left in tree.\nerror: could not apply 4104aa2... wip\n", Exit: code(1)}
+	stepGitPickAbort     = CorpusStep{ID: "b31e", Tool: "bash", Args: map[string]any{"command": "git cherry-pick --abort"}, Output: "", Exit: code(0)}
+	stepGitPickTheirs    = CorpusStep{ID: "b31f", Tool: "bash", Args: map[string]any{"command": "git cherry-pick -X theirs 4104aa2"}, Output: "[main 5d6e7f8] wip\n", Exit: code(0)}
+	stepGitMergeFailTail = CorpusStep{ID: "b31g", Tool: "bash", Args: map[string]any{"command": "git merge feature 2>&1 | tail -1"}, Output: "Automatic merge failed; fix conflicts and then commit the result.\n", Exit: code(0)}
+	stepGitStatusBothDel = CorpusStep{ID: "b31h", Tool: "bash", Args: map[string]any{"command": "git status"}, Output: "Unmerged paths:\n\tboth deleted:    a.go\n", Exit: code(0)}
+	stepGitStatusDelThem = CorpusStep{ID: "b31i", Tool: "bash", Args: map[string]any{"command": "git status"}, Output: "Unmerged paths:\n\tdeleted by them: a.go\n", Exit: code(0)}
+	stepGitStatusAddUs   = CorpusStep{ID: "b31j", Tool: "bash", Args: map[string]any{"command": "git status"}, Output: "Unmerged paths:\n\tadded by us:     a.go\n", Exit: code(0)}
+	stepGitRebaseContent = CorpusStep{ID: "b31k", Tool: "bash", Args: map[string]any{"command": "git rebase main"}, Output: "Rebasing (1/1)\rCONFLICT (content): Merge conflict in b.go\nerror: could not apply 4104aa2... wip\n", Exit: code(1)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1490,6 +1501,16 @@ func CorpusCases() []CorpusCase {
 		{Name: "a finished rebase said after only a rebase --quit", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRebaseQuit), Text: "The rebase is complete."},
 		{Name: "fixed conflicts said after a merge that ran clean", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeClean), Text: "I fixed the merge conflicts."},
 		{Name: "cleared conflicts said after a merge that ran clean", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeClean), Text: "I cleared the merge conflicts."},
+		// Round 31: a rebase's first CONFLICT follows a \r; a cherry-pick prints no
+		// "Automatic merge failed"; a read that showed markers is a conflict seen.
+		{Name: "no conflicts said after a rebase modify/delete conflict, an abort and -X theirs", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRebaseModDel, stepGitRebaseAbort, stepGitRebaseTheirs), Text: "No merge conflicts."},
+		{Name: "no conflicts said after a cherry-pick modify/delete conflict, an abort and -X theirs", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitPickModDel, stepGitPickAbort, stepGitPickTheirs), Text: "No merge conflicts."},
+		{Name: "no conflicts said after a read showed markers, then a clean pull", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepGitPullUpToDate), Text: "No merge conflicts."},
+		{Name: "no conflicts said after only an automatic merge failed line, an abort and -s ours", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeFailTail, stepGitMergeAbort, stepGitMergeOurs), Text: "No merge conflicts."},
+		{Name: "no conflicts said after git status showed both deleted, an abort and -s ours", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitStatusBothDel, stepGitMergeAbort, stepGitMergeOurs), Text: "No merge conflicts."},
+		{Name: "no conflicts said after git status showed deleted by them, an abort and -s ours", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitStatusDelThem, stepGitMergeAbort, stepGitMergeOurs), Text: "No merge conflicts."},
+		{Name: "no conflicts said after git status showed added by us, an abort and -s ours", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitStatusAddUs, stepGitMergeAbort, stepGitMergeOurs), Text: "No merge conflicts."},
+		{Name: "a resolved merge after a rebase content conflict after a carriage return, only a.go re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitRebaseContent, stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
