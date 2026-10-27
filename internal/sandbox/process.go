@@ -381,12 +381,12 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 // seatbeltProfileFor is the profile for a command whose session's egress
 // proxy holds port; 0 is none.
 func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
-	return s.seatbeltProfileWith(port, false, readable...)
+	return s.seatbeltProfileWith(port, loopback{}, readable...)
 }
 
 // seatbeltProfileWith is seatbeltProfileFor, with loopback ports open when
 // loopback is set (WithLoopback) and readable also readable under home.
-func (s *Process) seatbeltProfileWith(port uint16, loopback bool, readable ...string) string {
+func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
@@ -542,9 +542,14 @@ func (s *Process) seatbeltProfileWith(port uint16, loopback bool, readable ...st
 		}
 		// A debug session the person agreed to: loopback ports, both ways,
 		// and no other address.
-		if loopback {
+		if lb.on {
 			b.WriteString(";; Loopback, for a debug adapter and its program, which the person agreed to.\n")
-			b.WriteString("(allow network-outbound (remote ip \"localhost:*\"))\n")
+			if lb.wide() {
+				b.WriteString("(allow network-outbound (remote ip \"localhost:*\"))\n")
+			}
+			for _, p := range lb.ports {
+				fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", p)
+			}
 			b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
 			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
 		}
@@ -746,7 +751,7 @@ func (s *Process) Backend() string { return s.backend }
 // wrapEgress runs argv inside the backend's confinement; under the
 // allowlist eg is the session's proxy, its one way out.
 func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *egressState, argv ...string) *exec.Cmd {
-	if loopbackOf(ctx) && s.policy.Egress != nil {
+	if loopbackOf(ctx).wide() && s.policy.Egress != nil {
 		// Loopback would also reach the egress proxies, other calls' and
 		// other sessions', with allowlists this command was never given.
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: loopback is not opened under the egress allowlist")}

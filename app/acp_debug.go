@@ -223,6 +223,16 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		}
 		loopback = true
 	}
+	// Delve on macOS picks its own loopback ports, which only a wide
+	// loopback reaches; that would also reach other calls' egress proxies.
+	if loopback && runtime.GOOS == "darwin" && req.Language == debugrelay.Go && b.Isolation.Allowlist {
+		c.reply(msg.ID, nil, debugRefusal(&debugrelay.Problem{Kind: debugrelay.KindTier, Retry: true,
+			Message: "Go cannot be debugged on this Mac's process sandbox while the session's network is an allowlist: Delve picks its own loopback ports, " +
+				"and opening every loopback port would also open the egress proxies of other commands and sessions",
+			Steps: []string{"Use the container tier for Go debugging: _abhed/debug/status-tier lists the steps (install Podman, start its machine, use the container tier)",
+				"Or debug in a session whose network is closed, with no package registries opened"}}))
+		return
+	}
 	var bridge, bridgePath string
 	var pinned bool
 	if req.Language == debugrelay.Go {
@@ -302,7 +312,22 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		lctx = sandbox.WithPrivateDirs(lctx, sockDir)
 	}
 	if loopback {
-		lctx = sandbox.WithLoopback(lctx)
+		// Python's adapter listens on ports chosen now, and only those are
+		// opened to it; Go's Delve picks its own, so it gets every loopback
+		// port (never under the allowlist, refused above).
+		if req.Language == debugrelay.Python {
+			ports, err := sandbox.FreeLoopbackPorts(4)
+			if err != nil {
+				cancel()
+				_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the debug adapter could not start: no free loopback port: " + err.Error(), IsError: true}, 0)
+				c.reply(msg.ID, nil, refusal(errRefused, "the debug adapter could not start: no free loopback port: %v", err))
+				return
+			}
+			debugrelay.PinPorts(&spec, ports)
+			lctx = sandbox.WithLoopbackPorts(lctx, ports...)
+		} else {
+			lctx = sandbox.WithLoopback(lctx)
+		}
 	}
 	cmd := debugCommand(b, lctx, spec.Cwd, spec.Command)
 	stdin, err1 := cmd.StdinPipe()

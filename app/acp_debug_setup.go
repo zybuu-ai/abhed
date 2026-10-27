@@ -80,8 +80,9 @@ func debugLoopbackWhyOn(goos string) string {
 		return "debug on this machine's process sandbox, whose network is open, instead of a container: while it is being debugged, the program " +
 			"can reach services on this machine (localhost ports) and the network, as this session's commands can, and local services can reach it." + keep
 	}
-	return "debug on this machine's process sandbox instead of a container: while it is being debugged, the program can reach " +
-		"services on this Mac (localhost ports) and they can reach it; nothing else on the network." + keep
+	return "debug on this machine's process sandbox instead of a container: while it is being debugged, the program can listen on this Mac's " +
+		"loopback (localhost) ports, where other programs on this Mac can reach it, and the debugger reaches it there; a Go program, whose debugger " +
+		"picks its own ports, can also reach services on this Mac (localhost ports). Nothing else on the network." + keep
 }
 
 // debugEngineProbe finds the container engine, Homebrew and a Mac's podman
@@ -138,18 +139,19 @@ func findProgram(name string, places ...string) string {
 // debug command alone), and the Linux process tier with the network open
 // (whose loopback is the host's already).
 //
-// Not under the egress allowlist: loopback would also reach the egress
-// proxies, its own calls' and other sessions', which hold allowlists this
-// debug session was never given.
+// On macOS under the egress allowlist too: Python's adapter listens on ports
+// chosen before it starts, and only those are opened to it, so no egress
+// proxy is reachable (Go, whose Delve picks its own ports, is refused there
+// at launch).
 func debugProcessTierPossible(tier string, iso tools.Isolation) bool {
 	return debugProcessTierPossibleOn(runtime.GOOS, tier, iso)
 }
 
 func debugProcessTierPossibleOn(goos, tier string, iso tools.Isolation) bool {
-	if tier != string(sandbox.TierProcess) || iso.Allowlist {
+	if tier != string(sandbox.TierProcess) {
 		return false
 	}
-	return goos == "darwin" || goos == "linux" && iso.Network
+	return goos == "darwin" || goos == "linux" && iso.Network && !iso.Allowlist
 }
 
 // debugSetupFor is what the session at workspace needs to debug.

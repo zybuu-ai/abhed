@@ -700,3 +700,35 @@ func Read(br *bufio.Reader) (json.RawMessage, error) {
 	}
 	return body, nil
 }
+
+// pinnedAdapter is debugpy's adapter with the ports it listens on taken, in
+// order, from ABHED_DAP_PORTS instead of chosen by the system: the ports the
+// sandbox opens to it alone (sandbox.WithLoopbackPorts). The variable is
+// removed before the adapter runs, so the program it starts does not see it.
+const pinnedAdapter = `import os, runpy
+import debugpy.common.sockets as s
+ports = [int(p) for p in os.environ.pop("ABHED_DAP_PORTS").split(",")]
+create = s.create_server
+def pinned(host, port=0, *a, **k):
+    if not port:
+        if not ports:
+            raise OSError("abhed-debug: no loopback port left for the debug adapter")
+        port = ports.pop(0)
+    return create(host, port, *a, **k)
+s.create_server = pinned
+runpy.run_module("debugpy.adapter", run_name="__main__", alter_sys=True)
+`
+
+// PinPorts makes a Python spec's adapter listen on ports alone, for a
+// sandbox that opens those loopback ports and no others.
+func PinPorts(spec *Spec, ports []uint16) {
+	const adapter = "exec python3 -m debugpy.adapter"
+	if !strings.HasSuffix(spec.Command, adapter) || len(ports) == 0 {
+		return
+	}
+	list := make([]string, len(ports))
+	for i, p := range ports {
+		list[i] = strconv.Itoa(int(p))
+	}
+	spec.Command = strings.TrimSuffix(spec.Command, adapter) + "ABHED_DAP_PORTS=" + strings.Join(list, ",") + " exec python3 -c " + shellQuote(pinnedAdapter)
+}

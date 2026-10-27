@@ -53,7 +53,7 @@ func TestLoopbackForOneCommand(t *testing.T) {
 	if out, err := run(ctx, "nc -z -G 2 192.0.2.1 80"); err == nil {
 		t.Fatalf("an address beyond loopback was reached: %s", out)
 	}
-	if prof := sb.seatbeltProfileWith(0, true); !strings.Contains(prof, `(allow network-outbound (remote ip "localhost:*"))`) || strings.Contains(prof, `remote ip "*:*"`) {
+	if prof := sb.seatbeltProfileWith(0, loopback{on: true}); !strings.Contains(prof, `(allow network-outbound (remote ip "localhost:*"))`) || strings.Contains(prof, `remote ip "*:*"`) {
 		t.Fatalf("profile %s", prof)
 	}
 }
@@ -81,5 +81,56 @@ func TestLoopbackRefusedUnderAllowlist(t *testing.T) {
 	if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "allowlist") {
 		out, _ := cmd.CombinedOutput()
 		t.Fatalf("loopback opened under the allowlist: %v %s", cmd.Err, out)
+	}
+}
+
+
+// Loopback to named ports holds under the allowlist: the command listens and
+// reaches its own ports, and another port on loopback (such as another
+// call's egress proxy) stays out of reach.
+func TestLoopbackPortsUnderAllowlist(t *testing.T) {
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+		t.Skip("no sandbox-exec")
+	}
+	other, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	go func() {
+		for {
+			c, err := other.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(t.TempDir())
+	p.Egress = pol
+	sb := NewProcess(p)
+	ports, err := FreeLoopbackPorts(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := strconv.Itoa(int(ports[0]))
+	ctx := WithLoopbackPorts(context.Background(), ports...)
+	run := func(line string) (string, error) {
+		out, err := sb.Command(ctx, t.TempDir(), line).CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run("nc -l 127.0.0.1 " + own + " > /dev/null & sleep 0.5; echo hi | nc -G 2 127.0.0.1 " + own + " && echo sent"); err != nil || !strings.Contains(out, "sent") {
+		t.Fatalf("the command's own port: %v %s", err, out)
+	}
+	if out, err := run("nc -z -G 2 127.0.0.1 " + strconv.Itoa(other.Addr().(*net.TCPAddr).Port)); err == nil {
+		t.Fatalf("another loopback port was reached: %s", out)
+	}
+	prof := sb.seatbeltProfileWith(0, loopback{on: true, ports: ports})
+	if strings.Contains(prof, `remote ip "localhost:*"`) || !strings.Contains(prof, `remote ip "localhost:`+own+`"`) {
+		t.Fatalf("profile %s", prof)
 	}
 }

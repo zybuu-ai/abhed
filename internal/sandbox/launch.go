@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"net"
 	"os/exec"
 	"sync"
 
@@ -69,19 +70,60 @@ func readOnlyPathsOf(ctx context.Context) []string {
 
 type loopbackKey struct{}
 
-// WithLoopback lets one command on the macOS process tier, whose network is
-// otherwise closed, connect to and listen on loopback ports, and nothing
-// beyond: what a debug adapter needs to reach the program it debugs. The
-// loopback is the Mac's own, so its local services are reachable too; the
-// engine sets it only after the person agreed to that. Only the engine sets
-// it.
-func WithLoopback(ctx context.Context) context.Context {
-	return context.WithValue(ctx, loopbackKey{}, true)
+// loopback is what of the Mac's loopback one command may use: listening on
+// any port, and connecting to ports, all of them (wide) or the ones named.
+type loopback struct {
+	on    bool
+	ports []uint16
 }
 
-func loopbackOf(ctx context.Context) bool {
-	on, _ := ctx.Value(loopbackKey{}).(bool)
-	return on
+// wide reports loopback open to every port: the Mac's local services, and
+// the egress proxies of other calls and sessions.
+func (l loopback) wide() bool { return l.on && len(l.ports) == 0 }
+
+// WithLoopback lets one command on the macOS process tier, whose network is
+// otherwise closed, listen on loopback and connect to any loopback port,
+// and nothing beyond. The loopback is the Mac's own, so its local services
+// are reachable too, and so are other calls' egress proxies: refused under
+// the egress allowlist (WithLoopbackPorts is not). The engine sets it only
+// after the person agreed to it.
+func WithLoopback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, loopbackKey{}, loopback{on: true})
+}
+
+// WithLoopbackPorts lets one command on the macOS process tier listen on
+// loopback, and connect to these loopback ports alone: the ports a debug
+// adapter and the program it debugs talk over, chosen before it starts. No
+// other local service, nor any egress proxy, is reachable, so it holds under
+// the egress allowlist too.
+func WithLoopbackPorts(ctx context.Context, ports ...uint16) context.Context {
+	return context.WithValue(ctx, loopbackKey{}, loopback{on: true, ports: append([]uint16(nil), ports...)})
+}
+
+func loopbackOf(ctx context.Context) loopback {
+	l, _ := ctx.Value(loopbackKey{}).(loopback)
+	return l
+}
+
+// FreeLoopbackPorts are n loopback ports nothing listens on now, for a
+// command that will listen on them (WithLoopbackPorts).
+func FreeLoopbackPorts(n int) ([]uint16, error) {
+	var lns []net.Listener
+	defer func() {
+		for _, l := range lns {
+			_ = l.Close()
+		}
+	}()
+	var out []uint16
+	for range n {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		lns = append(lns, l)
+		out = append(out, uint16(l.Addr().(*net.TCPAddr).Port)) // #nosec G115 -- a TCP port
+	}
+	return out, nil
 }
 
 type privateDirKey struct{}
