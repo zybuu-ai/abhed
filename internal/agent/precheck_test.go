@@ -20,11 +20,11 @@ func (a *askCounter) Approve(context.Context, string, json.RawMessage, policy.Re
 	return true, nil
 }
 
-// A relative path can never succeed, so nobody is asked to approve it, and the
-// model still gets the correction.
+// A path out of the workspace can never succeed, so nobody is asked to
+// approve it, and the model still gets the correction.
 func TestDoomedCallIsNotPutToAPerson(t *testing.T) {
 	l, store, _ := harness(t, []scriptedTurn{
-		{calls: []model.ToolCall{call("write", map[string]string{"path": "new.txt", "content": "x"})}},
+		{calls: []model.ToolCall{call("write", map[string]string{"path": "../new.txt", "content": "x"})}},
 		{text: "ok"},
 	}, policy.ModeDefault, true)
 	counter := &askCounter{}
@@ -52,7 +52,7 @@ func TestDoomedCallIsNotPutToAPerson(t *testing.T) {
 	last := adapter.gotRequests[len(adapter.gotRequests)-1]
 	found := false
 	for _, m := range last.Messages {
-		if m.Role == model.RoleTool && strings.Contains(m.Content, "must be absolute") {
+		if m.Role == model.RoleTool && strings.Contains(m.Content, "outside this session's workspace") {
 			found = true
 		}
 	}
@@ -97,5 +97,55 @@ func TestAllowedDoomedWriteIsNotRecordedApproved(t *testing.T) {
 	denied := payloads[map[string]string](evs, EvActionDenied)
 	if len(denied) != 1 || denied[0]["step"] != "precheck" || !strings.Contains(denied[0]["reason"], "Abhed's own state") {
 		t.Fatalf("denied: %+v", denied)
+	}
+}
+
+// An approved edit that failed without effect hands its approval to the next
+// attempt at the same file in the message, once, and the record says so.
+func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
+	dir := tempDir(t)
+	p := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(p, []byte("package a\n\nvar x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edit := func(old, new string) model.ToolCall {
+		return call("edit", map[string]string{"path": p, "old_string": old, "new_string": new})
+	}
+	turns := []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
+		{calls: []model.ToolCall{edit("var y = 1", "var y = 2")}},
+		{calls: []model.ToolCall{edit("var x = 1", "var x = 2")}},
+		{calls: []model.ToolCall{edit("var x = 2", "var x = 3")}},
+		{text: "done"},
+	}
+	l, store := harnessIn(t, dir, turns, policy.ModeDefault, true)
+	counter := &askCounter{}
+	l.Approver = counter
+	if _, err := l.Run(context.Background(), "change x"); err != nil {
+		t.Fatal(err)
+	}
+	// The failed edit's approval answers the second; the third is asked again.
+	if counter.asked != 2 {
+		t.Fatalf("asked %d times; want 2", counter.asked)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "package a\n\nvar x = 3\n" {
+		t.Fatalf("file %q", got)
+	}
+	evs, _ := store.Events("sess1")
+	carried := 0
+	for _, e := range evs {
+		if e.Type == EvActionApproved {
+			var m map[string]string
+			_ = json.Unmarshal(e.Payload, &m)
+			if m["carried_from"] != "" {
+				carried++
+				if m["by"] != ByReviewer {
+					t.Fatalf("carried approval by %q", m["by"])
+				}
+			}
+		}
+	}
+	if carried != 1 {
+		t.Fatalf("%d carried approvals", carried)
 	}
 }

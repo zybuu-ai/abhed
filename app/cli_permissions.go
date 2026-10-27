@@ -220,11 +220,10 @@ func explainDecision(e *cmdEnv, tool, what string) string {
 	case "web_search":
 		key = "query"
 	}
-	// A relative path is read from where the session is, as the tools read
-	// it; it used to reach the file tools as is and come back "must be absolute".
+	// A relative path is read from the workspace root, as the tools read it.
 	resolved := ""
 	if key == "path" && what != "" && !filepath.IsAbs(what) && e.sess != nil {
-		what = filepath.Join(e.sess.Cwd, what)
+		what = filepath.Join(e.sess.Root, what)
 		resolved = what + ": "
 	}
 	args, _ := json.Marshal(map[string]string{key: what})

@@ -33,7 +33,7 @@ func (Read) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "path":{"type":"string","description":"Absolute path to the file."},
+    "path":{"type":"string","description":"Path to the file: absolute, or relative to the workspace root."},
     "offset":{"type":"integer","description":"1-indexed line to start from. Use with limit for large files."},
     "limit":{"type":"integer","description":"Max lines to return. Default 2000."}
   },
@@ -185,7 +185,7 @@ func (Write) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "path":{"type":"string","description":"Absolute path."},
+    "path":{"type":"string","description":"Absolute path, or relative to the workspace root."},
     "content":{"type":"string","description":"Complete file content."}
   },
   "required":["path","content"]

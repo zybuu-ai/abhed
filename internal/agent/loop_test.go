@@ -901,3 +901,41 @@ func TestShutdownIsNotAUserInterrupt(t *testing.T) {
 		})
 	}
 }
+
+// After a retry_exhausted end the next message is a fresh start: the count
+// of repeated failures does not carry over, and the end says what failed.
+func TestRetryExhaustedDoesNotOutliveItsMessage(t *testing.T) {
+	dir := tempDir(t)
+	badEdit := call("edit", map[string]string{
+		"path": filepath.Join(dir, "nope.go"), "old_string": "a", "new_string": "b",
+	})
+	var turns []scriptedTurn
+	for i := 0; i < repeatedFailureAbort; i++ {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{badEdit}})
+	}
+	// The next message: the same failing call once more, then an answer.
+	turns = append(turns, scriptedTurn{calls: []model.ToolCall{badEdit}}, scriptedTurn{text: "done"})
+	l, store := harnessIn(t, dir, turns, policy.ModeAuto, true)
+	l.Config.MaxTurns = 50
+	if reason, err := l.Run(context.Background(), "edit a file"); err != nil || reason != TermRetryExhausted {
+		t.Fatalf("first message: %s %v", reason, err)
+	}
+	if d := l.EndDetail(); !strings.Contains(d, "failed") || !strings.Contains(d, "edit") {
+		t.Fatalf("the end did not say what failed: %q", d)
+	}
+	if reason, err := l.Run(context.Background(), "try once more, differently"); err != nil || reason != TermCompleted {
+		t.Fatalf("the next message ended %s %v; want completed", reason, err)
+	}
+	evs, _ := store.Events("sess1")
+	var details []string
+	for _, ev := range evs {
+		if ev.Type == EvSessionEnded {
+			var e SessionEnded
+			_ = json.Unmarshal(ev.Payload, &e)
+			details = append(details, string(e.Reason)+":"+e.Detail)
+		}
+	}
+	if len(details) != 2 || !strings.HasPrefix(details[0], "retry_exhausted:the same call failed") || details[1] != "completed:" {
+		t.Fatalf("ends %q", details)
+	}
+}

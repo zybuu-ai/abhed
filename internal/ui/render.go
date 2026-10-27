@@ -471,6 +471,9 @@ func noticeText(n agent.Notice) string {
 		sanitize(orStr(n.Description, n.TaskID), false), sanitize(n.Status, false), turns)
 }
 
+// EndedText says, in words, why a turn ended when it was not by finishing.
+func EndedText(reason agent.TerminalReason, detail string) string { return endedText(reason, detail) }
+
 // endedText says, in words, why a turn ended when it was not by finishing.
 func endedText(reason agent.TerminalReason, detail string) string {
 	switch reason {

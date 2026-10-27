@@ -25,7 +25,13 @@ vLLM or llama.cpp. For those types (`ollama`, `vllm`, `llamacpp`, `tgi`,
 endpoint with the code before and after the cursor. Abhed does not start
 Ollama for this; it uses it only when it is configured and running. Any other
 provider, a hosted one included, is asked through a chat turn with the cursor
-marked, and only the text of its reply is used.
+marked, at a low temperature, and only the text of its reply is used.
+
+A chat or reasoning model often answers in prose, so the reply is cleaned
+first: reasoning written into the text is removed, a fenced block gives its
+code, and code repeated from around the cursor is trimmed. A reply that still
+reads as an explanation is not offered; Studio is told why (`dropped`). For
+dependable ghost text, use a coding model with fill-in-the-middle.
 
 | Setting | Default | |
 |---|---|---|

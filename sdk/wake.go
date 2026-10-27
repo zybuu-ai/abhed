@@ -68,7 +68,7 @@ func (a *Agent) wakeRun(ctx context.Context, ids []string) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted && reason != agent.TermWakeLimit {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }
