@@ -752,6 +752,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Abhed Studio's Go, Python and Rust language servers never started: the
+  supervisor looked for the server on the engine's own `PATH`, without the
+  toolchains Abhed installs for the sandbox, and refused it as an unknown
+  program before the install offer could appear, with the reason only in
+  the log. The supervisor now finds programs on the `PATH` commands get,
+  toolchain folders first (which also lets the agent run a toolchain's `go`
+  or `cargo`); a server that is not there is offered for install
+  (`server-missing`) before anything is judged, in Studio and the
+  workbench; and a refused start reaches Studio as a `start-refused`
+  problem with its reason and steps.
+
 - A run with a temporary home folder, as a test or a harness that drives
   Abhed or Studio with a scratch `HOME` gives it, could start a real
   `ollama serve` that then held port 11434 reading the scratch home's empty

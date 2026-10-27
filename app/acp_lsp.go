@@ -22,6 +22,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -230,6 +231,13 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " +
 		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language)})
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
+	// A server that is not on the PATH commands get (the toolchains' folders
+	// first) cannot start: the person is offered the install, and nothing is
+	// put to policy or the supervisor for a command that cannot run.
+	if find := lspProgramFinder(loop.Tools); find != nil && !strings.ContainsAny(l.argv[0], "/\\") && !find(l.argv[0]) {
+		cancel()
+		return nil, lspMissing(l)
+	}
 	// A workspace rust-analyzer.toml overrides the engine's settings, so the
 	// person is asked, told what it can do.
 	// A walk that stopped at a bound asks too: a file may have gone unseen.
@@ -251,7 +259,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	if refused != nil {
 		cancel()
 		_ = loop.ManualObserve(callID, "bash", *refused, 0)
-		return nil, refusal(errPolicy, "%s", refused.Content)
+		return nil, lspRefused(l, refused.Content)
 	}
 	// A stop while the start was being decided (a rust-analyzer.toml written
 	// during the question, or the person's own stop) holds: nothing starts.
@@ -407,10 +415,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 						"Start the language server again"}}}}
 		}
 		if bytes.Contains(stderr.Bytes(), []byte("abhed-lsp:")) {
-			return nil, &rpcError{Code: errRefused, Message: l.argv[0] + " is not installed in the sandbox",
-				Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
-					"message": l.argv[0] + " is not on the sandbox's PATH, so " + l.language + " has no language server there",
-					"steps":   lspMissingSteps(l.language, l.argv[0])}}}
+			return nil, lspMissing(l)
 		}
 		why := initErr.Error()
 		if tail := lastLines(stderr.String(), 8); tail != "" {
@@ -522,6 +527,33 @@ var (
 	errNoTSServer          = errors.New("typescript-language-server's start did not name the TypeScript beside it")
 	errTSServerInWorkspace = errors.New("the TypeScript beside typescript-language-server is under a session folder, or under the home folder outside Abhed's toolchain cache")
 )
+
+// lspProgramFinder is toolset.ProgramFinder; tests replace it.
+var lspProgramFinder = toolset.ProgramFinder
+
+// lspMissing is the server-missing problem for l: its program is not on the
+// sandbox's PATH, with the toolchain install first among the steps.
+func lspMissing(l *acpLSP) *rpcError {
+	return &rpcError{Code: errRefused, Message: l.argv[0] + " is not installed in the sandbox",
+		Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
+			"message": l.argv[0] + " is not on the sandbox's PATH, so " + l.language + " has no language server there",
+			"steps":   lspMissingSteps(l.language, l.argv[0])}}}
+}
+
+// lspRefused is a refused start as a problem Studio shows, with the reason
+// and what can be done, not only an error message.
+func lspRefused(l *acpLSP, why string) *rpcError {
+	steps := []string{"Abhed did not start " + l.argv[0] + ": " + why}
+	if strings.Contains(why, "unknown-program") {
+		steps = append(steps, lspMissingSteps(l.language, l.argv[0])...)
+	} else {
+		steps = append(steps, "If this server should run, ask whoever manages Abhed's policy here, or name another server in sandbox.language_servers in ~/.abhed/config.json",
+			"Start the language server again")
+	}
+	return &rpcError{Code: errPolicy, Message: why,
+		Data: map[string]any{"problem": map[string]any{"kind": "start-refused", "retry": true,
+			"message": "The language server for " + l.language + " was not started: " + why, "steps": steps}}}
+}
 
 // lspMissingSteps are what to do when a language's server is not on PATH:
 // install it with its language through the toolchain route, where Abhed

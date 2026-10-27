@@ -141,6 +141,7 @@ func withToolchains(b tools.Bash, tc *toolchain.Session) tools.Bash {
 	if tc.Off || b.Sandbox == nil {
 		return b
 	}
+	b.Provides = tc.Provides
 	inner := b.Sandbox
 	b.Sandbox = func(ctx context.Context, cwd, line string) *exec.Cmd {
 		if hostgit.Brokered(line) {

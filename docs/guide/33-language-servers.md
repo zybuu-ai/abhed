@@ -27,7 +27,14 @@ accept Studio's offer, or run `abhed toolchain install -lsp go` (`python`,
 `node`, `rust`; add `-platform linux` for the container tier). When it is
 not there, starting it fails with `server-missing`, a problem that names it
 and gives that route first, then the sandbox image or
-`sandbox.language_servers`.
+`sandbox.language_servers`. Where commands run on this machine's files (the
+`process` and `fence` tiers), that is found before anything is judged: the
+`PATH` commands get, with the installed toolchains' folders first, is where
+the server is looked for, so a missing one is offered for install rather
+than refused, and one the toolchain installed is not taken for an unknown
+program. A start that policy or the supervisor refuses reaches Studio as a
+`start-refused` problem with the reason and the steps, as a missing server
+does.
 
 It runs on every sandbox tier but `none`, the macOS process tier included:
 unlike a debugger, a language server needs no loopback. Each runs with

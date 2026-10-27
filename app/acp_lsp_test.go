@@ -87,8 +87,10 @@ func TestLSPFakeServer(t *testing.T) {
 func fakeLSP(t *testing.T, root string, env ...string) *[]string {
 	t.Helper()
 	var asked []string
-	oldCmd, oldTier, oldBackoff := lspCommand, lspTier, lspBackoff
+	oldCmd, oldTier, oldBackoff, oldFinder := lspCommand, lspTier, lspBackoff, lspProgramFinder
 	lspTier = func(tools.Bash) string { return "process" }
+	// The fake stands in for every server, so each is "on the PATH".
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(string) bool { return true } }
 	lspBackoff = func(int) time.Duration { return 10 * time.Millisecond }
 	lspCommand = func(_ tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
 		asked = append(asked, command)
@@ -107,7 +109,7 @@ func fakeLSP(t *testing.T, root string, env ...string) *[]string {
 		c.Dir = cwd
 		return c
 	}
-	t.Cleanup(func() { lspCommand, lspTier, lspBackoff = oldCmd, oldTier, oldBackoff })
+	t.Cleanup(func() { lspCommand, lspTier, lspBackoff, lspProgramFinder = oldCmd, oldTier, oldBackoff, oldFinder })
 	return &asked
 }
 
@@ -823,5 +825,51 @@ func TestStudioRustAnalyzerRestartOvertakenByAStop(t *testing.T) {
 	}
 	if n := listed(r); n != 0 {
 		t.Fatalf("%d servers still listed", n)
+	}
+}
+
+// A server not on the PATH commands get is offered for install before
+// anything is judged: no call is put to policy or the supervisor, nothing
+// runs, and Studio gets server-missing with the toolchain route first.
+func TestStudioMissingServerIsOfferedBeforeJudging(t *testing.T) {
+	r := newStudioRig(t, "")
+	asked := fakeLSP(t, r.ws)
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(p string) bool { return p != "gopls" } }
+	id := r.open()
+	withSupervisor(t, r, id, &monitor.Guard{Monitor: judging(policy.Deny, "unknown-program", nil)})
+	m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "go"})
+	if m.Error == nil || !strings.Contains(fmt.Sprint(m.Error.Data), "server-missing") || !strings.Contains(fmt.Sprint(m.Error.Data), "abhed toolchain install -lsp go") {
+		t.Fatalf("start: %+v", m.Error)
+	}
+	if len(*asked) != 0 {
+		t.Fatalf("a command ran: %v", *asked)
+	}
+	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
+		t.Fatalf("a start that cannot run was judged: %v", reqs)
+	}
+}
+
+// A refused start reaches Studio as a problem with the reason and steps, not
+// only an error message.
+func TestStudioRefusedStartIsAProblem(t *testing.T) {
+	r := newStudioRig(t, "")
+	fakeLSP(t, r.ws)
+	id := r.open()
+	withSupervisor(t, r, id, &monitor.Guard{Monitor: judging(policy.Deny, "unknown-program", nil)})
+	m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "go"})
+	if m.Error == nil || m.Error.Code != errPolicy {
+		t.Fatalf("start: %+v", m.Error)
+	}
+	data, _ := json.Marshal(m.Error.Data)
+	var d struct {
+		Problem struct {
+			Kind    string   `json:"kind"`
+			Message string   `json:"message"`
+			Steps   []string `json:"steps"`
+		} `json:"problem"`
+	}
+	if json.Unmarshal(data, &d) != nil || d.Problem.Kind != "start-refused" || !strings.Contains(d.Problem.Message, "the judge's reason") ||
+		len(d.Problem.Steps) < 2 || !strings.Contains(strings.Join(d.Problem.Steps, "\n"), "abhed toolchain install -lsp go") {
+		t.Fatalf("problem %s", data)
 	}
 }
