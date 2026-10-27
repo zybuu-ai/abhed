@@ -676,9 +676,9 @@ sends it:
              // 1.2.9, bash at the default step: the scopes below, each with
              // _meta["zybuu.ai/abhed"].grant = {command?, family?, folder?, session?}
              { optionId: "session-exact:<bind>", name: "Allow `<command>` for this session", kind: "allow_once" },
-             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>`",   kind: "allow_always" },
-             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family only
-             { optionId: "always-family:<bind>", name: "Always allow `<family> …` commands", kind: "allow_always" },    // a family only
+             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>` in this workspace", kind: "allow_always" },
+             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family, below the root
+             { optionId: "always-family:<bind>", name: "Always allow `<family> …` in this workspace", kind: "allow_always" }, // a family only
              { optionId: "reject:<bind>", name: "Deny",                 kind: "reject_once" } ] }
 
 interface AskMeta {
@@ -723,8 +723,19 @@ interface AskMeta {
   only a later default-step ask; every rule, the destructive check, the
   supervisor and the screens still come first. None is offered where the
   managed configuration holds the permissions. Each is recorded as
-  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`;
-  `session/load` restores all but those for the session alone.
+  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`.
+  An "always" grant is kept for the workspace in Abhed's state
+  (`~/.abhed/state/bash-grants.json`, out of every command's reach) and
+  loaded by every new or continued session of the workspace; one for the
+  session alone is never kept. The kept grants are the source: a grant in an
+  older record is not brought back once revoked.
+- **Kept grants (1.2.9, feature `grants`).** `_abhed/grants/list {sessionId}`
+  → `{workspace, managed, grants: [{id, scope, command?, family?, folder?,
+  grantedAt}]}`; `_abhed/grants/revoke {sessionId, id}` → `{revoked, scope}`,
+  forgets it and takes it from every open session of the workspace, recorded
+  `permission.changed {op: "remove", list: "allow", rule, scope:
+  "workspace"}`; refused inside an agent's command, `-32602` for an unknown
+  id. With `managed` true none is loaded or offered.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a

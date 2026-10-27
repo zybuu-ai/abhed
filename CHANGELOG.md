@@ -194,8 +194,10 @@ All notable changes to Abhed are recorded here. The format follows
   split at `=` or `:`, or a word with `@`. A family grant runs the project's
   own build or test, with whatever its files declare: what it can reach is
   the sandbox's network policy's to say, not the grant's. None is offered
-  where the managed configuration holds the permissions. Grants are recorded, and
-  `session/load` restores all but those for the session alone.
+  where the managed configuration holds the permissions. "Always" grants
+  are kept for the workspace in Abhed's state, outside every command's
+  reach, so every session of the workspace starts with them; Studio lists
+  and revokes them (`_abhed/grants/list`, `revoke`).
 
 - Previewing writes from Abhed Studio: a prompt with
   `_meta["zybuu.ai/abhed"].previewWrites` asks about each of its `edit` and

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -92,7 +94,7 @@ func TestACPBashGrants(t *testing.T) {
 		t.Fatalf("ok %v err %v", ok, err)
 	}
 	labels := strings.Join(seen, " | ")
-	for _, want := range []string{"Allow `go test ./...` for this session", "Always allow exactly `go test ./...`", "Always allow `go test …` in ws", "Always allow `go test …` commands"} {
+	for _, want := range []string{"Allow `go test ./...` for this session", "Always allow exactly `go test ./...` in this workspace", "Always allow `go test …` in this workspace"} {
 		if !strings.Contains(labels, want) {
 			t.Errorf("no option %q in %s", want, labels)
 		}
@@ -118,16 +120,17 @@ func TestACPBashGrants(t *testing.T) {
 	}
 }
 
-// A grant for the session alone is recorded as such and not restored.
+// A recorded bash grant is not brought back from the record; the
+// workspace's kept grants are the source, so one revoked stays revoked.
 func TestACPSessionGrantIsNotRestored(t *testing.T) {
 	s := &acpSession{}
 	for _, g := range []bashGrant{{Command: "make check", Session: true}, {Family: "go test", Folder: "/ws"}} {
 		b, _ := json.Marshal(g.grantRecord())
 		if !s.restoreGrant(b) {
-			t.Fatalf("%+v not read back", g)
+			t.Fatalf("%+v not read as a bash grant", g)
 		}
 	}
-	if len(s.grants) != 1 || s.grants[0].Family != "go test" || s.grants[0].Folder != "/ws" {
+	if len(s.grants) != 0 {
 		t.Fatalf("restored %+v", s.grants)
 	}
 	if s.restoreGrant(json.RawMessage(`{"scope":"bash(ls *)","by":"user"}`)) {
@@ -228,7 +231,7 @@ func TestGrantsRoundTwo(t *testing.T) {
 		}
 	}
 	for _, cmd := range []string{"go run example.com/m@latest", "go test /abs/pkg", "go test ../x", "make -C /tmp", "npm test -- X=/etc/passwd"} {
-		if opts := bashGrantOptions(cmd, "/ws", "b"); len(opts) != 0 {
+		if opts := bashGrantOptions(cmd, "/ws", "/ws", "b"); len(opts) != 0 {
 			t.Errorf("%q was offered %d scopes", cmd, len(opts))
 		}
 		if (bashGrant{Command: cmd}).covers(cmd, "/ws") {
@@ -250,4 +253,65 @@ func TestCargoPassThroughOnlyForTestAndRun(t *testing.T) {
 			t.Errorf("%q: %q, want %q", cmd, got, want)
 		}
 	}
+}
+
+// "Always" grants are kept per workspace in Abhed's state: a new session in
+// the workspace starts with them, the person lists and revokes them, and a
+// revoked one asks again; one for the session alone is never kept.
+func TestBashGrantsAreKeptForTheWorkspace(t *testing.T) {
+	r := newStudioRig(t, "")
+	r.model.script(callTool("c1", "bash", map[string]any{"command": "go version"}), say("done"))
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		var p struct {
+			Options []struct {
+				OptionID string `json:"optionId"`
+			} `json:"options"`
+		}
+		_ = json.Unmarshal(params, &p)
+		for _, o := range p.Options {
+			if strings.HasPrefix(o.OptionID, "always-exact:") {
+				return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": o.OptionID}}
+			}
+		}
+		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+	})
+	id := r.open()
+	r.prompt(id, "run it")
+	var list struct {
+		Grants []struct {
+			ID      string `json:"id"`
+			Command string `json:"command"`
+		} `json:"grants"`
+	}
+	r.cl.ok("_abhed/grants/list", map[string]any{"sessionId": id}, &list)
+	if len(list.Grants) != 1 || list.Grants[0].Command != "go version" {
+		t.Fatalf("kept %+v", list)
+	}
+	if b, err := os.ReadFile(filepath.Join(r.home, ".abhed", "state", "bash-grants.json")); err != nil || !strings.Contains(string(b), "go version") {
+		t.Fatalf("state file %s %v", b, err)
+	}
+	// A new session in the workspace is not asked.
+	asked := 0
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		asked++
+		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}
+	})
+	r.model.script(callTool("c2", "bash", map[string]any{"command": "go version"}), say("done"))
+	id2 := r.open()
+	r.prompt(id2, "again")
+	if asked != 0 {
+		t.Fatalf("asked %d times in a new session", asked)
+	}
+	// Revoked, it asks again.
+	r.cl.ok("_abhed/grants/revoke", map[string]any{"sessionId": id2, "id": list.Grants[0].ID}, nil)
+	r.cl.ok("_abhed/grants/list", map[string]any{"sessionId": id2}, &list)
+	if len(list.Grants) != 0 {
+		t.Fatalf("still kept %+v", list)
+	}
+	r.model.script(callTool("c3", "bash", map[string]any{"command": "go version"}), say("done"))
+	r.prompt(id2, "once more")
+	if asked != 1 {
+		t.Fatalf("asked %d times after revoking", asked)
+	}
+	r.cl.refused(errParams, "_abhed/grants/revoke", map[string]any{"sessionId": id2, "id": "g-none"})
 }
