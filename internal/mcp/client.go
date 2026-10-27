@@ -120,13 +120,13 @@ func (c *Client) Initialize(ctx context.Context) error {
 	})
 	raw, err := c.call(ctx, "initialize", params)
 	if err != nil {
-		return fmt.Errorf("initialize %s: %w", c.name, err)
+		return c.withStderr(fmt.Errorf("initialize %s: %w", c.name, err))
 	}
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
-		return fmt.Errorf("initialized notification: %w", err)
+		return c.withStderr(fmt.Errorf("initialized notification: %w", err))
 	}
 	if err := c.refreshTools(ctx); err != nil {
-		return err
+		return c.withStderr(err)
 	}
 	var init struct {
 		Capabilities struct {
@@ -416,6 +416,25 @@ func (c *Client) readLoop() {
 	}
 }
 
+// stderrTailer is a transport that keeps the end of what its server wrote
+// to stderr.
+type stderrTailer interface {
+	StderrTail(wait time.Duration) string
+}
+
+// withStderr adds to err the end of what the server wrote to stderr, which
+// says why a server that died at the start did: "broken pipe" alone does not.
+func (c *Client) withStderr(err error) error {
+	t, ok := c.transport.(stderrTailer)
+	if !ok {
+		return err
+	}
+	if tail := t.StderrTail(time.Second); tail != "" {
+		return fmt.Errorf("%w; the server wrote: %s", err, tail)
+	}
+	return err
+}
+
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
@@ -435,6 +454,64 @@ type StdioTransport struct {
 	// cleanup removes what the server runs in, such as its container, which
 	// killing the engine's client would leave running.
 	cleanup func()
+	// stderr keeps the end of what the server writes to stderr; stderrDone
+	// closes when it has written all it will.
+	stderr     *tailBuffer
+	stderrDone chan struct{}
+}
+
+// stderrKeep is how much of a server's stderr is kept: its last lines.
+const stderrKeep = 4 << 10
+
+// tailBuffer keeps the last stderrKeep bytes written to it.
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > stderrKeep {
+		b.buf = append([]byte(nil), b.buf[len(b.buf)-stderrKeep:]...)
+	}
+	b.mu.Unlock()
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// StderrTail is the end of the server's stderr, its last lines, printable
+// and bounded, waiting up to wait for a server that is ending to finish
+// writing.
+func (t *StdioTransport) StderrTail(wait time.Duration) string {
+	if t.stderr == nil {
+		return ""
+	}
+	if t.stderrDone != nil {
+		select {
+		case <-t.stderrDone:
+		case <-time.After(wait):
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(t.stderr.String()), "\n")
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	out := strings.Map(func(r rune) rune {
+		if r == '\t' || r >= ' ' && r != 0x7f {
+			return r
+		}
+		return ' '
+	}, strings.Join(lines, " | "))
+	if len(out) > 1000 {
+		out = "…" + out[len(out)-1000:]
+	}
+	return strings.TrimSpace(out)
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
@@ -458,18 +535,26 @@ func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
 	if err != nil {
 		return nil, err
 	}
-	// stderr is deliberately discarded rather than merged: a server that logs
-	// to stderr would otherwise corrupt the JSON-RPC stream.
-	cmd.Stderr = io.Discard
-
+	// stderr is kept apart, never merged into the JSON-RPC stream, and only
+	// its end is kept: it is told when the server fails to start.
+	errPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start MCP server %q: %w", command, err)
 	}
-	return &StdioTransport{
+	t := &StdioTransport{
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: bufio.NewReaderSize(stdout, 1<<20),
-	}, nil
+		stderr: &tailBuffer{}, stderrDone: make(chan struct{}),
+	}
+	go func() {
+		defer close(t.stderrDone)
+		_, _ = io.Copy(t.stderr, errPipe)
+	}()
+	return t, nil
 }
 
 func (t *StdioTransport) Send(_ context.Context, payload []byte) error {

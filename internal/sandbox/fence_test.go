@@ -897,7 +897,7 @@ func TestFenceServerSpec(t *testing.T) {
 		}
 	}
 	tool := filepath.Join(home, "tools", "srv", "bin", "srv")
-	files, err := serverFilesIn("srv", tool, nil, PathForms(p.Workspace))
+	files, err := serverFilesIn("srv", []string{tool}, nil, PathForms(p.Workspace))
 	if err != nil {
 		t.Fatal(err)
 	}

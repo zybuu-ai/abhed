@@ -19,6 +19,20 @@ type serverFiles struct {
 	home       string   // the server's own, its HOME
 	prefix     string   // the server's install folder under the home, read-only; "" when outside it
 	workspaces []string // writable, as the session's
+	// scripts are the folders, under the home, of files the server's
+	// configured arguments name, such as the script an interpreter runs:
+	// read-only, as its install folder is.
+	scripts []string
+}
+
+// shown are the folders under the home the server reads: its install
+// folder and its scripts' folders.
+func (f serverFiles) shown() []string {
+	var out []string
+	if f.prefix != "" {
+		out = append(out, f.prefix)
+	}
+	return append(out, f.scripts...)
 }
 
 var serverNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]`)
@@ -39,12 +53,13 @@ func (f serverFiles) outsideHome(ps []string) []string {
 }
 
 // serverFilesFor works out a server's confinement and makes its home.
-func (s *Process) serverFilesFor(name, program string, env []string) (serverFiles, error) {
-	return serverFilesIn(name, program, env, s.workspaces())
+func (s *Process) serverFilesFor(name string, argv, env []string) (serverFiles, error) {
+	return serverFilesIn(name, argv, env, s.workspaces())
 }
 
 // serverFilesIn is a server's confinement with workspaces writable, its home made.
-func serverFilesIn(name, program string, env, workspaces []string) (serverFiles, error) {
+func serverFilesIn(name string, argv, env, workspaces []string) (serverFiles, error) {
+	program := argv[0]
 	real, err := os.UserHomeDir()
 	if err != nil {
 		return serverFiles{}, fmt.Errorf("sandbox: no home folder to hide from the server: %w", err)
@@ -63,7 +78,48 @@ func serverFilesIn(name, program string, env, workspaces []string) (serverFiles,
 		return serverFiles{}, fmt.Errorf("sandbox: the server's program %s is installed in %s, which holds Abhed's state (%s) and is never shown to a server; "+
 			"install it in a folder of its own, or set \"host_files\": true on the server", program, f.prefix, state)
 	}
+	f.scripts = scriptFolders(real, argv[1:])
 	return f, nil
+}
+
+// scriptFolders are the folders of the existing files under home that args
+// name by absolute path, such as `python3 ~/tools/mcp/server.py`: the
+// server's own code, from the configuration. Never home itself or a broad
+// folder in it, Abhed's state, or a folder that is or holds credentials.
+func scriptFolders(home string, args []string) []string {
+	var out []string
+	broad := []string{home, filepath.Join(home, ".local"), filepath.Join(home, ".cargo"), filepath.Join(home, ".config"),
+		filepath.Join(home, "Library"), filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin")}
+	state := filepath.Join(home, stateDir)
+	for _, a := range args {
+		if !filepath.IsAbs(a) {
+			continue
+		}
+		p := a
+		if r, err := filepath.EvalSymlinks(a); err == nil {
+			p = r
+		}
+		fi, err := os.Stat(p)
+		if err != nil || !fi.Mode().IsRegular() || !insideAny(p, []string{home}) {
+			continue
+		}
+		dir := filepath.Dir(p)
+		if slices.Contains(broad, dir) || insideAny(dir, []string{state}) || insideAny(state, []string{dir}) || slices.Contains(out, dir) {
+			continue
+		}
+		secret := false
+		for _, c := range HomeSecrets {
+			s := filepath.Join(home, c)
+			if insideAny(dir, []string{s}) || insideAny(s, []string{dir}) {
+				secret = true
+				break
+			}
+		}
+		if !secret {
+			out = append(out, dir)
+		}
+	}
+	return out
 }
 
 // serverProgramMissing says a host server's program is not there to run: a
@@ -135,8 +191,8 @@ func installPrefix(home, program string) string {
 // workspace's state; they come after the root is bound.
 func (f serverFiles) bwrapArgs() []string {
 	args := []string{"--tmpfs", f.realHome}
-	if f.prefix != "" {
-		args = append(args, "--ro-bind", f.prefix, f.prefix)
+	for _, d := range f.shown() {
+		args = append(args, "--ro-bind", d, d)
 	}
 	args = append(args, "--bind", f.home, f.home)
 	for _, ws := range f.workspaces {
@@ -159,8 +215,8 @@ func (f serverFiles) seatbeltRules() string {
 	for _, h := range PathForms(f.realHome) {
 		fmt.Fprintf(&b, "(deny file-read-data file-write* (subpath %q))\n", h)
 	}
-	if f.prefix != "" {
-		fmt.Fprintf(&b, "(allow file-read-data (subpath %q))\n", f.prefix)
+	for _, d := range f.shown() {
+		fmt.Fprintf(&b, "(allow file-read-data (subpath %q))\n", d)
 	}
 	fmt.Fprintf(&b, "(allow file-read-data file-write* (subpath %q))\n", f.home)
 	for _, ws := range f.workspaces {

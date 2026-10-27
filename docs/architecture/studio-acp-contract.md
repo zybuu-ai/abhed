@@ -1072,8 +1072,33 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   (container or `vm` tier, or the Linux process tier with its network closed
   or allowlisted, where bubblewrap gives it its own network namespace; with
   the network open its loopback would be the host's); elsewhere `launch`
-  fails with `-32000` and `data.problem` `{kind: "tier-unsupported", message,
-  steps, retry}`. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
+  fails with `-32000` and `data.problem` `{kind: "container-setup", message,
+  steps, retry}` and `data.setup` (below), unless the person chose the
+  process tier (`processTier: true`, below).
+- `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
+  `{os, tier, ready, engine?, brew?, machine?: "none" | "stopped" |
+  "running", steps: [{id: "install-podman" | "machine-init" |
+  "machine-start" | "use-container-tier", title, command?}],
+  processTier: {available, consented, consent?}}`. `steps` are those left,
+  in order, with the exact command where there is one (`brew install
+  podman`, `podman machine init`, `podman machine start`); Studio runs them
+  in the person's terminal. `_abhed/debug/use-container {sessionId}` →
+  `{path, newSession: true}` sets `sandbox.min_tier: "container"` in the
+  workspace's `.abhed/config.json`, keeping the rest, recorded as
+  `debug.setup` (`use_container`); it applies to a new session.
+- `launch` with `processTier: true` debugs on the process tier where
+  `processTier.available` (the macOS process tier; the Linux process tier
+  with the network open). The first time in a workspace the launch's
+  judged call is put to the person with the consent as its reason
+  (`meta.step: "workspace"`, or folded into the supervisor's question):
+  "the program can reach services on this Mac (localhost ports) …". Allow
+  keeps the choice for the workspace and records `debug.setup`
+  (`process_tier_consent`); later launches there are not asked about it.
+  `_abhed/debug/forget-consent {sessionId}` → `{}` forgets it (recorded,
+  `process_tier_forgotten`). On macOS the debug command alone gets loopback
+  ports (Seatbelt `localhost:*` outbound, inbound and bind) and nothing
+  else; `debug.launched` carries `loopback: true`. Go there is bridged by
+  the engine's own program. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
   bad params are `-32602` with `kind: "invalid-request"`.
 - The program or test, its args, cwd and env make the debuggee's command line
   (`dlv debug|test …`, `python3 …`, `python3 -m pytest …`), which is put to
