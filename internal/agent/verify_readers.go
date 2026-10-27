@@ -3,6 +3,7 @@ package agent
 import (
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -94,6 +95,8 @@ func pureReader(words []string) bool {
 		return goReader(words)
 	case "find":
 		return findReader(words)
+	case "eslint", "mypy", "tsc", "staticcheck", "cargo":
+		return lintReader(prog, words)
 	}
 	spec, ok := readerSpecs[prog]
 	if !ok {
@@ -240,6 +243,31 @@ func goReader(words []string) bool {
 		}
 		if valued && !eq {
 			i++
+		}
+	}
+	return true
+}
+
+// lintReader: a lint run that reports and does not fix (no --fix, no output
+// file), by a tool whose config cannot turn fixing on.
+func lintReader(prog string, words []string) bool {
+	sub := ""
+	if len(words) > 1 {
+		sub = words[1]
+	}
+	switch {
+	case prog == "cargo" && sub != "clippy":
+		return false
+	case prog == "tsc" && !slices.Contains(words, "--noEmit"):
+		return false
+	}
+	for _, a := range words[1:] {
+		name, _, _ := strings.Cut(a, "=")
+		switch {
+		case strings.HasPrefix(name, "--fix") && name != "--fix-dry-run", name == "--unsafe-fixes", name == "--add-noqa",
+			name == "-o", strings.Contains(name, "output"), strings.HasPrefix(name, "--out"), strings.HasPrefix(name, "--cache"),
+			name == "--install-types", name == "-b", name == "--build", name == "-w", name == "--watch", name == "--":
+			return false
 		}
 	}
 	return true

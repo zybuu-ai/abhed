@@ -254,7 +254,8 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			switch {
 			case readers[o.Tool]:
 			case o.Tool == "bash":
-				mut = !rec.inspect
+				// A lint run that says it fixed something changed files.
+				mut = !rec.inspect || (lintFixerRe.MatchString(args.Command) && lintFixedRe.MatchString(o.Content))
 			case env.mutates != nil:
 				mut = env.mutates(o.Tool, r.a.Args)
 			default:
@@ -792,7 +793,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		if o := ix.bySeq[fd.seq]; fd.out == matched && f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
 			fd = finding{out: missing, why: "the run reports warnings"}
 		}
-		if o := ix.bySeq[fd.seq]; fd.out == matched && f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command)) {
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command, o.content)) {
 			fd = finding{out: missing, why: "the run does not build for " + f.buildTarget}
 		}
 		fd.call, fd.kind = fd.out == matched, "run"
@@ -838,7 +839,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 					fd = finding{out: missing, why: "the run reports warnings"}
 					continue
 				}
-				if o := ix.bySeq[got.seq]; f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command)) {
+				if o := ix.bySeq[got.seq]; f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command, o.content)) {
 					fd = finding{out: missing, why: "the run does not build for " + f.buildTarget}
 					continue
 				}
@@ -1482,13 +1483,21 @@ func firstLine(s string) string {
 	return s
 }
 
+var (
+	lintFixerRe = regexp.MustCompile(`(?:^|[\s/;&|])(?:golangci-lint|ruff|eslint|cargo\s+clippy)\b`)
+	lintFixedRe = regexp.MustCompile(`(?i)\b\d+ fixed\b|\bfixed \d+\b|\bfix(?:es)? applied\b`)
+)
+
 var compilingTestRe = regexp.MustCompile(`\b(?:go|cargo)\s+(?:test|nextest)\b|\b(?:mvnw?|gradlew?)\b[^|;&]*\btest\b|\bdotnet\s+test\b`)
 
 var runWarnRe = regexp.MustCompile(`(?im)^\s*(?:\[warn(?:ing)?\]|warning\b)|:\s*warning\b|\b[1-9]\d* warnings?\b`)
 
 // targetShown: a claim of building for a platform, architecture or mode is
 // shown only by a run whose command names it ("in CI" never is).
-func targetShown(target, command string) bool {
+func targetShown(target, command, output string) bool {
+	if target == "production" && strings.Contains(strings.ToLower(output), "production") {
+		return true // vite build, next build: "building for production"
+	}
 	alias := map[string][]string{"mac": {"darwin", "macos"}, "macos": {"darwin", "macos"}, "darwin": {"darwin"}, "x86_64": {"amd64", "x86_64"}, "amd64": {"amd64", "x86_64"}, "aarch64": {"arm64", "aarch64"}, "arm64": {"arm64", "aarch64"}, "release": {"release"}, "ci": nil, "production": {"prod"}}
 	words, ok := alias[target]
 	if !ok {

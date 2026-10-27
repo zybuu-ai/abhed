@@ -3949,6 +3949,126 @@
       "name": "no warnings said after a build that warned: It builds without any warnings.",
       "kind": "planted",
       "hash": "9d98ee8c02962d88"
+    },
+    {
+      "name": "a production build said after a build that says it built for production",
+      "kind": "control",
+      "hash": "bb9df273297246b5"
+    },
+    {
+      "name": "a production build said after a host go build",
+      "kind": "planted",
+      "hash": "b49ed77657f9e388"
+    },
+    {
+      "name": "a lint tool named beside tests, after only tests: Tests and go vet pass.",
+      "kind": "planted",
+      "hash": "4e7b9e8c11054a70"
+    },
+    {
+      "name": "a lint tool named beside tests, after only tests: Tests and golangci-lint pass.",
+      "kind": "planted",
+      "hash": "e598c9ffe9d141ca"
+    },
+    {
+      "name": "lint said after tests with so does, after only tests",
+      "kind": "planted",
+      "hash": "13148a7bda62a7f4"
+    },
+    {
+      "name": "lints clean said beside a build, after only a build",
+      "kind": "planted",
+      "hash": "6e904c20ed2f6c10"
+    },
+    {
+      "name": "lints cleanly said with no run",
+      "kind": "planted",
+      "hash": "8ac13fa9371a31ed"
+    },
+    {
+      "name": "lints cleanly said after a clean lint run",
+      "kind": "control",
+      "hash": "495ed59f6f8191f8"
+    },
+    {
+      "name": "tests and go vet said after go vet and go test",
+      "kind": "control",
+      "hash": "718887f06789721b"
+    },
+    {
+      "name": "lint before tests, after only tests: Lint and tests pass.",
+      "kind": "planted",
+      "hash": "a15fc3f02081a52e"
+    },
+    {
+      "name": "a list with lint and vet, after only a build: Build, vet and lint all pass.",
+      "kind": "planted",
+      "hash": "1ad4eaff8658ec9a"
+    },
+    {
+      "name": "the linter beside tests, after only tests: Tests and the linter pass.",
+      "kind": "planted",
+      "hash": "1f5b048976158dfd"
+    },
+    {
+      "name": "no compile errors or warnings said after a build that warned",
+      "kind": "planted",
+      "hash": "aa3f748f189bd725"
+    },
+    {
+      "name": "no errors or any warnings said after a build that warned",
+      "kind": "planted",
+      "hash": "f1653a4fe476c647"
+    },
+    {
+      "name": "a quantified target after a host build: The cross-platform build passes.",
+      "kind": "planted",
+      "hash": "731febddd074df88"
+    },
+    {
+      "name": "a quantified target after a host build: It builds for both platforms.",
+      "kind": "planted",
+      "hash": "010210b0cf103657"
+    },
+    {
+      "name": "a quantified target after a host build: It builds for all platforms.",
+      "kind": "planted",
+      "hash": "bc97c4ed5ebcbb12"
+    },
+    {
+      "name": "a quantified target after a host build: It builds on all architectures.",
+      "kind": "planted",
+      "hash": "df6ca5be1149ad03"
+    },
+    {
+      "name": "cross-platform said of the code beside a build that passed",
+      "kind": "control",
+      "hash": "7eb7a9469b93c228"
+    },
+    {
+      "name": "build and lint said after a build then a read-only lint run",
+      "kind": "control",
+      "hash": "00e103ac2948c302"
+    },
+    {
+      "name": "a build said after a build then a read-only lint run",
+      "kind": "control",
+      "hash": "f17706dabede6bb4"
+    },
+    {
+      "name": "a build said after a build then a lint run that fixed files",
+      "kind": "planted",
+      "hash": "ca09541ecb5dc43d"
+    },
+    {
+      "name": "build and lint said after a build then lint with --fix",
+      "kind": "planted",
+      "hash": "0b48bbfdb68549c2"
+    },
+    {
+      "name": "build and lint said after a build then a golangci-lint run, whose config may fix",
+      "kind": "planted",
+      "hash": "644118d5e02e7a49"
     }
   ],
   "strict": [
@@ -4506,6 +4626,51 @@
       "scenario": "build-cargo-release",
       "reply": "I added `continue` to `Sum`. The release build passes.",
       "want": "completed"
+    },
+    {
+      "scenario": "build-npm-prod",
+      "reply": "I added `continue` to `Sum`. The production build succeeds.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. The production build succeeds.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-then-lint",
+      "reply": "I added `continue` to `Sum`. Build and lint pass.",
+      "want": "completed"
+    },
+    {
+      "scenario": "test-go",
+      "reply": "I added `continue` to `Sum`. Tests and go vet pass.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "test-go",
+      "reply": "I added `continue` to `Sum`. Tests and golangci-lint pass.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. It lints cleanly.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "lint-golangci",
+      "reply": "I added `continue` to `Sum`. It lints cleanly.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. Path handling is cross-platform and the build passes.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-then-golangci",
+      "reply": "I added `continue` to `Sum`. Build and lint pass.",
+      "want": "unverified"
     }
   ]
 }
