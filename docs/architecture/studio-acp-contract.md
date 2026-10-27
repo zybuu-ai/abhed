@@ -311,7 +311,7 @@ language (`go`, `python`, `node`, `rust`, `java`, `maven`, `gradle`, `ruby`,
 | `_abhed/toolchain/install` | `{sessionId, language, version?, installId, debugger?, lsp?, agreed?: {version, digest, debugger_version?, debugger_digest?, lsp_version?, lsp_digest?, needs_version?, needs_digest?, registries}}`. Studio sends `agreed`: the offer's version, digests and `registries` the modal showed, and `needs_version` and `needs_digest` for a language the server runs on that comes first (`offer.lsp.needs`); if the install would now fetch anything else, or open other registries, it is refused with `changed` and nothing is installed. Fields of an extra installed already may be left out. `registries` left out opens no registries: the install is made, and its reply says they were not opened. An install without `agreed` (an older Studio) is still made, but recorded with `consent: "studio-unconfirmed"` and **opens no registries**; a later contract version will require `agreed`. → `{language, available: true, version, dir, bin, debugger?: {name, version, dir, bin, pythonpath}, lsp?: {name, version, dir, bin}, registries}` once it is verified and in place (with `debugger: true`, the debugger is planned first, and a `no_debugger` refusal installs nothing; progress for it has `status: "debugger"`); `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"` (or `"studio-unconfirmed"` without `agreed`), and `toolchain.registry` for registries opened |
 | `_abhed/toolchain/remove` | feature `toolchain.manage`. `{sessionId, language, version?}` → `{language, platform, removed: [version]}`: the version named, else every installed version for the platform the session's commands run on. `not_installed` (-32602) when there is none. Recorded `toolchain.install` with `outcome: "removed"` |
 | `_abhed/toolchain/clean` | feature `toolchain.manage`. `{sessionId}` → `{cleaned, root}`. The engine asks the person first with its own `session/request_permission` (`meta.tool: "toolchain.clean"`, `destructive: true`, options *Remove them all* and *Keep them*); only that yes removes the whole cache, every toolchain and extra for every platform. Recorded `toolchain.install {lang: "*", outcome: "removed"}`, or `declined` |
-| `_abhed/toolchain/registries` | feature `toolchain.manage`. `{sessionId, language, registries}` → `{language, hosts, registries}`: opens an installed language's package registries, as an install's `agreed.registries` does; `registries` must be the hosts `status.offer.registries` named, else `changed`. `not_installed` (-32000) for a language the session's commands do not have; `registries_closed` (-32001) where none can be opened. Recorded `toolchain.registry` |
+| `_abhed/toolchain/registries` | feature `toolchain.manage`. `{sessionId, language, registries}` → `{language, hosts, registries}`: opens a language's package registries, as an install's `agreed.registries` does, whether its tools are Abhed's toolchain or the host's own (the process tier's Node, Go…); `registries` must be the hosts `status.offer.registries` named, else `changed`. `registries_closed` (-32001) where none can be opened. Recorded `toolchain.registry` |
 | `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 with `kind: "cancelled"`, and nothing partial is left |
 
 **Errors.** `data` is `{problem: {kind, message, steps?}}`, as the Ollama
@@ -676,9 +676,9 @@ sends it:
              // 1.2.9, bash at the default step: the scopes below, each with
              // _meta["zybuu.ai/abhed"].grant = {command?, family?, folder?, session?}
              { optionId: "session-exact:<bind>", name: "Allow `<command>` for this session", kind: "allow_once" },
-             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>`",   kind: "allow_always" },
-             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family only
-             { optionId: "always-family:<bind>", name: "Always allow `<family> …` commands", kind: "allow_always" },    // a family only
+             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>` in this workspace", kind: "allow_always" },
+             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family, below the root
+             { optionId: "always-family:<bind>", name: "Always allow `<family> …` in this workspace", kind: "allow_always" }, // a family only
              { optionId: "reject:<bind>", name: "Deny",                 kind: "reject_once" } ] }
 
 interface AskMeta {
@@ -723,8 +723,19 @@ interface AskMeta {
   only a later default-step ask; every rule, the destructive check, the
   supervisor and the screens still come first. None is offered where the
   managed configuration holds the permissions. Each is recorded as
-  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`;
-  `session/load` restores all but those for the session alone.
+  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`.
+  An "always" grant is kept for the workspace in Abhed's state
+  (`~/.abhed/state/bash-grants.json`, out of every command's reach) and
+  loaded by every new or continued session of the workspace; one for the
+  session alone is never kept. The kept grants are the source: a grant in an
+  older record is not brought back once revoked.
+- **Kept grants (1.2.9, feature `grants`).** `_abhed/grants/list {sessionId}`
+  → `{workspace, managed, grants: [{id, scope, command?, family?, folder?,
+  grantedAt}]}`; `_abhed/grants/revoke {sessionId, id}` → `{revoked, scope}`,
+  forgets it and takes it from every open session of the workspace, recorded
+  `permission.changed {op: "remove", list: "allow", rule, scope:
+  "workspace"}`; refused inside an agent's command, `-32602` for an unknown
+  id. With `managed` true none is loaded or offered.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a
@@ -1008,17 +1019,30 @@ through policy; a step needing approval in a headless run is refused.
 
 ```ts
 _abhed/terminal/create { sessionId, mode: "lines" | "interactive", cols, rows }
-  → { terminalId, tier: string, network: boolean, recorded: true }
+  → { terminalId, tier: string, network: boolean, recorded: true,
+      registries: string[], networkNote: string }   // 1.2.9: for the header
 _abhed/terminal/input  { terminalId, data: string }     → {}
 _abhed/terminal/resize { terminalId, cols, rows }       → {}
 _abhed/terminal/kill   { terminalId }                   → {}
 // notifications
 _abhed/terminal/output { terminalId, data: string }     // base64 of the bytes
 _abhed/terminal/exit   { terminalId, code?: number, signal?: string }
+// 1.2.9: a command there was refused a package registry; offer its opening
+_abhed/toolchain/registry_refused { sessionId, terminalId, language, hosts, canOpen, why?, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
 
+- **Network (1.2.9).** The terminal has the network the agent's commands
+  have: off but for the package registries the person opened to the
+  session (through the egress proxy), unless the session's policy opens it.
+  `registries` lists those open now and `networkNote` says it in a line for
+  the terminal's header. A command whose output shows the egress proxy
+  refusing a known registry (`npm install` with registry.npmjs.org closed,
+  `go get` with proxy.golang.org closed) gets, once per language and
+  terminal, a line in the terminal naming the registry and how to open it,
+  and Studio gets `_abhed/toolchain/registry_refused` to offer the one-click
+  opening (`_abhed/toolchain/registries`, §3.2b), or to say why it cannot.
 - The shell runs in the engine's sandbox tier for the session. In `lines`
   mode each line is a `bash` call through policy; in `interactive` mode the
   shell runs whole under the sandbox and each entered line is recorded

@@ -49,6 +49,10 @@ func Toolchains(cfg config.Config, workspace string, sb sandbox.Sandbox) *toolch
 			}
 			return hosts, sandbox.EgressOf(resolved(sb)).Grant("toolchain "+lang, hosts)
 		}
+		tc.Granted = func(host string) bool {
+			pol := sandbox.EgressOf(resolved(sb))
+			return pol != nil && pol.Granted(host)
+		}
 	}
 	return tc
 }

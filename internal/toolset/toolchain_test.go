@@ -299,3 +299,29 @@ func TestRealRustBuildsInTheSandbox(t *testing.T) {
 func toolchainsIn(root, lang string) []toolchain.Installed {
 	return toolchain.Cache{Root: root}.List(toolchain.Host(), lang)
 }
+
+// A command in the process sandbox uses the project's .venv, as Run Tests
+// needs: its python is the venv's.
+func TestCommandsUseTheProjectsVenv(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	ws := t.TempDir()
+	if out, err := exec.Command(py, "-m", "venv", filepath.Join(ws, ".venv")).CombinedOutput(); err != nil {
+		t.Skipf("no venv module: %v %s", err, out)
+	}
+	sb := sandbox.NewProcess(sandbox.DefaultPolicy(ws))
+	if ok, why := sb.Available(); !ok {
+		t.Skip(why)
+	}
+	defer sandbox.Close(sb)
+	b := withToolchains(tools.Bash{Sandbox: sb.Command}, &toolchain.Session{Cache: toolchain.Cache{Root: t.TempDir()}, Workspace: ws, Root: ws, Platform: toolchain.Host})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := b.Sandbox(ctx, ws, `python3 -c 'import sys; print(sys.prefix)'; echo "venv=$VIRTUAL_ENV"`).CombinedOutput()
+	real, _ := filepath.EvalSymlinks(filepath.Join(ws, ".venv"))
+	if err != nil || (!strings.Contains(string(out), filepath.Join(ws, ".venv")) && !strings.Contains(string(out), real)) {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

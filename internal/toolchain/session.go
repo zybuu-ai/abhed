@@ -34,15 +34,14 @@ type Session struct {
 	Registries func(lang string) (hosts []string, why string)
 	// Open opens them; it returns what it opened.
 	Open func(lang string) ([]string, error)
+	// Granted reports whether commands can reach host through the egress
+	// proxy now; nil reaches none.
+	Granted func(host string) bool
 }
 
 // pins are the pins a command in dir finds, up to the workspace root.
 func (s *Session) pins(dir string) map[string]Pin {
-	root := s.Root
-	if root == "" {
-		root = s.Workspace
-	}
-	return PinsWithin(dir, root)
+	return PinsWithin(dir, s.root())
 }
 
 func (s *Session) platform() Platform {
@@ -157,6 +156,63 @@ func (s *Session) Active(dir string) []Installed {
 // Prelude is the shell lines a command in dir starts with to find the active
 // toolchains: their programs first on PATH, and the variables they need.
 func (s *Session) Prelude(dir string) string {
+	return s.toolchainPrelude(dir) + s.venvPrelude(dir)
+}
+
+// venvPrelude puts the project's Python virtual environment first, as its
+// activate script would: the nearest .venv or venv at or above dir, up to
+// the workspace root, that holds a pyvenv.cfg and a bin/python. After the
+// toolchains', so the project's own python and pytest are found first.
+func (s *Session) venvPrelude(dir string) string {
+	v := ProjectVenv(dir, s.root())
+	if v == "" {
+		return ""
+	}
+	return fmt.Sprintf("unset PYTHONHOME; export VIRTUAL_ENV=%s; export PATH=%s\"${PATH:+:$PATH}\"; ",
+		shellQuote(v), shellQuote(filepath.Join(v, "bin")))
+}
+
+// root is the workspace root pin files and a venv are looked for up to.
+func (s *Session) root() string {
+	if s.Root != "" {
+		return s.Root
+	}
+	return s.Workspace
+}
+
+// ProjectVenv is the project's virtual environment for commands in dir, or
+// "": the nearest .venv or venv at or above dir, no higher than root, that
+// is one (a pyvenv.cfg and a bin/python beside it). Poetry's and uv's
+// in-project environments are .venv.
+func ProjectVenv(dir, root string) string {
+	if dir == "" {
+		return ""
+	}
+	d, root := filepath.Clean(dir), filepath.Clean(root)
+	if root == "." || d != root && !strings.HasPrefix(d, root+string(filepath.Separator)) {
+		root = d
+	}
+	for i := 0; i < 64; i++ {
+		for _, name := range []string{".venv", "venv"} {
+			v := filepath.Join(d, name)
+			if cfg, err := os.Lstat(filepath.Join(v, "pyvenv.cfg")); err != nil || !cfg.Mode().IsRegular() {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(v, "bin", "python")); err == nil {
+				return v
+			}
+		}
+		up := filepath.Dir(d)
+		if up == d || d == root {
+			break
+		}
+		d = up
+	}
+	return ""
+}
+
+// toolchainPrelude is the active toolchains' part of the prelude.
+func (s *Session) toolchainPrelude(dir string) string {
 	path, search, vars := s.environment(dir)
 	if len(path) == 0 && len(vars) == 0 && len(search) == 0 {
 		return ""

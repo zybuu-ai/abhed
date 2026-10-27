@@ -1251,10 +1251,10 @@ offers more than *Allow once*:
 
 | Option | Covers |
 |---|---|
-| Allow `go test ./...` for this session | this exact command, until the session ends; not restored when the session is opened again |
-| Always allow exactly `go test ./...` | this exact command, in this session and whenever it is opened again |
-| Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it |
-| Always allow `go test …` commands | any command of the family, in any folder |
+| Allow `go test ./...` for this session | this exact command, until the session ends; never kept |
+| Always allow exactly `go test ./...` in this workspace | this exact command, in every session of this workspace |
+| Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it, in every session of this workspace (offered when the session is in a folder below the workspace's root) |
+| Always allow `go test …` in this workspace | any command of the family, anywhere in this workspace, in every session of it |
 
 A family is a program and its subcommand: `go test`, `go build`, `go vet`,
 `go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),
@@ -1294,7 +1294,14 @@ A scope answers only a later ask of the same default kind: a deny or ask
 rule, the destructive check, the supervisor and the screens still decide
 first, and where the managed configuration holds the permissions none is
 offered. Each is recorded as `approval.scope_granted` with what it covers.
-A scope lasts for its session: to drop one, start a new session.
+An "always" scope is kept for the workspace in Abhed's own state
+(`~/.abhed/state/bash-grants.json`, which no command can read or write), so
+every new session there starts with it. Abhed Studio lists the workspace's
+kept scopes and revokes any of them (`_abhed/grants/list` and `revoke`); a
+revoked scope asks again in every open session at once, and is recorded as
+`permission.changed` (`op: remove`, `scope: workspace`). Where the managed
+configuration holds the permissions, kept scopes are neither offered nor
+loaded.
 
 ## Recovering
 

@@ -82,6 +82,8 @@ type acpTerminal struct {
 	shell *acpShell
 	// done is closed once the terminal has recorded its last line or exit.
 	done chan struct{}
+	// reg watches the output for a package registry the sandbox refused.
+	reg registryWatch
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
@@ -147,7 +149,9 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 	} else {
 		go c.runTerminal(t)
 	}
-	c.reply(msg.ID, map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true}, nil)
+	open, note := terminalNetwork(parts, iso.Network)
+	c.reply(msg.ID, map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true,
+		"registries": open, "networkNote": note}, nil)
 	if t.shell == nil {
 		c.output(t, linePrompt(t.sess))
 		t.mu.Unlock()
@@ -174,6 +178,7 @@ func (c *acpConn) output(t *acpTerminal, b []byte) {
 		return
 	}
 	c.notification("_abhed/terminal/output", map[string]any{"terminalId": t.id, "data": base64.StdEncoding.EncodeToString(b)})
+	c.watchRegistries(t, b)
 }
 
 func (c *acpConn) terminalInput(msg rpcMessage) {

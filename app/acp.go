@@ -985,6 +985,7 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	}
 	s.agent = a
 	s.parts, s.inner = embedded.Of(a)
+	s.loadKeptGrants()
 	if s.inner {
 		s.undo = agent.NewUndoLog(s.parts.Session.RestoreFile, s.parts.Session.RemoveFile)
 		loop := s.parts.Loop
@@ -1455,7 +1456,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	var grantOpts []grantOption
 	// Offered only when the card shows the command as it runs.
 	if grantable && bashCommandOf(shown) == command {
-		grantOpts = bashGrantOptions(command, s.workDir(), bind)
+		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind)
 		for _, g := range grantOpts {
 			kind := "allow_always"
 			if g.grant.Session {
@@ -1550,9 +1551,13 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		return true, nil
 	case grantChosen(grantOpts, out.Outcome.OptionID) != nil:
 		g := *grantChosen(grantOpts, out.Outcome.OptionID)
-		s.mu.Lock()
-		s.grants = append(s.grants, g)
-		s.mu.Unlock()
+		s.addGrant(g)
+		// Kept for the workspace, outside every command's reach, for its next sessions.
+		if s.inner && s.parts.Session != nil {
+			if err := keepGrant(s.parts.Session.Root, g); err != nil {
+				warnf("the grant %s could not be kept for the workspace: %v", g.scopeOf(), err)
+			}
+		}
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: g.scopeOf()})
 		// Recorded either way; one for the session alone is not restored.
 		s.record(agent.EvApprovalScopeGranted, g.grantRecord())

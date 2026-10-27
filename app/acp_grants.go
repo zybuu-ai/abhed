@@ -312,7 +312,7 @@ type grantOption struct {
 // bashGrantOptions are the scopes offered for an ask on command run in cwd:
 // this exact command for the session and always, its family in this folder
 // and always. None for a line a grant could not cover.
-func bashGrantOptions(command, cwd, bind string) []grantOption {
+func bashGrantOptions(command, cwd, root, bind string) []grantOption {
 	fields := commandFields(command)
 	if fields == nil {
 		return nil
@@ -320,13 +320,14 @@ func bashGrantOptions(command, cwd, bind string) []grantOption {
 	exact := strings.TrimSpace(command)
 	opts := []grantOption{
 		{"session-exact:" + bind, "Allow `" + exact + "` for this session", bashGrant{Command: exact, Session: true}},
-		{"always-exact:" + bind, "Always allow exactly `" + exact + "`", bashGrant{Command: exact}},
+		{"always-exact:" + bind, "Always allow exactly `" + exact + "` in this workspace", bashGrant{Command: exact}},
 	}
 	if fam := familyOf(command); fam != "" {
-		if cwd != "" {
+		// A folder below the workspace's root; at the root it is the workspace.
+		if cwd != "" && filepath.Clean(cwd) != filepath.Clean(root) {
 			opts = append(opts, grantOption{"always-folder:" + bind, "Always allow `" + fam + " …` in " + filepath.Base(cwd), bashGrant{Family: fam, Folder: cwd}})
 		}
-		opts = append(opts, grantOption{"always-family:" + bind, "Always allow `" + fam + " …` commands", bashGrant{Family: fam}})
+		opts = append(opts, grantOption{"always-family:" + bind, "Always allow `" + fam + " …` in this workspace", bashGrant{Family: fam}})
 	}
 	return opts
 }
@@ -374,6 +375,14 @@ func bashCommandOf(args json.RawMessage) string {
 	return a.Command
 }
 
+// workRoot is the session's workspace root.
+func (s *acpSession) workRoot() string {
+	if s.inner && s.parts.Session != nil {
+		return s.parts.Session.Root
+	}
+	return s.cwd
+}
+
 // workDir is the folder the session's commands run in.
 func (s *acpSession) workDir() string {
 	if s.inner && s.parts.Session != nil {
@@ -392,15 +401,14 @@ func grantChosen(opts []grantOption, id string) *bashGrant {
 	return nil
 }
 
-// restoreGrant takes back a recorded bash grant as a session continues,
-// unless it was for that session alone; false for a payload of another kind.
+// restoreGrant passes over a recorded bash grant as a session continues;
+// false for a payload of another kind.
 func (s *acpSession) restoreGrant(payload json.RawMessage) bool {
 	var g agent.ScopeGranted
 	if json.Unmarshal(payload, &g) != nil || g.Command == "" && g.Family == "" {
 		return false
 	}
-	if !g.Session {
-		s.grants = append(s.grants, bashGrant{Command: g.Command, Family: g.Family, Folder: g.Folder})
-	}
+	// The workspace's kept grants are the source (loadKeptGrants): one
+	// revoked since is not brought back from an older record.
 	return true
 }

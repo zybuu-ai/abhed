@@ -108,7 +108,7 @@ func (c *acpConn) toolchainClean(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{"cleaned": true, "root": root}, nil)
 }
 
-// toolchainRegistries opens an installed language's package registries to
+// toolchainRegistries opens a language's package registries to
 // the session's commands, as an install's agreed.registries does: only the
 // hosts status offered, named back as the person saw them.
 func (c *acpConn) toolchainRegistries(msg rpcMessage) {
@@ -125,14 +125,8 @@ func (c *acpConn) toolchainRegistries(msg rpcMessage) {
 		Registries *[]string `json:"registries"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
-	installed := false
-	for _, in := range tc.Active(tc.Workspace) {
-		installed = installed || in.Lang == spec.Lang
-	}
-	if !installed {
-		c.reply(msg.ID, nil, toolchainError(errRefused, "not_installed", spec.Lang+" is not installed for the session's commands; install it first"))
-		return
-	}
+	// The person's own agreement opens them, whether the language's tools
+	// are Abhed's toolchain or the host's own, as on the process tier.
 	hosts, why := registriesOffer(tc, spec.Lang)
 	switch {
 	case why != "":
