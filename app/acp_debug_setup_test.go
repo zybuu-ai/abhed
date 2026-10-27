@@ -61,7 +61,7 @@ func TestDebugContainerSetupProblem(t *testing.T) {
 		ids = append(ids, s.ID)
 	}
 	if strings.Join(ids, ",") != "install-podman,machine-init,machine-start,use-container-tier" || d.Setup.Steps[0].Command != "brew install podman" ||
-		!d.Setup.ProcessTier.Available || d.Setup.ProcessTier.Consented || !strings.Contains(d.Setup.ProcessTier.Consent, "loopback ports") {
+		!d.Setup.ProcessTier.Available || d.Setup.ProcessTier.Consented || !strings.Contains(d.Setup.ProcessTier.Consent, "five ports Abhed picks") {
 		t.Fatalf("setup %+v", d.Setup)
 	}
 	if !strings.Contains(strings.Join(d.Problem.Steps, "\n"), "processTier: true") {
@@ -112,7 +112,7 @@ func TestDebugProcessTierConsent(t *testing.T) {
 	})
 	launch := map[string]any{"sessionId": id, "language": "python", "program": "app.py", "processTier": true}
 	r.cl.refused(errPolicy, "_abhed/debug/launch", launch)
-	if len(reasons) != 1 || !strings.Contains(reasons[0], "loopback ports") || !strings.Contains(reasons[0], "step=workspace") || len(*asked) != 0 || debugConsented(r.ws) {
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "five ports Abhed picks") || !strings.Contains(reasons[0], "step=workspace") || len(*asked) != 0 || debugConsented(r.ws) {
 		t.Fatalf("declined: asked %v, ran %v", reasons, *asked)
 	}
 	if strings.Join(options[0], ",") != "allow_once=Allow once,allow_always=Allow for this workspace,reject_once=Deny" {

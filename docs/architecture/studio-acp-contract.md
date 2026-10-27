@@ -1228,9 +1228,11 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   where every Abhed listener on a Mac takes its port; `debug.launched`
   carries `loopback: true`. Python: debugpy's adapter listens on five ports
   the engine chose outside the range before it starts (`ABHED_DAP_PORTS`,
-  removed before the program runs), binds them all on every address first
-  and holds them, and the command may connect, bind and accept on those
-  alone. Go: the command may connect to each port the system hands out to
+  removed before the program runs), binds them all on the wildcard and
+  loopback addresses first and holds them, and the command may connect,
+  bind and accept on those alone, on any of the Mac's addresses (Seatbelt's
+  localhost matches the Mac's network addresses too; the consent says so),
+  and on no other port. Go: the command may connect to each port the system hands out to
   listeners (`net.inet.ip.portrange`) but the range, one Seatbelt rule
   each (the profile then goes in the session's own folder), and may listen
   on any loopback port, which Seatbelt lets take the wildcard address. Both work whatever the

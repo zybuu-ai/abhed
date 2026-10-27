@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/wsconn"
 )
@@ -455,7 +456,9 @@ func (r *runner) forward(args []string) error {
 	if _, _, err := r.getSandbox(id); err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", net.JoinHostPort(*addr, local))
+	// Any local port: on a Mac, one of Abhed's reserved range, which a debug
+	// session never reaches (internal/loopport).
+	ln, err := loopport.ListenAddr(net.JoinHostPort(*addr, local))
 	if err != nil {
 		return err
 	}

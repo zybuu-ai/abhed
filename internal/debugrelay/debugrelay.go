@@ -722,12 +722,13 @@ func Read(br *bufio.Reader) (json.RawMessage, error) {
 // pinnedAdapter is debugpy's adapter with the ports it listens on taken, in
 // order, from ABHED_DAP_PORTS instead of chosen by the system: the ports the
 // sandbox opens to it alone (sandbox.WithLoopbackPorts). Before anything
-// else it binds every one of them on every address, the wildcard and
-// loopback, IPv4 and IPv6, and holds them until it exits: no other program,
-// the debuggee included, can take a port the sandbox lets the debuggee
-// reach or listen on, even one the adapter has closed (its launcher's
-// listener after the launcher connects) or not used yet, nor listen on it
-// where the network can reach. The variable is removed
+// else it binds every one of them on the wildcard and loopback addresses,
+// IPv4 and IPv6, and holds them until it exits: no other program can take
+// one of those, even one the adapter has closed (its launcher's listener
+// after the launcher connects) or not used yet. The debuggee can still bind
+// one on the Mac's own network address (Seatbelt's localhost matches it,
+// and SO_REUSEADDR lets a specific address go over a held wildcard), which
+// the consent discloses. The variable is removed
 // before the adapter runs, so the program it starts does not see it.
 const pinnedAdapter = `import os, socket as S
 ports = [int(p) for p in os.environ.pop("ABHED_DAP_PORTS").split(",")]
@@ -742,8 +743,9 @@ def bind(fam, host, port, reuse):
     held.append(x)
     return x
 for p in ports:
-    # The wildcard first, never listening, so no other socket can take the
-    # port on any address; then loopback, which the adapter listens on.
+    # The wildcard first, never listening, then loopback, which the adapter
+    # listens on: no other program takes those (a specific network address
+    # can still be bound over the wildcard; see above).
     bind(S.AF_INET, "0.0.0.0", p, False)
     free.append(bind(S.AF_INET, "127.0.0.1", p, True))
     try:

@@ -36,6 +36,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/metrics"
@@ -5320,7 +5321,7 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 // ListenAndServe starts the HTTP server. With Options.TLS set every
 // connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	return s.serve(ctx, func() (net.Listener, error) { return net.Listen("tcp", s.opts.Addr) })
+	return s.serve(ctx, func() (net.Listener, error) { return loopport.ListenAddr(s.opts.Addr) })
 }
 
 // Serve is ListenAndServe on a listener the caller opened; it closes ln.
