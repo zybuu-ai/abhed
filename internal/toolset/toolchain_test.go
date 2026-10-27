@@ -265,3 +265,37 @@ func TestRealGoBuildsWithAHostGOROOT(t *testing.T) {
 	}
 	t.Logf("%s", out)
 }
+
+// An opt-in check with a real Rust in a toolchain cache: a crate builds and
+// its tests run in the process sandbox. ABHED_TEST_TOOLCHAIN_CACHE names the cache.
+func TestRealRustBuildsInTheSandbox(t *testing.T) {
+	root := os.Getenv("ABHED_TEST_TOOLCHAIN_CACHE")
+	if root == "" || len(toolchainsIn(root, "rust")) == 0 {
+		t.Skip("set ABHED_TEST_TOOLCHAIN_CACHE to a cache with Rust to build with it")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ws := filepath.Join(home, "code", "rustcalc")
+	_ = os.MkdirAll(filepath.Join(ws, "src"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws, "Cargo.toml"), []byte("[package]\nname = \"rustcalc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(ws, "src", "lib.rs"), []byte("pub fn f(n: u64) -> u64 { (1..=n).product() }\n#[cfg(test)]\nmod t { #[test] fn five() { assert_eq!(super::f(5), 120); } }\n"), 0o644)
+	p := sandbox.DefaultPolicy(ws)
+	p.ReadOnlyPaths = []string{root}
+	sb := sandbox.NewProcess(p)
+	if ok, why := sb.Available(); !ok {
+		t.Skip(why)
+	}
+	defer sandbox.Close(sb)
+	b := withToolchains(tools.Bash{Sandbox: sb.Command}, &toolchain.Session{Cache: toolchain.Cache{Root: root}, Platform: toolchain.Host})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	out, err := b.Sandbox(ctx, ws, "cargo test --offline 2>&1").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "test result: ok") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// toolchainsIn are the installed versions of lang for this host in root.
+func toolchainsIn(root, lang string) []toolchain.Installed {
+	return toolchain.Cache{Root: root}.List(toolchain.Host(), lang)
+}
