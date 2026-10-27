@@ -850,18 +850,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 - When a `user_prompt_submit` hook refuses every waiting message, ones
   queued while the hook decided are now counted too, so the model is not
-  called again on the conversation as it was. Over `abhed rpc`, the
-  prompt's reply keeps its refusal, with a steer's own other error on a
-  second line. Affects 1.2.3 to 1.2.8.
+  called again on the conversation as it was. Affects 1.2.3 to 1.2.8.
 - The server records a refused run's end at the point it decides the run
   does not go on, so a client no longer misses that end when messages
   were queued as the run was cancelled. Affects 1.2.8.
 - A WebSocket frame over the message limit is refused at its header,
   before its payload is read, and large payloads are read a chunk at a
-  time instead of all at once. Affects 1.2.8 and earlier.
+  time instead of all at once. Affects 1.2.8.
 - Closing a session on the container tier stops calls still starting their
   container and waits for those containers to be removed, where they could
-  be left running. Affects 1.2.8 and earlier.
+  be left running. Affects 1.2.8.
 - Previewing writes now asks about every `edit` and `write` short of a
   deny, so an "always" grant no longer answers it; it covers a custom
   command's or skill's run and its subagents' writes, and a session that
