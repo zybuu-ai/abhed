@@ -750,6 +750,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A local Ollama model that is downloaded was offered for download again
+  when the server answering on its port had been started with another
+  models folder (another `HOME` or `OLLAMA_MODELS`). The check now looks in
+  the models folder too: such a model is never offered for download, and
+  the problem (`other_models_folder`) says how to find and restart that
+  server. A server Abhed starts is given the models folder the check reads,
+  shown in its command; the model list falls back to `/v1/models` when
+  `/api/tags` fails; and `ollama` is found in `/opt/homebrew/bin` and
+  `/usr/local/bin` (`/usr/bin` and `/snap/bin` on Linux) when an app's
+  `PATH` lacks them.
+
 - A command's egress relay container (`abhed-egr-…`) outlived an Abhed
   that was killed. It now runs attached, its main process ending when the
   input Abhed holds closes, so it exits and removes itself however Abhed

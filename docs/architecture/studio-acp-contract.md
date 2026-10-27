@@ -215,7 +215,8 @@ not serve it, and nothing is shown.
 interface OllamaProblem {
   kind: "not_installed" | "not_running" | "not_pulled" | "port_busy" | "not_ready" | "start_failed"
       | "install_failed" | "no_network" | "disk_short" | "pull_failed" | "model_not_found"
-      | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "not_ollama" | "manual_steps";
+      | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "not_ollama" | "manual_steps"
+      | "other_models_folder";  // downloaded here, but the server answering reads another models folder; no pull is offered
   message: string;      // one plain sentence
   steps: string[];      // numbered manual steps, in order: commands or sentences
   retry: boolean;       // checking again may work once the steps are done
@@ -227,6 +228,7 @@ interface OllamaStatus {
   installed: boolean; binary?: string; app?: string;
   running: boolean; version?: string; port_busy?: boolean;
   pulled: boolean; ready: boolean;
+  downloaded?: boolean;             // not listed by the server, but in this machine's models folder
   next?: "install" | "start" | "pull";
   problem?: OllamaProblem;          // absent when ready
 }

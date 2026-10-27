@@ -30,6 +30,10 @@ type Env struct {
 	GOOS string
 	// LookPath finds a program, as exec.LookPath does.
 	LookPath func(string) (string, error)
+	// Programs are where the ollama program is looked for when it is not on
+	// PATH: an app started from the Dock or Finder gets a PATH without
+	// Homebrew's folders.
+	Programs []string
 	// AppPath is the macOS app's location; "" where there is none to look for.
 	AppPath string
 	// HTTP reaches the local API; Web reaches the registry and download hosts.
@@ -82,7 +86,7 @@ func DefaultEnv() Env {
 		app = MacApp
 	}
 	return Env{
-		GOOS: runtime.GOOS, LookPath: exec.LookPath, AppPath: app,
+		GOOS: runtime.GOOS, LookPath: exec.LookPath, AppPath: app, Programs: standardPrograms(runtime.GOOS),
 		HTTP:     &http.Client{Timeout: 0},
 		Web:      &http.Client{Timeout: 30 * time.Second},
 		Registry: Registry,
@@ -102,7 +106,7 @@ func (e Env) underTest() Env {
 	if os.Getenv(testMarker) == "" {
 		return e
 	}
-	e.AppPath = ""
+	e.AppPath, e.Programs = "", nil
 	e.LookPath = func(name string) (string, error) { return "", errUnderTest }
 	e.Launch = func(string, []string, []string, *os.File) (int, <-chan error, error) { return 0, nil, errUnderTest }
 	e.Listening = func(context.Context, string) bool { return false }
@@ -138,6 +142,10 @@ type Status struct {
 	PortBusy bool `json:"port_busy,omitempty"`
 	// Pulled is set when the model is among the server's models.
 	Pulled bool `json:"pulled"`
+	// Downloaded is set when the server does not list the model but it is
+	// in this machine's models folder: the server uses another folder, and
+	// downloading it again would not help.
+	Downloaded bool `json:"downloaded,omitempty"`
 	// Ready is Running and Pulled.
 	Ready bool `json:"ready"`
 	// Next is the step that would make it ready: install, start, pull, or "".
@@ -174,10 +182,15 @@ func (e Env) Check(ctx context.Context, t Target) Status {
 	}
 	if st.Running && t.Model != "" {
 		models, err := e.tags(ctx, t)
+		if err != nil && openAIErr != nil {
+			// Ollama's own list failed; its OpenAI list names the same models.
+			openAI, openAIErr = e.openAIModels(ctx, t)
+		}
 		if err != nil && openAIErr == nil {
 			models, err = openAI, nil
 		}
 		st.Pulled = err == nil && hasModel(models, t.Model)
+		st.Downloaded = err == nil && !st.Pulled && t.Loopback && e.downloaded(t.Model)
 	}
 	st.Ready = st.Running && (st.Pulled || t.Model == "")
 	switch {
@@ -198,11 +211,57 @@ func (e Env) Check(ctx context.Context, t Target) Status {
 	case !st.Running:
 		st.Next = "start"
 		st.Problem = e.problem(KindNotRunning, fmt.Sprintf("Ollama is installed but not running at %s.", t.API), t, st)
+	case st.Downloaded:
+		// Never offer to download what is already here: the server answering
+		// is not reading this machine's models.
+		st.Problem = &Problem{Kind: KindOtherModels, Message: fmt.Sprintf("%s is downloaded in %s, but the Ollama answering at %s does not list it: "+
+			"that server was started with another models folder (another HOME or OLLAMA_MODELS), so Abhed will not download it again.", t.Model, e.ModelsDir, t.API),
+			Steps: []string{portStep(e.GOOS, t.Port) + "   (the Ollama server holding the port)",
+				"Quit that server, then start Ollama again as yourself: " + e.startStep(t, st),
+				retryStep(t)}, Retry: true}
 	default:
 		st.Next = "pull"
 		st.Problem = e.problem(KindNotPulled, fmt.Sprintf("Ollama is running but does not have %s yet.", t.Model), t, st)
 	}
 	return st
+}
+
+// standardPrograms are where an installed ollama program usually is.
+func standardPrograms(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"}
+	case "linux":
+		return []string{"/usr/local/bin/ollama", "/usr/bin/ollama", "/snap/bin/ollama"}
+	}
+	return nil
+}
+
+// downloaded reports whether tag's manifest is in the models folder, as
+// Ollama lays it out: manifests/<host>/<namespace>/<model>/<tag>, with
+// registry.ollama.ai and library for a bare name, and latest for no tag.
+func (e Env) downloaded(tag string) bool {
+	if e.ModelsDir == "" {
+		return false
+	}
+	name, ver := tag, "latest"
+	if i := strings.LastIndex(tag, ":"); i > strings.LastIndex(tag, "/") {
+		name, ver = tag[:i], tag[i+1:]
+	}
+	parts := strings.Split(name, "/")
+	switch len(parts) {
+	case 1:
+		parts = []string{"registry.ollama.ai", "library", parts[0]}
+	case 2:
+		parts = append([]string{"registry.ollama.ai"}, parts...)
+	}
+	for _, p := range append(parts, ver) {
+		if p == "" || p == "." || p == ".." || strings.ContainsAny(p, `/\`) {
+			return false
+		}
+	}
+	fi, err := os.Stat(filepath.Join(append([]string{e.ModelsDir, "manifests"}, append(parts, ver)...)...))
+	return err == nil && fi.Mode().IsRegular()
 }
 
 func portStep(goos, port string) string {
@@ -212,10 +271,16 @@ func portStep(goos, port string) string {
 	return "See what holds the port: lsof -nP -iTCP:" + port + " -sTCP:LISTEN"
 }
 
-// binary is the ollama program: on PATH, or inside the macOS app.
+// binary is the ollama program: on PATH, in a standard install folder, or
+// inside the macOS app.
 func (e Env) binary() string {
 	if e.LookPath != nil {
 		if p, err := e.LookPath("ollama"); err == nil {
+			return p
+		}
+	}
+	for _, p := range e.Programs {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
 			return p
 		}
 	}
