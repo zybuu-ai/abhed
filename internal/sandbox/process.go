@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // Process confines a command with OS process-level primitives: macOS
@@ -549,24 +551,54 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 			if lb.wide() {
 				b.WriteString("(allow network-outbound (remote ip \"localhost:*\"))\n")
 			}
+			if lb.ephemeral {
+				// The ports the system hands out, one rule each: Seatbelt does
+				// not reliably let a later deny for one port carve it out of
+				// localhost:*, so the allow names every port, and never one of
+				// Abhed's reserved range.
+				lo, hi := loopport.Ephemeral()
+				for p := lo; p <= hi; p++ {
+					if !loopport.In(p) {
+						fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", p)
+					}
+				}
+			}
 			for _, p := range lb.ports {
 				fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", p)
+				fmt.Fprintf(&b, "(allow network-inbound (local ip \"localhost:%d\"))\n", p)
+				fmt.Fprintf(&b, "(allow network-bind (local ip \"localhost:%d\"))\n", p)
 			}
-			b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
-			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
-		} else if busy, ok := s.listenable(); ok {
-			// A dev server the person opens in their browser: it listens and
-			// accepts on loopback, connects to nothing there, and binds
-			// neither Abhed's reserved ports nor one the Mac listens on.
+			if len(lb.ports) == 0 {
+				// A rule names "localhost", but Seatbelt lets it bind the
+				// wildcard address too, which the network can reach; with
+				// ports named, the command holds every address of each.
+				b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
+				b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+			}
+		}
+		// A dev server the person opens in their browser, where commands may
+		// listen: it listens and accepts on loopback, connects to nothing
+		// there, and binds neither Abhed's reserved ports nor one the Mac
+		// listens on. A debug session's named ports stay its own.
+		if busy, ok := s.listenable(); ok {
 			b.WriteString(";; Listening on loopback, for a dev server; no loopback connection out.\n")
-			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
-			b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
-			lo, hi := reservedLoopback()
-			for p := lo; p > 0 && p <= hi; p++ {
-				fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+			if !lb.on || len(lb.ports) > 0 {
+				b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+				b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
+			}
+			deny := func(p int) {
+				if !slices.Contains(lb.ports, uint16(p)) { // #nosec G115 -- a TCP port
+					fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+				}
+			}
+			if loopport.Applies() {
+				lo, hi := loopport.Range()
+				for p := lo; p <= hi; p++ {
+					deny(p)
+				}
 			}
 			for _, p := range busy {
-				fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+				deny(p)
 			}
 		}
 		// Nor a view of the host's network: its interfaces, addresses and
@@ -792,10 +824,10 @@ func (s *Process) Backend() string { return s.backend }
 // wrapEgress runs argv inside the backend's confinement; under the
 // allowlist eg is the session's proxy, its one way out.
 func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *egressState, argv ...string) *exec.Cmd {
-	if loopbackOf(ctx).wide() && s.policy.Egress != nil {
+	if lb := loopbackOf(ctx); s.policy.Egress != nil && (lb.wide() || lb.ephemeral && !loopport.Applies()) {
 		// Loopback would also reach the egress proxies, other calls' and
 		// other sessions', with allowlists this command was never given.
-		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: loopback is not opened under the egress allowlist")}
+		return &exec.Cmd{Err: ErrLoopbackUnderEgress}
 	}
 	if s.policy.Egress != nil && eg.port() == 0 {
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
@@ -814,8 +846,23 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		profile := s.seatbeltProfileWith(eg.portFor(egressCallOf(ctx)), loopbackOf(ctx), append([]string{eg.caFolder()}, readOnlyPathsOf(ctx)...)...) +
 			seatbeltPrivateDirs(privateDirsOf(ctx))
 		// -p takes the profile inline, avoiding a temp file the command could
-		// itself tamper with.
-		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
+		// itself tamper with. One too long for the command line (a port rule
+		// each, for a debug command) goes in the folder the engine made for
+		// this command alone, in .abhed, which sandbox-exec reads before the
+		// command runs and no other command can reach.
+		args := []string{"-p", profile}
+		if len(profile) > 128<<10 {
+			dirs := privateDirsOf(ctx)
+			if len(dirs) == 0 {
+				return &exec.Cmd{Err: errors.New("sandbox: the command was not run: its profile is too long for the command line, and it has no folder of its own")}
+			}
+			f := filepath.Join(dirs[0], "profile.sb")
+			if err := os.WriteFile(f, []byte(profile), 0o600); err != nil {
+				return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its profile: %w", err)}
+			}
+			args = []string{"-f", f}
+		}
+		cmd := s.bounded(ctx, "sandbox-exec", append(args, argv...))
 		cmd.Dir = cwd
 		cmd.Env = env
 		return cmd

@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +77,30 @@ func TestOwnCachesAreMarkedAndRemoved(t *testing.T) {
 	}
 	if _, err := os.Stat(s.caches); err == nil {
 		t.Fatal("the caches outlived Close")
+	}
+}
+
+// A debug session's socket folder is made in the home's .abhed, which every
+// command's profile denies, owned for the reaper, which removes one an
+// ended Abhed left.
+func TestDebugSocketDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := DebugSocketDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(dir) != filepath.Join(home, ".abhed", "run") || !strings.HasPrefix(filepath.Base(dir), "abhed-dap-") {
+		t.Fatalf("dir %s", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, tempOwnerFile)); err != nil {
+		t.Fatalf("no owner file: %v", err)
+	}
+	if !hasReapedPrefix(filepath.Base(dir)) || !slices.Contains(reapParents(), filepath.Join(home, ".abhed", "run")) {
+		t.Fatal("not reaped")
+	}
+	prof := NewProcess(DefaultPolicy(t.TempDir())).seatbeltProfileFor(0)
+	if !strings.Contains(prof, fmt.Sprintf("(deny file-read* (subpath %q))", filepath.Join(home, ".abhed"))) {
+		t.Fatal("the folder's parent is not denied to commands")
 	}
 }

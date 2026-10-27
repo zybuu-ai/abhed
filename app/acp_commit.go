@@ -3,8 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -56,8 +58,16 @@ func readStaged(ctx context.Context, root string, roots []string, mayRead func(s
 	}
 	var d stagedDiff
 	var keep []string
-	for _, name := range strings.Split(strings.TrimRight(string(names), "\x00"), "\x00") {
+	all := strings.Split(strings.TrimRight(string(names), "\x00"), "\x00")
+	ignored := ignoredNames(ctx, root, all)
+	for _, name := range all {
 		if name == "" {
+			continue
+		}
+		// A file .gitignore names was meant to stay out of the repository;
+		// force-added, it is still left out of what the model sees.
+		if ignored[name] {
+			d.excluded++
 			continue
 		}
 		path := filepath.Join(root, filepath.FromSlash(name))
@@ -195,8 +205,10 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		warnf("the record did not take %s: %v", agent.EvCommitMessage, rerr)
 	}
 	switch {
-	case err != nil && ctx.Err() != nil:
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		fail(refusal(errRefused, "the commit model did not answer within %s", commitTimeout))
+	case err != nil && ctx.Err() != nil:
+		fail(refusal(errRefused, "the request was cancelled: a newer one replaced it, or the session closed"))
 	case err != nil:
 		fail(refusal(errRefused, "the commit model did not answer: %s", redacted(err.Error())))
 	case recorded == "empty":
@@ -214,4 +226,37 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		}
 		c.reply(msg.ID, out, nil)
 	}
+}
+
+// ignoredNames are those of names that the repository's ignore rules match,
+// whether or not they are tracked (check-ignore --no-index), read through the
+// confined git. If it cannot say, every name counts as ignored: fail closed.
+func ignoredNames(ctx context.Context, root string, names []string) map[string]bool {
+	out := map[string]bool{}
+	var in strings.Builder
+	for _, n := range names {
+		if n != "" {
+			in.WriteString(n)
+			in.WriteByte(0)
+		}
+	}
+	if in.Len() == 0 {
+		return out
+	}
+	cmd := hostgit.Command(ctx, root, "check-ignore", "--no-index", "-z", "--stdin")
+	cmd.Stdin = strings.NewReader(in.String())
+	res, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		for _, n := range names {
+			out[n] = true
+		}
+		return out
+	}
+	for _, n := range strings.Split(strings.TrimRight(string(res), "\x00"), "\x00") {
+		if n != "" {
+			out[n] = true
+		}
+	}
+	return out
 }

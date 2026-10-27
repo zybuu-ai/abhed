@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // contentPattern is one shape of secret written into text; value is the
@@ -23,6 +24,10 @@ type contentPattern struct {
 	// structured is a JSON or list value, a secret when one of its quoted
 	// strings is a literal and not a placeholder.
 	structured bool
+	// userPass is a URL's user:password, which is no secret when the two are the same.
+	userPass bool
+	// named, when set, says whether submatch 1, a key's name, names a secret.
+	named func(string) bool
 }
 
 // contentPatterns are the shapes of keys and tokens written into text, the
@@ -43,7 +48,7 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
 	{re: regexp.MustCompile(`https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]{20,}`)},
 	// A URL's password, and a query parameter named as a secret.
-	{re: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://([^\s/:@"'` + "`" + `]*):([^\s/@"'` + "`" + `]+)@`), value: 2, literal: true},
+	{re: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://([^\s/:@"'` + "`" + `]*):([^\s/@"'` + "`" + `]+)@`), value: 2, literal: true, userPass: true},
 	{re: regexp.MustCompile(`(?i)[?&][a-z0-9_]*(?:token|secret|password|passwd|api_?key|signature)[a-z0-9_]*=([^\s&#"'` + "`" + `]{8,})`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?i)\baws_secret_access_key["']?\s*[=:]\s*["']?([^\s"']{20,})`), value: 1, literal: true},
 	// An HTTP credential: a bearer token, as an Authorization header or a
@@ -51,6 +56,10 @@ var contentPatterns = []contentPattern{
 	// credentials.
 	{re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-])Bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})`), value: 1, literal: true, valid: bearerToken},
 	{re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-])Basic[ \t]+([A-Za-z0-9+/]{12,}={0,2})`), value: 1, literal: true, valid: basicCredential, redactOnly: true},
+	// A JSON or YAML key whose name says it holds a secret, in any case
+	// ("internal_api_key", "clientSecret", "password:"), given a literal.
+	{re: regexp.MustCompile(`"([A-Za-z0-9_.-]+)"[ \t]*:[ \t]*"([^"\n]*)"`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
+	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+["']?([^"'\s#{}\[\]&*|>][^"'\n#]*?)["']?[ \t]*(?:#.*)?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
 	// words, given a literal: quoted, or a bare run that is not code.
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
@@ -118,7 +127,10 @@ func (p contentPattern) counts(text string, loc []int) bool {
 	if p.bare && (strings.Contains(v, "(") || strings.Contains(v[1:], "[") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
 		return false // a call, an index or a field such as settings.API_KEY
 	}
-	if p.value == 2 && loc[2] >= 0 && text[loc[2]:loc[3]] == v {
+	if p.named != nil && (loc[2] < 0 || !p.named(text[loc[2]:loc[3]]) || len(v) < 6) {
+		return false
+	}
+	if p.userPass && loc[2] >= 0 && text[loc[2]:loc[3]] == v {
 		return false // a stock default such as postgres:postgres
 	}
 	return true
@@ -239,4 +251,54 @@ func basicCredential(v string) bool {
 		b, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(v, "="))
 	}
 	return err == nil && strings.Contains(string(b), ":") && !isPlaceholder(string(b))
+}
+
+// secretWords are the words a key's name holds when its value is a secret.
+var secretWords = map[string]bool{"password": true, "passwd": true, "pwd": true, "secret": true, "secrets": true,
+	"token": true, "apikey": true, "credential": true, "credentials": true, "passphrase": true}
+
+// secretKeyName reports whether a JSON or YAML key's name says its value is
+// a secret: a word of secretWords, or an API, private, access, client or
+// signing key, with words split at _ . - and at a change to upper case.
+func secretKeyName(name string) bool {
+	var words []string
+	cur := []rune{}
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	prev := rune(0)
+	for _, r := range name {
+		switch {
+		case r == '_' || r == '.' || r == '-':
+			flush()
+		case unicode.IsUpper(r) && prev != 0 && unicode.IsLower(prev):
+			flush()
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+		prev = r
+	}
+	flush()
+	for i, w := range words {
+		if secretWords[w] {
+			return true
+		}
+		if w == "key" && i > 0 {
+			switch words[i-1] {
+			case "api", "private", "access", "client", "signing", "secret", "encryption", "master":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// yamlLiteral is a YAML value that is a literal, not code that happens to sit
+// after a colon (an object literal's `password: hashed,` or a call).
+func yamlLiteral(v string) bool {
+	return !strings.HasSuffix(v, ",") && !strings.ContainsAny(v, "()")
 }

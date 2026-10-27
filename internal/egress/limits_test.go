@@ -477,3 +477,13 @@ func TestLimiterAllowedFloodKeepsDenialKinds(t *testing.T) {
 		t.Fatalf("the denial was not recorded with its host: %+v", last)
 	}
 }
+
+// ipv6Loopback reports whether [::1] can be listened on at all.
+func ipv6Loopback() bool {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}

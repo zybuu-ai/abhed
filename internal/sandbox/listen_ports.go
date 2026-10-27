@@ -3,7 +3,6 @@ package sandbox
 import (
 	"context"
 	"net"
-	"os"
 	"os/exec"
 	"slices"
 	"sort"
@@ -12,22 +11,6 @@ import (
 	"sync"
 	"time"
 )
-
-// reservedLoopback is the loopback port range Abhed's own listeners hold on
-// the Mac, which no command may bind: ABHED_LOOPBACK_PORTS ("lo-hi", at
-// least 16 ports above 1024), else 47600-47855. It matches internal/loopport.
-func reservedLoopback() (lo, hi int) {
-	lo, hi = 47600, 47855
-	if v := os.Getenv("ABHED_LOOPBACK_PORTS"); v != "" {
-		a, b, ok := strings.Cut(v, "-")
-		l, err1 := strconv.Atoi(strings.TrimSpace(a))
-		h, err2 := strconv.Atoi(strings.TrimSpace(b))
-		if ok && err1 == nil && err2 == nil && l > 1024 && h <= 65535 && h-l+1 >= 16 {
-			lo, hi = l, h
-		}
-	}
-	return lo, hi
-}
 
 // hostListeners are the TCP ports this user's processes listen on now, any
 // address. A command binding loopback on one would take the connections

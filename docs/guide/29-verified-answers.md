@@ -65,7 +65,8 @@ row. Code blocks, headings and lines that only arrange the reply (a heading
 word such as "Summary" or "Files changed", a file name alone or after a
 label of heading nouns, as in "Changes: `sum.go`"; a label that says what
 happened, as in "Created: `sum_test.go`" or "Files changed: `main.go`", stays
-a claim), questions, courtesies ("let me know if…"), advice
+a claim; a short title with nothing about the work in it, such as "Go test
+run" or "Cited source", whether bold or plain), questions, courtesies ("let me know if…"), advice
 ("run `make test` to confirm") and stated intentions ("I'll update the docs")
 are left out, and at most 40 statements are checked. From each statement Abhed
 takes what can be compared: quoted text and backticked text, file paths, host
@@ -423,7 +424,12 @@ counts (`12 tests`, `replicas: 3`). Then:
     --env-file`, `dotenv` and `direnv exec`, which are not taken off, so the
     run is not one of a known kind;
   - covers, by path, the packages or folders the statement names, or the
-    whole workspace (`./...` from the workspace) when it names none;
+    whole workspace (`./...` from the workspace) when it names none. A
+    statement that names no folder answers the person's latest message:
+    when that message names folders (`services/orders`) and does not ask
+    about the whole workspace ("all", "every", "whole", "repo"), a run
+    over every folder it names covers it. A cached run (`ok … (cached)`)
+    counts like any other;
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -681,7 +687,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 705 plant a wrong claim. Some cite the result that shows them wrong
+session. 710 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -773,11 +779,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 705
+tail, a port not listening, a file not in a response). Today none of the 710
 planted claims is shown as verified (32 are contradicted: 30 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 199 controls are verified,
-and none of the 299 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 201 controls are verified,
+and none of the 301 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -787,7 +793,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 140 strict-mode
+control, by name and by a hash of its text and calls, and 143 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is

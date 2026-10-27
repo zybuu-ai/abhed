@@ -243,8 +243,10 @@ type NextEditResult struct {
 // reasoning and fences.
 func NextEditByChat(ctx context.Context, a Adapter, req NextEditRequest) (NextEditResult, error) {
 	sys := "You predict a developer's next edit. Given their recent edits and the lines around the cursor, " +
-		"output the same lines with the next edit applied: the whole window, nothing else. No explanation, no prose, " +
-		"no markdown, no code fences. Change only what follows from the recent edits; if nothing does, output the window unchanged."
+		"output the same lines with the next edit applied: the whole window, every line, nothing else. No explanation, " +
+		"no prose, no markdown, no code fences. Change only what follows from the recent edits, and apply it everywhere in " +
+		"the window it applies: after a rename, every remaining use of the old name. Copy every other line exactly as it " +
+		"is, with its indentation, and add no spaces at line ends. If nothing follows, output the window unchanged."
 	lines := strings.SplitAfter(req.Window, "\n")
 	if req.CursorLine >= 0 && req.CursorLine < len(lines) {
 		lines[req.CursorLine] = strings.TrimSuffix(lines[req.CursorLine], "\n") + "  " + cursor + "\n"

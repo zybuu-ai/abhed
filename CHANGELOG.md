@@ -8,6 +8,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.8
 
+- On a Mac, Abhed's own loopback listeners (egress proxies, each command's
+  proxy port, port forwards, the sign-in callback) now take their ports from
+  47600 to 47855 only, and fail, saying so, when that range is full. If
+  another program on the Mac uses those ports, set `ABHED_LOOPBACK_PORTS`
+  to another range (`lo-hi`, at least 16 ports above 1024), the same for
+  every Abhed process there.
 - A confined MCP stdio server whose program or script sits directly in a
   top-level folder of your home (`~/Downloads`, `~/bin`, `~/Projects`),
   in `~/.local/bin` or `~/.cargo/bin`, now sees only that file, where 1.2.8
@@ -642,10 +648,10 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 705 planted wrong claims none is shown as verified and 32 are
+  -v`): of 710 planted wrong claims none is shown as verified and 32 are
   contradicted (30 from cited, conflicting evidence, 2 by conflict markers
-  still shown), all 199 true controls
-  are verified, and none of the 299 true or neutral claims is contradicted;
+  still shown), all 201 true controls
+  are verified, and none of the 301 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
@@ -704,8 +710,11 @@ All notable changes to Abhed are recorded here. The format follows
   included; never after `--abort`, `--quit`, `--skip` or `--continue`);
   headings and lines that only arrange the reply ("Summary", "Changes:
   `sum.go`") are not claims, while a label that says what happened
-  ("Created: `sum_test.go`") is; a test result with no test run behind it
-  says "no test run in this session"; a
+  ("Created: `sum_test.go`") is, and a short title ("Go test run", "Cited
+  source") is not; a pass claim that names no folder is covered by a run
+  of the folders the person's message named, unless it asked about the
+  whole workspace; a test result with no test run behind it says "no test
+  run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
   change that names no file is verified only by an edit, a write or a
@@ -867,6 +876,27 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A page linked in Abhed Studio while the agent's `web_fetch` is off was
+  refused every time (its fetch had no secrets store). It is now read, with
+  `web_fetch`'s own ask when no `allowed_hosts` names the site, a URL that
+  can never be read refused before the person is asked, and the ask shown
+  as a fetch; only the managed file's own `web_fetch.enabled: false` refuses
+  it.
+- Commit messages leave out a file the repository's ignore rules name even
+  when it is force-added, and withhold the value of a JSON or YAML key whose
+  name says secret in any case (`internal_api_key`, `clientSecret`,
+  `password:`).
+- An agent that makes the same read-only call with the same answer again
+  and again is told so after three and stopped after six, with the reason
+  named (`retry_exhausted`); the next message goes on. A call that can
+  change things starts the count again.
+- Next-edit suggestions take the window's line ends (no added trailing
+  spaces, the last line's newline as it was), and the model is asked to
+  apply a rename to every use in the window.
+- The SDK's `Model` gains `Images` (whether the model reads images). For
+  Studio builds that read it: `_abhed/commitMessage` now answers a reply
+  with no message, or one carrying a secret, with an error rather than
+  `dropped`.
 - Commands, Studio's Run and Test among them, did not use the project's
   Python virtual environment, so pytest installed in `.venv` was "not
   installed". The nearest `.venv` or `venv` in the workspace is now used,
@@ -902,15 +932,24 @@ All notable changes to Abhed are recorded here. The format follows
   model that reads it.
 - Next-edit suggestions no longer offer an edit that changes only
   whitespace at a line's end, which left the line looking the same.
-- Debugging on this Mac could not start: under the egress allowlist, which
-  a session gets once package registries are opened, loopback was refused
-  to the debug command. Python's debug adapter now listens on ports the
-  engine chose before it starts, and only those are opened to it, so no
-  egress proxy is reachable and Python debugs under the allowlist. Go
-  debugs on the macOS process tier with a Delve built for macOS, offered
-  and installed with Go like any debugger; a Go launch without Delve offers
-  the install before anything is judged. Go on this Mac stays refused,
-  with steps, while the session goes out through the egress proxy.
+- Debugging on this Mac could not start: every default session's commands
+  go out through Abhed's egress proxy (the allowlist, or the package-registry
+  proxy every session has unless `sandbox.toolchains_registries` is off),
+  and loopback was refused to the debug command there. Every Abhed listener
+  on a Mac (egress proxies, each command's proxy port, port forwards, the
+  sign-in callback) now takes its port from a reserved range, 47600 to
+  47855 or `ABHED_LOOPBACK_PORTS`, and a debug command may never reach that
+  range: the rule was "never every loopback port", it is now "never the
+  reserved range". Python's adapter listens on ports chosen outside the
+  range before it starts, which it holds on every address for its whole
+  life, and only those are opened to it; Go may reach each port the system
+  hands out to listeners (49152 to 65535) but the range, one rule each, and
+  a Go program being debugged can listen where the network reaches (the
+  consent says so). Both debug on the macOS process tier in the default
+  configuration. Delve is built for macOS too, offered and installed with
+  Go like any debugger; a Go launch without Delve offers the install before
+  anything is judged. A workspace agreement to debug on this Mac is kept
+  only once a session has started.
 - Language servers: a missing server's problem carries the one-click
   toolchain install (`install: {language, lsp: true}`) and plain steps, and
   the engine tells Studio when a toolchain or server was installed or

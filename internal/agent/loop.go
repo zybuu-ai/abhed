@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -364,7 +365,11 @@ type Loop struct {
 	// concurrent writes to a Go map are not a race that corrupts a counter —
 	// they abort the process.
 	repeatedFailures map[string]int
-	failuresMu       sync.Mutex
+	// repeatedSuccesses counts identical calls that read without changing
+	// anything, since the last call that could; see repeatedSuccessAbort.
+	repeatedSuccesses map[string]int
+	lastAnswers       map[string][32]byte
+	failuresMu        sync.Mutex
 	// reviewedCalls are this message's calls a person approved; carried maps
 	// an edit or write that failed with no effect, by tool and file, to the
 	// call whose approval the next attempt at that file takes.
@@ -860,7 +865,7 @@ func (l *Loop) startMessage() {
 	// wake runs are bounded on their own (subagents.max_wakes_per_hour and
 	// wake_max_turns), so a reset there cannot loop without end.
 	l.failuresMu.Lock()
-	l.repeatedFailures = nil
+	l.repeatedFailures, l.repeatedSuccesses, l.lastAnswers = nil, nil, nil
 	l.failuresMu.Unlock()
 	l.carryMu.Lock()
 	l.reviewedCalls, l.carried = nil, nil
@@ -1563,6 +1568,16 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		l.stuckDetail = fmt.Sprintf("the same call failed %d times without adaptation: %s", n, truncateKey(key))
 		return TermRetryExhausted, true, nil
 	}
+	if key, n, stuck := l.worstRepeatedSuccess(); stuck {
+		l.messages = append(l.messages, model.Message{
+			Role: model.RoleUser,
+			Content: fmt.Sprintf(
+				"Stopping: the same call gave the same answer %d times with nothing changed in between (%s).",
+				n, truncateKey(key)),
+		})
+		l.stuckDetail = fmt.Sprintf("the same call gave the same answer %d times with nothing changed in between: %s; send a message to go on", n, truncateKey(key))
+		return TermRetryExhausted, true, nil
+	}
 	return "", false, nil
 }
 
@@ -1571,6 +1586,9 @@ const (
 	repeatedFailureLimit = 3
 	// After this many, the loop gives up rather than burning the budget.
 	repeatedFailureAbort = 6
+	// The same for an identical call that changes nothing and succeeds.
+	repeatedSuccessLimit = 3
+	repeatedSuccessAbort = 6
 	// How many empty turns to nudge through before calling the run stalled.
 	emptyTurnRetries = 2
 )
@@ -2097,9 +2115,36 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 					"what is blocking you and stop.]", result.Content, n)
 		}
 	} else {
+		key := call.Name + string(call.Args)
 		l.failuresMu.Lock()
-		delete(l.repeatedFailures, call.Name+string(call.Args))
+		delete(l.repeatedFailures, key)
+		// The same read, search or listing again, with nothing changed in
+		// between, gives the same answer: the model is going round in circles.
+		// A call that can change things starts the count again.
+		n := 0
+		if tools.MutatesCall(tool, call.Args) {
+			l.repeatedSuccesses, l.lastAnswers = nil, nil
+		} else {
+			if l.repeatedSuccesses == nil {
+				l.repeatedSuccesses, l.lastAnswers = map[string]int{}, map[string][32]byte{}
+			}
+			// Only the same answer counts: a poll whose output moves on is not a loop.
+			sum := sha256.Sum256([]byte(result.Content))
+			if prev, ok := l.lastAnswers[key]; ok && prev == sum {
+				l.repeatedSuccesses[key]++
+			} else {
+				l.repeatedSuccesses[key] = 1
+			}
+			l.lastAnswers[key] = sum
+			n = l.repeatedSuccesses[key]
+		}
 		l.failuresMu.Unlock()
+		if n >= repeatedSuccessLimit {
+			result.Content = fmt.Sprintf(
+				"%s\n\n[You have made this exact call %d times and had the same answer each time, with "+
+					"nothing changed in between. Use what it returned and move on, or explain what you are "+
+					"looking for and stop.]", result.Content, n)
+		}
 	}
 
 	// Tool output is untrusted: it may contain text that looks like
@@ -2439,6 +2484,17 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 }
 
 // worstRepeatedFailure reports a call that has failed past the abort threshold.
+func (l *Loop) worstRepeatedSuccess() (string, int, bool) {
+	l.failuresMu.Lock()
+	defer l.failuresMu.Unlock()
+	for key, n := range l.repeatedSuccesses {
+		if n >= repeatedSuccessAbort {
+			return key, n, true
+		}
+	}
+	return "", 0, false
+}
+
 func (l *Loop) worstRepeatedFailure() (string, int, bool) {
 	l.failuresMu.Lock()
 	defer l.failuresMu.Unlock()

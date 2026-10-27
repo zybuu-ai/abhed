@@ -15,8 +15,14 @@ func TestStructureLinesAreNotClaims(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("claims = %q, want %q", got, want)
 	}
+	for _, s := range []string{"Go test run", "Cited source", "Verification", "Key findings", "Cited sources"} {
+		if c, ok := claimOf(s); ok {
+			t.Errorf("heading %q kept as a claim %q", s, c)
+		}
+	}
 	for _, s := range []string{"Files changed: 3", "Exit code: `0`", "Tests pass", "`go test ./...` passes", "`sum.go`: added `continue`", "Fixed `sum.go`",
-		"Created: `sum_test.go`", "Files changed: `main.go`", "Tests pass: `sum_test.go`", "Modified: `main.go`", "New file: `sum_test.go`"} {
+		"Created: `sum_test.go`", "Files changed: `main.go`", "Tests pass: `sum_test.go`", "Modified: `main.go`", "New file: `sum_test.go`",
+		"Tests added", "All tests pass", "Build passes", "What I changed", "No issues found"} {
 		if _, ok := claimOf(s); !ok {
 			t.Errorf("%q was dropped as structure", s)
 		}

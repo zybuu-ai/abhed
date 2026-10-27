@@ -166,3 +166,26 @@ func TestLoadWarnTakesTheWarnings(t *testing.T) {
 		t.Fatalf("without Warn, nothing on stderr: %q", stderr.String())
 	}
 }
+
+// ManagedWebFetchOff is the managed file's own false, not a lower layer's
+// narrowing of a managed true, nor a managed file that leaves it unset.
+func TestManagedWebFetchOff(t *testing.T) {
+	for managedJSON, want := range map[string]bool{
+		`{"web_fetch":{"enabled":false}}`:                              true,
+		`{"web_fetch":{"enabled":true,"allowed_hosts":["a.example"]}}`: false,
+		`{"permissions":{"mode":"default"}}`:                           false,
+	} {
+		withManaged(t, managedJSON)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		_ = os.MkdirAll(filepath.Join(home, ".abhed"), 0o700)
+		_ = os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(`{"web_fetch":{"enabled":false}}`), 0o600)
+		cfg, err := Load(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.ManagedWebFetchOff(); got != want {
+			t.Errorf("%s: %v, want %v", managedJSON, got, want)
+		}
+	}
+}

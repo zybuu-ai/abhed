@@ -2,13 +2,17 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // WithLoopback opens loopback ports to one command on the macOS process
@@ -78,7 +82,7 @@ func TestLoopbackRefusedUnderAllowlist(t *testing.T) {
 	p.Egress = pol
 	sb := NewProcess(p)
 	cmd := sb.Command(WithLoopback(context.Background()), t.TempDir(), "nc -z -G 2 127.0.0.1 "+strconv.Itoa(other.Addr().(*net.TCPAddr).Port))
-	if cmd.Err == nil || !strings.Contains(cmd.Err.Error(), "allowlist") {
+	if !errors.Is(cmd.Err, ErrLoopbackUnderEgress) {
 		out, _ := cmd.CombinedOutput()
 		t.Fatalf("loopback opened under the allowlist: %v %s", cmd.Err, out)
 	}
@@ -131,5 +135,86 @@ func TestLoopbackPortsUnderAllowlist(t *testing.T) {
 	prof := sb.seatbeltProfileWith(0, loopback{on: true, ports: ports})
 	if strings.Contains(prof, `remote ip "localhost:*"`) || !strings.Contains(prof, `remote ip "localhost:`+own+`"`) {
 		t.Fatalf("profile %s", prof)
+	}
+}
+
+// The system's ephemeral loopback ports but Abhed's reserved range: under
+// the egress proxy the command runs, reaches a port the system handed out,
+// and reaches no listener inside the range, on 127.0.0.1 or [::1].
+func TestLoopbackEphemeral(t *testing.T) {
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+		t.Skip("no sandbox-exec")
+	}
+	accept := func(ln net.Listener) {
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				_ = c.Close()
+			}
+		}()
+	}
+	// A reserved range inside the ephemeral one here, to show it is carved out.
+	base := 60100
+	t.Setenv(loopport.Env, strconv.Itoa(base)+"-"+strconv.Itoa(base+15))
+	lns, err := loopport.ListenBoth(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lns {
+		defer l.Close()
+		accept(l)
+	}
+	inside := strconv.Itoa(lns[0].Addr().(*net.TCPAddr).Port)
+	outside, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outside.Close()
+	accept(outside)
+	if loopport.In(outside.Addr().(*net.TCPAddr).Port) {
+		t.Skip("the system's port landed in the test range")
+	}
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := DefaultPolicy(t.TempDir())
+	p.Egress = pol
+	sb := NewProcess(p)
+	own := t.TempDir()
+	ctx := WithPrivateDirs(WithLoopbackEphemeral(context.Background()), own)
+	run := func(line string) (string, error) {
+		cmd := sb.Command(ctx, t.TempDir(), line)
+		if cmd.Err != nil {
+			return "", cmd.Err
+		}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run("nc -z -G 2 127.0.0.1 " + strconv.Itoa(outside.Addr().(*net.TCPAddr).Port)); err != nil {
+		t.Fatalf("a port the system handed out: %v %s", err, out)
+	}
+	if out, err := run("nc -z -G 2 127.0.0.1 " + inside); err == nil {
+		t.Fatalf("a listener inside the reserved range was reached: %s", out)
+	}
+	if len(lns) == 2 {
+		if out, err := run("nc -6 -z -G 2 ::1 " + inside); err == nil {
+			t.Fatalf("an [::1] listener inside the reserved range was reached: %s", out)
+		}
+	}
+	prof := sb.seatbeltProfileWith(0, loopback{on: true, ephemeral: true})
+	if strings.Contains(prof, `remote ip "localhost:*"`) || strings.Contains(prof, `remote ip "localhost:`+inside+`"`) ||
+		!strings.Contains(prof, `remote ip "localhost:`+strconv.Itoa(outside.Addr().(*net.TCPAddr).Port)+`"`) {
+		t.Fatal("the profile does not name the ephemeral ports but the range")
+	}
+	if _, err := os.Stat(filepath.Join(own, "profile.sb")); err != nil {
+		t.Fatalf("the long profile was not put in the command's own folder: %v", err)
+	}
+	// Without a folder of its own, the long profile has nowhere to go.
+	if cmd := sb.Command(WithLoopbackEphemeral(context.Background()), t.TempDir(), "true"); cmd.Err == nil {
+		t.Fatal("ran without a folder for its profile")
 	}
 }

@@ -162,16 +162,13 @@ func debugBridge(relayBinary string) (command, path string, pinned bool, p *debu
 	return debugrelay.Quote(path) + " " + dapbridge.Arg, path, pinned, nil
 }
 
-// goLoopbackProblem is Go on the macOS process sandbox while the session's
-// commands go out through the egress proxy (an allowlist, or package
-// registries opened): Delve picks its own loopback ports, which only every
-// loopback port would reach, and that would reach other commands' proxies.
-func goLoopbackProblem() *debugrelay.Problem {
+// loopbackProblem is a debug command the sandbox would not open loopback to
+// (sandbox.ErrLoopbackUnderEgress), as a problem with steps.
+func loopbackProblem() *debugrelay.Problem {
 	return &debugrelay.Problem{Kind: debugrelay.KindTier, Retry: true,
-		Message: "Go cannot be debugged on this Mac's process sandbox while this session's commands reach the network through Abhed's egress proxy " +
-			"(an allowlist, or package registries opened): Delve picks its own loopback ports, and opening them all would also open the proxies of other commands",
-		Steps: []string{"Use the container tier for Go debugging: Set Up Debugging lists the steps (install Podman, start its machine, use the container tier)",
-			"Or debug in a new session of a workspace whose package registries are not opened (sandbox.toolchains_registries off)"}}
+		Message: "this debug session needs every loopback port, which is not opened while this session's commands go out through Abhed's egress proxy " +
+			"(the allowlist, or the package-registry proxy every session has unless sandbox.toolchains_registries is off)",
+		Steps: []string{"Use the container tier: Set Up Debugging lists the steps (install Podman, start its machine, use the container tier)"}}
 }
 
 // ownBridge is the engine's own binary as the debug bridge, for Delve run on
@@ -237,12 +234,6 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		}
 		loopback = true
 	}
-	// Delve on macOS picks its own loopback ports, which only a wide
-	// loopback reaches; that would also reach other calls' egress proxies.
-	if loopback && runtime.GOOS == "darwin" && req.Language == debugrelay.Go && b.Isolation.Allowlist {
-		c.reply(msg.ID, nil, debugRefusal(goLoopbackProblem()))
-		return
-	}
 	// Delve not where commands run: the install is offered before anything
 	// is judged, as for a language server.
 	if req.Language == debugrelay.Go {
@@ -277,7 +268,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	// the session does.
 	var madeDir string
 	if loopback && runtime.GOOS == "darwin" && req.Language == debugrelay.Go {
-		dir, err := os.MkdirTemp("", "abhed-dap-")
+		dir, err := sandbox.DebugSocketDir()
 		if err != nil {
 			c.reply(msg.ID, nil, refusal(errRefused, "the debug session could not start: a folder for its socket: %v", err))
 			return
@@ -326,12 +317,6 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", refused.Content))
 		return
 	}
-	if why != "" && forWorkspace {
-		if err := setDebugConsent(parts.Session.Root, true); err != nil {
-			warnf("the choice to debug %s on the process tier could not be kept: %v", parts.Session.Root, err)
-		}
-		s.record(agent.EvDebugSetup, agent.DebugSetup{Action: "process_tier_consent", Workspace: parts.Session.Root, CallID: callID})
-	}
 	// The person may have closed the session while the supervisor's ask waited.
 	if sessionClosed(s) {
 		cancel()
@@ -347,11 +332,11 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		lctx = sandbox.WithPrivateDirs(lctx, sockDir)
 	}
 	if loopback {
-		// Python's adapter listens on ports chosen now, and only those are
-		// opened to it; Go's Delve picks its own, so it gets every loopback
-		// port (never under the allowlist, refused above).
+		// Python's adapter listens on ports chosen now, which it holds, and
+		// only those are opened to it; Go's Delve picks its own, so it gets
+		// every loopback port but Abhed's reserved range.
 		if req.Language == debugrelay.Python {
-			ports, err := sandbox.FreeLoopbackPorts(4)
+			ports, err := sandbox.FreeLoopbackPorts(debugrelay.PinnedPorts)
 			if err != nil {
 				cancel()
 				_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the debug adapter could not start: no free loopback port: " + err.Error(), IsError: true}, 0)
@@ -361,7 +346,9 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 			debugrelay.PinPorts(&spec, ports)
 			lctx = sandbox.WithLoopbackPorts(lctx, ports...)
 		} else {
-			lctx = sandbox.WithLoopback(lctx)
+			// Go: every loopback port but Abhed's reserved range, where every
+			// Abhed listener on this Mac is, so no egress proxy is reachable.
+			lctx = sandbox.WithLoopbackEphemeral(lctx)
 		}
 	}
 	cmd := debugCommand(b, lctx, spec.Cwd, spec.Command)
@@ -376,12 +363,20 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	if err != nil {
 		cancel()
 		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the debug adapter could not start: " + err.Error(), IsError: true}, 0)
-		if loopback && req.Language == debugrelay.Go && strings.Contains(err.Error(), "loopback is not opened under the egress allowlist") {
-			c.reply(msg.ID, nil, debugRefusal(goLoopbackProblem()))
+		if errors.Is(err, sandbox.ErrLoopbackUnderEgress) {
+			c.reply(msg.ID, nil, debugRefusal(loopbackProblem()))
 			return
 		}
 		c.reply(msg.ID, nil, refusal(errRefused, "the debug adapter could not start: %v", err))
 		return
+	}
+	// The workspace's agreement is kept only once the session it was given
+	// for has started: nothing is kept for a launch that could not run.
+	if why != "" && forWorkspace {
+		if err := setDebugConsent(parts.Session.Root, true); err != nil {
+			warnf("the choice to debug %s on the process tier could not be kept: %v", parts.Session.Root, err)
+		}
+		s.record(agent.EvDebugSetup, agent.DebugSetup{Action: "process_tier_consent", Workspace: parts.Session.Root, CallID: callID})
 	}
 	d := &acpDebug{id: "dbg-" + acpID(), callID: callID, session: s.id, cancel: cancel, started: time.Now(), done: make(chan struct{}), dir: madeDir,
 		sends: make(chan rpcMessage, debugQueue)}
@@ -617,6 +612,18 @@ func (c *acpConn) manualAsk(s *acpSession, callID, kind, display string) agent.M
 // (allow_always, named alwaysName) whose choice sets *always: for an
 // agreement kept beyond this action, which "Allow once" must not give.
 func (c *acpConn) manualAskWith(s *acpSession, callID, kind, display, alwaysName string, always *bool) agent.ManualAsk {
+	return c.manualAskFor(s, callID, "bash", "execute", kind, display, map[string]any{"command": display}, alwaysName, always)
+}
+
+// manualToolAsk is manualAsk for a person's call of another tool than bash,
+// shown as that tool with its ACP kind and input, as a fetch is.
+func (c *acpConn) manualToolAsk(s *acpSession, callID, tool, acpKind, display string, input map[string]any) agent.ManualAsk {
+	return c.manualAskFor(s, callID, tool, acpKind, acpKind, display, input, "", nil)
+}
+
+// manualAskFor puts a person's own action to them as tool, of ACP kind
+// acpKind, with input as its rawInput.
+func (c *acpConn) manualAskFor(s *acpSession, callID, tool, acpKind, kind, display string, input map[string]any, alwaysName string, always *bool) agent.ManualAsk {
 	return func(ctx context.Context, d policy.Result) (bool, error) {
 		once, reject, keep := "once:"+callID, "reject:"+callID, "always:"+callID
 		options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
@@ -624,15 +631,15 @@ func (c *acpConn) manualAskWith(s *acpSession, callID, kind, display, alwaysName
 			options = append(options, map[string]any{"optionId": keep, "name": alwaysName, "kind": "allow_always"})
 		}
 		options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
-		meta := map[string]any{"tool": "bash", "step": d.Step, "reason": redacted(d.Reason), kind: true}
+		meta := map[string]any{"tool": tool, "step": d.Step, "reason": redacted(d.Reason), kind: true}
 		title := ui.VisibleLine(kind + ": " + display)
 		if ui.HasHidden(display) || anyHidden(d.Reason) {
 			title += " (contains hidden or control characters)"
 		}
 		res, err := c.call(ctx, "session/request_permission", map[string]any{
 			"sessionId": s.id,
-			"toolCall": map[string]any{"toolCallId": callID, "title": title, "kind": "execute", "status": "pending",
-				"rawInput": map[string]any{"command": display}, "_meta": map[string]any{acpMetaKey: meta}},
+			"toolCall": map[string]any{"toolCallId": callID, "title": title, "kind": acpKind, "status": "pending",
+				"rawInput": input, "_meta": map[string]any{acpMetaKey: meta}},
 			"options": options,
 		})
 		if err != nil {
