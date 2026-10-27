@@ -739,6 +739,12 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		}
 	}
 	sub.Provider = provider
+	// A parent previewing writes previews its subagents' writes too: one
+	// started under preview keeps it, even past the prompt that started it.
+	if parent != nil && parent.loop != nil {
+		sub.previewParent = parent.loop
+		sub.previewWrites.Store(parent.loop.previewing())
+	}
 	// A subagent's calls reach the same person, so the same hooks screen them.
 	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
 		sub.Hooks = childHooks{parent.loop.Hooks}

@@ -403,14 +403,29 @@ answer, and the checks could not verify it. `features` lists `answer-verdicts`.
 ### 3.5 Images
 
 `promptCapabilities.image` is `true`. An `image` block (`mimeType` png,
-jpeg, gif or webp; `data` base64; at most four, 5 MB each) goes to the model
+jpeg, gif or webp; `data` base64; at most four, 5 MB each and 10 MB in all,
+so a prompt's base64 stays well under a line's 16 MiB) goes to the model
 with the prompt when the session's model reads images (a provider's
 `extra.vision`, or a type that always does); otherwise the prompt is refused
 (`-32001`, "the model … does not read images"). Images are held in memory for
 the conversation only, never in the record: the record holds an
 `input.mention {path: "image:<type>", sha256, bytes}` and the prompt's text
 notes each image, so a resumed or forked session has the note, not the
-image.
+image. A session the engine does not run itself refuses an image, and names
+a link rather than reading it.
+
+Any message over 16 MiB on one line is refused with its id
+(`-32602`, "the message is over the 16 MiB a line may hold") and the
+connection goes on.
+
+Known limits, left for 1.2.10: a linked web page is read as the person's
+call, so a `web_fetch` ask (no `allowed_hosts`, a user `ask` rule, a managed
+ask) is taken as answered by the person sending the link rather than put to
+them; images stay in the conversation and are sent with every later
+request, with no session-wide budget, so a long session with many images
+can reach the provider's request limit; and with many parallel tool
+results in the last turn, the Anthropic history markers can fall on
+adjacent results and miss the previous request's cache.
 
 ---
 
@@ -757,13 +772,17 @@ are sent, with `meta.hunksOnly: true`.
 ### 5.5a Previewing writes
 
 A `session/prompt` whose `_meta["zybuu.ai/abhed"]` carries
-`previewWrites: true` previews every `edit` and `write` of that prompt: a
-call the mode or a rule would allow is asked instead (step `preview`), with
-its diff as §5.5 gives it, and nothing is written until the person accepts.
-Rejected, it is denied by the reviewer like any ask; accepted, it is
-approved and written. A deny stays a deny. It covers the agent's own `edit`
-and `write` only (not `bash`, nor a subagent's calls), and ends with the
-prompt. An inline edit on a selection is a prompt with the selection
+`previewWrites: true` previews every `edit` and `write` of that prompt:
+whatever the mode or a rule decided, short of a deny, it is asked (step
+`preview`, keeping an earlier ask's reason), with its diff as §5.5 gives it,
+and nothing is written until the person accepts. The preview ask offers no
+scope, so no "always" grant, remembered or restored, answers it. Rejected,
+it is denied by the reviewer like any ask; accepted, it is approved and
+written. A deny stays a deny. It covers the prompt's run whether it is a
+plain prompt, a custom command or a skill, and the writes of any subagent
+it starts; not `bash`. It ends with the prompt. A session that cannot
+preview (one the engine does not run itself) refuses the prompt (`-32001`,
+"this session cannot preview writes"). An inline edit on a selection is a prompt with the selection
 attached (§3.1a) and this flag.
 
 ### 5.6 Workspace trust

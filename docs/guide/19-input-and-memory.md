@@ -41,7 +41,7 @@ rules and recorded the same way. A web page you link is read with
 `web_fetch` on; otherwise the message is refused and says why. An image goes
 to the model with the message when the model reads images (set
 `"extra": {"vision": "true"}` on a provider that does), at most four of 5 MB
-each; with a model that does not, the message is refused. Images are kept in
+each and 10 MB in all; with a model that does not, the message is refused. Images are kept in
 memory only: the record holds a note and the image's SHA-256, so a resumed
 session knows an image was there but does not have it.
 

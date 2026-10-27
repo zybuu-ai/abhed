@@ -365,8 +365,10 @@ type Loop struct {
 	carryMu       sync.Mutex
 	reviewedCalls map[string]bool
 	carried       map[string]string
-	// previewWrites makes every edit and write an ask, for this run.
+	// previewWrites makes every edit and write an ask, for this run;
+	// previewParent is the loop that spawned this one, whose flag holds too.
 	previewWrites atomic.Bool
+	previewParent *Loop
 	// pendingImages are the images AttachImages gave the next message.
 	pendingImages []model.ContentBlock
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
@@ -774,6 +776,17 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 // PreviewWrites turns on or off asking about every edit and write, whatever
 // the mode allows, so the person sees each diff before it is written.
 func (l *Loop) PreviewWrites(on bool) { l.previewWrites.Store(on) }
+
+// previewing reports whether this loop, or the loop that spawned it, is
+// previewing writes, so a subagent's writes are put to the person too.
+func (l *Loop) previewing() bool {
+	for p := l; p != nil; p = p.previewParent {
+		if p.previewWrites.Load() {
+			return true
+		}
+	}
+	return false
+}
 
 // AttachImages gives the next RunMessage's message these images, for a
 // model that reads them. They are held in memory only, never recorded.
@@ -1654,11 +1667,15 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 	decision = l.filesJudged(tool, call, decision)
-	// A person previewing writes sees each edit and write before it lands: an
-	// allow becomes an ask, a deny stays a deny.
-	if decision.Decision == policy.Allow && (call.Name == "edit" || call.Name == "write") && l.previewWrites.Load() {
-		decision = policy.Result{Decision: policy.Ask, Step: "preview",
-			Reason: "the person asked to preview each change before it is written"}
+	// A person previewing writes sees each edit and write before it lands:
+	// any decision but a deny becomes the preview ask, which offers no scope,
+	// so no "always" grant can answer it. An earlier ask's reason is kept.
+	if decision.Decision != policy.Deny && (call.Name == "edit" || call.Name == "write") && l.previewing() {
+		why := "the person asked to preview each change before it is written"
+		if decision.Decision == policy.Ask && decision.Reason != "" {
+			why += "; " + decision.Reason
+		}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a

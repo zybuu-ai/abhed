@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/linediff"
@@ -160,8 +161,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		if why != "" || readDenied(parts.Loop.Policy, rp) {
 			continue
 		}
-		rel, _ := filepath.Rel(parts.Session.Root, rp)
-		fmt.Fprintf(&recent, "In %s at line %d:\n- %s\n+ %s\n", filepath.ToSlash(rel), r.Range.Start.Line+1,
+		rel := rootRel(rp, roots)
+		fmt.Fprintf(&recent, "In %s at line %d:\n- %s\n+ %s\n", rel, r.Range.Start.Line+1,
 			clean(headBytes(r.OldText, nextEditRecentText)), clean(headBytes(r.NewText, nextEditRecentText)))
 		n++
 	}
@@ -174,9 +175,9 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		refuse(why)
 		return
 	}
-	rel, _ := filepath.Rel(parts.Session.Root, path)
+	rel := rootRel(path, roots)
 	res, err := model.NextEditByChat(ctx, a, model.NextEditRequest{
-		File: filepath.ToSlash(rel), Language: req.Language, Recent: recent.String(),
+		File: rel, Language: req.Language, Recent: recent.String(),
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
 	cancelled := err != nil && ctx.Err() != nil
@@ -242,11 +243,16 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 			skipped = true
 			continue
 		}
+		end := editPos{Line: start + h.OldStart + h.OldCount}
+		if last := h.OldStart + h.OldCount; last == len(shown) && last > 0 && !strings.HasSuffix(shown[last-1], "\n") {
+			// The window's end has no newline after it: the range ends at the end of its last line.
+			end = editPos{Line: start + last - 1, Character: len(utf16.Encode([]rune(shown[last-1])))}
+		}
 		edits = append(edits, suggestedEdit{
 			URI: uri,
 			Range: editRange{
 				Start: editPos{Line: start + h.OldStart},
-				End:   editPos{Line: start + h.OldStart + h.OldCount},
+				End:   end,
 			},
 			NewText: strings.Join(next[h.NewStart:h.NewStart+h.NewCount], ""),
 		})
@@ -255,4 +261,14 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 		return edits, "the only change touched a line holding a secret"
 	}
 	return edits, ""
+}
+
+// rootRel is path relative to the root that holds it, as the model is shown it.
+func rootRel(path string, roots []string) string {
+	for _, r := range roots {
+		if rel, err := filepath.Rel(r, path); err == nil && filepath.IsLocal(rel) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(path)
 }

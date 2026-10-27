@@ -54,7 +54,7 @@ func readStaged(ctx context.Context, root string, roots []string, mayRead func(s
 			continue
 		}
 		path := filepath.Join(root, filepath.FromSlash(name))
-		if _, why := sendable("file://"+filepath.ToSlash(path), roots); why != "" || !mayRead(path) || secretfiles.Match(path) != "" || tools.IsState(path, roots...) {
+		if sendablePath(path, roots) != "" || !mayRead(path) || secretfiles.Match(path) != "" || tools.IsState(path, roots...) {
 			d.excluded++
 			continue
 		}
@@ -106,8 +106,20 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "the commit model cannot be used: %v", err))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), commitTimeout)
+	// Ended by the session's close or the connection's, as well as the timeout.
+	k := c.completerFor(s, "commit")
+	if k == nil {
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.root(), commitTimeout)
 	defer cancel()
+	k.mu.Lock()
+	if k.cancel != nil {
+		k.cancel()
+	}
+	k.cancel = cancel
+	k.mu.Unlock()
 	clean := func(text string) string {
 		text = parts.Loop.Withheld(text)
 		text, _ = secretfiles.RedactContent(text)

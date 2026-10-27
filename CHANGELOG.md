@@ -820,6 +820,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Previewing writes now asks about every `edit` and `write` short of a
+  deny, so an "always" grant no longer answers it; it covers a custom
+  command's or skill's run and its subagents' writes, and a session that
+  cannot preview refuses the prompt. A prompt's images are capped at 10 MB
+  in all, and a message over 16 MiB is refused with its id instead of
+  ending the connection. `grep` no longer takes a `path` with `[` (such as
+  `app/[id]`) for a glob.
 - Anthropic sessions mark the last two user turns for the prompt cache, so
   a long session reads its history from the cache rather than paying for it
   again each turn; before, only the system prompt and tools were cached.

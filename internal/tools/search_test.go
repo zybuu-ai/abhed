@@ -236,3 +236,22 @@ func TestGrepTakesAGlobInPath(t *testing.T) {
 		t.Fatalf("%s", res.Content)
 	}
 }
+
+// A folder named with brackets, as app/[id] in web frameworks, is a path,
+// not a glob: it is searched as written and takes a glob of its own.
+func TestGrepPathWithBrackets(t *testing.T) {
+	s, dir := seedRepo(t)
+	p := filepath.Join(dir, "app", "[id]", "page.tsx")
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte("export default function Page() {}\n"), 0o644)
+	for _, args := range []grepArgs{
+		{Pattern: "Page", Path: "app/[id]"},
+		{Pattern: "Page", Path: "app/[id]", Glob: "*.tsx"},
+		{Pattern: "Page", Path: filepath.Join(dir, "app", "[id]")},
+	} {
+		res := run(t, Grep{}, s, args)
+		if res.IsError || !strings.Contains(res.Content, "page.tsx") {
+			t.Fatalf("%+v: %s", args, res.Content)
+		}
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
 // §5.1 modes: what the engine allows now, changed through the engine's
@@ -602,5 +603,96 @@ func TestStudioPreviewWrites(t *testing.T) {
 	r.prompt(id, "again")
 	if len(asked) != 2 || r.read("a.txt") != "one\n2\n" {
 		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	}
+}
+
+// Under preview, an edit is asked about with its diff even when an "always"
+// grant for that file would answer the mode's ask.
+func TestStudioPreviewWritesBeatsAnAlwaysGrant(t *testing.T) {
+	r := newStudioRig(t, "")
+	file := r.write("a.txt", "one\ntwo\n")
+	var asked int
+	answer := "allow_always"
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method == "session/request_permission" {
+			asked++
+			return chosen(params, answer)
+		}
+		return map[string]any{}
+	})
+	id := r.open()
+	r.model.script(callTool("c1", "read", map[string]any{"path": file}),
+		callTool("c2", "edit", map[string]any{"path": file, "old_string": "two", "new_string": "TWO"}), say("done"))
+	r.prompt(id, "edit it")
+	if asked != 1 || r.read("a.txt") != "one\nTWO\n" {
+		t.Fatalf("asked %d; file %q", asked, r.read("a.txt"))
+	}
+	answer = "reject_once"
+	r.model.script(callTool("c3", "read", map[string]any{"path": file}),
+		callTool("c4", "edit", map[string]any{"path": file, "old_string": "TWO", "new_string": "2"}), say("done"))
+	r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "again"}},
+		"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}}, nil)
+	if asked != 2 || r.read("a.txt") != "one\nTWO\n" {
+		t.Fatalf("the always grant answered a preview: asked %d; file %q", asked, r.read("a.txt"))
+	}
+}
+
+// A custom command's run, and a subagent's writes, are previewed too.
+func TestStudioPreviewWritesCoversCommandsAndSubagents(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits"}`)
+	if err := os.MkdirAll(filepath.Join(r.home, ".abhed", "commands"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.home, ".abhed", "commands", "fix.md"), []byte("Fix $ARGUMENTS"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := r.write("a.txt", "one\ntwo\n")
+	var asked int
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method == "session/request_permission" {
+			asked++
+			return chosen(params, "reject_once")
+		}
+		return map[string]any{}
+	})
+	id := r.open()
+	preview := func(text string) {
+		r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": text}},
+			"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}}, nil)
+	}
+	r.model.script(callTool("c1", "read", map[string]any{"path": file}),
+		callTool("c2", "edit", map[string]any{"path": file, "old_string": "two", "new_string": "TWO"}), say("done"))
+	preview("/fix a.txt")
+	if asked != 1 || r.read("a.txt") != "one\ntwo\n" {
+		t.Fatalf("command: asked %d; file %q", asked, r.read("a.txt"))
+	}
+	r.model.script(callTool("t1", "task", map[string]any{"prompt": "change two to TWO in a.txt", "description": "edit"}),
+		callTool("s1", "read", map[string]any{"path": file}),
+		callTool("s2", "edit", map[string]any{"path": file, "old_string": "two", "new_string": "TWO"}),
+		say("child done"), say("done"))
+	preview("delegate it")
+	if asked != 2 || r.read("a.txt") != "one\ntwo\n" {
+		t.Fatalf("subagent: asked %d; file %q", asked, r.read("a.txt"))
+	}
+}
+
+// A session that cannot preview refuses a previewWrites prompt.
+func TestACPPreviewWritesRefusedWhereItCannotHold(t *testing.T) {
+	newACPAgent = func(_ context.Context, opts abhed.Options) (acpAgent, error) {
+		return &scriptedACPAgent{opts: opts}, nil
+	}
+	defer func() {
+		newACPAgent = func(ctx context.Context, o abhed.Options) (acpAgent, error) { return abhed.New(ctx, o) }
+	}()
+	cl := newACPClient(t, func(method string, params json.RawMessage) any { return chosen(params, "allow_once") })
+	m := cl.request(1, "session/new", map[string]any{"cwd": t.TempDir()})
+	var res struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(m.Result, &res)
+	got := cl.request(2, "session/prompt", map[string]any{"sessionId": res.SessionID, "prompt": []any{map[string]any{"type": "text", "text": "x"}},
+		"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}})
+	if got.Error == nil || !strings.Contains(got.Error.Message, "cannot preview writes") {
+		t.Fatalf("%+v %s", got.Error, got.Result)
 	}
 }
