@@ -1685,7 +1685,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if decision.Decision == policy.Ask && decision.Reason != "" {
 			why += "; " + decision.Reason
 		}
-		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
