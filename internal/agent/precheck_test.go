@@ -114,9 +114,9 @@ func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 	}
 	turns := []scriptedTurn{
 		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
-		{calls: []model.ToolCall{edit("var x = 1", "var x = 2")}}, // asked; the file changes meanwhile, so it fails
+		{calls: []model.ToolCall{edit("var x = 1\n", "var x = 2\n")}}, // asked; the file changes meanwhile, so it fails
 		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
-		{calls: []model.ToolCall{edit("var x = 1  ", "var x = 2")}}, // the same change, a trailing space aside: carried
+		{calls: []model.ToolCall{edit("var x = 1  \n", "var x = 2\n")}}, // the same change, spaces at a line's end aside: carried
 		{text: "done"},
 	}
 	l, store := harnessIn(t, dir, turns, policy.ModeDefault, true)
@@ -199,4 +199,30 @@ type rejectAfter struct{ allow, asked int }
 func (a *rejectAfter) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
 	a.asked++
 	return a.asked <= a.allow, nil
+}
+
+// The reviewer's probe: an approved deletion that failed for matching twice
+// does not carry to the same deletion with replace_all.
+func TestCarriedApprovalNeedsTheSameReplaceAll(t *testing.T) {
+	dir := tempDir(t)
+	p := filepath.Join(dir, "a.go")
+	body := "package a\n\nfunc h() {\n\tcheckAuth()\n\tcheckAuth()\n}\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	turns := []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
+		{calls: []model.ToolCall{call("edit", map[string]any{"path": p, "old_string": "\tcheckAuth()\n", "new_string": ""})}},
+		{calls: []model.ToolCall{call("edit", map[string]any{"path": p, "old_string": "\tcheckAuth()\n", "new_string": "", "replace_all": true})}},
+		{text: "done"},
+	}
+	l, _ := harnessIn(t, dir, turns, policy.ModeDefault, true)
+	counter := &rejectAfter{allow: 1}
+	l.Approver = counter
+	if _, err := l.Run(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(p); counter.asked != 2 || string(got) != body {
+		t.Fatalf("asked %d; file %q", counter.asked, got)
+	}
 }

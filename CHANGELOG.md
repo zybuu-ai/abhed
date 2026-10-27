@@ -839,8 +839,8 @@ All notable changes to Abhed are recorded here. The format follows
 - `grep` takes a glob in `path` (`docs/**/*.md`), searching the folder before
   the glob with the rest as its pattern, instead of refusing it.
 - A carried approval for a failed `edit` or `write` now needs the retry to
-  be the same change: the same `old_string` (whitespace at line ends aside)
-  and exactly the same new text or content. It is recorded `by: carried`
+  be the same change: the same `old_string` (whitespace at line ends aside),
+  the same `replace_all`, and exactly the same new text or content. It is recorded `by: carried`
   and never carries on. A loose `edit` match is refused when its lines are
   nested differently from the file's.
 - Debugging without a container engine: a debug launch that needs the

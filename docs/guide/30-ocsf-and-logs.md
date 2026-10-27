@@ -94,7 +94,7 @@ record withheld.
 | `user.message`, `agent.message`, `agent.reasoning`, `subagent.message` | API Activity (6003) | Other (Message), with `message_context.ai_role_id` User or Assistant |
 | `model.call` | API Activity (6003) | Other (Model call): `ai_model`, tokens in `message_context`, latency as `duration`, an error as a failure |
 | `action.requested` | API Activity (6003); File System Activity (1001) for `read`, `write`, `edit` and `memory_write` with a path; SSH Activity (4007) for `ssh`, `ssh_connect`, `ssh_put` and `ssh_get` | Call; Read or Update; Open or Traffic. `status` is `Requested` |
-| `action.approved`, `action.denied`, `subagent.action` | API Activity (6003) | Other (Decision), with `action_id` and `disposition_id` (Allowed, Approved when a person answered, Blocked), and the deciding rule, scope or layer as `policy` |
+| `action.approved`, `action.denied`, `subagent.action` | API Activity (6003) | Other (Decision), with `action_id` and `disposition_id` (Allowed, Approved when a person answered, Blocked; a carried approval, `by: carried`, is Allowed, since no one reviewed the retry itself), and the deciding rule, scope or layer as `policy` |
 | `observation` | API Activity (6003) | Other (Result): success, failure, Not run, or Unknown for an outcome a crash left unknown; `duration` |
 | `hook.fired` | API Activity (6003) | Other (Hook): a `block` is Denied and Blocked, `ask` and `annotate` Observed |
 | `mcp.status` | API Activity (6003) | Other (Restart), the server as a resource |

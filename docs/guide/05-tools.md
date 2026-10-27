@@ -36,8 +36,9 @@ not matched.
 When a person approved an `edit` or `write` that then failed without
 changing anything, a retry of the very same change in the same message
 takes that approval instead of asking again, once: the same file, the same
-`old_string` (whitespace at the end of a line aside) and exactly the same new
-text, or for `write` the same content. Anything else is asked about again,
+`old_string` (whitespace at the end of a line before a newline aside), the
+same `replace_all` and exactly the same new text, or for `write` the same
+content. Anything else is asked about again,
 and a carried approval never carries on. It is recorded with `by: carried`
 and `carried_from` naming the call the person approved. A rule's, the
 supervisor's or a preview's ask is asked again.

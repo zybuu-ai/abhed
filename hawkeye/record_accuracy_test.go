@@ -96,9 +96,13 @@ func TestAttributionIsTheEventsOwn(t *testing.T) {
 	// A reviewer's refusal written before denials carried "by".
 	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c4", Tool: "write", Args: json.RawMessage(`{}`)})
 	r.add(agent.EvActionDenied, agent.ActorUser, agent.Trusted, map[string]string{"call_id": "c4", "step": "default"})
+	// A retry that took the approval of a failed attempt: carried, not reviewed.
+	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c5", Tool: "edit", Args: json.RawMessage(`{}`)})
+	r.add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": "c5", "step": "default", "by": "carried", "carried_from": "c0"})
+	r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "c5", Tool: "edit", Content: "ok"})
 	got := Analyze("s", r.end(agent.TermCompleted).evs)
 
-	want := []struct{ by, scope string }{{"user", ""}, {"headless", ""}, {"session-scope", "write(*)"}, {"reviewer", ""}}
+	want := []struct{ by, scope string }{{"user", ""}, {"headless", ""}, {"session-scope", "write(*)"}, {"reviewer", ""}, {"carried", ""}}
 	for i, w := range want {
 		if c := got.Calls[i]; c.By != w.by || c.Scope != w.scope {
 			t.Errorf("call %s by %q scope %q, want %q %q", c.CallID, c.By, c.Scope, w.by, w.scope)
