@@ -71,6 +71,15 @@ func TestBasedpyrightFromNPM(t *testing.T) {
 	if !strings.Contains(s.Prelude(s.Workspace), filepath.Join(x.Dir, "bin")) {
 		t.Fatal("basedpyright is not on PATH with Python")
 	}
+	// The supervisor counts it as there, as a command in the sandbox finds it.
+	if !s.Provides("", "basedpyright-langserver") || s.Provides("", "gopls") || s.Provides("", "../bin/basedpyright-langserver") {
+		t.Fatal("Provides does not match the PATH the toolchains give")
+	}
+	s.Off = true
+	if s.Provides("", "basedpyright-langserver") {
+		t.Fatal("toolchains off still provide a program")
+	}
+	s.Off = false
 	if len(events) != 1 || events[0].Extra != "basedpyright" || events[0].Outcome != agent.ToolchainOK {
 		t.Fatalf("events %+v", events)
 	}

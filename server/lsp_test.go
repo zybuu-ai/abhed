@@ -743,3 +743,20 @@ func TestLSPRustAnalyzerStopsOnConfigChange(t *testing.T) {
 		t.Fatal("saving a rust-analyzer.toml did not stop the server")
 	}
 }
+
+// A configured server that is not on the PATH commands get is refused as
+// not installed, before anything is judged or run.
+func TestLSPMissingServerNotJudged(t *testing.T) {
+	wb, _ := lspBench(t, "process", func(c *config.Config) {
+		c.Sandbox.LanguageServers["go"] = []string{"abhed-no-such-server-x1"}
+	})
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not installed") || !strings.Contains(rec.Body.String(), "abhed toolchain install -lsp go") {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	for _, e := range wb.events() {
+		if e.Type == agent.EvActionRequested {
+			t.Fatalf("a start that cannot run was judged: %s", e.Payload)
+		}
+	}
+}

@@ -69,6 +69,10 @@ type Bash struct {
 	// NotFound, when set, says what a command run in dir that could not
 	// find program can do about it, such as install the toolchain; "" says nothing.
 	NotFound func(dir, program string) string
+	// Provides reports whether the toolchains put program first on PATH for
+	// a command in dir, inside the sandbox: the supervisor counts such a
+	// program as there, as a command finds it. Nil when none are given.
+	Provides func(dir, program string) bool
 	// NetworkNote, when set, is added to the note a command that could not
 	// reach the network gets, such as how to open a package registry.
 	NetworkNote string

@@ -1153,10 +1153,16 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   failing as it did). At most four per connection.
 - The server runs in the session's sandbox on any tier but `none`; its
   command (operator-named, else the language's default) is judged as the
-  person's `bash` call (`-32001` when refused) and recorded as `lsp.started`;
-  a missing server is `-32000` with `data.problem.kind: "server-missing"`,
-  whose steps start with the toolchain route (`_abhed/toolchain/install`
-  with `lsp: true`, §3.2b) where Abhed installs that server.
+  person's `bash` call and recorded as `lsp.started`; a refusal is `-32001`
+  with `data.problem.kind: "start-refused"` (the reason as its message, and
+  steps: the toolchain route for `unknown-program`). A missing server is
+  `-32000` with `data.problem.kind: "server-missing"`, whose steps start
+  with the toolchain route (`_abhed/toolchain/install` with `lsp: true`,
+  §3.2b) where Abhed installs that server. On the process and fence tiers
+  the server is looked for first, on the PATH commands get with the
+  toolchains' folders before the host's, and a missing one is reported
+  before anything is judged or recorded; the supervisor finds programs on
+  that same PATH.
   A supervisor's ask on the start goes to Studio as a normal
   `session/request_permission` (`meta.lsp: true`, `meta.step: "monitor"`,
   Allow once or Deny); it starts only on Allow. For rust-analyzer, a
