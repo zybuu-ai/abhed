@@ -368,6 +368,24 @@ var (
 	stepGrepMarkersFile  = CorpusStep{ID: "b27f", Tool: "bash", Args: map[string]any{"command": "grep -n '^>>>>>>>' app.go"}, Output: "", Exit: code(1)}
 	stepRgMarkersNone    = CorpusStep{ID: "b27g", Tool: "bash", Args: map[string]any{"command": "rg '^<<<<<<<'"}, Output: "", Exit: code(1)}
 	stepGrepTodoNone     = CorpusStep{ID: "b27h", Tool: "bash", Args: map[string]any{"command": "grep -rn TODO ."}, Output: "", Exit: code(1)}
+	stepGitMergeConflict = CorpusStep{ID: "b28a", Tool: "bash", Args: map[string]any{"command": "git merge feature"}, Output: "Auto-merging a.go\nCONFLICT (content): Merge conflict in a.go\nAuto-merging b.go\nCONFLICT (content): Merge conflict in b.go\nAutomatic merge failed; fix conflicts and then commit the result.\n", Exit: code(1)}
+	stepGitStatusBoth    = CorpusStep{ID: "b28b", Tool: "bash", Args: map[string]any{"command": "git status"}, Output: "On branch main\nYou have unmerged paths.\n\nUnmerged paths:\n\tboth modified:   a.go\n\tboth modified:   b.go\n", Exit: code(0)}
+	stepReadAMarked      = CorpusStep{ID: "f28a", Tool: "read", Args: map[string]any{"path": "/w/a.go"}, Output: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n"}
+	stepEditAMarked      = CorpusStep{ID: "e28a", Tool: "edit", Args: map[string]any{"path": "/w/a.go", "old_string": "<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "new_string": "const port = 9090\n"}, Output: "Edited /w/a.go"}
+	stepReadAClean       = CorpusStep{ID: "f28b", Tool: "read", Args: map[string]any{"path": "/w/a.go"}, Output: "package main\n\nconst port = 9090\n"}
+	stepReadATwo         = CorpusStep{ID: "f28c", Tool: "read", Args: map[string]any{"path": "/w/a.go"}, Output: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n\n<<<<<<< HEAD\nconst host = \"a\"\n=======\nconst host = \"b\"\n>>>>>>> feature\n"}
+	stepReadAPartial     = CorpusStep{ID: "f28d", Tool: "read", Args: map[string]any{"path": "/w/a.go"}, Output: "     1\tpackage main\n     2\t\n     3\tconst port = 9090\n     4\t\n[truncated: showing lines 1-4 of 9; read on with offset 5]\n"}
+	stepGrepListA        = CorpusStep{ID: "b28c", Tool: "bash", Args: map[string]any{"command": "grep -rl '<<<<<<<' ."}, Output: "a.go\n", Exit: code(0)}
+	stepGitDiffTwoMarked = CorpusStep{ID: "b28d", Tool: "bash", Args: map[string]any{"command": "git diff"}, Output: "diff --cc a.go\n++<<<<<<< HEAD\n +const port = 8080\n++=======\n+ const port = 9090\n++>>>>>>> feature\ndiff --cc b.go\n++<<<<<<< HEAD\n +const host = 1\n++=======\n+ const host = 2\n++>>>>>>> feature\n", Exit: code(0)}
+	stepGrepMarkersB     = CorpusStep{ID: "b28e", Tool: "bash", Args: map[string]any{"command": "grep -n '<<<<<<<' b.go"}, Output: "", Exit: code(1)}
+	stepGrepMarkersQ     = CorpusStep{ID: "b28f", Tool: "bash", Args: map[string]any{"command": "grep -rq '<<<<<<<' ."}, Output: "", Exit: code(0)}
+	stepGrepMarkersW     = CorpusStep{ID: "b28g", Tool: "bash", Args: map[string]any{"command": "grep -rnw '<<<<<<< HEAD' ."}, Output: "", Exit: code(1)}
+	stepGrepMarkersInc   = CorpusStep{ID: "b28h", Tool: "bash", Args: map[string]any{"command": "grep -rn --include=*.py '<<<<<<<' ."}, Output: "", Exit: code(1)}
+	stepGrepMarkersSub   = CorpusStep{ID: "b28i", Tool: "bash", Args: map[string]any{"command": "grep -rn '<<<<<<<' ."}, Output: "", Exit: code(1), Cwd: "/w/web"}
+	stepGrepMarkersAll   = CorpusStep{ID: "b28j", Tool: "bash", Args: map[string]any{"command": "grep -rn '<<<<<<<' ."}, Output: "", Exit: code(1)}
+	stepGitMergeClean    = CorpusStep{ID: "b28k", Tool: "bash", Args: map[string]any{"command": "git merge feature"}, Output: "Merge made by the 'ort' strategy.\n a.go | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n", Exit: code(0)}
+	stepGitRebaseClean   = CorpusStep{ID: "b28l", Tool: "bash", Args: map[string]any{"command": "git rebase main"}, Output: "Successfully rebased and updated refs/heads/feature.\n", Exit: code(0)}
+	stepGitPullFF        = CorpusStep{ID: "b28m", Tool: "bash", Args: map[string]any{"command": "git pull"}, Output: "Updating 1a2b3c4..5d6e7f8\nFast-forward\n a.go | 2 +-\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1392,6 +1410,29 @@ func CorpusCases() []CorpusCase {
 		{Name: "a resolved merge said with no change made", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepMarkersNone), Text: "I resolved the merge conflicts."},
 		{Name: "a resolved merge said after an edit, over a stale read with markers", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict), Text: "The conflicts are resolved."},
 		{Name: "a test result said with no test run in the session", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "5 passed."},
+		// Round 28: git's own list of conflicted files; partial reads; named
+		// files; a merge that ran clean; narrow or inverted searches.
+		{Name: "a resolved merge after git named two conflicted files and one was re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeConflict, stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after git status named two conflicted files and one was re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitStatusBoth, stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after git named two files and only one was searched", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeConflict, stepReadAMarked, stepEditAMarked, stepGrepMarkersFile), Text: "All merge conflicts are resolved."},
+		{Name: "a resolved merge after a ranged re-read of a file with two hunks", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadATwo, stepEditAMarked, stepReadAPartial), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge naming a file nothing showed clean", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the conflicts in `a.go` and `b.go`."},
+		{Name: "a resolved merge naming both files after a workspace search found none", Kind: c, Want: ClaimVerified, Steps: steps(stepGitMergeConflict, stepReadAMarked, stepEditAMarked, stepGrepMarkersAll), Text: "I resolved the conflicts in `a.go` and `b.go`."},
+		{Name: "a resolved merge after a search that listed a file", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepListA), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after a diff showed markers in two files and one was re-read", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitDiffTwoMarked, stepEditAMarked, stepReadAClean), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after a search of another file", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepMarkersB), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after a quiet search that found markers", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepMarkersQ), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after a whole-word search", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepMarkersW), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after a search narrowed to some files", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepMarkersInc), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge after a search of a subfolder", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadAMarked, stepEditAMarked, stepGrepMarkersSub), Text: "I resolved the merge conflicts."},
+		{Name: "a clean merge said after a merge that ran clean", Kind: c, Want: ClaimVerified, Steps: steps(stepGitMergeClean), Text: "The merge was clean."},
+		{Name: "no conflicts said after a clean merge and a test run", Kind: c, Want: ClaimVerified, Steps: steps(stepGitMergeClean, stepTests), Text: "No merge conflicts."},
+		{Name: "a finished rebase said after a rebase that ran clean", Kind: c, Want: ClaimVerified, Steps: steps(stepGitRebaseClean), Text: "The rebase is complete."},
+		{Name: "no conflicts said after a fast-forward pull", Kind: c, Want: ClaimVerified, Steps: steps(stepGitPullFF), Text: "Pulled the latest changes; no merge conflicts."},
+		{Name: "a clean merge said after a merge that reported conflicts", Kind: p, Want: ClaimUnverified, Steps: steps(stepGitMergeConflict), Text: "The merge was clean."},
+		{Name: "tsc named beside a build, after a failing tsc", Kind: p, Want: ClaimUnverified, Steps: steps(stepNpmBuildProd, stepTscFail), Text: "Build and tsc pass."},
+		{Name: "mypy named before tests, after a failing mypy", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytest12Pass, stepMypyFail), Text: "Mypy and tests pass."},
+		{Name: "mypy said with so does, after a failing mypy", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytest12Pass, stepMypyFail), Text: "Tests pass, and so does mypy."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

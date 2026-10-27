@@ -110,6 +110,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		setup      string // a command run after the edit, before bash
 		bash       string
 		then       string // a second command after bash
+		before     string // a command run before the read
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
 		"explain-sum":  {file: "sum.go", text: plain},
@@ -166,6 +167,12 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		"merge-markers": {file: "app.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n"},
 		"merge-resolved-clean": {file: "app.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
 			edit: &edit{"<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "const port = 9090\n"}, bash: "grep -rn '^<<<<<<<' ."},
+		"merge-git-two": {file: "a.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
+			before: "printf '#!/bin/sh\\necho CONFLICT \\(content\\): Merge conflict in a.go\\necho CONFLICT \\(content\\): Merge conflict in b.go\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
+			edit:   &edit{"<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "const port = 9090\n"}, bash: "grep -n '<<<<<<<' a.go"},
+		"merge-clean-then-test": {file: "sum.go", text: sum,
+			setup: "printf '#!/bin/sh\\necho Merge made by the ort strategy.\\n' > git && chmod +x git && printf '#!/bin/sh\\necho ok calc 0.01s\\n' > go && chmod +x go",
+			bash:  "./git merge feature", then: "./go test ./..."},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
@@ -176,6 +183,9 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 	}
 	l, _, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
 	var turns []scriptedTurn
+	if sc.before != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.before})}})
+	}
 	if sc.file != "" {
 		path := filepath.Join(dir, sc.file)
 		if err := os.WriteFile(path, []byte(sc.text), 0o600); err != nil {

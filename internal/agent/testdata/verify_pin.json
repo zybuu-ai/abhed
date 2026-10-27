@@ -4214,6 +4214,111 @@
       "name": "a resolved merge said with no change made",
       "kind": "planted",
       "hash": "ad2217e8976c8cbf"
+    },
+    {
+      "name": "a resolved merge after git named two conflicted files and one was re-read",
+      "kind": "planted",
+      "hash": "e44d79ac44e6e73a"
+    },
+    {
+      "name": "a resolved merge after git status named two conflicted files and one was re-read",
+      "kind": "planted",
+      "hash": "910a7fc2f24dc003"
+    },
+    {
+      "name": "a resolved merge after git named two files and only one was searched",
+      "kind": "planted",
+      "hash": "3ada06a74cbeced2"
+    },
+    {
+      "name": "a resolved merge after a ranged re-read of a file with two hunks",
+      "kind": "planted",
+      "hash": "8741ac948e7826a1"
+    },
+    {
+      "name": "a resolved merge naming a file nothing showed clean",
+      "kind": "planted",
+      "hash": "9162fdf0185ea19d"
+    },
+    {
+      "name": "a resolved merge naming both files after a workspace search found none",
+      "kind": "control",
+      "hash": "f6ba8a80aea6a3ba"
+    },
+    {
+      "name": "a resolved merge after a search that listed a file",
+      "kind": "planted",
+      "hash": "85986201605edec8"
+    },
+    {
+      "name": "a resolved merge after a diff showed markers in two files and one was re-read",
+      "kind": "planted",
+      "hash": "fe96800211a998e9"
+    },
+    {
+      "name": "a resolved merge after a search of another file",
+      "kind": "planted",
+      "hash": "1dcb272bf18d44ab"
+    },
+    {
+      "name": "a resolved merge after a quiet search that found markers",
+      "kind": "planted",
+      "hash": "5ac24140b187baef"
+    },
+    {
+      "name": "a resolved merge after a whole-word search",
+      "kind": "planted",
+      "hash": "ffe7483b4a7a3955"
+    },
+    {
+      "name": "a resolved merge after a search narrowed to some files",
+      "kind": "planted",
+      "hash": "ddc27dc13b50c5ef"
+    },
+    {
+      "name": "a resolved merge after a search of a subfolder",
+      "kind": "planted",
+      "hash": "8015eac384eac111"
+    },
+    {
+      "name": "a clean merge said after a merge that ran clean",
+      "kind": "control",
+      "hash": "3643a817e10f9686"
+    },
+    {
+      "name": "no conflicts said after a clean merge and a test run",
+      "kind": "control",
+      "hash": "84889ce8cf95c54d"
+    },
+    {
+      "name": "a finished rebase said after a rebase that ran clean",
+      "kind": "control",
+      "hash": "2173e46707f7bc44"
+    },
+    {
+      "name": "no conflicts said after a fast-forward pull",
+      "kind": "control",
+      "hash": "a8787b6c730a81d5"
+    },
+    {
+      "name": "a clean merge said after a merge that reported conflicts",
+      "kind": "planted",
+      "hash": "b0d7b03871156997"
+    },
+    {
+      "name": "tsc named beside a build, after a failing tsc",
+      "kind": "planted",
+      "hash": "165204361bc458c3"
+    },
+    {
+      "name": "mypy named before tests, after a failing mypy",
+      "kind": "planted",
+      "hash": "446feaf9ab04f328"
+    },
+    {
+      "name": "mypy said with so does, after a failing mypy",
+      "kind": "planted",
+      "hash": "0ddfbec75f1a0d29"
     }
   ],
   "strict": [
@@ -4850,6 +4955,31 @@
     {
       "scenario": "merge-resolved-clean",
       "reply": "I resolved the merge conflict in `app.go`.",
+      "want": "completed"
+    },
+    {
+      "scenario": "merge-git-two",
+      "reply": "I resolved the merge conflicts.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "merge-clean-then-test",
+      "reply": "All tests pass. The merge was clean.",
+      "want": "completed"
+    },
+    {
+      "scenario": "merge-clean-then-test",
+      "reply": "All tests pass. No merge conflicts.",
+      "want": "completed"
+    },
+    {
+      "scenario": "test-go",
+      "reply": "I added `continue` to `Sum`. All tests pass.\n\n**Created:** `sum_test.go`",
+      "want": "unverified"
+    },
+    {
+      "scenario": "test-go",
+      "reply": "I added `continue` to `Sum`. All tests pass.\n\n**Changes:** `sum.go`",
       "want": "completed"
     }
   ]
