@@ -804,13 +804,17 @@ func (l *Loop) startMessage() {
 	l.carryMu.Unlock()
 }
 
-// carryKey names the file an edit or write is aimed at, "" for other calls.
+// carryKey names an edit or write by the file it is aimed at and the text it
+// puts there, its whitespace set aside, "" for other calls: a retry that
+// only fixes how it finds its place keeps the key, other content does not.
 func (l *Loop) carryKey(call model.ToolCall) string {
 	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
 		return ""
 	}
 	var a struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		NewString string `json:"new_string"`
+		Content   string `json:"content"`
 	}
 	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
 		return ""
@@ -819,12 +823,17 @@ func (l *Loop) carryKey(call model.ToolCall) string {
 	if err != nil {
 		return ""
 	}
-	return call.Name + "\x00" + path
+	text := a.NewString
+	if call.Name == "write" {
+		text = a.Content
+	}
+	return call.Name + "\x00" + path + "\x00" + strings.Join(strings.Fields(text), " ")
 }
 
 // takeCarried is the call whose approval this one takes, once: an earlier
-// attempt at the same file, in this message, that a person approved and that
-// failed without changing anything. "" when there is none.
+// attempt at the same file with the same new text (whitespace aside), in this
+// message, that a person approved and that failed without changing anything.
+// "" when there is none.
 func (l *Loop) takeCarried(call model.ToolCall) string {
 	key := l.carryKey(call)
 	if key == "" {

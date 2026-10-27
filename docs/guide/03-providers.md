@@ -12,7 +12,7 @@ install reports honestly.
 
 | Type | Notes |
 |---|---|
-| `anthropic` | Messages API; explicit prompt caching, thinking blocks |
+| `anthropic` | Messages API; explicit prompt caching (the system prompt and tools, and a rolling marker on the last two user turns so a long session reads its history from the cache), thinking blocks |
 | `openai` | chat completions |
 | `gemini` | generateContent; thought parts |
 | `watsonx` | project- or space-scoped |

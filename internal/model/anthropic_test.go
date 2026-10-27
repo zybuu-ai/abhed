@@ -95,3 +95,39 @@ func TestAnthropicDropsEmptyAssistantTurn(t *testing.T) {
 		t.Fatalf("want the empty assistant turn dropped, got %d messages", len(got.Messages))
 	}
 }
+
+// The last two user turns carry cache markers, so history is read from the
+// cache; with the system block's that stays within the four allowed.
+func TestAnthropicMarksHistoryForTheCache(t *testing.T) {
+	a := NewAnthropic("", "k", "claude-opus-5", Profile{})
+	var msgs []Message
+	for i := range 4 {
+		msgs = append(msgs, Message{Role: RoleUser, Content: "turn"},
+			Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: string(rune('a' + i)), Name: "read", Args: json.RawMessage(`{}`)}}},
+			Message{Role: RoleTool, ToolCallID: string(rune('a' + i)), Content: "result"})
+	}
+	got := a.buildRequest(Request{System: "s", Messages: msgs})
+	marks := 0
+	var at []int
+	for i, m := range got.Messages {
+		for _, b := range m.Content {
+			if b.CacheControl != nil {
+				marks++
+				at = append(at, i)
+			}
+		}
+	}
+	n := len(got.Messages)
+	// The last two user-role turns: the person's message and the tool result after it.
+	if marks != 2 || at[0] != n-3 || at[1] != n-1 {
+		t.Fatalf("history marks at %v of %d messages", at, n)
+	}
+	if marks+len(got.System) > 4 {
+		t.Fatalf("%d cache markers; the API allows four", marks+len(got.System))
+	}
+	// An empty text block is never marked.
+	got = a.buildRequest(Request{Messages: []Message{{Role: RoleUser, Content: "x"}, {Role: RoleUser, Content: " "}}})
+	if got.Messages[1].Content[0].CacheControl != nil || got.Messages[0].Content[0].CacheControl == nil {
+		t.Fatalf("%+v", got.Messages)
+	}
+}

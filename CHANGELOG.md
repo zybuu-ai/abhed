@@ -752,6 +752,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Anthropic sessions mark the last two user turns for the prompt cache, so
+  a long session reads its history from the cache rather than paying for it
+  again each turn; before, only the system prompt and tools were cached.
+- `grep` takes a glob in `path` (`docs/**/*.md`), searching the folder before
+  the glob with the rest as its pattern, instead of refusing it.
+- A carried approval for a failed `edit` or `write` now needs the retry to
+  put the same new text in the file, whitespace aside.
 - Abhed Studio's Go, Python and Rust language servers never started: the
   supervisor looked for the server on the engine's own `PATH`, without the
   toolchains Abhed installs for the sandbox, and refused it as an unknown
