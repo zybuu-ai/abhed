@@ -391,6 +391,11 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 		for _, p := range allow {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
 		}
+		// The folders on the way to them can be stat'ed, not listed or read:
+		// Node's realpath, Python's and Java's path checks lstat each one.
+		for _, d := range ancestorsWithin(allow, PathForms(home)) {
+			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", d)
+		}
 		b.WriteString("\n")
 	}
 	// A command signals only its own sandbox: never Abhed (kill $PPID) nor
@@ -1270,6 +1275,25 @@ var (
 
 // homeToolchains are the home paths commands may read, from the lists above,
 // environment variables and PATH, never home itself.
+// ancestorsWithin are the folders strictly between each of roots and each
+// of paths inside it, once each.
+func ancestorsWithin(paths, roots []string) []string {
+	var out []string
+	for _, p := range paths {
+		for _, r := range roots {
+			if _, in := Within(p, r); !in {
+				continue
+			}
+			for d := filepath.Dir(p); d != filepath.Clean(r) && d != filepath.Dir(d); d = filepath.Dir(d) {
+				if !slices.Contains(out, d) {
+					out = append(out, d)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func homeToolchains(home string) []string {
 	var out []string
 	add := func(p string) {
