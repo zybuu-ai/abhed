@@ -107,6 +107,10 @@ func TestToolchainCommand(t *testing.T) {
 	if code, out, errb := run("", "install", "go@1.22", "-yes"); code != 0 || !strings.Contains(out, "Installed Go 1.22.5") {
 		t.Fatalf("flags after the language: %d %q %q", code, out, errb)
 	}
+	// After "--" a word is a language, not a flag.
+	if code, _, errb := run("", "install", "-yes", "--", "-platform"); code != 2 || !strings.Contains(errb, `"-platform" is not a language`) {
+		t.Fatalf("a flag after --: %d %q", code, errb)
+	}
 	// clean removes the whole cache, read-only as it is; it asks unless -yes.
 	if code, _, errb := run("", "clean"); code != 1 || !strings.Contains(errb, "add -yes") {
 		t.Fatalf("clean not at a terminal: %d %q", code, errb)

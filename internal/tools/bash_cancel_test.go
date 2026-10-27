@@ -375,6 +375,9 @@ func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 		{"the egress proxy's 403, network off", off, `echo 'go: Get "https://proxy.golang.org/x/@v/list": Forbidden'; exit 1`, true},
 		{"pip's tunnel refused", off, `echo "Tunnel connection failed: 403 Forbidden"; exit 1`, true},
 		{"a 403 with the network on", on, `echo "Tunnel connection failed: 403 Forbidden"; exit 1`, false},
+		{"a local server's 403, network off", off, `echo "GET http://127.0.0.1:8080/api: 403 Forbidden"; exit 1`, false},
+		{"a test's 403 text, network off", off, `echo "--- FAIL: TestAuth: want 403 Forbidden"; exit 1`, false},
+		{"npm's 403 through the proxy", off, `echo "npm error 403 403 Forbidden - GET https://registry.npmjs.org/left-pad"; exit 1`, true},
 	} {
 		res := run(t, tc.bash, s, bashArgs{Command: tc.command, Description: "x"})
 		if got := strings.Contains(res.Content, "this sandbox has no network access"); got != tc.hint {

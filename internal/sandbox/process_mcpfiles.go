@@ -85,11 +85,14 @@ func serverFilesIn(name string, argv, env, workspaces []string) (serverFiles, er
 // scriptFolders are the folders of the existing files under home that args
 // name by absolute path, such as `python3 ~/tools/mcp/server.py`: the
 // server's own code, from the configuration. Never home itself or a broad
-// folder in it, Abhed's state, or a folder that is or holds credentials.
+// folder in it (Documents, Desktop, Downloads, .config…), whose other files
+// the server has no business reading, Abhed's state, or a folder that is or
+// holds credentials.
 func scriptFolders(home string, args []string) []string {
 	var out []string
 	broad := []string{home, filepath.Join(home, ".local"), filepath.Join(home, ".cargo"), filepath.Join(home, ".config"),
-		filepath.Join(home, "Library"), filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin")}
+		filepath.Join(home, "Library"), filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin"),
+		filepath.Join(home, "Documents"), filepath.Join(home, "Desktop"), filepath.Join(home, "Downloads")}
 	state := filepath.Join(home, stateDir)
 	for _, a := range args {
 		if !filepath.IsAbs(a) {

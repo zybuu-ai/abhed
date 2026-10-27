@@ -1310,10 +1310,36 @@ func (b Bash) networkNote(command, output string) string {
 	return strings.TrimSpace(networkHint + " " + b.NetworkNote)
 }
 
-// proxyRefused is what clients print when the session's egress proxy
-// refuses them: its own text, curl's, pip's, Go's and npm's for a 403.
-var proxyRefused = regexp.MustCompile(`(?i)abhed egress:|tunnel connection failed: 403|received HTTP code 403 from proxy|` +
-	`proxyconnect tcp|": Forbidden\b|\b403 Forbidden\b|\bE403\b`).MatchString
+// proxyPhrases are what clients print only for a proxy's refusal: the
+// egress proxy's own text, and curl's, pip's and Go's for a refused CONNECT.
+var proxyPhrases = regexp.MustCompile(`(?i)abhed egress:|tunnel connection failed: 403|received HTTP code 403 from proxy|` +
+	`CONNECT tunnel failed, response 403|proxyconnect tcp`)
+
+// forbiddenLine is a 403 a client reports for a URL: Go's `Get "https://…": Forbidden`, npm's `403 Forbidden - GET https://…`.
+var forbiddenLine = regexp.MustCompile(`(?i)(?:": Forbidden\b|\b403 Forbidden\b|\bE403\b)`)
+
+// httpsHost is the host of an https URL in a line.
+var httpsHost = regexp.MustCompile(`https://([^\s/"':]+)`)
+
+// proxyRefused reports output from the session's egress proxy refusing a
+// client: its own phrases, or a 403 on a line naming a remote https URL, as
+// the proxy refuses those; a local server's 403 is not it.
+func proxyRefused(output string) bool {
+	if proxyPhrases.MatchString(output) {
+		return true
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if !forbiddenLine.MatchString(line) {
+			continue
+		}
+		for _, m := range httpsHost.FindAllStringSubmatch(line, -1) {
+			if h := strings.ToLower(m[1]); h != "localhost" && !strings.HasPrefix(h, "127.") && h != "[" && h != "0.0.0.0" && strings.Contains(h, ".") {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // networkHint says why a command that reached for the network failed. Without
 // it a model that ran curl sees only "could not resolve host", and neither it
