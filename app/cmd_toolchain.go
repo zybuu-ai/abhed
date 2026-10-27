@@ -55,13 +55,18 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 	yes := fs.Bool("yes", false, "install without asking")
 	debugger := fs.Bool("debugger", false, "also install the language's debugger (install)")
 	lsp := fs.Bool("lsp", false, "also install the language's language server (install)")
-	// Flags may follow the languages too, as abhed doctor writes them.
+	// Flags may follow the languages too, as abhed doctor writes them; after
+	// a "--" every word is a language.
 	var positional []string
 	for {
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
 		if fs.NArg() == 0 {
+			break
+		}
+		if n := len(rest) - fs.NArg(); n > 0 && rest[n-1] == "--" {
+			positional = append(positional, fs.Args()...)
 			break
 		}
 		positional = append(positional, fs.Arg(0))

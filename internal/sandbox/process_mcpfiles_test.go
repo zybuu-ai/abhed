@@ -144,10 +144,16 @@ func TestServerScriptFoldersReadable(t *testing.T) {
 		!slices.Contains(f.bwrapArgs(), filepath.Dir(script)) {
 		t.Fatalf("not shown: %s %v", f.seatbeltRules(), f.bwrapArgs())
 	}
-	for _, rel := range []string{"top.py", ".ssh/x.py", ".aws/cli/x.py", ".abhed/x.py", ".config/x.py", "Library/x.py"} {
+	for _, rel := range []string{"top.py", ".ssh/x.py", ".aws/cli/x.py", ".abhed/x.py", ".config/x.py", "Library/x.py",
+		"Documents/server.py", "Desktop/server.py", "Downloads/server.py"} {
 		if got := scriptFolders(home, []string{mk(rel)}); len(got) != 0 {
 			t.Errorf("%s made %v readable", rel, got)
 		}
+	}
+	// A script's own folder inside one of them is shown, and only it.
+	own := mk("Downloads/mcp-tickets/server.py")
+	if got := scriptFolders(home, []string{own}); !slices.Equal(got, []string{filepath.Dir(own)}) {
+		t.Errorf("a script's own folder in Downloads: %v", got)
 	}
 	// The server runs its script from there, confined, on macOS.
 	if runtime.GOOS != "darwin" {
