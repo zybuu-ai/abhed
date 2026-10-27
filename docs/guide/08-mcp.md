@@ -35,9 +35,12 @@ folder of each file its configured `args` name by absolute path under your
 home, such as the script an interpreter runs (`"command": "python3",
 "args": ["/Users/me/tools/mcp/tickets.py"]` shows `~/tools/mcp`), on every
 tier. Where that folder, or the install folder, is a folder directly in
-your home (`~/Downloads`, `~/Documents`, `~/Projects`, `~/.local`), iCloud
-Drive's root or a folder directly in it, `~/.local/bin` or `~/.cargo/bin`,
-only the file itself is shown, not the folder. A file in your home itself,
+your home (`~/Downloads`, `~/Documents`, `~/Projects`, `~/bin`,
+`~/.local`), `~/.local/bin` or `~/.cargo/bin`, or a cloud drive's root or a
+folder directly in it (iCloud Drive and other apps' folders in
+`~/Library/Mobile Documents`, the drives in `~/Library/CloudStorage`), only
+the file itself is shown, not the folder; paths are compared without
+regard to case, as macOS's disk does. A file in your home itself,
 in a folder that holds a credential path (`~/.config`, `~/Library`) or
 inside one (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud` and the
 rest) is never shown, and a program installed in a credential folder is

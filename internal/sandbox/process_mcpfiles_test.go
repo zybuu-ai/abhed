@@ -212,3 +212,71 @@ func TestServerInstallPrefixIsNotATopLevelFolder(t *testing.T) {
 		t.Fatalf("an install folder of its own: %+v %v", f, err)
 	}
 }
+
+// homeShown compares without case, as macOS's disk does, so a different
+// spelling of a folder gets what the folder gets.
+func TestHomeShownIgnoresCase(t *testing.T) {
+	home := "/Users/me"
+	for dir, want := range map[string]int{
+		"/Users/me/Downloads":             showFile,
+		"/USERS/ME/Downloads":             showFile,
+		"/Users/me/downloads/mcp-tickets": showFolder,
+		"/Users/me/.local/BIN":            showFile,
+		"/users/me/.cargo/Bin":            showFile,
+		"/Users/me/bin":                   showFile,
+		"/Users/me/library/Mobile Documents/com~apple~clouddocs":     showFile,
+		"/Users/me/Library/Mobile Documents/com~apple~CloudDocs/a":   showFile,
+		"/Users/me/Library/Mobile Documents/iCloud~md~obsidian":      showFile,
+		"/Users/me/Library/Mobile Documents/com~apple~CloudDocs/a/b": showFolder,
+		"/Users/me/Library/CloudStorage/Dropbox":                     showFile,
+		"/Users/me/library/cloudstorage/GoogleDrive-me@x.com/sub":    showFile,
+		"/Users/me/Library/CloudStorage/OneDrive-X/a/b":              showFolder,
+		"/Users/me/.SSH":      showNothing,
+		"/Users/me/.Abhed/x":  showNothing,
+		"/Users/ME":           showNothing,
+		"/Users/me/tools/srv": showFolder,
+	} {
+		if got := homeShown(home, dir); got != want {
+			t.Errorf("%s: %d, want %d", dir, got, want)
+		}
+	}
+}
+
+// On a case-insensitive disk, a case variant of a top-level folder shows
+// only the file, through the script and program paths alike.
+func TestServerCaseVariantsShowOnlyTheFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("a case-insensitive disk")
+	}
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	mk := func(rel string) {
+		p := filepath.Join(home, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("Downloads/server.py")
+	mk("Downloads/mcp-server")
+	mk(".local/bin/x.py")
+	mk("Library/Mobile Documents/com~apple~CloudDocs/server.py")
+	upper := strings.ToUpper(home)
+	for _, variant := range []string{upper + "/Downloads/server.py", home + "/downloads/server.py", home + "/.local/BIN/x.py",
+		home + "/library/Mobile Documents/com~apple~clouddocs/server.py"} {
+		if _, err := os.Stat(variant); err != nil {
+			t.Skip("the disk is case-sensitive")
+		}
+		if dirs, files := scriptFolders(home, []string{variant}); len(dirs) != 0 || len(files) != 1 {
+			t.Errorf("%s: folders %v files %v", variant, dirs, files)
+		}
+	}
+	prog := upper + "/Downloads/mcp-server"
+	f, err := serverFilesIn("s", []string{prog}, nil, nil)
+	if err != nil || f.prefix != "" || len(f.files) != 1 {
+		t.Fatalf("a program at %s: %+v %v", prog, f, err)
+	}
+}

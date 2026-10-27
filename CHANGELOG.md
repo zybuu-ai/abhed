@@ -8,6 +8,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.8
 
+- A confined MCP stdio server whose program or script sits directly in a
+  top-level folder of your home (`~/Downloads`, `~/bin`, `~/Projects`),
+  in `~/.local/bin` or `~/.cargo/bin`, now sees only that file, where 1.2.8
+  showed it the whole folder: a server that reads files beside its program
+  there stops working. Move it into a folder of its own (such as
+  `~/tools/<server>/`), or set `"host_files": true` on it. A server whose
+  program is installed in a credential folder (`~/.ssh`, `~/.aws`,
+  `~/.config/gcloud` and the like), or a folder holding one, is refused.
 - First run now writes the Ollama model you choose as `"type": "ollama"`
   (it wrote `openai-compatible`). Both use the same local sampling set; the
   `ollama` type does not send `parallel_tool_calls`. A configuration already
@@ -856,8 +864,15 @@ All notable changes to Abhed are recorded here. The format follows
   takes the same agreement.
 - An MCP stdio server whose code lives under your home outside the
   workspace failed with only "broken pipe": the folder of a script its
-  configured arguments name is now readable to it, and a server that fails
-  to start shows the end of its stderr, redacted, in the error.
+  configured arguments name is now readable to it, as its install folder
+  is, and a server that fails to start shows the end of its stderr in the
+  error, redacted against its own environment, the secrets its arguments
+  carry (`-e NAME=…`, `--header "Authorization: …"`) and key shapes. Where
+  that folder is a folder directly in your home (`~/Downloads`,
+  `~/Projects`, `~/bin`, `~/.local`), `~/.local/bin`, `~/.cargo/bin` or a
+  cloud drive's root, only the file itself is shown; nothing in home
+  itself, a folder holding credentials or a credential folder is, and a
+  program installed in a credential folder is refused.
 
 - `abhed toolchain clean` removes the whole toolchain cache, which a plain
   `rm -rf` cannot, as installed toolchains are read-only; and `abhed

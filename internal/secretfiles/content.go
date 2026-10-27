@@ -1,6 +1,7 @@
 package secretfiles
 
 import (
+	"encoding/base64"
 	"regexp"
 	"strings"
 )
@@ -13,9 +14,12 @@ type contentPattern struct {
 	value   int
 	literal bool
 	bare    bool // an unquoted value, which is not a secret when it is code
-	// digit is set for a value that is a secret only with a digit in it, so
-	// a word such as "Bearer authentication" is not taken for a token.
-	digit bool
+	// valid, when set, says whether a value is a secret by its own look,
+	// for shapes that prose and fixtures share (an HTTP credential).
+	valid func(string) bool
+	// redactOnly patterns are hidden from what is shown, but are not taken
+	// as a credential seen (HasKeyMaterial): their shape is too common.
+	redactOnly bool
 	// structured is a JSON or list value, a secret when one of its quoted
 	// strings is a literal and not a placeholder.
 	structured bool
@@ -43,8 +47,10 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`(?i)[?&][a-z0-9_]*(?:token|secret|password|passwd|api_?key|signature)[a-z0-9_]*=([^\s&#"'` + "`" + `]{8,})`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?i)\baws_secret_access_key["']?\s*[=:]\s*["']?([^\s"']{20,})`), value: 1, literal: true},
 	// An HTTP credential: a bearer token, as an Authorization header or a
-	// --header argument carries it.
-	{re: regexp.MustCompile(`(?i)\bBearer[ \t]+([A-Za-z0-9._~+/=-]{8,})`), value: 1, literal: true, digit: true},
+	// --header argument carries it, and, for redaction alone, Basic
+	// credentials.
+	{re: regexp.MustCompile(`(?i)(?:^|[\s"'=:,(])Bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})`), value: 1, literal: true, valid: bearerToken},
+	{re: regexp.MustCompile(`(?i)(?:^|[\s"'=:,(])Basic[ \t]+([A-Za-z0-9+/]{12,}={0,2})`), value: 1, literal: true, valid: basicCredential, redactOnly: true},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
 	// words, given a literal: quoted, or a bare run that is not code.
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
@@ -98,7 +104,7 @@ func (p contentPattern) counts(text string, loc []int) bool {
 	if isPlaceholder(v) {
 		return false
 	}
-	if p.digit && !strings.ContainsAny(v, "0123456789") {
+	if p.valid != nil && !p.valid(v) {
 		return false
 	}
 	if p.structured {
@@ -121,6 +127,9 @@ func (p contentPattern) counts(text string, loc []int) bool {
 // HasKeyMaterial reports whether text carries a key or token by its shape.
 func HasKeyMaterial(text string) bool {
 	for _, p := range contentPatterns {
+		if p.redactOnly {
+			continue
+		}
 		for _, l := range p.re.FindAllStringSubmatchIndex(text, -1) {
 			if p.counts(text, l) {
 				return true
@@ -154,4 +163,55 @@ func RedactContent(text string) (string, bool) {
 		text = string(append(out, text[last:]...))
 	}
 	return text, found
+}
+
+// fixtureWords mark a value written as a stand-in: a test's, a doc's.
+var fixtureWords = []string{"test", "fake", "dummy", "example", "mock", "sample", "placeholder", "changeme", "your_", "your-", "redacted"}
+
+// lowerRun is seven lower-case letters in a row: a word, in a short value.
+var lowerRun = regexp.MustCompile(`[a-z]{7}`)
+
+// bearerToken reports whether a bearer value looks like a token rather than
+// a fixture or prose: no stand-in word or mask, and, below 20 characters, a
+// digit and no word in it; from 20 on, two kinds of character at least.
+func bearerToken(v string) bool {
+	low := strings.ToLower(v)
+	for _, w := range fixtureWords {
+		if strings.Contains(low, w) {
+			return false
+		}
+	}
+	if masked := strings.Trim(low, "0123456789"); masked == "" || strings.Trim(masked, string(masked[0])) == "" {
+		return false // xxxxxxxx1, 00000000
+	}
+	var lower, upper, digit bool
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= '0' && r <= '9':
+			digit = true
+		}
+	}
+	if len(v) < 20 {
+		return digit && (lower || upper) && !lowerRun.MatchString(v)
+	}
+	kinds := 0
+	for _, k := range []bool{lower, upper, digit} {
+		if k {
+			kinds++
+		}
+	}
+	return kinds >= 2
+}
+
+// basicCredential reports whether a Basic value is base64 of user:password.
+func basicCredential(v string) bool {
+	b, err := base64.StdEncoding.DecodeString(v)
+	if err != nil {
+		b, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(v, "="))
+	}
+	return err == nil && strings.Contains(string(b), ":") && !isPlaceholder(string(b))
 }

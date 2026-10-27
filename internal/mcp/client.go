@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -561,21 +562,19 @@ func (t *StdioTransport) redact(text string) string {
 			if k, v, ok := strings.Cut(strings.TrimPrefix(a, "--env="), "="); ok && namesSecret(strings.ToLower(k)) {
 				values = append(values, v)
 			}
-		case strings.HasPrefix(low, "-") && namesSecret(low):
-			// --api-token VALUE, --token=VALUE
+		case low == "-h" || low == "--header":
+			values = append(values, headerSecret(next)...)
+		case strings.HasPrefix(low, "--header="):
+			values = append(values, headerSecret(a[len("--header="):])...)
+		case strings.HasPrefix(a, "-H") && len(a) > 2:
+			// -HAuthorization: Bearer VALUE, -H=…
+			values = append(values, headerSecret(strings.TrimPrefix(a[2:], "="))...)
+		case strings.HasPrefix(low, "-") && !strings.HasPrefix(low, "--no-") && namesSecret(low):
+			// --api-token VALUE, --token=VALUE; not a following flag
 			if _, v, ok := strings.Cut(a, "="); ok {
 				values = append(values, v)
-			} else {
+			} else if !strings.HasPrefix(next, "-") {
 				values = append(values, next)
-			}
-		case low == "-h" || low == "--header":
-			// --header "Authorization: Bearer VALUE", "X-Api-Key: VALUE"
-			if k, v, ok := strings.Cut(next, ":"); ok && (namesSecret(strings.ToLower(k)) || strings.EqualFold(strings.TrimSpace(k), "authorization")) {
-				v = strings.TrimSpace(v)
-				if f := strings.Fields(v); len(f) == 2 {
-					values = append(values, f[1])
-				}
-				values = append(values, v)
 			}
 		default:
 			// NAME=VALUE given as an argument
@@ -588,15 +587,37 @@ func (t *StdioTransport) redact(text string) string {
 	// Longest first, so a value inside another is not left half there.
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	for _, v := range values {
-		text = strings.ReplaceAll(text, v, "[secret]")
+		// As written, and as a server may print it: URL-encoded or inside a
+		// JSON string.
+		quoted, _ := json.Marshal(v)
+		for _, form := range []string{v, url.QueryEscape(v), url.PathEscape(v), strings.Trim(string(quoted), `"`)} {
+			text = strings.ReplaceAll(text, form, "[secret]")
+		}
 	}
 	text, _ = secretfiles.RedactContent(text)
 	return text
 }
 
+// headerSecret is what to hide of an HTTP header argument ("Name: value"):
+// for an Authorization header or one named as a secret, its value and the
+// credential after its scheme (Bearer, Basic, Token).
+func headerSecret(h string) []string {
+	k, v, ok := strings.Cut(h, ":")
+	secret := namesSecret(strings.ToLower(k)) || strings.EqualFold(strings.TrimSpace(k), "authorization")
+	if !ok || !secret {
+		return nil
+	}
+	v = strings.TrimSpace(v)
+	out := []string{v}
+	if f := strings.Fields(v); len(f) == 2 {
+		out = append(out, f[1])
+	}
+	return out
+}
+
 // namesSecret reports whether a lower-cased name says it holds a secret.
 func namesSecret(low string) bool {
-	for _, w := range []string{"token", "key", "secret", "password", "passwd", "credential", "auth"} {
+	for _, w := range []string{"token", "key", "secret", "pass", "credential", "auth"} {
 		if strings.Contains(low, w) {
 			return true
 		}
