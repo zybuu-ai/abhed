@@ -1355,6 +1355,29 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   `next_edit.enabled` before the first request and `next_edit.summary` when
   the session closes.
 
+### 7.12 Commit messages
+
+```ts
+_abhed/commitMessage { sessionId } → { message: string, excluded?: number, truncated?: boolean,
+                                       disabled?: string, empty?: string, dropped?: string, limited?: string }
+```
+
+- Listed under the `commitMessage` feature. Studio sends no diff: the engine
+  reads `git diff --cached --relative` in the session's root itself, through
+  the confined git (no external diff, no textconv, no filter or merge driver,
+  inside the sandbox where one is registered).
+- A staged file outside the roots, one a read rule denies, one that looks
+  like keys, or Abhed's state is left out (`excluded` counts them). The rest
+  is cleaned of stored secrets and key-shaped text and cut to 32 KiB
+  (`truncated`).
+- The model is `model.commit`, or `model.completion` when unset, under the
+  same `completion.enabled`, `completion.local_only`, managed pin and key
+  rules as §7.10, each request sent once.
+- Recorded as `commit_message.requested` before the diff goes (if it cannot
+  be recorded, nothing is sent) and `commit_message.generated` with the
+  outcome. A message that carries a secret is `dropped`; nothing staged, or
+  only files that may not be read, is `empty`.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor

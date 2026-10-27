@@ -143,6 +143,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Commit messages for Abhed Studio: `_abhed/commitMessage` (the
+  `commitMessage` feature). The engine reads the staged diff itself through
+  the confined git, leaves out files the session may not read, key files and
+  Abhed's state, withholds secrets, caps it at 32 KiB, and asks
+  `model.commit` (or the completion model) under the completion rules.
+  Recorded as `commit_message.requested` before the diff goes and
+  `commit_message.generated`, counted by `abhed_commit_messages_total`
+  ([Commit messages](docs/guide/34-inline-completions.md#commit-messages)).
 - Next-edit suggestions for Abhed Studio: `_abhed/nextEdit` (the `nextEdit`
   feature) sends the lines around the cursor and the recent edits, cleaned
   of secrets and bounded, to `model.next_edit` (or the completion model) and

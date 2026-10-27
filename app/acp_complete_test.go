@@ -28,6 +28,7 @@ type fimServer struct {
 	*httptest.Server
 	mu      sync.Mutex
 	seen    []map[string]any
+	bodies  []string // every request's body, as sent
 	auth    []string
 	paths   []string
 	gate    chan struct{} // when set, a request waits for it to close
@@ -45,6 +46,7 @@ func newFIMServer(t *testing.T, text string) *fimServer {
 		_ = json.Unmarshal(b, &m)
 		f.mu.Lock()
 		f.paths = append(f.paths, r.URL.Path)
+		f.bodies = append(f.bodies, string(b))
 		f.auth = append(f.auth, r.Header.Get("Authorization"))
 		gate, status, body := f.gate, f.status, f.body
 		if r.URL.Path == "/v1/completions" && status == 0 {

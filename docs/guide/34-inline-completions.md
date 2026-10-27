@@ -129,3 +129,18 @@ prose is dropped and Studio is told why. The record holds
 `next_edit.enabled` and `next_edit.summary` as it does for completions, and
 the metrics count them as `abhed_next_edits_total` and
 `abhed_next_edit_tokens_total`.
+
+## Commit messages
+
+Studio's Source Control view can ask for a message for what is staged. The
+engine reads the staged change itself, with the same confined git it uses
+for its own reads, so Studio never sends a diff. A staged file the session
+may not read, one that looks like keys, or Abhed's state is left out of what
+is sent; the rest has stored secrets and key-shaped text withheld and is cut
+to 32 KiB. The model is `model.commit`, or the completion model, under the
+same rules as completions.
+
+The record holds `commit_message.requested`, before the diff goes, with how
+many files were sent and left out and how many bytes, and
+`commit_message.generated` with the outcome; the metrics count
+`abhed_commit_messages_total`.
