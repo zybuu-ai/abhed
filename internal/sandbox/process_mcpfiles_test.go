@@ -280,3 +280,24 @@ func TestServerCaseVariantsShowOnlyTheFile(t *testing.T) {
 		t.Fatalf("a program at %s: %+v %v", prog, f, err)
 	}
 }
+
+// installPrefix compares without case: a case variant of ~/bin, ~/.local/bin
+// or ~/.cargo/bin is that folder, never all of home or ~/.local.
+func TestInstallPrefixIgnoresCase(t *testing.T) {
+	home := "/Users/me"
+	for prog, want := range map[string]string{
+		"/USERS/ME/bin/prog":         "/USERS/ME/bin",
+		"/Users/me/BIN/prog":         "/Users/me/BIN",
+		"/Users/me/.LOCAL/bin/prog":  "/Users/me/.LOCAL/bin",
+		"/users/me/.cargo/Bin/prog":  "/users/me/.cargo/Bin",
+		"/Users/me/tools/srv/BIN/x":  "/Users/me/tools/srv",
+		"/Users/me/tools/srv/prog/x": "/Users/me/tools/srv/prog",
+	} {
+		if got := installPrefix(home, prog); got != want {
+			t.Errorf("%s: %q, want %q", prog, got, want)
+		}
+		if got := installPrefix(home, prog); homeShown(home, got) == showFolder && strings.HasSuffix(strings.ToLower(got), "/bin") && !strings.Contains(got, "tools") {
+			t.Errorf("%s: %s shown whole", prog, got)
+		}
+	}
+}

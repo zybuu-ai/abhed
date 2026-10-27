@@ -229,12 +229,13 @@ func installPrefix(home, program string) string {
 		return ""
 	}
 	dir := filepath.Dir(program)
-	if filepath.Base(dir) != "bin" {
+	if !strings.EqualFold(filepath.Base(dir), "bin") {
 		return dir
 	}
 	parent := filepath.Dir(dir)
 	for _, broad := range []string{home, filepath.Join(home, ".local"), filepath.Join(home, ".cargo")} {
-		if parent == broad {
+		// Compared without case, as macOS's disk does.
+		if rest, ok := Within(parent, broad); ok && len(rest) == 0 {
 			return dir
 		}
 	}

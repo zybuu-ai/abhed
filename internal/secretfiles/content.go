@@ -38,7 +38,7 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`glpat-[A-Za-z0-9_-]{20,}\b`)},
 	{re: regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}\b`)},
 	{re: regexp.MustCompile(`\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}\b`)},
-	{re: regexp.MustCompile(`\b[sr]k_live_[A-Za-z0-9]{16,}\b`)},
+	{re: regexp.MustCompile(`\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}\b`)},
 	{re: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}\b`)},
 	{re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
 	{re: regexp.MustCompile(`https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]{20,}`)},
@@ -49,8 +49,8 @@ var contentPatterns = []contentPattern{
 	// An HTTP credential: a bearer token, as an Authorization header or a
 	// --header argument carries it, and, for redaction alone, Basic
 	// credentials.
-	{re: regexp.MustCompile(`(?i)(?:^|[\s"'=:,(])Bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})`), value: 1, literal: true, valid: bearerToken},
-	{re: regexp.MustCompile(`(?i)(?:^|[\s"'=:,(])Basic[ \t]+([A-Za-z0-9+/]{12,}={0,2})`), value: 1, literal: true, valid: basicCredential, redactOnly: true},
+	{re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-])Bearer[ \t]+([A-Za-z0-9._~+/=-]{16,})`), value: 1, literal: true, valid: bearerToken},
+	{re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-])Basic[ \t]+([A-Za-z0-9+/]{12,}={0,2})`), value: 1, literal: true, valid: basicCredential, redactOnly: true},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
 	// words, given a literal: quoted, or a bare run that is not code.
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
@@ -168,21 +168,46 @@ func RedactContent(text string) (string, bool) {
 // fixtureWords mark a value written as a stand-in: a test's, a doc's.
 var fixtureWords = []string{"test", "fake", "dummy", "example", "mock", "sample", "placeholder", "changeme", "your_", "your-", "redacted"}
 
+// fixture reports a stand-in value (lower-cased): one that starts with a
+// stand-in word, holds one as a whole part (between - _ . or the ends), or,
+// below 24 characters, holds one anywhere. A long random token that
+// happens to spell one inside a run is not one.
+func fixture(low string) bool {
+	for _, w := range fixtureWords {
+		if strings.HasPrefix(low, w) || len(low) < 24 && strings.Contains(low, w) {
+			return true
+		}
+		for i := strings.Index(low, w); i >= 0; {
+			end := i + len(w)
+			before := i == 0 || strings.ContainsRune("-_.", rune(low[i-1]))
+			after := end == len(low) || strings.ContainsRune("-_.", rune(low[end])) || strings.HasSuffix(w, "_") || strings.HasSuffix(w, "-")
+			if before && after {
+				return true
+			}
+			next := strings.Index(low[i+1:], w)
+			if next < 0 {
+				break
+			}
+			i += 1 + next
+		}
+	}
+	return false
+}
+
 // lowerRun is seven lower-case letters in a row: a word, in a short value.
 var lowerRun = regexp.MustCompile(`[a-z]{7}`)
 
 // bearerToken reports whether a bearer value looks like a token rather than
-// a fixture or prose: no stand-in word or mask, and, below 20 characters, a
-// digit and no word in it; from 20 on, two kinds of character at least.
+// a fixture or prose: no stand-in word as a part of it, not one character
+// repeated, and, below 20 characters, a digit and no word in it; from 20
+// on, two kinds of character at least.
 func bearerToken(v string) bool {
 	low := strings.ToLower(v)
-	for _, w := range fixtureWords {
-		if strings.Contains(low, w) {
-			return false
-		}
+	if fixture(low) {
+		return false
 	}
-	if masked := strings.Trim(low, "0123456789"); masked == "" || strings.Trim(masked, string(masked[0])) == "" {
-		return false // xxxxxxxx1, 00000000
+	if strings.Trim(low, low[:1]) == "" {
+		return false // a mask: xxxxxxxxxxxxxxxx
 	}
 	var lower, upper, digit bool
 	for _, r := range v {
