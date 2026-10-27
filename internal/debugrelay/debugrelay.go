@@ -30,10 +30,13 @@ const (
 
 // Problem kinds, each with steps a person can take.
 const (
-	KindTier    = "tier-unsupported"
-	KindBridge  = "bridge-missing"
-	KindAdapter = "adapter-missing"
-	KindArgs    = "invalid-request"
+	KindTier = "tier-unsupported"
+	// KindContainerSetup is a tier that cannot debug, with what the
+	// container tier needs here and how to set it up.
+	KindContainerSetup = "container-setup"
+	KindBridge         = "bridge-missing"
+	KindAdapter        = "adapter-missing"
+	KindArgs           = "invalid-request"
 )
 
 // Problem is a launch that cannot go ahead, with what to do about it.
@@ -164,7 +167,7 @@ func Plan(r Request, workspace, bridge, sockDir string) (Spec, error) {
 		if len(args) == 0 {
 			display = display[:3]
 		}
-		mkdir := "d=$(mktemp -d /tmp/abhed-dap.XXXXXX) || exit 1; "
+		mkdir := "d=$(mktemp -d \"${TMPDIR:-/tmp}/abhed-dap.XXXXXX\") || exit 1; "
 		if sockDir != "" {
 			mkdir = "d=" + shellQuote(sockDir) + "; mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; "
 		}

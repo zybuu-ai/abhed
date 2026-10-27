@@ -8,7 +8,21 @@ const (
 	EvDebugLaunched EventType = "debug.launched"
 	// EvDebugStopped is a debug session ended; see DebugStopped.
 	EvDebugStopped EventType = "debug.stopped"
+	// EvDebugSetup is a person's choice about where debugging runs; see
+	// DebugSetup.
+	EvDebugSetup EventType = "debug.setup"
 )
+
+// DebugSetup is the payload of debug.setup: the person raised the
+// workspace's tier to the container (use_container, with the file written),
+// agreed to debug it on the process tier with loopback open
+// (process_tier_consent), or took that back (process_tier_forgotten).
+type DebugSetup struct {
+	Action    string `json:"action"`
+	Workspace string `json:"workspace"`
+	Path      string `json:"path,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+}
 
 // DebugLaunched is the payload of debug.launched.
 type DebugLaunched struct {
@@ -22,6 +36,9 @@ type DebugLaunched struct {
 	// whether its checksum was pinned by the build.
 	Bridge       string `json:"bridge,omitempty"`
 	BridgePinned bool   `json:"bridge_pinned,omitempty"`
+	// Loopback is set for a session on the process tier with loopback open
+	// to the debug command, on the person's agreement for the workspace.
+	Loopback bool `json:"loopback,omitempty"`
 }
 
 // DebugStopped is the payload of debug.stopped.

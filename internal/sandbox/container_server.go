@@ -67,7 +67,7 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	if ok, why := c.Available(); !ok {
 		return nil, errors.New(why)
 	}
-	files, err := serverFilesIn(name, argv[0], env, PathForms(c.policy.Workspace))
+	files, err := serverFilesIn(name, argv, env, PathForms(c.policy.Workspace))
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +76,8 @@ func (c *Container) ServerCommand(ctx context.Context, name string, argv, env []
 	// Before this server's start: what a killed Abhed left goes first.
 	sweptNote(c.SweepServers(ctx))
 	extra := append(serverOwnerArgs(), "-v", files.home+":"+files.home)
-	if files.prefix != "" {
-		extra = append(extra, "-v", files.prefix+":"+files.prefix+":ro")
+	for _, d := range files.shown() {
+		extra = append(extra, "-v", d+":"+d+":ro")
 	}
 	if err := c.programInImage(ctx, p, extra, argv[0]); err != nil {
 		return nil, err

@@ -569,9 +569,10 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 631 planted wrong claims none is shown as verified and 30 are
-  contradicted (all from cited, conflicting evidence), all 182 true controls
-  are verified, and none of the 279 true or neutral claims is contradicted;
+  -v`): of 648 planted wrong claims none is shown as verified and 32 are
+  contradicted (30 from cited, conflicting evidence, 2 by conflict markers
+  still shown), all 194 true controls
+  are verified, and none of the 294 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
   every planted case and control, by name and a hash of its text and calls,
   and every strict-mode answer from the reviews. Every clause of a statement
@@ -617,9 +618,15 @@ All notable changes to Abhed are recorded here. The format follows
   a build for a named platform or mode needs a run that names it, while
   "on all platforms" is never shown by one run); "lint passes", alone or
   beside a build or tests by name or idiom ("tests and go vet pass", "so
-  does lint"), needs a lint run, a lint run that only reports, by a tool
+  does lint", "tests and mypy pass"), needs a lint run, a lint run that only reports, by a tool
   whose config cannot turn fixing on, is no change, and "the build is
-  clean" needs a build or test run; a
+  clean" needs a build or test run; "the merge conflicts are resolved" is
+  contradicted by a current read or diff that still shows conflict
+  markers, and verified by a search for markers that found none, or reads
+  or a diff of every file that had them, after the last change; headings and lines that only
+  arrange the reply ("Summary", "Changes: `sum.go`") are not claims; a
+  test result with no test run behind it says "no test run in this
+  session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
   change that names no file is verified only by an edit, a write or a
@@ -788,6 +795,21 @@ All notable changes to Abhed are recorded here. The format follows
   the glob with the rest as its pattern, instead of refusing it.
 - A carried approval for a failed `edit` or `write` now needs the retry to
   put the same new text in the file, whitespace aside.
+- Debugging without a container engine: a debug launch that needs the
+  container tier now returns a `container-setup` problem with what is
+  missing on this machine and the exact steps (install Podman, `podman
+  machine init`, `podman machine start`, put the workspace on the container
+  tier), which Studio walks through; `_abhed/debug/status-tier` reports the
+  same, and `_abhed/debug/use-container` raises the workspace's tier. Or, on
+  the person's choice and one-time agreement for the workspace (recorded as
+  `debug.setup`), the macOS process tier debugs with loopback ports open to
+  the debug command alone; the Linux process tier with an open network
+  takes the same agreement.
+- An MCP stdio server whose code lives under your home outside the
+  workspace failed with only "broken pipe": the folder of a script its
+  configured arguments name is now readable to it, and a server that fails
+  to start shows the end of its stderr in the error.
+
 - Abhed Studio's Go, Python and Rust language servers never started: the
   supervisor looked for the server on the engine's own `PATH`, without the
   toolchains Abhed installs for the sandbox, and refused it as an unknown

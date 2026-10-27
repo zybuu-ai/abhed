@@ -31,11 +31,41 @@ sandbox with a network of its own:
   adapter's loopback would be the host's, so a launch is refused with steps:
   close the network, use the allowlist, or use the container tier.
 
-Not the macOS process tier: its loopback is the host's, and opening it would
-let the sandboxed program reach the services on your machine. A launch there
-is refused with a problem that says to use the container tier: start a
-container engine (`podman machine start`), set `"sandbox": {"min_tier":
-"container"}`, and open a new session.
+Not the macOS process tier as it is: its loopback is the host's, and opening
+it lets the program reach the services on your machine. A launch there (or
+on the Linux process tier with the network open, or with no sandbox) is
+refused with a `container-setup` problem that says what the container tier
+needs on this machine and the exact steps, which Studio walks you through:
+
+1. Install Podman, where none is found: `brew install podman` where
+   Homebrew is (on Linux, your package manager; else podman.io).
+2. On a Mac, create and start its virtual machine: `podman machine init`,
+   `podman machine start` (only the start when the machine exists).
+3. Run this workspace's commands in a container: Studio writes
+   `{"sandbox": {"min_tier": "container"}}` to the workspace's
+   `.abhed/config.json` (a workspace file may always raise the tier), and
+   you open a new session.
+
+`_abhed/debug/status-tier` gives the same at any time: the tier, whether a
+debug session can start, the container engine, Homebrew and the machine
+found, and the steps left.
+
+**Or debug on the process tier, once you agree.** If you would rather not
+set up containers, Studio can launch on the process tier instead. The first
+time in a workspace you are asked, with what it means: while it is being
+debugged, the program can reach services on this Mac (localhost ports) and
+they can reach it; nothing else on the network. Allow keeps the choice for
+that workspace (in `~/.abhed/state/debug-process-tier.json`; Studio's
+forget, `_abhed/debug/forget-consent`, takes it back); Deny, a cancel or
+no answer starts nothing. The question and your answer are recorded with
+the launch, the choice as `debug.setup` (`process_tier_consent`), and each
+such session's `debug.launched` has `loopback: true`. On macOS only the
+debug command gets loopback: its Seatbelt profile allows connecting to and
+listening on loopback ports (`localhost:*`), and no other address; the
+agent's commands keep the network closed. The Linux process tier with the
+network open, whose loopback is the host's already, takes the same
+agreement. Go on the macOS process tier runs Delve natively (it needs the
+Xcode command line tools' debugger), bridged by the engine's own program.
 
 On the Linux process tier the session's commands share one `/tmp`, so
 Delve's socket is put in a folder only the debug command sees (an empty

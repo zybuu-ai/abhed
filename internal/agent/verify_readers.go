@@ -262,6 +262,9 @@ func lintReader(prog string, words []string) bool {
 		return false
 	}
 	for _, a := range words[1:] {
+		if a == "--" && prog == "cargo" {
+			break // clippy's own lint flags follow
+		}
 		name, _, _ := strings.Cut(a, "=")
 		switch {
 		case strings.HasPrefix(name, "--fix") && name != "--fix-dry-run", name == "--unsafe-fixes", name == "--add-noqa",

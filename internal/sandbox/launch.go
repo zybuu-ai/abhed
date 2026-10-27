@@ -56,7 +56,7 @@ func Release(cmd *exec.Cmd) {
 type readOnlyKey struct{}
 
 // WithReadOnlyPaths adds host paths one command sees read-only at the same
-// path, on the container and Linux process tiers: the engine's own files a
+// path, on the container and process tiers: the engine's own files a
 // command needs, such as the debug bridge. Only the engine sets it.
 func WithReadOnlyPaths(ctx context.Context, paths ...string) context.Context {
 	return context.WithValue(ctx, readOnlyKey{}, append(readOnlyPathsOf(ctx), paths...))
@@ -65,6 +65,23 @@ func WithReadOnlyPaths(ctx context.Context, paths ...string) context.Context {
 func readOnlyPathsOf(ctx context.Context) []string {
 	p, _ := ctx.Value(readOnlyKey{}).([]string)
 	return append([]string(nil), p...)
+}
+
+type loopbackKey struct{}
+
+// WithLoopback lets one command on the macOS process tier, whose network is
+// otherwise closed, connect to and listen on loopback ports, and nothing
+// beyond: what a debug adapter needs to reach the program it debugs. The
+// loopback is the Mac's own, so its local services are reachable too; the
+// engine sets it only after the person agreed to that. Only the engine sets
+// it.
+func WithLoopback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, loopbackKey{}, true)
+}
+
+func loopbackOf(ctx context.Context) bool {
+	on, _ := ctx.Value(loopbackKey{}).(bool)
+	return on
 }
 
 type privateDirKey struct{}

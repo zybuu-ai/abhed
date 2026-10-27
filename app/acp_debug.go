@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -158,6 +160,19 @@ func debugBridge(relayBinary string) (command, path string, pinned bool, p *debu
 	return debugrelay.Quote(path) + " " + dapbridge.Arg, path, pinned, nil
 }
 
+// ownBridge is the engine's own binary as the debug bridge, for Delve run on
+// this Mac (the process tier): readable to the debug command alone.
+func ownBridge() (command, path string, p *debugrelay.Problem) {
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.EvalSymlinks(exe)
+	}
+	if err != nil {
+		return "", "", &debugrelay.Problem{Kind: debugrelay.KindBridge, Retry: true, Message: "the engine's own program could not be found to bridge Delve's socket: " + err.Error()}
+	}
+	return debugrelay.Quote(exe) + " " + dapbridge.Arg, exe, nil
+}
+
 func (c *acpConn) debugLaunch(msg rpcMessage) {
 	var req debugrelay.Request
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
@@ -189,19 +204,36 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	tool, ok := parts.Loop.Tools.Get("bash")
 	b, isBash := tool.(tools.Bash)
 	if !ok || !isBash || b.Sandbox == nil {
-		c.reply(msg.ID, nil, debugRefusal(debugTierProblem("none", tools.Isolation{})))
+		c.reply(msg.ID, nil, debugSetupProblem(debugTierProblem("none", tools.Isolation{}), debugSetupFor(c.root(), "none", tools.Isolation{}, parts.Session.Root)))
 		return
 	}
 	tier := debugTier(b)
+	// A tier that cannot debug says what the container tier needs here; on
+	// the person's choice (processTier) and agreement for the workspace, the
+	// process tier debugs with loopback open to the debug command alone.
+	var loopback bool
 	if p := debugTierProblem(tier, b.Isolation); p != nil {
-		c.reply(msg.ID, nil, debugRefusal(p))
-		return
+		var opt struct {
+			ProcessTier bool `json:"processTier"`
+		}
+		_ = json.Unmarshal(msg.Params, &opt)
+		if !opt.ProcessTier || !debugProcessTierPossible(tier, b.Isolation) {
+			c.reply(msg.ID, nil, debugSetupProblem(p, debugSetupFor(c.root(), tier, b.Isolation, parts.Session.Root)))
+			return
+		}
+		loopback = true
 	}
 	var bridge, bridgePath string
 	var pinned bool
 	if req.Language == debugrelay.Go {
 		var p *debugrelay.Problem
-		if bridge, bridgePath, pinned, p = debugBridge(sandboxconfig.RelayBinary(parts.Config)); p != nil {
+		if loopback && runtime.GOOS == "darwin" {
+			// Delve runs on this Mac: the engine's own build is the bridge.
+			bridge, bridgePath, p = ownBridge()
+		} else {
+			bridge, bridgePath, pinned, p = debugBridge(sandboxconfig.RelayBinary(parts.Config))
+		}
+		if p != nil {
 			c.reply(msg.ID, nil, debugRefusal(p))
 			return
 		}
@@ -209,7 +241,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	// On the Linux process tier the session's commands share one /tmp, so
 	// Delve's socket goes in a folder only this command sees.
 	var sockDir string
-	if tier == string(sandbox.TierProcess) && req.Language == debugrelay.Go {
+	if tier == string(sandbox.TierProcess) && runtime.GOOS == "linux" && req.Language == debugrelay.Go {
 		sockDir = "/run/abhed-dap-" + acpID()
 	}
 	spec, err := debugrelay.Plan(req, parts.Session.Root, bridge, sockDir)
@@ -228,7 +260,12 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	callID := "u" + acpID()
 	args, _ := json.Marshal(map[string]any{"command": spec.Display, "description": "debug a " + req.Language + " program in the session sandbox"})
 	ctx, cancel := context.WithTimeout(context.Background(), debugLife)
-	_, refused, err := loop.ManualAuthorizeReviewed(ctx, "bash", callID, args, c.debugAsk(s, callID, spec.Display))
+	// Debugging on the process tier is put to the person once per workspace.
+	var why string
+	if loopback && !debugConsented(parts.Session.Root) {
+		why = debugLoopbackWhy
+	}
+	_, refused, err := loop.ManualAuthorizeAsking(ctx, "bash", callID, args, c.debugAsk(s, callID, spec.Display), why)
 	if err != nil {
 		cancel()
 		c.reply(msg.ID, nil, refusal(errRecord, "the debug session could not be recorded, so it was not started: %v", err))
@@ -239,6 +276,12 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		_ = loop.ManualObserve(callID, "bash", *refused, 0)
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", refused.Content))
 		return
+	}
+	if why != "" {
+		if err := setDebugConsent(parts.Session.Root, true); err != nil {
+			warnf("the choice to debug %s on the process tier could not be kept: %v", parts.Session.Root, err)
+		}
+		s.record(agent.EvDebugSetup, agent.DebugSetup{Action: "process_tier_consent", Workspace: parts.Session.Root, CallID: callID})
 	}
 	// The person may have closed the session while the supervisor's ask waited.
 	if sessionClosed(s) {
@@ -253,6 +296,9 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	}
 	if sockDir != "" {
 		lctx = sandbox.WithPrivateDirs(lctx, sockDir)
+	}
+	if loopback {
+		lctx = sandbox.WithLoopback(lctx)
 	}
 	cmd := debugCommand(b, lctx, spec.Cwd, spec.Command)
 	stdin, err1 := cmd.StdinPipe()
@@ -316,7 +362,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		return
 	}
 	go c.debugSends(d)
-	launched := agent.DebugLaunched{DebugID: d.id, CallID: callID, Language: req.Language, Command: spec.Display, Tier: tier, BridgePinned: pinned}
+	launched := agent.DebugLaunched{DebugID: d.id, CallID: callID, Language: req.Language, Command: spec.Display, Tier: tier, BridgePinned: pinned, Loopback: loopback}
 	if bridgePath != "" {
 		launched.Bridge = bridgePath
 	}
