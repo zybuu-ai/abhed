@@ -914,7 +914,10 @@ func (ix *recordIndex) mergeMarkers(pool []*obsRec, work bool) (finding, func(st
 
 // gitConflictRe: a file git reports as conflicted, from a merge's output or
 // from git status (long or short form).
-var gitConflictRe = regexp.MustCompile(`(?m)^(?:CONFLICT \([^)]*\): Merge conflict in |\s*both (?:modified|added):\s+|(?:UU|AA|DU|UD|AU|UA|DD) )(\S+)\s*$`)
+var gitConflictRe = regexp.MustCompile(`(?m)^(?:CONFLICT \([^)]*\): Merge conflict in |\s*both (?:modified|added):\s+|(?:UU|AA|DU|UD|AU|UA|DD) )(.*\S)\s*$`)
+
+// gitConflictSeenRe: any conflict git reports, whether or not its path is read.
+var gitConflictSeenRe = regexp.MustCompile(`(?m)^(?:CONFLICT \(|Automatic merge failed|\s*(?:both (?:modified|added|deleted)|deleted by (?:us|them)|added by (?:us|them)):|(?:UU|AA|DU|UD|AU|UA|DD) )`)
 
 // partialRead: a read that shows only part of the file (a range, or cut).
 func partialRead(s string) bool {
@@ -945,14 +948,15 @@ func (ix *recordIndex) mergeMarkersIn(pool []*obsRec, work bool) (finding, bool,
 	if last == nil {
 		return finding{out: missing, why: "a resolved merge needs a change, and this session made none"}, false, nil
 	}
-	marked, unknown := map[string]bool{}, false
+	marked, unknown, saw := map[string]bool{}, false, false
 	for _, o := range ix.obs {
 		if o.child != "" || !o.usable() || o.tool == "write" || o.tool == "edit" {
 			continue
 		}
 		if o.tool == "bash" {
+			saw = saw || gitConflictSeenRe.MatchString(o.content)
 			for _, m := range gitConflictRe.FindAllStringSubmatch(o.content, -1) {
-				p := m[1]
+				p := strings.Trim(m[1], `"`) // a path with spaces may be quoted
 				if !filepath.IsAbs(p) {
 					p = filepath.Join(ix.workDir, p)
 				}
@@ -987,7 +991,7 @@ func (ix *recordIndex) mergeMarkersIn(pool []*obsRec, work bool) (finding, bool,
 	}
 	// A merge, pull or rebase that ran clean is the last change, in a session that
 	// never saw a conflict: nothing to resolve, so "no conflicts" but not "resolved".
-	if o := ix.bySeq[last.seq]; o != nil && !work && len(marked) == 0 && !unknown && o.tool == "bash" && o.exit != nil && *o.exit == 0 && o.line.shape && len(o.line.final) > 1 &&
+	if o := ix.bySeq[last.seq]; o != nil && !work && !saw && len(marked) == 0 && !unknown && o.tool == "bash" && o.exit != nil && *o.exit == 0 && o.line.shape && len(o.line.final) > 1 &&
 		filepath.Base(o.line.final[0]) == "git" && slices.Contains([]string{"merge", "pull", "rebase", "cherry-pick"}, o.line.final[1]) &&
 		!slices.ContainsFunc(o.line.final[2:], func(a string) bool { return slices.Contains([]string{"--abort", "--quit", "--skip", "--continue"}, a) }) &&
 		!strings.Contains(o.content, "CONFLICT") {
