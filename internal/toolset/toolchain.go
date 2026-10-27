@@ -111,6 +111,7 @@ func withToolchains(b tools.Bash, tc *toolchain.Session) tools.Bash {
 		return b
 	}
 	b.NotFound = tc.NotFound
+	b.RegistryNote = tc.RegistryNote
 	if tc.Registries != nil && tc.Open != nil && !tc.Off {
 		b.NetworkNote = "If it was a language's package registry (" + strings.Join(toolchain.AllRegistries()[:6], ", ") +
 			"…), call the toolchain tool with that language: the user is asked, and its registries are opened to commands where this sandbox allows."

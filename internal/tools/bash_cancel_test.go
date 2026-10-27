@@ -325,6 +325,26 @@ func TestBashTimeoutEndsADetachedChild(t *testing.T) {
 	}
 }
 
+// A command refused a package registry is told which, and how to open it.
+func TestBashRegistryNote(t *testing.T) {
+	s, dir := setup(t)
+	none := sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command
+	b := Bash{Sandbox: none, Isolation: Isolation{Tier: "process"}, RegistryNote: func(command, output string) string {
+		if strings.Contains(output, "proxy.golang.org") {
+			return "NOTE: go's registry"
+		}
+		return ""
+	}}
+	res := run(t, b, s, bashArgs{Command: `echo 'Get "https://proxy.golang.org/x": Forbidden'; exit 1`, Description: "x"})
+	if !strings.Contains(res.Content, "NOTE: go's registry") || strings.Contains(res.Content, "this sandbox has no network access") {
+		t.Fatalf("%s", res.Content)
+	}
+	res = run(t, b, s, bashArgs{Command: `echo "curl: (6) Could not resolve host: example.com"; exit 6`, Description: "x"})
+	if !strings.Contains(res.Content, "this sandbox has no network access") {
+		t.Fatalf("%s", res.Content)
+	}
+}
+
 // A command that failed reaching for the network in a sandbox without one is
 // told why, and pointed at the web tools, even when a pipe hid the exit code.
 func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
@@ -352,6 +372,9 @@ func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 		{"a local server not running", off, `echo "curl: (7) Failed to connect to localhost port 8080"; exit 7`, false},
 		{"an ordinary failure", off, `echo "FAIL: TestParse"; exit 1`, false},
 		{"a rust build error", off, `echo "error[E0433]: failed to resolve: use of undeclared crate or module ` + "`serde`" + `"; exit 101`, false},
+		{"the egress proxy's 403, network off", off, `echo 'go: Get "https://proxy.golang.org/x/@v/list": Forbidden'; exit 1`, true},
+		{"pip's tunnel refused", off, `echo "Tunnel connection failed: 403 Forbidden"; exit 1`, true},
+		{"a 403 with the network on", on, `echo "Tunnel connection failed: 403 Forbidden"; exit 1`, false},
 	} {
 		res := run(t, tc.bash, s, bashArgs{Command: tc.command, Description: "x"})
 		if got := strings.Contains(res.Content, "this sandbox has no network access"); got != tc.hint {

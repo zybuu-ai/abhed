@@ -72,6 +72,9 @@ type Bash struct {
 	// NetworkNote, when set, is added to the note a command that could not
 	// reach the network gets, such as how to open a package registry.
 	NetworkNote string
+	// RegistryNote, when set, says what a command refused a package
+	// registry can do, naming the language; "" when it names none.
+	RegistryNote func(command, output string) string
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -1030,8 +1033,9 @@ func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, conten
 	// Any exit code: a pipeline's last command can succeed after curl failed.
 	if missing := b.notFoundNote(s.Cwd, content, exitCode); missing != "" {
 		content = withNote(content, missing)
-	} else if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
-		content = withNote(content, strings.TrimSpace(networkHint+" "+b.NetworkNote))
+	} else if b.network() == networkOff && (networkFailed(a.Command, content, exitCode) || exitCode != 0 && proxyRefused(content)) {
+		// With the network off a 403 is the egress proxy's: no registry is open yet.
+		content = withNote(content, b.networkNote(a.Command, content))
 	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)
@@ -1287,6 +1291,22 @@ func networkFailed(command, output string, exitCode int) bool {
 	}
 	return networkFailure(strings.Join(lines, "\n"))
 }
+
+// networkNote is what a command that could not reach the network is told:
+// how to open the package registry it was refused, where it names one.
+func (b Bash) networkNote(command, output string) string {
+	if b.RegistryNote != nil {
+		if n := b.RegistryNote(command, output); n != "" {
+			return n
+		}
+	}
+	return strings.TrimSpace(networkHint + " " + b.NetworkNote)
+}
+
+// proxyRefused is what clients print when the session's egress proxy
+// refuses them: its own text, curl's, pip's, Go's and npm's for a 403.
+var proxyRefused = regexp.MustCompile(`(?i)abhed egress:|tunnel connection failed: 403|received HTTP code 403 from proxy|` +
+	`proxyconnect tcp|": Forbidden\b|\b403 Forbidden\b|\bE403\b`).MatchString
 
 // networkHint says why a command that reached for the network failed. Without
 // it a model that ran curl sees only "could not resolve host", and neither it
