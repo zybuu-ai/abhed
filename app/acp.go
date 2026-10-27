@@ -71,6 +71,20 @@ var heldAskWait = 30 * time.Minute
 // reviewLinger is how long a review window stays open after its last answer.
 var reviewLinger = 5 * time.Minute
 
+// previewWrites reads previewWrites from a prompt's _meta. Read loosely,
+// since it can only tighten what the prompt may do.
+func previewWrites(meta map[string]json.RawMessage) bool {
+	for _, key := range []string{acpMetaKey, acpLegacyMetaKey} {
+		var m struct {
+			PreviewWrites bool `json:"previewWrites"`
+		}
+		if json.Unmarshal(meta[key], &m) == nil && m.PreviewWrites {
+			return true
+		}
+	}
+	return false
+}
+
 // attachImages gives a session's next prompt its images, where the session can take them.
 func attachImages(a acpAgent, imgs []abhed.Image) error {
 	if ia, ok := a.(interface{ AttachImages([]abhed.Image) error }); ok {
@@ -1053,8 +1067,9 @@ var lineFragment = regexp.MustCompile(`^L(\d+)-L(\d+)$`)
 
 func (c *acpConn) prompt(msg rpcMessage) {
 	var p struct {
-		SessionID string            `json:"sessionId"`
-		Prompt    []json.RawMessage `json:"prompt"`
+		SessionID string                     `json:"sessionId"`
+		Prompt    []json.RawMessage          `json:"prompt"`
+		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	s := c.session(p.SessionID)
@@ -1138,6 +1153,11 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {
+		// Under preview, every edit and write of this prompt is put to the person with its diff.
+		if previewWrites(p.Meta) && s.inner && s.parts.Loop != nil {
+			s.parts.Loop.PreviewWrites(true)
+			defer s.parts.Loop.PreviewWrites(false)
+		}
 		if err = attachImages(s.agent, links.images); err == nil {
 			_, err = s.agent.Run(ctx, withAttached(text))
 		}

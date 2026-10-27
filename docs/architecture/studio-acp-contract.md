@@ -730,6 +730,18 @@ asks and puts it in the ask's `content` as spec `{type: "diff", path, oldText,
 newText}` and in `locations`. For files over 256 KiB only the changed hunks
 are sent, with `meta.hunksOnly: true`.
 
+### 5.5a Previewing writes
+
+A `session/prompt` whose `_meta["zybuu.ai/abhed"]` carries
+`previewWrites: true` previews every `edit` and `write` of that prompt: a
+call the mode or a rule would allow is asked instead (step `preview`), with
+its diff as §5.5 gives it, and nothing is written until the person accepts.
+Rejected, it is denied by the reviewer like any ask; accepted, it is
+approved and written. A deny stays a deny. It covers the agent's own `edit`
+and `write` only (not `bash`, nor a subagent's calls), and ends with the
+prompt. An inline edit on a selection is a prompt with the selection
+attached (§3.1a) and this flag.
+
 ### 5.6 Workspace trust
 
 | | |

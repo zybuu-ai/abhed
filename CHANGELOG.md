@@ -143,6 +143,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Previewing writes from Abhed Studio: a prompt with
+  `_meta["zybuu.ai/abhed"].previewWrites` asks about each of its `edit` and
+  `write` calls with the diff, even where the mode allows them, and writes
+  nothing until the person accepts; for Studio's inline edit preview.
 - Abhed Studio prompts take more context: a `resource_link` to a file, a
   range of lines (a symbol) or a folder is read by the engine as an `@`
   mention is, through the policy and recorded; a link to a web page is read

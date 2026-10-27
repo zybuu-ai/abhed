@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -364,6 +365,8 @@ type Loop struct {
 	carryMu       sync.Mutex
 	reviewedCalls map[string]bool
 	carried       map[string]string
+	// previewWrites makes every edit and write an ask, for this run.
+	previewWrites atomic.Bool
 	// pendingImages are the images AttachImages gave the next message.
 	pendingImages []model.ContentBlock
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
@@ -767,6 +770,10 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	l.startMessage()
 	return l.run(ctx)
 }
+
+// PreviewWrites turns on or off asking about every edit and write, whatever
+// the mode allows, so the person sees each diff before it is written.
+func (l *Loop) PreviewWrites(on bool) { l.previewWrites.Store(on) }
 
 // AttachImages gives the next RunMessage's message these images, for a
 // model that reads them. They are held in memory only, never recorded.
@@ -1647,6 +1654,12 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 	decision = l.filesJudged(tool, call, decision)
+	// A person previewing writes sees each edit and write before it lands: an
+	// allow becomes an ask, a deny stays a deny.
+	if decision.Decision == policy.Allow && (call.Name == "edit" || call.Name == "write") && l.previewWrites.Load() {
+		decision = policy.Result{Decision: policy.Ask, Step: "preview",
+			Reason: "the person asked to preview each change before it is written"}
+	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
 	// deny. An allowed write the tool would refuse (into .abhed in
