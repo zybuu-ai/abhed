@@ -3,6 +3,7 @@ package toolchain
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -185,6 +186,18 @@ func (s *Session) Prelude(dir string) string {
 		}
 	}
 	var b strings.Builder
+	var unset []string
+	for _, in := range act {
+		for _, k := range Unsets(in) {
+			if !slices.Contains(unset, k) {
+				unset = append(unset, k)
+			}
+		}
+	}
+	if len(unset) > 0 {
+		sort.Strings(unset)
+		fmt.Fprintf(&b, "unset %s; ", strings.Join(unset, " "))
+	}
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
 		keys = append(keys, k)
