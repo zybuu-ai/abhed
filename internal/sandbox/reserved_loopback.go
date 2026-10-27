@@ -45,7 +45,7 @@ func hostListeners() (ports []int, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	defer own.Close()
+	defer func() { _ = own.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fn").Output()

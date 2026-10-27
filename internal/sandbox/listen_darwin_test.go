@@ -87,6 +87,15 @@ func TestDevServerListensOnLoopback(t *testing.T) {
 		t.Fatalf("bound a port the Mac listens on: %s", o)
 	}
 	lo, hi := reservedLoopback()
+	// Each carve-out holds on its own port, for every address of it.
+	for _, p := range []int{lo, (lo + hi) / 2, hi} {
+		for _, addr := range []string{"127.0.0.1", "0.0.0.0", "::1"} {
+			bind := `python3 -I -c 'import socket,sys; f=socket.AF_INET6 if ":" in sys.argv[1] else socket.AF_INET; s=socket.socket(f); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind((sys.argv[1], int(sys.argv[2]))); print("bo" + "und-it")' ` + addr + " " + strconv.Itoa(p)
+			if o, _ := sb.Command(context.Background(), t.TempDir(), bind).CombinedOutput(); strings.Contains(string(o), "bound-it") {
+				t.Fatalf("bound reserved port %s:%d: %s", addr, p, o)
+			}
+		}
+	}
 	prof := sb.seatbeltProfileWith(0, loopback{})
 	if !strings.Contains(prof, `(deny network-bind (local ip "localhost:`+strconv.Itoa(lo)+`"))`) ||
 		!strings.Contains(prof, `(deny network-bind (local ip "localhost:`+strconv.Itoa(hi)+`"))`) ||
