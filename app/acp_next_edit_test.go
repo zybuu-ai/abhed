@@ -135,3 +135,23 @@ func TestStudioNextEditTakesTheWindowsLineEnds(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// Whitespace the person wrote at a line's end stays (a Markdown hard break),
+// and a CRLF window takes an LF rewrite as CRLF.
+func TestStudioNextEditKeepsThePersonsWhitespace(t *testing.T) {
+	for _, tc := range []struct{ window, reply, want string }{
+		{"line one  \nline two\nline three\n", "line one\nline 2\nline three\n", "line 2\n"},
+		{"a := 1\r\nb := 2\r\nc := 3\r\n", "a := 1\nb := 20\nc := 3\n", "b := 20\r\n"},
+	} {
+		model := newFIMServer(t, tc.reply)
+		r := completionRig(t, model.URL, "")
+		noHold(t)
+		id := r.open()
+		var res nextEdits
+		r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.md",
+			"cursor": map[string]int{"line": 1}, "window": map[string]any{"startLine": 0, "text": tc.window}}, &res)
+		if len(res.Edits) != 1 || res.Edits[0].Text != tc.want || res.Edits[0].Range.Start.Line != 1 {
+			t.Fatalf("%q: %+v", tc.window, res)
+		}
+	}
+}

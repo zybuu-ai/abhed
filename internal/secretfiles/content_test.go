@@ -160,3 +160,44 @@ func TestSecretNamedKeys(t *testing.T) {
 		}
 	}
 }
+
+// The review's probes: ordinary code and keys that only name a secret are
+// left alone; = forms, JS quoted values, escaped quotes, block scalars and
+// more key names are caught; a CRLF line keeps its \r.
+func TestSecretNamedKeysLeaveCodeAlone(t *testing.T) {
+	for _, ok := range []string{
+		"  token: string;\n", "  password: string\n", "    api_key: Optional[str] = None\n", "    secret: SecretStr\n",
+		"    private_key: PrivateKey\n", "  password: user.password\n", "  token: this.token\n",
+		"  password: process.env.DB_PASSWORD\n", "  token: env.TOKEN\n", "  token: tokenFromHeader\n",
+		"  password: required\n", "      token: ${{ secrets.GITHUB_TOKEN }}\n", `  token: "${{ secrets.GITHUB_TOKEN }}"` + "\n",
+		"  token: !Ref TokenParam\n", "secretName: my-k8s-secret\n", "passwordFile: /run/secrets/db\n",
+		"token_url: https://auth.example/token\n", `tokenType: "Bearer"` + "\n", "secret_name: db-creds\n",
+		"password_policy: strict-policy-v2\n", "password_hash: argon2id-params\n", "token_count: 123456\n",
+		"token_limit: 100000\n", "pwd: /home/user/project\n",
+		"password = request.form[\"password\"]\n", "api_key = os.environ[\"API_KEY\"]\n", "password = None\n",
+	} {
+		if out, found := RedactContent(ok); found || out != ok {
+			t.Errorf("not a secret, but %q -> %q", ok, out)
+		}
+	}
+	for in, secret := range map[string]string{
+		`{"password":"abc\"123def456"}`:                       `123def456`,
+		"password=Sup3rS3cretPw\n":                            "Sup3rS3cretPw",
+		"spring.datasource.password=Sup3rS3cretPw\n":          "Sup3rS3cretPw",
+		`api_key = "a8f5f167f44f4964"` + "\n":                 "a8f5f167f44f",
+		"const conf = {password: 'Hunter2Hunter2', x: 1}":     "Hunter2Hunter2",
+		"password: |\n  first-secret-line-9\n  second-line\n": "first-secret-line-9",
+		"dbPass: Zq81kLm0Pw7x\n":                              "Zq81kLm0Pw7x",
+		"auth: Zq81kLm0Pw7x\n":                                "Zq81kLm0Pw7x",
+		"sessionKey: Zq81kLm0Pw7x\n":                          "Zq81kLm0Pw7x",
+		"bearer: Zq81kLm0Pw7x\n":                              "Zq81kLm0Pw7x",
+		"github_pat: Zq81kLm0Pw7x\n":                          "Zq81kLm0Pw7x",
+	} {
+		if out, found := RedactContent(in); !found || strings.Contains(out, secret) {
+			t.Errorf("%q -> %q", in, out)
+		}
+	}
+	if out, _ := RedactContent("Password: abc123def456\r\nnext: 1\r\n"); out != "Password: [secret]\r\nnext: 1\r\n" {
+		t.Errorf("CRLF: %q", out)
+	}
+}

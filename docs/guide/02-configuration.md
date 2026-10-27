@@ -954,6 +954,14 @@ no allowed_hosts configured") unless an allow rule such as
 allow rule or `allowed_hosts`; `abhed eval` approves every ask, so an eval
 run with `web_fetch` on and no host list fetches any public URL.
 
+One exception to "off by default": a web page a person links in Abhed
+Studio is read as that person's own `web_fetch` call even while `web_fetch`
+is off, under the same deny rules, address and secret checks. It asks as
+above when no `allowed_hosts` names the site, unless an allow rule names
+it. A user's or workspace's `web_fetch.enabled: false` does not stop it;
+only the managed file's own `"enabled": false` does. See
+[Input and memory](19-input-and-memory.md#in-abhed-studio).
+
 A wildcard over a single label, such as `*.com`, is refused. Be careful with
 wildcards over shared hosting — `*.github.io`, `*.vercel.app`,
 `*.s3.amazonaws.com`, `*.githubusercontent.com` — where anyone can publish a

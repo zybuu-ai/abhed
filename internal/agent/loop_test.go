@@ -959,7 +959,7 @@ func TestRepeatedIdenticalSuccessIsStopped(t *testing.T) {
 	if err != nil || reason != TermRetryExhausted || l.Usage().Turns != repeatedSuccessAbort {
 		t.Fatalf("%s %v after %d turns", reason, err, l.Usage().Turns)
 	}
-	if d := l.EndDetail(); !strings.Contains(d, "same answer") || !strings.Contains(d, "send a message to go on") {
+	if d := l.EndDetail(); !strings.Contains(d, "same answer") || strings.Contains(d, "send a message") {
 		t.Fatalf("detail %q", d)
 	}
 	evs, _ := store.Events("sess1")
@@ -989,5 +989,79 @@ func TestRepeatedIdenticalSuccessIsStopped(t *testing.T) {
 	l2.Config.MaxTurns = 50
 	if reason, err := l2.Run(context.Background(), "read, write, read"); err != nil || reason != TermCompleted {
 		t.Fatalf("%s %v", reason, err)
+	}
+}
+
+// tickTool answers each call with a new count: the same call, a changed answer.
+type tickTool struct{ n int }
+
+func (*tickTool) Name() string            { return "tick" }
+func (*tickTool) Description() string     { return "count" }
+func (*tickTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (*tickTool) Mutates() bool           { return false }
+func (t *tickTool) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
+	t.n++
+	return tools.Result{Content: fmt.Sprint("tick ", t.n)}
+}
+
+// A call whose answer changes each time is never taken for a loop, and the
+// count of repeated answers starts again with each message.
+func TestRepeatedAnswerCountResets(t *testing.T) {
+	dir := tempDir(t)
+	tick := call("tick", map[string]string{})
+	var turns []scriptedTurn
+	for range 8 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{tick}})
+	}
+	turns = append(turns, scriptedTurn{text: "done"})
+	l, _ := harnessIn(t, dir, turns, policy.ModeAuto, true)
+	l.Tools.Add(&tickTool{})
+	l.Config.MaxTurns = 50
+	if reason, err := l.Run(context.Background(), "tick"); err != nil || reason != TermCompleted {
+		t.Fatalf("a changing answer was stopped: %s %v", reason, err)
+	}
+
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte("same\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := call("read", map[string]string{"path": p})
+	turns = nil
+	for range repeatedSuccessAbort - 1 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{read}})
+	}
+	turns = append(turns, scriptedTurn{text: "first done"})
+	for range repeatedSuccessAbort - 1 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{read}})
+	}
+	turns = append(turns, scriptedTurn{text: "second done"})
+	l2, _ := harnessIn(t, dir, turns, policy.ModeAuto, true)
+	l2.Config.MaxTurns = 50
+	for _, msg := range []string{"read it", "read it again"} {
+		if reason, err := l2.Run(context.Background(), msg); err != nil || reason != TermCompleted {
+			t.Fatalf("%s: %s %v; the count did not start again with the message", msg, reason, err)
+		}
+	}
+}
+
+// A tool's own ask (why) is put to the person under a mode's allow, but an
+// allow rule that names the call answers it, as it does for the agent.
+func TestManualRunToolOwnAskAndAllowRules(t *testing.T) {
+	dir := tempDir(t)
+	l, _ := harnessIn(t, dir, nil, policy.ModeDefault, true)
+	asked := 0
+	ask := func(context.Context, policy.Result) (bool, error) { asked++; return false, nil }
+	tick := &tickTool{}
+	own := func(string) string { return "the tool's own reason" }
+	res, err := l.ManualRunTool(context.Background(), l.Session, tick, "p1", json.RawMessage(`{}`), ask, own)
+	if err != nil || !res.IsError || asked != 1 || tick.n != 0 {
+		t.Fatalf("mode allow: %+v %v, asked %d, ran %d", res, err, asked, tick.n)
+	}
+	if err := l.Policy.AddAllow("tick"); err != nil {
+		t.Fatal(err)
+	}
+	res, err = l.ManualRunTool(context.Background(), l.Session, tick, "p2", json.RawMessage(`{}`), ask, own)
+	if err != nil || res.IsError || asked != 1 || tick.n != 1 {
+		t.Fatalf("allow rule: %+v %v, asked %d, ran %d", res, err, asked, tick.n)
 	}
 }

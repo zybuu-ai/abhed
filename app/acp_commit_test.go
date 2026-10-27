@@ -177,7 +177,9 @@ func TestStudioCommitMessageLeavesOutIgnoredAndNamedSecrets(t *testing.T) {
 	r.write(".gitignore", "secrets.local.json\n")
 	r.write("secrets.local.json", `{"note":"IGNORED-CONTENT"}`+"\n")
 	r.write("config/app.json", `{"name":"svc","internal_api_key":"internal-9f8e7d6c5b4a"}`+"\n")
-	git("add", ".gitignore", "config/app.json")
+	// A name that reads as pathspec magic is still a path, judged and sent.
+	r.write(":!odd.txt", "ODD-CONTENT\n")
+	git("add", ".gitignore", "config/app.json", "./:!odd.txt")
 	git("add", "-f", "secrets.local.json")
 	id := r.open()
 	var res struct {
@@ -191,7 +193,7 @@ func TestStudioCommitMessageLeavesOutIgnoredAndNamedSecrets(t *testing.T) {
 	model.mu.Lock()
 	sent := strings.Join(model.bodies, "\n")
 	model.mu.Unlock()
-	if strings.Contains(sent, "IGNORED-CONTENT") || strings.Contains(sent, "internal-9f8e7d6c5b4a") || !strings.Contains(sent, "internal_api_key") {
+	if strings.Contains(sent, "IGNORED-CONTENT") || strings.Contains(sent, "internal-9f8e7d6c5b4a") || !strings.Contains(sent, "internal_api_key") || !strings.Contains(sent, "ODD-CONTENT") {
 		t.Fatalf("sent %.600s", sent)
 	}
 }

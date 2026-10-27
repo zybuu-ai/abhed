@@ -8,6 +8,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.8
 
+- A web page a person links in Abhed Studio is fetched as that person's own
+  call, with an ask when no `allowed_hosts` names it, even while `web_fetch`
+  is off; a user's or workspace's own `web_fetch.enabled: false` does not
+  stop it. Only the managed file's own `web_fetch.enabled: false` refuses it,
+  so a managed deployment that relied on the default must now set it to
+  false.
 - On a Mac, Abhed's own loopback listeners (egress proxies, each command's
   proxy port, port forwards, the sign-in callback) now take their ports from
   47600 to 47855 only, and fail, saying so, when that range is full. If
@@ -228,12 +234,17 @@ All notable changes to Abhed are recorded here. The format follows
   nothing until the person accepts; for Studio's inline edit preview.
 - Abhed Studio prompts take more context: a `resource_link` to a file, a
   range of lines (a symbol) or a folder is read by the engine as an `@`
-  mention is, through the policy and recorded; a link to a web page is read
-  with `web_fetch` as the person's call when the managed configuration turns
-  it on, and refused plainly otherwise; and `image` blocks go to a model
-  that reads images (`promptCapabilities.image` is now `true`), held in
-  memory only, with a note and a hash in the record. The SDK gains
-  `Agent.AttachImages`.
+  mention is, through the policy and recorded. A link to a web page is read
+  as the person's own `web_fetch` call, even while the agent's `web_fetch`
+  is off: under the same deny rules, address and secret checks, with a URL
+  that can never be read refused before anyone is asked, and an ask, shown
+  as a fetch, when a rule asks or no `allowed_hosts` names the site (an
+  allow rule naming it answers that); only the managed file's own
+  `web_fetch.enabled: false` refuses it. `image` blocks go to a model that
+  reads images, held in memory only, with a note and a hash in the record:
+  each model in the session's list says whether it does
+  (`_meta["zybuu.ai/abhed"].image`), and `promptCapabilities.image` is
+  `false`. The SDK gains `Agent.AttachImages` and `Model.Images`.
 - Commit messages for Abhed Studio: `_abhed/commitMessage` (the
   `commitMessage` feature). The engine reads the staged diff itself through
   the confined git, leaves out files the session may not read, key files and
@@ -878,23 +889,22 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
-- A page linked in Abhed Studio while the agent's `web_fetch` is off was
-  refused every time (its fetch had no secrets store). It is now read, with
-  `web_fetch`'s own ask when no `allowed_hosts` names the site, a URL that
-  can never be read refused before the person is asked, and the ask shown
-  as a fetch; only the managed file's own `web_fetch.enabled: false` refuses
-  it.
 - Commit messages leave out a file the repository's ignore rules name even
-  when it is force-added, and withhold the value of a JSON or YAML key whose
-  name says secret in any case (`internal_api_key`, `clientSecret`,
-  `password:`).
+  when it is force-added (a repository whose `.gitignore` is `*` gets none),
+  and withhold the value of a key whose name says secret, in any case, in
+  JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
+  and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
+  `password=`); a type, a variable, a template or a key that only names a
+  secret (`passwordFile`, `token_url`) is left alone.
 - An agent that makes the same read-only call with the same answer again
   and again is told so after three and stopped after six, with the reason
   named (`retry_exhausted`); the next message goes on. A call that can
-  change things starts the count again.
-- Next-edit suggestions take the window's line ends (no added trailing
-  spaces, the last line's newline as it was), and the model is asked to
-  apply a rename to every use in the window.
+  change things, a changed answer, a compaction and each new message start
+  the count again, and polling a subagent's status is not counted.
+- Next-edit suggestions take the window's line ends: CRLF or LF as the
+  window has them, no trailing spaces the model added (the person's own,
+  such as a Markdown hard break, are kept), and the last line's newline as
+  it was; the model is asked to apply a rename to every use in the window.
 - The SDK's `Model` gains `Images` (whether the model reads images). For
   Studio builds that read it: `_abhed/commitMessage` now answers a reply
   with no message, or one carrying a secret, with an error rather than
@@ -924,14 +934,6 @@ All notable changes to Abhed are recorded here. The format follows
   the working tree's changes when nothing is staged, gives the model room
   (2,048 tokens, 90 s), ends with a message or a clear error, and logs each
   request.
-- A web page linked in Abhed Studio is read as the person's own `web_fetch`
-  call even while the agent's `web_fetch` is off, under the same rules, and
-  asked about when a rule asks; only a managed `web_fetch.enabled: false`
-  refuses it.
-- Abhed Studio is told per model whether it reads images
-  (`_meta["zybuu.ai/abhed"].image` in the model list), and
-  `promptCapabilities.image` is `false`, so an image is offered only to a
-  model that reads it.
 - Next-edit suggestions no longer offer an edit that changes only
   whitespace at a line's end, which left the line looking the same.
 - Debugging on this Mac could not start: every default session's commands
@@ -1148,6 +1150,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 From `apidiff -m` between v1.2.8 and this release (internal packages left
 out):
+
+- Added: `config.Config.ManagedWebFetchOff`, whether the managed file
+  itself sets `web_fetch.enabled` to false; `abhed.Model.Images`.
 
 - Incompatible: `hawkeye.Call` gains `Sandbox`, a slice, and
   `monitor.Guard` now holds a mutex and a slice, so neither is comparable any

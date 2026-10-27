@@ -457,6 +457,18 @@ func (e *Engine) WithoutHooks() *Engine {
 	return &dry
 }
 
+// WithReadOnlyAsk is a copy of e in which tool, read-only, asks as askOf
+// says, as AskReadOnly would have it: for a tool policy was not built with.
+func (e *Engine) WithReadOnlyAsk(tool string, askOf func(subject string) string) *Engine {
+	c := *e
+	c.AskReadOnly = make(map[string]func(string) string, len(e.AskReadOnly)+1)
+	for k, v := range e.AskReadOnly {
+		c.AskReadOnly[k] = v
+	}
+	c.AskReadOnly[tool] = askOf
+	return &c
+}
+
 // AllowGitExtensions opts the named git extensions in; a name that is not a
 // plain subcommand, or is one of git's own, is refused.
 func (e *Engine) AllowGitExtensions(names ...string) error {

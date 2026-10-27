@@ -1183,8 +1183,17 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.messages = compacted
 	l.usage.Compactions++
 	l.justCompacted = true
+	l.forgetAnswers()
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
+}
+
+// forgetAnswers starts the repeated-answer count again once history is
+// rewritten: a call the model makes again may be for an answer it lost.
+func (l *Loop) forgetAnswers() {
+	l.failuresMu.Lock()
+	l.repeatedSuccesses, l.lastAnswers = nil, nil
+	l.failuresMu.Unlock()
 }
 
 // ErrNothingToCompact is Compact finding no older history to summarise.
@@ -1210,6 +1219,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	}
 	l.messages = compacted
 	l.usage.Compactions++
+	l.forgetAnswers()
 	l.record(EvCompactDone, ActorSystem, info)
 	return info, nil
 }
@@ -1575,7 +1585,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				"Stopping: the same call gave the same answer %d times with nothing changed in between (%s).",
 				n, truncateKey(key)),
 		})
-		l.stuckDetail = fmt.Sprintf("the same call gave the same answer %d times with nothing changed in between: %s; send a message to go on", n, truncateKey(key))
+		l.stuckDetail = fmt.Sprintf("the same call gave the same answer %d times with nothing changed in between: %s", n, truncateKey(key))
 		return TermRetryExhausted, true, nil
 	}
 	return "", false, nil
@@ -2122,9 +2132,12 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		// between, gives the same answer: the model is going round in circles.
 		// A call that can change things starts the count again.
 		n := 0
-		if tools.MutatesCall(tool, call.Args) {
+		switch {
+		case tools.MutatesCall(tool, call.Args):
 			l.repeatedSuccesses, l.lastAnswers = nil, nil
-		} else {
+		case call.Name == "task_status":
+			// Waiting on a subagent: its status is the same until it is not.
+		default:
 			if l.repeatedSuccesses == nil {
 				l.repeatedSuccesses, l.lastAnswers = map[string]int{}, map[string][32]byte{}
 			}
@@ -2483,7 +2496,8 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	return ""
 }
 
-// worstRepeatedFailure reports a call that has failed past the abort threshold.
+// worstRepeatedSuccess reports a call that has given the same answer past
+// the abort threshold with nothing changed in between.
 func (l *Loop) worstRepeatedSuccess() (string, int, bool) {
 	l.failuresMu.Lock()
 	defer l.failuresMu.Unlock()
@@ -2495,6 +2509,7 @@ func (l *Loop) worstRepeatedSuccess() (string, int, bool) {
 	return "", 0, false
 }
 
+// worstRepeatedFailure reports a call that has failed past the abort threshold.
 func (l *Loop) worstRepeatedFailure() (string, int, bool) {
 	l.failuresMu.Lock()
 	defer l.failuresMu.Unlock()

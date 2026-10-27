@@ -138,7 +138,9 @@ the change itself, with the same confined git it uses
 for its own reads, so Studio never sends a diff. A staged file the session
 may not read, one that looks like keys, or Abhed's state is left out of what
 is sent; the rest has stored secrets and key-shaped text withheld and is cut
-to 32 KiB. The model is `model.commit`, or the completion model, under the
+to 32 KiB. A file the repository's ignore rules name is left out even when
+it was force-added, so a repository that ignores everything and force-adds
+its files (a dotfiles repository, say) gets no message. The model is `model.commit`, or the completion model, under the
 same rules as completions.
 
 The record holds `commit_message.requested`, before the diff goes, with how
