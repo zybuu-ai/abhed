@@ -22,11 +22,14 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
 
 const protocolVersion = "2025-06-18"
@@ -498,7 +501,7 @@ func (t *StdioTransport) StderrTail(wait time.Duration) string {
 		case <-time.After(wait):
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(t.stderr.String()), "\n")
+	lines := strings.Split(strings.TrimSpace(t.redact(t.stderr.String())), "\n")
 	if len(lines) > 8 {
 		lines = lines[len(lines)-8:]
 	}
@@ -512,6 +515,47 @@ func (t *StdioTransport) StderrTail(wait time.Duration) string {
 		out = "…" + out[len(out)-1000:]
 	}
 	return strings.TrimSpace(out)
+}
+
+// envKept are the variables whose values are no secret and stay in a
+// server's stderr as written.
+var envKept = map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "TERM": true, "USER": true,
+	"LOGNAME": true, "SHELL": true, "PWD": true, "TZ": true}
+
+// redact takes out of a server's stderr what could be a secret before it is
+// told anywhere: each value of the server's own environment but the plain
+// ones above, an argument after a flag that names a token, key, secret or
+// password, and anything shaped like a key or token.
+func (t *StdioTransport) redact(text string) string {
+	var values []string
+	if t.cmd != nil {
+		for _, kv := range t.cmd.Env {
+			k, v, ok := strings.Cut(kv, "=")
+			if ok && !envKept[k] && !strings.HasPrefix(k, "LC_") && len(v) >= 6 {
+				values = append(values, v)
+			}
+		}
+		args := t.cmd.Args
+		for i, a := range args {
+			low := strings.ToLower(a)
+			named := strings.Contains(low, "token") || strings.Contains(low, "key") || strings.Contains(low, "secret") || strings.Contains(low, "password")
+			if !strings.HasPrefix(low, "-") || !named {
+				continue
+			}
+			if _, v, ok := strings.Cut(a, "="); ok && len(v) >= 6 {
+				values = append(values, v)
+			} else if i+1 < len(args) && len(args[i+1]) >= 6 {
+				values = append(values, args[i+1])
+			}
+		}
+	}
+	// Longest first, so a value inside another is not left half there.
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, v := range values {
+		text = strings.ReplaceAll(text, v, "[secret]")
+	}
+	text, _ = secretfiles.RedactContent(text)
+	return text
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {

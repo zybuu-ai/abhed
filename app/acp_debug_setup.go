@@ -66,10 +66,23 @@ type debugProcessTier struct {
 	Consent   string `json:"consent,omitempty"`
 }
 
-// debugLoopbackWhy is what the person agrees to for debugging on the process
-// tier: put to them once per workspace, recorded.
-const debugLoopbackWhy = "debug on this machine's process sandbox instead of a container: while it is being debugged, the program can reach " +
-	"services on this Mac (localhost ports) and they can reach it; nothing else on the network. Allowing it keeps the choice for this workspace"
+// debugLoopbackWhy is what the person agrees to for debugging on the
+// process tier here: put to them until they allow it for the workspace,
+// recorded.
+var debugLoopbackWhy = debugLoopbackWhyOn(runtime.GOOS)
+
+// debugLoopbackWhyOn is that agreement's text on goos: on macOS loopback is
+// opened to the debug command alone; on Linux the session's network is
+// open already, so the program reaches all of it.
+func debugLoopbackWhyOn(goos string) string {
+	keep := " Allow for this workspace keeps the choice; Allow once is for this debug session only"
+	if goos == "linux" {
+		return "debug on this machine's process sandbox, whose network is open, instead of a container: while it is being debugged, the program " +
+			"can reach services on this machine (localhost ports) and the network, as this session's commands can, and local services can reach it." + keep
+	}
+	return "debug on this machine's process sandbox instead of a container: while it is being debugged, the program can reach " +
+		"services on this Mac (localhost ports) and they can reach it; nothing else on the network." + keep
+}
 
 // debugEngineProbe finds the container engine, Homebrew and a Mac's podman
 // machine; tests replace it.
@@ -124,11 +137,19 @@ func findProgram(name string, places ...string) string {
 // the person's agreement: the macOS process tier (loopback is opened to the
 // debug command alone), and the Linux process tier with the network open
 // (whose loopback is the host's already).
+//
+// Not under the egress allowlist: loopback would also reach the egress
+// proxies, its own calls' and other sessions', which hold allowlists this
+// debug session was never given.
 func debugProcessTierPossible(tier string, iso tools.Isolation) bool {
-	if tier != string(sandbox.TierProcess) {
+	return debugProcessTierPossibleOn(runtime.GOOS, tier, iso)
+}
+
+func debugProcessTierPossibleOn(goos, tier string, iso tools.Isolation) bool {
+	if tier != string(sandbox.TierProcess) || iso.Allowlist {
 		return false
 	}
-	return runtime.GOOS == "darwin" || runtime.GOOS == "linux" && iso.Network
+	return goos == "darwin" || goos == "linux" && iso.Network
 }
 
 // debugSetupFor is what the session at workspace needs to debug.
@@ -227,49 +248,58 @@ func (c *acpConn) debugUseContainer(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	path, err := raiseWorkspaceTier(parts.Session.Root, string(sandbox.TierContainer))
+	path, raised, err := raiseWorkspaceTier(parts.Session.Root, sandbox.TierContainer)
 	if err != nil {
 		c.reply(msg.ID, nil, refusal(errRefused, "the workspace's configuration could not be written: %v", err))
+		return
+	}
+	if !raised {
+		// Already at least the container tier: never lowered.
+		c.reply(msg.ID, map[string]any{"path": path, "newSession": true, "already": true}, nil)
 		return
 	}
 	s.record(agent.EvDebugSetup, agent.DebugSetup{Action: "use_container", Workspace: parts.Session.Root, Path: path})
 	c.reply(msg.ID, map[string]any{"path": path, "newSession": true}, nil)
 }
 
-// raiseWorkspaceTier sets sandbox.min_tier in workspace/.abhed/config.json,
-// keeping the rest of the file.
-func raiseWorkspaceTier(workspace, tier string) (string, error) {
+// raiseWorkspaceTier sets sandbox.min_tier in workspace/.abhed/config.json
+// to tier when it is absent or weaker, keeping the rest of the file; a
+// stronger one is left as it is (raised false).
+func raiseWorkspaceTier(workspace string, tier sandbox.Tier) (string, bool, error) {
 	dir := filepath.Join(workspace, ".abhed")
 	path := filepath.Join(dir, "config.json")
 	if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New(dir + " is a link")
+		return "", false, errors.New(dir + " is a link")
 	}
 	cfg := map[string]any{}
 	if b, err := os.ReadFile(path); err == nil {
 		if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-			return "", errors.New(path + " is not a plain file")
+			return "", false, errors.New(path + " is not a plain file")
 		}
 		if err := json.Unmarshal(b, &cfg); err != nil {
-			return "", errors.New(path + " is not JSON: " + err.Error())
+			return "", false, errors.New(path + " is not JSON: " + err.Error())
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
+		return "", false, err
 	}
 	sb, _ := cfg["sandbox"].(map[string]any)
 	if sb == nil {
 		sb = map[string]any{}
 	}
-	sb["min_tier"] = tier
+	if cur, _ := sb["min_tier"].(string); cur != "" && sandbox.Tier(cur).Strength() >= tier.Strength() {
+		return path, false, nil
+	}
+	sb["min_tier"] = string(tier)
 	cfg["sandbox"] = sb
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+		return "", false, err
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return path, os.Rename(tmp, path)
+	return path, true, os.Rename(tmp, path)
 }
 
 func (c *acpConn) debugForgetConsent(msg rpcMessage) {
@@ -314,17 +344,20 @@ func debugWorkspaceKey(ws string) string {
 	return filepath.Clean(ws)
 }
 
-func readDebugConsents() debugConsents {
-	var c debugConsents
+// readDebugConsents reads the agreements; bad is set when the file is
+// there but cannot be read as one, which then counts as no agreement.
+func readDebugConsents() (c debugConsents, bad bool) {
 	if f := debugConsentFile(); f != "" {
-		if b, err := os.ReadFile(f); err == nil {
-			_ = json.Unmarshal(b, &c)
+		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &c) != nil {
+			warnf("%s is not a list of agreements to debug on the process tier, so none is taken from it", f)
+			bad = true
+			c = debugConsents{}
 		}
 	}
 	if c.Workspaces == nil {
 		c.Workspaces = map[string]time.Time{}
 	}
-	return c
+	return c, bad
 }
 
 // debugConsented reports whether the person agreed to debug workspace on the
@@ -332,7 +365,8 @@ func readDebugConsents() debugConsents {
 func debugConsented(workspace string) bool {
 	debugConsentMu.Lock()
 	defer debugConsentMu.Unlock()
-	_, ok := readDebugConsents().Workspaces[debugWorkspaceKey(workspace)]
+	c, _ := readDebugConsents()
+	_, ok := c.Workspaces[debugWorkspaceKey(workspace)]
 	return ok
 }
 
@@ -344,7 +378,15 @@ func setDebugConsent(workspace string, on bool) error {
 	if f == "" {
 		return errors.New("there is no home folder to keep the choice in")
 	}
-	c := readDebugConsents()
+	c, bad := readDebugConsents()
+	if bad {
+		// Kept aside, not overwritten: what it held is the person's to look at.
+		aside := f + ".unreadable-" + time.Now().UTC().Format("20060102T150405")
+		if err := os.Rename(f, aside); err != nil {
+			return err
+		}
+		warnf("the unreadable %s was moved to %s", f, aside)
+	}
 	if on {
 		c.Workspaces[debugWorkspaceKey(workspace)] = time.Now().UTC()
 	} else {

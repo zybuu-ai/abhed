@@ -833,14 +833,15 @@ All notable changes to Abhed are recorded here. The format follows
   machine init`, `podman machine start`, put the workspace on the container
   tier), which Studio walks through; `_abhed/debug/status-tier` reports the
   same, and `_abhed/debug/use-container` raises the workspace's tier. Or, on
-  the person's choice and one-time agreement for the workspace (recorded as
-  `debug.setup`), the macOS process tier debugs with loopback ports open to
-  the debug command alone; the Linux process tier with an open network
+  the person's choice and agreement (Allow once, or Allow for this workspace,
+  kept and recorded as `debug.setup`), the macOS process tier debugs with
+  loopback ports open to the debug command alone (never under the egress
+  allowlist); the Linux process tier with an open network
   takes the same agreement.
 - An MCP stdio server whose code lives under your home outside the
   workspace failed with only "broken pipe": the folder of a script its
   configured arguments name is now readable to it, and a server that fails
-  to start shows the end of its stderr in the error.
+  to start shows the end of its stderr, redacted, in the error.
 
 - `abhed toolchain clean` removes the whole toolchain cache, which a plain
   `rm -rf` cannot, as installed toolchains are read-only; and `abhed

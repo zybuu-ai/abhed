@@ -729,6 +729,11 @@ func (s *Process) Backend() string { return s.backend }
 // wrapEgress runs argv inside the backend's confinement; under the
 // allowlist eg is the session's proxy, its one way out.
 func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *egressState, argv ...string) *exec.Cmd {
+	if loopbackOf(ctx) && s.policy.Egress != nil {
+		// Loopback would also reach the egress proxies, other calls' and
+		// other sessions', with allowlists this command was never given.
+		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: loopback is not opened under the egress allowlist")}
+	}
 	if s.policy.Egress != nil && eg.port() == 0 {
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
 	}

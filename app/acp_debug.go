@@ -260,12 +260,16 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	callID := "u" + acpID()
 	args, _ := json.Marshal(map[string]any{"command": spec.Display, "description": "debug a " + req.Language + " program in the session sandbox"})
 	ctx, cancel := context.WithTimeout(context.Background(), debugLife)
-	// Debugging on the process tier is put to the person once per workspace.
+	// Debugging on the process tier is put to the person until they allow
+	// it for the workspace; Allow once starts this session alone.
 	var why string
+	var forWorkspace bool
+	ask := c.debugAsk(s, callID, spec.Display)
 	if loopback && !debugConsented(parts.Session.Root) {
 		why = debugLoopbackWhy
+		ask = c.manualAskWith(s, callID, "debug", spec.Display, "Allow for this workspace", &forWorkspace)
 	}
-	_, refused, err := loop.ManualAuthorizeAsking(ctx, "bash", callID, args, c.debugAsk(s, callID, spec.Display), why)
+	_, refused, err := loop.ManualAuthorizeAsking(ctx, "bash", callID, args, ask, why)
 	if err != nil {
 		cancel()
 		c.reply(msg.ID, nil, refusal(errRecord, "the debug session could not be recorded, so it was not started: %v", err))
@@ -277,7 +281,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", refused.Content))
 		return
 	}
-	if why != "" {
+	if why != "" && forWorkspace {
 		if err := setDebugConsent(parts.Session.Root, true); err != nil {
 			warnf("the choice to debug %s on the process tier could not be kept: %v", parts.Session.Root, err)
 		}
@@ -538,8 +542,20 @@ func (c *acpConn) debugAsk(s *acpSession, callID, display string) agent.ManualAs
 
 // manualAsk puts a supervisor ask about a person's debug or language-server start to them.
 func (c *acpConn) manualAsk(s *acpSession, callID, kind, display string) agent.ManualAsk {
+	return c.manualAskWith(s, callID, kind, display, "", nil)
+}
+
+// manualAskWith is manualAsk with, when always is set, a third option
+// (allow_always, named alwaysName) whose choice sets *always: for an
+// agreement kept beyond this action, which "Allow once" must not give.
+func (c *acpConn) manualAskWith(s *acpSession, callID, kind, display, alwaysName string, always *bool) agent.ManualAsk {
 	return func(ctx context.Context, d policy.Result) (bool, error) {
-		once, reject := "once:"+callID, "reject:"+callID
+		once, reject, keep := "once:"+callID, "reject:"+callID, "always:"+callID
+		options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
+		if always != nil {
+			options = append(options, map[string]any{"optionId": keep, "name": alwaysName, "kind": "allow_always"})
+		}
+		options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
 		meta := map[string]any{"tool": "bash", "step": d.Step, "reason": redacted(d.Reason), kind: true}
 		title := ui.VisibleLine(kind + ": " + display)
 		if ui.HasHidden(display) || anyHidden(d.Reason) {
@@ -549,8 +565,7 @@ func (c *acpConn) manualAsk(s *acpSession, callID, kind, display string) agent.M
 			"sessionId": s.id,
 			"toolCall": map[string]any{"toolCallId": callID, "title": title, "kind": "execute", "status": "pending",
 				"rawInput": map[string]any{"command": display}, "_meta": map[string]any{acpMetaKey: meta}},
-			"options": []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"},
-				{"optionId": reject, "name": "Deny", "kind": "reject_once"}},
+			"options": options,
 		})
 		if err != nil {
 			return false, err
@@ -563,6 +578,10 @@ func (c *acpConn) manualAsk(s *acpSession, callID, kind, display string) agent.M
 		}
 		if json.Unmarshal(res, &out) != nil || out.Outcome.Outcome != "selected" {
 			return false, errors.New("not answered")
+		}
+		if always != nil && out.Outcome.OptionID == keep {
+			*always = true
+			return true, nil
 		}
 		return out.Outcome.OptionID == once, nil
 	}
