@@ -1248,7 +1248,7 @@ func saysWork(s string) bool {
 // ("Summary", "Files changed"), a file name alone or after a label
 // ("Changes: `sum.go`"); it says nothing about the work.
 func structureOnly(t string) bool {
-	if i := strings.Index(t, ":"); i > 0 && !strings.Contains(t[:i], "`") && len(strings.Fields(t[:i])) <= 3 && pathsOnly(t[i+1:]) {
+	if i := strings.Index(t, ":"); i > 0 && !strings.Contains(t[:i], "`") && len(strings.Fields(t[:i])) <= 3 && labelOnly(t[:i]) && pathsOnly(t[i+1:]) {
 		return true
 	}
 	if pathsOnly(t) {
@@ -1289,3 +1289,15 @@ func pathsOnly(t string) bool {
 }
 
 var filePathSpanRe = regexp.MustCompile(`^[\w.\-]*/[\w./\-]*$|^[\w\-]+(?:\.[\w\-]+)*\.[A-Za-z][A-Za-z0-9]{0,5}$`)
+
+// labelOnly: a label of heading nouns ("Changes", "Files"), not one that says
+// what was done ("Created", "Files changed", "Tests pass").
+func labelOnly(l string) bool {
+	for _, w := range strings.Fields(strings.ToLower(l)) {
+		w = strings.Trim(w, ",;()·")
+		if !headingWords[w] || w == "changed" || w == "made" {
+			return false
+		}
+	}
+	return true
+}
