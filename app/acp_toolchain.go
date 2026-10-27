@@ -64,7 +64,8 @@ type toolchainAgreed struct {
 	NeedsDigest  string `json:"needs_digest"`
 	// Registries are the registry hosts the modal showed; only an install
 	// that lists them, as status offers them, opens them.
-	Registries []string `json:"registries"`
+	// Absent, the install opens none; present, it must be what is offered.
+	Registries *[]string `json:"registries"`
 }
 
 // toolchainProblem is an error's data, as the Ollama assist's is.
@@ -145,10 +146,11 @@ func (a *toolchainAgreed) changedFrom(plan toolchain.Plan, ep, lp *toolchain.Ext
 		digest = plan.Installed.Digest
 	}
 	changed := a.Version != plan.Version() || a.Digest != "" && a.Digest != digest
-	if ep != nil {
+	// An extra installed already fetches nothing, so its fields may be left out.
+	if ep != nil && ep.Installed == nil {
 		changed = changed || a.DebuggerVersion != ep.Extra.Version || a.DebuggerDigest != "" && a.DebuggerDigest != ep.Digest
 	}
-	if lp != nil {
+	if lp != nil && lp.Installed == nil {
 		changed = changed || a.LSPVersion != lp.Extra.Version || a.LSPDigest != "" && a.LSPDigest != lp.Digest
 		if n := lp.Needs; n != nil {
 			changed = changed || a.NeedsVersion != n.Version() || a.NeedsDigest != "" && a.NeedsDigest != n.Artifact.Digest
@@ -156,8 +158,11 @@ func (a *toolchainAgreed) changedFrom(plan toolchain.Plan, ep, lp *toolchain.Ext
 			changed = changed || a.NeedsVersion != ""
 		}
 	}
-	return changed || !sameHosts(hosts, a.Registries)
+	return changed || a.Registries != nil && !sameHosts(hosts, *a.Registries)
 }
+
+// opensRegistries reports whether an agreement covers the registries.
+func (a *toolchainAgreed) opensRegistries() bool { return a != nil && a.Registries != nil }
 
 // sameHosts reports whether two host lists name the same hosts.
 func sameHosts(a, b []string) bool {
@@ -468,7 +473,7 @@ func (c *acpConn) toolchainInstall(msg rpcMessage) {
 		bin, _ := toolchain.ExtraEnv(x)
 		res["lsp"] = map[string]any{"name": x.Name, "version": x.Version, "dir": x.Dir, "bin": bin}
 	}
-	if p.Agreed != nil {
+	if p.Agreed.opensRegistries() {
 		res["registries"] = tc.OpenRegistriesFor(in.Lang, "acp", func(r agent.ToolchainRegistry) { s.record(agent.EvToolchainRegistry, r) })
 	} else {
 		res["registries"] = "Its package registries were not opened: the install did not confirm them (agreed.registries)."

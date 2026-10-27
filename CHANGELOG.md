@@ -752,6 +752,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Studio's toolchain install looped on "The offer changed" with the same
+  offer: the engine required `agreed.registries`, which Studio does not
+  send, and the fields of an extra installed already. Those are no longer
+  required; an agreement without `registries` installs and opens none.
+
 - macOS process tier: every Node program failed with `EPERM ... lstat` on
   a folder above the workspace, as Node's realpath stats each one and home
   was closed to that too. The folders on the way to the workspace, the
