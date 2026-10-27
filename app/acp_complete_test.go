@@ -114,6 +114,7 @@ type completeItems struct {
 	Refused  string           `json:"refused"`
 	Limited  string           `json:"limited"`
 	Cancel   string           `json:"cancelled"`
+	Dropped  string           `json:"dropped"`
 }
 
 // §7.10: the code around the cursor, bounded, goes to the completion model's
@@ -778,5 +779,18 @@ func TestWithheldAroundKeepsTheCursor(t *testing.T) {
 		if p != tc.wantP || s != tc.wantS {
 			t.Errorf("%q | %q -> %q | %q; want %q | %q", tc.prefix, tc.suffix, p, s, tc.wantP, tc.wantS)
 		}
+	}
+}
+
+// A model that answers in prose gives no suggestion, and the answer says why.
+func TestStudioCompletionsSayWhyProseIsDropped(t *testing.T) {
+	fim := newFIMServer(t, "Below is a **complete, idiomatic implementation** of `Size`.")
+	r := completionRig(t, fim.URL, "")
+	noHold(t)
+	id := r.open()
+	var res completeItems
+	r.cl.ok("_abhed/complete", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go", "prefix": "func Size() int {\n\t"}, &res)
+	if len(res.Items) != 0 || !strings.Contains(res.Dropped, "prose") {
+		t.Fatalf("%+v", res)
 	}
 }

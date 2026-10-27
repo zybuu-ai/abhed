@@ -514,6 +514,9 @@ func (c *acpConn) complete(msg rpcMessage) {
 		empty("cancelled", "a newer completion replaced it")
 	case err != nil:
 		c.reply(msg.ID, nil, refusal(errRefused, "the completion model did not answer: %s", redacted(err.Error())))
+	case strings.TrimSpace(text) == "" && res.Dropped != "":
+		// Said, so the editor can tell a model that answers in prose from one with nothing to add.
+		c.reply(msg.ID, map[string]any{"items": []any{}, "dropped": res.Dropped}, nil)
 	case strings.TrimSpace(text) == "":
 		c.reply(msg.ID, map[string]any{"items": []any{}}, nil)
 	default:

@@ -18,6 +18,25 @@
 | `ssh_put`, `ssh_get` | file transfer over SFTP, off by default (`ssh.transfers`) |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
 
+A path given to `read`, `write`, `edit`, `glob` or `grep` may be absolute or
+relative to the workspace root (never to where a `cd` left `bash`). Either
+way it must stay in the workspace or an added directory, and the rules match
+it in both spellings.
+
+`edit` matches `old_string` exactly. When it matches nowhere exactly but
+matches one place line for line once leading and trailing whitespace is set
+aside, such as two tabs sent where the file has one, it is applied there:
+`new_string` is re-indented to the file's indentation, and the result says it
+was matched loosely and at which line. Two such places are refused, as an
+exact double match is, and any difference other than indentation is not
+matched.
+
+When a person approved an `edit` or `write` that then failed without
+changing anything, the next attempt at the same file in the same message
+takes that approval instead of asking again, once. It is recorded as
+approved by the reviewer, with `carried_from` naming the call approved. A
+rule's or the supervisor's ask is asked again.
+
 `write` creates a new file's missing folders, inside the workspace and never
 in Abhed's state, so a new file in a new folder needs no shell approval in
 `accept-edits` or `auto` mode. A write that fails takes back the folders it made,

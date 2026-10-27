@@ -763,6 +763,20 @@ All notable changes to Abhed are recorded here. The format follows
   workbench; and a refused start reaches Studio as a `start-refused`
   problem with its reason and steps.
 
+- Inline completions from a chat or reasoning model: the reply is cleaned of
+  reasoning, fences, prose and code repeated from around the cursor, asked
+  at a low temperature, and an answer that reads as prose is dropped with
+  `dropped` saying why, instead of being offered as code.
+- The file tools take a path relative to the workspace root, held to the
+  same confinement and rules as an absolute one, instead of refusing it with
+  "path must be absolute".
+- After a `retry_exhausted` end, the next message runs: the count of
+  repeated failures starts again with each message. The end names the call
+  that kept failing, and Abhed Studio is told the reason in the chat.
+- `edit` applies a change whose only difference from the file is
+  indentation, re-indented to the file's, when it matches one place, and
+  says so. An approved `edit` or `write` that failed without effect hands
+  its approval to the next attempt at the same file in the message, once.
 - A run with a temporary home folder, as a test or a harness that drives
   Abhed or Studio with a scratch `HOME` gives it, could start a real
   `ollama serve` that then held port 11434 reading the scratch home's empty

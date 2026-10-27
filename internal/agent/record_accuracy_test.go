@@ -374,7 +374,7 @@ func TestFailedApproverRecordsAnOutcome(t *testing.T) {
 // outcome on the record.
 func TestPrecheckRefusalRecordsAnOutcome(t *testing.T) {
 	l, store, _ := harness(t, []scriptedTurn{
-		{calls: []model.ToolCall{call("write", map[string]string{"path": "new.txt", "content": "x"})}},
+		{calls: []model.ToolCall{call("write", map[string]string{"path": "../new.txt", "content": "x"})}},
 		{text: "ok"},
 	}, policy.ModeDefault, true)
 	if _, err := l.Run(context.Background(), "write a file"); err != nil {
@@ -383,7 +383,7 @@ func TestPrecheckRefusalRecordsAnOutcome(t *testing.T) {
 	evs, _ := store.Events("sess1")
 	e, p := outcome(t, evs, "cwrite")
 	if e.Type != EvActionDenied || e.Actor != ActorSystem || p["by"] != BySystem || p["step"] != "precheck" ||
-		!strings.Contains(p["reason"], "absolute") {
+		!strings.Contains(p["reason"], "outside this session's workspace") {
 		t.Fatalf("outcome %s %s %v", e.Type, e.Actor, p)
 	}
 }

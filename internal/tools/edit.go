@@ -15,8 +15,11 @@ import (
 // rate. Exact string matching fails loudly and safely: a non-match changes
 // nothing, and the error tells the model precisely what to fix.
 //
-// Never fuzzy-match. A near-miss that "helpfully" applies produces a silent
-// wrong edit, which is the worst outcome this tool can have.
+// Never fuzzy-match content. The one tolerance is indentation: when the text
+// matches nowhere exactly but, line for line, matches exactly one place once
+// leading whitespace is set aside, it is applied there, re-indented to the
+// file's own indentation, and the result says it was matched loosely. Two
+// such places refuse, as an exact double match does.
 type Edit struct{}
 
 func (Edit) Name() string  { return "edit" }
@@ -118,6 +121,18 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	count := strings.Count(content, a.OldString)
+	loose := ""
+	if count == 0 && !a.ReplaceAll {
+		updated, reindented, places, lines := indentMatch(content, a.OldString, a.NewString)
+		switch {
+		case places == 1:
+			content, a.NewString, count = updated, reindented, 1
+			loose = fmt.Sprintf("Matched loosely at line %d: the indentation differed from the file's, so the replacement was re-indented to match it.", lines[0])
+		case places > 1:
+			return errf("old_string matches nowhere exactly, and %d places once indentation is set aside (lines %s).\nCopy the exact text, including leading whitespace, with enough context to make it unique.",
+				places, strings.Join(intsToStrings(lines), ", "))
+		}
+	}
 	switch {
 	case count == 0:
 		return errf("%s", noMatchMessage(a.Path, a.OldString, content))
@@ -127,13 +142,19 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	var updated string
-	if a.ReplaceAll {
+	switch {
+	case loose != "":
+		updated = content // already the file with the loose match applied
+	case a.ReplaceAll:
 		updated = strings.ReplaceAll(content, a.OldString, a.NewString)
-	} else {
+	default:
 		updated = strings.Replace(content, a.OldString, a.NewString, 1)
 	}
 
 	note, refuse := s.syntaxVerdict(ctx, path, data, true, []byte(updated))
+	if loose != "" {
+		note = strings.TrimSpace(loose + "\n" + note)
+	}
 	if refuse {
 		return errf("%s", note)
 	}
@@ -334,4 +355,99 @@ func changedRegion(updated, needle string, ctx int) string {
 		fmt.Fprintf(&b, "%6d\t%s\n", i, line)
 	}
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// indentMatch finds where old matches content line for line once leading
+// whitespace (and trailing, and a CR) is set aside. With exactly one such
+// place it returns content with those lines replaced by new, re-indented
+// from old's indentation to the file's, and the re-indented new. It returns
+// how many places matched and their first lines.
+func indentMatch(content, old, new string) (string, string, int, []int) {
+	oldLines := strings.Split(strings.TrimSuffix(old, "\n"), "\n")
+	key := strings.TrimSpace
+	solid := 0
+	for _, l := range oldLines {
+		if key(l) != "" {
+			solid++
+		}
+	}
+	if solid == 0 {
+		return "", "", 0, nil
+	}
+	fileLines := strings.Split(content, "\n")
+	var starts []int
+	for i := 0; i+len(oldLines) <= len(fileLines); i++ {
+		match := true
+		for j, ol := range oldLines {
+			if key(fileLines[i+j]) != key(ol) {
+				match = false
+				break
+			}
+		}
+		if match {
+			starts = append(starts, i)
+		}
+	}
+	lines := make([]int, len(starts))
+	for i, st := range starts {
+		lines[i] = st + 1
+	}
+	if len(starts) != 1 {
+		return "", "", len(starts), lines
+	}
+	at := starts[0]
+	// How each indentation old used is spelled in the file.
+	spell := map[string]string{}
+	var keys []string
+	cr := strings.HasSuffix(fileLines[at], "\r")
+	for j, ol := range oldLines {
+		if key(ol) == "" {
+			continue
+		}
+		o, f := leadingSpace(ol), leadingSpace(fileLines[at+j])
+		if _, seen := spell[o]; !seen {
+			spell[o] = f
+			keys = append(keys, o)
+		}
+	}
+	newLines := strings.Split(strings.TrimSuffix(new, "\n"), "\n")
+	for i, nl := range newLines {
+		nl = strings.TrimSuffix(nl, "\r")
+		if strings.TrimSpace(nl) != "" {
+			w := leadingSpace(nl)
+			best := ""
+			for _, k := range keys {
+				if strings.HasPrefix(w, k) && len(k) >= len(best) {
+					best = k
+				}
+			}
+			if f, ok := spell[best]; ok && (best != "" || spell[""] != "") {
+				nl = f + w[len(best):] + nl[len(w):]
+			}
+		}
+		if cr {
+			nl += "\r"
+		}
+		newLines[i] = nl
+	}
+	reindented := strings.Join(newLines, "\n")
+	out := append(append(append([]string{}, fileLines[:at]...), newLines...), fileLines[at+len(oldLines):]...)
+	if strings.TrimSuffix(new, "\n") == "" {
+		// A deletion takes its lines away rather than leaving one empty.
+		out = append(append([]string{}, fileLines[:at]...), fileLines[at+len(oldLines):]...)
+	}
+	return strings.Join(out, "\n"), reindented, 1, lines
+}
+
+// leadingSpace is the run of spaces and tabs a line starts with.
+func leadingSpace(l string) string {
+	return l[:len(l)-len(strings.TrimLeft(l, " \t"))]
+}
+
+func intsToStrings(ns []int) []string {
+	out := make([]string, len(ns))
+	for i, n := range ns {
+		out[i] = fmt.Sprint(n)
+	}
+	return out
 }

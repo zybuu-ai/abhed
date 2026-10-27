@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,5 +223,31 @@ func TestTrustFlagCoversOnlyTheStartedWorkspace(t *testing.T) {
 	}
 	if got := trusted(other); got == true {
 		t.Fatal("another workspace the editor opened was trusted by the flag")
+	}
+}
+
+// A prompt that ends at retry_exhausted says why in the chat, and the next
+// prompt in the same session runs.
+func TestStudioRetryExhaustedSaysWhyAndRecovers(t *testing.T) {
+	var frames []string
+	for i := range 6 {
+		frames = append(frames, callTool(fmt.Sprintf("c%d", i), "read", map[string]any{"path": "missing.txt"}))
+	}
+	r := newStudioRig(t, "", frames...)
+	id := r.open()
+	stop, ups := r.prompt(id, "read the file")
+	said := ""
+	for _, u := range ups {
+		if u["sessionUpdate"] == "agent_message_chunk" {
+			c, _ := u["content"].(map[string]any)
+			said += fmt.Sprint(c["text"])
+		}
+	}
+	if stop != "refusal" || !strings.Contains(said, "retry_exhausted") || !strings.Contains(said, "failed 6 times") {
+		t.Fatalf("stop %s, said %q", stop, said)
+	}
+	r.model.script(say("all good"))
+	if stop, _ := r.prompt(id, "try again"); stop != "end_turn" {
+		t.Fatalf("the next prompt stopped %s", stop)
 	}
 }

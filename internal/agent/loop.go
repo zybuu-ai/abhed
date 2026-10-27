@@ -358,6 +358,15 @@ type Loop struct {
 	// they abort the process.
 	repeatedFailures map[string]int
 	failuresMu       sync.Mutex
+	// reviewedCalls are this message's calls a person approved; carried maps
+	// an edit or write that failed with no effect, by tool and file, to the
+	// call whose approval the next attempt at that file takes.
+	carryMu       sync.Mutex
+	reviewedCalls map[string]bool
+	carried       map[string]string
+	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
+	// is the detail the last run's end recorded.
+	stuckDetail, lastDetail string
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
@@ -761,6 +770,10 @@ func (l *Loop) EndRefused() {
 	l.record(EvSessionEnded, ActorSystem, l.endPayload(TermPromptRefused))
 }
 
+// EndDetail is what the last run's end said beyond its reason, such as the
+// call a retry_exhausted end gave up on.
+func (l *Loop) EndDetail() string { return l.lastDetail }
+
 // RefusedPrompt is why a hook refused the last RunMessage's own message, or
 // "" when it was sent. A run that answered earlier queued messages instead
 // still completes; this says the caller's own message was not among them.
@@ -781,6 +794,76 @@ func (l *Loop) setRefused(why string) {
 func (l *Loop) startMessage() {
 	if n := l.Config.TurnsPerMessage; n > 0 {
 		l.Config.MaxTurns = l.turns + n
+	}
+	// A new message is a fresh start: failures repeated before it do not end it.
+	l.failuresMu.Lock()
+	l.repeatedFailures = nil
+	l.failuresMu.Unlock()
+	l.carryMu.Lock()
+	l.reviewedCalls, l.carried = nil, nil
+	l.carryMu.Unlock()
+}
+
+// carryKey names the file an edit or write is aimed at, "" for other calls.
+func (l *Loop) carryKey(call model.ToolCall) string {
+	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
+		return ""
+	}
+	var a struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
+		return ""
+	}
+	path, err := l.Session.Resolve(a.Path)
+	if err != nil {
+		return ""
+	}
+	return call.Name + "\x00" + path
+}
+
+// takeCarried is the call whose approval this one takes, once: an earlier
+// attempt at the same file, in this message, that a person approved and that
+// failed without changing anything. "" when there is none.
+func (l *Loop) takeCarried(call model.ToolCall) string {
+	key := l.carryKey(call)
+	if key == "" {
+		return ""
+	}
+	l.carryMu.Lock()
+	defer l.carryMu.Unlock()
+	from := l.carried[key]
+	delete(l.carried, key)
+	return from
+}
+
+// noteReviewed marks a call a person approved.
+func (l *Loop) noteReviewed(callID string) {
+	l.carryMu.Lock()
+	if l.reviewedCalls == nil {
+		l.reviewedCalls = map[string]bool{}
+	}
+	l.reviewedCalls[callID] = true
+	l.carryMu.Unlock()
+}
+
+// noteOutcome keeps the approval of a reviewed edit or write that failed, for
+// the next attempt at the same file.
+func (l *Loop) noteOutcome(call model.ToolCall, failed bool) {
+	l.carryMu.Lock()
+	reviewed := l.reviewedCalls[call.ID]
+	delete(l.reviewedCalls, call.ID)
+	l.carryMu.Unlock()
+	if !reviewed || !failed {
+		return
+	}
+	if key := l.carryKey(call); key != "" {
+		l.carryMu.Lock()
+		if l.carried == nil {
+			l.carried = map[string]string{}
+		}
+		l.carried[key] = call.ID
+		l.carryMu.Unlock()
 	}
 }
 
@@ -1399,6 +1482,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				"Stopping: the same call failed %d times without adaptation (%s).",
 				n, truncateKey(key)),
 		})
+		l.stuckDetail = fmt.Sprintf("the same call failed %d times without adaptation: %s", n, truncateKey(key))
 		return TermRetryExhausted, true, nil
 	}
 	return "", false, nil
@@ -1594,6 +1678,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		return l.deniedOwnerGone(call.ID)
 	}
 	answer := &Answer{}
+	carriedFrom := ""
 	switch decision.Decision {
 	case policy.Deny:
 		l.record(EvActionDenied, ActorSystem, withRule(map[string]string{
@@ -1625,7 +1710,18 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		}
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
-		approved, err := l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
+		var approved bool
+		var err error
+		// The mode's own ask for a file a person just approved an attempt at,
+		// which failed with no effect, is answered by that approval.
+		if decision.Step == "default" || decision.Step == "mode" {
+			carriedFrom = l.takeCarried(call)
+		}
+		if carriedFrom != "" {
+			approved, answer.By = true, ByReviewer
+		} else {
+			approved, err = l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
+		}
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
@@ -1699,10 +1795,13 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if answer.By != "" {
 			approvedBy["by"] = answer.By
 		}
-		for k, v := range map[string]string{"scope": answer.Scope, "approver": answer.Approver, "granted_scope": answer.Granted} {
+		for k, v := range map[string]string{"scope": answer.Scope, "approver": answer.Approver, "granted_scope": answer.Granted, "carried_from": carriedFrom} {
 			if v != "" {
 				approvedBy[k] = v
 			}
+		}
+		if approvedBy["by"] == ByReviewer {
+			l.noteReviewed(call.ID)
 		}
 	}
 	if ok, res := l.planClaim(call, planned, approvedBy); !ok {
@@ -1889,6 +1988,8 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		result.Content += "\n\n[ignored: " + strings.Join(keys.([]string), ", ") + " (not arguments of " + call.Name + ")]"
 	}
 
+	l.noteOutcome(call, result.IsError)
+
 	// An identical call that keeps failing means the model is not reading the
 	// error. Escalate the message rather than letting it consume every turn:
 	// the error text alone has demonstrably not worked.
@@ -1968,7 +2069,13 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
+	if reason == TermRetryExhausted && l.stuckDetail != "" && l.endDetail == "" {
+		l.endDetail = l.stuckDetail
+		defer func() { l.endDetail = "" }()
+	}
+	l.stuckDetail = ""
 	end := l.endPayload(reason)
+	l.lastDetail = end.Detail
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
 	l.observe(context.Background(), HookTurnEnd, "", string(reason))

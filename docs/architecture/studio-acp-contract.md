@@ -1285,7 +1285,8 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
 _abhed/complete { sessionId, uri, position: { line, character }, prefix: string, suffix: string,
                   language?: string, trigger?: "auto" | "invoked", seq?: number,
                   context?: { uri, text }[] }        // other open files, optional
-  → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string }
+  → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string,
+      dropped?: string }  // why the model's answer was not used as code, such as prose
 _abhed/complete/cancel { sessionId } → {}
 ```
 
@@ -1316,7 +1317,11 @@ _abhed/complete/cancel { sessionId } → {}
   completions endpoint, or a 400 saying it or `suffix` is not supported,
   switches the session to chat. Each request is sent once, no retries; under
   `local_only` no provider follows a redirect off the machine. Text only, no
-  tools.
+  tools. The answer is cleaned before it is offered: reasoning a model wrote
+  into its text (`<think>`, `analysis…final` channels) is removed, a fenced
+  block gives its code, code repeated from either side of the cursor is
+  trimmed, and an answer that reads as prose is dropped, with `dropped`
+  saying so.
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when

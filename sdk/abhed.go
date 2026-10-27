@@ -631,7 +631,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 		return answer, &EndedError{Reason: agent.TermPromptRefused, Detail: why}
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }
@@ -696,7 +696,7 @@ func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.Ra
 	}
 	raw = redactJSON(a.redact, raw)
 	if reason != agent.TermCompleted {
-		return raw, &EndedError{Reason: reason}
+		return raw, &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return raw, nil
 }
@@ -742,10 +742,10 @@ func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if reason == agent.TermPromptRefused {
-		return "", &EndedError{Reason: reason} // nothing was answered
+		return "", &EndedError{Reason: reason, Detail: a.loop.EndDetail()} // nothing was answered
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }
@@ -982,7 +982,7 @@ func (a *Agent) Wake(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted && reason != agent.TermWakeLimit {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }
