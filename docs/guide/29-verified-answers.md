@@ -362,11 +362,14 @@ counts (`12 tests`, `replicas: 3`). Then:
   passes" and "vet passes" need a lint run that reports no problems, and
   so does lint named beside a build or tests, by name or idiom ("tests and
   go vet pass", "and so does lint", "lints cleanly"): "build and lint
-  pass" needs both runs. A lint run that only reports (`golangci-lint
-  run`, `ruff check`, `eslint`, `mypy`, `tsc --noEmit`, `cargo clippy`,
-  `go vet`, with no `--fix` or output file) changes nothing, so the build
-  or test run before it stays current; one with `--fix`, or whose output
-  says it fixed something, is a change) that:
+  pass" needs both runs. A lint run that only reports, by a tool whose
+  config cannot turn fixing on (`eslint`, `mypy`, `tsc --noEmit`,
+  `staticcheck`, `cargo clippy`, `go vet`, with no `--fix` or output file),
+  changes nothing, so the build or test run before it stays current; one
+  with `--fix`, one whose output says it fixed something, and any
+  `golangci-lint` or `ruff` run (their config can turn fixing on) is a
+  change, so "build and lint pass" after a build and then `golangci-lint
+  run` stays unverified: run the linter first) that:
   - is the whole line, or the last command of an `&&` chain at its top with
     only `cd` before it, so its exit is the line's: not in a pipe, and not
     followed by `;`, `||` or `&`;
@@ -642,7 +645,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 630 plant a wrong claim. Some cite the result that shows them wrong
+session. 631 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -734,7 +737,7 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 630
+tail, a port not listening, a file not in a response). Today none of the 631
 planted claims is shown as verified (30 are contradicted, all from cited,
 conflicting evidence; the rest unverified), all 182 controls are verified,
 and none of the 279 true or neutral claims is contradicted. 19 of the
@@ -747,7 +750,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 119 strict-mode
+control, by name and by a hash of its text and calls, and 120 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -804,6 +807,4 @@ makes them.
   builds cross-platform" is not read as a build claim, `dotnet build -c
   Release` is not read as a whole build run, and lint idioms other than
   "so does lint" or "lint too" ("lint is happy too") are not read beside
-  a build or tests. A lint config that turns fixing on (`fix = true`) is
-  not seen: such a run is taken as reporting only, unless its output says
-  it fixed something.
+  a build or tests.

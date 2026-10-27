@@ -540,7 +540,7 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 630 planted wrong claims none is shown as verified and 30 are
+  -v`): of 631 planted wrong claims none is shown as verified and 30 are
   contradicted (all from cited, conflicting evidence), all 182 true controls
   are verified, and none of the 279 true or neutral claims is contradicted;
   the test holds those figures as a floor, and a regression pin freezes
@@ -588,8 +588,9 @@ All notable changes to Abhed are recorded here. The format follows
   a build for a named platform or mode needs a run that names it, while
   "on all platforms" is never shown by one run); "lint passes", alone or
   beside a build or tests by name or idiom ("tests and go vet pass", "so
-  does lint"), needs a lint run, a lint run that only reports is no
-  change, and "the build is clean" needs a build or test run; a
+  does lint"), needs a lint run, a lint run that only reports, by a tool
+  whose config cannot turn fixing on, is no change, and "the build is
+  clean" needs a build or test run; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
   change that names no file is verified only by an edit, a write or a

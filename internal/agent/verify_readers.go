@@ -95,7 +95,7 @@ func pureReader(words []string) bool {
 		return goReader(words)
 	case "find":
 		return findReader(words)
-	case "golangci-lint", "ruff", "eslint", "mypy", "tsc", "staticcheck", "cargo":
+	case "eslint", "mypy", "tsc", "staticcheck", "cargo":
 		return lintReader(prog, words)
 	}
 	spec, ok := readerSpecs[prog]
@@ -249,14 +249,14 @@ func goReader(words []string) bool {
 }
 
 // lintReader: a lint run that reports and does not fix (no --fix, no output
-// file); a config that turns fixing on is not seen.
+// file), by a tool whose config cannot turn fixing on.
 func lintReader(prog string, words []string) bool {
 	sub := ""
 	if len(words) > 1 {
 		sub = words[1]
 	}
 	switch {
-	case prog == "golangci-lint" && sub != "run", prog == "ruff" && sub != "check", prog == "cargo" && sub != "clippy":
+	case prog == "cargo" && sub != "clippy":
 		return false
 	case prog == "tsc" && !slices.Contains(words, "--noEmit"):
 		return false

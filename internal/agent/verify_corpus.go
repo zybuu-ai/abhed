@@ -346,6 +346,7 @@ var (
 	stepCargoBuildDebug  = CorpusStep{ID: "b24e", Tool: "bash", Args: map[string]any{"command": "cargo build"}, Output: "    Finished dev [unoptimized] target(s) in 0.52s\n", Exit: code(0)}
 	stepCargoRelease     = CorpusStep{ID: "b24f", Tool: "bash", Args: map[string]any{"command": "cargo build --release"}, Output: "    Finished release [optimized] target(s) in 2.10s\n", Exit: code(0)}
 	stepNpmBuildProd     = CorpusStep{ID: "b26a", Tool: "bash", Args: map[string]any{"command": "npm run build"}, Output: "vite v5.4.0 building for production...\n✓ built in 1.20s\n", Exit: code(0)}
+	stepEslintClean26    = CorpusStep{ID: "y26c", Tool: "bash", Args: map[string]any{"command": "eslint ."}, Output: "", Exit: code(0)}
 	stepRuffFixed        = CorpusStep{ID: "y26a", Tool: "bash", Args: map[string]any{"command": "ruff check ."}, Output: "Found 3 errors (3 fixed, 0 remaining).\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
@@ -1332,8 +1333,9 @@ func CorpusCases() []CorpusCase {
 		{Name: "a quantified target after a host build: It builds for all platforms.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds for all platforms."},
 		{Name: "a quantified target after a host build: It builds on all architectures.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "It builds on all architectures."},
 		{Name: "cross-platform said of the code beside a build that passed", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll), Text: "Path handling is cross-platform and the build passes."},
-		{Name: "build and lint said after a build then a read-only lint run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepGolangciRun), Text: "Build and lint pass."},
-		{Name: "a build said after a build then a read-only lint run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepGolangciRun), Text: "It builds."},
+		{Name: "build and lint said after a build then a read-only lint run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepVetQuiet), Text: "Build and lint pass."},
+		{Name: "build and lint said after a build then a golangci-lint run, whose config may fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepGolangciRun), Text: "Build and lint pass."},
+		{Name: "a build said after a build then a read-only lint run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepEslintClean26), Text: "It builds."},
 		{Name: "a build said after a build then a lint run that fixed files", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepRuffFixed), Text: "It builds."},
 		{Name: "build and lint said after a build then lint with --fix", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoBuildAll, stepGolangciFix), Text: "Build and lint pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},

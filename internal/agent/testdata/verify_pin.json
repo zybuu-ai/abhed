@@ -4048,12 +4048,12 @@
     {
       "name": "build and lint said after a build then a read-only lint run",
       "kind": "control",
-      "hash": "34134f1be71d4f3f"
+      "hash": "00e103ac2948c302"
     },
     {
       "name": "a build said after a build then a read-only lint run",
       "kind": "control",
-      "hash": "6ac8ab4c2c54d9f0"
+      "hash": "f17706dabede6bb4"
     },
     {
       "name": "a build said after a build then a lint run that fixed files",
@@ -4064,6 +4064,11 @@
       "name": "build and lint said after a build then lint with --fix",
       "kind": "planted",
       "hash": "0b48bbfdb68549c2"
+    },
+    {
+      "name": "build and lint said after a build then a golangci-lint run, whose config may fix",
+      "kind": "planted",
+      "hash": "644118d5e02e7a49"
     }
   ],
   "strict": [
@@ -4661,6 +4666,11 @@
       "scenario": "build-go",
       "reply": "I added `continue` to `Sum`. Path handling is cross-platform and the build passes.",
       "want": "completed"
+    },
+    {
+      "scenario": "build-then-golangci",
+      "reply": "I added `continue` to `Sum`. Build and lint pass.",
+      "want": "unverified"
     }
   ]
 }
