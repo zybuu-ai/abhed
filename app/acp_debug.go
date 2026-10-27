@@ -82,6 +82,8 @@ type acpDebug struct {
 	stopped bool
 	// reason is how a stop ended it: stopped, or closed with its session.
 	reason string
+	// dir is a folder the engine made for the session, removed at its end.
+	dir string
 }
 
 // debugTierProblem is why a tier cannot host a debug session, or nil. Only
@@ -160,6 +162,18 @@ func debugBridge(relayBinary string) (command, path string, pinned bool, p *debu
 	return debugrelay.Quote(path) + " " + dapbridge.Arg, path, pinned, nil
 }
 
+// goLoopbackProblem is Go on the macOS process sandbox while the session's
+// commands go out through the egress proxy (an allowlist, or package
+// registries opened): Delve picks its own loopback ports, which only every
+// loopback port would reach, and that would reach other commands' proxies.
+func goLoopbackProblem() *debugrelay.Problem {
+	return &debugrelay.Problem{Kind: debugrelay.KindTier, Retry: true,
+		Message: "Go cannot be debugged on this Mac's process sandbox while this session's commands reach the network through Abhed's egress proxy " +
+			"(an allowlist, or package registries opened): Delve picks its own loopback ports, and opening them all would also open the proxies of other commands",
+		Steps: []string{"Use the container tier for Go debugging: Set Up Debugging lists the steps (install Podman, start its machine, use the container tier)",
+			"Or debug in a new session of a workspace whose package registries are not opened (sandbox.toolchains_registries off)"}}
+}
+
 // ownBridge is the engine's own binary as the debug bridge, for Delve run on
 // this Mac (the process tier): readable to the debug command alone.
 func ownBridge() (command, path string, p *debugrelay.Problem) {
@@ -223,6 +237,20 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		}
 		loopback = true
 	}
+	// Delve on macOS picks its own loopback ports, which only a wide
+	// loopback reaches; that would also reach other calls' egress proxies.
+	if loopback && runtime.GOOS == "darwin" && req.Language == debugrelay.Go && b.Isolation.Allowlist {
+		c.reply(msg.ID, nil, debugRefusal(goLoopbackProblem()))
+		return
+	}
+	// Delve not where commands run: the install is offered before anything
+	// is judged, as for a language server.
+	if req.Language == debugrelay.Go {
+		if find := lspProgramFinder(parts.Loop.Tools); find != nil && !find("dlv") {
+			c.reply(msg.ID, nil, debugRefusal(debugrelay.NoDelve("")))
+			return
+		}
+	}
 	var bridge, bridgePath string
 	var pinned bool
 	if req.Language == debugrelay.Go {
@@ -243,6 +271,23 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	var sockDir string
 	if tier == string(sandbox.TierProcess) && runtime.GOOS == "linux" && req.Language == debugrelay.Go {
 		sockDir = "/run/abhed-dap-" + acpID()
+	}
+	// On macOS the engine makes it: a folder of this account's alone, the
+	// one place the command may make and reach a unix socket. It goes when
+	// the session does.
+	var madeDir string
+	if loopback && runtime.GOOS == "darwin" && req.Language == debugrelay.Go {
+		dir, err := os.MkdirTemp("", "abhed-dap-")
+		if err != nil {
+			c.reply(msg.ID, nil, refusal(errRefused, "the debug session could not start: a folder for its socket: %v", err))
+			return
+		}
+		sockDir, madeDir = dir, dir
+		defer func() {
+			if madeDir != "" {
+				_ = os.RemoveAll(madeDir)
+			}
+		}()
 	}
 	spec, err := debugrelay.Plan(req, parts.Session.Root, bridge, sockDir)
 	var problem *debugrelay.Problem
@@ -302,7 +347,22 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		lctx = sandbox.WithPrivateDirs(lctx, sockDir)
 	}
 	if loopback {
-		lctx = sandbox.WithLoopback(lctx)
+		// Python's adapter listens on ports chosen now, and only those are
+		// opened to it; Go's Delve picks its own, so it gets every loopback
+		// port (never under the allowlist, refused above).
+		if req.Language == debugrelay.Python {
+			ports, err := sandbox.FreeLoopbackPorts(4)
+			if err != nil {
+				cancel()
+				_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the debug adapter could not start: no free loopback port: " + err.Error(), IsError: true}, 0)
+				c.reply(msg.ID, nil, refusal(errRefused, "the debug adapter could not start: no free loopback port: %v", err))
+				return
+			}
+			debugrelay.PinPorts(&spec, ports)
+			lctx = sandbox.WithLoopbackPorts(lctx, ports...)
+		} else {
+			lctx = sandbox.WithLoopback(lctx)
+		}
 	}
 	cmd := debugCommand(b, lctx, spec.Cwd, spec.Command)
 	stdin, err1 := cmd.StdinPipe()
@@ -316,10 +376,14 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	if err != nil {
 		cancel()
 		_ = loop.ManualObserve(callID, "bash", tools.Result{Content: "the debug adapter could not start: " + err.Error(), IsError: true}, 0)
+		if loopback && req.Language == debugrelay.Go && strings.Contains(err.Error(), "loopback is not opened under the egress allowlist") {
+			c.reply(msg.ID, nil, debugRefusal(goLoopbackProblem()))
+			return
+		}
 		c.reply(msg.ID, nil, refusal(errRefused, "the debug adapter could not start: %v", err))
 		return
 	}
-	d := &acpDebug{id: "dbg-" + acpID(), callID: callID, session: s.id, cancel: cancel, started: time.Now(), done: make(chan struct{}),
+	d := &acpDebug{id: "dbg-" + acpID(), callID: callID, session: s.id, cancel: cancel, started: time.Now(), done: make(chan struct{}), dir: madeDir,
 		sends: make(chan rpcMessage, debugQueue)}
 	d.relay = debugrelay.New(stdin,
 		spec.Launch,
@@ -371,6 +435,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		launched.Bridge = bridgePath
 	}
 	s.record(agent.EvDebugLaunched, launched)
+	madeDir = "" // debugRun removes it now
 	go c.debugRun(s, d, cmd, stdout, &stderr, b.Isolation.Tier)
 	c.reply(msg.ID, map[string]any{"debugId": d.id}, nil)
 }
@@ -379,6 +444,9 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 // the session ended.
 func (c *acpConn) debugRun(s *acpSession, d *acpDebug, cmd *exec.Cmd, stdout io.Reader, stderr *bytes.Buffer, tier string) {
 	defer close(d.done)
+	if d.dir != "" {
+		defer func() { _ = os.RemoveAll(d.dir) }()
+	}
 	// An adapter whose output cannot be read (a header past its bound, a
 	// message too large) is ended, not left blocked on a pipe nobody reads.
 	pumpErr := d.relay.Pump(stdout)

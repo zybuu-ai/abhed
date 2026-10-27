@@ -16,12 +16,12 @@ import (
 
 // setupRig is a Studio session whose commands run on the process tier, with
 // the engine probe and the consent file its own.
-func setupRig(t *testing.T, engine, brew, machine string) (*studioRig, string, *[]string) {
+func setupRig(t *testing.T, brew string) (*studioRig, string, *[]string) {
 	t.Helper()
 	asked := fakeDebugger(t, 0)
 	debugTier = func(tools.Bash) string { return "process" }
 	oldProbe, oldFile := debugEngineProbe, debugConsentFile
-	debugEngineProbe = func(context.Context) (string, string, string) { return engine, brew, machine }
+	debugEngineProbe = func(context.Context) (string, string, string) { return "", brew, "" }
 	file := filepath.Join(t.TempDir(), "debug-process-tier.json")
 	debugConsentFile = func() string { return file }
 	t.Cleanup(func() { debugEngineProbe, debugConsentFile = oldProbe, oldFile })
@@ -37,7 +37,7 @@ func TestDebugContainerSetupProblem(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("the macOS process tier's setup")
 	}
-	r, id, asked := setupRig(t, "", "/opt/homebrew/bin/brew", "")
+	r, id, asked := setupRig(t, "/opt/homebrew/bin/brew")
 	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py"})
 	if m.Error == nil || len(*asked) != 0 {
 		t.Fatalf("launch %+v, asked %v", m.Error, *asked)
@@ -80,7 +80,7 @@ func TestDebugProcessTierConsent(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("the macOS process tier's consent")
 	}
-	r, id, asked := setupRig(t, "", "", "")
+	r, id, asked := setupRig(t, "")
 	var reasons []string
 	var options [][]string
 	answer := "reject:"
@@ -159,7 +159,7 @@ func TestDebugProcessTierConsent(t *testing.T) {
 // Use the container tier: sandbox.min_tier in the workspace's own file, the
 // rest of it kept, recorded.
 func TestDebugUseContainer(t *testing.T) {
-	r, id, _ := setupRig(t, "", "", "")
+	r, id, _ := setupRig(t, "")
 	r.write(".abhed/config.json", `{"sandbox":{"image":"golang:1.26"},"model":{"default":"x"}}`)
 	var res struct {
 		Path string `json:"path"`
@@ -193,8 +193,9 @@ func TestDebugProcessTierPossibleOn(t *testing.T) {
 		ok         bool
 	}{
 		{"darwin", "process", closed, true}, {"darwin", "process", open, true},
-		// Under the allowlist loopback would reach the egress proxies.
-		{"darwin", "process", allow, false},
+		// Under the allowlist only the adapter's own ports are opened (Python;
+		// Go is refused at launch).
+		{"darwin", "process", allow, true},
 		{"linux", "process", open, true}, {"linux", "process", closed, false}, {"linux", "process", allow, false},
 		{"darwin", "container", closed, false}, {"darwin", "none", closed, false}, {"linux", "fence", open, false},
 		{"windows", "process", open, false},
@@ -204,7 +205,7 @@ func TestDebugProcessTierPossibleOn(t *testing.T) {
 		}
 	}
 	if !strings.Contains(debugLoopbackWhyOn("linux"), "the network") || strings.Contains(debugLoopbackWhyOn("linux"), "nothing else on the network") ||
-		!strings.Contains(debugLoopbackWhyOn("darwin"), "nothing else on the network") {
+		!strings.Contains(debugLoopbackWhyOn("darwin"), "Nothing else on the network") {
 		t.Fatal("the agreement's text does not fit its system")
 	}
 }
@@ -231,5 +232,58 @@ func TestDebugConsentFileUnreadable(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(aside[0]); string(b) != "{not json" {
 		t.Fatalf("kept %q", b)
+	}
+}
+
+// Under the allowlist on macOS, Python debugs on the process tier with its
+// adapter's ports pinned; Go is refused with steps.
+func TestDebugProcessTierUnderAllowlist(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the macOS process tier")
+	}
+	r, id, asked := setupRig(t, "")
+	s := r.cl.conn.session(id)
+	tool, _ := s.parts.Loop.Tools.Get("bash")
+	b := tool.(tools.Bash)
+	b.Isolation.Allowlist = true
+	s.parts.Loop.Tools.Add(b)
+	if err := setDebugConsent(r.ws, true); err != nil {
+		t.Fatal(err)
+	}
+	r.write("main.go", "package main\nfunc main() {}\n")
+	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "go", "program": ".", "processTier": true})
+	if m.Error == nil || !strings.Contains(m.Error.Message, "allowlist") || len(*asked) != 0 {
+		t.Fatalf("go: %+v, ran %v", m.Error, *asked)
+	}
+	var res struct {
+		DebugID string `json:"debugId"`
+	}
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py", "processTier": true}, &res)
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "ABHED_DAP_PORTS=") || strings.Contains((*asked)[0], "exec python3 -m debugpy.adapter") {
+		t.Fatalf("python ran %v", *asked)
+	}
+	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
+}
+
+// Delve missing where commands run: the install is offered, as a structured
+// install for a one-click button, before anything is judged.
+func TestDebugOffersDelveBeforeJudging(t *testing.T) {
+	r, id, asked := setupRig(t, "")
+	debugTier = func(tools.Bash) string { return "container" }
+	old := lspProgramFinder
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(p string) bool { return p != "dlv" } }
+	t.Cleanup(func() { lspProgramFinder = old })
+	r.write("main.go", "package main\nfunc main() {}\n")
+	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "go", "program": "."})
+	if m.Error == nil || len(*asked) != 0 {
+		t.Fatalf("launch %+v ran %v", m.Error, *asked)
+	}
+	data, _ := json.Marshal(m.Error.Data)
+	if !strings.Contains(string(data), `"install":{"debugger":true,"language":"go"}`) || !strings.Contains(string(data), "adapter-missing") ||
+		strings.Contains(string(data), "_abhed/") {
+		t.Fatalf("problem %s", data)
+	}
+	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
+		t.Fatalf("judged: %v", reqs)
 	}
 }

@@ -392,8 +392,10 @@ type goTool struct {
 // goTools are the extras built with go install.
 var goTools = map[string]goTool{
 	"delve": {module: delveModule, pkg: delveModule + "/cmd/dlv", bin: "dlv", minGo: delveMinGo,
-		where:     "Linux sandboxes on amd64 or arm64, where the debugger runs",
-		platforms: func(p Platform) bool { return p.OS == "linux" && (p.Arch == "amd64" || p.Arch == "arm64") }},
+		where: "Linux and macOS on amd64 or arm64, where the debugger runs (on macOS, the process tier, with Xcode's command line tools)",
+		platforms: func(p Platform) bool {
+			return (p.OS == "linux" || p.OS == "darwin") && (p.Arch == "amd64" || p.Arch == "arm64")
+		}},
 	"gopls": {module: goplsModule, pkg: goplsModule, bin: "gopls", minGo: goplsMinGo,
 		where: "Linux and macOS on amd64 or arm64, and Linux on s390x",
 		platforms: func(p Platform) bool {

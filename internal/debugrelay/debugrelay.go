@@ -45,9 +45,23 @@ type Problem struct {
 	Message string   `json:"message"`
 	Steps   []string `json:"steps,omitempty"`
 	Retry   bool     `json:"retry"`
+	// Install is the toolchain install that fixes it, for a one-click offer:
+	// _abhed/toolchain/status then install with these, as for any toolchain.
+	Install *Install `json:"install,omitempty"`
+}
+
+// Install names a toolchain install: the language, with its debugger or its
+// language server.
+type Install struct {
+	Language string `json:"language"`
+	Debugger bool   `json:"debugger,omitempty"`
+	LSP      bool   `json:"lsp,omitempty"`
 }
 
 func (p *Problem) Error() string { return p.Message }
+
+// NoDelve is the problem of Delve missing where the session's commands run.
+func NoDelve(image string) *Problem { return MissingAdapter(exitNoDelve, image) }
 
 // Exit codes the adapter command uses when its debugger is missing.
 const (
@@ -59,13 +73,15 @@ const (
 func MissingAdapter(code int, image string) *Problem {
 	switch code {
 	case exitNoDelve:
-		return &Problem{Kind: KindAdapter, Retry: true, Message: "Delve (dlv) is not on the sandbox's PATH, so Go cannot be debugged there",
-			Steps: []string{"Install Go with its debugger: accept the toolchain offer with the debugger (_abhed/toolchain/install with debugger true), or run `abhed toolchain install -debugger -platform linux go` in your own terminal",
+		return &Problem{Kind: KindAdapter, Retry: true, Message: "Go's debugger (Delve) is not installed where this session's commands run",
+			Install: &Install{Language: "go", Debugger: true},
+			Steps: []string{"Install Go with its debugger: choose Install, or run `abhed toolchain install -debugger go` in a terminal (add `-platform linux` for the container tier)",
 				"Or use a sandbox image with Go and Delve: build one FROM " + orElse(image, "golang:1.26-bookworm") + " with `RUN go install github.com/go-delve/delve/cmd/dlv@latest`",
 				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
 	case exitNoDebugpy:
-		return &Problem{Kind: KindAdapter, Retry: true, Message: "debugpy is not installed for the sandbox's python3, so Python cannot be debugged there",
-			Steps: []string{"Install Python with its debugger: accept the toolchain offer with the debugger (_abhed/toolchain/install with debugger true), or run `abhed toolchain install -debugger python` in your own terminal",
+		return &Problem{Kind: KindAdapter, Retry: true, Message: "Python's debugger (debugpy) is not installed for the Python this session's commands run",
+			Install: &Install{Language: "python", Debugger: true},
+			Steps: []string{"Install Python with its debugger: choose Install, or run `abhed toolchain install -debugger python` in a terminal",
 				"Or use a sandbox image with Python and debugpy: build one FROM " + orElse(image, "python:3.12-slim-bookworm") + " with `RUN pip install debugpy`",
 				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
 	}
@@ -699,4 +715,36 @@ func Read(br *bufio.Reader) (json.RawMessage, error) {
 		return nil, err
 	}
 	return body, nil
+}
+
+// pinnedAdapter is debugpy's adapter with the ports it listens on taken, in
+// order, from ABHED_DAP_PORTS instead of chosen by the system: the ports the
+// sandbox opens to it alone (sandbox.WithLoopbackPorts). The variable is
+// removed before the adapter runs, so the program it starts does not see it.
+const pinnedAdapter = `import os, runpy
+import debugpy.common.sockets as s
+ports = [int(p) for p in os.environ.pop("ABHED_DAP_PORTS").split(",")]
+create = s.create_server
+def pinned(host, port=0, *a, **k):
+    if not port:
+        if not ports:
+            raise OSError("abhed-debug: no loopback port left for the debug adapter")
+        port = ports.pop(0)
+    return create(host, port, *a, **k)
+s.create_server = pinned
+runpy.run_module("debugpy.adapter", run_name="__main__", alter_sys=True)
+`
+
+// PinPorts makes a Python spec's adapter listen on ports alone, for a
+// sandbox that opens those loopback ports and no others.
+func PinPorts(spec *Spec, ports []uint16) {
+	const adapter = "exec python3 -m debugpy.adapter"
+	if !strings.HasSuffix(spec.Command, adapter) || len(ports) == 0 {
+		return
+	}
+	list := make([]string, len(ports))
+	for i, p := range ports {
+		list[i] = strconv.Itoa(int(p))
+	}
+	spec.Command = strings.TrimSuffix(spec.Command, adapter) + "ABHED_DAP_PORTS=" + strings.Join(list, ",") + " exec python3 -c " + shellQuote(pinnedAdapter)
 }

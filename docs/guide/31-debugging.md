@@ -53,27 +53,36 @@ found, and the steps left.
 **Or debug on the process tier, once you agree.** If you would rather not
 set up containers, Studio can launch on the process tier instead. Until you
 allow it for the workspace, each such launch asks, with what it means: on
-macOS, while it is being debugged, the program can reach services on this
-Mac (localhost ports) and they can reach it, and nothing else on the
-network; on Linux, where this only applies with the session's network open,
-it can reach those services and the network, as the session's commands can.
-**Allow for this workspace** keeps the choice (in
+macOS, while it is being debugged, the program can listen on this Mac's
+loopback ports, where other programs on this Mac can reach it, and a Go
+program can also reach services on this Mac (localhost ports); nothing
+else on the network. On Linux, where this only applies with the session's
+network open, it can reach those services and the network, as the
+session's commands can. **Allow for this workspace** keeps the choice (in
 `~/.abhed/state/debug-process-tier.json`; Studio's forget,
 `_abhed/debug/forget-consent`, takes it back), and later launches there are
 not asked about it. **Allow once** starts this debug session only and keeps
 nothing. Deny, a cancel or no answer starts nothing. The question and your
 answer are recorded with the launch, a kept choice as `debug.setup`
 (`process_tier_consent`), and each such session's `debug.launched` has
-`loopback: true`. On macOS only the debug command gets loopback: its
-Seatbelt profile allows connecting to and listening on loopback ports
-(`localhost:*`), and no other address; the agent's commands keep the
-network closed. Not under the egress allowlist (`sandbox.network:
-"allowlist"`): loopback would also reach the egress proxies, other calls'
-and other sessions', which hold allowlists the debug session was never
-given, so there the process tier is not offered and the sandbox refuses
-loopback to any command. Go on the macOS process tier runs Delve natively
-(it needs the Xcode command line tools' debugger), bridged by the engine's
-own program.
+`loopback: true`.
+
+On macOS only the debug command gets loopback, and only what its debugger
+needs; the agent's commands keep the network closed:
+
+- **Python:** debugpy's adapter is run with the ports it listens on chosen
+  by the engine before it starts, and the command's Seatbelt profile lets
+  it connect to those loopback ports alone (and listen on loopback). No
+  other local port, and so no egress proxy, is reachable, so this works
+  under the egress allowlist and with package registries opened too.
+- **Go:** Delve runs natively (it needs the Xcode command line tools'
+  debugger), bridged by the engine's own program through a socket folder
+  the engine makes for the session alone. Delve picks its own loopback
+  ports, so the command may connect to any loopback port; that would also
+  reach other commands' egress proxies, so Go on this Mac is refused while
+  the session's commands go out through the proxy (an allowlist, or
+  package registries opened), with steps: use the container tier, or a
+  workspace whose registries are not opened.
 
 Studio's "use the container tier" step never lowers a workspace: one
 already at `container` or `vm` is left as it is (`already: true`).
@@ -86,8 +95,13 @@ where the agent's other commands could connect to it first.
 The debugger must be in the sandbox: Delve for Go, `debugpy` for Python.
 The simplest way is to have Abhed install the language with its debugger
 ([Toolchains: Debuggers](32-toolchains.md#debuggers)): accept Studio's
-offer, or run `abhed toolchain install -debugger -platform linux go` (or
-`python`), and the next session finds it on `PATH`. Or build an image from
+offer, or run `abhed toolchain install -debugger go` (or `python`; add
+`-platform linux` for the container tier), and the next launch finds it on
+`PATH`. Delve is built for Linux and for macOS (the process tier). A Go
+launch without Delve where the session's commands run is refused before
+anything is judged, with an `adapter-missing` problem whose `install`
+(`{language: "go", debugger: true}`) is the one-click toolchain install
+Studio offers. Or build an image from
 your toolchain's image
 (`FROM golang:1.26-bookworm` with `RUN go install
 github.com/go-delve/delve/cmd/dlv@latest`, or `FROM python:3.12-slim-bookworm`

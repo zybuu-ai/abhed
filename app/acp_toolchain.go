@@ -88,8 +88,8 @@ var problemSteps = map[string][]string{
 	"toolchains_off": {"Set sandbox.toolchains to ask in your own configuration, where the managed file allows it"},
 	"no_build":       {"Name another version, or set sandbox.image to an image that has the toolchain"},
 	"changed":        {"Ask for the offer again (_abhed/toolchain/status) and show it before installing"},
-	"no_debugger": {"Debug in a Linux sandbox (the container tier, or the process tier on Linux)",
-		"For Go, use Go 1.25 or later; for Python, 3.10 or later", "Or use a sandbox image that has the debugger"},
+	"no_debugger": {"For Go, use Go 1.25 or later; for Python, 3.10 or later",
+		"Debug on Linux or macOS, amd64 or arm64", "Or use a sandbox image that has the debugger"},
 	"no_lsp": {"For Go, use Go 1.26 or later; TypeScript's server needs Node.js 22.22.2 or later",
 		"Or name a server the image has in sandbox.language_servers"},
 }
@@ -222,7 +222,10 @@ func (c *acpConn) toolchainSession(msg rpcMessage) (*acpSession, toolchainParams
 	if parts.Session != nil {
 		tc.Workspace, tc.Root = parts.Session.WorkDir(), parts.Session.Root
 	}
-	tc.Record = func(a agent.ToolchainAction) { s.record(agent.EvToolchainInstall, a) }
+	tc.Record = func(a agent.ToolchainAction) {
+		s.record(agent.EvToolchainInstall, a)
+		c.toolchainChanged(s, a)
+	}
 	l, ok := toolchainLang(p.Language)
 	if !ok {
 		return nil, p, nil, toolchain.Spec{}, toolchainError(errParams, "unknown_language",
@@ -494,4 +497,20 @@ func (c *acpConn) toolchainCancel(msg rpcMessage) {
 		cancel()
 	}
 	c.reply(msg.ID, map[string]any{"cancelled": ok}, nil)
+}
+
+// toolchainChanged tells Studio a toolchain, debugger or language server was
+// installed or removed for the session's commands, whoever did it (Studio,
+// the agent's toolchain tool, a person at the CLI is another process): a
+// language server that was missing can be started again now, without an
+// engine restart.
+func (c *acpConn) toolchainChanged(s *acpSession, a agent.ToolchainAction) {
+	if a.Outcome != agent.ToolchainOK && a.Outcome != agent.ToolchainRemoved {
+		return
+	}
+	n := map[string]any{"sessionId": s.id, "language": a.Lang, "outcome": a.Outcome}
+	if a.Extra != "" {
+		n["extra"] = a.Extra
+	}
+	c.notification("_abhed/toolchain/changed", n)
 }

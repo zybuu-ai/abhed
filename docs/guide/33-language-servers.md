@@ -27,7 +27,13 @@ accept Studio's offer, or run `abhed toolchain install -lsp go` (`python`,
 `node`, `rust`; add `-platform linux` for the container tier). When it is
 not there, starting it fails with `server-missing`, a problem that names it
 and gives that route first, then the sandbox image or
-`sandbox.language_servers`. Where commands run on this machine's files (the
+`sandbox.language_servers`; it also names the install itself
+(`install: {language, lsp: true}`), so Studio's Install button installs
+the language with its server in one step, after its usual consent modal.
+When any toolchain or server is installed or removed for the session, by
+Studio or by the agent's toolchain tool, the engine tells Studio
+(`_abhed/toolchain/changed`), which starts the server again: no engine
+restart. Where commands run on this machine's files (the
 `process` and `fence` tiers), that is found before anything is judged: the
 `PATH` commands get, with the installed toolchains' folders first, is where
 the server is looked for, so a missing one is offered for install rather
