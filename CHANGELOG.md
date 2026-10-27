@@ -143,6 +143,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Studio can manage installed toolchains (feature `toolchain.manage`):
+  `_abhed/toolchain/remove`, `_abhed/toolchain/clean`, which asks the person
+  in the engine's own permission request before removing the whole cache,
+  and `_abhed/toolchain/registries`, which opens an installed language's
+  registries as an install's `agreed.registries` does. Each is refused
+  inside an agent's command and recorded.
+
 - The terminal on the macOS process tier runs your own shell where it can:
   zsh when it is your login shell, else Homebrew's bash 4 or later, else
   `/bin/bash`, with no start-up file but Abhed's own (which commands cannot

@@ -19,11 +19,14 @@ import (
 // the official sources, verified, and records every attempt.
 
 func init() {
-	liveFeatures = append(liveFeatures, "toolchain")
+	liveFeatures = append(liveFeatures, "toolchain", "toolchain.manage")
 	handle(map[string]func(*acpConn, rpcMessage){
-		"_abhed/toolchain/status":  (*acpConn).toolchainStatus,
-		"_abhed/toolchain/install": (*acpConn).toolchainInstall,
-		"_abhed/toolchain/cancel":  (*acpConn).toolchainCancel,
+		"_abhed/toolchain/status":     (*acpConn).toolchainStatus,
+		"_abhed/toolchain/install":    (*acpConn).toolchainInstall,
+		"_abhed/toolchain/cancel":     (*acpConn).toolchainCancel,
+		"_abhed/toolchain/remove":     (*acpConn).toolchainRemove,
+		"_abhed/toolchain/clean":      (*acpConn).toolchainClean,
+		"_abhed/toolchain/registries": (*acpConn).toolchainRegistries,
 	})
 }
 

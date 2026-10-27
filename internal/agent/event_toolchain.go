@@ -27,6 +27,7 @@ const (
 	ToolchainDeclined  = "declined"  // the person said no
 	ToolchainRefused   = "refused"   // not allowed here: sandbox.toolchains off, or not a known language or version
 	ToolchainCancelled = "cancelled" // stopped part way
+	ToolchainRemoved   = "removed"   // a person removed it, or the whole cache (lang "*")
 )
 
 // ToolchainAction is the payload of toolchain.install: which toolchain, from

@@ -339,3 +339,71 @@ func TestStudioToolchainAgreementWithoutRegistries(t *testing.T) {
 		t.Fatalf("recorded %v", got)
 	}
 }
+
+// toolchain.manage: open an installed language's registries as offered,
+// remove a language's toolchain, and clean the whole cache once the person
+// says so; each recorded.
+func TestStudioToolchainManage(t *testing.T) {
+	root := fakeGoSource(t)
+	r := newStudioRig(t, "")
+	id := r.open()
+	var st struct {
+		Offer struct {
+			Version, Digest string
+			Registries      []string `json:"registries"`
+		} `json:"offer"`
+	}
+	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go"}, &st)
+	r.cl.refused(errRefused, "_abhed/toolchain/registries", map[string]any{"sessionId": id, "language": "go", "registries": st.Offer.Registries})
+	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "m1",
+		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}}, nil)
+	if len(st.Offer.Registries) > 0 {
+		r.cl.refused(errRefused, "_abhed/toolchain/registries", map[string]any{"sessionId": id, "language": "go", "registries": []string{"evil.example"}})
+		var opened struct {
+			Hosts []string `json:"hosts"`
+		}
+		r.cl.ok("_abhed/toolchain/registries", map[string]any{"sessionId": id, "language": "go", "registries": st.Offer.Registries}, &opened)
+		if len(opened.Hosts) != len(st.Offer.Registries) {
+			t.Fatalf("opened %v", opened)
+		}
+		if got, _ := r.recorded(id, "toolchain.registry"); len(got) != 1 {
+			t.Fatalf("registry opening recorded %v", got)
+		}
+	}
+	var rm struct {
+		Removed []string `json:"removed"`
+	}
+	r.cl.ok("_abhed/toolchain/remove", map[string]any{"sessionId": id, "language": "go"}, &rm)
+	if len(rm.Removed) != 1 || rm.Removed[0] != "1.22.5" {
+		t.Fatalf("removed %+v", rm)
+	}
+	r.cl.refused(errParams, "_abhed/toolchain/remove", map[string]any{"sessionId": id, "language": "go"})
+	// Clean asks the person; kept on a no, removed on a yes.
+	var cl struct {
+		Cleaned bool `json:"cleaned"`
+	}
+	r.cl.ok("_abhed/toolchain/clean", map[string]any{"sessionId": id}, &cl)
+	if cl.Cleaned {
+		t.Fatal("cleaned without the person's yes")
+	}
+	r.cl.answering(func(method string, params json.RawMessage) any { return chosen(params, "allow_once") })
+	r.cl.ok("_abhed/toolchain/clean", map[string]any{"sessionId": id}, &cl)
+	if !cl.Cleaned {
+		t.Fatal("not cleaned on the person's yes")
+	}
+	if _, err := os.Stat(root); err == nil {
+		t.Fatal("the cache outlived clean")
+	}
+	got, _ := r.recorded(id, "toolchain.install")
+	var outcomes []string
+	for _, g := range got {
+		outcomes = append(outcomes, g["lang"].(string)+":"+g["outcome"].(string))
+	}
+	if strings.Join(outcomes, " ") != "go:ok go:removed *:declined *:removed" {
+		t.Fatalf("recorded %v", outcomes)
+	}
+	old := inAgentCommand
+	inAgentCommand = func() string { return "ABHED_SESSION is set" }
+	defer func() { inAgentCommand = old }()
+	r.cl.refused(errPolicy, "_abhed/toolchain/clean", map[string]any{"sessionId": id})
+}
