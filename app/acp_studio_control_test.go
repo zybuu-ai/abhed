@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -568,15 +570,23 @@ func TestStudioPreviewWrites(t *testing.T) {
 		r.model.script(callTool("c1", "read", map[string]any{"path": file}),
 			callTool("c2", "edit", map[string]any{"path": file, "old_string": "two", "new_string": "TWO"}), say("done"))
 	}
+	var mu sync.Mutex
 	answer := "reject_once"
 	var asked []json.RawMessage
 	r.cl.answering(func(method string, params json.RawMessage) any {
 		if method == "session/request_permission" {
+			mu.Lock()
+			defer mu.Unlock()
 			asked = append(asked, params)
 			return chosen(params, answer)
 		}
 		return map[string]any{}
 	})
+	seen := func() []json.RawMessage {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]json.RawMessage(nil), asked...)
+	}
 	id := r.open()
 	prompt := func() {
 		r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "edit it"}},
@@ -584,25 +594,51 @@ func TestStudioPreviewWrites(t *testing.T) {
 	}
 	script()
 	prompt()
-	if len(asked) != 1 || !strings.Contains(string(asked[0]), `"type":"diff"`) || !strings.Contains(string(asked[0]), `"rule":"builtin:preview"`) || r.read("a.txt") != "one\ntwo\n" {
-		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	if a := seen(); len(a) != 1 || !strings.Contains(string(a[0]), `"type":"diff"`) || !strings.Contains(string(a[0]), `"rule":"builtin:preview"`) || r.read("a.txt") != "one\ntwo\n" {
+		t.Fatalf("asked %d times; file %q", len(a), r.read("a.txt"))
 	}
 	denied, _ := r.recorded(id, agent.EvActionDenied)
 	if len(denied) != 1 || denied[0]["step"] != "preview" {
 		t.Fatalf("denied %v", denied)
 	}
+	mu.Lock()
 	answer = "allow_once"
+	mu.Unlock()
 	script()
 	prompt()
-	if len(asked) != 2 || r.read("a.txt") != "one\nTWO\n" {
-		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	if a := seen(); len(a) != 2 || r.read("a.txt") != "one\nTWO\n" {
+		t.Fatalf("asked %d times; file %q", len(a), r.read("a.txt"))
 	}
 	// Without the flag the mode allows it again, unasked.
 	r.model.script(callTool("c3", "read", map[string]any{"path": file}),
 		callTool("c4", "edit", map[string]any{"path": file, "old_string": "TWO", "new_string": "2"}), say("done"))
 	r.prompt(id, "again")
-	if len(asked) != 2 || r.read("a.txt") != "one\n2\n" {
-		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	if a := seen(); len(a) != 2 || r.read("a.txt") != "one\n2\n" {
+		t.Fatalf("asked %d times; file %q", len(a), r.read("a.txt"))
+	}
+}
+
+// A prompt's preview flag and images are undone before its reply lets the
+// next prompt in: undone after, they could switch off the next prompt's
+// preview (an edit then landing unasked) or drop its images.
+func TestStudioPromptUndoesItsSettingsBeforeItsReply(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits"}`)
+	id := r.open()
+	loop := r.cl.conn.session(id).parts.Loop
+	leftOn := make(chan bool, 1)
+	old := promptExit
+	promptExit = func() { leftOn <- loop.PreviewingWrites() }
+	t.Cleanup(func() { promptExit = old })
+	r.model.script(say("done"))
+	r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "hi"}},
+		"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}}, nil)
+	select {
+	case on := <-leftOn:
+		if on {
+			t.Fatal("the prompt's preview was still on after its reply")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the prompt's handler never returned")
 	}
 }
 

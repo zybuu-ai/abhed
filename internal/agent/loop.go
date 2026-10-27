@@ -780,6 +780,9 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 // the mode allows, so the person sees each diff before it is written.
 func (l *Loop) PreviewWrites(on bool) { l.previewWrites.Store(on) }
 
+// PreviewingWrites reports whether this loop previews writes now.
+func (l *Loop) PreviewingWrites() bool { return l.previewing() }
+
 // previewing reports whether this loop, or the loop that spawned it, is
 // previewing writes, so a subagent's writes are put to the person too.
 func (l *Loop) previewing() bool {
