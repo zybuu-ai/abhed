@@ -158,7 +158,10 @@ const (
 	// BySessionScope is an "always allow" a reviewer chose earlier in the session.
 	BySessionScope = "session-scope"
 	ByHeadless     = "headless" // nobody could be asked, and the run's fixed answer applied
-	BySystem       = "system"   // the harness, with no rule or person involved
+	// ByCarried is a person's approval of the same change, which failed with
+	// no effect, taken once by its retry; see carried_from.
+	ByCarried = "carried"
+	BySystem  = "system" // the harness, with no rule or person involved
 )
 
 // Answer is what an Approver reports when a request was settled by someone
@@ -840,6 +843,9 @@ func (l *Loop) startMessage() {
 		l.Config.MaxTurns = l.turns + n
 	}
 	// A new message is a fresh start: failures repeated before it do not end it.
+	// Queued messages and wake runs start one too, so they reset the count;
+	// wake runs are bounded on their own (subagents.max_wakes_per_hour and
+	// wake_max_turns), so a reset there cannot loop without end.
 	l.failuresMu.Lock()
 	l.repeatedFailures = nil
 	l.failuresMu.Unlock()
@@ -848,15 +854,16 @@ func (l *Loop) startMessage() {
 	l.carryMu.Unlock()
 }
 
-// carryKey names an edit or write by the file it is aimed at and the text it
-// puts there, its whitespace set aside, "" for other calls: a retry that
-// only fixes how it finds its place keeps the key, other content does not.
+// carryKey names an edit or write by the file it is aimed at, the text it
+// replaces (whitespace at the end of each line aside) and the exact text it
+// puts there, "" for other calls: only a retry of the same change keeps it.
 func (l *Loop) carryKey(call model.ToolCall) string {
 	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
 		return ""
 	}
 	var a struct {
 		Path      string `json:"path"`
+		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 		Content   string `json:"content"`
 	}
@@ -867,11 +874,14 @@ func (l *Loop) carryKey(call model.ToolCall) string {
 	if err != nil {
 		return ""
 	}
-	text := a.NewString
 	if call.Name == "write" {
-		text = a.Content
+		return "write\x00" + path + "\x00" + a.Content
 	}
-	return call.Name + "\x00" + path + "\x00" + strings.Join(strings.Fields(text), " ")
+	lines := strings.Split(a.OldString, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " \t\r")
+	}
+	return "edit\x00" + path + "\x00" + strings.Join(lines, "\n") + "\x00" + a.NewString
 }
 
 // takeCarried is the call whose approval this one takes, once: an earlier
@@ -1781,7 +1791,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			carriedFrom = l.takeCarried(call)
 		}
 		if carriedFrom != "" {
-			approved, answer.By = true, ByReviewer
+			approved, answer.By = true, ByCarried
 		} else {
 			approved, err = l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		}

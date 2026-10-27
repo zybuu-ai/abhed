@@ -98,6 +98,7 @@ const (
 	BySessionScope = agent.BySessionScope
 	ByHeadless     = agent.ByHeadless
 	BySystem       = agent.BySystem
+	ByCarried      = agent.ByCarried
 )
 
 // Answer is what an approver reports when someone other than the person it

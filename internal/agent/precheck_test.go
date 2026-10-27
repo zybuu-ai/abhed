@@ -100,8 +100,9 @@ func TestAllowedDoomedWriteIsNotRecordedApproved(t *testing.T) {
 	}
 }
 
-// An approved edit that failed without effect hands its approval to the next
-// attempt at the same file in the message, once, and the record says so.
+// An approved edit that failed without effect hands its approval to a retry
+// of the very same change, once, recorded as carried; a change to another
+// place, other new text or other indentation is asked again.
 func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 	dir := tempDir(t)
 	p := filepath.Join(dir, "a.go")
@@ -113,25 +114,26 @@ func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 	}
 	turns := []scriptedTurn{
 		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
-		{calls: []model.ToolCall{edit("var z = 1", "var x = 2")}},     // fails: no such text
-		{calls: []model.ToolCall{edit("var x = 7", "\tvar x  =  2")}}, // fails, new text the same once whitespace is aside: carried
-		{calls: []model.ToolCall{edit("var x = 7", "var x = 5")}},     // fails, other new text: asked again
-		{calls: []model.ToolCall{edit("var x = 1", "var x = 3")}},     // asked again: the last approval went to a failure, and this text differs
+		{calls: []model.ToolCall{edit("var x = 1", "var x = 2")}}, // asked; the file changes meanwhile, so it fails
+		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
+		{calls: []model.ToolCall{edit("var x = 1  ", "var x = 2")}}, // the same change, a trailing space aside: carried
 		{text: "done"},
 	}
 	l, store := harnessIn(t, dir, turns, policy.ModeDefault, true)
 	counter := &askCounter{}
-	l.Approver = counter
+	// The file changes on disk while the person is asked, so the approved edit fails with no effect.
+	l.Approver = approverFunc(func(context.Context, policy.Result) (bool, error) {
+		counter.asked++
+		if counter.asked == 1 {
+			_ = os.WriteFile(p, []byte("package a\n\n// touched\nvar x = 1\n"), 0o644)
+		}
+		return true, nil
+	})
 	if _, err := l.Run(context.Background(), "change x"); err != nil {
 		t.Fatal(err)
 	}
-	// The first failure's approval answers the second; the third and fourth,
-	// with other text, are asked again.
-	if counter.asked != 3 {
-		t.Fatalf("asked %d times; want 3", counter.asked)
-	}
-	if got, _ := os.ReadFile(p); string(got) != "package a\n\nvar x = 3\n" {
-		t.Fatalf("file %q", got)
+	if got, _ := os.ReadFile(p); counter.asked != 1 || string(got) != "package a\n\n// touched\nvar x = 2\n" {
+		t.Fatalf("asked %d; file %q", counter.asked, got)
 	}
 	evs, _ := store.Events("sess1")
 	carried := 0
@@ -141,8 +143,8 @@ func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 			_ = json.Unmarshal(e.Payload, &m)
 			if m["carried_from"] != "" {
 				carried++
-				if m["by"] != ByReviewer {
-					t.Fatalf("carried approval by %q", m["by"])
+				if m["by"] != ByCarried || e.Actor != ActorSystem {
+					t.Fatalf("carried approval by %q, actor %s", m["by"], e.Actor)
 				}
 			}
 		}
@@ -150,4 +152,51 @@ func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 	if carried != 1 {
 		t.Fatalf("%d carried approvals", carried)
 	}
+}
+
+// The reviewer's probe: an approved deletion of a line that does not exist
+// does not carry to deleting other lines, and a carry never chains.
+func TestCarriedApprovalNeverMovesOrChains(t *testing.T) {
+	dir := tempDir(t)
+	p := filepath.Join(dir, "a.go")
+	body := "package a\n\nfunc h() {\n\tcheckAuth()\n\tserve()\n}\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edit := func(old, new string) model.ToolCall {
+		return call("edit", map[string]string{"path": p, "old_string": old, "new_string": new})
+	}
+	turns := []scriptedTurn{
+		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
+		{calls: []model.ToolCall{edit("\tdebugLog()\n", "")}},
+		{calls: []model.ToolCall{edit("\ttraceLog()\n", "")}},
+		{calls: []model.ToolCall{edit("\tcheckAuth()\n", "")}},
+		{calls: []model.ToolCall{edit("\tcheckAuth()\n", "")}},
+		{text: "done"},
+	}
+	l, store := harnessIn(t, dir, turns, policy.ModeDefault, true)
+	counter := &rejectAfter{allow: 1}
+	l.Approver = counter
+	if _, err := l.Run(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	// Only the first was approved; the others were asked and refused.
+	if got, _ := os.ReadFile(p); string(got) != body || counter.asked != 4 {
+		t.Fatalf("asked %d; file %q", counter.asked, got)
+	}
+	evs, _ := store.Events("sess1")
+	for _, e := range evs {
+		var m map[string]string
+		if e.Type == EvActionApproved && json.Unmarshal(e.Payload, &m) == nil && m["carried_from"] != "" {
+			t.Fatalf("an approval carried: %s", e.Payload)
+		}
+	}
+}
+
+// rejectAfter approves the first allow asks and rejects the rest, counting them.
+type rejectAfter struct{ allow, asked int }
+
+func (a *rejectAfter) Approve(context.Context, string, json.RawMessage, policy.Result) (bool, error) {
+	a.asked++
+	return a.asked <= a.allow, nil
 }

@@ -36,7 +36,7 @@ var OllamaOutcomes = []string{agent.OllamaOK, agent.OllamaFailed, agent.OllamaDe
 var Methods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 
 // Approvers are who an approval or denial names as deciding.
-var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByHeadless, agent.BySystem}
+var Approvers = []string{agent.ByPolicy, agent.ByReviewer, agent.ByUser, agent.BySessionScope, agent.ByHeadless, agent.BySystem, agent.ByCarried}
 
 // VerdictCodes are the supervisor's codes; Skipped and Unavailable stand for
 // a call the judge did not, or could not, answer.
