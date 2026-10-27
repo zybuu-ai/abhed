@@ -73,7 +73,8 @@ var heldAskWait = 30 * time.Minute
 var reviewLinger = 5 * time.Minute
 
 // promptExit runs as a prompt's handler returns, after its reply; tests use
-// it to hold that moment.
+// it to hold that moment. Replacing it is safe only while no app test runs
+// in parallel (t.Parallel), since it is one variable for every prompt.
 var promptExit = func() {}
 
 // previewWrites reads previewWrites from a prompt's _meta. Read loosely,
@@ -509,7 +510,8 @@ func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err e
 	for {
 		chunk, err := rd.ReadSlice('\n')
 		if !tooLong {
-			if len(line)+len(chunk) > max+1 {
+			// Room for the line's \r\n, which is not counted against max.
+			if len(line)+len(chunk) > max+2 {
 				tooLong = true
 				head = append(append([]byte(nil), line[:min(len(line), headMax)]...), chunk...)
 				head = head[:min(len(head), headMax)]
@@ -524,7 +526,11 @@ func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err e
 		case err != nil && (!errors.Is(err, io.EOF) || len(line) == 0 || tooLong):
 			return nil, head, tooLong, err
 		}
-		return bytes.TrimRight(line, "\r\n"), head, tooLong, nil
+		line = bytes.TrimRight(line, "\r\n")
+		if len(line) > max {
+			return nil, append([]byte(nil), line[:min(len(line), headMax)]...), true, nil
+		}
+		return line, head, tooLong, nil
 	}
 }
 
