@@ -47,8 +47,9 @@ func (e Env) PlanStart(t Target, st Status) (StartPlan, *Problem) {
 	if st.Binary != "" {
 		logPath := filepath.Join(e.LogDir, "ollama-serve.log")
 		host := t.serveHost()
-		return StartPlan{Display: "OLLAMA_HOST=" + host + " " + st.Binary + " serve", Log: logPath, Program: st.Binary,
-			path: st.Binary, args: []string{"serve"}, env: []string{"OLLAMA_HOST=" + host}}, nil
+		env := e.serveEnv(host)
+		return StartPlan{Display: commandLineOf(env) + " " + st.Binary + " serve", Log: logPath, Program: st.Binary,
+			path: st.Binary, args: []string{"serve"}, env: env}, nil
 	}
 	if e.GOOS == "darwin" && st.App != "" {
 		if !t.Default() {
@@ -242,4 +243,30 @@ func (e Env) environ() []string {
 		return os.Environ()
 	}
 	return e.Environ()
+}
+
+// serveEnv is what a server Abhed starts is given: the target's loopback
+// address and the models folder Abhed checks (OLLAMA_MODELS when the person
+// set it, else ~/.ollama/models), so the server and the check read the same
+// models.
+func (e Env) serveEnv(host string) []string {
+	env := []string{"OLLAMA_HOST=" + host}
+	if e.ModelsDir != "" {
+		env = append(env, "OLLAMA_MODELS="+e.ModelsDir)
+	}
+	return env
+}
+
+// commandLineOf is assignments as a shell shows them, a value with a space
+// or a quote quoted.
+func commandLineOf(env []string) string {
+	out := make([]string, len(env))
+	for i, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if strings.ContainsAny(v, " '\"$`\\") {
+			v = "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+		}
+		out[i] = k + "=" + v
+	}
+	return strings.Join(out, " ")
 }

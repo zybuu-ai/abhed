@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -416,7 +417,7 @@ func TestPlanStartUsesServeWheneverTheProgramIsThere(t *testing.T) {
 	def, _ := Resolve("l", "ollama", "http://127.0.0.1:11434/v1", "m", "")
 	st := Status{Target: def, Installed: true, App: "/Applications/Ollama.app", Binary: "/usr/local/bin/ollama"}
 	plan, p := env.PlanStart(def, st)
-	if p != nil || plan.Display != "OLLAMA_HOST=127.0.0.1:11434 /usr/local/bin/ollama serve" || plan.AppBinds || plan.Program != "/usr/local/bin/ollama" {
+	if p != nil || plan.Display != "OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS="+env.ModelsDir+" /usr/local/bin/ollama serve" || plan.AppBinds || plan.Program != "/usr/local/bin/ollama" {
 		t.Fatalf("macOS with the program: %+v %v", plan, p)
 	}
 	st.Binary = ""
@@ -869,5 +870,132 @@ func TestStartStepLeadsWithServe(t *testing.T) {
 	env.GOOS = "linux"
 	if got := env.startStep(tg, Status{Target: tg}); got != "OLLAMA_HOST=127.0.0.1:11434 ollama serve" {
 		t.Fatalf("linux step %q", got)
+	}
+}
+
+// realOllama answers as Ollama does, in the shapes its API documents, with
+// listed as the models of /api/tags and /v1/models; tagsFail makes
+// /api/tags fail.
+func realOllama(t *testing.T, tagsFail bool, listed ...string) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch r.URL.Path {
+		case "/api/version":
+			fmt.Fprint(w, `{"version":"0.33.2"}`)
+		case "/api/tags":
+			if tagsFail {
+				http.Error(w, `{"error":"busy"}`, http.StatusInternalServerError)
+				return
+			}
+			var ms []string
+			for _, m := range listed {
+				ms = append(ms, `{"name":"`+m+`","model":"`+m+`","modified_at":"2026-10-20T10:00:00.123456+05:30","size":17012345678,`+
+					`"digest":"b3c1d2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2",`+
+					`"details":{"parent_model":"","format":"gguf","family":"gemma4","families":["gemma4"],"parameter_size":"25.8B","quantization_level":"Q4_K_M"}}`)
+			}
+			fmt.Fprint(w, `{"models":[`+strings.Join(ms, ",")+`]}`)
+		case "/v1/models":
+			var ds []string
+			for _, m := range listed {
+				ds = append(ds, `{"id":"`+m+`","object":"model","created":1729400000,"owned_by":"library"}`)
+			}
+			fmt.Fprint(w, `{"object":"list","data":[`+strings.Join(ds, ",")+`]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A model Ollama lists is ready, by its tag, its :latest form, and through
+// /v1/models when /api/tags fails.
+func TestCheckFindsAListedModel(t *testing.T) {
+	for _, c := range []struct {
+		model    string
+		listed   []string
+		tagsFail bool
+	}{
+		{"gemma4:26b", []string{"qwen3-coder:30b", "gemma4:26b"}, false},
+		{"gemma4", []string{"gemma4:latest"}, false},
+		{"gemma4:latest", []string{"gemma4:latest"}, false},
+		{"gemma4:26b", []string{"gemma4:26b"}, true},
+	} {
+		srv := realOllama(t, c.tagsFail, c.listed...)
+		tg, _ := Resolve("gemma4", "ollama", srv.URL+"/v1", c.model, "")
+		st := testEnv(t, t.TempDir()).Check(context.Background(), tg)
+		if !st.Ready || st.Next != "" || st.Problem != nil {
+			t.Errorf("%s of %v (tags fail %v): %+v", c.model, c.listed, c.tagsFail, st)
+		}
+	}
+}
+
+// A model downloaded on this machine that the answering server does not
+// list (it was started with another HOME or OLLAMA_MODELS) is never offered
+// for download: the problem says what is wrong and how to restart it.
+func TestCheckNeverOffersToPullADownloadedModel(t *testing.T) {
+	srv := realOllama(t, false, "qwen3-coder:30b")
+	env := testEnv(t, t.TempDir())
+	manifest := filepath.Join(env.ModelsDir, "manifests", "registry.ollama.ai", "library", "gemma4", "26b")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(`{"schemaVersion":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg, _ := Resolve("gemma4", "ollama", srv.URL+"/v1", "gemma4:26b", "")
+	st := env.Check(context.Background(), tg)
+	if st.Ready || st.Next != "" || !st.Downloaded || st.Problem == nil || st.Problem.Kind != KindOtherModels {
+		t.Fatalf("status %+v", st)
+	}
+	if !strings.Contains(st.Problem.Message, env.ModelsDir) || !strings.Contains(st.Problem.Text(), "lsof") {
+		t.Errorf("problem %s", st.Problem.Text())
+	}
+	r := Assist{Env: env, Mode: ModeAsk, Admin: true}.Report(context.Background(), tg, false)
+	if r.Pull != nil || r.CanAct {
+		t.Fatalf("a download was offered: %+v", r)
+	}
+	// Not downloaded here: the pull is offered as before.
+	tg, _ = Resolve("gemma4", "ollama", srv.URL+"/v1", "gemma4:e4b", "")
+	if st := env.Check(context.Background(), tg); st.Next != "pull" || st.Downloaded {
+		t.Fatalf("a missing model: %+v", st)
+	}
+	for in, want := range map[string]bool{"gemma4:26b": true, "gemma4": false, "../x:1": false, "a/../../b:1": false} {
+		if got := env.downloaded(in); got != want {
+			t.Errorf("downloaded(%q) = %v", in, got)
+		}
+	}
+}
+
+// With no ollama on PATH, as for an app started from the Dock, the standard
+// install folders are looked in.
+func TestBinaryInStandardFolders(t *testing.T) {
+	env := testEnv(t, t.TempDir())
+	dir := t.TempDir()
+	fakeBin(t, dir, "ollama", "exit 0")
+	env.Programs = []string{filepath.Join(t.TempDir(), "missing"), filepath.Join(dir, "ollama")}
+	if got := env.binary(); got != filepath.Join(dir, "ollama") {
+		t.Fatalf("binary %q", got)
+	}
+	if d := standardPrograms("darwin"); !slices.Contains(d, "/opt/homebrew/bin/ollama") || !slices.Contains(d, "/usr/local/bin/ollama") {
+		t.Fatalf("darwin folders %v", d)
+	}
+	if DefaultEnv().Programs != nil {
+		t.Fatal("a test binary's default env looks for real programs")
+	}
+}
+
+// A server Abhed starts reads the models folder its check reads, and the
+// command shown says so.
+func TestStartUsesTheCheckedModelsFolder(t *testing.T) {
+	env := testEnv(t, t.TempDir())
+	env.ModelsDir = "/Users/me/my models"
+	tg, _ := Resolve("local", "ollama", "http://127.0.0.1:11434/v1", "gemma4:26b", "")
+	plan, p := env.PlanStart(tg, Status{Target: tg, Installed: true, Binary: "/opt/homebrew/bin/ollama"})
+	if p != nil {
+		t.Fatal(p)
+	}
+	if !slices.Contains(plan.env, "OLLAMA_MODELS=/Users/me/my models") || !strings.Contains(plan.Display, "OLLAMA_MODELS='/Users/me/my models'") {
+		t.Fatalf("plan %+v", plan)
 	}
 }

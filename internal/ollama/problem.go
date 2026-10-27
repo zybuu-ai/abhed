@@ -18,6 +18,7 @@ const (
 	KindPullFailed    = "pull_failed"
 	KindModelNotFound = "model_not_found"
 	KindNotPulled     = "not_pulled"
+	KindOtherModels   = "other_models_folder"
 	KindNotRunning    = "not_running"
 	KindRemote        = "remote"
 	KindAssistOff     = "assist_off"
