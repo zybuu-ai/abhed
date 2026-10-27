@@ -84,7 +84,6 @@ func TestLoopbackRefusedUnderAllowlist(t *testing.T) {
 	}
 }
 
-
 // Loopback to named ports holds under the allowlist: the command listens and
 // reaches its own ports, and another port on loopback (such as another
 // call's egress proxy) stays out of reach.

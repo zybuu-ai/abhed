@@ -259,8 +259,11 @@ func TestLSPMissingStepsPointAtTheInstall(t *testing.T) {
 	for lang, prog := range map[string]string{"go": "gopls", "python": "basedpyright-langserver", "typescript": "typescript-language-server", "rust": "rust-analyzer"} {
 		steps := strings.Join(lspMissingSteps(lang, prog), " | ")
 		want := "abhed toolchain install -lsp "
-		if !strings.Contains(steps, want) || !strings.Contains(steps, "lsp true") {
+		if !strings.Contains(steps, want) || strings.Contains(steps, "_abhed/") {
 			t.Errorf("%s: %s", lang, steps)
+		}
+		if l, ok := lspInstallable(lang, prog); !ok || (lang == "typescript") != (l == "node") {
+			t.Errorf("%s: not installable as %q", lang, l)
 		}
 		if lang == "typescript" && !strings.Contains(steps, "-lsp node") {
 			t.Errorf("typescript's server comes with node: %s", steps)
@@ -872,4 +875,24 @@ func TestStudioRefusedStartIsAProblem(t *testing.T) {
 		len(d.Problem.Steps) < 2 || !strings.Contains(strings.Join(d.Problem.Steps, "\n"), "abhed toolchain install -lsp go") {
 		t.Fatalf("problem %s", data)
 	}
+}
+
+// A missing server carries its one-click install; an install the agent's
+// toolchain tool makes tells Studio, so it can start the server again
+// without an engine restart.
+func TestStudioMissingServerInstallAndChanged(t *testing.T) {
+	r := newStudioRig(t, `,"monitor":{"enabled":false}`)
+	fakeLSP(t, r.ws)
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(string) bool { return false } }
+	id := r.open()
+	m := r.cl.call("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "go"})
+	if m.Error == nil || !strings.Contains(fmt.Sprint(m.Error.Data), "install:map[language:go lsp:true]") {
+		t.Fatalf("start: %+v", m.Error)
+	}
+	from := r.cl.mark()
+	payload, _ := json.Marshal(agent.ToolchainAction{Lang: "go", Extra: "gopls", Outcome: agent.ToolchainOK, By: "agent"})
+	r.cl.conn.lspNoteAction(r.cl.conn.session(id), abhed.Event{Type: agent.EvToolchainInstall, Payload: payload})
+	r.cl.waitFor(from, "toolchain changed", func(m rpcMessage) bool {
+		return m.Method == "_abhed/toolchain/changed" && strings.Contains(string(m.Params), `"extra":"gopls"`) && strings.Contains(string(m.Params), id)
+	})
 }

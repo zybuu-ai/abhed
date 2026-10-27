@@ -1180,22 +1180,33 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   It applies to a new session.
 - `launch` with `processTier: true` debugs on the process tier where
   `processTier.available` (the macOS process tier; the Linux process tier
-  with the network open; never under the egress allowlist, where loopback
-  would reach the egress proxies, and the sandbox refuses a loopback
-  command). Until the person allows it for the workspace, the launch's
+  with the network open and no allowlist). Until the person allows it for the workspace, the launch's
   judged call is put to them with the consent as its reason (`meta.step:
-  "workspace"`, or folded into the supervisor's question; on macOS "the
-  program can reach services on this Mac (localhost ports) … nothing else on
-  the network", on Linux that it reaches those services and the network),
+  "workspace"`, or folded into the supervisor's question; on macOS that the
+  program can listen on loopback, and a Go program reach services on this
+  Mac, nothing else on the network; on Linux that it reaches those services
+  and the network),
   with three options: `allow_once` ("Allow once": this session only,
   nothing kept), `allow_always` ("Allow for this workspace": kept, recorded
   as `debug.setup` `process_tier_consent`, not asked again there) and
   `reject_once`.
   `_abhed/debug/forget-consent {sessionId}` → `{}` forgets it (recorded,
-  `process_tier_forgotten`). On macOS the debug command alone gets loopback
-  ports (Seatbelt `localhost:*` outbound, inbound and bind) and nothing
-  else; `debug.launched` carries `loopback: true`. Go there is bridged by
-  the engine's own program. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
+  `process_tier_forgotten`). On macOS the debug command alone gets loopback,
+  and nothing else; `debug.launched` carries `loopback: true`. Python:
+  debugpy's adapter listens on ports the engine chose before it starts
+  (`ABHED_DAP_PORTS`, removed before the program runs), and the command may
+  listen on loopback and connect to those ports alone, so no egress proxy is
+  reachable and it works under the allowlist. Go: Delve picks its own
+  ports, so the command may connect to any loopback port; that is refused
+  while the session's commands go out through the egress proxy (an
+  allowlist or opened registries), with `kind: "tier-unsupported"` and
+  steps. Go there is bridged by the engine's own program through a socket
+  folder the engine makes for the session, the only place it may make or
+  reach a unix socket. Go without Delve where commands run is refused
+  before anything is judged, with `kind: "adapter-missing"` and
+  `problem.install: {language: "go", debugger: true}` (Python's missing
+  debugpy likewise, `{language: "python", debugger: true}`): the
+  toolchain install (§3.2b) Studio offers in one click. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
   bad params are `-32602` with `kind: "invalid-request"`.
 - The program or test, its args, cwd and env make the debuggee's command line
   (`dlv debug|test …`, `python3 …`, `python3 -m pytest …`), which is put to
@@ -1279,8 +1290,14 @@ _abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart
   with `data.problem.kind: "start-refused"` (the reason as its message, and
   steps: the toolchain route for `unknown-program`). A missing server is
   `-32000` with `data.problem.kind: "server-missing"`, whose steps start
-  with the toolchain route (`_abhed/toolchain/install` with `lsp: true`,
-  §3.2b) where Abhed installs that server. On the process and fence tiers
+  with the toolchain route where Abhed installs that server, and then
+  `problem.install: {language, lsp: true}` (`node` for TypeScript's): the
+  one-click install, `_abhed/toolchain/status` then `install` with those
+  (§3.2b). After any toolchain install or removal for the session, by
+  Studio or by the agent's toolchain tool, the engine sends
+  `_abhed/toolchain/changed {sessionId, language, outcome: "ok" |
+  "removed", extra?}` (`extra` naming gopls, delve and the like); Studio
+  starts a missing server again then, with no engine restart. On the process and fence tiers
   the server is looked for first, on the PATH commands get with the
   toolchains' folders before the host's, and a missing one is reported
   before anything is judged or recorded; the supervisor finds programs on

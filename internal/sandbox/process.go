@@ -770,7 +770,8 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 				}
 			}
 		}
-		profile := s.seatbeltProfileWith(eg.portFor(egressCallOf(ctx)), loopbackOf(ctx), append([]string{eg.caFolder()}, readOnlyPathsOf(ctx)...)...)
+		profile := s.seatbeltProfileWith(eg.portFor(egressCallOf(ctx)), loopbackOf(ctx), append([]string{eg.caFolder()}, readOnlyPathsOf(ctx)...)...) +
+			seatbeltPrivateDirs(privateDirsOf(ctx))
 		// -p takes the profile inline, avoiding a temp file the command could
 		// itself tamper with.
 		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
@@ -1460,4 +1461,23 @@ func nonEmpty(ps []string) []string {
 		}
 	}
 	return out
+}
+
+// seatbeltPrivateDirs are the rules for folders the engine made for one
+// command alone (WithPrivateDirs), such as a debugger's socket folder:
+// readable and writable, and a unix socket made and reached there, nowhere
+// else. Last in the profile, so they win over the temp areas' denies.
+func seatbeltPrivateDirs(dirs []string) string {
+	var b strings.Builder
+	for _, d := range dirs {
+		for _, p := range PathForms(d) {
+			fmt.Fprintf(&b, "(allow file-read* file-write* (subpath %q))\n", p)
+			fmt.Fprintf(&b, "(allow network-bind (local unix-socket (subpath %q)))\n", p)
+			fmt.Fprintf(&b, "(allow network-outbound (remote unix-socket (subpath %q)))\n", p)
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n;; Folders made for this command alone.\n" + b.String()
 }

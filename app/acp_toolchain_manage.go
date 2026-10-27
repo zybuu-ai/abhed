@@ -46,6 +46,7 @@ func (c *acpConn) toolchainRemove(msg rpcMessage) {
 			removed = append(removed, in.Version)
 		}
 		s.record(agent.EvToolchainInstall, ev)
+		c.toolchainChanged(s, ev)
 		if err != nil {
 			c.reply(msg.ID, nil, toolchainError(errRefused, "remove_failed", err.Error()))
 			return
@@ -105,6 +106,7 @@ func (c *acpConn) toolchainClean(msg rpcMessage) {
 		return
 	}
 	s.record(agent.EvToolchainInstall, ev)
+	c.toolchainChanged(s, ev)
 	c.reply(msg.ID, map[string]any{"cleaned": true, "root": root}, nil)
 }
 

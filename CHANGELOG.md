@@ -848,6 +848,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Debugging on this Mac could not start: under the egress allowlist, which
+  a session gets once package registries are opened, loopback was refused
+  to the debug command. Python's debug adapter now listens on ports the
+  engine chose before it starts, and only those are opened to it, so no
+  egress proxy is reachable and Python debugs under the allowlist. Go
+  debugs on the macOS process tier with a Delve built for macOS, offered
+  and installed with Go like any debugger; a Go launch without Delve offers
+  the install before anything is judged. Go on this Mac stays refused,
+  with steps, while the session goes out through the egress proxy.
+- Language servers: a missing server's problem carries the one-click
+  toolchain install (`install: {language, lsp: true}`) and plain steps, and
+  the engine tells Studio when a toolchain or server was installed or
+  removed (`_abhed/toolchain/changed`), so a new server starts without an
+  engine restart.
+
 - When a `user_prompt_submit` hook refuses every waiting message, ones
   queued while the hook decided are now counted too, so the model is not
   called again on the conversation as it was. Affects 1.2.3 to 1.2.8.

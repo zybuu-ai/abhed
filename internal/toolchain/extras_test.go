@@ -164,10 +164,11 @@ func TestDelveIsBuiltByTheEngine(t *testing.T) {
 	if pre := s.Prelude(s.Workspace); !strings.Contains(pre, filepath.Join(x.Dir, "bin")) {
 		t.Fatalf("prelude %s", pre)
 	}
-	// Delve is only for the Linux sandboxes the debugger runs in.
-	s.Platform = func() Platform { return Platform{OS: "darwin", Arch: "arm64"} }
+	// Delve is for Linux and macOS (the macOS process tier debugs natively),
+	// not other systems.
+	s.Platform = func() Platform { return Platform{OS: "windows", Arch: "amd64"} }
 	if _, err := s.PlanExtra(context.Background(), e, Plan{Installed: &goIn}); err == nil {
-		t.Fatal("Delve planned for macOS")
+		t.Fatal("Delve planned for Windows")
 	}
 }
 

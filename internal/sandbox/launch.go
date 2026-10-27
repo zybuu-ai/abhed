@@ -128,11 +128,13 @@ func FreeLoopbackPorts(n int) ([]uint16, error) {
 
 type privateDirKey struct{}
 
-// WithPrivateDirs gives one command, on the Linux process tier, empty
-// folders at these paths that only it sees: each is a tmpfs in the
-// command's own mount namespace, so the session's other commands, which
-// share its /tmp under PrivateTemp, cannot reach what is in them, such as a
-// debugger's socket. Only the engine sets it.
+// WithPrivateDirs gives one command folders that only it uses. On the Linux
+// process tier each is an empty tmpfs at that path in the command's own
+// mount namespace, so the session's other commands, which share its /tmp
+// under PrivateTemp, cannot reach what is in them, such as a debugger's
+// socket. On macOS the engine makes the folder itself, readable by this
+// account alone, and the command may write there and make and reach unix
+// sockets there, nowhere else. Only the engine sets it.
 func WithPrivateDirs(ctx context.Context, paths ...string) context.Context {
 	return context.WithValue(ctx, privateDirKey{}, append(privateDirsOf(ctx), paths...))
 }

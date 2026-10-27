@@ -480,6 +480,14 @@ func (c *acpConn) lspWorkspaceConfig(sessionID string) {
 // walk is dropped, and a write or edit of a rust-analyzer.toml stops
 // rust-analyzer before it can read it.
 func (c *acpConn) lspNoteAction(s *acpSession, ev abhed.Event) {
+	// The agent's toolchain tool installed or removed something.
+	if ev.Type == agent.EvToolchainInstall {
+		var a agent.ToolchainAction
+		if json.Unmarshal(ev.Payload, &a) == nil && a.By != agent.ByUser {
+			c.toolchainChanged(s, a)
+		}
+		return
+	}
 	if ev.Type == agent.EvSubagentAction {
 		s.raConfigs.Invalidate()
 		var p agent.SubagentAction
@@ -534,10 +542,25 @@ var lspProgramFinder = toolset.ProgramFinder
 // lspMissing is the server-missing problem for l: its program is not on the
 // sandbox's PATH, with the toolchain install first among the steps.
 func lspMissing(l *acpLSP) *rpcError {
-	return &rpcError{Code: errRefused, Message: l.argv[0] + " is not installed in the sandbox",
-		Data: map[string]any{"problem": map[string]any{"kind": "server-missing", "retry": true,
-			"message": l.argv[0] + " is not on the sandbox's PATH, so " + l.language + " has no language server there",
-			"steps":   lspMissingSteps(l.language, l.argv[0])}}}
+	prob := map[string]any{"kind": "server-missing", "retry": true,
+		"message": "No " + l.language + " language server (" + l.argv[0] + ") is installed where this session's commands run",
+		"steps":   lspMissingSteps(l.language, l.argv[0])}
+	if lang, ok := lspInstallable(l.language, l.argv[0]); ok {
+		// One click: _abhed/toolchain/status then install, with lsp true.
+		prob["install"] = map[string]any{"language": lang, "lsp": true}
+	}
+	return &rpcError{Code: errRefused, Message: l.argv[0] + " is not installed in the sandbox", Data: map[string]any{"problem": prob}}
+}
+
+// lspInstallable is the toolchain language that installs program as
+// language's server, when Abhed installs it.
+func lspInstallable(language, program string) (string, bool) {
+	lang := language
+	if l, ok := toolchain.Find(language); ok {
+		lang = l.Name
+	}
+	e, ok := toolchain.LSPFor(lang)
+	return lang, ok && e.Name == lspServerPackage(program)
 }
 
 // lspRefused is a refused start as a problem Studio shows, with the reason
@@ -559,14 +582,10 @@ func lspRefused(l *acpLSP, why string) *rpcError {
 // install it with its language through the toolchain route, where Abhed
 // installs one, else use an image or another server.
 func lspMissingSteps(language, program string) []string {
-	lang := language
-	if l, ok := toolchain.Find(language); ok {
-		lang = l.Name
-	}
 	var steps []string
-	if e, ok := toolchain.LSPFor(lang); ok && e.Name == lspServerPackage(program) {
-		steps = append(steps, "Install "+lang+" with its language server: accept the toolchain offer with the language server (_abhed/toolchain/install with lsp true), "+
-			"or run `abhed toolchain install -lsp "+lang+"` in your own terminal (add `-platform linux` for the container tier)")
+	if lang, ok := lspInstallable(language, program); ok {
+		steps = append(steps, "Install "+lang+" with its language server: choose Install, or run `abhed toolchain install -lsp "+lang+
+			"` in a terminal (add `-platform linux` for the container tier)")
 		steps = append(steps, "Or use a sandbox image that has "+program)
 	} else {
 		steps = append(steps, "Use a sandbox image that has "+program)
