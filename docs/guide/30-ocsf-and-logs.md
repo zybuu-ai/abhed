@@ -181,7 +181,7 @@ Network Activity (Open, or Refuse for a denial) in 1.3.0 and 1.1.0.
 
 **The control plane.** The control plane's audit record is a chain apart
 from the session record: the sandbox operations, every mutating API request
-(`api:<METHOD> <route>`) and, from the Enterprise edition, its admin events
+(`api:<METHOD> <route>`) and, from the Team and Enterprise editions, their admin events
 (`admin:<action>`), in Postgres (`sandbox_audit`, one chain per tenant), in
 the control plane's SQLite database, or in the local `api.jsonl`. Each row
 is API Activity:
