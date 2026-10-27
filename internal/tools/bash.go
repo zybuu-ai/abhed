@@ -66,6 +66,9 @@ type Bash struct {
 	// Forward, when set, passes named variables already in a command's Env
 	// into what Sandbox built, in place of sandbox.ForwardEnv.
 	Forward func(cmd *exec.Cmd, names []string)
+	// ShellLine is the line the interactive terminal is judged and recorded
+	// as; nil is bash's.
+	ShellLine func() string
 	// NotFound, when set, says what a command run in dir that could not
 	// find program can do about it, such as install the toolchain; "" says nothing.
 	NotFound func(dir, program string) string

@@ -432,6 +432,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {
 			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+			bash.ShellLine = func() string { return sandbox.TerminalCommandOf(sb) }
 		}
 	}
 	// A users or secrets file kept outside .abhed is state all the same.

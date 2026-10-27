@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,7 +51,11 @@ type Process struct {
 	// caches is the folder holding this sandbox's own toolchain caches on
 	// Seatbelt, made at its first command; "" when it could not be.
 	cachesOnce sync.Once
-	caches     string
+	// zdotdir holds a zsh terminal's start-up file, in the sandbox's own
+	// caches, denied to commands' writes.
+	zshOnce sync.Once
+	zdotdir atomic.Pointer[string]
+	caches  string
 
 	// tmp is this sandbox's own temp folder under PrivateTemp, made at its
 	// first command; tmpErr says why it could not be.
@@ -667,8 +672,42 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return hangUp(s.wrapEgress(ctx, cwd, append(env, shellEnv(s.Tier())...), eg, shellArgv...))
+	choice := s.shell()
+	env = append(append(env, shellEnv(s.Tier())...), loginEnv()...)
+	if z := s.zdotdir.Load(); choice.zsh && z != nil {
+		env = append(env, "ZDOTDIR="+*z)
+	}
+	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
 }
+
+// shell is the terminal's shell: the person's preferred one on macOS, where
+// the sandbox's own caches can hold zsh's start-up file, else bash.
+func (s *Process) shell() shellChoice {
+	if s.backend != "sandbox-exec" {
+		return bashChoice(shellArgv[0])
+	}
+	choice := hostShell()
+	if !choice.zsh {
+		return choice
+	}
+	s.zshOnce.Do(func() {
+		s.ownCaches()
+		if s.caches == "" {
+			return
+		}
+		dir := filepath.Join(s.caches, "zsh")
+		if os.Mkdir(dir, 0o700) == nil && os.WriteFile(filepath.Join(dir, ".zshrc"), []byte(zshrc(s.Tier())), 0o600) == nil {
+			s.zdotdir.Store(&dir)
+		}
+	})
+	if s.zdotdir.Load() == nil {
+		return bashChoice(shellArgv[0])
+	}
+	return choice
+}
+
+// ShellLine is the line the terminal is judged and recorded as.
+func (s *Process) ShellLine() string { return s.shell().line }
 
 // Backend names the mechanism: sandbox-exec or bwrap.
 func (s *Process) Backend() string { return s.backend }
@@ -900,6 +939,10 @@ func (s *Process) readOnlyWriteDenies() []string {
 	paths := append([]string(nil), s.policy.ReadOnlyPaths...)
 	if root, err := helperCacheRoot(); err == nil {
 		paths = append(paths, root)
+	}
+	// A zsh terminal's start-up file, which no command may change.
+	if z := s.zdotdir.Load(); z != nil {
+		paths = append(paths, *z)
 	}
 	var out []string
 	for _, p := range formsOf(paths) {

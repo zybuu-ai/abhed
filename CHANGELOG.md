@@ -143,6 +143,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- The terminal on the macOS process tier runs your own shell where it can:
+  zsh when it is your login shell, else Homebrew's bash 4 or later, else
+  `/bin/bash`, with no start-up file but Abhed's own (which commands cannot
+  change), and only your language, time zone, editor and colour settings from
+  your login environment. A zsh terminal is judged and recorded as `zsh -d
+  -i`.
+
 - `mode.default`: the mode new sessions start in where `permissions.mode`
   names none, so a workspace's Studio chats keep the mode chosen for it
   (`plan`, `default`, `accept-edits` or `auto`, never `bypass`). An untrusted
