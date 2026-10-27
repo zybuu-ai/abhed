@@ -258,6 +258,14 @@ Installed toolchains are read-only, so a plain `rm -rf` of the cache fails.
 the whole cache, every toolchain and extra for every platform (asked first,
 or with `-yes`).
 
+Abhed Studio does the same through the engine: removing a language takes its
+installed versions for the platform the session's commands run on; cleaning
+asks you in Abhed's own prompt before removing the whole cache; and opening
+registries opens an installed language's package registries to the
+session's commands, showing the hosts first, as an install's offer does.
+Each is your own act, refused inside an agent's command, and recorded as
+`toolchain.install` (`outcome: removed`) or `toolchain.registry`.
+
 ## The record
 
 Every install, by the agent or a person, is recorded as `toolchain.install`

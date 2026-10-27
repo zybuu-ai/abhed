@@ -21,7 +21,7 @@ var Steps = []string{
 }
 
 // ToolchainOutcomes are how a toolchain install ended.
-var ToolchainOutcomes = []string{agent.ToolchainOK, agent.ToolchainFailed, agent.ToolchainDeclined, agent.ToolchainRefused, agent.ToolchainCancelled}
+var ToolchainOutcomes = []string{agent.ToolchainOK, agent.ToolchainFailed, agent.ToolchainDeclined, agent.ToolchainRefused, agent.ToolchainCancelled, agent.ToolchainRemoved}
 
 // toolchainLangs bound the lang label.
 var toolchainLangs = []string{"go", "python", "node", "rust", "java", "maven", "gradle", "ruby", "dotnet"}

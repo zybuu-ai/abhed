@@ -107,7 +107,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		return 2
 	}
 	if role != nil {
-		from := policy.Mode(orDefault(cfg.Permissions.Mode, "default"))
+		from := policy.Mode(cfg.StartMode())
 		if to := agent.RoleMode(from, role.PermissionMode); to != from {
 			if cfg, err = cfg.Apply(config.Overrides{Mode: string(to)}); err != nil {
 				fail(err)
@@ -169,7 +169,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
-	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	// A -mode flag is chosen over mode.default, as permissions.mode is.
+	pol := policy.New(policy.Mode(cfg.StartMode()))
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
@@ -566,7 +567,7 @@ func skipPermissions(cfg config.Config, f *cliFlags, confirm func(config.Config)
 // -dangerously-skip-permissions.
 func startPayload(cfg config.Config, f *cliFlags, headless bool, model string) map[string]any {
 	return map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": model,
-		"mode": orDefault(cfg.Permissions.Mode, "default"), "bypass_confirmed": f.skipPerms}
+		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms}
 }
 
 // confirmBypass asks, on a terminal, before -dangerously-skip-permissions

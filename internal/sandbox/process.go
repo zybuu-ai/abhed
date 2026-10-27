@@ -52,8 +52,7 @@ type Process struct {
 	// Seatbelt, made at its first command; "" when it could not be.
 	cachesOnce sync.Once
 	// zdotdir holds a zsh terminal's start-up file, in the sandbox's own
-	// caches, denied to commands' writes.
-	zshOnce sync.Once
+	// caches, denied to commands' writes from the first command on.
 	zdotdir atomic.Pointer[string]
 	caches  string
 
@@ -689,7 +688,11 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	choice := s.shell()
 	env = append(append(env, shellEnv(s.Tier())...), loginEnv()...)
 	if z := s.zdotdir.Load(); choice.zsh && z != nil {
-		env = append(env, "ZDOTDIR="+*z)
+		if err := s.writeZshrc(); err != nil {
+			choice = bashChoice(shellArgv[0])
+		} else {
+			env = append(env, "ZDOTDIR="+*z)
+		}
 	}
 	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
 }
@@ -704,20 +707,34 @@ func (s *Process) shell() shellChoice {
 	if !choice.zsh {
 		return choice
 	}
-	s.zshOnce.Do(func() {
-		s.ownCaches()
-		if s.caches == "" {
-			return
-		}
-		dir := filepath.Join(s.caches, "zsh")
-		if os.Mkdir(dir, 0o700) == nil && os.WriteFile(filepath.Join(dir, ".zshrc"), []byte(zshrc(s.Tier())), 0o600) == nil {
-			s.zdotdir.Store(&dir)
-		}
-	})
-	if s.zdotdir.Load() == nil {
+	s.ownCaches()
+	z := s.zdotdir.Load()
+	if z == nil {
 		return bashChoice(shellArgv[0])
 	}
 	return choice
+}
+
+// writeZshrc writes the zsh terminal's start-up file afresh, as each
+// terminal starts, so whatever stood there before is not what runs.
+func (s *Process) writeZshrc() error {
+	z := s.zdotdir.Load()
+	if z == nil {
+		return errors.New("no folder for zsh's start-up file")
+	}
+	rc := filepath.Join(*z, ".zshrc")
+	if err := os.Remove(rc); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(rc, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- the sandbox's own start-up file
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(zshrc(s.Tier())); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // ShellLine is the line the terminal is judged and recorded as.
@@ -1060,6 +1077,14 @@ func (s *Process) ownCaches() map[string]string {
 		if d, err := os.MkdirTemp(parent, "abhed-caches-"); err == nil {
 			markOwned(d)
 			s.caches = d
+			// Named with the caches, before any command runs, so every
+			// command's profile denies writing it.
+			if s.backend == "sandbox-exec" && hostShell().zsh {
+				dir := filepath.Join(d, "zsh")
+				if os.Mkdir(dir, 0o700) == nil {
+					s.zdotdir.Store(&dir)
+				}
+			}
 		}
 	})
 	if s.caches == "" {

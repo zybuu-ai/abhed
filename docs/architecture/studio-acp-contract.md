@@ -691,9 +691,14 @@ interface AskMeta {
   `cargo test`, `npm run <script>`, `npm test`, `python -m pytest`, `pytest`,
   `dotnet test`, `mvn test`, `gradle test` and the like), that family in the
   session's current folder or anywhere. A line with a chain, a redirect, an
-  expansion, a quote, an assignment in front, a program named by a path, or a
-  flag that hands the program code or a config (`-exec`, `-toolexec`,
-  `--config`, `-e`, `-c`…) is offered and covered by none. A grant answers
+  expansion, a quote, `~`, an assignment in front, a program named by a path,
+  an absolute path, a `..` step or a `module@version` is offered and covered
+  by none. A family grant covers only the flags on its family's list, those
+  that select, filter, repeat or report (`app/acp_grants.go` `familyFlags`);
+  a flag that names another program, script, settings file, project or output
+  path (`-exec`, `-toolexec`, `-vettool`, `-o`, `--init-script`, `-s`,
+  `--manifest-path`, `--prefix`, pytest's `-p`…) is not on any list, so such
+  a line asks. A grant answers
   only a later default-step ask; every rule, the destructive check, the
   supervisor and the screens still come first. None is offered where the
   managed configuration holds the permissions. Each is recorded as

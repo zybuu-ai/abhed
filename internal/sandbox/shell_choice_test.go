@@ -65,3 +65,36 @@ func TestZshTerminal(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 }
+
+// A command run before the first zsh terminal cannot plant the terminal's
+// start-up file, and the file is written afresh as each terminal starts.
+func TestZshrcIsNotPlantedBeforeTheTerminal(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("zsh terminals are the macOS process tier's")
+	}
+	if _, err := os.Stat("/bin/zsh"); err != nil {
+		t.Skip("no zsh")
+	}
+	old := hostShell
+	t.Cleanup(func() { hostShell = old })
+	hostShell = func() shellChoice {
+		return shellChoice{argv: []string{"/bin/zsh", "-d", "-i"}, line: zshLine, zsh: true}
+	}
+	ws := workspace(t)
+	s := NewProcess(DefaultPolicy(ws))
+	available(t, s)
+	defer func() { _ = s.Close() }()
+	// The first command makes the caches; the folder is named with them.
+	out, _ := runIn(t, s, ws, `d="$XDG_CACHE_HOME/../zsh"; echo 'echo PLANTED' > "$d/.zshrc" 2>/dev/null && echo wrote || echo denied`)
+	if !strings.Contains(out, "denied") {
+		t.Fatalf("a command planted the start-up file: %s", out)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := s.Shell(ctx, ws)
+	cmd.Stdin = strings.NewReader("echo ok\nexit\n")
+	got, _ := cmd.CombinedOutput()
+	if strings.Contains(string(got), "PLANTED") || !strings.Contains(string(got), "ok") {
+		t.Fatalf("%q", got)
+	}
+}
