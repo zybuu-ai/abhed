@@ -752,6 +752,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `abhed toolchain clean` removes the whole toolchain cache, which a plain
+  `rm -rf` cannot, as installed toolchains are read-only; and `abhed
+  toolchain` takes its flags after the languages too, as `abhed doctor`
+  writes them.
+- A command the sandbox refused a package registry (`go get`, `pip
+  install`, `npm install` through the egress proxy) got a bare 403 or
+  Forbidden. It is now told which language's registry was refused and to
+  call the toolchain tool for it, which asks the person and opens it.
+
 - Studio's toolchain install looped on "The offer changed" with the same
   offer: the engine required `agreed.registries`, which Studio does not
   send, and the fields of an extra installed already. Those are no longer

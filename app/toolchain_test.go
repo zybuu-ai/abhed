@@ -103,6 +103,20 @@ func TestToolchainCommand(t *testing.T) {
 	if code, out, errb := run("", "remove", "go@1.22"); code != 0 || !strings.Contains(out, "removed go 1.22.5") {
 		t.Fatalf("remove: %d %q %q", code, out, errb)
 	}
+	// Flags may follow the language, as abhed doctor writes them.
+	if code, out, errb := run("", "install", "go@1.22", "-yes"); code != 0 || !strings.Contains(out, "Installed Go 1.22.5") {
+		t.Fatalf("flags after the language: %d %q %q", code, out, errb)
+	}
+	// clean removes the whole cache, read-only as it is; it asks unless -yes.
+	if code, _, errb := run("", "clean"); code != 1 || !strings.Contains(errb, "add -yes") {
+		t.Fatalf("clean not at a terminal: %d %q", code, errb)
+	}
+	if code, out, errb := run("", "clean", "-yes"); code != 0 || !strings.Contains(out, "removed the toolchain cache") {
+		t.Fatalf("clean: %d %q %q", code, out, errb)
+	}
+	if _, err := os.Stat(root); err == nil {
+		t.Fatal("the cache outlived clean")
+	}
 	old := inAgentCommand
 	inAgentCommand = func() string { return "ABHED_SESSION is set" }
 	if code, _, errb := run("", "install", "-yes", "go"); code != 1 || !strings.Contains(errb, "inside an agent's command") {

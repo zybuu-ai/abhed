@@ -23,6 +23,8 @@ const toolchainUsage = `usage: abhed toolchain <command> [flags] [lang[@version]
                              else the workspace's pin, else the latest stable
   list                       the installed toolchains and the workspace's pins (-json)
   remove lang@version...     remove installed toolchains
+  clean                      remove the whole toolchain cache, every toolchain
+                             and extra for every platform (-yes, else asked)
 
   -platform host|linux|os-arch   whose builds: this host (the process tier), or
                                  linux (the container tier); default host
@@ -53,9 +55,19 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 	yes := fs.Bool("yes", false, "install without asking")
 	debugger := fs.Bool("debugger", false, "also install the language's debugger (install)")
 	lsp := fs.Bool("lsp", false, "also install the language's language server (install)")
-	if err := fs.Parse(rest); err != nil {
-		return 2
+	// Flags may follow the languages too, as abhed doctor writes them.
+	var positional []string
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return 2
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		rest = fs.Args()[1:]
 	}
+	args = positional
 	p, err := platformFlag(*plat)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
@@ -76,7 +88,7 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 	case "list", "ls":
 		return toolchainList(tc, p, *asJSON, stdout)
 	case "install":
-		if fs.NArg() == 0 {
+		if len(args) == 0 {
 			fmt.Fprintf(stderr, "abhed: toolchain install names a language\n%s", toolchainUsage)
 			return 2
 		}
@@ -84,14 +96,36 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 			fmt.Fprintf(stderr, "abhed: toolchain install is refused inside an agent's command (%s); the agent asks with its toolchain tool\n", why)
 			return 1
 		}
-		return toolchainInstall(cfg, tc, fs.Args(), *yes, *debugger, *lsp, stdin, stdout, stderr)
+		return toolchainInstall(cfg, tc, args, *yes, *debugger, *lsp, stdin, stdout, stderr)
+	case "clean":
+		if why := inAgentCommand(); why != "" {
+			fmt.Fprintf(stderr, "abhed: toolchain clean is refused inside an agent's command (%s)\n", why)
+			return 1
+		}
+		if !*yes {
+			if !ollamaTerminal(stdin, stdout) {
+				fmt.Fprintln(stderr, "abhed: not at a terminal, so nothing was removed; add -yes to remove the toolchain cache without asking")
+				return 1
+			}
+			fmt.Fprintf(stdout, "Remove every toolchain in %s? [y/N] ", tc.Cache.Root)
+			if line, _ := readAnswer(stdin); !strings.EqualFold(strings.TrimSpace(line), "y") && !strings.EqualFold(strings.TrimSpace(line), "yes") {
+				fmt.Fprintln(stdout, "Nothing was removed.")
+				return 0
+			}
+		}
+		if err := tc.Cache.Clean(); err != nil {
+			fmt.Fprintf(stderr, "abhed: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "removed the toolchain cache %s\n", tc.Cache.Root)
+		return 0
 	case "remove", "rm":
 		if why := inAgentCommand(); why != "" {
 			fmt.Fprintf(stderr, "abhed: toolchain remove is refused inside an agent's command (%s)\n", why)
 			return 1
 		}
 		code := 0
-		for _, a := range fs.Args() {
+		for _, a := range args {
 			spec, err := toolchain.ParseSpec(a)
 			if err == nil && spec.Version == "" {
 				err = fmt.Errorf("name the version to remove, such as %s@1.22.5", spec.Lang)
