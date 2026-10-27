@@ -378,6 +378,10 @@ func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 		{"a local server's 403, network off", off, `echo "GET http://127.0.0.1:8080/api: 403 Forbidden"; exit 1`, false},
 		{"a test's 403 text, network off", off, `echo "--- FAIL: TestAuth: want 403 Forbidden"; exit 1`, false},
 		{"npm's 403 through the proxy", off, `echo "npm error 403 403 Forbidden - GET https://registry.npmjs.org/left-pad"; exit 1`, true},
+		{"npm 9+'s refused CONNECT", off, "echo 'npm error code EINVALIDRESPONSE'; echo 'npm error Invalid status code `403` connecting to proxy'; exit 1", true},
+		{"uv's refused tunnel", off, `echo "error: Request failed after 3 retries: unsuccessful tunnel"; exit 1`, true},
+		{"Gradle's 403 from a registry", off, `echo "Could not GET 'https://repo.maven.apache.org/maven2/x.pom'. Received status code 403 from server: Forbidden"; exit 1`, true},
+		{"Gradle's 403 from a local server", off, `echo "Could not GET 'http://localhost:8081/x.pom'. Received status code 403 from server: Forbidden"; exit 1`, false},
 	} {
 		res := run(t, tc.bash, s, bashArgs{Command: tc.command, Description: "x"})
 		if got := strings.Contains(res.Content, "this sandbox has no network access"); got != tc.hint {

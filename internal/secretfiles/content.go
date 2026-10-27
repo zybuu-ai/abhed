@@ -13,6 +13,9 @@ type contentPattern struct {
 	value   int
 	literal bool
 	bare    bool // an unquoted value, which is not a secret when it is code
+	// digit is set for a value that is a secret only with a digit in it, so
+	// a word such as "Bearer authentication" is not taken for a token.
+	digit bool
 	// structured is a JSON or list value, a secret when one of its quoted
 	// strings is a literal and not a placeholder.
 	structured bool
@@ -39,6 +42,9 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://([^\s/:@"'` + "`" + `]*):([^\s/@"'` + "`" + `]+)@`), value: 2, literal: true},
 	{re: regexp.MustCompile(`(?i)[?&][a-z0-9_]*(?:token|secret|password|passwd|api_?key|signature)[a-z0-9_]*=([^\s&#"'` + "`" + `]{8,})`), value: 1, literal: true},
 	{re: regexp.MustCompile(`(?i)\baws_secret_access_key["']?\s*[=:]\s*["']?([^\s"']{20,})`), value: 1, literal: true},
+	// An HTTP credential: a bearer token, as an Authorization header or a
+	// --header argument carries it.
+	{re: regexp.MustCompile(`(?i)\bBearer[ \t]+([A-Za-z0-9._~+/=-]{8,})`), value: 1, literal: true, digit: true},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
 	// words, given a literal: quoted, or a bare run that is not code.
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
@@ -90,6 +96,9 @@ func (p contentPattern) counts(text string, loc []int) bool {
 	}
 	v := text[loc[2*p.value]:loc[2*p.value+1]]
 	if isPlaceholder(v) {
+		return false
+	}
+	if p.digit && !strings.ContainsAny(v, "0123456789") {
 		return false
 	}
 	if p.structured {

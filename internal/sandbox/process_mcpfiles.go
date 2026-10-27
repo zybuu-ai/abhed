@@ -23,16 +23,19 @@ type serverFiles struct {
 	// configured arguments name, such as the script an interpreter runs:
 	// read-only, as its install folder is.
 	scripts []string
+	// files are single files shown read-only, where their folder is not:
+	// a program or script directly in a top-level folder of the home.
+	files []string
 }
 
-// shown are the folders under the home the server reads: its install
-// folder and its scripts' folders.
+// shown are what under the home the server reads: its install folder, its
+// scripts' folders and the single files shown without their folder.
 func (f serverFiles) shown() []string {
 	var out []string
 	if f.prefix != "" {
 		out = append(out, f.prefix)
 	}
-	return append(out, f.scripts...)
+	return append(append(out, f.scripts...), f.files...)
 }
 
 var serverNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]`)
@@ -72,28 +75,33 @@ func serverFilesIn(name string, argv, env, workspaces []string) (serverFiles, er
 	if err := os.MkdirAll(f.home, 0o700); err != nil {
 		return serverFiles{}, fmt.Errorf("sandbox: the server's own home: %w", err)
 	}
-	f.prefix = installPrefix(real, resolveIn(program, env))
-	// Its install folder is shown to it: never Abhed's state, nor a folder holding it.
+	resolved := resolveIn(program, env)
+	f.prefix = installPrefix(real, resolved)
+	// Its install folder is shown to it: never Abhed's state, nor a folder
+	// holding it or credentials; a top-level folder only as the program.
 	if state := filepath.Join(real, stateDir); f.prefix != "" && (insideAny(f.prefix, []string{state}) || insideAny(state, []string{f.prefix})) {
 		return serverFiles{}, fmt.Errorf("sandbox: the server's program %s is installed in %s, which holds Abhed's state (%s) and is never shown to a server; "+
 			"install it in a folder of its own, or set \"host_files\": true on the server", program, f.prefix, state)
 	}
-	f.scripts = scriptFolders(real, argv[1:])
+	if f.prefix != "" {
+		switch homeShown(real, f.prefix) {
+		case showNothing:
+			return serverFiles{}, fmt.Errorf("sandbox: the server's program %s is installed in %s, which holds Abhed's state or credentials and is never shown to a server; "+
+				"install it in a folder of its own, or set \"host_files\": true on the server", program, f.prefix)
+		case showFile:
+			f.prefix, f.files = "", []string{resolved}
+		}
+	}
+	scripts, files := scriptFolders(real, argv[1:])
+	f.scripts, f.files = scripts, append(f.files, files...)
 	return f, nil
 }
 
 // scriptFolders are the folders of the existing files under home that args
 // name by absolute path, such as `python3 ~/tools/mcp/server.py`: the
-// server's own code, from the configuration. Never home itself or a broad
-// folder in it (Documents, Desktop, Downloads, .config…), whose other files
-// the server has no business reading, Abhed's state, or a folder that is or
-// holds credentials.
-func scriptFolders(home string, args []string) []string {
-	var out []string
-	broad := []string{home, filepath.Join(home, ".local"), filepath.Join(home, ".cargo"), filepath.Join(home, ".config"),
-		filepath.Join(home, "Library"), filepath.Join(home, ".local", "bin"), filepath.Join(home, "bin"),
-		filepath.Join(home, "Documents"), filepath.Join(home, "Desktop"), filepath.Join(home, "Downloads")}
-	state := filepath.Join(home, stateDir)
+// server's own code, from the configuration; files are the files themselves
+// where their folder is not shown (homeShown).
+func scriptFolders(home string, args []string) (folders, files []string) {
 	for _, a := range args {
 		if !filepath.IsAbs(a) {
 			continue
@@ -106,23 +114,57 @@ func scriptFolders(home string, args []string) []string {
 		if err != nil || !fi.Mode().IsRegular() || !insideAny(p, []string{home}) {
 			continue
 		}
-		dir := filepath.Dir(p)
-		if slices.Contains(broad, dir) || insideAny(dir, []string{state}) || insideAny(state, []string{dir}) || slices.Contains(out, dir) {
-			continue
-		}
-		secret := false
-		for _, c := range HomeSecrets {
-			s := filepath.Join(home, c)
-			if insideAny(dir, []string{s}) || insideAny(s, []string{dir}) {
-				secret = true
-				break
+		switch homeShown(home, filepath.Dir(p)) {
+		case showFolder:
+			if !slices.Contains(folders, filepath.Dir(p)) {
+				folders = append(folders, filepath.Dir(p))
+			}
+		case showFile:
+			if !slices.Contains(files, p) {
+				files = append(files, p)
 			}
 		}
-		if !secret {
-			out = append(out, dir)
-		}
 	}
-	return out
+	return folders, files
+}
+
+// What of a folder under home a server is shown.
+const (
+	showNothing = iota // credentials or Abhed's state: not even the file
+	showFile           // a top-level or broad folder: only the named file
+	showFolder         // a folder of its own: all of it, read-only
+)
+
+// homeShown is how much of dir, under home, a server may read. Nothing in
+// a credential folder or Abhed's state, nor in home or another folder that
+// holds one of them (a file named there may be a credential); only the file
+// itself a folder directly in it (~/Downloads, ~/Projects,
+// ~/.local), ~/Library, iCloud Drive's root or one directly in it, and
+// ~/.local/bin; otherwise the folder.
+func homeShown(home, dir string) int {
+	state := filepath.Join(home, stateDir)
+	if insideAny(dir, []string{state}) {
+		return showNothing
+	}
+	holds := insideAny(state, []string{dir})
+	for _, c := range HomeSecrets {
+		sec := filepath.Join(home, c)
+		if insideAny(dir, []string{sec}) {
+			return showNothing
+		}
+		holds = holds || insideAny(sec, []string{dir})
+	}
+	if holds {
+		return showNothing // home, or a folder holding credentials or state: a file named there may be one
+	}
+	icloud := filepath.Join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
+	switch {
+	case dir == home, filepath.Dir(dir) == home, dir == filepath.Join(home, "Library"),
+		dir == icloud, filepath.Dir(dir) == icloud, dir == filepath.Join(home, "Library", "Mobile Documents"),
+		dir == filepath.Join(home, ".local", "bin"), dir == filepath.Join(home, ".cargo", "bin"):
+		return showFile
+	}
+	return showFolder
 }
 
 // serverProgramMissing says a host server's program is not there to run: a
