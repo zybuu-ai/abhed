@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -14,7 +15,7 @@ import (
 const tempOwnerFile = ".abhed-owner"
 
 // reapedPrefixes are the folders a process sandbox makes in a temp area.
-var reapedPrefixes = []string{"abhed-caches-", "abhed-tmp-"}
+var reapedPrefixes = []string{"abhed-caches-", "abhed-tmp-", "abhed-dap-"}
 
 // markOwned records this process as the owner of a folder it made.
 func markOwned(dir string) {
@@ -31,6 +32,9 @@ var reapParents = func() []string {
 	parents := []string{os.TempDir()}
 	if t := userTemp(); t != "" && t != parents[0] {
 		parents = append(parents, t)
+	}
+	if d := debugRunDir(); d != "" {
+		parents = append(parents, d)
 	}
 	return parents
 }
@@ -91,4 +95,33 @@ func ownerOfTemp(dir string) ownerState {
 		return ownerElsewhere
 	}
 	return ownerOfLabel(strings.TrimSpace(string(b)))
+}
+
+// debugRunDir is where a debug session's socket folders are made: in the
+// home's .abhed, which every command's profile denies, so only the one
+// command the folder is opened to (WithPrivateDirs) reaches it.
+func debugRunDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, stateDir, "run")
+}
+
+// DebugSocketDir makes a folder for one debug session's socket, owned by
+// this process for the reaper, under debugRunDir.
+func DebugSocketDir() (string, error) {
+	parent := debugRunDir()
+	if parent == "" {
+		return "", errors.New("sandbox: no home folder for a debug session's socket")
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(parent, "abhed-dap-")
+	if err != nil {
+		return "", err
+	}
+	markOwned(dir)
+	return dir, nil
 }

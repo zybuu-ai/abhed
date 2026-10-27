@@ -356,7 +356,7 @@ func TestPlanConfinesAPythonTest(t *testing.T) {
 // Delve's socket goes in the folder given, when one is.
 func TestPlanUsesTheSocketFolder(t *testing.T) {
 	s, err := Plan(Request{Language: Go, Program: "."}, "/w", "/b __abhed_dap_bridge", "/run/abhed-dap-1f")
-	if err != nil || !strings.Contains(s.Command, "d=/run/abhed-dap-1f; mkdir -p") || strings.Contains(s.Command, "mktemp") {
+	if err != nil || !strings.Contains(s.Command, "d=/run/abhed-dap-1f; [ -d \"$d\" ] || { mkdir -p") || strings.Contains(s.Command, "mktemp") {
 		t.Fatalf("%q %v", s.Command, err)
 	}
 }

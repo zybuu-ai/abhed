@@ -9,11 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // Method is one sign-in method a server offers, from its discovery document.
@@ -263,7 +264,8 @@ func PKCELogin(ctx context.Context, c *http.Client, base string, m Method, open 
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 	state := randomString(24)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// On a Mac, from Abhed's reserved range, which a debug session never reaches.
+	ln, err := loopport.Listen("127.0.0.1")
 	if err != nil {
 		return nil, fmt.Errorf("open a loopback port for the browser to return to: %w", err)
 	}

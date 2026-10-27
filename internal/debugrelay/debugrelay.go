@@ -185,7 +185,9 @@ func Plan(r Request, workspace, bridge, sockDir string) (Spec, error) {
 		}
 		mkdir := "d=$(mktemp -d \"${TMPDIR:-/tmp}/abhed-dap.XXXXXX\") || exit 1; "
 		if sockDir != "" {
-			mkdir = "d=" + shellQuote(sockDir) + "; mkdir -p \"$d\" && chmod 700 \"$d\" || exit 1; "
+			// The engine made it (macOS) or mounted it (Linux): made here only
+			// where it is missing, without walking a parent the command may not read.
+			mkdir = "d=" + shellQuote(sockDir) + "; [ -d \"$d\" ] || { mkdir -p \"$d\" && chmod 700 \"$d\"; } || exit 1; "
 		}
 		return Spec{Cwd: cwd, Launch: launch, Display: strings.TrimSpace(strings.Join(prefix, " ") + " " + quoteAll(display)),
 			Command: "command -v dlv >/dev/null 2>&1 || { echo 'abhed-debug: dlv is not on PATH' >&2; exit " + strconv.Itoa(exitNoDelve) + "; }; " +
@@ -719,21 +721,58 @@ func Read(br *bufio.Reader) (json.RawMessage, error) {
 
 // pinnedAdapter is debugpy's adapter with the ports it listens on taken, in
 // order, from ABHED_DAP_PORTS instead of chosen by the system: the ports the
-// sandbox opens to it alone (sandbox.WithLoopbackPorts). The variable is
-// removed before the adapter runs, so the program it starts does not see it.
-const pinnedAdapter = `import os, runpy
-import debugpy.common.sockets as s
+// sandbox opens to it alone (sandbox.WithLoopbackPorts). Before anything
+// else it binds every one of them on every address, the wildcard and
+// loopback, IPv4 and IPv6, and holds them until it exits: no other program,
+// the debuggee included, can take a port the sandbox lets the debuggee
+// reach or listen on, even one the adapter has closed (its launcher's
+// listener after the launcher connects) or not used yet, nor listen on it
+// where the network can reach. The variable is removed
+// before the adapter runs, so the program it starts does not see it.
+const pinnedAdapter = `import os, socket as S
 ports = [int(p) for p in os.environ.pop("ABHED_DAP_PORTS").split(",")]
+held, free = [], []
+def bind(fam, host, port, reuse):
+    x = S.socket(fam, S.SOCK_STREAM)
+    if fam == S.AF_INET6:
+        x.setsockopt(S.IPPROTO_IPV6, S.IPV6_V6ONLY, 1)
+    if reuse:
+        x.setsockopt(S.SOL_SOCKET, S.SO_REUSEADDR, 1)
+    x.bind((host, port))
+    held.append(x)
+    return x
+for p in ports:
+    # The wildcard first, never listening, so no other socket can take the
+    # port on any address; then loopback, which the adapter listens on.
+    bind(S.AF_INET, "0.0.0.0", p, False)
+    free.append(bind(S.AF_INET, "127.0.0.1", p, True))
+    try:
+        bind(S.AF_INET6, "::", p, False)
+        bind(S.AF_INET6, "::1", p, True)
+    except OSError as e:
+        if e.errno not in (47, 49, 97, 99):
+            raise
+import debugpy.common.sockets as s
 create = s.create_server
-def pinned(host, port=0, *a, **k):
-    if not port:
-        if not ports:
-            raise OSError("abhed-debug: no loopback port left for the debug adapter")
-        port = ports.pop(0)
-    return create(host, port, *a, **k)
+def pinned(host, port=0, backlog=S.SOMAXCONN, timeout=None):
+    if port:
+        return create(host, port, backlog, timeout)
+    if not free:
+        raise OSError("abhed-debug: no loopback port left for the debug adapter (each restart takes one)")
+    a = free.pop(0)
+    srv = S.fromfd(a.fileno(), S.AF_INET, S.SOCK_STREAM)
+    srv.settimeout(timeout)
+    srv.listen(backlog)
+    return srv
 s.create_server = pinned
+import runpy
 runpy.run_module("debugpy.adapter", run_name="__main__", alter_sys=True)
 `
+
+// PinnedPorts is how many ports a Python session is given: the adapter's
+// server listener, its launcher's, and one more launcher for each of three
+// restarts.
+const PinnedPorts = 5
 
 // PinPorts makes a Python spec's adapter listen on ports alone, for a
 // sandbox that opens those loopback ports and no others.
@@ -746,5 +785,8 @@ func PinPorts(spec *Spec, ports []uint16) {
 	for i, p := range ports {
 		list[i] = strconv.Itoa(int(p))
 	}
-	spec.Command = strings.TrimSuffix(spec.Command, adapter) + "ABHED_DAP_PORTS=" + strings.Join(list, ",") + " exec python3 -c " + shellQuote(pinnedAdapter)
+	// -P (3.11+) keeps the workspace off sys.path, so no file there stands in
+	// for the shim's imports.
+	spec.Command = strings.TrimSuffix(spec.Command, adapter) + `P=; python3 -P -c '' >/dev/null 2>&1 && P=-P; ` +
+		"ABHED_DAP_PORTS=" + strings.Join(list, ",") + " exec python3 $P -c " + shellQuote(pinnedAdapter)
 }
