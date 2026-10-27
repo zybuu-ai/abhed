@@ -1545,7 +1545,8 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   inside the sandbox where one is registered).
 - A staged file outside the roots, one a read rule denies, one that looks
   like keys, Abhed's state, or one the repository's ignore rules name (even
-  force-added) is left out (`excluded` counts them). The rest
+  force-added, so a repository whose `.gitignore` is `*` gets no message)
+  is left out (`excluded` counts them). The rest
   is cleaned of stored secrets and key-shaped text and cut to 32 KiB
   (`truncated`).
 - The model is `model.commit`, or `model.completion` when unset, under the

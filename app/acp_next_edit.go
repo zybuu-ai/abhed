@@ -218,22 +218,40 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 		return nil, "the suggestion carried a secret"
 	}
 	next := linediff.SplitLines(rewrite)
-	// The model's rewrite takes the window's line ends: no spaces it added at
-	// a line's end, and the window's own last newline, there or not.
+	// The model's rewrite takes the window's line ends: a line it copied keeps
+	// the whitespace the person wrote at its end (a Markdown hard break), a
+	// line it changed loses any it added, every line ends as the window's do
+	// (CRLF or LF), and the last newline is there or not as in the window.
+	crlf := len(shown) > 0 && strings.HasSuffix(shown[0], "\r\n")
+	eol := "\n"
+	if crlf {
+		eol = "\r\n"
+	}
+	asWritten := map[string]string{}
+	for _, l := range shown {
+		body := strings.TrimRight(l, "\r\n")
+		if _, seen := asWritten[strings.TrimRight(body, " \t")]; !seen {
+			asWritten[strings.TrimRight(body, " \t")] = body
+		}
+	}
 	for i, l := range next {
 		body, nl := strings.CutSuffix(l, "\n")
-		next[i] = strings.TrimRight(body, " \t")
+		body = strings.TrimRight(strings.TrimSuffix(body, "\r"), " \t")
+		if orig, ok := asWritten[body]; ok {
+			body = orig
+		}
+		next[i] = body
 		if nl {
-			next[i] += "\n"
+			next[i] += eol
 		}
 	}
 	if n := len(next); n > 0 && len(shown) > 0 {
 		last := strings.HasSuffix(shown[len(shown)-1], "\n")
 		if strings.HasSuffix(next[n-1], "\n") != last {
 			if last {
-				next[n-1] += "\n"
+				next[n-1] += eol
 			} else {
-				next[n-1] = strings.TrimSuffix(next[n-1], "\n")
+				next[n-1] = strings.TrimSuffix(strings.TrimSuffix(next[n-1], "\n"), "\r")
 			}
 		}
 	}

@@ -230,32 +230,46 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 
 // ignoredNames are those of names that the repository's ignore rules match,
 // whether or not they are tracked (check-ignore --no-index), read through the
-// confined git. If it cannot say, every name counts as ignored: fail closed.
+// confined git. Each name goes as ./name, so a name that reads as pathspec
+// magic (:!x) is a path, and git answers for every name (-v -n): an answer
+// that does not cover every name, or a failure, counts every name as
+// ignored, so nothing it could not judge is sent.
 func ignoredNames(ctx context.Context, root string, names []string) map[string]bool {
 	out := map[string]bool{}
 	var in strings.Builder
+	asked := 0
 	for _, n := range names {
 		if n != "" {
-			in.WriteString(n)
+			in.WriteString("./" + n)
 			in.WriteByte(0)
+			asked++
 		}
 	}
-	if in.Len() == 0 {
+	if asked == 0 {
 		return out
 	}
-	cmd := hostgit.Command(ctx, root, "check-ignore", "--no-index", "-z", "--stdin")
-	cmd.Stdin = strings.NewReader(in.String())
-	res, err := cmd.Output()
-	var exit *exec.ExitError
-	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+	all := func() map[string]bool {
 		for _, n := range names {
 			out[n] = true
 		}
 		return out
 	}
-	for _, n := range strings.Split(strings.TrimRight(string(res), "\x00"), "\x00") {
-		if n != "" {
-			out[n] = true
+	cmd := hostgit.Command(ctx, root, "check-ignore", "--no-index", "-z", "-v", "-n", "--stdin")
+	cmd.Stdin = strings.NewReader(in.String())
+	res, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		return all()
+	}
+	// Four fields a name: source, line, pattern, path; a pattern of "" is no
+	// match, and one that starts with ! un-ignores.
+	f := strings.Split(strings.TrimSuffix(string(res), "\x00"), "\x00")
+	if len(f) != 4*asked {
+		return all()
+	}
+	for k := 0; k < len(f); k += 4 {
+		if pattern := f[k+2]; pattern != "" && !strings.HasPrefix(pattern, "!") {
+			out[strings.TrimPrefix(f[k+3], "./")] = true
 		}
 	}
 	return out

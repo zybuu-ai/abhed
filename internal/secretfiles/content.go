@@ -58,8 +58,18 @@ var contentPatterns = []contentPattern{
 	{re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_-])Basic[ \t]+([A-Za-z0-9+/]{12,}={0,2})`), value: 1, literal: true, valid: basicCredential, redactOnly: true},
 	// A JSON or YAML key whose name says it holds a secret, in any case
 	// ("internal_api_key", "clientSecret", "password:"), given a literal.
-	{re: regexp.MustCompile(`"([A-Za-z0-9_.-]+)"[ \t]*:[ \t]*"([^"\n]*)"`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
-	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+["']?([^"'\s#{}\[\]&*|>][^"'\n#]*?)["']?[ \t]*(?:#.*)?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
+	{re: regexp.MustCompile(`"([A-Za-z0-9_.-]+)"[ \t]*:[ \t]*"((?:[^"\\\n]|\\.)*)"`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
+	// A quoted YAML value is a string; a bare one must not read as code or a type.
+	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+"((?:[^"\\\r\n]|\\.)*)"[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+'([^'\r\n]*)'[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+([^"'\s#{}\[\]&*|>!][^\r\n#]*?)[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
+	// The same with = (.properties, .env, TOML, HCL, Python), a JS or Python
+	// object's quoted value, and a YAML block scalar's lines.
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*"((?:[^"\\\r\n]|\\.)*)"[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*'([^'\r\n]*)'[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*([^"'\s#][^\r\n#]*?)[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
+	{re: regexp.MustCompile(`[{,][ \t]*["']?([A-Za-z0-9_]+)["']?[ \t]*:[ \t]*'((?:[^'\\\n]|\\.)*)'`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
+	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*\r?\n((?:[ \t]+[^\r\n]*(?:\r?\n|$))+)`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
 	// words, given a literal: quoted, or a bare run that is not code.
 	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
@@ -254,8 +264,16 @@ func basicCredential(v string) bool {
 }
 
 // secretWords are the words a key's name holds when its value is a secret.
-var secretWords = map[string]bool{"password": true, "passwd": true, "pwd": true, "secret": true, "secrets": true,
-	"token": true, "apikey": true, "credential": true, "credentials": true, "passphrase": true}
+var secretWords = map[string]bool{"password": true, "passwd": true, "pass": true, "secret": true, "secrets": true,
+	"token": true, "apikey": true, "credential": true, "credentials": true, "passphrase": true, "auth": true,
+	"bearer": true, "pat": true}
+
+// metaWords end a key that names something about a secret, not the secret:
+// passwordFile, secret_name, token_url, password_hash, token_count.
+var metaWords = map[string]bool{"name": true, "file": true, "path": true, "url": true, "uri": true, "type": true,
+	"hash": true, "policy": true, "count": true, "limit": true, "length": true, "len": true, "ref": true, "id": true,
+	"env": true, "header": true, "size": true, "field": true, "prefix": true, "expiry": true, "expires": true,
+	"ttl": true, "format": true, "mode": true, "kind": true, "endpoint": true, "dir": true, "required": true}
 
 // secretKeyName reports whether a JSON or YAML key's name says its value is
 // a secret: a word of secretWords, or an API, private, access, client or
@@ -283,13 +301,16 @@ func secretKeyName(name string) bool {
 		prev = r
 	}
 	flush()
+	if len(words) == 0 || metaWords[words[len(words)-1]] {
+		return false
+	}
 	for i, w := range words {
 		if secretWords[w] {
 			return true
 		}
 		if w == "key" && i > 0 {
 			switch words[i-1] {
-			case "api", "private", "access", "client", "signing", "secret", "encryption", "master":
+			case "api", "private", "access", "client", "signing", "secret", "encryption", "master", "session":
 				return true
 			}
 		}
@@ -297,8 +318,23 @@ func secretKeyName(name string) bool {
 	return false
 }
 
-// yamlLiteral is a YAML value that is a literal, not code that happens to sit
-// after a colon (an object literal's `password: hashed,` or a call).
+// yamlLiteral is a value after a colon or = that is a literal, not code or a
+// type that happens to sit there: an object literal's `password: hashed,`, a
+// call, `token: string;`, `api_key: Optional[str]`, `password: user.password`,
+// a template (`${{ secrets.X }}`), a tag (`!Ref X`), or a bare word of
+// letters alone (a type, a variable, a schema rule such as `required`).
 func yamlLiteral(v string) bool {
-	return !strings.HasSuffix(v, ",") && !strings.ContainsAny(v, "()")
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "", strings.HasSuffix(v, ","), strings.HasSuffix(v, ";"), strings.ContainsAny(v, "()[<"),
+		strings.Contains(v, "${{"), strings.HasPrefix(v, "!"), identChain.MatchString(v), lettersOnly.MatchString(v):
+		return false
+	}
+	return true
 }
+
+// noTemplate is a quoted value that is not a template to be filled in.
+func noTemplate(v string) bool { return !strings.Contains(v, "${{") && !strings.Contains(v, "{{") }
+
+// lettersOnly is a word of letters and underscores: an identifier, not a value.
+var lettersOnly = regexp.MustCompile(`^[A-Za-z_]+$`)

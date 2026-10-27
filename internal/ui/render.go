@@ -492,7 +492,7 @@ func endedText(reason agent.TerminalReason, detail string) string {
 	case agent.TermMaxBudget:
 		return "Stopped at the token budget (max_budget)"
 	case agent.TermRetryExhausted:
-		return "The model kept failing; gave up after retrying (retry_exhausted)"
+		return "Stopped: the model kept making the same call without getting anywhere (retry_exhausted)"
 	case agent.TermStalled:
 		return "The model produced nothing, repeatedly (stalled)"
 	case agent.TermUnverified:

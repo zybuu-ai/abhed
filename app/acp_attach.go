@@ -222,7 +222,7 @@ func (c *acpConn) attachLinkedFile(ctx context.Context, s *acpSession, u *url.UR
 func (c *acpConn) fetchLinked(ctx context.Context, s *acpSession, uri string) (string, string, error) {
 	loop, cfg := s.parts.Loop, s.parts.Config
 	var tool tools.Tool
-	why := ""
+	var askOf func(string) string
 	if t, ok := loop.Tools.Get("web_fetch"); ok {
 		tool = t
 	} else {
@@ -236,13 +236,11 @@ func (c *acpConn) fetchLinked(ctx context.Context, s *acpSession, uri string) (s
 		tool = f
 		// The tool's own ask, which policy carries only while it is on: with no
 		// allowed hosts, any public site would get what the URL carries.
-		if askOf := webfetch.AskReadOnly(true, cfg.WebFetch.AllowedHosts)["web_fetch"]; askOf != nil {
-			why = askOf(uri)
-		}
+		askOf = webfetch.AskReadOnly(true, cfg.WebFetch.AllowedHosts)["web_fetch"]
 	}
 	id := personCallID("link")
 	res, err := loop.ManualRunTool(ctx, s.parts.Session, tool, id, argsJSON(map[string]string{"url": uri}),
-		c.manualToolAsk(s, id, "web_fetch", "fetch", "Read the linked page "+redacted(uri), map[string]any{"url": redacted(uri)}), why)
+		c.manualToolAsk(s, id, "web_fetch", "fetch", "Read the linked page "+redacted(uri), map[string]any{"url": redacted(uri)}), askOf)
 	if err != nil {
 		return "", "", err
 	}

@@ -57,7 +57,12 @@ The last line of `json` and `stream-json` is the result:
 ```
 
 `subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
-`retry_exhausted`, …); `error` is present when the run failed. `stream-json`
+`retry_exhausted`, …); `error` is present when the run failed.
+`retry_exhausted` means the model kept making the same call without getting
+anywhere: it failed the same way six times, or a read-only call gave the
+same answer six times with nothing changed in between (it is warned after
+three). The end's detail names the call, and the next message starts the
+count again. `stream-json`
 without `-include-partial-messages` adds
 `"omitted":["agent.delta","agent.reasoning.delta"]`, the event types it left
 out, so `abhed hawkeye` can tell the gaps they leave from missing events. Policy
