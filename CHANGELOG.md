@@ -603,7 +603,7 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 664 planted wrong claims none is shown as verified and 32 are
+  -v`): of 684 planted wrong claims none is shown as verified and 32 are
   contradicted (30 from cited, conflicting evidence, 2 by conflict markers
   still shown), all 199 true controls
   are verified, and none of the 299 true or neutral claims is contradicted;
@@ -658,8 +658,9 @@ All notable changes to Abhed are recorded here. The format follows
   contradicted by a current read or diff that still shows conflict
   markers, and verified by a search for markers that found none, or whole
   reads or a diff of every file that had them (a read showed markers, or
-  git reported it conflicted), after the last change, or by a merge, pull
-  or rebase that ran clean; headings and lines that only
+  git reported it conflicted), after the last change, or, for "no merge
+  conflicts", by a merge, pull or rebase that ran clean in a session that
+  saw no conflict (never after `--abort`, `--skip` or `--continue`); headings and lines that only
   arrange the reply ("Summary", "Changes: `sum.go`") are not claims, while
   a label that says what happened ("Created: `sum_test.go`") is; a
   test result with no test run behind it says "no test run in this
