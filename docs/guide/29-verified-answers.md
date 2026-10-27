@@ -357,12 +357,16 @@ counts (`12 tests`, `replicas: 3`). Then:
   starts at 0" after an edit, "`STRIPE_KEY` is not sensitive because
   `sk_prod_9f8e7d` is a sandbox key" after a grep, and "login works now
   because the token check runs first" citing a failed run all stay work.
-- **A resolved merge is never verified.** "I resolved the merge
-  conflicts", "the merge is clean" and "no conflict markers remain" are
-  contradicted when a current read, diff or search in the session still
-  shows conflict markers (`<<<<<<<` and `>>>>>>>` lines, not ones a diff
-  removes), and are unverified otherwise. A read made before the edit that
-  removed them does not count.
+- **A resolved merge needs the markers shown gone.** "I resolved the
+  merge conflicts", "the merge is clean" and "no conflict markers remain"
+  are contradicted when a current read, diff or search in the session
+  still shows conflict markers (`<<<<<<<` and `>>>>>>>` lines, not ones a
+  diff removes). They are verified when, after the last change, a search
+  for a marker (`grep -rn '^<<<<<<<' .`, `rg`, `git grep`) over the
+  workspace, or over every file that had markers, found nothing, or a read
+  or `git diff` of every file a read showed with markers shows none.
+  Otherwise, or with no change in the session, they are unverified. A read
+  made before the edit that removed them does not count.
 - **"Tests pass" and "the build succeeds" need a whole run.** With no
   run of that kind in the session at all, the reason says so ("no test run
   in this session"). Such a statement is verified by a run of its own kind (read from the program and
@@ -659,7 +663,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 645 plant a wrong claim. Some cite the result that shows them wrong
+session. 648 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -751,11 +755,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 645
+tail, a port not listening, a file not in a response). Today none of the 648
 planted claims is shown as verified (32 are contradicted: 30 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 189 controls are verified,
-and none of the 291 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 194 controls are verified,
+and none of the 294 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -765,7 +769,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 125 strict-mode
+control, by name and by a hash of its text and calls, and 127 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is

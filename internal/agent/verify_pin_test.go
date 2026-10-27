@@ -164,7 +164,9 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			setup: "printf '#!/bin/sh\\necho 12 passed in 0.9s\\n' > pytest && chmod +x pytest && printf '#!/bin/sh\\necho Success: no issues found\\n' > mypy && chmod +x mypy",
 			bash:  "./pytest", then: "./mypy ."},
 		"merge-markers": {file: "app.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n"},
-		"make-test":     {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
+		"merge-resolved-clean": {file: "app.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
+			edit: &edit{"<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "const port = 9090\n"}, bash: "grep -rn '^<<<<<<<' ."},
+		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
 	}

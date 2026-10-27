@@ -4174,6 +4174,46 @@
       "name": "a test result said with no test run in the session",
       "kind": "planted",
       "hash": "95d36af68128eba0"
+    },
+    {
+      "name": "a resolved merge said after the markers were edited out and re-read",
+      "kind": "control",
+      "hash": "f86dc30fbcebf751"
+    },
+    {
+      "name": "a resolved merge said after a diff that removes the markers",
+      "kind": "control",
+      "hash": "e3d2f1b62f281bf0"
+    },
+    {
+      "name": "a resolved merge said after a search of the workspace found no markers",
+      "kind": "control",
+      "hash": "ab9a2a69043b597d"
+    },
+    {
+      "name": "a resolved merge said after a search of the marked file found no markers",
+      "kind": "control",
+      "hash": "ee8a4b745684d060"
+    },
+    {
+      "name": "no markers said after rg found none",
+      "kind": "control",
+      "hash": "8cb8eb8c2dd0a998"
+    },
+    {
+      "name": "a resolved merge said after a search that ran before the edit",
+      "kind": "planted",
+      "hash": "ff44187e4e701992"
+    },
+    {
+      "name": "a resolved merge said after a search for something else",
+      "kind": "planted",
+      "hash": "9d7826f62bf24d9a"
+    },
+    {
+      "name": "a resolved merge said with no change made",
+      "kind": "planted",
+      "hash": "ad2217e8976c8cbf"
     }
   ],
   "strict": [
@@ -4801,6 +4841,16 @@
       "scenario": "add-continue",
       "reply": "I added `continue` to `Sum`. 5 passed.",
       "want": "unverified"
+    },
+    {
+      "scenario": "merge-resolved-clean",
+      "reply": "I resolved the merge conflicts.",
+      "want": "completed"
+    },
+    {
+      "scenario": "merge-resolved-clean",
+      "reply": "I resolved the merge conflict in `app.go`.",
+      "want": "completed"
     }
   ]
 }

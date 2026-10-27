@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -478,13 +479,15 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 // checkWhole checks a claim as one statement.
 func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	v := checkClaim(env, ix, c)
-	if v.Verdict == ClaimVerified && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
+	// A resolved merge is judged whole by its own check, its "no" included.
+	merge := extractFacts(citeRe.ReplaceAllString(c.Text, " ")).mergeClean
+	if v.Verdict == ClaimVerified && !merge && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
 		v.Verdict = ClaimUnverified
 		v.Reason = "it says something did not happen or is not so, which a result showing the thing does not show"
 	}
 	// A state ("healthy", "down") or a deed ("we deployed") the matched
 	// output does not itself say is not shown by its other words matching.
-	if v.Verdict == ClaimVerified {
+	if v.Verdict == ClaimVerified && !merge {
 		if why := unsaid(ix, c, v); why != "" {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
@@ -641,7 +644,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 				findings = append(findings, finding{out: missing, why: "a claim that something was not done is not shown by what was"})
 			}
 		}
-	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.observeOnly && !f.proof && (!f.success || f.changed || f.deed) && len(f.ran) == 0 && !f.negated {
+	} else if (f.changed || f.changeWord || (f.changeAct || f.changeEvent) && (f.deed || f.event != "")) && !f.mergeClean && !f.observeOnly && !f.proof && (!f.success || f.changed || f.deed) && len(f.ran) == 0 && !f.negated {
 		// A change, in any wording, is read from the calls: by the change to
 		// the file it names, whose own changed text must hold the code it
 		// names; or, naming none, by a change whose text holds that code.
@@ -682,6 +685,17 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 					markToken(atLine, t)
 				}
 				changedText = put
+			}
+		}
+	}
+	// "I resolved the conflicts" is a change shown by a search or reads with
+	// no markers left after the last change.
+	if f.mergeClean {
+		fd := ix.mergeMarkers(pool)
+		findings = append(findings, fd)
+		if fd.out == matched {
+			for _, t := range append(append([]string(nil), f.paths...), f.tokens...) {
+				markToken(atLine, t)
 			}
 		}
 	}
@@ -870,14 +884,13 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			}
 		}
 	}
-	if f.mergeClean {
-		findings = append(findings, ix.mergeMarkers(pool))
-	}
 	return findings
 }
 
 // mergeMarkers judges "the conflicts are resolved": contradicted by a current
-// result that still shows conflict markers, and never verified otherwise.
+// result that still shows conflict markers; verified, after the last change,
+// by a search for markers over the workspace (or every file that had them)
+// that found none, or by reads of every such file that show none.
 func (ix *recordIndex) mergeMarkers(pool []*obsRec) finding {
 	for _, o := range pool {
 		if o.tool == "write" || o.tool == "edit" {
@@ -892,7 +905,127 @@ func (ix *recordIndex) mergeMarkers(pool []*obsRec) finding {
 				conflict: &Conflict{Seq: o.seq, CallID: o.callID, Excerpt: strings.TrimSpace(m)}}
 		}
 	}
-	return finding{out: missing, why: "a resolved merge is not shown by the calls; a read with no conflict markers left is not proof"}
+	last := ix.lastChange()
+	if last == nil {
+		return finding{out: missing, why: "a resolved merge needs a change, and this session made none"}
+	}
+	marked, unknown := map[string]bool{}, false
+	for _, o := range ix.obs {
+		if o.child != "" || !o.usable() || o.tool == "write" || o.tool == "edit" || !hasMarkers(o.content) {
+			continue
+		}
+		if o.tool == "read" && o.path != "" {
+			marked[filepath.Clean(o.path)] = true
+		} else {
+			unknown = true // a diff or search: its files are not told
+		}
+	}
+	cleanRead := map[string]int64{} // a file shown without markers, by which call
+	for _, o := range ix.obs {
+		if o.child != "" || !o.usable() || o.pos < last.pos || hasMarkers(o.content) {
+			continue
+		}
+		if o.tool == "read" && o.path != "" {
+			cleanRead[filepath.Clean(o.path)] = o.seq
+		}
+		// A diff after the change shows each file it names without markers.
+		if o.tool == "bash" && len(o.line.final) > 1 && filepath.Base(o.line.final[0]) == "git" && o.line.final[1] == "diff" && o.line.finalCwd != "" {
+			for _, l := range strings.Split(o.content, "\n") {
+				if rel, ok := strings.CutPrefix(l, "+++ b/"); ok {
+					cleanRead[filepath.Join(o.line.finalCwd, strings.TrimSpace(rel))] = o.seq
+				}
+			}
+		}
+		if o.tool == "bash" && ix.markerSearch(o, marked, unknown) {
+			return finding{out: matched, what: fmt.Sprintf("no conflict markers found by #%d after the last change", o.seq), seq: o.seq, call: true, kind: "change"}
+		}
+	}
+	if len(marked) > 0 && !unknown {
+		all, seq := true, int64(0)
+		for p := range marked {
+			all = all && cleanRead[p] > 0
+			seq = max(seq, cleanRead[p])
+		}
+		if all {
+			return finding{out: matched, what: fmt.Sprintf("no conflict markers in #%d after the last change", seq), seq: seq, call: true, kind: "change"}
+		}
+	}
+	return finding{out: missing, why: "no search or read after the last change shows the conflict markers gone"}
+}
+
+// emptyRun: a run that printed nothing, its status line and the bash tool's
+// placeholder aside ("exit 1 · 59ms", "[no output]").
+func emptyRun(s string) bool {
+	s = runStatusRe.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	return s == "" || s == "[no output]"
+}
+
+var runStatusRe = regexp.MustCompile(`(?m)\Aexit \d+ · [^\n]*\n?`)
+
+func hasMarkers(s string) bool {
+	return conflictMarkerRe.MatchString(s) && conflictEndRe.MatchString(s)
+}
+
+// markerSearch: a grep, rg or git grep for a conflict marker, alone on its
+// line, over the workspace or every file that had markers, that found none.
+func (ix *recordIndex) markerSearch(o *obsRec, marked map[string]bool, unknown bool) bool {
+	lf := o.line
+	if !lf.shape || !lf.leadCd || !emptyRun(o.content) || o.exit == nil || *o.exit > 1 || len(lf.final) == 0 {
+		return false
+	}
+	w := lf.final
+	prog := filepath.Base(w[0])
+	recursive := true
+	switch {
+	case prog == "git" && len(w) > 1 && w[1] == "grep":
+		w = w[2:]
+	case prog == "rg":
+		w = w[1:]
+	case prog == "grep" || prog == "egrep":
+		recursive = slices.ContainsFunc(w[1:], func(a string) bool {
+			return strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a, "rR") || a == "--recursive"
+		})
+		w = w[1:]
+	default:
+		return false
+	}
+	var pattern string
+	var ops []string
+	for i := 0; i < len(w); i++ {
+		a := w[i]
+		switch {
+		case a == "-e" && i+1 < len(w):
+			pattern, i = w[i+1], i+1
+		case strings.HasPrefix(a, "-"):
+		case pattern == "":
+			pattern = a
+		default:
+			ops = append(ops, a)
+		}
+	}
+	if !strings.Contains(pattern, "<<<<<<<") && !strings.Contains(pattern, ">>>>>>>") {
+		return false
+	}
+	if len(ops) == 0 || slices.ContainsFunc(ops, func(a string) bool { return a == "." || a == "./" }) {
+		return recursive
+	}
+	if unknown || len(marked) == 0 {
+		return false
+	}
+	have := map[string]bool{}
+	for _, a := range ops {
+		if !filepath.IsAbs(a) {
+			a = filepath.Join(lf.finalCwd, a)
+		}
+		have[filepath.Clean(a)] = true
+	}
+	for p := range marked {
+		if !have[p] {
+			return false
+		}
+	}
+	return true
 }
 
 // A conflict marker line as a read (with its gutter), a diff (added or

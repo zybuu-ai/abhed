@@ -364,6 +364,10 @@ var (
 	stepEditConflict     = CorpusStep{ID: "e27a", Tool: "edit", Args: map[string]any{"path": "/w/app.go", "old_string": "<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "new_string": "const port = 9090\n"}, Output: "Edited /w/app.go"}
 	stepReadResolved     = CorpusStep{ID: "f27b", Tool: "read", Args: map[string]any{"path": "/w/app.go"}, Output: "package main\n\nconst port = 9090\n"}
 	stepGitDiffResolved  = CorpusStep{ID: "b27d", Tool: "bash", Args: map[string]any{"command": "git diff"}, Output: "--- a/app.go\n+++ b/app.go\n@@ -1,7 +1,3 @@\n package main\n \n-<<<<<<< HEAD\n-const port = 8080\n-=======\n const port = 9090\n->>>>>>> feature\n", Exit: code(0)}
+	stepGrepMarkersNone  = CorpusStep{ID: "b27e", Tool: "bash", Args: map[string]any{"command": "grep -rn '^<<<<<<<' ."}, Output: "", Exit: code(1)}
+	stepGrepMarkersFile  = CorpusStep{ID: "b27f", Tool: "bash", Args: map[string]any{"command": "grep -n '^>>>>>>>' app.go"}, Output: "", Exit: code(1)}
+	stepRgMarkersNone    = CorpusStep{ID: "b27g", Tool: "bash", Args: map[string]any{"command": "rg '^<<<<<<<'"}, Output: "", Exit: code(1)}
+	stepGrepTodoNone     = CorpusStep{ID: "b27h", Tool: "bash", Args: map[string]any{"command": "grep -rn TODO ."}, Output: "", Exit: code(1)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1378,8 +1382,14 @@ func CorpusCases() []CorpusCase {
 		{Name: "a clean merge said over a diff that shows conflict markers", Kind: p, Want: ClaimContradicted, Steps: steps(stepGitDiffConflict), Text: "The merge is clean and all conflicts are resolved."},
 		{Name: "open conflicts said over a read that shows conflict markers: Conflicts in app.go are not resolved yet.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict), Text: "Conflicts in `app.go` are not resolved yet."},
 		{Name: "open conflicts said over a read that shows conflict markers: One conflict still remains in app.go.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict), Text: "One conflict still remains in `app.go`, so no clean merge yet."},
-		{Name: "a resolved merge said after the markers were edited out and re-read", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict, stepReadResolved), Text: "I resolved the merge conflicts."},
-		{Name: "a resolved merge said after a diff that removes the markers", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict, stepGitDiffResolved), Text: "No conflict markers remain."},
+		{Name: "a resolved merge said after the markers were edited out and re-read", Kind: c, Want: ClaimVerified, Steps: steps(stepReadConflict, stepEditConflict, stepReadResolved), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge said after a diff that removes the markers", Kind: c, Want: ClaimVerified, Steps: steps(stepReadConflict, stepEditConflict, stepGitDiffResolved), Text: "No conflict markers remain."},
+		{Name: "a resolved merge said after a search of the workspace found no markers", Kind: c, Want: ClaimVerified, Steps: steps(stepReadConflict, stepEditConflict, stepGrepMarkersNone), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge said after a search of the marked file found no markers", Kind: c, Want: ClaimVerified, Steps: steps(stepReadConflict, stepEditConflict, stepGrepMarkersFile), Text: "I resolved the merge conflict in `app.go`."},
+		{Name: "no markers said after rg found none", Kind: c, Want: ClaimVerified, Steps: steps(stepReadConflict, stepEditConflict, stepRgMarkersNone), Text: "No conflict markers remain."},
+		{Name: "a resolved merge said after a search that ran before the edit", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepGrepMarkersNone, stepEditConflict), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge said after a search for something else", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict, stepGrepTodoNone), Text: "I resolved the merge conflicts."},
+		{Name: "a resolved merge said with no change made", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepMarkersNone), Text: "I resolved the merge conflicts."},
 		{Name: "a resolved merge said after an edit, over a stale read with markers", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadConflict, stepEditConflict), Text: "The conflicts are resolved."},
 		{Name: "a test result said with no test run in the session", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont), Text: "5 passed."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
