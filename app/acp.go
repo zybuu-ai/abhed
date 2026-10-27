@@ -179,6 +179,9 @@ type acpSession struct {
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
 	always map[string]string
+	// grants are the bash scopes the editor chose beyond the policy's own:
+	// an exact command or a family, perhaps in a folder (acp_grants.go).
+	grants []bashGrant
 	// subAsks are the subagent asks shown as tool calls, by request id, so
 	// their answer settles the card and no other subagent.action draws one.
 	subAsks map[string]bool
@@ -1181,6 +1184,25 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
 		return true, nil
 	}
+	// A bash grant answers only the policy's default ask, never a rule's,
+	// the destructive check's, the supervisor's or a screen's.
+	command, grantable := s.grantable(tool, args, d)
+	if grantable {
+		cwd := s.workDir()
+		s.mu.Lock()
+		var hit *bashGrant
+		for i := range s.grants {
+			if s.grants[i].covers(command, cwd) {
+				hit = &s.grants[i]
+				break
+			}
+		}
+		s.mu.Unlock()
+		if hit != nil {
+			abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: hit.scopeOf()})
+			return true, nil
+		}
+	}
 	// The request names the call its tool_call update names, and its options
 	// carry the engine's request id so an answer meant for another ask is refused.
 	callID, requestID := abhed.CallIDOf(ctx), abhed.RequestIDOf(ctx)
@@ -1246,6 +1268,19 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	options := []map[string]any{{"optionId": once, "name": "Allow once", "kind": "allow_once"}}
 	if offerAlways {
 		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + ui.VisibleLine(shownScope), "kind": "allow_always"})
+	}
+	var grantOpts []grantOption
+	// Offered only when the card shows the command as it runs.
+	if grantable && bashCommandOf(shown) == command {
+		grantOpts = bashGrantOptions(command, s.workDir(), bind)
+		for _, g := range grantOpts {
+			kind := "allow_always"
+			if g.grant.Session {
+				kind = "allow_once"
+			}
+			options = append(options, map[string]any{"optionId": g.id, "name": ui.VisibleLine(g.label), "kind": kind,
+				"_meta": map[string]any{acpMetaKey: map[string]any{"grant": g.grant}}})
+		}
 	}
 	options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
 	meta := map[string]any{"tool": tool, "step": d.Step, "reason": reason, "destructive": destructive(tool, args, d),
@@ -1329,6 +1364,15 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		s.record(agent.EvApprovalScopeGranted, agent.ScopeGranted{Scope: shownScope, By: agent.ByUser})
 		return true, nil
 	case out.Outcome.OptionID == once:
+		return true, nil
+	case grantChosen(grantOpts, out.Outcome.OptionID) != nil:
+		g := *grantChosen(grantOpts, out.Outcome.OptionID)
+		s.mu.Lock()
+		s.grants = append(s.grants, g)
+		s.mu.Unlock()
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: g.scopeOf()})
+		// Recorded either way; one for the session alone is not restored.
+		s.record(agent.EvApprovalScopeGranted, g.grantRecord())
 		return true, nil
 	case out.Outcome.OptionID == reject:
 		return false, nil

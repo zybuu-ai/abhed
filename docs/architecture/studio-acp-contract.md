@@ -636,6 +636,12 @@ sends it:
               _meta: { "zybuu.ai/abhed": AskMeta } },
   options: [ { optionId: "once:<bind>",   name: "Allow once",          kind: "allow_once" },
              { optionId: "always:<bind>", name: "Always allow <scope>", kind: "allow_always" },  // only when offered
+             // 1.2.9, bash at the default step: the scopes below, each with
+             // _meta["zybuu.ai/abhed"].grant = {command?, family?, folder?, session?}
+             { optionId: "session-exact:<bind>", name: "Allow `<command>` for this session", kind: "allow_once" },
+             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>`",   kind: "allow_always" },
+             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family only
+             { optionId: "always-family:<bind>", name: "Always allow `<family> …` commands", kind: "allow_always" },    // a family only
              { optionId: "reject:<bind>", name: "Deny",                 kind: "reject_once" } ] }
 
 interface AskMeta {
@@ -656,6 +662,21 @@ interface AskMeta {
 - Option ids are bound to the request, so an answer meant for another ask is
   refused.
 - "Always" is never offered for destructive, screen or ask-rule steps.
+- **Bash scopes (1.2.9).** For a bash call the policy asks about by default
+  (no deny or ask rule, not destructive, not flagged by the supervisor or a
+  screen), the request also offers this exact command for the session or
+  always, and, for a command in a family Abhed knows (`go test`, `go build`,
+  `cargo test`, `npm run <script>`, `npm test`, `python -m pytest`, `pytest`,
+  `dotnet test`, `mvn test`, `gradle test` and the like), that family in the
+  session's current folder or anywhere. A line with a chain, a redirect, an
+  expansion, a quote, an assignment in front, a program named by a path, or a
+  flag that hands the program code or a config (`-exec`, `-toolexec`,
+  `--config`, `-e`, `-c`…) is offered and covered by none. A grant answers
+  only a later default-step ask; every rule, the destructive check, the
+  supervisor and the screens still come first. None is offered where the
+  managed configuration holds the permissions. Each is recorded as
+  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`;
+  `session/load` restores all but those for the session alone.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a

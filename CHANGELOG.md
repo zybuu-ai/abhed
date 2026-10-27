@@ -143,6 +143,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Studio's permission request for a bash command offers scopes the engine
+  enforces: this exact command for the session or always, and, for a known
+  command family (`go test`, `cargo test`, `npm run lint`, `python -m
+  pytest`…), that family in the current folder or anywhere. A grant answers
+  only the policy's default ask, never one a rule, the destructive check,
+  the supervisor or a screen makes, and covers no line with a chain,
+  expansion, assignment, path or code flag; none is offered where the
+  managed configuration holds the permissions. Grants are recorded, and
+  `session/load` restores all but those for the session alone.
+
 - Inline completions for Abhed Studio: `_abhed/complete` (the `complete`
   feature) sends the code around the cursor, bounded, to the provider
   `model.completion` names, by fill in the middle on a local coding model
