@@ -3804,6 +3804,151 @@
       "name": "a clean build said for a target the build did not name",
       "kind": "planted",
       "hash": "7a4d47b9725850d7"
+    },
+    {
+      "name": "lint said beside a build, after only a build: Build and lint pass.",
+      "kind": "planted",
+      "hash": "6e24ed31652c9ffd"
+    },
+    {
+      "name": "lint said beside a build, after only a build: The build and lint pass.",
+      "kind": "planted",
+      "hash": "f44af8954fc61c56"
+    },
+    {
+      "name": "lint said beside a build, after only a build: Build and lint both pass.",
+      "kind": "planted",
+      "hash": "8c551a5d2a4fd7fc"
+    },
+    {
+      "name": "lint said beside a build, after only a build: It builds and lints cleanly.",
+      "kind": "planted",
+      "hash": "09f630fee255b422"
+    },
+    {
+      "name": "lint said beside tests, after only a test run: Tests and lint pass.",
+      "kind": "planted",
+      "hash": "6a00aeb85c59d99d"
+    },
+    {
+      "name": "lint said beside tests, after only a test run: All tests and lint checks pass.",
+      "kind": "planted",
+      "hash": "2c490fc6cc2be26c"
+    },
+    {
+      "name": "a build said beside lint, after only a lint run",
+      "kind": "planted",
+      "hash": "68e94a364111b7d3"
+    },
+    {
+      "name": "lint said beside tests, after a lint run and a test run",
+      "kind": "control",
+      "hash": "199d7703b2c5f37f"
+    },
+    {
+      "name": "tests pass beside a linter that complains",
+      "kind": "control",
+      "hash": "3b70322fd9395d01"
+    },
+    {
+      "name": "no warnings or errors said with no run: It compiles without any errors or warnings.",
+      "kind": "planted",
+      "hash": "c822292fe280c5bb"
+    },
+    {
+      "name": "no warnings or errors said with no run: It builds with no warnings or errors.",
+      "kind": "planted",
+      "hash": "952f7f46965eff3b"
+    },
+    {
+      "name": "no warnings or errors said with no run: It builds without warnings or errors.",
+      "kind": "planted",
+      "hash": "fc469be19930dad6"
+    },
+    {
+      "name": "no warnings or errors said with no run: It builds with no compile errors or warnings.",
+      "kind": "planted",
+      "hash": "6ed31a433c5e8fcf"
+    },
+    {
+      "name": "no warnings or errors said with no run: It builds with no type errors or warnings.",
+      "kind": "planted",
+      "hash": "f972f8861a7f732c"
+    },
+    {
+      "name": "no warnings said after a build that warned: It builds with no warnings or errors.",
+      "kind": "planted",
+      "hash": "a8de5a7208a10ac3"
+    },
+    {
+      "name": "no warnings said after a build that warned: Build is successful and warning free.",
+      "kind": "planted",
+      "hash": "c91021154e8048b4"
+    },
+    {
+      "name": "no warnings said after a build that warned: The build is clean.",
+      "kind": "planted",
+      "hash": "0115ead7f7e34b0f"
+    },
+    {
+      "name": "no warnings said after a build that warned: The clean build passes.",
+      "kind": "planted",
+      "hash": "fad035cd5b16837a"
+    },
+    {
+      "name": "no warnings said after a quiet build: It builds with no warnings or errors.",
+      "kind": "control",
+      "hash": "b4348cf616c583f0"
+    },
+    {
+      "name": "no warnings said after a quiet build: It builds without any warnings.",
+      "kind": "control",
+      "hash": "5097b372d829254c"
+    },
+    {
+      "name": "a build said for targets a host build does not show: It now builds on all platforms.",
+      "kind": "planted",
+      "hash": "872c612516e79304"
+    },
+    {
+      "name": "a build said for targets a host build does not show: It builds for both Linux and Windows.",
+      "kind": "planted",
+      "hash": "3c3d52bd6173d817"
+    },
+    {
+      "name": "a build said for targets a host build does not show: The Windows build passes now.",
+      "kind": "planted",
+      "hash": "50b6163fee063540"
+    },
+    {
+      "name": "a build said for targets a host build does not show: The CI build passes.",
+      "kind": "planted",
+      "hash": "6f66fd1338368be8"
+    },
+    {
+      "name": "a release build said after a debug build: The release build passes.",
+      "kind": "planted",
+      "hash": "22ba3e6b12e551ec"
+    },
+    {
+      "name": "a release build said after a debug build: The release build succeeds.",
+      "kind": "planted",
+      "hash": "382432ccf5a9bc86"
+    },
+    {
+      "name": "a release build said after a release build",
+      "kind": "control",
+      "hash": "7bde8dadcb1d2e79"
+    },
+    {
+      "name": "lint said beside tests, after a lint run with problems and a test run",
+      "kind": "planted",
+      "hash": "a0ea3f4c9087061d"
+    },
+    {
+      "name": "no warnings said after a build that warned: It builds without any warnings.",
+      "kind": "planted",
+      "hash": "9d98ee8c02962d88"
     }
   ],
   "strict": [
@@ -4290,6 +4435,76 @@
     {
       "scenario": "build-go",
       "reply": "I added `continue` to `Sum`. The build is clean.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. Build and lint pass.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "lint-golangci",
+      "reply": "I added `continue` to `Sum`. Build and lint pass.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "lint-then-test",
+      "reply": "I added `continue` to `Sum`. Tests and lint pass.",
+      "want": "completed"
+    },
+    {
+      "scenario": "add-continue",
+      "reply": "I added `continue` to `Sum`. It builds with no warnings or errors.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. It builds with no warnings or errors.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It builds with no warnings or errors.",
+      "want": "completed"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. The build is clean.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-cargo-warn",
+      "reply": "I added `continue` to `Sum`. The clean build passes.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It now builds on all platforms.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. It builds for both Linux and Windows.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. The Windows build passes now.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-go",
+      "reply": "I added `continue` to `Sum`. The CI build passes.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-cargo-debug",
+      "reply": "I added `continue` to `Sum`. The release build passes.",
+      "want": "unverified"
+    },
+    {
+      "scenario": "build-cargo-release",
+      "reply": "I added `continue` to `Sum`. The release build passes.",
       "want": "completed"
     }
   ]

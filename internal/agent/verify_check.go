@@ -797,6 +797,14 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		}
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
+		if f.alsoLint {
+			lf := ix.success(pool, "lint", f.scope, false, cited)
+			if o := ix.bySeq[lf.seq]; lf.out == matched && o != nil && lintProblemsRe.MatchString(strings.ToLower(o.content)) {
+				lf = finding{out: missing, why: "the lint run reports problems"}
+			}
+			lf.call, lf.kind = lf.out == matched, "run"
+			findings = append(findings, lf)
+		}
 	}
 	// "No issues", "looks good": only a check run that passed shows it.
 	if f.overclaim {
