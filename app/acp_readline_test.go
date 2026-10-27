@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -50,5 +51,30 @@ func TestRequestIDIsTheTopLevelOne(t *testing.T) {
 		if got := string(requestID([]byte(in))); got != want {
 			t.Errorf("%s: %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A head nested as deep as a line can hold is walked in bounded memory: only
+// its first bytes are read, and only so deep.
+func TestRequestIDBoundsItsWork(t *testing.T) {
+	head := []byte(`{"p":` + strings.Repeat("[", 16<<20))
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if id := requestID(head); id != nil {
+		t.Fatalf("id %s", id)
+	}
+	runtime.ReadMemStats(&after)
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 4<<20 {
+		t.Fatalf("walking the head allocated %d MiB", grew>>20)
+	}
+}
+
+// readLine keeps at most headMax bytes of a line too long to use.
+func TestReadLineKeepsAShortHead(t *testing.T) {
+	rd := bufio.NewReaderSize(strings.NewReader(strings.Repeat("z", 3<<20)+"\n"), 64<<10)
+	_, head, tooLong, _ := readLine(rd, 1<<20)
+	if !tooLong || len(head) != headMax {
+		t.Fatalf("tooLong %v, head %d bytes", tooLong, len(head))
 	}
 }

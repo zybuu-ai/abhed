@@ -507,7 +507,8 @@ func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err e
 		if !tooLong {
 			if len(line)+len(chunk) > max+1 {
 				tooLong = true
-				head = append(append([]byte(nil), line...), chunk[:min(len(chunk), 64<<10)]...)
+				head = append(append([]byte(nil), line[:min(len(line), headMax)]...), chunk...)
+				head = head[:min(len(head), headMax)]
 				line = nil
 			} else {
 				line = append(line, chunk...)
@@ -523,13 +524,20 @@ func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err e
 	}
 }
 
+// headMax is how much of a too-long line is kept to find its id in, and
+// idDepth how deep the walk for it goes before it gives up.
+const (
+	headMax = 64 << 10
+	idDepth = 16
+)
+
 // requestID is the top-level id at the head of a message too long to parse,
-// or nil: the head is walked token by token, so an "id" nested in params is
-// never taken for it.
+// or nil: the first headMax bytes are walked token by token, so an "id"
+// nested in params is never taken for it, and the walk stops past idDepth.
 func requestID(head []byte) json.RawMessage {
-	dec := json.NewDecoder(bytes.NewReader(head))
+	dec := json.NewDecoder(bytes.NewReader(head[:min(len(head), headMax)]))
 	dec.UseNumber()
-	depth, atKey := 0, false
+	depth, atKey, object := 0, false, false
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -539,14 +547,20 @@ func requestID(head []byte) json.RawMessage {
 			switch d {
 			case '{', '[':
 				depth++
-				atKey = depth == 1 && d == '{'
+				if depth == 1 {
+					object = d == '{'
+				}
+				if depth > idDepth {
+					return nil
+				}
+				atKey = depth == 1 && object
 			default:
 				depth--
-				atKey = depth == 1 // after a value closes, a key comes next
+				atKey = depth == 1 && object // after a value closes, a key comes next
 			}
 			continue
 		}
-		if depth != 1 {
+		if depth != 1 || !object {
 			continue
 		}
 		if !atKey {
@@ -1601,6 +1615,10 @@ func (c *acpConn) awaitAskable(ctx context.Context, s *acpSession, task, callID 
 
 // ruleOf names what made the ask: the rule as written, or the built-in step.
 func ruleOf(d abhed.Decision) string {
+	// The preview asked, whatever rule it replaced; that rule stays on the record.
+	if d.Step == "preview" {
+		return "builtin:preview"
+	}
 	if d.Rule != "" {
 		return d.Rule
 	}

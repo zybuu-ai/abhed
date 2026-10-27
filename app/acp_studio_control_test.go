@@ -584,7 +584,7 @@ func TestStudioPreviewWrites(t *testing.T) {
 	}
 	script()
 	prompt()
-	if len(asked) != 1 || !strings.Contains(string(asked[0]), `"type":"diff"`) || r.read("a.txt") != "one\ntwo\n" {
+	if len(asked) != 1 || !strings.Contains(string(asked[0]), `"type":"diff"`) || !strings.Contains(string(asked[0]), `"rule":"builtin:preview"`) || r.read("a.txt") != "one\ntwo\n" {
 		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
 	}
 	denied, _ := r.recorded(id, agent.EvActionDenied)
