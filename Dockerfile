@@ -57,7 +57,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
 # without them would be smaller and useless.
 # trixie rather than bookworm: the same packages, and the scan drops from 16
 # critical CVEs in the base image to none (docs/trust/security-scans.md).
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 # ca-certificates is required to verify TLS to the model endpoint. git and the
 # rest are what an agent working in a repository actually reaches for.
