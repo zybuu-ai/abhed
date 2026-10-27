@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,8 +31,8 @@ func init() {
 // Commit message bounds: the diff sent, the answer, and the wait.
 const (
 	commitDiffBytes = 32 << 10
-	commitMaxTokens = 512
-	commitTimeout   = 30 * time.Second
+	commitMaxTokens = 2048 // room for a reasoning model to think before it writes
+	commitTimeout   = 90 * time.Second
 )
 
 // stagedDiff is what of the staged change may be sent: the diff of the files
@@ -41,9 +43,14 @@ type stagedDiff struct {
 	truncated       bool
 }
 
-// readStaged reads the staged change under root through the confined git.
-func readStaged(ctx context.Context, root string, roots []string, mayRead func(string) bool, clean func(string) string) (stagedDiff, error) {
-	names, err := hostgit.Command(ctx, root, "diff", "--cached", "--relative", "--name-only", "-z").Output()
+// readStaged reads the staged change under root through the confined git;
+// with staged false, the working tree's unstaged changes to tracked files.
+func readStaged(ctx context.Context, root string, roots []string, mayRead func(string) bool, clean func(string) string, staged bool) (stagedDiff, error) {
+	which := []string{"diff", "--cached"}
+	if !staged {
+		which = []string{"diff"}
+	}
+	names, err := hostgit.Command(ctx, root, append(which, "--relative", "--name-only", "-z")...).Output()
 	if err != nil {
 		return stagedDiff{}, err
 	}
@@ -64,7 +71,7 @@ func readStaged(ctx context.Context, root string, roots []string, mayRead func(s
 	if len(keep) == 0 {
 		return d, nil
 	}
-	out, err := hostgit.Command(ctx, root, append([]string{"diff", "--cached", "--relative", "--no-color", "--stat", "--patch", "-U3", "--"}, keep...)...).Output()
+	out, err := hostgit.Command(ctx, root, append(append(which, "--relative", "--no-color", "--stat", "--patch", "-U3", "--"), keep...)...).Output()
 	if err != nil {
 		return stagedDiff{}, err
 	}
@@ -77,17 +84,28 @@ func readStaged(ctx context.Context, root string, roots []string, mayRead func(s
 }
 
 func (c *acpConn) commitMessage(msg rpcMessage) {
+	start := time.Now()
+	outcome := "refused"
+	// Every request ends logged, with how it ended, so a silent one is never silent.
+	defer func() {
+		fmt.Fprintf(os.Stderr, "abhed: acp: commit message: %s in %s\n", outcome, time.Since(start).Round(time.Millisecond))
+	}()
+	fail := func(e *rpcError) {
+		outcome = "error: " + e.Message
+		c.reply(msg.ID, nil, e)
+	}
 	s, e := c.sessionFor(msg.Params)
 	if e != nil {
-		c.reply(msg.ID, nil, e)
+		fail(e)
 		return
 	}
 	parts, e := innerOf(s)
 	if e != nil {
-		c.reply(msg.ID, nil, e)
+		fail(e)
 		return
 	}
 	empty := func(field, why string) {
+		outcome = field + ": " + why
 		c.reply(msg.ID, map[string]any{"message": "", field: why}, nil)
 	}
 	cfg := parts.Config
@@ -103,13 +121,13 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 	}
 	a, err := completionAdapter(provider, cfg.Completion.LocalOnly)
 	if err != nil {
-		c.reply(msg.ID, nil, refusal(errRefused, "the commit model cannot be used: %v", err))
+		fail(refusal(errRefused, "the commit model cannot be used: %v", err))
 		return
 	}
 	// Ended by the session's close or the connection's, as well as the timeout.
 	k := c.completerFor(s, "commit")
 	if k == nil {
-		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		fail(refusal(errParams, "the session has closed"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.root(), commitTimeout)
@@ -117,7 +135,7 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 	k.mu.Lock()
 	if k.closed {
 		k.mu.Unlock()
-		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		fail(refusal(errParams, "the session has closed"))
 		return
 	}
 	if k.cancel != nil {
@@ -131,15 +149,22 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		return text
 	}
 	roots := append([]string{parts.Session.Root}, s.roots()...)
-	diff, err := readStaged(ctx, parts.Session.Root, roots, func(p string) bool { return !readDenied(parts.Loop.Policy, p) }, clean)
+	mayRead := func(p string) bool { return !readDenied(parts.Loop.Policy, p) }
+	diff, err := readStaged(ctx, parts.Session.Root, roots, mayRead, clean, true)
+	source := "staged"
+	if err == nil && diff.files == 0 && diff.excluded == 0 {
+		// Nothing staged: the message is for the changes in the working tree.
+		diff, err = readStaged(ctx, parts.Session.Root, roots, mayRead, clean, false)
+		source = "unstaged"
+	}
 	if err != nil {
-		c.reply(msg.ID, nil, refusal(errRefused, "the staged change could not be read: %s", redacted(err.Error())))
+		fail(refusal(errRefused, "the changes could not be read: %s", redacted(err.Error())))
 		return
 	}
 	if diff.files == 0 {
-		why := "nothing is staged"
+		why := "nothing is staged or changed"
 		if diff.excluded > 0 {
-			why = "every staged file is one the session may not read"
+			why = "every changed file is one the session may not read"
 		}
 		empty("empty", why)
 		return
@@ -150,7 +175,7 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		Provider: name, Model: provider.Model, Local: provider.OnThisMachine(),
 		Files: diff.files, Excluded: diff.excluded, Bytes: len(diff.text), Truncated: diff.truncated,
 	}); err != nil {
-		empty("refused", "the record did not take the request, so nothing was sent")
+		fail(refusal(errRefused, "the record did not take the request, so nothing was sent"))
 		return
 	}
 	res, err := model.CommitMessageByChat(ctx, a, diff.text, commitMaxTokens)
@@ -158,24 +183,32 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 	if clean(text) != text {
 		text, res.Dropped = "", "the message carried a secret"
 	}
-	outcome := "served"
+	recorded := "served"
 	switch {
 	case err != nil:
-		outcome = "failed"
+		recorded = "failed"
 	case strings.TrimSpace(text) == "":
-		outcome = "empty"
+		recorded = "empty"
 	}
 	if _, rerr := parts.Loop.Recorder.Record(agent.EvCommitMessage, agent.ActorSystem, agent.Trusted,
-		agent.CommitMessage{Outcome: outcome, TokensIn: res.InputTokens, TokensOut: res.OutputTokens}); rerr != nil {
+		agent.CommitMessage{Outcome: recorded, TokensIn: res.InputTokens, TokensOut: res.OutputTokens}); rerr != nil {
 		warnf("the record did not take %s: %v", agent.EvCommitMessage, rerr)
 	}
 	switch {
+	case err != nil && ctx.Err() != nil:
+		fail(refusal(errRefused, "the commit model did not answer within %s", commitTimeout))
 	case err != nil:
-		c.reply(msg.ID, nil, refusal(errRefused, "the commit model did not answer: %s", redacted(err.Error())))
-	case outcome == "empty":
-		empty("dropped", orDefault(res.Dropped, "the model gave no message"))
+		fail(refusal(errRefused, "the commit model did not answer: %s", redacted(err.Error())))
+	case recorded == "empty":
+		// A clear error, not an empty answer: the person asked for a message.
+		why := orDefault(res.Dropped, "the commit model gave no message")
+		if res.Dropped == "" && res.OutputTokens >= commitMaxTokens {
+			why += " (it spent its tokens before writing one)"
+		}
+		fail(refusal(errRefused, "%s", why))
 	default:
-		out := map[string]any{"message": text}
+		outcome = "served"
+		out := map[string]any{"message": text, "source": source}
 		if diff.excluded > 0 || diff.truncated {
 			out["excluded"], out["truncated"] = diff.excluded, diff.truncated
 		}

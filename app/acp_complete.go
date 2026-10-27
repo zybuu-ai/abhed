@@ -153,7 +153,7 @@ func editorOff(cfg config.Config, feature string) (string, config.ProviderConfig
 		if feature == "complete" {
 			return "no completion model is configured (model.completion)", config.ProviderConfig{}
 		}
-		return "no model is configured for " + what + " (" + key + " or model.completion)", config.ProviderConfig{}
+		return "no model is configured for " + what + " (model." + feature + " or model.completion)", config.ProviderConfig{}
 	}
 	if !cfg.EditorAIOn(feature) {
 		return what + " are turned off (completion.enabled)", config.ProviderConfig{}

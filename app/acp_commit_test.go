@@ -109,3 +109,54 @@ func TestStudioCommitMessageRunsNoRepositoryProgram(t *testing.T) {
 		t.Fatal("a program the repository names ran")
 	}
 }
+
+// With nothing staged, the message is for the working tree's changes; a model
+// that gives no message is a clear error, never an empty answer.
+func TestStudioCommitMessageUnstagedAndEmpty(t *testing.T) {
+	model := newFIMServer(t, "Tune the loop")
+	r := completionRig(t, model.URL, "")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	r.write("loop.go", "package a\n\nvar n = 1\n")
+	git("add", "loop.go")
+	git("commit", "-q", "-m", "first")
+	r.write("loop.go", "package a\n\nvar n = 2\n")
+	id := r.open()
+	var res struct {
+		Message string `json:"message"`
+		Source  string `json:"source"`
+	}
+	r.cl.ok("_abhed/commitMessage", map[string]any{"sessionId": id}, &res)
+	if res.Message != "Tune the loop" || res.Source != "unstaged" {
+		t.Fatalf("%+v", res)
+	}
+	model.mu.Lock()
+	sent := strings.Join(model.bodies, "\n")
+	model.mu.Unlock()
+	if !strings.Contains(sent, "var n = 2") {
+		t.Fatalf("the working tree's change was not sent: %.300s", sent)
+	}
+
+	quiet := newFIMServer(t, "")
+	r2 := completionRig(t, quiet.URL, "")
+	git2 := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", r2.ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git2("init", "-q")
+	r2.write("a.go", "package a\n")
+	git2("add", "a.go")
+	id2 := r2.open()
+	got := r2.cl.call("_abhed/commitMessage", map[string]any{"sessionId": id2})
+	if got.Error == nil || !strings.Contains(got.Error.Message, "gave no message") {
+		t.Fatalf("%+v %s", got.Error, got.Result)
+	}
+}

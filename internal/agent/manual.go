@@ -209,6 +209,52 @@ func (l *Loop) ManualAuthorizeAsking(ctx context.Context, call, id string, args 
 	return tool, nil, nil
 }
 
+// ManualRunTool runs tool as the person's own call, the tool given rather
+// than looked up, for an action the person takes themselves with a tool the
+// agent may not have, such as reading a page they link while the agent's
+// web_fetch is off. Policy, the secret checks and the supervisor judge it as
+// any call: a deny refuses it, and any ask, a rule's included, is put to the
+// person with ask; no ask, an error or no answer refuses it.
+func (l *Loop) ManualRunTool(ctx context.Context, sess *tools.Session, tool tools.Tool, id string, args json.RawMessage, ask ManualAsk) (tools.Result, error) {
+	call := tool.Name()
+	mutates := tools.MutatesCall(tool, args)
+	decision := l.Policy.Evaluate(call, mutates, args)
+	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	if l.Monitor != nil && decision.Decision != policy.Deny {
+		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
+	}
+	answer := Unanswered
+	if decision.Decision == policy.Ask {
+		ok, err := false, errors.New("no one to ask")
+		if ask != nil {
+			ok, err = ask(ctx, decision)
+		}
+		switch {
+		case err != nil:
+			decision = policy.Result{Decision: policy.Deny, Reason: decision.Reason + "; not answered", Step: "unanswered"}
+		case ok:
+			answer = Confirmed
+		default:
+			answer = Declined
+		}
+	}
+	refused, err := l.manualDecide(call, id, args, decision, answer)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	if refused != nil {
+		return *refused, nil
+	}
+	start := time.Now()
+	result := tool.Run(l.withLaunch(ctx, id), sess, args)
+	if red := l.Recorder.redactor(); red != nil {
+		result.Content = redactedText(red.Redact, result.Content)
+	}
+	return result, l.ManualObserve(id, call, result, time.Since(start))
+}
+
 // namesSecret applies the file-name secret check to the name an explorer
 // action creates: a new folder's path, or a rename's new path.
 func (l *Loop) namesSecret(action string, args json.RawMessage) string {
@@ -265,7 +311,7 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 }
 
 func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
-	asked := answer != Unanswered && decision.Decision == policy.Ask && (decision.Step == "destructive" || decision.Step == "monitor" || decision.Step == "workspace")
+	asked := answer != Unanswered && decision.Decision == policy.Ask
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
 		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Offer(), RequiresApproval: asked,
 	}); err != nil {

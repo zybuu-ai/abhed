@@ -848,6 +848,23 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Generate Commit Message in Abhed Studio could end with nothing shown:
+  with nothing staged it answered only "nothing is staged", and a model that
+  gave no message (a reasoning model can spend 512 tokens thinking) came
+  back as an empty message with a reason rather than an error. It now uses
+  the working tree's changes when nothing is staged, gives the model room
+  (2,048 tokens, 90 s), ends with a message or a clear error, and logs each
+  request.
+- A web page linked in Abhed Studio is read as the person's own `web_fetch`
+  call even while the agent's `web_fetch` is off, under the same rules, and
+  asked about when a rule asks; only a managed `web_fetch.enabled: false`
+  refuses it.
+- Abhed Studio is told per model whether it reads images
+  (`_meta["zybuu.ai/abhed"].image` in the model list), and
+  `promptCapabilities.image` is `false`, so an image is offered only to a
+  model that reads it.
+- Next-edit suggestions no longer offer an edit that changes only
+  whitespace at a line's end, which left the line looking the same.
 - When a `user_prompt_submit` hook refuses every waiting message, ones
   queued while the hook decided are now counted too, so the model is not
   called again on the conversation as it was. Affects 1.2.3 to 1.2.8.

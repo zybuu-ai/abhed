@@ -104,3 +104,18 @@ func TestStudioNextEditAtTheEndOfTheDocument(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// A suggestion that only changes whitespace at a line's end, as a cursor
+// marker left behind does, is no edit: nothing is offered.
+func TestStudioNextEditDropsNoOps(t *testing.T) {
+	model := newFIMServer(t, "a := 1  \nb := 2\t\n")
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go",
+		"cursor": map[string]int{"line": 0}, "window": map[string]any{"startLine": 0, "text": "a := 1\nb := 2\n"}}, &res)
+	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "no change") {
+		t.Fatalf("%+v", res)
+	}
+}

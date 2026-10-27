@@ -225,6 +225,15 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 	skipped := false
 	hunks := linediff.Hunks(shown, next)
 	changed := 0
+	// A change of trailing whitespace alone (often what is left where the
+	// model's cursor marker was) leaves the line looking the same: no edit.
+	var real []linediff.Hunk
+	for _, h := range hunks {
+		if !sameBarTrailingSpace(shown[h.OldStart:h.OldStart+h.OldCount], next[h.NewStart:h.NewStart+h.NewCount]) {
+			real = append(real, h)
+		}
+	}
+	hunks = real
 	for _, h := range hunks {
 		changed += max(h.OldCount, h.NewCount)
 	}
@@ -260,6 +269,9 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 	if len(edits) == 0 && skipped {
 		return edits, "the only change touched a line holding a secret"
 	}
+	if len(edits) == 0 {
+		return edits, "the model suggested no change"
+	}
 	return edits, ""
 }
 
@@ -271,4 +283,18 @@ func rootRel(path string, roots []string) string {
 		}
 	}
 	return filepath.Base(path)
+}
+
+// sameBarTrailingSpace reports whether two runs of lines differ only in the
+// whitespace at the ends of their lines.
+func sameBarTrailingSpace(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimRight(a[i], " \t\r\n") != strings.TrimRight(b[i], " \t\r\n") {
+			return false
+		}
+	}
+	return true
 }

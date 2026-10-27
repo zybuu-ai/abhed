@@ -34,6 +34,12 @@ func modelDescription(m abhed.Model) string {
 	return m.Model + " (" + m.Type + ")"
 }
 
+// modelMeta is what Studio reads of a model beyond its name: whether it
+// reads images, so an image is offered only with a model that does (§3.5).
+func modelMeta(m abhed.Model) map[string]any {
+	return map[string]any{acpMetaKey: map[string]any{"image": m.Images}}
+}
+
 func currentModel(models []abhed.Model) string {
 	for _, m := range models {
 		if m.Current {
@@ -47,7 +53,7 @@ func currentModel(models []abhed.Model) string {
 func modelConfigOptions(models []abhed.Model) []any {
 	opts := make([]any, 0, len(models))
 	for _, m := range models {
-		opts = append(opts, map[string]any{"value": m.Name, "name": m.Name, "description": modelDescription(m)})
+		opts = append(opts, map[string]any{"value": m.Name, "name": m.Name, "description": modelDescription(m), "_meta": modelMeta(m)})
 	}
 	return []any{map[string]any{
 		"id": modelConfigID, "name": "Model", "description": "The configured model this session runs on",
@@ -59,7 +65,7 @@ func modelConfigOptions(models []abhed.Model) []any {
 func legacyModelState(models []abhed.Model) map[string]any {
 	avail := make([]any, 0, len(models))
 	for _, m := range models {
-		avail = append(avail, map[string]any{"modelId": m.Name, "name": m.Name, "description": modelDescription(m)})
+		avail = append(avail, map[string]any{"modelId": m.Name, "name": m.Name, "description": modelDescription(m), "_meta": modelMeta(m)})
 	}
 	return map[string]any{"currentModelId": currentModel(models), "availableModels": avail}
 }

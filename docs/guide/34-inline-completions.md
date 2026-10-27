@@ -132,8 +132,9 @@ the metrics count them as `abhed_next_edits_total` and
 
 ## Commit messages
 
-Studio's Source Control view can ask for a message for what is staged. The
-engine reads the staged change itself, with the same confined git it uses
+Studio's Source Control view can ask for a message for what is staged, or,
+with nothing staged, for the changes in the working tree. The engine reads
+the change itself, with the same confined git it uses
 for its own reads, so Studio never sends a diff. A staged file the session
 may not read, one that looks like keys, or Abhed's state is left out of what
 is sent; the rest has stored secrets and key-shaped text withheld and is cut
