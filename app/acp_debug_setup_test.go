@@ -82,6 +82,7 @@ func TestDebugProcessTierConsent(t *testing.T) {
 	}
 	r, id, asked := setupRig(t, "", "", "")
 	var reasons []string
+	var options [][]string
 	answer := "reject:"
 	r.cl.answering(func(method string, params json.RawMessage) any {
 		if method != "session/request_permission" {
@@ -92,9 +93,18 @@ func TestDebugProcessTierConsent(t *testing.T) {
 				ToolCallID string                    `json:"toolCallId"`
 				Meta       map[string]map[string]any `json:"_meta"`
 			} `json:"toolCall"`
+			Options []struct {
+				Name string `json:"name"`
+				Kind string `json:"kind"`
+			} `json:"options"`
 		}
 		_ = json.Unmarshal(params, &p)
 		reasons = append(reasons, fmt.Sprint(p.ToolCall.Meta[acpMetaKey]["reason"], " step=", p.ToolCall.Meta[acpMetaKey]["step"]))
+		var opts []string
+		for _, o := range p.Options {
+			opts = append(opts, o.Kind+"="+o.Name)
+		}
+		options = append(options, opts)
 		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": answer + p.ToolCall.ToolCallID}}
 	})
 	launch := map[string]any{"sessionId": id, "language": "python", "program": "app.py", "processTier": true}
@@ -102,23 +112,37 @@ func TestDebugProcessTierConsent(t *testing.T) {
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "localhost ports") || !strings.Contains(reasons[0], "step=workspace") || len(*asked) != 0 || debugConsented(r.ws) {
 		t.Fatalf("declined: asked %v, ran %v", reasons, *asked)
 	}
+	if strings.Join(options[0], ",") != "allow_once=Allow once,allow_always=Allow for this workspace,reject_once=Deny" {
+		t.Fatalf("options %v", options[0])
+	}
+	// Allow once: this session starts, nothing is kept, the next is asked again.
 	answer = "once:"
 	var res struct {
 		DebugID string `json:"debugId"`
 	}
 	r.cl.ok("_abhed/debug/launch", launch, &res)
-	if len(reasons) != 2 || len(*asked) != 1 || !debugConsented(r.ws) {
-		t.Fatalf("allowed: asked %v, ran %v", reasons, *asked)
+	if len(reasons) != 2 || len(*asked) != 1 || debugConsented(r.ws) {
+		t.Fatalf("allowed once: asked %v, ran %v, kept %v", reasons, *asked, debugConsented(r.ws))
+	}
+	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
+	if setups, _ := r.recorded(id, agent.EvDebugSetup); len(setups) != 0 {
+		t.Fatalf("allow once was recorded as the workspace's choice: %v", setups)
+	}
+	// Allow for this workspace: kept and recorded.
+	answer = "always:"
+	r.cl.ok("_abhed/debug/launch", launch, &res)
+	if len(reasons) != 3 || len(*asked) != 2 || !debugConsented(r.ws) {
+		t.Fatalf("allowed for the workspace: asked %v, ran %v", reasons, *asked)
 	}
 	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
 	setups, _ := r.recorded(id, agent.EvDebugSetup)
 	launched, _ := r.recorded(id, agent.EvDebugLaunched)
-	if len(setups) != 1 || setups[0]["action"] != "process_tier_consent" || len(launched) != 1 || launched[0]["loopback"] != true {
+	if len(setups) != 1 || setups[0]["action"] != "process_tier_consent" || len(launched) != 2 || launched[1]["loopback"] != true {
 		t.Fatalf("record: %v %v", setups, launched)
 	}
-	// Agreed once for the workspace: not asked again.
+	// Agreed for the workspace: not asked again.
 	r.cl.ok("_abhed/debug/launch", launch, &res)
-	if len(reasons) != 2 {
+	if len(reasons) != 3 {
 		t.Fatalf("asked again: %v", reasons)
 	}
 	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
@@ -146,7 +170,66 @@ func TestDebugUseContainer(t *testing.T) {
 	if err != nil || json.Unmarshal(b, &cfg) != nil || cfg["sandbox"]["min_tier"] != "container" || cfg["sandbox"]["image"] != "golang:1.26" || cfg["model"]["default"] != "x" {
 		t.Fatalf("file %s %v", b, err)
 	}
+	// A stronger tier is never lowered.
+	r.write(".abhed/config.json", `{"sandbox":{"min_tier":"vm"}}`)
+	var again struct {
+		Already bool `json:"already"`
+	}
+	r.cl.ok("_abhed/debug/use-container", map[string]any{"sessionId": id}, &again)
+	if b, _ := os.ReadFile(filepath.Join(r.ws, ".abhed", "config.json")); !again.Already || !strings.Contains(string(b), `"min_tier":"vm"`) {
+		t.Fatalf("a vm workspace became %s (already %v)", b, again.Already)
+	}
 	if setups, _ := r.recorded(id, agent.EvDebugSetup); len(setups) != 1 || setups[0]["action"] != "use_container" {
 		t.Fatalf("record %v", setups)
+	}
+}
+
+// Where the process tier may debug on agreement, on any system.
+func TestDebugProcessTierPossibleOn(t *testing.T) {
+	closed, open, allow := tools.Isolation{}, tools.Isolation{Network: true}, tools.Isolation{Allowlist: true}
+	for _, c := range []struct {
+		goos, tier string
+		iso        tools.Isolation
+		ok         bool
+	}{
+		{"darwin", "process", closed, true}, {"darwin", "process", open, true},
+		// Under the allowlist loopback would reach the egress proxies.
+		{"darwin", "process", allow, false},
+		{"linux", "process", open, true}, {"linux", "process", closed, false}, {"linux", "process", allow, false},
+		{"darwin", "container", closed, false}, {"darwin", "none", closed, false}, {"linux", "fence", open, false},
+		{"windows", "process", open, false},
+	} {
+		if got := debugProcessTierPossibleOn(c.goos, c.tier, c.iso); got != c.ok {
+			t.Errorf("%s %s %+v: %v", c.goos, c.tier, c.iso, got)
+		}
+	}
+	if !strings.Contains(debugLoopbackWhyOn("linux"), "the network") || strings.Contains(debugLoopbackWhyOn("linux"), "nothing else on the network") ||
+		!strings.Contains(debugLoopbackWhyOn("darwin"), "nothing else on the network") {
+		t.Fatal("the agreement's text does not fit its system")
+	}
+}
+
+// An unreadable consent file counts as no agreement and is kept aside, not
+// overwritten.
+func TestDebugConsentFileUnreadable(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "debug-process-tier.json")
+	old := debugConsentFile
+	debugConsentFile = func() string { return file }
+	t.Cleanup(func() { debugConsentFile = old })
+	if err := os.WriteFile(file, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if debugConsented("/w") {
+		t.Fatal("an unreadable file gave an agreement")
+	}
+	if err := setDebugConsent("/w", true); err != nil {
+		t.Fatal(err)
+	}
+	aside, _ := filepath.Glob(file + ".unreadable-*")
+	if len(aside) != 1 || !debugConsented("/w") {
+		t.Fatalf("aside %v", aside)
+	}
+	if b, _ := os.ReadFile(aside[0]); string(b) != "{not json" {
+		t.Fatalf("kept %q", b)
 	}
 }

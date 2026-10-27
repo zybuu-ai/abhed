@@ -1138,17 +1138,24 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   in order, with the exact command where there is one (`brew install
   podman`, `podman machine init`, `podman machine start`); Studio runs them
   in the person's terminal. `_abhed/debug/use-container {sessionId}` →
-  `{path, newSession: true}` sets `sandbox.min_tier: "container"` in the
-  workspace's `.abhed/config.json`, keeping the rest, recorded as
-  `debug.setup` (`use_container`); it applies to a new session.
+  `{path, newSession: true, already?: true}` sets `sandbox.min_tier:
+  "container"` in the workspace's `.abhed/config.json` when it is absent or
+  weaker, keeping the rest, recorded as `debug.setup` (`use_container`); a
+  workspace already at `container` or `vm` is left alone (`already: true`).
+  It applies to a new session.
 - `launch` with `processTier: true` debugs on the process tier where
   `processTier.available` (the macOS process tier; the Linux process tier
-  with the network open). The first time in a workspace the launch's
-  judged call is put to the person with the consent as its reason
-  (`meta.step: "workspace"`, or folded into the supervisor's question):
-  "the program can reach services on this Mac (localhost ports) …". Allow
-  keeps the choice for the workspace and records `debug.setup`
-  (`process_tier_consent`); later launches there are not asked about it.
+  with the network open; never under the egress allowlist, where loopback
+  would reach the egress proxies, and the sandbox refuses a loopback
+  command). Until the person allows it for the workspace, the launch's
+  judged call is put to them with the consent as its reason (`meta.step:
+  "workspace"`, or folded into the supervisor's question; on macOS "the
+  program can reach services on this Mac (localhost ports) … nothing else on
+  the network", on Linux that it reaches those services and the network),
+  with three options: `allow_once` ("Allow once": this session only,
+  nothing kept), `allow_always` ("Allow for this workspace": kept, recorded
+  as `debug.setup` `process_tier_consent`, not asked again there) and
+  `reject_once`.
   `_abhed/debug/forget-consent {sessionId}` → `{}` forgets it (recorded,
   `process_tier_forgotten`). On macOS the debug command alone gets loopback
   ports (Seatbelt `localhost:*` outbound, inbound and bind) and nothing
