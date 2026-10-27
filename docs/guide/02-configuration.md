@@ -37,7 +37,7 @@ configuration](#trusting-the-workspace-configuration).
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
-| `sandbox` | process isolation and network access; `toolchains`, `toolchains_preapproved` and `toolchains_registries`: languages installed on demand for commands and their package registries — [Toolchains](32-toolchains.md); `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
+| `sandbox` | process isolation and network access; `toolchains`, `toolchains_preapproved` and `toolchains_registries`: languages installed on demand for commands and their package registries — [Toolchains](32-toolchains.md); `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md); `listen`: whether commands on macOS may listen on loopback for a dev server (`ask`, `allow`, `off`) — [below](#sandbox) |
 | `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall`, and the managed `egress_port_only` and `allow_root` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
@@ -232,6 +232,23 @@ workspace and a few shared folders, not only the workspace:
   copies and every `read_only_paths` folder stay unwritable, except a
   `read_only_paths` folder that holds the workspace: it gets no write deny,
   so where a temp or cache area lies inside it, that part stays writable.
+
+On macOS a command cannot listen for connections until you agree for the
+workspace (`"listen": "ask"`, the default): a dev server refused its port
+in Abhed Studio's terminal (`listen EPERM`) brings the offer, and once you
+agree every session of the workspace may listen, so `npm run dev` opens in
+your browser; take it back from Studio. `"allow"` lets commands listen
+without asking, `"off"` never; a workspace file can only make it stricter.
+Commands that listen still connect to nothing on loopback but the egress
+proxy, and cannot bind Abhed's own reserved ports (47600-47855, or
+`ABHED_LOOPBACK_PORTS`) nor a port one of your programs already listens
+on, so a sandboxed server never takes the connections meant for a local
+database or console (another user's ports the kernel itself refuses).
+The sandbox cannot tell a server bound to `127.0.0.1` from one bound to
+`0.0.0.0`, which your network reaches: bind `127.0.0.1` or `localhost`.
+An interactive terminal opened before you agreed keeps its old rules.
+On Linux, the container and the vm tiers a server inside the sandbox is
+not reachable from the host.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command

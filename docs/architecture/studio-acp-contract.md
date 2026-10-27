@@ -733,14 +733,22 @@ interface AskMeta {
   managed configuration holds the permissions. Each is recorded as
   `approval.scope_granted {scope, by, command?, family?, folder?, session?}`.
   An "always" grant is kept for the workspace in Abhed's state
-  (`~/.abhed/state/bash-grants.json`, out of every command's reach) and
-  loaded by every new or continued session of the workspace; one for the
-  session alone is never kept. The kept grants are the source: a grant in an
-  older record is not brought back once revoked.
+  (`~/.abhed/state/workspace-grants.json`, out of every command's reach) and
+  loaded by every new or continued session of the workspace, each recorded
+  at the start as `approval.scope_granted` with `kept: "workspace"` and
+  `granted_at`; one for the session alone is never kept, and one that
+  cannot be kept holds for the session alone. The kept grants are the
+  source: a grant in an older record is not brought back once revoked. A
+  call a kept grant lets through is `action.approved` with `by:
+  "workspace-grant"` and its `scope`. The workspace is its real path, one
+  key for every case spelling where the disk ignores case, and its folder's
+  identity: a folder deleted and made again at the path starts with none.
 - **Kept grants (1.2.9, feature `grants`).** `_abhed/grants/list {sessionId}`
   → `{workspace, managed, grants: [{id, scope, command?, family?, folder?,
   grantedAt}]}`; `_abhed/grants/revoke {sessionId, id}` → `{revoked, scope}`,
-  forgets it and takes it from every open session of the workspace, recorded
+  forgets it and takes it from this process's open sessions of the
+  workspace at once; a session in another Abhed process (another window)
+  looks the grant up again before it would answer, and asks. Recorded
   `permission.changed {op: "remove", list: "allow", rule, scope:
   "workspace"}`; refused inside an agent's command, `-32602` for an unknown
   id. With `managed` true none is loaded or offered.
@@ -1028,7 +1036,9 @@ through policy; a step needing approval in a headless run is refused.
 ```ts
 _abhed/terminal/create { sessionId, mode: "lines" | "interactive", cols, rows }
   → { terminalId, tier: string, network: boolean, recorded: true,
-      registries: string[], networkNote: string }   // 1.2.9: for the header
+      registries: string[], networkNote: string,    // 1.2.9: for the header
+      serves: boolean,                              // 1.2.9: a loopback server opens from the Mac
+      venv?: { path: string, inUse: boolean } }     // 1.2.9: the project's Python venv
 _abhed/terminal/input  { terminalId, data: string }     → {}
 _abhed/terminal/resize { terminalId, cols, rows }       → {}
 _abhed/terminal/kill   { terminalId }                   → {}
@@ -1037,20 +1047,46 @@ _abhed/terminal/output { terminalId, data: string }     // base64 of the bytes
 _abhed/terminal/exit   { terminalId, code?: number, signal?: string }
 // 1.2.9: a command there was refused a package registry; offer its opening
 _abhed/toolchain/registry_refused { sessionId, terminalId, language, hosts, canOpen, why?, message }
+// 1.2.9: a command there printed the loopback address a server listens on
+_abhed/terminal/serving { sessionId, terminalId, url }
+// 1.2.9: a server there was refused its port; offer _abhed/sandbox/listen
+_abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
 
 - **Network (1.2.9).** The terminal has the network the agent's commands
-  have: off but for the package registries the person opened to the
-  session (through the egress proxy), unless the session's policy opens it.
-  `registries` lists those open now and `networkNote` says it in a line for
-  the terminal's header. A command whose output shows the egress proxy
+  have: off but for the package registries open to the session through
+  the egress proxy, by the person's agreement or by configured egress rules,
+  unless the session's policy opens it. `registries` lists those open now
+  and `networkNote` says it in a line for the terminal's header. Abhed's own
+  echo, prompts and notes are not watched; a command whose output shows the egress proxy
   refusing a known registry (`npm install` with registry.npmjs.org closed,
   `go get` with proxy.golang.org closed) gets, once per language and
   terminal, a line in the terminal naming the registry and how to open it,
   and Studio gets `_abhed/toolchain/registry_refused` to offer the one-click
   opening (`_abhed/toolchain/registries`, §3.2b), or to say why it cannot.
+- **Dev servers (1.2.9, feature `listen`).** Where `serves` is true (no
+  sandbox, or the macOS process tier with `sandbox.listen` allow or the
+  person's agreement for the workspace), a command may listen on loopback
+  and the person's browser reaches it; the first time a terminal's output
+  shows a loopback address (`http://localhost:5173/`), up to 16 per
+  terminal, Studio gets `_abhed/terminal/serving` to offer opening it.
+  Where it is false, a server refused its port (`listen EPERM`, `bind:
+  operation not permitted`) gets one line in the terminal and
+  `_abhed/terminal/listen_refused {sessionId, terminalId, canAllow, why?,
+  message}`. `_abhed/sandbox/listen {sessionId, allow}` → `{listens}` is the
+  person's agreement, or taking it back: kept for the workspace with the
+  kept grants, applied to this process's open sessions of it and every
+  later one, recorded `permission.changed {op, list: "allow", rule:
+  "sandbox(listen loopback)", scope: "workspace"}` (and at a session's start
+  where it applies); refused inside an agent's command, under
+  `sandbox.listen` off, and off the macOS process tier. An interactive
+  terminal keeps the rules it started with.
+- **Python venv (1.2.9).** `venv` is the project's virtual environment for
+  the terminal's folder, if any. In `lines` mode its python and pip are
+  used (`inUse`); in `interactive` mode only once the person types
+  `abhed_venv`. Show it in the header. Its `bin` never comes before `PATH`.
 - The shell runs in the engine's sandbox tier for the session. In `lines`
   mode each line is a `bash` call through policy; in `interactive` mode the
   shell runs whole under the sandbox and each entered line is recorded

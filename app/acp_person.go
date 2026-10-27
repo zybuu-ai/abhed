@@ -84,6 +84,12 @@ type acpTerminal struct {
 	done chan struct{}
 	// reg watches the output for a package registry the sandbox refused.
 	reg registryWatch
+	// serves is whether a server it starts on loopback can be opened from
+	// the Mac; serving watches the output for the address one prints.
+	serves  bool
+	serving servingWatch
+	// tier is the sandbox tier its commands run in.
+	tier string
 }
 
 func (c *acpConn) terminalCreate(msg rpcMessage) {
@@ -127,7 +133,8 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		return
 	}
 	ctx, cancel := context.WithCancel(c.root())
-	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	t := &acpTerminal{id: "term-" + acpID(), session: s, sess: parts.Session.Fork(), queue: make(chan queuedLine, 16), ctx: ctx, cancel: cancel, done: make(chan struct{}),
+		serves: servesLoopback(iso, parts), tier: iso.Tier}
 	if p.Mode == "interactive" {
 		if e := c.startShell(t, parts, bash, iso, p.Cols, p.Rows); e != nil {
 			cancel()
@@ -150,10 +157,17 @@ func (c *acpConn) terminalCreate(msg rpcMessage) {
 		go c.runTerminal(t)
 	}
 	open, note := terminalNetwork(parts, iso.Network)
-	c.reply(msg.ID, map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true,
-		"registries": open, "networkNote": note}, nil)
+	reply := map[string]any{"terminalId": t.id, "tier": iso.Tier, "network": iso.Network, "recorded": true,
+		"registries": open, "networkNote": note, "serves": t.serves}
+	if parts.Set != nil && parts.Set.Toolchains != nil {
+		if v := parts.Set.Toolchains.Venv(t.sess.Cwd); v != "" {
+			// Lines use its python and pip; an interactive shell only once the person types abhed_venv.
+			reply["venv"] = map[string]any{"path": v, "inUse": t.shell == nil && !parts.Set.Toolchains.Off}
+		}
+	}
+	c.reply(msg.ID, reply, nil)
 	if t.shell == nil {
-		c.output(t, linePrompt(t.sess))
+		c.show(t, linePrompt(t.sess))
 		t.mu.Unlock()
 	}
 }
@@ -172,13 +186,21 @@ func (c *acpConn) terminal(params json.RawMessage) (*acpTerminal, *rpcError) {
 	return t, nil
 }
 
-// output sends bytes to the terminal's view, base64 as the contract says.
+// output sends a command's output to the terminal's view, watched for a
+// refused package registry.
 func (c *acpConn) output(t *acpTerminal, b []byte) {
+	c.show(t, b)
+	c.watchRegistries(t, b)
+	c.watchServing(t, b)
+}
+
+// show sends bytes to the terminal's view, base64 as the contract says:
+// Abhed's own echo, prompts and notes, which are not watched.
+func (c *acpConn) show(t *acpTerminal, b []byte) {
 	if len(b) == 0 {
 		return
 	}
 	c.notification("_abhed/terminal/output", map[string]any{"terminalId": t.id, "data": base64.StdEncoding.EncodeToString(b)})
-	c.watchRegistries(t, b)
 }
 
 func (c *acpConn) terminalInput(msg rpcMessage) {
@@ -256,12 +278,12 @@ func (c *acpConn) terminalInput(msg rpcMessage) {
 		}
 		echo.control(fmt.Sprintf("abhed: %d typed-ahead %s not run\r\n", dropped, what))
 	}
-	c.output(t, echo.bytes())
+	c.show(t, echo.bytes())
 	for _, l := range lines {
 		select {
 		case t.queue <- queuedLine{line: l, gen: gen}:
 		default:
-			c.output(t, []byte("abhed: too many lines waiting; this one was not run\r\n"))
+			c.show(t, []byte("abhed: too many lines waiting; this one was not run\r\n"))
 		}
 	}
 	c.reply(msg.ID, map[string]any{}, nil)
@@ -391,14 +413,14 @@ func (c *acpConn) runTerminal(t *acpTerminal) {
 					e.typed(b)
 				}
 				e.control("\r\n")
-				c.output(t, e.bytes())
+				c.show(t, e.bytes())
 			}
 			if line != "" {
 				c.runLine(t, line)
 			}
 			if t.ctx.Err() == nil {
 				ahead = len(t.queue) > 0
-				c.output(t, linePrompt(t.sess))
+				c.show(t, linePrompt(t.sess))
 			}
 		}
 	}
@@ -465,12 +487,12 @@ func (c *acpConn) runLine(t *acpTerminal, line string) {
 		tool, refused, _, err = loop.ManualAuthorizeTyped(id, args, answer)
 	}
 	if err != nil {
-		c.output(t, []byte("abhed: not run: "+err.Error()+"\r\n"))
+		c.show(t, []byte("abhed: not run: "+err.Error()+"\r\n"))
 		return
 	}
 	if refused != nil {
 		_ = loop.ManualObserve(id, "bash", *refused, 0)
-		c.output(t, crlf(refused.Content))
+		c.show(t, crlf(refused.Content))
 		return
 	}
 	ctx, cancel := context.WithCancel(t.ctx)

@@ -96,9 +96,11 @@ const (
 	ByReviewer     = agent.ByReviewer
 	ByUser         = agent.ByUser
 	BySessionScope = agent.BySessionScope
-	ByHeadless     = agent.ByHeadless
-	BySystem       = agent.BySystem
-	ByCarried      = agent.ByCarried
+	// ByWorkspaceGrant is a bash grant kept for the workspace (Abhed Studio).
+	ByWorkspaceGrant = agent.ByWorkspaceGrant
+	ByHeadless       = agent.ByHeadless
+	BySystem         = agent.BySystem
+	ByCarried        = agent.ByCarried
 )
 
 // Answer is what an approver reports when someone other than the person it

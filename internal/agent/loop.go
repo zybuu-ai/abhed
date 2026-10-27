@@ -158,7 +158,10 @@ const (
 	ByUser     = "user"     // the person made the call themselves, at the workbench
 	// BySessionScope is an "always allow" a reviewer chose earlier in the session.
 	BySessionScope = "session-scope"
-	ByHeadless     = "headless" // nobody could be asked, and the run's fixed answer applied
+	// ByWorkspaceGrant is a bash grant kept for the workspace, chosen in this
+	// session or an earlier one.
+	ByWorkspaceGrant = "workspace-grant"
+	ByHeadless       = "headless" // nobody could be asked, and the run's fixed answer applied
 	// ByCarried is a person's approval of the same change, which failed with
 	// no effect, taken once by its retry; see carried_from.
 	ByCarried = "carried"
@@ -169,7 +172,7 @@ const (
 // other than the person it would ask; see NoteAnswer.
 type Answer struct {
 	By     string
-	Scope  string // the remembered scope that allowed it, for BySessionScope
+	Scope  string // the remembered scope that allowed it, for BySessionScope and ByWorkspaceGrant
 	Reason string // why no one answered, said in place of "rejected"
 	// Approver names the person who answered, where the approver knows them.
 	Approver string
@@ -193,7 +196,7 @@ func ExpectAnswer(ctx context.Context) (context.Context, *Answer) {
 // none of the By values is ignored, and the answer is recorded as a reviewer's.
 func NoteAnswer(ctx context.Context, a Answer) {
 	switch a.By {
-	case "", ByPolicy, ByReviewer, ByUser, BySessionScope, ByHeadless, BySystem:
+	case "", ByPolicy, ByReviewer, ByUser, BySessionScope, ByWorkspaceGrant, ByHeadless, BySystem:
 	default:
 		return
 	}

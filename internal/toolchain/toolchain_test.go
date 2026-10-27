@@ -329,10 +329,11 @@ func TestPinsStopAtTheWorkspaceRoot(t *testing.T) {
 	}
 }
 
-// The project's virtual environment, the nearest .venv or venv at or above
-// the command's folder within the workspace, comes first on PATH.
+// The project's virtual environment is the nearest .venv or venv at or
+// above the command's folder within the workspace; only its python and pip
+// come before PATH.
 func TestProjectVenv(t *testing.T) {
-	root := t.TempDir()
+	root, _ := filepath.EvalSymlinks(t.TempDir())
 	mkVenv := func(v string) {
 		_ = os.MkdirAll(filepath.Join(v, "bin"), 0o755)
 		_ = os.WriteFile(filepath.Join(v, "pyvenv.cfg"), []byte("home = /usr/bin\n"), 0o644)
@@ -354,8 +355,30 @@ func TestProjectVenv(t *testing.T) {
 	}
 	s := &Session{Workspace: sub, Root: root}
 	pre := s.Prelude(sub)
-	if !strings.Contains(pre, "export VIRTUAL_ENV="+shellQuote(filepath.Join(root, ".venv"))) || !strings.Contains(pre, "unset PYTHONHOME") {
+	bin := shellQuote(filepath.Join(root, ".venv", "bin"))
+	if !strings.Contains(pre, "export VIRTUAL_ENV="+shellQuote(filepath.Join(root, ".venv"))) || !strings.Contains(pre, "unset PYTHONHOME") ||
+		!strings.Contains(pre, `export PATH="${PATH:+$PATH:}"`+bin) || !strings.Contains(pre, "python() { ") {
 		t.Fatalf("prelude %q", pre)
+	}
+	// A person's terminal is only offered it, in abhed_venv.
+	sh := s.ShellSetup(sub)
+	if i := strings.Index(sh, "abhed_venv() {"); i < 0 || strings.Contains(sh[:i], "VIRTUAL_ENV") || !strings.Contains(sh, "Type abhed_venv") {
+		t.Fatalf("shell setup %q", sh)
+	}
+	// A venv, or its bin, linked out of the workspace is not one.
+	out := t.TempDir()
+	mkVenv(filepath.Join(out, "v"))
+	ws2, _ := filepath.EvalSymlinks(t.TempDir())
+	_ = os.Symlink(filepath.Join(out, "v"), filepath.Join(ws2, ".venv"))
+	if got := ProjectVenv(ws2, ws2); got != "" {
+		t.Fatalf("a venv linked outside the workspace: %q", got)
+	}
+	ws3, _ := filepath.EvalSymlinks(t.TempDir())
+	_ = os.MkdirAll(filepath.Join(ws3, ".venv"), 0o755)
+	_ = os.WriteFile(filepath.Join(ws3, ".venv", "pyvenv.cfg"), nil, 0o644)
+	_ = os.Symlink(filepath.Join(out, "v", "bin"), filepath.Join(ws3, ".venv", "bin"))
+	if got := ProjectVenv(ws3, ws3); got != "" {
+		t.Fatalf("a venv bin linked outside the workspace: %q", got)
 	}
 	// Never above the workspace root.
 	above := t.TempDir()

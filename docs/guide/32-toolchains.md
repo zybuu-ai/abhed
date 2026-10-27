@@ -253,14 +253,29 @@ alone, or `toolchains_preapproved: ["go"]`, never agrees to building Delve;
 
 ## The project's virtual environment
 
-A Python project's own virtual environment comes first for every command,
-the agent's, Abhed Studio's Run and Test and the terminal's: the nearest
-`.venv` or `venv` at or above the command's folder, no higher than the
-workspace, that holds a `pyvenv.cfg` and a `bin/python`. Commands get
-`VIRTUAL_ENV` and its `bin` first on `PATH`, as its activate script would
-set, so `python3 -m pytest` runs the pytest installed there. uv's and
-Poetry's in-project environments are `.venv`; one Poetry keeps in its own
-cache under your home is not seen, as home is closed to commands
+A Python project's own virtual environment is used by the agent's commands
+and by Abhed Studio's Run and Test: the nearest `.venv` or `venv` at or above
+the command's folder, no higher than the workspace, that holds a
+`pyvenv.cfg` and a `bin/python`. The venv and its `bin` must be inside the
+workspace; one linked from elsewhere is not used.
+
+The venv is a folder the agent can write, so it does not go first on `PATH`
+the way its activate script would put it. Commands get `VIRTUAL_ENV`, and
+only its `python`, `python3`, `python3.N`, `pip`, `pip3` and `pip3.N` come
+first, as shell functions that bash commands started from them inherit. Its
+`bin` goes after everything else on `PATH`, so a program only the venv has,
+such as `pytest` where the system has none, is found there, but a `git`,
+`node` or `ssh` placed in it never replaces the one found elsewhere. Run
+`python3 -m pytest` to be sure of the venv's pytest; Studio's Run Tests does.
+
+In an interactive terminal the venv is not used until you say so: the
+terminal names it before its first prompt, Studio's header shows it, and
+typing `abhed_venv` uses it in that terminal the same way. Sourcing its
+`bin/activate` yourself puts all of its `bin` first, which runs whatever the
+agent left there.
+
+uv's and Poetry's in-project environments are `.venv`; one Poetry keeps in
+its own cache under your home is not seen, as home is closed to commands
 (`poetry config virtualenvs.in-project true` puts it in the project). On the
 container tier a venv made on the host points at the host's Python, so make
 it inside the sandbox.

@@ -244,7 +244,7 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 			}
 			continue
 		}
-		c.output(t, []byte("\r\n\x1b[31m"+strings.ReplaceAll(refused.Content, "\n", "\r\n")+"\x1b[0m\r\n"))
+		c.show(t, []byte("\r\n\x1b[31m"+strings.ReplaceAll(refused.Content, "\n", "\r\n")+"\x1b[0m\r\n"))
 		// A line pasted whole has not reached the shell at all, and an empty
 		// line brings its prompt back. One typed earlier is in its buffer.
 		discard := []byte{'\r'}
