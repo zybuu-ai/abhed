@@ -134,3 +134,54 @@ func TestACPSessionGrantIsNotRestored(t *testing.T) {
 		t.Fatal("a policy scope was taken for a bash grant")
 	}
 }
+
+// A family grant covers no line that hands the program another program,
+// script, settings file, project or output path, nor one naming a path
+// outside the folder or a module@version; flags that only select or report,
+// such as -p 4 for go test and -p crate for cargo, are covered.
+func TestFamilyGrantsRefuseWhatHandsOverControl(t *testing.T) {
+	for _, c := range []struct {
+		family, cmd string
+	}{
+		{"go vet", "go vet -vettool=/tmp/evil ./..."},
+		{"go vet", "go vet -vettool x ./..."},
+		{"npm test", "npm test --prefix /home/u/other"},
+		{"npm test", "npm test --prefix other"},
+		{"cargo test", "cargo test --manifest-path /home/u/other/Cargo.toml"},
+		{"cargo test", "cargo test --manifest-path other/Cargo.toml"},
+		{"gradle test", "gradle test --init-script /tmp/x.gradle"},
+		{"gradle test", "gradle test -I x.gradle"},
+		{"mvn test", "mvn test -s /tmp/settings.xml"},
+		{"mvn test", "mvn test -f other/pom.xml"},
+		{"go run", "go run example.com/m@latest"},
+		{"go build", "go build -o ~/.zshrc ."},
+		{"go build", "go build -o bin/x ."},
+		{"go test", "go test -exec x ./..."},
+		{"go test", "go test ../other/..."},
+		{"go test", "go test /abs/pkg"},
+		{"go test", "go test -C ../x ./..."},
+		{"python3 -m pytest", "python3 -m pytest -p evil_plugin"},
+		{"python3 -m pytest", "python3 -m pytest -c /tmp/pytest.ini"},
+		{"npm run lint", "npm run lint --script-shell /bin/evil"},
+		{"go test", "go test ./... -- -x"},
+	} {
+		if (bashGrant{Family: c.family}).covers(c.cmd, "/ws") {
+			t.Errorf("%q covered by the %s grant", c.cmd, c.family)
+		}
+	}
+	for cmd, fam := range map[string]string{
+		"go test -p 4 ./...":            "go test",
+		"cargo test -p crate":           "cargo test",
+		"cargo test -- --nocapture":     "cargo test",
+		"npm run lint -- --fix":         "npm run lint",
+		"mvn test -Dtest=FooTest":       "mvn test",
+		"gradle test --tests Foo":       "gradle test",
+		"python3 -m pytest -q -k slow":  "python3 -m pytest",
+		"go test -run=TestX -count=1 .": "go test",
+		"go run ./cmd/tool":             "go run",
+	} {
+		if got := familyOf(cmd); got != fam {
+			t.Errorf("%q: %q, want %q", cmd, got, fam)
+		}
+	}
+}

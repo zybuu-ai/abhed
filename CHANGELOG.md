@@ -167,8 +167,13 @@ All notable changes to Abhed are recorded here. The format follows
   command family (`go test`, `cargo test`, `npm run lint`, `python -m
   pytest`…), that family in the current folder or anywhere. A grant answers
   only the policy's default ask, never one a rule, the destructive check,
-  the supervisor or a screen makes, and covers no line with a chain,
-  expansion, assignment, path or code flag; none is offered where the
+  the supervisor or a screen makes. A family grant covers only the flags
+  on that family's list, ones that select, filter or report (`-run`,
+  `-count`, `-p 4` for `go test`; `-p crate`, `--release` for `cargo`), never
+  one that names another program, script, settings file, project or output
+  path (`-vettool`, `--init-script`, `-s`, `--manifest-path`, `--prefix`,
+  `-o`); no grant covers a line with a chain, expansion, assignment, `~`, an
+  absolute path, a `..` step or a `module@version`. None is offered where the
   managed configuration holds the permissions. Grants are recorded, and
   `session/load` restores all but those for the session alone.
 

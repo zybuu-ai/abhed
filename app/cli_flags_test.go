@@ -259,3 +259,20 @@ func TestNoStdinFlag(t *testing.T) {
 		}
 	}
 }
+
+// The CLI starts in mode.default where no mode was chosen, and a -mode
+// flag is chosen over it, as permissions.mode is.
+func TestCLIStartsInTheWorkspaceDefaultMode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Mode.Default = "plan"
+	if s := startPayload(cfg, &cliFlags{}, false, "m"); s["mode"] != "plan" {
+		t.Fatalf("mode.default: %v", s["mode"])
+	}
+	got, err := applyFlags(cfg, "default", 0, nil, nil, nil)
+	if err != nil || got.StartMode() != "default" {
+		t.Fatalf("the flag did not win: %q %v", got.StartMode(), err)
+	}
+	if s := startPayload(got, &cliFlags{mode: "default"}, false, "m"); s["mode"] != "default" {
+		t.Fatalf("with the flag: %v", s["mode"])
+	}
+}

@@ -98,8 +98,9 @@ command_not_found_handler() {
 }
 
 // loginEnvKeys are the person's settings a terminal keeps from their login
-// environment: language, time zone, editor and colours, nothing that names a
-// credential or changes what a program runs.
+// environment: language, time zone, editor and colours, none naming a
+// credential. EDITOR and VISUAL do choose the program git commit or crontab
+// runs, inside the same sandbox as the terminal itself.
 var loginEnvKeys = []string{"TZ", "EDITOR", "VISUAL", "COLORTERM", "CLICOLOR", "LSCOLORS", "LS_COLORS", "LESS", "TERM_PROGRAM"}
 
 // loginEnv is that safe subset of this process's environment, with every

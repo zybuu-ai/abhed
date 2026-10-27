@@ -30,7 +30,7 @@ type bashGrant struct {
 
 // shellWords are characters that make a line more than one simple command,
 // or a word the shell rewrites; no grant covers such a line.
-var shellWords = regexp.MustCompile("[;&|<>()`$\\\\\n\r*?{}\\[\\]'\"]")
+var shellWords = regexp.MustCompile("[;&|<>()`$~\\\\\n\r*?{}\\[\\]'\"]")
 
 // familySubs are the programs a family grant may name, with the subcommands
 // that build, check or test a project. They run the project's own code, as
@@ -53,9 +53,104 @@ var familySubs = map[string][]string{
 // pythonModules are what python -m may run under a family grant.
 var pythonModules = map[string]bool{"pytest": true, "unittest": true, "mypy": true, "ruff": true}
 
-// codeFlags hand a program a command, a config or code of its own choosing:
-// a family grant never covers a line with one.
-var codeFlags = regexp.MustCompile(`(?i)^--?(exec|toolexec|config|script-shell|node-options|require|import|loader|eval|e|c|p|r|overlay|modfile|pgo)(=|$)`)
+// familyFlags are the flags each family may carry under a grant, case as
+// the tool reads it: ones that select, filter, repeat or report, never one
+// that names another program, script, settings file, project or output
+// path. A flag not listed leaves the line to be asked about. The value of a
+// listed flag, given after = or as the next word, is held to the same path
+// rules as every word.
+var familyFlags = map[string][]string{
+	"go test":   {"-v", "-run", "-count", "-race", "-short", "-cover", "-covermode", "-coverpkg", "-timeout", "-p", "-parallel", "-bench", "-benchmem", "-benchtime", "-failfast", "-json", "-cpu", "-tags", "-list", "-skip", "-shuffle", "-vet", "-trimpath", "-mod"},
+	"go build":  {"-v", "-race", "-tags", "-trimpath", "-p", "-a", "-n", "-x", "-mod"},
+	"go vet":    {"-v", "-tags", "-json", "-mod"},
+	"go fmt":    {"-n", "-x"},
+	"go run":    {"-race", "-tags", "-trimpath", "-mod"},
+	"go list":   {"-m", "-json", "-deps", "-test", "-e", "-u", "-versions", "-f", "-mod"},
+	"cargo":     {"-p", "--package", "--release", "--all-features", "--features", "-F", "--no-default-features", "--workspace", "--lib", "--bins", "--bin", "--tests", "--test", "--examples", "--example", "--all-targets", "--doc", "--no-fail-fast", "-q", "--quiet", "-v", "--verbose", "-j", "--jobs", "--locked", "--offline", "--frozen", "--all", "--check", "--no-run"},
+	"npm":       {"-s", "--silent", "-q", "--quiet", "--if-present"},
+	"dotnet":    {"-c", "--configuration", "-f", "--framework", "--no-restore", "--no-build", "--filter", "-v", "--verbosity", "--nologo"},
+	"mvn":       {"-q", "--quiet", "-B", "--batch-mode", "-o", "--offline", "-U", "-T", "-e", "-pl", "--projects", "-am", "--also-make", "-P", "-DskipTests", "-DskipITs", "-Dtest", "-Dit.test", "-Dsurefire.failIfNoSpecifiedTests"},
+	"gradle":    {"-q", "--quiet", "--info", "--stacktrace", "--tests", "-x", "--exclude-task", "--continue", "--parallel", "--offline", "--no-daemon", "--rerun-tasks"},
+	"pytest":    {"-q", "-v", "-vv", "-x", "-k", "-m", "-s", "--maxfail", "--tb", "--lf", "--ff", "-n", "--durations", "-ra", "-rA", "--no-header", "--cov", "--cov-report"},
+	"unittest":  {"-v", "-q", "-f", "-k", "discover", "-s", "-t"},
+	"mypy":      {"--strict", "--ignore-missing-imports", "--no-incremental", "-p", "--package", "-m", "--module", "--pretty"},
+	"ruff":      {"check", "format", "--fix", "--diff", "--select", "--ignore", "--statistics", "--quiet", "-q"},
+	"node test": {"--test-name-pattern", "--test-only", "--test-concurrency", "--experimental-test-coverage"},
+}
+
+// passThrough are the families whose words after `--` go to the project's
+// own program (the test binary, the script), not the tool: those words are
+// held to the path rules alone.
+var passThrough = map[string]bool{"cargo": true, "npm": true}
+
+// flagsFor is the allowed-flag list a family key reads.
+func flagsFor(prog, sub string) (string, []string) {
+	switch prog {
+	case "go":
+		return "go " + sub, familyFlags["go "+sub]
+	case "cargo":
+		return "cargo", familyFlags["cargo"]
+	case "npm", "pnpm", "yarn":
+		return "npm", familyFlags["npm"]
+	case "dotnet", "mvn", "gradle", "pytest":
+		return prog, familyFlags[prog]
+	case "node":
+		return "node test", familyFlags["node test"]
+	}
+	return "", nil
+}
+
+// safeWord reports a word, or a flag's value, that names nothing outside
+// the session's folder: no absolute path, no home, no step out with "..",
+// and no module@version, which fetches code.
+func safeWord(w string) bool {
+	if _, v, ok := strings.Cut(w, "="); ok && strings.HasPrefix(w, "-") {
+		w = v
+	}
+	if strings.HasPrefix(w, "/") || strings.Contains(w, "@") {
+		return false
+	}
+	for _, part := range strings.Split(w, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// flagsAllowed reports whether every word of args is a listed flag (or one
+// with a listed name and a value) or a safe word, honouring `--`.
+func flagsAllowed(key string, allowed, args []string) bool {
+	for i, a := range args {
+		if !safeWord(a) {
+			return false
+		}
+		if a == "--" {
+			if !passThrough[strings.Fields(key)[0]] {
+				return false
+			}
+			for _, rest := range args[i+1:] {
+				if !safeWord(rest) {
+					return false
+				}
+			}
+			return true
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(a, "=")
+		listed := false
+		for _, f := range allowed {
+			// -Dtest=Foo is listed as -Dtest; -run=X as -run.
+			listed = listed || f == name
+		}
+		if !listed {
+			return false
+		}
+	}
+	return true
+}
 
 // commandFields are a line's words, or nil when it is not one simple
 // command a grant may cover.
@@ -83,12 +178,11 @@ func familyOf(command string) string {
 	if !ok {
 		return ""
 	}
-	for _, a := range fields[1:] {
-		if codeFlags.MatchString(a) {
+	if subs == nil {
+		// pytest alone: its flags are pytest's.
+		if !flagsAllowed("pytest", familyFlags["pytest"], fields[1:]) {
 			return ""
 		}
-	}
-	if subs == nil {
 		return fields[0]
 	}
 	if len(fields) < 2 {
@@ -104,17 +198,21 @@ func familyOf(command string) string {
 	}
 	switch {
 	case sub == "-m":
-		// python -m pytest: the module is the family.
-		if len(fields) < 3 || !pythonModules[fields[2]] {
+		// python -m pytest: the module is the family, and its flags are its own.
+		if len(fields) < 3 || !pythonModules[fields[2]] || !flagsAllowed(fields[2], familyFlags[fields[2]], fields[3:]) {
 			return ""
 		}
 		return strings.Join(fields[:3], " ")
 	case sub == "run" && (fields[0] == "npm" || fields[0] == "pnpm" || fields[0] == "yarn"):
 		// npm run lint: the script is the family, not every script.
-		if len(fields) < 3 || strings.HasPrefix(fields[2], "-") {
+		if len(fields) < 3 || strings.HasPrefix(fields[2], "-") || !safeWord(fields[2]) || !flagsAllowed("npm", familyFlags["npm"], fields[3:]) {
 			return ""
 		}
 		return strings.Join(fields[:3], " ")
+	}
+	key, flags := flagsFor(fields[0], sub)
+	if key == "" || !flagsAllowed(key, flags, fields[2:]) {
+		return ""
 	}
 	return fields[0] + " " + sub
 }

@@ -1243,6 +1243,41 @@ approval is not spent on them and the model is told to read first. When
 another call in the same turn names the file, or a command runs before it,
 the tool decides when it runs.
 
+### Allow scopes in Abhed Studio
+
+In Abhed Studio a bash command the policy asks about by default (no deny or
+ask rule matched, not destructive, not flagged by the supervisor or a screen)
+offers more than *Allow once*:
+
+| Option | Covers |
+|---|---|
+| Allow `go test ./...` for this session | this exact command, until the session ends; not restored when the session is opened again |
+| Always allow exactly `go test ./...` | this exact command, in this session and whenever it is opened again |
+| Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it |
+| Always allow `go test …` commands | any command of the family, in any folder |
+
+A family is a program and its subcommand: `go test`, `go build`, `go vet`,
+`go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),
+`npm test`, `npm run <script>` (the script is part of it: `npm run lint` is
+not `npm run deploy`), `pnpm` and `yarn` alike, `python -m pytest` (and
+`unittest`, `mypy`, `ruff`), `pytest`, `dotnet test`, `mvn test`, `gradle
+test`, `node --test`. A family grant covers only the flags that select,
+filter, repeat or report for that tool (`-run`, `-count`, `-p 4`, `-race`
+for `go test`; `-p crate`, `--release`, `--features` for `cargo`; `-k`,
+`-q`, `-x` for pytest). A flag that names another program, script, settings
+file, project or output path (`-exec`, `-toolexec`, `-vettool`, `-o`,
+`--manifest-path`, `--prefix`, `--init-script`, Maven's `-s` or `-f`,
+pytest's `-p` or `-c`) is on no list, so that line asks again. No scope is
+offered for, or covers, a line with a chain, a redirect, an expansion, a
+quote, `~`, an assignment in front such as `CGO_ENABLED=0`, a program named
+by a path, an absolute path, a `..` step or a `module@version`.
+
+A scope answers only a later ask of the same default kind: a deny or ask
+rule, the destructive check, the supervisor and the screens still decide
+first, and where the managed configuration holds the permissions none is
+offered. Each is recorded as `approval.scope_granted` with what it covers.
+A scope lasts for its session: to drop one, start a new session.
+
 ## Recovering
 
 `/undo` reverts the last turn's file changes, and `/rewind` takes code and the

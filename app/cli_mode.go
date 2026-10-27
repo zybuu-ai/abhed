@@ -420,7 +420,7 @@ var modeFlagGiven bool
 // the configuration.
 func resumedVia(now string, cfg config.Config) string {
 	switch {
-	case now != orDefault(cfg.Permissions.Mode, "default"):
+	case now != cfg.StartMode():
 		return viaCarried
 	case modeFlagGiven:
 		return agent.ViaFlag
@@ -435,7 +435,7 @@ func (c *cliState) carryState() {
 		return p.typ == agent.EvModeChanged || p.typ == agent.EvWorkspaceDirAdded
 	})
 	var carried []pendingEvent
-	if start := policy.Mode(orDefault(c.appCfg.Permissions.Mode, "default")); c.pol != nil && c.pol.Mode != start {
+	if start := policy.Mode(c.appCfg.StartMode()); c.pol != nil && c.pol.Mode != start {
 		carried = append(carried, pendingEvent{agent.EvModeChanged, agent.ModeChanged{
 			From: string(start), To: string(c.pol.Mode), By: agent.ByUser, Via: viaCarried}})
 	}
