@@ -147,6 +147,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `plan.runbooks` | **applied** only when false |
+| `mode.default` | **applied** only as `plan` or `default`, and only narrower than the mode sessions would start in |
 | `monitor.enabled` | **applied** only when true |
 | `monitor.on_unavailable` | **applied** only for `deny` |
 | `monitor.max_per_turn` | **applied** only when more calls are reviewed; zero means no bound, so it is the most |

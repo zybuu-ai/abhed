@@ -88,6 +88,9 @@ type Config struct {
 	Monitor MonitorConfig `json:"monitor,omitempty"`
 	// Plan governs what an accepted plan may carry.
 	Plan PlanConfig `json:"plan,omitempty"`
+	// Mode is the default mode new sessions start in where permissions.mode
+	// names none.
+	Mode ModeConfig `json:"mode,omitzero"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
 	// Egress is the rules of the egress proxy that sandbox.network
@@ -107,6 +110,9 @@ type Config struct {
 	Duplicates []DuplicateKey `json:"-"`
 	// SetKeys are the settings any file made, as dotted paths; see Sets.
 	SetKeys []string `json:"-"`
+	// modeChosen is set where permissions.mode was chosen for this run, by an
+	// override or a workspace narrowing it, over the built-in default.
+	modeChosen bool
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
 	// SetAside are settings a file made that its layer may not make, such
@@ -236,6 +242,27 @@ type FenceConfig struct {
 	// AllowRoot lets the fence run as root (Landlock ABI 6 or later), with
 	// the files under /etc only root may read hidden. Managed only.
 	AllowRoot bool `json:"allow_root,omitempty"`
+}
+
+// ModeConfig is the workspace's default mode: the mode a person chose for
+// it, which new sessions there start in, such as Studio's session/new. Never
+// bypass, which is chosen for a session each time; permissions.mode, when
+// set, wins, and a managed mode binds as always.
+type ModeConfig struct {
+	Default string `json:"default,omitempty"`
+}
+
+// StartMode is the mode a new session starts in: permissions.mode, else
+// mode.default, else default.
+func (c Config) StartMode() string {
+	chosen := c.modeChosen || c.Sets("permissions.mode") || c.Permissions.Mode != "" && c.Permissions.Mode != "default"
+	switch {
+	case chosen:
+		return c.Permissions.Mode
+	case c.Mode.Default != "" && c.Mode.Default != "bypass" && knownMode(c.Mode.Default):
+		return c.Mode.Default
+	}
+	return orDefaultMode(c.Permissions.Mode)
 }
 
 // PlanConfig governs plans from plan mode.
@@ -1944,6 +1971,9 @@ func (c Config) Validate() error {
 	}
 	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
+	}
+	if c.Mode.Default != "" && (!knownMode(c.Mode.Default) || c.Mode.Default == "bypass") {
+		return fmt.Errorf("mode.default %q is not a mode a session may start in (plan, default, accept-edits or auto)", c.Mode.Default)
 	}
 	// Checked here so every path fails on a bad rule, not only the CLI.
 	for _, l := range []struct {

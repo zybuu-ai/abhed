@@ -472,6 +472,7 @@ func (c Config) Apply(o Overrides) (Config, error) {
 			return c, refuse("permissions.mode", o.Mode, "bypass mode is disabled under a managed configuration")
 		}
 		c.Permissions.Mode = o.Mode
+		c.modeChosen = true
 	}
 	if o.SyntaxCheck != "" {
 		if c.ManagedSets("tools.syntax_check") && syntaxRank(o.SyntaxCheck) < syntaxRank(c.Tools.SyntaxCheck) {

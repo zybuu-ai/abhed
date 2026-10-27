@@ -143,6 +143,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `mode.default`: the mode new sessions start in where `permissions.mode`
+  names none, so a workspace's Studio chats keep the mode chosen for it
+  (`plan`, `default`, `accept-edits` or `auto`, never `bypass`). An untrusted
+  workspace file may only start sessions narrower.
+
 - Studio's permission request for a bash command offers scopes the engine
   enforces: this exact command for the session or always, and, for a known
   command family (`go test`, `cargo test`, `npm run lint`, `python -m

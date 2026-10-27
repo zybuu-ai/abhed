@@ -516,3 +516,44 @@ func TestStudioFileAttachmentIsCheckedByPolicy(t *testing.T) {
 		t.Fatalf("an allowed attachment: %v", got)
 	}
 }
+
+// A workspace's default mode is the mode Studio's new sessions start in: the
+// person's own configuration may name any but bypass; an untrusted workspace
+// file may only start them narrower.
+func TestStudioWorkspaceDefaultMode(t *testing.T) {
+	start := func(r *studioRig) string {
+		var res struct {
+			Modes struct {
+				CurrentModeID string `json:"currentModeId"`
+			} `json:"modes"`
+		}
+		r.cl.ok("session/new", map[string]any{"cwd": r.ws, "mcpServers": []any{}}, &res)
+		return res.Modes.CurrentModeID
+	}
+	r := newStudioRig(t, `,"mode":{"default":"auto"}`)
+	if got := start(r); got != "auto" {
+		t.Fatalf("the person's default mode: %s", got)
+	}
+	writeWS := func(r *studioRig, body string) {
+		_ = os.MkdirAll(filepath.Join(r.ws, ".abhed"), 0o700)
+		if err := os.WriteFile(filepath.Join(r.ws, ".abhed", "config.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An untrusted workspace may start sessions in plan, narrower than auto.
+	writeWS(r, `{"mode":{"default":"plan"}}`)
+	if got := start(r); got != "plan" {
+		t.Fatalf("a workspace's narrower default: %s", got)
+	}
+	// A workspace's own permissions.mode narrows it too.
+	writeWS(r, `{"permissions":{"mode":"default"}}`)
+	if got := start(r); got != "default" {
+		t.Fatalf("a workspace's permissions.mode did not narrow the start: %s", got)
+	}
+	// It may not start them wider than the person chose.
+	r2 := newStudioRig(t, "")
+	writeWS(r2, `{"mode":{"default":"auto"}}`)
+	if got := start(r2); got != "default" {
+		t.Fatalf("an untrusted workspace widened the start: %s", got)
+	}
+}

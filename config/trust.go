@@ -743,6 +743,7 @@ var workspaceRules = map[string]fieldRule{
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
 	"plan.runbooks":       {onlyFalse(func(c *Config) *bool { return &c.Plan.Runbooks }), "only false"},
+	"mode.default":        {narrowDefaultMode, "only plan or default, and only narrower than the mode sessions start in"},
 	"suggest.model":       {nil, "a provider receives the conversation"},
 
 	"monitor.enabled":        {onlyTrue(func(c *Config) *bool { return &c.Monitor.Enabled }), "only true"},
@@ -916,11 +917,24 @@ func stricterToolchains(dst, ws *Config) bool {
 
 func narrowMode(dst, ws *Config) bool {
 	m := ws.Permissions.Mode
-	cur, ok := modeRank[orDefaultMode(dst.Permissions.Mode)]
+	cur, ok := modeRank[dst.StartMode()]
 	if (m != "plan" && m != "default") || !ok || modeRank[m] > cur {
 		return false
 	}
 	dst.Permissions.Mode = m
+	dst.modeChosen = true
+	return true
+}
+
+// narrowDefaultMode takes an untrusted workspace's mode.default only where
+// it starts sessions in a narrower mode than they would start in.
+func narrowDefaultMode(dst, ws *Config) bool {
+	m := ws.Mode.Default
+	cur, ok := modeRank[dst.StartMode()]
+	if (m != "plan" && m != "default") || !ok || modeRank[m] > cur {
+		return false
+	}
+	dst.Mode.Default = m
 	return true
 }
 

@@ -376,7 +376,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	// Studio hands checkpoints on; with no one to take them, "required" refuses every command.
 	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
-	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	pol := policy.New(policy.Mode(cfg.StartMode()))
 	// Set whatever the tool set holds: web_fetch with no host list asks.
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
