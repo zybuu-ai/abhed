@@ -27,16 +27,20 @@ it in both spellings.
 matches one place line for line once leading and trailing whitespace is set
 aside, such as two tabs sent where the file has one, it is applied there:
 `new_string` is re-indented to the file's indentation, and the result says it
-was matched loosely and at which line. Two such places are refused, as an
-exact double match is, and any difference other than indentation is not
-matched.
+was matched loosely and at which line. Its indentation must map onto the
+file's one for one and in the same order, so no line moves into or out of a
+block; a place nested differently is refused. Two such places are refused,
+as an exact double match is, and any difference other than indentation is
+not matched.
 
 When a person approved an `edit` or `write` that then failed without
-changing anything, the next attempt at the same file in the same message,
-putting the same new text there (whitespace aside), takes that approval
-instead of asking again, once. Other new text is asked about again. It is recorded as
-approved by the reviewer, with `carried_from` naming the call approved. A
-rule's or the supervisor's ask is asked again.
+changing anything, a retry of the very same change in the same message
+takes that approval instead of asking again, once: the same file, the same
+`old_string` (whitespace at the end of a line aside) and exactly the same new
+text, or for `write` the same content. Anything else is asked about again,
+and a carried approval never carries on. It is recorded with `by: carried`
+and `carried_from` naming the call the person approved. A rule's, the
+supervisor's or a preview's ask is asked again.
 
 `write` creates a new file's missing folders, inside the workspace and never
 in Abhed's state, so a new file in a new folder needs no shell approval in

@@ -358,3 +358,25 @@ func TestEditLooseMatchKeepsCRLF(t *testing.T) {
 		t.Fatalf("%s %q", res.Content, got)
 	}
 }
+
+// A loose match that would move a line into or out of a block is refused:
+// the reviewer's case, where cleanup() would have gone inside if c:.
+func TestEditLooseMatchKeepsNesting(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "m.py")
+	body := "def f(c):\n    if c:\n        do()\n    cleanup()\n"
+	writeFile(t, p, body)
+	run(t, Read{}, s, readArgs{Path: p})
+	res := run(t, Edit{}, s, editArgs{Path: p,
+		OldString: "if c:\n    do()\n    cleanup()",
+		NewString: "if c:\n    do()\n    cleanup()\n    log()"})
+	if got, _ := os.ReadFile(p); !res.IsError || !strings.Contains(res.Content, "nested differently") || string(got) != body {
+		t.Fatalf("%s\n%s", res.Content, got)
+	}
+	// Two old indentations onto one in the file is refused too.
+	writeFile(t, p, "a\n  b\n  c\n")
+	run(t, Read{}, s, readArgs{Path: p})
+	if res := run(t, Edit{}, s, editArgs{Path: p, OldString: "a\n  b\n    c", NewString: "a\n  b\n    C"}); !res.IsError {
+		t.Fatalf("%s", res.Content)
+	}
+}

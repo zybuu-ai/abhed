@@ -187,25 +187,6 @@ func skippedFolderHint(pattern, root string) string {
 // compileGlob translates a glob into a matcher. Supports ** (any depth),
 // * (within a segment), and ? (single char) — the subset models actually use.
 // fold matches without case, as a disk that folds case opens names.
-// splitPathGlob splits a path holding glob characters into the folder before
-// the first segment that has one ("" for the root) and the rest.
-func splitPathGlob(p string) (string, string, bool) {
-	if !strings.ContainsAny(p, "*?[") {
-		return "", "", false
-	}
-	segs := strings.Split(filepath.ToSlash(p), "/")
-	for i, seg := range segs {
-		if strings.ContainsAny(seg, "*?[") {
-			base := strings.Join(segs[:i], "/")
-			if base == "" && strings.HasPrefix(p, "/") {
-				base = "/"
-			}
-			return filepath.FromSlash(base), strings.Join(segs[i:], "/"), true
-		}
-	}
-	return "", "", false
-}
-
 func compileGlob(pattern string, fold bool) (func(string) bool, error) {
 	p := filepath.ToSlash(pattern)
 	var re strings.Builder
@@ -332,7 +313,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	root := s.Root
 	// A glob in path, as models often write it, is split into the folder it
 	// starts from and the glob below it.
-	if base, pattern, isGlob := splitPathGlob(a.Path); isGlob {
+	if base, pattern, isGlob := splitPathGlob(a.Path, s.Root); isGlob {
 		if a.Glob != "" {
 			return errf("path %q is a glob and glob is set too. Put the folder in path and the pattern in glob, e.g. path %q, glob %q.", a.Path, base, pattern)
 		}
@@ -542,4 +523,32 @@ func truncateLine(s string) string {
 		return s[:300] + " [...]"
 	}
 	return s
+}
+
+// splitPathGlob splits a path holding * or ? (the glob characters
+// compileGlob reads) into the folder before the first segment that has one
+// ("" for the root) and the rest. A path that exists as written under root,
+// such as a folder named a*b, is never split.
+func splitPathGlob(p, root string) (string, string, bool) {
+	if !strings.ContainsAny(p, "*?") {
+		return "", "", false
+	}
+	as := p
+	if !filepath.IsAbs(as) {
+		as = filepath.Join(root, as)
+	}
+	if _, err := os.Lstat(as); err == nil {
+		return "", "", false
+	}
+	segs := strings.Split(filepath.ToSlash(p), "/")
+	for i, seg := range segs {
+		if strings.ContainsAny(seg, "*?") {
+			base := strings.Join(segs[:i], "/")
+			if base == "" && strings.HasPrefix(p, "/") {
+				base = "/"
+			}
+			return filepath.FromSlash(base), strings.Join(segs[i:], "/"), true
+		}
+	}
+	return "", "", false
 }

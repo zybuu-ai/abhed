@@ -88,3 +88,19 @@ func TestStudioNextEditRefusals(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// A change at the end of a window with no newline after it ends its range
+// at the end of the last line, not one line past it.
+func TestStudioNextEditAtTheEndOfTheDocument(t *testing.T) {
+	model := newFIMServer(t, "a := 1\nb := 3")
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go",
+		"cursor": map[string]int{"line": 4}, "window": map[string]any{"startLine": 3, "text": "a := 1\nb := 2"}}, &res)
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 4 || res.Edits[0].Range.End.Line != 4 ||
+		res.Edits[0].Range.End.Character != 6 || res.Edits[0].Text != "b := 3" {
+		t.Fatalf("%+v", res)
+	}
+}

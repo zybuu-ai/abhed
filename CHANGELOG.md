@@ -825,13 +825,23 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Previewing writes now asks about every `edit` and `write` short of a
+  deny, so an "always" grant no longer answers it; it covers a custom
+  command's or skill's run and its subagents' writes, and a session that
+  cannot preview refuses the prompt. A prompt's images are capped at 10 MB
+  in all, and a message over 16 MiB is refused with its id instead of
+  ending the connection. `grep` no longer takes a `path` with `[` (such as
+  `app/[id]`) for a glob.
 - Anthropic sessions mark the last two user turns for the prompt cache, so
   a long session reads its history from the cache rather than paying for it
   again each turn; before, only the system prompt and tools were cached.
 - `grep` takes a glob in `path` (`docs/**/*.md`), searching the folder before
   the glob with the rest as its pattern, instead of refusing it.
 - A carried approval for a failed `edit` or `write` now needs the retry to
-  put the same new text in the file, whitespace aside.
+  be the same change: the same `old_string` (whitespace at line ends aside)
+  and exactly the same new text or content. It is recorded `by: carried`
+  and never carries on. A loose `edit` match is refused when its lines are
+  nested differently from the file's.
 - Debugging without a container engine: a debug launch that needs the
   container tier now returns a `container-setup` problem with what is
   missing on this machine and the exact steps (install Podman, `podman

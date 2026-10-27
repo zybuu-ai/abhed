@@ -23,10 +23,12 @@ import (
 // page goes through web_fetch as the person's call, when web_fetch is on; an
 // image goes to a model that reads images, held in memory only.
 
-// Image bounds: how many a prompt may carry, and how big each may be.
+// Image bounds: how many a prompt may carry, how big each may be, and how
+// big all of them, which keeps a prompt's base64 well under a line's 16 MiB.
 const (
 	promptImages     = 4
 	promptImageBytes = 5 << 20
+	promptImageTotal = 10 << 20
 )
 
 var imageTypes = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
@@ -45,10 +47,33 @@ type promptLinks struct {
 func (c *acpConn) linkedAttachments(ctx context.Context, s *acpSession, blocks []json.RawMessage, room int) (promptLinks, error) {
 	var out promptLinks
 	if !s.inner || s.parts.Loop == nil || s.parts.Session == nil {
+		// Not read here: a link is named for the agent, and an image refuses the prompt.
+		var notes []string
+		for _, raw := range blocks {
+			var blk struct {
+				Type string `json:"type"`
+				URI  string `json:"uri"`
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(raw, &blk) != nil {
+				continue
+			}
+			switch blk.Type {
+			case "image":
+				out.why = "this session cannot take images"
+				return out, nil
+			case "resource_link":
+				notes = append(notes, fmt.Sprintf("(See %s at %s)", blk.Name, blk.URI))
+			}
+		}
+		if len(notes) > 0 {
+			out.text = "\n\n" + strings.Join(notes, "\n")
+		}
 		return out, nil
 	}
 	loop, sess := s.parts.Loop, s.parts.Session
 	var parts, refused []string
+	imageBytes := 0
 	for _, raw := range blocks {
 		var blk struct {
 			Type     string `json:"type"`
@@ -83,6 +108,11 @@ func (c *acpConn) linkedAttachments(ctx context.Context, s *acpSession, blocks [
 				refused = append(refused, fmt.Sprintf("an image of %d MB is over the %d MB limit", len(data)>>20, promptImageBytes>>20))
 				continue
 			}
+			if imageBytes+len(data) > promptImageTotal {
+				refused = append(refused, fmt.Sprintf("a prompt's images may hold %d MB in all", promptImageTotal>>20))
+				continue
+			}
+			imageBytes += len(data)
 			sum := sha256.Sum256(data)
 			hash := hex.EncodeToString(sum[:])
 			out.images = append(out.images, abhed.Image{MediaType: blk.MimeType, Data: data})

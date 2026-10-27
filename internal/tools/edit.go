@@ -128,6 +128,8 @@ func (Edit) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		case places == 1:
 			content, a.NewString, count = updated, reindented, 1
 			loose = fmt.Sprintf("Matched loosely at line %d: the indentation differed from the file's, so the replacement was re-indented to match it.", lines[0])
+		case places < 0:
+			return errf("old_string matches line %d once indentation is set aside, but its lines are nested differently from the file's there, so it was not applied.\nCopy the exact text, including leading whitespace.", lines[0])
 		case places > 1:
 			return errf("old_string matches nowhere exactly, and %d places once indentation is set aside (lines %s).\nCopy the exact text, including leading whitespace, with enough context to make it unique.",
 				places, strings.Join(intsToStrings(lines), ", "))
@@ -361,7 +363,9 @@ func changedRegion(updated, needle string, ctx int) string {
 // whitespace (and trailing, and a CR) is set aside. With exactly one such
 // place it returns content with those lines replaced by new, re-indented
 // from old's indentation to the file's, and the re-indented new. It returns
-// how many places matched and their first lines.
+// how many places matched and their first lines, or -1 when the one place
+// nests its lines differently from old (old's indentation must map onto the
+// file's one for one, in the same order).
 func indentMatch(content, old, new string) (string, string, int, []int) {
 	oldLines := strings.Split(strings.TrimSuffix(old, "\n"), "\n")
 	key := strings.TrimSpace
@@ -405,9 +409,20 @@ func indentMatch(content, old, new string) (string, string, int, []int) {
 			continue
 		}
 		o, f := leadingSpace(ol), leadingSpace(fileLines[at+j])
-		if _, seen := spell[o]; !seen {
+		if prev, seen := spell[o]; seen && prev != f {
+			return "", "", -1, lines // one old indentation, two in the file: the nesting differs
+		} else if !seen {
 			spell[o] = f
 			keys = append(keys, o)
+		}
+	}
+	// One to one and in the same order: deeper in old is deeper in the file,
+	// so no line moves into or out of a block.
+	for _, a := range keys {
+		for _, b := range keys {
+			if a != b && (spell[a] == spell[b] || (len(a) < len(b)) != (len(spell[a]) < len(spell[b]))) {
+				return "", "", -1, lines
+			}
 		}
 	}
 	newLines := strings.Split(strings.TrimSuffix(new, "\n"), "\n")

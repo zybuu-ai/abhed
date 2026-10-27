@@ -63,3 +63,49 @@ func TestStudioCommitMessage(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// A staged file a read rule denies is left out, and the repository's own
+// diff.external, textconv and fsmonitor programs never run.
+func TestStudioCommitMessageRunsNoRepositoryProgram(t *testing.T) {
+	model := newFIMServer(t, "Change things")
+	r := completionRig(t, model.URL, `,"permissions":{"deny":["read(**/hidden/**)"]}`)
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(t.TempDir(), "evil.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\ncat \"$1\" 2>/dev/null\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	r.write(".gitattributes", "*.go diff=evil\n")
+	r.write("a.go", "package a\n")
+	r.write("hidden/p.go", "package p // PRIVATE\n")
+	git("add", "a.go", "hidden/p.go", ".gitattributes")
+	// Set after the test's own git has run, so only the engine's could run them.
+	git("config", "diff.external", script)
+	git("config", "diff.evil.textconv", script)
+	git("config", "core.fsmonitor", script)
+	id := r.open()
+	var res struct {
+		Message  string `json:"message"`
+		Excluded int    `json:"excluded"`
+	}
+	r.cl.ok("_abhed/commitMessage", map[string]any{"sessionId": id}, &res)
+	if res.Message != "Change things" || res.Excluded != 1 {
+		t.Fatalf("%+v", res)
+	}
+	model.mu.Lock()
+	sent := strings.Join(model.bodies, "\n")
+	model.mu.Unlock()
+	if strings.Contains(sent, "PRIVATE") || !strings.Contains(sent, "package a") {
+		t.Fatalf("sent %.400s", sent)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a program the repository names ran")
+	}
+}

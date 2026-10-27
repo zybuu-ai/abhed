@@ -228,9 +228,17 @@ func sendable(uri string, roots []string) (string, string) {
 		return "", "the document is not a file"
 	}
 	path := filepath.Clean(u.Path)
+	if why := sendablePath(path, roots); why != "" {
+		return "", why
+	}
+	return path, ""
+}
+
+// sendablePath is sendable for a path: why it may not be sent, or "".
+func sendablePath(path string, roots []string) string {
 	forms := sandbox.PathForms(path)
 	if len(forms) == 0 {
-		return "", "the document is not a file"
+		return "the document is not a file"
 	}
 	var rootForms []string
 	for _, r := range roots {
@@ -246,14 +254,14 @@ func sendable(uri string, roots []string) (string, string) {
 		}
 		switch {
 		case !inside:
-			return "", "the file is not in the session's workspace"
+			return "the file is not in the session's workspace"
 		case secretfiles.Match(f) != "":
-			return "", "the file looks like it holds keys or credentials"
+			return "the file looks like it holds keys or credentials"
 		case tools.IsState(f, roots...):
-			return "", "the file is Abhed's own state"
+			return "the file is Abhed's own state"
 		}
 	}
-	return path, ""
+	return ""
 }
 
 // withheldAround cleans the text on both sides of the cursor as one, so a
@@ -623,7 +631,7 @@ func (c *acpConn) completeCancel(msg rpcMessage) {
 
 // completionSummary records the session's completions, once, as it closes.
 func (c *acpConn) completionSummary(s *acpSession) {
-	for _, feature := range []string{"complete", "next_edit"} {
+	for _, feature := range []string{"complete", "next_edit", "commit"} {
 		c.featureSummary(s, feature)
 	}
 }

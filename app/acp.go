@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -449,10 +450,20 @@ func (c *acpConn) run(in io.Reader) error {
 // gone; the replies to requests still running follow (see drain).
 func (c *acpConn) serve(in io.Reader) error {
 	defer c.inputClosed()
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
+	rd := bufio.NewReaderSize(in, 64<<10)
+	for {
+		line, head, tooLong, err := readLine(rd, acpLineMax)
+		if tooLong {
+			// Refused, and the connection goes on: one oversized message ends no session.
+			c.reply(requestID(head), nil, refusal(errParams, "the message is over the %d MiB a line may hold; send less (fewer or smaller images)", acpLineMax>>20))
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
@@ -482,7 +493,45 @@ func (c *acpConn) serve(in io.Reader) error {
 			}()
 		}
 	}
-	return sc.Err()
+}
+
+// acpLineMax is the most one message may hold.
+const acpLineMax = 16 << 20
+
+// readLine reads one line of at most max bytes, without its newline. A
+// longer line is read to its end and dropped: tooLong is set and head holds
+// its first bytes, where a request's id is.
+func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err error) {
+	for {
+		chunk, err := rd.ReadSlice('\n')
+		if !tooLong {
+			if len(line)+len(chunk) > max+1 {
+				tooLong = true
+				head = append(append([]byte(nil), line...), chunk[:min(len(chunk), 64<<10)]...)
+				line = nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case err != nil && (!errors.Is(err, io.EOF) || len(line) == 0 || tooLong):
+			return nil, head, tooLong, err
+		}
+		return bytes.TrimRight(line, "\r\n"), head, tooLong, nil
+	}
+}
+
+// requestIDPattern finds a JSON-RPC id near the start of a message.
+var requestIDPattern = regexp.MustCompile(`"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)`)
+
+// requestID is the id at the head of a message too long to parse, or nil.
+func requestID(head []byte) json.RawMessage {
+	if m := requestIDPattern.FindSubmatch(head); m != nil {
+		return json.RawMessage(m[1])
+	}
+	return nil
 }
 
 func (c *acpConn) send(v any) {
@@ -1152,18 +1201,30 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		}
 		return prompt + attached
 	}
+	// Under preview, every edit and write of this prompt is put to the person
+	// with its diff, a command's or skill's run and its subagents' included;
+	// a session that cannot do that refuses the prompt rather than write unseen.
+	if previewWrites(p.Meta) {
+		if !s.inner || s.parts.Loop == nil {
+			end()
+			c.reply(msg.ID, nil, refusal(errPolicy, "this session cannot preview writes"))
+			return
+		}
+		s.parts.Loop.PreviewWrites(true)
+		defer s.parts.Loop.PreviewWrites(false)
+	}
+	// The images go with this prompt's run, whichever runs it, and no later one.
+	if err := attachImages(s.agent, links.images); err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	defer func() { _ = attachImages(s.agent, nil) }()
 	s.undo.BeginTurn()
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {
-		// Under preview, every edit and write of this prompt is put to the person with its diff.
-		if previewWrites(p.Meta) && s.inner && s.parts.Loop != nil {
-			s.parts.Loop.PreviewWrites(true)
-			defer s.parts.Loop.PreviewWrites(false)
-		}
-		if err = attachImages(s.agent, links.images); err == nil {
-			_, err = s.agent.Run(ctx, withAttached(text))
-		}
+		_, err = s.agent.Run(ctx, withAttached(text))
 		// A plan the run proposed is put to the editor; accepted, the turn goes on with it.
 		if next := c.decidePlan(ctx, s, err); next != "" {
 			_, err = s.agent.Run(ctx, next)

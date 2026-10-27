@@ -158,7 +158,10 @@ const (
 	// BySessionScope is an "always allow" a reviewer chose earlier in the session.
 	BySessionScope = "session-scope"
 	ByHeadless     = "headless" // nobody could be asked, and the run's fixed answer applied
-	BySystem       = "system"   // the harness, with no rule or person involved
+	// ByCarried is a person's approval of the same change, which failed with
+	// no effect, taken once by its retry; see carried_from.
+	ByCarried = "carried"
+	BySystem  = "system" // the harness, with no rule or person involved
 )
 
 // Answer is what an Approver reports when a request was settled by someone
@@ -365,8 +368,10 @@ type Loop struct {
 	carryMu       sync.Mutex
 	reviewedCalls map[string]bool
 	carried       map[string]string
-	// previewWrites makes every edit and write an ask, for this run.
+	// previewWrites makes every edit and write an ask, for this run;
+	// previewParent is the loop that spawned this one, whose flag holds too.
 	previewWrites atomic.Bool
+	previewParent *Loop
 	// pendingImages are the images AttachImages gave the next message.
 	pendingImages []model.ContentBlock
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
@@ -775,6 +780,17 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 // the mode allows, so the person sees each diff before it is written.
 func (l *Loop) PreviewWrites(on bool) { l.previewWrites.Store(on) }
 
+// previewing reports whether this loop, or the loop that spawned it, is
+// previewing writes, so a subagent's writes are put to the person too.
+func (l *Loop) previewing() bool {
+	for p := l; p != nil; p = p.previewParent {
+		if p.previewWrites.Load() {
+			return true
+		}
+	}
+	return false
+}
+
 // AttachImages gives the next RunMessage's message these images, for a
 // model that reads them. They are held in memory only, never recorded.
 func (l *Loop) AttachImages(imgs []model.ContentBlock) {
@@ -827,6 +843,9 @@ func (l *Loop) startMessage() {
 		l.Config.MaxTurns = l.turns + n
 	}
 	// A new message is a fresh start: failures repeated before it do not end it.
+	// Queued messages and wake runs start one too, so they reset the count;
+	// wake runs are bounded on their own (subagents.max_wakes_per_hour and
+	// wake_max_turns), so a reset there cannot loop without end.
 	l.failuresMu.Lock()
 	l.repeatedFailures = nil
 	l.failuresMu.Unlock()
@@ -835,15 +854,16 @@ func (l *Loop) startMessage() {
 	l.carryMu.Unlock()
 }
 
-// carryKey names an edit or write by the file it is aimed at and the text it
-// puts there, its whitespace set aside, "" for other calls: a retry that
-// only fixes how it finds its place keeps the key, other content does not.
+// carryKey names an edit or write by the file it is aimed at, the text it
+// replaces (whitespace at the end of each line aside) and the exact text it
+// puts there, "" for other calls: only a retry of the same change keeps it.
 func (l *Loop) carryKey(call model.ToolCall) string {
 	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
 		return ""
 	}
 	var a struct {
 		Path      string `json:"path"`
+		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 		Content   string `json:"content"`
 	}
@@ -854,11 +874,14 @@ func (l *Loop) carryKey(call model.ToolCall) string {
 	if err != nil {
 		return ""
 	}
-	text := a.NewString
 	if call.Name == "write" {
-		text = a.Content
+		return "write\x00" + path + "\x00" + a.Content
 	}
-	return call.Name + "\x00" + path + "\x00" + strings.Join(strings.Fields(text), " ")
+	lines := strings.Split(a.OldString, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " \t\r")
+	}
+	return "edit\x00" + path + "\x00" + strings.Join(lines, "\n") + "\x00" + a.NewString
 }
 
 // takeCarried is the call whose approval this one takes, once: an earlier
@@ -1654,11 +1677,15 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 	decision = l.filesJudged(tool, call, decision)
-	// A person previewing writes sees each edit and write before it lands: an
-	// allow becomes an ask, a deny stays a deny.
-	if decision.Decision == policy.Allow && (call.Name == "edit" || call.Name == "write") && l.previewWrites.Load() {
-		decision = policy.Result{Decision: policy.Ask, Step: "preview",
-			Reason: "the person asked to preview each change before it is written"}
+	// A person previewing writes sees each edit and write before it lands:
+	// any decision but a deny becomes the preview ask, which offers no scope,
+	// so no "always" grant can answer it. An earlier ask's reason is kept.
+	if decision.Decision != policy.Deny && (call.Name == "edit" || call.Name == "write") && l.previewing() {
+		why := "the person asked to preview each change before it is written"
+		if decision.Decision == policy.Ask && decision.Reason != "" {
+			why += "; " + decision.Reason
+		}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
@@ -1764,7 +1791,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			carriedFrom = l.takeCarried(call)
 		}
 		if carriedFrom != "" {
-			approved, answer.By = true, ByReviewer
+			approved, answer.By = true, ByCarried
 		} else {
 			approved, err = l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
 		}

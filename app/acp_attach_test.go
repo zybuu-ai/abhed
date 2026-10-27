@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,5 +107,64 @@ func TestStudioPromptImages(t *testing.T) {
 	m, _ := v.recorded(vid, agent.EvInputMention)
 	if len(m) != 1 || m[0]["path"] != "image:image/png" {
 		t.Fatalf("mentions %v", m)
+	}
+}
+
+// A prompt's images are bounded in all, and a message over a line's limit is
+// refused with its id while the connection, and its sessions, go on.
+func TestStudioOversizedPromptsAreRefused(t *testing.T) {
+	v := visionRig(t, true)
+	id := v.open()
+	big := base64.StdEncoding.EncodeToString(make([]byte, 3500<<10))
+	img := map[string]any{"type": "image", "mimeType": "image/png", "data": big}
+	if res := v.promptBlocks(id, img, img, img); res.Error == nil || !strings.Contains(res.Error.Message, "in all") {
+		t.Fatalf("%+v", res.Error)
+	}
+	huge := strings.Repeat("x", acpLineMax+10)
+	from := v.cl.mark()
+	v.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"big"`), Method: "session/prompt",
+		Params: json.RawMessage(`{"sessionId":"` + id + `","prompt":[{"type":"text","text":"` + huge + `"}]}`)})
+	got := v.cl.waitFor(from, "the refusal", func(m rpcMessage) bool { return string(m.ID) == `"big"` })
+	if got.Error == nil || !strings.Contains(got.Error.Message, "MiB a line may hold") {
+		t.Fatalf("%+v", got)
+	}
+	// The connection still answers, and the session still runs a prompt.
+	if res := v.promptBlocks(id); res.Error != nil {
+		t.Fatalf("after the refusal: %+v", res.Error)
+	}
+}
+
+// A file: link outside the workspace, through a link that leads out, or
+// under a read-deny rule refuses the prompt.
+func TestStudioLinkedFilesStayInBounds(t *testing.T) {
+	m := newScriptModel(t)
+	acpModelsEnv(t, `{"model":{"default":"m","providers":{"m":`+stubProvider(m.URL, "m-1")+`}},"permissions":{"deny":["read(**/hidden/**)"]}}`)
+	ws := t.TempDir()
+	if real, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = real
+	}
+	r := &studioRig{t: t, ws: ws, home: os.Getenv("HOME"), model: m}
+	r.cl = newStudioClient(t, ws, true)
+	r.cl.ok("initialize", map[string]any{"protocolVersion": 1}, nil)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "o.txt"), []byte("OUTSIDE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "o.txt"), filepath.Join(ws, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r.write("hidden/p.txt", "PRIVATE")
+	id := r.open()
+	for _, uri := range []string{"file:///etc/hosts", "file://" + ws + "/link.txt", "file://" + ws + "/hidden/p.txt"} {
+		res := r.promptBlocks(id, map[string]any{"type": "resource_link", "name": "x", "uri": uri})
+		if res.Error == nil {
+			t.Fatalf("%s was attached", uri)
+		}
+	}
+	r.model.mu.Lock()
+	body := strings.Join(r.model.bodies, "\n")
+	r.model.mu.Unlock()
+	if strings.Contains(body, "OUTSIDE") || strings.Contains(body, "PRIVATE") {
+		t.Fatal("refused content reached the model")
 	}
 }
