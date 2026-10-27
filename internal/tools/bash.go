@@ -1323,6 +1323,9 @@ var forbiddenLine = regexp.MustCompile(`(?i)(?:": Forbidden\b|\b403 Forbidden\b|
 // httpsHost is the host of an https URL in a line.
 var httpsHost = regexp.MustCompile(`https://([^\s/"':]+)`)
 
+// ProxyRefused is proxyRefused for a terminal's output, which no bash call wraps.
+func ProxyRefused(output string) bool { return proxyRefused(output) }
+
 // proxyRefused reports output from the session's egress proxy refusing a
 // client: its own phrases, or a 403 on a line naming a remote https URL, as
 // the proxy refuses those; a local server's 403 is not it.

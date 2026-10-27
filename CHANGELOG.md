@@ -848,6 +848,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A command in Studio's terminal refused a package registry (`npm install`,
+  `go get`) showed only a 403. It now prints which language's registry was
+  refused and how to open it, and Studio is sent an offer to open it; opening
+  a language's registries no longer needs Abhed's toolchain for it, so the
+  host's own Node or Go on the process tier can use them. The terminal's
+  header says what it can reach: the agent's network, with the registries
+  opened to the session.
+
 - When a `user_prompt_submit` hook refuses every waiting message, ones
   queued while the hook decided are now counted too, so the model is not
   called again on the conversation as it was. Affects 1.2.3 to 1.2.8.

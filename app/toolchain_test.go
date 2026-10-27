@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
@@ -358,7 +359,6 @@ func TestStudioToolchainManage(t *testing.T) {
 		} `json:"offer"`
 	}
 	r.cl.ok("_abhed/toolchain/status", map[string]any{"sessionId": id, "language": "go"}, &st)
-	r.cl.refused(errRefused, "_abhed/toolchain/registries", map[string]any{"sessionId": id, "language": "go", "registries": st.Offer.Registries})
 	r.cl.ok("_abhed/toolchain/install", map[string]any{"sessionId": id, "language": "go", "installId": "m1",
 		"agreed": map[string]any{"version": st.Offer.Version, "digest": st.Offer.Digest}}, nil)
 	if len(st.Offer.Registries) > 0 {
@@ -410,4 +410,39 @@ func TestStudioToolchainManage(t *testing.T) {
 	inAgentCommand = func() string { return "ABHED_SESSION is set" }
 	defer func() { inAgentCommand = old }()
 	r.cl.refused(errPolicy, "_abhed/toolchain/clean", map[string]any{"sessionId": id})
+}
+
+// A command in Studio's terminal refused a package registry is told which
+// language's it was and how to open it, once, Studio is sent the offer, and
+// the terminal's header says what it can reach.
+func TestTerminalNamesARefusedRegistry(t *testing.T) {
+	fakeGoSource(t)
+	r := newStudioRig(t, "")
+	id := r.open()
+	var term struct {
+		TerminalID  string   `json:"terminalId"`
+		Registries  []string `json:"registries"`
+		NetworkNote string   `json:"networkNote"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &term)
+	if term.Registries == nil || !strings.Contains(term.NetworkNote, "network:") {
+		t.Fatalf("header %+v", term)
+	}
+	from := r.cl.mark()
+	refuse := `echo "npm error 403 403 Forbidden - GET https://registry.npmjs.org/left-pad"; exit 1`
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": refuse + "\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "Node.js's package registry (registry.npmjs.org) is closed")
+	r.cl.waitFor(from, "the registry offer", func(m rpcMessage) bool {
+		return m.Method == "_abhed/toolchain/registry_refused" && strings.Contains(string(m.Params), `"language":"node"`)
+	})
+	// Once per language per terminal.
+	from = r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": refuse + "\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "left-pad")
+	time.Sleep(200 * time.Millisecond)
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/toolchain/registry_refused" {
+			t.Fatal("offered twice")
+		}
+	}
 }

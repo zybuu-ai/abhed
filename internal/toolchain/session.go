@@ -34,6 +34,9 @@ type Session struct {
 	Registries func(lang string) (hosts []string, why string)
 	// Open opens them; it returns what it opened.
 	Open func(lang string) ([]string, error)
+	// Granted reports whether commands can reach host through the egress
+	// proxy now; nil reaches none.
+	Granted func(host string) bool
 }
 
 // pins are the pins a command in dir finds, up to the workspace root.
