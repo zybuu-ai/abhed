@@ -1270,9 +1270,11 @@ file, project or output path (`-exec`, `-toolexec`, `-vettool`, `-o`,
 `--manifest-path`, `--prefix`, `--init-script`, Maven's `-s` or `-f`,
 pytest's `-p` or `-c`) is on no list, so that line asks again. Go's `-mod`
 is covered only as `-mod=readonly` or `-mod=vendor`, which never rewrite
-`go.mod`, and
-a go package only as `.`, a relative path (`./x`, `./...`) or a pattern such
-as `all` or `std`, never an import path naming a host. For `mvn` and `gradle`
+`go.mod`, and a go package only as `.`, a relative path (`./x`, `./...`) or
+a pattern such as `all` or `std`, never an import path naming a host. Words
+after `--` pass through only for `npm`, `pnpm` and `yarn`, and for `cargo
+test` and `cargo run`, where they go to the project's own script or test
+binary. For `mvn` and `gradle`
 the family is the one goal or task named: a further goal or task (`mvn test
 deploy`, `gradle test publish`), and for Maven any word with a `:` (a plugin
 goal such as `exec:exec`, or `-pl :core`), asks again. No scope, exact or

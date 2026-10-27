@@ -123,7 +123,7 @@ func flagsFor(prog, sub string) (string, []string) {
 // safeWord reports a word, or a flag's value, that names nothing outside
 // the session's folder: in no part of it, split at each "=" and ":", an
 // absolute path or a step out with "..", and no "@" anywhere, as in a
-// module@version, which fetches code.
+// word with @ (such as module@version, which fetches code).
 func safeWord(w string) bool {
 	if strings.Contains(w, "@") {
 		return false
@@ -225,7 +225,7 @@ func commandFields(command string) []string {
 		return nil
 	}
 	// No scope, exact or family, for a line naming a path outside the
-	// folder or a module@version: it asks every time.
+	// folder or a word with @: it asks every time.
 	for _, a := range fields[1:] {
 		if !safeWord(a) {
 			return nil

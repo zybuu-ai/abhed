@@ -717,8 +717,7 @@ interface AskMeta {
   a line asks. Go's `-mod` is covered only as `readonly` or `vendor`, which
   never rewrite `go.mod` (they do not stop the build fetching what it
   requires: what a family's build reaches is the network policy's to say),
-  and a go
-  package only inside the module (`.`, `./…`, or a pattern whose first
+  and a go package only inside the module (`.`, `./…`, or a pattern whose first
   element has no dot); for `mvn` and `gradle` no further goal or task word is
   covered, nor, for Maven, any word with a `:`. A grant answers
   only a later default-step ask; every rule, the destructive check, the

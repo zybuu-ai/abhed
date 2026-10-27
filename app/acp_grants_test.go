@@ -137,7 +137,7 @@ func TestACPSessionGrantIsNotRestored(t *testing.T) {
 
 // A family grant covers no line that hands the program another program,
 // script, settings file, project or output path, nor one naming a path
-// outside the folder or a module@version; flags that only select or report,
+// outside the folder or a word with @; flags that only select or report,
 // such as -p 4 for go test and -p crate for cargo, are covered.
 func TestFamilyGrantsRefuseWhatHandsOverControl(t *testing.T) {
 	for _, c := range []struct {
@@ -189,7 +189,7 @@ func TestFamilyGrantsRefuseWhatHandsOverControl(t *testing.T) {
 // Round 2: -mod that fetches, a go package outside the module, a further
 // Maven goal or Gradle task, a path behind = or :, and npm run env are
 // covered by no family grant; a line naming a path outside the folder or a
-// module@version is offered no scope at all.
+// word with @ is offered no scope at all.
 func TestGrantsRoundTwo(t *testing.T) {
 	for _, c := range []struct{ family, cmd string }{
 		{"go test", "go test -mod=mod example.com/evil/pkg"},
