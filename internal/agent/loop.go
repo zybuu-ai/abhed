@@ -802,6 +802,13 @@ func (l *Loop) AttachImages(imgs []model.ContentBlock) {
 	l.steerMu.Unlock()
 }
 
+// PendingImages is how many images wait for the next message.
+func (l *Loop) PendingImages() int {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return len(l.pendingImages)
+}
+
 func (l *Loop) takeImages() []model.ContentBlock {
 	l.steerMu.Lock()
 	defer l.steerMu.Unlock()

@@ -78,3 +78,24 @@ func TestReadLineKeepsAShortHead(t *testing.T) {
 		t.Fatalf("tooLong %v, head %d bytes", tooLong, len(head))
 	}
 }
+
+// The limit is the line's own bytes, its \r\n aside, ended by a newline or
+// by the input.
+func TestReadLineLimitIsExact(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		long bool
+	}{
+		{strings.Repeat("a", 10) + "\r\n", false},
+		{strings.Repeat("a", 10) + "\n", false},
+		{strings.Repeat("a", 10), false},
+		{strings.Repeat("a", 11) + "\r\n", true},
+		{strings.Repeat("a", 11), true},
+	} {
+		rd := bufio.NewReaderSize(iotest.OneByteReader(strings.NewReader(tc.in)), 16)
+		line, _, tooLong, _ := readLine(rd, 10)
+		if tooLong != tc.long || (!tc.long && string(line) != strings.Repeat("a", 10)) {
+			t.Errorf("%q: tooLong %v, line %q", tc.in, tooLong, line)
+		}
+	}
+}

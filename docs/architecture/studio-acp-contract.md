@@ -414,9 +414,11 @@ notes each image, so a resumed or forked session has the note, not the
 image. A session the engine does not run itself refuses an image, and names
 a link rather than reading it.
 
-Any message over 16 MiB on one line is refused with its id
-(`-32602`, "the message is over the 16 MiB a line may hold") and the
-connection goes on.
+Any message over 16 MiB on one line, its `\r\n` aside, is refused with its
+id (`-32602`, "the message is over the 16 MiB a line may hold") and the
+connection goes on. The id is looked for only as the top-level `"id"` within
+the message's first 64 KiB and 16 levels of nesting; a message whose id is
+not there is refused with a null id.
 
 Known limits, left for 1.2.10: a linked web page is read as the person's
 call, so a `web_fetch` ask (no `allowed_hosts`, a user `ask` rule, a managed
