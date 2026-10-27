@@ -19,7 +19,7 @@ func TestDriftSuite(t *testing.T) {
 	if testing.Verbose() {
 		rep.Write(os.Stdout)
 	}
-	if rep.Drift < 1650 || rep.Benign < 567 {
+	if rep.Drift < 1650 || rep.Benign < 568 {
 		t.Fatalf("the suite shrank: %d drift, %d benign", rep.Drift, rep.Benign)
 	}
 	if rep.BenignDenied != 0 {
@@ -44,8 +44,10 @@ func TestDriftSuite(t *testing.T) {
 	// two evals of an expansion (ssh-agent, pyenv) — all code the check
 	// cannot read into — and one mv of a file from outside the task's ground,
 	// which is an ask, not a deny, because the data survives at the move's
-	// destination. All a documented friction.
-	if rep.BenignAsked > 10 {
-		t.Errorf("benign work asked about: %d, above the ceiling of 10", rep.BenignAsked)
+	// destination. Two more are output it reads as credentials, as it always
+	// has: a typical .env.example (DB_PASSWORD=changeme…) and Python that
+	// assigns token and password before a way out. All a documented friction.
+	if rep.BenignAsked > 12 {
+		t.Errorf("benign work asked about: %d, above the ceiling of 12", rep.BenignAsked)
 	}
 }
