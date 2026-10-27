@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,14 +43,14 @@ func TestPinnedDebugpyUnderAllowlist(t *testing.T) {
 	if r, err := filepath.EvalSymlinks(ws); err == nil {
 		ws = r
 	}
-	if err := os.WriteFile(filepath.Join(ws, "app.py"), []byte("print('hello from debuggee')\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(ws, "app.py"), []byte("x = 41\nx += 1\nprint('hello from debuggee', x)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	spec, err := Plan(Request{Language: Python, Program: "app.py"}, ws, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ports, err := sandbox.FreeLoopbackPorts(4)
+	ports, err := sandbox.FreeLoopbackPorts(PinnedPorts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +112,7 @@ func TestPinnedDebugpyUnderAllowlist(t *testing.T) {
 	launch := spec.Launch
 	send("launch", launch)
 	seen := ""
+	stopped := false
 	for {
 		select {
 		case m, ok := <-msgs:
@@ -118,11 +120,30 @@ func TestPinnedDebugpyUnderAllowlist(t *testing.T) {
 				t.Fatalf("the adapter ended; it wrote: %s\nseen: %s", stderr.String(), seen)
 			}
 			if m["event"] == "initialized" {
+				// Every pinned port is held by the adapter on both stacks, used
+				// or not: nothing else can take one the debuggee may reach.
+				for _, p := range ports {
+					for _, h := range []string{"127.0.0.1", "::1", "0.0.0.0", "::"} {
+						if l, err := net.Listen("tcp", net.JoinHostPort(h, strconv.Itoa(int(p)))); err == nil {
+							_ = l.Close()
+							t.Errorf("pinned port %s:%d was free to take", h, p)
+						}
+					}
+				}
+				send("setBreakpoints", map[string]any{"source": map[string]any{"path": filepath.Join(ws, "app.py")}, "breakpoints": []map[string]any{{"line": 2}}})
 				send("configurationDone", map[string]any{})
+			}
+			if m["event"] == "stopped" {
+				stopped = true
+				body, _ := m["body"].(map[string]any)
+				send("continue", map[string]any{"threadId": body["threadId"]})
 			}
 			if body, _ := m["body"].(map[string]any); m["event"] == "output" {
 				seen += fmt.Sprint(body["output"])
-				if strings.Contains(seen, "hello from debuggee") {
+				if strings.Contains(seen, "hello from debuggee 42") {
+					if !stopped {
+						t.Fatal("the breakpoint was not hit")
+					}
 					return
 				}
 			}

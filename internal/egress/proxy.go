@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // Event is one decision, as the record keeps it: never a body, a header
@@ -163,39 +165,15 @@ func Start(opts Options) (*Proxy, error) {
 	return p, nil
 }
 
-// listenLoopback takes a random port on 127.0.0.1 and, when asked, the same on
-// [::1]; a port whose IPv6 half is taken is dropped and retried.
+// listenLoopback takes a port on 127.0.0.1 and, when asked, the same on
+// [::1]: on a Mac one of Abhed's reserved range (loopport), which a debug
+// session's loopback never reaches; elsewhere any free one.
 func listenLoopback(v6 bool) ([]net.Listener, error) {
-	for range 20 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return nil, fmt.Errorf("egress: listening on loopback: %w", err)
-		}
-		if !v6 {
-			return []net.Listener{ln}, nil
-		}
-		port := ln.Addr().(*net.TCPAddr).Port
-		ln6, err := net.Listen("tcp", net.JoinHostPort("::1", fmt.Sprint(port)))
-		if err == nil {
-			return []net.Listener{ln, ln6}, nil
-		}
-		_ = ln.Close()
-		if !ipv6Loopback() {
-			// No IPv6 loopback here: no process can hold [::1] either.
-			return listenLoopback(false)
-		}
-	}
-	return nil, errors.New("egress: no loopback port free on both 127.0.0.1 and [::1]")
-}
-
-// ipv6Loopback reports whether [::1] can be listened on at all.
-func ipv6Loopback() bool {
-	ln, err := net.Listen("tcp", "[::1]:0")
+	lns, err := loopport.ListenBoth(v6)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("egress: listening on loopback: %w", err)
 	}
-	_ = ln.Close()
-	return true
+	return lns, nil
 }
 
 // ListenUnix serves the proxy on a unix socket as well, for a relay inside

@@ -70,19 +70,40 @@ answer are recorded with the launch, a kept choice as `debug.setup`
 On macOS only the debug command gets loopback, and only what its debugger
 needs; the agent's commands keep the network closed:
 
+- **Abhed's reserved port range.** Every Abhed listener on a Mac (the
+  egress proxies and each command's own proxy port, port forwards, the
+  sign-in callback) takes its port from one range, 47600 to 47855 unless
+  `ABHED_LOOPBACK_PORTS` names another (`lo-hi`, at least 16 ports above
+  1024; give every Abhed process on the Mac the same one). A listener that
+  finds the range full fails, saying so; it never takes another port. The
+  rule for a debug command is: never the reserved range. So no Abhed
+  proxy or listener of any engine on the Mac is reachable from it,
+  whatever the session's network. Abhed releases before 1.2.9 running on
+  the same Mac do not use the range.
 - **Python:** debugpy's adapter is run with the ports it listens on chosen
-  by the engine before it starts, and the command's Seatbelt profile lets
-  it connect to those loopback ports alone (and listen on loopback). No
-  other local port, and so no egress proxy, is reachable, so this works
-  under the egress allowlist and with package registries opened too.
+  by the engine before it starts, outside the reserved range, five of them
+  (its listener, its launcher's, and one for each of three restarts of the
+  session). The adapter binds all of them on every address (the wildcard
+  and loopback, IPv4 and IPv6) before anything else and holds them until it
+  exits, so nothing else, the program included, can take one or listen on
+  it where the network reaches; the command's Seatbelt profile lets it
+  connect to, bind and accept on those ports alone.
 - **Go:** Delve runs natively (it needs the Xcode command line tools'
   debugger), bridged by the engine's own program through a socket folder
-  the engine makes for the session alone. Delve picks its own loopback
-  ports, so the command may connect to any loopback port; that would also
-  reach other commands' egress proxies, so Go on this Mac is refused while
-  the session's commands go out through the proxy (an allowlist, or
-  package registries opened), with steps: use the container tier, or a
-  workspace whose registries are not opened.
+  the engine makes for the session in `~/.abhed/run`, which every other
+  command's profile denies. Delve picks its own loopback ports, which the
+  system hands out (49152 to 65535, `net.inet.ip.portrange`), so the
+  command may connect to each of those but the reserved range, one
+  Seatbelt rule per port: Seatbelt does not reliably let a later deny carve
+  one port out of `localhost:*`, so the rules never use it. Starting such a
+  command takes a few seconds while Seatbelt reads them. It may listen on
+  any loopback port, and Seatbelt's "localhost" lets a listener take the
+  wildcard address too, which other machines on the network can reach: the
+  consent says so.
+- A launch the sandbox would still refuse (every loopback port while the
+  session's commands go out through the egress proxy) is a problem with
+  steps, and an "Allow for this workspace" given for it is not kept: the
+  agreement is kept only once the session it was given for has started.
 
 Studio's "use the container tier" step never lowers a workspace: one
 already at `container` or `vm` is left as it is (`already: true`).

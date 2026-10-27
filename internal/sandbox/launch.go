@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
-	"net"
+	"errors"
 	"os/exec"
 	"sync"
+
+	"github.com/zybuu-ai/abhed/internal/loopport"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
@@ -71,31 +73,51 @@ func readOnlyPathsOf(ctx context.Context) []string {
 type loopbackKey struct{}
 
 // loopback is what of the Mac's loopback one command may use: listening on
-// any port, and connecting to ports, all of them (wide) or the ones named.
+// any port, and connecting to ports: all of them (wide), all but Abhed's
+// reserved range (loopport), or the ones named.
 type loopback struct {
-	on    bool
-	ports []uint16
+	on        bool
+	ports     []uint16
+	ephemeral bool
 }
 
 // wide reports loopback open to every port: the Mac's local services, and
 // the egress proxies of other calls and sessions.
-func (l loopback) wide() bool { return l.on && len(l.ports) == 0 }
+func (l loopback) wide() bool { return l.on && len(l.ports) == 0 && !l.ephemeral }
+
+// ErrLoopbackUnderEgress refuses a command every loopback port is opened to
+// while commands go out through the egress proxy, whose ports it would reach.
+var ErrLoopbackUnderEgress = errors.New("sandbox: the command was not run: every loopback port is not opened while commands go out through Abhed's egress proxy")
 
 // WithLoopback lets one command on the macOS process tier, whose network is
 // otherwise closed, listen on loopback and connect to any loopback port,
 // and nothing beyond. The loopback is the Mac's own, so its local services
-// are reachable too, and so are other calls' egress proxies: refused under
-// the egress allowlist (WithLoopbackPorts is not). The engine sets it only
-// after the person agreed to it.
+// are reachable too, and so are other calls' egress proxies: refused while
+// commands go out through the egress proxy (ErrLoopbackUnderEgress). The
+// engine sets it only after the person agreed to it.
 func WithLoopback(ctx context.Context) context.Context {
 	return context.WithValue(ctx, loopbackKey{}, loopback{on: true})
 }
 
+// WithLoopbackEphemeral lets one command on the macOS process tier listen
+// on loopback and connect to the loopback ports the system hands out to
+// listeners that ask for none (loopport.Ephemeral), never one of Abhed's
+// reserved range (loopport), where every Abhed listener on a Mac is: no
+// egress proxy, call port or port forward of any engine is reachable, so it
+// holds while commands go out through the egress proxy. It is what a
+// debugger that picks its own ports needs (Delve's link to macOS's
+// debugserver). The rule was never every loopback port; it is never the
+// reserved range. Its profile has a rule per port, so it is written to the
+// command's own folder (WithPrivateDirs), which it must have.
+func WithLoopbackEphemeral(ctx context.Context) context.Context {
+	return context.WithValue(ctx, loopbackKey{}, loopback{on: true, ephemeral: true})
+}
+
 // WithLoopbackPorts lets one command on the macOS process tier listen on
 // loopback, and connect to these loopback ports alone: the ports a debug
-// adapter and the program it debugs talk over, chosen before it starts. No
-// other local service, nor any egress proxy, is reachable, so it holds under
-// the egress allowlist too.
+// adapter and the program it debugs talk over, chosen outside the reserved
+// range before it starts, which the command holds itself for its whole
+// life, on 127.0.0.1 and [::1].
 func WithLoopbackPorts(ctx context.Context, ports ...uint16) context.Context {
 	return context.WithValue(ctx, loopbackKey{}, loopback{on: true, ports: append([]uint16(nil), ports...)})
 }
@@ -105,23 +127,17 @@ func loopbackOf(ctx context.Context) loopback {
 	return l
 }
 
-// FreeLoopbackPorts are n loopback ports nothing listens on now, for a
-// command that will listen on them (WithLoopbackPorts).
+// FreeLoopbackPorts are n loopback ports nothing listens on now, on
+// 127.0.0.1 or [::1], outside Abhed's reserved range, for a command that
+// will listen on them (WithLoopbackPorts).
 func FreeLoopbackPorts(n int) ([]uint16, error) {
-	var lns []net.Listener
-	defer func() {
-		for _, l := range lns {
-			_ = l.Close()
-		}
-	}()
-	var out []uint16
-	for range n {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return nil, err
-		}
-		lns = append(lns, l)
-		out = append(out, uint16(l.Addr().(*net.TCPAddr).Port)) // #nosec G115 -- a TCP port
+	ps, err := loopport.FreeOutside(n)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint16, len(ps))
+	for i, p := range ps {
+		out[i] = uint16(p) // #nosec G115 -- a TCP port
 	}
 	return out, nil
 }

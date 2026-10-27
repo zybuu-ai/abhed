@@ -8,6 +8,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.8
 
+- On a Mac, Abhed's own loopback listeners (egress proxies, each command's
+  proxy port, port forwards, the sign-in callback) now take their ports from
+  47600 to 47855 only, and fail, saying so, when that range is full. If
+  another program on the Mac uses those ports, set `ABHED_LOOPBACK_PORTS`
+  to another range (`lo-hi`, at least 16 ports above 1024), the same for
+  every Abhed process there.
 - A confined MCP stdio server whose program or script sits directly in a
   top-level folder of your home (`~/Downloads`, `~/bin`, `~/Projects`),
   in `~/.local/bin` or `~/.cargo/bin`, now sees only that file, where 1.2.8
@@ -904,15 +910,24 @@ All notable changes to Abhed are recorded here. The format follows
   model that reads it.
 - Next-edit suggestions no longer offer an edit that changes only
   whitespace at a line's end, which left the line looking the same.
-- Debugging on this Mac could not start: under the egress allowlist, which
-  a session gets once package registries are opened, loopback was refused
-  to the debug command. Python's debug adapter now listens on ports the
-  engine chose before it starts, and only those are opened to it, so no
-  egress proxy is reachable and Python debugs under the allowlist. Go
-  debugs on the macOS process tier with a Delve built for macOS, offered
-  and installed with Go like any debugger; a Go launch without Delve offers
-  the install before anything is judged. Go on this Mac stays refused,
-  with steps, while the session goes out through the egress proxy.
+- Debugging on this Mac could not start: every default session's commands
+  go out through Abhed's egress proxy (the allowlist, or the package-registry
+  proxy every session has unless `sandbox.toolchains_registries` is off),
+  and loopback was refused to the debug command there. Every Abhed listener
+  on a Mac (egress proxies, each command's proxy port, port forwards, the
+  sign-in callback) now takes its port from a reserved range, 47600 to
+  47855 or `ABHED_LOOPBACK_PORTS`, and a debug command may never reach that
+  range: the rule was "never every loopback port", it is now "never the
+  reserved range". Python's adapter listens on ports chosen outside the
+  range before it starts, which it holds on every address for its whole
+  life, and only those are opened to it; Go may reach each port the system
+  hands out to listeners (49152 to 65535) but the range, one rule each, and
+  a Go program being debugged can listen where the network reaches (the
+  consent says so). Both debug on the macOS process tier in the default
+  configuration. Delve is built for macOS too, offered and installed with
+  Go like any debugger; a Go launch without Delve offers the install before
+  anything is judged. A workspace agreement to debug on this Mac is kept
+  only once a session has started.
 - Language servers: a missing server's problem carries the one-click
   toolchain install (`install: {language, lsp: true}`) and plain steps, and
   the engine tells Studio when a toolchain or server was installed or

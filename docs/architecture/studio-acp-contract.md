@@ -1224,17 +1224,21 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   `reject_once`.
   `_abhed/debug/forget-consent {sessionId}` → `{}` forgets it (recorded,
   `process_tier_forgotten`). On macOS the debug command alone gets loopback,
-  and nothing else; `debug.launched` carries `loopback: true`. Python:
-  debugpy's adapter listens on ports the engine chose before it starts
-  (`ABHED_DAP_PORTS`, removed before the program runs), and the command may
-  listen on loopback and connect to those ports alone, so no egress proxy is
-  reachable and it works under the allowlist. Go: Delve picks its own
-  ports, so the command may connect to any loopback port; that is refused
-  while the session's commands go out through the egress proxy (an
-  allowlist or opened registries), with `kind: "tier-unsupported"` and
-  steps. Go there is bridged by the engine's own program through a socket
-  folder the engine makes for the session, the only place it may make or
-  reach a unix socket. Go without Delve where commands run is refused
+  never Abhed's reserved port range (47600-47855, or `ABHED_LOOPBACK_PORTS`),
+  where every Abhed listener on a Mac takes its port; `debug.launched`
+  carries `loopback: true`. Python: debugpy's adapter listens on five ports
+  the engine chose outside the range before it starts (`ABHED_DAP_PORTS`,
+  removed before the program runs), binds them all on every address first
+  and holds them, and the command may connect, bind and accept on those
+  alone. Go: the command may connect to each port the system hands out to
+  listeners (`net.inet.ip.portrange`) but the range, one Seatbelt rule
+  each (the profile then goes in the session's own folder), and may listen
+  on any loopback port, which Seatbelt lets take the wildcard address. Both work whatever the
+  session's network. Go there is bridged by the engine's own program
+  through a socket folder the engine makes for the session in
+  `~/.abhed/run`, the only place it may make or reach a unix socket. A
+  launch the sandbox still refuses is `kind: "tier-unsupported"` with
+  steps, and a workspace agreement given for it is not kept. Go without Delve where commands run is refused
   before anything is judged, with `kind: "adapter-missing"` and
   `problem.install: {language: "go", debugger: true}` (Python's missing
   debugpy likewise, `{language: "python", debugger: true}`): the

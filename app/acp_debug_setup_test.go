@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/debugrelay"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -58,7 +61,7 @@ func TestDebugContainerSetupProblem(t *testing.T) {
 		ids = append(ids, s.ID)
 	}
 	if strings.Join(ids, ",") != "install-podman,machine-init,machine-start,use-container-tier" || d.Setup.Steps[0].Command != "brew install podman" ||
-		!d.Setup.ProcessTier.Available || d.Setup.ProcessTier.Consented || !strings.Contains(d.Setup.ProcessTier.Consent, "localhost ports") {
+		!d.Setup.ProcessTier.Available || d.Setup.ProcessTier.Consented || !strings.Contains(d.Setup.ProcessTier.Consent, "loopback ports") {
 		t.Fatalf("setup %+v", d.Setup)
 	}
 	if !strings.Contains(strings.Join(d.Problem.Steps, "\n"), "processTier: true") {
@@ -109,7 +112,7 @@ func TestDebugProcessTierConsent(t *testing.T) {
 	})
 	launch := map[string]any{"sessionId": id, "language": "python", "program": "app.py", "processTier": true}
 	r.cl.refused(errPolicy, "_abhed/debug/launch", launch)
-	if len(reasons) != 1 || !strings.Contains(reasons[0], "localhost ports") || !strings.Contains(reasons[0], "step=workspace") || len(*asked) != 0 || debugConsented(r.ws) {
+	if len(reasons) != 1 || !strings.Contains(reasons[0], "loopback ports") || !strings.Contains(reasons[0], "step=workspace") || len(*asked) != 0 || debugConsented(r.ws) {
 		t.Fatalf("declined: asked %v, ran %v", reasons, *asked)
 	}
 	if strings.Join(options[0], ",") != "allow_once=Allow once,allow_always=Allow for this workspace,reject_once=Deny" {
@@ -251,18 +254,56 @@ func TestDebugProcessTierUnderAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.write("main.go", "package main\nfunc main() {}\n")
-	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "go", "program": ".", "processTier": true})
-	if m.Error == nil || !strings.Contains(m.Error.Message, "allowlist") || len(*asked) != 0 {
-		t.Fatalf("go: %+v, ran %v", m.Error, *asked)
-	}
+	old := lspProgramFinder
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(string) bool { return true } }
+	t.Cleanup(func() { lspProgramFinder = old })
+	// Go runs too: every loopback port but Abhed's reserved range.
 	var res struct {
 		DebugID string `json:"debugId"`
 	}
+	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "go", "program": ".", "processTier": true}, &res)
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "dlv dap") {
+		t.Fatalf("go ran %v", *asked)
+	}
+	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
 	r.cl.ok("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py", "processTier": true}, &res)
-	if len(*asked) != 1 || !strings.Contains((*asked)[0], "ABHED_DAP_PORTS=") || strings.Contains((*asked)[0], "exec python3 -m debugpy.adapter") {
+	if len(*asked) != 2 || !strings.Contains((*asked)[1], "ABHED_DAP_PORTS=") || strings.Count((*asked)[1], ",") < debugrelay.PinnedPorts-1 ||
+		strings.Contains((*asked)[1], "exec python3 -m debugpy.adapter") {
 		t.Fatalf("python ran %v", *asked)
 	}
 	r.cl.ok("_abhed/debug/stop", map[string]any{"debugId": res.DebugID}, nil)
+}
+
+// A launch the sandbox refuses to open loopback to is a problem with steps,
+// and "Allow for this workspace" keeps nothing for a session that never
+// started.
+func TestDebugConsentKeptOnlyWhenStarted(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the macOS process tier")
+	}
+	r, id, _ := setupRig(t, "")
+	debugCommand = func(_ tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
+		return &exec.Cmd{Err: sandbox.ErrLoopbackUnderEgress}
+	}
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		var p struct {
+			ToolCall struct {
+				ToolCallID string `json:"toolCallId"`
+			} `json:"toolCall"`
+		}
+		_ = json.Unmarshal(params, &p)
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "always:" + p.ToolCall.ToolCallID}}
+	})
+	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "python", "program": "app.py", "processTier": true})
+	if m.Error == nil || !strings.Contains(fmt.Sprint(m.Error.Data), "tier-unsupported") || !strings.Contains(m.Error.Message, "egress proxy") {
+		t.Fatalf("launch %+v", m.Error)
+	}
+	if debugConsented(r.ws) {
+		t.Fatal("a consent was kept for a session that never started")
+	}
+	if setups, _ := r.recorded(id, agent.EvDebugSetup); len(setups) != 0 {
+		t.Fatalf("recorded %v", setups)
+	}
 }
 
 // Delve missing where commands run: the install is offered, as a structured

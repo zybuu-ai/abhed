@@ -80,9 +80,9 @@ func debugLoopbackWhyOn(goos string) string {
 		return "debug on this machine's process sandbox, whose network is open, instead of a container: while it is being debugged, the program " +
 			"can reach services on this machine (localhost ports) and the network, as this session's commands can, and local services can reach it." + keep
 	}
-	return "debug on this machine's process sandbox instead of a container: while it is being debugged, the program can listen on this Mac's " +
-		"loopback (localhost) ports, where other programs on this Mac can reach it, and the debugger reaches it there; a Go program, whose debugger " +
-		"picks its own ports, can also reach services on this Mac (localhost ports). Nothing else on the network." + keep
+	return "debug on this machine's process sandbox instead of a container: while it is being debugged, a Python program and its debugger talk " +
+		"over loopback ports Abhed picks and holds; a Go program, whose debugger picks its own ports, can also reach services on this Mac that use " +
+		"the ports the system hands out, and can listen on a port other machines on the network can reach. Nothing else on the network." + keep
 }
 
 // debugEngineProbe finds the container engine, Homebrew and a Mac's podman
