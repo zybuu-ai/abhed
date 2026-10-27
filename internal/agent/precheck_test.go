@@ -113,9 +113,10 @@ func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 	}
 	turns := []scriptedTurn{
 		{calls: []model.ToolCall{call("read", map[string]string{"path": p})}},
-		{calls: []model.ToolCall{edit("var y = 1", "var y = 2")}},
-		{calls: []model.ToolCall{edit("var x = 1", "var x = 2")}},
-		{calls: []model.ToolCall{edit("var x = 2", "var x = 3")}},
+		{calls: []model.ToolCall{edit("var z = 1", "var x = 2")}},     // fails: no such text
+		{calls: []model.ToolCall{edit("var x = 7", "\tvar x  =  2")}}, // fails, new text the same once whitespace is aside: carried
+		{calls: []model.ToolCall{edit("var x = 7", "var x = 5")}},     // fails, other new text: asked again
+		{calls: []model.ToolCall{edit("var x = 1", "var x = 3")}},     // asked again: the last approval went to a failure, and this text differs
 		{text: "done"},
 	}
 	l, store := harnessIn(t, dir, turns, policy.ModeDefault, true)
@@ -124,9 +125,10 @@ func TestFailedEditDoesNotSpendItsApproval(t *testing.T) {
 	if _, err := l.Run(context.Background(), "change x"); err != nil {
 		t.Fatal(err)
 	}
-	// The failed edit's approval answers the second; the third is asked again.
-	if counter.asked != 2 {
-		t.Fatalf("asked %d times; want 2", counter.asked)
+	// The first failure's approval answers the second; the third and fourth,
+	// with other text, are asked again.
+	if counter.asked != 3 {
+		t.Fatalf("asked %d times; want 3", counter.asked)
 	}
 	if got, _ := os.ReadFile(p); string(got) != "package a\n\nvar x = 3\n" {
 		t.Fatalf("file %q", got)

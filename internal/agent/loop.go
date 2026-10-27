@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -364,6 +365,10 @@ type Loop struct {
 	carryMu       sync.Mutex
 	reviewedCalls map[string]bool
 	carried       map[string]string
+	// previewWrites makes every edit and write an ask, for this run.
+	previewWrites atomic.Bool
+	// pendingImages are the images AttachImages gave the next message.
+	pendingImages []model.ContentBlock
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
 	// is the detail the last run's end recorded.
 	stuckDetail, lastDetail string
@@ -719,6 +724,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
+	imgs := l.takeImages() // this message's alone, sent or not
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
 	delivered, err := l.deliverQueuedCount()
@@ -753,11 +759,36 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
 		return TermError, err
 	}
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	um := model.Message{Role: model.RoleUser, Content: text}
+	if len(imgs) > 0 {
+		// The images reach the model with this message only; the record keeps what the text says of them.
+		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: text}}, imgs...)
+	}
+	l.messages = append(l.messages, um)
 	l.noteSaid(text, false)
 	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
+}
+
+// PreviewWrites turns on or off asking about every edit and write, whatever
+// the mode allows, so the person sees each diff before it is written.
+func (l *Loop) PreviewWrites(on bool) { l.previewWrites.Store(on) }
+
+// AttachImages gives the next RunMessage's message these images, for a
+// model that reads them. They are held in memory only, never recorded.
+func (l *Loop) AttachImages(imgs []model.ContentBlock) {
+	l.steerMu.Lock()
+	l.pendingImages = imgs
+	l.steerMu.Unlock()
+}
+
+func (l *Loop) takeImages() []model.ContentBlock {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	imgs := l.pendingImages
+	l.pendingImages = nil
+	return imgs
 }
 
 // EndRefused records the end of a run a hook refused before it began, for a
@@ -804,13 +835,17 @@ func (l *Loop) startMessage() {
 	l.carryMu.Unlock()
 }
 
-// carryKey names the file an edit or write is aimed at, "" for other calls.
+// carryKey names an edit or write by the file it is aimed at and the text it
+// puts there, its whitespace set aside, "" for other calls: a retry that
+// only fixes how it finds its place keeps the key, other content does not.
 func (l *Loop) carryKey(call model.ToolCall) string {
 	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
 		return ""
 	}
 	var a struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		NewString string `json:"new_string"`
+		Content   string `json:"content"`
 	}
 	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
 		return ""
@@ -819,12 +854,17 @@ func (l *Loop) carryKey(call model.ToolCall) string {
 	if err != nil {
 		return ""
 	}
-	return call.Name + "\x00" + path
+	text := a.NewString
+	if call.Name == "write" {
+		text = a.Content
+	}
+	return call.Name + "\x00" + path + "\x00" + strings.Join(strings.Fields(text), " ")
 }
 
 // takeCarried is the call whose approval this one takes, once: an earlier
-// attempt at the same file, in this message, that a person approved and that
-// failed without changing anything. "" when there is none.
+// attempt at the same file with the same new text (whitespace aside), in this
+// message, that a person approved and that failed without changing anything.
+// "" when there is none.
 func (l *Loop) takeCarried(call model.ToolCall) string {
 	key := l.carryKey(call)
 	if key == "" {
@@ -1614,6 +1654,12 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
 	decision = l.filesJudged(tool, call, decision)
+	// A person previewing writes sees each edit and write before it lands: an
+	// allow becomes an ask, a deny stays a deny.
+	if decision.Decision == policy.Allow && (call.Name == "edit" || call.Name == "write") && l.previewWrites.Load() {
+		decision = policy.Result{Decision: policy.Ask, Step: "preview",
+			Reason: "the person asked to preview each change before it is written"}
+	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
 	// deny. An allowed write the tool would refuse (into .abhed in

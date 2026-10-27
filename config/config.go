@@ -615,6 +615,27 @@ type ModelConfig struct {
 	// Completion names the provider an editor's inline completions use;
 	// none turns them off.
 	Completion string `json:"completion,omitempty"`
+	// NextEdit and Commit name the providers an editor's next-edit
+	// suggestions and commit messages use; unset, they use Completion.
+	NextEdit string `json:"next_edit,omitempty"`
+	Commit   string `json:"commit,omitempty"`
+}
+
+// EditorModel is the provider an editor feature uses and the key that named
+// it: "complete", "next_edit" or "commit", the last two falling back to
+// model.completion.
+func (c Config) EditorModel(feature string) (name, key string) {
+	switch feature {
+	case "next_edit":
+		if c.Model.NextEdit != "" {
+			return c.Model.NextEdit, "model.next_edit"
+		}
+	case "commit":
+		if c.Model.Commit != "" {
+			return c.Model.Commit, "model.commit"
+		}
+	}
+	return c.Model.Completion, "model.completion"
 }
 
 // CompletionConfig bounds editor inline completions. A layer below the
@@ -627,6 +648,13 @@ type CompletionConfig struct {
 	// LocalOnly keeps completions to a provider on this machine: the code
 	// around the cursor goes nowhere else.
 	LocalOnly bool `json:"local_only,omitempty"`
+}
+
+// EditorAIOn reports whether a feature has a model and completion.enabled
+// has not turned the editor's model features off.
+func (c Config) EditorAIOn(feature string) bool {
+	name, _ := c.EditorModel(feature)
+	return name != "" && (c.Completion.Enabled == nil || *c.Completion.Enabled)
 }
 
 // CompletionsOn reports whether completions are configured and not turned off.
@@ -2073,9 +2101,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
 	}
-	if n := c.Model.Completion; n != "" {
-		if _, ok := c.Model.Providers[n]; !ok {
-			return fmt.Errorf("model.completion names %q, which is not one of model.providers", n)
+	for key, n := range map[string]string{"model.completion": c.Model.Completion, "model.next_edit": c.Model.NextEdit, "model.commit": c.Model.Commit} {
+		if _, ok := c.Model.Providers[n]; n != "" && !ok {
+			return fmt.Errorf("%s names %q, which is not one of model.providers", key, n)
 		}
 	}
 	switch c.Tools.BashCheckpoints {

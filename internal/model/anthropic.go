@@ -240,6 +240,8 @@ func (c *Anthropic) buildRequest(req Request) anthropicRequest {
 		}
 	}
 
+	markHistory(msgs)
+
 	var system []anthropicBlock
 	if req.System != "" {
 		// The marker on the last system block is what makes the stable prefix
@@ -294,6 +296,29 @@ func (c *Anthropic) buildRequest(req Request) anthropicRequest {
 		out.Thinking = &anthropicThinking{Type: "adaptive"}
 	}
 	return out
+}
+
+// historyMarks is how many of the conversation's last user turns carry a
+// cache marker; with the system block's that is three of the four allowed.
+const historyMarks = 2
+
+// markHistory puts a cache marker on the last block of the last user turns,
+// so a long session reads its history from the cache instead of paying for
+// it again each turn: the newest marker writes the cache, the one before it
+// is where the previous request's write is read back.
+func markHistory(msgs []anthropicMessage) {
+	marked := 0
+	for i := len(msgs) - 1; i >= 0 && marked < historyMarks; i-- {
+		if msgs[i].Role != "user" || len(msgs[i].Content) == 0 {
+			continue
+		}
+		b := &msgs[i].Content[len(msgs[i].Content)-1]
+		if b.Type == "text" && strings.TrimSpace(b.Text) == "" {
+			continue // an empty text block may not carry a marker
+		}
+		b.CacheControl = &anthropicCache{Type: "ephemeral"}
+		marked++
+	}
 }
 
 // ---------------------------------------------------------------- streaming

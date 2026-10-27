@@ -557,3 +557,50 @@ func TestStudioWorkspaceDefaultMode(t *testing.T) {
 		t.Fatalf("an untrusted workspace widened the start: %s", got)
 	}
 }
+
+// §5.5a a prompt with previewWrites puts each edit to the person with its
+// diff even where the mode allows edits; rejected, nothing is written.
+func TestStudioPreviewWrites(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"mode":"accept-edits"}`)
+	file := r.write("a.txt", "one\ntwo\n")
+	script := func() {
+		r.model.script(callTool("c1", "read", map[string]any{"path": file}),
+			callTool("c2", "edit", map[string]any{"path": file, "old_string": "two", "new_string": "TWO"}), say("done"))
+	}
+	answer := "reject_once"
+	var asked []json.RawMessage
+	r.cl.answering(func(method string, params json.RawMessage) any {
+		if method == "session/request_permission" {
+			asked = append(asked, params)
+			return chosen(params, answer)
+		}
+		return map[string]any{}
+	})
+	id := r.open()
+	prompt := func() {
+		r.cl.ok("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "edit it"}},
+			"_meta": map[string]any{acpMetaKey: map[string]any{"previewWrites": true}}}, nil)
+	}
+	script()
+	prompt()
+	if len(asked) != 1 || !strings.Contains(string(asked[0]), `"type":"diff"`) || r.read("a.txt") != "one\ntwo\n" {
+		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	}
+	denied, _ := r.recorded(id, agent.EvActionDenied)
+	if len(denied) != 1 || denied[0]["step"] != "preview" {
+		t.Fatalf("denied %v", denied)
+	}
+	answer = "allow_once"
+	script()
+	prompt()
+	if len(asked) != 2 || r.read("a.txt") != "one\nTWO\n" {
+		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	}
+	// Without the flag the mode allows it again, unasked.
+	r.model.script(callTool("c3", "read", map[string]any{"path": file}),
+		callTool("c4", "edit", map[string]any{"path": file, "old_string": "TWO", "new_string": "2"}), say("done"))
+	r.prompt(id, "again")
+	if len(asked) != 2 || r.read("a.txt") != "one\n2\n" {
+		t.Fatalf("asked %d times; file %q", len(asked), r.read("a.txt"))
+	}
+}

@@ -79,7 +79,7 @@ func (c *acpConn) managed() bool {
 func (c *acpConn) initialize(msg rpcMessage) {
 	caps := map[string]any{
 		"loadSession":        c.durable(),
-		"promptCapabilities": map[string]any{"image": false, "audio": false, "embeddedContext": true},
+		"promptCapabilities": map[string]any{"image": true, "audio": false, "embeddedContext": true},
 		"mcpCapabilities":    map[string]any{"http": false, "sse": false},
 		"_meta":              map[string]any{acpMetaKey: c.agentMeta()},
 	}

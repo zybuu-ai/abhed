@@ -162,10 +162,22 @@ relax them.
 
 ### 3.1a Attached context
 
-`session/prompt` takes `text`, `resource_link` and `resource` blocks
-(`embeddedContext: true`). A `text` block is the person's own words. A
-`resource_link` names a file the agent reads through its policy-checked
-tools. A `resource` is text the person attached in the editor (a selection,
+`session/prompt` takes `text`, `resource_link`, `resource` and `image`
+blocks (`embeddedContext: true`, `image: true`). A `text` block is the
+person's own words. A `resource_link` is read by the engine before the
+prompt runs, as an `@` mention is, as the person's own call through the
+session's policy and recorded so:
+
+- a `file:` URI names a file (with `#Lm-Ln`, those lines; a symbol is sent
+  as its file and range) or a folder, given as a bounded listing;
+- an `http:` or `https:` URI is read with `web_fetch` as the person's call,
+  under its allowed hosts, when the managed configuration turns `web_fetch`
+  on; otherwise the prompt is refused and says so;
+- any other URI is passed as a note naming it.
+
+A link that may not be read refuses the whole prompt (`-32001`), each reason
+said. Links share the prompt's attachment cap with `resource` blocks. A
+`resource` is text the person attached in the editor (a selection,
 a symbol, a problem the editor reports). The engine does not read the text
 itself, since the person picked it, but a `file:` URI is put to the `read`
 rules and the `.abhed` check as an `@` mention is: one that may not be read
@@ -390,8 +402,15 @@ answer, and the checks could not verify it. `features` lists `answer-verdicts`.
 
 ### 3.5 Images
 
-`promptCapabilities.image` stays `false` while the engine's messages are text
-only. Studio never offers an image attachment while it is false.
+`promptCapabilities.image` is `true`. An `image` block (`mimeType` png,
+jpeg, gif or webp; `data` base64; at most four, 5 MB each) goes to the model
+with the prompt when the session's model reads images (a provider's
+`extra.vision`, or a type that always does); otherwise the prompt is refused
+(`-32001`, "the model … does not read images"). Images are held in memory for
+the conversation only, never in the record: the record holds an
+`input.mention {path: "image:<type>", sha256, bytes}` and the prompt's text
+notes each image, so a resumed or forked session has the note, not the
+image.
 
 ---
 
@@ -734,6 +753,18 @@ interface PolicyView {
 asks and puts it in the ask's `content` as spec `{type: "diff", path, oldText,
 newText}` and in `locations`. For files over 256 KiB only the changed hunks
 are sent, with `meta.hunksOnly: true`.
+
+### 5.5a Previewing writes
+
+A `session/prompt` whose `_meta["zybuu.ai/abhed"]` carries
+`previewWrites: true` previews every `edit` and `write` of that prompt: a
+call the mode or a rule would allow is asked instead (step `preview`), with
+its diff as §5.5 gives it, and nothing is written until the person accepts.
+Rejected, it is denied by the reviewer like any ask; accepted, it is
+approved and written. A deny stays a deny. It covers the agent's own `edit`
+and `write` only (not `bash`, nor a subagent's calls), and ends with the
+prompt. An inline edit on a selection is a prompt with the selection
+attached (§3.1a) and this flag.
 
 ### 5.6 Workspace trust
 
@@ -1376,6 +1407,56 @@ _abhed/complete/cancel { sessionId } → {}
   it cannot be recorded, nothing is sent) and `completion.summary` when
   the session closes, which counts `superseded` (replaced before sending)
   apart from `cancelled` (after); single completions are not recorded.
+
+### 7.11 Next-edit suggestions
+
+```ts
+_abhed/nextEdit { sessionId, uri, cursor: { line, character },
+                  window: { startLine: number, text: string },   // the document's lines around the cursor
+                  recentEdits?: { uri, range: Range, oldText: string, newText: string }[],
+                  language?: string, seq?: number }
+  → { edits: { uri, range: Range, newText: string }[], disabled?: string, refused?: string,
+      limited?: string, cancelled?: string, dropped?: string }
+```
+
+- Listed under the `nextEdit` feature. The model is `model.next_edit`, or
+  `model.completion` when unset, under the same `completion.enabled`,
+  `completion.local_only`, managed pin and key rules as §7.10.
+- The engine sends at most 80 lines and 8 KiB of `window` and five recent
+  edits (1 KiB of text each), each cleaned of stored secrets and key-shaped
+  text; recent edits in a file it may not send are left out. The document
+  itself must be sendable (§7.10), or the request is `refused`.
+- The model is asked, in a chat turn, for the window as it would read after
+  the next edit; the engine diffs that against what it sent and answers with
+  edits by whole lines in `uri` only. A changed line that held a withheld
+  secret, a suggestion carrying one, prose, or a rewrite of more than half the
+  window is `dropped` with the reason.
+- Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
+  `next_edit.enabled` before the first request and `next_edit.summary` when
+  the session closes.
+
+### 7.12 Commit messages
+
+```ts
+_abhed/commitMessage { sessionId } → { message: string, excluded?: number, truncated?: boolean,
+                                       disabled?: string, empty?: string, dropped?: string, limited?: string }
+```
+
+- Listed under the `commitMessage` feature. Studio sends no diff: the engine
+  reads `git diff --cached --relative` in the session's root itself, through
+  the confined git (no external diff, no textconv, no filter or merge driver,
+  inside the sandbox where one is registered).
+- A staged file outside the roots, one a read rule denies, one that looks
+  like keys, or Abhed's state is left out (`excluded` counts them). The rest
+  is cleaned of stored secrets and key-shaped text and cut to 32 KiB
+  (`truncated`).
+- The model is `model.commit`, or `model.completion` when unset, under the
+  same `completion.enabled`, `completion.local_only`, managed pin and key
+  rules as §7.10, each request sent once.
+- Recorded as `commit_message.requested` before the diff goes (if it cannot
+  be recorded, nothing is sent) and `commit_message.generated` with the
+  outcome. A message that carries a secret is `dropped`; nothing staged, or
+  only files that may not be read, is `empty`.
 
 ## 8. Health, setup and memory
 

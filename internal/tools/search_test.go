@@ -218,3 +218,21 @@ func TestSearchSkipsWorktrees(t *testing.T) {
 		}
 	}
 }
+
+// A glob in grep's path is split into its folder and a glob below it, held
+// to the workspace like any path; a glob in both path and glob gets a hint.
+func TestGrepTakesAGlobInPath(t *testing.T) {
+	s, dir := seedRepo(t)
+	for _, p := range []string{"pkg/**/*.go", filepath.Join(dir, "pkg", "**", "*.go"), "**/auth*.go"} {
+		res := run(t, Grep{}, s, grepArgs{Pattern: "package auth", Path: p})
+		if res.IsError || !strings.Contains(res.Content, "auth.go") || strings.Contains(res.Content, "main.go") {
+			t.Fatalf("%s: %s", p, res.Content)
+		}
+	}
+	if res := run(t, Grep{}, s, grepArgs{Pattern: "x", Path: "../**/*.go"}); !res.IsError {
+		t.Fatalf("a glob out of the workspace was searched: %s", res.Content)
+	}
+	if res := run(t, Grep{}, s, grepArgs{Pattern: "x", Path: "pkg/*.go", Glob: "*.ts"}); !res.IsError || !strings.Contains(res.Content, "glob is set too") {
+		t.Fatalf("%s", res.Content)
+	}
+}

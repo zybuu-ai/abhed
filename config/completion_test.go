@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // A workspace file may only turn completions off or keep them local, and
 // cannot name the provider the code goes to.
@@ -42,5 +45,30 @@ func TestOnThisMachine(t *testing.T) {
 		if c.p.OnThisMachine() != c.want {
 			t.Errorf("%+v: %v", c.p, !c.want)
 		}
+	}
+}
+
+// next_edit and commit name their own providers or fall back to completion,
+// and completion.enabled false turns all three off.
+func TestEditorModels(t *testing.T) {
+	c := Config{Model: ModelConfig{Completion: "coder", Commit: "big"}}
+	for feature, want := range map[string][2]string{
+		"complete":  {"coder", "model.completion"},
+		"next_edit": {"coder", "model.completion"},
+		"commit":    {"big", "model.commit"},
+	} {
+		if name, key := c.EditorModel(feature); name != want[0] || key != want[1] || !c.EditorAIOn(feature) {
+			t.Errorf("%s: %s %s", feature, name, key)
+		}
+	}
+	off := false
+	c.Completion.Enabled = &off
+	if c.EditorAIOn("commit") || c.EditorAIOn("next_edit") {
+		t.Error("completion.enabled false left a feature on")
+	}
+	bad := Default()
+	bad.Model.NextEdit = "nope"
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "model.next_edit") {
+		t.Errorf("validate: %v", err)
 	}
 }

@@ -71,6 +71,31 @@ var heldAskWait = 30 * time.Minute
 // reviewLinger is how long a review window stays open after its last answer.
 var reviewLinger = 5 * time.Minute
 
+// previewWrites reads previewWrites from a prompt's _meta. Read loosely,
+// since it can only tighten what the prompt may do.
+func previewWrites(meta map[string]json.RawMessage) bool {
+	for _, key := range []string{acpMetaKey, acpLegacyMetaKey} {
+		var m struct {
+			PreviewWrites bool `json:"previewWrites"`
+		}
+		if json.Unmarshal(meta[key], &m) == nil && m.PreviewWrites {
+			return true
+		}
+	}
+	return false
+}
+
+// attachImages gives a session's next prompt its images, where the session can take them.
+func attachImages(a acpAgent, imgs []abhed.Image) error {
+	if ia, ok := a.(interface{ AttachImages([]abhed.Image) error }); ok {
+		return ia.AttachImages(imgs)
+	}
+	if len(imgs) > 0 {
+		return errors.New("this session cannot take images")
+	}
+	return nil
+}
+
 // newACPAgent builds a session. A variable so tests can replace it.
 var newACPAgent = func(ctx context.Context, opts abhed.Options) (acpAgent, error) {
 	return abhed.New(ctx, opts)
@@ -949,8 +974,6 @@ func promptText(blocks []json.RawMessage) (said, attachedText string, mentions [
 			room = max(0, room-int(m.Bytes))
 			attached = append(attached, block)
 			mentions = append(mentions, m)
-		case "resource_link":
-			fmt.Fprintf(&b, "\n\n(See %s%s)", blk.Name, map[bool]string{true: " at " + blk.URI, false: ""}[blk.URI != ""])
 		}
 	}
 	if len(attached) > 0 {
@@ -1047,8 +1070,9 @@ var lineFragment = regexp.MustCompile(`^L(\d+)-L(\d+)$`)
 
 func (c *acpConn) prompt(msg rpcMessage) {
 	var p struct {
-		SessionID string            `json:"sessionId"`
-		Prompt    []json.RawMessage `json:"prompt"`
+		SessionID string                     `json:"sessionId"`
+		Prompt    []json.RawMessage          `json:"prompt"`
+		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	s := c.session(p.SessionID)
@@ -1105,6 +1129,22 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", why))
 		return
 	}
+	// Links and images are read now, and refuse the prompt whole if one cannot be.
+	used := 0
+	for _, m := range mentions {
+		used += int(m.Bytes)
+	}
+	links, err := c.linkedAttachments(ctx, s, p.Prompt, mentionMaxBytes-used)
+	if err == nil && links.why != "" {
+		err = errors.New(links.why)
+	}
+	if err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	mentions = append(mentions, links.mentions...)
+	attached += links.text
 	// What the person attached is recorded where it reaches the model.
 	withAttached := func(prompt string) string {
 		for _, m := range mentions {
@@ -1116,7 +1156,14 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {
-		_, err = s.agent.Run(ctx, withAttached(text))
+		// Under preview, every edit and write of this prompt is put to the person with its diff.
+		if previewWrites(p.Meta) && s.inner && s.parts.Loop != nil {
+			s.parts.Loop.PreviewWrites(true)
+			defer s.parts.Loop.PreviewWrites(false)
+		}
+		if err = attachImages(s.agent, links.images); err == nil {
+			_, err = s.agent.Run(ctx, withAttached(text))
+		}
 		// A plan the run proposed is put to the editor; accepted, the turn goes on with it.
 		if next := c.decidePlan(ctx, s, err); next != "" {
 			_, err = s.agent.Run(ctx, next)

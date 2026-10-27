@@ -172,6 +172,35 @@ All notable changes to Abhed are recorded here. The format follows
   managed configuration holds the permissions. Grants are recorded, and
   `session/load` restores all but those for the session alone.
 
+- Previewing writes from Abhed Studio: a prompt with
+  `_meta["zybuu.ai/abhed"].previewWrites` asks about each of its `edit` and
+  `write` calls with the diff, even where the mode allows them, and writes
+  nothing until the person accepts; for Studio's inline edit preview.
+- Abhed Studio prompts take more context: a `resource_link` to a file, a
+  range of lines (a symbol) or a folder is read by the engine as an `@`
+  mention is, through the policy and recorded; a link to a web page is read
+  with `web_fetch` as the person's call when the managed configuration turns
+  it on, and refused plainly otherwise; and `image` blocks go to a model
+  that reads images (`promptCapabilities.image` is now `true`), held in
+  memory only, with a note and a hash in the record. The SDK gains
+  `Agent.AttachImages`.
+- Commit messages for Abhed Studio: `_abhed/commitMessage` (the
+  `commitMessage` feature). The engine reads the staged diff itself through
+  the confined git, leaves out files the session may not read, key files and
+  Abhed's state, withholds secrets, caps it at 32 KiB, and asks
+  `model.commit` (or the completion model) under the completion rules.
+  Recorded as `commit_message.requested` before the diff goes and
+  `commit_message.generated`, counted by `abhed_commit_messages_total`
+  ([Commit messages](docs/guide/34-inline-completions.md#commit-messages)).
+- Next-edit suggestions for Abhed Studio: `_abhed/nextEdit` (the `nextEdit`
+  feature) sends the lines around the cursor and the recent edits, cleaned
+  of secrets and bounded, to `model.next_edit` (or the completion model) and
+  answers with line edits in the same file. It follows the completion rules:
+  `completion.enabled`, `completion.local_only`, the managed model pin, the
+  same files never sent. A line that held a withheld secret is never edited.
+  Recorded as `next_edit.enabled` and `next_edit.summary`, counted by
+  `abhed_next_edits_total`
+  ([Next-edit suggestions](docs/guide/34-inline-completions.md#next-edit-suggestions)).
 - Inline completions for Abhed Studio: `_abhed/complete` (the `complete`
   feature) sends the code around the cursor, bounded, to the provider
   `model.completion` names, by fill in the middle on a local coding model
@@ -788,6 +817,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Anthropic sessions mark the last two user turns for the prompt cache, so
+  a long session reads its history from the cache rather than paying for it
+  again each turn; before, only the system prompt and tools were cached.
+- `grep` takes a glob in `path` (`docs/**/*.md`), searching the folder before
+  the glob with the rest as its pattern, instead of refusing it.
+- A carried approval for a failed `edit` or `write` now needs the retry to
+  put the same new text in the file, whitespace aside.
 - Debugging without a container engine: a debug launch that needs the
   container tier now returns a `container-setup` problem with what is
   missing on this machine and the exact steps (install Podman, `podman

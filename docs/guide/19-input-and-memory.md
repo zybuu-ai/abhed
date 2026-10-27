@@ -32,6 +32,19 @@ cannot close the block and go on as if you had written it. A file is
 attached up to 256 KB, and the rest is noted. Each attachment is
 recorded as `input.mention` with the SHA-256 of what was attached.
 
+### In Abhed Studio
+
+Studio's chat attaches the same way. A file, a range of lines, a symbol or
+a folder you add is read by the engine as an `@` mention, under the same
+rules and recorded the same way. A web page you link is read with
+`web_fetch` as your own call, only when the managed configuration turns
+`web_fetch` on; otherwise the message is refused and says why. An image goes
+to the model with the message when the model reads images (set
+`"extra": {"vision": "true"}` on a provider that does), at most four of 5 MB
+each; with a model that does not, the message is refused. Images are kept in
+memory only: the record holds a note and the image's SHA-256, so a resumed
+session knows an image was there but does not have it.
+
 ## Running a command with !
 
 ```

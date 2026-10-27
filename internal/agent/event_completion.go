@@ -8,7 +8,38 @@ const (
 	EvCompletionEnabled EventType = "completion.enabled"
 	// EvCompletionSummary counts a session's completions; see CompletionSummary.
 	EvCompletionSummary EventType = "completion.summary"
+	// EvNextEditEnabled and EvNextEditSummary are the same for the editor's
+	// next-edit suggestions, with the same payloads.
+	EvNextEditEnabled EventType = "next_edit.enabled"
+	EvNextEditSummary EventType = "next_edit.summary"
+	// EvCommitRequested is recorded before a staged diff goes to the commit
+	// model, and EvCommitMessage when its answer is back; see CommitRequested
+	// and CommitMessage.
+	EvCommitRequested EventType = "commit_message.requested"
+	EvCommitMessage   EventType = "commit_message.generated"
 )
+
+// CommitRequested is the payload of commit_message.requested: where the
+// staged diff goes, how much of it, and what was left out.
+type CommitRequested struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Local    bool   `json:"local"`
+	// Files were in the diff sent; Excluded were staged but left out (a read
+	// rule, a key file, Abhed's state); Bytes is what was sent, after redaction.
+	Files     int  `json:"files"`
+	Excluded  int  `json:"excluded"`
+	Bytes     int  `json:"bytes"`
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// CommitMessage is the payload of commit_message.generated.
+type CommitMessage struct {
+	// Outcome is served, empty or failed.
+	Outcome   string `json:"outcome"`
+	TokensIn  int    `json:"tokens_in"`
+	TokensOut int    `json:"tokens_out"`
+}
 
 // CompletionEnabled is the payload of completion.enabled.
 type CompletionEnabled struct {

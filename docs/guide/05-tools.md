@@ -32,8 +32,9 @@ exact double match is, and any difference other than indentation is not
 matched.
 
 When a person approved an `edit` or `write` that then failed without
-changing anything, the next attempt at the same file in the same message
-takes that approval instead of asking again, once. It is recorded as
+changing anything, the next attempt at the same file in the same message,
+putting the same new text there (whitespace aside), takes that approval
+instead of asking again, once. Other new text is asked about again. It is recorded as
 approved by the reviewer, with `carried_from` naming the call approved. A
 rule's or the supervisor's ask is asked again.
 
@@ -41,6 +42,10 @@ rule's or the supervisor's ask is asked again.
 in Abhed's state, so a new file in a new folder needs no shell approval in
 `accept-edits` or `auto` mode. A write that fails takes back the folders it made,
 and `/undo` of the new file removes them while they are empty.
+
+`grep` also takes a glob in `path`, such as `docs/**/*.md`: the folder before
+the first glob segment is searched, held to the workspace as any path, with
+the rest as its `glob`.
 
 `glob` and `grep` pass over vendored and build folders (`node_modules`,
 `vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
