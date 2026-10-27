@@ -917,8 +917,8 @@ func (ix *recordIndex) mergeMarkers(pool []*obsRec, work bool) (finding, func(st
 var gitConflictRe = regexp.MustCompile(`(?m)(?:^|\r)(?:CONFLICT \([^)]*\): Merge conflict in |\s*both (?:modified|added):\s+|(?:UU|AA|DU|UD|AU|UA|DD) )(.*\S)\s*$`)
 
 // gitConflictSeenRe: any conflict git reports, whether or not its path is read;
-// a rebase prints its first one after its progress line and a \r.
-var gitConflictSeenRe = regexp.MustCompile(`(?m)(?:^|\r)(?:CONFLICT \(|Automatic merge failed|\s*(?:both (?:modified|added|deleted)|deleted by (?:us|them)|added by (?:us|them)):|(?:UU|AA|DU|UD|AU|UA|DD) )`)
+// a rebase prints its first one after a \r, and --autostash exits 0 on one.
+var gitConflictSeenRe = regexp.MustCompile(`(?m)(?:^|\r)(?:CONFLICT \(|Automatic merge failed|Applying autostash resulted in conflicts|\s*(?:both (?:modified|added|deleted)|deleted by (?:us|them)|added by (?:us|them)):|(?:UU|AA|DU|UD|AU|UA|DD) )`)
 
 // partialRead: a read that shows only part of the file (a range, or cut).
 func partialRead(s string) bool {
