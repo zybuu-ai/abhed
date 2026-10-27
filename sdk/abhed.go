@@ -611,6 +611,29 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	return a, nil
 }
 
+// Image is a picture given with a prompt: its media type (image/png,
+// image/jpeg, image/gif or image/webp) and its bytes.
+type Image struct {
+	MediaType string
+	Data      []byte
+}
+
+// AttachImages gives the next Run's prompt these images, for a model that
+// reads them; Run refuses them otherwise. They are held in memory for the
+// conversation and never recorded: the record keeps what the prompt's text
+// says of them, so a resumed session does not have them.
+func (a *Agent) AttachImages(imgs []Image) error {
+	if len(imgs) > 0 && !a.loop.Adapter.Profile().SupportsVision {
+		return fmt.Errorf("abhed: the model %s does not read images", a.loop.Adapter.Profile().Name)
+	}
+	blocks := make([]model.ContentBlock, 0, len(imgs))
+	for _, im := range imgs {
+		blocks = append(blocks, model.ContentBlock{Kind: model.BlockImage, MediaType: im.MediaType, Data: im.Data})
+	}
+	a.loop.AttachImages(blocks)
+	return nil
+}
+
 // Run sends a prompt and returns the agent's final message. A prompt a
 // user_prompt_submit hook refuses ends with an *EndedError whose Reason is
 // prompt_refused and whose Detail says why; when messages queued before it

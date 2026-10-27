@@ -364,6 +364,8 @@ type Loop struct {
 	carryMu       sync.Mutex
 	reviewedCalls map[string]bool
 	carried       map[string]string
+	// pendingImages are the images AttachImages gave the next message.
+	pendingImages []model.ContentBlock
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
 	// is the detail the last run's end recorded.
 	stuckDetail, lastDetail string
@@ -719,6 +721,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
+	imgs := l.takeImages() // this message's alone, sent or not
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
 	delivered, err := l.deliverQueuedCount()
@@ -753,11 +756,32 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
 		return TermError, err
 	}
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	um := model.Message{Role: model.RoleUser, Content: text}
+	if len(imgs) > 0 {
+		// The images reach the model with this message only; the record keeps what the text says of them.
+		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: text}}, imgs...)
+	}
+	l.messages = append(l.messages, um)
 	l.noteSaid(text, false)
 	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
+}
+
+// AttachImages gives the next RunMessage's message these images, for a
+// model that reads them. They are held in memory only, never recorded.
+func (l *Loop) AttachImages(imgs []model.ContentBlock) {
+	l.steerMu.Lock()
+	l.pendingImages = imgs
+	l.steerMu.Unlock()
+}
+
+func (l *Loop) takeImages() []model.ContentBlock {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	imgs := l.pendingImages
+	l.pendingImages = nil
+	return imgs
 }
 
 // EndRefused records the end of a run a hook refused before it began, for a

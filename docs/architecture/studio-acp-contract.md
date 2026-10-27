@@ -162,10 +162,22 @@ relax them.
 
 ### 3.1a Attached context
 
-`session/prompt` takes `text`, `resource_link` and `resource` blocks
-(`embeddedContext: true`). A `text` block is the person's own words. A
-`resource_link` names a file the agent reads through its policy-checked
-tools. A `resource` is text the person attached in the editor (a selection,
+`session/prompt` takes `text`, `resource_link`, `resource` and `image`
+blocks (`embeddedContext: true`, `image: true`). A `text` block is the
+person's own words. A `resource_link` is read by the engine before the
+prompt runs, as an `@` mention is, as the person's own call through the
+session's policy and recorded so:
+
+- a `file:` URI names a file (with `#Lm-Ln`, those lines; a symbol is sent
+  as its file and range) or a folder, given as a bounded listing;
+- an `http:` or `https:` URI is read with `web_fetch` as the person's call,
+  under its allowed hosts, when the managed configuration turns `web_fetch`
+  on; otherwise the prompt is refused and says so;
+- any other URI is passed as a note naming it.
+
+A link that may not be read refuses the whole prompt (`-32001`), each reason
+said. Links share the prompt's attachment cap with `resource` blocks. A
+`resource` is text the person attached in the editor (a selection,
 a symbol, a problem the editor reports). The engine does not read the text
 itself, since the person picked it, but a `file:` URI is put to the `read`
 rules and the `.abhed` check as an `@` mention is: one that may not be read
@@ -387,8 +399,15 @@ answer, and the checks could not verify it. `features` lists `answer-verdicts`.
 
 ### 3.5 Images
 
-`promptCapabilities.image` stays `false` while the engine's messages are text
-only. Studio never offers an image attachment while it is false.
+`promptCapabilities.image` is `true`. An `image` block (`mimeType` png,
+jpeg, gif or webp; `data` base64; at most four, 5 MB each) goes to the model
+with the prompt when the session's model reads images (a provider's
+`extra.vision`, or a type that always does); otherwise the prompt is refused
+(`-32001`, "the model … does not read images"). Images are held in memory for
+the conversation only, never in the record: the record holds an
+`input.mention {path: "image:<type>", sha256, bytes}` and the prompt's text
+notes each image, so a resumed or forked session has the note, not the
+image.
 
 ---
 

@@ -187,6 +187,11 @@ func mentionPath(sess *tools.Session, p string) string {
 // attachFile reads one file through the read tool as the person. why is the
 // refusal when it may not be read; err is a failure to record.
 func attachFile(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, ref mentionRef) (block string, att Attachment, why string, err error) {
+	return attachFileWithin(ctx, loop, sess, abs, ref, mentionMaxBytes)
+}
+
+// attachFileWithin is attachFile within limit bytes.
+func attachFileWithin(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, ref mentionRef, limit int) (block string, att Attachment, why string, err error) {
 	args := map[string]any{"path": abs, "limit": mentionMaxLines}
 	if ref.From > 0 {
 		args["offset"], args["limit"] = ref.From, ref.To-ref.From+1
@@ -198,10 +203,10 @@ func attachFile(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs 
 	if res.IsError {
 		return "", Attachment{}, strings.TrimSpace(res.Content), nil
 	}
-	content, truncated := capText(res.Content, mentionMaxBytes)
+	content, truncated := capText(res.Content, limit)
 	note := ""
 	if truncated {
-		note = fmt.Sprintf("\n[attached the first %d KB; read the file for the rest]", mentionMaxBytes>>10)
+		note = fmt.Sprintf("\n[attached the first %d KB; read the file for the rest]", limit>>10)
 	}
 	rel := filepath.ToSlash(sess.Rel(abs))
 	lines := ""
@@ -217,6 +222,11 @@ func attachFile(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs 
 // attachDir lists a directory's files through the glob tool as the person,
 // after the read rules for the directory itself.
 func attachDir(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string) (block string, att Attachment, why string, err error) {
+	return attachDirWithin(ctx, loop, sess, abs, mentionMaxBytes)
+}
+
+// attachDirWithin is attachDir within limit bytes.
+func attachDirWithin(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs string, limit int) (block string, att Attachment, why string, err error) {
 	id := personCallID("mention")
 	dirArgs := argsJSON(map[string]string{"path": abs + string(filepath.Separator)})
 	if d := loop.Policy.Evaluate("read", false, dirArgs); d.Decision == policy.Deny {
@@ -242,7 +252,7 @@ func attachDir(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs s
 	if res.IsError {
 		return "", Attachment{}, strings.TrimSpace(res.Content), nil
 	}
-	content, truncated := capText(res.Content, mentionMaxBytes)
+	content, truncated := capText(res.Content, limit)
 	rel := filepath.ToSlash(sess.Rel(abs))
 	sum := sha256.Sum256([]byte(content))
 	att = Attachment{Path: rel + "/", SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(content)),

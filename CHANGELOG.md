@@ -143,6 +143,14 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Abhed Studio prompts take more context: a `resource_link` to a file, a
+  range of lines (a symbol) or a folder is read by the engine as an `@`
+  mention is, through the policy and recorded; a link to a web page is read
+  with `web_fetch` as the person's call when the managed configuration turns
+  it on, and refused plainly otherwise; and `image` blocks go to a model
+  that reads images (`promptCapabilities.image` is now `true`), held in
+  memory only, with a note and a hash in the record. The SDK gains
+  `Agent.AttachImages`.
 - Commit messages for Abhed Studio: `_abhed/commitMessage` (the
   `commitMessage` feature). The engine reads the staged diff itself through
   the confined git, leaves out files the session may not read, key files and
