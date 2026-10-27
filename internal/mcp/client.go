@@ -599,7 +599,7 @@ func (t *StdioTransport) redact(text string) string {
 }
 
 // flagLike is an argument that is itself a flag, not a flag's value.
-var flagLike = regexp.MustCompile(`^--?[A-Za-z][A-Za-z0-9-]*$`)
+var flagLike = regexp.MustCompile(`^(?:-[A-Za-z]|--[a-z][a-z0-9-]*)$`)
 
 // headerSecret is what to hide of an HTTP header argument ("Name: value"):
 // for Authorization, Proxy-Authorization, Cookie, Set-Cookie, a session

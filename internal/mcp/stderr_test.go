@@ -135,10 +135,10 @@ func TestStderrRedactsJoinedForms(t *testing.T) {
 // A secret flag's value that starts with "-" is still a value; cookies and
 // session headers are secrets too.
 func TestStderrRedactsDashValuesAndCookies(t *testing.T) {
-	tr := &StdioTransport{argv: []string{"srv", "--api-token", "-opaque+Dash/Tok1", "--auth-key", "--verbose",
+	tr := &StdioTransport{argv: []string{"srv", "--api-token", "-opaque+Dash/Tok1", "--secret", "-opaqueWordTok", "--auth-key", "--verbose",
 		"--header", "Cookie: sid=opaqueCookie22", "-HSet-Cookie: opaqueSetCookie3", "--header", "X-Session-Id: opaqueSession44",
 		"--header", "Proxy-Authorization: Basic opaqueProxyAuth5"}}
-	out := tr.redact("got -opaque+Dash/Tok1 sid=opaqueCookie22 opaqueSetCookie3 opaqueSession44 opaqueProxyAuth5 --verbose")
+	out := tr.redact("got -opaque+Dash/Tok1 -opaqueWordTok sid=opaqueCookie22 opaqueSetCookie3 opaqueSession44 opaqueProxyAuth5 --verbose")
 	if strings.Contains(out, "opaque") || !strings.Contains(out, "--verbose") {
 		t.Fatalf("redacted %q", out)
 	}

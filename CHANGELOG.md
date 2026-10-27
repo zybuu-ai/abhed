@@ -37,8 +37,8 @@ All notable changes to Abhed are recorded here. The format follows
 - The reason of a call the supervisor refused starts `supervisor:` instead
   of `monitor:`.
 - The supervisor counts more output as credential content: JWTs, Slack
-  webhook URLs, Stripe live keys, passwords in URLs and secret-named URL
-  parameters, and tokens run into other text, besides every shape it counted
+  webhook URLs, Stripe live and test-mode keys, bearer tokens, passwords in
+  URLs and secret-named URL parameters, and tokens run into other text, besides every shape it counted
   before, which it still counts as it did.
 - Answers are checked and labelled by default in the terminal, the workbench
   and console, and Abhed Studio. A reply with a statement the record
