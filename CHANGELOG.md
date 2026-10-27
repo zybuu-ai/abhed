@@ -752,6 +752,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- macOS process tier: every Node program failed with `EPERM ... lstat` on
+  a folder above the workspace, as Node's realpath stats each one and home
+  was closed to that too. The folders on the way to the workspace, the
+  read-only paths and the toolchains can now be stat'ed, not listed or read.
+- Toolchains: with a `GOROOT` set on the host, an installed Go first on
+  `PATH` mixed two Go versions and every build failed. An active Go now sets
+  its own `GOROOT` and `GOTOOLCHAIN=local`, and the host's `PYTHONHOME`,
+  `GEM_HOME`, `RUBYOPT`, `RUSTC`, `NODE_PATH` and the like are unset while
+  their toolchain is active.
+- The macOS process tier's own caches and temp folders (`abhed-caches-…`,
+  `abhed-tmp-…`) piled up in `$TMPDIR` when an Abhed process ended without
+  closing its sandbox. Each now records its owner, and the next sandbox
+  removes those whose owner has ended, by that record and name only; folders
+  left by earlier builds carry no record and are not touched.
+
 - A run with a temporary home folder, as a test or a harness that drives
   Abhed or Studio with a scratch `HOME` gives it, could start a real
   `ollama serve` that then held port 11434 reading the scratch home's empty

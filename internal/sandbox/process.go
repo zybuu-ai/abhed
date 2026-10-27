@@ -994,7 +994,9 @@ func (s *Process) ownCaches() map[string]string {
 				parent = t
 			}
 		}
+		reapStaleTemps()
 		if d, err := os.MkdirTemp(parent, "abhed-caches-"); err == nil {
+			markOwned(d)
 			s.caches = d
 		}
 	})
@@ -1061,11 +1063,13 @@ func (s *Process) privateTemp() (string, error) {
 		if t := userTemp(); t != "" && s.backend != "bwrap" {
 			parent = t
 		}
+		reapStaleTemps()
 		d, err := os.MkdirTemp(parent, "abhed-tmp-")
 		if err != nil {
 			s.tmpErr = err
 			return
 		}
+		markOwned(d)
 		if real, err := filepath.EvalSymlinks(d); err == nil {
 			d = real
 		}
