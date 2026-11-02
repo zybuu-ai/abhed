@@ -49,6 +49,9 @@ type acpShell struct {
 	// and none tiers), so it can ask which process group has the foreground.
 	local     bool
 	shellPgrp atomic.Int64
+	// inputSeen is set at the first input: until then only the shell and what
+	// starts it hold the terminal, and the group that has it last is the shell's.
+	inputSeen atomic.Bool
 	leader    sandbox.Leader
 	inputMu   sync.Mutex
 	mu        sync.Mutex
@@ -131,11 +134,11 @@ func (c *acpConn) pumpShell(t *acpTerminal) {
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			sh.capture.Output(chunk)
-			// The first output is the shell's prompt; the foreground group
-			// then is the shell's own.
-			if sh.local && sh.shellPgrp.Load() == 0 {
-				if fg, _, ok := ttyNow(sh.tty); ok {
-					sh.shellPgrp.Store(int64(fg))
+			// Until the person types, output is the shell's start and its
+			// prompt, so the group then in front is the shell's own; what starts
+			// it (a relay printing first) may hold the terminal before it does.
+			if sh.local && !sh.inputSeen.Load() {
+				if fg, _, ok := ttyNow(sh.tty); ok && fg > 0 && sh.shellPgrp.Swap(int64(fg)) != int64(fg) {
 					fmt.Fprintf(os.Stderr, "abhed: acp: terminal %s: the shell's process group is %d\n", sh.id, fg)
 				}
 			}
@@ -205,6 +208,7 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 	sh := t.shell
 	sh.inputMu.Lock()
 	defer sh.inputMu.Unlock()
+	sh.inputSeen.Store(true)
 	keys := sh.capture.Keys(data)
 	if len(keys) > shellLinesPerInput {
 		return refusal(errParams, "too many lines in one input")

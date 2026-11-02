@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -125,7 +126,8 @@ func TestStudioTerminalLinesShowOutputBeforeTheStatus(t *testing.T) {
 	if strings.Contains(got, "[no output]") {
 		t.Fatalf("the record's placeholder reached the terminal: %q", got)
 	}
-	if !strings.HasSuffix(got, "ms\x1b[0m\r\n\x1b[2m"+filepath.Join(filepath.Base(r.ws), "sub")+" $\x1b[0m ") {
+	// The status names the time in ms, or in s past a second, as on a loaded runner.
+	if !regexp.MustCompile(`exit 0 · [0-9.]+m?s\x1b\[0m\r\n\x1b\[2m` + regexp.QuoteMeta(filepath.Join(filepath.Base(r.ws), "sub")) + ` \$\x1b\[0m $`).MatchString(got) {
 		t.Fatalf("the prompt does not follow the cd: %q", got)
 	}
 	// A cd that is not followed has no output but a note: the note shows, the placeholder does not.
@@ -907,4 +909,44 @@ func TestStudioInteractiveTerminalUnderManagedFiles(t *testing.T) {
 			r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "exit\r"}, nil)
 		})
 	}
+}
+
+// In a project with a venv the shell's start prints its notice before the
+// shell takes the terminal; a line typed at the prompt is still the shell's,
+// and is still put to the deny rules, not passed through as a program's input.
+func TestStudioInteractiveTerminalJudgesLinesInAVenvProject(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(curl *)"]}`)
+	r.write(".venv/pyvenv.cfg", "home = /usr/bin\n")
+	if err := os.MkdirAll(filepath.Join(r.ws, ".venv", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/bin/python3", filepath.Join(r.ws, ".venv", "bin", "python")); err != nil {
+		t.Fatal(err)
+	}
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
+	prompted := func(s string) bool {
+		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
+		return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#")
+	}
+	wait := func(from int, pred func(string) bool) {
+		t.Helper()
+		var got strings.Builder
+		r.cl.waitFor(from, "shell output", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return pred(got.String())
+		})
+	}
+	// As soon as the shell is there, before or after its prompt, as a person types.
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo first\r"}, nil)
+	wait(at, func(s string) bool { return strings.Contains(s, "first") && prompted(s) })
+	at = r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "curl example.com\r"}, nil)
+	wait(at, func(s string) bool { return strings.Contains(s, "Denied") && prompted(s) })
+	_ = from
 }

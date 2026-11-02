@@ -20,6 +20,13 @@ All notable changes to Abhed are recorded here. The format follows
   The config is now written to a fresh, randomly named file made with
   `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
   a device, or over 1 MiB, is refused instead of followed or waited on.
+- Studio's interactive terminal on Linux could take every line typed in it
+  for a program's input, so the deny rules never judged it. The shell's
+  process group was taken from the terminal's first output; in a project
+  with a Python venv, or wherever something prints before the shell takes
+  the terminal, that was not the shell's, and each line after went through
+  unjudged. The group is now followed until the person first types, and a
+  test types a denied command in a venv project's terminal.
 
 ### Fixed
 
@@ -29,6 +36,18 @@ All notable changes to Abhed are recorded here. The format follows
   protected file is now opened only as a plain file, never through a link
   or waiting on a pipe or device. Past 256 MiB it is named by its size,
   time and inode instead of hashed, so a change to it is still seen.
+- A warning logged while the interactive command line held the screen (such
+  as the egress relay's, from a binary built with cgo) was written under it
+  and left a stale "Running…" line behind; the log package's output now goes
+  through the screen as the rest of stderr does.
+- A folder made again at the same path could inherit the commands kept as
+  "always allow" for the old one when the file system reused its inode; a
+  folder's identity now includes its birth time on Linux and macOS. Grants
+  kept before match as they did.
+- A bash command's checkpoint missed a same-size rewrite on a file system
+  whose timestamps are coarse (seconds, or a clock tick), so its /undo had
+  nothing to take back: a file whose mtime is within two seconds of the
+  snapshot is now compared by its content, or a key file by its hash.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by

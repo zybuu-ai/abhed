@@ -304,9 +304,20 @@ func toolchainsIn(root, lang string) []toolchain.Installed {
 // A command in the process sandbox uses the project's .venv, as Run Tests
 // needs: its python is the venv's.
 func TestCommandsUseTheProjectsVenv(t *testing.T) {
-	py, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("no python3")
+	// The system's python first: a venv's python links to the one that made it,
+	// and one installed under a CI tool cache is outside what the sandbox shows.
+	py := ""
+	for _, p := range []string{"/usr/bin/python3", "/usr/local/bin/python3"} {
+		if _, err := os.Stat(p); err == nil {
+			py = p
+			break
+		}
+	}
+	if py == "" {
+		var err error
+		if py, err = exec.LookPath("python3"); err != nil {
+			t.Skip("no python3")
+		}
 	}
 	ws := t.TempDir()
 	if out, err := exec.Command(py, "-m", "venv", filepath.Join(ws, ".venv")).CombinedOutput(); err != nil {

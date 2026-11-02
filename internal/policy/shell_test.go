@@ -278,9 +278,10 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 		if large > 10*small+slowdown*50*time.Millisecond {
 			t.Errorf("%s (%d bytes): took %v against %v for a quarter", c.name, len(command), large, small)
 		}
-		// And a ceiling: linear work on 64 KiB is tens of milliseconds.
-		if large > slowdown*time.Second {
-			t.Errorf("%s (%d bytes): took %v", c.name, len(command), large)
+		// And a ceiling relative to this machine: no more than a few times
+		// what a plain command of the same length costs, which every line pays.
+		if base := plainOfLength(e, len(command)); large > 6*base+slowdown*100*time.Millisecond {
+			t.Errorf("%s (%d bytes): took %v against %v for a plain command as long", c.name, len(command), large, base)
 		}
 		res := e.Evaluate("bash", true, args(map[string]string{"command": command}))
 		if c.bounded && (res.Decision != Ask || res.Step != "screen") {
@@ -299,6 +300,13 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 }
 
 // fastestEvaluate is the best of three times for one decision on command.
+// plainOfLength is the time a command of n bytes of ordinary words takes:
+// the linear cost every line pays, the yardstick for a hostile one.
+func plainOfLength(e *Engine, n int) time.Duration {
+	words := strings.Repeat("abcdefgh ", n/9+1)
+	return fastestEvaluate(e, "echo "+words[:max(n-5, 0)])
+}
+
 func fastestEvaluate(e *Engine, command string) time.Duration {
 	best := time.Duration(1 << 62)
 	for range 3 {

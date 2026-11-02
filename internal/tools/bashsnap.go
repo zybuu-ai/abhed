@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
@@ -97,7 +100,17 @@ type snapEntry struct {
 	held  bool
 	// why says why the content is not held.
 	why string
+	// sum is the sha256 of a key file's content, not held, so a rewrite
+	// its stat cannot show is still seen.
+	sum *[32]byte
 }
+
+// racyWindow is how close to a snapshot a file's mtime may be and its stat
+// still miss a rewrite: a coarse clock, or a file system keeping seconds only.
+const racyWindow = 2 * time.Second
+
+// racy reports whether e changed too close to at for its stat to tell.
+func (e snapEntry) racy(at time.Time) bool { return e.mtime >= at.Add(-racyWindow).UnixNano() }
 
 func (e snapEntry) same(o snapEntry) bool {
 	return e.size == o.size && e.mtime == o.mtime && e.ctime == o.ctime && e.mode == o.mode
@@ -106,6 +119,8 @@ func (e snapEntry) same(o snapEntry) bool {
 // wsSnapshot is the workspace's files before a command.
 type wsSnapshot struct {
 	files map[string]snapEntry
+	// at is when the walk began.
+	at time.Time
 	// cut says why the snapshot is not whole; "" when every file was looked at and held.
 	cut string
 	// partial is set when files were left out of the walk itself, which a
@@ -141,7 +156,7 @@ func (s *Session) bashSnapshotOn() bool {
 // than read again; read false reads nothing.
 func (s *Session) walkWorkspace(ctx context.Context, prev map[string]snapEntry, read bool) wsSnapshot {
 	cfg := s.BashCheckpoints
-	snap := wsSnapshot{files: map[string]snapEntry{}}
+	snap := wsSnapshot{files: map[string]snapEntry{}, at: time.Now()}
 	state := s.stateSet()
 	root := s.Root
 	budget := cfg.maxBytes()
@@ -176,13 +191,20 @@ func (s *Session) walkWorkspace(ctx context.Context, prev map[string]snapEntry, 
 			snap.files[path] = e
 			return nil
 		}
-		if p, ok := prev[path]; ok && p.same(e) && p.held {
+		if p, ok := prev[path]; ok && p.same(e) && p.held && !e.racy(snap.at) {
 			e.data, e.held = p.data, true
 			budget -= int64(len(e.data))
 		} else {
 			switch {
 			case secretfiles.Match(path) != "":
 				e.why = "it looks like a file of keys or credentials"
+				if e.size <= bashSnapshotFileBytes {
+					if data, err := s.readFile(path); err == nil {
+						sum := sha256.Sum256(data)
+						e.sum = &sum
+						clear(data)
+					}
+				}
 			case e.size > bashSnapshotFileBytes:
 				e.why = fmt.Sprintf("it was over the %d MiB a command's checkpoint keeps of one file", bashSnapshotFileBytes>>20)
 				over = append(over, path)
@@ -255,7 +277,7 @@ func (s *Session) afterBash(snap *wsSnapshot) string {
 	var changed []FileBefore
 	for path, b := range snap.files {
 		a, ok := now.files[path]
-		if ok && a.same(b) {
+		if ok && a.same(b) && !s.rewritten(path, b, snap.at) {
 			continue
 		}
 		if !ok && now.partial {
@@ -311,4 +333,23 @@ func (s *Session) afterBash(snap *wsSnapshot) string {
 		out += n
 	}
 	return out + ". /undo cannot take back what was not kept.]"
+}
+
+// rewritten reports whether a file whose stat is unchanged since b was taken
+// at at was rewritten all the same: only when b's mtime is too close to at to
+// tell, by its held content or its key file's sum.
+func (s *Session) rewritten(path string, b snapEntry, at time.Time) bool {
+	if !b.racy(at) || (!b.held && b.sum == nil) {
+		return false
+	}
+	data, err := s.readFile(path)
+	if err != nil {
+		return true
+	}
+	if b.held {
+		return !bytes.Equal(data, b.data)
+	}
+	sum := sha256.Sum256(data)
+	clear(data)
+	return sum != *b.sum
 }
