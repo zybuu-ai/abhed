@@ -20,7 +20,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/managed"
@@ -78,6 +80,24 @@ func (g *Guard) note(s string) {
 	g.mu.Unlock()
 }
 
+// judged counts judge's calls, so a test can see the dialer's Control run.
+var judged atomic.Int64
+
+// judge refuses, and notes, a dial to a real model service on this machine,
+// or to the fallback while it is in force.
+func (g *Guard) judge(addr string) error {
+	judged.Add(1)
+	if addr == fallbackAddr && g.fallback.Load() {
+		g.note("the default model endpoint, at " + addr + " (no stub could listen)")
+		return fmt.Errorf("testenv: %s is the default model endpoint; tests use a stub", addr)
+	}
+	if Real(addr) {
+		g.note("a real model service at " + addr)
+		return fmt.Errorf("testenv: %s is a real local model service; tests use a stub", addr)
+	}
+	return nil
+}
+
 // Hits are what reached a model endpoint no test may use.
 func (g *Guard) Hits() []string {
 	g.mu.Lock()
@@ -97,11 +117,14 @@ func (g *Guard) Hits() []string {
 func Isolate() *Guard {
 	g := &Guard{OrigHome: os.Getenv("HOME")}
 	// The managed paths lead to a missing folder inside a 0700 folder of
-	// this user's own, so no other user can make it and plant a managed file.
-	// A helper reuses the folder its parent names, once it checks it is
-	// exactly that, and makes nothing to leave behind when it exits from
-	// inside a test; anything else makes one, which Close removes.
-	if parent := os.Getenv(privateEnv); os.Getenv(Marker) != "" && privateFolder(parent) {
+	// this user's own, which no other user can change or swap (checkPrivate),
+	// so none can make the missing folder and plant a managed file. A helper
+	// reuses the folder its parent names, resolved and checked, and makes
+	// nothing to leave behind when it exits from inside a test; anything else
+	// makes one, which Close removes. A folder of its own that fails the
+	// check stops the run.
+	parent, perr := checkPrivate(os.Getenv(privateEnv))
+	if os.Getenv(Marker) != "" && perr == nil {
 		managed.MoveTo(filepath.Join(parent, "none"))
 	} else {
 		private, err := os.MkdirTemp("", "abhed-no-managed-")
@@ -109,6 +132,12 @@ func Isolate() *Guard {
 			panic("testenv: " + err.Error())
 		}
 		g.private = private
+		if ownFolderChecked {
+			if private, err = checkPrivate(private); err != nil {
+				_ = os.RemoveAll(g.private)
+				panic("testenv: the temporary folder is not private: " + err.Error())
+			}
+		}
 		managed.MoveTo(filepath.Join(private, "none"))
 		_ = os.Setenv(privateEnv, private)
 	}
@@ -133,20 +162,17 @@ func Isolate() *Guard {
 	defaults.OllamaURL = stub + "/v1"
 
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
-		dial := t.DialContext
-		if dial == nil {
-			dial = (&net.Dialer{}).DialContext
-		}
+		// The address is judged as written and again once resolved, in the
+		// dialer's Control, so a name that resolves to this machine (an
+		// /etc/hosts alias, a public name with a loopback record) is caught.
+		// The timeouts are http.DefaultTransport's own.
+		d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second,
+			Control: func(network, address string, _ syscall.RawConn) error { return g.judge(address) }}
 		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if addr == fallbackAddr && g.fallback.Load() {
-				g.note("the default model endpoint, at " + addr + " (no stub could listen)")
-				return nil, fmt.Errorf("testenv: %s is the default model endpoint; tests use a stub", addr)
+			if err := g.judge(addr); err != nil {
+				return nil, err
 			}
-			if Real(addr) {
-				g.note("a real model service at " + addr)
-				return nil, fmt.Errorf("testenv: %s is a real local model service; tests use a stub", addr)
-			}
-			return dial(ctx, network, addr)
+			return d.DialContext(ctx, network, addr)
 		}
 	}
 
@@ -209,7 +235,8 @@ func Real(addr string) bool {
 // takes for one (a trailing dot, the short IPv4 forms such as 127.1).
 func Local(host string) bool {
 	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+	// An empty host, as in ":11434", is this machine to Go's dialer.
+	if host == "" || strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -221,7 +248,9 @@ func Local(host string) bool {
 
 // shortIPv4 reads the inet_aton forms Go's parser refuses: one to four
 // parts, each decimal, 0x hex or 0 octal, the last filling the remaining
-// bytes (127.1 is 127.0.0.1). nil if s is not one.
+// bytes (127.1 is 127.0.0.1). nil if s is not one. It is deliberately
+// broader than libc: strconv also takes 0o, 0b and _ forms, which only
+// makes the guard refuse more.
 func shortIPv4(s string) net.IP {
 	parts := strings.Split(s, ".")
 	if len(parts) == 0 || len(parts) > 4 {

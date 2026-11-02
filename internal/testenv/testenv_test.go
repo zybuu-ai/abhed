@@ -3,6 +3,7 @@ package testenv
 import (
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,7 +29,7 @@ func TestReal(t *testing.T) {
 	for addr, want := range map[string]bool{"localhost:11434": true, "127.0.0.1:11434": true, "[::1]:4000": true,
 		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false,
 		"localhost.:11434": true, "LOCALHOST:4000": true, "127.1:11434": true, "0x7f000001:11434": true, "0177.0.0.1:4000": true,
-		"0:11434": true, "x.localhost:11434": true, "128.1:11434": false, "300.1:11434": false} {
+		"0:11434": true, "x.localhost:11434": true, "128.1:11434": false, "300.1:11434": false, ":11434": true} {
 		if Real(addr) != want {
 			t.Errorf("Real(%q) = %v", addr, !want)
 		}
@@ -103,4 +104,40 @@ func TestEveryEnginePackageIsIsolated(t *testing.T) {
 			t.Errorf("%s loads a configuration or builds an engine in its tests but has no TestMain through internal/testenv", rel)
 		}
 	}
+}
+
+// The dial guard judges the address again once the name is resolved, in
+// the dialer's Control: the resolved address a loopback-resolving name dials
+// is refused and noted, and an ordinary one is let through.
+func TestDialControlJudgesTheResolvedAddress(t *testing.T) {
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || tr.DialContext == nil {
+		t.Fatal("the default transport is not guarded")
+	}
+	// A dial through the default transport is judged twice: as written, and
+	// in Control once resolved.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	before := judged.Load()
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := judged.Load() - before; got < 2 {
+		t.Fatalf("a dial was judged %d time(s); the resolved address is not judged in Control", got)
+	}
+	n := len(g.Hits())
+	if err := g.judge("127.0.0.1:11434"); err == nil || !strings.Contains(err.Error(), "testenv") {
+		t.Fatalf("the resolved address 127.0.0.1:11434 was let through: %v", err)
+	}
+	if err := g.judge("127.0.0.1:8867"); err != nil {
+		t.Fatalf("an ordinary local port was refused: %v", err)
+	}
+	if hits := g.Hits(); len(hits) != n+1 {
+		t.Fatalf("hits %v", hits)
+	}
+	g.mu.Lock()
+	g.hits = g.hits[:n]
+	g.mu.Unlock()
 }

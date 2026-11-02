@@ -74,39 +74,59 @@ func TestHelperReusesTheParentsFolder(t *testing.T) {
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, bin := copyBinary(t)
 	out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+parent))
-	if !strings.Contains(out, "config="+filepath.Join(parent, "none", "config.json")+"\n") || !strings.Contains(out, "private=\n") {
+	if !strings.Contains(out, "config="+filepath.Join(resolved, "none", "config.json")+"\n") || !strings.Contains(out, "private=\n") {
 		t.Fatalf("the helper did not reuse its parent's folder:\n%s", out)
 	}
 }
 
-// A folder the parent names is used only if it is exactly what Isolate
-// makes: one others may write in, a link to a private one, or a relative
-// path is refused, and the helper makes a folder of its own.
+// A folder the parent names is used only if no other user can change it or
+// swap it: one others may write in, one under a folder others may write in
+// (which could be renamed away and replaced), or a relative path, is
+// refused, and the helper makes a folder of its own. A link is followed once
+// and the folder it leads to used, so repointing it later changes nothing.
 func TestHelperRefusesAParentFolderThatIsNotPrivate(t *testing.T) {
 	base := t.TempDir()
+	mk := func(path string, mode os.FileMode) {
+		t.Helper()
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
 	open := filepath.Join(base, "open")
-	if err := os.Mkdir(open, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(open, 0o777); err != nil { // #nosec G302 -- world-writable on purpose: not private
-		t.Fatal(err)
-	}
+	mk(open, 0o777)
+	shared := filepath.Join(base, "shared")
+	mk(shared, 0o777)
+	under := filepath.Join(shared, "mine")
+	mk(under, 0o700)
 	private := filepath.Join(base, "private")
-	if err := os.Mkdir(private, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	mk(private, 0o700)
 	link := filepath.Join(base, "link")
 	if err := os.Symlink(private, link); err != nil {
 		t.Fatal(err)
 	}
 	_, bin := copyBinary(t)
-	for name, parent := range map[string]string{"world-writable": open, "a link": link, "relative": "private"} {
+	for name, parent := range map[string]string{"world-writable": open, "under a writable folder": under, "relative": "private"} {
 		out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+parent))
-		if strings.Contains(out, "config="+filepath.Join(parent, "none")) || !strings.Contains(out, "private=/") {
+		if strings.Contains(out, "none/config.json\nprivate=\n") || !strings.Contains(out, "private=/") {
 			t.Fatalf("%s: the helper used %s rather than a folder of its own:\n%s", name, parent, out)
 		}
+	}
+	resolved, err := filepath.EvalSymlinks(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+link))
+	if !strings.Contains(out, "config="+filepath.Join(resolved, "none", "config.json")+"\n") {
+		t.Fatalf("a link to a private folder: the paths do not lead to the folder it resolves to:\n%s", out)
 	}
 }
 
