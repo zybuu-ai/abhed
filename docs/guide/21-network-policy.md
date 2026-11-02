@@ -597,13 +597,25 @@ with, or goes without one.
 
 Every subcommand that connects (`abhed record`, `abhed hawkeye`, `abhed
 policy refresh`, `abhed login`, `abhed mcp`, `abhed resolve`, `abhed
-index`, `abhed toolchain`, `abhed ollama`, `abhed eval`, `abhed doctor`)
-puts the proxy in force before it does, and the CLI and an editor's
+index`, `abhed toolchain`, `abhed ollama`, `abhed eval`, `abhed doctor`,
+`abhed sandbox`) puts the proxy in force before it does, and the CLI and an editor's
 connection put it in force before they fetch the org policy. When the
 network configuration cannot go in force (a CA bundle that does not
 read, say), an editor's connection fetches no org policy at all.
+`abhed sandbox`'s streams (`exec -i`, `connect`, `cp`, `forward`, and
+`ssh` through `connect --stdio`) reach the server by a `CONNECT` tunnel
+through the proxy, also for an `http://` server, so the proxy must allow
+`CONNECT` to the server's port.
 
-**Not covered:** a PAC file or WPAD; SOCKS; NTLM, Kerberos or other
+When a model call fails at the proxy (it refuses the tunnel, or answers
+502, 503 or 504), the error names the proxy and the model host, and
+`/doctor` says the endpoint answered only when a call through the proxy
+did.
+
+**Not covered:** a PAC file or WPAD; SOCKS; a name under `.localhost`
+(`app.localhost`), which is always reached directly, though only `localhost`
+itself is certain to be this machine (on macOS such a name is looked up in
+DNS, outside the proxy); NTLM, Kerberos or other
 challenge-response proxy authentication (Basic only); `ssh_connect` and
 other raw TCP connections, which stay direct; commands outside the
 allowlist, which use the network as the sandbox gives it; and programs that

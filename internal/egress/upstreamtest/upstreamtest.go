@@ -65,6 +65,19 @@ func (p *Proxy) Saw(s string) bool {
 	return false
 }
 
+// SawExactly reports whether it was asked for exactly target: a CONNECT's
+// host:port or an absolute-form URL.
+func (p *Proxy) SawExactly(target string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, t := range p.seen {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
 // Auth are the Proxy-Authorization values it was sent, in order.
 func (p *Proxy) Auth() []string {
 	p.mu.Lock()

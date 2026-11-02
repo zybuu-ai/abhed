@@ -460,3 +460,18 @@ func ApplyUpstream(t *http.Transport) http.RoundTripper {
 	}
 	return t
 }
+
+// DialUpstream opens a TCP connection to addr (host:port): by a CONNECT
+// tunnel through the upstream proxy in force unless it bypasses the host,
+// else directly. For Abhed's own raw streams, such as a websocket.
+func DialUpstream(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if u := CurrentUpstream(); u != nil && !u.Bypass(host) {
+		return u.DialTunnel(ctx, addr, 30*time.Second)
+	}
+	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return d.DialContext(ctx, network, addr)
+}

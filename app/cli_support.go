@@ -51,13 +51,20 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	if err := probe.run(ctx); err != nil {
 		rows = append(rows, []string{"endpoint", friendlyModelError(err, st.appCfg.Model.Default, p)})
 	} else {
+		// Through a proxy the probe dialled nothing, so only the call says it answers.
+		answers := "answers"
+		if up := proxyFor(p.BaseURL); up != "" {
+			answers = "answers through the upstream proxy " + up
+		}
 		switch called, err := probeToolCalling(ctx, p); {
+		case err != nil && proxyFor(p.BaseURL) != "":
+			rows = append(rows, []string{"endpoint", friendlyModelError(err, st.appCfg.Model.Default, p)})
 		case err != nil:
 			rows = append(rows, []string{"endpoint", "answers; tool calling: " + friendlyModelError(err, st.appCfg.Model.Default, p)})
 		case called:
-			rows = append(rows, []string{"endpoint", "answers, and the model calls tools"})
+			rows = append(rows, []string{"endpoint", answers + ", and the model calls tools"})
 		default:
-			rows = append(rows, []string{"endpoint", "answers, but the model did not call the tool it was given"})
+			rows = append(rows, []string{"endpoint", answers + ", but the model did not call the tool it was given"})
 		}
 	}
 	if st.set != nil && st.set.Gateway != nil {

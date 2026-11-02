@@ -340,7 +340,8 @@ All notable changes to Abhed are recorded here. The format follows
   the model clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the
   `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
   installs, registry lookups and calls to a remote Ollama server,
-  `abhed login`, the profile calls, the org
+  `abhed login`, the profile calls, `abhed sandbox` (its streams by a
+  `CONNECT` tunnel), the org
   policy fetch, record shipping and the record's witness. Under the
   allowlist, the commands' proxy chains what it allowed through it
   (`CONNECT` for tunnels, absolute form for plain HTTP), so a provider or

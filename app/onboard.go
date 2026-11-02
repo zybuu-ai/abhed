@@ -351,6 +351,9 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 
 // friendlyCause is friendlyModelError's first part: what failed and the next step.
 func friendlyCause(err error, name string, p config.ProviderConfig, where, next string) string {
+	if msg, ok := proxiedFailure(err, name, p, next); ok {
+		return msg
+	}
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
@@ -798,4 +801,46 @@ func viaUpstream(addr string) bool {
 		host = addr
 	}
 	return !up.Bypass(host)
+}
+
+// proxyFor is the authority of the upstream proxy a model's calls go
+// through, or "" when they go directly.
+func proxyFor(base string) string {
+	addr := dialAddr(base)
+	if addr == "" || !viaUpstream(addr) {
+		return ""
+	}
+	return egress.CurrentUpstream().Authority()
+}
+
+// proxiedFailure names the upstream proxy when a model call through it
+// failed at the proxy: its refusal of the tunnel, or a 502, 503 or 504.
+func proxiedFailure(err error, name string, p config.ProviderConfig, next string) (string, bool) {
+	up := proxyFor(p.BaseURL)
+	if up == "" {
+		return "", false
+	}
+	host := dialAddr(p.BaseURL)
+	var refused *egress.UpstreamRefused
+	var se *model.StatusError
+	status := 0
+	switch {
+	case errors.As(err, &refused):
+		status = refused.Status
+	case errors.As(err, &se) && (se.Status == http.StatusBadGateway || se.Status == http.StatusServiceUnavailable || se.Status == http.StatusGatewayTimeout):
+		return fmt.Sprintf("%d %s for %s (model %q) through the upstream proxy %s: the proxy, or the server behind it, did not complete the call. "+
+			"Check that the model server is up and that the proxy may reach it. %s", se.Status, http.StatusText(se.Status), host, name, up, next), true
+	default:
+		// Go's own CONNECT reports a refusal by its status text alone.
+		for _, c := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusForbidden, http.StatusProxyAuthRequired} {
+			if t := http.StatusText(c); err != nil && (strings.HasSuffix(err.Error(), ": "+t) || err.Error() == t) {
+				status = c
+			}
+		}
+	}
+	if status == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
+		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true
 }
