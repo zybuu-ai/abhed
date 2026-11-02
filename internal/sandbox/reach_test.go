@@ -75,6 +75,7 @@ var unfollowedCalls = map[string]string{
 	// The owner's callbacks, which SetListenWatch stores from app's
 	// watchListening, whose function literals the walk checks there.
 	sandboxPkg + "..sweepListeners: *f":         "callback",
+	sandboxPkg + "..flushListenRecords: *f":     "callback",
 	sandboxPkg + ".Process.listening: *f":       "callback",
 	sandboxPkg + ".Process.listenWatchLost: *f": "callback",
 	// The change keepGrant, dropGrant and setListenAgreed pass in, function
@@ -174,6 +175,10 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a package func var set from a map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tm := map[string]func(){\"k\": func() { _ = killGroupNow(1) }}\n\tprobeHook, _ = m[\"k\"]")},
 		{"a package func var set from a package map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = hooks[\"k\"]")},
 		{"a package func var ranged from an appended package slice", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks []func()\n\nfunc init() {\n\thooks = append(hooks, func() { _ = killGroupNow(1) })\n\tfor _, probeHook = range hooks {\n\t}")},
+		{"a package func var set from a local any", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tvar x any = func() { _ = killGroupNow(1) }\n\tprobeHook = x.(func())")},
+		{"a package func var set through an any parameter", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc setX(v any) { probeHook = v.(func()) }\n\nfunc init() {\n\tsetX(func() { _ = killGroupNow(1) })")},
+		{"a package func var set from a package any", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hold any\n\nfunc init() {\n\thold = func() { _ = killGroupNow(1) }\n\tprobeHook = hold.(func())")},
+		{"a package func var set from a getter of a package map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc getHook() func() { return hooks[\"k\"] }\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
 		{"another package's func var set from app", crossPackageHook(t, sandboxDir, appDir)},
 		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
@@ -781,14 +786,84 @@ func pkgVarKey(obj types.Object) string {
 	return v.Pkg().Path() + ".." + v.Name()
 }
 
-// containsFunc reports a type that is, or can hold, a function: a func, or
-// a map, slice, array, channel, pointer or struct with one inside.
+// returnsThroughContainers reports a call in value to a module function
+// whose return statements read a func-holding package variable that is not
+// itself a func (a map or slice of them, an interface), or a local that can
+// hold one: a getter the walk does not follow into.
+func (r *reach) returnsThroughContainers(s *srcPkg, value ast.Node, where string) []string {
+	var found []string
+	ast.Inspect(value, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var id *ast.Ident
+		switch f := ast.Unparen(call.Fun).(type) {
+		case *ast.Ident:
+			id = f
+		case *ast.SelectorExpr:
+			id = f.Sel
+		}
+		if id == nil {
+			return true
+		}
+		fn, ok := s.info.Uses[id].(*types.Func)
+		if !ok || !inModule(fn.Pkg()) {
+			return true
+		}
+		key := funcKey(fn)
+		src, err := r.load(fn.Pkg().Path())
+		if err != nil {
+			found = append(found, loadFailed+key+": "+err.Error())
+			return true
+		}
+		d, ok := src.funcs[key]
+		if !ok || d.Body == nil {
+			return true
+		}
+		ast.Inspect(d.Body, func(m ast.Node) bool {
+			if _, lit := m.(*ast.FuncLit); lit {
+				return false
+			}
+			ret, ok := m.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			for _, res := range ret.Results {
+				ast.Inspect(res, func(k ast.Node) bool {
+					rid, ok := k.(*ast.Ident)
+					if !ok {
+						return true
+					}
+					v, ok := src.info.Uses[rid].(*types.Var)
+					if !ok || v.IsField() || v.Pkg() == nil || isFunc(v.Type()) || !containsFunc(v.Type(), 0) {
+						return true
+					}
+					found = append(found, r.fset.Position(rid.Pos()).String()+": "+key+" returns a value read from "+rid.Name+
+						", which can hold a function the walk does not follow (reached by "+r.path(where)+")")
+					return true
+				})
+			}
+			return true
+		})
+		return true
+	})
+	return found
+}
+
+// containsFunc reports a type that is, or can hold, a function: a func, an
+// interface or a type parameter, or a map, slice, array, channel, pointer
+// or struct with one inside.
 func containsFunc(t types.Type, depth int) bool {
 	if depth > 8 {
 		return false
 	}
+	if _, ok := types.Unalias(t).(*types.TypeParam); ok {
+		return true
+	}
 	switch u := types.Unalias(t).Underlying().(type) {
-	case *types.Signature:
+	case *types.Signature, *types.Interface:
+		// A func, or an interface any func can sit in.
 		return true
 	case *types.Map:
 		return containsFunc(u.Key(), depth+1) || containsFunc(u.Elem(), depth+1)
@@ -910,8 +985,11 @@ func (r *reach) check(s *srcPkg, where string, node ast.Node, queue *[]item) []s
 	}
 	if strings.HasPrefix(where, "value ") {
 		// A value assigned to a field or package variable is followed as an
-		// expression: one that goes through a local variable is not followed.
+		// expression: one that goes through a local variable is not followed,
+		// nor one read from a package container, there or in what a module
+		// function it calls returns.
 		if _, lit := node.(*ast.FuncLit); !lit {
+			found = append(found, r.returnsThroughContainers(s, node, where)...)
 			ast.Inspect(node, func(n ast.Node) bool {
 				if _, ok := n.(*ast.FuncLit); ok {
 					return false

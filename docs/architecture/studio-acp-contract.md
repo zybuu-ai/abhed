@@ -1120,10 +1120,14 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   at most one notice per port per read and none held back. A later
   `port_contested` for the same session and port replaces the earlier one
   in place: it carries `joined`, the programs joined since the port was
-  last recorded, and `latestJoin`, the time of the latest. The record and
+  last recorded, which starts again from the next join after each record
+  (it is not a running total), and `latestJoin`, the time of the latest. The record and
   the engine's log take a port's first notice at once and then at most
   one entry per port every 30 s, flushed when the window ends even if the
-  port has cleared; a clear does not reset the window. A server and
+  port has cleared, and when the session closes, before `session.ended`;
+  a clear does not reset the window. A record's `listeners` is the count
+  at its latest join, so one recorded after the port cleared still says
+  how many programs contested it. A server and
   the workers it forks, sharing one socket, count as one program; Abhed
   cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's

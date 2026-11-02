@@ -212,9 +212,9 @@ type program struct {
 // already holds (a wildcard bind with SO_REUSEADDR succeeds beside it) can
 // lose its loopback connections to the command. Abhed cannot prove which
 // of two listeners is a sandbox's, so it signals neither: it tells every
-// sandbox that may listen on that port, once while the port stays
-// contested, and a new command's profile leaves the port out, as it is
-// busy then.
+// sandbox that may listen on that port of each program that joins, the
+// record and the log under a per-port bound, and a new command's profile
+// leaves the port out, as it is busy then.
 
 var watching struct {
 	mu    sync.Mutex
@@ -239,11 +239,40 @@ func watchListeners(p *Process) {
 	})
 }
 
-// unwatchListeners takes p out, as it closes.
+// unwatchListeners takes p out, as it closes, recording first what its
+// windows still hold.
 func unwatchListeners(p *Process) {
+	flushListenRecords(p)
 	watching.mu.Lock()
 	delete(watching.procs, p)
 	watching.mu.Unlock()
+}
+
+// FlushListenRecords records now, whatever the windows' age, the joins
+// sb's windows still hold: as its session ends, before the end is recorded.
+func FlushListenRecords(sb Sandbox) {
+	if p, ok := sb.(*Process); ok {
+		flushListenRecords(p)
+	}
+}
+
+func flushListenRecords(p *Process) {
+	watching.mu.Lock()
+	var out []notice
+	now := time.Now()
+	for port, w := range p.windows {
+		if w.pending == 0 {
+			continue
+		}
+		out = append(out, notice{p, PortContested{Port: port, Listeners: w.listeners, Joined: w.pending, At: w.at, Record: true}})
+		w.last, w.pending = now, 0
+	}
+	watching.mu.Unlock()
+	for _, n := range out {
+		if f := n.p.onPortContested.Load(); f != nil {
+			(*f)(n.c)
+		}
+	}
 }
 
 // PortContested is what a sandbox's owner is told: more than one program
@@ -254,7 +283,9 @@ type PortContested struct {
 	Listeners int
 	// Notify is set when programs joined in this read: the person is told
 	// now. Joined counts the programs joined since the port was last
-	// recorded, and At the latest join.
+	// recorded, starting again after each record, and At the latest join.
+	// Listeners are the programs listening at that latest join, which a
+	// record at a window's end keeps though the port may have cleared.
 	Notify bool
 	Joined int
 	At     time.Time
@@ -272,16 +303,17 @@ const listenRecordWindow = 30 * time.Second
 // recordWindow is one port's record bound for one sandbox, kept across the
 // port clearing, so clearing and joining again cannot reset it.
 type recordWindow struct {
-	last    time.Time // when the port was last recorded; zero for never
-	pending int       // programs joined since
-	at      time.Time // the latest of them
+	last      time.Time // when the port was last recorded; zero for never
+	pending   int       // programs joined since
+	at        time.Time // the latest of them
+	listeners int       // the programs listening at the latest join
 }
 
-// join takes fresh programs joining at now and says whether to record now,
-// and how many joined since the last record.
-func (w *recordWindow) join(fresh int, now time.Time) (bool, int) {
+// join takes fresh programs joining at now, with listeners listening, and
+// says whether to record now, and how many joined since the last record.
+func (w *recordWindow) join(fresh, listeners int, now time.Time) (bool, int) {
 	w.pending += fresh
-	w.at = now
+	w.at, w.listeners = now, listeners
 	if !w.last.IsZero() && now.Sub(w.last) < listenRecordWindow {
 		return false, w.pending
 	}
@@ -299,6 +331,12 @@ func (w *recordWindow) due(now time.Time) (bool, int, time.Time) {
 	joined, at := w.pending, w.at
 	w.last, w.pending = now, 0
 	return true, joined, at
+}
+
+// recordAt is the notice a window's end records: its joins, with the
+// programs listening at the latest of them, as the port may have cleared.
+func (w *recordWindow) recordAt(port, joined int, at time.Time) PortContested {
+	return PortContested{Port: port, Listeners: w.listeners, Joined: joined, At: at, Record: true}
 }
 
 // spent reports a window with nothing pending that has ended: forgotten.
@@ -328,7 +366,7 @@ func sweepListeners() {
 		p.notices = nil
 		for port, w := range p.windows {
 			if due, joined, at := w.due(now); due {
-				idle = append(idle, notice{p, PortContested{Port: port, Joined: joined, At: at, Record: true}})
+				idle = append(idle, notice{p, w.recordAt(port, joined, at)})
 			} else if w.spent(now) {
 				delete(p.windows, port)
 			}
@@ -373,7 +411,7 @@ func sweepListeners() {
 					w = &recordWindow{}
 					p.windows[port] = w
 				}
-				record, joined := w.join(fresh, now)
+				record, joined := w.join(fresh, len(byPort[port]), now)
 				tell = append(tell, notice{p, PortContested{Port: port, Listeners: len(byPort[port]), Notify: true, Joined: joined, At: now, Record: record}})
 				continue
 			}
@@ -382,7 +420,7 @@ func sweepListeners() {
 			}
 			if due, joined, at := w.due(now); due {
 				// The window's joins, recorded at its end, cleared or not.
-				tell = append(tell, notice{p, PortContested{Port: port, Listeners: len(byPort[port]), Joined: joined, At: at, Record: true}})
+				tell = append(tell, notice{p, w.recordAt(port, joined, at)})
 			} else if w.spent(now) {
 				delete(p.windows, port)
 			}

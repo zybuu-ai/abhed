@@ -754,6 +754,10 @@ func (c *acpConn) shut(s *acpSession) {
 	c.killLSPs(s.id)
 	c.completionSummary(s)
 	c.unsubscribeSession(s.id)
+	// Contested-port joins held back are recorded before the end is.
+	if s.inner && s.parts.Set != nil && s.parts.Set.FlushListen != nil {
+		s.parts.Set.FlushListen()
+	}
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
 }

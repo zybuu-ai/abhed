@@ -652,7 +652,7 @@ func TestContestRecordBound(t *testing.T) {
 	for i := 0; i < 20; i++ { // a new program every sweep for 40 s
 		now := start.Add(time.Duration(i) * 2 * time.Second)
 		told++
-		if rec, n := w.join(1, now); rec {
+		if rec, n := w.join(1, 2, now); rec {
 			records++
 			joined += n
 		}
@@ -670,7 +670,7 @@ func TestContestRecordBound(t *testing.T) {
 		t.Fatalf("flushed %v with %d; recorded joins %d of 20", due, n, joined+n)
 	}
 	// Joining again just after does not reset the window.
-	if rec, _ := w.join(1, start.Add(62*time.Second)); rec {
+	if rec, _ := w.join(1, 2, start.Add(62*time.Second)); rec {
 		t.Fatal("a join right after a record was recorded")
 	}
 	if w.spent(start.Add(200 * time.Second)) {
@@ -732,5 +732,25 @@ func TestContestChurnIsBoundedButThePersonIsToldAtOnce(t *testing.T) {
 	defer mu.Unlock()
 	if notified[ports[0]] <= before || records[ports[0]] != 1 {
 		t.Fatalf("a program of the person's mid-window: told %d (was %d), recorded %d", notified[ports[0]], before, records[ports[0]])
+	}
+}
+
+// Joins a window still holds are recorded when the sandbox closes, and on
+// FlushListenRecords, whatever the window's age.
+func TestPendingJoinsAreRecordedOnClose(t *testing.T) {
+	for _, viaFlush := range []bool{false, true} {
+		sb := NewProcess(DefaultPolicy(t.TempDir()))
+		var got []PortContested
+		SetListenWatch(sb, nil, func(c PortContested) { got = append(got, c) }, nil)
+		watching.mu.Lock()
+		sb.windows = map[int]*recordWindow{3000: {last: time.Now(), pending: 2, at: time.Now(), listeners: 3}, 3001: {last: time.Now()}}
+		watching.mu.Unlock()
+		if viaFlush {
+			FlushListenRecords(sb)
+		}
+		_ = sb.Close()
+		if len(got) != 1 || !got[0].Record || got[0].Notify || got[0].Port != 3000 || got[0].Joined != 2 || got[0].Listeners != 3 {
+			t.Fatalf("flush %v: recorded %+v", viaFlush, got)
+		}
 	}
 }
