@@ -180,6 +180,25 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- A corporate upstream proxy, `network.upstream_proxy`: an explicit HTTP
+  proxy (`http://` or `https://`), an optional CA bundle, credentials by the
+  name of a stored secret (`user:password`, sent as Basic to the proxy alone)
+  and a `no_proxy` list. Abhed's own connections go out through it: the model
+  clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the `k8s_*`
+  tools, the forge API and `git push`, toolchain downloads, Ollama installs
+  and registry lookups, `abhed login` and the profile calls, and the
+  record's witness. Under the allowlist, the commands' proxy chains what it
+  allowed through it (`CONNECT` for tunnels, absolute form for plain HTTP),
+  so a provider or registry reachable only through the corporate proxy is
+  reached under the allowlist too. The allowlist decides first and the
+  internal-address check runs on the addresses a name has here, so the
+  proxy never widens what is allowed. Credentials never reach a URL, an
+  error, a log, the record or the model; programs Abhed starts for its own
+  downloads get a loopback relay with a one-time token. A workspace never
+  sets it; a managed file can force it, and then the person's `no_proxy`
+  is dropped unless the managed file names its own. PAC, WPAD, SOCKS and
+  NTLM or Kerberos proxy authentication are not supported. Records of
+  chained connections carry `upstream`.
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen on loopback once the person agrees for the workspace
   (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // MacApp is where the Ollama app for macOS installs.
@@ -130,7 +132,7 @@ func DefaultEnv() Env {
 		TempHome: temp,
 		GOOS:     runtime.GOOS, LookPath: exec.LookPath, AppPath: app, Programs: standardPrograms(runtime.GOOS),
 		HTTP:     &http.Client{Timeout: 0},
-		Web:      &http.Client{Timeout: 30 * time.Second},
+		Web:      &http.Client{Timeout: 30 * time.Second, Transport: egress.UpstreamRoundTripper{}},
 		Registry: Registry,
 		LogDir:   filepath.Join(home, ".abhed", "logs"), StateDir: filepath.Join(home, ".abhed", "state"),
 		ReadyWait: 30 * time.Second,
@@ -442,7 +444,7 @@ func (e Env) web() *http.Client {
 	if e.Web != nil {
 		return e.Web
 	}
-	return http.DefaultClient
+	return &http.Client{Transport: egress.UpstreamRoundTripper{}}
 }
 
 // listening reports whether anything accepts a connection at the target.
