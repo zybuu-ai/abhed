@@ -821,7 +821,7 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 710 planted wrong claims none is shown as verified and 32 are
+  -v`): of 706 planted wrong claims none is shown as verified and 32 are
   contradicted (30 from cited, conflicting evidence, 2 by conflict markers
   still shown), all 201 true controls
   are verified, and none of the 301 true or neutral claims is contradicted;
