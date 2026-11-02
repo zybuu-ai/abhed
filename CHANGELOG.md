@@ -15,6 +15,13 @@ All notable changes to Abhed are recorded here. The format follows
   endpoint is checked against `no_proxy` like any other host. The proxy's
   own 407 on an `http://` endpoint now says to check the proxy credentials
   ([Network policy](docs/guide/21-network-policy.md#a-corporate-upstream-proxy)).
+- A dev server that recycles the workers sharing its listening socket
+  (gunicorn, php-fpm) keeps its master process, so the contested-port
+  notice counts it as one program and does not tell a contest again for
+  each new worker. A program is the same one only with the same sockets
+  and a process in common, so a new program on a socket address another
+  left is told, and programs that stopped listening are forgotten, so a
+  long contest does not grow without bound.
 
 ## [1.2.9] - 2026-11-02
 

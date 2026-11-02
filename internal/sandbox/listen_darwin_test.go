@@ -330,6 +330,17 @@ func TestServersJoinSharedSockets(t *testing.T) {
 	if got[3000] != 1 || got[3001] != 1 || got[3002] != 2 || got[3003] != 2 {
 		t.Fatalf("%v", got)
 	}
+	// A program is named by its sockets, with its processes beside the name.
+	progs := programs(all)
+	if p := progs[3000]; len(p) != 1 || p[0].name != "s0xa" || !slices.Equal(p[0].pids, []int{10, 11}) {
+		t.Fatalf("a server and its worker: %+v", p)
+	}
+	if p := progs[3001]; len(p) != 1 || p[0].name != "s0xb,s0xc" {
+		t.Fatalf("one program on two sockets: %+v", p)
+	}
+	if p := progs[3003]; len(p) != 2 || p[0].name != "p40" || p[1].name != "p41" {
+		t.Fatalf("no socket addresses: %+v", p)
+	}
 }
 
 func TestOwnTree(t *testing.T) {
@@ -570,5 +581,74 @@ func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
 	sweepListeners()
 	if told.Load() <= before {
 		t.Fatalf("a program of the person's joined inside the cooldown: told %d, as before", told.Load())
+	}
+}
+
+// A server that recycles the workers sharing its socket is the same
+// program: a contest is not told again for each new worker.
+func TestRecycledWorkersAreNotToldAgain(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var told atomic.Int64
+	SetListenWatch(sb, nil, func(c PortContested) {
+		if c.Port == port {
+			told.Add(1)
+		}
+	}, nil)
+	recycle := `import os,socket,sys,time
+s=socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen()
+print("listening", flush=True)
+for _ in range(4):
+    pid=os.fork()
+    if pid == 0:
+        time.sleep(0.8); os._exit(0)
+    os.waitpid(pid, 0)
+time.sleep(20)`
+	startIn(t, sb, `python3 -I -c '`+recycle+`' `+strconv.Itoa(port))
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	waitPrograms(t, port, 2)
+	sweepListeners()
+	first := told.Load()
+	if first < 1 {
+		t.Fatal("the contest was not told")
+	}
+	for i := 0; i < 6; i++ {
+		time.Sleep(500 * time.Millisecond)
+		sweepListeners()
+	}
+	if told.Load() != first {
+		t.Fatalf("told again as workers came and went: %d, then %d", first, told.Load())
+	}
+}
+
+// A told program is the same one only with the same sockets and a process
+// in common: a recycled worker keeps the master and stays told, and a new
+// process on a told socket address, as macOS hands a freed address on, is
+// told.
+func TestNoteContestByProgramAndProcess(t *testing.T) {
+	now := time.Now()
+	server := program{name: "s0xa", pids: []int{10, 11}}
+	host := program{name: "s0xb", pids: []int{50}}
+	st, tell := noteContest(nil, []program{server, host}, now)
+	if !tell {
+		t.Fatal("a first contest was not told")
+	}
+	// The server recycles its worker: the master stays.
+	recycled := program{name: "s0xa", pids: []int{10, 12}}
+	if st, tell = noteContest(st, []program{recycled, host}, now.Add(2*time.Second)); tell {
+		t.Fatal("a recycled worker was told as a new program")
+	}
+	// The server's address freed and taken by a new process.
+	reused := program{name: "s0xa", pids: []int{70}}
+	if st, tell = noteContest(st, []program{reused, host}, now.Add(4*time.Second)); !tell {
+		t.Fatal("a new process on a told socket address was not told")
+	}
+	// Gone: forgotten.
+	if st, _ = noteContest(st, []program{host}, now.Add(6*time.Second)); len(st.told) != 1 {
+		t.Fatalf("told names kept for programs gone: %v", st.told)
 	}
 }
