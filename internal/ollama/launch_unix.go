@@ -13,7 +13,7 @@ import (
 // reaped when it exits, which exited reports, and is not stopped when
 // Abhed exits.
 func launch(path string, args, env []string, log *os.File) (int, <-chan error, error) {
-	cmd := exec.Command(path, args...)
+	cmd := exec.Command(path, args...) // #nosec G204 -- the ollama program found on PATH, started after the person agrees
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if log != nil {

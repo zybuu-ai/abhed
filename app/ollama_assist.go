@@ -248,7 +248,7 @@ func (f ollamaFlow) pull(ctx context.Context, t ollama.Target, st ollama.Status)
 		{Kind: ui.BlockNotice, Text: "Source: " + f.a.Env.Registry},
 		{Kind: ui.BlockNotice, Text: "Size: " + size}}
 	if fit.DiskFree > 0 {
-		body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "Free where Ollama keeps models: " + ollama.HumanBytes(int64(fit.DiskFree))})
+		body = append(body, ui.Block{Kind: ui.BlockNotice, Text: "Free where Ollama keeps models: " + ollama.HumanBytes(int64(fit.DiskFree))}) // #nosec G115 -- free bytes shown to a person; beyond 8 EiB it would only print oddly
 	}
 	for _, w := range fit.Warnings {
 		body = append(body, ui.Block{Kind: ui.BlockError, Text: w})

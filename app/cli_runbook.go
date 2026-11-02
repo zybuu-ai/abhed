@@ -121,7 +121,7 @@ const maxRunbookFile = 1 << 20
 // loadRunbookFile reads a runbook file: exit_plan's own arguments, the plan
 // and its runbook, so a plan proposed in a conversation can be saved and run.
 func loadRunbookFile(path, hash string) (*runbookSpec, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the -runbook file the person named, read up to 1 MiB
 	if err != nil {
 		return nil, err
 	}

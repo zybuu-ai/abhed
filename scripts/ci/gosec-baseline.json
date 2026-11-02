@@ -15,7 +15,6 @@
  "G118 internal/mcp/http.go": 1,
  "G118 server/server.go": 2,
  "G118 server/settings.go": 1,
- "G120 server/upload.go": 1,
  "G124 auth/local.go": 2,
  "G203 hawkeye/render.go": 1,
  "G204 driver/drivertest/fake.go": 1,
@@ -69,7 +68,5 @@
  "G703 server/upload_folder.go": 2,
  "G703 server/workbench.go": 1,
  "G704 internal/remote/ssh.go": 1,
- "G705 server/export.go": 1,
- "G705 server/server.go": 1,
  "G710 server/security.go": 1
 }

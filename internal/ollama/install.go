@@ -133,7 +133,7 @@ func (e Env) InstallSize(ctx context.Context, p *InstallPlan) {
 	if err == nil {
 		var resp *http.Response
 		if resp, err = e.web().Do(req); err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close() // a HEAD response carries no body to lose
 			if resp.StatusCode == http.StatusOK && resp.ContentLength > 0 {
 				p.SizeNote = "about " + HumanBytes(resp.ContentLength) + " (" + p.SizeURL + ", as it is now)"
 				return

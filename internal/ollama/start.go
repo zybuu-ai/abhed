@@ -175,7 +175,7 @@ func logTail(path string, offset int64) string {
 	if path == "" {
 		return ""
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the server log Abhed itself opened for the ollama it started
 	if err != nil {
 		return ""
 	}
@@ -230,7 +230,7 @@ func portBusyIn(path string, offset int64) bool {
 	if path == "" {
 		return false
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the server log Abhed itself opened for the ollama it started
 	if err != nil {
 		return false
 	}

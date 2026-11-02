@@ -112,7 +112,7 @@ func rustInstall(dir string, _ Artifact) (string, error) {
 		return "", err
 	}
 	prefix := filepath.Join(filepath.Dir(dir), "prefix")
-	if err := os.MkdirAll(prefix, 0o755); err != nil {
+	if err := os.MkdirAll(prefix, 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 		return "", err
 	}
 	for _, c := range strings.Fields(string(comps)) {
@@ -136,7 +136,7 @@ func rustInstall(dir string, _ Artifact) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return "", err
 			}
 			if err := os.Rename(from, to); err != nil {

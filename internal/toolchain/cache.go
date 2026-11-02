@@ -66,7 +66,7 @@ type Installed struct {
 // run as this user's id, which a VM's shared folders may not map, and read
 // the toolchains through it. Abhed's own folders above it are opened too.
 func (c Cache) Prepare() error {
-	if err := os.MkdirAll(c.Root, 0o755); err != nil {
+	if err := os.MkdirAll(c.Root, 0o755); err != nil { // #nosec G301 -- the toolchain cache is readable to every user by design: commands read it, read-only
 		return err
 	}
 	for _, d := range []string{c.Root, filepath.Dir(c.Root)} {
@@ -216,7 +216,7 @@ func (c Cache) Install(ctx context.Context, src *Source, a Artifact, progress Pr
 	if err := writeExclusive(filepath.Join(top, markerFile), marker, 0o444); err != nil {
 		return Installed{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil { // #nosec G301 -- the toolchain cache is readable to every user by design: commands read it, read-only
 		return Installed{}, err
 	}
 	if err := os.Rename(top, dir); err != nil {
@@ -357,7 +357,7 @@ func (s *Source) download(ctx context.Context, a Artifact, path string, progress
 // unpack extracts archive into dir, refusing any entry that would land
 // outside it.
 func unpack(archive, format, dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 		return err
 	}
 	var err error
@@ -485,7 +485,7 @@ func realDir(top, rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(p, 0o755); err != nil {
+	if err := os.MkdirAll(p, 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 		return "", err
 	}
 	if info, err := os.Lstat(p); err != nil || !info.IsDir() {
@@ -533,7 +533,7 @@ func untarGz(archive, dir string) error {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(p, 0o755); err != nil {
+			if err := os.MkdirAll(p, 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return err
 			}
 		case tar.TypeReg:
@@ -548,7 +548,7 @@ func untarGz(archive, dir string) error {
 			if !linkWithin(dir, p, hdr.Linkname) {
 				return fmt.Errorf("refused the link %q -> %q, which leaves the toolchain", hdr.Name, hdr.Linkname)
 			}
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return err
 			}
 			if err := os.Symlink(hdr.Linkname, p); err != nil && !caseCollision(p, err) {
@@ -563,7 +563,7 @@ func untarGz(archive, dir string) error {
 			if info, err := os.Lstat(src); err != nil || !info.Mode().IsRegular() {
 				return fmt.Errorf("refused the hard link %q -> %q, which is not a file of the toolchain", hdr.Name, hdr.Linkname)
 			}
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return err
 			}
 			if err := os.Link(src, p); err != nil && !caseCollision(p, err) {
@@ -595,7 +595,7 @@ func writeFileOverLink(p string, r io.Reader, size int64, mode fs.FileMode) erro
 }
 
 func writeFile(p string, r io.Reader, size int64, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 		return err
 	}
 	perm := os.FileMode(0o644)
@@ -631,7 +631,7 @@ func unzip(archive, dir string) error {
 		mode := zf.Mode()
 		switch {
 		case mode.IsDir():
-			if err := os.MkdirAll(p, 0o755); err != nil {
+			if err := os.MkdirAll(p, 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return err
 			}
 		case mode&fs.ModeSymlink != 0:
@@ -647,7 +647,7 @@ func unzip(archive, dir string) error {
 			if !linkWithin(dir, p, string(target)) {
 				return fmt.Errorf("refused the link %q, which leaves the toolchain", zf.Name)
 			}
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { // #nosec G301 -- a toolchain folder, readable to commands by design
 				return err
 			}
 			if err := os.Symlink(string(target), p); err != nil && !caseCollision(p, err) {
@@ -729,14 +729,14 @@ func readOnly(dir string) error {
 			dirs = append(dirs, p)
 			return nil
 		}
-		return os.Chmod(p, info.Mode().Perm()&^0o222)
+		return os.Chmod(p, info.Mode().Perm()&^0o222) // #nosec G122 -- a toolchain Abhed just unpacked in its own folder, which commands only read; links are skipped
 	})
 	if err != nil {
 		return err
 	}
 	// Directories last, deepest first, so the walk could still enter them.
 	for i := len(dirs) - 1; i >= 0; i-- {
-		if err := os.Chmod(dirs[i], 0o555); err != nil {
+		if err := os.Chmod(dirs[i], 0o555); err != nil { // #nosec G302 -- a read-only toolchain folder, readable to commands by design
 			return err
 		}
 	}
@@ -747,7 +747,7 @@ func readOnly(dir string) error {
 func removeTree(dir string) error {
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
-			_ = os.Chmod(p, 0o755) // #nosec G302 -- a directory about to be removed
+			_ = os.Chmod(p, 0o755) // #nosec G302 G122 -- a directory of a toolchain about to be removed, in Abhed's own folder, which commands only read; links are not followed
 		}
 		return nil
 	})
