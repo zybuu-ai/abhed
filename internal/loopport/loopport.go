@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Env names the range ("lo-hi") in place of the default.
@@ -64,17 +65,28 @@ func Range() (lo, hi int) {
 
 var warnOnce sync.Once
 
-// ListenAddr is net.Listen("tcp", addr), but for any port (port 0) on a
-// Mac: a port of the range then, on addr's host, so a listener a person
-// or a configuration asked for on any port (a port forward, abhed serve on
-// :0, a metrics or egress-proxy listener) is never one a debug session on
-// the Mac may reach. A port named explicitly is taken as named.
+// ListenAddr is net.Listen("tcp", addr), but for any port on a Mac (a port
+// of "0", "00" or empty, as net reads them): a port of the range then, on
+// addr's host, so a listener a person or a configuration asked for on any
+// port (a port forward, abhed serve on :0, a metrics or egress-proxy
+// listener) is never one a debug session on the Mac may reach. A port named
+// explicitly is taken as named.
 func ListenAddr(addr string) (net.Listener, error) {
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil || port != "0" || !Applies() {
+	if err != nil || !AnyPort(port) || !Applies() {
 		return net.Listen("tcp", addr)
 	}
 	return Listen(host)
+}
+
+// AnyPort reports whether port, as written in an address, asks for any
+// port: empty, or a number that is 0.
+func AnyPort(port string) bool {
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n == 0
 }
 
 // In reports whether port is in the reserved range, where the rule applies.
@@ -94,16 +106,28 @@ func exhausted() error {
 	return fmt.Errorf("%w %d-%d; free some, or give every Abhed on this Mac another range in %s", ErrExhausted, lo, hi, Env)
 }
 
-// Listen listens on host (127.0.0.1 or ::1) at a port of the range where
-// the rule applies, else at a port the system picks.
+// Listen listens on host (an address or a name, looked up once; empty is
+// every address) at a port of the range where the rule applies, else at a
+// port the system picks. A failure other than a port in use or refused is
+// returned as it is, not as ErrExhausted.
 func Listen(host string) (net.Listener, error) {
 	if !Applies() {
 		return net.Listen("tcp", net.JoinHostPort(host, "0"))
 	}
+	at, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return nil, err
+	}
 	lo, hi := Range()
 	for _, p := range order(lo, hi) {
-		if ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p))); err == nil {
+		a := *at
+		a.Port = p
+		ln, err := net.ListenTCP("tcp", &a)
+		if err == nil {
 			return ln, nil
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) && !errors.Is(err, syscall.EACCES) {
+			return nil, err
 		}
 	}
 	return nil, exhausted()

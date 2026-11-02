@@ -14,12 +14,6 @@ All notable changes to Abhed are recorded here. The format follows
   stop it. Only the managed file's own `web_fetch.enabled: false` refuses it,
   so a managed deployment that relied on the default must now set it to
   false.
-- On a Mac, Abhed's own loopback listeners (egress proxies, each command's
-  proxy port, port forwards, the sign-in callback) now take their ports from
-  47600 to 47855 only, and fail, saying so, when that range is full. If
-  another program on the Mac uses those ports, set `ABHED_LOOPBACK_PORTS`
-  to another range (`lo-hi`, at least 16 ports above 1024), the same for
-  every Abhed process there.
 - On a Mac, Abhed's own listeners that do not name their port (egress
   proxies, each command's proxy port, `abhed sandbox forward` without a
   local port, `abhed serve`, `server.metrics.listen` and `abhed
@@ -959,12 +953,15 @@ All notable changes to Abhed are recorded here. The format follows
   five ports chosen outside the range before it starts, which it holds on
   the wildcard and loopback addresses for its whole life, and only those
   are opened to it; the program may listen on those five on any of the
-  Mac's addresses, and on no other port (a dev server cannot be debugged
-  this way; use the container tier). Go may reach each port the system
-  hands out to listeners (49152 to 65535) but the range, one rule each,
-  older Abhed releases' proxies on the Mac included, and a Go program being
-  debugged can listen where the network reaches, the reserved range too
-  (the consent and the guide say so). Both debug on the macOS process tier in the default
+  Mac's addresses, and on no other port unless the session's commands may
+  listen (`sandbox.listen`): then, as any command, on any port but the
+  range and the Mac's busy ones, where the network reaches, so a dev server
+  can be debugged with listening on (else use the container tier). Go may
+  reach each port the system hands out to listeners (49152 to 65535) but
+  the range, one rule each, older Abhed releases' proxies on the Mac
+  included, and a Go program being debugged can listen where the network
+  reaches, but never on a port of the range (the consent and the guide say
+  so). Both debug on the macOS process tier in the default
   configuration. Delve is built for macOS too, offered and installed with
   Go like any debugger; a Go launch without Delve offers the install before
   anything is judged. A workspace agreement to debug on this Mac is kept
@@ -1168,6 +1165,13 @@ out):
 
 - Added: `config.Config.ManagedWebFetchOff`, whether the managed file
   itself sets `web_fetch.enabled` to false; `abhed.Model.Images`.
+
+- Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
+  with an `Options.Addr` asking for any port (`:0`, or an empty port) now
+  listens on a port of Abhed's reserved loopback range (47600 to 47855, or
+  `ABHED_LOOPBACK_PORTS`), not one the system picks, and fails with
+  `loopport.ErrExhausted` wrapped when that range is full. Name a port to
+  keep it as before.
 
 - Incompatible: `hawkeye.Call` gains `Sandbox`, a slice, and
   `monitor.Guard` now holds a mutex and a slice, so neither is comparable any
