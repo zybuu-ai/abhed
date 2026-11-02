@@ -803,15 +803,23 @@ func viaUpstream(addr string) bool {
 	return !up.Bypass(host)
 }
 
-// proxyFor is the authority of the upstream proxy a model's calls go
-// through, or "" when they go directly. A provider's default endpoint (no
-// base_url) is a public host, taken to go through the proxy in force.
-func proxyFor(base string) string {
+// proxyFor is the authority of the upstream proxy a provider's calls go
+// through, or "" when they go directly. With no base_url, the type's own
+// default endpoint is checked, so a local server's loopback default is direct.
+func proxyFor(p config.ProviderConfig) string {
 	up := egress.CurrentUpstream()
 	if up == nil {
 		return ""
 	}
+	base := p.BaseURL
 	if base == "" {
+		base = defaultEndpoint(p)
+	}
+	if base == "" {
+		// A type that does not say where it calls: a hosted one goes through the proxy.
+		if p.OnThisMachine() {
+			return ""
+		}
 		return up.Authority()
 	}
 	if addr := dialAddr(base); addr == "" || !viaUpstream(addr) {
@@ -820,12 +828,25 @@ func proxyFor(base string) string {
 	return up.Authority()
 }
 
+// defaultEndpoint is the URL a provider with no base_url calls, as its
+// adapter resolves it, or "" when that cannot be told.
+func defaultEndpoint(p config.ProviderConfig) string {
+	if p.Model == "" {
+		p.Model = "m" // the endpoint does not depend on it, but the adapter needs one
+	}
+	a, err := p.Adapter()
+	if err != nil {
+		return ""
+	}
+	return model.Endpoint(a)
+}
+
 // proxiedFailure names the upstream proxy when a model call through it
 // failed at the proxy: the proxy not answering, its refusal of the tunnel,
 // or a 502, 503 or 504 the call came back with. An answer the model server
 // gave is never put on the proxy.
 func proxiedFailure(err error, name string, p config.ProviderConfig, where, next string) (string, bool) {
-	up := proxyFor(p.BaseURL)
+	up := proxyFor(p)
 	if up == "" || err == nil {
 		return "", false
 	}
@@ -833,8 +854,16 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	if host == "" {
 		host = where
 	}
+	credentials := func() (string, bool) {
+		return fmt.Sprintf("The upstream proxy %s asked for credentials (407) for %s (model %q): check network.upstream_proxy.credentials_secret "+
+			"and the user:password stored under that name. %s", up, host, name, next), true
+	}
 	var se *model.StatusError
 	if errors.As(err, &se) {
+		// A 407 is the proxy's own: an http:// call is forwarded, so its answer comes back as the call's.
+		if se.Status == http.StatusProxyAuthRequired {
+			return credentials()
+		}
 		if se.Status != http.StatusBadGateway && se.Status != http.StatusServiceUnavailable && se.Status != http.StatusGatewayTimeout {
 			return "", false
 		}
@@ -864,8 +893,7 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	case 0:
 		return "", false
 	case http.StatusProxyAuthRequired:
-		return fmt.Sprintf("The upstream proxy %s asked for credentials (407) for %s (model %q): check network.upstream_proxy.credentials_secret "+
-			"and the user:password stored under that name. %s", up, host, name, next), true
+		return credentials()
 	}
 	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
 		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true

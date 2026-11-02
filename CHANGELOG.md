@@ -6,6 +6,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- With a corporate upstream proxy in force, a local model server left at
+  its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
+  no `base_url`) is no longer reported as reached through the proxy, by
+  `/doctor` or in a failed call's error; a hosted provider's default
+  endpoint is checked against `no_proxy` like any other host. The proxy's
+  own 407 on an `http://` endpoint now says to check the proxy credentials
+  ([Network policy](docs/guide/21-network-policy.md#a-corporate-upstream-proxy)).
+
 ## [1.2.9] - 2026-11-02
 
 ### Upgrading from 1.2.8
