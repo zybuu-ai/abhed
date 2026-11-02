@@ -811,3 +811,10 @@ func TestDialUpstream(t *testing.T) {
 		t.Fatalf("loopback or a no_proxy host went through the proxy: %v %v", err, corp.requests())
 	}
 }
+
+// An UpstreamUnreachable without its cause still reads, and names the proxy.
+func TestUpstreamUnreachableWithoutCause(t *testing.T) {
+	if got := (&UpstreamUnreachable{Proxy: "proxy.corp.test:3128"}).Error(); got != "the upstream proxy proxy.corp.test:3128 is not answering" {
+		t.Fatal(got)
+	}
+}

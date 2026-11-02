@@ -194,7 +194,7 @@ func endpointRow(ctx context.Context, p config.ProviderConfig, name string) stri
 		return friendlyModelError(err, name, p)
 	}
 	answers := "answers"
-	up := proxyFor(p.BaseURL)
+	up := proxyFor(p)
 	if up != "" {
 		answers = "answers through the upstream proxy " + up
 	}

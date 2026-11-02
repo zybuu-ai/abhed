@@ -328,8 +328,12 @@ type UpstreamUnreachable struct {
 }
 
 func (e *UpstreamUnreachable) Error() string {
+	if e.Err == nil {
+		return "the upstream proxy " + e.Proxy + " is not answering"
+	}
 	return "the upstream proxy " + e.Proxy + ": " + e.Err.Error()
 }
+
 func (e *UpstreamUnreachable) Unwrap() error { return e.Err }
 
 // UpstreamRefused is the upstream proxy's answer other than 200 to a CONNECT.

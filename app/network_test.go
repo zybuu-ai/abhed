@@ -276,10 +276,10 @@ func TestModelFailureThroughTheProxyNamesIt(t *testing.T) {
 	}
 	// The model server's own answers, and other errors, are never put on the proxy.
 	for name, e := range map[string]error{
-		"server 403 Forbidden":       fmt.Errorf("model: %w", &model.StatusError{Status: http.StatusForbidden, Body: "Forbidden", Attempts: 1}),
-		"server 400 ... Bad Gateway": &model.StatusError{Status: http.StatusBadRequest, Body: "upstream said Bad Gateway", Attempts: 1},
-		"other : Forbidden":          errors.New("open /x: Forbidden"),
-		"url error : Forbidden":      &url.Error{Op: "Post", URL: p.BaseURL, Err: fmt.Errorf("read: %w", errors.New("Forbidden"))},
+		"server 403 Forbidden":         fmt.Errorf("model: %w", &model.StatusError{Status: http.StatusForbidden, Body: "Forbidden", Attempts: 1}),
+		"server 400 ... Bad Gateway":   &model.StatusError{Status: http.StatusBadRequest, Body: "upstream said Bad Gateway", Attempts: 1},
+		"other : Forbidden":            errors.New("open /x: Forbidden"),
+		"url error wrapping Forbidden": &url.Error{Op: "Post", URL: p.BaseURL, Err: wrappedText{"Forbidden", errors.New("read")}},
 	} {
 		if got := friendlyModelError(e, "m", p); strings.Contains(got, "upstream proxy") {
 			t.Errorf("%s was put on the proxy: %s", name, got)
@@ -313,7 +313,22 @@ func TestModelFailureThroughTheProxyNamesIt(t *testing.T) {
 			t.Errorf("%s: %s", name, got)
 		}
 	}
-	// A provider's default endpoint goes through the proxy too, and is named so.
+	// The proxy's own 407 on a forwarded http:// call comes back as the call's.
+	hp := config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://llm.corp.test:8000/v1", Model: "m"}
+	if got := friendlyModelError(&model.StatusError{Status: http.StatusProxyAuthRequired, Attempts: 1}, "m", hp); !strings.Contains(got, "credentials_secret") {
+		t.Errorf("http 407: %s", got)
+	}
+	// A local server left at its default is on loopback, reached directly: its 503 is its own.
+	for _, typ := range []string{"vllm", "ollama", "llamacpp"} {
+		lp := config.ProviderConfig{Type: typ, Model: "m"}
+		if up := proxyFor(lp); up != "" {
+			t.Errorf("%s with no base_url is put through the proxy %s", typ, up)
+		}
+		if got := friendlyModelError(&model.StatusError{Status: http.StatusServiceUnavailable, Attempts: 4}, "m", lp); strings.Contains(got, "proxy") {
+			t.Errorf("%s 503: %s", typ, got)
+		}
+	}
+	// A hosted provider's default endpoint goes through the proxy, and is named so.
 	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m",
 		config.ProviderConfig{Type: "anthropic", Model: "m"}); !strings.Contains(got, "upstream proxy "+addr) {
 		t.Errorf("default endpoint: %s", got)
@@ -392,3 +407,13 @@ func TestDoctorEndpointRowThroughTheProxy(t *testing.T) {
 		t.Fatalf("a failed call through the proxy: %q", got)
 	}
 }
+
+// wrappedText is an error whose own text is exactly text but which wraps
+// another: not the bare leaf Go's CONNECT refusal is.
+type wrappedText struct {
+	text string
+	err  error
+}
+
+func (w wrappedText) Error() string { return w.text }
+func (w wrappedText) Unwrap() error { return w.err }

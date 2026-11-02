@@ -112,6 +112,20 @@ func Known(name string) bool {
 	return ok
 }
 
+// Endpoint is the base URL an adapter calls, its type's default included,
+// or "" for one that does not say.
+func Endpoint(a Adapter) string {
+	switch m := a.(type) {
+	case *OpenAICompatible:
+		return m.BaseURL
+	case *Anthropic:
+		return m.BaseURL
+	case *Gemini:
+		return m.BaseURL
+	}
+	return ""
+}
+
 // LocalByDefault reports a built-in type whose own endpoint, with no
 // base_url, is a server on this machine.
 func LocalByDefault(name string) bool {
