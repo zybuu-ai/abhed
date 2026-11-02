@@ -54,7 +54,8 @@ const (
 // isolates before it runs anything: a statement of the body itself, not in a
 // branch, a loop or a function literal, that is, or directly wraps, a call
 // to testenv.Main or testenv.Isolate, or clitest.Main (inside package
-// clitest, its own Main), before any statement mentions m.Run. The names are
+// clitest, its own Main), with no use of m before it, nor in it but as that
+// call's argument. The names are
 // resolved through the file's imports, and a body that declares one of
 // those names again, shadowing the package, never counts.
 func isolatingMain(t *testing.T, path, pkg string) bool {
@@ -104,41 +105,45 @@ func isolatingMain(t *testing.T, path, pkg string) bool {
 			}
 			return false
 		}
-		// The call itself, or a call it is a direct argument of, as in
-		// os.Exit(clitest.Main(m)).
-		direct := func(e ast.Expr) bool {
+		// The isolating call of a statement: the call itself, or one that is a
+		// direct argument of the statement's call, as in os.Exit(clitest.Main(m)).
+		isoCall := func(e ast.Expr) *ast.CallExpr {
 			if isolating(e) {
-				return true
+				return e.(*ast.CallExpr)
 			}
 			if call, ok := e.(*ast.CallExpr); ok {
 				for _, a := range call.Args {
 					if isolating(a) {
-						return true
+						return a.(*ast.CallExpr)
 					}
 				}
 			}
-			return false
+			return nil
 		}
 		for _, st := range fn.Body.List {
+			var call *ast.CallExpr
 			switch st := st.(type) {
 			case *ast.ExprStmt:
-				if direct(st.X) {
-					return true
-				}
+				call = isoCall(st.X)
 			case *ast.AssignStmt:
-				if len(st.Rhs) == 1 && direct(st.Rhs[0]) {
-					return true
+				if len(st.Rhs) == 1 {
+					call = isoCall(st.Rhs[0])
 				}
 			case *ast.DeclStmt:
-				if gd, ok := st.Decl.(*ast.GenDecl); ok {
-					for _, sp := range gd.Specs {
-						if vs, ok := sp.(*ast.ValueSpec); ok && len(vs.Values) == 1 && direct(vs.Values[0]) {
-							return true
-						}
+				if gd, ok := st.Decl.(*ast.GenDecl); ok && len(gd.Specs) == 1 {
+					if vs, ok := gd.Specs[0].(*ast.ValueSpec); ok && len(vs.Values) == 1 {
+						call = isoCall(vs.Values[0])
 					}
 				}
 			}
-			if mentionsRun(st, param) {
+			// m may appear only as an argument of the isolating call: any
+			// other use (m.Run in the same statement, r := m, a method value
+			// applied to m) runs or may run the tests first, and stops here.
+			uses := countUses(st, param)
+			if call != nil && uses == argUses(call, param) {
+				return true
+			}
+			if uses > 0 {
 				return false
 			}
 		}
@@ -147,18 +152,27 @@ func isolatingMain(t *testing.T, path, pkg string) bool {
 	return false
 }
 
-// mentionsRun reports whether n mentions m.Run, for the TestMain parameter m.
-func mentionsRun(n ast.Node, param string) bool {
-	found := false
+// countUses counts the identifiers in n that name the TestMain parameter.
+func countUses(n ast.Node, param string) int {
+	c := 0
 	ast.Inspect(n, func(n ast.Node) bool {
-		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Run" {
-			if x, ok := sel.X.(*ast.Ident); ok && x.Name == param {
-				found = true
-			}
+		if id, ok := n.(*ast.Ident); ok && id.Name == param {
+			c++
 		}
-		return !found
+		return true
 	})
-	return found
+	return c
+}
+
+// argUses counts the arguments of call that are the parameter itself.
+func argUses(call *ast.CallExpr, param string) int {
+	c := 0
+	for _, a := range call.Args {
+		if id, ok := a.(*ast.Ident); ok && id.Name == param {
+			c++
+		}
+	}
+	return c
 }
 
 // shadows reports whether fn declares, anywhere, a name one of the file's
