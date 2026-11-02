@@ -337,26 +337,29 @@ All notable changes to Abhed are recorded here. The format follows
   list and `resolve_via_proxy`. Abhed's own connections go out through it:
   the model clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the
   `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
-  installs and registry lookups, `abhed login`, the profile calls, the org policy fetch and
-  the record's witness. Under the allowlist, the commands' proxy chains
-  what it allowed through it (`CONNECT` for tunnels, absolute form for
-  plain HTTP), so a provider or registry reachable only through the
-  corporate proxy is reached under the allowlist too. The allowlist decides
-  first; before chaining, Abhed resolves the name itself and refuses an
-  internal address no rule names, a lookup that times out or fails, and,
-  by default, a name that does not resolve here at all. With
-  `resolve_via_proxy` on, such a name is sent to the proxy unchecked, only
-  for a host an allow rule (or `web_fetch`'s `allowed_hosts`) names
-  exactly, and the record marks it `"resolved": "proxy"`. Credentials never
-  reach a URL, an error, a log, the record or the model; `go install` and
-  `git push` get a loopback relay with a per-run token, for the hosts that
+  installs and registry lookups, `abhed login`, the profile calls, the org
+  policy fetch, record shipping and the record's witness. Under the
+  allowlist, the commands' proxy chains what it allowed through it
+  (`CONNECT` for tunnels, absolute form for plain HTTP), so a provider or
+  registry reachable only through the corporate proxy is reached under the
+  allowlist too. The allowlist decides first; before chaining, Abhed
+  resolves the name itself and refuses an internal address no rule names,
+  a lookup that times out or fails, and, by default, a name that does not
+  resolve here at all. With `resolve_via_proxy` on, such a name is sent to
+  the proxy unchecked, only for a host an allow rule names exactly (or, for
+  `web_fetch` outside the allowlist, the managed `allowed_hosts` names
+  exactly; a narrowing of a managed wildcard does not count), and the
+  record marks it `"resolved": "proxy"`. Credentials never reach a URL, an
+  error, a log, the record or the model; `go install` and `git push` get a
+  loopback relay with a per-run token, for the hosts and ports that
   download needs, and a push to a `no_proxy` remote goes directly. A
   workspace never sets it; a managed file can force it, and then the
   person's `no_proxy` and `resolve_via_proxy` are dropped unless the
   managed file names its own. The proxy is set when a session or command
-  starts, for the whole process; an SDK agent with a different one than
-  another in the same process is refused. PAC, WPAD, SOCKS and NTLM or
-  Kerberos proxy authentication are not supported. Records of chained
+  starts, for the whole process: after changing it, restart a running
+  `abhed serve` or editor connection. An SDK agent with a different one
+  than another in the same process is refused. PAC, WPAD, SOCKS and NTLM
+  or Kerberos proxy authentication are not supported. Records of chained
   connections carry `upstream`.
 - `statusline.timeout_ms` sets how long one run of the statusline command
   may take (one second unset, ten at most), and `/status` shows the

@@ -283,11 +283,21 @@ func pushProxy(url string) ([][2]string, func(), error) {
 	if up == nil || rh == "" || up.Bypass(rh) {
 		return nil, func() {}, nil
 	}
-	proxy, _, stop, err := egress.UpstreamRelay([]string{rh})
+	// The remote's host and port as the URL names them; the relay reaches nothing else.
+	proxy, _, stop, err := egress.UpstreamRelay([]string{remoteAuthority(url)})
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("the upstream proxy relay: %w", err)
 	}
 	return [][2]string{{"http.proxy", proxy}}, stop, nil
+}
+
+// remoteAuthority is a push URL's host, with its port when it names one.
+func remoteAuthority(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // remoteHost is a push URL's host, or "".

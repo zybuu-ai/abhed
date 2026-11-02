@@ -518,7 +518,7 @@ commands' allowed traffic through it:
 | `ca_file` | a PEM bundle trusted beside the system's, for connections through the proxy only: an `https://` proxy's certificate, and servers a proxy that inspects TLS re-signs with the organisation's CA. It is added to a client's own roots too (a cluster's CA, a forge's CA file) for those connections; a destination `no_proxy` names, reached directly, does not trust it |
 | `credentials_secret` | the NAME of a stored secret (`abhed secret set CORP_PROXY`) holding `user:password`, sent to the proxy as `Proxy-Authorization: Basic`. It is read at each connection, so a rotated password is used at once |
 | `no_proxy` | destinations reached directly: a host name, a domain (`.corp.example` or `*.corp.example`, which match the domain and its subdomains), an IP address or a CIDR range. A port is not supported; `*` is refused (remove `upstream_proxy` instead). Loopback (`localhost`, `127.0.0.0/8`, `::1`) is always reached directly |
-| `resolve_via_proxy` | off by default: a name that does not resolve on this machine is refused, so its address can always be checked. On, such a name (a definite "no such host" only) is sent to the proxy unchecked, for a host an allow rule names exactly (or, for `web_fetch` outside the allowlist, its `allowed_hosts` names exactly), never one matched only by a wildcard or the default; the record marks it `"resolved": "proxy"`. A managed file's value wins, and under a managed proxy the person cannot turn it on |
+| `resolve_via_proxy` | off by default: a name that does not resolve on this machine is refused, so its address can always be checked. On, such a name (a definite "no such host" only) is sent to the proxy unchecked, for a host an allow rule names exactly (or, for `web_fetch` outside the allowlist, the managed file's `allowed_hosts` names exactly; a narrowing of a managed wildcard does not count), never one matched only by a wildcard or the default; the record marks it `"resolved": "proxy"`. A managed file's value wins, and under a managed proxy the person cannot turn it on |
 
 **What goes through it**, unless `no_proxy` names the destination:
 
@@ -558,7 +558,9 @@ relay instead, in `HTTPS_PROXY` for `go install` and git's `http.proxy` for
 a push, with a token made for that run, and the relay adds the
 credentials. The relay reaches only the hosts that download needs (the Go
 module proxy and checksum database, or the push remote's host) and refuses
-any other target before the proxy is asked; it lives only as long as the
+any other target, and any other port (443 for a tunnel and 80 for plain
+HTTP, or the port the endpoint's URL names), before the proxy is asked; it
+lives only as long as the
 program. The token is in that program's environment or configuration for
 its run, where a concurrent command that can read it could reach those
 hosts through the relay. A push to a remote `no_proxy` names goes directly,
@@ -581,6 +583,20 @@ loading a configuration. A process takes one: an SDK agent whose
 configuration names a different upstream proxy (or none) than one already
 built in the same process is refused, rather than either running through
 the other's; run it in a process of its own.
+
+After changing `network.upstream_proxy`, a managed one included, restart
+a running `abhed serve` and the editor's connection. Until then their new
+sessions are refused, and their background work (the record's witness and
+shipping, the org policy refresh) keeps the proxy the process started
+with, or goes without one.
+
+Every subcommand that connects (`abhed record`, `abhed hawkeye`, `abhed
+policy refresh`, `abhed login`, `abhed mcp`, `abhed resolve`, `abhed
+index`, `abhed toolchain`, `abhed ollama`, `abhed eval`, `abhed doctor`)
+puts the proxy in force before it does, and the CLI and an editor's
+connection put it in force before they fetch the org policy. When the
+network configuration cannot go in force (a CA bundle that does not
+read, say), an editor's connection fetches no org policy at all.
 
 **Not covered:** a PAC file or WPAD; SOCKS; NTLM, Kerberos or other
 challenge-response proxy authentication (Basic only); `ssh_connect` and

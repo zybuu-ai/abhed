@@ -344,8 +344,8 @@ type Transport struct {
 	// Resolve is the client's own resolver, which Check's addresses come
 	// from through an upstream proxy outside the allowlist; nil is the system's.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
-	// Anchored reports a host the client's own configuration names exactly
-	// (web_fetch's allowed_hosts), which resolve_via_proxy may pass unresolved.
+	// Anchored reports a host the managed configuration names exactly for this
+	// client, which resolve_via_proxy may pass unresolved outside the allowlist only.
 	Anchored func(host string) bool
 	// Guard is the guard of the client's tool set, Unguarded outside the
 	// allowlist; nil uses the request's, then the one installed.
@@ -709,7 +709,8 @@ func (g *Guard) roundTrip(t *Transport, req *http.Request) (*http.Response, erro
 		// Chained after the decision: the proxy resolves the name, so the
 		// addresses it has here are checked first, where it has any.
 		ov.via, ev.Upstream = up, up.Authority()
-		anchored := model || v.Exact && v.Decision == Allow || t.Anchored != nil && t.Anchored(host)
+		// Under the allowlist only its own exact rule anchors; Anchored is for the unguarded path.
+		anchored := model || v.Exact && v.Decision == Allow
 		addrs, byProxy, perr := up.precheck(req.Context(), g.resolve, host, anchored)
 		if perr != nil {
 			closeBody(req)

@@ -381,13 +381,13 @@ func goHosts(e Endpoints) []string {
 	var hosts []string
 	for _, p := range strings.Split(e.goProxy(), ",") {
 		if u, err := url.Parse(strings.TrimSpace(p)); err == nil && u.Hostname() != "" {
-			hosts = append(hosts, u.Hostname())
+			hosts = append(hosts, u.Host)
 		}
 	}
 	sum := strings.Fields(e.goSumDB())
 	if len(sum) > 1 {
 		if u, err := url.Parse(sum[1]); err == nil && u.Hostname() != "" {
-			hosts = append(hosts, u.Hostname())
+			hosts = append(hosts, u.Host)
 		}
 	} else if len(sum) == 1 {
 		name, _, _ := strings.Cut(sum[0], "+")

@@ -35,7 +35,9 @@ func UpstreamEnv(hosts []string) (env []string, stop func(), err error) {
 // hosts alone (the ones the download needs), and returns its URL with a
 // per-run token as its user, the no_proxy list for the program's own
 // settings, and the function that ends it; "" and a no-op with no upstream
-// proxy. Any other target is refused before the proxy is asked.
+// proxy. A host alone is reached on 443 by CONNECT and 80 in absolute form;
+// "host:port" on that port only. Any other target is refused before the
+// proxy is asked.
 func UpstreamRelay(hosts []string) (proxy, noProxy string, stop func(), err error) {
 	u := CurrentUpstream()
 	if u == nil {
@@ -53,7 +55,7 @@ func UpstreamRelay(hosts []string) (proxy, noProxy string, stop func(), err erro
 // holder of its token alone.
 type relay struct {
 	u     *Upstream
-	hosts map[string]bool // the only hosts it reaches
+	hosts map[string]map[string]bool // the only hosts it reaches, each on its ports ("" for the defaults)
 	ln    net.Listener
 	token string
 	want  string // the Proxy-Authorization its clients send
@@ -77,10 +79,17 @@ func startRelay(u *Upstream, hosts []string) (*relay, error) {
 	}
 	tok := hex.EncodeToString(b)
 	r := &relay{u: u, ln: ln, token: tok, want: "Basic " + base64.StdEncoding.EncodeToString([]byte("abhed:"+tok)),
-		conns: map[net.Conn]bool{}, hosts: map[string]bool{}}
+		conns: map[net.Conn]bool{}, hosts: map[string]map[string]bool{}}
 	for _, h := range hosts {
-		if h = strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), ".")); h != "" {
-			r.hosts[h] = true
+		port := ""
+		if hh, p, err := net.SplitHostPort(h); err == nil {
+			h, port = hh, p
+		}
+		if h = relayHost(h); h != "" {
+			if r.hosts[h] == nil {
+				r.hosts[h] = map[string]bool{}
+			}
+			r.hosts[h][port] = true
 		}
 	}
 	r.wg.Add(1)
@@ -157,12 +166,17 @@ func (r *relay) handle(c net.Conn) {
 	if req.Method != http.MethodConnect && req.URL != nil {
 		target = req.URL.Host
 	}
-	host, _, err := net.SplitHostPort(target)
+	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		host = target
+		host, port = target, ""
 	}
-	if !r.hosts[strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))] {
+	ports := r.hosts[relayHost(host)]
+	if ports == nil {
 		writeStatus(c, http.StatusForbidden, "abhed relay: "+host+" is not a host this download needs\n", nil)
+		return
+	}
+	if !relayPortOK(ports, port, req.Method == http.MethodConnect) {
+		writeStatus(c, http.StatusForbidden, "abhed relay: port "+port+" of "+host+" is not one this download needs\n", nil)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -246,4 +260,25 @@ func splice(c net.Conn, br *bufio.Reader, up net.Conn) {
 	}()
 	<-done
 	<-done
+}
+
+// relayHost is a host as the relay compares it.
+func relayHost(h string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), "."))
+}
+
+// relayPortOK reports whether port is one the relay reaches for a host
+// listed with ports: a port named with the host, or else 443 for CONNECT
+// and 80 for absolute-form http.
+func relayPortOK(ports map[string]bool, port string, connect bool) bool {
+	if ports[port] && port != "" {
+		return true
+	}
+	if !ports[""] {
+		return false
+	}
+	if connect {
+		return port == "443"
+	}
+	return port == "" || port == "80"
 }

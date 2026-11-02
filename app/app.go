@@ -331,14 +331,11 @@ type flagSettings struct {
 }
 
 func (a *App) loadConfigWith(workspace string, set flagSettings) (config.Config, error) {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust, Settings: set.data, SettingsName: set.name})
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: a.trust, Settings: set.data, SettingsName: set.name})
 	if err != nil {
 		return cfg, err
 	}
 	registerState(cfg, workspace)
-	if err := cfg.ApplyNetwork(); err != nil {
-		return cfg, err
-	}
 	return cfg, a.checkEdition(cfg)
 }
 

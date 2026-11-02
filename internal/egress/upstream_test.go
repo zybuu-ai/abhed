@@ -469,7 +469,10 @@ func TestUpstreamRelay(t *testing.T) {
 	_, port, _ := ownServer(t)
 	corp := startCorp(t, basic(corpUser, corpPass), nil)
 	useUpstream(t, corp, func(u *Upstream) { u.NoProxy = []string{"internal.corp"} })
-	env, stop, err := UpstreamEnv([]string{"outside.test"})
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "relay tls") }))
+	t.Cleanup(tlsSrv.Close)
+	// Each listed with the port it serves on: the relay reaches no other.
+	env, stop, err := UpstreamEnv([]string{fmt.Sprintf("outside.test:%d", port), fmt.Sprintf("outside.test:%d", portOf(t, tlsSrv.URL))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,8 +502,6 @@ func TestUpstreamRelay(t *testing.T) {
 	if string(b) != "own ok /relay" || !corp.saw("/relay") {
 		t.Fatalf("through the relay: %q, proxy %v", b, corp.requests())
 	}
-	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "relay tls") }))
-	t.Cleanup(tlsSrv.Close)
 	tlsConf := tlsSrv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	tlsConf.ServerName = "example.com"
 	c = &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(pu), TLSClientConfig: tlsConf}}
@@ -604,6 +605,12 @@ func TestUpstreamResolveViaProxy(t *testing.T) {
 		if err := get(g, &rec, "x.wild.test"); err == nil || corp.saw("x.wild.test") {
 			t.Fatalf("a wildcard host went to the proxy unresolved: %v", err)
 		}
+		// Under the allowlist the client's own anchor does not count: only the rule's.
+		ctx := WithCaller(context.Background(), Caller{Session: "s", Record: rec.rec})
+		anch := &Transport{Kind: KindWebFetch, Guard: g, Anchored: func(string) bool { return true }}
+		if _, err := ownGet(t, anch, ctx, fmt.Sprintf("http://y.wild.test:%d/r", port)); err == nil || corp.saw("y.wild.test") {
+			t.Fatalf("a client anchor widened a wildcard rule: %v", err)
+		}
 		// A lookup that times out or fails is no not-found: refused.
 		for name, dns := range map[string]func(context.Context, string) ([]netip.Addr, error){"slow": slowDNS, "servfail": failingDNS} {
 			g2 := ownGuard(t, rules, GuardOptions{Resolve: dns})
@@ -679,6 +686,62 @@ func TestUpstreamRelayRefusesOtherHosts(t *testing.T) {
 	_ = r.Body.Close()
 	if r.StatusCode != http.StatusForbidden || len(corp.requests()) != 0 {
 		t.Fatalf("an unlisted CONNECT through the relay: %d", r.StatusCode)
+	}
+}
+
+// A listed host is reached on its own ports only: 443 by CONNECT and 80 in
+// absolute form for a host alone, or the port listed with it.
+func TestUpstreamRelayRefusesOtherPorts(t *testing.T) {
+	corp := startCorp(t, "", nil)
+	useUpstream(t, corp, func(u *Upstream) { u.Credentials = nil })
+	proxy, _, stop, err := UpstreamRelay([]string{"proxy.golang.test", "sum.golang.test:8443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	pu, _ := url.Parse(proxy)
+	pass, _ := pu.User.Password()
+	ask := func(line string) int {
+		t.Helper()
+		conn, err := net.Dial("tcp", pu.Host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		method, target, _ := strings.Cut(line, " ")
+		host := target
+		if u, err := url.Parse(target); err == nil && u.Host != "" {
+			host = u.Host
+		}
+		fmt.Fprintf(conn, "%s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: %s\r\n\r\n", line, host, basic(pu.User.Username(), pass))
+		r, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: method})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.Body.Close()
+		return r.StatusCode
+	}
+	for _, line := range []string{
+		"CONNECT proxy.golang.test:22",
+		"CONNECT proxy.golang.test:80",
+		"GET http://proxy.golang.test:8080/",
+		"GET http://proxy.golang.test:443/",
+		"CONNECT sum.golang.test:443",
+		"GET http://sum.golang.test/",
+	} {
+		if code := ask(line); code != http.StatusForbidden || len(corp.requests()) != 0 {
+			t.Fatalf("%s: %d, proxy %v", line, code, corp.requests())
+		}
+	}
+	// The listed ports pass the relay's check and reach the proxy.
+	for _, line := range []string{"CONNECT proxy.golang.test:443", "CONNECT sum.golang.test:8443"} {
+		if code := ask(line); code == http.StatusForbidden {
+			t.Fatalf("%s: refused", line)
+		}
+	}
+	if !corp.saw("proxy.golang.test:443") || !corp.saw("sum.golang.test:8443") {
+		t.Fatalf("the proxy was not asked: %v", corp.requests())
 	}
 }
 

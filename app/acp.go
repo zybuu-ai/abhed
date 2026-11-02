@@ -433,14 +433,7 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	defer stopper.stop()
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
-	// The proxy first, so the org policy fetch takes it; without it there is no fetch.
-	c.noNetwork = !profileNetwork(os.Stderr)
-	if !c.noNetwork {
-		orgPolicyAtStart(stopper.ctx, os.Stderr)
-	}
-	if mc, err := config.MachineOrgPolicy(); err == nil {
-		keepOrgPolicyFresh(stopper.ctx, mc.Refresh(), os.Stderr)
-	}
+	c.orgPolicyAtConnect(os.Stderr)
 	c.useRecord(workspace, trust)
 	err := c.run(os.Stdin)
 	c.closeRecord()

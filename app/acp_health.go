@@ -185,7 +185,7 @@ func (c *acpConn) doctorACP(msg rpcMessage) {
 	if p.Cwd == "" {
 		p.Cwd = c.base
 	}
-	cfg, err := config.LoadWith(p.Cwd, config.LoadOptions{Trust: config.GrantFor(trust, c.base, p.Cwd)})
+	cfg, err := loadNetworked(p.Cwd, config.LoadOptions{Trust: config.GrantFor(trust, c.base, p.Cwd)})
 	var verify func() error
 	if c.durable() {
 		verify = func() error {

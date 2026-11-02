@@ -52,7 +52,8 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	if len(args) == 0 {
 		return usage()
 	}
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: true})
+	// The witness and record shipping connect through the upstream proxy.
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1

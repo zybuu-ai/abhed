@@ -17,7 +17,6 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -84,23 +83,6 @@ func profileName(raw string) string {
 		return "default"
 	}
 	return n
-}
-
-// profileNetwork puts the person's and the managed configuration's upstream
-// proxy in force for a command that calls a server, as a session would.
-func profileNetwork(errOut io.Writer) bool {
-	home, err := os.UserHomeDir()
-	if err == nil {
-		var cfg config.Config
-		if cfg, err = config.LoadWith(home, config.LoadOptions{Quiet: true}); err == nil {
-			err = cfg.ApplyNetwork()
-		}
-	}
-	if err != nil {
-		fmt.Fprintf(errOut, "abhed: the network configuration: %v\n", err)
-		return false
-	}
-	return true
 }
 
 func loginCmd(workspace string, args []string, out, errOut io.Writer) int {

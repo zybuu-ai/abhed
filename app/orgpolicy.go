@@ -449,6 +449,9 @@ func policyCmd(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(out, string(b))
 		return 0
 	case "refresh":
+		if !profileNetwork(errOut) {
+			return 1
+		}
 		res, err := refreshOrgPolicy(context.Background(), true)
 		if !res.Enrolled && err == nil {
 			fmt.Fprintln(out, "This machine takes no org policy; abhed login URL takes one from a server that serves it.")

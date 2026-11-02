@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/egress/upstreamtest"
@@ -25,5 +26,17 @@ func TestSourceUsesTheUpstreamProxy(t *testing.T) {
 	_ = resp.Body.Close()
 	if string(b) != "dist" || !corp.Saw("dist.example.test") {
 		t.Fatalf("not through the upstream proxy: %q", b)
+	}
+}
+
+// A Go build's relay hosts keep the port an endpoint names, so the relay
+// reaches that port and no other.
+func TestGoHostsKeepTheirPorts(t *testing.T) {
+	got := goHosts(Endpoints{GoProxy: "https://goproxy.corp.test:8443,direct", GoSumDB: "sum.corp.test https://sum.corp.test:9443"})
+	if !slices.Equal(got, []string{"goproxy.corp.test:8443", "sum.corp.test:9443"}) {
+		t.Fatalf("%v", got)
+	}
+	if got := goHosts(Endpoints{}); !slices.Equal(got, []string{"proxy.golang.org", "sum.golang.org"}) {
+		t.Fatalf("defaults %v", got)
 	}
 }
