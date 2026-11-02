@@ -106,6 +106,8 @@ type cliState struct {
 	// statuslineSlow once a first run that ran out of time went unsaid.
 	statuslineWarned bool
 	statuslineSlow   bool
+	// statuslineLast is the command's last output, from the footer or /status.
+	statuslineLast string
 	// statuslineSB is the statusline's own sandbox, chosen at its first run.
 	// statuslineRoots are the granted folders it was judged against; a
 	// change to them judges it again. statuslineMu guards all of these.

@@ -33,11 +33,13 @@ type footer struct {
 	// The custom status line: ready judges it on the session's goroutine
 	// (where and what runs, or a notice in its place), failed says a failed
 	// run once; line is its last output, running whether a run is in flight.
-	ready   func() (sandbox.Sandbox, string, string)
-	failed  func(error) string
-	line    string
-	running bool
-	lastRun time.Time
+	ready  func() (sandbox.Sandbox, string, string)
+	failed func(error) string
+	// succeeded is told each line a run gives, so /status can show it.
+	succeeded func(string)
+	line      string
+	running   bool
+	lastRun   time.Time
 	// again is a run asked for while one ran or within the second after one,
 	// with what was judged to run: it runs then, so the line never stays on
 	// a mode Shift-Tab has changed.
@@ -57,7 +59,7 @@ func startFooter(editor *ui.LineReader, r *ui.Renderer, st *cliState, pol *polic
 	editor.Hotkey("shift+tab", func() { editor.Send(modeCycleLine) })
 	// The statusline command runs as the session's statusline does: under
 	// the process sandbox with the network off, judged again as folders change.
-	f.ready, f.failed = st.statuslineReady, st.statuslineFailed
+	f.ready, f.failed, f.succeeded = st.statuslineReady, st.statuslineFailed, st.noteStatusline
 	f.refresh(st, pol)
 	return f
 }
@@ -235,6 +237,8 @@ func (f *footer) start() {
 		line, err := runStatusline(context.Background(), sb, f.root, command, m)
 		if err != nil && f.failed != nil {
 			line = f.failed(err)
+		} else if err == nil && f.succeeded != nil {
+			f.succeeded(line)
 		}
 		f.mu.Lock()
 		f.running = false
