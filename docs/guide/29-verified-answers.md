@@ -490,7 +490,7 @@ counts (`12 tests`, `replicas: 3`). Then:
   count or a number the sentence gives for the change ("scaled `checkout`
   to 3 replicas") is read from what the change was given
   (`--replicas=3`), never from output after it. `kind/name`
-  (`deploy/checkout`) is a resource, not a file. The arguments are decoded
+  (`deployment/checkout`) is a resource, not a file. The arguments are decoded
   first, so a tab or a newline before the code still matches. A note to
   memory, a commit message, a formatter, any other shell writer and every
   other tool never count. Otherwise it is unverified, never contradicted.

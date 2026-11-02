@@ -28,7 +28,7 @@ func Run(addr string, in io.Reader, out io.Writer, wait time.Duration) error {
 	var conn net.Conn
 	var err error
 	for deadline := time.Now().Add(wait); ; time.Sleep(20 * time.Millisecond) {
-		if conn, err = net.Dial("unix", path); err == nil {
+		if conn, err = net.Dial("unix", path); err == nil { // #nosec G704 -- a local unix socket the bridge was given, not a network address
 			break
 		}
 		if time.Now().After(deadline) {

@@ -195,7 +195,7 @@ func (c *acpConn) attachLinkedFile(ctx context.Context, s *acpSession, u *url.UR
 			ref.From, ref.To = 0, 0
 		}
 	}
-	info, statErr := os.Stat(abs)
+	info, statErr := os.Stat(abs) // #nosec G703 -- a file the person attached, only checked; the read is policy-gated
 	if statErr != nil {
 		return "", agent.InputMention{}, "no such file or folder", nil //nolint:nilerr // a missing link is a refusal, not a failure
 	}

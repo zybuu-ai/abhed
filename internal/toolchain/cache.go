@@ -406,7 +406,7 @@ func noLinkParents(dir, p string) error {
 			continue
 		}
 		cur = filepath.Join(cur, c)
-		info, err := os.Lstat(cur)
+		info, err := os.Lstat(cur) // #nosec G703 -- this walk is the cache's own traversal guard
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
