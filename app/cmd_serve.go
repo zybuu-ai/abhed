@@ -420,7 +420,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	// banner names the port it got, not ":0".
 	var ln net.Listener
 	shown := addr
-	if _, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
+	if _, port, err := net.SplitHostPort(addr); err == nil && loopport.AnyPort(port) {
 		// On a Mac, a port of Abhed's reserved range (internal/loopport).
 		if ln, err = loopport.ListenAddr(addr); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
