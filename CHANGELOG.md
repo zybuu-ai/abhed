@@ -88,9 +88,9 @@ All notable changes to Abhed are recorded here. The format follows
   cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
   without, the new file `<records>/<tenant>/audit/api.jsonl` under
   `record.dir` or `~/.abhed/records`.
-- Postgres: this release takes the schema from version 10 to 16. Run
+- Postgres: this release takes the schema from version 10 to 17. Run
   `abhed migrate` as the owner role before starting a server as the runtime
-  role; a runtime-role server refuses a schema older than 13 and says to
+  role; a runtime-role server refuses a schema older than 17 and says to
   migrate, and a `storage.single_role` server applies it itself. Version 11
   adds the `chain_pre` table; 12 adds `events.commit_tx`; 13 adds the
   `ocsf_cursors` table; 14 replaces the trigger that chains events (same
@@ -102,13 +102,16 @@ All notable changes to Abhed are recorded here. The format follows
   16 replaces version 12's commit-order index with `events_commit_tx_idx`,
   which row security lets the commit-ordered scan use; `abhed migrate` builds
   it in its transaction, holding appends to `events` until it is built, so
-  on a large table run it in a quiet window. A server still starts on 13 to
-  15, but without what the later versions add: on 13 the trigger does not
-  set `commit_tx` itself (14), so a writer could keep its row out of the
-  commit-ordered scan; on 13 and 14 a row can still land in a session
-  deleted while its insert waited (15); and below 16 commit-ordered reads
-  (`record.ocsf` on `abhed serve`, an edition's export) are slower. Migrate
-  to 16.
+  on a large table run it in a quiet window. 17 adds the `commit_shift`
+  table. `commit_tx` is a transaction id, so after a logical restore
+  (`pg_dump`, `pg_restore`) into a cluster whose transaction counter is
+  behind the one that wrote the record, new events would sort before rows a
+  commit-ordered reader (`record.ocsf`, an edition's SIEM delivery) had
+  already passed, and it would never see them. Each `abhed migrate` raises
+  the shift, while it holds the tables, just past the highest `commit_tx`
+  when that is ahead of the cluster; new events and the readers' horizon both
+  add it. It stays 0 in a database the cluster wrote, is never lowered, and
+  the runtime role only reads it.
 - HawkEYE's `sandbox-denied` no longer fires on the words of a command's
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
@@ -174,6 +177,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Backup and restore scripts for a self-hosted server, in
+  `scripts/backup/`: `abhed-backup.sh` writes a logical dump of the database
+  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser), the
+  roles without passwords, and a tarball of the state folders you name,
+  each checked before it counts; `abhed-restore.sh` restores them into an
+  empty database in one transaction and can run `abhed migrate`, `abhed
+  record verify` and `abhed record audit` after. A systemd service and timer
+  are examples. `scripts/backup/restore-test.sh` proves them: it seeds a
+  record in a throwaway Postgres container, backs it up, restores it into a
+  new database of the same cluster, into a fresh cluster whose transaction
+  counter is behind, and from a `pg_basebackup` copy, and checks every chain
+  position, hash and `commit_tx` is unchanged, both record checks pass, and a
+  commit-ordered reader goes on from its cursor without skipping or
+  repeating an event ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen on loopback once the person agrees for the workspace
   (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its
