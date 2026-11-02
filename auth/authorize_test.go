@@ -76,3 +76,37 @@ func TestAuthorizeRunsOnRecheck(t *testing.T) {
 		t.Fatalf("recheck = %v, want the Authorize refusal", recheck)
 	}
 }
+
+// A trusted proxy's identity is held to the request too: Authorize runs on
+// it as on a session or a token, and a request with no proxy headers is not
+// asked about.
+func TestAuthorizeRunsBehindATrustedProxy(t *testing.T) {
+	var seen []string
+	mw := Middleware{TrustHeaders: true, Authorize: func(r *http.Request, id *Identity) error {
+		seen = append(seen, id.Subject+" "+r.Method)
+		if r.Method == http.MethodPost {
+			return errors.New("reads only")
+		}
+		return nil
+	}}
+	h := mw.Wrap(echoSubject())
+	do := func(method string, user string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/v1/sessions", nil)
+		if user != "" {
+			req.Header.Set("X-Abhed-User", user)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := do(http.MethodGet, "ann"); rec.Code != http.StatusOK || rec.Body.String() != "ann" {
+		t.Fatalf("an allowed request: %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := do(http.MethodPost, "ann"); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "reads only") {
+		t.Fatalf("a refused request: %d %q", rec.Code, rec.Body.String())
+	}
+	do(http.MethodPost, "")
+	if len(seen) != 2 {
+		t.Fatalf("Authorize ran %d times, want 2: %v", len(seen), seen)
+	}
+}
