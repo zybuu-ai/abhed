@@ -597,7 +597,7 @@ jobs:
                    TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices \
                    TestSandboxAllowsToolchainTempDir \
                    TestDevServerListensOnLoopback TestContestedPortIsToldNotStopped TestListeningReachesNoSignal \
-                   TestContestNoticeReachesLateWatchersAndCoolsDown TestForkedServerIsNotAContest TestListeningReachCatchesTheRoutes \
+                   TestContestNoticeReachesLateWatchers TestForkedServerIsNotAContest TestListeningReachCatchesTheRoutes \
                    TestContestToldAgainWhenAProgramJoins TestContestToldAgainAfterListeningComesBack \
                    TestContestToldWhenANewProgramJoinsAfterOneLeft TestContestToldAtOnceForANewProgramInsideTheCooldown \
                    TestDebugLoopbackAndListenCompose; do

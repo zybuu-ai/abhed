@@ -1117,7 +1117,8 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   same one only with the same sockets and a process in common, so a server
   recycling its workers keeps its master and stays one, a new process on a
   socket address another left is new, and a program gone is forgotten),
-  and for the same programs coming back at most once a minute. A server and
+  at most one notice per port per read and none held back, so a command
+  that keeps starting listeners brings one every few seconds. A server and
   the workers it forks, sharing one socket, count as one program; Abhed
   cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's

@@ -222,10 +222,6 @@ var watching struct {
 	once  sync.Once
 }
 
-// listenNoticeCooldown is the least time between two notices of one port to
-// one sandbox, so a contest that comes and goes does not flood the records.
-var listenNoticeCooldown = time.Minute
-
 // watchListeners puts p among the sandboxes whose listen ports are watched.
 func watchListeners(p *Process) {
 	watching.mu.Lock()
@@ -259,11 +255,11 @@ type PortContested struct {
 }
 
 // sweepListeners tells each listening sandbox of a listen port of its that
-// more than one program listens on. It tells within one sweep whenever a
-// program it has not told of joins the port, whatever was told before;
-// only the same programs coming back after the port cleared wait for
-// listenNoticeCooldown. It reads afresh and tells; it never signals a
-// process.
+// more than one program listens on: within one sweep whenever a program it
+// has not told of joins the port, at most one notice per port per sweep.
+// Nothing holds a notice back, so a command that keeps starting new
+// listeners gets a notice every few seconds: noise, never silence. It reads
+// afresh and tells; it never signals a process.
 func sweepListeners() {
 	watching.mu.Lock()
 	var procs []*Process
@@ -292,14 +288,13 @@ func sweepListeners() {
 		c PortContested
 	}
 	var tell []notice
-	now := time.Now()
 	watching.mu.Lock()
 	for _, p := range procs {
 		if p.notices == nil {
 			p.notices = map[int]*portNotice{}
 		}
 		for _, port := range p.policy.ListenPorts {
-			st, tellNow := noteContest(p.notices[port], byPort[port], now)
+			st, tellNow := noteContest(p.notices[port], byPort[port])
 			if st == nil {
 				delete(p.notices, port)
 			} else {
@@ -322,21 +317,19 @@ func sweepListeners() {
 }
 
 // portNotice is what a sandbox was told of one listen port: the programs
-// told of, by name with their processes, whether it is contested now, when
-// it was last told, and when it last cleared.
+// told of, by name with their processes.
 type portNotice struct {
-	told              map[string][]int
-	contested         bool
-	toldAt, clearedAt time.Time
+	told map[string][]int
 }
 
 // noteContest takes one read of a port's programs into what a sandbox was
-// told, and says whether to tell it now; a nil result forgets the port.
+// told, and says whether to tell it now: when the port is contested and a
+// program on it was not told of; a nil result forgets the port.
 // A program is told of only if one of that name with a process in common
 // was: the told processes follow it from read to read, so a server that
 // recycles its workers stays told, and a new program on a socket address
 // another left is new. A program gone is forgotten.
-func noteContest(st *portNotice, progs []program, now time.Time) (*portNotice, bool) {
+func noteContest(st *portNotice, progs []program) (*portNotice, bool) {
 	known := func(p program) bool {
 		for _, pid := range st.told[p.name] {
 			if slices.Contains(p.pids, pid) {
@@ -355,10 +348,7 @@ func noteContest(st *portNotice, progs []program, now time.Time) (*portNotice, b
 		st.told = kept
 	}
 	if len(progs) < 2 {
-		if st != nil && st.contested {
-			st.contested, st.clearedAt = false, now
-		}
-		if st != nil && !st.contested && now.Sub(st.clearedAt) >= listenNoticeCooldown {
+		if st != nil && len(st.told) == 0 {
 			return nil, false
 		}
 		return st, false
@@ -370,19 +360,12 @@ func noteContest(st *portNotice, progs []program, now time.Time) (*portNotice, b
 	for _, p := range progs {
 		fresh = fresh || !known(p)
 	}
-	switch {
-	case fresh:
-		// A program not told of: told now, whatever the cooldown.
-	case st.contested:
-		return st, false
-	case now.Sub(st.toldAt) < listenNoticeCooldown:
-		// The same programs back too soon: told once the cooldown ends, if still so.
+	if !fresh {
 		return st, false
 	}
 	for _, p := range progs {
 		st.told[p.name] = p.pids
 	}
-	st.contested, st.toldAt = true, now
 	return st, true
 }
 

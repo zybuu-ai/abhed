@@ -168,6 +168,10 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a package func var set in a tuple", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc makeHook() (func(), error) { return func() { _ = killGroupNow(1) }, nil }\n\nfunc init() {\n\tprobeHook, _ = makeHook()")},
 		{"a package func var set in parentheses", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\t(probeHook) = func() { _ = killGroupNow(1) }")},
 		{"a package func var written through a pointer", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tp := &probeHook\n\t*p = func() {}")},
+		{"a package func var set from a local literal", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tf := func() { _ = killGroupNow(1) }\n\tprobeHook = f")},
+		{"a package func var set from a local holding a function", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc killer() { _ = killGroupNow(1) }\n\nfunc init() {\n\tf := killer\n\tprobeHook = f")},
+		{"a package func var set by a range", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\thooks := []func(){func() { _ = killGroupNow(1) }}\n\tfor _, probeHook = range hooks {\n\t}")},
+		{"a package func var set from a map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tm := map[string]func(){\"k\": func() { _ = killGroupNow(1) }}\n\tprobeHook, _ = m[\"k\"]")},
 		{"another package's func var set from app", crossPackageHook(t, sandboxDir, appDir)},
 		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
@@ -503,6 +507,15 @@ func (r *reach) parseAndCheck(path string) (*srcPkg, error) {
 				if x.Op == token.AND {
 					if k := varKeyOf(info, x.X); k != "" {
 						s.addressed[k] = true
+					}
+				}
+			case *ast.RangeStmt:
+				// for _, hook = range hooks: the ranged value is followed.
+				for _, l := range []ast.Expr{x.Key, x.Value} {
+					if l != nil && x.Tok == token.ASSIGN {
+						if k := varKeyOf(info, l); k != "" {
+							s.fields[k] = append(s.fields[k], x.X)
+						}
 					}
 				}
 			case *ast.AssignStmt:
@@ -862,6 +875,24 @@ func (r *reach) check(s *srcPkg, where string, node ast.Node, queue *[]item) []s
 	at := func(n ast.Node, what string) {
 		found = append(found, r.fset.Position(n.Pos()).String()+": "+what+" (reached by "+r.path(where)+")")
 	}
+	if strings.HasPrefix(where, "value ") {
+		// A value assigned to a field or package variable is followed as an
+		// expression: one that goes through a local variable is not followed.
+		if _, lit := node.(*ast.FuncLit); !lit {
+			ast.Inspect(node, func(n ast.Node) bool {
+				if _, ok := n.(*ast.FuncLit); ok {
+					return false
+				}
+				if id, ok := n.(*ast.Ident); ok {
+					if v, ok := s.info.Uses[id].(*types.Var); ok && !v.IsField() && v.Pkg() != nil && v.Parent() != v.Pkg().Scope() {
+						found = append(found, r.fset.Position(id.Pos()).String()+": the value goes through the local variable "+id.Name+
+							", which the walk does not follow (reached by "+r.path(where)+")")
+					}
+				}
+				return true
+			})
+		}
+	}
 	enqueue := func(it item) {
 		if _, ok := r.from[it.key]; !ok {
 			r.from[it.key] = where
@@ -1056,8 +1087,10 @@ func (r *reach) unfollowed(s *srcPkg, call *ast.CallExpr, locals map[types.Objec
 			if o.Pkg() != nil && o.Parent() == o.Pkg().Scope() && inModule(o.Pkg()) {
 				// Its initialiser and the assignments to it in the packages loaded
 				// (the sandbox's, those that import it, and those walked into)
-				// are followed, by name, qualified name, parenthesised or in a
-				// tuple; a write through its address is not, so that is named.
+				// are followed as expressions, by name, qualified name,
+				// parenthesised, from a tuple's call or a range; a value through
+				// a local variable, or a write through its address, is not, so
+				// it is reported.
 				if k := pkgVarKey(o); k != "" && r.addressTaken(k) {
 					return f.Name + " (its address is taken)"
 				}

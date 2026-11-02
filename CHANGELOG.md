@@ -21,7 +21,10 @@ All notable changes to Abhed are recorded here. The format follows
   each new worker. A program is the same one only with the same sockets
   and a process in common, so a new program on a socket address another
   left is told, and programs that stopped listening are forgotten, so a
-  long contest does not grow without bound.
+  long contest does not grow without bound. The "at most once a minute"
+  for a contest coming back is dropped: it could never apply, as a
+  program gone is forgotten, so every new program is told at once, at
+  most one notice per port each sweep.
 
 ## [1.2.9] - 2026-11-02
 

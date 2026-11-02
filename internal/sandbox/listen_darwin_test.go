@@ -17,16 +17,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
-// setNoticeCooldown sets the cooldown under the watch's lock and returns
-// the one before.
-func setNoticeCooldown(d time.Duration) time.Duration {
-	watching.mu.Lock()
-	defer watching.mu.Unlock()
-	was := listenNoticeCooldown
-	listenNoticeCooldown = d
-	return was
-}
-
 // freshListeners makes the next read of the Mac's listeners a new one.
 func freshListeners() {
 	listeners.mu.Lock()
@@ -219,7 +209,6 @@ func pyListen(port int) string {
 // once while it stays contested, and nothing is stopped; a new command is
 // not given the port. Under PrivateTemp too.
 func TestContestedPortIsToldNotStopped(t *testing.T) {
-	defer setNoticeCooldown(setNoticeCooldown(0))
 	for _, private := range []bool{false, true} {
 		port := freePort(t)
 		sb, elsewhere := listenSandbox(t, port), listenSandbox(t, freePort(t))
@@ -268,9 +257,8 @@ func TestContestedPortIsToldNotStopped(t *testing.T) {
 }
 
 // A sandbox that starts watching while a port is contested is told too,
-// and a program that starts listening again inside the cooldown is a new
-// one, told at once.
-func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
+// and a program that starts listening again is a new one, told at once.
+func TestContestNoticeReachesLateWatchers(t *testing.T) {
 	port := freePort(t)
 	first := listenSandbox(t, port)
 	var toldFirst, toldLate atomic.Int64
@@ -290,7 +278,7 @@ func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
 	if toldFirst.Load() != 1 || toldLate.Load() != 1 {
 		t.Fatalf("told first %d, late %d", toldFirst.Load(), toldLate.Load())
 	}
-	// Cleared, and contested again by a new listener inside the cooldown.
+	// Cleared, and contested again by a new listener.
 	_ = host.Close()
 	sweepListeners()
 	host, err = net.Listen("tcp", ":"+strconv.Itoa(port))
@@ -300,7 +288,7 @@ func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
 	defer host.Close()
 	sweepListeners()
 	if toldFirst.Load() != 2 {
-		t.Fatalf("a new listener inside the cooldown: told %d times", toldFirst.Load())
+		t.Fatalf("a new listener: told %d times", toldFirst.Load())
 	}
 }
 
@@ -420,7 +408,7 @@ func TestDebugLoopbackAndListenCompose(t *testing.T) {
 
 // A command cannot spend the notice in advance: two sockets of its own on a
 // listen port are told once, and a program of the person's joining the
-// port is told again at once, whatever the cooldown.
+// port is told again at once.
 func TestContestToldAgainWhenAProgramJoins(t *testing.T) {
 	port := freePort(t)
 	sb := listenSandbox(t, port)
@@ -552,7 +540,7 @@ func TestContestToldWhenANewProgramJoinsAfterOneLeft(t *testing.T) {
 	}
 }
 
-// A contest that cleared is not a cooldown on a new program: an orphan of
+// A contest that cleared holds nothing back from a new program: an orphan of
 // the command leaving and a program of the person's joining within the
 // minute is told at once.
 func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
@@ -580,7 +568,7 @@ func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
 	defer host.Close()
 	sweepListeners()
 	if told.Load() <= before {
-		t.Fatalf("a program of the person's joined inside the cooldown: told %d, as before", told.Load())
+		t.Fatalf("a program of the person's joined within the minute: told %d, as before", told.Load())
 	}
 }
 
@@ -630,25 +618,24 @@ time.sleep(20)`
 // process on a told socket address, as macOS hands a freed address on, is
 // told.
 func TestNoteContestByProgramAndProcess(t *testing.T) {
-	now := time.Now()
 	server := program{name: "s0xa", pids: []int{10, 11}}
 	host := program{name: "s0xb", pids: []int{50}}
-	st, tell := noteContest(nil, []program{server, host}, now)
+	st, tell := noteContest(nil, []program{server, host})
 	if !tell {
 		t.Fatal("a first contest was not told")
 	}
 	// The server recycles its worker: the master stays.
 	recycled := program{name: "s0xa", pids: []int{10, 12}}
-	if st, tell = noteContest(st, []program{recycled, host}, now.Add(2*time.Second)); tell {
+	if st, tell = noteContest(st, []program{recycled, host}); tell {
 		t.Fatal("a recycled worker was told as a new program")
 	}
 	// The server's address freed and taken by a new process.
 	reused := program{name: "s0xa", pids: []int{70}}
-	if st, tell = noteContest(st, []program{reused, host}, now.Add(4*time.Second)); !tell {
+	if st, tell = noteContest(st, []program{reused, host}); !tell {
 		t.Fatal("a new process on a told socket address was not told")
 	}
 	// Gone: forgotten.
-	if st, _ = noteContest(st, []program{host}, now.Add(6*time.Second)); len(st.told) != 1 {
+	if st, _ = noteContest(st, []program{host}); len(st.told) != 1 {
 		t.Fatalf("told names kept for programs gone: %v", st.told)
 	}
 }

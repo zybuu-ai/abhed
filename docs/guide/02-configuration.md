@@ -268,8 +268,8 @@ tells you within a few seconds, in every session that may listen on that
 port, and records it (`sandbox.port_contested`). It tells again within
 one read whenever a program it has not told of starts listening there,
 so a command cannot use the warning up in advance with programs of its
-own; only the same programs coming back after the port cleared are told
-at most once a minute. A
+own. Nothing holds a notice back, so a command that keeps starting new
+listeners there brings a notice every few seconds. A
 server and the workers it forks share one socket and count as one
 program, as does one program listening on both `127.0.0.1` and `::1`;
 separate sockets bound with `SO_REUSEPORT` count as more than one. It
