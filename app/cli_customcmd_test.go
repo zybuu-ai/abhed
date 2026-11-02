@@ -10,7 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
-	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
@@ -24,9 +24,9 @@ func customRig(t *testing.T, answers ...string) (*cliState, *agent.MemStore, *sc
 	st.appCfg = config.Default()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(config.TrustEnv, "")
-	was := customcmd.ManagedDir
-	customcmd.ManagedDir = filepath.Join(t.TempDir(), "none")
-	t.Cleanup(func() { customcmd.ManagedDir = was; ui.SetCommands(builtinSlash.uiCommands(nil)) })
+	was := managed.CommandsDir
+	managed.CommandsDir = filepath.Join(t.TempDir(), "none")
+	t.Cleanup(func() { managed.CommandsDir = was; ui.SetCommands(builtinSlash.uiCommands(nil)) })
 	return st, store, sf
 }
 

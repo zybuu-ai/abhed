@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -55,9 +56,6 @@ const (
 	DefaultImportDepth = 5
 	MaxImportDepth     = 10
 )
-
-// ManagedMemoryDir holds the organisation's ABHED.md; a variable for tests.
-var ManagedMemoryDir = filepath.Join("/etc", "abhed")
 
 // MemoryOptions say where to look and how far.
 type MemoryOptions struct {
@@ -125,7 +123,7 @@ func DiscoverMemoryFiles(workspace string) []string {
 		addNamed(filepath.Join(workspace, AgentsFileName))
 	}
 	addNamed(filepath.Join(workspace, LocalMemoryFileName))
-	add(filepath.Join(ManagedMemoryDir, MemoryFileName))
+	add(filepath.Join(managed.MemoryDir, MemoryFileName))
 	return out
 }
 
@@ -197,8 +195,8 @@ func LoadMemory(o MemoryOptions) *Memory {
 	if o.Auto != "" && exists(o.Auto) {
 		l.auto(o.Auto)
 	}
-	if managed := filepath.Join(ManagedMemoryDir, MemoryFileName); exists(managed) {
-		l.file(managed, MemoryManaged, managed+", set by the organisation", "", 0)
+	if org := filepath.Join(managed.MemoryDir, MemoryFileName); exists(org) {
+		l.file(org, MemoryManaged, org+", set by the organisation", "", 0)
 	}
 	return m
 }
@@ -366,7 +364,7 @@ func (l *memoryLoader) importAllowed(from, _ string, p string) bool {
 	}
 	// An operator's file may import from the organisation's directory; the
 	// person's ~/.abhed is Abhed's state and never imported.
-	for _, root := range []string{ManagedMemoryDir} {
+	for _, root := range []string{managed.MemoryDir} {
 		if rel, err := filepath.Rel(root, p); err == nil && filepath.IsLocal(rel) {
 			return true
 		}
@@ -614,7 +612,7 @@ func memoryFromFiles(workspace string, files []string, allow func(string) error)
 		switch {
 		case home != "" && f == filepath.Join(home, ".abhed", MemoryFileName):
 			scope, label = MemoryUser, "~/.abhed/"+MemoryFileName
-		case f == filepath.Join(ManagedMemoryDir, MemoryFileName):
+		case f == filepath.Join(managed.MemoryDir, MemoryFileName):
 			scope, label = MemoryManaged, f+", set by the organisation"
 		case filepath.Base(f) == LocalMemoryFileName:
 			scope = MemoryLocal

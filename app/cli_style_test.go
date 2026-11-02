@@ -8,16 +8,17 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 func TestOutputStyle(t *testing.T) {
 	st, store, sf := customRig(t)
-	was := managedStyleDir
-	managedStyleDir = t.TempDir()
-	t.Cleanup(func() { managedStyleDir = was })
+	was := managed.StylesDir
+	managed.StylesDir = t.TempDir()
+	t.Cleanup(func() { managed.StylesDir = was })
 	home, _ := os.UserHomeDir()
 	write(t, filepath.Join(home, ".abhed", "styles", "terse.md"), "---\ndescription: short answers\n---\nANSWER-TERSELY")
-	write(t, filepath.Join(managedStyleDir, "house.md"), "HOUSE-STYLE")
+	write(t, filepath.Join(managed.StylesDir, "house.md"), "HOUSE-STYLE")
 	write(t, filepath.Join(home, ".abhed", "styles", "house.md"), "USER-HOUSE")
 	write(t, filepath.Join(st.sess.Root, ".abhed", "styles", "repo.md"), "REPO-STYLE")
 	st.loop.Config.SystemPrompt = "BASE"

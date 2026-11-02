@@ -47,9 +47,6 @@ const (
 	MaxDesc      = 300
 )
 
-// ManagedDir is the organisation's directory; a variable for tests.
-var ManagedDir = filepath.Join("/etc", "abhed", "commands")
-
 // Command is one custom command.
 type Command struct {
 	Name         string // "/review", or "/frontend:test" for frontend/test.md

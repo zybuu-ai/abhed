@@ -12,6 +12,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -415,7 +416,7 @@ func readCustomCommands(cfg config.Config, ws string) *customState {
 			}
 		}
 	}
-	cmds, errs := customcmd.Load(customcmd.Options{ManagedDir: customcmd.ManagedDir, UserDirs: userDirs, Workspace: trusted, Models: models})
+	cmds, errs := customcmd.Load(customcmd.Options{ManagedDir: managed.CommandsDir, UserDirs: userDirs, Workspace: trusted, Models: models})
 	for _, e := range errs {
 		cs.problems = append(cs.problems, e.Error())
 	}
