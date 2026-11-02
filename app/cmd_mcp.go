@@ -154,7 +154,7 @@ func mcpManaged() error {
 	if err != nil {
 		return err
 	}
-	if cfg.ManagedSets("mcp") {
+	if cfg.ManagedSets("mcp.servers") {
 		return &config.ManagedError{Key: "mcp.servers", Value: "", File: managed.ConfigFile,
 			Reason: "the managed configuration sets the MCP servers, so they are changed only there"}
 	}
@@ -195,6 +195,12 @@ func describeServer(s config.MCPServerConfig) string {
 // mcpAdd confirms and writes a server into the person's own file.
 func mcpAdd(s config.MCPServerConfig, cio mcpIO) error {
 	if err := mcpManaged(); err != nil {
+		return err
+	}
+	// A server the managed MCP lists refuse would never start; it is not written.
+	if cfg, err := config.LoadManaged(); err != nil {
+		return err
+	} else if err := cfg.MCPAdmitted(config.MCPServerOf(s)); err != nil {
 		return err
 	}
 	unlock, err := lockUserConfig()
@@ -300,7 +306,7 @@ func mcpList(workspace string, trust config.TrustChoice, out io.Writer) error {
 	for _, s := range cfg.MCP.Servers {
 		source := "workspace"
 		switch {
-		case cfg.ManagedSets("mcp"):
+		case cfg.ManagedSets("mcp.servers"):
 			source = "managed"
 		case user[s.Name]:
 			source = "user"

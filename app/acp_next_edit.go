@@ -135,16 +135,22 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		text, _ = secretfiles.RedactContent(text)
 		return text
 	}
-	// The window is cleaned whole, then bounded by lines and bytes; lines the
-	// cleaning changed may not be edited, since what the model saw is not there.
+	// The window is cleaned whole, so a shape that spans lines (a block
+	// scalar) is caught, and then bounded by lines and bytes; lines the
+	// cleaning changed may not be edited, since what the model saw is not
+	// there. A cleaning that would not keep the lines apart is refused.
 	raw := linediff.SplitLines(req.Window.Text)
 	if len(raw) > nextEditLines {
 		raw = raw[:nextEditLines]
 	}
+	cleaned := linediff.SplitLines(clean(strings.Join(raw, "")))
+	if len(cleaned) != len(raw) {
+		empty("refused", "the window holds a secret over several lines")
+		return
+	}
 	var shown []string
 	size := 0
-	for _, l := range raw {
-		l = clean(l)
+	for _, l := range cleaned {
 		if size+len(l) > nextEditWindow {
 			break
 		}
@@ -230,8 +236,9 @@ func windowEdits(uri string, start int, orig, shown []string, rewrite string, cl
 	asWritten := map[string]string{}
 	for _, l := range shown {
 		body := strings.TrimRight(l, "\r\n")
-		if _, seen := asWritten[strings.TrimRight(body, " \t")]; !seen {
-			asWritten[strings.TrimRight(body, " \t")] = body
+		key := strings.TrimRight(body, " \t")
+		if _, seen := asWritten[key]; !seen && key != "" { // a blank line's spaces are given to no other
+			asWritten[key] = body
 		}
 	}
 	for i, l := range next {

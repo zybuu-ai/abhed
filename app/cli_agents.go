@@ -69,6 +69,12 @@ func slashSkills(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 // slashMCP is /mcp: every enabled server's state and tools, and restart.
 func slashMCP(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	st := e.st
+	// Servers the configuration's MCP lists left out are never started; say which, and why.
+	for _, k := range st.appCfg.SetAside {
+		if k.Key == "mcp.servers" && len(args) == 0 {
+			e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "not started: " + ui.VisibleLine(k.Value) + ": " + ui.VisibleLine(k.Reason)})
+		}
+	}
 	if st.set == nil || st.set.Gateway == nil {
 		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "no MCP servers are configured"})
 		return false, nil
@@ -94,6 +100,9 @@ func slashMCP(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		state := "connected"
 		if !s.Connected {
 			state = "not connected"
+			if s.NotAdmitted {
+				state = "refused"
+			}
 			if s.Err != nil {
 				state += ": " + oneLine(s.Err.Error(), 60)
 			}

@@ -232,6 +232,10 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 // /model records it.
 func switchCommandModel(st *cliState, name string) error {
 	if err := st.appCfg.ModelAllowed(name); err != nil {
+		var refused *config.ManagedError
+		if errors.As(err, &refused) {
+			recordModelRefused(st, "custom command model", refused)
+		}
 		return err
 	}
 	p, err := st.appCfg.ProviderNamed(name)

@@ -207,6 +207,10 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		}
 		return nil, err
 	}
+	if err := checkCommitOrder(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	p.protected = true
 	return p, nil
 }

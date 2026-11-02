@@ -211,6 +211,7 @@ var subcommands = []subcommand{
 	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
 	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
 	{name: "profile", about: "the servers this command line knows: list, use, rm"},
+	{name: "policy", about: "the signed org policy this machine takes: status, show, refresh, leave"},
 	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
 	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},

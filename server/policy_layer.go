@@ -265,11 +265,40 @@ type permissionsResponse struct {
 	Rules   []permissionRow `json:"rules"`
 	// SetAside are rules a layer gave that the session does not apply.
 	SetAside []permissionRow `json:"set_aside,omitempty"`
-	Layer    *struct {
+	// AllowLists are the allowed models and MCP server lists in force.
+	AllowLists []allowListRow `json:"allow_lists,omitempty"`
+	Layer      *struct {
 		Name     string `json:"name"`
 		Revision string `json:"revision,omitempty"`
 		SHA256   string `json:"sha256"`
 	} `json:"policy_layer,omitempty"`
+}
+
+// allowListRow is one layer's model.allowed, mcp.allowed or mcp.denied.
+type allowListRow struct {
+	Key     string   `json:"key"`
+	Layer   string   `json:"layer"`
+	Entries []string `json:"entries"`
+}
+
+// allowListRows are the lists in force, each with the layer that set it.
+func allowListRows(cfg config.Config) []allowListRow {
+	var out []allowListRow
+	for _, l := range cfg.ModelsAllowed() {
+		out = append(out, allowListRow{Key: "model.allowed", Layer: l.Layer, Entries: l.Entries})
+	}
+	for _, l := range cfg.MCPLists() {
+		key := "mcp.allowed"
+		if l.Denied {
+			key = "mcp.denied"
+		}
+		entries := l.Entries
+		if entries == nil {
+			entries = []string{}
+		}
+		out = append(out, allowListRow{Key: key, Layer: l.Layer, Entries: entries})
+	}
+	return out
 }
 
 // sessionPermissions is the server's /permissions: the rules a running
@@ -282,7 +311,7 @@ func (s *Server) sessionPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, pol := s.opts.Config, live.Loop.Policy
-	out := permissionsResponse{Mode: string(pol.Mode), Managed: cfg.Managed, Rules: []permissionRow{}}
+	out := permissionsResponse{Mode: string(pol.Mode), Managed: cfg.Managed, Rules: []permissionRow{}, AllowLists: allowListRows(cfg)}
 	rank := map[string]int{config.LayerManaged: 0, config.LayerUser: 2, config.LayerSettings: 3,
 		config.LayerWorkspace: 4, config.LayerFlag: 5, config.LayerEnv: 6, config.LayerDefault: 7}
 	if a := live.layer; a != nil {

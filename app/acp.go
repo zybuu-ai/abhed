@@ -27,6 +27,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -338,6 +339,8 @@ type acpConn struct {
 	base    string // the workspace given on the command line, when cwd is absent
 	// trust is -trust-workspace, the default for every session's cwd.
 	trust config.TrustChoice
+	// noNetwork is a network configuration that would not go in force; no org fetch goes without it.
+	noNetwork bool
 	// ctx ends every agent and prompt on a stop signal, and busy holds the
 	// exit that follows until a prompt has ended; nil for neither.
 	ctx  context.Context
@@ -430,6 +433,14 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	defer stopper.stop()
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	// The proxy first, so the org policy fetch takes it; without it there is no fetch.
+	c.noNetwork = !profileNetwork(os.Stderr)
+	if !c.noNetwork {
+		orgPolicyAtStart(stopper.ctx, os.Stderr)
+	}
+	if mc, err := config.MachineOrgPolicy(); err == nil {
+		keepOrgPolicyFresh(stopper.ctx, mc.Refresh(), os.Stderr)
+	}
 	c.useRecord(workspace, trust)
 	err := c.run(os.Stdin)
 	c.closeRecord()
@@ -895,11 +906,22 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	// those the client names are not started.
 	if refused := mcpNames(p.MCPServers); len(refused) > 0 {
 		metaOf(res)["mcpServersRefused"] = refused
+		metaOf(res)["mcpServersRefusedReason"] = acpMCPRefused
+		if s.inner && s.parts.Loop != nil && s.parts.Loop.Recorder != nil {
+			for _, name := range refused {
+				_, _ = s.parts.Loop.Recorder.Record(agent.EvConfigRefused, agent.ActorSystem, agent.Trusted, agent.ConfigAttempt{
+					Layer: "command", Source: "session/new mcpServers", Key: "mcp.servers", Value: name,
+					Decision: "refused", Reason: acpMCPRefused, Principal: toolset.LocalPrincipal(inAgentCommand())})
+			}
+		}
 	}
 	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
 	c.sessionUpdate(s.id, cmds)
 }
+
+// acpMCPRefused is why the MCP servers a client names in session/new are not started.
+const acpMCPRefused = "the engine starts only the MCP servers its own configuration names, under workspace trust and its MCP server lists"
 
 // mcpNames are the names of the MCP servers a client offered.
 func mcpNames(servers []json.RawMessage) []string {
@@ -932,6 +954,9 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
+	if !c.noNetwork {
+		orgPolicyAtStart(c.ctx, os.Stderr)
+	}
 	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]string{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()

@@ -274,6 +274,9 @@ func (c *acpConn) recordContinued(s *acpSession, events []agent.Event, via strin
 	resumed := map[string]any{"surface": "acp", "via": via, "through_seq": last, "provider": loop.Provider,
 		"model": loop.Adapter.Profile().Name, "mode": string(loop.Policy.Mode), "web": toolset.WebState(cfg),
 		"workspace_trust": toolset.TrustState(config.GrantFor(s.trust, c.base, s.cwd), cfg.Workspace)}
+	if org := toolset.OrgPolicyState(cfg); org != nil {
+		resumed["org_policy"] = org
+	}
 	if err := recordResumed(loop.Recorder, resumed); err != nil {
 		return err
 	}

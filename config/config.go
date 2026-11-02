@@ -102,7 +102,11 @@ type Config struct {
 	Egress egress.Config `json:"egress,omitempty"`
 	// ControlPlane serves /v1/sandboxes from `abhed serve`. Off by default.
 	ControlPlane ControlPlaneConfig `json:"control_plane,omitempty"`
+	// Org is the machine's say over the signed org policy. Managed only.
+	Org OrgPolicyConfig `json:"org_policy,omitzero"`
 
+	// OrgPolicy is what loading decided about the signed org policy.
+	OrgPolicy OrgPolicyStatus `json:"-"`
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
 	// ManagedKeys are the settings the managed file made, as sorted dotted
@@ -139,6 +143,11 @@ type Config struct {
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+	// allowLayers are each file's own model.allowed and mcp lists, applied
+	// together; see ModelListed and MCPAdmitted.
+	allowLayers []allowLayer
+	// orgListFile names the org policy's own allow-list layer, when it has one.
+	orgListFile string
 	// monitorLocked is set when the managed file keeps the supervisor on.
 	monitorLocked bool
 	// managedRules are the rules the managed file itself lists, by list and
@@ -183,6 +192,9 @@ type RulesConfig struct {
 // status as JSON on stdin.
 type StatuslineConfig struct {
 	Command string `json:"command,omitempty"`
+	// TimeoutMS bounds one run of the command, in milliseconds: unset is one
+	// second, and at most ten seconds is taken.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
 // MemoryConfig governs what the agent remembers between sessions.
@@ -212,6 +224,25 @@ type RecordConfig struct {
 	Witness WitnessConfig `json:"witness,omitempty"`
 	// OCSF is a JSONL file of the record as OCSF events.
 	OCSF OCSFConfig `json:"ocsf,omitempty"`
+	// Ship sends each session's record to the org server as it is written.
+	// Managed only, and normally set by the org policy.
+	Ship ShipConfig `json:"ship,omitzero"`
+}
+
+// ShipConfig is record shipping to the org server signed in with abhed login.
+type ShipConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxBacklogMB is how much unshipped record is held before each start
+	// warns and records it (512).
+	MaxBacklogMB int `json:"max_backlog_mb,omitempty"`
+}
+
+// MaxBacklog is the backlog limit in bytes.
+func (s ShipConfig) MaxBacklog() int64 {
+	if s.MaxBacklogMB > 0 {
+		return int64(s.MaxBacklogMB) << 20
+	}
+	return 512 << 20
 }
 
 // WitnessConfig names an off-host witness for the record's heads. Managed only.
@@ -340,6 +371,8 @@ var managedOnly = map[string]string{
 	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
 	"record.ocsf.path":                   "only the managed configuration moves the record's OCSF file",
 	"record.ocsf.locked":                 "only the managed configuration locks the record's OCSF file",
+	"record.ship":                        "only the managed configuration ships the record to the org server",
+	"org_policy":                         "only the managed configuration says where the org policy comes from",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
@@ -420,6 +453,10 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.OCSF.Path = ""
 	case "record.ocsf.locked":
 		c.Record.OCSF.Locked = false
+	case "record.ship":
+		c.Record.Ship = ShipConfig{}
+	case "org_policy":
+		c.Org = OrgPolicyConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
 	case "hooks.managed_only":
@@ -625,6 +662,11 @@ type ModelConfig struct {
 	// suggestions and commit messages use; unset, they use Completion.
 	NextEdit string `json:"next_edit,omitempty"`
 	Commit   string `json:"commit,omitempty"`
+	// Allowed lists the models a session may run on, as provider-type/model
+	// patterns where * is any run of characters (anthropic/claude-*). Unset
+	// allows every configured model. Each layer that sets it must admit a
+	// model, so a lower layer can only narrow the managed list.
+	Allowed []string `json:"allowed,omitempty"`
 }
 
 // EditorModel is the provider an editor feature uses and the key that named
@@ -1449,6 +1491,12 @@ type RAGCorpusConfig struct {
 // does not run: discovery does not imply trust (docs §03 T4).
 type MCPConfig struct {
 	Servers []MCPServerConfig `json:"servers,omitempty"`
+	// Allowed and Denied judge every server before it starts, whatever
+	// configured or added it: one Denied matches, or no Allowed entry
+	// matches when the list is set, never starts. A lower layer can only
+	// narrow the managed lists.
+	Allowed []MCPMatch `json:"allowed,omitempty"`
+	Denied  []MCPMatch `json:"denied,omitempty"`
 }
 
 type MCPServerConfig struct {
@@ -1749,7 +1797,9 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	userAllowlistNarrows(&cfg)
 
 	applyEnv(&cfg)
+	narrowToAllowLists(&cfg)
 	w := warnSink(o.Warn)
+	warnOrgFallback(w, cfg)
 	warnUnknown(w, cfg.Unknown)
 	warnDuplicates(w, cfg.Duplicates)
 	warnSetAside(w, cfg.SetAside)
@@ -1802,7 +1852,9 @@ func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
-	cfg.SetKeys = append(cfg.SetKeys, managedKeys(data)...)
+	keys := managedKeys(data)
+	cfg.SetKeys = append(cfg.SetKeys, keys...)
+	noteAllowLayer(cfg, path, keys)
 	return data, nil
 }
 
@@ -1893,7 +1945,23 @@ func (c Config) Provider() (ProviderConfig, error) {
 //
 // The name is looked up in the configured map, never treated as an endpoint.
 // That is what stops a caller pointing the agent at a host of their choosing.
+//
+// A model no model.allowed list admits is refused with a ManagedError, so
+// every caller that resolves a provider, the default included, holds the list.
 func (c Config) ProviderNamed(name string) (ProviderConfig, error) {
+	p, err := c.providerNamed(name)
+	if err != nil {
+		return p, err
+	}
+	if err := c.ModelListed(name, p); err != nil {
+		return ProviderConfig{}, err
+	}
+	return p, nil
+}
+
+// providerNamed is ProviderNamed without the allowed-models list, for
+// checking a configuration's own consistency.
+func (c Config) providerNamed(name string) (ProviderConfig, error) {
 	p, found := c.Model.Providers[name]
 	if !found {
 		return ProviderConfig{}, fmt.Errorf(
@@ -1934,6 +2002,9 @@ type ToolsConfig struct {
 }
 
 func (c Config) Validate() error {
+	if err := c.validateAllowLists(); err != nil {
+		return err
+	}
 	if err := c.validateNetwork(); err != nil {
 		return err
 	}
@@ -2012,7 +2083,7 @@ func (c Config) Validate() error {
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
 	}
-	p, err := c.Provider()
+	p, err := c.providerNamed(c.Model.Default)
 	if err != nil {
 		return err
 	}

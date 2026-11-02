@@ -114,8 +114,10 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	cert := fs.String("cert", "", "client certificate, for a server that asks for one (PEM)")
 	key := fs.String("key", "", "client certificate key (PEM)")
 	allowHTTP := fs.Bool("allow-http", false, "allow plain http to a host other than this machine")
+	var policyKeys policyKeyFlag
+	fs.Var(&policyKeys, "policy-key", "pin this org policy signing key (base64 Ed25519 or PEM; repeatable) instead of the one the server offers")
 	fs.Usage = func() {
-		fmt.Fprintln(errOut, "usage: abhed login [flags] URL\n  Signs this command line in to an Abhed server and saves it as a profile.")
+		fmt.Fprintln(errOut, "usage: abhed login [flags] URL\n  Signs this command line in to an Abhed server and saves it as a profile.\n  When the server serves a signed org policy, this machine takes it.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -180,7 +182,10 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	switch {
 	case d.AuthMode == "none" || d.AuthMode == "":
 		fmt.Fprintf(out, "%s asks for no sign-in; saved it as profile %s.\n", base, *name)
-		return saveProfile(path, reg, *name, p, errOut)
+		if code := saveProfile(path, reg, *name, p, errOut); code != 0 {
+			return code
+		}
+		return enrollAfterLogin(ctx, path, *name, p, policyKeys, out, errOut)
 	case len(d.Methods) == 0:
 		return fail(fmt.Errorf("%s (auth.mode %s) does not offer command-line sign-in; its operator can turn on auth.cli.enabled", base, d.AuthMode))
 	}
@@ -251,6 +256,15 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 		until = ", until " + p.ExpiresAt.Local().Format("2 Jan 15:04")
 	}
 	fmt.Fprintf(out, "Signed in to %s as %s (profile %s%s).\n", base, p.Username, *name, until)
+	return enrollAfterLogin(ctx, path, *name, p, policyKeys, out, errOut)
+}
+
+// enrollAfterLogin takes the server's signed org policy, if it serves one.
+func enrollAfterLogin(ctx context.Context, path, name string, p *profiles.Profile, keys []string, out, errOut io.Writer) int {
+	if err := enrollOrgPolicy(ctx, path, name, p, keys, out, errOut); err != nil {
+		fmt.Fprintf(errOut, "abhed: org policy: %v\n", err)
+		return 1
+	}
 	return 0
 }
 

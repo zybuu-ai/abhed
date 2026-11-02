@@ -1674,6 +1674,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	if spec.Provider != "" {
 		a, err := s.resolveProvider(spec.Provider)
 		if err != nil {
+			s.auditRefused(ctx, err)
 			return "", fmt.Errorf("provider: %w", err)
 		}
 		adapter = a
@@ -1831,6 +1832,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	if spec.Provider != "" {
 		a, err := s.resolveProvider(spec.Provider)
 		if err != nil {
+			s.auditRefused(ctx, err)
 			return "", fmt.Errorf("provider: %w", err)
 		}
 		adapter = a

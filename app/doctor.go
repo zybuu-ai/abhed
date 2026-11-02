@@ -30,6 +30,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -75,6 +76,13 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		return 1
 	}
 	provider, err := cfg.Provider()
+	// A model the allowed-models list refuses is shown with why, and not probed.
+	var notAllowed *config.ManagedError
+	if errors.As(err, &notAllowed) && notAllowed.Key == "model.allowed" {
+		provider, err = cfg.Model.Providers[cfg.Model.Default], nil
+	} else {
+		notAllowed = nil
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 1
@@ -91,6 +99,15 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)
+	}
+	if s := cfg.OrgPolicy; s.Status != "" && s.Status != orgpolicy.StatusNone {
+		fmt.Printf("org policy  %s\n", config.Printable(s.OrgPolicyLine()))
+	}
+	for _, line := range allowListLines(cfg) {
+		fmt.Println(line)
+	}
+	if notAllowed != nil {
+		fmt.Printf("            ⚠ %v\n", notAllowed)
 	}
 	if cfg.Settings.Name != "" {
 		fmt.Printf("settings    %s\n", config.Printable(cfg.Settings.Name))
@@ -280,6 +297,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
+		gw.Admit = toolset.MCPAdmit(cfg)
 		// The servers are started as a session starts them: their files
 		// confined, and under the allowlist their network too.
 		if own := toolset.OwnEgress(cfg); own != nil {
@@ -313,6 +331,10 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	fmt.Println()
 
+	if notAllowed != nil {
+		fmt.Println("endpoint    not probed: the allowed models do not admit it; choose one they admit with -model or model.default")
+		return 1
+	}
 	// The workspace named a model that waits for trust: the default in its
 	// place is not what this workspace would use, so it is not probed.
 	if modelAwaitsTrust(cfg) {
@@ -722,7 +744,14 @@ func managedLine(cfg config.Config) string {
 	if !cfg.Managed {
 		return ""
 	}
-	return fmt.Sprintf("%s (sets %d setting(s))", config.Printable(managed.ConfigFile), len(cfg.ManagedKeys))
+	var from []string
+	if _, err := os.Stat(managed.ConfigFile); err == nil {
+		from = append(from, config.Printable(managed.ConfigFile))
+	}
+	if cfg.OrgPolicy.Status != "" && cfg.OrgPolicy.Status != orgpolicy.StatusNone {
+		from = append(from, "the org policy")
+	}
+	return fmt.Sprintf("%s (sets %d setting(s))", strings.Join(from, " and "), len(cfg.ManagedKeys))
 }
 
 // sessionLine says how long a browser sign-in lasts, when one does.
@@ -891,4 +920,39 @@ func andList(words []string) string {
 		return strings.Join(words, "")
 	}
 	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+}
+
+// allowListLines are doctor's lines for the allowed models and the MCP
+// server lists, each with the file that set it.
+func allowListLines(cfg config.Config) []string {
+	var out []string
+	from := func(l config.AllowList) string {
+		if l.Managed {
+			return "managed"
+		}
+		return config.Printable(l.File)
+	}
+	for _, l := range cfg.ModelsAllowed() {
+		out = append(out, fmt.Sprintf("models      only %s (%s)", strings.Join(l.Entries, ", "), from(l)))
+	}
+	for _, l := range cfg.MCPLists() {
+		what := "mcp allow   "
+		if l.Denied {
+			what = "mcp deny    "
+		}
+		entries := strings.Join(l.Entries, ", ")
+		if len(l.Entries) == 0 {
+			entries = "none"
+		}
+		out = append(out, fmt.Sprintf("%s%s (%s)", what, entries, from(l)))
+	}
+	for _, k := range cfg.SetAside {
+		switch k.Key {
+		case "mcp.servers":
+			out = append(out, fmt.Sprintf("            ⚠ MCP server %s is not started: %s", config.Printable(k.Value), k.Reason))
+		case "model.fallback", "model.completion", "model.next_edit", "model.commit", "suggest.model", "verify.critic.model", "monitor.model":
+			out = append(out, fmt.Sprintf("            ⚠ %s %s is not used: %s", k.Key, config.Printable(k.Value), k.Reason))
+		}
+	}
+	return out
 }

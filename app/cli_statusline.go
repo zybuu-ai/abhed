@@ -150,10 +150,27 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 // JSON on stdin and returns its first line, sanitized. A workspace's
 // statusline reaches here only once the workspace is trusted.
 func runStatusline(ctx context.Context, sb sandbox.Sandbox, cwd, command string, m ui.StatusModel) (string, error) {
+	return runStatuslineWithin(ctx, sb, cwd, command, m, statuslineTimeout)
+}
+
+// statuslineLimit is how long one run of cfg's statusline command may take:
+// statusline.timeout_ms, at most ten seconds, or statuslineTimeout.
+func statuslineLimit(cfg config.Config) time.Duration {
+	if ms := cfg.Statusline.TimeoutMS; ms > 0 {
+		return min(time.Duration(ms)*time.Millisecond, 10*time.Second)
+	}
+	return statuslineTimeout
+}
+
+// runStatuslineWithin is runStatusline with its own limit.
+func runStatuslineWithin(ctx context.Context, sb sandbox.Sandbox, cwd, command string, m ui.StatusModel, limit time.Duration) (string, error) {
 	if strings.TrimSpace(command) == "" || sb == nil {
 		return "", nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, statuslineTimeout)
+	if limit <= 0 {
+		limit = statuslineTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	in, err := json.Marshal(m)
 	if err != nil {
@@ -170,7 +187,7 @@ func runStatusline(ctx context.Context, sb sandbox.Sandbox, cwd, command string,
 	cmd.WaitDelay = 100 * time.Millisecond
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return "", fmt.Errorf("%w %d ms", errStatuslineSlow, statuslineTimeout.Milliseconds())
+			return "", fmt.Errorf("%w %d ms", errStatuslineSlow, limit.Milliseconds())
 		}
 		return "", err
 	}
@@ -261,7 +278,7 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	if sb == nil {
 		return notice
 	}
-	line, err := runStatusline(ctx, sb, c.workspace, command, c.statusModel(mode))
+	line, err := runStatuslineWithin(ctx, sb, c.workspace, command, c.statusModel(mode), statuslineLimit(c.appCfg))
 	if err != nil {
 		// A run that only took too long, on a busy machine, shows the last
 		// line the command gave rather than nothing.

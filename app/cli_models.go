@@ -91,7 +91,12 @@ func switchModel(ctx context.Context, e *cmdEnv, name string) error {
 	if st.appCfg.ModelPinned() {
 		return fmt.Errorf("the managed configuration sets the model to %s; it is not switched", st.appCfg.Model.Default)
 	}
-	if st.appCfg.ModelAllowed(name) != nil {
+	if err := st.appCfg.ModelAllowed(name); err != nil {
+		var refused *config.ManagedError
+		if errors.As(err, &refused) {
+			recordModelRefused(st, "/model", refused)
+			return err
+		}
 		return fmt.Errorf("no provider %q in config; /model lists them", name)
 	}
 	// Resolve through ProviderNamed so the selected provider's api_key_env
@@ -277,8 +282,15 @@ func fallbackChain(cfg config.Config, flag string) ([]string, []string) {
 	}
 	var chain []string
 	for _, n := range names {
+		p, configured := cfg.Model.Providers[n]
+		var refused error
+		if configured {
+			refused = cfg.ModelListed(n, p)
+		}
 		switch {
 		case n == cfg.Model.Default || slices.Contains(chain, n):
+		case refused != nil:
+			warn = append(warn, fmt.Sprintf("fallback %q is left out: %v", n, refused))
 		case !slices.Contains(offered, n):
 			warn = append(warn, fmt.Sprintf("fallback %q is not a configured provider; left out", n))
 		default:
@@ -440,4 +452,12 @@ func switchBackHint(st *cliState, runErr error) string {
 		return ""
 	}
 	return "/model " + from + " switches back to the model you were on"
+}
+
+// recordModelRefused records a model choice the configuration refused, as
+// config.refused with what was asked and why.
+func recordModelRefused(st *cliState, source string, refused *config.ManagedError) {
+	st.recordCLI(agent.EvConfigRefused, agent.ConfigAttempt{Layer: "command", Source: source, Key: refused.Key,
+		Value: config.Printable(refused.Value), Decision: "refused", Reason: refused.Reason,
+		Principal: toolset.LocalPrincipal(inAgentCommand())})
 }

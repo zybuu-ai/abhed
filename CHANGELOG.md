@@ -111,11 +111,20 @@ All notable changes to Abhed are recorded here. The format follows
   the shift, while it holds the tables, just past the highest `commit_tx`
   when that is ahead of the cluster; new events and the readers' horizon both
   add it. It stays 0 in a database the cluster wrote, is never lowered, and
-  the runtime role only reads it.
+  the runtime role only reads it. A runtime server refuses to start, naming
+  `abhed migrate`, on a database whose commit order is ahead of the cluster,
+  as after a restore that skipped the migrate.
 - HawkEYE's `sandbox-denied` no longer fires on the words of a command's
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
   `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
+- `model.allowed`, `mcp.allowed` and `mcp.denied` are new keys. A
+  configuration that sets none of them behaves as before. One that sets a
+  list Abhed cannot read stops at startup, naming the file and the entry, so
+  check a new list with `abhed doctor` before rolling it out. Under a managed
+  `model.default`, the SDK's `SwitchModelNamed` refusal still `errors.Is`
+  `ErrUnknownModel`, and now also unwraps to the `config.ManagedError` that
+  says why.
 
 ### Security
 
@@ -177,20 +186,76 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Signed org policy. After `abhed login` to a server that serves one, Abhed
+  fetches the org's managed configuration, checks its Ed25519 signature
+  against a key pinned at sign-in (`-policy-key` to pin one given out of
+  band; signed statements rotate the pins), keeps it in
+  `~/.abhed/org-policy.json` and applies it as the managed layer above the
+  user, `-settings` and workspace files and below `/etc/abhed/config.json`,
+  which wins where both set a key; deny and ask rules from both are kept. It
+  is fetched again as sessions start and every 15 minutes. A cached policy
+  past its age with the server unreachable, a fetched policy that fails
+  verification or is an earlier epoch, or no policy when the managed file
+  requires one applies the fallback (plan mode, no allow rules, no web
+  tools) over what was cached, and says so. An org policy cannot name
+  programs, local paths or environment variables (extensions, MCP servers,
+  `additional_dirs`, `api_key_env` and others are set aside). The managed
+  `org_policy` section pins the server and keys and can require the policy.
+  `abhed policy status|show|refresh|leave`; `session.started` records
+  `org_policy`. Guide: [Signed org policy](docs/guide/35-org-policy.md).
+- Record shipping. With the managed `record.ship.enabled` (normally set by
+  the org policy), each session's record is sent to the org server as it is
+  written, line for line with its hash chain, authenticated with the sign-in
+  token, resumable after time offline from cursors in
+  `~/.abhed/state/record-ship.json`. A line the secrets store would still
+  redact is not sent. `blocked`, `diverged`, `refused`, `gap`, `backlog` and
+  `resumed` events are printed, kept and reported to the server. `abhed
+  record ship [status|now]`. Guide: [Shipping the record](docs/guide/36-record-shipping.md).
+- `local.CheckSegment` and `local.WriteExport`, for a server that checks
+  shipped lines and exports them in the record's own format; packages
+  `orgpolicy` and `recordship` (experimental until 2.0).
+- Allowed models and MCP servers in the managed configuration. The managed
+  file lists the models any session may use in `model.allowed`, as
+  `type/model` patterns (`anthropic/claude-*`). Its lists are refused
+  everywhere a model is chosen:
+  - the session's default, `-model`, `/model` and custom commands
+  - the console's picker and its sessions
+  - Studio's model picker over ACP
+  - the SDK's `SwitchModelNamed`, `SetModel` and `Options.Provider`
+  - subagents and fallbacks
+  - completion, next-edit and commit models
+  - the suggestion, critic and supervisor-judge models
+
+  `mcp.allowed` and `mcp.denied` judge every MCP server before it starts, by
+  name, the program's path, a pinned digest or a remote server's host,
+  whether it comes from the user's, the workspace's or the managed
+  configuration, `-mcp-config`, `abhed mcp add`, the console, Studio or a
+  restart.
+
+  A refusal names the list and is recorded as `config.refused`, and the
+  console's refusals also go to the admin audit hook. A model or server set
+  aside at load is listed by `abhed doctor`, `/permissions`, `/mcp` and
+  Studio, and the policy views show each list with its layer. A lower layer
+  may set the lists too, but only to narrow them. A malformed list stops
+  Abhed at startup. A local managed file is all it takes, in every edition.
+  See [Allowed models and MCP servers](docs/guide/02-configuration.md#allowed-models-and-mcp-servers).
 - Backup and restore scripts for a self-hosted server, in
   `scripts/backup/`: `abhed-backup.sh` writes a logical dump of the database
-  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser), the
-  roles without passwords, and a tarball of the state folders you name,
-  each checked before it counts; `abhed-restore.sh` restores them into an
-  empty database in one transaction and can run `abhed migrate`, `abhed
-  record verify` and `abhed record audit` after. A systemd service and timer
-  are examples. `scripts/backup/restore-test.sh` proves them: it seeds a
-  record in a throwaway Postgres container, backs it up, restores it into a
-  new database of the same cluster, into a fresh cluster whose transaction
-  counter is behind, and from a `pg_basebackup` copy, and checks every chain
-  position, hash and `commit_tx` is unchanged, both record checks pass, and a
-  commit-ordered reader goes on from its cursor without skipping or
-  repeating an event ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
+  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser) and a
+  tarball of the state folders you name, each checked before it counts;
+  `abhed-restore.sh` restores them into an empty database in one
+  transaction, makes the owner and runtime roles only if they are missing
+  and only as plain roles, and can run `abhed migrate`, `abhed record
+  verify` and `abhed record audit` after. Both refuse a connection string
+  that carries a password (use `PGPASSFILE` or `PGPASSWORD`). A systemd
+  service and timer are examples. `scripts/backup/restore-test.sh` proves
+  them: it seeds a record in a throwaway Postgres container, backs it up,
+  restores it into a new database of the same cluster, into a fresh cluster
+  whose transaction counter is behind, and from a `pg_basebackup` copy, and
+  checks every chain position, hash and `commit_tx` is unchanged, both record
+  checks pass, the state comes back with its modes, and a commit-ordered
+  reader goes on from its cursor without skipping or repeating an event
+  ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
 - A corporate upstream proxy, `network.upstream_proxy`: an explicit HTTP
   proxy (`http://` or `https://`), an optional CA bundle (trusted for
   connections through the proxy only), credentials by the name of a stored
@@ -198,7 +263,7 @@ All notable changes to Abhed are recorded here. The format follows
   list and `resolve_via_proxy`. Abhed's own connections go out through it:
   the model clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the
   `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
-  installs and registry lookups, `abhed login` and the profile calls, and
+  installs and registry lookups, `abhed login`, the profile calls, the org policy fetch and
   the record's witness. Under the allowlist, the commands' proxy chains
   what it allowed through it (`CONNECT` for tunnels, absolute form for
   plain HTTP), so a provider or registry reachable only through the
@@ -219,6 +284,9 @@ All notable changes to Abhed are recorded here. The format follows
   another in the same process is refused. PAC, WPAD, SOCKS and NTLM or
   Kerberos proxy authentication are not supported. Records of chained
   connections carry `upstream`.
+- `statusline.timeout_ms` sets how long one run of the statusline command
+  may take (one second unset, ten at most), and `/status` shows the
+  command's last line when a run only took too long.
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen once the person agrees for the workspace (`sandbox.listen`: `ask`
   by default, `allow`, `off`), which covers every command in every session
@@ -950,8 +1018,11 @@ All notable changes to Abhed are recorded here. The format follows
   and withhold the value of a key whose name says secret, in any case, in
   JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
   and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
-  `password=`); a type, a variable, a template or a key that only names a
-  secret (`passwordFile`, `token_url`) is left alone.
+  `password=`), on a diff's added and removed lines too; a type, a variable,
+  a template, Python that only assigns to such a name, or a key that only
+  names a secret (`passwordFile`, `token_url`) is left alone, and a block
+  scalar's lines are withheld one by one, its sibling keys kept. Next-edit
+  cleans its window whole, so a block scalar there is withheld too.
 - An agent that makes the same read-only call with the same answer again
   and again is told so after three and stopped after six, with the reason
   named (`retry_exhausted`); the next message goes on. A call that can
@@ -1217,6 +1288,13 @@ out):
 
 - Added: `config.Config.ManagedWebFetchOff`, whether the managed file
   itself sets `web_fetch.enabled` to false; `abhed.Model.Images`.
+- Added: `config.ModelConfig.Allowed`, `config.MCPConfig.Allowed` and
+  `Denied`, `config.MCPMatch`, `config.MCPServer`, `config.MCPServerOf`,
+  `config.ModelID`, `config.AllowList`, and `Config.ModelListed`,
+  `Config.ModelsAllowed`, `Config.MCPAdmitted`, `Config.MCPLists`,
+  `Config.HasMCPLists` and `Config.EndpointRefused`.
+  `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
+  outside `model.allowed`.
 
 - Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
   with an `Options.Addr` asking for any port (`:0`, or an empty port) now

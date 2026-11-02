@@ -31,7 +31,7 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
@@ -47,7 +47,7 @@ configuration](#trusting-the-workspace-configuration).
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
-| `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
+| `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
 | `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
@@ -1180,31 +1180,41 @@ control that is silently off is worse than one that is visibly missing.
 ### Backing up and restoring
 
 `scripts/backup/abhed-backup.sh` writes a logical dump of the database with
-`pg_dump`, the roles without their passwords, and a tarball of the state
-folders you name (the server's `~/.abhed`, `/etc/abhed`). Dump as a role that
-reads every tenant's rows past row security, not as the runtime role:
+`pg_dump` and a tarball of the state folders you name (the server's
+`~/.abhed`, `/etc/abhed`). Dump as a role that reads every tenant's rows past
+row security, not as the runtime role:
 
 ```sql
 CREATE ROLE abhed_backup LOGIN PASSWORD '…' NOSUPERUSER BYPASSRLS;
 GRANT pg_read_all_data TO abhed_backup;
 ```
 
-Use client tools of the server's major version. `abhed-backup.service` and
-`abhed-backup.timer` beside it are an example schedule.
+Give the connection string without its password and put the password in a
+`PGPASSFILE` (or `~/.pgpass`) or `PGPASSWORD`: the scripts refuse a
+connection string that carries one, since the database clients would show it
+to every local user in the process list. Use client tools of the server's
+major version. `abhed-backup.service` and `abhed-backup.timer` beside the
+script are an example schedule.
 
 `scripts/backup/abhed-restore.sh` restores a dump, as a superuser, into an
-empty database, in one transaction that stops at the first error. A full
-dump creates the record's triggers after its rows are loaded, so every
-chain position, hash and `commit_tx` is kept as it was. Never restore with
-`--data-only` into a database that already has the schema: the record's
-triggers then run on every row, which they are not written to do (tried
-with `pg_restore --data-only`, the restore stops at the first event). Then, before any server starts, run `abhed migrate` as the owner
-and `abhed record verify` and `abhed record audit` (the script runs all
-three when `ABHED_BIN`, `ABHED_MIGRATE_DATABASE_URL` and
-`ABHED_DATABASE_URL` are set). Restored into a cluster whose transaction
-counter is behind the one the dump came from, `abhed migrate` raises
-`commit_shift` so the OCSF file's cursor and an edition's SIEM delivery go
-on without skipping new events.
+empty database, in one transaction that stops at the first error, and
+refuses a database that already has tables. `ABHED_RESTORE_CREATE_ROLES`
+names the owner and runtime roles to make if they are missing, as plain
+login roles without a password; it changes no role that exists and makes no
+other. A full dump creates the record's triggers after its rows are loaded,
+so every chain position, hash and `commit_tx` is kept as it was. Never
+restore with `--data-only` into a database that already has the schema: the
+record's triggers then run on every row, and the restore stops at the first
+event.
+
+Then, before any server starts, run `abhed migrate` as the owner, and `abhed
+record verify` and `abhed record audit`. The script runs all three when
+`ABHED_BIN`, `ABHED_MIGRATE_DATABASE_URL` and `ABHED_DATABASE_URL` are set.
+Restored into a cluster whose transaction counter is behind the one the dump
+came from, `abhed migrate` raises `commit_shift` so the OCSF file's cursor
+and an edition's SIEM delivery go on without skipping new events. A runtime
+server started on such a database before the migrate refuses, naming
+`abhed migrate`.
 
 A physical copy (`pg_basebackup`, or WAL archiving) keeps transaction ids
 as they were and needs none of this beyond the two checks. With
@@ -1214,10 +1224,11 @@ showing the restore.
 
 `scripts/backup/restore-test.sh` checks all three ways (a logical restore
 into the same cluster, into a fresh one whose counter is behind, and a
-physical copy) in throwaway containers. The OCSF file's cursor is in the
-database and goes back with it; lines the file already holds for events
-after the backup point stay in the file, though those events are not in the
-restored database.
+physical copy) in throwaway containers, with the restore script running the
+migrate and both checks and restoring a state tarball. The OCSF file's
+cursor is in the database and goes back with it; lines the file already
+holds for events after the backup point stay in the file, though those
+events are not in the restored database.
 
 ## Stopping the server
 
@@ -1481,7 +1492,11 @@ configuration says `default`), not only `bypass`. A nested run narrows with
 ### The managed file
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
-key it sets replaces what the user and project files said. A list it sets,
+key it sets replaces what the user and project files said. An organisation can
+also sign a policy on its server for every laptop that signs in to it; that
+[signed org policy](35-org-policy.md) is laid under this file, which wins
+where both make a setting, and the two together are the managed
+configuration this section describes. A list it sets,
 such as `permissions.allow`, replaces the lower files' list; so does a map
 entry, such as one provider under `model.providers`. `permissions.deny` and
 `permissions.ask` are the exceptions: the managed rules are added to the
@@ -1585,8 +1600,131 @@ model. Fallbacks under a managed default are only those the managed
 managed `model.default`, a `model.completion` (or `model.next_edit`,
 `model.commit`) naming another provider is refused unless the managed file
 sets that key itself
-([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default`, any provider a
-file defines may be chosen, and the SDK's `Provider` names any endpoint.
+([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default` or
+`model.allowed`, any provider a file defines may be chosen, and the SDK's
+`Provider` names any endpoint. To allow several models rather than pin one,
+see [Allowed models and MCP servers](#allowed-models-and-mcp-servers).
+
+### Allowed models and MCP servers
+
+A managed `model.default` pins one model. To allow several, the managed
+file lists them in `model.allowed`, and lists the MCP servers that may start
+in `mcp.allowed` and `mcp.denied`:
+
+```json
+{
+  "model": {"allowed": ["anthropic/claude-*", "ollama/qwen3:*", "openai-compatible/corp-*"]},
+  "mcp": {
+    "allowed": [
+      {"name": "github", "digest": "sha256:9f2c…"},
+      {"command": "/opt/mcp/bin/*"},
+      {"host": "*.mcp.corp.example"}
+    ],
+    "denied": [{"name": "shell-*"}]
+  }
+}
+```
+
+**Models.** Each `model.allowed` entry is a pattern over a provider's
+`type` and the `model` it serves, written `type/model`. `*` stands for any
+run of characters, `/` included. The configured provider's own name is not
+matched, since any layer can choose a name. A provider is admitted when a
+pattern matches it, and every other one is refused on every surface:
+
+- the default model when a session starts, `-model`, `/model` and a custom
+  command's `model`
+- the console's picker and the sessions it starts or switches
+- Studio's model picker and `session/set_config_option` or `session/set_model`
+  over `abhed acp`
+- the SDK's `SwitchModelNamed`, `SetModel` and `Options.Provider`
+- subagents, including a definition's `model`
+- `model.completion`, `model.next_edit` and `model.commit`
+- `suggest.model`, `verify.critic.model` and a supervisor `monitor.model`
+- each `model.fallback` and `-fallback-model` name
+
+The refusal names `model.allowed`, the model as `type/model` and the
+patterns. A choice made in a session is recorded as `config.refused` with
+the decision `refused`. The console's refusal also goes to the server log
+and the admin audit hook. A fallback the list refuses is dropped, and a
+`suggest.model` or `verify.critic.model` it refuses is left unset, so the
+session's own model does that work. A completion, next-edit or commit model
+it refuses is turned away when the editor asks for it. A supervisor judge
+model it refuses is never asked, so each call it would judge gets
+`monitor.on_unavailable`. Each of these is set aside at load, recorded as
+`config.refused` with the decision `set_aside`, and listed by `abhed
+doctor`. A default model the list refuses does not stop the configuration
+loading. It stops the session from starting with the reason: choose an
+admitted model with `-model`, or change `model.default`.
+
+`openai-compatible` reaches any endpoint that speaks that API. A pattern
+such as `openai-compatible/*` therefore admits whatever server a lower file
+names. Pair it with the egress allowlist ([Network policy](21-network-policy.md))
+when that matters.
+
+**MCP servers.** Each `mcp.allowed` or `mcp.denied` entry is an object.
+A server matches an entry when every field the entry sets matches it:
+
+| Field | Matches |
+|---|---|
+| `name` | the configured name; `*` for any run of characters |
+| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above |
+| `digest` | the `sha256:` digest the server's configuration pins. Abhed checks the program, or the image the digest names, before it starts the server, so a server whose program does not match never runs |
+| `host` | a remote server's URL host; `*.example.com` matches any subdomain |
+
+An entry with no field, a field Abhed does not know, a `command` that is not
+an absolute path, a malformed `digest`, or a `host` with a scheme, port or
+path stops Abhed at startup. So does an entry that sets `host` together
+with `command` or `digest`. A `name` alone matches whatever program a lower
+file runs under that name. To bind the program itself, use `command`,
+`digest` or `host`. An empty `mcp.allowed` list allows no server.
+
+A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
+set, a server no entry matches never starts either. This covers servers from
+every source:
+
+- the user's, a trusted workspace's and the managed `mcp.servers`
+- `-mcp-config` and `abhed mcp add`
+- one an administrator adds through the console (refused with 403, and
+  audited as `mcp.refused`)
+- one Studio adds
+- a reconnect with `/mcp restart` or Studio's restart
+
+The servers an editor names in ACP `session/new` are never started under any
+configuration. The reply's `mcpServersRefusedReason` says so, and each is
+recorded.
+
+The lists are applied when the configuration loads. A server they refuse is
+taken out and recorded as `config.refused` with the decision `set_aside`, the
+reason naming the list. `/mcp`, Studio's MCP panel and `abhed doctor` show it
+as refused, with why. The gateway that starts servers checks every server
+again just before it starts, so one added later is judged the same way.
+
+**Narrowing.** The lists only narrow. `~/.abhed/config.json`, `-settings`
+and a workspace's file may set `model.allowed` and `mcp.allowed`
+too, but each list that is set must admit a model or server. A workspace
+file's lists apply whether or not it is trusted, since they can only take
+away. A malformed list in an untrusted workspace file is ignored with a
+warning rather than stopping Abhed. So a lower list
+can leave out what the managed list allows, and cannot add to it. A lower
+`mcp.denied` adds to the managed one. Without a managed file, a user's own
+lists still bind their sessions. Setting `mcp.allowed` or `mcp.denied` in
+the managed file does not make its `mcp.servers` the organisation's: the
+user's and workspace's servers stay theirs to change, within the lists.
+
+**Fail closed.** A list that cannot be read in the managed file, the user's
+file, `-settings` or a trusted workspace's file stops Abhed at startup,
+naming the file, rather than leaving the list unenforced. That covers:
+
+- an empty `model.allowed`, which would refuse every model
+- a pattern without a `/` or with whitespace
+- an MCP entry as described above
+- a value of the wrong type
+
+**Where to see them.** `abhed doctor` prints each list with the file that
+set it, and every model and server it left out. `/permissions` prints the
+same lines. The policy views show them too: `allowLists` in Studio's policy
+view (ACP `_abhed/capabilities`), and `allow_lists` in the console's
+`/v1/sessions/{id}/permissions`.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say. With Postgres storage it

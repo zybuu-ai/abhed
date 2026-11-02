@@ -118,6 +118,16 @@ func pinnedCommand(cfg ServerConfig, env []string) (string, error) {
 // resolveProgram finds command as the server's own PATH would, links
 // followed.
 func resolveProgram(command string, env []string) (string, error) {
+	path, err := foundProgram(command, env)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(path)
+}
+
+// foundProgram finds command as the server's own PATH would, as an absolute
+// path, links not followed.
+func foundProgram(command string, env []string) (string, error) {
 	path := command
 	if !strings.ContainsRune(command, os.PathSeparator) && !strings.ContainsRune(command, '/') {
 		search := os.Getenv("PATH")
@@ -141,11 +151,22 @@ func resolveProgram(command string, env []string) (string, error) {
 			return "", fmt.Errorf("%s is not found on the server's PATH", command)
 		}
 	}
-	abs, err := filepath.Abs(path)
+	return filepath.Abs(path)
+}
+
+// Programs are the files command resolves to on the server's PATH, as found
+// and with links followed, for the configuration's MCP lists to judge; none
+// when it is not found.
+func Programs(command string, env []string) []string {
+	real, err := resolveProgram(command, env)
 	if err != nil {
-		return "", err
+		return nil
 	}
-	return filepath.EvalSymlinks(abs)
+	out := []string{real}
+	if found, err := foundProgram(command, env); err == nil && found != real {
+		out = append(out, found)
+	}
+	return out
 }
 
 func fileDigest(path string) (string, error) {

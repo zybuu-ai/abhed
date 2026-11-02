@@ -155,3 +155,31 @@ func TestStudioNextEditKeepsThePersonsWhitespace(t *testing.T) {
 		}
 	}
 }
+
+// A whitespace-only line's spaces are not given to an empty line, and a
+// block scalar in the window is withheld whole, so its line is not edited.
+func TestStudioNextEditBlanksAndBlocks(t *testing.T) {
+	model := newFIMServer(t, "func a() {\n    \n}\n\nx := 2\n")
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": "file://" + r.ws + "/a.go",
+		"cursor": map[string]int{"line": 4}, "window": map[string]any{"startLine": 0, "text": "func a() {\n    \n}\n\nx := 1\n"}}, &res)
+	if len(res.Edits) != 1 || res.Edits[0].Text != "x := 2\n" || res.Edits[0].Range.Start.Line != 4 {
+		t.Fatalf("%+v", res)
+	}
+
+	block := newFIMServer(t, "db:\n  password: |\n    s3cretvalue9\n  user: alice\n")
+	r2 := completionRig(t, block.URL, "")
+	noHold(t)
+	id2 := r2.open()
+	r2.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id2, "uri": "file://" + r2.ws + "/v.yaml",
+		"cursor": map[string]int{"line": 3}, "window": map[string]any{"startLine": 0, "text": "db:\n  password: |\n    s3cretvalue9\n  user: bob\n"}}, &res)
+	block.mu.Lock()
+	sent := strings.Join(block.bodies, "\n")
+	block.mu.Unlock()
+	if strings.Contains(sent, "s3cretvalue9") {
+		t.Fatal("the block scalar's value reached the model")
+	}
+}

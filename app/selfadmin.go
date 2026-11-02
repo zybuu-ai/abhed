@@ -57,6 +57,11 @@ func selfAdmin(rest []string) string {
 		if slices.Contains([]string{"use", "rm", "remove"}, verb) {
 			return "abhed profile " + verb
 		}
+	case "policy":
+		// Fetching or leaving the org policy is the person's, never a command's.
+		if verb == "refresh" || verb == "leave" {
+			return "abhed policy " + verb
+		}
 	case "sandbox":
 		// Nor reach a server's sandboxes with it.
 		if verb != "" && verb != "-h" && verb != "--help" && verb != "help" {

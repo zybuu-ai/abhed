@@ -183,6 +183,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
+		s.Gateway.Admit = MCPAdmit(cfg)
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/zybuu-ai/abhed/config"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -86,9 +87,12 @@ func (c *acpConn) switchModel(sessionID, name string) (modelSwitcher, *rpcError)
 	if running {
 		return nil, &rpcError{Code: errRefused, Message: "a prompt is running in this session; change the model once it ends"}
 	}
+	var refused *config.ManagedError
 	switch err := m.SwitchModelNamed(name); {
 	case err == nil:
 		return m, nil
+	case errors.As(err, &refused) && refused.Key == "model.allowed":
+		return nil, &rpcError{Code: errRefused, Message: refused.Error()}
 	case errors.Is(err, abhed.ErrSwitchDuringRun):
 		return nil, &rpcError{Code: errRefused, Message: "a prompt is running in this session; change the model once it ends"}
 	case errors.Is(err, abhed.ErrUnknownModel):

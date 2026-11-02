@@ -226,9 +226,40 @@ from the managed file, your own or the workspace's.
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
 
-When the managed configuration sets the `mcp` section, `add` and `remove`
+When the managed configuration sets `mcp.servers`, `add` and `remove`
 are refused: its list replaces yours, and only it changes it. A workspace's
 servers still need workspace trust, as before.
+
+## Allowed and denied servers
+
+The managed file can say which servers may ever start, with `mcp.allowed`
+and `mcp.denied`. Each entry matches by `name`, by the `command` path the
+program resolves to, by a pinned `digest`, or by a remote server's `host`:
+
+```json
+"mcp": {
+  "allowed": [{"command": "/opt/mcp/bin/*"}, {"host": "*.mcp.corp.example"}],
+  "denied": [{"name": "shell-*"}]
+}
+```
+
+A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
+set, a server no entry matches never starts either. That holds wherever the
+server comes from:
+
+- the user's, a trusted workspace's or the managed file
+- `-mcp-config` (the run stops, naming the server and the list)
+- `abhed mcp add` (refused before anything is written)
+- the console's add (403, audited as `mcp.refused`)
+- Studio
+- a restart
+
+Each server left out is recorded as `config.refused` and shown as refused,
+with why, by `/mcp`, Studio's MCP panel and `abhed doctor`. Setting the
+lists does not make `mcp.servers` the organisation's. A lower layer's lists
+can only narrow. See
+[Allowed models and MCP servers](02-configuration.md#allowed-models-and-mcp-servers)
+for every field and the startup checks.
 
 ## Prompts as commands
 

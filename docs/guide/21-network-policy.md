@@ -528,8 +528,9 @@ commands' allowed traffic through it:
   `k8s_*` tools and `abhed resolve`'s forge API calls and `git push`;
 - toolchain downloads (and the `go install` Abhed runs for Delve and gopls),
   Ollama installs and registry lookups;
-- `abhed login` and the other profile calls to an Abhed server, and the
-  record's witness;
+- `abhed login` and the other profile calls to an Abhed server, the org
+  policy fetch (the proxy is in force before it; an org policy never sets
+  the proxy), and the record's witness;
 - under the allowlist, the commands' allowed traffic, chained by Abhed's
   egress proxy: a `CONNECT` tunnel to the proxy for HTTPS and every
   tunnel, and plain HTTP in absolute form.

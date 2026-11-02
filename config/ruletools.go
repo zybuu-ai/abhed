@@ -165,7 +165,7 @@ func (c Config) mcpProblem(tool, list string) problem {
 		if prefix := strings.ToLower("mcp__" + s.Name + "__"); strings.HasPrefix(lower, prefix) || lower == strings.TrimSuffix(prefix, "__") {
 			// Evident only for a server the organisation set: a person's own
 			// server named in another case must not stop every machine starting.
-			return problem{never: true, mistake: c.ManagedSets("mcp"),
+			return problem{never: true, mistake: c.ManagedSets("mcp.servers"),
 				why: fmt.Sprintf("the MCP server is configured as %q, and MCP tool names are compared exactly, case included, so the rule never matches", s.Name)}
 		}
 	}

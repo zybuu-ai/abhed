@@ -1065,3 +1065,41 @@ func TestManualRunToolOwnAskAndAllowRules(t *testing.T) {
 		t.Fatalf("allow rule: %+v %v, asked %d, ran %d", res, err, asked, tick.n)
 	}
 }
+
+// A deny rule refuses a person's own call before the tool's ask is put to
+// anyone, and a managed bypass still asks, where an unmanaged one runs it.
+func TestManualRunToolDenyAndBypass(t *testing.T) {
+	dir := tempDir(t)
+	own := func(string) string { return "the tool's own reason" }
+	for _, tc := range []struct {
+		name    string
+		mode    policy.Mode
+		managed bool
+		deny    bool
+		asked   int
+		ran     int
+	}{
+		{"deny wins", policy.ModeDefault, false, true, 0, 0},
+		{"unmanaged bypass runs it", policy.ModeBypass, false, false, 0, 1},
+		{"managed bypass asks", policy.ModeBypass, true, false, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l, _ := harnessIn(t, dir, nil, tc.mode, true)
+			l.Policy.Managed = tc.managed
+			if tc.deny {
+				if err := l.Policy.AddDeny("tick"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			asked := 0
+			ask := func(context.Context, policy.Result) (bool, error) { asked++; return false, nil }
+			tick := &tickTool{}
+			if _, err := l.ManualRunTool(context.Background(), l.Session, tick, "p", json.RawMessage(`{}`), ask, own); err != nil {
+				t.Fatal(err)
+			}
+			if asked != tc.asked || tick.n != tc.ran {
+				t.Fatalf("asked %d, ran %d; want %d, %d", asked, tick.n, tc.asked, tc.ran)
+			}
+		})
+	}
+}
