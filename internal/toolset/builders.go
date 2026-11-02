@@ -52,8 +52,7 @@ func MCPAdmit(cfg config.Config) func(mcp.ServerConfig, []string) error {
 		return nil
 	}
 	return func(s mcp.ServerConfig, programs []string) error {
-		return cfg.MCPAdmitted(config.MCPServer{Name: s.Name, Programs: programs, Digest: s.Digest, URL: s.URL,
-			ImagePinned: s.URL == "" && mcp.PinsImage(s.Command, s.Args, s.Digest)})
+		return cfg.MCPAdmitted(config.NewMCPServer(s.Name, s.Command, s.Args, s.Digest, s.URL, programs))
 	}
 }
 

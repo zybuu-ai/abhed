@@ -90,10 +90,8 @@ const (
 	pinFile
 )
 
-// PinsImage reports a digest that pins the image a container engine's run
-// names rather than the program file: the command's base name is an engine
-// and its run's image is that digest. Nothing is hashed then, so the program
-// itself is bound only by its path.
+// PinsImage reports a digest that pins the image an engine's run names, not
+// the program file: nothing is hashed, so the engine is bound only by path.
 func PinsImage(command string, args []string, digest string) bool {
 	want := strings.ToLower(strings.TrimSpace(digest))
 	if want == "" || !containerEngines[engineName(command)] {
