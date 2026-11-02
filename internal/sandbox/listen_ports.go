@@ -218,21 +218,29 @@ type PortContested struct {
 }
 
 // sweepListeners tells each listening sandbox of a listen port of its that
-// more than one program listens on: once while it stays so, the first time
-// the sandbox sees it, and no more often than listenNoticeCooldown. It
-// reads afresh and tells; it never signals a process.
+// more than one program listens on. It tells the first time the sandbox
+// sees the contest, and again at once when more programs listen than it
+// last told of, or when a listener outside everything Abhed started joins
+// a contest of its own processes; the same contest coming back is told no
+// more often than listenNoticeCooldown. It reads afresh and tells; it
+// never signals a process.
 func sweepListeners() {
 	watching.mu.Lock()
 	var procs []*Process
 	for p := range watching.procs {
 		if p.listening() {
 			procs = append(procs, p)
+		} else {
+			// Off, it starts afresh: turned on again, it is told again.
+			p.notices = nil
 		}
 	}
 	watching.mu.Unlock()
 	if len(procs) == 0 {
 		return
 	}
+	// Parents first, so a pid reused after this reads as foreign.
+	parents := processParents()
 	all, ok := readListenersWithin(0)
 	if !ok {
 		for _, p := range procs {
@@ -255,20 +263,36 @@ func sweepListeners() {
 	var tell []notice
 	now := time.Now()
 	for _, p := range procs {
-		if p.toldNow == nil {
-			p.toldNow, p.lastTold = map[int]bool{}, map[int]time.Time{}
-		}
-		for port := range p.toldNow {
-			if watching.contested[port] == 0 {
-				delete(p.toldNow, port)
-			}
+		if p.notices == nil {
+			p.notices = map[int]*portNotice{}
 		}
 		for _, port := range p.policy.ListenPorts {
 			n := watching.contested[port]
-			if n == 0 || p.toldNow[port] || now.Sub(p.lastTold[port]) < listenNoticeCooldown {
+			st := p.notices[port]
+			if n == 0 {
+				if st != nil && st.contested {
+					st.contested, st.clearedAt = false, now
+				}
+				if st != nil && !st.contested && now.Sub(st.clearedAt) >= listenNoticeCooldown {
+					delete(p.notices, port)
+				}
 				continue
 			}
-			p.toldNow[port], p.lastTold[port] = true, now
+			if st == nil {
+				st = &portNotice{}
+				p.notices[port] = st
+			}
+			foreign := !ownTree(all, port, parents)
+			switch {
+			case n > st.count, foreign && !st.foreign:
+				// More programs, or one of the person's: told now, whatever the cooldown.
+			case st.contested:
+				continue
+			case now.Sub(st.toldAt) < listenNoticeCooldown:
+				// Come back too soon: told once the cooldown ends, if still contested.
+				continue
+			}
+			st.contested, st.count, st.foreign, st.toldAt = true, max(st.count, n), st.foreign || foreign, now
 			tell = append(tell, notice{p, PortContested{Port: port, Listeners: n}})
 		}
 	}
@@ -281,6 +305,15 @@ func sweepListeners() {
 			(*f)(t.c)
 		}
 	}
+}
+
+// portNotice is what a sandbox was told of one listen port: whether it is
+// contested now, the most programs told of, whether a listener outside
+// Abhed was among them, when it was last told, and when it last cleared.
+type portNotice struct {
+	contested, foreign bool
+	count              int
+	toldAt, clearedAt  time.Time
 }
 
 // ListenersOn is how many programs listen on port now, read afresh: a

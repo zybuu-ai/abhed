@@ -376,8 +376,10 @@ All notable changes to Abhed are recorded here. The format follows
   While listening is on, a command can take a listen port before one of
   your programs starts there and receive its connections: Abhed warns you
   (`_abhed/sandbox/port_contested`, `sandbox.port_contested`) within a few
-  seconds, at most once a minute per port, in every session that may listen on that port, but does not stop
-  the command; stop it yourself or turn listening off. Both settings are an operator's: a
+  seconds, in every session that may listen on that port, and again at once
+  when more programs join it or one of yours does; the same contest coming
+  back is told at most once a minute. Abhed does not stop the command; stop
+  it yourself or turn listening off. Both settings are an operator's: a
   workspace file, trusted or not, can only make `listen` stricter. A server
   refused its port in Studio's terminal brings the offer
   (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio

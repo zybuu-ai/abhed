@@ -17,6 +17,16 @@ import (
 	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
+// setNoticeCooldown sets the cooldown under the watch's lock and returns
+// the one before.
+func setNoticeCooldown(d time.Duration) time.Duration {
+	watching.mu.Lock()
+	defer watching.mu.Unlock()
+	was := listenNoticeCooldown
+	listenNoticeCooldown = d
+	return was
+}
+
 // freshListeners makes the next read of the Mac's listeners a new one.
 func freshListeners() {
 	listeners.mu.Lock()
@@ -209,9 +219,7 @@ func pyListen(port int) string {
 // once while it stays contested, and nothing is stopped; a new command is
 // not given the port. Under PrivateTemp too.
 func TestContestedPortIsToldNotStopped(t *testing.T) {
-	cooldown := listenNoticeCooldown
-	listenNoticeCooldown = 0
-	defer func() { listenNoticeCooldown = cooldown }()
+	defer setNoticeCooldown(setNoticeCooldown(0))
 	for _, private := range []bool{false, true} {
 		port := freePort(t)
 		sb, elsewhere := listenSandbox(t, port), listenSandbox(t, freePort(t))
@@ -395,5 +403,67 @@ func TestDebugLoopbackAndListenCompose(t *testing.T) {
 		count(pyOn, `(allow network-bind (local ip "localhost:`+strconv.Itoa(int(port))+`"))`) != 1 ||
 		count(pyOn, `(allow network-bind (local tcp "localhost:`+strconv.Itoa(devPort)+`"))`) != 1 {
 		t.Fatalf("Python debug with listening on has other rules than intended:\n%s", pyOn)
+	}
+}
+
+// A command cannot spend the notice in advance: two sockets of its own on a
+// listen port are told once, and a program of the person's joining the
+// port is told again at once, whatever the cooldown.
+func TestContestToldAgainWhenAProgramJoins(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var told atomic.Int64
+	var last atomic.Int64
+	SetListenWatch(sb, nil, func(c PortContested) {
+		if c.Port == port {
+			told.Add(1)
+			last.Store(int64(c.Listeners))
+		}
+	}, nil)
+	two := `import os,socket,sys,time
+p=int(sys.argv[1])
+def sock():
+    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1); s.bind(("127.0.0.1", p)); s.listen(); return s
+if os.fork() == 0:
+    s=sock(); time.sleep(30); os._exit(0)
+time.sleep(0.3)
+s=sock(); print("listening", flush=True); time.sleep(30)`
+	startIn(t, sb, `python3 -I -c '`+two+`' `+strconv.Itoa(port))
+	time.Sleep(300 * time.Millisecond)
+	sweepListeners()
+	if told.Load() != 1 || last.Load() != 2 {
+		t.Fatalf("a self-contest: told %d, listeners %d", told.Load(), last.Load())
+	}
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatalf("the host could not listen beside it: %v", err)
+	}
+	defer host.Close()
+	sweepListeners()
+	if told.Load() != 2 || last.Load() != 3 {
+		t.Fatalf("a program of the person's joining: told %d, listeners %d", told.Load(), last.Load())
+	}
+}
+
+// A sandbox that stops listening and starts again during one contest is
+// told again.
+func TestContestToldAgainAfterListeningComesBack(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var told atomic.Int64
+	SetListenWatch(sb, nil, func(PortContested) { told.Add(1) }, nil)
+	startIn(t, sb, pyListen(port))
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	sweepListeners()
+	sb.policy.ListenLoopback = false
+	sweepListeners()
+	sb.policy.ListenLoopback = true
+	sweepListeners()
+	if told.Load() != 2 {
+		t.Fatalf("told %d times", told.Load())
 	}
 }
