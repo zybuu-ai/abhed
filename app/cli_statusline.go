@@ -157,7 +157,7 @@ func runStatusline(ctx context.Context, sb sandbox.Sandbox, cwd, command string,
 // statusline.timeout_ms, at most ten seconds, or statuslineTimeout.
 func statuslineLimit(cfg config.Config) time.Duration {
 	if ms := cfg.Statusline.TimeoutMS; ms > 0 {
-		return min(time.Duration(ms)*time.Millisecond, 10*time.Second)
+		return time.Duration(min(ms, 10000)) * time.Millisecond
 	}
 	return statuslineTimeout
 }

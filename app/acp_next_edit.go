@@ -145,7 +145,7 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	}
 	cleaned := linediff.SplitLines(clean(strings.Join(raw, "")))
 	if len(cleaned) != len(raw) {
-		empty("refused", "the window holds a secret over several lines")
+		refuse("the window holds a secret over several lines")
 		return
 	}
 	var shown []string

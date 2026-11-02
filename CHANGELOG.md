@@ -1009,7 +1009,8 @@ All notable changes to Abhed are recorded here. The format follows
   and withhold the value of a key whose name says secret, in any case, in
   JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
   and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
-  `password=`), on a diff's added and removed lines too; a type, a variable,
+  `password=`), on a diff's added and removed lines too, a block scalar
+  whose value changed under an unchanged key included; a type, a variable,
   a template, Python that only assigns to such a name, or a key that only
   names a secret (`passwordFile`, `token_url`) is left alone, and a block
   scalar's lines are withheld one by one, its sibling keys kept. Next-edit
