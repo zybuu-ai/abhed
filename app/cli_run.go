@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
@@ -23,7 +25,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 	"github.com/zybuu-ai/abhed/orgpolicy"
-	"golang.org/x/term"
 )
 
 func run(a *App, workspace string, f *cliFlags) int {

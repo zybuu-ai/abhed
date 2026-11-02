@@ -99,7 +99,8 @@ hosts and `ssh.read_commands`, `k8s` clusters, `sandbox.read_only_paths`,
 auth, schedules, the control plane and `org_policy` itself.
 
 **Only where it tightens** what the layers below already say, by the same rule
-an untrusted workspace's file follows: deny and ask rules (added),
+an untrusted workspace's file follows: deny and ask rules, honeytokens and `verify.contract.protect` (added to the
+person's own, never replacing them),
 `permissions.mode` and `mode.default` (only plan or default, and only
 narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
 lower limits, a stronger `sandbox.min_tier`, `allow_network` and
@@ -116,10 +117,11 @@ or reaches out unasked, so they need keys `/etc/abhed/config.json` pins out
 of band (`org_policy.keys`); a key pinned on first use is not enough.
 `auto` and `bypass` modes are never set by an org policy.
 
-**Always**: `record.ship` (records go only to the server this machine
-enrolled with), `hooks.managed_only: true`, `studio.disable_host_terminal:
-true`, `model.allowed_loopback: false`, and `model.default` pinned to a
-provider this machine already configures. Under the org's `model.allowed`,
+**Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records
+go only to the server this machine enrolled with), `hooks.managed_only:
+true`, `studio.disable_host_terminal: true`, `model.allowed_loopback: false`,
+and `model.default` pinned to a provider the machine's managed file defines
+(never one the person configured with their own key). Under the org's `model.allowed`,
 endpoints are bound as under the managed file's, but only the managed file
 may define one (a provider, a custom provider type, `monitor.endpoint`).
 

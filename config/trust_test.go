@@ -56,7 +56,26 @@ func ignored(st WorkspaceTrust, key string) bool {
 // leafPaths lists every setting of t as the dotted paths a file writes; a map
 // or a list is one setting.
 func leafPaths(prefix string, t reflect.Type) []string {
-	if t.Kind() != reflect.Struct {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	// A list or map is one setting, and the fields of its element are its parts.
+	if (t.Kind() == reflect.Slice || t.Kind() == reflect.Map) && prefix != "" {
+		e := t.Elem()
+		for e.Kind() == reflect.Pointer {
+			e = e.Elem()
+		}
+		out := []string{prefix}
+		if e.Kind() == reflect.Struct && !reflect.PointerTo(e).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+			for _, p := range leafPaths(prefix, e) {
+				if p != prefix {
+					out = append(out, p)
+				}
+			}
+		}
+		return out
+	}
+	if t.Kind() != reflect.Struct || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]()) {
 		return []string{prefix}
 	}
 	var out []string

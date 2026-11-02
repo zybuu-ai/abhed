@@ -689,6 +689,15 @@ type fieldRule struct {
 	why   string
 }
 
+// unionFields are the lists union rules add to, by setting.
+var unionFields = map[string]func(*Config) *[]string{}
+
+// unionRule is key's rule that adds the file's entries to a list.
+func unionRule(key string, field func(*Config) *[]string, why string) fieldRule {
+	unionFields[key] = field
+	return fieldRule{union(field), why}
+}
+
 // ruleFor finds the rule for a dotted path, or for the nearest section above it.
 // A setting no rule names is ignored.
 func ruleFor(key string) fieldRule {
@@ -708,8 +717,8 @@ func ruleFor(key string) fieldRule {
 // workspaceRules is the classification in workspace-trust.md. Every setting
 // must resolve to an entry here; TestEveryConfigFieldIsClassified holds that.
 var workspaceRules = map[string]fieldRule{
-	"permissions.deny":           {union(func(c *Config) *[]string { return &c.Permissions.Deny }), "added to the deny rules"},
-	"permissions.ask":            {union(func(c *Config) *[]string { return &c.Permissions.Ask }), "added to the ask rules"},
+	"permissions.deny":           unionRule("permissions.deny", func(c *Config) *[]string { return &c.Permissions.Deny }, "added to the deny rules"),
+	"permissions.ask":            unionRule("permissions.ask", func(c *Config) *[]string { return &c.Permissions.Ask }, "added to the ask rules"),
 	"permissions.mode":           {narrowMode, "only plan or default, and only narrower than the current mode"},
 	"permissions.allow":          {nil, "an allow rule widens what runs unasked"},
 	"permissions.git_extensions": {nil, "a git extension opted in runs unasked"},
@@ -796,7 +805,7 @@ var workspaceRules = map[string]fieldRule{
 	"monitor.enabled":        {onlyTrue(func(c *Config) *bool { return &c.Monitor.Enabled }), "only true"},
 	"monitor.on_unavailable": {stricterUnavailable, "only deny"},
 	"monitor.max_per_turn":   {moreReviews, "only more calls reviewed"},
-	"monitor.honeytokens":    {union(func(c *Config) *[]string { return &c.Monitor.Honeytokens }), "added to the honeytokens"},
+	"monitor.honeytokens":    unionRule("monitor.honeytokens", func(c *Config) *[]string { return &c.Monitor.Honeytokens }, "added to the honeytokens"),
 	"monitor":                {nil, "a judge endpoint receives the conversation"},
 
 	"additional_dirs":       {nil, "widens the directories the agent may reach"},

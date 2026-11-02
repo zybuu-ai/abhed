@@ -1747,7 +1747,10 @@ Defining the providers in the managed file does not by itself pin the
 endpoint, since a lower file may still add a provider on this machine. Only
 two things pin it outright:
 
-- a managed `model.default`, which pins the model and therefore its endpoint
+- a managed `model.default` to a provider the managed file defines, which
+  pins the model and therefore its endpoint (an org policy's pin may name
+  only such a provider; a managed pin to a provider a lower file defines
+  takes that file's endpoint)
 - `allowed_loopback: false` together with managed providers
 
 The egress allowlist does not judge the model's endpoint: that endpoint is

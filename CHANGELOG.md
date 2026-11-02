@@ -248,7 +248,9 @@ All notable changes to Abhed are recorded here. The format follows
   that only narrows. An org policy may set only classified settings: never
   anything naming a program, a local file or folder, an environment
   variable, an endpoint or a base URL; most posture settings (mode, sandbox,
-  limits, web tools, supervisor) only where they tighten what is below;
+  limits, web tools, supervisor) only where they tighten what is below,
+  its deny and ask rules, honeytokens and protected files joined with the
+  person's own; `model.default` only to a provider `/etc/abhed` defines;
   allow rules, sandbox tier and network, fence, egress and hooks only when
   `/etc/abhed` pins `org_policy.keys`; never auto or bypass mode. It is
   fetched again as sessions start and every 15 minutes. A cached policy past
