@@ -159,7 +159,7 @@ BEGIN
   RAISE EXCEPTION 'events are append-only: % on events is not permitted', TG_OP
     USING HINT = 'Audit integrity depends on immutability. Use retention policy to expire old partitions.';
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp;
 
 DROP TRIGGER IF EXISTS events_no_update ON events;
 CREATE TRIGGER events_no_update BEFORE UPDATE ON events
@@ -288,7 +288,7 @@ BEGIN
   NEW.inserted_at := now();
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp;
 
 DROP TRIGGER IF EXISTS events_inserted_at ON events;
 CREATE TRIGGER events_inserted_at BEFORE INSERT ON events
@@ -419,7 +419,7 @@ CREATE OR REPLACE FUNCTION abhed_chain_hash(prev text, rec jsonb, cols text[]) R
   SELECT encode(sha256(convert_to(prev || E'\n' ||
     COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(rec) e WHERE e.key = ANY(cols)), '{}'::jsonb)::text,
     'UTF8')), 'hex')
-$$ LANGUAGE sql IMMUTABLE SET timezone TO 'UTC';
+$$ LANGUAGE sql IMMUTABLE SET timezone TO 'UTC' SET search_path = pg_catalog, public, pg_temp;
 
 -- abhed_chain_insert links a new row. Its first argument names the key
 -- column; the rest name the columns the hash covers.
@@ -429,15 +429,15 @@ DECLARE
   last record;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(TG_TABLE_NAME || '/' || k, 0));
-  EXECUTE format('SELECT chain_pos, hash FROM %I WHERE %I = $1 AND chain_pos IS NOT NULL
-                  ORDER BY chain_pos DESC LIMIT 1', TG_TABLE_NAME, TG_ARGV[0])
+  EXECUTE format('SELECT chain_pos, hash FROM %I.%I WHERE %I = $1 AND chain_pos IS NOT NULL
+                  ORDER BY chain_pos DESC LIMIT 1', TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_ARGV[0])
     INTO last USING k;
   NEW.chain_pos := COALESCE(last.chain_pos, 0) + 1;
   NEW.prev_hash := COALESCE(last.hash, repeat('0', 64));
-  NEW.hash := abhed_chain_hash(NEW.prev_hash, to_jsonb(NEW), TG_ARGV[1:]);
+  NEW.hash := public.abhed_chain_hash(NEW.prev_hash, to_jsonb(NEW), TG_ARGV[1:]);
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SET timezone TO 'UTC';
+$$ LANGUAGE plpgsql SET timezone TO 'UTC' SET search_path = pg_catalog, public, pg_temp;
 
 -- Named to sort last: BEFORE triggers fire in name order, and the hash must
 -- cover what the others set.
@@ -466,14 +466,14 @@ BEGIN
   FOR r IN EXECUTE format('SELECT chain_pos, prev_hash, hash, to_jsonb(t) AS rec FROM %s t
                            WHERE %I = $1 AND chain_pos IS NOT NULL ORDER BY chain_pos', tbl, keycol) USING k LOOP
     IF first_bad = 0 AND (r.chain_pos <> want OR r.prev_hash IS DISTINCT FROM prev
-                          OR r.hash IS DISTINCT FROM abhed_chain_hash(prev, r.rec, cols)) THEN
+                          OR r.hash IS DISTINCT FROM public.abhed_chain_hash(prev, r.rec, cols)) THEN
       first_bad := want;
     END IF;
     prev := r.hash; want := r.chain_pos + 1;
     rows_chained := rows_chained + 1; head := r.hash;
   END LOOP;
 END;
-$$ LANGUAGE plpgsql STABLE SET timezone TO 'UTC';
+$$ LANGUAGE plpgsql STABLE SET timezone TO 'UTC' SET search_path = pg_catalog, public, pg_temp;
 
 INSERT INTO schema_version (version) VALUES (8) ON CONFLICT DO NOTHING;
 
@@ -519,7 +519,7 @@ BEGIN
   END IF;
   IF NEW.user_id IS DISTINCT FROM OLD.user_id
      AND NEW.user_id IS DISTINCT FROM 'unclaimed:' || OLD.user_id
-     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+     AND NOT pg_catalog.pg_has_role(current_user, (SELECT relowner FROM pg_catalog.pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
     RAISE EXCEPTION 'a session''s owner changes only when its account is removed (to unclaimed:%), or by a migration', OLD.user_id;
   END IF;
   -- A deletion names who made it, and is final: its key is gone, and the
@@ -527,17 +527,17 @@ BEGIN
   IF OLD.deleted_at IS NULL
      AND (NEW.deleted_at IS NULL AND NEW.deleted_by IS DISTINCT FROM OLD.deleted_by
           OR NEW.deleted_at IS NOT NULL AND COALESCE(NEW.deleted_by, '') = '')
-     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+     AND NOT pg_catalog.pg_has_role(current_user, (SELECT relowner FROM pg_catalog.pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
     RAISE EXCEPTION 'a session''s deletion says who made it, and is set only with the deletion';
   END IF;
   IF OLD.deleted_at IS NOT NULL
      AND (NEW.deleted_at IS DISTINCT FROM OLD.deleted_at OR NEW.deleted_by IS DISTINCT FROM OLD.deleted_by)
-     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+     AND NOT pg_catalog.pg_has_role(current_user, (SELECT relowner FROM pg_catalog.pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
     RAISE EXCEPTION 'a session''s deletion is not undone or rewritten';
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp;
 
 DROP TRIGGER IF EXISTS sessions_guard ON sessions;
 CREATE TRIGGER sessions_guard BEFORE UPDATE ON sessions
@@ -550,12 +550,12 @@ DECLARE
   was text := current_setting('app.tenant_id', true);
 BEGIN
   PERFORM set_config('app.tenant_id', NEW.tenant_id, true);
-  INSERT INTO owner_changes (tenant_id, session_id, from_user, to_user, by_role)
+  INSERT INTO public.owner_changes (tenant_id, session_id, from_user, to_user, by_role)
   VALUES (NEW.tenant_id, NEW.id, OLD.user_id, NEW.user_id, session_user);
   PERFORM set_config('app.tenant_id', COALESCE(was, ''), true);
   RETURN NULL;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp;
 
 DROP TRIGGER IF EXISTS sessions_owner_noted ON sessions;
 CREATE TRIGGER sessions_owner_noted AFTER UPDATE OF user_id ON sessions
@@ -596,13 +596,13 @@ CREATE POLICY session_keys_tenant_isolation ON session_keys
 -- transaction, so the server's role cannot make a live session unreadable.
 CREATE OR REPLACE FUNCTION abhed_session_keys_guard() RETURNS trigger AS $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM sessions WHERE id = OLD.session_id AND deleted_at IS NOT NULL)
-     AND NOT pg_has_role(current_user, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+  IF NOT EXISTS (SELECT 1 FROM public.sessions WHERE id = OLD.session_id AND deleted_at IS NOT NULL)
+     AND NOT pg_catalog.pg_has_role(current_user, (SELECT relowner FROM pg_catalog.pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
     RAISE EXCEPTION 'a session''s key is deleted only with the session';
   END IF;
   RETURN OLD;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp;
 
 DROP TRIGGER IF EXISTS session_keys_guard ON session_keys;
 CREATE TRIGGER session_keys_guard BEFORE DELETE ON session_keys
@@ -675,7 +675,7 @@ BEGIN
   ALTER TABLE sandbox_audit FORCE ROW LEVEL SECURITY;
   ALTER TABLE chain_pre FORCE ROW LEVEL SECURITY;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp;
 REVOKE ALL ON FUNCTION abhed_chain_mark_pre() FROM PUBLIC;
 
 -- Once, the first time this version is applied: a later run would mark rows
@@ -763,9 +763,11 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SET timezone TO 'UTC' SET search_path = pg_catalog, public, pg_temp;
--- Names are schema-qualified and pg_temp is searched last (version 17): a
--- writer's temporary table named sessions or commit_shift must not stand in
--- for the real one.
+-- Every function here names its tables with their schema and sets
+-- search_path to pg_catalog, public, pg_temp (version 17). Unless pg_temp is
+-- named, Postgres searches it first for tables, and a session may put it
+-- before pg_catalog: a temporary table of the writer's named sessions,
+-- pg_class or commit_shift must never stand in for the real one.
 
 DROP TRIGGER IF EXISTS zz_events_chain ON events;
 CREATE TRIGGER zz_events_chain BEFORE INSERT ON events
@@ -815,7 +817,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp;
 DROP TRIGGER IF EXISTS commit_shift_guard ON commit_shift;
 CREATE TRIGGER commit_shift_guard BEFORE UPDATE OR DELETE ON commit_shift
   FOR EACH ROW EXECUTE FUNCTION abhed_commit_shift_guard();

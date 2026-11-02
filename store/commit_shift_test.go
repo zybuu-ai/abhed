@@ -146,6 +146,10 @@ func TestTemporaryTablesDoNotStandInForTheRecordsOwn(t *testing.T) {
 	if err := p.DeleteSession(gone); err != nil {
 		t.Fatal(err)
 	}
+	// The live session gets its sealing key with its first sealed event.
+	if err := p.Append(ev(live, 10, agent.EvAgentMessage, agent.Trusted, map[string]int{"n": 10})); err != nil {
+		t.Fatal(err)
+	}
 	// The runtime role's own connection and its own SQL, as someone holding
 	// the server's credentials would write it.
 	conn, err := p.pool.Acquire(ctx)
@@ -161,7 +165,10 @@ func TestTemporaryTablesDoNotStandInForTheRecordsOwn(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	defer func() { _, _ = conn.Exec(ctx, `DROP TABLE IF EXISTS pg_temp.commit_shift, pg_temp.sessions`) }()
+	defer func() {
+		_, _ = conn.Exec(ctx, `SET search_path TO DEFAULT`)
+		_, _ = conn.Exec(ctx, `DROP TABLE IF EXISTS pg_temp.commit_shift, pg_temp.sessions, pg_temp.pg_class, pg_temp.sandbox_audit`)
+	}()
 	insert := `INSERT INTO public.events (id, session_id, tenant_id, seq, type, payload, actor, trust)
 		VALUES ($1, $2, $3, $4, 'agent.message', '{}', 'agent', 'trusted') RETURNING commit_tx::text`
 	// Every transaction from here takes an id at or past xmax, so with the
@@ -184,7 +191,57 @@ func TestTemporaryTablesDoNotStandInForTheRecordsOwn(t *testing.T) {
 	if _, err := conn.Exec(ctx, insert, gone+"-ev-2", gone, tenant, 2); err == nil {
 		t.Fatal("a temporary sessions table let a row into a deleted session")
 	}
-	if _, ids := scanAll(t, p, CommitPos{}); len(ids) != 2 {
-		t.Fatalf("a commit-ordered reader sees %d of the tenant's 2 rows", len(ids))
+	if _, ids := scanAll(t, p, CommitPos{}); len(ids) != 3 {
+		t.Fatalf("a commit-ordered reader sees %d of the tenant's 3 rows", len(ids))
+	}
+
+	// From here pg_temp is searched first, as a session may ask, so a
+	// temporary table can stand for pg_class too.
+	if _, err := conn.Exec(ctx, `SET search_path = pg_temp, pg_catalog, public`); err != nil {
+		t.Fatal(err)
+	}
+	// A live session's key, deleted under a temporary sessions table that
+	// calls it deleted, would leave its sealed payloads unreadable for good.
+	if _, err := conn.Exec(ctx, `INSERT INTO pg_temp.sessions VALUES ($1, now())`, live); err != nil {
+		t.Fatal(err)
+	}
+	var keys int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.session_keys WHERE session_id = $1`, live).Scan(&keys); err != nil || keys != 1 {
+		t.Fatalf("the live session has %d keys (%v), want 1 before the attempt", keys, err)
+	}
+	if _, err := conn.Exec(ctx, `DELETE FROM public.session_keys WHERE session_id = $1`, live); err == nil ||
+		!strings.Contains(err.Error(), "key is deleted only with the session") {
+		t.Fatalf("deleting a live session's key under a temporary sessions table: %v; want the guard's refusal", err)
+	}
+	// A temporary pg_class naming the runtime role as the sessions table's
+	// owner would pass the guard's owner test: a session given to someone
+	// else, recorded as legitimate, and a deletion undone.
+	if _, err := conn.Exec(ctx, `CREATE TEMP TABLE pg_class AS
+		SELECT 'public.sessions'::regclass::oid AS oid, (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) AS relowner`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `UPDATE public.sessions SET user_id = 'mallory' WHERE id = $1`, live); err == nil ||
+		!strings.Contains(err.Error(), "owner changes only") {
+		t.Fatalf("giving a session to another owner under a temporary pg_class: %v; want the guard's refusal", err)
+	}
+	if _, err := conn.Exec(ctx, `UPDATE public.sessions SET deleted_at = NULL WHERE id = $1`, gone); err == nil ||
+		!strings.Contains(err.Error(), "not undone") {
+		t.Fatalf("undoing a deletion under a temporary pg_class: %v; want the guard's refusal", err)
+	}
+	// A temporary sandbox_audit must not choose the next audit row's link.
+	if _, err := conn.Exec(ctx, `CREATE TEMP TABLE sandbox_audit AS
+		SELECT $1::text AS tenant_id, 41::bigint AS chain_pos, repeat('a', 64) AS hash`, tenant); err != nil {
+		t.Fatal(err)
+	}
+	var pos int64
+	if err := conn.QueryRow(ctx, `INSERT INTO public.sandbox_audit (tenant_id, at, principal, action, sandbox_id, generation, outcome, code, detail)
+		VALUES ($1, now(), 'local:ops', 'api:POST /v1/x', '', 0, 'ok', '', '{}') RETURNING chain_pos`, tenant).Scan(&pos); err != nil {
+		t.Fatal(err)
+	}
+	if pos != 1 {
+		t.Fatalf("the tenant's first audit row took chain position %d under a temporary sandbox_audit, want 1", pos)
+	}
+	if r, err := p.VerifyAuditChain(ctx); err != nil || !r.OK() {
+		t.Fatalf("audit chain: %+v, %v", r, err)
 	}
 }

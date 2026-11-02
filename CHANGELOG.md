@@ -128,6 +128,24 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- Postgres: the record's triggers read some tables by unqualified name
+  with no `search_path` of their own, and Postgres looks in a session's
+  temporary schema first for a table unless told otherwise. So the runtime
+  role, the server's own database credentials, could make a temporary table
+  that stood in for the real one: a `sessions` table that called a live
+  session deleted let it delete that session's sealing key, leaving its
+  sealed payloads unreadable for good (`abhed_session_keys_guard`); a
+  `pg_class` naming it the sessions table's owner let it give a session to
+  another owner, recorded as legitimate, and undo a deletion
+  (`abhed_sessions_guard`); a `sessions` table got an event into a deleted
+  session (`abhed_events_chain`); and a `sandbox_audit` table chose the next
+  audit row's chain link (`abhed_chain_insert`; `abhed record audit` showed
+  the fork). Every function in the schema now names its tables with their
+  schema and sets `search_path = pg_catalog, public, pg_temp`, as does the
+  accounts table's trigger. Someone without the runtime role's credentials
+  could not do any of this. Affects 1.2.8 (schema versions 8 to 10). The
+  fix is in schema version 17: run `abhed migrate` as the owner before
+  starting this release's servers, which refuse an older schema.
 - A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
   still deciding on it went unscreened: it was recorded as sent and
   reached the model with the next message. It is now recorded as

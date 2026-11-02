@@ -39,12 +39,26 @@ esac
 # A password in a connection string would be on the clients' command lines,
 # readable by any local user from the process list.
 has_password() {
-  case "$1" in
-    *[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]=*) return 0 ;;
-    postgres://*@* | postgresql://*@*)
-      userinfo="${1#*://}"
-      userinfo="${userinfo%%@*}"
-      case "$userinfo" in *:*) return 0 ;; esac ;;
+  # Lower case and without blanks, so "Password = x" is caught as well.
+  d="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t')"
+  case "$d" in *password=*) return 0 ;; esac
+  case "$d" in
+    postgres://* | postgresql://*)
+      rest="${d#*://}"
+      auth="${rest%%/*}"
+      case "$auth" in *@*)
+        case "${auth%@*}" in *:*) return 0 ;; esac ;;
+      esac
+      # libpq decodes %XX in parameter names (pass%77ord); none is accepted.
+      case "$d" in *\?*)
+        q="${d#*\?}"
+        old_ifs="$IFS"
+        IFS='&'
+        for kv in $q; do
+          case "${kv%%=*}" in *%*) IFS="$old_ifs"; return 0 ;; esac
+        done
+        IFS="$old_ifs" ;;
+      esac ;;
   esac
   return 1
 }
@@ -54,22 +68,26 @@ if [ -z "${ABHED_BACKUP_DSN:-}" ] && [ -z "${ABHED_BACKUP_STATE:-}" ]; then
   exit 2
 fi
 if [ -n "${ABHED_BACKUP_DSN:-}" ] && has_password "$ABHED_BACKUP_DSN"; then
-  echo "abhed-backup: ABHED_BACKUP_DSN carries a password; put it in PGPASSFILE or PGPASSWORD instead" >&2
+  echo "abhed-backup: ABHED_BACKUP_DSN carries a password (or a percent-encoded parameter name); put the password in PGPASSFILE or PGPASSWORD instead" >&2
   exit 2
 fi
 
 mkdir -p "$DEST"
 chmod 700 "$DEST"
-parts=""
+# The two files a run may leave half-written, each in a variable of its own so
+# a backup folder with spaces in its name is no trouble.
+db_part=""
+state_part=""
 cleanup() {
-  for f in $parts; do rm -f "$f"; done
+  [ -z "$db_part" ] || rm -f "$db_part"
+  [ -z "$state_part" ] || rm -f "$state_part"
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 if [ -n "${ABHED_BACKUP_DSN:-}" ]; then
   out="$DEST/abhed-db-$STAMP.dump"
-  parts="$parts $out.part"
+  db_part="$out.part"
   pg_dump --format=custom --no-password --dbname="$ABHED_BACKUP_DSN" --file="$out.part"
   # A dump pg_restore cannot list is not a backup.
   pg_restore --list "$out.part" > /dev/null
@@ -79,7 +97,7 @@ fi
 
 if [ -n "${ABHED_BACKUP_STATE:-}" ]; then
   out="$DEST/abhed-state-$STAMP.tar.gz"
-  parts="$parts $out.part"
+  state_part="$out.part"
   # Word splitting is the list's separator.
   # shellcheck disable=SC2086
   tar -czf "$out.part" $ABHED_BACKUP_STATE
