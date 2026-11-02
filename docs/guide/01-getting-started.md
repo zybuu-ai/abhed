@@ -51,7 +51,7 @@ Check the signature, then the file, with
 or later:
 
 ```bash
-V=v1.2.8
+V=v1.2.9
 cosign verify-blob SHA256SUMS \
   --bundle SHA256SUMS.sigstore.json \
   --certificate-identity "https://github.com/zybuu-ai/abhed/.github/workflows/release.yml@refs/tags/$V" \

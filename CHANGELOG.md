@@ -6,6 +6,8 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-11-02
+
 ### Upgrading from 1.2.8
 
 - A web page a person links in Abhed Studio is fetched as that person's own
