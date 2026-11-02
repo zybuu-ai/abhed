@@ -1034,6 +1034,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `auth.Middleware.Authorize` now runs on an identity a trusted proxy's
+  headers give (`auth.mode` `proxy`), as it does on a session or a token, so
+  an edition that holds a caller to some requests only holds a proxied
+  caller too. Before, the trusted-header branch skipped it.
+
 - Commit messages leave out a file the repository's ignore rules name even
   when it is force-added (a repository whose `.gitignore` is `*` gets none),
   and withhold the value of a key whose name says secret, in any case, in
