@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"sync"
 
@@ -24,7 +23,7 @@ var ErrUnconfined = errors.New("this stdio server cannot be confined here, so it
 // startStdio starts a stdio server, confined when the gateway can confine it.
 func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTransport, error) {
 	env := ServerEnv(cfg.Env)
-	command, err := pinnedCommand(cfg, env)
+	command, pin, err := pinnedProgram(cfg, env)
 	if err != nil {
 		return nil, err
 	}
@@ -46,8 +45,9 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 			return nil, err
 		}
 		// Only a digest that pinned the file resolved command itself; any other
-		// command is the configured one, links and all, and real replaces it.
-		if cfg.Digest != "" && filepath.IsAbs(command) && command != real {
+		// command (none, or an engine whose image is pinned) is the configured
+		// one, links and all, and real replaces it.
+		if pin == pinFile && command != real {
 			return nil, fmt.Errorf("%w: its program resolved to %s when judged and %s when checked against its digest", ErrNotAdmitted, real, command)
 		}
 		command, pinned = real, true

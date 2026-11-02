@@ -80,39 +80,56 @@ func engineName(command string) string {
 // digest pins.
 var ErrDigestMismatch = errors.New("the server's program does not match its digest")
 
-// pinnedCommand checks a server's digest and returns the command to start.
+// pinKind is which pin pinnedProgram took: none, an engine's image, or the
+// program file itself (whose path it resolved).
+type pinKind int
+
+const (
+	pinNone pinKind = iota
+	pinImage
+	pinFile
+)
+
+// pinnedCommand is pinnedProgram without the kind.
+func pinnedCommand(cfg ServerConfig, env []string) (string, error) {
+	c, _, err := pinnedProgram(cfg, env)
+	return c, err
+}
+
+// pinnedProgram checks a server's digest and returns the command to start,
+// and which pin it took.
 // An OCI image named by that digest in the arguments is pinned by the engine
 // that pulls it; otherwise the program file the command resolves to is
 // hashed, and its resolved path is what starts, so what runs is what was
 // checked. A URL server cannot be checked and is refused with a digest.
-func pinnedCommand(cfg ServerConfig, env []string) (string, error) {
+func pinnedProgram(cfg ServerConfig, env []string) (string, pinKind, error) {
 	if cfg.Digest == "" {
-		return cfg.Command, nil
+		return cfg.Command, pinNone, nil
 	}
 	want := strings.ToLower(strings.TrimSpace(cfg.Digest))
 	if !digestForm.MatchString(want) {
-		return "", fmt.Errorf("digest %q is not sha256:<64 hex digits>", cfg.Digest)
+		return "", pinNone, fmt.Errorf("digest %q is not sha256:<64 hex digits>", cfg.Digest)
 	}
 	if cfg.URL != "" {
-		return "", errors.New("digest pins a program Abhed starts; a URL server's cannot be checked, so remove digest or run the server over stdio")
+		return "", pinNone, errors.New("digest pins a program Abhed starts; a URL server's cannot be checked, so remove digest or run the server over stdio")
 	}
 	if containerEngines[engineName(cfg.Command)] {
 		if a := runImage(cfg.Args); imageByDigest.MatchString(strings.ToLower(a)) && strings.HasSuffix(strings.ToLower(a), "@"+want) {
-			return cfg.Command, nil
+			return cfg.Command, pinImage, nil
 		}
 	}
 	path, err := resolveProgram(cfg.Command, env)
 	if err != nil {
-		return "", fmt.Errorf("digest: %w", err)
+		return "", pinNone, fmt.Errorf("digest: %w", err)
 	}
 	got, err := fileDigest(path)
 	if err != nil {
-		return "", fmt.Errorf("digest: %w", err)
+		return "", pinNone, fmt.Errorf("digest: %w", err)
 	}
 	if got != want {
-		return "", fmt.Errorf("%w: %s is %s, the configuration pins %s", ErrDigestMismatch, path, got, want)
+		return "", pinNone, fmt.Errorf("%w: %s is %s, the configuration pins %s", ErrDigestMismatch, path, got, want)
 	}
-	return path, nil
+	return path, pinFile, nil
 }
 
 // resolveProgram finds command as the server's own PATH would, links
