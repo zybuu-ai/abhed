@@ -237,6 +237,11 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				Path    string `json:"path"`
 			}
 			_ = json.Unmarshal(r.a.Args, &args)
+			// A file tool resolves a relative path against the workspace, as
+			// a claim's path is read; this session's own calls only.
+			if args.Path != "" && !filepath.IsAbs(args.Path) && at == nil && ix.workDir != "" && o.Tool != "bash" && o.Tool != "ssh" {
+				args.Path = filepath.Join(ix.workDir, args.Path)
+			}
 			rec.command, rec.path, rec.args, rec.argMap = args.Command, args.Path, argText(r.a.Args), argMap(r.a.Args)
 			var line lineFacts
 			if o.Tool == "bash" || o.Tool == "ssh" {

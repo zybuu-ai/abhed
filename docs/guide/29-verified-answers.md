@@ -420,7 +420,8 @@ counts (`12 tests`, `replicas: 3`). Then:
     `-c`, `pytest -k` or `--collect-only`, `cargo test --no-run` and anything
     else not read as a plain run leave it out);
   - is given no variable but `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR` or
-    `CLICOLOR_FORCE`, which only colour its output: any other
+    `CLICOLOR_FORCE`, which only colour its output, or a `PYTHONPATH`
+    of folders inside the workspace (`PYTHONPATH=.`): any other
     (`GOFLAGS=-run=TestA`, `PYTEST_ADDOPTS='-k x'`, `CI=true`), before it or
     through `env`, may filter it or change what passes. Runners that load
     variables from a file are not read either: `pipenv run` (the project's
@@ -429,7 +430,8 @@ counts (`12 tests`, `replicas: 3`). Then:
     run is not one of a known kind;
   - covers, by path, the packages or folders the statement names, or the
     whole workspace (`./...` from the workspace) when it names none.
-    A cached run (`ok … (cached)`) counts like any other;
+    A cached run (`ok … (cached)`) counts like any other, and unittest's
+    "Ran 3 tests … OK" counts 3 passed (not "OK (skipped=1)");
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -493,7 +495,11 @@ counts (`12 tests`, `replicas: 3`). Then:
   (`deployment/checkout`) is a resource, not a file. The arguments are decoded
   first, so a tab or a newline before the code still matches. A note to
   memory, a commit message, a formatter, any other shell writer and every
-  other tool never count. Otherwise it is unverified, never contradicted.
+  other tool never count. Otherwise it is unverified, never contradicted. A file tool's relative path (`tip.py`) is read against the
+  workspace, as a statement's is. Code a statement names is compared with
+  the spacing around operators and brackets ignored, so `amount * percent`
+  matches an edit that wrote `amount*percent`, and "I changed `Tip` to
+  return …" is met by a change inside `Tip`.
 - **"I ran `Y`" is checked against the commands.** It is verified when Y, as
   written (assignments and the program's path included), perhaps with more
   arguments after it, is a line's first command, or any command of an `&&`
@@ -825,7 +831,9 @@ makes them.
 - Labels do not stop a reply from streaming; the banner follows it, and
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test
-  runners other than `go test`, `golangci-lint`, `ruff`, and linters run
+  runners other than `go test` and `python -m unittest` given only test
+  names and output flags, pytest, whose config can turn on writing,
+  `golangci-lint`, `ruff`, and linters run
   with `--fix`) counts as a possible
   change with unknown files, so
   what was read before it, and claims about files it may have changed, are

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -259,6 +260,9 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	// it does (UPDATE=1 go test rewrites goldens): never a reader then.
 	assigned := len(call.Assigns) > 0 || hasAssignment(words, unwrapped)
 	wrapped := assigned || len(unwrapped) != len(words)
+	// Variables that only colour output or point imports at the workspace
+	// (PYTHONPATH=.) leave a reader a reader.
+	assigned = assigned && !harmlessEnv(assignedNames(call, raw, unwrapped))
 	words = unwrapped
 	if len(words) == 0 {
 		// A runner alone, as env, writes only where it is redirected.
@@ -540,13 +544,13 @@ func hasAssignment(before, after []string) bool {
 // words a runner such as env took off.
 func assignedNames(call *syntax.CallExpr, raw, words []string) []string {
 	var names []string
-	for _, a := range call.Assigns {
-		names = append(names, a.Name.Value)
+	for _, w := range raw[:len(call.Assigns)] {
+		names = append(names, envName(w))
 	}
 	args := raw[len(call.Assigns):]
 	for _, w := range args[:len(args)-len(words)] {
 		if name, _, ok := strings.Cut(w, "="); ok && name != "" && !strings.HasPrefix(w, "-") {
-			names = append(names, name)
+			names = append(names, envName(w))
 		}
 		// pipenv run loads the project's .env, and hatch run its environment's
 		// env-vars: variables with no word on the line to show them.
@@ -709,4 +713,19 @@ func equalWords(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// envName is the name of a NAME=value word, marked unsafe ("PYTHONPATH*")
+// when PYTHONPATH points anywhere but inside the workspace.
+func envName(w string) string {
+	name, v, _ := strings.Cut(w, "=")
+	if name != "PYTHONPATH" {
+		return name
+	}
+	for _, p := range strings.Split(v, ":") {
+		if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$~") || slices.Contains(strings.Split(filepath.ToSlash(p), "/"), "..") {
+			return name + "*"
+		}
+	}
+	return name
 }

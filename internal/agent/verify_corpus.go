@@ -425,6 +425,22 @@ var (
 	stepGitRebaseContent = CorpusStep{ID: "b31k", Tool: "bash", Args: map[string]any{"command": "git rebase main"}, Output: "Rebasing (1/1)\rCONFLICT (content): Merge conflict in b.go\nerror: could not apply 4104aa2... wip\n", Exit: code(1)}
 	stepGoTestCached     = CorpusStep{ID: "tq2a", Tool: "bash", Args: map[string]any{"command": "go test ./..."}, Output: "ok  \tgithub.com/acme/api/auth\t(cached)\nok  \tgithub.com/acme/api/store\t(cached)\n", Exit: code(0)}
 	stepGoTestCachedSub  = CorpusStep{ID: "tq2b", Tool: "bash", Args: map[string]any{"command": "cd services/orders && go test ./..."}, Output: "?   \texample.com/mono/orders/cmd/orders\t[no test files]\nok  \texample.com/mono/orders/internal/store\t(cached)\n", Exit: code(0)}
+	stepReadTipPy        = CorpusStep{ID: "f130a", Tool: "read", Args: map[string]any{"path": "/w/tip.py"}, Output: "def tip(amount, percent):\n    return amount * percent // 100\n"}
+	stepEditTipPy        = CorpusStep{ID: "e130a", Tool: "edit", Args: map[string]any{"path": "/w/tip.py", "old_string": "    return amount * percent // 100\n", "new_string": "    return (amount * percent + 50) // 100\n"}, Output: "Edited /w/tip.py"}
+	stepPyUnittest       = CorpusStep{ID: "t130a", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
+	stepPyUnittestPath   = CorpusStep{ID: "t130b", Tool: "bash", Args: map[string]any{"command": "PYTHONPATH=. python3 -m unittest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
+	stepReadTipGo        = CorpusStep{ID: "f130b", Tool: "read", Args: map[string]any{"path": "/w/tip.go"}, Output: "package receipts\n\nfunc Tip(amount, percent int) int {\n\treturn amount * percent / 100\n}\n"}
+	stepEditTipGo        = CorpusStep{ID: "e130b", Tool: "edit", Args: map[string]any{"path": "/w/tip.go", "old_string": "\treturn amount * percent / 100\n", "new_string": "\treturn (amount*percent + 50) / 100\n"}, Output: "Edited /w/tip.go"}
+	stepGoTestTip        = CorpusStep{ID: "t130c", Tool: "bash", Args: map[string]any{"command": "go test ./..."}, Output: "ok  \texample.com/receipts\t0.21s\n", Exit: code(0)}
+	stepEditTipPyRel     = CorpusStep{ID: "e130c", Tool: "edit", Args: map[string]any{"path": "tip.py", "old_string": "    return amount * percent // 100\n", "new_string": "    return (amount * percent + 50) // 100\n"}, Output: "Edited tip.py"}
+	stepReadCalc2        = CorpusStep{ID: "f130c", Tool: "read", Args: map[string]any{"path": "/w/calc.go"}, Output: "package calc\n\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t}\n\treturn total\n}\n\nfunc Product(nums []int) int {\n\tp := 1\n\tfor _, n := range nums {\n\t\tp *= n\n\t}\n\treturn p\n}\n"}
+	stepEditCalc2Prod    = CorpusStep{ID: "e130d", Tool: "edit", Args: map[string]any{"path": "/w/calc.go", "old_string": "\t\tp *= n\n", "new_string": "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\tp *= n\n"}, Output: "Edited /w/calc.go"}
+	stepEditTipGoOther   = CorpusStep{ID: "e130e", Tool: "edit", Args: map[string]any{"path": "/w/tip.go", "old_string": "\treturn amount * percent / 100\n", "new_string": "\treturn (amount*percent + 49) / 100\n"}, Output: "Edited /w/tip.go"}
+	stepReadTipPyAfter   = CorpusStep{ID: "f130d", Tool: "read", Args: map[string]any{"path": "/w/tip.py"}, Output: "def tip(amount, percent):\n    return (amount * percent + 50) // 100\n"}
+	stepPyUnittestFail   = CorpusStep{ID: "t130d", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "..F\n======================================================================\nFAIL: test_round (test_tip.TipTest.test_round)\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nFAILED (failures=1)\n", Exit: code(1)}
+	stepPyUnittestSkip   = CorpusStep{ID: "t130e", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "..s\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK (skipped=1)\n", Exit: code(0)}
+	stepPyUnittestElse   = CorpusStep{ID: "t130f", Tool: "bash", Args: map[string]any{"command": "PYTHONPATH=/srv/old python3 -m unittest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
+	stepPyUnittestFlag   = CorpusStep{ID: "t130g", Tool: "bash", Args: map[string]any{"command": "python3 -m pytest --snapshot-update"}, Output: "3 passed in 0.05s\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1087,7 +1103,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "a true addition, named with its function: Sum now skips negatives with continue.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepReadSumWith), Text: "`Sum` now skips negatives with `continue`."},
 		{Name: "a true addition, named with its function: I added continue so negatives are skipped.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepReadSumWith), Text: "I added `continue` so negatives are skipped."},
 		{Name: "a true addition, named with its function: In sum.go, I added continue so negatives are skipped.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepReadSumWith), Text: "In `sum.go`, I added `continue` so negatives are skipped."},
-		{Name: "a true change said without a direction, its function outside the edit", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepReadSumWith), Text: "I edited `sum.go` so that `Sum` skips negatives with `continue`."},
+		{Name: "a true change said without a direction, its function outside the edit", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepReadSumWith), Text: "I edited `sum.go` so that `Sum` skips negatives with `continue`."},
 		{Name: "a comment, said as code added: I added continue to skip negatives in Sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepEditTodo), Text: "I added `continue` to skip negatives in `Sum`."},
 		{Name: "a comment, said as code added: I added a continue to Sum.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadSum, stepEditTodo), Text: "I added a `continue` to `Sum`."},
 		{Name: "a search of one folder said to be of the whole repo", Kind: p, Want: ClaimUnverified, Steps: steps(stepGrepTodoAuth), Text: "I searched for `TODO` across the whole repo."},
@@ -1525,6 +1541,26 @@ func CorpusCases() []CorpusCase {
 		{Name: "all tests passed after a cached whole run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadSumPlain, stepEditAddCont, stepGoTestCached), Text: "All tests passed."},
 		{Name: "the folder's tests said to pass after a run of that folder", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestCachedSub), Text: "The services/orders tests pass."},
 		{Name: "all tests passed after a run of one folder, with no folder asked about", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestCachedSub), Text: "Result: all tests passed."},
+		// 1.3.0: a relative edit path, a Python test run, unittest's summary,
+		// PYTHONPATH=. and code said with other spacing (a gemma4 demo run).
+		{Name: "a relative edit path, said as the workspace file", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPyRel), Text: "I edited `tip.py`."},
+		{Name: "a relative edit path, said after a unittest run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPyRel, stepPyUnittest), Text: "I edited `tip.py`."},
+		{Name: "code put in, said after a unittest run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "I changed `tip` to return `(amount * percent + 50) // 100`."},
+		{Name: "a pass count from unittest's summary", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "All 3 tests pass."},
+		{Name: "tests passed under PYTHONPATH=.", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittestPath), Text: "All tests pass."},
+		{Name: "a file read before a unittest run is still current", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUnittest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		{Name: "code said with spacing the edit did not use", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipGo, stepEditTipGo, stepGoTestTip), Text: "I changed `Tip` to return `(amount * percent + 50) / 100`."},
+		{Name: "code said with spacing the edit did not use, naming the file", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipGo, stepEditTipGo, stepGoTestTip), Text: "I updated `Tip` in `tip.go` to `(amount * percent + 50) / 100`."},
+		{Name: "a file read before a PYTHONPATH=. unittest run is still current", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUnittestPath), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		{Name: "a fix said as a judgement after a unittest run", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "I fixed the rounding in `tip.py`."},
+		{Name: "a pass count above unittest's summary", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "All 4 tests pass."},
+		{Name: "tests said to pass after a failed unittest run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittestFail), Text: "All 3 tests pass."},
+		{Name: "every test said to pass when unittest skipped one", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittestSkip), Text: "All 3 tests pass."},
+		{Name: "tests said to pass under a PYTHONPATH outside the workspace", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittestElse), Text: "All tests pass."},
+		{Name: "a read said current after a test run that may rewrite files", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUnittestFlag), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		{Name: "another relative file said edited", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPyRel, stepPyUnittest), Text: "I edited `fees.py`."},
+		{Name: "code said with other spacing and another number", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipGo, stepEditTipGoOther, stepGoTestTip), Text: "I changed `Tip` to return `(amount * percent + 50) / 100`."},
+		{Name: "a change said made in a function the edit was not in", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadCalc2, stepEditCalc2Prod), Text: "I edited `calc.go` so that `Sum` skips negatives with `continue`."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

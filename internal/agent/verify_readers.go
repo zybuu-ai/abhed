@@ -93,6 +93,8 @@ func pureReader(words []string) bool {
 		return gitReader(words)
 	case "go":
 		return goReader(words)
+	case "python", "python3":
+		return unittestReader(words)
 	case "find":
 		return findReader(words)
 	case "eslint", "mypy", "tsc", "staticcheck", "cargo":
@@ -270,6 +272,26 @@ func lintReader(prog string, words []string) bool {
 		case strings.HasPrefix(name, "--fix") && name != "--fix-dry-run", name == "--unsafe-fixes", name == "--add-noqa",
 			name == "-o", strings.Contains(name, "output"), strings.HasPrefix(name, "--out"), strings.HasPrefix(name, "--cache"),
 			name == "--install-types", name == "-b", name == "--build", name == "-w", name == "--watch", name == "--":
+			return false
+		}
+	}
+	return true
+}
+
+// unittestReader: `python -m unittest` given only test names, paths and
+// output flags, like `go test`. pytest is not one: its config (addopts) can
+// turn on writing snapshots or reports.
+func unittestReader(words []string) bool {
+	if len(words) < 3 || words[1] != "-m" || words[2] != "unittest" {
+		return false
+	}
+	args := words[3:]
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case slices.Contains([]string{"-q", "-v", "--quiet", "--verbose", "-f", "--failfast", "discover"}, a):
+		case a == "-s" || a == "-p" || a == "-t":
+			i++ // discover's start folder, pattern and top folder
+		case strings.HasPrefix(a, "-"):
 			return false
 		}
 	}
