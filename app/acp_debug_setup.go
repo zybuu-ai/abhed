@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/debugrelay"
 	"github.com/zybuu-ai/abhed/internal/enginecli"
+	"github.com/zybuu-ai/abhed/internal/regularfile"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -265,6 +266,9 @@ func (c *acpConn) debugUseContainer(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{"path": path, "newSession": true}, nil)
 }
 
+// maxWorkspaceConfig bounds the workspace config raiseWorkspaceTier reads.
+const maxWorkspaceConfig = 1 << 20
+
 // raiseWorkspaceTier sets sandbox.min_tier in workspace/.abhed/config.json
 // to tier when it is absent or weaker, keeping the rest of the file; a
 // stronger one is left as it is (raised false).
@@ -275,9 +279,12 @@ func raiseWorkspaceTier(workspace string, tier sandbox.Tier) (string, bool, erro
 		return "", false, errors.New(dir + " is a link")
 	}
 	cfg := map[string]any{}
-	if b, err := os.ReadFile(path); err == nil {
-		if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-			return "", false, errors.New(path + " is not a plain file")
+	if _, err := os.Lstat(path); err == nil {
+		// Read only as a plain file of bounded size: a link, a pipe or a device
+		// a repository put there is refused, never followed or waited on.
+		b, err := regularfile.Read(path, maxWorkspaceConfig)
+		if err != nil {
+			return "", false, err
 		}
 		if err := json.Unmarshal(b, &cfg); err != nil {
 			return "", false, errors.New(path + " is not JSON: " + err.Error())
@@ -295,14 +302,32 @@ func raiseWorkspaceTier(workspace string, tier sandbox.Tier) (string, bool, erro
 	sb["min_tier"] = string(tier)
 	cfg["sandbox"] = sb
 	b, _ := json.MarshalIndent(cfg, "", "  ")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- the workspace's .abhed folder, as readable as the repository it sits in
 		return "", false, err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil { // #nosec G306 -- the workspace config, not a secret
+	// A fresh, randomly named file: a fixed name such as config.json.tmp could
+	// already be a link a repository planted, and writing through it would
+	// overwrite whatever it points at.
+	f, err := os.CreateTemp(dir, ".config.json.*")
+	if err != nil {
 		return "", false, err
 	}
-	return path, true, os.Rename(tmp, path)
+	tmp := f.Name()
+	_, werr := f.Write(append(b, '\n'))
+	if werr == nil {
+		werr = f.Chmod(0o644) // #nosec G302 -- the workspace config, not a secret
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, path)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return "", false, werr
+	}
+	return path, true, nil
 }
 
 func (c *acpConn) debugForgetConsent(msg rpcMessage) {
@@ -351,7 +376,7 @@ func debugWorkspaceKey(ws string) string {
 // there but cannot be read as one, which then counts as no agreement.
 func readDebugConsents() (c debugConsents, bad bool) {
 	if f := debugConsentFile(); f != "" {
-		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &c) != nil {
+		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &c) != nil { // #nosec G304 -- the person's own consent file under their home
 			warnf("%s is not a list of agreements to debug on the process tier, so none is taken from it", f)
 			bad = true
 			c = debugConsents{}

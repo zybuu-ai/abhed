@@ -6,6 +6,21 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Abhed Studio's debug setup could overwrite a file outside the workspace.
+  When a person chose to run a workspace's commands in a container, Abhed
+  raised `sandbox.min_tier` in `.abhed/config.json` by writing a fixed
+  `.abhed/config.json.tmp`. A repository could ship that name as a link to
+  any file the person can write, such as `~/.bashrc`, and the repository's
+  own `config.json` chose the JSON written there. That is one click, after
+  opening a hostile repository in Studio, to overwrite a file and possibly
+  run code at the next shell start. Affected: 1.2.9 only, through ACP
+  `_abhed/debug/use-container`; the terminal and the server never call it.
+  The config is now written to a fresh, randomly named file made with
+  `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
+  a device, or over 1 MiB, is refused instead of followed or waited on.
+
 ### Fixed
 
 - With a corporate upstream proxy in force, a local model server left at
