@@ -471,7 +471,8 @@ name once, refuses the same internal addresses the proxy refuses unless the
 allowing rule names them in `allow_ips`, and connects only to an address it
 checked; a pooled connection is checked again against each request's rule
 before it is reused. It never uses `HTTP_PROXY` or `HTTPS_PROXY` from
-Abhed's environment, so it sees where each connection goes. A denied
+Abhed's environment, so it sees where each connection goes; a corporate
+proxy is configured instead, as `network.upstream_proxy` (next section). A denied
 request is never sent: the tool gets an error naming the rule and the
 reason, and the model client's caller sees the same error.
 
@@ -492,6 +493,80 @@ the model's endpoint. It never falls back to the open network.
 Requests made outside any session, such as an MCP server's connection when
 Abhed starts and the legacy SSE stream it keeps open, are judged the same
 way but written to Abhed's log rather than a record.
+
+## A corporate upstream proxy
+
+Where every connection must leave through the organisation's proxy, name it
+once and Abhed sends all of its own traffic and, under the allowlist, the
+commands' allowed traffic through it:
+
+```json
+"network": {
+  "upstream_proxy": {
+    "url": "http://proxy.corp.example:3128",
+    "ca_file": "/etc/ssl/certs/corp-root.pem",
+    "credentials_secret": "CORP_PROXY",
+    "no_proxy": [".corp.example", "10.0.0.0/8", "k8s-api.internal"]
+  }
+}
+```
+
+| Key | |
+|---|---|
+| `url` | an explicit HTTP proxy, `http://host:port` or `https://host:port` (TLS to the proxy itself). No user or password, path or query: a credential in the URL is refused at load, without echoing it. A PAC file, WPAD discovery and SOCKS are not supported |
+| `ca_file` | a PEM bundle trusted beside the system's: for an `https://` proxy's certificate, and for servers a proxy that inspects TLS re-signs with the organisation's CA. It is added to a client's own roots too (a cluster's CA, a forge's CA file) |
+| `credentials_secret` | the NAME of a stored secret (`abhed secret set CORP_PROXY`) holding `user:password`, sent to the proxy as `Proxy-Authorization: Basic`. It is read at each connection, so a rotated password is used at once |
+| `no_proxy` | destinations reached directly: a host name, a domain (`.corp.example` or `*.corp.example`, which match the domain and its subdomains), an IP address or a CIDR range. A port is not supported; `*` is refused (remove `upstream_proxy` instead). Loopback (`localhost`, `127.0.0.0/8`, `::1`) is always reached directly |
+
+**What goes through it**, unless `no_proxy` names the destination:
+
+- the model clients (each provider, the supervisor's model judge, the code
+  index's embeddings, onboarding's model check);
+- `web_fetch`, `web_search`, MCP servers over HTTP, `rag` retrieval, the
+  `k8s_*` tools and `abhed resolve`'s forge API calls and `git push`;
+- toolchain downloads (and the `go install` Abhed runs for Delve and gopls),
+  Ollama installs and registry lookups;
+- `abhed login` and the other profile calls to an Abhed server, and the
+  record's witness;
+- under the allowlist, the commands' allowed traffic, chained by Abhed's
+  egress proxy: a `CONNECT` tunnel to the proxy for HTTPS and every
+  tunnel, and plain HTTP in absolute form.
+
+The allowlist decides first, every time: a request or tunnel the rules
+refuse is never sent to the corporate proxy, so the proxy can only carry
+less than the allowlist allows, never more. Before chaining, Abhed resolves
+the name itself and refuses it, as without a proxy, when it resolves to an
+internal address no rule names in `allow_ips`. Through a proxy the proxy
+resolves the name and picks the address it connects to; a name that does
+not resolve on this machine (common where only the proxy reaches outside
+DNS) is not refused for that, and the address the proxy connects to is the
+proxy's to check. The record entry carries `upstream` (the proxy's
+`host:port`) and no `ip`.
+
+**Credentials** are sent only to the proxy, in a `Proxy-Authorization`
+header on the `CONNECT` or plain-HTTP request; the commands never see them
+(the commands' proxy adds them as it chains), and they are never in a URL,
+an error, a log line, the record or what the model sees. A program Abhed
+starts for its own downloads (`go install`, `git push`) is given a loopback
+relay with a one-time token in `HTTPS_PROXY` instead, and the relay adds the
+credentials; nothing else can use the relay. `ollama serve`, which outlives
+Abhed, is given the proxy only when it needs no credentials; with
+credentials, configure Ollama's own proxy.
+
+When the proxy is set, Abhed's clients ignore `HTTP_PROXY`, `HTTPS_PROXY`
+and `NO_PROXY` in its environment. Without it they keep their previous
+behaviour: outside the allowlist they follow the environment, and under it
+they connect directly. A workspace's configuration never sets
+`network`, trusted or not. The managed configuration can force it: a
+managed `upstream_proxy` wins over the person's, and the person's
+`no_proxy` list is dropped unless the managed file names its own, so it
+cannot route around the organisation's proxy.
+
+**Not covered:** a PAC file or WPAD; SOCKS; NTLM, Kerberos or other
+challenge-response proxy authentication (Basic only); `ssh_connect` and
+other raw TCP connections, which stay direct; commands outside the
+allowlist, which use the network as the sandbox gives it; and programs that
+keep their own proxy settings (a stdio MCP server, an extension).
 
 ### Stdio MCP servers
 

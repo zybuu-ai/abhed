@@ -67,9 +67,13 @@ aside, with a warning and a `config.refused` event in each session's record:
 `commands.dirs`, `rules.dirs`, `skills.dirs`, `agents.dirs`,
 `context.memory_files`, `k8s`, `storage`, `server`, `auth`, `schedules`,
 `control_plane`, `record.dir`, `record.ocsf.path`, `record.witness.file`,
-`sandbox.microvm_socket` and `model.providers.<name>.api_key_env`. They name
-a program to run, a file or folder, or an environment variable on this
-machine, or configure a server; the machine's own managed file may set them.
+`sandbox.microvm_socket`, `model.providers.<name>.api_key_env` and
+`network.upstream_proxy`. They name a program to run, a file or folder, a
+stored secret or an environment variable on this machine, or configure a
+server; the machine's own managed file may set them. The proxy is the
+machine's because it names a local CA file and secret, and because the
+policy itself is fetched through it: a policy that pointed it elsewhere
+could cut the laptop off from the next one.
 
 ## Refresh and age
 

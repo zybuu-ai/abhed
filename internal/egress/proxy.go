@@ -35,6 +35,9 @@ type Event struct {
 	BytesOut int64
 	// Synthetic is the resolver's address the command connected to, which named Host.
 	Synthetic string
+	// Upstream is the corporate proxy (host:port) the connection was chained
+	// through after the policy allowed it; "" for a direct one.
+	Upstream string
 	// Repeats, on a summary, is how many decisions like this one were not
 	// recorded one by one in the interval it covers.
 	Repeats int64
@@ -61,6 +64,9 @@ func (e Event) Payload() map[string]any {
 	}
 	if e.Synthetic != "" {
 		m["synthetic"] = e.Synthetic
+	}
+	if e.Upstream != "" {
+		m["upstream"] = e.Upstream
 	}
 	return m
 }
@@ -382,9 +388,12 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(life, p.opts.DialTimeout)
-	up, ip, err := p.dial(ctx, t, v)
+	up, ip, via, err := p.dial(ctx, t, v)
 	cancel()
 	ev.IP = ip
+	if via != nil {
+		ev.Upstream = via.Authority()
+	}
 	if err != nil && life.Err() != nil {
 		ev.Decision, ev.Reason = Deny, errCallEnded.Error()
 		p.record(ev)
@@ -401,6 +410,11 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		}
 		ev.Reason = v.Reason + "; dial failed: " + err.Error()
 		p.record(ev)
+		var refused *UpstreamRefused
+		if errors.As(err, &refused) {
+			writeStatus(c, http.StatusBadGateway, "abhed egress: "+refused.Error()+"\n", nil)
+			return
+		}
 		writeStatus(c, http.StatusBadGateway, "abhed egress: could not reach "+t.Authority()+"\n", nil)
 		return
 	}
@@ -434,7 +448,7 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		p.tunnel(c, br, cu, true)
 		return
 	}
-	p.forward(c, req, t, cu)
+	p.forward(c, req, t, cu, via)
 }
 
 func kindOf(method string) string {
@@ -460,8 +474,38 @@ func (e *refusal) Error() string {
 }
 
 // dial resolves the host, checks every address, and connects to one it
-// checked: the name is never resolved again.
-func (p *Proxy) dial(ctx context.Context, t Target, v Verdict) (net.Conn, string, error) {
+// checked: the name is never resolved again. Through the upstream proxy in
+// force it connects to the proxy instead, after the same check of the
+// addresses the name has here, if any; the proxy is returned then.
+func (p *Proxy) dial(ctx context.Context, t Target, v Verdict) (net.Conn, string, *Upstream, error) {
+	if up := CurrentUpstream(); up != nil && !up.Bypass(t.Host) {
+		for _, a := range upstreamPrecheck(ctx, p.resolve, t.Host) {
+			a = a.Unmap()
+			if p.self(netip.AddrPortFrom(a, t.Port)) {
+				return nil, a.String(), nil, &refusal{host: t.Host, addr: a, why: "this proxy itself"}
+			}
+			if named(v.AllowIPs, a) {
+				continue
+			}
+			if why := AddrRefusal(a); why != "" {
+				return nil, a.String(), nil, &refusal{host: t.Host, addr: a, why: why}
+			}
+		}
+		var c net.Conn
+		var err error
+		if t.Tunnel {
+			c, err = up.DialTunnel(ctx, t.Authority(), p.opts.DialTimeout)
+		} else {
+			c, err = up.DialForward(ctx, p.opts.DialTimeout)
+		}
+		return c, "", up, err
+	}
+	c, ip, err := p.dialDirect(ctx, t, v)
+	return c, ip, nil, err
+}
+
+// dialDirect is dial with no upstream proxy.
+func (p *Proxy) dialDirect(ctx context.Context, t Target, v Verdict) (net.Conn, string, error) {
 	addrs, err := p.resolve(ctx, t.Host)
 	if err != nil {
 		return nil, "", err
@@ -556,9 +600,9 @@ func closeWrite(c net.Conn) {
 var hopHeaders = []string{"Proxy-Authorization", "Proxy-Connection", "Connection", "Keep-Alive",
 	"Proxy-Authenticate", "Te", "Trailer", "Upgrade"}
 
-// forward sends a plain HTTP request to the checked address and copies the
-// response back, then closes.
-func (p *Proxy) forward(c net.Conn, req *http.Request, t Target, up *counted) {
+// forward sends a plain HTTP request to the checked address, or in absolute
+// form to the upstream proxy via, and copies the response back, then closes.
+func (p *Proxy) forward(c net.Conn, req *http.Request, t Target, up *counted, via *Upstream) {
 	for _, f := range strings.Split(req.Header.Get("Connection"), ",") {
 		if f = strings.TrimSpace(f); f != "" {
 			req.Header.Del(f)
@@ -571,8 +615,20 @@ func (p *Proxy) forward(c net.Conn, req *http.Request, t Target, up *counted) {
 	req.Host = t.URL.Host
 	req.RequestURI = ""
 	req.Close = true
+	write := req.Write
+	if via != nil {
+		auth, err := via.ForwardHeader()
+		if err != nil {
+			writeStatus(c, http.StatusBadGateway, "abhed egress: the upstream proxy's credentials could not be read\n", nil)
+			return
+		}
+		if auth != "" {
+			req.Header.Set("Proxy-Authorization", auth)
+		}
+		write = req.WriteProxy
+	}
 	// The body is read from the client past the header limit.
-	if err := req.Write(up); err != nil {
+	if err := write(up); err != nil {
 		writeStatus(c, http.StatusBadGateway, "abhed egress: sending the request failed\n", nil)
 		return
 	}

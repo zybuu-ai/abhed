@@ -248,7 +248,7 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		// No proxy from the environment, so the address check sees where the
 		// connection goes; under the allowlist this tool's check follows the guard's.
 		Transport: &egress.Transport{
-			Kind: egress.KindWebFetch, Check: t.addrCheck, Guard: t.Guard,
+			Kind: egress.KindWebFetch, Check: t.addrCheck, Resolve: t.resolve, Guard: t.Guard,
 			Base: &http.Transport{
 				DialContext:            t.dial,
 				DisableKeepAlives:      true,

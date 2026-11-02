@@ -101,6 +101,7 @@ var orgRefused = map[string]string{
 	"record.witness.file":           "an org policy does not name files on this machine",
 	"sandbox.microvm_socket":        "an org policy does not name files on this machine",
 	"model.providers.*.api_key_env": "an org policy does not read this machine's environment",
+	"network.upstream_proxy":        "an org policy does not choose this machine's proxy, which names its files and secrets and carries the org policy's own fetch",
 }
 
 // orgRefusedOf is the rule path falls under, if any.

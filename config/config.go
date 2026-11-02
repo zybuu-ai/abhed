@@ -61,6 +61,8 @@ type Config struct {
 	Schedules []ScheduleConfig `json:"schedules,omitempty"`
 	Auth      AuthConfig       `json:"auth"`
 	Tools     ToolsConfig      `json:"tools,omitempty"`
+	// Network governs how Abhed's own connections leave the machine.
+	Network NetworkConfig `json:"network,omitzero"`
 
 	// CLI tunes the interactive command line.
 	CLI CLIConfig `json:"cli,omitempty"`
@@ -1780,7 +1782,11 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	if !o.Quiet {
 		warnUntrusted(w, cfg.Workspace)
 	}
-	return cfg, cfg.Validate()
+	managedNetwork(&cfg)
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, applyNetwork(cfg)
 }
 
 // mergeFile merges the workspace's or the home directory's config. One with a
@@ -1954,6 +1960,9 @@ type ToolsConfig struct {
 }
 
 func (c Config) Validate() error {
+	if err := c.validateNetwork(); err != nil {
+		return err
+	}
 	switch c.Subagents.Wake {
 	case "", "off", "notify", "auto":
 	default:

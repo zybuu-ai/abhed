@@ -213,7 +213,7 @@ func (p *Postgres) CommitEnd(ctx context.Context) (CommitPos, error) {
 	// with none, the last from before schema version 12.
 	err := p.pool.QueryRow(ctx, `
 		SELECT commit_tx::text AS tx, created_at, session_id, seq FROM events
-		WHERE commit_tx IS NOT NULL AND commit_tx < pg_snapshot_xmin(pg_current_snapshot())
+		WHERE commit_tx IS NOT NULL AND commit_tx < abhed_commit_horizon()
 		ORDER BY commit_tx DESC, created_at DESC, session_id DESC, seq DESC
 		LIMIT 1`).Scan(&tx, &pos.At, &pos.Session, &pos.Seq)
 	if errors.Is(err, pgx.ErrNoRows) {

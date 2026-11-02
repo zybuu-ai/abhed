@@ -280,6 +280,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
 		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
+		network := cfg.Network.clone()
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -289,6 +290,8 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		keepHA(cfg, path, data, ha, before, prior)
 		keepLanguageServers(cfg, path, data, servers, before, prior)
+		keepOperatorOnly(cfg, path, data, before, prior, "network", "a workspace never routes Abhed's connections or trusts a CA",
+			func() { cfg.Network = network })
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
 		if cfg.Memory.Auto && !auto {
@@ -732,6 +735,7 @@ var workspaceRules = map[string]fieldRule{
 	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
 	"agents.dirs":            {nil, "a definition is instructions and a model choice"},
 	"telemetry":              {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
+	"network":                {nil, "routes Abhed's connections through a proxy, with credentials and trusted CAs"},
 
 	"commands.dirs":       {nil, "a command is instructions to the agent"},
 	"rules.dirs":          {nil, "a rule is instructions to the agent"},

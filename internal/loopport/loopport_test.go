@@ -89,15 +89,43 @@ func TestRangeWarnsOnABadValue(t *testing.T) {
 	}
 }
 
-// Any port on a Mac is a port of the range; a named port is as named.
+// Any port on a Mac, however written, is a port of the range; a named
+// port is as named; an address not on the Mac is its own error.
 func TestListenAddr(t *testing.T) {
 	onMac(t)
-	ln, err := ListenAddr("127.0.0.1:0")
+	for _, addr := range []string{"127.0.0.1:0", "127.0.0.1:", "127.0.0.1:00", "localhost:0"} {
+		ln, err := ListenAddr(addr)
+		if err != nil {
+			t.Fatal(addr, err)
+		}
+		p := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if !In(p) {
+			t.Fatalf("%s took port %d", addr, p)
+		}
+	}
+	named, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	if !In(ln.Addr().(*net.TCPAddr).Port) {
-		t.Fatalf("port %d", ln.Addr().(*net.TCPAddr).Port)
+	port := named.Addr().(*net.TCPAddr).Port
+	_ = named.Close()
+	if ln, err := ListenAddr(net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err == nil {
+		got := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if got != port {
+			t.Fatalf("named %d, got %d", port, got)
+		}
+	}
+	if _, err := ListenAddr("192.0.2.1:0"); err == nil || errors.Is(err, ErrExhausted) {
+		t.Fatalf("an address not on this machine: %v", err)
+	}
+}
+
+func TestAnyPort(t *testing.T) {
+	for port, want := range map[string]bool{"": true, "0": true, "00": true, "1": false, "8080": false, "http": false} {
+		if AnyPort(port) != want {
+			t.Errorf("AnyPort(%q) = %v", port, !want)
+		}
 	}
 }

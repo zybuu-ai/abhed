@@ -1,0 +1,229 @@
+package egress
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// UpstreamEnv is the environment a program Abhed starts for its own
+// downloads (a Go module build, say) needs to go out through the upstream
+// proxy in force, and a function that ends it; nil and a no-op with none.
+// The program is given a loopback relay with a one-time token, never the
+// proxy's credentials, which the relay adds itself.
+func UpstreamEnv() (env []string, stop func(), err error) {
+	proxy, np, stop, err := UpstreamRelay()
+	if err != nil || proxy == "" {
+		return nil, stop, err
+	}
+	return []string{"HTTPS_PROXY=" + proxy, "HTTP_PROXY=" + proxy, "https_proxy=" + proxy, "http_proxy=" + proxy,
+		"NO_PROXY=" + np, "no_proxy=" + np}, stop, nil
+}
+
+// UpstreamRelay starts a loopback relay to the upstream proxy in force and
+// returns its URL, with the one-time token as its user, the no_proxy list
+// for the program's own settings, and the function that ends it; "" and a
+// no-op with no upstream proxy.
+func UpstreamRelay() (proxy, noProxy string, stop func(), err error) {
+	u := CurrentUpstream()
+	if u == nil {
+		return "", "", func() {}, nil
+	}
+	r, err := startRelay(u)
+	if err != nil {
+		return "", "", func() {}, err
+	}
+	np := strings.Join(append([]string{"localhost", "127.0.0.1", "::1"}, u.NoProxy...), ",")
+	return "http://abhed:" + r.token + "@" + r.ln.Addr().String(), np, r.close, nil
+}
+
+// relay is a loopback proxy that forwards to the upstream proxy, for the
+// holder of its token alone.
+type relay struct {
+	u     *Upstream
+	ln    net.Listener
+	token string
+	want  string // the Proxy-Authorization its clients send
+	once  sync.Once
+	wg    sync.WaitGroup
+
+	mu     sync.Mutex
+	conns  map[net.Conn]bool
+	closed bool
+}
+
+func startRelay(u *Upstream) (*relay, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	tok := hex.EncodeToString(b)
+	r := &relay{u: u, ln: ln, token: tok, want: "Basic " + base64.StdEncoding.EncodeToString([]byte("abhed:"+tok)),
+		conns: map[net.Conn]bool{}}
+	r.wg.Add(1)
+	go r.serve()
+	return r, nil
+}
+
+// close stops the relay and ends every connection through it.
+func (r *relay) close() {
+	r.once.Do(func() {
+		_ = r.ln.Close()
+		r.mu.Lock()
+		r.closed = true
+		for c := range r.conns {
+			_ = c.Close()
+		}
+		r.mu.Unlock()
+	})
+	r.wg.Wait()
+}
+
+// track keeps c until untrack, so close ends it; false once closed.
+func (r *relay) track(c net.Conn) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.conns[c] = true
+	return true
+}
+
+func (r *relay) untrack(c net.Conn) {
+	r.mu.Lock()
+	delete(r.conns, c)
+	r.mu.Unlock()
+}
+
+func (r *relay) serve() {
+	defer r.wg.Done()
+	for {
+		c, err := r.ln.Accept()
+		if err != nil {
+			return
+		}
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.handle(c)
+		}()
+	}
+}
+
+func (r *relay) handle(c net.Conn) {
+	defer func() { _ = c.Close() }()
+	if !r.track(c) {
+		return
+	}
+	defer r.untrack(c)
+	_ = c.SetReadDeadline(time.Now().Add(headerTimeout))
+	br := bufio.NewReader(io.LimitReader(c, maxHeader))
+	req, err := http.ReadRequest(br)
+	if err != nil {
+		writeStatus(c, http.StatusBadRequest, "abhed relay: malformed request\n", nil)
+		return
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	if subtle.ConstantTimeCompare([]byte(req.Header.Get("Proxy-Authorization")), []byte(r.want)) != 1 {
+		writeStatus(c, http.StatusProxyAuthRequired, "abhed relay: not this relay's client\n",
+			http.Header{"Proxy-Authenticate": {`Basic realm="abhed"`}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if req.Method == http.MethodConnect {
+		up, err := r.u.DialTunnel(ctx, req.Host, 30*time.Second)
+		if err != nil {
+			writeStatus(c, http.StatusBadGateway, "abhed relay: "+relayError(err)+"\n", nil)
+			return
+		}
+		defer func() { _ = up.Close() }()
+		if !r.track(up) {
+			return
+		}
+		defer r.untrack(up)
+		if _, err := io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+			return
+		}
+		splice(c, br, up)
+		return
+	}
+	if req.URL == nil || !req.URL.IsAbs() || !strings.EqualFold(req.URL.Scheme, "http") {
+		writeStatus(c, http.StatusBadRequest, "abhed relay: only CONNECT and absolute http requests\n", nil)
+		return
+	}
+	up, err := r.u.DialForward(ctx, 30*time.Second)
+	if err != nil {
+		writeStatus(c, http.StatusBadGateway, "abhed relay: "+relayError(err)+"\n", nil)
+		return
+	}
+	defer func() { _ = up.Close() }()
+	for _, h := range hopHeaders {
+		req.Header.Del(h)
+	}
+	if auth, err := r.u.ForwardHeader(); err != nil {
+		writeStatus(c, http.StatusBadGateway, "abhed relay: the upstream proxy's credentials could not be read\n", nil)
+		return
+	} else if auth != "" {
+		req.Header.Set("Proxy-Authorization", auth)
+	}
+	req.RequestURI, req.Close = "", true
+	if err := req.WriteProxy(up); err != nil {
+		return
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(up), req)
+	if err != nil {
+		writeStatus(c, http.StatusBadGateway, "abhed relay: the upstream response was malformed\n", nil)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	resp.Close = true
+	_ = resp.Write(c)
+}
+
+// relayError is an upstream failure as the relay's client is told it: the
+// proxy's status or that it could not be reached, never a header.
+func relayError(err error) string {
+	var r *UpstreamRefused
+	if errors.As(err, &r) {
+		return r.Error()
+	}
+	return "the upstream proxy could not be reached"
+}
+
+// splice copies both ways until either side ends, first what br holds.
+func splice(c net.Conn, br *bufio.Reader, up net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		if n := br.Buffered(); n > 0 {
+			b, _ := br.Peek(n)
+			_, _ = up.Write(b)
+		}
+		_, _ = io.Copy(up, c)
+		closeWrite(up)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(c, up)
+		closeWrite(c)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+}

@@ -85,10 +85,23 @@ func TestAskedFolders(t *testing.T) {
 		{"a checked answer starts a new request", []askedStep{askedUser("Make sure the whole repo's tests pass."), askedVerdict, askedUser(orders), askedSubRun}, "All tests pass.", ClaimVerified},
 		{"attachment names the folder", []askedStep{askedUser("Run the tests.\n\nWhat the person linked, read through the session's policy. " + AttachedNote + ": text.\n<page-1>see services/orders</page-1>"), askedSubRun}, "All tests passed.", ClaimUnverified},
 		{"attachment says all", []askedStep{askedUser(orders + "\n\nWhat the person linked, read through the session's policy. " + AttachedNote + ": text.\n<page-1>run all the tests in the repository</page-1>"), askedSubRun}, "All tests passed.", ClaimVerified},
+		{"piped stdin names the folder", []askedStep{askedUser("Run the tests\n\nInput from stdin. " + AttachedNote + ": text.\n<stdin-1>FAIL\tservices/orders\t0.2s</stdin-1>"), askedSubRun}, "All tests passed.", ClaimUnverified},
 		{"a file is no folder", []askedStep{askedUser("Run the tests for services/orders/store.go"), askedSubRun}, "All tests passed.", ClaimUnverified},
 		{"a path that climbs", []askedStep{askedUser("Run the tests for services/orders/../orders"), askedSubRun}, "All tests passed.", ClaimUnverified},
 		{"change inside the folder", []askedStep{askedUser("Add a request log in services/orders"), askedEdit("/w/services/orders/log.go"), askedSubRun}, "All tests pass.", ClaimVerified},
 		{"change outside the folder", []askedStep{askedUser("Add a request log in services/orders"), askedEdit("/w/libs/shared/log.go"), askedEdit("/w/services/orders/log.go"), askedSubRun}, "All tests pass.", ClaimUnverified},
+		{"folder and a name", []askedStep{askedUser("Run the tests for services/orders and billing"), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"folder and other tests", []askedStep{askedUser("Run the tests in services/orders and the integration tests"), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"folder and its dependents", []askedStep{askedUser("Run the tests for services/orders and its dependents"), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"folder and a file-like folder", []askedStep{askedUser("Run the tests in services/orders and libs/shared.v2"), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"not just the folder", []askedStep{askedUser("Run the tests, not just services/orders"), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"a sentence about tests with no folder", []askedStep{askedUser("You only ran services/orders. Run the tests."), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"quoting the agent", []askedStep{askedUser("Earlier you wrote `services/orders` was green. Check the tests again."), askedSubRun}, "All tests passed.", ClaimUnverified},
+		{"folder and a verb", []askedStep{askedUser("Fix the bug in services/orders and run its tests"), askedSubRun}, "All tests passed.", ClaimVerified},
+		{"two folders asked", []askedStep{askedUser("Run the tests for services/orders and services/orders/internal"), askedSubRun}, "All tests passed.", ClaimVerified},
+		{"a shell write outside the folder", []askedStep{askedUser("Add a request log in services/orders"), {tool: "bash", cmd: "sed -i 's/a/b/' libs/shared/log.go"}, askedSubRun}, "All tests pass.", ClaimUnverified},
+		{"a run chained after a generator", []askedStep{askedUser("Add a request log in services/orders"), {tool: "bash", cmd: "./scripts/gen.sh && go test ./services/orders/..."}, askedSubRun}, "All tests pass.", ClaimUnverified},
+		{"a sibling folder sharing the prefix", []askedStep{askedUser("Add a request log in services/orders"), askedEdit("/w/services/orders-v2/log.go"), askedSubRun}, "All tests pass.", ClaimUnverified},
 		{"a command that may change anything", []askedStep{askedUser(orders), {tool: "bash", cmd: "./scripts/gen.sh"}, askedSubRun}, "All tests pass.", ClaimUnverified},
 	} {
 		if got := askedCheck(t, c.steps, c.claim); got.Verdict != c.want {
@@ -97,7 +110,8 @@ func TestAskedFolders(t *testing.T) {
 	}
 	// Each word that asks about more than the folders turns the rule off.
 	for _, w := range []string{"whole", "entire", "all", "every", "everything", "anything", "nothing", "repo", "repository", "workspace",
-		"monorepo", "codebase", "project", "full", "complete", "other", "others", "else", "rest", "global", "globally", "everywhere", "across", "CI"} {
+		"monorepo", "codebase", "project", "full", "complete", "other", "others", "else", "rest", "global", "globally", "everywhere", "across", "CI",
+		"just", "besides", "beyond", "including", "plus", "also", "dependents", "depends", "downstream", "callers", "importers", "consumers", "e2e", "integration", "frontend", "backend"} {
 		msg := orders + " Mind the " + w + " too."
 		if got := askedCheck(t, []askedStep{askedUser(msg), askedSubRun}, "All tests passed."); got.Verdict != ClaimUnverified {
 			t.Errorf("%q: %s (%s), want unverified", msg, got.Verdict, got.Reason)
@@ -109,7 +123,7 @@ func TestAskedFolders(t *testing.T) {
 func TestAskedFoldersIgnoreSubagentTasks(t *testing.T) {
 	store := NewMemStore()
 	p, kid := NewRecorder(store, "sess1", ""), NewRecorder(store, "kid", "sess1")
-	p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "Run the Go tests."})
+	p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "Look into the orders problem."})
 	kid.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "Run the Go tests for services/orders."})
 	p.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "kid"})
 	p.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"session": "kid", "reason": "completed"})

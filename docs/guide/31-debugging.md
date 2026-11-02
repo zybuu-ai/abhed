@@ -97,9 +97,14 @@ needs; the agent's commands keep the network closed:
   Seatbelt's "localhost" also matches the Mac's own network addresses, so
   the program may listen on those five ports on any address of this Mac,
   where other machines on the network can reach it; the consent says so.
-  It may listen on no other port: a program that serves on a port of its
-  own (a Flask or Django dev server, say) cannot be debugged on this Mac's
-  process sandbox under Python; use the container tier for it.
+  It may listen on no other port unless commands in this session may
+  listen ([`sandbox.listen`](02-configuration.md), or you agreed for the
+  workspace): then, as any command, it may listen on any port but Abhed's
+  reserved range and the ports the Mac already listens on, on any of the
+  Mac's addresses, which other machines on the network can reach. So a
+  program that serves on a port of its own (a Flask or Django dev server,
+  say) can be debugged under Python on this Mac's process sandbox only with
+  listening on; otherwise use the container tier for it.
 - **Go:** Delve runs natively (it needs the Xcode command line tools'
   debugger), bridged by the engine's own program through a socket folder
   the engine makes for the session in `~/.abhed/run`, which every other
@@ -111,10 +116,10 @@ needs; the agent's commands keep the network closed:
   command takes a few seconds while Seatbelt reads them. It may listen on
   any port on any address of the Mac, where other machines on the network
   can reach it (Seatbelt's "localhost" matches those too): the consent says
-  so. Ports of the reserved range included: a program that took them all
-  would leave no port for Abhed's listeners, and every Abhed on the Mac
-  would refuse new commands until it ended (availability only, never a
-  weaker sandbox).
+  so. Never on a port of the reserved range, on any address, so it cannot
+  take an Abhed listener's port or fill the range; and while commands may
+  listen (`sandbox.listen`), not on a port the Mac already listens on
+  either.
 - **Older Abhed on the same Mac.** Abhed releases before 1.2.9 do not use
   the reserved range: their egress proxies and each command's own proxy
   port take ports the system hands out, which a Go program being debugged

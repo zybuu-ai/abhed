@@ -301,3 +301,40 @@ func TestMergeDocsFoldsKeysAndKeepsLocal(t *testing.T) {
 		t.Errorf("merged %s", b)
 	}
 }
+
+// The org policy cannot choose the proxy; the machine's managed proxy still
+// binds, dropping the person's no_proxy, with an org policy in force.
+func TestUpstreamProxyStaysTheMachinesUnderAnOrgPolicy(t *testing.T) {
+	noManaged(t)
+	f := newOrg(t)
+	f.write(t, `{"network":{"upstream_proxy":{"url":"http://org-proxy.example:3128"}},"limits":{"max_turns":4}}`, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Network.UpstreamProxy != nil || cfg.Limits.MaxTurns != 4 {
+		t.Fatalf("org proxy took effect: %+v turns %d", cfg.Network.UpstreamProxy, cfg.Limits.MaxTurns)
+	}
+	if !slices.ContainsFunc(cfg.SetAside, func(k SetAsideKey) bool { return k.Layer == LayerOrg && k.Key == "network.upstream_proxy" }) {
+		t.Errorf("not set aside: %+v", cfg.SetAside)
+	}
+
+	withManaged(t, `{"network":{"upstream_proxy":{"url":"http://corp-proxy.example:8080"}}}`)
+	home := os.Getenv("HOME")
+	_ = os.MkdirAll(filepath.Join(home, ".abhed"), 0o700)
+	_ = os.WriteFile(filepath.Join(home, ".abhed", "config.json"),
+		[]byte(`{"network":{"upstream_proxy":{"url":"http://corp-proxy.example:8080","no_proxy":["evil.example"]}}}`), 0o600)
+	f = newOrg(t)
+	f.write(t, `{"network":{"upstream_proxy":{"url":"http://org-proxy.example:3128"}},"limits":{"max_turns":4}}`, time.Now())
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Network.UpstreamProxy
+	if p == nil || p.URL != "http://corp-proxy.example:8080" || len(p.NoProxy) != 0 || !cfg.ManagedSets("network.upstream_proxy") {
+		t.Fatalf("the machine's proxy did not bind: %+v", p)
+	}
+	if cfg.FromOrg("network.upstream_proxy") || cfg.Limits.MaxTurns != 4 {
+		t.Errorf("credited to the org, or org keys lost: turns %d", cfg.Limits.MaxTurns)
+	}
+}
