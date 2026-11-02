@@ -205,7 +205,7 @@ a `resource_link` to the lines.
 | | |
 |---|---|
 | Wire | Spec config options. `session/new` returns `configOptions` with one `select` option of `category: "model"`, id `model`, whose values are configured provider **names**. `session/set_config_option {sessionId, configId: "model", value}` switches and returns every option. The older `models` field and `session/set_model` are answered too; that reply puts the new current model in `meta.currentModelId`. |
-| Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. |
+| Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. Only models a managed pin and `model.allowed` admit are offered; a switch to one `model.allowed` refuses is -32000 with a message naming the list and the model, and is recorded as `config.refused`. |
 | Not implemented in 1.2.2 | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
 | Per-subagent model | `subagent.spawned` and the task list carry `provider` and `model` (already recorded). |
 | Configuration warnings | Added in 1.2.9. `session/new`, `load` and `resume` results carry `_meta["zybuu.ai/abhed"].configWarnings: string[]` when something is wrong with the configuration: a key written twice in one object of any file read (the last one wins; a second provider of the same name replaces the first), a setting written twice in different letter case, a key no part of Abhed reads, and each setting an untrusted workspace file could not make. One plain, redacted sentence each; absent when there are none. Studio lists them in its model picker. |
@@ -785,6 +785,9 @@ interface PolicyView {
            layer: "managed" | "user" | "settings" | "workspace" | "flag" | "default" | "session" | "builtin";
            applied: boolean; ignoredBecause?: "workspace-untrusted" | "managed-override";
            note?: string }[];                     // why a session deny rule was pinned
+  allowLists?: { key: "model.allowed" | "mcp.allowed" | "mcp.denied";
+                 layer: "managed" | "user" | "settings" | "workspace";
+                 entries: string[] }[];           // absent when no list is set
 }
 ```
 
@@ -977,7 +980,7 @@ interface Capabilities {
             has_pipeline: boolean; allowed_tools?: string[]; dir?: string;
             trusted: boolean; refused?: string }[];
   mcp: { name: string; transport: "stdio" | "http" | "sse";
-         status: "connected" | "starting" | "stopped" | "error"; error?: string;
+         status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
          refusedTools?: string[] }[];                       // offered, not registered for their name
@@ -1009,9 +1012,13 @@ interface Capabilities {
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
 - **Client MCP servers are refused.** `session/new` must be sent
-  `mcpServers: []`; a non-empty list is not used and the reply's
-  `meta.mcpServersRefused` names them. MCP servers are configured in the
-  engine's configuration, under workspace trust.
+  `mcpServers: []`; a non-empty list is not used, the reply's
+  `meta.mcpServersRefused` names them and `meta.mcpServersRefusedReason` says
+  why, and each is recorded as `config.refused`. MCP servers are configured
+  in the engine's configuration, under workspace trust.
+- **Refused servers.** A server `mcp.allowed` or `mcp.denied` refuses is
+  listed in `mcp[]` with `status: "refused"` and `error` saying why. It is
+  never started, and a restart of it is refused.
 - **Security:** read-only, redacted. Untrusted workspace agents, skills,
   commands and MCP servers are listed with `trusted: false` and `refused`, so
   Studio can say why they are missing. Abhed hook extensions can veto, never
@@ -1051,6 +1058,10 @@ _abhed/toolchain/registry_refused { sessionId, terminalId, language, hosts, canO
 _abhed/terminal/serving { sessionId, terminalId, url }
 // 1.2.9: a server there was refused its port; offer _abhed/sandbox/listen
 _abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message }
+// 1.2.9: an interactive terminal now uses the project's venv (abhed_venv)
+_abhed/terminal/venv { sessionId, terminalId, inUse }
+// 1.2.9: a sandboxed listener was ended for a host program's port
+_abhed/sandbox/listener_ended { sessionId, port, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
@@ -1068,25 +1079,43 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   opening (`_abhed/toolchain/registries`, §3.2b), or to say why it cannot.
 - **Dev servers (1.2.9, feature `listen`).** Where `serves` is true (no
   sandbox, or the macOS process tier with `sandbox.listen` allow or the
-  person's agreement for the workspace), a command may listen on loopback
-  and the person's browser reaches it; the first time a terminal's output
-  shows a loopback address (`http://localhost:5173/`), up to 16 per
-  terminal, Studio gets `_abhed/terminal/serving` to offer opening it.
-  Where it is false, a server refused its port (`listen EPERM`, `bind:
+  person's agreement for the workspace, and the Mac's listeners readable),
+  a command may listen, TCP only, on `sandbox.listen_ports` less Abhed's
+  reserved ports and those the Mac listens on, and the person's browser
+  reaches it. The first time a terminal's output shows a loopback address
+  on a listen port that no program outside the sandbox holds
+  (`http://localhost:5173/`), up to 16 per terminal, Studio gets
+  `_abhed/terminal/serving` to offer opening it. A server refused a port
+  where commands do listen gets a line naming the listen ports. Where
+  `serves` is false, a server refused its port (`listen EPERM`, `bind:
   operation not permitted`) gets one line in the terminal and
   `_abhed/terminal/listen_refused {sessionId, terminalId, canAllow, why?,
   message}`. `_abhed/sandbox/listen {sessionId, allow}` → `{listens}` is the
   person's agreement, or taking it back: kept for the workspace with the
-  kept grants, applied to this process's open sessions of it and every
-  later one, recorded `permission.changed {op, list: "allow", rule:
-  "sandbox(listen loopback)", scope: "workspace"}` (and at a session's start
-  where it applies); refused inside an agent's command, under
-  `sandbox.listen` off, and off the macOS process tier. An interactive
-  terminal keeps the rules it started with.
+  kept grants, applied to this process's open sessions of it at once and
+  every later one; a session in another process looks it up again within
+  two seconds, before a command starts. Recorded `permission.changed {op,
+  list: "allow", rule: "sandbox(listen loopback)", scope: "workspace"}`
+  (and at a session's start where it applies); refused inside an agent's
+  command, under `sandbox.listen` off, off the macOS process tier, and
+  taking it back under `sandbox.listen` allow. An interactive terminal
+  keeps the rules it started with. Studio's consent must say that the
+  agreement covers every command in every session of the workspace, the
+  agent's too; that it is TCP on the listen ports; that a command can take
+  a listen port before one of the person's programs starts on it, and gets
+  its loopback connections until Abhed ends the command's listener, within
+  two seconds; and that a command can bind every address of the port.
+  When a program outside the sandbox starts listening on a port a
+  sandboxed command holds, the command's listener is ended, recorded
+  `sandbox.listener_ended {port, pid}`, and Studio gets
+  `_abhed/sandbox/listener_ended {sessionId, port, message}` (each session
+  that may listen is told).
 - **Python venv (1.2.9).** `venv` is the project's virtual environment for
   the terminal's folder, if any. In `lines` mode its python and pip are
   used (`inUse`); in `interactive` mode only once the person types
-  `abhed_venv`. Show it in the header. Its `bin` never comes before `PATH`.
+  `abhed_venv`, when Studio gets `_abhed/terminal/venv {sessionId,
+  terminalId, inUse: true}`. Show it in the header. Its `bin` never comes
+  before `PATH`.
 - The shell runs in the engine's sandbox tier for the session. In `lines`
   mode each line is a `bash` call through policy; in `interactive` mode the
   shell runs whole under the sandbox and each entered line is recorded

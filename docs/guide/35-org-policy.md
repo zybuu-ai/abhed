@@ -61,9 +61,15 @@ under `model.providers` is taken whole from the file. `permissions.deny` and
 `permissions.ask` are joined, so a rule from either stays. Both together are
 "the managed configuration" for every rule that page states.
 
+`model.allowed`, `mcp.allowed` and `mcp.denied` are kept as a layer of their
+own rather than merged: a model or MCP server must pass the machine file's
+list and the org policy's, so an org list narrows the machine's and never
+widens it, and an `mcp.denied` entry from either refuses. `abhed doctor` and
+the policy views show the org's lists with the layer `org`.
+
 An org policy may not reach into the machine. These settings in it are set
 aside, with a warning and a `config.refused` event in each session's record:
-`org_policy`, `additional_dirs`, `extensions`, `mcp`, `statusline`,
+`org_policy`, `additional_dirs`, `extensions`, `mcp.servers`, `statusline`,
 `commands.dirs`, `rules.dirs`, `skills.dirs`, `agents.dirs`,
 `context.memory_files`, `k8s`, `storage`, `server`, `auth`, `schedules`,
 `control_plane`, `record.dir`, `record.ocsf.path`, `record.witness.file`,

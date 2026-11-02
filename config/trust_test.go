@@ -130,6 +130,8 @@ func TestUntrustedWorkspaceIgnoresWhatWidens(t *testing.T) {
 		{"higher turn limit", "limits.max_turns", `{"limits":{"max_turns":100000}}`, func(c Config) bool { return c.Limits.MaxTurns == 100000 }},
 		{"nested subagents", "limits.nested_subagents", `{"limits":{"nested_subagents":true}}`, func(c Config) bool { return c.Limits.NestedSubagents }},
 		{"syntax check off", "tools.syntax_check", `{"tools":{"syntax_check":"off"}}`, func(c Config) bool { return c.Tools.SyntaxCheck == "off" }},
+		{"listen allow", "sandbox.listen", `{"sandbox":{"listen":"allow"}}`, func(c Config) bool { return c.Sandbox.Listen == "allow" }},
+		{"listen ports", "sandbox.listen_ports", `{"sandbox":{"listen_ports":["5432"]}}`, func(c Config) bool { return len(c.Sandbox.ListenPorts) > 0 }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, ws := trustHome(t, "", c.file)
@@ -179,6 +181,8 @@ func TestUntrustedWorkspaceAppliesWhatTightens(t *testing.T) {
 		{"a budget where there was none", "", `{"limits":{"max_budget_tokens":1000}}`, "limits.max_budget_tokens", func(c Config) bool { return c.Limits.MaxBudgetTokens == 1000 }},
 		{"stricter syntax check", `{"tools":{"syntax_check":"off"}}`, `{"tools":{"syntax_check":"report"}}`, "tools.syntax_check", func(c Config) bool { return c.Tools.SyntaxCheck == "report" }},
 		{"skills off", "", `{"skills":{"disabled":true}}`, "skills.disabled", func(c Config) bool { return c.Skills.Disabled }},
+		{"listen off", "", `{"sandbox":{"listen":"off"}}`, "sandbox.listen", func(c Config) bool { return c.Sandbox.Listen == "off" }},
+		{"listen ask from allow", `{"sandbox":{"listen":"allow"}}`, `{"sandbox":{"listen":"ask"}}`, "sandbox.listen", func(c Config) bool { return c.Sandbox.Listen == "ask" }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, ws := trustHome(t, c.user, c.file)

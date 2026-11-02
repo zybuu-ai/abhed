@@ -163,7 +163,7 @@ func TestOrgPolicyMayNotReachIntoTheMachine(t *testing.T) {
 			refused = append(refused, k.Key)
 		}
 	}
-	for _, want := range []string{"extensions", "mcp", "statusline", "additional_dirs", "context.memory_files",
+	for _, want := range []string{"extensions", "mcp.servers", "statusline", "additional_dirs", "context.memory_files",
 		"model.providers.evil.api_key_env", "org_policy", "record.dir"} {
 		if !slices.Contains(refused, want) {
 			t.Errorf("%s not set aside (set aside: %v)", want, refused)
@@ -336,5 +336,83 @@ func TestUpstreamProxyStaysTheMachinesUnderAnOrgPolicy(t *testing.T) {
 	}
 	if cfg.FromOrg("network.upstream_proxy") || cfg.Limits.MaxTurns != 4 {
 		t.Errorf("credited to the org, or org keys lost: turns %d", cfg.Limits.MaxTurns)
+	}
+}
+
+func TestCheckOrgPolicyTakesTheAllowLists(t *testing.T) {
+	good := `{"model":{"allowed":["anthropic/claude-*"]},"mcp":{"allowed":[{"name":"gh"}],"denied":[{"host":"evil.example"}]}}`
+	if err := CheckOrgPolicy([]byte(good)); err != nil {
+		t.Fatalf("the allow lists were refused: %v", err)
+	}
+	for _, bad := range []string{`{"model":{"allowed":[]}}`, `{"model":{"allowed":["claude"]}}`, `{"mcp":{"denied":[{}]}}`} {
+		if err := CheckOrgPolicy([]byte(bad)); err == nil {
+			t.Errorf("a malformed list was accepted: %s", bad)
+		}
+	}
+}
+
+// The org policy's allow lists are a layer of their own beside the machine's:
+// a model or server must pass both, so an org list narrows and never widens.
+func TestOrgAllowListsNarrowAndNeverWidenTheMachines(t *testing.T) {
+	withManaged(t, `{"model":{"allowed":["anthropic/*","openai/*"]},"mcp":{"allowed":[{"name":"gh"},{"name":"jira"}]}}`)
+	f := newOrg(t)
+	f.write(t, `{"model":{"allowed":["anthropic/claude-*","ollama/*"]},"mcp":{"allowed":[{"name":"gh"},{"name":"slack"}],"denied":[{"name":"jira"}]}}`, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, ok := range map[string]bool{
+		"anthropic/claude-x": true,  // both admit
+		"openai/gpt-x":       false, // the org narrows
+		"ollama/qwen":        false, // the org cannot widen
+		"anthropic/other":    false,
+	} {
+		typ, model, _ := strings.Cut(id, "/")
+		err := cfg.ModelListed("", ProviderConfig{Type: typ, Model: model})
+		if (err == nil) != ok {
+			t.Errorf("%s: %v", id, err)
+		}
+	}
+	for name, ok := range map[string]bool{"gh": true, "jira": false, "slack": false} {
+		if err := cfg.MCPAdmitted(MCPServer{Name: name}); (err == nil) != ok {
+			t.Errorf("mcp %s: %v", name, err)
+		}
+	}
+	var layers []string
+	for _, l := range cfg.ModelsAllowed() {
+		layers = append(layers, l.Layer)
+		if !l.Managed {
+			t.Errorf("%s list not shown as managed", l.Layer)
+		}
+	}
+	if !slices.Equal(layers, []string{LayerManaged, LayerOrg}) {
+		t.Errorf("layers %v", layers)
+	}
+	var me *ManagedError
+	if err := cfg.ModelListed("", ProviderConfig{Type: "openai", Model: "gpt-x"}); !errors.As(err, &me) || !strings.Contains(me.File, "org policy") {
+		t.Errorf("the refusal should name the org policy: %v", err)
+	}
+	if !cfg.FromOrg("model.allowed") {
+		t.Error("model.allowed not credited to the org")
+	}
+}
+
+// With no machine list, the org's lists alone apply; mcp.servers stays refused.
+func TestOrgAllowListsAloneAndServersRefused(t *testing.T) {
+	noManaged(t)
+	f := newOrg(t)
+	f.write(t, `{"model":{"allowed":["anthropic/*"]},"mcp":{"servers":[{"name":"x","command":"/bin/sh"}],"denied":[{"name":"x"}]}}`, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ModelListed("", ProviderConfig{Type: "openai", Model: "m"}); err == nil {
+		t.Error("the org's model list did not apply")
+	}
+	if len(cfg.MCP.Servers) != 0 || cfg.MCPAdmitted(MCPServer{Name: "x"}) == nil {
+		t.Errorf("servers %v; x admitted", cfg.MCP.Servers)
+	}
+	if !slices.ContainsFunc(cfg.SetAside, func(k SetAsideKey) bool { return k.Layer == LayerOrg && k.Key == "mcp.servers" }) {
+		t.Error("mcp.servers not set aside")
 	}
 }

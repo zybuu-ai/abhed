@@ -276,7 +276,36 @@ func policyView(s *acpSession) map[string]any {
 	for _, b := range builtinRules {
 		rules = append(rules, map[string]any{"decision": b[0], "rule": "builtin:" + b[1], "layer": "builtin", "applied": true})
 	}
-	return map[string]any{"mode": string(pol.Mode), "sandbox": sandbox, "managed": cfg.Managed, "rules": rules}
+	out := map[string]any{"mode": string(pol.Mode), "sandbox": sandbox, "managed": cfg.Managed, "rules": rules}
+	if lists := allowListsView(cfg); len(lists) > 0 {
+		out["allowLists"] = lists
+	}
+	return out
+}
+
+// allowListsView is the allowed models and the MCP server lists in force,
+// each with its layer, for the policy views.
+func allowListsView(cfg config.Config) []any {
+	out := []any{}
+	for _, l := range cfg.ModelsAllowed() {
+		out = append(out, map[string]any{"key": "model.allowed", "layer": l.Layer, "entries": redactedAll(l.Entries)})
+	}
+	for _, l := range cfg.MCPLists() {
+		key := "mcp.allowed"
+		if l.Denied {
+			key = "mcp.denied"
+		}
+		out = append(out, map[string]any{"key": key, "layer": l.Layer, "entries": redactedAll(l.Entries)})
+	}
+	return out
+}
+
+func redactedAll(in []string) []string {
+	out := []string{}
+	for _, v := range in {
+		out = append(out, redacted(v))
+	}
+	return out
 }
 
 // setAsideLayer is the layer of the file a set-aside setting came from. The
@@ -798,7 +827,18 @@ func mcpView(cfg config.Config, set *toolset.Set) []any {
 		if refused := refusedNames(st.Refused); len(refused) > 0 {
 			v["refusedTools"] = refused
 		}
+		if st.NotAdmitted {
+			v["status"] = "refused"
+		}
 		out = append(out, v)
+	}
+	// Servers the configuration's MCP lists left out are listed with why;
+	// they are never started.
+	for _, k := range cfg.SetAside {
+		if k.Key == "mcp.servers" && mcp.ValidServerName(k.Value) {
+			out = append(out, map[string]any{"name": k.Value, "status": "refused", "tools": []string{},
+				"source": k.Layer, "error": ui.VisibleLine(k.Reason)})
+		}
 	}
 	return out
 }

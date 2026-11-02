@@ -154,11 +154,13 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `monitor.honeytokens` | **applied**, added to the ones already there |
 | `monitor` (other keys: `judge`, `endpoint`, `model`, `api_key_env`, `timeout_ms`) | ignored: a judge endpoint receives the conversation |
 | `model` (`default`, `providers`, `completion`, any `base_url`) | ignored: the provider receives the code |
+| `model.allowed` | **applied** as a narrowing: every list set must admit a model, so it only takes models away; a list with a malformed entry is ignored, so a repository cannot stop Abhed starting |
 | `completion.enabled` | **applied** only when false |
 | `completion.local_only` | **applied** only when true |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
-| `mcp` | ignored: a server is a process or an endpoint |
+| `mcp.allowed`, `mcp.denied` | **applied** as a narrowing: an allow list must also admit a server, and a deny entry only stops one; a list with a malformed entry is ignored |
+| `mcp` (other keys) | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |
 | `agents.disabled` | **applied** only when true |
 | `agents.dirs` | ignored: a definition is instructions and a model choice |

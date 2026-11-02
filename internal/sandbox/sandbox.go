@@ -168,6 +168,9 @@ type Policy struct {
 	// connecting to loopback: a dev server the person opens in their
 	// browser (sandbox.listen allow; SetListen turns it on later).
 	ListenLoopback bool
+	// ListenPorts are the only ports listening opens (sandbox.listen_ports),
+	// TCP alone, less Abhed's reserved ports and those the Mac listens on.
+	ListenPorts []int
 	// ReadableHome lets the macOS process tier read all of home but the
 	// HomeSecrets; otherwise only the toolchain folders there are readable.
 	ReadableHome bool

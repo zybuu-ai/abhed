@@ -31,7 +31,7 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
 | `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
@@ -47,7 +47,7 @@ configuration](#trusting-the-workspace-configuration).
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
-| `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
+| `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
 | `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name and a `no_proxy` list; never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
@@ -236,20 +236,45 @@ workspace and a few shared folders, not only the workspace:
 
 On macOS a command cannot listen for connections until you agree for the
 workspace (`"listen": "ask"`, the default): a dev server refused its port
-in Abhed Studio's terminal (`listen EPERM`) brings the offer, and once you
-agree every session of the workspace may listen, so `npm run dev` opens in
-your browser; take it back from Studio. `"allow"` lets commands listen
-without asking, `"off"` never; a workspace file can only make it stricter.
-Commands that listen still connect to nothing on loopback but the egress
-proxy, and cannot bind Abhed's own reserved ports (47600-47855, or
-`ABHED_LOOPBACK_PORTS`) nor a port one of your programs already listens
-on, so a sandboxed server never takes the connections meant for a local
-database or console (another user's ports the kernel itself refuses).
-The sandbox cannot tell a server bound to `127.0.0.1` from one bound to
-`0.0.0.0`, which your network reaches: bind `127.0.0.1` or `localhost`.
-An interactive terminal opened before you agreed keeps its old rules.
-On Linux, the container and the vm tiers a server inside the sandbox is
-not reachable from the host.
+in Abhed Studio's terminal (`listen EPERM`) brings the offer. Once you
+agree, every command in every session of the workspace, the agent's
+included, may listen, so `npm run dev` opens in your browser. `"allow"`
+lets commands listen without asking and cannot be taken back from Studio;
+`"off"` never lets them; a workspace file can only make it stricter.
+Taking it back from Studio reaches this window's sessions at once, and
+another window's within two seconds, before its next command starts.
+
+Listening is TCP only, and only on the ports in `"listen_ports"`: by
+default `["3000-3009", "4200", "4321", "5173-5179", "8000-8009"]` (Next.js,
+Rails and Express, Angular, Astro, Vite, Django and `python3 -m
+http.server`), chosen to leave out databases, caches and consoles (5432,
+3306, 6379, 27017, 8080, 8090, 8888) and macOS's own AirPlay ports (5000,
+7000). Each entry is a port or a range above 1024, at most 512 in all; a
+workspace file cannot set it. A UDP bind, or any other port, is refused,
+and so are Abhed's own reserved ports (47600-47855, or
+`ABHED_LOOPBACK_PORTS`) and a listen port one of your programs already
+listens on (another user's ports the kernel itself keeps). Commands that
+listen still connect to nothing on loopback but the egress proxy.
+
+A command can take a listen port before one of your programs starts on it.
+Your program then still starts (Go, Node and Python servers bind every
+address with `SO_REUSEADDR`), but connections to `127.0.0.1` would reach the
+command. Abhed reads the Mac's listeners every two seconds and ends a
+sandboxed command's listener on a port where one of your programs now
+listens too, then tells you and records it (`sandbox.listener_ended`); in
+those two seconds the command can still take what is sent there. A program
+of yours that binds `127.0.0.1` itself instead fails to start, as the port
+is taken. Keep your own servers off the listen ports, or narrow them.
+
+The sandbox cannot keep a command, the agent's included, from binding
+every address of a listen port, `0.0.0.0` too. In tests connections to the
+Mac's network address were not delivered to such a server, but bind
+`127.0.0.1` or `localhost` to be sure. Listening needs a build that can tell
+a sandboxed process from yours (the release builds can) and needs `lsof`
+to read the Mac's listeners; where either fails, commands do not listen
+and Studio says so. An interactive terminal opened before you agreed keeps
+its old rules. On Linux, the container and the vm tiers a server inside the
+sandbox is not reachable from the host.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command
@@ -1564,8 +1589,131 @@ model. Fallbacks under a managed default are only those the managed
 managed `model.default`, a `model.completion` (or `model.next_edit`,
 `model.commit`) naming another provider is refused unless the managed file
 sets that key itself
-([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default`, any provider a
-file defines may be chosen, and the SDK's `Provider` names any endpoint.
+([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default` or
+`model.allowed`, any provider a file defines may be chosen, and the SDK's
+`Provider` names any endpoint. To allow several models rather than pin one,
+see [Allowed models and MCP servers](#allowed-models-and-mcp-servers).
+
+### Allowed models and MCP servers
+
+A managed `model.default` pins one model. To allow several, the managed
+file lists them in `model.allowed`, and lists the MCP servers that may start
+in `mcp.allowed` and `mcp.denied`:
+
+```json
+{
+  "model": {"allowed": ["anthropic/claude-*", "ollama/qwen3:*", "openai-compatible/corp-*"]},
+  "mcp": {
+    "allowed": [
+      {"name": "github", "digest": "sha256:9f2c…"},
+      {"command": "/opt/mcp/bin/*"},
+      {"host": "*.mcp.corp.example"}
+    ],
+    "denied": [{"name": "shell-*"}]
+  }
+}
+```
+
+**Models.** Each `model.allowed` entry is a pattern over a provider's
+`type` and the `model` it serves, written `type/model`. `*` stands for any
+run of characters, `/` included. The configured provider's own name is not
+matched, since any layer can choose a name. A provider is admitted when a
+pattern matches it, and every other one is refused on every surface:
+
+- the default model when a session starts, `-model`, `/model` and a custom
+  command's `model`
+- the console's picker and the sessions it starts or switches
+- Studio's model picker and `session/set_config_option` or `session/set_model`
+  over `abhed acp`
+- the SDK's `SwitchModelNamed`, `SetModel` and `Options.Provider`
+- subagents, including a definition's `model`
+- `model.completion`, `model.next_edit` and `model.commit`
+- `suggest.model`, `verify.critic.model` and a supervisor `monitor.model`
+- each `model.fallback` and `-fallback-model` name
+
+The refusal names `model.allowed`, the model as `type/model` and the
+patterns. A choice made in a session is recorded as `config.refused` with
+the decision `refused`. The console's refusal also goes to the server log
+and the admin audit hook. A fallback the list refuses is dropped, and a
+`suggest.model` or `verify.critic.model` it refuses is left unset, so the
+session's own model does that work. A completion, next-edit or commit model
+it refuses is turned away when the editor asks for it. A supervisor judge
+model it refuses is never asked, so each call it would judge gets
+`monitor.on_unavailable`. Each of these is set aside at load, recorded as
+`config.refused` with the decision `set_aside`, and listed by `abhed
+doctor`. A default model the list refuses does not stop the configuration
+loading. It stops the session from starting with the reason: choose an
+admitted model with `-model`, or change `model.default`.
+
+`openai-compatible` reaches any endpoint that speaks that API. A pattern
+such as `openai-compatible/*` therefore admits whatever server a lower file
+names. Pair it with the egress allowlist ([Network policy](21-network-policy.md))
+when that matters.
+
+**MCP servers.** Each `mcp.allowed` or `mcp.denied` entry is an object.
+A server matches an entry when every field the entry sets matches it:
+
+| Field | Matches |
+|---|---|
+| `name` | the configured name; `*` for any run of characters |
+| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above |
+| `digest` | the `sha256:` digest the server's configuration pins. Abhed checks the program, or the image the digest names, before it starts the server, so a server whose program does not match never runs |
+| `host` | a remote server's URL host; `*.example.com` matches any subdomain |
+
+An entry with no field, a field Abhed does not know, a `command` that is not
+an absolute path, a malformed `digest`, or a `host` with a scheme, port or
+path stops Abhed at startup. So does an entry that sets `host` together
+with `command` or `digest`. A `name` alone matches whatever program a lower
+file runs under that name. To bind the program itself, use `command`,
+`digest` or `host`. An empty `mcp.allowed` list allows no server.
+
+A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
+set, a server no entry matches never starts either. This covers servers from
+every source:
+
+- the user's, a trusted workspace's and the managed `mcp.servers`
+- `-mcp-config` and `abhed mcp add`
+- one an administrator adds through the console (refused with 403, and
+  audited as `mcp.refused`)
+- one Studio adds
+- a reconnect with `/mcp restart` or Studio's restart
+
+The servers an editor names in ACP `session/new` are never started under any
+configuration. The reply's `mcpServersRefusedReason` says so, and each is
+recorded.
+
+The lists are applied when the configuration loads. A server they refuse is
+taken out and recorded as `config.refused` with the decision `set_aside`, the
+reason naming the list. `/mcp`, Studio's MCP panel and `abhed doctor` show it
+as refused, with why. The gateway that starts servers checks every server
+again just before it starts, so one added later is judged the same way.
+
+**Narrowing.** The lists only narrow. `~/.abhed/config.json`, `-settings`
+and a workspace's file may set `model.allowed` and `mcp.allowed`
+too, but each list that is set must admit a model or server. A workspace
+file's lists apply whether or not it is trusted, since they can only take
+away. A malformed list in an untrusted workspace file is ignored with a
+warning rather than stopping Abhed. So a lower list
+can leave out what the managed list allows, and cannot add to it. A lower
+`mcp.denied` adds to the managed one. Without a managed file, a user's own
+lists still bind their sessions. Setting `mcp.allowed` or `mcp.denied` in
+the managed file does not make its `mcp.servers` the organisation's: the
+user's and workspace's servers stay theirs to change, within the lists.
+
+**Fail closed.** A list that cannot be read in the managed file, the user's
+file, `-settings` or a trusted workspace's file stops Abhed at startup,
+naming the file, rather than leaving the list unenforced. That covers:
+
+- an empty `model.allowed`, which would refuse every model
+- a pattern without a `/` or with whitespace
+- an MCP entry as described above
+- a value of the wrong type
+
+**Where to see them.** `abhed doctor` prints each list with the file that
+set it, and every model and server it left out. `/permissions` prints the
+same lines. The policy views show them too: `allowLists` in Studio's policy
+view (ACP `_abhed/capabilities`), and `allow_lists` in the console's
+`/v1/sessions/{id}/permissions`.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say. With Postgres storage it

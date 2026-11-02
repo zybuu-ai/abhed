@@ -116,6 +116,11 @@ type Set struct {
 	// false where the sandbox has no such switch. Listens says whether they may.
 	SetListen func(on bool) bool
 	Listens   func() bool
+	// ListenWatch gives listening the person's agreement to look up again
+	// and who to tell of a listener ended for a host program's port;
+	// ListenPorts are the ports listening opens.
+	ListenWatch func(still func() bool, ended func(port, pid int))
+	ListenPorts func() []int
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -153,8 +158,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		Toolchains: tc,
 		SetListen:  func(on bool) bool { return sandbox.SetListen(resolved(o.Sandbox), on) },
 		Listens:    func() bool { return sandbox.Listens(resolved(o.Sandbox)) },
-		Skills:     skills.NewRegistry(),
-		Agents:     agent.BuiltinDefinitions(),
+		ListenWatch: func(still func() bool, ended func(port, pid int)) {
+			sandbox.SetListenWatch(resolved(o.Sandbox), still, ended)
+		},
+		ListenPorts: func() []int { return sandbox.ListenPortsOf(resolved(o.Sandbox)) },
+		Skills:      skills.NewRegistry(),
+		Agents:      agent.BuiltinDefinitions(),
 	}
 	if tc != nil && !tc.Off {
 		s.Registry.Add(toolchain.Tool{S: tc})
@@ -174,6 +183,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
+		s.Gateway.Admit = MCPAdmit(cfg)
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {

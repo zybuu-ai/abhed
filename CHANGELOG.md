@@ -116,6 +116,13 @@ All notable changes to Abhed are recorded here. The format follows
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
   `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
+- `model.allowed`, `mcp.allowed` and `mcp.denied` are new keys. A
+  configuration that sets none of them behaves as before. One that sets a
+  list Abhed cannot read stops at startup, naming the file and the entry, so
+  check a new list with `abhed doctor` before rolling it out. Under a managed
+  `model.default`, the SDK's `SwitchModelNamed` refusal still `errors.Is`
+  `ErrUnknownModel`, and now also unwraps to the `config.ManagedError` that
+  says why.
 
 ### Security
 
@@ -205,6 +212,31 @@ All notable changes to Abhed are recorded here. The format follows
 - `local.CheckSegment` and `local.WriteExport`, for a server that checks
   shipped lines and exports them in the record's own format; packages
   `orgpolicy` and `recordship` (experimental until 2.0).
+- Allowed models and MCP servers in the managed configuration. The managed
+  file lists the models any session may use in `model.allowed`, as
+  `type/model` patterns (`anthropic/claude-*`). Its lists are refused
+  everywhere a model is chosen:
+  - the session's default, `-model`, `/model` and custom commands
+  - the console's picker and its sessions
+  - Studio's model picker over ACP
+  - the SDK's `SwitchModelNamed`, `SetModel` and `Options.Provider`
+  - subagents and fallbacks
+  - completion, next-edit and commit models
+  - the suggestion, critic and supervisor-judge models
+
+  `mcp.allowed` and `mcp.denied` judge every MCP server before it starts, by
+  name, the program's path, a pinned digest or a remote server's host,
+  whether it comes from the user's, the workspace's or the managed
+  configuration, `-mcp-config`, `abhed mcp add`, the console, Studio or a
+  restart.
+
+  A refusal names the list and is recorded as `config.refused`, and the
+  console's refusals also go to the admin audit hook. A model or server set
+  aside at load is listed by `abhed doctor`, `/permissions`, `/mcp` and
+  Studio, and the policy views show each list with its layer. A lower layer
+  may set the lists too, but only to narrow them. A malformed list stops
+  Abhed at startup. A local managed file is all it takes, in every edition.
+  See [Allowed models and MCP servers](docs/guide/02-configuration.md#allowed-models-and-mcp-servers).
 - Backup and restore scripts for a self-hosted server, in
   `scripts/backup/`: `abhed-backup.sh` writes a logical dump of the database
   (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser), the
@@ -239,16 +271,21 @@ All notable changes to Abhed are recorded here. The format follows
   NTLM or Kerberos proxy authentication are not supported. Records of
   chained connections carry `upstream`.
 - Dev servers in the sandbox: on the macOS process tier a command may
-  listen on loopback once the person agrees for the workspace
-  (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its
-  port in Studio's terminal brings the offer
+  listen once the person agrees for the workspace (`sandbox.listen`: `ask`
+  by default, `allow`, `off`), which covers every command in every session
+  of the workspace, the agent's too. Listening is TCP only and only on
+  `sandbox.listen_ports` (by default 3000-3009, 4200, 4321, 5173-5179 and
+  8000-8009, which leave out database, cache and console ports), less
+  Abhed's reserved ports and any port one of your programs listens on. A
+  sandboxed listener on a port where one of your programs starts listening
+  too is ended within two seconds, and you are told
+  (`_abhed/sandbox/listener_ended`, `sandbox.listener_ended`). A server
+  refused its port in Studio's terminal brings the offer
   (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio
-  then offers the address the server prints (`_abhed/terminal/serving`).
-  Commands still connect to nothing on loopback, and cannot bind Abhed's
-  reserved ports nor a port one of your programs listens on, so a
-  sandboxed server never takes connections meant for a local service. A
-  server bound to `0.0.0.0` is reachable from the network; bind
-  `127.0.0.1`.
+  then offers the address the server prints (`_abhed/terminal/serving`),
+  never one on a port your programs hold. Commands still connect to
+  nothing on loopback. A command can bind every address of a listen port;
+  bind `127.0.0.1`.
 
 - Studio can manage installed toolchains (feature `toolchain.manage`):
   `_abhed/toolchain/remove`, `_abhed/toolchain/clean`, which asks the person
@@ -1231,6 +1268,13 @@ out):
 
 - Added: `config.Config.ManagedWebFetchOff`, whether the managed file
   itself sets `web_fetch.enabled` to false; `abhed.Model.Images`.
+- Added: `config.ModelConfig.Allowed`, `config.MCPConfig.Allowed` and
+  `Denied`, `config.MCPMatch`, `config.MCPServer`, `config.MCPServerOf`,
+  `config.ModelID`, `config.AllowList`, and `Config.ModelListed`,
+  `Config.ModelsAllowed`, `Config.MCPAdmitted`, `Config.MCPLists`,
+  `Config.HasMCPLists` and `Config.EndpointRefused`.
+  `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
+  outside `model.allowed`.
 
 - Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
   with an `Options.Addr` asking for any port (`:0`, or an empty port) now

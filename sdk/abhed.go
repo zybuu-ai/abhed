@@ -332,7 +332,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if p := opts.Provider; p != nil {
 		// A managed model.default pins the model; an endpoint the caller
 		// names is not it.
-		if err := cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		if err := cfg.EndpointRefused(config.ProviderConfig{Type: p.Type, Model: p.Model}); err != nil {
 			return nil, fmt.Errorf("abhed: Options.Provider: %w", err)
 		}
 		cfg.Model.Default = "embedded"
@@ -906,7 +906,11 @@ func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) 
 // the record refuses is not made, nor one a managed model.default pins away
 // from: an endpoint named here is not the managed model.
 func (a *Agent) SetModel(p Provider) error {
-	if err := a.cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+	if err := a.cfg.EndpointRefused(config.ProviderConfig{Type: p.Type, Model: p.Model}); err != nil {
+		var refused *config.ManagedError
+		if errors.As(err, &refused) {
+			a.recordRefused("SetModel", refused)
+		}
 		return fmt.Errorf("abhed: SetModel: %w", err)
 	}
 	cfg := config.ProviderConfig{

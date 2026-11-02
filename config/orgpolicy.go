@@ -83,7 +83,7 @@ var orgRefused = map[string]string{
 	"org_policy":                    "only the machine's managed file says where the org policy comes from",
 	"additional_dirs":               "an org policy does not name folders on this machine",
 	"extensions":                    "an org policy does not name programs to run on this machine",
-	"mcp":                           "an org policy does not name MCP servers to run or reach from this machine",
+	"mcp.servers":                   "an org policy does not name MCP servers to run or reach from this machine",
 	"statusline":                    "an org policy does not name programs to run on this machine",
 	"commands.dirs":                 "an org policy does not name folders on this machine",
 	"rules.dirs":                    "an org policy does not name folders on this machine",
@@ -410,3 +410,65 @@ func MachineOrgPolicy() (OrgPolicyConfig, error) {
 }
 
 func typeOfConfig() reflect.Type { return reflect.TypeFor[Config]() }
+
+// orgListKeys are the allow lists an org policy keeps as a layer of its own,
+// so they narrow the machine's lists and never replace them.
+var orgListKeys = [][2]string{{"model", "allowed"}, {"mcp", "allowed"}, {"mcp", "denied"}}
+
+// takeOrgLists moves the allow lists out of the org document into their own
+// document, nil when it sets none.
+func takeOrgLists(doc map[string]any) map[string]any {
+	var out map[string]any
+	for _, kv := range orgListKeys {
+		sec, ok := lookupFold(doc, kv[0]).(map[string]any)
+		if !ok {
+			continue
+		}
+		for k, v := range sec {
+			if foldKey(k) != foldKey(kv[1]) {
+				continue
+			}
+			if out == nil {
+				out = map[string]any{}
+			}
+			dst, _ := out[kv[0]].(map[string]any)
+			if dst == nil {
+				dst = map[string]any{}
+				out[kv[0]] = dst
+			}
+			dst[kv[1]] = v
+			delete(sec, k)
+		}
+	}
+	return out
+}
+
+// lookupFold is doc's value under key, matched as the config decode does.
+func lookupFold(doc map[string]any, key string) any {
+	for k, v := range doc {
+		if foldKey(k) == foldKey(key) {
+			return v
+		}
+	}
+	return nil
+}
+
+// noteOrgLists adds the org policy's allow lists as a layer of their own:
+// every layer must admit a model or server, so they only narrow.
+func noteOrgLists(cfg *Config, lists map[string]any, source string) error {
+	b, err := json.Marshal(lists)
+	if err != nil {
+		return err
+	}
+	var src Config
+	if err := json.Unmarshal(b, &src); err != nil {
+		return fmt.Errorf("%s: %w", source, err)
+	}
+	cfg.orgListFile = source
+	noteAllowLayerFrom(cfg, &src, source, managedKeys(b))
+	for _, k := range managedKeys(b) {
+		cfg.OrgPolicy.Keys = append(cfg.OrgPolicy.Keys, k)
+	}
+	sort.Strings(cfg.OrgPolicy.Keys)
+	return nil
+}
