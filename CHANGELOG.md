@@ -118,6 +118,10 @@ All notable changes to Abhed are recorded here. The format follows
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
   `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
+- The vertex-anthropic and vertex-gemini adapters refuse a `region` or
+  `project_id` that is not a plain name of letters, digits and hyphens. Both
+  are written into the request's host, and anything else could move it. A
+  domain-scoped project id (`example.com:proj`) needs a `base_url` instead.
 - `model.allowed`, `mcp.allowed` and `mcp.denied` are new keys. A
   configuration that sets none of them behaves as before. One that sets a
   list Abhed cannot read stops at startup, naming the file and the entry, so
@@ -149,13 +153,28 @@ All notable changes to Abhed are recorded here. The format follows
   could not do any of this. Affects 1.2.8 (schema versions 8 to 10). The
   fix is in schema version 17: run `abhed migrate` as the owner before
   starting this release's servers, which refuse an older schema.
-- Postgres before 15 lets every role create objects in schema `public`, so
-  a runtime role there could define a function or operator that a trigger
-  resolved before the built-in one. `abhed migrate` now revokes `CREATE` on
-  `public` from `PUBLIC` where its role may (as the schema's owner), and
-  refuses, saying what to run, while the runtime role can still create
-  there; a runtime server that can refuses to start. Postgres 15 and later
-  grant no such right, so nothing changes there.
+- Postgres: a runtime role that could create objects in schema `public`
+  could define a function or operator that a trigger resolved before the
+  built-in one. Postgres before 15 grants that to every role through
+  `PUBLIC`. `abhed migrate` now closes every route it finds (`PUBLIC`, a
+  grant to the runtime role, a role it belongs to with or without
+  `INHERIT`, ownership of the schema or, on 15 and later, of the database)
+  and refuses while one remains, printing what to run as the schema's owner
+  or a superuser: `GRANT CREATE ON SCHEMA public TO <owner>; REVOKE CREATE
+  ON SCHEMA public FROM PUBLIC;`, the first only when the owner role creates
+  there only through `PUBLIC`. Where its role owns `public` it runs both
+  itself, and it never revokes `PUBLIC`'s grant while that would leave the
+  owner role unable to create. A runtime server with any such route refuses
+  to start with the same message. Upgrading on Postgres 13 or 14 with the
+  default rights, where the schema belongs to the superuser, needs that
+  superuser step before `abhed migrate` completes. The revoke changes a
+  database-wide right: other applications on the same database that create
+  in `public` through `PUBLIC` need a grant of their own first. On Postgres
+  15 and later, a runtime role that owns the database, or holds `CREATE` on
+  `public` directly or through a group, used to start and now refuses. The
+  check that the runtime role cannot alter the record also counts every
+  role it belongs to, with or without `INHERIT`. A managed service that
+  gives no superuser: ask the provider, or use `storage.single_role`.
 - A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
   still deciding on it went unscreened: it was recorded as sent and
   reached the model with the next message. It is now recorded as
@@ -267,10 +286,17 @@ All notable changes to Abhed are recorded here. The format follows
   restart.
 
   A pattern judges the type and model name. Under the managed file's or the
-  org policy's list, the endpoint is bound too: a model is admitted at its
-  type's own endpoint, on this machine, or at a provider the organisation
-  defines, never at a lower file's or the environment's `base_url`. A user's
-  own list binds no endpoint. MCP hosts are compared in their IDNA ASCII
+  org policy's list, every input that decides where the requests go is bound
+  too: `base_url`, watsonx's `iam_url`, a vertex `region` and `project_id`, a
+  custom provider type's `base_url`, and the supervisor judge's
+  `monitor.endpoint`. Each is admitted unset (the type's own endpoint), on
+  this machine, or as the machine's managed file sets it (an org policy
+  never sets an endpoint), never from a lower file or the environment. An
+  endpoint on this machine may relay anywhere, which Abhed does not see; a
+  managed `model.allowed_loopback: false` refuses it, and an org policy may
+  set it to false but never to true.
+  Only a managed `model.default` pins the endpoint outright. A user's own
+  list binds no endpoint. MCP hosts are compared in their IDNA ASCII
   form, a host that does not map is refused, and a redirect to another host
   is judged. While a `command` entry is set, a server is started at exactly
   the program path that was judged. Embedding models are not covered.
@@ -827,7 +853,7 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 710 planted wrong claims none is shown as verified and 32 are
+  -v`): of 706 planted wrong claims none is shown as verified and 32 are
   contradicted (30 from cited, conflicting evidence, 2 by conflict markers
   still shown), all 201 true controls
   are verified, and none of the 301 true or neutral claims is contradicted;
@@ -1057,12 +1083,18 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `auth.Middleware.Authorize` now runs on an identity a trusted proxy's
+  headers give (`auth.mode` `proxy`), as it does on a session or a token, so
+  an edition that holds a caller to some requests only holds a proxied
+  caller too. Before, the trusted-header branch skipped it.
+
 - Commit messages leave out a file the repository's ignore rules name even
   when it is force-added (a repository whose `.gitignore` is `*` gets none),
   and withhold the value of a key whose name says secret, in any case, in
   JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
   and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
-  `password=`), on a diff's added and removed lines too; a type, a variable,
+  `password=`), on a diff's added and removed lines too, a block scalar
+  whose value changed under an unchanged key included; a type, a variable,
   a template, Python that only assigns to such a name, or a key that only
   names a secret (`passwordFile`, `token_url`) is left alone, and a block
   scalar's lines are withheld one by one, its sibling keys kept. Next-edit
@@ -1355,7 +1387,8 @@ out):
   `Config.HasMCPLists` and `Config.EndpointRefused`.
   `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
   outside `model.allowed`. `config.NormalHost`,
-  `Config.MCPListsMatchCommands`.
+  `Config.MCPListsMatchCommands`, `Config.JudgeListed`,
+  `Config.LoopbackAllowed` and `config.ModelConfig.AllowedLoopback`.
 - Changed behaviour, same signatures, in `sdk`: `SwitchModelNamed` refused
   by a managed pin or `model.allowed` still `errors.Is` `ErrUnknownModel`
   and now also unwraps to `config.ManagedError`; `SetModel` and

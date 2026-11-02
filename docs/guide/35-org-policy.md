@@ -118,8 +118,10 @@ of band (`org_policy.keys`); a key pinned on first use is not enough.
 
 **Always**: `record.ship` (records go only to the server this machine
 enrolled with), `hooks.managed_only: true`, `studio.disable_host_terminal:
-true`, and `model.default` pinned to a provider this machine already
-configures.
+true`, `model.allowed_loopback: false`, and `model.default` pinned to a
+provider this machine already configures. Under the org's `model.allowed`,
+endpoints are bound as under the managed file's, but only the managed file
+may define one (a provider, a custom provider type, `monitor.endpoint`).
 
 ## Refresh and age
 

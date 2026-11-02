@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -27,9 +28,12 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	if err != nil {
 		return nil, err
 	}
-	if g.PinProgram && cfg.Digest == "" {
+	pinned := false
+	if g.PinProgram {
 		// Resolved once on the server's PATH, judged as that exact file, and
 		// started at that path: the launch does not look the name up again.
+		// A digest that pins an engine's image leaves the engine itself to
+		// this, as one that pins the file has already resolved it.
 		real, err := resolveProgram(cfg.Command, env)
 		if err != nil {
 			return nil, fmt.Errorf("%w: the MCP server lists judge its program by path, and %w", ErrNotAdmitted, err)
@@ -41,7 +45,10 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 		if err := g.admitPrograms(cfg, programs); err != nil {
 			return nil, err
 		}
-		command = real
+		if filepath.IsAbs(command) && command != real {
+			return nil, fmt.Errorf("%w: its program resolved to %s when judged and %s when checked against its digest", ErrNotAdmitted, real, command)
+		}
+		command, pinned = real, true
 	}
 	launch := g.Confine
 	if cfg.HostFiles {
@@ -52,6 +59,10 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	if launch == nil {
 		if g.MustConfine {
 			return nil, fmt.Errorf("%w: sandbox.network is allowlist and no sandbox here can confine its network", ErrUnconfined)
+		}
+		if pinned {
+			// The judged path runs; the program still sees the name it was given.
+			return newStdioTransportAt(life, command, cfg.Command, cfg.Args, env)
 		}
 		return NewStdioTransport(life, command, cfg.Args, env)
 	}

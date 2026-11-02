@@ -112,10 +112,6 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"CREATE ROLE %s LOGIN PASSWORD '…'", cfg.RuntimeRole, pgx.Identifier{cfg.RuntimeRole}.Sanitize())
 	}
 
-	if err := closePublicCreate(ctx, pool, cfg.RuntimeRole); err != nil {
-		return err
-	}
-
 	// Two provisions at once (two migrates, or replicas starting together)
 	// update the same catalog rows and fail with "tuple concurrently updated":
 	// each holds this lock from the schema to the last grant.
@@ -130,6 +126,11 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	defer func() {
 		_, _ = lock.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('abhed.provision'))`)
 	}()
+	// Before the schema: a runtime role that can create in public could
+	// have made a table the schema is about to.
+	if err := closePublicCreate(ctx, lock, owner, cfg.RuntimeRole); err != nil {
+		return err
+	}
 
 	if err := applySchema(ctx, pool); err != nil {
 		return err
@@ -238,13 +239,17 @@ func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	var how []string
 	for _, table := range recordTables {
 		var owns, canInsert, canUpdate, canDelete, canTruncate bool
+		// Every role it is a member of counts, INHERIT or not: SET ROLE
+		// reaches them all.
 		err := pool.QueryRow(ctx, `
 			SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
-			       has_any_column_privilege(current_user, c.oid, 'INSERT'),
-			       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
-			       has_table_privilege(current_user, c.oid, 'DELETE'),
-			       has_table_privilege(current_user, c.oid, 'TRUNCATE')
-			FROM pg_class c WHERE c.oid = to_regclass('public.' || $1)`, table.name).
+			       bool_or(has_any_column_privilege(r.oid, c.oid, 'INSERT')),
+			       bool_or(has_any_column_privilege(r.oid, c.oid, 'UPDATE')),
+			       bool_or(has_table_privilege(r.oid, c.oid, 'DELETE')),
+			       bool_or(has_table_privilege(r.oid, c.oid, 'TRUNCATE'))
+			FROM pg_class c, pg_roles r
+			WHERE c.oid = to_regclass('public.' || $1) AND pg_has_role(current_user, r.oid, 'MEMBER')
+			GROUP BY c.relowner`, table.name).
 			Scan(&owns, &canInsert, &canUpdate, &canDelete, &canTruncate)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if table.name == "events" {
@@ -296,38 +301,4 @@ func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 		}
 	}
 	return missing, nil
-}
-
-// closePublicCreate makes sure the runtime role cannot create objects in
-// schema public. Postgres before 15 lets every role do that, and a role that
-// can put a function or operator in public may shadow the one a trigger
-// means (CVE-2018-1058), or make a table a later migration expects. The
-// grant to PUBLIC is revoked where this connection may; anything left, such
-// as a grant to the runtime role itself, refuses the migration.
-func closePublicCreate(ctx context.Context, pool *pgxpool.Pool, runtime string) error {
-	can := func() (bool, error) {
-		var c bool
-		err := pool.QueryRow(ctx, `SELECT has_schema_privilege($1, 'public', 'CREATE')`, runtime).Scan(&c)
-		return c, err
-	}
-	c, err := can()
-	if err != nil {
-		return fmt.Errorf("provision: check the runtime role's rights on schema public: %w", err)
-	}
-	if !c {
-		return nil
-	}
-	// Allowed for the schema's owner; anyone else is told what to run.
-	_, _ = pool.Exec(ctx, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
-	if c, err = can(); err != nil {
-		return fmt.Errorf("provision: check the runtime role's rights on schema public: %w", err)
-	}
-	if c {
-		return fmt.Errorf("provision: the runtime role %q can create objects in schema public, as every role can "+
-			"before Postgres 15 unless revoked, and could use that to stand in for what the record's triggers call. "+
-			"As the schema's owner or a superuser run REVOKE CREATE ON SCHEMA public FROM PUBLIC "+
-			"(and from %s if it was granted to it), then run abhed migrate again",
-			runtime, pgx.Identifier{runtime}.Sanitize())
-	}
-	return nil
 }

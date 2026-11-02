@@ -203,26 +203,27 @@ var orgRules = map[string]orgRule{
 	"verify.contract.timeout_ms": {orgRefuse, "the machine's own setting"},
 	"verify.critic":              {orgRefuse, "a critic model receives the conversation"},
 
-	"additional_dirs":       {orgRefuse, "names folders on this machine"},
-	"model.ollama.assist":   {orgTighten, ""},
-	"completion.enabled":    {orgTighten, ""},
-	"completion.local_only": {orgTighten, ""},
-	"model.allowed":         {orgTighten, ""},
-	"mcp.allowed":           {orgTighten, ""},
-	"mcp.denied":            {orgTighten, ""},
-	"model.default":         {orgExtra, ""},
-	"model":                 {orgRefuse, "a provider and its base_url receive the code"},
-	"custom_providers":      {orgRefuse, "a provider and its base_url receive the code"},
-	"context":               {orgRefuse, "names files read into the prompt"},
-	"rag":                   {orgRefuse, "a corpus URL and headers are egress"},
-	"mcp":                   {orgRefuse, "an MCP server is a program or an endpoint"},
-	"retrieval":             {orgRefuse, "embed_base_url receives the code"},
-	"extensions":            {orgRefuse, "names programs to run on this machine"},
-	"storage":               {orgRefuse, "configures storage and its credentials"},
-	"server":                {orgRefuse, "configures a server"},
-	"control_plane":         {orgRefuse, "configures a server's control plane"},
-	"schedules":             {orgRefuse, "configures a server's schedules"},
-	"auth":                  {orgRefuse, "configures a server's sign-in"},
+	"additional_dirs":        {orgRefuse, "names folders on this machine"},
+	"model.ollama.assist":    {orgTighten, ""},
+	"completion.enabled":     {orgTighten, ""},
+	"completion.local_only":  {orgTighten, ""},
+	"model.allowed":          {orgTighten, ""},
+	"mcp.allowed":            {orgTighten, ""},
+	"mcp.denied":             {orgTighten, ""},
+	"model.default":          {orgExtra, ""},
+	"model.allowed_loopback": {orgExtra, ""},
+	"model":                  {orgRefuse, "a provider and its base_url receive the code"},
+	"custom_providers":       {orgRefuse, "a provider and its base_url receive the code"},
+	"context":                {orgRefuse, "names files read into the prompt"},
+	"rag":                    {orgRefuse, "a corpus URL and headers are egress"},
+	"mcp":                    {orgRefuse, "an MCP server is a program or an endpoint"},
+	"retrieval":              {orgRefuse, "embed_base_url receives the code"},
+	"extensions":             {orgRefuse, "names programs to run on this machine"},
+	"storage":                {orgRefuse, "configures storage and its credentials"},
+	"server":                 {orgRefuse, "configures a server"},
+	"control_plane":          {orgRefuse, "configures a server's control plane"},
+	"schedules":              {orgRefuse, "configures a server's schedules"},
+	"auth":                   {orgRefuse, "configures a server's sign-in"},
 }
 
 // orgRuleFor is the rule for path: its own, or its nearest section's.
@@ -344,6 +345,11 @@ func (j orgStrip) extra(p string, v any) string {
 			return ""
 		}
 		return "an org policy may only turn it on"
+	case "model.allowed_loopback":
+		if b, ok := v.(bool); ok && !b {
+			return ""
+		}
+		return "an org policy may only set it to false, which narrows"
 	case "model.default":
 		name, _ := v.(string)
 		if j.below != nil {

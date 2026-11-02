@@ -667,6 +667,9 @@ type ModelConfig struct {
 	// allows every configured model. Each layer that sets it must admit a
 	// model, so a lower layer can only narrow the managed list.
 	Allowed []string `json:"allowed,omitempty"`
+	// AllowedLoopback false refuses, under the organisation's model.allowed,
+	// an endpoint on this machine, which may relay anywhere; unset admits it.
+	AllowedLoopback *bool `json:"allowed_loopback,omitempty"`
 }
 
 // EditorModel is the provider an editor feature uses and the key that named

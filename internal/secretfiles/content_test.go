@@ -247,3 +247,21 @@ func TestBlockScalarsAndPythonStayIntact(t *testing.T) {
 		}
 	}
 }
+
+// In a diff, a block scalar whose key is a context line and whose value
+// lines changed is read as the block it is: neither value goes through.
+func TestRedactDiffBlockWithAContextKey(t *testing.T) {
+	for _, in := range []string{
+		" db:\n   password: |\n-    oldS3cretVal9\n+    newS3cretVal9\n   user: bob\n",
+		"@@ -1,3 +1,3 @@\n password: >\n-  oldS3cretVal9\n+  newS3cretVal9\n",
+		"   password: |\n+    newS3cretVal9\n",
+	} {
+		out, found := RedactDiff(in)
+		if !found || strings.Contains(out, "S3cretVal9") {
+			t.Errorf("%q -> %q", in, out)
+		}
+	}
+	if out, _ := RedactDiff(" db:\n   password: |\n-    oldS3cretVal9\n+    newS3cretVal9\n   user: bob\n"); !strings.Contains(out, "   user: bob\n") || !strings.Contains(out, "-    [secret]\n+    [secret]\n") {
+		t.Errorf("the diff's shape was not kept: %q", out)
+	}
+}

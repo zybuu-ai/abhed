@@ -71,38 +71,52 @@ func TestGatewayAdmit(t *testing.T) {
 // binary earlier on Abhed's own PATH does not run in place of the one the
 // server's PATH finds and the lists admit.
 func TestGatewayStartsTheProgramItJudged(t *testing.T) {
-	allowed, other, marks := t.TempDir(), t.TempDir(), t.TempDir()
-	write := func(dir, tag string) {
-		script := "#!/bin/sh\necho " + tag + " > " + filepath.Join(marks, tag) + "\n"
-		if err := os.WriteFile(filepath.Join(dir, "probe-mcp"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(allowed, "allowed")
-	write(other, "other")
-	t.Setenv("PATH", other+string(os.PathListSeparator)+os.Getenv("PATH"))
-	realAllowed, _ := filepath.EvalSymlinks(allowed)
-	var judged []string
-	g := NewGateway()
-	defer g.Close()
-	g.PinProgram = true
-	g.Admit = func(c ServerConfig, programs []string) error {
-		judged = programs
-		for _, p := range programs {
-			if strings.HasPrefix(p, realAllowed+string(os.PathSeparator)) {
-				return nil
+	image := "img@sha256:" + strings.Repeat("a", 64)
+	for _, c := range []struct {
+		name, command string
+		args          []string
+		digest        string
+	}{
+		{"plain", "probe-mcp", nil, ""},
+		// A digest that pins an engine's image leaves the engine to be judged by path.
+		{"engine with a pinned image", "docker", []string{"run", image}, "sha256:" + strings.Repeat("a", 64)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			allowed, other, marks := t.TempDir(), t.TempDir(), t.TempDir()
+			write := func(dir, tag string) {
+				script := "#!/bin/sh\necho " + tag + " > " + filepath.Join(marks, tag) + "\n"
+				if err := os.WriteFile(filepath.Join(dir, c.command), []byte(script), 0o755); err != nil {
+					t.Fatal(err)
+				}
 			}
-		}
-		return errors.New("not under the allowed folder")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = g.Connect(ctx, []ServerConfig{{Name: "probe", Command: "probe-mcp", Env: []string{"PATH=" + allowed}, Enabled: true}})
-	if _, err := os.Stat(filepath.Join(marks, "other")); err == nil {
-		t.Fatal("the binary on Abhed's own PATH ran in place of the admitted one")
-	}
-	if _, err := os.Stat(filepath.Join(marks, "allowed")); err != nil {
-		t.Fatalf("the admitted program did not run (judged %v): %v", judged, err)
+			write(allowed, "allowed")
+			write(other, "other")
+			t.Setenv("PATH", other+string(os.PathListSeparator)+os.Getenv("PATH"))
+			realAllowed, _ := filepath.EvalSymlinks(allowed)
+			var judged []string
+			g := NewGateway()
+			defer g.Close()
+			g.PinProgram = true
+			g.Admit = func(_ ServerConfig, programs []string) error {
+				judged = programs
+				for _, p := range programs {
+					if strings.HasPrefix(p, realAllowed+string(os.PathSeparator)) {
+						return nil
+					}
+				}
+				return errors.New("not under the allowed folder")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = g.Connect(ctx, []ServerConfig{{Name: "probe", Command: c.command, Args: c.args, Digest: c.digest,
+				Env: []string{"PATH=" + allowed}, Enabled: true}})
+			if _, err := os.Stat(filepath.Join(marks, "other")); err == nil {
+				t.Fatal("the binary on Abhed's own PATH ran in place of the admitted one")
+			}
+			if _, err := os.Stat(filepath.Join(marks, "allowed")); err != nil {
+				t.Fatalf("the admitted program did not run (judged %v): %v", judged, err)
+			}
+		})
 	}
 }
 
@@ -137,5 +151,42 @@ func TestGatewayJudgesCrossHostRedirects(t *testing.T) {
 	}
 	if reached.Load() != 0 {
 		t.Fatalf("the refused host was reached %d times: %v", reached.Load(), errs)
+	}
+}
+
+// argv0File, when set, makes this test binary a stand-in server that writes
+// the name it was run by and exits.
+func init() {
+	if f := os.Getenv("ABHED_TEST_ARGV0_FILE"); f != "" {
+		_ = os.WriteFile(f, []byte(os.Args[0]), 0o600)
+		os.Exit(0)
+	}
+}
+
+// A pinned program runs at its resolved path but is given the configured
+// name as argv[0], as a shell would give it.
+func TestPinnedProgramKeepsItsName(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, out := t.TempDir(), filepath.Join(t.TempDir(), "argv0")
+	if err := os.Symlink(self, filepath.Join(dir, "multi-call")); err != nil {
+		t.Fatal(err)
+	}
+	g := NewGateway()
+	defer g.Close()
+	g.PinProgram = true
+	g.Admit = func(ServerConfig, []string) error { return nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = g.Connect(ctx, []ServerConfig{{Name: "argv", Command: "multi-call", Enabled: true,
+		Env: []string{"PATH=" + dir, "ABHED_TEST_ARGV0_FILE=" + out}}})
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("the program did not run: %v", err)
+	}
+	if string(got) != "multi-call" {
+		t.Fatalf("argv[0] is %q, want multi-call", got)
 	}
 }

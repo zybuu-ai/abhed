@@ -32,7 +32,7 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 		var model monitor.Monitor = monitor.Model{Endpoint: m.Endpoint, Model: m.Model, APIKey: apiKey(m.APIKeyEnv)}
 		// A judge model the allowed models refuse is never asked: every call
 		// it would judge gets what an unavailable judge gives.
-		if err := cfg.ModelListed("monitor", config.ProviderConfig{Type: "openai-compatible", Model: m.Model}); err != nil {
+		if err := cfg.JudgeListed(m); err != nil {
 			model = refusedJudge{err}
 		}
 		judge = monitor.Chain{judge, model}
