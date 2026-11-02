@@ -131,7 +131,7 @@ func DefaultEnv() Env {
 	return Env{
 		TempHome: temp,
 		GOOS:     runtime.GOOS, LookPath: exec.LookPath, AppPath: app, Programs: standardPrograms(runtime.GOOS),
-		HTTP:     &http.Client{Timeout: 0},
+		HTTP:     &http.Client{Timeout: 0, Transport: egress.UpstreamRoundTripper{}}, // a remote server through the proxy; loopback goes direct
 		Web:      &http.Client{Timeout: 30 * time.Second, Transport: egress.UpstreamRoundTripper{}},
 		Registry: Registry,
 		LogDir:   filepath.Join(home, ".abhed", "logs"), StateDir: filepath.Join(home, ".abhed", "state"),

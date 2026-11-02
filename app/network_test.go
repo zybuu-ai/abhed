@@ -2,16 +2,23 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/egress/upstreamtest"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/model"
 )
 
 const testProxy = "proxy.corp.test:3128"
@@ -137,5 +144,94 @@ func TestACPConnectOrgPolicyFollowsTheNetwork(t *testing.T) {
 	c.orgPolicyAtConnect(io.Discard)
 	if c.noNetwork || fetched != 1 || refreshing != 1 || proxyInForce() != testProxy {
 		t.Fatalf("noNetwork %v, fetched %d, refreshing %d, proxy %q", c.noNetwork, fetched, refreshing, proxyInForce())
+	}
+}
+
+// Through an upstream proxy the CLI's endpoint probe never resolves or dials
+// the model host itself: the gated adapter's call goes to the proxy, which
+// reaches a model this machine cannot resolve. A no_proxy host is probed.
+func TestEndpointProbeLeavesTheModelToTheProxy(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"through the proxy\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(llm.Close)
+	port := llm.URL[strings.LastIndex(llm.URL, ":")+1:]
+	var dialled []string
+	old := probeDial
+	probeDial = func(_ context.Context, addr string) (net.Conn, error) {
+		dialled = append(dialled, addr)
+		return nil, &net.DNSError{Err: "no such host", Name: addr, IsNotFound: true}
+	}
+	t.Cleanup(func() { probeDial = old })
+	egress.ResetUpstreamForTest()
+	t.Cleanup(egress.ResetUpstreamForTest)
+	corp := upstreamtest.Start(t)
+	up := corp.Use(t, "svc", "pw")
+	up.ResolveViaProxy = true
+
+	p := config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://llm.corp.test:" + port + "/v1", Model: "m", ContextWindow: 8192}
+	probe := newEndpointProbe(p)
+	probe.start(context.Background())
+	if err := probe.firstResult(2 * time.Second); err != nil {
+		t.Fatalf("the probe: %v", err)
+	}
+	g := gatedAdapter{Adapter: buildAdapter(p), probe: probe}
+	ch, err := g.Complete(context.Background(), model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	for c := range ch {
+		if c.Err != nil {
+			t.Fatal(c.Err)
+		}
+		text += c.Text
+	}
+	if text != "through the proxy" || !corp.Saw("llm.corp.test") || len(dialled) != 0 {
+		t.Fatalf("answer %q, proxy saw it %v, dialled directly %v", text, corp.Saw("llm.corp.test"), dialled)
+	}
+
+	up.NoProxy = []string{"llm.corp.test"}
+	if err := newEndpointProbe(p).run(context.Background()); err == nil || len(dialled) != 1 {
+		t.Fatalf("a no_proxy model host was not probed: %v %v", err, dialled)
+	}
+}
+
+// The record's witness, opened as abhed record opens it, posts each head
+// through the configured upstream proxy, and a second stand-in named by
+// HTTP_PROXY sees nothing.
+func TestWitnessPostsThroughTheUpstreamProxy(t *testing.T) {
+	var got atomic.Int32
+	wsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			got.Add(1)
+		}
+	}))
+	t.Cleanup(wsrv.Close)
+	port := wsrv.URL[strings.LastIndex(wsrv.URL, ":")+1:]
+	corp, other := upstreamtest.Start(t), upstreamtest.Start(t)
+	ws := networkHome(t, `{}`)
+	t.Setenv("HTTP_PROXY", "http://"+other.Addr())
+	mf := filepath.Join(t.TempDir(), "managed.json")
+	body := `{"network":{"upstream_proxy":{"url":"http://` + corp.Addr() + `"}},` +
+		`"record":{"witness":{"url":"http://witness.corp.test:` + port + `/heads"}}}`
+	if err := os.WriteFile(mf, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managed.ConfigFile = mf
+	cfg, err := loadNetworked(ws, config.LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := openWitness(cfg)
+	if err != nil || w == nil {
+		t.Fatalf("witness %v: %v", w, err)
+	}
+	w.Local("t", "s-1", 3, 3, strings.Repeat("ab", 32))
+	w.Close(5 * time.Second)
+	if got.Load() != 1 || !corp.Saw("witness.corp.test") || other.Saw("witness.corp.test") {
+		t.Fatalf("posts %d, configured proxy %v, environment's %v", got.Load(), corp.Saw("witness.corp.test"), other.Saw("witness.corp.test"))
 	}
 }

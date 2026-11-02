@@ -113,4 +113,11 @@ func TestNarrowedManagedWildcardAnchorsNothing(t *testing.T) {
 	if res := run(t, tool, page); res.IsError || !corp.Saw("public.example.test") {
 		t.Fatalf("a host the managed file names exactly: %s", res.Content)
 	}
+
+	// A managed list with web_fetch left off still anchors its exact hosts,
+	// for the tool an editor builds to read a linked page.
+	cfg = load(`{"web_fetch":{"allowed_hosts":["public.example.test"]}}`)
+	if cfg.WebFetch.Enabled || !slices.Equal(cfg.WebFetchAnchors(), []string{"public.example.test"}) {
+		t.Fatalf("enabled %v, anchors %v", cfg.WebFetch.Enabled, cfg.WebFetchAnchors())
+	}
 }

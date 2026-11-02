@@ -339,7 +339,8 @@ All notable changes to Abhed are recorded here. The format follows
   list and `resolve_via_proxy`. Abhed's own connections go out through it:
   the model clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the
   `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
-  installs and registry lookups, `abhed login`, the profile calls, the org
+  installs, registry lookups and calls to a remote Ollama server,
+  `abhed login`, the profile calls, the org
   policy fetch, record shipping and the record's witness. Under the
   allowlist, the commands' proxy chains what it allowed through it
   (`CONNECT` for tunnels, absolute form for plain HTTP), so a provider or
@@ -361,8 +362,11 @@ All notable changes to Abhed are recorded here. The format follows
   starts, for the whole process: after changing it, restart a running
   `abhed serve` or editor connection. An SDK agent with a different one
   than another in the same process is refused. PAC, WPAD, SOCKS and NTLM
-  or Kerberos proxy authentication are not supported. Records of chained
-  connections carry `upstream`.
+  or Kerberos proxy authentication are not supported, and the stand-alone
+  `abhed egress-proxy` does not chain to it. Through the proxy the CLI's
+  quick model-endpoint check dials nothing, so the model host is never
+  resolved or reached directly. Records of chained connections carry
+  `upstream`.
 - `statusline.timeout_ms` sets how long one run of the statusline command
   may take (one second unset, ten at most), and `/status` shows the
   command's last line when a run only took too long.

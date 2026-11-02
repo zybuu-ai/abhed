@@ -523,11 +523,16 @@ commands' allowed traffic through it:
 **What goes through it**, unless `no_proxy` names the destination:
 
 - the model clients (each provider, the supervisor's model judge, the code
-  index's embeddings, onboarding's model check);
+  index's embeddings, onboarding's model check). The CLI's quick check that
+  something answers at the model's address is not made through a proxy: the
+  model host is neither resolved nor dialled here, and the first model call
+  says whether it answers;
 - `web_fetch`, `web_search`, MCP servers over HTTP, `rag` retrieval, the
   `k8s_*` tools and `abhed resolve`'s forge API calls and `git push`;
 - toolchain downloads (and the `go install` Abhed runs for Delve and gopls),
-  Ollama installs and registry lookups;
+  Ollama installs and registry lookups, and `abhed ollama`'s calls to an
+  Ollama server on another machine (one on this machine is reached
+  directly);
 - `abhed login` and the other profile calls to an Abhed server, the org
   policy fetch (the proxy is in force before it; an org policy never sets
   the proxy), and the record's witness;
@@ -602,7 +607,9 @@ read, say), an editor's connection fetches no org policy at all.
 challenge-response proxy authentication (Basic only); `ssh_connect` and
 other raw TCP connections, which stay direct; commands outside the
 allowlist, which use the network as the sandbox gives it; and programs that
-keep their own proxy settings (a stdio MCP server, an extension).
+keep their own proxy settings (a stdio MCP server, an extension). The
+stand-alone `abhed egress-proxy` reads only its own `-config` egress
+section and never chains to `network.upstream_proxy`.
 
 ### Stdio MCP servers
 
@@ -671,7 +678,8 @@ names the tier and says whether it holds it.
 whose only route out is to it, such as a Kubernetes egress pod that a
 NetworkPolicy lets only one sandbox reach. Every connection on its port is
 counted as one call's, whatever proxy credentials the client sends, so the
-network policy in front of it is what decides who may use it.
+network policy in front of it is what decides who may use it. It connects
+directly; it does not chain to a corporate upstream proxy.
 
 ```bash
 abhed egress-proxy -listen :3128 -config /etc/abhed-egress/egress.json -call sbx-42
