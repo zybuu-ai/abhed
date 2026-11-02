@@ -299,7 +299,7 @@ func raiseWorkspaceTier(workspace string, tier sandbox.Tier) (string, bool, erro
 		return "", false, err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil { // #nosec G306 -- the workspace config, not a secret
 		return "", false, err
 	}
 	return path, true, os.Rename(tmp, path)

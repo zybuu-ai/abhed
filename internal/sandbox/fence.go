@@ -1072,7 +1072,8 @@ var fenceKeep = []string{"PATH", "LANG", "LC_ALL", "TERM",
 // env is an allowlist, as on the process tier. Home is unreachable, so HOME,
 // TMPDIR and the caches point into the session's private temp.
 func (f *Fence) env() []string {
-	out := []string{"ABHED_SANDBOX=" + string(f.Tier()), vimInitEnv()}
+	// SHELL set, bash looks up no user, whose NSS sockets seccomp refuses.
+	out := []string{"ABHED_SANDBOX=" + string(f.Tier()), vimInitEnv(), "SHELL=/bin/bash"}
 	for _, k := range fenceKeep {
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)

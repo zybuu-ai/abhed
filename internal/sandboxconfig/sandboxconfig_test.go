@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -120,6 +121,10 @@ func outsideWritableAreas(t *testing.T) string {
 	}
 	for _, p := range parents {
 		if under([]string{tools.RealPath(p)}, sandbox.WritableAreas()) {
+			continue
+		}
+		// On Linux /tmp is no writable area, so a TMPDIR set under it is none either.
+		if runtime.GOOS == "linux" && under([]string{tools.RealPath(p)}, []string{"/tmp", "/var/tmp"}) {
 			continue
 		}
 		dir, err := os.MkdirTemp(p, ".abhed-statepaths-*")

@@ -40,7 +40,7 @@ func chooseShell() shellChoice {
 		if p == "" || !filepath.IsAbs(p) || home != "" && within(p, home) {
 			return false
 		}
-		info, err := os.Stat(p)
+		info, err := os.Stat(p) // #nosec G703 -- the person's own $SHELL or a fixed bash path, only checked
 		return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 	}
 	login := os.Getenv("SHELL")
@@ -70,7 +70,7 @@ func within(p, dir string) bool {
 func bashMajor(path string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "--norc", "--noprofile", "-c", `echo "${BASH_VERSINFO[0]}"`).Output() // #nosec G204 -- a candidate shell, fixed arguments
+	out, err := exec.CommandContext(ctx, path, "--norc", "--noprofile", "-c", `echo "${BASH_VERSINFO[0]}"`).Output() // #nosec G204 G702 -- a candidate shell, fixed arguments
 	if err != nil {
 		return 0
 	}

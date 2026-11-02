@@ -94,7 +94,7 @@ func init() {
 				continue
 			}
 			fixed := rubyShebang.ReplaceAll(data, []byte("#!/usr/bin/env ruby"))
-			if err := os.WriteFile(p, fixed, info.Mode().Perm()); err != nil {
+			if err := os.WriteFile(p, fixed, info.Mode().Perm()); err != nil { // #nosec G703 -- a file of the toolchain being installed
 				return "", err
 			}
 		}
@@ -119,7 +119,7 @@ func rustInstall(dir string, _ Artifact) (string, error) {
 		if strings.HasPrefix(c, "rust-docs") || strings.ContainsAny(c, `/\`) || c == ".." {
 			continue
 		}
-		manifest, err := os.ReadFile(filepath.Join(dir, c, "manifest.in")) // #nosec G304 -- a file of the toolchain being installed
+		manifest, err := os.ReadFile(filepath.Join(dir, c, "manifest.in")) // #nosec G304 G703 -- a file of the toolchain being installed
 		if err != nil {
 			return "", err
 		}
