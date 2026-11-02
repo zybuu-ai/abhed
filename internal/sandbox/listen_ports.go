@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"net"
+	"os"
 	"os/exec"
 	"slices"
 	"sort"
@@ -12,9 +13,12 @@ import (
 	"time"
 )
 
-// listener is one TCP socket listening on the Mac, with its process.
+// listener is one TCP socket listening on the Mac, as one process holds
+// it: sock is the kernel's address for the socket, which every process
+// that inherited it shares (a server that forks workers).
 type listener struct {
 	port, pid int
+	sock      string
 }
 
 // listenRefresh is how often the listeners are read again.
@@ -47,7 +51,7 @@ func readListenersWithin(age time.Duration) ([]listener, bool) {
 	defer func() { _ = own.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn").Output()
+	out, err := exec.CommandContext(ctx, "/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpnd").Output()
 	if err != nil {
 		listeners.ok = false
 		return nil, false
@@ -86,15 +90,21 @@ func ListenersReadable() bool {
 	return ok
 }
 
-// parseListeners reads lsof -Fpn: a p line names the process, and its n
-// lines the addresses, n*:5432, n127.0.0.1:8080, n[::1]:8080.
+// parseListeners reads lsof -Fpnd: a p line names the process, an f line
+// starts one of its files, whose d line is the socket's address and whose
+// n lines are its addresses, n*:5432, n127.0.0.1:8080, n[::1]:8080.
 func parseListeners(out string) []listener {
 	var all []listener
-	pid := 0
+	pid, sock := 0, ""
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case strings.HasPrefix(line, "p"):
 			pid, _ = strconv.Atoi(line[1:])
+			sock = ""
+		case strings.HasPrefix(line, "f"):
+			sock = ""
+		case strings.HasPrefix(line, "d"):
+			sock = line[1:]
 		case strings.HasPrefix(line, "n"):
 			i := strings.LastIndexByte(line, ':')
 			if i < 0 {
@@ -104,13 +114,55 @@ func parseListeners(out string) []listener {
 			if err != nil || p <= 0 || p > 65535 {
 				continue
 			}
-			l := listener{port: p, pid: pid}
+			l := listener{port: p, pid: pid, sock: sock}
 			if !slices.Contains(all, l) {
 				all = append(all, l)
 			}
 		}
 	}
 	return all
+}
+
+// servers counts the programs listening on each port: sockets joined into
+// one when a process holds both (a server on 127.0.0.1 and ::1) or one
+// socket is held by several processes (a server and the workers it
+// forked). Two programs, each with sockets of its own, count two. Sockets
+// bound apart with SO_REUSEPORT by one program's unrelated processes
+// cannot be told from two programs.
+func servers(all []listener) map[int]int {
+	byPort := map[int][]listener{}
+	for _, l := range all {
+		byPort[l.port] = append(byPort[l.port], l)
+	}
+	out := map[int]int{}
+	for port, ls := range byPort {
+		parent := map[string]string{}
+		var find func(string) string
+		find = func(x string) string {
+			if parent[x] == "" || parent[x] == x {
+				parent[x] = x
+				return x
+			}
+			r := find(parent[x])
+			parent[x] = r
+			return r
+		}
+		union := func(a, b string) { parent[find(a)] = find(b) }
+		for _, l := range ls {
+			pidKey := "p" + strconv.Itoa(l.pid)
+			if l.sock == "" {
+				find(pidKey)
+				continue
+			}
+			union("s"+l.sock, pidKey)
+		}
+		roots := map[string]bool{}
+		for _, l := range ls {
+			roots[find("p"+strconv.Itoa(l.pid))] = true
+		}
+		out[port] = len(roots)
+	}
+	return out
 }
 
 // Listening processes are watched, and nothing more. A program of the
@@ -125,9 +177,13 @@ func parseListeners(out string) []listener {
 var watching struct {
 	mu        sync.Mutex
 	procs     map[*Process]bool
-	contested map[int]bool
+	contested map[int]int
 	once      sync.Once
 }
+
+// listenNoticeCooldown is the least time between two notices of one port to
+// one sandbox, so a contest that comes and goes does not flood the records.
+var listenNoticeCooldown = time.Minute
 
 // watchListeners puts p among the sandboxes whose listen ports are watched.
 func watchListeners(p *Process) {
@@ -162,8 +218,9 @@ type PortContested struct {
 }
 
 // sweepListeners tells each listening sandbox of a listen port of its that
-// more than one program listens on, once while it stays so. It reads and
-// tells; it never signals a process.
+// more than one program listens on: once while it stays so, the first time
+// the sandbox sees it, and no more often than listenNoticeCooldown. It
+// reads afresh and tells; it never signals a process.
 func sweepListeners() {
 	watching.mu.Lock()
 	var procs []*Process
@@ -183,55 +240,85 @@ func sweepListeners() {
 		}
 		return
 	}
-	pids := map[int]map[int]bool{}
-	for _, l := range all {
-		if pids[l.port] == nil {
-			pids[l.port] = map[int]bool{}
-		}
-		pids[l.port][l.pid] = true
-	}
+	count := servers(all)
 	watching.mu.Lock()
-	if watching.contested == nil {
-		watching.contested = map[int]bool{}
-	}
-	var fresh []PortContested
-	for port := range watching.contested {
-		if len(pids[port]) < 2 {
-			delete(watching.contested, port)
+	watching.contested = map[int]int{}
+	for port, n := range count {
+		if n >= 2 {
+			watching.contested[port] = n
 		}
 	}
-	for port, ps := range pids {
-		if len(ps) >= 2 && !watching.contested[port] {
-			watching.contested[port] = true
-			fresh = append(fresh, PortContested{Port: port, Listeners: len(ps)})
+	type notice struct {
+		p *Process
+		c PortContested
+	}
+	var tell []notice
+	now := time.Now()
+	for _, p := range procs {
+		if p.toldNow == nil {
+			p.toldNow, p.lastTold = map[int]bool{}, map[int]time.Time{}
+		}
+		for port := range p.toldNow {
+			if watching.contested[port] == 0 {
+				delete(p.toldNow, port)
+			}
+		}
+		for _, port := range p.policy.ListenPorts {
+			n := watching.contested[port]
+			if n == 0 || p.toldNow[port] || now.Sub(p.lastTold[port]) < listenNoticeCooldown {
+				continue
+			}
+			p.toldNow[port], p.lastTold[port] = true, now
+			tell = append(tell, notice{p, PortContested{Port: port, Listeners: n}})
 		}
 	}
 	watching.mu.Unlock()
-	sort.Slice(fresh, func(i, j int) bool { return fresh[i].Port < fresh[j].Port })
 	for _, p := range procs {
 		p.listenWatchFound()
-		for _, c := range fresh {
-			if slices.Contains(p.policy.ListenPorts, c.Port) {
-				if f := p.onPortContested.Load(); f != nil {
-					(*f)(c)
-				}
-			}
+	}
+	for _, t := range tell {
+		if f := t.p.onPortContested.Load(); f != nil {
+			(*f)(t.c)
 		}
 	}
 }
 
-// ListenersOn is how many processes listen on port now, read afresh; -1
-// when the listeners cannot be read.
+// ListenersOn is how many programs listen on port now, read afresh: a
+// server and the workers it forked count once. -1 when the listeners cannot
+// be read.
 func ListenersOn(port int) int {
 	all, ok := readListenersWithin(0)
 	if !ok {
 		return -1
 	}
-	seen := map[int]bool{}
+	return servers(all)[port]
+}
+
+// ownTree reports whether every listener on port is a process this Abhed
+// started or a descendant of one, by parent links; a process that left the
+// tree counts as not.
+func ownTree(all []listener, port int, parents map[int]int) bool {
+	self, found := os.Getpid(), false
 	for _, l := range all {
-		if l.port == port {
-			seen[l.pid] = true
+		if l.port != port {
+			continue
+		}
+		found = true
+		inside := false
+		for pid, i := l.pid, 0; pid > 1 && i < 64; i++ {
+			pp, ok := parents[pid]
+			if !ok {
+				break
+			}
+			if pp == self {
+				inside = true
+				break
+			}
+			pid = pp
+		}
+		if !inside {
+			return false
 		}
 	}
-	return len(seen)
+	return found
 }

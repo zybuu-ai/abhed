@@ -1060,7 +1060,7 @@ _abhed/terminal/serving { sessionId, terminalId, url }
 _abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message }
 // 1.2.9: an interactive terminal now uses the project's venv (abhed_venv)
 _abhed/terminal/venv { sessionId, terminalId, inUse }
-// 1.2.9: a sandboxed listener was ended for a host program's port
+// 1.2.9: more than one program listens on a listen port; Abhed stops nothing
 _abhed/sandbox/port_contested { sessionId, port, message }
 // 1.2.9: contested ports can no longer be seen (lsof failed)
 _abhed/sandbox/listen_watch_lost { sessionId, message }
@@ -1110,8 +1110,11 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   command can bind every address of the port. When more than one program
   listens on a listen port, every session that may listen on it gets
   `_abhed/sandbox/port_contested {sessionId, port, message}`, recorded
-  `sandbox.port_contested {port, listeners}`, once while the port stays
-  contested; Abhed cannot prove which listener is a sandbox's and signals
+  `sandbox.port_contested {port, listeners}`, within a few seconds, once
+  while the port stays contested (a session that starts watching during a
+  contest is told too) and at most once a minute per port. A server and
+  the workers it forks, sharing one socket, count as one program; Abhed
+  cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's
   listeners can no longer be read, Studio gets
   `_abhed/sandbox/listen_watch_lost {sessionId, message}`, once until they

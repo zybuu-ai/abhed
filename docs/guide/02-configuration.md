@@ -264,9 +264,14 @@ program still starts (Go, Node and Python servers bind every address with
 `SO_REUSEADDR`), but connections to `127.0.0.1` reach the command. Abhed
 warns you but does not stop the command: it reads the Mac's listeners every
 two seconds, and when more than one program listens on a listen port it
-tells you, in every session that may listen on that port, and records it
-(`sandbox.port_contested`), once while the port stays contested. It cannot
-prove which of the two is the sandbox's, so it signals neither. Stop the
+tells you within a few seconds, in every session that may listen on that
+port, and records it (`sandbox.port_contested`): once while the port stays
+contested, and at most once a minute for a port that comes and goes. A
+server and the workers it forks share one socket and count as one
+program, as does one program listening on both `127.0.0.1` and `::1`;
+separate sockets bound with `SO_REUSEPORT` count as more than one. It
+cannot prove which of two programs is the sandbox's, so it signals
+neither. Stop the
 command yourself, or turn listening off. A new command is not given a port
 one of your programs holds. If the Mac's listeners can no longer be read,
 Studio says so. A program of yours that binds `127.0.0.1` itself instead

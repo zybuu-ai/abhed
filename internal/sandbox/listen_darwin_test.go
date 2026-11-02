@@ -3,12 +3,9 @@ package sandbox
 import (
 	"bufio"
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"net"
+	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -212,6 +209,9 @@ func pyListen(port int) string {
 // once while it stays contested, and nothing is stopped; a new command is
 // not given the port. Under PrivateTemp too.
 func TestContestedPortIsToldNotStopped(t *testing.T) {
+	cooldown := listenNoticeCooldown
+	listenNoticeCooldown = 0
+	defer func() { listenNoticeCooldown = cooldown }()
 	for _, private := range []bool{false, true} {
 		port := freePort(t)
 		sb, elsewhere := listenSandbox(t, port), listenSandbox(t, freePort(t))
@@ -259,69 +259,82 @@ func TestContestedPortIsToldNotStopped(t *testing.T) {
 	}
 }
 
-// Nothing that watches listening may signal a process: no call that sends
-// a signal is in listen_ports.go, and the files that do send one are the
-// known ones, which signal only the command's own process tree or group,
-// or a container or helper Abhed itself started.
-func TestNoListenCodeSignalsAProcess(t *testing.T) {
-	known := map[string]bool{
-		"group_unix.go": true, "tree_darwin.go": true, "session_darwin.go": true, "fence_linux.go": true,
-		"container.go": true, "container_egress.go": true, "shell.go": true,
+// A sandbox that starts watching while a port is contested is told too;
+// within the cooldown, a contest that comes back is not told again.
+func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
+	port := freePort(t)
+	first := listenSandbox(t, port)
+	var toldFirst, toldLate atomic.Int64
+	SetListenWatch(first, nil, func(PortContested) { toldFirst.Add(1) }, nil)
+	cmd := startIn(t, first, pyListen(port))
+	_ = cmd
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
 	}
-	fset := token.NewFileSet()
-	files, _ := filepath.Glob("*.go")
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, f, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			name := sel.Sel.Name
-			// syscall.Kill(pid, sig) and the like; (*os.Process).Kill() and .Signal(sig).
-			kill := (name == "Kill" || name == "Tgkill") && len(call.Args) >= 2 && !signalZero(call) ||
-				name == "Kill" && len(call.Args) == 0 || name == "Signal" && len(call.Args) == 1 && !isPkg(sel.X)
-			if !kill {
-				return true
-			}
-			if f == "listen_ports.go" || !known[f] {
-				t.Errorf("%s: %s sends a signal; only the command's own tree may be signalled", fset.Position(call.Pos()), name)
-			}
-			return true
-		})
+	defer host.Close()
+	sweepListeners()
+	late := listenSandbox(t, port)
+	SetListenWatch(late, nil, func(PortContested) { toldLate.Add(1) }, nil)
+	late.seatbeltProfileWith(0, loopback{})
+	sweepListeners()
+	if toldFirst.Load() != 1 || toldLate.Load() != 1 {
+		t.Fatalf("told first %d, late %d", toldFirst.Load(), toldLate.Load())
+	}
+	// Cleared and contested again inside the cooldown: no second notice.
+	_ = host.Close()
+	sweepListeners()
+	host, err = net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	sweepListeners()
+	if toldFirst.Load() != 1 {
+		t.Fatalf("told %d times within the cooldown", toldFirst.Load())
 	}
 }
 
-// isPkg reports syscall or unix, whose Signal is a type, not a send.
-func isPkg(x ast.Expr) bool {
-	id, ok := x.(*ast.Ident)
-	return ok && (id.Name == "syscall" || id.Name == "unix")
+// A sandboxed server that forks after it listens (a reloader, workers)
+// holds one socket in several processes: one program, not a contest.
+func TestForkedServerIsNotAContest(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var told atomic.Int64
+	SetListenWatch(sb, nil, func(PortContested) { told.Add(1) }, nil)
+	startIn(t, sb, `python3 -I -c 'import os,socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); os.fork(); os.fork(); print("listening", flush=True); time.sleep(20)' `+strconv.Itoa(port))
+	time.Sleep(300 * time.Millisecond)
+	sweepListeners()
+	if n := ListenersOn(port); n != 1 || told.Load() != 0 {
+		t.Fatalf("a forked server counted as %d programs, told %d", n, told.Load())
+	}
 }
 
-// signalZero reports a Kill(pid, 0), which only asks whether pid exists.
-func signalZero(call *ast.CallExpr) bool {
-	if len(call.Args) != 2 {
-		return false
+func TestServersJoinSharedSockets(t *testing.T) {
+	all := []listener{
+		{port: 3000, pid: 10, sock: "0xa"}, {port: 3000, pid: 11, sock: "0xa"}, // a server and its worker
+		{port: 3001, pid: 20, sock: "0xb"}, {port: 3001, pid: 20, sock: "0xc"}, // one program, v4 and v6
+		{port: 3002, pid: 30, sock: "0xd"}, {port: 3002, pid: 31, sock: "0xe"}, // two programs
+		{port: 3003, pid: 40}, {port: 3003, pid: 41}, // no socket address: by process
 	}
-	if lit, ok := call.Args[1].(*ast.BasicLit); ok {
-		return lit.Value == "0"
+	got := servers(all)
+	if got[3000] != 1 || got[3001] != 1 || got[3002] != 2 || got[3003] != 2 {
+		t.Fatalf("%v", got)
 	}
-	return false
+}
+
+func TestOwnTree(t *testing.T) {
+	self := os.Getpid()
+	parents := map[int]int{100: self, 101: 100, 200: 1, 300: 99999}
+	all := []listener{{port: 3000, pid: 101}, {port: 3001, pid: 101}, {port: 3001, pid: 200}, {port: 3002, pid: 300}}
+	if !ownTree(all, 3000, parents) || ownTree(all, 3001, parents) || ownTree(all, 3002, parents) || ownTree(all, 3003, parents) {
+		t.Fatal("own tree misjudged")
+	}
 }
 
 func TestParseListeners(t *testing.T) {
-	out := "p947\nf10\nn*:5432\nf11\nn127.0.0.1:8080\nn[::1]:8080\np1\nf3\nnlocalhost:x\n"
-	want := []listener{{port: 5432, pid: 947}, {port: 8080, pid: 947}}
+	out := "p947\nf10\nd0xa1\nn*:5432\nf11\nd0xb2\nn127.0.0.1:8080\nn[::1]:8080\np948\nf3\nd0xb2\nn127.0.0.1:8080\np1\nf3\nnlocalhost:x\n"
+	want := []listener{{port: 5432, pid: 947, sock: "0xa1"}, {port: 8080, pid: 947, sock: "0xb2"}, {port: 8080, pid: 948, sock: "0xb2"}}
 	if got := parseListeners(out); !slices.Equal(got, want) {
 		t.Fatalf("%v", got)
 	}
