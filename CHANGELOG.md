@@ -6,7 +6,26 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+### Upgrading from 1.2.9
+
+- A workspace's `.abhed/config.json` must be a plain file of at most 4 MiB.
+  A link there is refused, and so is anything other than a plain file, and
+  the session does not start until it is fixed. In the home folder the file
+  is your own `~/.abhed/config.json` and may still be a link.
+
 ### Fixed
+
+- A repository could stall every session's start. A `.abhed/config.json`
+  that was a pipe, or a link to `/dev/zero`, was waited on or read without
+  end as soon as Abhed opened the workspace. The file is now opened without
+  following a link or waiting on a pipe, and its size is bounded.
+- `abhed init` wrote the starter config through a `.abhed/config.json` that
+  a repository had made a link, overwriting the file it named. It now
+  writes a fresh file and renames it into place.
+- A lock file beside a state file in a folder a repository controls, such
+  as the workspace's `users.json.lock`, was opened through a link, which made
+  an empty file at the path the link named, or waited on a pipe. It is now
+  opened without following a link or waiting, and must be a plain file.
 
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with

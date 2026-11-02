@@ -253,9 +253,23 @@ func InitWorkspace(workspace string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return path, err
 	}
-	// A config can carry keys. Owner-only, like every other file that can.
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// A config can carry keys. Owner-only, like every other file that can. A
+	// fresh file renamed into place: a config.json a repository made a link
+	// is replaced, never written through.
+	f, err := os.CreateTemp(filepath.Dir(path), ".config.json.*")
+	if err != nil {
 		return path, err
+	}
+	_, werr := f.Write(data)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(f.Name(), path)
+	}
+	if werr != nil {
+		_ = os.Remove(f.Name())
+		return path, werr
 	}
 	return path, GrantTrust(workspace, hashOf(data))
 }

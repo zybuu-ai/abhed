@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/regularfile"
 	"github.com/zybuu-ai/abhed/internal/visible"
 )
 
@@ -262,7 +263,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	} else if n > 0 {
 		return st, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- the workspace's config, read to be classified
+	data, err := readWorkspaceConfig(workspace, path)
 	if os.IsNotExist(err) {
 		return st, nil
 	}
@@ -311,6 +312,24 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		return st, nil
 	}
 	return st, tighten(cfg, path, data, &st)
+}
+
+// maxWorkspaceConfig bounds a workspace's .abhed/config.json.
+const maxWorkspaceConfig = 4 << 20
+
+// readWorkspaceConfig reads the workspace's config. A repository chooses
+// what is at that path, so it is read only as a plain file of bounded size:
+// a link, or a pipe or device such as /dev/zero, is refused rather than
+// followed or waited on, which would hang every session's start. In the home
+// folder it is the person's own file, which may be a link to their dotfiles.
+func readWorkspaceConfig(workspace, path string) ([]byte, error) {
+	if isHome(workspace) {
+		return os.ReadFile(path) // #nosec G304 -- the person's own ~/.abhed/config.json
+	}
+	if _, err := os.Lstat(path); err != nil {
+		return nil, err
+	}
+	return regularfile.Read(path, maxWorkspaceConfig)
 }
 
 // keepHA restores control_plane.ha as it was before a trusted workspace's

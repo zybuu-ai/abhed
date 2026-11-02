@@ -28,3 +28,7 @@ func unlockFile(f *os.File) error {
 	ol := new(windows.Overlapped)
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 }
+
+func openLock(lock string) (*os.File, error) {
+	return os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- a lock file beside the caller's own file
+}
