@@ -438,6 +438,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return logoutCmd(workspace, rest[1:], os.Stdout, os.Stderr)
 	case "profile":
 		return profileCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "policy":
+		return policyCmd(workspace, rest[1:], os.Stdout, os.Stderr)
 	case "sandbox":
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "pki":

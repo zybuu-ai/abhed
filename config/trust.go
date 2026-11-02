@@ -740,6 +740,7 @@ var workspaceRules = map[string]fieldRule{
 	"memory.import_depth": {lower(func(c *Config) *int { return &c.Memory.ImportDepth }, zeroIs(defaultImportDepth)), "only lower"},
 	"cli":                 {nil, "only the managed configuration sets it"},
 	"record":              {nil, "only the managed configuration sets it"},
+	"org_policy":          {nil, "only the managed configuration says where the org policy comes from"},
 	"hooks":               {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},

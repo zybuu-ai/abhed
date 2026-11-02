@@ -180,6 +180,35 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Signed org policy. After `abhed login` to a server that serves one, Abhed
+  fetches the org's managed configuration, checks its Ed25519 signature
+  against a key pinned at sign-in (`-policy-key` to pin one given out of
+  band; signed statements rotate the pins), keeps it in
+  `~/.abhed/org-policy.json` and applies it as the managed layer above the
+  user, `-settings` and workspace files and below `/etc/abhed/config.json`,
+  which wins where both set a key; deny and ask rules from both are kept. It
+  is fetched again as sessions start and every 15 minutes. A cached policy
+  past its age with the server unreachable, a fetched policy that fails
+  verification or is an earlier epoch, or no policy when the managed file
+  requires one applies the fallback (plan mode, no allow rules, no web
+  tools) over what was cached, and says so. An org policy cannot name
+  programs, local paths or environment variables (extensions, MCP servers,
+  `additional_dirs`, `api_key_env` and others are set aside). The managed
+  `org_policy` section pins the server and keys and can require the policy.
+  `abhed policy status|show|refresh|leave`; `session.started` records
+  `org_policy`. Guide: [Signed org policy](docs/guide/35-org-policy.md).
+- Record shipping. With the managed `record.ship.enabled` (normally set by
+  the org policy), each session's record is sent to the org server as it is
+  written, line for line with its hash chain, authenticated with the sign-in
+  token, resumable after time offline from cursors in
+  `~/.abhed/state/record-ship.json`. A line the secrets store would still
+  redact is not sent. `blocked`, `diverged`, `refused`, `gap`, `backlog` and
+  `resumed` events are printed, kept and reported to the server. `abhed
+  record ship [status|now]`. Guide: [Shipping the record](docs/guide/36-record-shipping.md).
+- `local.CheckSegment` and `local.WriteExport`, for a server that checks
+  shipped lines and exports them in the record's own format; packages
+  `orgpolicy` and `recordship` (experimental until 2.0).
+
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen on loopback once the person agrees for the workspace
   (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its

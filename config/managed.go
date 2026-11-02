@@ -33,6 +33,7 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	warnOrgFallback(w, cfg)
 	warnUnknown(w, cfg.Unknown)
 	warnNeverAllows(w, cfg.Permissions.Allow)
 	warnNotYetInEffect(w, cfg)
@@ -41,42 +42,80 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	return cfg, managedNeverDenies(findings)
 }
 
-// mergeManaged applies the managed file, if there is one, over cfg and
-// records which settings it made.
+// mergeManaged applies the managed configuration over cfg and records which
+// settings it made: the machine's managed file, if there is one, laid over
+// the signed org policy, if one applies. The file wins where both set a key.
 func mergeManaged(cfg *Config) error {
 	path := managed.ConfigFile
-	// Only nothing at the path means unmanaged; a file that cannot be read,
-	// or a link to nothing, is an error.
+	local, err := readManagedFile(path)
+	if err != nil {
+		return err
+	}
+	if local != nil {
+		// What the file sets is read twice, once into the config and once as keys;
+		// a file the two could read differently is refused, not guessed at.
+		if err := CheckManagedJSON(local); err != nil {
+			return fmt.Errorf("managed configuration %s: %w", path, err)
+		}
+	}
+	org, source := orgLayer(cfg, local)
+	if local == nil && org == nil {
+		return nil
+	}
+	data, label := local, path
+	if org != nil {
+		merged := any(org)
+		if local != nil {
+			ld, err := decodeDoc(local)
+			if err != nil {
+				return fmt.Errorf("managed configuration %s: %w", path, err)
+			}
+			merged = mergeDocs(org, ld, reflect.TypeFor[Config](), "")
+		} else {
+			label = source
+		}
+		if data, err = json.Marshal(merged); err != nil {
+			return fmt.Errorf("managed configuration: %w", err)
+		}
+		orgKeysOf(cfg, org, local)
+	}
+	return applyManaged(cfg, label, data)
+}
+
+// readManagedFile is the managed file's contents, nil when there is none.
+// Only nothing at the path means unmanaged; a file that cannot be read, or
+// a link to nothing, is an error.
+func readManagedFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		// Nor is a folder that is a link to nothing: the file is gone, not absent.
 		dir := filepath.Dir(path)
 		if di, derr := os.Lstat(dir); derr == nil && di.Mode()&fs.ModeSymlink != 0 {
 			if _, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) {
-				return fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
+				return nil, fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
 			}
 		}
-		return nil
+		return nil, nil
 	}
-	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
-	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
-	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		if info != nil && info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("managed configuration %s is a link to nothing", path)
+			return nil, fmt.Errorf("managed configuration %s is a link to nothing", path)
 		}
-		return fmt.Errorf("managed configuration %s was removed while it was read", path)
+		return nil, fmt.Errorf("managed configuration %s was removed while it was read", path)
 	}
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	// What the file sets is read twice, once into the config and once as keys;
-	// a file the two could read differently is refused, not guessed at.
-	if err := CheckManagedJSON(data); err != nil {
-		return fmt.Errorf("managed configuration %s: %w", path, err)
-	}
-	if _, err := mergeData(cfg, path, data); err != nil {
+	return data, nil
+}
+
+// applyManaged merges the managed document data, named label, over cfg.
+func applyManaged(cfg *Config, label string, data []byte) error {
+	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
+	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
+	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
+	if _, err := mergeData(cfg, label, data); err != nil {
 		return err
 	}
 	cfg.Managed = true
@@ -98,7 +137,7 @@ func mergeManaged(cfg *Config) error {
 	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
-		cfg.Unknown[i].Managed = cfg.Unknown[i].File == path
+		cfg.Unknown[i].Managed = cfg.Unknown[i].File == label
 	}
 	return nil
 }
@@ -382,7 +421,7 @@ func (c Config) ModelAllowed(name string) error {
 // model.default pins every choice to, or nil.
 func (c Config) PinnedAway(name string) error {
 	if c.ModelPinned() && name != c.Model.Default {
-		return refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
+		return c.refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
 	}
 	return nil
 }
@@ -392,7 +431,7 @@ func (c Config) PinnedAway(name string) error {
 // model.default, or nil when nothing pins the model.
 func (c Config) EndpointPinnedAway(desc string) error {
 	if c.ModelPinned() {
-		return refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
+		return c.refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
 	}
 	return nil
 }
@@ -445,9 +484,14 @@ func (e *ManagedError) Error() string {
 	return fmt.Sprintf("%s %s is refused: %s (set in %s)", Printable(e.Key), Printable(e.Value), e.Reason, Printable(e.File))
 }
 
-// refuse builds a ManagedError naming the managed file.
-func refuse(key, value, reason string) error {
-	return &ManagedError{Key: key, Value: value, Reason: reason, File: managed.ConfigFile}
+// refuse builds a ManagedError naming the managed file, or the org policy
+// when that made the setting.
+func (c Config) refuse(key, value, reason string) error {
+	file := managed.ConfigFile
+	if src := c.managedSourceOf(key); src != "" {
+		file = src
+	}
+	return &ManagedError{Key: key, Value: value, Reason: reason, File: file}
 }
 
 // knownMode reports whether m names a permission mode.
@@ -473,17 +517,17 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		case !knownMode(o.Mode):
 			return c, fmt.Errorf("unknown permission mode %q: want default, accept-edits, plan, auto or bypass", o.Mode)
 		case c.ManagedSets("permissions.mode") && o.Mode != c.Permissions.Mode && o.Mode != "plan":
-			return c, refuse("permissions.mode", o.Mode, fmt.Sprintf(
+			return c, c.refuse("permissions.mode", o.Mode, fmt.Sprintf(
 				"the managed configuration sets %q; only that mode or plan may be chosen", c.Permissions.Mode))
 		case c.Managed && o.Mode == "bypass":
-			return c, refuse("permissions.mode", o.Mode, "bypass mode is disabled under a managed configuration")
+			return c, c.refuse("permissions.mode", o.Mode, "bypass mode is disabled under a managed configuration")
 		}
 		c.Permissions.Mode = o.Mode
 		c.modeChosen = true
 	}
 	if o.SyntaxCheck != "" {
 		if c.ManagedSets("tools.syntax_check") && syntaxRank(o.SyntaxCheck) < syntaxRank(c.Tools.SyntaxCheck) {
-			return c, refuse("tools.syntax_check", o.SyntaxCheck, fmt.Sprintf(
+			return c, c.refuse("tools.syntax_check", o.SyntaxCheck, fmt.Sprintf(
 				"the managed configuration sets %q, which may only be made stricter", orRefuse(c.Tools.SyntaxCheck)))
 		}
 		c.Tools.SyntaxCheck = o.SyntaxCheck
@@ -496,24 +540,24 @@ func (c Config) Apply(o Overrides) (Config, error) {
 	}
 	if o.MaxTurns > 0 {
 		if c.ManagedSets("limits.max_turns") && c.Limits.MaxTurns > 0 && o.MaxTurns > c.Limits.MaxTurns {
-			return c, refuse("limits.max_turns", fmt.Sprint(o.MaxTurns), fmt.Sprintf(
+			return c, c.refuse("limits.max_turns", fmt.Sprint(o.MaxTurns), fmt.Sprintf(
 				"the managed configuration allows at most %d", c.Limits.MaxTurns))
 		}
 		c.Limits.MaxTurns = o.MaxTurns
 	}
 	if o.MemoryAuto != nil {
 		if c.ManagedSets("memory.auto") && *o.MemoryAuto != c.Memory.Auto {
-			return c, refuse("memory.auto", fmt.Sprint(*o.MemoryAuto), fmt.Sprintf(
+			return c, c.refuse("memory.auto", fmt.Sprint(*o.MemoryAuto), fmt.Sprintf(
 				"the managed configuration sets it to %v", c.Memory.Auto))
 		}
 		c.Memory.Auto = *o.MemoryAuto
 	}
 	if len(o.Allow) > 0 && c.AllowLocked() {
-		return c, refuse("permissions.allow", strings.Join(o.Allow, ","),
+		return c, c.refuse("permissions.allow", strings.Join(o.Allow, ","),
 			"the managed configuration sets the permissions, so allow rules may not be added")
 	}
 	if len(o.AdditionalDirs) > 0 && c.ManagedSets("additional_dirs") {
-		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
+		return c, c.refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
 	warnNeverAllows(warnSink(o.Warn), o.Allow)

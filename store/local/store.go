@@ -1146,6 +1146,8 @@ type Sealed struct {
 	// End is the file offset just past the line, where the next one starts;
 	// zero where it is not known, as from SealedSince.
 	End int64
+	// Raw is the line byte for byte, without its newline; set by LinesFrom.
+	Raw []byte
 }
 
 // SealedSince returns a session's lines after seq, in seq order, read from

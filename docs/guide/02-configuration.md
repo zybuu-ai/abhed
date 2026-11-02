@@ -1413,7 +1413,11 @@ configuration says `default`), not only `bypass`. A nested run narrows with
 ### The managed file
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
-key it sets replaces what the user and project files said. A list it sets,
+key it sets replaces what the user and project files said. An organisation can
+also sign a policy on its server for every laptop that signs in to it; that
+[signed org policy](35-org-policy.md) is laid under this file, which wins
+where both make a setting, and the two together are the managed
+configuration this section describes. A list it sets,
 such as `permissions.allow`, replaces the lower files' list; so does a map
 entry, such as one provider under `model.providers`. `permissions.deny` and
 `permissions.ask` are the exceptions: the managed rules are added to the

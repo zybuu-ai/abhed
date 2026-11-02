@@ -81,7 +81,7 @@ func (s *Store) LinesFrom(sessionID string, offset int64) ([]Sealed, int64, erro
 			return nil, 0, fmt.Errorf("the record is damaged at byte %d; run abhed record verify: %w", offset+sc.offsets[i], err)
 		}
 		end = offset + sc.offsets[i] + int64(len(raw)) + 1
-		out = append(out, Sealed{Event: l.event(), Prev: l.Prev, Hash: l.Hash, End: end})
+		out = append(out, Sealed{Event: l.event(), Prev: l.Prev, Hash: l.Hash, End: end, Raw: raw})
 	}
 	return out, end, nil
 }

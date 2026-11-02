@@ -104,12 +104,12 @@ func (c Config) applySupervisor(v string) (Config, error) {
 	switch v {
 	case "off":
 		if c.monitorLocked {
-			return c, refuse("monitor.enabled", v, "the managed configuration keeps the supervisor on")
+			return c, c.refuse("monitor.enabled", v, "the managed configuration keeps the supervisor on")
 		}
 		c.Monitor.Enabled = false
 	case "rules", "model":
 		if c.ManagedSets("monitor.judge") && orRules(c.Monitor.Judge) != v {
-			return c, refuse("monitor.judge", v, fmt.Sprintf("the managed configuration chooses the %s judge", orRules(c.Monitor.Judge)))
+			return c, c.refuse("monitor.judge", v, fmt.Sprintf("the managed configuration chooses the %s judge", orRules(c.Monitor.Judge)))
 		}
 		c.Monitor.Enabled, c.Monitor.Judge = true, v
 	default:

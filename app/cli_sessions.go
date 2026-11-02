@@ -773,7 +773,11 @@ func serveStorageLabel(cfg config.Config) string {
 // record.dir, or ~/.abhed/records, for this tenant and user, redacting with
 // the secrets store, read again as it changes, before anything is written. A managed
 // record.retention_days prunes what is older, leaving tombstones.
-func openRecord(cfg config.Config) (*local.Store, error) {
+func openRecord(cfg config.Config) (*local.Store, error) { return openRecordWith(cfg, true) }
+
+// openRecordWith is openRecord, shipping the record to the org server as it
+// is written when ship is set and record.ship is on.
+func openRecordWith(cfg config.Config, ship bool) (*local.Store, error) {
 	opts := local.Options{Dir: cfg.Record.Dir, Tenant: cliTenant(cfg), User: cliUser(), Redact: openVault().Session()}
 	anchor, stop, err := recordAnchor(cfg)
 	if err != nil {
@@ -787,6 +791,10 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 		opts.Witnessed = (&witnessFile{cfg: cfg, path: file}).heads
 	}
 	startOCSF := withOCSF(cfg, &opts)
+	startShip := func(*local.Store) {}
+	if ship {
+		startShip = withShipping(cfg, &opts)
+	}
 	rec, err := local.Open(opts)
 	if err != nil {
 		if stop != nil {
@@ -795,6 +803,7 @@ func openRecord(cfg config.Config) (*local.Store, error) {
 		return nil, fmt.Errorf("open the local record: %w", err)
 	}
 	startOCSF(rec)
+	startShip(rec)
 	if days := cfg.Record.RetentionDays; days > 0 && cfg.ManagedSets("record.retention_days") {
 		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 		pruned, _, err := rec.PruneOlder(cutoff, "managed", fmt.Sprintf("record.retention_days is %d", days))
