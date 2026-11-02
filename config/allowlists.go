@@ -68,9 +68,16 @@ type MCPServer struct {
 	ImagePinned bool
 }
 
+// NewMCPServer is what the lists judge of a server, given the programs its
+// command resolves to; the one place ImagePinned is decided.
+func NewMCPServer(name, command string, args []string, digest, url string, programs []string) MCPServer {
+	return MCPServer{Name: name, Programs: programs, Digest: digest, URL: url,
+		ImagePinned: url == "" && mcp.PinsImage(command, args, digest)}
+}
+
 // MCPServerOf is what the lists judge of a configured server.
 func MCPServerOf(s MCPServerConfig) MCPServer {
-	out := MCPServer{Name: s.Name, Digest: s.Digest, URL: s.URL, ImagePinned: s.URL == "" && mcp.PinsImage(s.Command, s.Args, s.Digest)}
+	out := NewMCPServer(s.Name, s.Command, s.Args, s.Digest, s.URL, nil)
 	if s.URL == "" && s.Command != "" {
 		out.Programs = mcp.Programs(s.Command, mcp.ServerEnv(s.Env))
 	}
@@ -453,9 +460,8 @@ func (m MCPMatch) matches(s MCPServer) bool {
 	return m.matchesHost(s)
 }
 
-// admits is matches for an allow entry: a digest that pins an engine's image
-// binds nothing about the engine, so such a server is admitted by a digest
-// entry only when the same entry also names the engine's path by command.
+// admits is matches for an allow entry: an image pin binds nothing about the
+// engine, so it also needs the entry's command to match the engine's path.
 func (m MCPMatch) admits(s MCPServer) bool {
 	if m.Digest != "" && s.ImagePinned && m.Command == "" {
 		return false
