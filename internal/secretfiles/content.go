@@ -165,7 +165,18 @@ func HasKeyMaterial(text string) bool {
 // RedactContent replaces each key or token in text with "[secret]" and
 // reports whether it found one.
 func RedactContent(text string) (string, bool) {
-	text, found := redactBlocks(text)
+	return redactAll(text, false)
+}
+
+// RedactDiff is RedactContent for a unified diff: every line's first
+// column is a diff's own (+, - or a space), so a block scalar whose key is a
+// context line and whose value lines changed is read as the block it is.
+func RedactDiff(text string) (string, bool) {
+	return redactAll(text, true)
+}
+
+func redactAll(text string, diff bool) (string, bool) {
+	text, found := redactBlocks(text, diff)
 	for _, p := range contentPatterns {
 		locs := p.re.FindAllStringSubmatchIndex(text, -1)
 		if len(locs) == 0 {
@@ -350,26 +361,34 @@ var blockKey = regexp.MustCompile(`^([+-]?)([ \t-]*)([A-Za-z0-9_.-]+)[ \t]*:[ \t
 // redactBlocks withholds a secret-named YAML block scalar's lines: those
 // indented deeper than its key, each replaced by [secret] at its own
 // indentation, so the lines, a sibling key and the line ends stay as they
-// were. A diff's one-column +, - or space before a line is read past.
-func redactBlocks(text string) (string, bool) {
+// were. A + or - before a key line is read past, and its block's lines' first
+// column too; in a diff, every line's first column is.
+func redactBlocks(text string, diff bool) (string, bool) {
 	if !strings.Contains(text, ":") {
 		return text, false
 	}
 	lines := strings.SplitAfter(text, "\n")
+	// column splits off a line's diff column when the text is a diff, or
+	// when its key line had one.
+	column := func(l string, on bool) (string, string) {
+		if on && len(l) > 0 && strings.ContainsRune("+- ", rune(l[0])) && !diffHeader(l) {
+			return l[:1], l[1:]
+		}
+		return "", l
+	}
 	found := false
 	for i := 0; i < len(lines); i++ {
-		m := blockKey.FindStringSubmatch(strings.TrimRight(lines[i], "\n"))
+		keyPrefix, keyLine := column(lines[i], diff)
+		m := blockKey.FindStringSubmatch(strings.TrimRight(keyPrefix+keyLine, "\n"))
+		if diff {
+			m = blockKey.FindStringSubmatch(strings.TrimRight(keyLine, "\n"))
+		}
 		if m == nil || !secretKeyName(m[3]) {
 			continue
 		}
-		diff, keyIndent := m[1] != "", len(m[2])
+		prefixed, keyIndent := diff || m[1] != "", len(m[2])
 		for i+1 < len(lines) {
-			next := lines[i+1]
-			body := next
-			prefix := ""
-			if diff && len(body) > 0 && strings.ContainsRune("+- ", rune(body[0])) {
-				prefix, body = body[:1], body[1:]
-			}
+			prefix, body := column(lines[i+1], prefixed)
 			content := strings.TrimRight(body, "\r\n")
 			if strings.TrimSpace(content) == "" {
 				i++ // a blank line inside the block stays as it is
@@ -385,6 +404,11 @@ func redactBlocks(text string) (string, bool) {
 		}
 	}
 	return strings.Join(lines, ""), found
+}
+
+// diffHeader is a diff's own line: a file's ---/+++ line or a hunk's @@.
+func diffHeader(l string) bool {
+	return strings.HasPrefix(l, "+++ ") || strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "@@")
 }
 
 // assignLiteral is a bare value after = that is a literal: yamlLiteral's

@@ -81,7 +81,7 @@ func readStaged(ctx context.Context, root string, roots []string, mayRead func(s
 	if len(keep) == 0 {
 		return d, nil
 	}
-	out, err := hostgit.Command(ctx, root, append(append(which, "--relative", "--no-color", "--stat", "--patch", "-U3", "--"), keep...)...).Output()
+	out, err := hostgit.Command(ctx, root, append(append(which, "--relative", "--no-color", "--stat", "--patch", "-U10", "--"), keep...)...).Output()
 	if err != nil {
 		return stagedDiff{}, err
 	}
@@ -158,13 +158,19 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		text, _ = secretfiles.RedactContent(text)
 		return text
 	}
+	// The diff is read as one: each line's first column is the diff's own.
+	cleanDiff := func(text string) string {
+		text = parts.Loop.Withheld(text)
+		text, _ = secretfiles.RedactDiff(text)
+		return text
+	}
 	roots := append([]string{parts.Session.Root}, s.roots()...)
 	mayRead := func(p string) bool { return !readDenied(parts.Loop.Policy, p) }
-	diff, err := readStaged(ctx, parts.Session.Root, roots, mayRead, clean, true)
+	diff, err := readStaged(ctx, parts.Session.Root, roots, mayRead, cleanDiff, true)
 	source := "staged"
 	if err == nil && diff.files == 0 && diff.excluded == 0 {
 		// Nothing staged: the message is for the changes in the working tree.
-		diff, err = readStaged(ctx, parts.Session.Root, roots, mayRead, clean, false)
+		diff, err = readStaged(ctx, parts.Session.Root, roots, mayRead, cleanDiff, false)
 		source = "unstaged"
 	}
 	if err != nil {
