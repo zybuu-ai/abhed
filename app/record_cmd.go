@@ -53,7 +53,13 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 		return usage()
 	}
 	// The witness and record shipping connect through the upstream proxy.
-	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
+	o := config.LoadOptions{Trust: trust, Quiet: true}
+	if args[0] == "verify" {
+		// Verify reads only where the record is and its witness: warnings about
+		// settings for sessions would only bury its answer.
+		o.Warn = func(string) {}
+	}
+	cfg, err := loadNetworked(workspace, o)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1

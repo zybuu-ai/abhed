@@ -8,6 +8,15 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Generate Commit Message asks with thinking off where the provider takes
+  the switch (`think` on Ollama and other local servers), so a thinking
+  model no longer spends the whole 2,048-token budget thinking and writes
+  no message; a server that refuses the switch is asked once more without
+  it. When a message still comes back empty after the full budget, the
+  error says so and names `model.commit`.
+- `abhed record verify` no longer prints configuration warnings, such as
+  egress settings set aside, which concern sessions and buried its answer
+  about the chain.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by
