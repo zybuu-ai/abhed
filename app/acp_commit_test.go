@@ -197,3 +197,44 @@ func TestStudioCommitMessageLeavesOutIgnoredAndNamedSecrets(t *testing.T) {
 		t.Fatalf("sent %.600s", sent)
 	}
 }
+
+// Secrets on a staged diff's added lines are withheld: YAML, a block
+// scalar, = files and upper-case names, each line starting with +.
+func TestStudioCommitMessageWithholdsSecretsOnAddedLines(t *testing.T) {
+	model := newFIMServer(t, "Add settings")
+	r := completionRig(t, model.URL, "")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	r.write("values.yaml", "db:\n  password: Zq81kLm0Pw7xA\n  cert: |\n    plain-line\n  private_key: |\n    BlockSecret9x7\n  user: bob\n")
+	r.write("app.properties", "spring.datasource.password=PropSecret8y6\nname=svc\n")
+	r.write("deploy.vars", "DB_PASSWORD=UpperSecret7z5\n")
+	r.write("settings.py", "api_key = \"PySecret6w4a1\"\nDEBUG = True\n")
+	git("add", "values.yaml", "app.properties", "deploy.vars", "settings.py")
+	id := r.open()
+	var res struct {
+		Message string `json:"message"`
+	}
+	r.cl.ok("_abhed/commitMessage", map[string]any{"sessionId": id}, &res)
+	if res.Message != "Add settings" {
+		t.Fatalf("%+v", res)
+	}
+	model.mu.Lock()
+	sent := strings.Join(model.bodies, "\n")
+	model.mu.Unlock()
+	for _, s := range []string{"Zq81kLm0Pw7xA", "BlockSecret9x7", "PropSecret8y6", "UpperSecret7z5", "PySecret6w4a1"} {
+		if strings.Contains(sent, s) {
+			t.Errorf("%s reached the model", s)
+		}
+	}
+	for _, s := range []string{"user: bob", "name=svc", "DEBUG = True", "plain-line"} {
+		if !strings.Contains(sent, s) {
+			t.Errorf("%q was lost from the diff", s)
+		}
+	}
+}

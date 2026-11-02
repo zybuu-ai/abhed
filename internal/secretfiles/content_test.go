@@ -201,3 +201,49 @@ func TestSecretNamedKeysLeaveCodeAlone(t *testing.T) {
 		t.Errorf("CRLF: %q", out)
 	}
 }
+
+// A diff's added and removed lines are read past their + or -: the
+// review's probes, each a line a commit message would otherwise carry.
+func TestSecretShapesReadDiffLines(t *testing.T) {
+	for in, secret := range map[string]string{
+		"+password=Sup3rS3cretPw\n":                       "Sup3rS3cretPw",
+		"+DB_PASSWORD=Sup3rS3cretPw\n":                    "Sup3rS3cretPw",
+		`+api_key = "a8f5f167f44f4964"` + "\n":            "a8f5f167f44f",
+		"+  password: Zq81kLm0Pw7x\n":                     "Zq81kLm0Pw7x",
+		`+  password: "Zq81kLm0Pw7x"` + "\n":              "Zq81kLm0Pw7x",
+		"+password: |\n+  Zq81kLm0Pw7x\n":                 "Zq81kLm0Pw7x",
+		"+spring.datasource.password=Sup3rS3cretPw\n":     "Sup3rS3cretPw",
+		"+  export api_key='a8f5f167f44f4964'\n":          "a8f5f167f44f",
+		"+sessionKey: Zq81kLm0Pw7x\n":                     "Zq81kLm0Pw7x",
+		"-  password: Zq81kLm0Pw7x\n":                     "Zq81kLm0Pw7x",
+		`const c = {password: "Zq81kLm0Pw7x", user: "a"}`: "Zq81kLm0Pw7x",
+	} {
+		if out, found := RedactContent(in); !found || strings.Contains(out, secret) {
+			t.Errorf("%q -> %q", in, out)
+		}
+	}
+}
+
+// A block scalar's lines are withheld only as deep as the block goes, one
+// [secret] a line, so sibling keys and the line structure stay; Python that
+// merely assigns to a secret-named name is left alone.
+func TestBlockScalarsAndPythonStayIntact(t *testing.T) {
+	in := "db:\n  password: |\n    s3cretvalue9\n    second-line-x\n  user: bob\n  host: db.internal\nother: 1\n"
+	want := "db:\n  password: |\n    [secret]\n    [secret]\n  user: bob\n  host: db.internal\nother: 1\n"
+	if out, found := RedactContent(in); !found || out != want {
+		t.Errorf("block: %q", out)
+	}
+	crlf := "password: >\r\n  s3cretvalue9\r\nnext: 1\r\n"
+	if out, _ := RedactContent(crlf); out != "password: >\r\n  [secret]\r\nnext: 1\r\n" {
+		t.Errorf("CRLF block: %q", out)
+	}
+	for _, ok := range []string{
+		`pat = r'\d+'`, `pat = r"\s+"`, `pat = '[a-z]+'`, "token = args.token or DEFAULT_TOKEN",
+		"password = None if x else y", `TOKEN = f"Bearer {tok}"`, `bearer = f'Bearer {t}'`, `secret = b"abc"`,
+		"auth = lambda r: r", "auth = a && b", `password = f"{user}"`,
+	} {
+		if out, found := RedactContent(ok + "\n"); found || out != ok+"\n" {
+			t.Errorf("not a secret, but %q -> %q", ok, out)
+		}
+	}
+}

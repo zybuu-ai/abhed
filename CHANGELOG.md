@@ -904,8 +904,11 @@ All notable changes to Abhed are recorded here. The format follows
   and withhold the value of a key whose name says secret, in any case, in
   JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
   and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
-  `password=`); a type, a variable, a template or a key that only names a
-  secret (`passwordFile`, `token_url`) is left alone.
+  `password=`), on a diff's added and removed lines too; a type, a variable,
+  a template, Python that only assigns to such a name, or a key that only
+  names a secret (`passwordFile`, `token_url`) is left alone, and a block
+  scalar's lines are withheld one by one, its sibling keys kept. Next-edit
+  cleans its window whole, so a block scalar there is withheld too.
 - An agent that makes the same read-only call with the same answer again
   and again is told so after three and stopped after six, with the reason
   named (`retry_exhausted`); the next message goes on. A call that can

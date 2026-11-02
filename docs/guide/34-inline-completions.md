@@ -134,14 +134,23 @@ the metrics count them as `abhed_next_edits_total` and
 
 Studio's Source Control view can ask for a message for what is staged, or,
 with nothing staged, for the changes in the working tree. The engine reads
-the change itself, with the same confined git it uses
-for its own reads, so Studio never sends a diff. A staged file the session
-may not read, one that looks like keys, or Abhed's state is left out of what
-is sent; the rest has stored secrets and key-shaped text withheld and is cut
-to 32 KiB. A file the repository's ignore rules name is left out even when
-it was force-added, so a repository that ignores everything and force-adds
-its files (a dotfiles repository, say) gets no message. The model is `model.commit`, or the completion model, under the
+the change itself, with the same confined git it uses for its own reads, so
+Studio never sends a diff. A staged file the session may not read, one that
+looks like keys, or Abhed's state is left out of what is sent; the rest has
+stored secrets and key-shaped text withheld, the diff's added and removed
+lines included, and is cut to 32 KiB. A file the repository's ignore rules
+name is left out even when it was force-added, so a repository that ignores
+everything and force-adds its files (a dotfiles repository, say) gets no
+message. The model is `model.commit`, or the completion model, under the
 same rules as completions.
+
+Withholding is by shape, not a guarantee. A stored secret's value is always
+withheld; beyond that, Abhed recognises keys and tokens by their form and
+values by the name they sit under. It leaves alone a bare value of letters
+only (`password: hunterhunter`), one that reads as code (ending in `;`, or
+holding `(`, `[` or `<`), a key whose last word only names a secret
+(`password_env`, `token_id`, `auth_header`), and a block scalar that starts
+with a blank line. Keep secrets in a store, not in files you edit or commit.
 
 The record holds `commit_message.requested`, before the diff goes, with how
 many files were sent and left out and how many bytes, and
