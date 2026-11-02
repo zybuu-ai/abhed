@@ -112,6 +112,24 @@ func webValue(c *Config, k string) string {
 // applyWebIntents applies, over the managed file, what the lower layers asked
 // that narrows the web sections, and sets aside what would not narrow.
 func applyWebIntents(c *Config) {
+	// Every list a lower layer gives only narrows the managed one, so the
+	// managed list here is the only source of exact anchors.
+	var exact []string
+	if c.ManagedSets("web_fetch.allowed_hosts") {
+		for _, h := range c.WebFetch.AllowedHosts {
+			if !strings.Contains(h, "*") {
+				exact = append(exact, h)
+			}
+		}
+	}
+	defer func() {
+		c.fetchAnchors = nil
+		for _, h := range exact {
+			if c.WebFetch.Enabled && slices.ContainsFunc(c.WebFetch.AllowedHosts, func(k string) bool { return strings.EqualFold(k, h) }) {
+				c.fetchAnchors = append(c.fetchAnchors, h)
+			}
+		}
+	}()
 	for _, in := range c.webIntents {
 		narrowed := func(value, how string) {
 			c.Narrowed = append(c.Narrowed, SetAsideKey{File: in.file, Layer: in.layer, Key: in.key, Value: value, Reason: how})
@@ -365,3 +383,8 @@ func (c Config) layerOf(file string) string {
 // RedactValue is v as a record shows a value set at key: credentials
 // redacted, a URL without its password, and cut to a short line.
 func RedactValue(key string, v any) string { return shortJSON(redact(key, v)) }
+
+// WebFetchAnchors are the hosts the managed web_fetch.allowed_hosts names
+// exactly and the effective list still holds: the only ones
+// resolve_via_proxy lets web_fetch send to the upstream proxy unresolved.
+func (c Config) WebFetchAnchors() []string { return slices.Clone(c.fetchAnchors) }

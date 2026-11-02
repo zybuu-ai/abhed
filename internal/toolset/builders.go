@@ -71,7 +71,7 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 		load = vault.LoadRedactor
 	}
 	ruled := append(append([]string(nil), cfg.Permissions.Deny...), cfg.Permissions.Ask...)
-	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
+	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts, ExactHosts: cfg.WebFetchAnchors(),
 		Secrets: load, MaxChars: cfg.WebFetch.MaxChars, PathRuled: webfetch.PathRuled(ruled)}
 }
 

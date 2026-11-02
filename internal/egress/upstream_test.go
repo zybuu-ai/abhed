@@ -604,6 +604,12 @@ func TestUpstreamResolveViaProxy(t *testing.T) {
 		if err := get(g, &rec, "x.wild.test"); err == nil || corp.saw("x.wild.test") {
 			t.Fatalf("a wildcard host went to the proxy unresolved: %v", err)
 		}
+		// Under the allowlist the client's own anchor does not count: only the rule's.
+		ctx := WithCaller(context.Background(), Caller{Session: "s", Record: rec.rec})
+		anch := &Transport{Kind: KindWebFetch, Guard: g, Anchored: func(string) bool { return true }}
+		if _, err := ownGet(t, anch, ctx, fmt.Sprintf("http://y.wild.test:%d/r", port)); err == nil || corp.saw("y.wild.test") {
+			t.Fatalf("a client anchor widened a wildcard rule: %v", err)
+		}
 		// A lookup that times out or fails is no not-found: refused.
 		for name, dns := range map[string]func(context.Context, string) ([]netip.Addr, error){"slow": slowDNS, "servfail": failingDNS} {
 			g2 := ownGuard(t, rules, GuardOptions{Resolve: dns})

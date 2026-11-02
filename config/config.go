@@ -114,6 +114,9 @@ type Config struct {
 	ManagedKeys []string `json:"-"`
 	// managedFetchOff is the managed file's own web_fetch.enabled false.
 	managedFetchOff bool
+	// fetchAnchors are the managed web_fetch.allowed_hosts entries named
+	// exactly that the lower layers' narrowing kept.
+	fetchAnchors []string
 	// Unknown lists the keys in the files that no setting reads.
 	Unknown []UnknownKey `json:"-"`
 	// Duplicates are keys written twice in one object of a file read; the last one wins.

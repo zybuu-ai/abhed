@@ -360,7 +360,7 @@ func (u *Upstream) precheck(ctx context.Context, resolve func(context.Context, s
 	case !u.ResolveViaProxy:
 		return nil, false, &refusal{host: host, msg: host + " does not resolve here, so its address cannot be checked; it is not sent to the upstream proxy unless network.upstream_proxy.resolve_via_proxy is on"}
 	case !anchored:
-		return nil, false, &refusal{host: host, msg: host + " does not resolve here; resolve_via_proxy passes such a name only for a host an allow rule (or web_fetch's allowed_hosts) names exactly, not by a wildcard or the default"}
+		return nil, false, &refusal{host: host, msg: host + " does not resolve here; resolve_via_proxy passes such a name only for a host an allow rule (or, for web_fetch outside the allowlist, the managed allowed_hosts) names exactly, not by a wildcard or the default"}
 	}
 	return nil, true, nil
 }
