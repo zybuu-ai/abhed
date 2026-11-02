@@ -605,10 +605,14 @@ read, say), an editor's connection fetches no org policy at all.
 `abhed sandbox`'s streams (`exec -i`, `connect`, `cp`, `forward`, and
 `ssh` through `connect --stdio`) reach the server by a `CONNECT` tunnel
 through the proxy, also for an `http://` server, so the proxy must allow
-`CONNECT` to the server's port.
+`CONNECT` to the server's port. They trust the CA bundle as the REST calls
+do, so a proxy that inspects TLS breaks neither.
 
-When a model call fails at the proxy (it refuses the tunnel, or answers
-502, 503 or 504), the error names the proxy and the model host, and
+When a model call fails at the proxy (the proxy is not answering, it
+refuses the tunnel or asks for credentials, or the call comes back 502, 503
+or 504), the error names the proxy and the model host; an answer the model
+server gave itself is reported as the server's. A provider's default
+endpoint, with no `base_url`, is taken to go through the proxy. And
 `/doctor` says the endpoint answered only when a call through the proxy
 did.
 
