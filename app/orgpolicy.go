@@ -414,7 +414,7 @@ func keepOrgPolicyFresh(ctx context.Context, every time.Duration, errOut io.Writ
 }
 
 // policyCmd is `abhed policy`: the signed org policy this machine takes.
-func policyCmd(workspace string, args []string, out, errOut io.Writer) int {
+func policyCmd(args []string, out, errOut io.Writer) int {
 	usage := func() int {
 		fmt.Fprintln(errOut, "usage: abhed policy status | show | refresh | leave")
 		return 2
@@ -425,7 +425,7 @@ func policyCmd(workspace string, args []string, out, errOut io.Writer) int {
 	fail := func(err error) int { fmt.Fprintf(errOut, "abhed: %v\n", err); return 1 }
 	switch args[0] {
 	case "status":
-		return policyStatus(workspace, out, errOut)
+		return policyStatus(out, errOut)
 	case "show":
 		path, err := orgpolicy.Path()
 		if err != nil {
@@ -486,7 +486,7 @@ func policyCmd(workspace string, args []string, out, errOut io.Writer) int {
 }
 
 // policyStatus prints what applies, as loading decides it.
-func policyStatus(workspace string, out, errOut io.Writer) int {
+func policyStatus(out, errOut io.Writer) int {
 	cfg, err := config.LoadManagedWith(config.LoadOptions{Warn: func(string) {}})
 	if err != nil {
 		fmt.Fprintf(errOut, "abhed: %v\n", err)

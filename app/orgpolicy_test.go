@@ -193,7 +193,7 @@ func TestPolicyLeaveAndManagedLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if code := policyCmd("", []string{"status"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "applied") ||
+	if code := policyCmd([]string{"status"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "applied") ||
 		!strings.Contains(out.String(), "limits.max_turns") {
 		t.Errorf("status %d: %s %s", code, out.String(), errOut.String())
 	}
@@ -203,11 +203,11 @@ func TestPolicyLeaveAndManagedLock(t *testing.T) {
 	if err := os.WriteFile(managed.ConfigFile, []byte(`{"org_policy":{"url":"`+srv.URL+`","required":true}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code := policyCmd("", []string{"leave"}, &out, &errOut); code == 0 {
+	if code := policyCmd([]string{"leave"}, &out, &errOut); code == 0 {
 		t.Fatal("leave was allowed under a managed org policy")
 	}
 	_ = os.Remove(managed.ConfigFile)
-	if code := policyCmd("", []string{"leave"}, &out, &errOut); code != 0 {
+	if code := policyCmd([]string{"leave"}, &out, &errOut); code != 0 {
 		t.Fatalf("leave: %s", errOut.String())
 	}
 	if cfg := loadOrg(t); cfg.OrgPolicy.Status != orgpolicy.StatusNone || cfg.Managed {

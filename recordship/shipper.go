@@ -471,21 +471,21 @@ func (s *Shipper) send(ctx context.Context, id string, c *Cursor, batch []local.
 	var ack Ack
 	_ = json.Unmarshal(resp, &ack)
 	last := batch[len(batch)-1]
-	switch {
-	case status == http.StatusOK:
+	switch status {
+	case http.StatusOK:
 		if ack.Lines != c.Lines+int64(len(batch)) || ack.Hash != last.Hash {
 			return nil, fmt.Errorf("the org server's answer (line %d) does not match what was sent (line %d)", ack.Lines, c.Lines+int64(len(batch)))
 		}
 		c.Lines, c.Hash, c.Offset = ack.Lines, ack.Hash, last.End
 		return nil, nil
-	case status == http.StatusConflict:
+	case http.StatusConflict:
 		if ack.Lines < 0 || (ack.Lines == c.Lines && ack.Hash == c.Hash) {
 			return nil, fmt.Errorf("the org server refused session %s's batch: %s", id, ack.Error)
 		}
 		return s.from(id, c, ack.Lines, ack.Hash)
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return nil, fmt.Errorf("the org server refused the sign-in (%d); run abhed login again", status)
-	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		s.block(id, *c, KindRefused, "the org server refused the record: "+ack.Error)
 		c.Blocked = "refused"
 		return nil, nil

@@ -673,9 +673,7 @@ func noteOrgLists(cfg *Config, lists map[string]any, source string) error {
 	}
 	cfg.orgListFile = source
 	noteAllowLayerFrom(cfg, &src, source, managedKeys(b))
-	for _, k := range managedKeys(b) {
-		cfg.OrgPolicy.Keys = append(cfg.OrgPolicy.Keys, k)
-	}
+	cfg.OrgPolicy.Keys = append(cfg.OrgPolicy.Keys, managedKeys(b)...)
 	sort.Strings(cfg.OrgPolicy.Keys)
 	return nil
 }
