@@ -574,6 +574,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
 			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg),
 			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
+		if org := toolset.OrgPolicyState(cfg); org != nil {
+			start["org_policy"] = org
+		}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
 		}

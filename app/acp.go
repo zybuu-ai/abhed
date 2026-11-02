@@ -431,6 +431,10 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	defer stopper.stop()
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	orgPolicyAtStart(stopper.ctx, os.Stderr)
+	if mc, err := config.MachineOrgPolicy(); err == nil {
+		keepOrgPolicyFresh(stopper.ctx, mc.Refresh(), os.Stderr)
+	}
 	c.useRecord(workspace, trust)
 	err := c.run(os.Stdin)
 	c.closeRecord()
@@ -944,6 +948,7 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
+	orgPolicyAtStart(c.ctx, os.Stderr)
 	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]string{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()

@@ -41,6 +41,7 @@ func recordCmd(workspace string, args []string, trust config.TrustChoice, stdin 
                                        with storage.driver postgres, the session's chain
   prune   <session> | -older-than 90d [-yes]
                                        remove sessions, leaving a tombstone in the index
+  ship    [status|now]                 record shipping to the org server (record.ship)
   audit   [-head pos:hash] [-format ocsf [-ocsf-version V]]
                                        check the control-plane audit chain abhed serve writes,
                                        or print its rows as OCSF events
@@ -67,7 +68,7 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	if args[0] == "export" && cfg.Storage.Driver == "postgres" {
 		return exportPostgres(cfg, workspace, args[1:], stdout, stderr)
 	}
-	rec, err := openRecord(cfg)
+	rec, err := openRecordWith(cfg, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1
@@ -85,6 +86,8 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 		return c.export(args[1:])
 	case "prune":
 		return c.prune(args[1:])
+	case "ship":
+		return c.ship(args[1:])
 	}
 	return usage()
 }

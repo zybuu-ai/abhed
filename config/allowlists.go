@@ -253,7 +253,7 @@ func (c Config) ModelsAllowed() []AllowList {
 	var out []AllowList
 	for _, l := range c.layersOrSelf() {
 		if l.setsModels {
-			out = append(out, AllowList{File: l.file, Layer: c.listLayer(l.file), Managed: l.file == managed.ConfigFile, Entries: slices.Clone(l.models)})
+			out = append(out, AllowList{File: l.file, Layer: c.listLayer(l.file), Managed: c.managedList(l.file), Entries: slices.Clone(l.models)})
 		}
 	}
 	return out
@@ -274,6 +274,9 @@ func (c Config) listLayer(file string) string {
 	if file == managed.ConfigFile {
 		return LayerManaged
 	}
+	if file != "" && file == c.orgListFile {
+		return LayerOrg
+	}
 	if l := c.layerOf(file); l != "" {
 		return l
 	}
@@ -289,7 +292,7 @@ func (c Config) MCPLists() []AllowList {
 			for _, m := range entries {
 				s = append(s, m.String())
 			}
-			out = append(out, AllowList{File: l.file, Layer: c.listLayer(l.file), Managed: l.file == managed.ConfigFile, Denied: denied, Entries: s})
+			out = append(out, AllowList{File: l.file, Layer: c.listLayer(l.file), Managed: c.managedList(l.file), Denied: denied, Entries: s})
 		}
 		if l.setsMCPAllowed {
 			add(l.mcpAllowed, false)
@@ -448,4 +451,10 @@ func fileOf(err error) string {
 		return me.File
 	}
 	return ""
+}
+
+// managedList reports whether a list is the managed configuration's: the
+// machine's file or the org policy.
+func (c Config) managedList(file string) bool {
+	return file == managed.ConfigFile || (file != "" && file == c.orgListFile)
 }

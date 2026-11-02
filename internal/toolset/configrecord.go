@@ -85,3 +85,27 @@ func WebState(cfg config.Config) map[string]any {
 	}
 	return out
 }
+
+// OrgPolicyState is what session.started says about the signed org policy,
+// nil when this machine takes none.
+func OrgPolicyState(cfg config.Config) map[string]any {
+	s := cfg.OrgPolicy
+	if s.Status == "" || s.Status == "none" {
+		return nil
+	}
+	out := map[string]any{"status": s.Status, "server": config.Printable(s.URL)}
+	if s.Reason != "" {
+		out["reason"] = config.Printable(s.Reason)
+	}
+	if s.Version > 0 || s.Name != "" {
+		out["name"], out["version"], out["epoch"], out["digest"], out["key"] = s.Name, s.Version, s.Epoch, s.Digest, s.KeyID
+		out["issued_at"] = s.Issued.UTC().Format("2006-01-02T15:04:05Z07:00")
+	}
+	if len(s.Keys) > 0 {
+		out["sets"] = s.Keys
+	}
+	if cfg.Record.Ship.Enabled && cfg.ManagedSets("record.ship") {
+		out["record_ship"] = true
+	}
+	return out
+}

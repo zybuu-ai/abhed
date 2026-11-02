@@ -30,6 +30,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -98,6 +99,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)
+	}
+	if s := cfg.OrgPolicy; s.Status != "" && s.Status != orgpolicy.StatusNone {
+		fmt.Printf("org policy  %s\n", config.Printable(s.OrgPolicyLine()))
 	}
 	for _, line := range allowListLines(cfg) {
 		fmt.Println(line)
@@ -740,7 +744,14 @@ func managedLine(cfg config.Config) string {
 	if !cfg.Managed {
 		return ""
 	}
-	return fmt.Sprintf("%s (sets %d setting(s))", config.Printable(managed.ConfigFile), len(cfg.ManagedKeys))
+	var from []string
+	if _, err := os.Stat(managed.ConfigFile); err == nil {
+		from = append(from, config.Printable(managed.ConfigFile))
+	}
+	if cfg.OrgPolicy.Status != "" && cfg.OrgPolicy.Status != orgpolicy.StatusNone {
+		from = append(from, "the org policy")
+	}
+	return fmt.Sprintf("%s (sets %d setting(s))", strings.Join(from, " and "), len(cfg.ManagedKeys))
 }
 
 // sessionLine says how long a browser sign-in lasts, when one does.

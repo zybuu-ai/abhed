@@ -102,7 +102,11 @@ type Config struct {
 	Egress egress.Config `json:"egress,omitempty"`
 	// ControlPlane serves /v1/sandboxes from `abhed serve`. Off by default.
 	ControlPlane ControlPlaneConfig `json:"control_plane,omitempty"`
+	// Org is the machine's say over the signed org policy. Managed only.
+	Org OrgPolicyConfig `json:"org_policy,omitzero"`
 
+	// OrgPolicy is what loading decided about the signed org policy.
+	OrgPolicy OrgPolicyStatus `json:"-"`
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
 	// ManagedKeys are the settings the managed file made, as sorted dotted
@@ -142,6 +146,8 @@ type Config struct {
 	// allowLayers are each file's own model.allowed and mcp lists, applied
 	// together; see ModelListed and MCPAdmitted.
 	allowLayers []allowLayer
+	// orgListFile names the org policy's own allow-list layer, when it has one.
+	orgListFile string
 	// monitorLocked is set when the managed file keeps the supervisor on.
 	monitorLocked bool
 	// managedRules are the rules the managed file itself lists, by list and
@@ -218,6 +224,25 @@ type RecordConfig struct {
 	Witness WitnessConfig `json:"witness,omitempty"`
 	// OCSF is a JSONL file of the record as OCSF events.
 	OCSF OCSFConfig `json:"ocsf,omitempty"`
+	// Ship sends each session's record to the org server as it is written.
+	// Managed only, and normally set by the org policy.
+	Ship ShipConfig `json:"ship,omitzero"`
+}
+
+// ShipConfig is record shipping to the org server signed in with abhed login.
+type ShipConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxBacklogMB is how much unshipped record is held before each start
+	// warns and records it (512).
+	MaxBacklogMB int `json:"max_backlog_mb,omitempty"`
+}
+
+// MaxBacklog is the backlog limit in bytes.
+func (s ShipConfig) MaxBacklog() int64 {
+	if s.MaxBacklogMB > 0 {
+		return int64(s.MaxBacklogMB) << 20
+	}
+	return 512 << 20
 }
 
 // WitnessConfig names an off-host witness for the record's heads. Managed only.
@@ -346,6 +371,8 @@ var managedOnly = map[string]string{
 	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
 	"record.ocsf.path":                   "only the managed configuration moves the record's OCSF file",
 	"record.ocsf.locked":                 "only the managed configuration locks the record's OCSF file",
+	"record.ship":                        "only the managed configuration ships the record to the org server",
+	"org_policy":                         "only the managed configuration says where the org policy comes from",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
@@ -426,6 +453,10 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.OCSF.Path = ""
 	case "record.ocsf.locked":
 		c.Record.OCSF.Locked = false
+	case "record.ship":
+		c.Record.Ship = ShipConfig{}
+	case "org_policy":
+		c.Org = OrgPolicyConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
 	case "hooks.managed_only":
@@ -1768,6 +1799,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	applyEnv(&cfg)
 	narrowToAllowLists(&cfg)
 	w := warnSink(o.Warn)
+	warnOrgFallback(w, cfg)
 	warnUnknown(w, cfg.Unknown)
 	warnDuplicates(w, cfg.Duplicates)
 	warnSetAside(w, cfg.SetAside)
