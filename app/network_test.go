@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,6 +274,50 @@ func TestModelFailureThroughTheProxyNamesIt(t *testing.T) {
 			t.Errorf("%s: %s", name, got)
 		}
 	}
+	// The model server's own answers, and other errors, are never put on the proxy.
+	for name, e := range map[string]error{
+		"server 403 Forbidden":       fmt.Errorf("model: %w", &model.StatusError{Status: http.StatusForbidden, Body: "Forbidden", Attempts: 1}),
+		"server 400 ... Bad Gateway": &model.StatusError{Status: http.StatusBadRequest, Body: "upstream said Bad Gateway", Attempts: 1},
+		"other : Forbidden":          errors.New("open /x: Forbidden"),
+		"url error : Forbidden":      &url.Error{Op: "Post", URL: p.BaseURL, Err: fmt.Errorf("read: %w", errors.New("Forbidden"))},
+	} {
+		if got := friendlyModelError(e, "m", p); strings.Contains(got, "upstream proxy") {
+			t.Errorf("%s was put on the proxy: %s", name, got)
+		}
+	}
+	if got := friendlyModelError(&model.StatusError{Status: http.StatusForbidden, Body: "Forbidden", Attempts: 1}, "m", p); !strings.Contains(got, "check the key") {
+		t.Errorf("a server 403 lost the key advice: %s", got)
+	}
+	// The proxy down, and asking for credentials.
+	dl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := dl.Addr().String()
+	_ = dl.Close()
+	egress.SetUpstream(&egress.Upstream{URL: &url.URL{Scheme: "http", Host: addr}})
+	_, derr := (&http.Client{Transport: egress.UpstreamRoundTripper{}, Timeout: 5 * time.Second}).Get(p.BaseURL + "/models") //nolint:bodyclose // fails
+	for name, e := range map[string]error{
+		"go proxyconnect": derr,
+		"own dial":        &egress.UpstreamUnreachable{Proxy: addr, Err: errors.New("connect: connection refused")},
+	} {
+		if got := friendlyModelError(e, "m", p); !strings.Contains(got, "upstream proxy "+addr+" is not answering") || strings.Contains(got, "Start the model server") {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	for name, e := range map[string]error{
+		"refused 407": &egress.UpstreamRefused{Proxy: addr, Target: "llm.corp.test:443", Status: http.StatusProxyAuthRequired},
+		"go 407":      &url.Error{Op: "Post", URL: p.BaseURL, Err: errors.New("Proxy Authentication Required")},
+	} {
+		if got := friendlyModelError(e, "m", p); !strings.Contains(got, "credentials_secret") {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	// A provider's default endpoint goes through the proxy too, and is named so.
+	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m",
+		config.ProviderConfig{Type: "anthropic", Model: "m"}); !strings.Contains(got, "upstream proxy "+addr) {
+		t.Errorf("default endpoint: %s", got)
+	}
 	// Directly, nothing about a proxy is said.
 	egress.SetUpstream(nil)
 	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m", p); strings.Contains(got, "proxy") {
@@ -314,5 +359,36 @@ func TestShippingAndOrgFetchGoThroughTheUpstreamProxy(t *testing.T) {
 	}
 	if !corp.Saw(server+orgPolicyPath) || other.Saw("org.corp.test") || hits.Load() != 2 {
 		t.Fatalf("org fetch: configured proxy %v, environment's %v, server %d", corp.Saw(server+orgPolicyPath), other.Saw("org.corp.test"), hits.Load())
+	}
+}
+
+// /doctor through a proxy says the endpoint answers only after a call came
+// back through it, and names the proxy; a failed call shows the error alone.
+func TestDoctorEndpointRowThroughTheProxy(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(llm.Close)
+	port := llm.URL[strings.LastIndex(llm.URL, ":")+1:]
+	egress.ResetUpstreamForTest()
+	t.Cleanup(egress.ResetUpstreamForTest)
+	corp := upstreamtest.Start(t)
+	corp.Use(t, "", "").ResolveViaProxy = true
+	p := config.ProviderConfig{Type: "openai-compatible", BaseURL: "http://llm.corp.test:" + port + "/v1", Model: "m", ContextWindow: 8192}
+	if got := endpointRow(context.Background(), p, "m"); got != "answers through the upstream proxy "+corp.Addr()+", but the model did not call the tool it was given" {
+		t.Fatalf("an answer through the proxy: %q", got)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	p.BaseURL = fmt.Sprintf("https://llm.corp.test:%d/v1", closed)
+	got := endpointRow(context.Background(), p, "m")
+	if strings.Contains(got, "answers") || !strings.Contains(got, "upstream proxy "+corp.Addr()) {
+		t.Fatalf("a failed call through the proxy: %q", got)
 	}
 }

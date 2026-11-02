@@ -181,6 +181,16 @@ func (u *Upstream) tlsConfig(base *tls.Config) *tls.Config {
 	return c
 }
 
+// UpstreamTLS is base with the bundle of the upstream proxy in force added,
+// for a connection to host that goes through it; base as it is otherwise,
+// as for a direct connection.
+func UpstreamTLS(host string, base *tls.Config) *tls.Config {
+	if u := CurrentUpstream(); u != nil && !u.Bypass(host) {
+		return u.tlsConfig(base)
+	}
+	return base
+}
+
 // Apply makes t send through u whatever u does not bypass: CONNECT for
 // https, absolute-form for http, each with u's credentials. The returned
 // round tripper adds them to plain http requests, which CONNECT does not carry.
@@ -244,7 +254,7 @@ func (u *Upstream) dialProxy(ctx context.Context, timeout time.Duration) (net.Co
 	d := net.Dialer{Timeout: timeout}
 	c, err := d.DialContext(ctx, "tcp", u.Authority())
 	if err != nil {
-		return nil, fmt.Errorf("the upstream proxy %s: %w", u.Authority(), err)
+		return nil, &UpstreamUnreachable{Proxy: u.Authority(), Err: err}
 	}
 	if u.URL.Scheme != "https" {
 		return c, nil
@@ -310,6 +320,17 @@ func (u *Upstream) DialForward(ctx context.Context, timeout time.Duration) (net.
 // ForwardHeader is the Proxy-Authorization a plain http request through the
 // proxy carries, or "".
 func (u *Upstream) ForwardHeader() (string, error) { return u.authorization() }
+
+// UpstreamUnreachable is a connection to the upstream proxy itself that failed.
+type UpstreamUnreachable struct {
+	Proxy string
+	Err   error
+}
+
+func (e *UpstreamUnreachable) Error() string {
+	return "the upstream proxy " + e.Proxy + ": " + e.Err.Error()
+}
+func (e *UpstreamUnreachable) Unwrap() error { return e.Err }
 
 // UpstreamRefused is the upstream proxy's answer other than 200 to a CONNECT.
 type UpstreamRefused struct {
@@ -470,6 +491,12 @@ func DialUpstream(ctx context.Context, network, addr string) (net.Conn, error) {
 		return nil, err
 	}
 	if u := CurrentUpstream(); u != nil && !u.Bypass(host) {
+		if _, ok := ctx.Deadline(); !ok {
+			// The CONNECT exchange is bounded by ctx alone; never wait forever on it.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+		}
 		return u.DialTunnel(ctx, addr, 30*time.Second)
 	}
 	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}

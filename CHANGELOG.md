@@ -341,7 +341,10 @@ All notable changes to Abhed are recorded here. The format follows
   `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
   installs, registry lookups and calls to a remote Ollama server,
   `abhed login`, the profile calls, `abhed sandbox` (its streams by a
-  `CONNECT` tunnel), the org
+  `CONNECT` tunnel, trusting the CA bundle as its REST calls do; the proxy
+  must allow `CONNECT` to the server's port, also for an `http://` server,
+  so one that allows it only to 443 breaks the streams of a server on
+  another port while its REST calls work), the org
   policy fetch, record shipping and the record's witness. Under the
   allowlist, the commands' proxy chains what it allowed through it
   (`CONNECT` for tunnels, absolute form for plain HTTP), so a provider or

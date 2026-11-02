@@ -351,7 +351,7 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 
 // friendlyCause is friendlyModelError's first part: what failed and the next step.
 func friendlyCause(err error, name string, p config.ProviderConfig, where, next string) string {
-	if msg, ok := proxiedFailure(err, name, p, next); ok {
+	if msg, ok := proxiedFailure(err, name, p, where, next); ok {
 		return msg
 	}
 	var dns *net.DNSError
@@ -804,42 +804,68 @@ func viaUpstream(addr string) bool {
 }
 
 // proxyFor is the authority of the upstream proxy a model's calls go
-// through, or "" when they go directly.
+// through, or "" when they go directly. A provider's default endpoint (no
+// base_url) is a public host, taken to go through the proxy in force.
 func proxyFor(base string) string {
-	addr := dialAddr(base)
-	if addr == "" || !viaUpstream(addr) {
+	up := egress.CurrentUpstream()
+	if up == nil {
 		return ""
 	}
-	return egress.CurrentUpstream().Authority()
+	if base == "" {
+		return up.Authority()
+	}
+	if addr := dialAddr(base); addr == "" || !viaUpstream(addr) {
+		return ""
+	}
+	return up.Authority()
 }
 
 // proxiedFailure names the upstream proxy when a model call through it
-// failed at the proxy: its refusal of the tunnel, or a 502, 503 or 504.
-func proxiedFailure(err error, name string, p config.ProviderConfig, next string) (string, bool) {
+// failed at the proxy: the proxy not answering, its refusal of the tunnel,
+// or a 502, 503 or 504 the call came back with. An answer the model server
+// gave is never put on the proxy.
+func proxiedFailure(err error, name string, p config.ProviderConfig, where, next string) (string, bool) {
 	up := proxyFor(p.BaseURL)
-	if up == "" {
+	if up == "" || err == nil {
 		return "", false
 	}
 	host := dialAddr(p.BaseURL)
-	var refused *egress.UpstreamRefused
+	if host == "" {
+		host = where
+	}
 	var se *model.StatusError
-	status := 0
-	switch {
-	case errors.As(err, &refused):
-		status = refused.Status
-	case errors.As(err, &se) && (se.Status == http.StatusBadGateway || se.Status == http.StatusServiceUnavailable || se.Status == http.StatusGatewayTimeout):
+	if errors.As(err, &se) {
+		if se.Status != http.StatusBadGateway && se.Status != http.StatusServiceUnavailable && se.Status != http.StatusGatewayTimeout {
+			return "", false
+		}
 		return fmt.Sprintf("%d %s for %s (model %q) through the upstream proxy %s: the proxy, or the server behind it, did not complete the call. "+
 			"Check that the model server is up and that the proxy may reach it. %s", se.Status, http.StatusText(se.Status), host, name, up, next), true
-	default:
-		// Go's own CONNECT reports a refusal by its status text alone.
+	}
+	var unreach *egress.UpstreamUnreachable
+	var op *net.OpError
+	if errors.As(err, &unreach) || errors.As(err, &op) && op.Op == "proxyconnect" {
+		return fmt.Sprintf("The upstream proxy %s is not answering, so %s (model %q) could not be reached. "+
+			"Check network.upstream_proxy and that the proxy is up. %s", up, host, name, next), true
+	}
+	status := 0
+	var refused *egress.UpstreamRefused
+	var ue *url.Error
+	if errors.As(err, &refused) {
+		status = refused.Status
+	} else if errors.As(err, &ue) && ue.Err != nil && errors.Unwrap(ue.Err) == nil {
+		// Go's own CONNECT reports the proxy's refusal as its status text and nothing else.
 		for _, c := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusForbidden, http.StatusProxyAuthRequired} {
-			if t := http.StatusText(c); err != nil && (strings.HasSuffix(err.Error(), ": "+t) || err.Error() == t) {
+			if ue.Err.Error() == http.StatusText(c) {
 				status = c
 			}
 		}
 	}
-	if status == 0 {
+	switch status {
+	case 0:
 		return "", false
+	case http.StatusProxyAuthRequired:
+		return fmt.Sprintf("The upstream proxy %s asked for credentials (407) for %s (model %q): check network.upstream_proxy.credentials_secret "+
+			"and the user:password stored under that name. %s", up, host, name, next), true
 	}
 	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
 		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true

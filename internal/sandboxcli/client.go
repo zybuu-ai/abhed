@@ -379,6 +379,10 @@ func (cl *client) dial(ctx context.Context, path, proto string) (*wsconn.Conn, e
 	if err != nil {
 		return nil, err
 	}
+	// Through the upstream proxy, its CA bundle is trusted too, as for the REST calls.
+	if u, err := url.Parse(cl.p.URL); err == nil {
+		tc = egress.UpstreamTLS(u.Hostname(), tc)
+	}
 	refreshed := false
 	refresh := func() bool {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
