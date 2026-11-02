@@ -207,6 +207,18 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		}
 		return nil, err
 	}
+	var canCreate bool
+	if err := pool.QueryRow(ctx, `SELECT has_schema_privilege(current_user, 'public', 'CREATE')`).Scan(&canCreate); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("check the connected role's rights on schema public: %w", err)
+	}
+	if canCreate {
+		pool.Close()
+		return nil, errors.New("refusing to start: the connected role can create objects in schema public " +
+			"(every role can before Postgres 15 unless revoked), and could stand in for what the record's triggers call. " +
+			"Run `abhed migrate` as the owner, which revokes it where it may, or as the schema's owner run " +
+			"REVOKE CREATE ON SCHEMA public FROM PUBLIC (see docs/guide/02-configuration.md)")
+	}
 	if err := checkCommitOrder(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err

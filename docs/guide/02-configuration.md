@@ -1183,6 +1183,14 @@ the difference is exact: the record is then protected against application bugs
 and stray statements, and **not** against anyone holding the server's database
 credentials. `abhed doctor` and the startup banner say which mode is in force.
 
+**The runtime role must not create in schema `public`.** Postgres before 15
+grants that to every role, and a role that can add a function or operator
+there can stand in for one the record's triggers call. `abhed migrate`
+revokes it from `PUBLIC` where its role owns the schema, and otherwise
+refuses until the schema's owner or a superuser runs `REVOKE CREATE ON
+SCHEMA public FROM PUBLIC`; a runtime server that can create there refuses
+to start. On Postgres 15 and later nothing needs doing.
+
 **Do not connect as a superuser,** in either mode. Row-level security is what
 isolates tenants, and Postgres does not apply it to a superuser or a
 `BYPASSRLS` role, not even with `FORCE`. Abhed checks and refuses, because a

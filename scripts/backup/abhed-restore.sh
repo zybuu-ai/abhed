@@ -39,8 +39,8 @@
 set -eu
 
 has_password() {
-  # Lower case and without blanks, so "Password = x" is caught as well.
-  d="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t')"
+  # Lower case and without white space, as libpq skips it around "=".
+  d="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
   case "$d" in *password=*) return 0 ;; esac
   case "$d" in
     postgres://* | postgresql://*)
@@ -54,9 +54,11 @@ has_password() {
         q="${d#*\?}"
         old_ifs="$IFS"
         IFS='&'
+        set -f
         for kv in $q; do
-          case "${kv%%=*}" in *%*) IFS="$old_ifs"; return 0 ;; esac
+          case "${kv%%=*}" in *%*) IFS="$old_ifs"; set +f; return 0 ;; esac
         done
+        set +f
         IFS="$old_ifs" ;;
       esac ;;
   esac
