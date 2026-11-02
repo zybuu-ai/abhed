@@ -102,7 +102,6 @@ func proxyURL(raw string) (*url.URL, error) {
 	return &url.URL{Scheme: u.Scheme, Host: u.Host}, nil
 }
 
-
 // readBundle reads the PEM certificates at path.
 func readBundle(path string) ([]*x509.Certificate, error) {
 	const key = "network.upstream_proxy.ca_file"
