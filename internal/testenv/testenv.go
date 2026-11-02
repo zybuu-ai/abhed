@@ -96,19 +96,14 @@ func (g *Guard) Hits() []string {
 // a test relies on: it stops the stub and removes the home.
 func Isolate() *Guard {
 	g := &Guard{OrigHome: os.Getenv("HOME")}
-	// The managed paths lead to a missing folder where no other user can make
-	// it and plant a managed file. Beside the test binary when only this user
-	// can write there, as in the folder go test builds it in: nothing is made,
-	// so a helper that exits from inside a test, with or without the
-	// marker, leaves nothing behind. Otherwise a helper reuses its parent's
-	// private folder, and anything else makes one.
-	exe, _ := os.Executable()
-	switch parent := os.Getenv(privateEnv); {
-	case exe != "" && privateDir(filepath.Dir(exe)):
-		managed.MoveTo(filepath.Join(exe+".no-managed", "none"))
-	case os.Getenv(Marker) != "" && filepath.IsAbs(parent):
+	// The managed paths lead to a missing folder inside a 0700 folder of
+	// this user's own, so no other user can make it and plant a managed file.
+	// A helper reuses the folder its parent names, once it checks it is
+	// exactly that, and makes nothing to leave behind when it exits from
+	// inside a test; anything else makes one, which Close removes.
+	if parent := os.Getenv(privateEnv); os.Getenv(Marker) != "" && privateFolder(parent) {
 		managed.MoveTo(filepath.Join(parent, "none"))
-	default:
+	} else {
 		private, err := os.MkdirTemp("", "abhed-no-managed-")
 		if err != nil {
 			panic("testenv: " + err.Error())
@@ -206,12 +201,53 @@ func Real(addr string) bool {
 	if err != nil || !slices.Contains(realPorts, p) {
 		return false
 	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
+	return Local(host)
+}
+
+// Local reports whether host names this machine: localhost, a loopback or
+// unspecified address, in any of the spellings a resolver or the C library
+// takes for one (a trailing dot, the short IPv4 forms such as 127.1).
+func Local(host string) bool {
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
+	if ip == nil {
+		ip = shortIPv4(host)
+	}
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+// shortIPv4 reads the inet_aton forms Go's parser refuses: one to four
+// parts, each decimal, 0x hex or 0 octal, the last filling the remaining
+// bytes (127.1 is 127.0.0.1). nil if s is not one.
+func shortIPv4(s string) net.IP {
+	parts := strings.Split(s, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return nil
+	}
+	var v []uint64
+	for _, p := range parts {
+		n, err := strconv.ParseUint(p, 0, 32)
+		if err != nil {
+			return nil
+		}
+		v = append(v, n)
+	}
+	var out uint64
+	for i, n := range v[:len(v)-1] {
+		if n > 255 {
+			return nil
+		}
+		out |= n << (24 - 8*uint(i))
+	}
+	last, room := v[len(v)-1], uint(32-8*(len(v)-1))
+	if room < 64 && last >= 1<<room {
+		return nil
+	}
+	out |= last
+	return net.IPv4(byte(out>>24), byte(out>>16), byte(out>>8), byte(out))
 }
 
 // Close stops the stub and removes the home, and returns code, or 1 when

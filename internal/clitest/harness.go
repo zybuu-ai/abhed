@@ -1044,7 +1044,8 @@ func checkMarker(bin string) error {
 
 // safeDefault reports whether a default model URL leads anywhere but a real
 // model service: parsed as the HTTP client parses it, scheme in any case,
-// with the scheme's port filled in when none is written.
+// with the scheme's port filled in when none is written, and its host a
+// literal address or localhost.
 func safeDefault(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
@@ -1063,5 +1064,10 @@ func safeDefault(raw string) bool {
 	default:
 		return false
 	}
-	return !testenv.Real(net.JoinHostPort(u.Hostname(), port))
+	// Only a literal address or localhost: a name could resolve to anything.
+	host := u.Hostname()
+	if net.ParseIP(host) == nil && !strings.EqualFold(host, "localhost") {
+		return false
+	}
+	return !testenv.Real(net.JoinHostPort(host, port))
 }

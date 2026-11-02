@@ -26,7 +26,9 @@ func TestMain(m *testing.M) {
 
 func TestReal(t *testing.T) {
 	for addr, want := range map[string]bool{"localhost:11434": true, "127.0.0.1:11434": true, "[::1]:4000": true,
-		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false} {
+		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false,
+		"localhost.:11434": true, "LOCALHOST:4000": true, "127.1:11434": true, "0x7f000001:11434": true, "0177.0.0.1:4000": true,
+		"0:11434": true, "x.localhost:11434": true, "128.1:11434": false, "300.1:11434": false} {
 		if Real(addr) != want {
 			t.Errorf("Real(%q) = %v", addr, !want)
 		}

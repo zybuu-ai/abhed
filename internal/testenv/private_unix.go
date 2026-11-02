@@ -4,14 +4,18 @@ package testenv
 
 import (
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
-// privateDir reports whether dir belongs to this user and no one else may
-// write in it, so nobody else can make a folder inside.
-func privateDir(dir string) bool {
-	fi, err := os.Stat(dir)
-	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o022 != 0 {
+// privateFolder reports whether dir is a folder made as Isolate makes one:
+// absolute, not a link, mode exactly 0700 and this user's.
+func privateFolder(dir string) bool {
+	if !filepath.IsAbs(dir) {
+		return false
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 || fi.Mode().Perm() != 0o700 {
 		return false
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)

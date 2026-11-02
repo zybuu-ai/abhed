@@ -2,5 +2,6 @@
 
 package testenv
 
-// privateDir is unknown here; the caller makes a folder of its own instead.
-func privateDir(string) bool { return false }
+// privateFolder cannot check ownership here; a helper makes a folder of its
+// own instead.
+func privateFolder(string) bool { return false }

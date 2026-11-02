@@ -50,10 +50,13 @@ const (
 	clitestPkg = "github.com/zybuu-ai/abhed/internal/clitest"
 )
 
-// isolatingMain reports whether the file declares a TestMain whose own body
-// calls testenv.Main or testenv.Isolate, or clitest.Main, which does; inside
-// package clitest, its own Main. A call anywhere else in the file, or a
-// comment, does not count.
+// isolatingMain reports whether the file declares a TestMain whose body
+// isolates before it runs anything: a statement of the body itself, not in a
+// branch, a loop or a function literal, that is, or directly wraps, a call
+// to testenv.Main or testenv.Isolate, or clitest.Main (inside package
+// clitest, its own Main), before any statement mentions m.Run. The names are
+// resolved through the file's imports, and a body that declares one of
+// those names again, shadowing the package, never counts.
 func isolatingMain(t *testing.T, path, pkg string) bool {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -75,31 +78,139 @@ func isolatingMain(t *testing.T, path, pkg string) bool {
 		if !ok || fn.Recv != nil || fn.Name.Name != "TestMain" || fn.Body == nil {
 			continue
 		}
-		found := false
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
+		param := ""
+		if ps := fn.Type.Params.List; len(ps) == 1 && len(ps[0].Names) == 1 {
+			param = ps[0].Names[0].Name
+		}
+		if param == "" || shadows(fn, names) {
+			return false
+		}
+		isolating := func(e ast.Expr) bool {
+			call, ok := e.(*ast.CallExpr)
 			if !ok {
-				return true
+				return false
 			}
 			switch fun := call.Fun.(type) {
 			case *ast.SelectorExpr:
-				if x, ok := fun.X.(*ast.Ident); ok {
-					ip := names[x.Name]
-					if ip == testenvPkg && (fun.Sel.Name == "Main" || fun.Sel.Name == "Isolate") ||
-						ip == clitestPkg && fun.Sel.Name == "Main" {
-						found = true
+				x, ok := fun.X.(*ast.Ident)
+				if !ok {
+					return false
+				}
+				ip := names[x.Name]
+				return ip == testenvPkg && (fun.Sel.Name == "Main" || fun.Sel.Name == "Isolate") ||
+					ip == clitestPkg && fun.Sel.Name == "Main"
+			case *ast.Ident:
+				return pkg == clitestPkg && fun.Name == "Main"
+			}
+			return false
+		}
+		// The call itself, or a call it is a direct argument of, as in
+		// os.Exit(clitest.Main(m)).
+		direct := func(e ast.Expr) bool {
+			if isolating(e) {
+				return true
+			}
+			if call, ok := e.(*ast.CallExpr); ok {
+				for _, a := range call.Args {
+					if isolating(a) {
+						return true
 					}
 				}
-			case *ast.Ident:
-				if pkg == clitestPkg && fun.Name == "Main" {
+			}
+			return false
+		}
+		for _, st := range fn.Body.List {
+			switch st := st.(type) {
+			case *ast.ExprStmt:
+				if direct(st.X) {
+					return true
+				}
+			case *ast.AssignStmt:
+				if len(st.Rhs) == 1 && direct(st.Rhs[0]) {
+					return true
+				}
+			case *ast.DeclStmt:
+				if gd, ok := st.Decl.(*ast.GenDecl); ok {
+					for _, sp := range gd.Specs {
+						if vs, ok := sp.(*ast.ValueSpec); ok && len(vs.Values) == 1 && direct(vs.Values[0]) {
+							return true
+						}
+					}
+				}
+			}
+			if mentionsRun(st, param) {
+				return false
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// mentionsRun reports whether n mentions m.Run, for the TestMain parameter m.
+func mentionsRun(n ast.Node, param string) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Run" {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == param {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// shadows reports whether fn declares, anywhere, a name one of the file's
+// imports goes by.
+func shadows(fn *ast.FuncDecl, names map[string]string) bool {
+	found := false
+	declares := func(ids ...*ast.Ident) {
+		for _, id := range ids {
+			if id != nil {
+				if _, ok := names[id.Name]; ok {
 					found = true
 				}
 			}
-			return !found
-		})
-		return found
+		}
 	}
-	return false
+	fields := func(fl *ast.FieldList) {
+		if fl != nil {
+			for _, f := range fl.List {
+				declares(f.Names...)
+			}
+		}
+	}
+	fields(fn.Type.Params)
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			if n.Tok == token.DEFINE {
+				for _, l := range n.Lhs {
+					if id, ok := l.(*ast.Ident); ok {
+						declares(id)
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			declares(n.Names...)
+		case *ast.TypeSpec:
+			declares(n.Name)
+		case *ast.FuncLit:
+			fields(n.Type.Params)
+			fields(n.Type.Results)
+		case *ast.RangeStmt:
+			if n.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{n.Key, n.Value} {
+					if id, ok := e.(*ast.Ident); ok {
+						declares(id)
+					}
+				}
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // Every test binary that links internal/managed, where every path the
