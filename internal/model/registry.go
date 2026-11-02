@@ -112,6 +112,33 @@ func Known(name string) bool {
 	return ok
 }
 
+// LocalByDefault reports a built-in type whose own endpoint, with no
+// base_url, is a server on this machine.
+func LocalByDefault(name string) bool {
+	switch name {
+	case "ollama", "vllm", "llamacpp", "tgi", "sglang":
+		return true
+	}
+	return false
+}
+
+// PlainLabel reports a value that is one DNS label of letters, digits and
+// hyphens, as a cloud region or project id is, and nothing that could move
+// the host or path it is written into.
+func PlainLabel(v string) bool {
+	if v == "" || len(v) > 63 || v[0] == '-' || v[len(v)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		if !letter && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 // splitList parses a comma-separated Extra value.
 func splitList(s string) []string {
 	var out []string

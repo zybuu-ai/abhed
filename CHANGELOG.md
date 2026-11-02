@@ -118,6 +118,10 @@ All notable changes to Abhed are recorded here. The format follows
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
   `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
+- The vertex-anthropic and vertex-gemini adapters refuse a `region` or
+  `project_id` that is not a plain name of letters, digits and hyphens. Both
+  are written into the request's host, and anything else could move it. A
+  domain-scoped project id (`example.com:proj`) needs a `base_url` instead.
 - `model.allowed`, `mcp.allowed` and `mcp.denied` are new keys. A
   configuration that sets none of them behaves as before. One that sets a
   list Abhed cannot read stops at startup, naming the file and the entry, so
@@ -261,10 +265,15 @@ All notable changes to Abhed are recorded here. The format follows
   restart.
 
   A pattern judges the type and model name. Under the managed file's or the
-  org policy's list, the endpoint is bound too: a model is admitted at its
-  type's own endpoint, on this machine, or at a provider the organisation
-  defines, never at a lower file's or the environment's `base_url`. A user's
-  own list binds no endpoint. MCP hosts are compared in their IDNA ASCII
+  org policy's list, every input that decides where the requests go is bound
+  too: `base_url`, watsonx's `iam_url`, a vertex `region` and `project_id`, a
+  custom provider type's `base_url`, and the supervisor judge's
+  `monitor.endpoint`. Each is admitted unset (the type's own endpoint), on
+  this machine, or as the organisation sets it, never from a lower file or
+  the environment. An endpoint on this machine may relay anywhere, which
+  Abhed does not see; a managed `model.allowed_loopback: false` refuses it.
+  Only a managed `model.default` pins the endpoint outright. A user's own
+  list binds no endpoint. MCP hosts are compared in their IDNA ASCII
   form, a host that does not map is refused, and a redirect to another host
   is judged. While a `command` entry is set, a server is started at exactly
   the program path that was judged. Embedding models are not covered.
@@ -1333,7 +1342,8 @@ out):
   `Config.HasMCPLists` and `Config.EndpointRefused`.
   `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
   outside `model.allowed`. `config.NormalHost`,
-  `Config.MCPListsMatchCommands`.
+  `Config.MCPListsMatchCommands`, `Config.JudgeListed`,
+  `Config.LoopbackAllowed` and `config.ModelConfig.AllowedLoopback`.
 - Changed behaviour, same signatures, in `sdk`: `SwitchModelNamed` refused
   by a managed pin or `model.allowed` still `errors.Is` `ErrUnknownModel`
   and now also unwraps to `config.ManagedError`; `SetModel` and
