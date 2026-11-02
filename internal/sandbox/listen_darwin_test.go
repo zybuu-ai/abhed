@@ -493,6 +493,17 @@ func reusePortScript(port int, lives []float64, orphan []bool) string {
 	return "python3 -I -c '" + b.String() + "'"
 }
 
+// waitPrograms waits until n programs listen on port.
+func waitPrograms(t *testing.T, port, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if ListenersOn(port) == n {
+			return
+		}
+	}
+	t.Fatalf("%d programs never listened on %d (now %d)", n, port, ListenersOn(port))
+}
+
 // A command cannot spend the notice with programs of its own, an orphan
 // among them: one of them leaving and a program of the person's joining
 // is told at once.
@@ -505,16 +516,19 @@ func TestContestToldWhenANewProgramJoinsAfterOneLeft(t *testing.T) {
 			told.Add(1)
 		}
 	}, nil)
-	startIn(t, sb, reusePortScript(port, []float64{30, 2, 30}, []bool{false, false, true}))
-	time.Sleep(300 * time.Millisecond)
+	startIn(t, sb, reusePortScript(port, []float64{30, 3, 30}, []bool{false, false, true}))
+	// The watch's own ticker sweeps too, so counts are compared, not fixed.
+	waitPrograms(t, port, 3)
 	sweepListeners()
-	if told.Load() != 1 {
-		t.Fatalf("three programs of the command: told %d", told.Load())
+	if told.Load() < 1 {
+		t.Fatal("three programs of the command: not told")
 	}
-	time.Sleep(2500 * time.Millisecond) // one of them has left
+	waitPrograms(t, port, 2) // one of them has left
 	sweepListeners()
-	if n := ListenersOn(port); n != 2 || told.Load() != 1 {
-		t.Fatalf("one left: %d programs, told %d", n, told.Load())
+	before := told.Load()
+	sweepListeners()
+	if told.Load() != before {
+		t.Fatalf("one left, the rest told already: told again (%d to %d)", before, told.Load())
 	}
 	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
@@ -522,8 +536,8 @@ func TestContestToldWhenANewProgramJoinsAfterOneLeft(t *testing.T) {
 	}
 	defer host.Close()
 	sweepListeners()
-	if told.Load() != 2 {
-		t.Fatalf("a program of the person's joined: told %d", told.Load())
+	if told.Load() <= before {
+		t.Fatalf("a program of the person's joined: told %d, as before", told.Load())
 	}
 }
 
@@ -539,21 +553,22 @@ func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
 			told.Add(1)
 		}
 	}, nil)
-	startIn(t, sb, reusePortScript(port, []float64{30, 2}, []bool{false, true}))
-	time.Sleep(300 * time.Millisecond)
+	startIn(t, sb, reusePortScript(port, []float64{30, 3}, []bool{false, true}))
+	waitPrograms(t, port, 2)
 	sweepListeners()
-	if told.Load() != 1 {
-		t.Fatalf("the command and its orphan: told %d", told.Load())
+	if told.Load() < 1 {
+		t.Fatal("the command and its orphan: not told")
 	}
-	time.Sleep(2500 * time.Millisecond) // the orphan has left
+	waitPrograms(t, port, 1) // the orphan has left
 	sweepListeners()
+	before := told.Load()
 	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close()
 	sweepListeners()
-	if told.Load() != 2 {
-		t.Fatalf("a program of the person's joined inside the cooldown: told %d", told.Load())
+	if told.Load() <= before {
+		t.Fatalf("a program of the person's joined inside the cooldown: told %d, as before", told.Load())
 	}
 }
