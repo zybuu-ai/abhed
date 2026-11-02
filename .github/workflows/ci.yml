@@ -293,8 +293,9 @@ jobs:
       - name: rpc and acp stop their sandboxed command on SIGTERM
         run: |
           set -euo pipefail
-          go test ./app/ -run 'TestRPCExitsOnSIGTERMAndEndsItsCommand$|TestACPExitsOnSIGTERMAfterTheStopReason$' -count=1 -v > stop.log 2>&1 || { cat stop.log; exit 1; }
-          for t in TestRPCExitsOnSIGTERMAndEndsItsCommand TestACPExitsOnSIGTERMAfterTheStopReason; do
+          go test ./app/ -run 'TestRPCExitsOnSIGTERMAndEndsItsCommand$|TestACPExitsOnSIGTERMAfterTheStopReason$|TestACPSignalBeforeEOFStillClosesSessions$|TestACPLoneSignalExitsAfterTheGrace$' -count=1 -v > stop.log 2>&1 || { cat stop.log; exit 1; }
+          for t in TestRPCExitsOnSIGTERMAndEndsItsCommand TestACPExitsOnSIGTERMAfterTheStopReason \
+                   TestACPSignalBeforeEOFStillClosesSessions TestACPLoneSignalExitsAfterTheGrace; do
             grep -q -- "--- PASS: $t " stop.log || { echo "$t did not run and pass:"; grep -- "$t" stop.log || true; exit 1; }
           done
       # The kernel does not bound root's processes, and this job runs as root,

@@ -518,7 +518,12 @@ func TestACPSignalBeforeEOFStillClosesSessions(t *testing.T) {
 	url, _ := stubModel(t, "")
 	ws, helper, stdin, _ := stopWorkspace(t, url, "acp")
 	home := t.TempDir()
-	helper.Env = append(helper.Env, "HOME="+home)
+	// The helper's home is one the test reads the record from after.
+	for i, e := range helper.Env {
+		if strings.HasPrefix(e, "HOME=") {
+			helper.Env[i] = "HOME=" + home
+		}
+	}
 	helper.Stdout = nil
 	stdout, err := helper.StdoutPipe()
 	if err != nil {
@@ -565,8 +570,7 @@ func TestACPSignalBeforeEOFStillClosesSessions(t *testing.T) {
 	for start := time.Now(); time.Since(start) < 100*time.Microsecond; {
 	}
 	_ = stdin.Close()
-	// Either the exit the signal asks for, or a plain one once stdin ended.
-	if code := exitOf(t, helper); code != 128+int(syscall.SIGTERM) && code != 0 {
+	if code := exitOf(t, helper); code != 128+int(syscall.SIGTERM) {
 		t.Fatalf("acp exited %d", code)
 	}
 	t.Setenv("HOME", home)
@@ -622,7 +626,7 @@ func TestACPLoneSignalExitsAfterTheGrace(t *testing.T) {
 	if code := exitOf(t, helper); code != 128+int(syscall.SIGTERM) {
 		t.Fatalf("acp exited %d", code)
 	}
-	if took := time.Since(start); took > 5*time.Second {
+	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("a lone signal took %v to exit", took)
 	}
 }
