@@ -52,7 +52,7 @@ func TestRecordShipsToTheOrgServer(t *testing.T) {
 	})
 	pf, p := orgClient(t, srv)
 	var out, errOut bytes.Buffer
-	if err := enrollOrgPolicy(context.Background(), pf, "org", p, nil, &out, &errOut); err != nil {
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	cfg := loadOrg(t)

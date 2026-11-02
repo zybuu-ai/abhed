@@ -68,12 +68,18 @@ type Statement struct {
 	Policy json.RawMessage `json:"policy"`
 }
 
-// MaxAge is the statement's own limit, or DefaultMaxAge.
+// MaxAgeCap is the most a statement may ask to be applied for.
+const MaxAgeCap = 30 * 24 * time.Hour
+
+// MaxAge is the statement's own limit, or DefaultMaxAge, at most MaxAgeCap.
 func (s Statement) MaxAge() time.Duration {
-	if s.MaxAgeSeconds > 0 {
-		return time.Duration(s.MaxAgeSeconds) * time.Second
+	switch {
+	case s.MaxAgeSeconds <= 0:
+		return DefaultMaxAge
+	case s.MaxAgeSeconds > int64(MaxAgeCap/time.Second):
+		return MaxAgeCap
 	}
-	return DefaultMaxAge
+	return time.Duration(s.MaxAgeSeconds) * time.Second
 }
 
 // Digest is the sha256 of the policy document as signed.

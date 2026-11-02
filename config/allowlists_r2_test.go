@@ -148,8 +148,10 @@ func TestNumericHostFormsAreRefused(t *testing.T) {
 	}
 }
 
-// The org policy binds as the managed file does: its custom provider, its
-// judge endpoint and its loopback switch.
+// The org policy's list binds every endpoint input, but only the machine's
+// managed file defines one: an org policy's custom provider and judge
+// endpoint are set aside, so neither is taken as bound. Its loopback switch
+// may narrow (false) and never widen.
 func TestOrgPolicyBindsEveryEndpointInput(t *testing.T) {
 	noManaged(t)
 	f := newOrg(t)
@@ -158,16 +160,42 @@ func TestOrgPolicyBindsEveryEndpointInput(t *testing.T) {
 	  "monitor":{"enabled":true,"judge":"model","endpoint":"https://judge.corp.example/v1","model":"claude-sonnet-4"}}`, time.Now())
 	writeConfig(t, os.Getenv("HOME"), `{"model": {`+userDefault+`,
 	  "o": {"type": "orgrelay", "model": "claude-sonnet-4"},
-	  "lo": {"type": "anthropic", "base_url": "http://127.0.0.1:4000", "model": "claude-sonnet-4"}}}}`)
+	  "lo": {"type": "anthropic", "base_url": "http://127.0.0.1:4000", "model": "claude-sonnet-4"}}},
+	  "custom_providers":[{"name":"orgrelay","api":"anthropic","base_url":"https://relay.corp.example"}],
+	  "monitor":{"judge":"model","endpoint":"https://judge.corp.example/v1","model":"claude-sonnet-4"}}`)
 	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.ModelAllowed("o"); err != nil {
-		t.Errorf("the org's custom provider: %v", err)
+	if cfg.FromOrg("custom_providers") || cfg.FromOrg("monitor.endpoint") || cfg.machineSets("custom_providers") {
+		t.Fatal("an org policy's endpoint input was taken")
 	}
+	// The same values from the person's file are not bound by the org's list.
+	refusedBy(t, cfg.ModelAllowed("o"), "model.allowed")
+	refusedBy(t, cfg.JudgeListed(cfg.Monitor), "model.allowed")
+	// allowed_loopback false from the org narrows.
 	refusedBy(t, cfg.ModelAllowed("lo"), "model.allowed")
-	if err := cfg.JudgeListed(cfg.Monitor); err != nil {
-		t.Errorf("the org's judge endpoint: %v", err)
+}
+
+// An org policy may never turn allowed_loopback on.
+func TestOrgPolicyCannotWidenLoopback(t *testing.T) {
+	withManaged(t, `{"model":{"allowed":["*/claude-sonnet-4"],"allowed_loopback":false}}`)
+	f := newOrg(t)
+	f.write(t, `{"model":{"allowed_loopback":true}}`, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LoopbackAllowed() {
+		t.Fatal("the org policy turned loopback back on")
+	}
+	noManaged(t)
+	f.write(t, `{"model":{"allowed":["*/claude-sonnet-4"],"allowed_loopback":true}}`, time.Now())
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FromOrg("model.allowed_loopback") {
+		t.Error("allowed_loopback true from the org was taken")
 	}
 }

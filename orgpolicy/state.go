@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
 // StateVersion is the state file format.
@@ -23,6 +26,10 @@ type State struct {
 	URL     string `json:"url"`
 	// Keys are the pinned signing keys, base64 Ed25519.
 	Keys []string `json:"keys"`
+	// Subject and Tenant are who the server said signed in, at enrolment;
+	// a statement for anyone else is refused.
+	Subject string `json:"subject,omitempty"`
+	Tenant  string `json:"tenant,omitempty"`
 	// Envelope is the last policy that verified, and FetchedAt when.
 	Envelope  *Envelope `json:"envelope,omitempty"`
 	FetchedAt time.Time `json:"fetched_at,omitzero"`
@@ -42,13 +49,10 @@ type Failure struct {
 	Reason string    `json:"reason"`
 }
 
-// PathOverride, when set, is the state file (tests only).
-var PathOverride string
-
 // Path is ~/.abhed/org-policy.json.
 func Path() (string, error) {
-	if PathOverride != "" {
-		return PathOverride, nil
+	if managed.OrgStateFile != "" {
+		return managed.OrgStateFile, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -216,12 +220,20 @@ func Evaluate(st *State, m Machine, now time.Time) Effective {
 		maxAge = m.MaxAge
 	}
 	switch {
+	case !forHolder(stmt, st):
+		return fallback(e, fmt.Sprintf("the cached policy was issued for %q in tenant %q, not this machine's sign-in", stmt.Subject, stmt.Tenant))
+	case stmt.Epoch < st.Epoch:
+		return fallback(e, fmt.Sprintf("the cached policy is from epoch %d, older than the %d already held", stmt.Epoch, st.Epoch))
 	case st.Failure != nil && !st.Failure.At.Before(st.FetchedAt):
 		return fallback(e, "the last fetched policy was refused: "+st.Failure.Reason)
 	case stmt.IssuedAt.After(now.Add(Skew)):
 		return fallback(e, "the cached policy was issued in the future ("+stmt.IssuedAt.UTC().Format(time.RFC3339)+"); check the clock")
 	case e.Age > maxAge:
-		return fallback(e, fmt.Sprintf("the cached policy is %s old, past its limit of %s, and no fresh one could be fetched", e.Age.Round(time.Minute), maxAge))
+		why := fmt.Sprintf("the cached policy is %s old, past its limit of %s, and no fresh one could be fetched", e.Age.Round(time.Minute), maxAge)
+		if st.LastError != "" {
+			why += " (last try: " + st.LastError + ")"
+		}
+		return fallback(e, why)
 	}
 	e.Status = StatusApplied
 	return e
@@ -256,12 +268,21 @@ func accept(st *State, m Machine, env Envelope, subject string, check func([]byt
 	if err != nil {
 		return Statement{}, err
 	}
-	stmt, _, err := Open(env, keys)
+	stmt, kid, err := Open(env, keys)
 	if err != nil {
 		return stmt, err
 	}
-	if subject != "" && stmt.Subject != "" && stmt.Subject != subject {
+	if subject != "" && stmt.Subject != subject {
 		return stmt, fmt.Errorf("the policy was issued for %q, not %q", stmt.Subject, subject)
+	}
+	if !forHolder(stmt, st) {
+		return stmt, fmt.Errorf("the policy was issued for %q in tenant %q, not this machine's sign-in", stmt.Subject, stmt.Tenant)
+	}
+	if len(m.Keys) == 0 && len(stmt.Keys) > 0 && !slices.ContainsFunc(stmt.Keys, func(k string) bool {
+		pub, err := ParseKey(k)
+		return err == nil && KeyID(pub) == kid
+	}) {
+		return stmt, errors.New("the policy's keys leave out the key that signed it, so it would not verify once pinned")
 	}
 	held := st.Epoch
 	if st.Envelope != nil {
@@ -278,4 +299,10 @@ func accept(st *State, m Machine, env Envelope, subject string, check func([]byt
 		}
 	}
 	return stmt, nil
+}
+
+// forHolder reports whether stmt was issued for the subject and tenant the
+// state enrolled as, where it knows them.
+func forHolder(stmt Statement, st *State) bool {
+	return (st.Subject == "" || stmt.Subject == st.Subject) && (st.Tenant == "" || stmt.Tenant == st.Tenant)
 }

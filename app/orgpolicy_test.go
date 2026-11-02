@@ -69,9 +69,9 @@ func orgClient(t *testing.T, srv *orgServer) (string, *profiles.Profile) {
 	t.Setenv("HOME", home)
 	pf := filepath.Join(home, ".abhed", "profiles.json")
 	t.Setenv(profiles.EnvFile, pf)
-	old := orgpolicy.PathOverride
-	orgpolicy.PathOverride = filepath.Join(home, ".abhed", "org-policy.json")
-	t.Cleanup(func() { orgpolicy.PathOverride = old })
+	old := managed.OrgStateFile
+	managed.OrgStateFile = filepath.Join(home, ".abhed", "org-policy.json")
+	t.Cleanup(func() { managed.OrgStateFile = old })
 	oldM := managed.ConfigFile
 	managed.ConfigFile = filepath.Join(home, "no-managed", "config.json")
 	t.Cleanup(func() { managed.ConfigFile = oldM })
@@ -96,7 +96,7 @@ func TestLoginEnrolsRefreshesAndFailsClosed(t *testing.T) {
 	srv := newOrgServer(t)
 	pf, p := orgClient(t, srv)
 	var out, errOut bytes.Buffer
-	if err := enrollOrgPolicy(context.Background(), pf, "org", p, nil, &out, &errOut); err != nil {
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Pinned") || !strings.Contains(out.String(), orgpolicy.KeyID(srv.pub)) {
@@ -160,14 +160,14 @@ func TestLoginRefusesAPolicyKeyTheServerDoesNotOffer(t *testing.T) {
 	pf, p := orgClient(t, srv)
 	other, _, _ := ed25519.GenerateKey(rand.Reader)
 	var out, errOut bytes.Buffer
-	err := enrollOrgPolicy(context.Background(), pf, "org", p, []string{orgpolicy.EncodeKey(other)}, &out, &errOut)
+	err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{given: []string{orgpolicy.EncodeKey(other)}, accept: true}, &out, &errOut)
 	if err == nil {
 		t.Fatal("a key the server does not offer was pinned")
 	}
-	if st, _ := orgpolicy.LoadState(orgpolicy.PathOverride); st != nil {
+	if st, _ := orgpolicy.LoadState(managed.OrgStateFile); st != nil {
 		t.Error("a state was written for a refused enrolment")
 	}
-	if err := enrollOrgPolicy(context.Background(), pf, "org", p, []string{orgpolicy.EncodeKey(srv.pub)}, &out, &errOut); err != nil {
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{given: []string{orgpolicy.EncodeKey(srv.pub)}, accept: true}, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -177,7 +177,7 @@ func TestPolicyForAnotherSubjectIsRefused(t *testing.T) {
 	srv.subject = "bob"
 	pf, p := orgClient(t, srv)
 	var out, errOut bytes.Buffer
-	if err := enrollOrgPolicy(context.Background(), pf, "org", p, nil, &out, &errOut); err == nil {
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err == nil {
 		t.Fatal("bob's policy was taken for alice")
 	}
 	if cfg := loadOrg(t); cfg.OrgPolicy.Status != orgpolicy.StatusFallback {
@@ -189,11 +189,11 @@ func TestPolicyLeaveAndManagedLock(t *testing.T) {
 	srv := newOrgServer(t)
 	pf, p := orgClient(t, srv)
 	var out, errOut bytes.Buffer
-	if err := enrollOrgPolicy(context.Background(), pf, "org", p, nil, &out, &errOut); err != nil {
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if code := policyCmd("", []string{"status"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "applied") ||
+	if code := policyCmd([]string{"status"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "applied") ||
 		!strings.Contains(out.String(), "limits.max_turns") {
 		t.Errorf("status %d: %s %s", code, out.String(), errOut.String())
 	}
@@ -203,11 +203,11 @@ func TestPolicyLeaveAndManagedLock(t *testing.T) {
 	if err := os.WriteFile(managed.ConfigFile, []byte(`{"org_policy":{"url":"`+srv.URL+`","required":true}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code := policyCmd("", []string{"leave"}, &out, &errOut); code == 0 {
+	if code := policyCmd([]string{"leave"}, &out, &errOut); code == 0 {
 		t.Fatal("leave was allowed under a managed org policy")
 	}
 	_ = os.Remove(managed.ConfigFile)
-	if code := policyCmd("", []string{"leave"}, &out, &errOut); code != 0 {
+	if code := policyCmd([]string{"leave"}, &out, &errOut); code != 0 {
 		t.Fatalf("leave: %s", errOut.String())
 	}
 	if cfg := loadOrg(t); cfg.OrgPolicy.Status != orgpolicy.StatusNone || cfg.Managed {
@@ -223,10 +223,10 @@ func TestManagedFileNamingAnotherServerIgnoresTheLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	if err := enrollOrgPolicy(context.Background(), pf, "org", p, nil, &out, &errOut); err != nil {
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := orgpolicy.LoadState(orgpolicy.PathOverride); st != nil {
+	if st, _ := orgpolicy.LoadState(managed.OrgStateFile); st != nil {
 		t.Error("enrolled with a server the managed file does not name")
 	}
 }
@@ -243,5 +243,69 @@ func TestChoosePins(t *testing.T) {
 	}
 	if got, _ := choosePins([]string{ka}, nil, nil, nil); got[0] != ka {
 		t.Error("first sign-in pins what is offered")
+	}
+}
+
+// A plain sign-in to a server that serves a policy does not enrol: it needs
+// -org-policy or a yes, unless the machine's managed file names the server.
+func TestEnrolmentIsExplicit(t *testing.T) {
+	srv := newOrgServer(t)
+	pf, p := orgClient(t, srv)
+	var out, errOut bytes.Buffer
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := orgpolicy.LoadState(managed.OrgStateFile); st != nil || !strings.Contains(out.String(), "not taken") {
+		t.Fatalf("a plain login enrolled: %v %s", st, out.String())
+	}
+	asked := ""
+	no := enrolOptions{confirm: func(p string) bool { asked = p; return false }}
+	_ = enrollOrgPolicy(context.Background(), pf, "org", p, no, &out, &errOut)
+	if st, _ := orgpolicy.LoadState(managed.OrgStateFile); st != nil || !strings.Contains(asked, srv.URL) ||
+		!strings.Contains(asked, orgpolicy.KeyID(srv.pub)) || !strings.Contains(asked, "session records") {
+		t.Fatalf("a no enrolled, or the question did not name the server, key and records: %q", asked)
+	}
+	yes := enrolOptions{confirm: func(string) bool { return true }}
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, yes, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := orgpolicy.LoadState(managed.OrgStateFile); st == nil || st.Subject != "alice" || st.Tenant != "acme" {
+		t.Fatalf("a yes did not enrol with the identity: %+v", st)
+	}
+}
+
+func TestManagedServerNeedsNoConsent(t *testing.T) {
+	srv := newOrgServer(t)
+	pf, p := orgClient(t, srv)
+	_ = os.MkdirAll(filepath.Dir(managed.ConfigFile), 0o755)
+	if err := os.WriteFile(managed.ConfigFile, []byte(`{"org_policy":{"url":"`+srv.URL+`"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := orgpolicy.LoadState(managed.OrgStateFile); st == nil {
+		t.Fatal("the server the machine names was not taken")
+	}
+}
+
+func TestPlainHTTPTrustOnFirstUseIsRefused(t *testing.T) {
+	for u, want := range map[string]bool{"http://org.example": true, "http://127.0.0.1:8": false, "https://org.example": false, "http://localhost:9": false} {
+		if plainRemote(u) != want {
+			t.Errorf("plainRemote(%s) = %v", u, !want)
+		}
+	}
+}
+
+// record.ship from the machine's own file ships nowhere without an enrolment.
+func TestRecordShipNeedsAnEnrolment(t *testing.T) {
+	srv := newOrgServer(t)
+	orgClient(t, srv)
+	_ = os.MkdirAll(filepath.Dir(managed.ConfigFile), 0o755)
+	_ = os.WriteFile(managed.ConfigFile, []byte(`{"record":{"ship":{"enabled":true}}}`), 0o644)
+	cfg := loadOrg(t)
+	if _, err := shipTargetFor(cfg); err == nil || !strings.Contains(err.Error(), "not signed in") {
+		t.Fatalf("record.ship found a target without an enrolment: %v", err)
 	}
 }

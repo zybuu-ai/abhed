@@ -16,6 +16,9 @@ var ConfigFile = "/etc/abhed/config.json"
 // and no workspace or operator definition can take their names.
 var AgentsDir = "/etc/abhed/agents"
 
+// OrgStateFile, when set, replaces ~/.abhed/org-policy.json; tests set it.
+var OrgStateFile string
+
 // testDirEnv is set only by the end-to-end test build (-ldflags -X): the
 // variable naming an absolute directory for one run's managed files. A
 // release build leaves it empty and never reads the environment for this.

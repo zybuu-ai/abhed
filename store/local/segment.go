@@ -58,25 +58,86 @@ func CheckSegment(raws [][]byte, session, before string) ([]SegmentLine, error) 
 // WriteExport writes a session's whole lines in the export format, with a
 // trailer of the head they verify to (or saying they do not).
 func WriteExport(w io.Writer, session string, raws [][]byte) (Head, error) {
-	if err := checkID("session", session); err != nil {
+	e, err := NewExportWriter(w, session)
+	if err != nil {
 		return Head{}, err
 	}
-	rep, _ := verifyLines(raws, session)
+	if err := e.Lines(raws); err != nil {
+		return Head{}, err
+	}
+	return e.Close()
+}
+
+// ExportWriter writes an export a page of lines at a time, from the first,
+// checking the chain as it goes, so a long session is never held whole.
+type ExportWriter struct {
+	w       io.Writer
+	session string
+	prev    string
+	seen    map[int64]bool
+	rep     Report
+}
+
+// NewExportWriter starts an export of session to w.
+func NewExportWriter(w io.Writer, session string) (*ExportWriter, error) {
+	if err := checkID("session", session); err != nil {
+		return nil, err
+	}
+	return &ExportWriter{w: w, session: session, prev: Genesis, seen: map[int64]bool{}, rep: Report{ID: session, OK: true}}, nil
+}
+
+// Lines checks and writes the next lines; a line that does not verify is
+// still written, and the trailer says where the chain broke.
+func (e *ExportWriter) Lines(raws [][]byte) error {
 	for _, raw := range raws {
-		if _, err := w.Write(append(append([]byte(nil), raw...), '\n')); err != nil {
-			return Head{}, err
+		if e.rep.OK {
+			e.check(raw)
+		}
+		if _, err := e.w.Write(append(append([]byte(nil), raw...), '\n')); err != nil {
+			return err
 		}
 	}
-	tr := exportTrailer{Head: rep.Head, Session: session, Format: ExportFormat, Verified: boolPtr(rep.OK)}
-	if !rep.OK {
-		tr.Unverified = fmt.Sprintf("at seq %d, %s", rep.FirstBad, rep.Reason)
+	return nil
+}
+
+func (e *ExportWriter) check(raw []byte) {
+	l, why := checkLine(raw)
+	switch {
+	case why != "":
+	case l.SessionID != e.session:
+		why = fmt.Sprintf("it belongs to session %s, not %s", l.SessionID, e.session)
+	case l.Prev != e.prev:
+		why = "it does not follow the line before it: a line was removed, added or moved"
+	case l.Seq <= 0 || e.seen[l.Seq]:
+		why = fmt.Sprintf("its seq %d is not a new step", l.Seq)
+	}
+	if why != "" {
+		e.rep.OK, e.rep.FirstBad, e.rep.Reason, e.rep.Line = false, l.Seq, why, int(e.rep.Events)+1
+		if e.rep.FirstBad == 0 {
+			e.rep.FirstBad = e.rep.Head.Seq + 1
+		}
+		return
+	}
+	e.seen[l.Seq], e.prev = true, l.Hash
+	e.rep.Events++
+	e.rep.Head = Head{Lines: e.rep.Events, Seq: l.Seq, Hash: l.Hash}
+}
+
+// Report is what the check found so far.
+func (e *ExportWriter) Report() Report { return e.rep }
+
+// Close writes the trailer and returns the head the lines verified to.
+func (e *ExportWriter) Close() (Head, error) {
+	tr := exportTrailer{Head: e.rep.Head, Session: e.session, Format: ExportFormat, Verified: boolPtr(e.rep.OK)}
+	if !e.rep.OK {
+		tr.Unverified = fmt.Sprintf("at seq %d, %s", e.rep.FirstBad, e.rep.Reason)
 	}
 	t, err := encode(tr)
 	if err != nil {
-		return rep.Head, err
+		return e.rep.Head, err
 	}
-	_, err = w.Write(append(t, '\n'))
-	return rep.Head, err
+	_, err = e.w.Write(append(t, '\n'))
+	return e.rep.Head, err
 }
 
 // VerifyLines checks a session's whole lines held away from the machine that

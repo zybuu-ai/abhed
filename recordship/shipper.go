@@ -373,11 +373,19 @@ func (s *Shipper) ship(ctx context.Context, id string) error {
 		return err
 	}
 	c.Size = size
+	moves := 0
 	for len(lines) > 0 {
 		var raws [][]byte
 		n := 0
 		for _, l := range lines {
 			if n > 0 && (n+len(l.Raw)+1 > MaxBatchBytes-4096 || len(raws) >= MaxBatchLines) {
+				break
+			}
+			if len(l.Raw) > MaxLineBytes {
+				if len(raws) == 0 {
+					s.block(id, c, KindOversize, fmt.Sprintf("line %d is %d bytes, over the %d a line may be; it and what follows are not shipped", c.Lines+1, len(l.Raw), MaxLineBytes))
+					return nil
+				}
 				break
 			}
 			if s.o.Redact != nil && !bytes.Equal(s.o.Redact.Redact(l.Payload), l.Payload) {
@@ -395,7 +403,10 @@ func (s *Shipper) ship(ctx context.Context, id string) error {
 			return err
 		}
 		if next != nil {
-			// The server holds a different place: read again from it.
+			// The server holds a different place: read again from it, a few times a pass.
+			if moves++; moves > 3 {
+				return fmt.Errorf("the org server moved its place in session %s %d times in one pass", id, moves)
+			}
 			lines = next
 			continue
 		}
@@ -460,21 +471,21 @@ func (s *Shipper) send(ctx context.Context, id string, c *Cursor, batch []local.
 	var ack Ack
 	_ = json.Unmarshal(resp, &ack)
 	last := batch[len(batch)-1]
-	switch {
-	case status == http.StatusOK:
+	switch status {
+	case http.StatusOK:
 		if ack.Lines != c.Lines+int64(len(batch)) || ack.Hash != last.Hash {
 			return nil, fmt.Errorf("the org server's answer (line %d) does not match what was sent (line %d)", ack.Lines, c.Lines+int64(len(batch)))
 		}
 		c.Lines, c.Hash, c.Offset = ack.Lines, ack.Hash, last.End
 		return nil, nil
-	case status == http.StatusConflict:
+	case http.StatusConflict:
 		if ack.Lines < 0 || (ack.Lines == c.Lines && ack.Hash == c.Hash) {
 			return nil, fmt.Errorf("the org server refused session %s's batch: %s", id, ack.Error)
 		}
 		return s.from(id, c, ack.Lines, ack.Hash)
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return nil, fmt.Errorf("the org server refused the sign-in (%d); run abhed login again", status)
-	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		s.block(id, *c, KindRefused, "the org server refused the record: "+ack.Error)
 		c.Blocked = "refused"
 		return nil, nil

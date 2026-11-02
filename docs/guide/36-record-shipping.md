@@ -7,7 +7,10 @@ the lines exactly as the local record holds them, so it checks the same hash
 chain `abhed record verify` does, and an export from it verifies offline.
 
 `record.ship` is managed-only: the org policy or `/etc/abhed/config.json`
-turns it on, never your own or a workspace's file.
+turns it on, never your own or a workspace's file. Either way it ships only
+to a server this machine enrolled with, which `abhed login` does only with
+your consent or when `/etc/abhed` names the server; with no enrolment the
+record stays here.
 
 ```json
 {"record": {"ship": {"enabled": true, "max_backlog_mb": 512}}}
@@ -42,7 +45,10 @@ is kept in `~/.abhed/state/record-ship.json`, out of the agent's reach.
 Offline, the record goes on growing on disk; the next pass, in this or a
 later Abhed, goes on from where the server is. The server answers each batch
 with how many lines it holds, so an answer lost on the way does not send a
-line twice or skip one. Only one Abhed process ships at a time.
+line twice or skip one; a server that names a new place more than three
+times in a pass is given up on until the next. Batches of several lines are
+at most 1 MiB; a longer line goes alone. Only one Abhed process ships at a
+time.
 
 ## Events
 
@@ -53,6 +59,7 @@ The shipper raises, prints, keeps in its state, and reports to the server:
 | `blocked` | a line still holds a stored secret; that session stops shipping |
 | `diverged` | the local record no longer holds lines already shipped (rewritten or restored); that session stops |
 | `refused` | the server refused a batch, such as one whose chain does not verify; that session stops |
+| `oversize` | a line is longer than 8 MiB, which no batch carries; that session stops |
 | `gap` | a session was pruned before all of it was shipped |
 | `backlog` | more is waiting than `max_backlog_mb` |
 | `resumed` | shipping reached the server again after failing |

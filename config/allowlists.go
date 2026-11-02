@@ -260,14 +260,13 @@ func (c Config) ModelListed(name string, p ProviderConfig) error {
 		org = org || c.managedList(l.file)
 	}
 	// Under the organisation's list a model is admitted at its provider's own
-	// endpoint, or at one the managed file or org policy defines: a lower
-	// file's base_url would send an admitted model's traffic anywhere.
+	// endpoint, or at one the managed file defines (an org policy never does).
 	if org {
 		if why := c.endpointUnbound(name, p); why != "" {
 			l := c.orgModelLayer()
 			return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
 				Reason: "model.allowed in " + c.listOwner(l.file) + " admits a model only at its type's own endpoint, " +
-					c.loopbackClause() + "or at a provider the managed configuration or org policy defines, and " + why}
+					c.loopbackClause() + "or at a provider the managed file defines, and " + why}
 		}
 	}
 	return nil
@@ -303,16 +302,16 @@ func (c Config) loopbackClause() string {
 // watsonx's IAM token URL, a vertex type's region and project (written into
 // the host), and a custom type's own base_url. Each is bound when it is the
 // type's own (unset), on this machine (unless model.allowed_loopback is
-// false), or set by the managed file or org policy.
+// false), or set by the machine's managed file.
 func (c Config) endpointUnbound(name string, p ProviderConfig) string {
-	managedEntry := name != "" && c.ManagedSets("model.providers."+name)
+	managedEntry := name != "" && c.machineSets("model.providers."+name)
 	local := func(u string) bool { return c.LoopbackAllowed() && loopbackURL(u) }
 	// A custom type's endpoint is its definition's, wherever the entry is.
 	for _, d := range c.CustomProviders {
 		if d.Name != p.Type {
 			continue
 		}
-		if p.BaseURL == "" && !c.ManagedSets("custom_providers") && !local(d.BaseURL) {
+		if p.BaseURL == "" && !c.machineSets("custom_providers") && !local(d.BaseURL) {
 			return "its type " + Printable(p.Type) + " is a custom provider a lower file defines, sending to " + PrintableURL(d.BaseURL)
 		}
 	}
@@ -341,20 +340,20 @@ func (c Config) endpointUnbound(name string, p ProviderConfig) string {
 // JudgeListed is ModelListed for the supervisor's model judge, matched as
 // openai-compatible/<monitor.model> since it is reached over that API. Under
 // the organisation's list its monitor.endpoint is bound too: set by the
-// managed file or org policy, or on this machine.
+// machine's managed file, or on this machine.
 func (c Config) JudgeListed(m MonitorConfig) error {
 	if err := c.ModelListed("monitor", ProviderConfig{Type: "openai-compatible", Model: m.Model}); err != nil {
 		return err
 	}
 	l := c.orgModelLayer()
-	if !l.setsModels || !c.managedList(l.file) || c.ManagedSets("monitor.endpoint") {
+	if !l.setsModels || !c.managedList(l.file) || c.machineSets("monitor.endpoint") {
 		return nil
 	}
 	if m.Endpoint == "" || c.LoopbackAllowed() && loopbackURL(m.Endpoint) {
 		return nil
 	}
 	return &ManagedError{Key: "model.allowed", Value: "monitor (" + "openai-compatible/" + m.Model + ")", File: l.file,
-		Reason: "model.allowed in " + c.listOwner(l.file) + " admits the supervisor's judge only at a monitor.endpoint the managed configuration or org policy sets, " +
+		Reason: "model.allowed in " + c.listOwner(l.file) + " admits the supervisor's judge only at a monitor.endpoint the managed file sets, " +
 			c.loopbackClause() + "and this one is sent to " + PrintableURL(m.Endpoint)}
 }
 
@@ -695,3 +694,7 @@ func loopbackURL(raw string) bool {
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
 }
+
+// machineSets reports whether the machine's managed file, not the org policy,
+// made the setting at path: only it may name an endpoint.
+func (c Config) machineSets(path string) bool { return c.ManagedSets(path) && !c.FromOrg(path) }

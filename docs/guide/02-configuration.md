@@ -1712,10 +1712,11 @@ Each input is bound when one of these holds:
   and `project_id` must then be plain names of letters, digits and hyphens.
   The vertex adapters now refuse any other value with or without a list.
 - It points at this machine (`localhost` or a loopback address).
-- The managed file or the org policy sets it. That means its provider entry
-  under `model.providers`, its `custom_providers`, or its `monitor.endpoint`.
-  A managed provider entry is one setting, every field included, and
-  `ABHED_BASE_URL` cannot change it.
+- The machine's managed file sets it. That means its provider entry under
+  `model.providers`, its `custom_providers`, or its `monitor.endpoint`. A
+  managed provider entry is one setting, every field included, and
+  `ABHED_BASE_URL` cannot change it. An org policy never sets these: they
+  name endpoints, and the laptop sets them aside.
 
 Anything else is refused, and the refusal says where the requests would
 have gone. That covers:
@@ -1739,7 +1740,8 @@ tags. Abhed does not see where such a relay sends the requests. A managed
 `"model": {"allowed_loopback": false}` refuses endpoints on this machine
 under the list, including a type whose own endpoint is local (`ollama`,
 `vllm`, `llamacpp`, `tgi`, `sglang`) and the built-in `local` provider. A
-provider the managed file or org policy defines there is still admitted.
+provider the managed file defines there is still admitted. An org policy may
+set `allowed_loopback` to `false`, which only narrows, and never to `true`.
 
 Defining the providers in the managed file does not by itself pin the
 endpoint, since a lower file may still add a provider on this machine. Only
