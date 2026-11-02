@@ -373,11 +373,19 @@ func (s *Shipper) ship(ctx context.Context, id string) error {
 		return err
 	}
 	c.Size = size
+	moves := 0
 	for len(lines) > 0 {
 		var raws [][]byte
 		n := 0
 		for _, l := range lines {
 			if n > 0 && (n+len(l.Raw)+1 > MaxBatchBytes-4096 || len(raws) >= MaxBatchLines) {
+				break
+			}
+			if len(l.Raw) > MaxLineBytes {
+				if len(raws) == 0 {
+					s.block(id, c, KindOversize, fmt.Sprintf("line %d is %d bytes, over the %d a line may be; it and what follows are not shipped", c.Lines+1, len(l.Raw), MaxLineBytes))
+					return nil
+				}
 				break
 			}
 			if s.o.Redact != nil && !bytes.Equal(s.o.Redact.Redact(l.Payload), l.Payload) {
@@ -395,7 +403,10 @@ func (s *Shipper) ship(ctx context.Context, id string) error {
 			return err
 		}
 		if next != nil {
-			// The server holds a different place: read again from it.
+			// The server holds a different place: read again from it, a few times a pass.
+			if moves++; moves > 3 {
+				return fmt.Errorf("the org server moved its place in session %s %d times in one pass", id, moves)
+			}
 			lines = next
 			continue
 		}

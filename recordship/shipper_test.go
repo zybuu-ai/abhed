@@ -411,3 +411,38 @@ func TestBatchRoundTripAndLimits(t *testing.T) {
 		t.Error("an oversized batch was accepted")
 	}
 }
+
+func TestOversizeLineStopsTheSessionAndConflictsAreBounded(t *testing.T) {
+	s := openStore(t)
+	org := newFakeOrg()
+	sh := newShipper(t, s, org, filepath.Join(t.TempDir(), "ship.json"))
+	session(t, s, "s-big", strings.Repeat("x", MaxLineBytes+10))
+	if err := sh.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c := sh.Status().Sessions["s-big"]; !strings.Contains(c.Blocked, "over the") {
+		t.Fatalf("an oversize line: %+v", c)
+	}
+	// A server that keeps naming a new place is given up on for the pass.
+	session(t, s, "s-409", "one", "two")
+	ls, _, _ := s.LinesFrom("s-409", 0)
+	places := []Ack{{Lines: 1, Hash: ls[0].Hash}, {Lines: 0, Hash: local.Genesis}}
+	n := 0
+	sh.o.Do = func(_ context.Context, _, path, _ string, _ []byte) (int, []byte, error) {
+		if !strings.Contains(path, "s-409") {
+			return http.StatusOK, nil, nil
+		}
+		n++
+		return http.StatusConflict, mustJSON(places[(n-1)%2]), nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- sh.Pass(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a moving server was not reported")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the shipper spun on 409s")
+	}
+}

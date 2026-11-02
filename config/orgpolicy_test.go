@@ -30,9 +30,9 @@ func newOrg(t *testing.T) *orgFixture {
 		t.Fatal(err)
 	}
 	f := &orgFixture{pub: pub, priv: priv, path: filepath.Join(t.TempDir(), "org-policy.json")}
-	old := orgpolicy.PathOverride
-	orgpolicy.PathOverride = f.path
-	t.Cleanup(func() { orgpolicy.PathOverride = old })
+	old := managed.OrgStateFile
+	managed.OrgStateFile = f.path
+	t.Cleanup(func() { managed.OrgStateFile = old })
 	if os.Getenv("HOME") == "" || !strings.Contains(os.Getenv("HOME"), os.TempDir()) {
 		t.Setenv("HOME", t.TempDir())
 	}
@@ -96,7 +96,7 @@ func TestOrgPolicyAppliesAsTheManagedLayer(t *testing.T) {
 func TestMachineManagedFileWinsOverTheOrgPolicy(t *testing.T) {
 	withManaged(t, `{"permissions":{"mode":"plan","deny":["bash(rm*)"]},"model":{"providers":{"local":{"type":"ollama","base_url":"http://gpu:1/v1","model":"m"}}}}`)
 	f := newOrg(t)
-	f.write(t, `{"permissions":{"mode":"accept-edits","deny":["bash(curl*)"],"ask":["bash(git push*)"]},
+	f.write(t, `{"permissions":{"mode":"default","deny":["bash(curl*)"],"ask":["bash(git push*)"]},
 		"model":{"providers":{"local":{"type":"openai","base_url":"http://org:2/v1","model":"o","context_window":9}}},
 		"limits":{"max_turns":7}}`, time.Now())
 	cfg, err := Load(t.TempDir())
@@ -114,10 +114,10 @@ func TestMachineManagedFileWinsOverTheOrgPolicy(t *testing.T) {
 	if !slices.Contains(cfg.Permissions.Ask, "bash(git push*)") || cfg.Limits.MaxTurns != 7 {
 		t.Errorf("the org's own keys did not apply: ask %v turns %d", cfg.Permissions.Ask, cfg.Limits.MaxTurns)
 	}
-	// A map entry is one setting: the machine's provider whole, not a blend.
+	// The org never names a provider; the machine's stays whole.
 	p := cfg.Model.Providers["local"]
 	if p.Type != "ollama" || p.BaseURL != "http://gpu:1/v1" || p.ContextWindow == 9 {
-		t.Errorf("provider blended: %+v", p)
+		t.Errorf("provider changed: %+v", p)
 	}
 	if !slices.Contains(cfg.OrgPolicy.Shadowed, "permissions.mode") || !slices.Contains(cfg.OrgPolicy.Keys, "limits.max_turns") {
 		t.Errorf("keys %v shadowed %v", cfg.OrgPolicy.Keys, cfg.OrgPolicy.Shadowed)
@@ -163,8 +163,8 @@ func TestOrgPolicyMayNotReachIntoTheMachine(t *testing.T) {
 			refused = append(refused, k.Key)
 		}
 	}
-	for _, want := range []string{"extensions", "mcp.servers", "statusline", "additional_dirs", "context.memory_files",
-		"model.providers.evil.api_key_env", "org_policy", "record.dir"} {
+	for _, want := range []string{"extensions", "mcp.servers", "statusline", "additional_dirs", "context",
+		"model.providers", "org_policy", "record.dir"} {
 		if !slices.Contains(refused, want) {
 			t.Errorf("%s not set aside (set aside: %v)", want, refused)
 		}
@@ -204,9 +204,9 @@ func TestFallbackAppliesWhenNoFreshVerifiedPolicyIsHeld(t *testing.T) {
 			t.Fatal(err)
 		}
 		strict(t, cfg)
-		// The cached policy still binds beneath it.
-		if !slices.Contains(cfg.Permissions.Deny, "bash(curl*)") || cfg.Limits.MaxTurns != 3 {
-			t.Errorf("the cached policy was dropped: %v %d", cfg.Permissions.Deny, cfg.Limits.MaxTurns)
+		// Only the cached deny and ask rules and allow lists bind beneath it.
+		if !slices.Contains(cfg.Permissions.Deny, "bash(curl*)") || cfg.Limits.MaxTurns == 3 {
+			t.Errorf("deny %v turns %d", cfg.Permissions.Deny, cfg.Limits.MaxTurns)
 		}
 		if !slices.ContainsFunc(warned, func(s string) bool { return strings.Contains(s, "fallback applies") }) {
 			t.Errorf("the fallback was not said: %v", warned)
@@ -315,7 +315,7 @@ func TestUpstreamProxyStaysTheMachinesUnderAnOrgPolicy(t *testing.T) {
 	if cfg.Network.UpstreamProxy != nil || cfg.Limits.MaxTurns != 4 {
 		t.Fatalf("org proxy took effect: %+v turns %d", cfg.Network.UpstreamProxy, cfg.Limits.MaxTurns)
 	}
-	if !slices.ContainsFunc(cfg.SetAside, func(k SetAsideKey) bool { return k.Layer == LayerOrg && k.Key == "network.upstream_proxy" }) {
+	if !slices.ContainsFunc(cfg.SetAside, func(k SetAsideKey) bool { return k.Layer == LayerOrg && k.Key == "network" }) {
 		t.Errorf("not set aside: %+v", cfg.SetAside)
 	}
 

@@ -204,34 +204,40 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- Signed org policy. After `abhed login` to a server that serves one, Abhed
-  fetches the org's managed configuration, checks its Ed25519 signature
-  against a key pinned at sign-in (`-policy-key` to pin one given out of
-  band; signed statements rotate the pins), keeps it in
-  `~/.abhed/org-policy.json` and applies it as the managed layer above the
+- Signed org policy. `abhed login` to a server that serves one asks before
+  taking it (or `-org-policy`, or `-policy-key` with a key given out of
+  band; no question when `/etc/abhed` names the server). Abhed then fetches
+  the policy, checks its Ed25519 signature against a key pinned at sign-in
+  (signed statements rotate the pins, and must keep the signer; trust on
+  first use over plain http is refused), checks it is for the signed-in
+  person and tenant and not an earlier epoch, keeps it in
+  `~/.abhed/org-policy.json` and applies it as a managed layer above the
   user, `-settings` and workspace files and below `/etc/abhed/config.json`,
-  which wins where both set a key; deny and ask rules from both are kept. It
-  is fetched again as sessions start and every 15 minutes. A cached policy
-  past its age with the server unreachable, a fetched policy that fails
-  verification or is an earlier epoch, or no policy when the managed file
-  requires one applies the fallback (plan mode, no allow rules, no web
-  tools) over what was cached, and says so. An org policy cannot name
-  programs, local paths or environment variables (extensions, MCP servers,
-  `additional_dirs`, `api_key_env` and others are set aside). The managed
-  `org_policy` section pins the server and keys and can require the policy.
-  `abhed policy status|show|refresh|leave`; `session.started` records
-  `org_policy`. Guide: [Signed org policy](docs/guide/35-org-policy.md).
+  which wins where both set a key; deny and ask rules from both are kept,
+  and the org's `model.allowed` and `mcp` lists are a layer of their own
+  that only narrows. An org policy may set only classified settings: never
+  anything naming a program, a local file or folder, an environment
+  variable, an endpoint or a base URL; most posture settings (mode, sandbox,
+  limits, web tools, supervisor) only where they tighten what is below;
+  allow rules, sandbox tier and network, fence, egress and hooks only when
+  `/etc/abhed` pins `org_policy.keys`; never auto or bypass mode. It is
+  fetched again as sessions start and every 15 minutes. A cached policy past
+  its age (at most 30 days) with the server unreachable, a fetched policy
+  that fails a check, or no policy when the managed file requires one
+  applies the fallback (plan mode, no allow rules, no web tools), keeping
+  of the cached policy only its deny and ask rules and allow lists, and
+  says so. `org_policy.required` without `org_policy.keys` is warned about.
+  `abhed policy status|show|refresh|leave`; `abhed doctor` and
+  `session.started` report it. Guide: [Signed org policy](docs/guide/35-org-policy.md).
 - Record shipping. With the managed `record.ship.enabled` (normally set by
   the org policy), each session's record is sent to the org server as it is
   written, line for line with its hash chain, authenticated with the sign-in
   token, resumable after time offline from cursors in
   `~/.abhed/state/record-ship.json`. A line the secrets store would still
   redact is not sent. `blocked`, `diverged`, `refused`, `gap`, `backlog` and
-  `resumed` events are printed, kept and reported to the server. `abhed
-  record ship [status|now]`. Guide: [Shipping the record](docs/guide/36-record-shipping.md).
-- `local.CheckSegment` and `local.WriteExport`, for a server that checks
-  shipped lines and exports them in the record's own format; packages
-  `orgpolicy` and `recordship` (experimental until 2.0).
+  `resumed` events are printed, kept and reported to the server. It ships
+  only to a server this machine enrolled with; a line over 8 MiB stops its
+  session (`oversize`). `abhed record ship [status|now]`. Guide: [Shipping the record](docs/guide/36-record-shipping.md).
 - Allowed models and MCP servers in the managed configuration. The managed
   file lists the models any session may use in `model.allowed`, as
   `type/model` patterns (`anthropic/claude-*`). Its lists are refused
@@ -1295,6 +1301,22 @@ All notable changes to Abhed are recorded here. The format follows
 From `apidiff -m` between v1.2.8 and this release (internal packages left
 out):
 
+- Added for the signed org policy: `config.Config.Org` (`org_policy`),
+  `config.Config.OrgPolicy`, `config.OrgPolicyConfig` and its `Machine` and
+  `Refresh`, `config.OrgPolicyStatus` and its `OrgPolicyLine`,
+  `config.ShipConfig` and `config.RecordConfig.Ship` (`record.ship`) with
+  `MaxBacklog`, `config.CheckOrgPolicy`, `config.MachineOrgPolicy`,
+  `config.Config.FromOrg`, `config.LayerOrg` and `config.OrgUnpinnedWarning`.
+- Changed: `config.ManagedError.File` names the org policy ("the org policy
+  from URL", or "the org policy fallback") rather than a path when the
+  setting refused came from it; a caller that opens `File` as a path must
+  check that it is one. A `config.AllowList.Layer` may be `org`.
+- Added: `store/local.Sealed.Raw`, set by `LinesFrom`; `local.SegmentLine`,
+  `local.CheckSegment`, `local.WriteExport`, `local.ExportWriter` and `local.VerifyLines`, for a
+  server that checks shipped lines and exports them in the record's format.
+- Added: packages `orgpolicy` (statements, DSSE envelopes, the state file,
+  `Evaluate` and `Accept`) and `recordship` (the batch format and the
+  shipper), experimental until 2.0.
 - Added: `config.Config.ManagedWebFetchOff`, whether the managed file
   itself sets `web_fetch.enabled` to false; `abhed.Model.Images`.
 - Added: `config.ModelConfig.Allowed`, `config.MCPConfig.Allowed` and

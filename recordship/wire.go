@@ -33,11 +33,16 @@ const ContentType = "application/x-ndjson"
 // WireVersion is the batch format.
 const WireVersion = 1
 
-// MaxBatchBytes and MaxBatchLines bound one batch.
+// MaxBatchBytes and MaxBatchLines bound a batch of several lines; one line
+// alone may be up to MaxLineBytes, and a longer one is not shipped.
 const (
 	MaxBatchBytes = 1 << 20
 	MaxBatchLines = 1000
+	MaxLineBytes  = 8 << 20
 )
+
+// MaxBodyBytes is the most a batch body may be: one line at its longest, and its header.
+const MaxBodyBytes = MaxLineBytes + 64<<10
 
 // Header is a batch's first line: whose lines follow and where they go.
 type Header struct {
@@ -77,6 +82,7 @@ const (
 	KindBacklog  = "backlog"  // more is waiting than record.ship.max_backlog_mb
 	KindResumed  = "resumed"  // shipping reached the server again after failing
 	KindRefused  = "refused"  // the server refused a batch
+	KindOversize = "oversize" // a line is longer than MaxLineBytes; the session stops
 )
 
 // EncodeBatch writes h and raws as a batch body.
@@ -126,6 +132,9 @@ func DecodeBatch(r io.Reader, max int64) (Header, [][]byte, error) {
 	}
 	if len(raws) > MaxBatchLines {
 		return h, nil, fmt.Errorf("the batch holds more than %d lines", MaxBatchLines)
+	}
+	if total := len(data) - len(lines[0]) - 1; len(raws) > 1 && total > MaxBatchBytes {
+		return h, nil, fmt.Errorf("a batch of several lines is over %d bytes", MaxBatchBytes)
 	}
 	return h, raws, nil
 }

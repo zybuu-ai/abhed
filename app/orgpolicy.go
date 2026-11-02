@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -123,7 +124,16 @@ func lockOrgState(path string) (func(), error) {
 
 // enrollOrgPolicy runs after a sign-in: when the server serves an org policy,
 // it pins the signing keys, then fetches and verifies the policy.
-func enrollOrgPolicy(ctx context.Context, profilesFile, name string, p *profiles.Profile, given []string, out, errOut io.Writer) error {
+// enrolOptions say how a sign-in may take an org policy: keys given out of
+// band, and consent (the -org-policy flag, or a y/N answer).
+type enrolOptions struct {
+	given   []string
+	accept  bool
+	confirm func(prompt string) bool
+}
+
+func enrollOrgPolicy(ctx context.Context, profilesFile, name string, p *profiles.Profile, o enrolOptions, out, errOut io.Writer) error {
+	given := o.given
 	mc, err := config.MachineOrgPolicy()
 	if err != nil {
 		return err
@@ -166,10 +176,23 @@ func enrollOrgPolicy(ctx context.Context, profilesFile, name string, p *profiles
 	if err != nil {
 		return err
 	}
+	tofu := len(machine.Keys) == 0 && len(given) == 0 && (st == nil || len(st.Keys) == 0)
+	if tofu && plainRemote(p.URL) {
+		return fmt.Errorf("%s is plain http, so the policy key it offers could be anyone's; pass -policy-key with the org's key", p.URL)
+	}
+	// Taking a policy is the person's choice, unless the machine's managed file names this server.
+	if machine.URL != p.URL && st == nil && !o.accept {
+		prompt := fmt.Sprintf("%s serves an org policy signed by %s.\nTaking it lets that server govern this machine's Abhed settings as managed configuration,\nand it may turn on sending your session records to it. Take it? [y/N] ",
+			p.URL, strings.Join(keyIDs(pins), ", "))
+		if o.confirm == nil || !o.confirm(prompt) {
+			fmt.Fprintf(out, "%s serves an org policy; not taken. abhed login -org-policy %s takes it.\n", p.URL, p.URL)
+			return nil
+		}
+	}
 	if st == nil {
 		st = &orgpolicy.State{}
 	}
-	st.Profile, st.URL, st.Keys = name, p.URL, pins
+	st.Profile, st.URL, st.Keys, st.Subject = name, p.URL, pins, p.Username
 	env, err := orgFetch(ctx, profilesFile, name, p)
 	st.LastAttempt = time.Now()
 	if err != nil {
@@ -181,6 +204,10 @@ func enrollOrgPolicy(ctx context.Context, profilesFile, name string, p *profiles
 	}
 	stmt, aerr := orgpolicy.Accept(st, machine, env, p.Username, config.CheckOrgPolicy, time.Now())
 	st.LastError = ""
+	if aerr == nil && st.Tenant == "" {
+		// The tenant is learnt with the key, from the first statement that verifies.
+		st.Tenant = stmt.Tenant
+	}
 	if err := orgpolicy.SaveState(path, st); err != nil {
 		return err
 	}
@@ -200,6 +227,12 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// plainRemote reports whether u is plain http to another machine.
+func plainRemote(u string) bool {
+	pu, err := url.Parse(u)
+	return err == nil && pu.Scheme == "http" && !profiles.Loopback(pu.Hostname())
 }
 
 // choosePins picks the keys to pin: the machine's, else those given (offered by

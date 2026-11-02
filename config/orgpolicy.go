@@ -77,60 +77,184 @@ func orgSource(url string) string {
 	return "the org policy from " + url
 }
 
-// orgRefused are the settings an org policy may not make: programs, local
-// files or environment variables on the machine, or a server's configuration.
-var orgRefused = map[string]string{
-	"org_policy":                    "only the machine's managed file says where the org policy comes from",
-	"additional_dirs":               "an org policy does not name folders on this machine",
-	"extensions":                    "an org policy does not name programs to run on this machine",
-	"mcp.servers":                   "an org policy does not name MCP servers to run or reach from this machine",
-	"statusline":                    "an org policy does not name programs to run on this machine",
-	"commands.dirs":                 "an org policy does not name folders on this machine",
-	"rules.dirs":                    "an org policy does not name folders on this machine",
-	"skills.dirs":                   "an org policy does not name folders on this machine",
-	"agents.dirs":                   "an org policy does not name folders on this machine",
-	"context.memory_files":          "an org policy does not name files on this machine",
-	"k8s":                           "an org policy does not name this machine's clusters or their files",
-	"storage":                       "an org policy does not configure storage",
-	"server":                        "an org policy does not configure a server",
-	"auth":                          "an org policy does not configure a server's sign-in",
-	"schedules":                     "an org policy does not configure a server's schedules",
-	"control_plane":                 "an org policy does not configure a server's control plane",
-	"record.dir":                    "an org policy does not name folders on this machine",
-	"record.ocsf.path":              "an org policy does not name files on this machine",
-	"record.witness.file":           "an org policy does not name files on this machine",
-	"sandbox.microvm_socket":        "an org policy does not name files on this machine",
-	"model.providers.*.api_key_env": "an org policy does not read this machine's environment",
-	"network.upstream_proxy":        "an org policy does not choose this machine's proxy, which names its files and secrets and carries the org policy's own fetch",
+// orgKind is what an org policy may do with a setting.
+type orgKind int
+
+const (
+	// orgRefuse: never, pinned keys or not.
+	orgRefuse orgKind = iota
+	// orgTighten: only where it tightens what is below, by the setting's
+	// workspace-trust rule; loosening needs machine-pinned keys.
+	orgTighten
+	// orgPinned: only when the machine's managed file pins org_policy.keys.
+	orgPinned
+	// orgExtra: always, as its check allows.
+	orgExtra
+)
+
+// orgRule classifies one setting, or a section, for the org policy.
+type orgRule struct {
+	kind orgKind
+	why  string
 }
 
-// orgRefusedOf is the rule path falls under, if any.
-func orgRefusedOf(path string) (string, bool) {
-	segs := strings.Split(path, ".")
-	for rule, why := range orgRefused {
-		rs := strings.Split(rule, ".")
-		if len(rs) > len(segs) {
-			continue
+// orgRules classify every setting for the org policy, by the nearest path.
+// Anything naming a program, a local file, an environment variable or an
+// endpoint is refused; TestEveryConfigFieldIsClassifiedForTheOrg holds it whole.
+var orgRules = map[string]orgRule{
+	"permissions.deny":           {orgTighten, ""},
+	"permissions.ask":            {orgTighten, ""},
+	"permissions.mode":           {orgTighten, ""},
+	"permissions.allow":          {orgPinned, "an allow rule widens what runs unasked"},
+	"permissions.git_extensions": {orgPinned, "a git extension opted in runs unasked"},
+
+	"sandbox.min_tier":               {orgTighten, ""},
+	"sandbox.allow_network":          {orgTighten, ""},
+	"sandbox.max_memory_mb":          {orgTighten, ""},
+	"sandbox.max_procs":              {orgTighten, ""},
+	"sandbox.readable_home":          {orgTighten, ""},
+	"sandbox.shared_caches":          {orgTighten, ""},
+	"sandbox.max_cpu_percent":        {orgTighten, ""},
+	"sandbox.terminal":               {orgTighten, ""},
+	"sandbox.terminal_idle_minutes":  {orgTighten, ""},
+	"sandbox.toolchains":             {orgTighten, ""},
+	"sandbox.toolchains_registries":  {orgTighten, ""},
+	"sandbox.listen":                 {orgTighten, ""},
+	"sandbox.tier":                   {orgPinned, "chooses what confines commands"},
+	"sandbox.network":                {orgPinned, "turns on the egress allowlist"},
+	"sandbox.protect_git":            {orgPinned, "turned off, commands can plant a git hook"},
+	"sandbox.listen_ports":           {orgPinned, "names the ports commands may listen on"},
+	"sandbox.toolchains_preapproved": {orgPinned, "an install that needs no ask"},
+	"sandbox.read_only_paths":        {orgRefuse, "names folders on this machine"},
+	"sandbox.language_servers":       {orgRefuse, "names programs to run on this machine"},
+	"sandbox.image":                  {orgRefuse, "chooses the image commands run in"},
+	"sandbox.microvm_socket":         {orgRefuse, "names a file on this machine"},
+	"fence":                          {orgPinned, "tunes the fence tier's limits"},
+	"egress":                         {orgPinned, "names the destinations commands reach"},
+
+	"limits.max_turns":                {orgTighten, ""},
+	"limits.max_tokens":               {orgTighten, ""},
+	"limits.max_budget_tokens":        {orgTighten, ""},
+	"limits.max_subagents":            {orgTighten, ""},
+	"limits.max_parallel_subagents":   {orgTighten, ""},
+	"limits.nested_subagents":         {orgTighten, ""},
+	"limits.max_background_subagents": {orgTighten, ""},
+	"limits.background_shells":        {orgTighten, ""},
+	"limits.background_max_minutes":   {orgTighten, ""},
+	"subagents.wake":                  {orgTighten, ""},
+	"subagents.max_wakes_per_hour":    {orgTighten, ""},
+	"subagents.wake_max_turns":        {orgTighten, ""},
+
+	"tools.syntax_check":          {orgTighten, ""},
+	"tools.bash_checkpoints":      {orgTighten, ""},
+	"tools.bash_checkpoint_mb":    {orgPinned, "sets how much of the workspace is held in memory"},
+	"tools.bash_checkpoint_files": {orgPinned, "sets how much of the workspace is held in memory"},
+
+	"web_search.enabled":     {orgTighten, ""},
+	"web_search.max_results": {orgTighten, ""},
+	"web_search":             {orgRefuse, "a search provider, key and endpoint receive the agent's queries"},
+	"web_fetch.enabled":      {orgTighten, ""},
+	"web_fetch.max_chars":    {orgTighten, ""},
+	"web_fetch":              {orgRefuse, "names hosts fetched without asking"},
+	"k8s.enabled":            {orgTighten, ""},
+	"k8s.allow_writes":       {orgTighten, ""},
+	"k8s":                    {orgRefuse, "names this machine's clusters and their files"},
+	"ssh.enabled":            {orgTighten, ""},
+	"ssh.transfers":          {orgTighten, ""},
+	"ssh.transfer_max_mb":    {orgTighten, ""},
+	"ssh.hosts":              {orgRefuse, "names machines, keys, files and environment variables"},
+	"ssh.connect_hosts":      {orgRefuse, "names machines the agent may reach"},
+	"ssh.read_commands":      {orgRefuse, "lets commands run on a host without asking"},
+	"skills.disabled":        {orgTighten, ""},
+	"skills.dirs":            {orgRefuse, "names folders on this machine"},
+	"agents.disabled":        {orgTighten, ""},
+	"agents.dirs":            {orgRefuse, "names folders on this machine"},
+	"telemetry":              {orgRefuse, "names an endpoint and headers that receive the event stream"},
+	"network":                {orgRefuse, "names this machine's proxy, its files and secrets, and carries the policy's own fetch"},
+
+	"commands.dirs":                {orgRefuse, "names folders on this machine"},
+	"rules.dirs":                   {orgRefuse, "names folders on this machine"},
+	"statusline":                   {orgRefuse, "names a program to run on this machine"},
+	"memory.auto":                  {orgTighten, ""},
+	"memory.import_depth":          {orgTighten, ""},
+	"cli":                          {orgRefuse, "the machine's managed file sets it"},
+	"record.ship":                  {orgExtra, ""},
+	"record":                       {orgRefuse, "names files on this machine, or erases the record"},
+	"org_policy":                   {orgRefuse, "only the machine's managed file says where the org policy comes from"},
+	"hooks.managed_only":           {orgExtra, ""},
+	"hooks":                        {orgPinned, "switching hooks off removes their vetoes"},
+	"studio.disable_host_terminal": {orgExtra, ""},
+	"studio":                       {orgRefuse, "the machine's managed file sets it"},
+	"suggest.enabled":              {orgTighten, ""},
+	"suggest.model":                {orgRefuse, "a provider receives the conversation"},
+	"plan.runbooks":                {orgTighten, ""},
+	"mode.default":                 {orgTighten, ""},
+
+	"monitor.enabled":        {orgTighten, ""},
+	"monitor.on_unavailable": {orgTighten, ""},
+	"monitor.max_per_turn":   {orgTighten, ""},
+	"monitor.honeytokens":    {orgTighten, ""},
+	"monitor":                {orgRefuse, "a judge endpoint and key receive the conversation"},
+
+	"verify.mode":                {orgTighten, ""},
+	"verify.answer_tool":         {orgTighten, ""},
+	"verify.contract.protect":    {orgTighten, ""},
+	"verify.contract.require":    {orgRefuse, "names commands the harness runs without asking"},
+	"verify.contract.timeout_ms": {orgRefuse, "the machine's own setting"},
+	"verify.critic":              {orgRefuse, "a critic model receives the conversation"},
+
+	"additional_dirs":       {orgRefuse, "names folders on this machine"},
+	"model.ollama.assist":   {orgTighten, ""},
+	"completion.enabled":    {orgTighten, ""},
+	"completion.local_only": {orgTighten, ""},
+	"model.allowed":         {orgTighten, ""},
+	"mcp.allowed":           {orgTighten, ""},
+	"mcp.denied":            {orgTighten, ""},
+	"model.default":         {orgExtra, ""},
+	"model":                 {orgRefuse, "a provider and its base_url receive the code"},
+	"custom_providers":      {orgRefuse, "a provider and its base_url receive the code"},
+	"context":               {orgRefuse, "names files read into the prompt"},
+	"rag":                   {orgRefuse, "a corpus URL and headers are egress"},
+	"mcp":                   {orgRefuse, "an MCP server is a program or an endpoint"},
+	"retrieval":             {orgRefuse, "embed_base_url receives the code"},
+	"extensions":            {orgRefuse, "names programs to run on this machine"},
+	"storage":               {orgRefuse, "configures storage and its credentials"},
+	"server":                {orgRefuse, "configures a server"},
+	"control_plane":         {orgRefuse, "configures a server's control plane"},
+	"schedules":             {orgRefuse, "configures a server's schedules"},
+	"auth":                  {orgRefuse, "configures a server's sign-in"},
+}
+
+// orgRuleFor is the rule for path: its own, or its nearest section's.
+func orgRuleFor(path string) (orgRule, bool) {
+	for k := path; k != ""; {
+		if r, ok := orgRules[k]; ok {
+			return r, true
 		}
-		ok := true
-		for i, r := range rs {
-			if r != "*" && r != segs[i] {
-				ok = false
-				break
-			}
+		i := strings.LastIndex(k, ".")
+		if i < 0 {
+			break
 		}
-		if ok {
-			return why, true
-		}
+		k = k[:i]
 	}
-	return "", false
+	return orgRule{kind: orgRefuse, why: "not classified for the org policy"}, false
 }
 
 // orgSetAside is a setting the org policy made that was left out.
 type orgSetAside struct{ key, why string }
 
-// stripOrg removes the settings an org policy may not make from doc.
-func stripOrg(doc map[string]any) []orgSetAside {
+// orgStrip is what stripOrg needs to judge a setting: the configuration
+// below the managed layer, the org document as a Config, and whether the
+// machine's managed file pins the keys that signed it.
+type orgStrip struct {
+	below  *Config
+	ws     *Config
+	pinned bool
+}
+
+// stripOrg removes from doc each setting the org policy may not make, or
+// may make only to tighten what is below and here would loosen.
+func stripOrg(doc map[string]any, j orgStrip) []orgSetAside {
 	var out []orgSetAside
 	var walk func(path string, obj map[string]any, t reflect.Type)
 	walk = func(path string, obj map[string]any, t reflect.Type) {
@@ -138,37 +262,98 @@ func stripOrg(doc map[string]any) []orgSetAside {
 			t = t.Elem()
 		}
 		isStruct := t.Kind() == reflect.Struct && !reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]())
-		var fields map[string]reflect.StructField
-		if isStruct {
-			fields = jsonFields(t)
+		if !isStruct {
+			return
 		}
+		fields := jsonFields(t)
 		for _, k := range slices.Sorted(maps.Keys(obj)) {
-			var p string
-			var ft reflect.Type
-			switch {
-			case isStruct:
-				f, ok := fieldFor(fields, k)
-				if !ok || annotation(k) {
-					continue
-				}
-				p, ft = join(path, jsonName(f)), f.Type
-			case t.Kind() == reflect.Map:
-				p, ft = join(path, k), t.Elem()
-			default:
+			f, ok := fieldFor(fields, k)
+			if !ok || annotation(k) {
 				continue
 			}
-			if why, refused := orgRefusedOf(p); refused {
+			p := join(path, jsonName(f))
+			if sub, ok := obj[k].(map[string]any); ok && hasOrgRuleUnder(p) {
+				walk(p, sub, f.Type)
+				continue
+			}
+			r, _ := orgRuleFor(p)
+			if why := j.judge(p, r, obj[k]); why != "" {
 				delete(obj, k)
 				out = append(out, orgSetAside{key: p, why: why})
-				continue
-			}
-			if sub, ok := obj[k].(map[string]any); ok {
-				walk(p, sub, ft)
 			}
 		}
 	}
 	walk("", doc, reflect.TypeFor[Config]())
 	return out
+}
+
+// hasOrgRuleUnder reports whether a rule names a setting inside section p.
+func hasOrgRuleUnder(p string) bool {
+	for k := range orgRules {
+		if strings.HasPrefix(k, p+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// judge says why the org policy may not set p to v, "" when it may.
+func (j orgStrip) judge(p string, r orgRule, v any) string {
+	pinNote := "the org policy may set it only when this machine's managed file pins org_policy.keys"
+	switch r.kind {
+	case orgRefuse:
+		return "an org policy " + orRefuseWhy(r.why)
+	case orgPinned:
+		if j.pinned {
+			return ""
+		}
+		return r.why + "; " + pinNote
+	case orgExtra:
+		return j.extra(p, v)
+	}
+	if p == "permissions.mode" || p == "mode.default" {
+		if m, _ := v.(string); m == "auto" || m == "bypass" {
+			return "an org policy never sets " + m + " mode"
+		}
+	}
+	wr, ok := workspaceRules[p]
+	if !ok || wr.apply == nil || j.below == nil || j.ws == nil {
+		return "no rule says how it tightens"
+	}
+	probe := *j.below
+	if wr.apply(&probe, j.ws) || j.pinned {
+		return ""
+	}
+	return "the org policy may only tighten it (" + wr.why + "); " + pinNote + " to loosen it"
+}
+
+func orRefuseWhy(why string) string {
+	if strings.HasPrefix(why, "only ") || strings.HasPrefix(why, "the machine") {
+		return "does not set it: " + why
+	}
+	return "does not set it: it " + why
+}
+
+// extra checks the settings an org policy may make outright.
+func (j orgStrip) extra(p string, v any) string {
+	switch p {
+	case "record.ship":
+		return "" // sent only to the server this machine enrolled with
+	case "hooks.managed_only", "studio.disable_host_terminal":
+		if b, ok := v.(bool); ok && b {
+			return ""
+		}
+		return "an org policy may only turn it on"
+	case "model.default":
+		name, _ := v.(string)
+		if j.below != nil {
+			if _, ok := j.below.Model.Providers[name]; ok {
+				return ""
+			}
+		}
+		return "an org policy may pin the model only to a provider this machine configures"
+	}
+	return "not classified for the org policy"
 }
 
 // unionLists are the managed settings both sources' entries are kept of: a
@@ -249,7 +434,13 @@ func CheckOrgPolicy(doc []byte) error {
 	if err != nil {
 		return err
 	}
-	stripOrg(m)
+	ws := Default()
+	if err := json.Unmarshal(doc, &ws); err != nil {
+		return err
+	}
+	below := Default()
+	// Judged as if pinned, so every setting it could carry is checked.
+	stripOrg(m, orgStrip{below: &below, ws: &ws, pinned: true})
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -318,10 +509,19 @@ func orgLayer(cfg *Config, local []byte) (map[string]any, string) {
 	if doc == nil {
 		doc = map[string]any{}
 	}
-	for _, s := range stripOrg(doc) {
+	ws := Default()
+	if err := json.Unmarshal(e.Doc, &ws); e.Doc != nil && err != nil {
+		doc, e.Fallback = map[string]any{}, true
+		st.Status, st.Reason = orgpolicy.StatusFallback, "the org policy does not read: "+err.Error()
+	}
+	j := orgStrip{below: cfg, ws: &ws, pinned: len(mc.Keys) > 0}
+	for _, s := range stripOrg(doc, j) {
 		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: source, Layer: LayerOrg, Key: s.key, Reason: s.why})
 	}
 	if e.Fallback {
+		// Of a stale or refused policy only what tightens stays: its deny and
+		// ask rules and its allow lists.
+		doc = pickTightening(doc)
 		fb, _ := decodeDoc(orgpolicy.Fallback())
 		doc, _ = mergeDocs(doc, fb, reflect.TypeFor[Config](), "").(map[string]any)
 		source = "the org policy fallback"
@@ -389,12 +589,19 @@ func (s OrgPolicyStatus) OrgPolicyLine() string {
 	return "none: " + s.Reason
 }
 
-// warnOrgFallback says the fallback applies, and why.
+// warnOrgFallback says the fallback applies, and why, and that a required
+// org policy whose keys the machine does not pin trusts its first answer.
 func warnOrgFallback(w warnSink, c Config) {
+	if c.Org.Required && len(c.Org.Keys) == 0 && c.ManagedSets("org_policy") {
+		w.emit("orgpolicy\x00unpinned", OrgUnpinnedWarning)
+	}
 	if c.OrgPolicy.Status == orgpolicy.StatusFallback {
 		w.emit("orgpolicy\x00fallback", "the org policy fallback applies (plan mode, no allow rules, no web tools): "+c.OrgPolicy.Reason)
 	}
 }
+
+// OrgUnpinnedWarning is said of a required org policy with no pinned keys.
+const OrgUnpinnedWarning = "org_policy.required is set without org_policy.keys: the signing key is pinned at the first sign-in, so whoever answers it decides the key; pin the org's keys in org_policy.keys"
 
 // MachineOrgPolicy is the org_policy section of the machine's managed file
 // alone, as `abhed login` and the policy client read it.
@@ -471,4 +678,26 @@ func noteOrgLists(cfg *Config, lists map[string]any, source string) error {
 	}
 	sort.Strings(cfg.OrgPolicy.Keys)
 	return nil
+}
+
+// pickTightening keeps of doc only its deny and ask rules and allow lists.
+func pickTightening(doc map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, kv := range [][2]string{{"permissions", "deny"}, {"permissions", "ask"}, {"model", "allowed"}, {"mcp", "allowed"}, {"mcp", "denied"}} {
+		sec, ok := lookupFold(doc, kv[0]).(map[string]any)
+		if !ok {
+			continue
+		}
+		for k, v := range sec {
+			if foldKey(k) == foldKey(kv[1]) {
+				dst, _ := out[kv[0]].(map[string]any)
+				if dst == nil {
+					dst = map[string]any{}
+					out[kv[0]] = dst
+				}
+				dst[kv[1]] = v
+			}
+		}
+	}
+	return out
 }

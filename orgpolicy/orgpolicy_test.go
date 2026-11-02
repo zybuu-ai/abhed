@@ -270,3 +270,43 @@ func TestStateFileIsPrivateAndRefusesLinks(t *testing.T) {
 		t.Error("a state others may write was read")
 	}
 }
+
+func TestIdentityEpochSignerAndAgeChecks(t *testing.T) {
+	k1, p1 := newKey(t)
+	k2, _ := newKey(t)
+	now := time.Now().UTC()
+	st := &State{URL: "https://org", Keys: []string{EncodeKey(k1)}, Subject: "alice", Tenant: "acme"}
+	// An empty subject is not anyone's.
+	empty := stmt(1, `{}`, now, k1)
+	empty.Subject = ""
+	if _, err := Accept(st, Machine{}, sign(t, empty, p1), "alice", nil, now); err == nil {
+		t.Error("a statement with no subject was taken")
+	}
+	other := stmt(1, `{}`, now, k1)
+	other.Tenant = "globex"
+	if _, err := Accept(st, Machine{}, sign(t, other, p1), "alice", nil, now); err == nil {
+		t.Error("another tenant's statement was taken")
+	}
+	// Keys that leave the signer out would strand the pins.
+	if _, err := Accept(st, Machine{}, sign(t, stmt(1, `{}`, now, k2), p1), "alice", nil, now); err == nil {
+		t.Error("a statement whose keys omit its signer was taken")
+	}
+	if _, err := Accept(st, Machine{}, sign(t, stmt(5, `{}`, now, k1), p1), "alice", nil, now); err != nil {
+		t.Fatal(err)
+	}
+	// On load: a swapped-in statement for another person, or an older one, falls back.
+	for name, s := range map[string]Statement{"other subject": func() Statement { x := stmt(5, `{}`, now, k1); x.Subject = "bob"; return x }(),
+		"older epoch": stmt(4, `{}`, now, k1)} {
+		env := sign(t, s, p1)
+		cp := *st
+		cp.Envelope = &env
+		if e := Evaluate(&cp, Machine{}, now); e.Status != StatusFallback {
+			t.Errorf("%s: %s", name, e.Status)
+		}
+	}
+	// A huge max age is capped, never wrapped.
+	big := Statement{MaxAgeSeconds: 1 << 62}
+	if big.MaxAge() != MaxAgeCap {
+		t.Errorf("max age %s", big.MaxAge())
+	}
+}

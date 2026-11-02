@@ -103,6 +103,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	if s := cfg.OrgPolicy; s.Status != "" && s.Status != orgpolicy.StatusNone {
 		fmt.Printf("org policy  %s\n", config.Printable(s.OrgPolicyLine()))
 	}
+	if cfg.Org.Required && len(cfg.Org.Keys) == 0 && cfg.ManagedSets("org_policy") {
+		fmt.Printf("            ⚠ %s\n", config.OrgUnpinnedWarning)
+	}
 	for _, line := range allowListLines(cfg) {
 		fmt.Println(line)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/zybuu-ai/abhed/orgpolicy"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 	"golang.org/x/term"
 )
 
