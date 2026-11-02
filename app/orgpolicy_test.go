@@ -32,6 +32,8 @@ type orgServer struct {
 	subject string
 	down    bool
 	tokens  []string
+	// records, when set, answers the record intake's paths.
+	records http.Handler
 }
 
 func newOrgServer(t *testing.T) *orgServer {
@@ -40,6 +42,11 @@ func newOrgServer(t *testing.T) *orgServer {
 	o := &orgServer{pub: pub, priv: priv, epoch: 1, policy: `{"limits":{"max_turns":9}}`, subject: "alice"}
 	o.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		o.mu.Lock()
+		if rh := o.records; rh != nil && strings.HasPrefix(r.URL.Path, "/v1/org/records/") {
+			o.mu.Unlock()
+			rh.ServeHTTP(w, r)
+			return
+		}
 		defer o.mu.Unlock()
 		o.tokens = append(o.tokens, r.Header.Get("Authorization"))
 		if o.down {
