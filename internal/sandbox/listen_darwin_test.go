@@ -267,8 +267,9 @@ func TestContestedPortIsToldNotStopped(t *testing.T) {
 	}
 }
 
-// A sandbox that starts watching while a port is contested is told too;
-// within the cooldown, a contest that comes back is not told again.
+// A sandbox that starts watching while a port is contested is told too,
+// and a program that starts listening again inside the cooldown is a new
+// one, told at once.
 func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
 	port := freePort(t)
 	first := listenSandbox(t, port)
@@ -289,7 +290,7 @@ func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
 	if toldFirst.Load() != 1 || toldLate.Load() != 1 {
 		t.Fatalf("told first %d, late %d", toldFirst.Load(), toldLate.Load())
 	}
-	// Cleared and contested again inside the cooldown: no second notice.
+	// Cleared, and contested again by a new listener inside the cooldown.
 	_ = host.Close()
 	sweepListeners()
 	host, err = net.Listen("tcp", ":"+strconv.Itoa(port))
@@ -298,8 +299,8 @@ func TestContestNoticeReachesLateWatchersAndCoolsDown(t *testing.T) {
 	}
 	defer host.Close()
 	sweepListeners()
-	if toldFirst.Load() != 1 {
-		t.Fatalf("told %d times within the cooldown", toldFirst.Load())
+	if toldFirst.Load() != 2 {
+		t.Fatalf("a new listener inside the cooldown: told %d times", toldFirst.Load())
 	}
 }
 
@@ -450,6 +451,9 @@ s=sock(); print("listening", flush=True); time.sleep(30)`
 func TestContestToldAgainAfterListeningComesBack(t *testing.T) {
 	port := freePort(t)
 	sb := listenSandbox(t, port)
+	// Listening by agreement, an atomic, so the watch's goroutine reads it safely.
+	sb.policy.ListenLoopback = false
+	SetListen(sb, true)
 	var told atomic.Int64
 	SetListenWatch(sb, nil, func(PortContested) { told.Add(1) }, nil)
 	startIn(t, sb, pyListen(port))
@@ -459,11 +463,97 @@ func TestContestToldAgainAfterListeningComesBack(t *testing.T) {
 	}
 	defer host.Close()
 	sweepListeners()
-	sb.policy.ListenLoopback = false
+	SetListen(sb, false)
 	sweepListeners()
-	sb.policy.ListenLoopback = true
+	SetListen(sb, true)
 	sweepListeners()
 	if told.Load() != 2 {
 		t.Fatalf("told %d times", told.Load())
+	}
+}
+
+// reusePortScript opens SO_REUSEPORT listeners on a port, one per entry of
+// lives (seconds each lives), the first in the script's own process, the
+// rest in children, those marked orphan in grandchildren whose parent has
+// exited, so they belong to no tree of Abhed's. It prints once all listen.
+func reusePortScript(port int, lives []float64, orphan []bool) string {
+	var b strings.Builder
+	b.WriteString("import os,socket,time\np=" + strconv.Itoa(port) + "\n")
+	b.WriteString("def hold(t):\n    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1); s.bind((\"127.0.0.1\", p)); s.listen(); time.sleep(t); os._exit(0)\n")
+	for i := 1; i < len(lives); i++ {
+		life := strconv.FormatFloat(lives[i], 'f', 1, 64)
+		if orphan[i] {
+			b.WriteString("if os.fork() == 0:\n    if os.fork() == 0:\n        hold(" + life + ")\n    os._exit(0)\n")
+		} else {
+			b.WriteString("if os.fork() == 0:\n    hold(" + life + ")\n")
+		}
+	}
+	b.WriteString("time.sleep(0.5)\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1); s.bind((\"127.0.0.1\", p)); s.listen(); print(\"listening\", flush=True); time.sleep(" +
+		strconv.FormatFloat(lives[0], 'f', 1, 64) + ")\n")
+	return "python3 -I -c '" + b.String() + "'"
+}
+
+// A command cannot spend the notice with programs of its own, an orphan
+// among them: one of them leaving and a program of the person's joining
+// is told at once.
+func TestContestToldWhenANewProgramJoinsAfterOneLeft(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var told atomic.Int64
+	SetListenWatch(sb, nil, func(c PortContested) {
+		if c.Port == port {
+			told.Add(1)
+		}
+	}, nil)
+	startIn(t, sb, reusePortScript(port, []float64{30, 2, 30}, []bool{false, false, true}))
+	time.Sleep(300 * time.Millisecond)
+	sweepListeners()
+	if told.Load() != 1 {
+		t.Fatalf("three programs of the command: told %d", told.Load())
+	}
+	time.Sleep(2500 * time.Millisecond) // one of them has left
+	sweepListeners()
+	if n := ListenersOn(port); n != 2 || told.Load() != 1 {
+		t.Fatalf("one left: %d programs, told %d", n, told.Load())
+	}
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	sweepListeners()
+	if told.Load() != 2 {
+		t.Fatalf("a program of the person's joined: told %d", told.Load())
+	}
+}
+
+// A contest that cleared is not a cooldown on a new program: an orphan of
+// the command leaving and a program of the person's joining within the
+// minute is told at once.
+func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var told atomic.Int64
+	SetListenWatch(sb, nil, func(c PortContested) {
+		if c.Port == port {
+			told.Add(1)
+		}
+	}, nil)
+	startIn(t, sb, reusePortScript(port, []float64{30, 2}, []bool{false, true}))
+	time.Sleep(300 * time.Millisecond)
+	sweepListeners()
+	if told.Load() != 1 {
+		t.Fatalf("the command and its orphan: told %d", told.Load())
+	}
+	time.Sleep(2500 * time.Millisecond) // the orphan has left
+	sweepListeners()
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	sweepListeners()
+	if told.Load() != 2 {
+		t.Fatalf("a program of the person's joined inside the cooldown: told %d", told.Load())
 	}
 }

@@ -123,18 +123,30 @@ func parseListeners(out string) []listener {
 	return all
 }
 
-// servers counts the programs listening on each port: sockets joined into
-// one when a process holds both (a server on 127.0.0.1 and ::1) or one
-// socket is held by several processes (a server and the workers it
-// forked). Two programs, each with sockets of its own, count two. Sockets
-// bound apart with SO_REUSEPORT by one program's unrelated processes
-// cannot be told from two programs.
+// servers counts the programs listening on each port, as programs groups
+// them.
 func servers(all []listener) map[int]int {
+	out := map[int]int{}
+	for port, ps := range programs(all) {
+		out[port] = len(ps)
+	}
+	return out
+}
+
+// programs groups the listeners on each port into programs: sockets joined
+// into one when a process holds both (a server on 127.0.0.1 and ::1) or one
+// socket is held by several processes (a server and the workers it
+// forked). Two programs, each with sockets of its own, are two. Sockets
+// bound apart with SO_REUSEPORT by one program's unrelated processes cannot
+// be told from two programs. Each program is named by its sorted sockets
+// and processes, so the same program keeps its name from one read to the
+// next and a new one, even on a reused socket address, gets another.
+func programs(all []listener) map[int][]string {
 	byPort := map[int][]listener{}
 	for _, l := range all {
 		byPort[l.port] = append(byPort[l.port], l)
 	}
-	out := map[int]int{}
+	out := map[int][]string{}
 	for port, ls := range byPort {
 		parent := map[string]string{}
 		var find func(string) string
@@ -156,11 +168,18 @@ func servers(all []listener) map[int]int {
 			}
 			union("s"+l.sock, pidKey)
 		}
-		roots := map[string]bool{}
-		for _, l := range ls {
-			roots[find("p"+strconv.Itoa(l.pid))] = true
+		members := map[string][]string{}
+		for x := range parent {
+			r := find(x)
+			members[r] = append(members[r], x)
 		}
-		out[port] = len(roots)
+		var names []string
+		for _, m := range members {
+			sort.Strings(m)
+			names = append(names, strings.Join(m, ","))
+		}
+		sort.Strings(names)
+		out[port] = names
 	}
 	return out
 }
@@ -175,10 +194,9 @@ func servers(all []listener) map[int]int {
 // busy then.
 
 var watching struct {
-	mu        sync.Mutex
-	procs     map[*Process]bool
-	contested map[int]int
-	once      sync.Once
+	mu    sync.Mutex
+	procs map[*Process]bool
+	once  sync.Once
 }
 
 // listenNoticeCooldown is the least time between two notices of one port to
@@ -218,12 +236,11 @@ type PortContested struct {
 }
 
 // sweepListeners tells each listening sandbox of a listen port of its that
-// more than one program listens on. It tells the first time the sandbox
-// sees the contest, and again at once when more programs listen than it
-// last told of, or when a listener outside everything Abhed started joins
-// a contest of its own processes; the same contest coming back is told no
-// more often than listenNoticeCooldown. It reads afresh and tells; it
-// never signals a process.
+// more than one program listens on. It tells within one sweep whenever a
+// program it has not told of joins the port, whatever was told before;
+// only the same programs coming back after the port cleared wait for
+// listenNoticeCooldown. It reads afresh and tells; it never signals a
+// process.
 func sweepListeners() {
 	watching.mu.Lock()
 	var procs []*Process
@@ -239,8 +256,6 @@ func sweepListeners() {
 	if len(procs) == 0 {
 		return
 	}
-	// Parents first, so a pid reused after this reads as foreign.
-	parents := processParents()
 	all, ok := readListenersWithin(0)
 	if !ok {
 		for _, p := range procs {
@@ -248,28 +263,22 @@ func sweepListeners() {
 		}
 		return
 	}
-	count := servers(all)
-	watching.mu.Lock()
-	watching.contested = map[int]int{}
-	for port, n := range count {
-		if n >= 2 {
-			watching.contested[port] = n
-		}
-	}
+	byPort := programs(all)
 	type notice struct {
 		p *Process
 		c PortContested
 	}
 	var tell []notice
 	now := time.Now()
+	watching.mu.Lock()
 	for _, p := range procs {
 		if p.notices == nil {
 			p.notices = map[int]*portNotice{}
 		}
 		for _, port := range p.policy.ListenPorts {
-			n := watching.contested[port]
+			progs := byPort[port]
 			st := p.notices[port]
-			if n == 0 {
+			if len(progs) < 2 {
 				if st != nil && st.contested {
 					st.contested, st.clearedAt = false, now
 				}
@@ -279,21 +288,27 @@ func sweepListeners() {
 				continue
 			}
 			if st == nil {
-				st = &portNotice{}
+				st = &portNotice{told: map[string]bool{}}
 				p.notices[port] = st
 			}
-			foreign := !ownTree(all, port, parents)
+			fresh := false
+			for _, prog := range progs {
+				fresh = fresh || !st.told[prog]
+			}
 			switch {
-			case n > st.count, foreign && !st.foreign:
-				// More programs, or one of the person's: told now, whatever the cooldown.
+			case fresh:
+				// A program not told of: told now, whatever the cooldown.
 			case st.contested:
 				continue
 			case now.Sub(st.toldAt) < listenNoticeCooldown:
-				// Come back too soon: told once the cooldown ends, if still contested.
+				// The same programs back too soon: told once the cooldown ends, if still so.
 				continue
 			}
-			st.contested, st.count, st.foreign, st.toldAt = true, max(st.count, n), st.foreign || foreign, now
-			tell = append(tell, notice{p, PortContested{Port: port, Listeners: n}})
+			for _, prog := range progs {
+				st.told[prog] = true
+			}
+			st.contested, st.toldAt = true, now
+			tell = append(tell, notice{p, PortContested{Port: port, Listeners: len(progs)}})
 		}
 	}
 	watching.mu.Unlock()
@@ -307,13 +322,13 @@ func sweepListeners() {
 	}
 }
 
-// portNotice is what a sandbox was told of one listen port: whether it is
-// contested now, the most programs told of, whether a listener outside
-// Abhed was among them, when it was last told, and when it last cleared.
+// portNotice is what a sandbox was told of one listen port: the programs
+// told of, whether it is contested now, when it was last told, and when it
+// last cleared.
 type portNotice struct {
-	contested, foreign bool
-	count              int
-	toldAt, clearedAt  time.Time
+	told              map[string]bool
+	contested         bool
+	toldAt, clearedAt time.Time
 }
 
 // ListenersOn is how many programs listen on port now, read afresh: a
