@@ -85,6 +85,12 @@ type allowLayer struct {
 // Lists are replaced wholesale as files merge, so each file's own is kept to
 // be applied together: a lower layer can only narrow the managed lists.
 func noteAllowLayer(cfg *Config, file string, keys []string) {
+	noteAllowLayerFrom(cfg, cfg, file, keys)
+}
+
+// noteAllowLayerFrom is noteAllowLayer with the lists read from src: an
+// untrusted workspace's own, which are never merged into cfg.
+func noteAllowLayerFrom(cfg, src *Config, file string, keys []string) {
 	l := allowLayer{file: file}
 	for _, k := range keys {
 		switch {
@@ -100,13 +106,13 @@ func noteAllowLayer(cfg *Config, file string, keys []string) {
 		return
 	}
 	if l.setsModels {
-		l.models = slices.Clone(cfg.Model.Allowed)
+		l.models = slices.Clone(src.Model.Allowed)
 	}
 	if l.setsMCPAllowed {
-		l.mcpAllowed = slices.Clone(cfg.MCP.Allowed)
+		l.mcpAllowed = slices.Clone(src.MCP.Allowed)
 	}
 	if l.setsMCPDenied {
-		l.mcpDenied = slices.Clone(cfg.MCP.Denied)
+		l.mcpDenied = slices.Clone(src.MCP.Denied)
 	}
 	cfg.allowLayers = append(slices.Clone(cfg.allowLayers), l)
 }

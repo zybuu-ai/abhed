@@ -1660,16 +1660,20 @@ as refused, with why. The gateway that starts servers checks every server
 again just before it starts, so one added later is judged the same way.
 
 **Narrowing.** The lists only narrow. `~/.abhed/config.json`, `-settings`
-and a trusted workspace's file may set `model.allowed` and `mcp.allowed`
-too, but each list that is set must admit a model or server. So a lower list
+and a workspace's file may set `model.allowed` and `mcp.allowed`
+too, but each list that is set must admit a model or server. A workspace
+file's lists apply whether or not it is trusted, since they can only take
+away. A malformed list in an untrusted workspace file is ignored with a
+warning rather than stopping Abhed. So a lower list
 can leave out what the managed list allows, and cannot add to it. A lower
 `mcp.denied` adds to the managed one. Without a managed file, a user's own
 lists still bind their sessions. Setting `mcp.allowed` or `mcp.denied` in
 the managed file does not make its `mcp.servers` the organisation's: the
 user's and workspace's servers stay theirs to change, within the lists.
 
-**Fail closed.** A list that cannot be read stops Abhed at startup, naming
-the file, rather than leaving the list unenforced. That covers:
+**Fail closed.** A list that cannot be read in the managed file, the user's
+file, `-settings` or a trusted workspace's file stops Abhed at startup,
+naming the file, rather than leaving the list unenforced. That covers:
 
 - an empty `model.allowed`, which would refuse every model
 - a pattern without a `/` or with whitespace

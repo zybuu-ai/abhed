@@ -250,3 +250,63 @@ func TestMCPListsAtLoad(t *testing.T) {
 		t.Errorf("lists: %v", cfg.MCPLists())
 	}
 }
+
+// An untrusted workspace file's lists apply as a narrowing: they take models
+// and servers away and never add one; a malformed one is ignored, not fatal.
+func TestUntrustedWorkspaceListsOnlyNarrow(t *testing.T) {
+	withManaged(t, `{"model": {"allowed": ["openai/*", "anthropic/*"]}}`)
+	writeConfig(t, os.Getenv("HOME"), allowUser)
+	ws := t.TempDir()
+	writeConfig(t, ws, `{"model": {"allowed": ["anthropic/*", "ollama/*"]}, "mcp": {"denied": [{"name": "docs"}]}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustRefused, Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.Trusted {
+		t.Fatal("the workspace is trusted")
+	}
+	if cfg.ModelAllowed("claude") != nil {
+		t.Errorf("claude is in both lists: %v", cfg.ModelAllowed("claude"))
+	}
+	refusedBy(t, cfg.ModelAllowed("gpt"), "model.allowed")  // taken away by the workspace
+	refusedBy(t, cfg.ModelAllowed("qwen"), "model.allowed") // not added by it
+	refusedBy(t, cfg.MCPAdmitted(MCPServer{Name: "docs", Programs: []string{"/bin/docs"}}), "mcp.denied")
+	for _, k := range []string{"model.allowed", "mcp.denied"} {
+		if !slices.Contains(cfg.Workspace.Applied, k) {
+			t.Errorf("%s not applied: %v", k, cfg.Workspace.Applied)
+		}
+	}
+	var layers []string
+	for _, l := range cfg.ModelsAllowed() {
+		layers = append(layers, l.Layer)
+	}
+	if !slices.Equal(layers, []string{LayerWorkspace, LayerManaged}) && !slices.Equal(layers, []string{LayerManaged, LayerWorkspace}) {
+		t.Errorf("layers: %v", layers)
+	}
+
+	// A malformed list there is ignored, and the session still starts.
+	writeConfig(t, ws, `{"model": {"allowed": ["no-slash"]}, "mcp": {"allowed": [{}]}}`)
+	cfg, err = LoadWith(ws, LoadOptions{Trust: TrustRefused, Quiet: true})
+	if err != nil {
+		t.Fatalf("a malformed untrusted list stopped the load: %v", err)
+	}
+	if cfg.ModelAllowed("gpt") != nil || slices.Contains(cfg.Workspace.Applied, "model.allowed") {
+		t.Errorf("the malformed list applied: %v %v", cfg.ModelAllowed("gpt"), cfg.Workspace.Applied)
+	}
+	ignored := map[string]bool{}
+	for _, k := range cfg.Workspace.Ignored {
+		ignored[k.Key] = true
+	}
+	if !ignored["model.allowed"] || !ignored["mcp.allowed"] {
+		t.Errorf("not reported as ignored: %+v", cfg.Workspace.Ignored)
+	}
+
+	// Trusted, the same lists narrow the same way.
+	writeConfig(t, ws, `{"model": {"allowed": ["anthropic/*", "ollama/*"]}}`)
+	cfg, err = LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedBy(t, cfg.ModelAllowed("gpt"), "model.allowed")
+	refusedBy(t, cfg.ModelAllowed("qwen"), "model.allowed")
+}
