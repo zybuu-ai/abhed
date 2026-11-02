@@ -68,7 +68,7 @@ var listenPrimitives = map[string]bool{
 var unfollowedCalls = map[string]string{
 	// The record's redactor and store: implementations redact and write the
 	// record; none signals or runs a program.
-	"Redactor.Redact": "interface", "Store.Append": "interface",
+	modulePath + "/internal/agent.Redactor.Redact": "interface", modulePath + "/internal/agent.Store.Append": "interface",
 	// The record's own hooks: the approval gate and the live tap, set where a
 	// session is built, to decide and to stream an event.
 	modulePath + "/internal/agent.Recorder.Gate": "field", modulePath + "/internal/agent.Recorder.tap": "field",
@@ -80,8 +80,9 @@ var unfollowedCalls = map[string]string{
 	// The change keepGrant, dropGrant and setListenAgreed pass in, function
 	// literals the walk checks where they are written.
 	appPkg + "..changeKeptGrants: change": "parameter",
-	// A lazy sandbox resolved to its tier, which probes the tier once; it
-	// signals no process and starts none of the person's.
+	// A lazy sandbox resolved to its tier: Resolve waits for the tier chosen
+	// at start (the probe runs in the goroutine that start began); it starts
+	// nothing and signals nothing.
 	modulePath + "/internal/toolset..resolved: l.Resolve": "interface",
 }
 
@@ -162,6 +163,9 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a renamed entry", renamedEntry(t, appDir)},
 		{"a call through an interface no one decided", appRoute(`var g interface{ Go() }; g.Go()`)},
 		{"a call through a func value no one decided", appRoute(`var f func(); f()`)},
+		// The body closes reachRoute and declares more; the template closes the last.
+		{"a package func var set in init", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tprobeHook = func() { _ = killGroupNow(1) }")},
+		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
 		{"a process held by an interface", appRoute(`p, _ := os.FindProcess(1); var k interface{ Kill() error } = p; _ = k.Kill()`, "os")},
 	} {
@@ -472,8 +476,18 @@ func (r *reach) parseAndCheck(path string) (*srcPkg, error) {
 				}
 			case *ast.AssignStmt:
 				for i, l := range x.Lhs {
-					if sel, ok := l.(*ast.SelectorExpr); ok && i < len(x.Rhs) {
+					if i >= len(x.Rhs) {
+						continue
+					}
+					if sel, ok := l.(*ast.SelectorExpr); ok {
 						if k := selFieldKey(info, sel); k != "" {
+							s.fields[k] = append(s.fields[k], x.Rhs[i])
+						}
+					}
+					// An assignment to a package's func variable, made anywhere
+					// but its declaration: followed as its initialiser is.
+					if id, ok := l.(*ast.Ident); ok {
+						if k := pkgVarKey(info.Uses[id]); k != "" {
 							s.fields[k] = append(s.fields[k], x.Rhs[i])
 						}
 					}
@@ -705,6 +719,16 @@ func (r *reach) path(key string) string {
 	return strings.Join(chain, " -> ")
 }
 
+// pkgVarKey names a package-level func variable of the module, as
+// "pkg..name", or "".
+func pkgVarKey(obj types.Object) string {
+	v, ok := obj.(*types.Var)
+	if !ok || v.IsField() || v.Pkg() == nil || v.Parent() != v.Pkg().Scope() || !inModule(v.Pkg()) || !isFunc(v.Type()) {
+		return ""
+	}
+	return v.Pkg().Path() + ".." + v.Name()
+}
+
 // funcFieldKey names field obj of a composite of type t when it is a
 // func-typed field of a module struct: "pkg.Struct.Field".
 func funcFieldKey(t types.Type, obj types.Object) string {
@@ -848,6 +872,11 @@ func (r *reach) check(s *srcPkg, where string, node ast.Node, queue *[]item) []s
 				}
 				if !o.IsField() && inModule(o.Pkg()) && o.Parent() == o.Pkg().Scope() {
 					enqueue(item{key: o.Pkg().Path() + ".." + o.Name()})
+					if k := pkgVarKey(o); k != "" {
+						for _, v := range r.fieldValues(k) {
+							enqueue(v)
+						}
+					}
 				}
 			case *types.Func:
 				path := ""
@@ -965,7 +994,7 @@ func (r *reach) unfollowed(s *srcPkg, call *ast.CallExpr, locals map[types.Objec
 			return ""
 		case *types.Var:
 			if o.Pkg() != nil && o.Parent() == o.Pkg().Scope() && inModule(o.Pkg()) {
-				return "" // its value is followed
+				return "" // its initialiser and every assignment to it are followed
 			}
 			if locals[o] {
 				return "" // a literal checked in place, or what a dependency returned
@@ -995,7 +1024,7 @@ func (r *reach) unfollowed(s *srcPkg, call *ast.CallExpr, locals map[types.Objec
 				if !inModule(n.Obj().Pkg()) {
 					return "" // the standard library's or a dependency's interface
 				}
-				return n.Obj().Name() + "." + f.Sel.Name
+				return n.Obj().Pkg().Path() + "." + n.Obj().Name() + "." + f.Sel.Name
 			}
 			return types.ExprString(f)
 		case types.FieldVal:

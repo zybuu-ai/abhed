@@ -138,9 +138,9 @@ func servers(all []listener) map[int]int {
 // socket is held by several processes (a server and the workers it
 // forked). Two programs, each with sockets of its own, are two. Sockets
 // bound apart with SO_REUSEPORT by one program's unrelated processes cannot
-// be told from two programs. Each program is named by its sorted sockets
-// and processes, so the same program keeps its name from one read to the
-// next and a new one, even on a reused socket address, gets another.
+// be told from two programs. Each program is named by its sorted sockets,
+// or by its process where lsof gives no socket, so a server keeps its name
+// while it recycles the workers that share its socket.
 func programs(all []listener) map[int][]string {
 	byPort := map[int][]listener{}
 	for _, l := range all {
@@ -175,8 +175,17 @@ func programs(all []listener) map[int][]string {
 		}
 		var names []string
 		for _, m := range members {
-			sort.Strings(m)
-			names = append(names, strings.Join(m, ","))
+			var socks []string
+			for _, x := range m {
+				if strings.HasPrefix(x, "s") {
+					socks = append(socks, x)
+				}
+			}
+			if len(socks) == 0 {
+				socks = m
+			}
+			sort.Strings(socks)
+			names = append(names, strings.Join(socks, ","))
 		}
 		sort.Strings(names)
 		out[port] = names
@@ -278,6 +287,15 @@ func sweepListeners() {
 		for _, port := range p.policy.ListenPorts {
 			progs := byPort[port]
 			st := p.notices[port]
+			if st != nil {
+				// Only programs still listening stay told of: a program gone,
+				// and one later on its socket address, is new again.
+				for name := range st.told {
+					if !slices.Contains(progs, name) {
+						delete(st.told, name)
+					}
+				}
+			}
 			if len(progs) < 2 {
 				if st != nil && st.contested {
 					st.contested, st.clearedAt = false, now
