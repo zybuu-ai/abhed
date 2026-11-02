@@ -9,8 +9,8 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  ACCESS PLANE                                                            │
-│  abhed CLI (Go, static binary) │ Web console (TS) │ REST/gRPC + SSE API  │
-│  IDE bridge (LSP)              │ OIDC/SAML SSO    │ Tenant-scoped RBAC   │
+│  abhed CLI (Go, static binary) │ Web console (TS) │ REST + SSE API       │
+│  IDE bridge (LSP)              │ OIDC SSO         │ Tenant-scoped RBAC   │
 └─────────────────────────────────┬────────────────────────────────────────┘
                                   │  session protocol (event stream)
 ┌─────────────────────────────────▼────────────────────────────────────────┐
@@ -52,6 +52,9 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 │  separate egress host with content audit is a target design, not built.  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+The access plane has no gRPC API and no SAML: the API is REST with server-sent
+events, and single sign-on is OIDC (Team and Enterprise editions).
 
 **Why this split:** the control plane is where the 7.80× harness variance lives (P1), so
 it must be independently versionable and testable. The inference plane is swappable by

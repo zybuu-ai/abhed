@@ -1,0 +1,12 @@
+# Runs abhed-backup.service nightly. The same with cron, as the backup user:
+#   15 3 * * *  . /etc/abhed/backup.env && /opt/abhed/scripts/backup/abhed-backup.sh
+[Unit]
+Description=Nightly Abhed backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

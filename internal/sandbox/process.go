@@ -574,6 +574,9 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 				// ports named, the command holds every address of each.
 				b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
 				b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+				// But never a port of Abhed's reserved range, on any address,
+				// so it cannot take a range listener's port or its LAN side.
+				denyRange(&b, nil)
 			}
 		}
 		// A dev server the person opens in their browser, where commands may
@@ -591,11 +594,8 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 					fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
 				}
 			}
-			if loopport.Applies() {
-				lo, hi := loopport.Range()
-				for p := lo; p <= hi; p++ {
-					deny(p)
-				}
+			if !lb.on || len(lb.ports) > 0 {
+				denyRange(&b, lb.ports) // a Go debug session's denies it already
 			}
 			for _, p := range busy {
 				deny(p)
@@ -634,6 +634,20 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		}
 	}
 	return b.String()
+}
+
+// denyRange denies binding each port of Abhed's reserved range, where the
+// rule applies, but the ones named in keep.
+func denyRange(b *strings.Builder, keep []uint16) {
+	if !loopport.Applies() {
+		return
+	}
+	lo, hi := loopport.Range()
+	for p := lo; p <= hi; p++ {
+		if !slices.Contains(keep, uint16(p)) { // #nosec G115 -- a TCP port
+			fmt.Fprintf(b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+		}
+	}
 }
 
 // listenable is the Mac's busy ports when commands may listen on loopback.

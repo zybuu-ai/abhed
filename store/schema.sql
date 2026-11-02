@@ -753,7 +753,7 @@ BEGIN
   SELECT chain_pos, hash INTO last_pos, last_hash FROM events
     WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
   NEW.inserted_at := now();
-  NEW.commit_tx := pg_current_xact_id();
+  NEW.commit_tx := abhed_commit_pos();  -- the transaction, shifted past a restored record (version 17)
   NEW.chain_pos := COALESCE(last_pos, 0) + 1;
   NEW.prev_hash := COALESCE(last_hash, repeat('0', 64));
   NEW.hash := encode(sha256(convert_to(NEW.prev_hash || E'\n' || jsonb_build_object(
@@ -788,3 +788,61 @@ CREATE INDEX IF NOT EXISTS events_commit_tx_idx
 DROP INDEX IF EXISTS events_commit_order_idx;
 
 INSERT INTO schema_version (version) VALUES (16) ON CONFLICT DO NOTHING;
+
+-- Schema version 17: commit order that survives a restore into another
+-- cluster. commit_tx is a transaction id, and a logical restore (pg_dump and
+-- pg_restore) into a cluster whose transaction counter is behind the one
+-- that wrote the rows keeps the old ids: new rows would then get lower ids
+-- than rows a reader has already passed, and a reader resuming from its
+-- cursor would never see them. commit_shift is added to every new commit_tx
+-- and to the horizon readers stop at. Each migrate raises it, while it holds
+-- every table, just far enough that the next transaction sorts after every
+-- row in the database; in a database written by this cluster that never
+-- happens, so the shift stays 0. It is never lowered.
+CREATE TABLE IF NOT EXISTS commit_shift (
+  one   BOOLEAN PRIMARY KEY DEFAULT true CHECK (one),
+  shift NUMERIC NOT NULL DEFAULT 0 CHECK (shift >= 0)
+);
+INSERT INTO commit_shift DEFAULT VALUES ON CONFLICT DO NOTHING;
+
+CREATE OR REPLACE FUNCTION abhed_commit_shift_guard() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP <> 'UPDATE' OR NEW.shift < OLD.shift OR NEW.one IS DISTINCT FROM OLD.one THEN
+    RAISE EXCEPTION 'commit_shift only ever rises';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS commit_shift_guard ON commit_shift;
+CREATE TRIGGER commit_shift_guard BEFORE UPDATE OR DELETE ON commit_shift
+  FOR EACH ROW EXECUTE FUNCTION abhed_commit_shift_guard();
+DROP TRIGGER IF EXISTS commit_shift_no_truncate ON commit_shift;
+CREATE TRIGGER commit_shift_no_truncate BEFORE TRUNCATE ON commit_shift
+  FOR EACH STATEMENT EXECUTE FUNCTION abhed_commit_shift_guard();
+
+-- The writing transaction's place in commit order.
+CREATE OR REPLACE FUNCTION abhed_commit_pos() RETURNS xid8 AS $$
+  SELECT (pg_current_xact_id()::text::numeric + shift)::text::xid8 FROM commit_shift
+$$ LANGUAGE sql VOLATILE;
+
+-- Where a commit-ordered reader stops: below every transaction still running.
+CREATE OR REPLACE FUNCTION abhed_commit_horizon() RETURNS xid8 AS $$
+  SELECT (pg_snapshot_xmin(pg_current_snapshot())::text::numeric + shift)::text::xid8 FROM commit_shift
+$$ LANGUAGE sql STABLE;
+
+-- Run by every migrate, which holds events exclusively here, so no writer is
+-- part way through an insert. Row security is lifted for this transaction
+-- only, as abhed_chain_mark_pre does, to see every tenant's rows.
+DO $$
+DECLARE
+  top numeric;
+  now_tx numeric := pg_current_xact_id()::text::numeric;
+BEGIN
+  ALTER TABLE events NO FORCE ROW LEVEL SECURITY;
+  SELECT max(commit_tx)::text::numeric INTO top FROM events;
+  ALTER TABLE events FORCE ROW LEVEL SECURITY;
+  UPDATE commit_shift SET shift = top - now_tx + 1
+    WHERE top IS NOT NULL AND top >= now_tx + shift;
+END $$;
+
+INSERT INTO schema_version (version) VALUES (17) ON CONFLICT DO NOTHING;

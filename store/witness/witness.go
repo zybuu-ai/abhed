@@ -32,6 +32,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Config says where heads go. File and URL may both be set.
@@ -117,7 +119,7 @@ func Open(cfg Config) (*Witness, error) {
 		cfg.Host, _ = os.Hostname()
 	}
 	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: 10 * time.Second}
+		cfg.Client = &http.Client{Timeout: 10 * time.Second, Transport: egress.UpstreamRoundTripper{}}
 	}
 	key, err := loadKey(cfg.KeyFile)
 	if err != nil {

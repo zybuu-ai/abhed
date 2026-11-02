@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // OpenAIEmbedder calls an OpenAI-compatible /embeddings endpoint.
@@ -30,7 +32,7 @@ func NewOpenAIEmbedder(baseURL, apiKey, model string, dims int) *OpenAIEmbedder 
 		APIKey:  apiKey,
 		Model:   model,
 		Dims:    dims,
-		HTTP:    &http.Client{Timeout: 2 * time.Minute},
+		HTTP:    &http.Client{Timeout: 2 * time.Minute, Transport: egress.UpstreamRoundTripper{}},
 	}
 }
 

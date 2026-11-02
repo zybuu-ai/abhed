@@ -38,10 +38,16 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	warnNotYetInEffect(w, cfg)
 	findings := cfg.RuleFindings()
 	warnRuleFindings(w, findings)
+	if err := managedNeverDenies(findings); err != nil {
+		return cfg, err
+	}
 	if err := cfg.validateAllowLists(); err != nil {
 		return cfg, err
 	}
-	return cfg, managedNeverDenies(findings)
+	if err := cfg.validateNetwork(); err != nil {
+		return cfg, err
+	}
+	return cfg, applyNetwork(cfg)
 }
 
 // mergeManaged applies the managed file, if there is one, over cfg and

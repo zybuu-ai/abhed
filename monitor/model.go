@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
@@ -89,7 +90,7 @@ func (m Model) Judge(ctx context.Context, c Case) (Verdict, error) {
 	}
 	client := m.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Transport: egress.UpstreamRoundTripper{}}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

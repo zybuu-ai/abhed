@@ -14,12 +14,6 @@ All notable changes to Abhed are recorded here. The format follows
   stop it. Only the managed file's own `web_fetch.enabled: false` refuses it,
   so a managed deployment that relied on the default must now set it to
   false.
-- On a Mac, Abhed's own loopback listeners (egress proxies, each command's
-  proxy port, port forwards, the sign-in callback) now take their ports from
-  47600 to 47855 only, and fail, saying so, when that range is full. If
-  another program on the Mac uses those ports, set `ABHED_LOOPBACK_PORTS`
-  to another range (`lo-hi`, at least 16 ports above 1024), the same for
-  every Abhed process there.
 - On a Mac, Abhed's own listeners that do not name their port (egress
   proxies, each command's proxy port, `abhed sandbox forward` without a
   local port, `abhed serve`, `server.metrics.listen` and `abhed
@@ -94,9 +88,9 @@ All notable changes to Abhed are recorded here. The format follows
   cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
   without, the new file `<records>/<tenant>/audit/api.jsonl` under
   `record.dir` or `~/.abhed/records`.
-- Postgres: this release takes the schema from version 10 to 16. Run
+- Postgres: this release takes the schema from version 10 to 17. Run
   `abhed migrate` as the owner role before starting a server as the runtime
-  role; a runtime-role server refuses a schema older than 13 and says to
+  role; a runtime-role server refuses a schema older than 17 and says to
   migrate, and a `storage.single_role` server applies it itself. Version 11
   adds the `chain_pre` table; 12 adds `events.commit_tx`; 13 adds the
   `ocsf_cursors` table; 14 replaces the trigger that chains events (same
@@ -108,13 +102,16 @@ All notable changes to Abhed are recorded here. The format follows
   16 replaces version 12's commit-order index with `events_commit_tx_idx`,
   which row security lets the commit-ordered scan use; `abhed migrate` builds
   it in its transaction, holding appends to `events` until it is built, so
-  on a large table run it in a quiet window. A server still starts on 13 to
-  15, but without what the later versions add: on 13 the trigger does not
-  set `commit_tx` itself (14), so a writer could keep its row out of the
-  commit-ordered scan; on 13 and 14 a row can still land in a session
-  deleted while its insert waited (15); and below 16 commit-ordered reads
-  (`record.ocsf` on `abhed serve`, an edition's export) are slower. Migrate
-  to 16.
+  on a large table run it in a quiet window. 17 adds the `commit_shift`
+  table. `commit_tx` is a transaction id, so after a logical restore
+  (`pg_dump`, `pg_restore`) into a cluster whose transaction counter is
+  behind the one that wrote the record, new events would sort before rows a
+  commit-ordered reader (`record.ocsf`, an edition's SIEM delivery) had
+  already passed, and it would never see them. Each `abhed migrate` raises
+  the shift, while it holds the tables, just past the highest `commit_tx`
+  when that is ahead of the cluster; new events and the readers' horizon both
+  add it. It stays 0 in a database the cluster wrote, is never lowered, and
+  the runtime role only reads it.
 - HawkEYE's `sandbox-denied` no longer fires on the words of a command's
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
@@ -212,6 +209,39 @@ All notable changes to Abhed are recorded here. The format follows
   may set the lists too, but only to narrow them. A malformed list stops
   Abhed at startup. A local managed file is all it takes, in every edition.
   See [Allowed models and MCP servers](docs/guide/02-configuration.md#allowed-models-and-mcp-servers).
+- Backup and restore scripts for a self-hosted server, in
+  `scripts/backup/`: `abhed-backup.sh` writes a logical dump of the database
+  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser), the
+  roles without passwords, and a tarball of the state folders you name,
+  each checked before it counts; `abhed-restore.sh` restores them into an
+  empty database in one transaction and can run `abhed migrate`, `abhed
+  record verify` and `abhed record audit` after. A systemd service and timer
+  are examples. `scripts/backup/restore-test.sh` proves them: it seeds a
+  record in a throwaway Postgres container, backs it up, restores it into a
+  new database of the same cluster, into a fresh cluster whose transaction
+  counter is behind, and from a `pg_basebackup` copy, and checks every chain
+  position, hash and `commit_tx` is unchanged, both record checks pass, and a
+  commit-ordered reader goes on from its cursor without skipping or
+  repeating an event ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
+- A corporate upstream proxy, `network.upstream_proxy`: an explicit HTTP
+  proxy (`http://` or `https://`), an optional CA bundle, credentials by the
+  name of a stored secret (`user:password`, sent as Basic to the proxy alone)
+  and a `no_proxy` list. Abhed's own connections go out through it: the model
+  clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the `k8s_*`
+  tools, the forge API and `git push`, toolchain downloads, Ollama installs
+  and registry lookups, `abhed login` and the profile calls, and the
+  record's witness. Under the allowlist, the commands' proxy chains what it
+  allowed through it (`CONNECT` for tunnels, absolute form for plain HTTP),
+  so a provider or registry reachable only through the corporate proxy is
+  reached under the allowlist too. The allowlist decides first and the
+  internal-address check runs on the addresses a name has here, so the
+  proxy never widens what is allowed. Credentials never reach a URL, an
+  error, a log, the record or the model; programs Abhed starts for its own
+  downloads get a loopback relay with a one-time token. A workspace never
+  sets it; a managed file can force it, and then the person's `no_proxy`
+  is dropped unless the managed file names its own. PAC, WPAD, SOCKS and
+  NTLM or Kerberos proxy authentication are not supported. Records of
+  chained connections carry `upstream`.
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen on loopback once the person agrees for the workspace
   (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its
@@ -767,8 +797,10 @@ All notable changes to Abhed are recorded here. The format follows
   source") is not, though a past form opens a title only as a few
   adjectives ("Cited", "Related"); a bare pass claim ("All tests passed")
   is covered by a run of the folders the person typed since the last
-  checked answer, attachments aside, when they asked about nothing wider
-  and every change lies inside those folders; a test result with no test run behind it says "no test
+  checked answer, attachments and piped stdin aside, when they asked
+  about nothing wider, joined only folders or verbs to a folder, named a
+  folder in every sentence about tests, and every change lies inside
+  those folders; a test result with no test run behind it says "no test
   run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
@@ -991,12 +1023,15 @@ All notable changes to Abhed are recorded here. The format follows
   five ports chosen outside the range before it starts, which it holds on
   the wildcard and loopback addresses for its whole life, and only those
   are opened to it; the program may listen on those five on any of the
-  Mac's addresses, and on no other port (a dev server cannot be debugged
-  this way; use the container tier). Go may reach each port the system
-  hands out to listeners (49152 to 65535) but the range, one rule each,
-  older Abhed releases' proxies on the Mac included, and a Go program being
-  debugged can listen where the network reaches, the reserved range too
-  (the consent and the guide say so). Both debug on the macOS process tier in the default
+  Mac's addresses, and on no other port unless the session's commands may
+  listen (`sandbox.listen`): then, as any command, on any port but the
+  range and the Mac's busy ones, where the network reaches, so a dev server
+  can be debugged with listening on (else use the container tier). Go may
+  reach each port the system hands out to listeners (49152 to 65535) but
+  the range, one rule each, older Abhed releases' proxies on the Mac
+  included, and a Go program being debugged can listen where the network
+  reaches, but never on a port of the range (the consent and the guide say
+  so). Both debug on the macOS process tier in the default
   configuration. Delve is built for macOS too, offered and installed with
   Go like any debugger; a Go launch without Delve offers the install before
   anything is judged. A workspace agreement to debug on this Mac is kept
@@ -1207,6 +1242,13 @@ out):
   `Config.HasMCPLists` and `Config.EndpointRefused`.
   `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
   outside `model.allowed`.
+
+- Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
+  with an `Options.Addr` asking for any port (`:0`, or an empty port) now
+  listens on a port of Abhed's reserved loopback range (47600 to 47855, or
+  `ABHED_LOOPBACK_PORTS`), not one the system picks, and fails with
+  `loopport.ErrExhausted` wrapped when that range is full. Name a port to
+  keep it as before.
 
 - Incompatible: `hawkeye.Call` gains `Sandbox`, a slice, and
   `monitor.Guard` now holds a mutex and a slice, so neither is comparable any

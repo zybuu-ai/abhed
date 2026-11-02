@@ -68,7 +68,7 @@ func TestHeadlessPipedLogIsContext(t *testing.T) {
 	t.Parallel()
 	h := piped(t, Opts{Args: []string{"-p", "why did this fail?", "-output-format", "json"}, Stdin: "error: build broke at step 3\n", Script: `text "step 3"`})
 	req := lastRequestText(t, h)
-	if !strings.Contains(req, "why did this fail?") || !strings.Contains(req, "Input from stdin:") || !strings.Contains(req, "build broke at step 3") {
+	if !strings.Contains(req, "why did this fail?") || !strings.Contains(req, "Input from stdin") || !strings.Contains(req, "build broke at step 3") {
 		t.Fatalf("the log did not reach the model with the question:\n%s", req)
 	}
 	if resultOf(t, h.Stdout())["exit_code"] != float64(0) {

@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // Artifact is one toolchain build: where it comes from, the checksum its
@@ -85,7 +87,7 @@ const maxManifest = 64 << 20
 func (s *Source) client(hosts []string) *http.Client {
 	base := s.Client
 	if base == nil {
-		base = &http.Client{Timeout: 30 * time.Minute}
+		base = &http.Client{Timeout: 30 * time.Minute, Transport: egress.UpstreamRoundTripper{}}
 	}
 	c := *base
 	allowed := append(append([]string(nil), hosts...), s.Endpoints.ExtraHosts...)

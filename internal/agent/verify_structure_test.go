@@ -28,7 +28,8 @@ func TestStructureLinesAreNotClaims(t *testing.T) {
 		"Migrated the database", "Updated the config", "Upgraded Go", "Deleted the branch", "Merged into main",
 		"Rolled back the release", "No Breaking Changes", "Deployed to staging", "Pushed the branch", "Verified the fix",
 		"Tested Locally", "We Ship Today", "Coverage At 85 Percent", "The handler returns a clean response body",
-		"go test run", "Sum is fine.", "Expected"} {
+		"go test run", "Sum is fine.", "Expected", "Related bug fixed", "Affected Packages Updated", "Required Secrets Removed",
+		"Known Vulnerability Patched", "Proposed Change Merged"} {
 		if _, ok := claimOf(s); !ok {
 			t.Errorf("%q was dropped as structure", s)
 		}

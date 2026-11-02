@@ -71,7 +71,7 @@ func (p *Postgres) ScanCommitted(ctx context.Context, pos CommitPos, limit int, 
 	// The bare column, not a COALESCE of it, so under row security the bound
 	// is an index condition (events_commit_tx_idx) rather than a filter over
 	// every row of the tenant.
-	_, err := p.scanCommitted(ctx, `commit_tx IS NOT NULL AND commit_tx < pg_snapshot_xmin(pg_current_snapshot())
+	_, err := p.scanCommitted(ctx, `commit_tx IS NOT NULL AND commit_tx < abhed_commit_horizon()
 		AND commit_tx >= $1::text::xid8 AND (commit_tx, created_at, session_id, seq) > ($1::text::xid8, $2, $3, $4)
 		ORDER BY commit_tx, created_at, session_id, seq LIMIT $5`,
 		[]any{strconv.FormatUint(pos.Tx, 10), pos.At, pos.Session, pos.Seq, limit}, fn)

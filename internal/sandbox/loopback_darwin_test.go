@@ -49,8 +49,14 @@ func TestLoopbackForOneCommand(t *testing.T) {
 	if out, err := run(ctx, reach); err != nil {
 		t.Fatalf("loopback stayed closed with the option: %v %s", err, out)
 	}
-	// Listening and connecting inside the command, as an adapter and its program do.
-	if out, err := run(ctx, `nc -l 127.0.0.1 47613 > /dev/null & sleep 0.5; echo hi | nc -G 2 127.0.0.1 47613 && echo sent`); err != nil || !strings.Contains(out, "sent") {
+	// Listening and connecting inside the command, as an adapter and its
+	// program do, on a port outside Abhed's reserved range.
+	free, err := loopport.FreeOutside(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := strconv.Itoa(free[0])
+	if out, err := run(ctx, `nc -l 127.0.0.1 `+inner+` > /dev/null & sleep 0.5; echo hi | nc -G 2 127.0.0.1 `+inner+` && echo sent`); err != nil || !strings.Contains(out, "sent") {
 		t.Fatalf("a listener inside the command: %v %s", err, out)
 	}
 	// Another address stays closed (a TEST-NET address, refused before any packet).
@@ -218,7 +224,38 @@ func TestLoopbackEphemeral(t *testing.T) {
 			t.Fatalf("an [::1] listener inside the reserved range was reached: %s", out)
 		}
 	}
+	// It may listen, but on no port of the range, on loopback or the
+	// wildcard address; a free port outside it, it may.
+	bind := func(host string, port int) error {
+		_, err := run(`perl -MIO::Socket::INET -e 'IO::Socket::INET->new(LocalAddr=>"` + host + `",LocalPort=>` + strconv.Itoa(port) + `,Listen=>1,ReuseAddr=>1) or exit 3'`)
+		return err
+	}
+	freeIn := 0
+	for p := base; p <= base+15; p++ {
+		if l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p)); err == nil {
+			_ = l.Close()
+			freeIn = p
+			break
+		}
+	}
+	if freeIn != 0 {
+		for _, host := range []string{"127.0.0.1", "0.0.0.0"} {
+			if err := bind(host, freeIn); err == nil {
+				t.Fatalf("bound %s:%d, a port of the reserved range", host, freeIn)
+			}
+		}
+	}
+	if free, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		p := free.Addr().(*net.TCPAddr).Port
+		_ = free.Close()
+		if err := bind("127.0.0.1", p); err != nil && !loopport.In(p) {
+			t.Fatalf("could not bind %d, outside the range: %v", p, err)
+		}
+	}
 	prof := sb.seatbeltProfileWith(0, loopback{on: true, ephemeral: true})
+	if !strings.Contains(prof, `(deny network-bind (local ip "localhost:`+strconv.Itoa(base)+`"))`) {
+		t.Fatal("the Go debug profile does not deny binding the range")
+	}
 	if strings.Contains(prof, `remote ip "localhost:*"`) || strings.Contains(prof, `remote ip "localhost:`+inside+`"`) ||
 		!strings.Contains(prof, `remote ip "localhost:`+strconv.Itoa(outside.Addr().(*net.TCPAddr).Port)+`"`) {
 		t.Fatal("the profile does not name the ephemeral ports but the range")

@@ -360,7 +360,13 @@ func (p *Proxy) inspectTunnel(c net.Conn, br *bufio.Reader, up *counted, t Targe
 	}
 	_ = srv.SetDeadline(time.Time{})
 	// An address is verified against the certificate's IP names.
-	conf := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: p.ins.roots, NextProtos: []string{"http/1.1"}, ServerName: t.Host}
+	roots := p.ins.roots
+	// Through an upstream proxy that inspects TLS, the server is re-signed
+	// by the operator's CA bundle.
+	if up := CurrentUpstream(); roots == nil && up != nil && !up.Bypass(t.Host) {
+		roots = up.Roots
+	}
+	conf := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, NextProtos: []string{"http/1.1"}, ServerName: t.Host}
 	upTLS := tls.Client(up, conf)
 	_ = upTLS.SetDeadline(time.Now().Add(headerTimeout))
 	if err := upTLS.Handshake(); err != nil {

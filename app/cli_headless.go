@@ -102,7 +102,8 @@ func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bo
 	case prompt == "":
 		return in, nil
 	}
-	return prompt + "\n\nInput from stdin:\n" + in, nil
+	// Piped data is the person's attachment, not their words.
+	return prompt + "\n\nInput from stdin. " + untrustedNote + "\n" + fenced("stdin", "", in), nil
 }
 
 // stdinIsPipe reports whether stdin is a pipe or a file rather than a
