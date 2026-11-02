@@ -35,6 +35,10 @@ type UpstreamProxyConfig struct {
 	// NoProxy are destinations reached directly: host names (".corp" or
 	// "*.corp" for a domain), IP addresses and CIDR ranges.
 	NoProxy []string `json:"no_proxy,omitempty"`
+	// ResolveViaProxy lets a name that does not resolve on this machine go
+	// to the proxy unchecked, for a host a rule names exactly. Off, such a
+	// name is refused.
+	ResolveViaProxy bool `json:"resolve_via_proxy,omitempty"`
 }
 
 // clone is a deep copy, so a restore is not changed by a later merge.
@@ -90,6 +94,8 @@ func proxyURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("%s holds a user or password; store them with `abhed secret set NAME` as user:password and name it in network.upstream_proxy.credentials_secret", key)
 	case u.Hostname() == "":
 		return nil, fmt.Errorf("%s has no host", key)
+	case !isASCII(u.Hostname()):
+		return nil, fmt.Errorf("%s names its host in non-ASCII characters; write the proxy's host as ASCII (its punycode form)", key)
 	case (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "":
 		return nil, fmt.Errorf("%s may name only a scheme, host and port (a PAC file is not supported)", key)
 	}
@@ -160,6 +166,9 @@ func managedNetwork(cfg *Config) {
 	if !cfg.ManagedSets("network.upstream_proxy.no_proxy") {
 		cfg.Network.UpstreamProxy.NoProxy = nil
 	}
+	if !cfg.ManagedSets("network.upstream_proxy.resolve_via_proxy") {
+		cfg.Network.UpstreamProxy.ResolveViaProxy = false
+	}
 }
 
 // Upstream builds the egress upstream proxy of network.upstream_proxy, or nil.
@@ -172,7 +181,7 @@ func (c Config) Upstream() (*egress.Upstream, error) {
 	if err != nil {
 		return nil, err
 	}
-	up := &egress.Upstream{URL: u, NoProxy: append([]string(nil), p.NoProxy...)}
+	up := &egress.Upstream{URL: u, NoProxy: append([]string(nil), p.NoProxy...), ResolveViaProxy: p.ResolveViaProxy}
 	if p.CAFile != "" {
 		certs, err := readBundle(p.CAFile)
 		if err != nil {
@@ -204,13 +213,23 @@ func (c Config) Upstream() (*egress.Upstream, error) {
 	return up, nil
 }
 
-// applyNetwork puts the loaded configuration's upstream proxy in force for
-// the process's connections, or none.
-func applyNetwork(cfg Config) error {
-	up, err := cfg.Upstream()
+// ApplyNetwork puts the configuration's upstream proxy, or none, in force
+// for the process's connections, where a session or command starts. The
+// proxy is process-wide: a second, different one in the same process is
+// refused (egress.ErrUpstreamConflict). Loading a configuration never does this.
+func (c Config) ApplyNetwork() error {
+	up, err := c.Upstream()
 	if err != nil {
 		return err
 	}
-	egress.SetUpstream(up)
-	return nil
+	return egress.UseUpstream(up, c.networkKey())
+}
+
+// networkKey describes the upstream proxy settings, for telling two apart.
+func (c Config) networkKey() string {
+	p := c.Network.UpstreamProxy
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s|%s|%s|%v|%s", p.URL, p.CAFile, p.CredentialsSecret, p.ResolveViaProxy, strings.Join(p.NoProxy, ","))
 }

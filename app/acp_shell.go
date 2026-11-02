@@ -239,6 +239,9 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 		}
 		if refused == nil {
 			sh.gave()
+			if strings.TrimSpace(e.Line) == "abhed_venv" {
+				t.serving.typedVenv()
+			}
 			if err := sh.capture.Send(e, func() error { _, err := sh.tty.Write(k.Data); return err }); err != nil {
 				return refusal(errRefused, "the terminal has ended")
 			}

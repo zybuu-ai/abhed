@@ -428,24 +428,8 @@ counts (`12 tests`, `replicas: 3`). Then:
     --env-file`, `dotenv` and `direnv exec`, which are not taken off, so the
     run is not one of a known kind;
   - covers, by path, the packages or folders the statement names, or the
-    whole workspace (`./...` from the workspace) when it names none. A
-    pass said of the tests, the build or the lint alone ("All tests
-    passed", "Result: all tests passed", "The build passes") answers what
-    the person typed since the last checked answer, attachments left out:
-    when that names folders (`services/orders`), asks about nothing wider
-    ("all", "every", "whole", "repo", "project", "full", "complete",
-    "other", "rest", "nothing else", "globally", "CI", "just", "besides",
-    "including", "dependents", "downstream", "callers", "e2e",
-    "integration", "frontend" and the like), joins to a folder only
-    another named folder or a verb ("services/orders and tell me", not
-    "services/orders and billing"), names a folder in every sentence that
-    asks about tests, a build or lint ("You only ran services/orders. Run
-    the tests." asks about more), and every known change lies inside those
-    folders, a run over every one of them covers it. Data piped to `-p`
-    is an attachment, not the person's words. A claim that names a scope or another part ("the whole
-    build", "tests pass in all services", "everything works") keeps the
-    whole-workspace rule, and a subagent's task never counts as what the
-    person asked. A cached run (`ok … (cached)`) counts like any other;
+    whole workspace (`./...` from the workspace) when it names none.
+    A cached run (`ok … (cached)`) counts like any other;
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -899,6 +883,8 @@ makes them.
   that puts a status code after a carriage return (`\rUU `) counts as
   one. "The pull was clean" is not read as a merge claim, so it is not
   checked at all. A covering test run that passed, followed by a narrower run of
-  the same kind that failed, still shows "all tests pass", and "Run all
-  the tests in services/orders" turns the asked-folder rule off, since it
-  says "all".
+  the same kind that failed, still shows "all tests pass". After a run
+  scoped to one folder (`cd services/orders && go test ./...`), an
+  unscoped "all tests passed" is unverified, even when that folder is
+  what the person asked about: say "the services/orders tests pass", which
+  that run verifies, or run the whole suite.

@@ -40,6 +40,9 @@ type Upstream struct {
 	// dot or *. matches the domain and its subdomains), IP addresses and
 	// CIDR ranges. Loopback is always reached directly.
 	NoProxy []string
+	// ResolveViaProxy lets a name that does not resolve here at all go to
+	// the proxy unchecked, for a host a rule names exactly; off, it is refused.
+	ResolveViaProxy bool
 }
 
 // ErrUpstreamCredentials is a proxy credential that could not be read.
@@ -50,6 +53,43 @@ var upstream atomic.Pointer[Upstream]
 // SetUpstream puts u, or none for nil, in force for every connection made
 // from now on.
 func SetUpstream(u *Upstream) { upstream.Store(u) }
+
+// upstreamUsed is set once UseUpstream has chosen the process's proxy, or none.
+var upstreamUsed struct {
+	sync.Mutex
+	done bool
+	key  string
+}
+
+// ErrUpstreamConflict is a second, different upstream proxy asked for in one
+// process: the proxy is process-wide, so it is refused rather than either
+// configuration running through the other's proxy, or none.
+var ErrUpstreamConflict = errors.New("abhed egress: this process already goes out through a different upstream proxy (or none); network.upstream_proxy is process-wide, so a session with another one runs in a process of its own")
+
+// UseUpstream puts u (nil for none) in force for the process the first time
+// it is called; later, the same proxy again is accepted and any other refused.
+// key describes the configuration, so two equal ones are the same proxy.
+func UseUpstream(u *Upstream, key string) error {
+	upstreamUsed.Lock()
+	defer upstreamUsed.Unlock()
+	if upstreamUsed.done {
+		if key != upstreamUsed.key {
+			return ErrUpstreamConflict
+		}
+		return nil
+	}
+	upstreamUsed.done, upstreamUsed.key = true, key
+	SetUpstream(u)
+	return nil
+}
+
+// ResetUpstreamForTest forgets the process's choice; tests only.
+func ResetUpstreamForTest() {
+	upstreamUsed.Lock()
+	upstreamUsed.done, upstreamUsed.key = false, ""
+	upstreamUsed.Unlock()
+	SetUpstream(nil)
+}
 
 // CurrentUpstream is the upstream proxy in force, or nil.
 func CurrentUpstream() *Upstream { return upstream.Load() }
@@ -145,6 +185,10 @@ func (u *Upstream) tlsConfig(base *tls.Config) *tls.Config {
 // https, absolute-form for http, each with u's credentials. The returned
 // round tripper adds them to plain http requests, which CONNECT does not carry.
 func (u *Upstream) Apply(t *http.Transport) http.RoundTripper {
+	// A destination reached directly gets the transport as it was, with no
+	// proxy from the environment and none of the bundle's trust.
+	direct := t.Clone()
+	direct.Proxy = nil
 	t.Proxy = func(req *http.Request) (*url.URL, error) {
 		if u.Bypass(req.URL.Hostname()) {
 			return nil, nil
@@ -159,18 +203,22 @@ func (u *Upstream) Apply(t *http.Transport) http.RoundTripper {
 		return http.Header{"Proxy-Authorization": {auth}}, nil
 	}
 	t.TLSClientConfig = u.tlsConfig(t.TLSClientConfig)
-	return &upstreamAuth{u: u, base: t}
+	return &upstreamAuth{u: u, base: t, direct: direct}
 }
 
 // upstreamAuth adds the proxy's credentials to a plain http request it sends
 // through the proxy, and to nothing else.
 type upstreamAuth struct {
-	u    *Upstream
-	base *http.Transport
+	u      *Upstream
+	base   *http.Transport // through the proxy
+	direct *http.Transport // for what u bypasses
 }
 
 func (a *upstreamAuth) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !strings.EqualFold(req.URL.Scheme, "http") || a.u.Bypass(req.URL.Hostname()) {
+	if a.u.Bypass(req.URL.Hostname()) {
+		return a.direct.RoundTrip(req)
+	}
+	if !strings.EqualFold(req.URL.Scheme, "http") {
 		return a.base.RoundTrip(req)
 	}
 	auth, err := a.u.authorization()
@@ -186,7 +234,10 @@ func (a *upstreamAuth) RoundTrip(req *http.Request) (*http.Response, error) {
 	return a.base.RoundTrip(r)
 }
 
-func (a *upstreamAuth) CloseIdleConnections() { a.base.CloseIdleConnections() }
+func (a *upstreamAuth) CloseIdleConnections() {
+	a.base.CloseIdleConnections()
+	a.direct.CloseIdleConnections()
+}
 
 // dialProxy connects to the proxy itself, over TLS for an https proxy.
 func (u *Upstream) dialProxy(ctx context.Context, timeout time.Duration) (net.Conn, error) {
@@ -209,6 +260,9 @@ func (u *Upstream) dialProxy(ctx context.Context, timeout time.Duration) (net.Co
 // DialTunnel opens a tunnel to authority (host:port) through the proxy with
 // CONNECT. The proxy's refusal is an error naming its status, never a header.
 func (u *Upstream) DialTunnel(ctx context.Context, authority string, timeout time.Duration) (net.Conn, error) {
+	if authority == "" || strings.ContainsAny(authority, "\r\n \t") {
+		return nil, fmt.Errorf("abhed egress: %q is not a host and port to tunnel to", authority)
+	}
 	auth, err := u.authorization()
 	if err != nil {
 		return nil, err
@@ -282,20 +336,45 @@ func (b *bufferedConn) CloseWrite() error {
 	return nil
 }
 
-// upstreamPrecheck resolves host, if it resolves here, and returns its
-// addresses for the internal-address check; through a proxy the name is the
-// proxy's to resolve, so one that does not resolve here is not refused for it.
-func upstreamPrecheck(ctx context.Context, resolve func(context.Context, string) ([]netip.Addr, error), host string) []netip.Addr {
+// precheck resolves host here for the internal-address check before a
+// request is chained. A name that does not resolve here at all is passed to
+// the proxy only with ResolveViaProxy and an anchor (a rule or list naming the
+// host exactly), and viaProxy says so; any other failure to resolve refuses.
+func (u *Upstream) precheck(ctx context.Context, resolve func(context.Context, string) ([]netip.Addr, error), host string, anchored bool) (addrs []netip.Addr, viaProxy bool, err error) {
 	if a, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
-		return []netip.Addr{a}
+		return []netip.Addr{a}, false, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	addrs, err := resolve(ctx, host)
-	if err != nil {
-		return nil
+	addrs, err = resolve(ctx, host)
+	if err == nil {
+		if len(addrs) == 0 {
+			return nil, false, &refusal{host: host, msg: host + " has no address here, so it is not sent to the upstream proxy"}
+		}
+		return addrs, false, nil
 	}
-	return addrs
+	var dnsErr *net.DNSError
+	switch {
+	case !errors.As(err, &dnsErr) || !dnsErr.IsNotFound:
+		return nil, false, &refusal{host: host, msg: fmt.Sprintf("%s could not be resolved here (%s), so its address cannot be checked; it is not sent to the upstream proxy", host, resolveWhy(err))}
+	case !u.ResolveViaProxy:
+		return nil, false, &refusal{host: host, msg: host + " does not resolve here, so its address cannot be checked; it is not sent to the upstream proxy unless network.upstream_proxy.resolve_via_proxy is on"}
+	case !anchored:
+		return nil, false, &refusal{host: host, msg: host + " does not resolve here; resolve_via_proxy passes such a name only for a host an allow rule (or web_fetch's allowed_hosts) names exactly, not by a wildcard or the default"}
+	}
+	return nil, true, nil
+}
+
+// resolveWhy is a resolver failure in a few words, for a refusal.
+func resolveWhy(err error) string {
+	var dnsErr *net.DNSError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &dnsErr) && dnsErr.IsTimeout:
+		return "the lookup timed out"
+	case errors.As(err, &dnsErr) && dnsErr.IsTemporary:
+		return "the resolver failed for now"
+	}
+	return "the lookup failed"
 }
 
 // clientCache holds each base transport's copy with an upstream applied.

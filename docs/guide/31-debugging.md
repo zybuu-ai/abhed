@@ -99,9 +99,9 @@ needs; the agent's commands keep the network closed:
   where other machines on the network can reach it; the consent says so.
   It may listen on no other port unless commands in this session may
   listen ([`sandbox.listen`](02-configuration.md), or you agreed for the
-  workspace): then, as any command, it may listen on any port but Abhed's
-  reserved range and the ports the Mac already listens on, on any of the
-  Mac's addresses, which other machines on the network can reach. So a
+  workspace): then, as any command, it may also listen for TCP on the
+  free listen ports (`sandbox.listen_ports`), on any of the Mac's
+  addresses. So a
   program that serves on a port of its own (a Flask or Django dev server,
   say) can be debugged under Python on this Mac's process sandbox only with
   listening on; otherwise use the container tier for it.
@@ -119,7 +119,9 @@ needs; the agent's commands keep the network closed:
   so. Never on a port of the reserved range, on any address, so it cannot
   take an Abhed listener's port or fill the range; and while commands may
   listen (`sandbox.listen`), not on a port the Mac already listens on
-  either.
+  either. The guard that ends a command taking a port one of your
+  programs then starts on watches the listen ports alone: a port outside
+  them that a Go debug command claims first is not watched.
 - **Older Abhed on the same Mac.** Abhed releases before 1.2.9 do not use
   the reserved range: their egress proxies and each command's own proxy
   port take ports the system hands out, which a Go program being debugged

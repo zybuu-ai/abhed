@@ -71,6 +71,8 @@ type HTTPConfig struct {
 	Client  *http.Client
 	// Egress is the tool set's egress guard for the default client; nil uses the request's.
 	Egress *egress.Guard
+	// CheckRedirect, when set, judges each redirect the default client would follow.
+	CheckRedirect func(*http.Request, []*http.Request) error
 }
 
 // NewHTTPTransport connects to a remote MCP server.
@@ -90,7 +92,7 @@ func NewHTTPTransport(ctx context.Context, cfg HTTPConfig) (*HTTPTransport, erro
 			timeout = 120 * time.Second
 		}
 		// Judged and recorded by the egress guard under the allowlist.
-		client = &http.Client{Timeout: timeout, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: cfg.Egress}}
+		client = &http.Client{Timeout: timeout, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: cfg.Egress}, CheckRedirect: cfg.CheckRedirect}
 	}
 
 	// Detached from ctx's end, but not its values: the stream keeps its set's guard.
@@ -124,7 +126,7 @@ func (t *HTTPTransport) tryLegacySSE(ctx context.Context) error {
 	t.applyHeaders(req)
 
 	// No client timeout on the stream: it is meant to stay open.
-	streamClient := &http.Client{Transport: t.client.Transport}
+	streamClient := &http.Client{Transport: t.client.Transport, CheckRedirect: t.client.CheckRedirect}
 	resp, err := streamClient.Do(req) //nolint:bodyclose // the body is the event stream; the reader goroutine below closes it when the stream ends
 	if err != nil {
 		// Connection refused here means the server is unreachable, which the

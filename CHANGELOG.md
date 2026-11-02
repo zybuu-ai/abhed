@@ -128,6 +128,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `-p` with piped stdin: the piped data reaches the model as an attached
+  block, fenced and marked as data rather than the person's words, and a
+  `-runbook` prompt goes before it, with the person's text.
 - Postgres: the record's triggers read some tables by unqualified name
   with no `search_path` of their own, and Postgres looks in a session's
   temporary schema first for a table unless told otherwise. So the runtime
@@ -137,15 +140,22 @@ All notable changes to Abhed are recorded here. The format follows
   sealed payloads unreadable for good (`abhed_session_keys_guard`); a
   `pg_class` naming it the sessions table's owner let it give a session to
   another owner, recorded as legitimate, and undo a deletion
-  (`abhed_sessions_guard`); a `sessions` table got an event into a deleted
-  session (`abhed_events_chain`); and a `sandbox_audit` table chose the next
-  audit row's chain link (`abhed_chain_insert`; `abhed record audit` showed
+  (`abhed_sessions_guard`); and an `events` or `sandbox_audit` table chose
+  the next row's chain position and link (`abhed_chain_insert`, which chained
+  both tables in 1.2.8; `abhed record verify` and `abhed record audit` show
   the fork). Every function in the schema now names its tables with their
   schema and sets `search_path = pg_catalog, public, pg_temp`, as does the
   accounts table's trigger. Someone without the runtime role's credentials
   could not do any of this. Affects 1.2.8 (schema versions 8 to 10). The
   fix is in schema version 17: run `abhed migrate` as the owner before
   starting this release's servers, which refuse an older schema.
+- Postgres before 15 lets every role create objects in schema `public`, so
+  a runtime role there could define a function or operator that a trigger
+  resolved before the built-in one. `abhed migrate` now revokes `CREATE` on
+  `public` from `PUBLIC` where its role may (as the schema's owner), and
+  refuses, saying what to run, while the runtime role can still create
+  there; a runtime server that can refuses to start. Postgres 15 and later
+  grant no such right, so nothing changes there.
 - A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
   still deciding on it went unscreened: it was recorded as sent and
   reached the model with the next message. It is now recorded as
@@ -256,6 +266,15 @@ All notable changes to Abhed are recorded here. The format follows
   configuration, `-mcp-config`, `abhed mcp add`, the console, Studio or a
   restart.
 
+  A pattern judges the type and model name. Under the managed file's or the
+  org policy's list, the endpoint is bound too: a model is admitted at its
+  type's own endpoint, on this machine, or at a provider the organisation
+  defines, never at a lower file's or the environment's `base_url`. A user's
+  own list binds no endpoint. MCP hosts are compared in their IDNA ASCII
+  form, a host that does not map is refused, and a redirect to another host
+  is judged. While a `command` entry is set, a server is started at exactly
+  the program path that was judged. Embedding models are not covered.
+
   A refusal names the list and is recorded as `config.refused`, and the
   console's refusals also go to the admin audit hook. A model or server set
   aside at load is listed by `abhed doctor`, `/permissions`, `/mcp` and
@@ -281,24 +300,33 @@ All notable changes to Abhed are recorded here. The format follows
   reader goes on from its cursor without skipping or repeating an event
   ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
 - A corporate upstream proxy, `network.upstream_proxy`: an explicit HTTP
-  proxy (`http://` or `https://`), an optional CA bundle, credentials by the
-  name of a stored secret (`user:password`, sent as Basic to the proxy alone)
-  and a `no_proxy` list. Abhed's own connections go out through it: the model
-  clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the `k8s_*`
-  tools, the forge API and `git push`, toolchain downloads, Ollama installs
-  and registry lookups, `abhed login` and the profile calls, and the
-  record's witness. Under the allowlist, the commands' proxy chains what it
-  allowed through it (`CONNECT` for tunnels, absolute form for plain HTTP),
-  so a provider or registry reachable only through the corporate proxy is
-  reached under the allowlist too. The allowlist decides first and the
-  internal-address check runs on the addresses a name has here, so the
-  proxy never widens what is allowed. Credentials never reach a URL, an
-  error, a log, the record or the model; programs Abhed starts for its own
-  downloads get a loopback relay with a one-time token. A workspace never
-  sets it; a managed file can force it, and then the person's `no_proxy`
-  is dropped unless the managed file names its own. PAC, WPAD, SOCKS and
-  NTLM or Kerberos proxy authentication are not supported. Records of
-  chained connections carry `upstream`.
+  proxy (`http://` or `https://`), an optional CA bundle (trusted for
+  connections through the proxy only), credentials by the name of a stored
+  secret (`user:password`, sent as Basic to the proxy alone), a `no_proxy`
+  list and `resolve_via_proxy`. Abhed's own connections go out through it:
+  the model clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the
+  `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
+  installs and registry lookups, `abhed login`, the profile calls, the org policy fetch and
+  the record's witness. Under the allowlist, the commands' proxy chains
+  what it allowed through it (`CONNECT` for tunnels, absolute form for
+  plain HTTP), so a provider or registry reachable only through the
+  corporate proxy is reached under the allowlist too. The allowlist decides
+  first; before chaining, Abhed resolves the name itself and refuses an
+  internal address no rule names, a lookup that times out or fails, and,
+  by default, a name that does not resolve here at all. With
+  `resolve_via_proxy` on, such a name is sent to the proxy unchecked, only
+  for a host an allow rule (or `web_fetch`'s `allowed_hosts`) names
+  exactly, and the record marks it `"resolved": "proxy"`. Credentials never
+  reach a URL, an error, a log, the record or the model; `go install` and
+  `git push` get a loopback relay with a per-run token, for the hosts that
+  download needs, and a push to a `no_proxy` remote goes directly. A
+  workspace never sets it; a managed file can force it, and then the
+  person's `no_proxy` and `resolve_via_proxy` are dropped unless the
+  managed file names its own. The proxy is set when a session or command
+  starts, for the whole process; an SDK agent with a different one than
+  another in the same process is refused. PAC, WPAD, SOCKS and NTLM or
+  Kerberos proxy authentication are not supported. Records of chained
+  connections carry `upstream`.
 - `statusline.timeout_ms` sets how long one run of the statusline command
   may take (one second unset, ten at most), and `/status` shows the
   command's last line when a run only took too long.
@@ -309,9 +337,12 @@ All notable changes to Abhed are recorded here. The format follows
   `sandbox.listen_ports` (by default 3000-3009, 4200, 4321, 5173-5179 and
   8000-8009, which leave out database, cache and console ports), less
   Abhed's reserved ports and any port one of your programs listens on. A
-  sandboxed listener on a port where one of your programs starts listening
-  too is ended within two seconds, and you are told
-  (`_abhed/sandbox/listener_ended`, `sandbox.listener_ended`). A server
+  sandboxed command on a port where one of your programs starts listening
+  too has its whole session sandbox ended within two seconds, and that
+  session alone is told (`_abhed/sandbox/listener_ended`,
+  `sandbox.listener_ended`); only a process the sandbox's own profile mark
+  proves is Abhed's is ever ended. Both settings are an operator's: a
+  workspace file, trusted or not, can only make `listen` stricter. A server
   refused its port in Studio's terminal brings the offer
   (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio
   then offers the address the server prints (`_abhed/terminal/serving`),
@@ -860,12 +891,10 @@ All notable changes to Abhed are recorded here. The format follows
   `sum.go`") are not claims, while a label that says what happened
   ("Created: `sum_test.go`") is, and a short title ("Go test run", "Cited
   source") is not, though a past form opens a title only as a few
-  adjectives ("Cited", "Related"); a bare pass claim ("All tests passed")
-  is covered by a run of the folders the person typed since the last
-  checked answer, attachments and piped stdin aside, when they asked
-  about nothing wider, joined only folders or verbs to a folder, named a
-  folder in every sentence about tests, and every change lies inside
-  those folders; a test result with no test run behind it says "no test
+  adjectives ("Cited", "Related"); a cached run (`ok … (cached)`) counts
+  like any other, and after a run of one folder "the services/orders
+  tests pass" verifies while an unscoped "all tests passed" does not; a
+  test result with no test run behind it says "no test
   run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
@@ -1092,9 +1121,9 @@ All notable changes to Abhed are recorded here. The format follows
   the wildcard and loopback addresses for its whole life, and only those
   are opened to it; the program may listen on those five on any of the
   Mac's addresses, and on no other port unless the session's commands may
-  listen (`sandbox.listen`): then, as any command, on any port but the
-  range and the Mac's busy ones, where the network reaches, so a dev server
-  can be debugged with listening on (else use the container tier). Go may
+  listen (`sandbox.listen`): then, as any command, TCP on the free listen
+  ports (`sandbox.listen_ports`), on any of the Mac's addresses, so a dev
+  server can be debugged with listening on (else use the container tier). Go may
   reach each port the system hands out to listeners (49152 to 65535) but
   the range, one rule each, older Abhed releases' proxies on the Mac
   included, and a Go program being debugged can listen where the network
@@ -1325,7 +1354,14 @@ out):
   `Config.ModelsAllowed`, `Config.MCPAdmitted`, `Config.MCPLists`,
   `Config.HasMCPLists` and `Config.EndpointRefused`.
   `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
-  outside `model.allowed`.
+  outside `model.allowed`. `config.NormalHost`,
+  `Config.MCPListsMatchCommands`.
+- Changed behaviour, same signatures, in `sdk`: `SwitchModelNamed` refused
+  by a managed pin or `model.allowed` still `errors.Is` `ErrUnknownModel`
+  and now also unwraps to `config.ManagedError`; `SetModel` and
+  `Options.Provider` refuse a model, or a remote endpoint, that
+  `model.allowed` does not admit; a refused `SetModel` or
+  `SwitchModelNamed` is recorded as `config.refused`.
 
 - Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
   with an `Options.Addr` asking for any port (`:0`, or an empty port) now

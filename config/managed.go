@@ -45,10 +45,7 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	if err := cfg.validateAllowLists(); err != nil {
 		return cfg, err
 	}
-	if err := cfg.validateNetwork(); err != nil {
-		return cfg, err
-	}
-	return cfg, applyNetwork(cfg)
+	return cfg, cfg.validateNetwork()
 }
 
 // mergeManaged applies the managed configuration over cfg and records which
@@ -447,7 +444,7 @@ func (c Config) PinnedAway(name string) error {
 		return c.ModelListed(name, p)
 	}
 	if len(c.ModelsAllowed()) > 0 {
-		return &ManagedError{Key: "model.allowed", Value: name, File: managed.ConfigFile,
+		return &ManagedError{Key: "model.allowed", Value: name, File: c.firstModelLayer().file,
 			Reason: "it is not a configured provider, so the allowed models cannot admit it"}
 	}
 	return nil

@@ -112,6 +112,10 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 			"CREATE ROLE %s LOGIN PASSWORD '…'", cfg.RuntimeRole, pgx.Identifier{cfg.RuntimeRole}.Sanitize())
 	}
 
+	if err := closePublicCreate(ctx, pool, cfg.RuntimeRole); err != nil {
+		return err
+	}
+
 	// Two provisions at once (two migrates, or replicas starting together)
 	// update the same catalog rows and fail with "tuple concurrently updated":
 	// each holds this lock from the schema to the last grant.
@@ -292,4 +296,38 @@ func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
 		}
 	}
 	return missing, nil
+}
+
+// closePublicCreate makes sure the runtime role cannot create objects in
+// schema public. Postgres before 15 lets every role do that, and a role that
+// can put a function or operator in public may shadow the one a trigger
+// means (CVE-2018-1058), or make a table a later migration expects. The
+// grant to PUBLIC is revoked where this connection may; anything left, such
+// as a grant to the runtime role itself, refuses the migration.
+func closePublicCreate(ctx context.Context, pool *pgxpool.Pool, runtime string) error {
+	can := func() (bool, error) {
+		var c bool
+		err := pool.QueryRow(ctx, `SELECT has_schema_privilege($1, 'public', 'CREATE')`, runtime).Scan(&c)
+		return c, err
+	}
+	c, err := can()
+	if err != nil {
+		return fmt.Errorf("provision: check the runtime role's rights on schema public: %w", err)
+	}
+	if !c {
+		return nil
+	}
+	// Allowed for the schema's owner; anyone else is told what to run.
+	_, _ = pool.Exec(ctx, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
+	if c, err = can(); err != nil {
+		return fmt.Errorf("provision: check the runtime role's rights on schema public: %w", err)
+	}
+	if c {
+		return fmt.Errorf("provision: the runtime role %q can create objects in schema public, as every role can "+
+			"before Postgres 15 unless revoked, and could use that to stand in for what the record's triggers call. "+
+			"As the schema's owner or a superuser run REVOKE CREATE ON SCHEMA public FROM PUBLIC "+
+			"(and from %s if it was granted to it), then run abhed migrate again",
+			runtime, pgx.Identifier{runtime}.Sanitize())
+	}
+	return nil
 }

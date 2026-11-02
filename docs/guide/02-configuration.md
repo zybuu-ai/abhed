@@ -49,7 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
-| `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name and a `no_proxy` list; never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
+| `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
@@ -240,7 +240,9 @@ in Abhed Studio's terminal (`listen EPERM`) brings the offer. Once you
 agree, every command in every session of the workspace, the agent's
 included, may listen, so `npm run dev` opens in your browser. `"allow"`
 lets commands listen without asking and cannot be taken back from Studio;
-`"off"` never lets them; a workspace file can only make it stricter.
+`"off"` never lets them. Both `listen` and `listen_ports` are an operator's
+settings, read from your own or the managed file: a workspace file, even a
+trusted one, can only make `listen` stricter and cannot set `listen_ports`.
 Taking it back from Studio reaches this window's sessions at once, and
 another window's within two seconds, before its next command starts.
 
@@ -249,8 +251,8 @@ default `["3000-3009", "4200", "4321", "5173-5179", "8000-8009"]` (Next.js,
 Rails and Express, Angular, Astro, Vite, Django and `python3 -m
 http.server`), chosen to leave out databases, caches and consoles (5432,
 3306, 6379, 27017, 8080, 8090, 8888) and macOS's own AirPlay ports (5000,
-7000). Each entry is a port or a range above 1024, at most 512 in all; a
-workspace file cannot set it. A UDP bind, or any other port, is refused,
+7000). Each entry is a port or a range above 1024, at most 512 in all. A
+UDP bind, or any other port, is refused,
 and so are Abhed's own reserved ports (47600-47855, or
 `ABHED_LOOPBACK_PORTS`) and a listen port one of your programs already
 listens on (another user's ports the kernel itself keeps). Commands that
@@ -259,12 +261,21 @@ listen still connect to nothing on loopback but the egress proxy.
 A command can take a listen port before one of your programs starts on it.
 Your program then still starts (Go, Node and Python servers bind every
 address with `SO_REUSEADDR`), but connections to `127.0.0.1` would reach the
-command. Abhed reads the Mac's listeners every two seconds and ends a
-sandboxed command's listener on a port where one of your programs now
-listens too, then tells you and records it (`sandbox.listener_ended`); in
-those two seconds the command can still take what is sent there. A program
-of yours that binds `127.0.0.1` itself instead fails to start, as the port
-is taken. Keep your own servers off the listen ports, or narrow them.
+command. Abhed reads the Mac's listeners every two seconds. When one of
+your programs now listens on a port a command holds, it ends every process
+of that session's sandbox, its terminals and the agent's running commands
+among them, so nothing there can listen on the port again (a new command
+is not given a port your program holds), and tells you and records it in
+that session alone (`sandbox.listener_ended`). Until then, up to two
+seconds, the command can still take what is sent there. Abhed ends only a
+process it can prove is one of that sandbox's: each such sandbox's profile
+carries a mark of its own, which the system's sandbox check confirms for
+the running process, whatever program it runs; a process confined by any
+other profile, Apple's or another tool's, is never touched. If the Mac's
+listeners can no longer be read, Studio says so, and commands that already
+listen keep their ports. A program of yours that binds `127.0.0.1` itself
+instead fails to start, as the port is taken. Keep your own servers off
+the listen ports, or narrow them.
 
 The sandbox cannot keep a command, the agent's included, from binding
 every address of a listen port, `0.0.0.0` too. In tests connections to the
@@ -1172,6 +1183,14 @@ the difference is exact: the record is then protected against application bugs
 and stray statements, and **not** against anyone holding the server's database
 credentials. `abhed doctor` and the startup banner say which mode is in force.
 
+**The runtime role must not create in schema `public`.** Postgres before 15
+grants that to every role, and a role that can add a function or operator
+there can stand in for one the record's triggers call. `abhed migrate`
+revokes it from `PUBLIC` where its role owns the schema, and otherwise
+refuses until the schema's owner or a superuser runs `REVOKE CREATE ON
+SCHEMA public FROM PUBLIC`; a runtime server that can create there refuses
+to start. On Postgres 15 and later nothing needs doing.
+
 **Do not connect as a superuser,** in either mode. Row-level security is what
 isolates tenants, and Postgres does not apply it to a superuser or a
 `BYPASSRLS` role, not even with `FORCE`. Abhed checks and refuses, because a
@@ -1656,10 +1675,32 @@ doctor`. A default model the list refuses does not stop the configuration
 loading. It stops the session from starting with the reason: choose an
 admitted model with `-model`, or change `model.default`.
 
-`openai-compatible` reaches any endpoint that speaks that API. A pattern
-such as `openai-compatible/*` therefore admits whatever server a lower file
-names. Pair it with the egress allowlist ([Network policy](21-network-policy.md))
-when that matters.
+**Endpoints.** A pattern judges the provider's type and model name, not
+where the requests go. Every type takes a `base_url`, so the endpoint is
+bound separately. When the managed file or the org policy sets
+`model.allowed`, a model is admitted only at one of three endpoints:
+
+- its type's own endpoint, with no `base_url`
+- an endpoint on this machine (`localhost` or a loopback address)
+- the endpoint of a provider the managed file or the org policy defines
+
+A managed provider entry is one setting, `base_url` included, and
+`ABHED_BASE_URL` cannot change it. A `base_url` from a lower file or from
+`ABHED_BASE_URL` is refused, and so is an endpoint an SDK embedder names off
+this machine; the refusal says where the requests would have gone. A user's
+or workspace's own list, without one from the organisation, judges type and
+model only. To pin the endpoint as well as the model, define the providers
+in the managed file, or pin one with a managed `model.default`. The egress
+allowlist does not judge the model's endpoint: that endpoint is allowed
+implicitly ([Network policy](21-network-policy.md)).
+
+While a list is set, a model id holding `..` as a path segment, `?`, `#`,
+`%` or `\` is refused, since some types put the id in the request's path.
+A supervisor judge (`monitor.model`) is matched as
+`openai-compatible/<monitor.model>`, because it is reached over that API
+whatever serves it. A pattern such as `anthropic/claude-*` does not admit
+it. Embedding models (`retrieval.embed_model` at `retrieval.embed_base_url`) are
+not covered by `model.allowed`, though they too are sent workspace content.
 
 **MCP servers.** Each `mcp.allowed` or `mcp.denied` entry is an object.
 A server matches an entry when every field the entry sets matches it:
@@ -1667,9 +1708,9 @@ A server matches an entry when every field the entry sets matches it:
 | Field | Matches |
 |---|---|
 | `name` | the configured name; `*` for any run of characters |
-| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above |
+| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above. While any entry matches by `command`, a server without a `digest` is started at exactly the path that was judged, with links followed, not looked up again |
 | `digest` | the `sha256:` digest the server's configuration pins. Abhed checks the program, or the image the digest names, before it starts the server, so a server whose program does not match never runs |
-| `host` | a remote server's URL host; `*.example.com` matches any subdomain |
+| `host` | a remote server's URL host; `*.example.com` matches any subdomain. Hosts are compared in the ASCII form a connection dials, as IDNA maps them, so `ｅｖｉｌ.com` is `evil.com`. Under any list, a URL whose host cannot be mapped is refused, and a redirect to another host is judged as the server reached there |
 
 An entry with no field, a field Abhed does not know, a `command` that is not
 an absolute path, a malformed `digest`, or a `host` with a scheme, port or
@@ -1677,6 +1718,17 @@ path stops Abhed at startup. So does an entry that sets `host` together
 with `command` or `digest`. A `name` alone matches whatever program a lower
 file runs under that name. To bind the program itself, use `command`,
 `digest` or `host`. An empty `mcp.allowed` list allows no server.
+
+What `command` and `digest` bind has limits:
+
+- `command` matches the program, never its arguments. An interpreter or
+  engine path (`npx`, `uvx`, `python3`, `node`, `docker`) admits whatever
+  package, script or image it is told to run.
+- For a container engine, `digest` pins only the image. The arguments still
+  choose the entrypoint and the mounts (`--entrypoint`, `-v /:/host`).
+- On the container tier a `command` entry judges the host's program, and
+  the server is started at that path inside the sandbox.
+- `digest` binds the file's contents; `command` alone binds only its path.
 
 A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
 set, a server no entry matches never starts either. This covers servers from

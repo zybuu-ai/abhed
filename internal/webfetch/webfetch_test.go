@@ -37,7 +37,7 @@ func serve(t *testing.T, h http.Handler) (*Tool, *httptest.Server) {
 			case "internal.test":
 				return []netip.Addr{netip.MustParseAddr("10.1.2.3")}, nil
 			}
-			return nil, fmt.Errorf("no such host %s", host)
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 		},
 	}
 	return tool, srv

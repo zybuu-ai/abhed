@@ -73,3 +73,38 @@ func TestDefaultListenPorts(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+// sandbox.listen and sandbox.listen_ports are the operator's: a workspace
+// file, trusted or not, never turns listening on or names the ports; it may
+// only make sandbox.listen stricter.
+func TestListenIsTheOperators(t *testing.T) {
+	for _, trust := range []TrustChoice{TrustRefused, TrustGranted} {
+		_, ws := trustHome(t, `{"sandbox":{"listen_ports":["3000"]}}`, `{"sandbox":{"listen":"allow","listen_ports":["5432","8080"]}}`)
+		cfg, err := LoadWith(ws, LoadOptions{Trust: trust, Quiet: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Sandbox.Listen == "allow" || !slices.Equal(cfg.Sandbox.ListenPorts, []string{"3000"}) {
+			t.Fatalf("trust %v: listen %q ports %v", trust, cfg.Sandbox.Listen, cfg.Sandbox.ListenPorts)
+		}
+		if trust == TrustGranted {
+			aside := map[string]bool{}
+			for _, k := range cfg.SetAside {
+				aside[k.Key] = true
+			}
+			if !aside["sandbox.listen"] || !aside["sandbox.listen_ports"] {
+				t.Fatalf("not named as set aside: %+v", cfg.SetAside)
+			}
+		}
+		// Stricter is taken, trusted or not.
+		_, ws = trustHome(t, `{"sandbox":{"listen":"allow"}}`, `{"sandbox":{"listen":"off"}}`)
+		if cfg, _ := LoadWith(ws, LoadOptions{Trust: trust, Quiet: true}); cfg.Sandbox.Listen != "off" {
+			t.Fatalf("trust %v: a stricter listen was not taken: %q", trust, cfg.Sandbox.Listen)
+		}
+	}
+	// The operator's own file sets both.
+	_, ws := trustHome(t, `{"sandbox":{"listen":"allow","listen_ports":["4000"]}}`, "")
+	if cfg, _ := LoadWith(ws, LoadOptions{Quiet: true}); cfg.Sandbox.Listen != "allow" || !slices.Equal(cfg.Sandbox.ListenPorts, []string{"4000"}) {
+		t.Fatalf("the operator's settings were not taken: %q %v", cfg.Sandbox.Listen, cfg.Sandbox.ListenPorts)
+	}
+}

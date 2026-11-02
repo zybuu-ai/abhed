@@ -138,6 +138,18 @@ func TestUserMessageText(t *testing.T) {
 	}
 }
 
+// The runbook prompt goes before piped stdin, outside the attached data.
+func TestWithRunbook(t *testing.T) {
+	if got := withRunbook("fix it", "RUNBOOK"); got != "fix it\n\nRUNBOOK" {
+		t.Errorf("%q", got)
+	}
+	task := "fix it" + stdinHeader + untrustedNote + "\n<stdin-1>log</stdin-1>"
+	got := withRunbook(task, "RUNBOOK")
+	if !strings.HasPrefix(got, "fix it\n\nRUNBOOK"+stdinHeader) || !strings.HasSuffix(got, "<stdin-1>log</stdin-1>") {
+		t.Errorf("%q", got)
+	}
+}
+
 func TestHeadlessTask(t *testing.T) {
 	ctx := context.Background()
 	var warn strings.Builder

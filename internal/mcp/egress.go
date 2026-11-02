@@ -27,6 +27,22 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 	if err != nil {
 		return nil, err
 	}
+	if g.PinProgram && cfg.Digest == "" {
+		// Resolved once on the server's PATH, judged as that exact file, and
+		// started at that path: the launch does not look the name up again.
+		real, err := resolveProgram(cfg.Command, env)
+		if err != nil {
+			return nil, fmt.Errorf("%w: the MCP server lists judge its program by path, and %w", ErrNotAdmitted, err)
+		}
+		programs := []string{real}
+		if found, err := foundProgram(cfg.Command, env); err == nil && found != real {
+			programs = append(programs, found)
+		}
+		if err := g.admitPrograms(cfg, programs); err != nil {
+			return nil, err
+		}
+		command = real
+	}
 	launch := g.Confine
 	if cfg.HostFiles {
 		// Its files as the host's, by the operator's choice; its network is

@@ -39,6 +39,9 @@ var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(ca
 // alongside the score, because identical pass rates hide different behaviour.
 func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) int {
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
+	if err == nil {
+		err = cfg.ApplyNetwork()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1

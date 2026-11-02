@@ -258,8 +258,9 @@ func (e Env) serveEnv(host string) []string {
 	}
 	// The configured upstream proxy, for the server's own model pulls. One
 	// with credentials is not passed: they would sit in the server's
-	// environment and in this command line; the operator configures Ollama's.
-	if u := egress.CurrentUpstream(); u != nil && u.Credentials == nil {
+	// environment and in this command line; nor one that needs the CA bundle,
+	// which the server would not trust. The operator configures Ollama's then.
+	if u := egress.CurrentUpstream(); u != nil && u.Credentials == nil && u.URL.Scheme == "http" && len(u.Bundle) == 0 {
 		np := strings.Join(append([]string{"localhost", "127.0.0.1", "::1"}, u.NoProxy...), ",")
 		env = append(env, "HTTPS_PROXY="+u.URL.String(), "HTTP_PROXY="+u.URL.String(), "NO_PROXY="+np)
 	}

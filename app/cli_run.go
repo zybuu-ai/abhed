@@ -58,9 +58,21 @@ func run(a *App, workspace string, f *cliFlags) int {
 			return 2
 		}
 	}
+	// The proxy goes in force before the org policy fetch, so the fetch takes it too;
+	// an org policy never sets the network, so the session's load keeps the same one.
+	pre, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust, Quiet: true, Settings: settings, SettingsName: settingsName})
+	if err == nil {
+		err = pre.ApplyNetwork()
+	}
+	if err != nil {
+		fail(err)
+	}
 	orgPolicyAtStart(ctx, os.Stderr)
 	cfg, err := loadSession(workspace, a.trust, !headless, settings, settingsName)
 	if err != nil {
+		fail(err)
+	}
+	if err := cfg.ApplyNetwork(); err != nil {
 		fail(err)
 	}
 	registerState(cfg, workspace)

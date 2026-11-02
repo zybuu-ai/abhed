@@ -45,13 +45,14 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 
 // MCPAdmit is the gateway's check of every server against the
 // configuration's mcp.allowed and mcp.denied lists, nil when none is set.
-func MCPAdmit(cfg config.Config) func(mcp.ServerConfig) error {
+// programs are what a stdio server's command resolves to, as the gateway
+// found them.
+func MCPAdmit(cfg config.Config) func(mcp.ServerConfig, []string) error {
 	if !cfg.HasMCPLists() {
 		return nil
 	}
-	return func(s mcp.ServerConfig) error {
-		return cfg.MCPAdmitted(config.MCPServerOf(config.MCPServerConfig{
-			Name: s.Name, Command: s.Command, Env: s.Env, URL: s.URL, Digest: s.Digest}))
+	return func(s mcp.ServerConfig, programs []string) error {
+		return cfg.MCPAdmitted(config.MCPServer{Name: s.Name, Programs: programs, Digest: s.Digest, URL: s.URL})
 	}
 }
 
