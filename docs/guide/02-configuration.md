@@ -1676,23 +1676,60 @@ loading. It stops the session from starting with the reason: choose an
 admitted model with `-model`, or change `model.default`.
 
 **Endpoints.** A pattern judges the provider's type and model name, not
-where the requests go. Every type takes a `base_url`, so the endpoint is
-bound separately. When the managed file or the org policy sets
-`model.allowed`, a model is admitted only at one of three endpoints:
+where the requests go. When the managed file or the org policy sets
+`model.allowed`, every input that decides where a model's requests go is
+bound as well:
 
-- its type's own endpoint, with no `base_url`
-- an endpoint on this machine (`localhost` or a loopback address)
-- the endpoint of a provider the managed file or the org policy defines
+- `base_url`
+- watsonx's `iam_url`, where the key is sent for a token
+- a vertex type's `region` and `project_id`, which are written into the host
+- a custom provider type's own `base_url`
+- the supervisor judge's `monitor.endpoint`
 
-A managed provider entry is one setting, `base_url` included, and
-`ABHED_BASE_URL` cannot change it. A `base_url` from a lower file or from
-`ABHED_BASE_URL` is refused, and so is an endpoint an SDK embedder names off
-this machine; the refusal says where the requests would have gone. A user's
-or workspace's own list, without one from the organisation, judges type and
-model only. To pin the endpoint as well as the model, define the providers
-in the managed file, or pin one with a managed `model.default`. The egress
-allowlist does not judge the model's endpoint: that endpoint is allowed
-implicitly ([Network policy](21-network-policy.md)).
+Each input is bound when one of these holds:
+
+- It is left unset, so the type's own endpoint is used. A vertex `region`
+  and `project_id` must then be plain names of letters, digits and hyphens.
+  The vertex adapters now refuse any other value with or without a list.
+- It points at this machine (`localhost` or a loopback address).
+- The managed file or the org policy sets it. That means its provider entry
+  under `model.providers`, its `custom_providers`, or its `monitor.endpoint`.
+  A managed provider entry is one setting, every field included, and
+  `ABHED_BASE_URL` cannot change it.
+
+Anything else is refused, and the refusal says where the requests would
+have gone. That covers:
+
+- a `base_url` from a lower file or from `ABHED_BASE_URL`
+- an `iam_url`
+- a custom type a lower file defines
+- a judge endpoint a lower file sets
+- an endpoint an SDK embedder names off this machine
+
+A lower file's explicit `base_url` is refused even when it equals the
+type's public endpoint, such as `https://api.anthropic.com`. Leave it unset
+instead. A user's or workspace's own list, without one from the
+organisation, judges type and model only.
+
+**This machine.** An endpoint on this machine is admitted because Ollama and
+the other local servers live there. But a loopback listener can relay
+anywhere: a LiteLLM proxy, an `ssh -L` tunnel, or Ollama's own
+cloud-offloaded models. A pattern such as `ollama/*` admits those `-cloud`
+tags. Abhed does not see where such a relay sends the requests. A managed
+`"model": {"allowed_loopback": false}` refuses endpoints on this machine
+under the list, including a type whose own endpoint is local (`ollama`,
+`vllm`, `llamacpp`, `tgi`, `sglang`) and the built-in `local` provider. A
+provider the managed file or org policy defines there is still admitted.
+
+Defining the providers in the managed file does not by itself pin the
+endpoint, since a lower file may still add a provider on this machine. Only
+two things pin it outright:
+
+- a managed `model.default`, which pins the model and therefore its endpoint
+- `allowed_loopback: false` together with managed providers
+
+The egress allowlist does not judge the model's endpoint: that endpoint is
+allowed implicitly ([Network policy](21-network-policy.md)).
 
 While a list is set, a model id holding `..` as a path segment, `?`, `#`,
 `%` or `\` is refused, since some types put the id in the request's path.
@@ -1708,9 +1745,9 @@ A server matches an entry when every field the entry sets matches it:
 | Field | Matches |
 |---|---|
 | `name` | the configured name; `*` for any run of characters |
-| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above. While any entry matches by `command`, a server without a `digest` is started at exactly the path that was judged, with links followed, not looked up again |
+| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above. While any entry matches by `command`, a server is started at exactly the path that was judged, with links followed, not looked up again. That includes a container engine whose image a `digest` pins. The program is still given the configured name as its `argv[0]` |
 | `digest` | the `sha256:` digest the server's configuration pins. Abhed checks the program, or the image the digest names, before it starts the server, so a server whose program does not match never runs |
-| `host` | a remote server's URL host; `*.example.com` matches any subdomain. Hosts are compared in the ASCII form a connection dials, as IDNA maps them, so `ｅｖｉｌ.com` is `evil.com`. Under any list, a URL whose host cannot be mapped is refused, and a redirect to another host is judged as the server reached there |
+| `host` | a remote server's URL host; `*.example.com` matches any subdomain. Hosts are compared in the ASCII form a connection dials, as IDNA maps them, so `ｅｖｉｌ.com` is `evil.com`. Under any list, a URL whose host cannot be mapped is refused, and so is a numeric form other than a plain IP (`2130706433`, `0x7f.1`, `127.1`). A redirect to another host is judged as the server reached there |
 
 An entry with no field, a field Abhed does not know, a `command` that is not
 an absolute path, a malformed `digest`, or a `host` with a scheme, port or

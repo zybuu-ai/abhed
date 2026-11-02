@@ -637,6 +637,15 @@ func NewStdioTransport(ctx context.Context, command string, args []string, env [
 	return startStdio(cmd, command, env, append([]string{command}, args...))
 }
 
+// newStdioTransportAt starts the program at path with argv[0] set to name,
+// as a shell would show it the name it was run by.
+func newStdioTransportAt(ctx context.Context, path, name string, args []string, env []string) (*StdioTransport, error) {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Args[0] = name
+	cmd.Env = append([]string{}, env...)
+	return startStdio(cmd, name, env, append([]string{name}, args...))
+}
+
 // startStdio starts cmd, built to run the server command, and speaks to it
 // over its stdin and stdout. env and argv are the server's own, as
 // configured: what its stderr is redacted against, whatever cmd wraps them

@@ -13,6 +13,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"golang.org/x/net/idna"
 )
 
@@ -261,37 +262,100 @@ func (c Config) ModelListed(name string, p ProviderConfig) error {
 	// Under the organisation's list a model is admitted at its provider's own
 	// endpoint, or at one the managed file or org policy defines: a lower
 	// file's base_url would send an admitted model's traffic anywhere.
-	if org && !c.endpointBound(name, p) {
-		l := c.firstModelLayer()
-		for _, x := range c.layersOrSelf() {
-			if x.setsModels && c.managedList(x.file) {
-				l = x
-				break
-			}
+	if org {
+		if why := c.endpointUnbound(name, p); why != "" {
+			l := c.orgModelLayer()
+			return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
+				Reason: "model.allowed in " + c.listOwner(l.file) + " admits a model only at its type's own endpoint, " +
+					c.loopbackClause() + "or at a provider the managed configuration or org policy defines, and " + why}
 		}
-		return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
-			Reason: "model.allowed in " + c.listOwner(l.file) + " admits a model only at its provider's own endpoint, on this machine, or at a provider the managed configuration or org policy defines, and this one is sent to " + PrintableURL(p.BaseURL)}
 	}
 	return nil
 }
 
-// endpointBound reports a provider whose endpoint is its type's own (no
-// base_url, or the built-in entry's unchanged), on this machine (a loopback
-// address), or one the managed file or org policy defines whole.
-func (c Config) endpointBound(name string, p ProviderConfig) bool {
-	if p.BaseURL == "" || loopbackURL(p.BaseURL) {
-		return true // the type's own endpoint, or one on this machine
+// orgModelLayer is the first managed or org layer that sets model.allowed.
+func (c Config) orgModelLayer() allowLayer {
+	for _, x := range c.layersOrSelf() {
+		if x.setsModels && c.managedList(x.file) {
+			return x
+		}
 	}
-	if name == "" {
-		return false // an endpoint an embedder names
+	return c.firstModelLayer()
+}
+
+// LoopbackAllowed reports whether, under the organisation's model list, an
+// endpoint on this machine is admitted: unless a layer sets
+// model.allowed_loopback to false.
+func (c Config) LoopbackAllowed() bool {
+	return c.Model.AllowedLoopback == nil || *c.Model.AllowedLoopback
+}
+
+func (c Config) loopbackClause() string {
+	if c.LoopbackAllowed() {
+		return "one on this machine, "
 	}
-	if c.ManagedSets("model.providers." + name) {
-		return true // a managed entry is one setting, base_url included; the environment cannot change it
+	return ""
+}
+
+// endpointUnbound says where a provider's requests would go that the
+// organisation's list does not bind, or "" when every input that decides the
+// endpoint is bound. Each of them is judged as base_url is: the base_url,
+// watsonx's IAM token URL, a vertex type's region and project (written into
+// the host), and a custom type's own base_url. Each is bound when it is the
+// type's own (unset), on this machine (unless model.allowed_loopback is
+// false), or set by the managed file or org policy.
+func (c Config) endpointUnbound(name string, p ProviderConfig) string {
+	managedEntry := name != "" && c.ManagedSets("model.providers."+name)
+	local := func(u string) bool { return c.LoopbackAllowed() && loopbackURL(u) }
+	// A custom type's endpoint is its definition's, wherever the entry is.
+	for _, d := range c.CustomProviders {
+		if d.Name != p.Type {
+			continue
+		}
+		if p.BaseURL == "" && !c.ManagedSets("custom_providers") && !local(d.BaseURL) {
+			return "its type " + Printable(p.Type) + " is a custom provider a lower file defines, sending to " + PrintableURL(d.BaseURL)
+		}
 	}
-	if d, ok := Default().Model.Providers[name]; ok && d.BaseURL == p.BaseURL && d.Type == p.Type {
-		return true
+	if managedEntry {
+		return "" // a managed entry is one setting, every field included; the environment cannot change it
 	}
-	return false
+	if p.BaseURL != "" && !local(p.BaseURL) {
+		if d, ok := Default().Model.Providers[name]; !ok || d.BaseURL != p.BaseURL || d.Type != p.Type || !c.LoopbackAllowed() {
+			return "this one is sent to " + PrintableURL(p.BaseURL)
+		}
+	}
+	for _, iam := range []string{p.IAMURL, p.Extra["iam_url"]} {
+		if iam != "" && !local(iam) {
+			return "its key is sent for a token to " + PrintableURL(iam)
+		}
+	}
+	if p.BaseURL == "" && strings.HasPrefix(p.Type, "vertex-") && (!model.PlainLabel(p.Region) || !model.PlainLabel(p.ProjectID)) {
+		return "its region and project, written into the host, are not plain names"
+	}
+	if p.BaseURL == "" && !c.LoopbackAllowed() && model.LocalByDefault(p.Type) {
+		return "its type's own endpoint is on this machine, which model.allowed_loopback refuses"
+	}
+	return ""
+}
+
+// JudgeListed is ModelListed for the supervisor's model judge, matched as
+// openai-compatible/<monitor.model> since it is reached over that API. Under
+// the organisation's list its monitor.endpoint is bound too: set by the
+// managed file or org policy, or on this machine.
+func (c Config) JudgeListed(m MonitorConfig) error {
+	if err := c.ModelListed("monitor", ProviderConfig{Type: "openai-compatible", Model: m.Model}); err != nil {
+		return err
+	}
+	l := c.orgModelLayer()
+	if !l.setsModels || !c.managedList(l.file) || c.ManagedSets("monitor.endpoint") {
+		return nil
+	}
+	if m.Endpoint == "" || c.LoopbackAllowed() && loopbackURL(m.Endpoint) {
+		return nil
+	}
+	return &ManagedError{Key: "model.allowed", Value: "monitor (" + "openai-compatible/" + m.Model + ")", File: l.file,
+		Reason: "model.allowed in " + c.listOwner(l.file) + " admits the supervisor's judge only at a monitor.endpoint the managed configuration or org policy sets, " +
+			c.loopbackClause() + "and this one is sent to " + PrintableURL(m.Endpoint)}
 }
 
 // ModelsAllowed are the model.allowed patterns in force, each list on its
@@ -419,6 +483,11 @@ func NormalHost(h string) (string, error) {
 		return ip.String(), nil
 	}
 	if isASCII(h) {
+		if numericHost(h) {
+			// 2130706433, 0x7f.1 or 127.1: a resolver may read it as an address
+			// the entries never name, so it is not judged as a name.
+			return "", fmt.Errorf("%q is an address in a form other than a plain IP", Printable(h))
+		}
 		return strings.ToLower(h), nil // dialled as written, as net/http does
 	}
 	a, err := idna.Lookup.ToASCII(h)
@@ -426,6 +495,17 @@ func NormalHost(h string) (string, error) {
 		return "", fmt.Errorf("%q is not a host name that can be read", Printable(h))
 	}
 	return strings.TrimSuffix(strings.ToLower(a), "."), nil
+}
+
+// numericHost reports a host whose last label is all digits or hexadecimal
+// with 0x: no top-level domain is, so it can only be read as an address.
+func numericHost(h string) bool {
+	labels := strings.Split(strings.ToLower(h), ".")
+	last := labels[len(labels)-1]
+	if x, ok := strings.CutPrefix(last, "0x"); ok {
+		return strings.Trim(x, "0123456789abcdef") == ""
+	}
+	return last != "" && strings.Trim(last, "0123456789") == ""
 }
 
 func isASCII(s string) bool {
@@ -556,7 +636,7 @@ func narrowToAllowLists(cfg *Config) {
 	}
 	if m := cfg.Monitor; m.Enabled && m.Judge == "model" && m.Model != "" {
 		// Not cleared: a judge that may not be asked fails each call closed.
-		if err := cfg.ModelListed("monitor", ProviderConfig{Type: "openai-compatible", Model: m.Model}); err != nil {
+		if err := cfg.JudgeListed(m); err != nil {
 			aside("monitor.model", m.Model, err)
 		}
 	}

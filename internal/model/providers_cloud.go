@@ -59,6 +59,10 @@ func init() {
 				return nil, fmt.Errorf("vertex-anthropic needs either base_url, or " +
 					"both project and region")
 			}
+			if s.BaseURL == "" && (!PlainLabel(s.Region) || !PlainLabel(s.Project)) {
+				// They are written into the host and path: anything but a plain name could move them.
+				return nil, fmt.Errorf("vertex-anthropic: region and project must be plain names of letters, digits and hyphens")
+			}
 			base := s.BaseURL
 			if base == "" {
 				base = fmt.Sprintf(
@@ -78,6 +82,10 @@ func init() {
 			if s.BaseURL == "" && (s.Project == "" || s.Region == "") {
 				return nil, fmt.Errorf("vertex-gemini needs either base_url, or " +
 					"both project and region")
+			}
+			if s.BaseURL == "" && (!PlainLabel(s.Region) || !PlainLabel(s.Project)) {
+				// They are written into the host and path: anything but a plain name could move them.
+				return nil, fmt.Errorf("vertex-gemini: region and project must be plain names of letters, digits and hyphens")
 			}
 			base := s.BaseURL
 			if base == "" {
