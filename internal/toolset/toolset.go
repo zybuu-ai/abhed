@@ -116,11 +116,14 @@ type Set struct {
 	// false where the sandbox has no such switch. Listens says whether they may.
 	SetListen func(on bool) bool
 	Listens   func() bool
-	// ListenWatch gives listening the person's agreement to look up again
-	// and who to tell of a listener ended for a host program's port;
-	// ListenPorts are the ports listening opens.
+	// ListenWatch gives listening the person's agreement to look up again,
+	// who to tell when more than one program listens on a listen port, and
+	// who to tell when that can no longer be seen.
 	ListenWatch func(still func() bool, contested func(sandbox.PortContested), lost func(why string))
+	// HeldAtStart reports a port a program outside Abhed's own processes
+	// held when the last listening command started.
 	HeldAtStart func(port int) bool
+	// ListenPorts are the ports listening opens.
 	ListenPorts func() []int
 	// extensionTools names the tools extensions provided.
 	extensionTools []string

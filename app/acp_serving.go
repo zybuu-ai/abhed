@@ -128,7 +128,7 @@ func (c *acpConn) watchServing(t *acpTerminal, chunk []byte) {
 		// Only a listen port that a program of the person's did not hold when the
 		// command started, and that one program alone listens on, can be a
 		// sandboxed server's.
-		if port := urlPort(u); t.tier != "none" && (!slices.Contains(ports, port) || t.heldAtStart(port) || sandbox.ListenersOn(port) > 1) {
+		if port := urlPort(u); t.tier != "none" && (!slices.Contains(ports, port) || t.heldAtStart(port) || contestedOrUnread(port)) {
 			continue
 		}
 		c.notification("_abhed/terminal/serving", map[string]any{"sessionId": t.session.id, "terminalId": t.id, "url": u})
@@ -171,6 +171,13 @@ func portList(ports []int) string {
 		return "(none)"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// contestedOrUnread reports a port more than one program listens on, or
+// one whose listeners cannot be read.
+func contestedOrUnread(port int) bool {
+	n := sandbox.ListenersOn(port)
+	return n < 0 || n > 1
 }
 
 // heldAtStart reports whether a program other than the sandbox's commands

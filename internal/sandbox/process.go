@@ -36,6 +36,10 @@ type Process struct {
 	// lastBusy are the ports the Mac listened on when the last profile that
 	// let commands listen was made: a command could not take those.
 	lastBusy atomic.Pointer[[]int]
+	// toldNow and lastTold are the contested listen ports this sandbox was
+	// told of, while they stay so, and when; guarded by watching.mu.
+	toldNow  map[int]bool
+	lastTold map[int]time.Time
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -689,10 +693,29 @@ func (s *Process) listenable() ([]int, bool) {
 	}
 	busy, ok := hostListeners()
 	if ok {
-		s.lastBusy.Store(&busy)
+		held := s.heldByOthers(busy)
+		s.lastBusy.Store(&held)
 		watchListeners(s)
 	}
 	return busy, ok
+}
+
+// heldByOthers are the busy ports some listener outside Abhed's own process
+// tree holds: a later command's run does not mark the port of a server this
+// sandbox started as another program's.
+func (s *Process) heldByOthers(busy []int) []int {
+	all, ok := readListeners()
+	if !ok {
+		return busy
+	}
+	parents := processParents()
+	var out []int
+	for _, p := range busy {
+		if !ownTree(all, p, parents) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // listenWatchLost tells the owner, once until the watch is found again,

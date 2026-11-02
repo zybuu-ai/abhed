@@ -565,9 +565,9 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	r.cl.ok("_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true}, &got)
 	if !got.Listens {
 		if sandbox.ListenersReadable() {
-			t.Fatal("not listening after the person agreed, though this build and Mac can")
+			t.Fatal("not listening after the person agreed, though the Mac's listeners can be read")
 		}
-		t.Skip("listening is not available here: the Mac's listeners cannot be read, or this build cannot tell a sandboxed process")
+		t.Skip("listening is not available here: the Mac's listeners cannot be read")
 	}
 	if changed, _ := r.recorded(id, agent.EvPermissionChanged); len(changed) != 1 || changed[0]["rule"] != listenRule || changed[0]["op"] != "add" {
 		t.Fatalf("recorded %v", changed)
@@ -703,4 +703,48 @@ func TestTerminalVenvInUseAfterAbhedVenv(t *testing.T) {
 	r.cl.waitFor(from, "the venv in use", func(m rpcMessage) bool {
 		return m.Method == "_abhed/terminal/venv" && strings.Contains(string(m.Params), `"inUse":true`)
 	})
+}
+
+// A dev server that forks after it listens, as a reloader does, is one
+// program: its address is offered, and no contest is told.
+func TestForkedDevServerIsOffered(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("listening is switched only on the macOS process tier")
+	}
+	var port int
+	for {
+		ports, err := sandbox.FreeLoopbackPorts(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if port = int(ports[0]); !loopport.In(port) {
+			break
+		}
+	}
+	r := newStudioRig(t, fmt.Sprintf(`,"sandbox":{"listen":"allow","listen_ports":["%d"]}`, port))
+	id := r.open()
+	var shell struct {
+		TerminalID string `json:"terminalId"`
+		Tier       string `json:"tier"`
+		Serves     bool   `json:"serves"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 160, "rows": 24}, &shell)
+	if shell.Tier != "process" || !shell.Serves {
+		if shell.Tier == "process" && sandbox.ListenersReadable() {
+			t.Fatal("not listening under sandbox.listen allow, though the Mac's listeners can be read")
+		}
+		t.Skipf("listening is not available here (tier %s)", shell.Tier)
+	}
+	from := r.cl.mark()
+	line := fmt.Sprintf(`python3 -I -c 'import os,socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1", %d)); s.listen(); os.fork(); time.sleep(0.3); print("Local: http://local"+"host:%d/", flush=True); time.sleep(20)'`, port, port)
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": shell.TerminalID, "data": line + "\r"}, nil)
+	r.cl.waitFor(from, "the forked server's address", func(m rpcMessage) bool {
+		return m.Method == "_abhed/terminal/serving" && strings.Contains(string(m.Params), fmt.Sprintf(`"url":"http://localhost:%d/"`, port))
+	})
+	time.Sleep(4500 * time.Millisecond)
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/sandbox/port_contested" {
+			t.Fatalf("a forked server was told as a contest: %s", m.Params)
+		}
+	}
 }
