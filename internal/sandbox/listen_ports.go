@@ -2,17 +2,13 @@ package sandbox
 
 import (
 	"context"
-	"fmt"
 	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -117,101 +113,23 @@ func parseListeners(out string) []listener {
 	return all
 }
 
-// HostHolds reports whether a program that is no command of a watched
-// Abhed sandbox listens on port now, or the listeners cannot be read: a
-// loopback address there is never a sandboxed server's. It reads afresh.
-func HostHolds(port int) bool {
-	all, ok := readListenersWithin(0)
-	if !ok {
-		return true
-	}
-	for _, l := range all {
-		if l.port == port && markedSandboxOf(l.pid) == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// listenMark is a sandbox's mark, which proves a process runs under one of
-// its profiles: a folder no command may write, holding two files that are
-// there for as long as the sandbox is. Every profile that lets commands
-// listen denies reading mark and says nothing of open. No other profile
-// names either, so a process denied mark but allowed open is this
-// sandbox's, whatever its program or the file it was started from.
-type listenMark struct {
-	dir, mark, open string
-}
-
-// newListenMark makes a mark in the temp folder, under a name of its own.
-func newListenMark() (*listenMark, error) {
-	dir, err := os.MkdirTemp("", "abhed-listen-")
-	if err != nil {
-		return nil, err
-	}
-	m := &listenMark{dir: dir, mark: filepath.Join(dir, "mark"), open: filepath.Join(dir, "open")}
-	for _, f := range []string{m.mark, m.open} {
-		if err := os.WriteFile(f, nil, 0o644); err != nil { // #nosec G306 -- empty; read only by the sandbox's own check
-			_ = os.RemoveAll(dir)
-			return nil, err
-		}
-	}
-	return m, nil
-}
-
-// rules are the mark's lines in a profile, as Seatbelt's real path forms.
-func (m *listenMark) rules() string {
-	var b strings.Builder
-	for _, d := range PathForms(m.dir) {
-		fmt.Fprintf(&b, "(deny file-read* (literal %q))\n", filepath.Join(d, "mark"))
-		fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", d)
-	}
-	return b.String()
-}
-
-// owns reports whether pid runs under a profile with this mark.
-func (m *listenMark) owns(pid int) bool {
-	if m == nil || pid <= 1 || pid == os.Getpid() {
-		return false
-	}
-	denied, known := pathDenied(pid, m.mark)
-	if !known || !denied {
-		return false
-	}
-	denied, known = pathDenied(pid, m.open)
-	return known && !denied
-}
-
-// markedSandboxOf is the watched sandbox pid runs in, or nil.
-func markedSandboxOf(pid int) *Process {
-	watching.mu.Lock()
-	procs := make([]*Process, 0, len(watching.procs))
-	for p := range watching.procs {
-		procs = append(procs, p)
-	}
-	watching.mu.Unlock()
-	for _, p := range procs {
-		if p.listenMark().owns(pid) {
-			return p
-		}
-	}
-	return nil
-}
-
-// Listening processes are watched: a program of the person's that starts
-// listening on a port a sandboxed command already holds (a wildcard bind
-// with SO_REUSEADDR succeeds beside it) would lose its loopback connections
-// to the command. At each refresh every process of that command's sandbox
-// is ended, so nothing in it can listen again on the port, and only its
-// session is told. A process no watched mark proves is never touched.
+// Listening processes are watched, and nothing more. A program of the
+// person's that starts listening on a listen port a sandboxed command
+// already holds (a wildcard bind with SO_REUSEADDR succeeds beside it) can
+// lose its loopback connections to the command. Abhed cannot prove which
+// of two listeners is a sandbox's, so it signals neither: it tells every
+// sandbox that may listen on that port, once while the port stays
+// contested, and a new command's profile leaves the port out, as it is
+// busy then.
 
 var watching struct {
-	mu    sync.Mutex
-	procs map[*Process]bool
-	once  sync.Once
+	mu        sync.Mutex
+	procs     map[*Process]bool
+	contested map[int]bool
+	once      sync.Once
 }
 
-// watchListeners puts p among the sandboxes whose listening is watched.
+// watchListeners puts p among the sandboxes whose listen ports are watched.
 func watchListeners(p *Process) {
 	watching.mu.Lock()
 	if watching.procs == nil {
@@ -235,25 +153,23 @@ func unwatchListeners(p *Process) {
 	watching.mu.Unlock()
 }
 
-// ListenerEnded is what a sandbox's owner is told of a takeover ended: the
-// port, the listener's process, and how many of the sandbox's processes
-// were ended with it.
-type ListenerEnded struct {
-	Port, PID, Ended int
+// PortContested is what a sandbox's owner is told: more than one program
+// listens on one of its listen ports, so one may be taking the other's
+// loopback connections.
+type PortContested struct {
+	Port      int
+	Listeners int
 }
 
-// sweepListeners ends the sandbox of each marked listener on a listen port
-// a program outside it now listens on too.
+// sweepListeners tells each listening sandbox of a listen port of its that
+// more than one program listens on, once while it stays so. It reads and
+// tells; it never signals a process.
 func sweepListeners() {
 	watching.mu.Lock()
 	var procs []*Process
-	ports := map[int]bool{}
 	for p := range watching.procs {
 		if p.listening() {
 			procs = append(procs, p)
-			for _, port := range p.policy.ListenPorts {
-				ports[port] = true
-			}
 		}
 	}
 	watching.mu.Unlock()
@@ -267,76 +183,55 @@ func sweepListeners() {
 		}
 		return
 	}
+	pids := map[int]map[int]bool{}
+	for _, l := range all {
+		if pids[l.port] == nil {
+			pids[l.port] = map[int]bool{}
+		}
+		pids[l.port][l.pid] = true
+	}
+	watching.mu.Lock()
+	if watching.contested == nil {
+		watching.contested = map[int]bool{}
+	}
+	var fresh []PortContested
+	for port := range watching.contested {
+		if len(pids[port]) < 2 {
+			delete(watching.contested, port)
+		}
+	}
+	for port, ps := range pids {
+		if len(ps) >= 2 && !watching.contested[port] {
+			watching.contested[port] = true
+			fresh = append(fresh, PortContested{Port: port, Listeners: len(ps)})
+		}
+	}
+	watching.mu.Unlock()
+	sort.Slice(fresh, func(i, j int) bool { return fresh[i].Port < fresh[j].Port })
 	for _, p := range procs {
 		p.listenWatchFound()
-	}
-	for _, e := range takenOver(all, ports, func(pid int) bool { return markedSandboxOf(pid) != nil }) {
-		endTakeover(e)
+		for _, c := range fresh {
+			if slices.Contains(p.policy.ListenPorts, c.Port) {
+				if f := p.onPortContested.Load(); f != nil {
+					(*f)(c)
+				}
+			}
+		}
 	}
 }
 
-// endTakeover ends every process of the sandbox that holds e, once a fresh
-// read shows e still there and its mark still proves whose it is, and
-// tells only that sandbox's owner, only if the listener was ended.
-func endTakeover(e listener) {
+// ListenersOn is how many processes listen on port now, read afresh; -1
+// when the listeners cannot be read.
+func ListenersOn(port int) int {
 	all, ok := readListenersWithin(0)
-	if !ok || !slices.Contains(all, e) {
-		return
+	if !ok {
+		return -1
 	}
-	owner := markedSandboxOf(e.pid)
-	if owner == nil {
-		return
-	}
-	m := owner.listenMark()
-	ended, listenerEnded := 0, false
-	for _, pid := range userPIDs() {
-		if !m.owns(pid) {
-			continue
-		}
-		if syscall.Kill(pid, syscall.SIGKILL) == nil {
-			ended++
-			listenerEnded = listenerEnded || pid == e.pid
-		}
-	}
-	if !listenerEnded {
-		return
-	}
-	if f := owner.onListenerEnded.Load(); f != nil {
-		(*f)(ListenerEnded{Port: e.port, PID: e.pid, Ended: ended})
-	}
-}
-
-// takenOver are the marked listeners on a watched port that a program no
-// mark proves listens on too.
-func takenOver(all []listener, ports map[int]bool, confinedPID func(int) bool) []listener {
-	byPort := map[int][]int{}
+	seen := map[int]bool{}
 	for _, l := range all {
-		if ports[l.port] && !slices.Contains(byPort[l.port], l.pid) {
-			byPort[l.port] = append(byPort[l.port], l.pid)
+		if l.port == port {
+			seen[l.pid] = true
 		}
 	}
-	var out []listener
-	for port, pids := range byPort {
-		if len(pids) < 2 {
-			continue
-		}
-		var inside []int
-		host := false
-		for _, pid := range pids {
-			if confinedPID(pid) {
-				inside = append(inside, pid)
-			} else {
-				host = true
-			}
-		}
-		if host {
-			for _, pid := range inside {
-				out = append(out, listener{port: port, pid: pid})
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].port < out[j].port || out[i].port == out[j].port && out[i].pid < out[j].pid
-	})
-	return out
+	return len(seen)
 }

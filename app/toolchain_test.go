@@ -564,7 +564,7 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	}
 	r.cl.ok("_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true}, &got)
 	if !got.Listens {
-		if ok, _ := sandbox.ListenSupported(); ok && sandbox.ListenersReadable() {
+		if sandbox.ListenersReadable() {
 			t.Fatal("not listening after the person agreed, though this build and Mac can")
 		}
 		t.Skip("listening is not available here: the Mac's listeners cannot be read, or this build cannot tell a sandboxed process")
@@ -582,6 +582,8 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
+	// The Mac's listeners are read at most every two seconds.
+	time.Sleep(2100 * time.Millisecond)
 	// Split, so the typed line's echo holds no address.
 	from = input(second.TerminalID, fmt.Sprintf(`printf '  Local:   http://%%s:%d/app\n' localhost; printf 'again http://localhost:%d/app\n'; printf 'host http://localhost:%d/\n'; printf 'out http://localhost:9/\n'`, devPort, devPort, hostPort))
 	want := fmt.Sprintf(`"url":"http://localhost:%d/app"`, devPort)
@@ -606,8 +608,9 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	waitOutput(r.cl, from, second.TerminalID, "may listen only on TCP ports")
 
 	// A program of the person's that listens on a port a sandboxed server
-	// holds ends that server, and the person and the record are told. An
-	// interactive terminal, so the server runs while the test goes on.
+	// holds is told, and recorded, and the server is not stopped: Abhed
+	// warns, it does not stop a command. An interactive terminal, so the
+	// server runs while the test goes on.
 	var shell termReply
 	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 120, "rows": 24}, &shell)
 	from = input(shell.TerminalID, fmt.Sprintf(`python3 -I -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1", %d)); s.listen(); print("serv"+"ing", flush=True); time.sleep(30)'`, devPort))
@@ -617,11 +620,19 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 		t.Fatalf("the host could not listen beside the sandboxed server: %v", err)
 	}
 	defer taker.Close()
-	r.cl.waitFor(from, "the ended listener", func(m rpcMessage) bool {
-		return m.Method == "_abhed/sandbox/listener_ended" && strings.Contains(string(m.Params), fmt.Sprintf(`"port":%d`, devPort))
+	notice := r.cl.waitFor(from, "the contested port", func(m rpcMessage) bool {
+		return m.Method == "_abhed/sandbox/port_contested" && strings.Contains(string(m.Params), fmt.Sprintf(`"port":%d`, devPort))
 	})
-	if ended, actors := r.recorded(id, agent.EvSandboxListenerEnded); len(ended) == 0 || actors[0] != agent.ActorSystem {
-		t.Fatalf("recorded %v %v", ended, actors)
+	if !strings.Contains(string(notice.Params), "does not stop it") {
+		t.Fatalf("the notice does not say Abhed stops nothing: %s", notice.Params)
+	}
+	if got, actors := r.recorded(id, agent.EvSandboxPortContested); len(got) != 1 || actors[0] != agent.ActorSystem {
+		t.Fatalf("recorded %v %v", got, actors)
+	}
+	if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", devPort), time.Second); err != nil {
+		t.Fatalf("the sandboxed server was stopped: %v", err)
+	} else {
+		_ = c.Close()
 	}
 
 	// Kept for the workspace: a new session starts listening, recorded.

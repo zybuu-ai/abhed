@@ -1,15 +1,14 @@
 package agent
 
-// EvSandboxListenerEnded is the session sandbox's commands ended because a
-// program outside it started listening on a port one of them held; see
-// SandboxListenerEnded.
-const EvSandboxListenerEnded EventType = "sandbox.listener_ended"
+// EvSandboxPortContested is more than one program listening on one of a
+// listening session's listen ports, so a sandboxed command may be taking a
+// program's loopback connections; Abhed tells and stops nothing. See
+// SandboxPortContested.
+const EvSandboxPortContested EventType = "sandbox.port_contested"
 
-// SandboxListenerEnded is the payload of sandbox.listener_ended: the port,
-// the listener's process, and how many of the sandbox's processes were
-// ended so the connections reach the host's program.
-type SandboxListenerEnded struct {
-	Port  int `json:"port"`
-	PID   int `json:"pid"`
-	Ended int `json:"ended"`
+// SandboxPortContested is the payload of sandbox.port_contested: the port
+// and how many processes listen on it.
+type SandboxPortContested struct {
+	Port      int `json:"port"`
+	Listeners int `json:"listeners"`
 }
