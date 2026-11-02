@@ -102,14 +102,6 @@ func proxyURL(raw string) (*url.URL, error) {
 	return &url.URL{Scheme: u.Scheme, Host: u.Host}, nil
 }
 
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
 
 // readBundle reads the PEM certificates at path.
 func readBundle(path string) ([]*x509.Certificate, error) {
