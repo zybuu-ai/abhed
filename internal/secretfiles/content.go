@@ -376,18 +376,24 @@ func redactBlocks(text string, diff bool) (string, bool) {
 		}
 		return "", l
 	}
+	// Only a unified diff is read as one: readStaged never asks git for a
+	// combined diff (a merge's, with two columns), so none is handled.
 	found := false
 	for i := 0; i < len(lines); i++ {
-		keyPrefix, keyLine := column(lines[i], diff)
-		m := blockKey.FindStringSubmatch(strings.TrimRight(keyPrefix+keyLine, "\n"))
+		keyLine := lines[i]
 		if diff {
-			m = blockKey.FindStringSubmatch(strings.TrimRight(keyLine, "\n"))
+			_, keyLine = column(keyLine, true)
 		}
+		m := blockKey.FindStringSubmatch(strings.TrimRight(keyLine, "\n"))
 		if m == nil || !secretKeyName(m[3]) {
 			continue
 		}
 		prefixed, keyIndent := diff || m[1] != "", len(m[2])
 		for i+1 < len(lines) {
+			if diff && strings.HasPrefix(lines[i+1], "\\") {
+				i++ // git's "\ No newline at end of file" is not the block's end
+				continue
+			}
 			prefix, body := column(lines[i+1], prefixed)
 			content := strings.TrimRight(body, "\r\n")
 			if strings.TrimSpace(content) == "" {

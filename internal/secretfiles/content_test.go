@@ -255,6 +255,11 @@ func TestRedactDiffBlockWithAContextKey(t *testing.T) {
 		" db:\n   password: |\n-    oldS3cretVal9\n+    newS3cretVal9\n   user: bob\n",
 		"@@ -1,3 +1,3 @@\n password: >\n-  oldS3cretVal9\n+  newS3cretVal9\n",
 		"   password: |\n+    newS3cretVal9\n",
+		// git's marker after a last line with no newline, on the old side, the new, or both.
+		" password: |\n-  oldS3cretVal9\n\\ No newline at end of file\n+  newS3cretVal9\n",
+		" password: |\n-  oldS3cretVal9\n+  newS3cretVal9\n\\ No newline at end of file\n",
+		" password: |\n-  oldS3cretVal9\n\\ No newline at end of file\n+  newS3cretVal9\n\\ No newline at end of file\n",
+		" password: |\n-  oldS3cretVal9a\n-  oldS3cretVal9b\n\\ No newline at end of file\n+  newS3cretVal9a\n+  newS3cretVal9b\n\\ No newline at end of file\n",
 	} {
 		out, found := RedactDiff(in)
 		if !found || strings.Contains(out, "S3cretVal9") {
