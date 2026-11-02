@@ -747,13 +747,13 @@ BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended('events/' || NEW.session_id, 0));
   -- Read after the lock (version 15): a delete that held it has committed, and
   -- a row for its session is refused rather than written into an erased one.
-  IF EXISTS (SELECT 1 FROM sessions WHERE id = NEW.session_id AND deleted_at IS NOT NULL) THEN
+  IF EXISTS (SELECT 1 FROM public.sessions WHERE id = NEW.session_id AND deleted_at IS NOT NULL) THEN
     RAISE EXCEPTION 'session % is deleted', NEW.session_id USING ERRCODE = 'ABD01';
   END IF;
-  SELECT chain_pos, hash INTO last_pos, last_hash FROM events
+  SELECT chain_pos, hash INTO last_pos, last_hash FROM public.events
     WHERE session_id = NEW.session_id AND chain_pos IS NOT NULL ORDER BY chain_pos DESC LIMIT 1;
   NEW.inserted_at := now();
-  NEW.commit_tx := abhed_commit_pos();  -- the transaction, shifted past a restored record (version 17)
+  NEW.commit_tx := public.abhed_commit_pos();  -- the transaction, shifted past a restored record (version 17)
   NEW.chain_pos := COALESCE(last_pos, 0) + 1;
   NEW.prev_hash := COALESCE(last_hash, repeat('0', 64));
   NEW.hash := encode(sha256(convert_to(NEW.prev_hash || E'\n' || jsonb_build_object(
@@ -762,7 +762,10 @@ BEGIN
     'created_at', NEW.created_at)::text, 'UTF8')), 'hex');
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SET timezone TO 'UTC';
+$$ LANGUAGE plpgsql SET timezone TO 'UTC' SET search_path = pg_catalog, public, pg_temp;
+-- Names are schema-qualified and pg_temp is searched last (version 17): a
+-- writer's temporary table named sessions or commit_shift must not stand in
+-- for the real one.
 
 DROP TRIGGER IF EXISTS zz_events_chain ON events;
 CREATE TRIGGER zz_events_chain BEFORE INSERT ON events
@@ -822,13 +825,14 @@ CREATE TRIGGER commit_shift_no_truncate BEFORE TRUNCATE ON commit_shift
 
 -- The writing transaction's place in commit order.
 CREATE OR REPLACE FUNCTION abhed_commit_pos() RETURNS xid8 AS $$
-  SELECT (pg_current_xact_id()::text::numeric + shift)::text::xid8 FROM commit_shift
-$$ LANGUAGE sql VOLATILE;
+  SELECT (pg_catalog.pg_current_xact_id()::text::numeric + shift)::text::xid8 FROM public.commit_shift
+$$ LANGUAGE sql VOLATILE SET search_path = pg_catalog, public, pg_temp;
 
 -- Where a commit-ordered reader stops: below every transaction still running.
 CREATE OR REPLACE FUNCTION abhed_commit_horizon() RETURNS xid8 AS $$
-  SELECT (pg_snapshot_xmin(pg_current_snapshot())::text::numeric + shift)::text::xid8 FROM commit_shift
-$$ LANGUAGE sql STABLE;
+  SELECT (pg_catalog.pg_snapshot_xmin(pg_catalog.pg_current_snapshot())::text::numeric + shift)::text::xid8
+    FROM public.commit_shift
+$$ LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp;
 
 -- Run by every migrate, which holds events exclusively here, so no writer is
 -- part way through an insert. Row security is lifted for this transaction

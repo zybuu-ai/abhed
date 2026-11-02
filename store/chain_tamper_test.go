@@ -372,8 +372,10 @@ func TestRuntimeRoleCannotSetCommitTx(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// The writing transaction, shifted as every commit_tx is (schema version
+	// 17; the shift is 0 unless the database was restored from elsewhere).
 	var mine string
-	if err := tx.QueryRow(ctx, `SELECT pg_current_xact_id()::text`).Scan(&mine); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT (pg_current_xact_id()::text::numeric + shift)::text FROM public.commit_shift`).Scan(&mine); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO events (id, session_id, tenant_id, seq, type, payload, actor, commit_tx)

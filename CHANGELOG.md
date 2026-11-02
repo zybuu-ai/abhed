@@ -111,7 +111,9 @@ All notable changes to Abhed are recorded here. The format follows
   the shift, while it holds the tables, just past the highest `commit_tx`
   when that is ahead of the cluster; new events and the readers' horizon both
   add it. It stays 0 in a database the cluster wrote, is never lowered, and
-  the runtime role only reads it.
+  the runtime role only reads it. A runtime server refuses to start, naming
+  `abhed migrate`, on a database whose commit order is ahead of the cluster,
+  as after a restore that skipped the migrate.
 - HawkEYE's `sandbox-denied` no longer fires on the words of a command's
   output alone. A call whose output says an operation was not permitted,
   with nothing in the record to show the sandbox refused it, is now
@@ -211,18 +213,21 @@ All notable changes to Abhed are recorded here. The format follows
   See [Allowed models and MCP servers](docs/guide/02-configuration.md#allowed-models-and-mcp-servers).
 - Backup and restore scripts for a self-hosted server, in
   `scripts/backup/`: `abhed-backup.sh` writes a logical dump of the database
-  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser), the
-  roles without passwords, and a tarball of the state folders you name,
-  each checked before it counts; `abhed-restore.sh` restores them into an
-  empty database in one transaction and can run `abhed migrate`, `abhed
-  record verify` and `abhed record audit` after. A systemd service and timer
-  are examples. `scripts/backup/restore-test.sh` proves them: it seeds a
-  record in a throwaway Postgres container, backs it up, restores it into a
-  new database of the same cluster, into a fresh cluster whose transaction
-  counter is behind, and from a `pg_basebackup` copy, and checks every chain
-  position, hash and `commit_tx` is unchanged, both record checks pass, and a
-  commit-ordered reader goes on from its cursor without skipping or
-  repeating an event ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
+  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser) and a
+  tarball of the state folders you name, each checked before it counts;
+  `abhed-restore.sh` restores them into an empty database in one
+  transaction, makes the owner and runtime roles only if they are missing
+  and only as plain roles, and can run `abhed migrate`, `abhed record
+  verify` and `abhed record audit` after. Both refuse a connection string
+  that carries a password (use `PGPASSFILE` or `PGPASSWORD`). A systemd
+  service and timer are examples. `scripts/backup/restore-test.sh` proves
+  them: it seeds a record in a throwaway Postgres container, backs it up,
+  restores it into a new database of the same cluster, into a fresh cluster
+  whose transaction counter is behind, and from a `pg_basebackup` copy, and
+  checks every chain position, hash and `commit_tx` is unchanged, both record
+  checks pass, the state comes back with its modes, and a commit-ordered
+  reader goes on from its cursor without skipping or repeating an event
+  ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
 - A corporate upstream proxy, `network.upstream_proxy`: an explicit HTTP
   proxy (`http://` or `https://`), an optional CA bundle, credentials by the
   name of a stored secret (`user:password`, sent as Basic to the proxy alone)
