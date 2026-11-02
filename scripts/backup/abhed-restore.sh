@@ -39,12 +39,26 @@
 set -eu
 
 has_password() {
-  case "$1" in
-    *[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]=*) return 0 ;;
-    postgres://*@* | postgresql://*@*)
-      userinfo="${1#*://}"
-      userinfo="${userinfo%%@*}"
-      case "$userinfo" in *:*) return 0 ;; esac ;;
+  # Lower case and without blanks, so "Password = x" is caught as well.
+  d="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' \t')"
+  case "$d" in *password=*) return 0 ;; esac
+  case "$d" in
+    postgres://* | postgresql://*)
+      rest="${d#*://}"
+      auth="${rest%%/*}"
+      case "$auth" in *@*)
+        case "${auth%@*}" in *:*) return 0 ;; esac ;;
+      esac
+      # libpq decodes %XX in parameter names (pass%77ord); none is accepted.
+      case "$d" in *\?*)
+        q="${d#*\?}"
+        old_ifs="$IFS"
+        IFS='&'
+        for kv in $q; do
+          case "${kv%%=*}" in *%*) IFS="$old_ifs"; return 0 ;; esac
+        done
+        IFS="$old_ifs" ;;
+      esac ;;
   esac
   return 1
 }
@@ -52,7 +66,7 @@ has_password() {
 if [ -n "${ABHED_RESTORE_DUMP:-}" ]; then
   : "${ABHED_RESTORE_DSN:?set ABHED_RESTORE_DSN to a superuser connection to an empty database}"
   if has_password "$ABHED_RESTORE_DSN"; then
-    echo "abhed-restore: ABHED_RESTORE_DSN carries a password; put it in PGPASSFILE or PGPASSWORD instead" >&2
+    echo "abhed-restore: ABHED_RESTORE_DSN carries a password (or a percent-encoded parameter name); put the password in PGPASSFILE or PGPASSWORD instead" >&2
     exit 2
   fi
   [ -r "$ABHED_RESTORE_DUMP" ] || { echo "abhed-restore: cannot read $ABHED_RESTORE_DUMP" >&2; exit 1; }
@@ -71,7 +85,9 @@ if [ -n "${ABHED_RESTORE_DUMP:-}" ]; then
     case "$role" in
       *[!a-z0-9_]* | [0-9]*) echo "abhed-restore: '$role' is not a role name this script makes" >&2; exit 2 ;;
     esac
-    if [ "$(psql_ -c "SELECT count(*) FROM pg_roles WHERE rolname = '$role'")" = 0 ]; then
+    # Captured first, so a failed lookup stops the script under set -e.
+    have="$(psql_ -c "SELECT count(*) FROM pg_roles WHERE rolname = '$role'")"
+    if [ "$have" = 0 ]; then
       psql_ -c "CREATE ROLE $role LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
       echo "role      $role made, with no password"
     fi

@@ -142,16 +142,26 @@ for f in abhed-backup.sh abhed-restore.sh; do "$ENGINE" cp "$ROOT/scripts/backup
 if "$ENGINE" exec -e ABHED_BACKUP_DSN="postgres://abhed_backup:backup@127.0.0.1/abhed" -e ABHED_BACKUP_DIR=/tmp/neg \
   "$P-src" sh /tmp/abhed-backup.sh 2> "$WORK/neg1.log"; then echo "a DSN with a password was accepted" >&2; exit 1; fi
 grep -q 'carries a password' "$WORK/neg1.log"
+for bad in "host=127.0.0.1 dbname=abhed user=abhed_backup Password = backup" \
+           "postgres://abhed_backup@127.0.0.1/abhed?pass%77ord=backup"; do
+  if "$ENGINE" exec -e ABHED_BACKUP_DSN="$bad" -e ABHED_BACKUP_DIR=/tmp/neg "$P-src" sh /tmp/abhed-backup.sh 2> /dev/null; then
+    echo "a DSN with a password was accepted: $bad" >&2; exit 1
+  fi
+done
 if "$ENGINE" exec -e ABHED_BACKUP_STATE=/tmp/state -e ABHED_BACKUP_KEEP_DAYS=7d -e ABHED_BACKUP_DIR=/tmp/neg \
   "$P-src" sh /tmp/abhed-backup.sh 2> "$WORK/neg2.log"; then echo "ABHED_BACKUP_KEEP_DAYS=7d was accepted" >&2; exit 1; fi
 grep -q 'whole number' "$WORK/neg2.log"
 if "$ENGINE" exec -e PGPASSWORD=backup -e ABHED_BACKUP_DSN="postgres://abhed_backup@127.0.0.1/nosuchdb" -e ABHED_BACKUP_DIR=/tmp/neg \
   "$P-src" sh /tmp/abhed-backup.sh 2> /dev/null; then echo "a dump of a missing database succeeded" >&2; exit 1; fi
-[ "$("$ENGINE" exec "$P-src" sh -c 'ls /tmp/neg | wc -l')" = 0 ] || { echo "a failed run left files behind" >&2; exit 1; }
+if "$ENGINE" exec -e PGPASSWORD=backup -e ABHED_BACKUP_DSN="postgres://abhed_backup@127.0.0.1/nosuchdb" \
+  -e ABHED_BACKUP_DIR="/tmp/neg/with space" "$P-src" sh /tmp/abhed-backup.sh 2> /dev/null; then
+  echo "a dump of a missing database succeeded" >&2; exit 1
+fi
+[ "$("$ENGINE" exec "$P-src" sh -c 'find /tmp/neg -type f | wc -l')" = 0 ] || { echo "a failed run left files behind" >&2; exit 1; }
 if "$ENGINE" exec -e ABHED_RESTORE_DSN="postgres://pgsuper:pgsuper@127.0.0.1/postgres" -e ABHED_RESTORE_DUMP=/dev/null \
   "$P-src" sh /tmp/abhed-restore.sh 2> "$WORK/neg3.log"; then echo "a restore DSN with a password was accepted" >&2; exit 1; fi
 grep -q 'carries a password' "$WORK/neg3.log"
-echo "  refused: passwords in DSNs, a non-numeric retention; a failed run left no .part file"
+echo "  refused: passwords in DSNs (in four forms), a non-numeric retention; failed runs left no .part file, a folder with a space included"
 "$ENGINE" exec -e PGPASSWORD=backup -e ABHED_BACKUP_DSN="postgres://abhed_backup@127.0.0.1/abhed" \
   -e ABHED_BACKUP_STATE=/tmp/state -e ABHED_BACKUP_DIR=/tmp/bk "$P-src" sh /tmp/abhed-backup.sh 2> /dev/null
 "$ENGINE" cp "$P-src:/tmp/bk" "$WORK/bk"
