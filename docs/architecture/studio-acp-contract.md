@@ -1112,10 +1112,10 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   `_abhed/sandbox/port_contested {sessionId, port, message}`, recorded
   `sandbox.port_contested {port, listeners}`, within a few seconds: once
   while the port stays contested (a session that starts watching during a
-  contest, or turns listening on again, is told too), again at once when
-  more programs listen than last told or a listener outside everything
-  Abhed started joins, and for the same contest coming back at most once a
-  minute. A server and
+  contest, or turns listening on again, is told too), again within one
+  read whenever a program not told of joins the port (programs are told
+  apart by their sockets and processes), and for the same programs coming
+  back at most once a minute. A server and
   the workers it forks, sharing one socket, count as one program; Abhed
   cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's
