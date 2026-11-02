@@ -259,7 +259,7 @@ func (c Config) ModelListed(name string, p ProviderConfig) error {
 		org = org || c.managedList(l.file)
 	}
 	// Under the organisation's list a model is admitted at its provider's own
-	// endpoint, or at one the managed file or org policy defines: a lower
+	// endpoint, or at one the managed file defines: a lower
 	// file's base_url would send an admitted model's traffic anywhere.
 	if org && !c.endpointBound(name, p) {
 		l := c.firstModelLayer()
@@ -270,14 +270,14 @@ func (c Config) ModelListed(name string, p ProviderConfig) error {
 			}
 		}
 		return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
-			Reason: "model.allowed in " + c.listOwner(l.file) + " admits a model only at its provider's own endpoint, on this machine, or at a provider the managed configuration or org policy defines, and this one is sent to " + PrintableURL(p.BaseURL)}
+			Reason: "model.allowed in " + c.listOwner(l.file) + " admits a model only at its provider's own endpoint, on this machine, or at a provider the managed file defines, and this one is sent to " + PrintableURL(p.BaseURL)}
 	}
 	return nil
 }
 
 // endpointBound reports a provider whose endpoint is its type's own (no
 // base_url, or the built-in entry's unchanged), on this machine (a loopback
-// address), or one the managed file or org policy defines whole.
+// address), or one the managed file defines whole (an org policy never does).
 func (c Config) endpointBound(name string, p ProviderConfig) bool {
 	if p.BaseURL == "" || loopbackURL(p.BaseURL) {
 		return true // the type's own endpoint, or one on this machine

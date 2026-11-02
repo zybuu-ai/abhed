@@ -1682,7 +1682,7 @@ bound separately. When the managed file or the org policy sets
 
 - its type's own endpoint, with no `base_url`
 - an endpoint on this machine (`localhost` or a loopback address)
-- the endpoint of a provider the managed file or the org policy defines
+- the endpoint of a provider the managed file defines (an org policy never defines one)
 
 A managed provider entry is one setting, `base_url` included, and
 `ABHED_BASE_URL` cannot change it. A `base_url` from a lower file or from

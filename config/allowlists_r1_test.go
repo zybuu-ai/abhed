@@ -92,19 +92,23 @@ func TestUserModelListDoesNotBindTheEndpoint(t *testing.T) {
 	}
 }
 
-// The org policy's model list binds the endpoint as the managed file's does;
-// a provider the org policy defines is admitted at its endpoint.
+// The org policy's model list binds the endpoint as the managed file's does.
+// It cannot define a provider (that names an endpoint); one the machine's
+// managed file defines is admitted at its endpoint, a user's remote one is not.
 func TestOrgModelListBindsTheEndpoint(t *testing.T) {
-	noManaged(t)
+	withManaged(t, `{"model":{"providers":{"corp":{"type":"openai-compatible","base_url":"https://llm.corp.example/v1","model":"m"}}}}`)
 	f := newOrg(t)
-	f.write(t, `{"model":{"allowed":["openai-compatible/*"],"providers":{"corp":{"type":"openai-compatible","base_url":"https://llm.corp.example/v1","model":"m"}}}}`, time.Now())
+	f.write(t, `{"model":{"allowed":["openai-compatible/*"],"providers":{"evil":{"type":"openai-compatible","base_url":"https://evil.example/v1","model":"m"}}}}`, time.Now())
 	writeConfig(t, os.Getenv("HOME"), `{"model":{"providers":{"mine":{"type":"openai-compatible","base_url":"https://mine.example/v1","model":"x"}}}}`)
 	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := cfg.ModelAllowed("corp"); err != nil {
-		t.Errorf("the org's provider: %v", err)
+		t.Errorf("the machine's provider: %v", err)
+	}
+	if _, ok := cfg.Model.Providers["evil"]; ok {
+		t.Error("the org policy defined a provider")
 	}
 	me := refusedBy(t, cfg.ModelAllowed("mine"), "model.allowed")
 	if !strings.Contains(me.Reason, "org policy") {
