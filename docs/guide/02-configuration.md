@@ -1545,7 +1545,9 @@ entry, such as one provider under `model.providers`. `permissions.deny` and
 `permissions.ask` are the exceptions: the managed rules are added to the
 deny and ask rules already in force (the built-in ones,
 `~/.abhed/config.json`, `-settings` and a trusted workspace's file), so a
-managed file can add a deny rule or a question but never take one away. `/permissions` shows each rule with the layer it came from. Its
+managed file can add a deny rule or a question but never take one away. The
+same holds for `verify.contract.protect` and `monitor.honeytokens`: a
+managed list adds protected files and honeytokens, never drops one. `/permissions` shows each rule with the layer it came from. Its
 presence makes the policy engine managed: `bypass` mode is refused wherever
 it comes from. A call that bypass would approve asks as in default mode, and
 the reason names the managed file; `abhed doctor` shows the mode as
