@@ -330,11 +330,16 @@ func TestServersJoinSharedSockets(t *testing.T) {
 	if got[3000] != 1 || got[3001] != 1 || got[3002] != 2 || got[3003] != 2 {
 		t.Fatalf("%v", got)
 	}
-	// A program is named by its sockets: a recycled worker keeps the name.
-	names := programs(all)
-	recycled := programs([]listener{{port: 3000, pid: 10, sock: "0xa"}, {port: 3000, pid: 12, sock: "0xa"}})
-	if !slices.Equal(names[3000], recycled[3000]) || !slices.Equal(names[3001], []string{"s0xb,s0xc"}) || !slices.Equal(names[3003], []string{"p40", "p41"}) {
-		t.Fatalf("names %v, recycled %v", names, recycled)
+	// A program is named by its sockets, with its processes beside the name.
+	progs := programs(all)
+	if p := progs[3000]; len(p) != 1 || p[0].name != "s0xa" || !slices.Equal(p[0].pids, []int{10, 11}) {
+		t.Fatalf("a server and its worker: %+v", p)
+	}
+	if p := progs[3001]; len(p) != 1 || p[0].name != "s0xb,s0xc" {
+		t.Fatalf("one program on two sockets: %+v", p)
+	}
+	if p := progs[3003]; len(p) != 2 || p[0].name != "p40" || p[1].name != "p41" {
+		t.Fatalf("no socket addresses: %+v", p)
 	}
 }
 
@@ -617,5 +622,33 @@ time.sleep(20)`
 	}
 	if told.Load() != first {
 		t.Fatalf("told again as workers came and went: %d, then %d", first, told.Load())
+	}
+}
+
+// A told program is the same one only with the same sockets and a process
+// in common: a recycled worker keeps the master and stays told, and a new
+// process on a told socket address, as macOS hands a freed address on, is
+// told.
+func TestNoteContestByProgramAndProcess(t *testing.T) {
+	now := time.Now()
+	server := program{name: "s0xa", pids: []int{10, 11}}
+	host := program{name: "s0xb", pids: []int{50}}
+	st, tell := noteContest(nil, []program{server, host}, now)
+	if !tell {
+		t.Fatal("a first contest was not told")
+	}
+	// The server recycles its worker: the master stays.
+	recycled := program{name: "s0xa", pids: []int{10, 12}}
+	if st, tell = noteContest(st, []program{recycled, host}, now.Add(2*time.Second)); tell {
+		t.Fatal("a recycled worker was told as a new program")
+	}
+	// The server's address freed and taken by a new process.
+	reused := program{name: "s0xa", pids: []int{70}}
+	if st, tell = noteContest(st, []program{reused, host}, now.Add(4*time.Second)); !tell {
+		t.Fatal("a new process on a told socket address was not told")
+	}
+	// Gone: forgotten.
+	if st, _ = noteContest(st, []program{host}, now.Add(6*time.Second)); len(st.told) != 1 {
+		t.Fatalf("told names kept for programs gone: %v", st.told)
 	}
 }

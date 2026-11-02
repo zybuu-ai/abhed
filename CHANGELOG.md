@@ -9,10 +9,12 @@ All notable changes to Abhed are recorded here. The format follows
 ### Fixed
 
 - A dev server that recycles the workers sharing its listening socket
-  (gunicorn, php-fpm) is one program to the contested-port notice, so a
-  contest is not told again for each new worker, and programs that have
-  stopped listening are forgotten, so a long contest neither grows
-  without bound nor confuses a new program with one that left.
+  (gunicorn, php-fpm) keeps its master process, so the contested-port
+  notice counts it as one program and does not tell a contest again for
+  each new worker. A program is the same one only with the same sockets
+  and a process in common, so a new program on a socket address another
+  left is told, and programs that stopped listening are forgotten, so a
+  long contest does not grow without bound.
 
 ## [1.2.9] - 2026-11-02
 

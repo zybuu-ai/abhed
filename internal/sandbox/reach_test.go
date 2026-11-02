@@ -165,6 +165,10 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a call through a func value no one decided", appRoute(`var f func(); f()`)},
 		// The body closes reachRoute and declares more; the template closes the last.
 		{"a package func var set in init", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tprobeHook = func() { _ = killGroupNow(1) }")},
+		{"a package func var set in a tuple", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc makeHook() (func(), error) { return func() { _ = killGroupNow(1) }, nil }\n\nfunc init() {\n\tprobeHook, _ = makeHook()")},
+		{"a package func var set in parentheses", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\t(probeHook) = func() { _ = killGroupNow(1) }")},
+		{"a package func var written through a pointer", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tp := &probeHook\n\t*p = func() {}")},
+		{"another package's func var set from app", crossPackageHook(t, sandboxDir, appDir)},
 		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
 		{"a process held by an interface", appRoute(`p, _ := os.FindProcess(1); var k interface{ Kill() error } = p; _ = k.Kill()`, "os")},
@@ -200,6 +204,24 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 			t.Errorf("clean %s route caught: %v", name, found)
 		}
 	}
+}
+
+// crossPackageHook has listening code call enginecli.Guard, which a new
+// app file sets to find and kill a process.
+func crossPackageHook(t *testing.T, sandboxDir, appDir string) map[string]string {
+	t.Helper()
+	path := filepath.Join(sandboxDir, "listen_ports.go")
+	src, err := os.ReadFile(path) // #nosec G304 -- this module's own source
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := map[string]string{
+		path: strings.Replace(string(src), "func sweepListeners() {", "func sweepListeners() {\n\treachRoute()", 1),
+		filepath.Join(sandboxDir, "listen_reach_route.go"): route("sandbox", `_ = enginecli.Guard("x")`, []string{modulePath + "/internal/enginecli"}),
+		filepath.Join(appDir, "acp_reach_route.go"): "package app\n\nimport (\n\t\"os\"\n\n\t\"" + modulePath + "/internal/enginecli\"\n)\n\n" +
+			"func init() {\n\tenginecli.Guard = func(string) error { p, _ := os.FindProcess(1); return p.Kill() }\n}\n",
+	}
+	return o
 }
 
 // renamedEntry renames watchServing, an entry, and its caller, and has the
@@ -343,6 +365,9 @@ type srcPkg struct {
 	// fields are the values the package assigns to func-typed fields of
 	// the module's structs, by "pkg.Struct.Field".
 	fields map[string][]ast.Expr
+	// addressed are the module func variables whose address the package
+	// takes, so they can be written through a pointer the walk cannot see.
+	addressed map[string]bool
 }
 
 func newReach(overlay map[string]string) (*reach, error) {
@@ -460,7 +485,7 @@ func (r *reach) parseAndCheck(path string) (*srcPkg, error) {
 		return nil, err
 	}
 	s := &srcPkg{path: path, info: info, funcs: map[string]*ast.FuncDecl{}, vars: map[string]ast.Expr{}, fileOf: map[ast.Node]*ast.File{},
-		fields: map[string][]ast.Expr{}}
+		fields: map[string][]ast.Expr{}, addressed: map[string]bool{}}
 	for _, file := range files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch x := n.(type) {
@@ -474,22 +499,32 @@ func (r *reach) parseAndCheck(path string) (*srcPkg, error) {
 						}
 					}
 				}
+			case *ast.UnaryExpr:
+				if x.Op == token.AND {
+					if k := varKeyOf(info, x.X); k != "" {
+						s.addressed[k] = true
+					}
+				}
 			case *ast.AssignStmt:
 				for i, l := range x.Lhs {
-					if i >= len(x.Rhs) {
+					l = ast.Unparen(l)
+					var v ast.Expr
+					switch {
+					case len(x.Rhs) == len(x.Lhs):
+						v = x.Rhs[i]
+					case len(x.Rhs) == 1:
+						// A tuple from one call: the call is followed, and with it the function.
+						v = x.Rhs[0]
+					default:
 						continue
 					}
 					if sel, ok := l.(*ast.SelectorExpr); ok {
 						if k := selFieldKey(info, sel); k != "" {
-							s.fields[k] = append(s.fields[k], x.Rhs[i])
+							s.fields[k] = append(s.fields[k], v)
 						}
 					}
-					// An assignment to a package's func variable, made anywhere
-					// but its declaration: followed as its initialiser is.
-					if id, ok := l.(*ast.Ident); ok {
-						if k := pkgVarKey(info.Uses[id]); k != "" {
-							s.fields[k] = append(s.fields[k], x.Rhs[i])
-						}
+					if k := varKeyOf(info, l); k != "" {
+						s.fields[k] = append(s.fields[k], v)
 					}
 				}
 			}
@@ -729,6 +764,20 @@ func pkgVarKey(obj types.Object) string {
 	return v.Pkg().Path() + ".." + v.Name()
 }
 
+// varKeyOf names the module func variable e is, by name or qualified
+// name (pkg.Var), as pkgVarKey does, or "".
+func varKeyOf(info *types.Info, e ast.Expr) string {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		return pkgVarKey(info.Uses[x])
+	case *ast.SelectorExpr:
+		if info.Selections[x] == nil {
+			return pkgVarKey(info.Uses[x.Sel])
+		}
+	}
+	return ""
+}
+
 // funcFieldKey names field obj of a composite of type t when it is a
 // func-typed field of a module struct: "pkg.Struct.Field".
 func funcFieldKey(t types.Type, obj types.Object) string {
@@ -776,6 +825,17 @@ var fieldPkgs = map[string]bool{sandboxPkg: true, modulePath + "/internal/toolse
 
 func followsFields(key string) bool {
 	return fieldPkgs[key[:strings.LastIndex(key[:strings.LastIndex(key, ".")], ".")]]
+}
+
+// addressTaken reports a module func variable whose address a loaded
+// package takes.
+func (r *reach) addressTaken(key string) bool {
+	for _, s := range r.loaded() {
+		if s.addressed[key] {
+			return true
+		}
+	}
+	return false
 }
 
 // fieldValues are the values the module assigns to the func-typed field
@@ -994,7 +1054,14 @@ func (r *reach) unfollowed(s *srcPkg, call *ast.CallExpr, locals map[types.Objec
 			return ""
 		case *types.Var:
 			if o.Pkg() != nil && o.Parent() == o.Pkg().Scope() && inModule(o.Pkg()) {
-				return "" // its initialiser and every assignment to it are followed
+				// Its initialiser and the assignments to it in the packages loaded
+				// (the sandbox's, those that import it, and those walked into)
+				// are followed, by name, qualified name, parenthesised or in a
+				// tuple; a write through its address is not, so that is named.
+				if k := pkgVarKey(o); k != "" && r.addressTaken(k) {
+					return f.Name + " (its address is taken)"
+				}
+				return ""
 			}
 			if locals[o] {
 				return "" // a literal checked in place, or what a dependency returned
@@ -1005,9 +1072,15 @@ func (r *reach) unfollowed(s *srcPkg, call *ast.CallExpr, locals map[types.Objec
 	case *ast.SelectorExpr:
 		sn := s.info.Selections[f]
 		if sn == nil {
-			// A qualified name: a function, or a package's variable.
-			if o, ok := s.info.Uses[f.Sel].(*types.Var); ok && !inModule(o.Pkg()) {
-				return types.ExprString(f)
+			// A qualified name: a function, or a package's variable, followed
+			// as by name.
+			if o, ok := s.info.Uses[f.Sel].(*types.Var); ok {
+				if !inModule(o.Pkg()) {
+					return types.ExprString(f)
+				}
+				if k := pkgVarKey(o); k != "" && r.addressTaken(k) {
+					return types.ExprString(f) + " (its address is taken)"
+				}
 			}
 			return ""
 		}

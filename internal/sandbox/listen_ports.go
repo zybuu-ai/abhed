@@ -139,14 +139,17 @@ func servers(all []listener) map[int]int {
 // forked). Two programs, each with sockets of its own, are two. Sockets
 // bound apart with SO_REUSEPORT by one program's unrelated processes cannot
 // be told from two programs. Each program is named by its sorted sockets,
-// or by its process where lsof gives no socket, so a server keeps its name
-// while it recycles the workers that share its socket.
-func programs(all []listener) map[int][]string {
+// or by its process where lsof gives no socket, and carries its processes:
+// a told program is the same one only with the same sockets and a process
+// in common, so a server recycling the workers that share its socket keeps
+// its master and stays one, and a new program on a reused socket address
+// is new.
+func programs(all []listener) map[int][]program {
 	byPort := map[int][]listener{}
 	for _, l := range all {
 		byPort[l.port] = append(byPort[l.port], l)
 	}
-	out := map[int][]string{}
+	out := map[int][]program{}
 	for port, ls := range byPort {
 		parent := map[string]string{}
 		var find func(string) string
@@ -173,24 +176,35 @@ func programs(all []listener) map[int][]string {
 			r := find(x)
 			members[r] = append(members[r], x)
 		}
-		var names []string
+		var progs []program
 		for _, m := range members {
 			var socks []string
+			var pids []int
 			for _, x := range m {
 				if strings.HasPrefix(x, "s") {
 					socks = append(socks, x)
+				} else if pid, err := strconv.Atoi(x[1:]); err == nil {
+					pids = append(pids, pid)
 				}
 			}
 			if len(socks) == 0 {
 				socks = m
 			}
 			sort.Strings(socks)
-			names = append(names, strings.Join(socks, ","))
+			sort.Ints(pids)
+			progs = append(progs, program{name: strings.Join(socks, ","), pids: pids})
 		}
-		sort.Strings(names)
-		out[port] = names
+		sort.Slice(progs, func(i, j int) bool { return progs[i].name < progs[j].name })
+		out[port] = progs
 	}
 	return out
+}
+
+// program is one program listening on a port: its name, from its sockets,
+// and its processes.
+type program struct {
+	name string
+	pids []int
 }
 
 // Listening processes are watched, and nothing more. A program of the
@@ -285,48 +299,15 @@ func sweepListeners() {
 			p.notices = map[int]*portNotice{}
 		}
 		for _, port := range p.policy.ListenPorts {
-			progs := byPort[port]
-			st := p.notices[port]
-			if st != nil {
-				// Only programs still listening stay told of: a program gone,
-				// and one later on its socket address, is new again.
-				for name := range st.told {
-					if !slices.Contains(progs, name) {
-						delete(st.told, name)
-					}
-				}
-			}
-			if len(progs) < 2 {
-				if st != nil && st.contested {
-					st.contested, st.clearedAt = false, now
-				}
-				if st != nil && !st.contested && now.Sub(st.clearedAt) >= listenNoticeCooldown {
-					delete(p.notices, port)
-				}
-				continue
-			}
+			st, tellNow := noteContest(p.notices[port], byPort[port], now)
 			if st == nil {
-				st = &portNotice{told: map[string]bool{}}
+				delete(p.notices, port)
+			} else {
 				p.notices[port] = st
 			}
-			fresh := false
-			for _, prog := range progs {
-				fresh = fresh || !st.told[prog]
+			if tellNow {
+				tell = append(tell, notice{p, PortContested{Port: port, Listeners: len(byPort[port])}})
 			}
-			switch {
-			case fresh:
-				// A program not told of: told now, whatever the cooldown.
-			case st.contested:
-				continue
-			case now.Sub(st.toldAt) < listenNoticeCooldown:
-				// The same programs back too soon: told once the cooldown ends, if still so.
-				continue
-			}
-			for _, prog := range progs {
-				st.told[prog] = true
-			}
-			st.contested, st.toldAt = true, now
-			tell = append(tell, notice{p, PortContested{Port: port, Listeners: len(progs)}})
 		}
 	}
 	watching.mu.Unlock()
@@ -341,12 +322,68 @@ func sweepListeners() {
 }
 
 // portNotice is what a sandbox was told of one listen port: the programs
-// told of, whether it is contested now, when it was last told, and when it
-// last cleared.
+// told of, by name with their processes, whether it is contested now, when
+// it was last told, and when it last cleared.
 type portNotice struct {
-	told              map[string]bool
+	told              map[string][]int
 	contested         bool
 	toldAt, clearedAt time.Time
+}
+
+// noteContest takes one read of a port's programs into what a sandbox was
+// told, and says whether to tell it now; a nil result forgets the port.
+// A program is told of only if one of that name with a process in common
+// was: the told processes follow it from read to read, so a server that
+// recycles its workers stays told, and a new program on a socket address
+// another left is new. A program gone is forgotten.
+func noteContest(st *portNotice, progs []program, now time.Time) (*portNotice, bool) {
+	known := func(p program) bool {
+		for _, pid := range st.told[p.name] {
+			if slices.Contains(p.pids, pid) {
+				return true
+			}
+		}
+		return false
+	}
+	if st != nil {
+		kept := map[string][]int{}
+		for _, p := range progs {
+			if known(p) {
+				kept[p.name] = p.pids
+			}
+		}
+		st.told = kept
+	}
+	if len(progs) < 2 {
+		if st != nil && st.contested {
+			st.contested, st.clearedAt = false, now
+		}
+		if st != nil && !st.contested && now.Sub(st.clearedAt) >= listenNoticeCooldown {
+			return nil, false
+		}
+		return st, false
+	}
+	if st == nil {
+		st = &portNotice{told: map[string][]int{}}
+	}
+	fresh := false
+	for _, p := range progs {
+		fresh = fresh || !known(p)
+	}
+	switch {
+	case fresh:
+		// A program not told of: told now, whatever the cooldown.
+	case st.contested:
+		return st, false
+	case now.Sub(st.toldAt) < listenNoticeCooldown:
+		// The same programs back too soon: told once the cooldown ends, if still so.
+		return st, false
+	}
+	for _, p := range progs {
+		st.told[p.name] = p.pids
+	}
+	st.contested, st.toldAt = true, now
+	return st, true
 }
 
 // ListenersOn is how many programs listen on port now, read afresh: a
