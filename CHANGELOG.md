@@ -735,8 +735,10 @@ All notable changes to Abhed are recorded here. The format follows
   source") is not, though a past form opens a title only as a few
   adjectives ("Cited", "Related"); a bare pass claim ("All tests passed")
   is covered by a run of the folders the person typed since the last
-  checked answer, attachments aside, when they asked about nothing wider
-  and every change lies inside those folders; a test result with no test run behind it says "no test
+  checked answer, attachments and piped stdin aside, when they asked
+  about nothing wider, joined only folders or verbs to a folder, named a
+  folder in every sentence about tests, and every change lies inside
+  those folders; a test result with no test run behind it says "no test
   run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a

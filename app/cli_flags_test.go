@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 func parse(t *testing.T, args ...string) *cliFlags {
@@ -139,7 +141,7 @@ func TestUserMessageText(t *testing.T) {
 func TestHeadlessTask(t *testing.T) {
 	ctx := context.Background()
 	var warn strings.Builder
-	if got, _ := headlessTask(ctx, "summarise", strings.NewReader("the log\n"), true, &warn); got != "summarise\n\nInput from stdin:\nthe log" {
+	if got, _ := headlessTask(ctx, "summarise", strings.NewReader("the log\n"), true, &warn); !strings.HasPrefix(got, "summarise\n\nInput from stdin. "+agent.AttachedNote) || !strings.Contains(got, "\nthe log\n") {
 		t.Errorf("%q", got)
 	}
 	if got, _ := headlessTask(ctx, "", strings.NewReader("do this"), true, &warn); got != "do this" {
