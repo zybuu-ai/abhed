@@ -21,7 +21,7 @@
 # are pinned by digest; Dependabot moves the digests.
 # It runs on the builder's own platform and cross-compiles, so a multi-arch
 # build does not compile Go under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
 
 WORKDIR /src
 
