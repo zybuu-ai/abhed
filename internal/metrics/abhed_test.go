@@ -179,7 +179,7 @@ var uncounted = []string{
 	"subagent.ask", "subagent.backgrounded", "subagent.message", "subagent.notice", "subagent.returned",
 	"subagent.spawned", "suggestion.offered", "task.cancelled", "terminal.input", "todo.updated",
 	"turn.continued", "user.message", "workspace.dir_added", "worktree.taken", "debug.launched", "debug.stopped", "debug.setup", "completion.enabled", "next_edit.enabled", "commit_message.requested",
-	"sandbox.git_walk_bounded", "sandbox.git_linked",
+	"sandbox.git_walk_bounded", "sandbox.git_linked", "sandbox.listener_ended",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {
