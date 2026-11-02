@@ -43,6 +43,18 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 	return out
 }
 
+// MCPAdmit is the gateway's check of every server against the
+// configuration's mcp.allowed and mcp.denied lists, nil when none is set.
+func MCPAdmit(cfg config.Config) func(mcp.ServerConfig) error {
+	if !cfg.HasMCPLists() {
+		return nil
+	}
+	return func(s mcp.ServerConfig) error {
+		return cfg.MCPAdmitted(config.MCPServerOf(config.MCPServerConfig{
+			Name: s.Name, Command: s.Command, Env: s.Env, URL: s.URL, Digest: s.Digest}))
+	}
+}
+
 // WebFetchTool constructs web_fetch when enabled, or returns nil. It reads
 // vault on each call, so a secret stored while the session runs is covered,
 // and refuses a URL holding a stored value. With no vault it cannot check a
@@ -155,8 +167,12 @@ func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 	offered := OfferedModels(cfg)
 	return func(name string) (model.Adapter, error) {
 		avail := strings.Join(offered, ", ")
-		if cfg.PinnedAway(name) != nil {
-			return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
+		if err := cfg.PinnedAway(name); err != nil {
+			var me *config.ManagedError
+			if errors.As(err, &me) && me.Key == "model.default" {
+				return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
+			}
+			return nil, err
 		}
 		if !slices.Contains(offered, name) {
 			return nil, fmt.Errorf("it is not a configured provider; available: %s", avail)

@@ -205,7 +205,7 @@ a `resource_link` to the lines.
 | | |
 |---|---|
 | Wire | Spec config options. `session/new` returns `configOptions` with one `select` option of `category: "model"`, id `model`, whose values are configured provider **names**. `session/set_config_option {sessionId, configId: "model", value}` switches and returns every option. The older `models` field and `session/set_model` are answered too; that reply puts the new current model in `meta.currentModelId`. |
-| Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. |
+| Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. Only models a managed pin and `model.allowed` admit are offered; a switch to one `model.allowed` refuses is -32000 with a message naming the list and the model, and is recorded as `config.refused`. |
 | Not implemented in 1.2.2 | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
 | Per-subagent model | `subagent.spawned` and the task list carry `provider` and `model` (already recorded). |
 | Configuration warnings | Added in 1.2.9. `session/new`, `load` and `resume` results carry `_meta["zybuu.ai/abhed"].configWarnings: string[]` when something is wrong with the configuration: a key written twice in one object of any file read (the last one wins; a second provider of the same name replaces the first), a setting written twice in different letter case, a key no part of Abhed reads, and each setting an untrusted workspace file could not make. One plain, redacted sentence each; absent when there are none. Studio lists them in its model picker. |
@@ -785,6 +785,9 @@ interface PolicyView {
            layer: "managed" | "user" | "settings" | "workspace" | "flag" | "default" | "session" | "builtin";
            applied: boolean; ignoredBecause?: "workspace-untrusted" | "managed-override";
            note?: string }[];                     // why a session deny rule was pinned
+  allowLists?: { key: "model.allowed" | "mcp.allowed" | "mcp.denied";
+                 layer: "managed" | "user" | "settings" | "workspace";
+                 entries: string[] }[];           // absent when no list is set
 }
 ```
 
@@ -977,7 +980,7 @@ interface Capabilities {
             has_pipeline: boolean; allowed_tools?: string[]; dir?: string;
             trusted: boolean; refused?: string }[];
   mcp: { name: string; transport: "stdio" | "http" | "sse";
-         status: "connected" | "starting" | "stopped" | "error"; error?: string;
+         status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
          refusedTools?: string[] }[];                       // offered, not registered for their name
@@ -1009,9 +1012,13 @@ interface Capabilities {
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
 - **Client MCP servers are refused.** `session/new` must be sent
-  `mcpServers: []`; a non-empty list is not used and the reply's
-  `meta.mcpServersRefused` names them. MCP servers are configured in the
-  engine's configuration, under workspace trust.
+  `mcpServers: []`; a non-empty list is not used, the reply's
+  `meta.mcpServersRefused` names them and `meta.mcpServersRefusedReason` says
+  why, and each is recorded as `config.refused`. MCP servers are configured
+  in the engine's configuration, under workspace trust.
+- **Refused servers.** A server `mcp.allowed` or `mcp.denied` refuses is
+  listed in `mcp[]` with `status: "refused"` and `error` saying why. It is
+  never started, and a restart of it is refused.
 - **Security:** read-only, redacted. Untrusted workspace agents, skills,
   commands and MCP servers are listed with `trusted: false` and `refused`, so
   Studio can say why they are missing. Abhed hook extensions can veto, never

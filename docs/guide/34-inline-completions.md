@@ -48,7 +48,10 @@ to another machine is refused, whatever the provider's type.
 The managed configuration can turn completions off or keep them local, and a
 lower layer cannot undo it. A managed `model.default` pins completions as it
 pins the session's model: a `model.completion` naming another provider is
-refused unless the managed file sets `model.completion` too. A workspace file
+refused unless the managed file sets `model.completion` too. A model
+`model.allowed` does not admit is refused for completions, next-edit
+suggestions and commit messages, whichever file names it
+([Allowed models and MCP servers](02-configuration.md#allowed-models-and-mcp-servers)). A workspace file
 can only turn them off or set `local_only`, and cannot name the provider: the
 code goes to it.
 

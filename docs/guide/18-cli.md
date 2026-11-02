@@ -97,8 +97,10 @@ temporary folder, so name only files you wrote or have read.
   servers is enabled unless it says `"enabled": false`; a server with the
   name of a configured one replaces it for the run. With
   `-strict-mcp-config` only these servers start. When the managed
-  configuration sets the `mcp` section, `-mcp-config` is refused and
-  `-strict-mcp-config` leaves the organisation's servers as they are.
+  configuration sets `mcp.servers`, `-mcp-config` is refused and
+  `-strict-mcp-config` leaves the organisation's servers as they are. A
+  server that `mcp.allowed` or `mcp.denied` refuses stops the run, naming
+  the server and the list.
 - **`-agents`** gives subagent definitions as
   `{"name": {"description": …, "prompt": …, "tools": […], …}}`, with the keys
   of a definition file and `prompt` for its instructions. Each is checked

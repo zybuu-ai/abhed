@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -327,6 +328,12 @@ func (s *Server) addMCP(w http.ResponseWriter, r *http.Request) {
 		sort.Strings(added)
 	})
 	if len(errs) > 0 {
+		if errors.Is(errs[0], mcp.ErrNotAdmitted) {
+			// The configuration's MCP lists refuse it: recorded, and said as a refusal.
+			s.adminAudit(r, "mcp.refused", req.Name, map[string]any{"reason": errs[0].Error()})
+			WriteError(w, http.StatusForbidden, errs[0].Error())
+			return
+		}
 		WriteError(w, http.StatusBadRequest, errs[0].Error())
 		return
 	}

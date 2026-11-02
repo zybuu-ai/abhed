@@ -191,13 +191,19 @@ func mcpFlags(cfg config.Config, ff flagFiles, files []string, strict bool) (con
 	if !strict && len(added) == 0 {
 		return cfg, nil, nil
 	}
-	if cfg.ManagedSets("mcp") {
+	if cfg.ManagedSets("mcp.servers") {
 		if len(added) > 0 {
 			return cfg, nil, &config.ManagedError{Key: "mcp.servers", Value: "-mcp-config", File: managed.ConfigFile,
 				Reason: "the managed configuration sets the MCP servers"}
 		}
 		warnf("-strict-mcp-config: the managed configuration sets the MCP servers, so they stay")
 		return cfg, nil, nil
+	}
+	for _, srv := range added {
+		// A server the MCP lists refuse ends the run: a script that named it expects it.
+		if err := cfg.MCPAdmitted(config.MCPServerOf(srv)); err != nil {
+			return cfg, nil, fmt.Errorf("-mcp-config: server %s: %w", config.Printable(srv.Name), err)
+		}
 	}
 	var servers []config.MCPServerConfig
 	if !strict {

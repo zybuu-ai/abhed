@@ -1,6 +1,7 @@
 package toolset
 
 import (
+	"context"
 	"net"
 	"net/url"
 	"os"
@@ -28,7 +29,13 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 	}
 	var judge monitor.Monitor = monitor.Rules{LookPath: look, Declared: declared(cfg), Hosts: sshHosts(cfg), Home: home}
 	if m.Judge == "model" {
-		judge = monitor.Chain{judge, monitor.Model{Endpoint: m.Endpoint, Model: m.Model, APIKey: apiKey(m.APIKeyEnv)}}
+		var model monitor.Monitor = monitor.Model{Endpoint: m.Endpoint, Model: m.Model, APIKey: apiKey(m.APIKeyEnv)}
+		// A judge model the allowed models refuse is never asked: every call
+		// it would judge gets what an unavailable judge gives.
+		if err := cfg.ModelListed("monitor", config.ProviderConfig{Type: "openai-compatible", Model: m.Model}); err != nil {
+			model = refusedJudge{err}
+		}
+		judge = monitor.Chain{judge, model}
 	}
 	g := &monitor.Guard{Monitor: judge, MaxPerTurn: m.MaxPerTurn, Unattended: unattended, OnUnavailable: policy.Ask,
 		Honeytokens: append([]string(nil), m.Honeytokens...)}
@@ -39,6 +46,13 @@ func Supervisor(cfg config.Config, reg *tools.Registry, unattended bool) *monito
 		g.Timeout = time.Duration(m.TimeoutMS) * time.Millisecond
 	}
 	return g
+}
+
+// refusedJudge is a model judge the configuration does not allow.
+type refusedJudge struct{ err error }
+
+func (r refusedJudge) Judge(context.Context, monitor.Case) (monitor.Verdict, error) {
+	return monitor.Verdict{}, r.err
 }
 
 // declared are the ssh hosts and Kubernetes clusters the operator configured.
