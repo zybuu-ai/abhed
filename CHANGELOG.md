@@ -156,10 +156,11 @@ All notable changes to Abhed are recorded here. The format follows
 - Postgres: a runtime role that could create objects in schema `public`
   could define a function or operator that a trigger resolved before the
   built-in one. Postgres before 15 grants that to every role through
-  `PUBLIC`. `abhed migrate` now closes every route it finds (`PUBLIC`, a
+  `PUBLIC`. `abhed migrate` now finds every route (`PUBLIC`, a
   grant to the runtime role, a role it belongs to with or without
-  `INHERIT`, ownership of the schema or, on 15 and later, of the database)
-  and refuses while one remains, printing what to run as the schema's owner
+  `INHERIT`, ownership of the schema or, on 15 and later, of the database),
+  closes `PUBLIC`'s grant itself where it may, and refuses while any
+  other remains, printing what to run as the schema's owner
   or a superuser: `GRANT CREATE ON SCHEMA public TO <owner>; REVOKE CREATE
   ON SCHEMA public FROM PUBLIC;`, the first only when the owner role creates
   there only through `PUBLIC`. Where its role owns `public` it runs both

@@ -1199,7 +1199,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ```
 
 `abhed migrate` runs both itself where its role may (it owns `public` or
-belongs to the role that does), and never revokes `PUBLIC`'s grant while
+inherits from the role that does), and never revokes `PUBLIC`'s grant while
 the owner role would be left without `CREATE`. Otherwise it refuses and
 prints the statements to run, the first only when the owner needs it,
 naming each route the runtime role has (`PUBLIC`, a grant to it, a role it
