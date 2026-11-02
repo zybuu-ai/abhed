@@ -787,10 +787,8 @@ func TestCloseWaitsForASweepInFlight(t *testing.T) {
 	<-done
 	mu.Lock()
 	defer mu.Unlock()
-	if notified >= 2 && joined != 3 {
-		t.Fatalf("the person's join was told (%d notices) but %d of 3 joins were recorded", notified, joined)
-	}
-	if joined < 2 {
-		t.Fatalf("recorded %d joins", joined)
+	// The close waited for the sweep, which told of the join; the flush recorded it.
+	if notified < 2 || joined != 3 {
+		t.Fatalf("told %d times, recorded %d of 3 joins", notified, joined)
 	}
 }

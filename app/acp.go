@@ -448,7 +448,9 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 // session.
 func (c *acpConn) run(in io.Reader) error {
 	// Once stdin has ended, a stop signal waits for closeAll to record each
-	// session's end; while it is open, the signal does not wait for this.
+	// session's end. A signal while stdin is open waits stdinGrace for it to
+	// end, as Studio ends stdin and signals at once and the signal can come
+	// first, and otherwise does not wait for this.
 	release := func() {}
 	if c.busy != nil {
 		var once sync.Once
@@ -461,7 +463,7 @@ func (c *acpConn) run(in io.Reader) error {
 		case <-c.root().Done():
 			select {
 			case <-served:
-			default:
+			case <-time.After(stdinGrace):
 				release()
 			}
 		case <-served:
@@ -476,6 +478,10 @@ func (c *acpConn) run(in io.Reader) error {
 	release()
 	return err
 }
+
+// stdinGrace is how long a stop signal that comes while stdin is open waits
+// for stdin to end, so the sessions are closed before the exit.
+const stdinGrace = 250 * time.Millisecond
 
 // serve answers the requests on in until it ends, then says the input is
 // gone; the replies to requests still running follow (see drain).

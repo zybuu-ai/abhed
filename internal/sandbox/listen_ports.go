@@ -221,7 +221,9 @@ var watching struct {
 	procs map[*Process]bool
 	once  sync.Once
 	// sweep is held by a sweep and by a flush, so a flush waits for a sweep
-	// in flight and nothing it held back is left after.
+	// in flight and nothing it held back is left after. The owner callbacks
+	// run under it, so a callback must never close or flush a sandbox: that
+	// would wait on itself.
 	sweep sync.Mutex
 }
 

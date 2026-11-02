@@ -181,6 +181,8 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a package func var set from a getter of a package map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc getHook() func() { return hooks[\"k\"] }\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
 		{"a package func var set from a two-level getter", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc get2() func() { return hooks[\"k\"] }\n\nfunc getHook() func() { return get2() }\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
 		{"a package func var set from a getter's local copy", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc getHook() func() {\n\tf := hooks[\"k\"]\n\treturn f\n}\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
+		{"a package func var set from a getter's local from another getter", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc get2() func() { return hooks[\"k\"] }\n\nfunc getHook() func() {\n\tf := get2()\n\treturn f\n}\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
+		{"a package func var set through six getters", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc g6() func() { return hooks[\"k\"] }\nfunc g5() func() { return g6() }\nfunc g4() func() { return g5() }\nfunc g3() func() { return g4() }\nfunc g2() func() { return g3() }\nfunc g1() func() { return g2() }\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = g1()")},
 		{"another package's func var set from app", crossPackageHook(t, sandboxDir, appDir)},
 		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
@@ -804,7 +806,7 @@ func (r *reach) returnsThroughContainers(s *srcPkg, value ast.Node, where string
 func (r *reach) returnsThrough(s *srcPkg, value ast.Node, where string, depth int, seen map[string]bool) []string {
 	var found []string
 	if depth > 4 {
-		return found
+		return []string{r.fset.Position(value.Pos()).String() + ": getters nested deeper than the walk follows (reached by " + r.path(where) + ")"}
 	}
 	ast.Inspect(value, func(n ast.Node) bool {
 		if _, lit := n.(*ast.FuncLit); lit {
@@ -843,6 +845,7 @@ func (r *reach) returnsThrough(s *srcPkg, value ast.Node, where string, depth in
 			return true
 		}
 		literals := localFuncs(src, d.Body)
+		sources := localSources(src, d.Body)
 		ast.Inspect(d.Body, func(m ast.Node) bool {
 			if _, lit := m.(*ast.FuncLit); lit {
 				return false
@@ -866,9 +869,20 @@ func (r *reach) returnsThrough(s *srcPkg, value ast.Node, where string, depth in
 						return true
 					}
 					local := v.Parent() != v.Pkg().Scope()
+					onlyLiterals := true
+					for _, src0 := range sources[v] {
+						if _, lit := ast.Unparen(src0).(*ast.FuncLit); !lit {
+							onlyLiterals = false
+						}
+					}
 					switch {
-					case local && literals[v] && isFunc(v.Type()):
+					case local && literals[v] && isFunc(v.Type()) && onlyLiterals:
 						// A literal written in the getter, checked in place.
+					case local && literals[v] && isFunc(v.Type()):
+						// What a call returned: that call's returns, followed the same way.
+						for _, src0 := range sources[v] {
+							found = append(found, r.returnsThrough(src, src0, where, depth+1, seen)...)
+						}
 					case !local && isFunc(v.Type()):
 						// A package func variable, followed as such.
 					default:
@@ -1153,6 +1167,43 @@ func (r *reach) check(s *srcPkg, where string, node ast.Node, queue *[]item) []s
 		return true
 	})
 	return found
+}
+
+// localSources are the values assigned to each local variable in node.
+func localSources(s *srcPkg, node ast.Node) map[types.Object][]ast.Expr {
+	out := map[types.Object][]ast.Expr{}
+	note := func(id *ast.Ident, v ast.Expr) {
+		o := s.info.Defs[id]
+		if o == nil {
+			o = s.info.Uses[id]
+		}
+		if o != nil {
+			out[o] = append(out[o], v)
+		}
+	}
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			for i, l := range x.Lhs {
+				if id, ok := l.(*ast.Ident); ok {
+					switch {
+					case len(x.Rhs) == len(x.Lhs):
+						note(id, x.Rhs[i])
+					case len(x.Rhs) == 1:
+						note(id, x.Rhs[0])
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for i, id := range x.Names {
+				if i < len(x.Values) {
+					note(id, x.Values[i])
+				}
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // localFuncs are the local func variables in node that hold only function

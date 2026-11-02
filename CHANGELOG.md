@@ -28,11 +28,13 @@ All notable changes to Abhed are recorded here. The format follows
   take a port's first notice at once and then at most one entry per port
   every 30 seconds, so a command that keeps starting listeners cannot
   flood them; joins still held back are recorded when the session closes,
-  before its end, a turn running or not.
+  before its end, a turn running or not. The "at most once a minute" for
+  a contest coming back, which could never apply, is gone.
 - When Abhed Studio ends its input and stops the engine at once, the
   engine now finishes closing its sessions (their ends, the terminals'
-  last lines) before it exits. The "at most once a minute" for a contest coming back,
-  which could never apply, is gone.
+  last lines) before it exits: a stop signal that comes while stdin is
+  open waits up to 250 ms for it to end, so a lone SIGTERM now exits
+  after about a quarter of a second.
 
 ## [1.2.9] - 2026-11-02
 
