@@ -447,11 +447,33 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 // run serves in, answers every request read from it, then closes every
 // session.
 func (c *acpConn) run(in io.Reader) error {
+	// Once stdin has ended, a stop signal waits for closeAll to record each
+	// session's end; while it is open, the signal does not wait for this.
+	release := func() {}
+	if c.busy != nil {
+		var once sync.Once
+		done := c.busy()
+		release = func() { once.Do(done) }
+	}
+	served := make(chan struct{})
+	go func() {
+		select {
+		case <-c.root().Done():
+			select {
+			case <-served:
+			default:
+				release()
+			}
+		case <-served:
+		}
+	}()
 	err := c.serve(in)
+	close(served)
 	if !c.drain(drainWait) {
 		fmt.Fprintln(os.Stderr, "abhed: acp: stdin closed and some requests were still unanswered after "+drainWait.String())
 	}
 	c.closeAll()
+	release()
 	return err
 }
 
@@ -739,6 +761,11 @@ func (c *acpConn) closeAll() {
 // shut ends a session's hold: its prompt and review window stop, its
 // background tasks end as session_closed, and its record is let go.
 func (c *acpConn) shut(s *acpSession) {
+	// Contested-port joins held back are recorded first, before a running
+	// turn is cancelled and records its own end.
+	if s.inner && s.parts.Set != nil && s.parts.Set.FlushListen != nil {
+		s.parts.Set.FlushListen()
+	}
 	// A prompt sets and clears cancel under s.mu while it runs.
 	s.mu.Lock()
 	cancel := s.cancel
@@ -754,10 +781,6 @@ func (c *acpConn) shut(s *acpSession) {
 	c.killLSPs(s.id)
 	c.completionSummary(s)
 	c.unsubscribeSession(s.id)
-	// Contested-port joins held back are recorded before the end is.
-	if s.inner && s.parts.Set != nil && s.parts.Set.FlushListen != nil {
-		s.parts.Set.FlushListen()
-	}
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
 }

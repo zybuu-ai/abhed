@@ -179,6 +179,8 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a package func var set through an any parameter", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc setX(v any) { probeHook = v.(func()) }\n\nfunc init() {\n\tsetX(func() { _ = killGroupNow(1) })")},
 		{"a package func var set from a package any", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hold any\n\nfunc init() {\n\thold = func() { _ = killGroupNow(1) }\n\tprobeHook = hold.(func())")},
 		{"a package func var set from a getter of a package map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc getHook() func() { return hooks[\"k\"] }\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
+		{"a package func var set from a two-level getter", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc get2() func() { return hooks[\"k\"] }\n\nfunc getHook() func() { return get2() }\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
+		{"a package func var set from a getter's local copy", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc getHook() func() {\n\tf := hooks[\"k\"]\n\treturn f\n}\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = getHook()")},
 		{"another package's func var set from app", crossPackageHook(t, sandboxDir, appDir)},
 		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
@@ -205,6 +207,8 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 	// Clean code reached from the same hooks passes.
 	for name, o := range map[string]map[string]string{
 		"sandbox": sandboxRoute(`_ = exec.Command("/usr/sbin/lsof", "-nP")`, "os/exec"),
+		// A constructor whose returned closure captures an error is clean.
+		"a constructor capturing an error": sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc mk(e error) func() { return func() { _ = e } }\n\nfunc init() {\n\tprobeHook = mk(nil)"),
 		// A constructor's int argument is no route for a function.
 		"an int argument": sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc mk(n int) func() { return func() { _ = n } }\n\nfunc init() {\n\tn := 1\n\tprobeHook = mk(n)"),
 		"app":             appRoute(`_ = strings.ToUpper("x")`, "strings"),
@@ -788,11 +792,24 @@ func pkgVarKey(obj types.Object) string {
 
 // returnsThroughContainers reports a call in value to a module function
 // whose return statements read a func-holding package variable that is not
-// itself a func (a map or slice of them, an interface), or a local that can
-// hold one: a getter the walk does not follow into.
+// itself a func (a map or slice of them, an interface), or return a local
+// that can hold a function and is not a literal written there: a getter
+// the walk does not follow into. Calls in the returns are followed the same
+// way, a few levels deep; a function literal returned is checked as a
+// value in its own right, so it is not looked into here.
 func (r *reach) returnsThroughContainers(s *srcPkg, value ast.Node, where string) []string {
+	return r.returnsThrough(s, value, where, 0, map[string]bool{})
+}
+
+func (r *reach) returnsThrough(s *srcPkg, value ast.Node, where string, depth int, seen map[string]bool) []string {
 	var found []string
+	if depth > 4 {
+		return found
+	}
 	ast.Inspect(value, func(n ast.Node) bool {
+		if _, lit := n.(*ast.FuncLit); lit {
+			return false
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -812,6 +829,10 @@ func (r *reach) returnsThroughContainers(s *srcPkg, value ast.Node, where string
 			return true
 		}
 		key := funcKey(fn)
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
 		src, err := r.load(fn.Pkg().Path())
 		if err != nil {
 			found = append(found, loadFailed+key+": "+err.Error())
@@ -821,6 +842,7 @@ func (r *reach) returnsThroughContainers(s *srcPkg, value ast.Node, where string
 		if !ok || d.Body == nil {
 			return true
 		}
+		literals := localFuncs(src, d.Body)
 		ast.Inspect(d.Body, func(m ast.Node) bool {
 			if _, lit := m.(*ast.FuncLit); lit {
 				return false
@@ -830,17 +852,29 @@ func (r *reach) returnsThroughContainers(s *srcPkg, value ast.Node, where string
 				return true
 			}
 			for _, res := range ret.Results {
+				found = append(found, r.returnsThrough(src, res, where, depth+1, seen)...)
 				ast.Inspect(res, func(k ast.Node) bool {
+					if _, lit := k.(*ast.FuncLit); lit {
+						return false
+					}
 					rid, ok := k.(*ast.Ident)
 					if !ok {
 						return true
 					}
 					v, ok := src.info.Uses[rid].(*types.Var)
-					if !ok || v.IsField() || v.Pkg() == nil || isFunc(v.Type()) || !containsFunc(v.Type(), 0) {
+					if !ok || v.IsField() || v.Pkg() == nil || !containsFunc(v.Type(), 0) {
 						return true
 					}
-					found = append(found, r.fset.Position(rid.Pos()).String()+": "+key+" returns a value read from "+rid.Name+
-						", which can hold a function the walk does not follow (reached by "+r.path(where)+")")
+					local := v.Parent() != v.Pkg().Scope()
+					switch {
+					case local && literals[v] && isFunc(v.Type()):
+						// A literal written in the getter, checked in place.
+					case !local && isFunc(v.Type()):
+						// A package func variable, followed as such.
+					default:
+						found = append(found, r.fset.Position(rid.Pos()).String()+": "+key+" returns a value read from "+rid.Name+
+							", which can hold a function the walk does not follow (reached by "+r.path(where)+")")
+					}
 					return true
 				})
 			}

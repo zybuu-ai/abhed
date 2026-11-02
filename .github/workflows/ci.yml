@@ -588,7 +588,7 @@ jobs:
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|ContestNotice|ContestTold|ContestRecord|ContestChurn|NoteContest|PendingJoins|ForkedServer|ListeningReach|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|ContestNotice|ContestTold|ContestRecord|ContestChurn|NoteContest|PendingJoins|CloseWaits|ForkedServer|ListeningReach|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           # A session's held-back contest joins are recorded before its end.
           go test ./app/ -run 'TestPendingContestJoinsAreRecordedBeforeTheEnd' -count=1 -v >> seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
@@ -604,6 +604,7 @@ jobs:
                    TestContestToldWhenANewProgramJoinsAfterOneLeft TestContestToldAtOnceForANewProgramAfterAClear \
                    TestContestRecordBound TestContestChurnIsBoundedButThePersonIsToldAtOnce TestNoteContestByProgramAndProcess \
                    TestPendingJoinsAreRecordedOnClose TestPendingContestJoinsAreRecordedBeforeTheEnd \
+                   TestPendingContestJoinsAreRecordedBeforeTheEndOfARunningTurn TestCloseWaitsForASweepInFlight \
                    TestDebugLoopbackAndListenCompose; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done

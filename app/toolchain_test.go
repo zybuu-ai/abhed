@@ -755,6 +755,17 @@ func TestForkedDevServerIsOffered(t *testing.T) {
 // A join a contested port's window still holds is recorded when the session
 // closes, before its end.
 func TestPendingContestJoinsAreRecordedBeforeTheEnd(t *testing.T) {
+	pendingJoinsBeforeTheEnd(t, false)
+}
+
+// Closing while a turn runs records them before the cancelled turn records
+// its end.
+func TestPendingContestJoinsAreRecordedBeforeTheEndOfARunningTurn(t *testing.T) {
+	pendingJoinsBeforeTheEnd(t, true)
+}
+
+func pendingJoinsBeforeTheEnd(t *testing.T, running bool) {
+	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Skip("listening is switched only on the macOS process tier")
 	}
@@ -793,6 +804,24 @@ s=sock(); print("two"+"up", flush=True); time.sleep(30)'`, port)
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": shell.TerminalID, "data": two + "\r"}, nil)
 	waitOutput(r.cl, from, shell.TerminalID, "twoup")
 	r.cl.waitFor(from, "the first notice", func(m rpcMessage) bool { return m.Method == "_abhed/sandbox/port_contested" })
+	if running {
+		// A turn held open by a model that does not answer until the test ends.
+		asked := make(chan struct{}, 1)
+		hold := make(chan struct{})
+		t.Cleanup(func() { close(hold) })
+		r.model.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			select {
+			case asked <- struct{}{}:
+			default:
+			}
+			select {
+			case <-hold:
+			case <-req.Context().Done():
+			}
+		})
+		go r.cl.call("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "wait"}}})
+		<-asked
+	}
 	// A program of the person's joins inside the record's window.
 	from = r.cl.mark()
 	host, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -820,7 +849,7 @@ s=sock(); print("two"+"up", flush=True); time.sleep(30)'`, port)
 			ended = append(ended, i)
 		}
 	}
-	if len(contested) != 2 || len(ended) != 1 || contested[1] > ended[0] || joined < 3 {
-		t.Fatalf("records at %v (joined %v in all), end at %v", contested, joined, ended)
+	if len(contested) != 2 || len(ended) == 0 || contested[1] > ended[len(ended)-1] || joined < 3 {
+		t.Fatalf("running %v: records at %v (joined %v in all), ends at %v", running, contested, joined, ended)
 	}
 }

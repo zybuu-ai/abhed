@@ -754,3 +754,43 @@ func TestPendingJoinsAreRecordedOnClose(t *testing.T) {
 		}
 	}
 }
+
+// A sweep in flight when the sandbox closes is waited for: a join it finds
+// is recorded by the close's flush, not left in a closed sandbox.
+func TestCloseWaitsForASweepInFlight(t *testing.T) {
+	port := freePort(t)
+	sb := listenSandbox(t, port)
+	var mu sync.Mutex
+	joined, notified := 0, 0
+	SetListenWatch(sb, nil, func(c PortContested) {
+		mu.Lock()
+		defer mu.Unlock()
+		if c.Record {
+			joined += c.Joined
+		}
+		if c.Notify {
+			notified++
+		}
+	}, nil)
+	startIn(t, sb, reusePortScript(port, []float64{30, 30}, []bool{false, false}))
+	waitPrograms(t, port, 2)
+	sweepListeners()
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	done := make(chan struct{})
+	go func() { sweepListeners(); close(done) }()
+	time.Sleep(10 * time.Millisecond)
+	_ = sb.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if notified >= 2 && joined != 3 {
+		t.Fatalf("the person's join was told (%d notices) but %d of 3 joins were recorded", notified, joined)
+	}
+	if joined < 2 {
+		t.Fatalf("recorded %d joins", joined)
+	}
+}

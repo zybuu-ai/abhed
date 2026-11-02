@@ -220,6 +220,9 @@ var watching struct {
 	mu    sync.Mutex
 	procs map[*Process]bool
 	once  sync.Once
+	// sweep is held by a sweep and by a flush, so a flush waits for a sweep
+	// in flight and nothing it held back is left after.
+	sweep sync.Mutex
 }
 
 // watchListeners puts p among the sandboxes whose listen ports are watched.
@@ -243,21 +246,24 @@ func watchListeners(p *Process) {
 // windows still hold.
 func unwatchListeners(p *Process) {
 	flushListenRecords(p)
-	watching.mu.Lock()
-	delete(watching.procs, p)
-	watching.mu.Unlock()
 }
 
 // FlushListenRecords records now, whatever the windows' age, the joins
-// sb's windows still hold: as its session ends, before the end is recorded.
+// sb's windows still hold, and stops watching sb: as its session ends,
+// before the end is recorded.
 func FlushListenRecords(sb Sandbox) {
 	if p, ok := sb.(*Process); ok {
 		flushListenRecords(p)
 	}
 }
 
+// flushListenRecords waits for a sweep in flight, takes p out of the watch
+// and records what its windows hold.
 func flushListenRecords(p *Process) {
+	watching.sweep.Lock()
+	defer watching.sweep.Unlock()
 	watching.mu.Lock()
+	delete(watching.procs, p)
 	var out []notice
 	now := time.Now()
 	for port, w := range p.windows {
@@ -352,6 +358,8 @@ func (w *recordWindow) spent(now time.Time) bool {
 // the joins in between, so a command that keeps starting listeners cannot
 // flood them. It reads afresh and tells; it never signals a process.
 func sweepListeners() {
+	watching.sweep.Lock()
+	defer watching.sweep.Unlock()
 	watching.mu.Lock()
 	var procs []*Process
 	var idle []notice
@@ -392,6 +400,9 @@ func sweepListeners() {
 	var tell []notice
 	watching.mu.Lock()
 	for _, p := range procs {
+		if !watching.procs[p] {
+			continue // closed while the listeners were read
+		}
 		if p.notices == nil {
 			p.notices = map[int]*portNotice{}
 		}
