@@ -35,8 +35,10 @@ type footer struct {
 	// run once; line is its last output, running whether a run is in flight.
 	ready  func() (sandbox.Sandbox, string, string)
 	failed func(error) string
-	// succeeded is told each line a run gives, so /status can show it.
+	// succeeded is told each line a run gives, so /status can show it;
+	// limit bounds one run.
 	succeeded func(string)
+	limit     time.Duration
 	line      string
 	running   bool
 	lastRun   time.Time
@@ -60,6 +62,7 @@ func startFooter(editor *ui.LineReader, r *ui.Renderer, st *cliState, pol *polic
 	// The statusline command runs as the session's statusline does: under
 	// the process sandbox with the network off, judged again as folders change.
 	f.ready, f.failed, f.succeeded = st.statuslineReady, st.statuslineFailed, st.noteStatusline
+	f.limit = statuslineLimit(st.appCfg)
 	f.refresh(st, pol)
 	return f
 }
@@ -234,7 +237,7 @@ func (f *footer) start() {
 	m := f.model()
 	go func() {
 		defer ui.RestoreOnPanic()
-		line, err := runStatusline(context.Background(), sb, f.root, command, m)
+		line, err := runStatuslineWithin(context.Background(), sb, f.root, command, m, f.limit)
 		if err != nil && f.failed != nil {
 			line = f.failed(err)
 		} else if err == nil && f.succeeded != nil {

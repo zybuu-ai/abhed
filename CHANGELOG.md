@@ -242,6 +242,9 @@ All notable changes to Abhed are recorded here. The format follows
   is dropped unless the managed file names its own. PAC, WPAD, SOCKS and
   NTLM or Kerberos proxy authentication are not supported. Records of
   chained connections carry `upstream`.
+- `statusline.timeout_ms` sets how long one run of the statusline command
+  may take (one second unset, ten at most), and `/status` shows the
+  command's last line when a run only took too long.
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen once the person agrees for the workspace (`sandbox.listen`: `ask`
   by default, `allow`, `off`), which covers every command in every session
@@ -973,8 +976,11 @@ All notable changes to Abhed are recorded here. The format follows
   and withhold the value of a key whose name says secret, in any case, in
   JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
   and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
-  `password=`); a type, a variable, a template or a key that only names a
-  secret (`passwordFile`, `token_url`) is left alone.
+  `password=`), on a diff's added and removed lines too; a type, a variable,
+  a template, Python that only assigns to such a name, or a key that only
+  names a secret (`passwordFile`, `token_url`) is left alone, and a block
+  scalar's lines are withheld one by one, its sibling keys kept. Next-edit
+  cleans its window whole, so a block scalar there is withheld too.
 - An agent that makes the same read-only call with the same answer again
   and again is told so after three and stopped after six, with the reason
   named (`retry_exhausted`); the next message goes on. A call that can

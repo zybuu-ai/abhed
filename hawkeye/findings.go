@@ -26,7 +26,7 @@ var (
 	abnormal = map[string]string{
 		"error": "the run failed", "stalled": "the model stopped making progress",
 		"max_turns": "the turn limit was reached", "max_budget": "the token budget was spent",
-		"shutdown": "the server shut down mid-turn", "retry_exhausted": "the model endpoint kept failing",
+		"shutdown": "the server shut down mid-turn", "retry_exhausted": "the model kept making the same call without getting anywhere",
 		"policy_denied": "policy ended the run", "deadline": "the run's time limit passed",
 	}
 

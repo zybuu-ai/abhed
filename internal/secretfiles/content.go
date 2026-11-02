@@ -60,24 +60,25 @@ var contentPatterns = []contentPattern{
 	// ("internal_api_key", "clientSecret", "password:"), given a literal.
 	{re: regexp.MustCompile(`"([A-Za-z0-9_.-]+)"[ \t]*:[ \t]*"((?:[^"\\\n]|\\.)*)"`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
 	// A quoted YAML value is a string; a bare one must not read as code or a type.
-	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+"((?:[^"\\\r\n]|\\.)*)"[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
-	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+'([^'\r\n]*)'[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
-	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+([^"'\s#{}\[\]&*|>!][^\r\n#]*?)[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
-	// The same with = (.properties, .env, TOML, HCL, Python), a JS or Python
-	// object's quoted value, and a YAML block scalar's lines.
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*"((?:[^"\\\r\n]|\\.)*)"[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*'([^'\r\n]*)'[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*([^"'\s#][^\r\n#]*?)[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
+	{re: regexp.MustCompile(`(?m)^\+?[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+"((?:[^"\\\r\n]|\\.)*)"[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^\+?[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+'([^'\r\n]*)'[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^\+?[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]+([^"'\s#{}\[\]&*|>!][^\r\n#]*?)[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: yamlLiteral},
+	// The same with = (.properties, .env, TOML, HCL, Python) and a JS or
+	// Python object's quoted value; a YAML block scalar is redactBlocks'.
+	// Each line may start with a diff's + or -, so a diff's lines are read too.
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*"((?:[^"\\\r\n]|\\.)*)"[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*'([^'\r\n]*)'[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: noTemplate},
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?([A-Za-z0-9_.-]+)[ \t]*=[ \t]*([^"'\s#][^\r\n#]*?)[ \t]*(?:#[^\r\n]*)?\r?$`), value: 2, literal: true, named: secretKeyName, redactOnly: true, valid: assignLiteral},
 	{re: regexp.MustCompile(`[{,][ \t]*["']?([A-Za-z0-9_]+)["']?[ \t]*:[ \t]*'((?:[^'\\\n]|\\.)*)'`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
-	{re: regexp.MustCompile(`(?m)^[ \t-]*([A-Za-z0-9_.-]+)[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*\r?\n((?:[ \t]+[^\r\n]*(?:\r?\n|$))+)`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
+	{re: regexp.MustCompile(`[{,][ \t]*'?([A-Za-z0-9_]+)'?[ \t]*:[ \t]*"((?:[^"\\\n]|\\.)*)"`), value: 2, literal: true, named: secretKeyName, redactOnly: true},
 	// An upper-case name with SECRET, TOKEN, PASSWORD or KEY as one of its
 	// words, given a literal: quoted, or a bare run that is not code.
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*'([^'\n]{8,})'`), value: 1, literal: true},
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([^\s"'` + "`" + `][^\s'` + "`" + `]{7,})`), value: 1, literal: true, bare: true},
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*"([^"\n]{8,})"`), value: 1, literal: true},
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*'([^'\n]{8,})'`), value: 1, literal: true},
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?` + secretName + `[ \t]*[=:][ \t]*([^\s"'` + "`" + `][^\s'` + "`" + `]{7,})`), value: 1, literal: true, bare: true},
 	// A JSON or list value under such a name, plural too (APP_SECRETS), to
 	// the end of the line: a secret when it holds a quoted literal.
-	{re: regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?` + secretNames + `[ \t]*[=:][ \t]*['"]?([{\[].*?)['"]?[ \t]*$`), value: 1, literal: true, structured: true},
+	{re: regexp.MustCompile(`(?m)^[+-]?[ \t]*(?:export[ \t]+)?` + secretNames + `[ \t]*[=:][ \t]*['"]?([{\[].*?)['"]?[ \t]*$`), value: 1, literal: true, structured: true},
 }
 
 // secretName is an ALL_CAPS identifier one of whose words names a secret;
@@ -134,7 +135,7 @@ func (p contentPattern) counts(text string, loc []int) bool {
 		}
 		return false
 	}
-	if p.bare && (strings.Contains(v, "(") || strings.Contains(v[1:], "[") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
+	if p.bare && (strings.Contains(v, "(") || strings.Contains(v[1:], "[") || strings.ContainsAny(v, "\"'") || identChain.MatchString(strings.TrimRight(v, ";,"))) {
 		return false // a call, an index or a field such as settings.API_KEY
 	}
 	if p.named != nil && (loc[2] < 0 || !p.named(text[loc[2]:loc[3]]) || len(v) < 6) {
@@ -164,7 +165,7 @@ func HasKeyMaterial(text string) bool {
 // RedactContent replaces each key or token in text with "[secret]" and
 // reports whether it found one.
 func RedactContent(text string) (string, bool) {
-	found := false
+	text, found := redactBlocks(text)
 	for _, p := range contentPatterns {
 		locs := p.re.FindAllStringSubmatchIndex(text, -1)
 		if len(locs) == 0 {
@@ -266,7 +267,7 @@ func basicCredential(v string) bool {
 // secretWords are the words a key's name holds when its value is a secret.
 var secretWords = map[string]bool{"password": true, "passwd": true, "pass": true, "secret": true, "secrets": true,
 	"token": true, "apikey": true, "credential": true, "credentials": true, "passphrase": true, "auth": true,
-	"bearer": true, "pat": true}
+	"bearer": true}
 
 // metaWords end a key that names something about a secret, not the secret:
 // passwordFile, secret_name, token_url, password_hash, token_count.
@@ -308,6 +309,9 @@ func secretKeyName(name string) bool {
 		if secretWords[w] {
 			return true
 		}
+		if w == "pat" && i > 0 { // github_pat; a bare pat is a pattern
+			return true
+		}
 		if w == "key" && i > 0 {
 			switch words[i-1] {
 			case "api", "private", "access", "client", "signing", "secret", "encryption", "master", "session":
@@ -338,3 +342,54 @@ func noTemplate(v string) bool { return !strings.Contains(v, "${{") && !strings.
 
 // lettersOnly is a word of letters and underscores: an identifier, not a value.
 var lettersOnly = regexp.MustCompile(`^[A-Za-z_]+$`)
+
+// blockKey is a YAML key that opens a block scalar (password: |), with a
+// diff's + or - before it allowed.
+var blockKey = regexp.MustCompile(`^([+-]?)([ \t-]*)([A-Za-z0-9_.-]+)[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*\r?$`)
+
+// redactBlocks withholds a secret-named YAML block scalar's lines: those
+// indented deeper than its key, each replaced by [secret] at its own
+// indentation, so the lines, a sibling key and the line ends stay as they
+// were. A diff's one-column +, - or space before a line is read past.
+func redactBlocks(text string) (string, bool) {
+	if !strings.Contains(text, ":") {
+		return text, false
+	}
+	lines := strings.SplitAfter(text, "\n")
+	found := false
+	for i := 0; i < len(lines); i++ {
+		m := blockKey.FindStringSubmatch(strings.TrimRight(lines[i], "\n"))
+		if m == nil || !secretKeyName(m[3]) {
+			continue
+		}
+		diff, keyIndent := m[1] != "", len(m[2])
+		for i+1 < len(lines) {
+			next := lines[i+1]
+			body := next
+			prefix := ""
+			if diff && len(body) > 0 && strings.ContainsRune("+- ", rune(body[0])) {
+				prefix, body = body[:1], body[1:]
+			}
+			content := strings.TrimRight(body, "\r\n")
+			if strings.TrimSpace(content) == "" {
+				i++ // a blank line inside the block stays as it is
+				continue
+			}
+			indent := len(content) - len(strings.TrimLeft(content, " \t"))
+			if indent <= keyIndent {
+				break
+			}
+			found = true
+			lines[i+1] = prefix + content[:indent] + "[secret]" + body[len(content):]
+			i++
+		}
+	}
+	return strings.Join(lines, ""), found
+}
+
+// assignLiteral is a bare value after = that is a literal: yamlLiteral's
+// rules, and no whitespace, quote or operator, which make it code
+// (token = a or b, pat = r'\d+', auth = lambda r: r, auth = a && b).
+func assignLiteral(v string) bool {
+	return yamlLiteral(v) && !strings.ContainsAny(v, " \t'\"`") && !strings.Contains(v, "&&") && !strings.Contains(v, "||")
+}
