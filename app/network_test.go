@@ -318,8 +318,12 @@ func TestModelFailureThroughTheProxyNamesIt(t *testing.T) {
 	if got := friendlyModelError(&model.StatusError{Status: http.StatusProxyAuthRequired, Attempts: 1}, "m", hp); !strings.Contains(got, "credentials_secret") {
 		t.Errorf("http 407: %s", got)
 	}
+	// Inside an https tunnel a 407 is the server's or its gateway's, not the proxy's.
+	if got := friendlyModelError(&model.StatusError{Status: http.StatusProxyAuthRequired, Attempts: 1}, "m", p); strings.Contains(got, "credentials_secret") {
+		t.Errorf("https 407 put on the proxy: %s", got)
+	}
 	// A local server left at its default is on loopback, reached directly: its 503 is its own.
-	for _, typ := range []string{"vllm", "ollama", "llamacpp"} {
+	for _, typ := range []string{"vllm", "ollama", "llamacpp", "tgi", "sglang"} {
 		lp := config.ProviderConfig{Type: typ, Model: "m"}
 		if up := proxyFor(lp); up != "" {
 			t.Errorf("%s with no base_url is put through the proxy %s", typ, up)
@@ -329,10 +333,17 @@ func TestModelFailureThroughTheProxyNamesIt(t *testing.T) {
 		}
 	}
 	// A hosted provider's default endpoint goes through the proxy, and is named so.
-	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m",
-		config.ProviderConfig{Type: "anthropic", Model: "m"}); !strings.Contains(got, "upstream proxy "+addr) {
+	hosted := config.ProviderConfig{Type: "anthropic", Model: "m"}
+	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m", hosted); !strings.Contains(got, "upstream proxy "+addr) ||
+		!strings.Contains(got, "api.anthropic.com:443") {
 		t.Errorf("default endpoint: %s", got)
 	}
+	// The same default listed in no_proxy is reached directly.
+	egress.CurrentUpstream().NoProxy = []string{"api.anthropic.com"}
+	if up := proxyFor(hosted); up != "" {
+		t.Errorf("a no_proxy hosted default is put through the proxy %s", up)
+	}
+	egress.CurrentUpstream().NoProxy = nil
 	// Directly, nothing about a proxy is said.
 	egress.SetUpstream(nil)
 	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m", p); strings.Contains(got, "proxy") {

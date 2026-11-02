@@ -385,3 +385,6 @@ func (g *Gemini) CountTokens(req Request) (int, error) { return estimateTokens(r
 // fatalStatus: this adapter has no status it can recognise as hopeless, so
 // every retryable failure is retried.
 func (g *Gemini) fatalStatus(*StatusError) bool { return false }
+
+// Endpoint is the base URL the adapter calls.
+func (c *Gemini) Endpoint() string { return c.BaseURL }

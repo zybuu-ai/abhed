@@ -115,13 +115,8 @@ func Known(name string) bool {
 // Endpoint is the base URL an adapter calls, its type's default included,
 // or "" for one that does not say.
 func Endpoint(a Adapter) string {
-	switch m := a.(type) {
-	case *OpenAICompatible:
-		return m.BaseURL
-	case *Anthropic:
-		return m.BaseURL
-	case *Gemini:
-		return m.BaseURL
+	if e, ok := a.(interface{ Endpoint() string }); ok {
+		return e.Endpoint()
 	}
 	return ""
 }
