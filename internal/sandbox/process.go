@@ -577,6 +577,9 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 				// ports named, the command holds every address of each.
 				b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
 				b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+				// But never a port of Abhed's reserved range, on any address,
+				// so it cannot take a range listener's port or its LAN side.
+				denyRange(&b, nil)
 			}
 		}
 		// A dev server the person opens in their browser, where commands may
@@ -586,20 +589,17 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		if busy, ok := s.listenable(); ok {
 			b.WriteString(";; Listening on loopback, for a dev server: TCP on the listen ports alone; no loopback connection out.\n")
 			if lb.on && len(lb.ports) == 0 {
-				// The debug session binds any loopback port already: carve out
-				// Abhed's reserved ports and the Mac's busy ones.
-				deny := func(p int) { fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p) }
-				if loopport.Applies() {
-					lo, hi := loopport.Range()
-					for p := lo; p <= hi; p++ {
-						deny(p)
+				// The debug session binds any loopback port already, and its
+				// block denied Abhed's reserved range: carve out the Mac's
+				// busy ports too, one deny per port.
+				for _, p := range busy {
+					if !loopport.Applies() || !loopport.In(p) {
+						fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
 					}
 				}
-				for _, p := range busy {
-					deny(p)
-				}
 			} else {
-				// One rule per port, TCP only: a UDP bind, or any other port, is refused.
+				// One rule per port, TCP only: a UDP bind, or any other port,
+				// the reserved range among them, is refused.
 				for _, p := range s.listenPorts(busy) {
 					fmt.Fprintf(&b, "(allow network-bind (local tcp \"localhost:%d\"))\n", p)
 					fmt.Fprintf(&b, "(allow network-inbound (local tcp \"localhost:%d\"))\n", p)
@@ -639,6 +639,20 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		}
 	}
 	return b.String()
+}
+
+// denyRange denies binding each port of Abhed's reserved range, where the
+// rule applies, but the ones named in keep.
+func denyRange(b *strings.Builder, keep []uint16) {
+	if !loopport.Applies() {
+		return
+	}
+	lo, hi := loopport.Range()
+	for p := lo; p <= hi; p++ {
+		if !slices.Contains(keep, uint16(p)) { // #nosec G115 -- a TCP port
+			fmt.Fprintf(b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+		}
+	}
 }
 
 // listening reports whether commands may listen now: so configured or

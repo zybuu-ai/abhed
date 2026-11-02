@@ -243,13 +243,27 @@ func TestDebugLoopbackAndListenCompose(t *testing.T) {
 	devPort := freePort(t)
 
 	listening := listenSandbox(t, devPort)
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	busyDeny := `(deny network-bind (local ip "localhost:` + strconv.Itoa(busy.Addr().(*net.TCPAddr).Port) + `"))`
 	freshListeners()
 	goDebug := listening.seatbeltProfileWith(0, loopback{on: true, ephemeral: true})
 	eLo, _ := loopport.Ephemeral()
+	_, hi := loopport.Range()
 	if count(goDebug, bindAll) != 1 || count(goDebug, outAll) != 0 || count(goDebug, reserved) != 1 ||
+		count(goDebug, `(deny network-bind (local ip "localhost:`+strconv.Itoa(hi)+`"))`) != 1 || count(goDebug, busyDeny) != 1 ||
+		strings.Contains(goDebug, "(local tcp ") ||
 		!strings.Contains(goDebug, `(allow network-outbound (remote ip "localhost:`+strconv.Itoa(eLo)+`"))`) ||
 		strings.Contains(goDebug, `(allow network-outbound (remote ip "localhost:`+strconv.Itoa(lo)+`"))`) {
-		t.Fatal("Go debug with listening on has other rules than intended")
+		t.Fatalf("Go debug with listening on has other rules than intended:\n%s", goDebug)
+	}
+	// With listening off, the Go debug session's own range denies alone.
+	goQuiet := NewProcess(DefaultPolicy(t.TempDir())).seatbeltProfileWith(0, loopback{on: true, ephemeral: true})
+	if count(goQuiet, reserved) != 1 || count(goQuiet, busyDeny) != 0 || strings.Contains(goQuiet, "Listening on loopback") {
+		t.Fatal("Go debug with listening off has other rules than intended")
 	}
 
 	quiet := NewProcess(DefaultPolicy(t.TempDir()))

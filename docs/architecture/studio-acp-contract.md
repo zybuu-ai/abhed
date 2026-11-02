@@ -1290,10 +1290,15 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   loopback addresses first and holds them, and the command may connect,
   bind and accept on those alone, on any of the Mac's addresses (Seatbelt's
   localhost matches the Mac's network addresses too; the consent says so),
-  and on no other port. Go: the command may connect to each port the system hands out to
-  listeners (`net.inet.ip.portrange`) but the range, one Seatbelt rule
-  each (the profile then goes in the session's own folder), and may listen
-  on any loopback port, which Seatbelt lets take the wildcard address. Both work whatever the
+  and on no other port unless the session's commands may listen
+  (`sandbox.listen`, §7.1): then, as any command, on any port but the range
+  and the Mac's busy ports, on any of its addresses. Go: the command may
+  connect to each port the system hands out to listeners
+  (`net.inet.ip.portrange`) but the range, one Seatbelt rule each (the
+  profile then goes in the session's own folder), and may listen on any
+  loopback port but the range, which Seatbelt lets take the wildcard and
+  network addresses; with listening on, not on the Mac's busy ports
+  either. Both work whatever the
   session's network. Go there is bridged by the engine's own program
   through a socket folder the engine makes for the session in
   `~/.abhed/run`, the only place it may make or reach a unix socket. A
