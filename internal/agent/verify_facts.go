@@ -24,7 +24,6 @@ type facts struct {
 	success   bool        // says a command, test or build succeeded
 	testish   string      // "test" or "build" when success names one
 	wholeRun  bool        // success said of the run, not only of a count in it
-	bare      bool        // a pass said of "the tests" or "the build" alone, naming nothing else
 	changed   bool        // says the agent changed the paths it names
 	negated   bool        // says something did not happen, or is not so
 	// deed: the agent says it did something (first person, past or
@@ -418,7 +417,6 @@ func extractFacts(claim string) facts {
 	// Fail, error and broken words elsewhere do not undo a pass said of
 	// tests; not or never does.
 	testPass := successRe.MatchString(full) && testRe.MatchString(plain) && !negationRe.MatchString(plain)
-	f.bare = bareRunRe.MatchString(strings.ToLower(strings.TrimSpace(text)))
 	if testPass || successRe.MatchString(full) && !negRe.MatchString(plain) {
 		f.success = true
 		// A claim that says not or never is no claim the run passed.
@@ -1346,6 +1344,3 @@ func headingLine(t string) bool {
 var titleParticiples = map[string]bool{"cited": true, "related": true, "suggested": true, "proposed": true, "recommended": true,
 	"expected": true, "affected": true, "referenced": true, "linked": true, "selected": true, "detailed": true, "supported": true,
 	"required": true, "attached": true, "known": true, "estimated": true}
-
-// bareRunRe is a pass said of the tests, the build or the lint alone.
-var bareRunRe = regexp.MustCompile(`^(?:(?:result|results|status|outcome|tests?):\s*)?(?:and |so |now )?(?:all (?:the )?|the )?(?:(?:go|unit) )?(?:tests?|test suite|suite|build|lint|linter|checks?|it)(?: all)? (?:now |still )?(?:pass(?:es|ed)?|succeed(?:s|ed)?|(?:is|are|was|were) (?:green|clean|passing))(?: again| now| cleanly)?[.!]*$`)

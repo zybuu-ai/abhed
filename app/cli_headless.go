@@ -103,7 +103,19 @@ func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bo
 		return in, nil
 	}
 	// Piped data is the person's attachment, not their words.
-	return prompt + "\n\nInput from stdin. " + untrustedNote + "\n" + fenced("stdin", "", in), nil
+	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil
+}
+
+// stdinHeader opens piped stdin in a -p task.
+const stdinHeader = "\n\nInput from stdin. "
+
+// withRunbook adds the runbook prompt to a task, before any piped stdin, so
+// it stays with the person's words and outside the attached data.
+func withRunbook(task, prompt string) string {
+	if i := strings.Index(task, stdinHeader); i >= 0 {
+		return task[:i] + "\n\n" + prompt + task[i:]
+	}
+	return strings.TrimSpace(task + "\n\n" + prompt)
 }
 
 // stdinIsPipe reports whether stdin is a pipe or a file rather than a
@@ -522,7 +534,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	runOne := func(task string) {
 		if o.runbook != nil && !ran {
-			task = strings.TrimSpace(task + "\n\n" + o.runbook.prompt)
+			task = withRunbook(task, o.runbook.prompt)
 		}
 		ran = true
 		if o.schema != nil {

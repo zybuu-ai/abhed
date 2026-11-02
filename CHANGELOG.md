@@ -128,6 +128,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- `-p` with piped stdin: the piped data reaches the model as an attached
+  block, fenced and marked as data rather than the person's words, and a
+  `-runbook` prompt goes before it, with the person's text.
 - Postgres: the record's triggers read some tables by unqualified name
   with no `search_path` of their own, and Postgres looks in a session's
   temporary schema first for a table unless told otherwise. So the runtime
@@ -873,12 +876,10 @@ All notable changes to Abhed are recorded here. The format follows
   `sum.go`") are not claims, while a label that says what happened
   ("Created: `sum_test.go`") is, and a short title ("Go test run", "Cited
   source") is not, though a past form opens a title only as a few
-  adjectives ("Cited", "Related"); a bare pass claim ("All tests passed")
-  is covered by a run of the folders the person typed since the last
-  checked answer, attachments and piped stdin aside, when they asked
-  about nothing wider, joined only folders or verbs to a folder, named a
-  folder in every sentence about tests, and every change lies inside
-  those folders; a test result with no test run behind it says "no test
+  adjectives ("Cited", "Related"); a cached run (`ok … (cached)`) counts
+  like any other, and after a run of one folder "the services/orders
+  tests pass" verifies while an unscoped "all tests passed" does not; a
+  test result with no test run behind it says "no test
   run in this session"; a
   sentence that reports an event, in any wording or person (a past form or
   participle, "now", "new", a change noun), is shown only by the calls; a
