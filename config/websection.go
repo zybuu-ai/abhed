@@ -113,7 +113,8 @@ func webValue(c *Config, k string) string {
 // that narrows the web sections, and sets aside what would not narrow.
 func applyWebIntents(c *Config) {
 	// Every list a lower layer gives only narrows the managed one, so the
-	// managed list here is the only source of exact anchors.
+	// managed list here is the only source of exact anchors. They hold while
+	// web_fetch is off too, for an editor's read of a linked page.
 	var exact []string
 	if c.ManagedSets("web_fetch.allowed_hosts") {
 		for _, h := range c.WebFetch.AllowedHosts {
@@ -125,7 +126,7 @@ func applyWebIntents(c *Config) {
 	defer func() {
 		c.fetchAnchors = nil
 		for _, h := range exact {
-			if c.WebFetch.Enabled && slices.ContainsFunc(c.WebFetch.AllowedHosts, func(k string) bool { return strings.EqualFold(k, h) }) {
+			if slices.ContainsFunc(c.WebFetch.AllowedHosts, func(k string) bool { return strings.EqualFold(k, h) }) {
 				c.fetchAnchors = append(c.fetchAnchors, h)
 			}
 		}

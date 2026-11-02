@@ -266,13 +266,23 @@ func dialAddr(base string) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
-// run dials once, with a 500 ms limit, and remembers a refusal.
+// probeDial is the probe's direct dial; tests replace it to see it used.
+var probeDial = func(ctx context.Context, addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 500 * time.Millisecond}
+	return d.DialContext(ctx, "tcp", addr)
+}
+
+// run dials once, with a 500 ms limit, and remembers a refusal. Through an
+// upstream proxy it dials nothing: the model host is neither resolved nor
+// reached directly, and the first real call, through the proxy, decides.
 func (e *endpointProbe) run(ctx context.Context) error {
-	if e.addr == "" {
+	if e.addr == "" || viaUpstream(e.addr) {
+		e.mu.Lock()
+		e.down, e.at = nil, time.Now()
+		e.mu.Unlock()
 		return nil
 	}
-	d := net.Dialer{Timeout: 500 * time.Millisecond}
-	conn, err := d.DialContext(ctx, "tcp", e.addr)
+	conn, err := probeDial(ctx, e.addr)
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -774,4 +784,18 @@ func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (str
 		return path, err
 	}
 	return path, f.Close()
+}
+
+// viaUpstream reports whether connections to addr go through the upstream
+// proxy in force.
+func viaUpstream(addr string) bool {
+	up := egress.CurrentUpstream()
+	if up == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	return !up.Bypass(host)
 }

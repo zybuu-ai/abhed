@@ -50,6 +50,9 @@ func (p *Proxy) Use(t testing.TB, user, pass string) *egress.Upstream {
 	return u
 }
 
+// Addr is the proxy's host:port, for a configuration to name.
+func (p *Proxy) Addr() string { return p.ln.Addr().String() }
+
 // Saw reports whether any target it was asked for contains s.
 func (p *Proxy) Saw(s string) bool {
 	p.mu.Lock()
