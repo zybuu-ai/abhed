@@ -131,9 +131,14 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
 	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
+	belowLists := map[string][]string{}
+	for _, k := range orgBelowLists {
+		belowLists[k] = slices.Clone(*unionFields[k](cfg))
+	}
 	if _, err := mergeData(cfg, label, data); err != nil {
 		return err
 	}
+	joinOrgLists(cfg, belowLists)
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
 	// As the managed file says it, before a lower layer's narrowing applies.

@@ -129,8 +129,16 @@ var orgRules = map[string]orgRule{
 	"sandbox.language_servers":       {orgRefuse, "names programs to run on this machine"},
 	"sandbox.image":                  {orgRefuse, "chooses the image commands run in"},
 	"sandbox.microvm_socket":         {orgRefuse, "names a file on this machine"},
-	"fence":                          {orgPinned, "tunes the fence tier's limits"},
-	"egress":                         {orgPinned, "names the destinations commands reach"},
+	"fence.cpu_percent":              {orgPinned, "tunes the fence tier's limits"},
+	"fence.socketcall":               {orgPinned, "lets commands make sockets through socketcall"},
+	"fence.egress_port_only":         {orgPinned, "lets the fence hold the allowlist by port alone"},
+	"fence.allow_root":               {orgPinned, "lets the fence run as root"},
+	"egress.rules":                   {orgPinned, "names the destinations commands reach"},
+	"egress.default":                 {orgPinned, "sets what commands reach by default"},
+	"egress.mode":                    {orgPinned, "sets the egress mode"},
+	"egress.record_paths":            {orgPinned, "sets what the egress record keeps"},
+	"egress.idle_seconds":            {orgPinned, "sets how long an idle connection lasts"},
+	"egress.inspect_tls":             {orgPinned, "has the egress proxy look inside HTTPS"},
 
 	"limits.max_turns":                {orgTighten, ""},
 	"limits.max_tokens":               {orgTighten, ""},
@@ -178,11 +186,12 @@ var orgRules = map[string]orgRule{
 	"memory.auto":                  {orgTighten, ""},
 	"memory.import_depth":          {orgTighten, ""},
 	"cli":                          {orgRefuse, "the machine's managed file sets it"},
-	"record.ship":                  {orgExtra, ""},
+	"record.ship.enabled":          {orgExtra, ""},
+	"record.ship.max_backlog_mb":   {orgExtra, ""},
 	"record":                       {orgRefuse, "names files on this machine, or erases the record"},
 	"org_policy":                   {orgRefuse, "only the machine's managed file says where the org policy comes from"},
 	"hooks.managed_only":           {orgExtra, ""},
-	"hooks":                        {orgPinned, "switching hooks off removes their vetoes"},
+	"hooks.disabled":               {orgPinned, "switching hooks off removes their vetoes"},
 	"studio.disable_host_terminal": {orgExtra, ""},
 	"studio":                       {orgRefuse, "the machine's managed file sets it"},
 	"suggest.enabled":              {orgTighten, ""},
@@ -251,20 +260,27 @@ type orgStrip struct {
 	below  *Config
 	ws     *Config
 	pinned bool
+	// machineProviders are the providers the machine's managed file defines.
+	machineProviders map[string]bool
 }
 
 // stripOrg removes from doc each setting the org policy may not make, or
 // may make only to tighten what is below and here would loosen.
 func stripOrg(doc map[string]any, j orgStrip) []orgSetAside {
+	return stripOrgIn(doc, reflect.TypeFor[Config](), j)
+}
+
+// stripOrgIn is stripOrg over a document of root type root.
+func stripOrgIn(doc map[string]any, root reflect.Type, j orgStrip) []orgSetAside {
 	var out []orgSetAside
-	var walk func(path string, obj map[string]any, t reflect.Type)
-	walk = func(path string, obj map[string]any, t reflect.Type) {
+	var walk func(path string, obj map[string]any, t reflect.Type) bool
+	walk = func(path string, obj map[string]any, t reflect.Type) bool {
 		for t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 		isStruct := t.Kind() == reflect.Struct && !reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]())
 		if !isStruct {
-			return
+			return false // the caller sets it aside whole
 		}
 		fields := jsonFields(t)
 		for _, k := range slices.Sorted(maps.Keys(obj)) {
@@ -274,7 +290,10 @@ func stripOrg(doc map[string]any, j orgStrip) []orgSetAside {
 			}
 			p := join(path, jsonName(f))
 			if sub, ok := obj[k].(map[string]any); ok && hasOrgRuleUnder(p) {
-				walk(p, sub, f.Type)
+				if !walk(p, sub, f.Type) {
+					delete(obj, k)
+					out = append(out, orgSetAside{key: p, why: "it cannot be judged setting by setting"})
+				}
 				continue
 			}
 			r, _ := orgRuleFor(p)
@@ -283,8 +302,9 @@ func stripOrg(doc map[string]any, j orgStrip) []orgSetAside {
 				out = append(out, orgSetAside{key: p, why: why})
 			}
 		}
+		return true
 	}
-	walk("", doc, reflect.TypeFor[Config]())
+	walk("", doc, root)
 	return out
 }
 
@@ -313,8 +333,8 @@ func (j orgStrip) judge(p string, r orgRule, v any) string {
 		return j.extra(p, v)
 	}
 	if p == "permissions.mode" || p == "mode.default" {
-		if m, _ := v.(string); m == "auto" || m == "bypass" {
-			return "an org policy never sets " + m + " mode"
+		if m, _ := v.(string); neverOrgMode(m) {
+			return "an org policy never sets auto or bypass mode"
 		}
 	}
 	wr, ok := workspaceRules[p]
@@ -338,7 +358,7 @@ func orRefuseWhy(why string) string {
 // extra checks the settings an org policy may make outright.
 func (j orgStrip) extra(p string, v any) string {
 	switch p {
-	case "record.ship":
+	case "record.ship.enabled", "record.ship.max_backlog_mb":
 		return "" // sent only to the server this machine enrolled with
 	case "hooks.managed_only", "studio.disable_host_terminal":
 		if b, ok := v.(bool); ok && b {
@@ -352,19 +372,40 @@ func (j orgStrip) extra(p string, v any) string {
 		return "an org policy may only set it to false, which narrows"
 	case "model.default":
 		name, _ := v.(string)
-		if j.below != nil {
-			if _, ok := j.below.Model.Providers[name]; ok {
-				return ""
-			}
+		if j.machineProviders[name] {
+			return ""
 		}
-		return "an org policy may pin the model only to a provider this machine configures"
+		return "an org policy may pin the model only to a provider the machine's managed file defines, never a person's own"
 	}
 	return "not classified for the org policy"
 }
 
 // unionLists are the managed settings both sources' entries are kept of: a
-// deny or ask rule is only ever added.
-var unionLists = map[string]bool{"permissions.deny": true, "permissions.ask": true}
+// deny or ask rule, a honeytoken or a protected file is only ever added.
+var unionLists = map[string]bool{"permissions.deny": true, "permissions.ask": true,
+	"monitor.honeytokens": true, "verify.contract.protect": true}
+
+// orgJoinedBack are the union-ruled settings whose org entries are joined
+// with the layers below, never replacing them: deny and ask in applyManaged,
+// honeytokens in monitorBelow, the rest in joinOrgLists. Every union-ruled
+// tighten key must be here; TestUnionRuledOrgKeysAreJoinedBack holds it.
+var orgJoinedBack = map[string]bool{"permissions.deny": true, "permissions.ask": true,
+	"monitor.honeytokens": true, "verify.contract.protect": true}
+
+// orgBelowLists are the lists joinOrgLists joins back, by key.
+var orgBelowLists = []string{"verify.contract.protect"}
+
+// joinOrgLists joins back the lists below that the org policy set: a null,
+// empty or other list from it never drops the person's own entries.
+func joinOrgLists(cfg *Config, below map[string][]string) {
+	for _, k := range orgBelowLists {
+		if !cfg.FromOrg(k) {
+			continue
+		}
+		dst := unionFields[k](cfg)
+		*dst = dedupe(append(slices.Clone(*dst), below[k]...))
+	}
+}
 
 // mergeDocs lays local over org setting by setting: local wins, map entries
 // are replaced whole, and deny and ask rules are joined.
@@ -520,7 +561,7 @@ func orgLayer(cfg *Config, local []byte) (map[string]any, string) {
 		doc, e.Fallback = map[string]any{}, true
 		st.Status, st.Reason = orgpolicy.StatusFallback, "the org policy does not read: "+err.Error()
 	}
-	j := orgStrip{below: cfg, ws: &ws, pinned: len(mc.Keys) > 0}
+	j := orgStrip{below: cfg, ws: &ws, pinned: len(mc.Keys) > 0, machineProviders: machineProviders(local)}
 	for _, s := range stripOrg(doc, j) {
 		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: source, Layer: LayerOrg, Key: s.key, Reason: s.why})
 	}
@@ -701,6 +742,28 @@ func pickTightening(doc map[string]any) map[string]any {
 				}
 				dst[kv[1]] = v
 			}
+		}
+	}
+	return out
+}
+
+// neverOrgMode reports a mode an org policy never sets, however it is written.
+func neverOrgMode(m string) bool {
+	n := strings.ToLower(strings.TrimSpace(m))
+	return n == "auto" || strings.HasPrefix(n, "bypass")
+}
+
+// machineProviders are the provider names the machine's managed file defines.
+func machineProviders(local []byte) map[string]bool {
+	var m struct {
+		Model struct {
+			Providers map[string]json.RawMessage `json:"providers"`
+		} `json:"model"`
+	}
+	out := map[string]bool{}
+	if local != nil && json.Unmarshal(local, &m) == nil {
+		for k := range m.Model.Providers {
+			out[k] = true
 		}
 	}
 	return out

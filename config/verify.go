@@ -110,7 +110,7 @@ func init() {
 	workspaceRules["verify.mode"] = fieldRule{stricterVerify, "only stricter: off < label < strict"}
 	workspaceRules["verify.answer_tool"] = fieldRule{answerToolOn, "only true"}
 	workspaceRules["verify.critic"] = fieldRule{nil, "a model receives the session's tool output"}
-	workspaceRules["verify.contract.protect"] = fieldRule{union(func(c *Config) *[]string { return &c.Verify.Contract.Protect }), "added to the protected files"}
+	workspaceRules["verify.contract.protect"] = unionRule("verify.contract.protect", func(c *Config) *[]string { return &c.Verify.Contract.Protect }, "added to the protected files")
 	workspaceRules["verify.contract.require"] = fieldRule{nil, "a required command is a process the harness runs"}
 	workspaceRules["verify.contract.timeout_ms"] = fieldRule{nil, "a longer command time"}
 }

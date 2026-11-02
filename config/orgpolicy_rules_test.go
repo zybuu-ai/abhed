@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -40,8 +39,8 @@ func TestEveryConfigFieldIsClassifiedForTheOrg(t *testing.T) {
 			strings.Contains(last, "endpoint") || strings.Contains(last, "command") || strings.HasSuffix(last, "dirs") ||
 			strings.HasSuffix(last, "headers") || strings.HasSuffix(last, "path") || strings.HasSuffix(last, "paths") ||
 			last == "url" || last == "require" || last == "language_servers"
-		// egress.record_paths is whether URL paths are recorded, not a path.
-		if names && r.kind != orgRefuse && p != "egress.record_paths" {
+		// egress.record_paths and egress rules' paths are URL paths, not files.
+		if names && r.kind != orgRefuse && p != "egress.record_paths" && p != "egress.rules.paths" {
 			t.Errorf("%s names something on the machine or an endpoint, yet the org may set it", p)
 		}
 	}
@@ -173,5 +172,89 @@ func TestRequiredWithoutKeysWarns(t *testing.T) {
 	if !slices.ContainsFunc(warned, func(s string) bool { return strings.Contains(s, "without org_policy.keys") }) {
 		t.Errorf("no warning: %v", warned)
 	}
-	_ = os.Remove(filepath.Join(t.TempDir(), "x"))
+}
+
+// A union-ruled setting the org may tighten is joined with the layers below,
+// never replacing them; a new one fails here until it is.
+func TestUnionRuledOrgKeysAreJoinedBack(t *testing.T) {
+	for k := range unionFields {
+		if r, ok := orgRules[k]; ok && r.kind == orgTighten && !orgJoinedBack[k] {
+			t.Errorf("%s is union-ruled and org-settable, but not joined back with the layers below", k)
+		}
+	}
+	for k := range orgJoinedBack {
+		if _, ok := unionFields[k]; !ok {
+			t.Errorf("orgJoinedBack names %s, which no union rule adds to", k)
+		}
+	}
+}
+
+// The person's protected files survive an org policy that sets the list to
+// null, empty or another list.
+func TestOrgCannotDropProtectedFiles(t *testing.T) {
+	for _, v := range []string{"null", "[]", `["x/**"]`} {
+		t.Run(v, func(t *testing.T) {
+			noManaged(t)
+			f := newOrg(t)
+			f.write(t, `{"verify":{"contract":{"protect":`+v+`}}}`, time.Now())
+			writeConfig(t, os.Getenv("HOME"), `{"verify":{"contract":{"protect":["secrets/**","tests/golden/**"]}}}`)
+			cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := cfg.Verify.Contract.Protect
+			for _, want := range []string{"secrets/**", "tests/golden/**"} {
+				if !slices.Contains(got, want) {
+					t.Errorf("protect %v lost %s", got, want)
+				}
+			}
+			if v == `["x/**"]` && !slices.Contains(got, "x/**") {
+				t.Errorf("the org's own entry is missing: %v", got)
+			}
+		})
+	}
+}
+
+// model.default is pinned only to a provider the machine's file defines.
+func TestOrgModelDefaultOnlyMachineProviders(t *testing.T) {
+	withManaged(t, `{"model":{"providers":{"corp":{"type":"anthropic","model":"m"}}}}`)
+	f := newOrg(t)
+	writeConfig(t, os.Getenv("HOME"), `{"model":{"providers":{"personal":{"type":"anthropic","model":"m","api_key_env":"MY_KEY"}}}}`)
+	f.write(t, `{"model":{"default":"personal"}}`, time.Now())
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Model.Default == "personal" {
+		t.Fatal("the org pinned a person's own provider")
+	}
+	f.write(t, `{"model":{"default":"corp"}}`, time.Now())
+	if cfg, err = LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}}); err != nil || cfg.Model.Default != "corp" {
+		t.Fatalf("a machine provider pin: %v %q", err, cfg.Model.Default)
+	}
+}
+
+func TestNeverOrgModeIsNormalised(t *testing.T) {
+	for _, m := range []string{"auto", "AUTO", " Auto ", "bypass", "bypassPermissions"} {
+		if !neverOrgMode(m) {
+			t.Errorf("%q not refused", m)
+		}
+	}
+	if neverOrgMode("plan") || neverOrgMode("default") {
+		t.Error("a narrow mode was refused")
+	}
+}
+
+// A section the walk cannot descend into is set aside whole, not kept.
+func TestStripSetsAsideWhatItCannotWalk(t *testing.T) {
+	type root struct {
+		// A map where rules expect a struct of settings.
+		Verify map[string]any `json:"verify"`
+	}
+	doc := map[string]any{"verify": map[string]any{"contract": map[string]any{"protect": []any{"a"}}}}
+	below, ws := Default(), Default()
+	out := stripOrgIn(doc, reflect.TypeFor[root](), orgStrip{below: &below, ws: &ws})
+	if len(out) != 1 || out[0].key != "verify" || doc["verify"] != nil {
+		t.Fatalf("set aside %v, left %v", out, doc)
+	}
 }
