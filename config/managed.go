@@ -41,6 +41,9 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	if err := managedNeverDenies(findings); err != nil {
 		return cfg, err
 	}
+	if err := cfg.validateAllowLists(); err != nil {
+		return cfg, err
+	}
 	if err := cfg.validateNetwork(); err != nil {
 		return cfg, err
 	}
@@ -385,12 +388,29 @@ func (c Config) ModelAllowed(name string) error {
 }
 
 // PinnedAway is the refusal of a model other than the one a managed
-// model.default pins every choice to, or nil.
+// model.default pins every choice to, or of one no model.allowed list
+// admits, or nil.
 func (c Config) PinnedAway(name string) error {
 	if c.ModelPinned() && name != c.Model.Default {
 		return refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
 	}
+	if p, ok := c.Model.Providers[name]; ok {
+		return c.ModelListed(name, p)
+	}
+	if len(c.ModelsAllowed()) > 0 {
+		return &ManagedError{Key: "model.allowed", Value: name, File: managed.ConfigFile,
+			Reason: "it is not a configured provider, so the allowed models cannot admit it"}
+	}
 	return nil
+}
+
+// EndpointRefused is EndpointPinnedAway for a model named by its endpoint,
+// with the model.allowed lists applied to its type and model too.
+func (c Config) EndpointRefused(p ProviderConfig) error {
+	if err := c.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		return err
+	}
+	return c.ModelListed("", p)
 }
 
 // EndpointPinnedAway is the refusal of a model named by its endpoint rather

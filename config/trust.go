@@ -424,6 +424,10 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 		r := ruleFor(s.key)
 		if r.apply != nil && r.apply(cfg, &ws) {
 			st.Applied = append(st.Applied, s.key)
+			if allowListKey(s.key) {
+				// Applied with the other layers' lists: it can only narrow them.
+				noteAllowLayerFrom(cfg, &ws, path, []string{s.key})
+			}
 			if WebKey(s.key) {
 				// Applied again over the managed file, which may turn it on.
 				in := webIntent{key: s.key, file: path, layer: LayerWorkspace}
@@ -641,6 +645,19 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 	return st, nil
 }
 
+// allowListOK takes an untrusted file's model.allowed, mcp.allowed or
+// mcp.denied, which only narrow, when every entry of each it sets is well
+// formed; a malformed one is ignored, so a repository cannot stop Abhed starting.
+func allowListOK(_, ws *Config) bool {
+	l := allowLayer{file: "workspace", models: ws.Model.Allowed, mcpAllowed: ws.MCP.Allowed, mcpDenied: ws.MCP.Denied,
+		setsModels: ws.Model.Allowed != nil, setsMCPAllowed: ws.MCP.Allowed != nil, setsMCPDenied: ws.MCP.Denied != nil}
+	return (Config{allowLayers: []allowLayer{l}}).validateAllowLists() == nil
+}
+
+func allowListKey(k string) bool {
+	return k == "model.allowed" || k == "mcp.allowed" || k == "mcp.denied"
+}
+
 // fieldRule classifies one setting of a workspace file. apply is nil for a
 // setting that is always ignored when untrusted; otherwise it applies the
 // value when it tightens and reports whether it did.
@@ -762,6 +779,9 @@ var workspaceRules = map[string]fieldRule{
 	"model.ollama.assist":   {tighterAssist, "only tighter: off < local < ask"},
 	"completion.enabled":    {completionOff, "only false"},
 	"completion.local_only": {onlyTrue(func(c *Config) *bool { return &c.Completion.LocalOnly }), "only true"},
+	"model.allowed":         {allowListOK, "only narrows: each list set must admit a model"},
+	"mcp.allowed":           {allowListOK, "only narrows: each list set must admit a server"},
+	"mcp.denied":            {allowListOK, "only adds servers that never start"},
 	"model":                 {nil, "a provider and its base_url receive the code"},
 	"custom_providers":      {nil, "a provider and its base_url receive the code"},
 	"context":               {nil, "memory_files are read into the prompt; the rest waits for trust"},

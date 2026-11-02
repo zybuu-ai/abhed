@@ -112,6 +112,9 @@ func permissionsView(cfg config.Config, pol *policy.Engine) []ui.Block {
 	if len(dropped) > 0 {
 		out = append(out, ui.Block{Kind: ui.BlockNotice, Text: "allow rules left out because the managed configuration sets the permissions: " + strings.Join(dropped, "; ")})
 	}
+	for _, line := range allowListLines(cfg) {
+		out = append(out, ui.Block{Kind: ui.BlockNotice, Text: strings.Join(strings.Fields(line), " ")})
+	}
 	out = append(out, ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(pol.Mode) +
 		". Deny rules win in every mode; session rules end with /clear or /resume."})
 	return out

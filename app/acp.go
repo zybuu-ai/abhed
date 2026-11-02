@@ -27,6 +27,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -895,11 +896,22 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	// those the client names are not started.
 	if refused := mcpNames(p.MCPServers); len(refused) > 0 {
 		metaOf(res)["mcpServersRefused"] = refused
+		metaOf(res)["mcpServersRefusedReason"] = acpMCPRefused
+		if s.inner && s.parts.Loop != nil && s.parts.Loop.Recorder != nil {
+			for _, name := range refused {
+				_, _ = s.parts.Loop.Recorder.Record(agent.EvConfigRefused, agent.ActorSystem, agent.Trusted, agent.ConfigAttempt{
+					Layer: "command", Source: "session/new mcpServers", Key: "mcp.servers", Value: name,
+					Decision: "refused", Reason: acpMCPRefused, Principal: toolset.LocalPrincipal(inAgentCommand())})
+			}
+		}
 	}
 	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
 	c.sessionUpdate(s.id, cmds)
 }
+
+// acpMCPRefused is why the MCP servers a client names in session/new are not started.
+const acpMCPRefused = "the engine starts only the MCP servers its own configuration names, under workspace trust and its MCP server lists"
 
 // mcpNames are the names of the MCP servers a client offered.
 func mcpNames(servers []json.RawMessage) []string {

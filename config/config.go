@@ -139,6 +139,9 @@ type Config struct {
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+	// allowLayers are each file's own model.allowed and mcp lists, applied
+	// together; see ModelListed and MCPAdmitted.
+	allowLayers []allowLayer
 	// monitorLocked is set when the managed file keeps the supervisor on.
 	monitorLocked bool
 	// managedRules are the rules the managed file itself lists, by list and
@@ -625,6 +628,11 @@ type ModelConfig struct {
 	// suggestions and commit messages use; unset, they use Completion.
 	NextEdit string `json:"next_edit,omitempty"`
 	Commit   string `json:"commit,omitempty"`
+	// Allowed lists the models a session may run on, as provider-type/model
+	// patterns where * is any run of characters (anthropic/claude-*). Unset
+	// allows every configured model. Each layer that sets it must admit a
+	// model, so a lower layer can only narrow the managed list.
+	Allowed []string `json:"allowed,omitempty"`
 }
 
 // EditorModel is the provider an editor feature uses and the key that named
@@ -1449,6 +1457,12 @@ type RAGCorpusConfig struct {
 // does not run: discovery does not imply trust (docs §03 T4).
 type MCPConfig struct {
 	Servers []MCPServerConfig `json:"servers,omitempty"`
+	// Allowed and Denied judge every server before it starts, whatever
+	// configured or added it: one Denied matches, or no Allowed entry
+	// matches when the list is set, never starts. A lower layer can only
+	// narrow the managed lists.
+	Allowed []MCPMatch `json:"allowed,omitempty"`
+	Denied  []MCPMatch `json:"denied,omitempty"`
 }
 
 type MCPServerConfig struct {
@@ -1749,6 +1763,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	userAllowlistNarrows(&cfg)
 
 	applyEnv(&cfg)
+	narrowToAllowLists(&cfg)
 	w := warnSink(o.Warn)
 	warnUnknown(w, cfg.Unknown)
 	warnDuplicates(w, cfg.Duplicates)
@@ -1805,7 +1820,9 @@ func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
-	cfg.SetKeys = append(cfg.SetKeys, managedKeys(data)...)
+	keys := managedKeys(data)
+	cfg.SetKeys = append(cfg.SetKeys, keys...)
+	noteAllowLayer(cfg, path, keys)
 	return data, nil
 }
 
@@ -1896,7 +1913,23 @@ func (c Config) Provider() (ProviderConfig, error) {
 //
 // The name is looked up in the configured map, never treated as an endpoint.
 // That is what stops a caller pointing the agent at a host of their choosing.
+//
+// A model no model.allowed list admits is refused with a ManagedError, so
+// every caller that resolves a provider, the default included, holds the list.
 func (c Config) ProviderNamed(name string) (ProviderConfig, error) {
+	p, err := c.providerNamed(name)
+	if err != nil {
+		return p, err
+	}
+	if err := c.ModelListed(name, p); err != nil {
+		return ProviderConfig{}, err
+	}
+	return p, nil
+}
+
+// providerNamed is ProviderNamed without the allowed-models list, for
+// checking a configuration's own consistency.
+func (c Config) providerNamed(name string) (ProviderConfig, error) {
 	p, found := c.Model.Providers[name]
 	if !found {
 		return ProviderConfig{}, fmt.Errorf(
@@ -1937,6 +1970,9 @@ type ToolsConfig struct {
 }
 
 func (c Config) Validate() error {
+	if err := c.validateAllowLists(); err != nil {
+		return err
+	}
 	if err := c.validateNetwork(); err != nil {
 		return err
 	}
@@ -2015,7 +2051,7 @@ func (c Config) Validate() error {
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
 	}
-	p, err := c.Provider()
+	p, err := c.providerNamed(c.Model.Default)
 	if err != nil {
 		return err
 	}
