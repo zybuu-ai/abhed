@@ -134,6 +134,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- golang.org/x/net 0.62.0 (CVE-2026-78669) and, in the container image,
+  pypdf 6.21.4 (ten HIGH findings in 6.19.0).
+
 - `-p` with piped stdin: the piped data reaches the model as an attached
   block, fenced and marked as data rather than the person's words, and a
   `-runbook` prompt goes before it, with the person's text.

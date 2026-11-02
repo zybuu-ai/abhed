@@ -82,7 +82,7 @@ rows for `Index.Update`, the OIDC key accessors, `cookie_secure` and the
 `0644` writes of undo snapshots, the config and `abhed init` were fixed the
 same day (see "Fixes applied" at the end). The
 toolchain is now Go 1.26.9 in `go.mod`, the image and CI, and the image's
-pypdf 6.19.0. The image's trivy result and the semgrep run are still from
+pypdf 6.21.4. The image's trivy result and the semgrep run are still from
 this first scan.
 
 **Since this scan,** the CLI's code moved out of `cmd/abhed/main.go`, which
