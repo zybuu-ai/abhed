@@ -60,10 +60,23 @@ func TestMCPAdmitFollowsTheLists(t *testing.T) {
 	}
 	cfg.MCP.Denied = []config.MCPMatch{{Host: "*.evil.test"}}
 	admit := MCPAdmit(cfg)
-	if err := admit(mcp.ServerConfig{Name: "x", URL: "https://a.evil.test/mcp"}); err == nil {
+	if err := admit(mcp.ServerConfig{Name: "x", URL: "https://a.evil.test/mcp"}, nil); err == nil {
 		t.Fatal("a denied host was admitted")
 	}
-	if err := admit(mcp.ServerConfig{Name: "y", URL: "https://good.example/mcp"}); err != nil {
+	if err := admit(mcp.ServerConfig{Name: "y", URL: "https://good.example/mcp"}, nil); err != nil {
 		t.Fatalf("an unlisted host under a deny list alone: %v", err)
+	}
+	if err := admit(mcp.ServerConfig{Name: "z", URL: "https://a.ｅｖｉｌ.test/mcp"}, nil); err == nil {
+		t.Fatal("a fullwidth form of a denied host was admitted")
+	}
+	if cfg.MCPListsMatchCommands() {
+		t.Fatal("no command entry, yet servers would be pinned to a path")
+	}
+	cfg.MCP.Allowed = []config.MCPMatch{{Command: "/opt/mcp/bin/*"}}
+	if !cfg.MCPListsMatchCommands() {
+		t.Fatal("a command entry does not pin the program started")
+	}
+	if err := MCPAdmit(cfg)(mcp.ServerConfig{Name: "s", Command: "s"}, []string{"/opt/mcp/bin/s"}); err != nil {
+		t.Fatalf("the program the gateway resolved: %v", err)
 	}
 }

@@ -250,6 +250,15 @@ All notable changes to Abhed are recorded here. The format follows
   configuration, `-mcp-config`, `abhed mcp add`, the console, Studio or a
   restart.
 
+  A pattern judges the type and model name. Under the managed file's or the
+  org policy's list, the endpoint is bound too: a model is admitted at its
+  type's own endpoint, on this machine, or at a provider the organisation
+  defines, never at a lower file's or the environment's `base_url`. A user's
+  own list binds no endpoint. MCP hosts are compared in their IDNA ASCII
+  form, a host that does not map is refused, and a redirect to another host
+  is judged. While a `command` entry is set, a server is started at exactly
+  the program path that was judged. Embedding models are not covered.
+
   A refusal names the list and is recorded as `config.refused`, and the
   console's refusals also go to the admin audit hook. A model or server set
   aside at load is listed by `abhed doctor`, `/permissions`, `/mcp` and
@@ -1303,7 +1312,14 @@ out):
   `Config.ModelsAllowed`, `Config.MCPAdmitted`, `Config.MCPLists`,
   `Config.HasMCPLists` and `Config.EndpointRefused`.
   `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
-  outside `model.allowed`.
+  outside `model.allowed`. `config.NormalHost`,
+  `Config.MCPListsMatchCommands`.
+- Changed behaviour, same signatures, in `sdk`: `SwitchModelNamed` refused
+  by a managed pin or `model.allowed` still `errors.Is` `ErrUnknownModel`
+  and now also unwraps to `config.ManagedError`; `SetModel` and
+  `Options.Provider` refuse a model, or a remote endpoint, that
+  `model.allowed` does not admit; a refused `SetModel` or
+  `SwitchModelNamed` is recorded as `config.refused`.
 
 - Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
   with an `Options.Addr` asking for any port (`:0`, or an empty port) now

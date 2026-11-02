@@ -69,7 +69,7 @@ func TestServerHoldsTheAllowLists(t *testing.T) {
 	if len(got) != 1 || got[0].Name != "corp" {
 		t.Fatalf("providers %+v, want corp alone", got)
 	}
-	if _, err := wb.s.resolveProvider("mine"); err == nil || !strings.Contains(err.Error(), "model.allowed admits only openai-compatible/corp-*") {
+	if _, err := wb.s.resolveProvider("mine"); err == nil || !strings.Contains(err.Error(), "admits only openai-compatible/corp-*") {
 		t.Fatalf("a session on mine: %v", err)
 	}
 	if _, err := wb.s.StartSession(context.Background(), StartSpec{Prompt: "hi", Provider: "mine"}); err == nil {
