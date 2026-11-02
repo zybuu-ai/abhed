@@ -437,6 +437,10 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	c.useRecord(workspace, trust)
 	err := c.run(os.Stdin)
 	c.closeRecord()
+	// Stopped by a signal: the exit says so, as a shell reports it.
+	if code, stopped := stopCode(stopper.ctx); stopped {
+		return code
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: acp: %v\n", err)
 		return 1
