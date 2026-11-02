@@ -1062,6 +1062,8 @@ _abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message 
 _abhed/terminal/venv { sessionId, terminalId, inUse }
 // 1.2.9: a sandboxed listener was ended for a host program's port
 _abhed/sandbox/listener_ended { sessionId, port, message }
+// 1.2.9: takeovers can no longer be seen (lsof failed)
+_abhed/sandbox/listen_watch_lost { sessionId, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
@@ -1103,18 +1105,23 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   agreement covers every command in every session of the workspace, the
   agent's too; that it is TCP on the listen ports; that a command can take
   a listen port before one of the person's programs starts on it, and gets
-  its loopback connections until Abhed ends the command's listener, within
+  its loopback connections until Abhed ends that session's sandbox, within
   two seconds; and that a command can bind every address of the port.
   When a program outside the sandbox starts listening on a port a
-  sandboxed command holds, the command's listener is ended, recorded
-  `sandbox.listener_ended {port, pid}`, and Studio gets
-  `_abhed/sandbox/listener_ended {sessionId, port, message}` (each session
-  that may listen is told).
+  sandboxed command holds, every process of that session's sandbox is
+  ended (only processes its profile mark proves are its own), recorded in
+  that session alone as `sandbox.listener_ended {port, pid, ended}`, and
+  Studio gets `_abhed/sandbox/listener_ended {sessionId, port, message}`.
+  If the Mac's listeners can no longer be read, Studio gets
+  `_abhed/sandbox/listen_watch_lost {sessionId, message}`, once until they
+  can be read again.
 - **Python venv (1.2.9).** `venv` is the project's virtual environment for
   the terminal's folder, if any. In `lines` mode its python and pip are
   used (`inUse`); in `interactive` mode only once the person types
   `abhed_venv`, when Studio gets `_abhed/terminal/venv {sessionId,
-  terminalId, inUse: true}`. Show it in the header. Its `bin` never comes
+  terminalId, inUse: true}`: sent only once the person typed `abhed_venv`
+  at the shell and its line came back, so a program's output alone never
+  sends it. Show it in the header. Its `bin` never comes
   before `PATH`.
 - The shell runs in the engine's sandbox tier for the session. In `lines`
   mode each line is a `bash` call through policy; in `interactive` mode the
@@ -1298,8 +1305,8 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   bind and accept on those alone, on any of the Mac's addresses (Seatbelt's
   localhost matches the Mac's network addresses too; the consent says so),
   and on no other port unless the session's commands may listen
-  (`sandbox.listen`, §7.1): then, as any command, on any port but the range
-  and the Mac's busy ports, on any of its addresses. Go: the command may
+  (`sandbox.listen`, §7.1): then, as any command, TCP on the free listen
+  ports too, on any of its addresses. Go: the command may
   connect to each port the system hands out to listeners
   (`net.inet.ip.portrange`) but the range, one Seatbelt rule each (the
   profile then goes in the session's own folder), and may listen on any

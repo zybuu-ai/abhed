@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"os"
 	"os/exec"
@@ -27,9 +28,15 @@ type Process struct {
 	backend string // "sandbox-exec" | "bwrap"
 	// listen is SetListen's: commands may listen on loopback from now on.
 	listen atomic.Bool
-	// listenStill and onListenerEnded are SetListenWatch's.
-	listenStill     atomic.Pointer[func() bool]
-	onListenerEnded atomic.Pointer[func(port, pid int)]
+	// listenStill, onListenerEnded and onListenWatchLost are SetListenWatch's.
+	listenStill       atomic.Pointer[func() bool]
+	onListenerEnded   atomic.Pointer[func(ListenerEnded)]
+	onListenWatchLost atomic.Pointer[func(why string)]
+	// watchLost is set once the person was told the watch is lost.
+	watchLost atomic.Bool
+	// mark proves a process is one of this sandbox's commands; made once.
+	markOnce sync.Once
+	mark     *listenMark
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -588,6 +595,7 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		// listens on. A debug session's named ports stay its own.
 		if busy, ok := s.listenable(); ok {
 			b.WriteString(";; Listening on loopback, for a dev server: TCP on the listen ports alone; no loopback connection out.\n")
+			b.WriteString(s.listenMark().rules())
 			if lb.on && len(lb.ports) == 0 {
 				// The debug session binds any loopback port already, and its
 				// block denied Abhed's reserved range: carve out the Mac's
@@ -676,9 +684,10 @@ func (s *Process) listening() bool {
 }
 
 // listenable is the Mac's busy ports when commands may listen on loopback,
-// and puts the sandbox among those watched for a takeover.
+// and puts the sandbox among those watched for a takeover. It takes the
+// sandbox's mark, without which a takeover could not be ended.
 func (s *Process) listenable() ([]int, bool) {
-	if !s.listening() {
+	if !s.listening() || s.listenMark() == nil {
 		return nil, false
 	}
 	busy, ok := hostListeners()
@@ -687,6 +696,41 @@ func (s *Process) listenable() ([]int, bool) {
 	}
 	return busy, ok
 }
+
+// listenMark is the sandbox's mark, made the first time; nil if it could
+// not be made.
+func (s *Process) listenMark() *listenMark {
+	s.markOnce.Do(func() {
+		m, err := newListenMark()
+		if err != nil {
+			slog.Warn("commands cannot listen: the sandbox's mark could not be made", "err", err)
+			return
+		}
+		s.mark = m
+	})
+	return s.mark
+}
+
+// dropListenMark removes the mark's folder, as the sandbox closes.
+func (s *Process) dropListenMark() {
+	s.markOnce.Do(func() {})
+	if s.mark != nil {
+		_ = os.RemoveAll(s.mark.dir)
+	}
+}
+
+// listenWatchLost tells the owner, once until the watch is found again,
+// that a takeover can no longer be seen.
+func (s *Process) listenWatchLost(why string) {
+	if s.watchLost.Swap(true) {
+		return
+	}
+	if f := s.onListenWatchLost.Load(); f != nil {
+		(*f)(why)
+	}
+}
+
+func (s *Process) listenWatchFound() { s.watchLost.Store(false) }
 
 // listenPorts are the ports listening opens to a command: the configured
 // ones, less Abhed's reserved range and those the Mac listens on.
@@ -713,9 +757,10 @@ func SetListen(sb Sandbox, on bool) bool {
 }
 
 // SetListenWatch gives sb what listening needs from its owner: still, whether
-// the person's agreement is still kept, and ended, told of a sandboxed
-// listener ended because a program of the person's took its port too.
-func SetListenWatch(sb Sandbox, still func() bool, ended func(port, pid int)) {
+// the person's agreement is still kept; ended, told when the sandbox's
+// processes were ended because a program of the person's took a port one
+// of them held; and lost, told once when takeovers can no longer be seen.
+func SetListenWatch(sb Sandbox, still func() bool, ended func(ListenerEnded), lost func(why string)) {
 	p, ok := sb.(*Process)
 	if !ok {
 		return
@@ -726,6 +771,18 @@ func SetListenWatch(sb Sandbox, still func() bool, ended func(port, pid int)) {
 	if ended != nil {
 		p.onListenerEnded.Store(&ended)
 	}
+	if lost != nil {
+		p.onListenWatchLost.Store(&lost)
+	}
+}
+
+// ListenSupported says whether this build can let commands listen: it must
+// prove which processes are a sandbox's before it ends one.
+func ListenSupported() (bool, string) {
+	if !canTellSandboxed {
+		return false, "this build cannot tell a sandboxed process from yours"
+	}
+	return true, ""
 }
 
 // Listens reports whether sb's commands may listen on loopback now, which

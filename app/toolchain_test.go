@@ -564,6 +564,9 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	}
 	r.cl.ok("_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true}, &got)
 	if !got.Listens {
+		if ok, _ := sandbox.ListenSupported(); ok && sandbox.ListenersReadable() {
+			t.Fatal("not listening after the person agreed, though this build and Mac can")
+		}
 		t.Skip("listening is not available here: the Mac's listeners cannot be read, or this build cannot tell a sandboxed process")
 	}
 	if changed, _ := r.recorded(id, agent.EvPermissionChanged); len(changed) != 1 || changed[0]["rule"] != listenRule || changed[0]["op"] != "add" {
@@ -674,7 +677,17 @@ func TestTerminalVenvInUseAfterAbhedVenv(t *testing.T) {
 	if term.Venv == nil || term.Venv.InUse || term.Venv.Path != v {
 		t.Fatalf("venv %+v", term.Venv)
 	}
+	// A program printing abhed_venv's line does not count.
 	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "printf 'abhed: using x: its python and pip come first; x\\n'; echo printed\r"}, nil)
+	waitOutput(r.cl, from, term.TerminalID, "\nprinted")
+	time.Sleep(200 * time.Millisecond)
+	for _, m := range r.cl.since(from) {
+		if m.Method == "_abhed/terminal/venv" {
+			t.Fatal("a program's output claimed the venv in use")
+		}
+	}
+	from = r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "abhed_venv\r"}, nil)
 	r.cl.waitFor(from, "the venv in use", func(m rpcMessage) bool {
 		return m.Method == "_abhed/terminal/venv" && strings.Contains(string(m.Params), `"inUse":true`)
