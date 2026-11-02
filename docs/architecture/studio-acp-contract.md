@@ -1061,8 +1061,8 @@ _abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message 
 // 1.2.9: an interactive terminal now uses the project's venv (abhed_venv)
 _abhed/terminal/venv { sessionId, terminalId, inUse }
 // 1.2.9: a sandboxed listener was ended for a host program's port
-_abhed/sandbox/listener_ended { sessionId, port, message }
-// 1.2.9: takeovers can no longer be seen (lsof failed)
+_abhed/sandbox/port_contested { sessionId, port, message }
+// 1.2.9: contested ports can no longer be seen (lsof failed)
 _abhed/sandbox/listen_watch_lost { sessionId, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
@@ -1103,16 +1103,17 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   taking it back under `sandbox.listen` allow. An interactive terminal
   keeps the rules it started with. Studio's consent must say that the
   agreement covers every command in every session of the workspace, the
-  agent's too; that it is TCP on the listen ports; that a command can take
-  a listen port before one of the person's programs starts on it, and gets
-  its loopback connections until Abhed ends that session's sandbox, within
-  two seconds; and that a command can bind every address of the port.
-  When a program outside the sandbox starts listening on a port a
-  sandboxed command holds, every process of that session's sandbox is
-  ended (only processes its profile mark proves are its own), recorded in
-  that session alone as `sandbox.listener_ended {port, pid, ended}`, and
-  Studio gets `_abhed/sandbox/listener_ended {sessionId, port, message}`.
-  If the Mac's listeners can no longer be read, Studio gets
+  agent's too; that it is TCP on the listen ports; that, while listening is
+  on, a command can take a listen port before one of the person's programs
+  starts there and receive its connections, and that Abhed warns but does
+  not stop the command (stop it, or turn listening off); and that a
+  command can bind every address of the port. When more than one program
+  listens on a listen port, every session that may listen on it gets
+  `_abhed/sandbox/port_contested {sessionId, port, message}`, recorded
+  `sandbox.port_contested {port, listeners}`, once while the port stays
+  contested; Abhed cannot prove which listener is a sandbox's and signals
+  no process. A new command's profile leaves the port out. If the Mac's
+  listeners can no longer be read, Studio gets
   `_abhed/sandbox/listen_watch_lost {sessionId, message}`, once until they
   can be read again.
 - **Python venv (1.2.9).** `venv` is the project's virtual environment for

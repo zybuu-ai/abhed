@@ -198,7 +198,7 @@ func (c *acpConn) offerListen(t *acpTerminal) {
 	note := "the sandbox does not let commands listen for connections in this workspace."
 	if canAllow {
 		note += " Allow it from Studio (Let Commands Listen): every command in every session of this workspace, the agent's too, may then listen on TCP ports " +
-			portList(t.listenPorts()) + ". Then start the server again on one of them (in a new terminal, for an interactive one)."
+			portList(t.listenPorts()) + ". A command can then take one of those ports before a program of yours starts there and receive its connections; Abhed warns you but does not stop the command. Then start the server again on one of them (in a new terminal, for an interactive one)."
 	} else {
 		note += " It cannot be allowed here: " + why + "."
 	}

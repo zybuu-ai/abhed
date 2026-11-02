@@ -362,12 +362,12 @@ All notable changes to Abhed are recorded here. The format follows
   of the workspace, the agent's too. Listening is TCP only and only on
   `sandbox.listen_ports` (by default 3000-3009, 4200, 4321, 5173-5179 and
   8000-8009, which leave out database, cache and console ports), less
-  Abhed's reserved ports and any port one of your programs listens on. A
-  sandboxed command on a port where one of your programs starts listening
-  too has its whole session sandbox ended within two seconds, and that
-  session alone is told (`_abhed/sandbox/listener_ended`,
-  `sandbox.listener_ended`); only a process the sandbox's own profile mark
-  proves is Abhed's is ever ended. Both settings are an operator's: a
+  Abhed's reserved ports and any port one of your programs listens on.
+  While listening is on, a command can take a listen port before one of
+  your programs starts there and receive its connections: Abhed warns you
+  (`_abhed/sandbox/port_contested`, `sandbox.port_contested`) within two
+  seconds, in every session that may listen on that port, but does not stop
+  the command; stop it yourself or turn listening off. Both settings are an operator's: a
   workspace file, trusted or not, can only make `listen` stricter. A server
   refused its port in Studio's terminal brings the offer
   (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio

@@ -119,9 +119,9 @@ needs; the agent's commands keep the network closed:
   so. Never on a port of the reserved range, on any address, so it cannot
   take an Abhed listener's port or fill the range; and while commands may
   listen (`sandbox.listen`), not on a port the Mac already listens on
-  either. The guard that ends a command taking a port one of your
-  programs then starts on watches the listen ports alone: a port outside
-  them that a Go debug command claims first is not watched.
+  either. The warning when a program of yours then starts on a port a
+  command holds covers the listen ports alone: a port outside them that a
+  Go debug command claims first is not watched, and Abhed stops neither.
 - **Older Abhed on the same Mac.** Abhed releases before 1.2.9 do not use
   the reserved range: their egress proxies and each command's own proxy
   port take ports the system hands out, which a Go program being debugged
