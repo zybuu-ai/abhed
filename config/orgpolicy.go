@@ -387,7 +387,7 @@ var unionLists = map[string]bool{"permissions.deny": true, "permissions.ask": tr
 
 // orgJoinedBack are the union-ruled settings whose org entries are joined
 // with the layers below, never replacing them: deny and ask in applyManaged,
-// honeytokens in monitorBelow, the rest in joinOrgLists. Every union-ruled
+// honeytokens in monitorBelow, the rest in joinManagedLists. Every union-ruled
 // tighten key must be here; TestUnionRuledOrgKeysAreJoinedBack holds it.
 var orgJoinedBack = map[string]bool{"permissions.deny": true, "permissions.ask": true,
 	"monitor.honeytokens": true, "verify.contract.protect": true}
@@ -395,11 +395,12 @@ var orgJoinedBack = map[string]bool{"permissions.deny": true, "permissions.ask":
 // orgBelowLists are the lists joinOrgLists joins back, by key.
 var orgBelowLists = []string{"verify.contract.protect"}
 
-// joinOrgLists joins back the lists below that the org policy set: a null,
-// empty or other list from it never drops the person's own entries.
-func joinOrgLists(cfg *Config, below map[string][]string) {
+// joinManagedLists joins back the lists below that the managed layer set,
+// the machine's file or the org policy: a null, empty or other list from it
+// never drops the person's own entries, so these lists only grow.
+func joinManagedLists(cfg *Config, below map[string][]string) {
 	for _, k := range orgBelowLists {
-		if !cfg.FromOrg(k) {
+		if !cfg.ManagedSets(k) {
 			continue
 		}
 		dst := unionFields[k](cfg)

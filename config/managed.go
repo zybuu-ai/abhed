@@ -138,9 +138,9 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	if _, err := mergeData(cfg, label, data); err != nil {
 		return err
 	}
-	joinOrgLists(cfg, belowLists)
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	joinManagedLists(cfg, belowLists)
 	// As the managed file says it, before a lower layer's narrowing applies.
 	cfg.managedFetchOff = cfg.ManagedSets("web_fetch.enabled") && !cfg.WebFetch.Enabled
 	cfg.managedRules = managedRuleSet(data)

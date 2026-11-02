@@ -1068,6 +1068,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- A managed `verify.contract.protect` now joins the protected files a
+  person's or workspace's file lists, as deny and ask rules do, rather than
+  replacing them: from the managed file or the org policy, a null, empty or
+  other list no longer drops a protected file.
+
 - `plan.proposed` carries the plan's `hash`, and its `runbook` when it has
   one; `plan.decided` carries the `plan_hash` and runbook an accept bound,
   and on a server who answered (`by`)

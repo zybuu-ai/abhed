@@ -174,17 +174,52 @@ func TestRequiredWithoutKeysWarns(t *testing.T) {
 	}
 }
 
-// A union-ruled setting the org may tighten is joined with the layers below,
-// never replacing them; a new one fails here until it is.
-func TestUnionRuledOrgKeysAreJoinedBack(t *testing.T) {
-	for k := range unionFields {
-		if r, ok := orgRules[k]; ok && r.kind == orgTighten && !orgJoinedBack[k] {
-			t.Errorf("%s is union-ruled and org-settable, but not joined back with the layers below", k)
-		}
+// unionSamples are a valid entry for each union-ruled list.
+var unionSamples = map[string]string{
+	"permissions.deny": "bash(keep-me*)", "permissions.ask": "bash(keep-me*)",
+	"monitor.honeytokens": "keep-me-token", "verify.contract.protect": "keep-me/**",
+}
+
+// docAt is a JSON document setting the dotted path to v.
+func docAt(path string, v any) string {
+	parts := strings.Split(path, ".")
+	var x any = v
+	for i := len(parts) - 1; i >= 0; i-- {
+		x = map[string]any{parts[i]: x}
 	}
-	for k := range orgJoinedBack {
-		if _, ok := unionFields[k]; !ok {
-			t.Errorf("orgJoinedBack names %s, which no union rule adds to", k)
+	b, _ := json.Marshal(x)
+	return string(b)
+}
+
+// Every union-ruled list keeps the person's entry when the org policy, or the
+// machine's file, sets it to null, empty or another list: checked by what
+// loading does, so the joins cannot drift from the rules.
+func TestUnionRuledListsOnlyGrow(t *testing.T) {
+	for k := range unionFields {
+		sample, ok := unionSamples[k]
+		if !ok {
+			t.Errorf("%s is union-ruled: give it a sample in unionSamples", k)
+			continue
+		}
+		for _, v := range []any{nil, []string{}, []string{"bash(other*)"}} {
+			for _, from := range []string{"org", "machine"} {
+				if from == "org" {
+					noManaged(t)
+					f := newOrg(t)
+					f.write(t, docAt(k, v), time.Now())
+				} else {
+					withManaged(t, docAt(k, v))
+					newOrg(t)
+				}
+				writeConfig(t, os.Getenv("HOME"), docAt(k, []string{sample}))
+				cfg, err := LoadWith(t.TempDir(), LoadOptions{Warn: func(string) {}})
+				if err != nil {
+					t.Fatalf("%s %v from the %s: %v", k, v, from, err)
+				}
+				if !slices.Contains(*unionFields[k](&cfg), sample) {
+					t.Errorf("%s set to %v by the %s dropped the person's %q: %v", k, v, from, sample, *unionFields[k](&cfg))
+				}
+			}
 		}
 	}
 }
