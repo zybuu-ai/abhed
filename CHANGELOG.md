@@ -299,7 +299,9 @@ All notable changes to Abhed are recorded here. The format follows
   list binds no endpoint. MCP hosts are compared in their IDNA ASCII
   form, a host that does not map is refused, and a redirect to another host
   is judged. While a `command` entry is set, a server is started at exactly
-  the program path that was judged. Embedding models are not covered.
+  the program path that was judged; unconfined it keeps the configured name
+  as `argv[0]`, while a confined start passes the resolved path. Embedding
+  models are not covered.
 
   A refusal names the list and is recorded as `config.refused`, and the
   console's refusals also go to the admin audit hook. A model or server set
