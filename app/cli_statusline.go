@@ -263,9 +263,31 @@ func (c *cliState) statusLine(ctx context.Context, mode string) string {
 	}
 	line, err := runStatusline(ctx, sb, c.workspace, command, c.statusModel(mode))
 	if err != nil {
+		// A run that only took too long, on a busy machine, shows the last
+		// line the command gave rather than nothing.
+		if errors.Is(err, errStatuslineSlow) {
+			if last := c.lastStatusline(); last != "" {
+				_ = c.statuslineFailed(err) // counted, the last line shown instead
+				return last
+			}
+		}
 		return c.statuslineFailed(err)
 	}
+	c.noteStatusline(line)
 	return line
+}
+
+// noteStatusline keeps a run's output as the command's last line.
+func (c *cliState) noteStatusline(line string) {
+	c.statuslineMu.Lock()
+	c.statuslineLast = line
+	c.statuslineMu.Unlock()
+}
+
+func (c *cliState) lastStatusline() string {
+	c.statuslineMu.Lock()
+	defer c.statuslineMu.Unlock()
+	return c.statuslineLast
 }
 
 // statuslineReady judges the statusline, again when the session's folders
