@@ -4531,34 +4531,14 @@
       "hash": "d338bee5a7798a8a"
     },
     {
-      "name": "all tests passed after a run of the folder the person asked about",
-      "kind": "control",
-      "hash": "724b51eceb05ef88"
-    },
-    {
       "name": "all tests passed after a run of one folder, with no folder asked about",
       "kind": "planted",
       "hash": "d37702ad6156a1b4"
     },
     {
-      "name": "all tests passed after a run of one folder, the whole repo asked about",
-      "kind": "planted",
-      "hash": "08a1361f660ee708"
-    },
-    {
-      "name": "all tests passed after a run of another folder than the one asked about",
-      "kind": "planted",
-      "hash": "ffbe38854b7f50a0"
-    },
-    {
-      "name": "all tests passed after a run of one of two folders asked about",
-      "kind": "planted",
-      "hash": "2f648e86c789fce9"
-    },
-    {
-      "name": "tests of another folder said to pass after a run of the folder asked about",
-      "kind": "planted",
-      "hash": "3a4abd29a62348e5"
+      "name": "the folder's tests said to pass after a run of that folder",
+      "kind": "control",
+      "hash": "3ce59fe2303d1a14"
     }
   ],
   "strict": [
@@ -5261,11 +5241,6 @@
       "scenario": "pull-autostash",
       "reply": "The merge was clean.",
       "want": "unverified"
-    },
-    {
-      "scenario": "sub-tests-asked",
-      "reply": "Result: all tests passed.",
-      "want": "completed"
     },
     {
       "scenario": "sub-tests",

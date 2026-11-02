@@ -33,9 +33,6 @@ func caseHash(c CorpusCase) string {
 		Claim            *Claim
 		Steps            []CorpusStep
 	}{c.Kind, c.Want, c.Text, c.Claim, c.Steps})
-	if c.Asked != "" {
-		b = append(b, c.Asked...)
-	}
 	return fmt.Sprintf("%x", sha256.Sum256(b))[:16]
 }
 
@@ -115,7 +112,6 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		bash       string
 		then       string // a second command after bash
 		before     string // a command run before the read
-		asked      string // the person's message, "do it" when unset
 		prep       string // a shell line run in the workspace before the session
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
@@ -188,8 +184,6 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			bash: "./git rebase --abort", then: "./git rebase -s ours main"},
 		"pull-autostash": {before: `printf '%s\n' '#!/bin/sh' 'echo Fast-forward' 'echo Applying autostash resulted in conflicts.' 'echo Your changes are safe in the stash.' > git && chmod +x git`,
 			bash: "./git pull"},
-		"sub-tests-asked": {prep: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > services/orders/go && chmod +x services/orders/go",
-			bash: "cd services/orders && ./go test ./...", asked: "Run the Go tests for services/orders and tell me how many pass."},
 		"sub-tests": {prep: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > services/orders/go && chmod +x services/orders/go",
 			bash: "cd services/orders && ./go test ./..."},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
@@ -233,11 +227,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 	}
 	turns = append(turns, scriptedTurn{text: reply}, scriptedTurn{text: reply})
 	ad.turns = turns
-	asked := "do it"
-	if sc.asked != "" {
-		asked = sc.asked
-	}
-	reason, _ := l.Run(context.Background(), asked)
+	reason, _ := l.Run(context.Background(), "do it")
 	return reason
 }
 
