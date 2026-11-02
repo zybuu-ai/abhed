@@ -289,7 +289,9 @@ status as JSON on stdin (`model`, `provider`, `mode`, `session_title`, `context_
 `context_percent`, `tokens_in`, `tokens_out`, `background_tasks`,
 `sandbox_tier`, `git_branch`, `cwd` and more) and runs at most once a
 second, under the process sandbox with the network off whatever the session
-allows, and is stopped after one second; only its first 4 KB are read. Where
+allows, and is stopped after one second (`statusline.timeout_ms` raises
+that, to at most ten seconds); only its first 4 KB are read. A run that only
+took too long shows the last line the command gave. Where
 that sandbox is missing, or its script is where the agent could change it,
 it is not run, and the footer says why (see [the command
 line](18-cli.md)). Its colours

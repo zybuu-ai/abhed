@@ -179,6 +179,9 @@ type RulesConfig struct {
 // status as JSON on stdin.
 type StatuslineConfig struct {
 	Command string `json:"command,omitempty"`
+	// TimeoutMS bounds one run of the command, in milliseconds: unset is one
+	// second, and at most ten seconds is taken.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
 // MemoryConfig governs what the agent remembers between sessions.

@@ -508,3 +508,19 @@ func TestStatuslineSlowRunShowsTheLastLine(t *testing.T) {
 		}
 	}
 }
+
+// statusline.timeout_ms sets one run's limit, at most ten seconds.
+func TestStatuslineLimitFromConfig(t *testing.T) {
+	cfg := config.Default()
+	if got := statuslineLimit(cfg); got != statuslineTimeout {
+		t.Fatalf("default %s", got)
+	}
+	cfg.Statusline.TimeoutMS = 2500
+	if got := statuslineLimit(cfg); got != 2500*time.Millisecond {
+		t.Fatalf("2500 ms: %s", got)
+	}
+	cfg.Statusline.TimeoutMS = 60000
+	if got := statuslineLimit(cfg); got != 10*time.Second {
+		t.Fatalf("capped: %s", got)
+	}
+}

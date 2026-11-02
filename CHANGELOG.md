@@ -180,6 +180,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `statusline.timeout_ms` sets how long one run of the statusline command
+  may take (one second unset, ten at most), and `/status` shows the
+  command's last line when a run only took too long.
 - Dev servers in the sandbox: on the macOS process tier a command may
   listen on loopback once the person agrees for the workspace
   (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its
