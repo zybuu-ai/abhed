@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -137,5 +138,70 @@ func TestInfillByChatWithAReasoningModel(t *testing.T) {
 	sys, _ := got["messages"].([]any)[0].(map[string]any)["content"].(string)
 	if !strings.Contains(sys, "Output only the exact code") {
 		t.Fatalf("system %q", sys)
+	}
+}
+
+// thinker answers like chatOnly, with a profile that takes the think switch;
+// refuse makes it fail any request that names the switch.
+type thinker struct {
+	chatOnly
+	refuse bool
+	asked  []*bool
+}
+
+func (c *thinker) Profile() Profile {
+	return Profile{Name: "thinker", Sampling: Sampling{Temperature: true, Think: true}}
+}
+func (c *thinker) Complete(ctx context.Context, req Request) (<-chan Chunk, error) {
+	c.asked = append(c.asked, req.Params.Think)
+	if c.refuse && req.Params.Think != nil {
+		return nil, errors.New("400: unknown field think")
+	}
+	return c.chatOnly.Complete(ctx, req)
+}
+
+// A commit message is asked for with thinking off where the server takes the
+// switch, so a thinking model cannot spend the budget and write nothing.
+func TestCommitMessageAsksWithThinkingOff(t *testing.T) {
+	c := &thinker{chatOnly: chatOnly{reply: "Fix the rounding in Tip"}}
+	res, err := CommitMessageByChat(context.Background(), c, "diff", 2048)
+	if err != nil || res.Text != "Fix the rounding in Tip" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if len(c.asked) != 1 || c.asked[0] == nil || *c.asked[0] {
+		t.Fatalf("think sent: %v", c.asked)
+	}
+	// A model whose profile has no switch is not sent one.
+	plain := &chatOnly{reply: "Fix it"}
+	if _, err := CommitMessageByChat(context.Background(), plain, "diff", 2048); err != nil || plain.seen.Params.Think != nil {
+		t.Fatalf("think sent to a model without the switch: %v %v", plain.seen.Params.Think, err)
+	}
+}
+
+// A server that refuses the switch is asked once more without it.
+func TestCommitMessageRetriesWithoutTheSwitch(t *testing.T) {
+	c := &thinker{chatOnly: chatOnly{reply: "Fix the rounding in Tip"}, refuse: true}
+	res, err := CommitMessageByChat(context.Background(), c, "diff", 2048)
+	if err != nil || res.Text != "Fix the rounding in Tip" || len(c.asked) != 2 || c.asked[1] != nil {
+		t.Fatalf("%+v %v %v", res, err, c.asked)
+	}
+}
+
+// Over an OpenAI-shaped local server the switch goes as "think": false.
+func TestCommitMessageSendsThinkFalseOnTheWire(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Add billing\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	a := NewOpenAICompatible(srv.URL, "", "gemma4:26b", Profile{Name: "local", Sampling: SamplingLocal()})
+	res, err := CommitMessageByChat(context.Background(), a, "diff", 2048)
+	if err != nil || res.Text != "Add billing" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if body["think"] != false {
+		t.Fatalf("body %v", body)
 	}
 }

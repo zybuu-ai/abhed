@@ -323,6 +323,22 @@ func CommitMessageByChat(ctx context.Context, a Adapter, diff string, maxTokens 
 		t := 0.2
 		r.Temperature = &t
 	}
+	// A thinking model can spend the whole budget thinking and write nothing;
+	// a commit message needs none, so thinking is off where the server takes it.
+	if a.Profile().Sampling.Think {
+		off := false
+		r.Params.Think = &off
+	}
+	res, err := commitMessageOnce(ctx, a, r)
+	if err != nil && r.Params.Think != nil && ctx.Err() == nil {
+		// A server that refuses the switch is asked once more without it.
+		r.Params.Think = nil
+		res, err = commitMessageOnce(ctx, a, r)
+	}
+	return res, err
+}
+
+func commitMessageOnce(ctx context.Context, a Adapter, r Request) (CommitMessageResult, error) {
 	ch, err := a.Complete(ctx, r)
 	if err != nil {
 		return CommitMessageResult{}, err
