@@ -615,3 +615,6 @@ func looksLikeSubscriptionRefusal(se *StatusError) bool {
 	}
 	return strings.Contains(se.Body, "rate_limit_error")
 }
+
+// Endpoint is the base URL the adapter calls.
+func (c *Anthropic) Endpoint() string { return c.BaseURL }

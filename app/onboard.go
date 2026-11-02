@@ -850,7 +850,11 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	if up == "" || err == nil {
 		return "", false
 	}
-	host := dialAddr(p.BaseURL)
+	base := p.BaseURL
+	if base == "" {
+		base = defaultEndpoint(p)
+	}
+	host := dialAddr(base)
 	if host == "" {
 		host = where
 	}
@@ -860,8 +864,9 @@ func proxiedFailure(err error, name string, p config.ProviderConfig, where, next
 	}
 	var se *model.StatusError
 	if errors.As(err, &se) {
-		// A 407 is the proxy's own: an http:// call is forwarded, so its answer comes back as the call's.
-		if se.Status == http.StatusProxyAuthRequired {
+		// An http:// call is forwarded, so the proxy's 407 comes back as the call's;
+		// inside an https tunnel a 407 is the server's or its gateway's.
+		if se.Status == http.StatusProxyAuthRequired && strings.HasPrefix(strings.ToLower(base), "http://") {
 			return credentials()
 		}
 		if se.Status != http.StatusBadGateway && se.Status != http.StatusServiceUnavailable && se.Status != http.StatusGatewayTimeout {

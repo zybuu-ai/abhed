@@ -548,3 +548,6 @@ func (c *OpenAICompatible) CountTokens(req Request) (int, error) {
 // fatalStatus: this adapter has no status it can recognise as hopeless, so
 // every retryable failure is retried.
 func (c *OpenAICompatible) fatalStatus(*StatusError) bool { return false }
+
+// Endpoint is the base URL the adapter calls.
+func (c *OpenAICompatible) Endpoint() string { return c.BaseURL }
