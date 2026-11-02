@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
@@ -28,6 +29,15 @@ import (
 // Marker is set in the environment of an isolated test binary, so a helper
 // process it runs keeps the home and variables its parent test prepared.
 const Marker = "ABHED_TESTENV"
+
+// privateEnv names, for a helper, the parent's private folder, so the helper
+// points its managed paths there and makes no folder of its own to leave
+// behind: a helper usually exits from inside a test, before any Close.
+const privateEnv = "ABHED_TESTENV_PRIVATE"
+
+// fallbackAddr is where the defaults lead when no stub can listen, as in a
+// helper running in a sandbox with no network.
+const fallbackAddr = "127.0.0.1:9"
 
 // scrubbed are variables that choose a model, a key, or a file Abhed reads
 // in place of the home folder's. A test that needs one sets its own.
@@ -56,6 +66,10 @@ type Guard struct {
 	// private holds the managed paths' missing folder; only this process
 	// can make anything in it.
 	private string
+	// fallback is set when no stub could listen and the defaults lead to
+	// fallbackAddr; a dial there is then a hit. Tests use that closed port
+	// for an endpoint that refuses, so it is a hit only then.
+	fallback atomic.Bool
 }
 
 func (g *Guard) note(s string) {
@@ -82,18 +96,27 @@ func (g *Guard) Hits() []string {
 // a test relies on: it stops the stub and removes the home.
 func Isolate() *Guard {
 	g := &Guard{OrigHome: os.Getenv("HOME")}
-	// Under a 0700 folder of this process's own, so no other user can make
-	// the missing folder and plant a managed file in it.
-	private, err := os.MkdirTemp("", "abhed-no-managed-")
-	if err != nil {
-		panic("testenv: " + err.Error())
+	// The managed paths lead to a missing folder inside a 0700 folder of
+	// this user's own, so no other user can make it and plant a managed file.
+	// A helper reuses the folder its parent names, once it checks it is
+	// exactly that, and makes nothing to leave behind when it exits from
+	// inside a test; anything else makes one, which Close removes.
+	if parent := os.Getenv(privateEnv); os.Getenv(Marker) != "" && privateFolder(parent) {
+		managed.MoveTo(filepath.Join(parent, "none"))
+	} else {
+		private, err := os.MkdirTemp("", "abhed-no-managed-")
+		if err != nil {
+			panic("testenv: " + err.Error())
+		}
+		g.private = private
+		managed.MoveTo(filepath.Join(private, "none"))
+		_ = os.Setenv(privateEnv, private)
 	}
-	g.private = private
-	managed.MoveTo(filepath.Join(private, "none"))
 
 	// A helper a test runs in a sandbox with no network cannot listen; its
-	// defaults then lead to a closed port instead of the stub.
-	stub := "http://127.0.0.1:9"
+	// defaults then lead to a closed port, and a dial there is noted like a
+	// call to the stub.
+	stub := "http://" + fallbackAddr
 	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
 		g.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			g.note("the default model endpoint: " + r.Method + " " + r.URL.Path)
@@ -103,6 +126,8 @@ func Isolate() *Guard {
 		g.srv.Listener = ln
 		g.srv.Start()
 		stub = g.srv.URL
+	} else {
+		g.fallback.Store(true)
 	}
 	defaults.LocalModelURL = stub + "/v1"
 	defaults.OllamaURL = stub + "/v1"
@@ -113,6 +138,10 @@ func Isolate() *Guard {
 			dial = (&net.Dialer{}).DialContext
 		}
 		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == fallbackAddr && g.fallback.Load() {
+				g.note("the default model endpoint, at " + addr + " (no stub could listen)")
+				return nil, fmt.Errorf("testenv: %s is the default model endpoint; tests use a stub", addr)
+			}
 			if Real(addr) {
 				g.note("a real model service at " + addr)
 				return nil, fmt.Errorf("testenv: %s is a real local model service; tests use a stub", addr)
@@ -172,12 +201,53 @@ func Real(addr string) bool {
 	if err != nil || !slices.Contains(realPorts, p) {
 		return false
 	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
+	return Local(host)
+}
+
+// Local reports whether host names this machine: localhost, a loopback or
+// unspecified address, in any of the spellings a resolver or the C library
+// takes for one (a trailing dot, the short IPv4 forms such as 127.1).
+func Local(host string) bool {
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
+	if ip == nil {
+		ip = shortIPv4(host)
+	}
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+// shortIPv4 reads the inet_aton forms Go's parser refuses: one to four
+// parts, each decimal, 0x hex or 0 octal, the last filling the remaining
+// bytes (127.1 is 127.0.0.1). nil if s is not one.
+func shortIPv4(s string) net.IP {
+	parts := strings.Split(s, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return nil
+	}
+	var v []uint64
+	for _, p := range parts {
+		n, err := strconv.ParseUint(p, 0, 32)
+		if err != nil {
+			return nil
+		}
+		v = append(v, n)
+	}
+	var out uint64
+	for i, n := range v[:len(v)-1] {
+		if n > 255 {
+			return nil
+		}
+		out |= n << (24 - 8*uint(i))
+	}
+	last, room := v[len(v)-1], uint(32-8*(len(v)-1))
+	if room < 64 && last >= 1<<room {
+		return nil
+	}
+	out |= last
+	return net.IPv4(byte(out>>24), byte(out>>16), byte(out>>8), byte(out))
 }
 
 // Close stops the stub and removes the home, and returns code, or 1 when

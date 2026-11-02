@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -993,9 +995,7 @@ func checkBuildFlags(bin string) error {
 	}
 	for _, v := range []string{"LocalModelURL", "OllamaURL"} {
 		u := x[defaultsPkg+"."+v]
-		hp := strings.TrimPrefix(strings.TrimPrefix(u, "http://"), "https://")
-		hp, _, _ = strings.Cut(hp, "/")
-		if u == "" || testenv.Real(hp) {
+		if !safeDefault(u) {
 			return fmt.Errorf("%s was not built with -X %s.%s at an address that is not a real model service (got %q)",
 				bin, defaultsPkg, v, u)
 		}
@@ -1040,4 +1040,34 @@ func checkMarker(bin string) error {
 		}
 	}
 	return fmt.Errorf("%s did not take its managed configuration from %s, so it may read this machine's:\n%s", bin, marker, out)
+}
+
+// safeDefault reports whether a default model URL leads anywhere but a real
+// model service: parsed as the HTTP client parses it, scheme in any case,
+// with the scheme's port filled in when none is written, and its host a
+// literal address or localhost.
+func safeDefault(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	port := u.Port()
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		if port == "" {
+			port = "80"
+		}
+	case "https":
+		if port == "" {
+			port = "443"
+		}
+	default:
+		return false
+	}
+	// Only a literal address or localhost: a name could resolve to anything.
+	host := u.Hostname()
+	if net.ParseIP(host) == nil && !strings.EqualFold(host, "localhost") {
+		return false
+	}
+	return !testenv.Real(net.JoinHostPort(host, port))
 }

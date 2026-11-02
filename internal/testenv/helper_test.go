@@ -1,0 +1,169 @@
+package testenv
+
+import (
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/managed"
+)
+
+// copyBinary copies this test binary into a folder of the test's own.
+func copyBinary(t *testing.T) (dir, bin string) {
+	t.Helper()
+	dir = filepath.Join(t.TempDir(), "bin")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin = filepath.Join(dir, "testenv.test")
+	if err := os.WriteFile(bin, data, 0o700); err != nil { // #nosec G306 -- an executable
+		t.Fatal(err)
+	}
+	return dir, bin
+}
+
+// run runs bin in role and returns what it printed.
+func run(t *testing.T, bin, role string, env []string) string {
+	t.Helper()
+	cmd := exec.Command(bin, "-test.run=^TestProbeRole$") // #nosec G204 -- a copy of this test binary
+	cmd.Env = append(append([]string{}, env...), "ABHED_TESTENV_PROBE="+role)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe %s: %v\n%s", role, err, out)
+	}
+	return string(out)
+}
+
+// cleanEnv is this process's environment without the marker and the
+// parent folder.
+func cleanEnv() []string {
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, privateEnv+"=") && !strings.HasPrefix(e, Marker+"=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
+// TestProbeRole is the probe's side: it says where its paths lead and what
+// its Isolate made, and removes what it made, since it exits without Close.
+func TestProbeRole(t *testing.T) {
+	if os.Getenv("ABHED_TESTENV_PROBE") == "" {
+		t.Skip("run by a probe")
+	}
+	os.Stdout.WriteString("config=" + managed.ConfigFile + "\nprivate=" + g.private + "\n")
+	for _, d := range []string{g.private, g.home} {
+		if d != "" {
+			_ = os.RemoveAll(d)
+		}
+	}
+}
+
+// A helper with the marker reuses the private folder its parent names and
+// makes none of its own.
+func TestHelperReusesTheParentsFolder(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, bin := copyBinary(t)
+	out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+parent))
+	if !strings.Contains(out, "config="+filepath.Join(parent, "none", "config.json")+"\n") || !strings.Contains(out, "private=\n") {
+		t.Fatalf("the helper did not reuse its parent's folder:\n%s", out)
+	}
+}
+
+// A folder the parent names is used only if it is exactly what Isolate
+// makes: one others may write in, a link to a private one, or a relative
+// path is refused, and the helper makes a folder of its own.
+func TestHelperRefusesAParentFolderThatIsNotPrivate(t *testing.T) {
+	base := t.TempDir()
+	open := filepath.Join(base, "open")
+	if err := os.Mkdir(open, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o777); err != nil { // #nosec G302 -- world-writable on purpose: not private
+		t.Fatal(err)
+	}
+	private := filepath.Join(base, "private")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(private, link); err != nil {
+		t.Fatal(err)
+	}
+	_, bin := copyBinary(t)
+	for name, parent := range map[string]string{"world-writable": open, "a link": link, "relative": "private"} {
+		out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+parent))
+		if strings.Contains(out, "config="+filepath.Join(parent, "none")) || !strings.Contains(out, "private=/") {
+			t.Fatalf("%s: the helper used %s rather than a folder of its own:\n%s", name, parent, out)
+		}
+	}
+}
+
+// Nothing beside the binary is trusted: a folder planted there, holding a
+// managed file, is never where the managed paths lead, whether the binary's
+// folder is private or others may write in it.
+func TestPlantedFolderBesideTheBinaryIsNotUsed(t *testing.T) {
+	for _, mode := range []os.FileMode{0o700, 0o777} {
+		dir, bin := copyBinary(t)
+		planted := filepath.Join(bin+".no-managed", "none")
+		if err := os.MkdirAll(planted, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(planted, "config.json"), []byte(`{"planted":true}`), 0o644); err != nil { // #nosec G306 -- a stand-in
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, bin, "top", cleanEnv())
+		if strings.Contains(out, ".no-managed") || !strings.Contains(out, "private=/") {
+			t.Fatalf("mode %o: the managed paths lead beside the binary:\n%s", mode, out)
+		}
+	}
+}
+
+// When no stub could listen, the defaults lead to a closed port, and a dial
+// there is a hit like a call to the stub, so a test that reaches the default
+// endpoint still fails the run. Tests also use that closed port as an
+// endpoint that refuses, so it is a hit only in fallback.
+func TestFallbackDialIsAHit(t *testing.T) {
+	was := g.fallback.Load()
+	t.Cleanup(func() { g.fallback.Store(was) })
+	dial := func() error {
+		resp, err := http.Get("http://" + fallbackAddr + "/v1/models")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+	if !was {
+		before := len(g.Hits())
+		_ = dial()
+		if len(g.Hits()) != before {
+			t.Fatalf("with a stub listening, a dial to %s was noted: %v", fallbackAddr, g.Hits())
+		}
+	}
+	g.fallback.Store(true)
+	n := len(g.Hits())
+	if err := dial(); err == nil || !strings.Contains(err.Error(), "testenv") {
+		t.Fatalf("a dial to the fallback was let through: %v", err)
+	}
+	hits := g.Hits()
+	if len(hits) != n+1 || !strings.Contains(hits[n], "no stub could listen") {
+		t.Fatalf("hits %v", hits)
+	}
+	g.mu.Lock()
+	g.hits = g.hits[:n]
+	g.mu.Unlock()
+}

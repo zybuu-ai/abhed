@@ -96,3 +96,18 @@ func TestMarkerCheckRefusesABinaryThatIgnoresTheManagedDirectory(t *testing.T) {
 		t.Fatalf("marker check of the harness's own binary: %v", err)
 	}
 }
+
+// The defaults check parses a URL as the HTTP client does: the scheme in any
+// case, and the scheme's port when none is written.
+func TestSafeDefault(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"http://127.0.0.1:9/v1": true, "http://localhost/v1": true, "https://example.test/v1": false,
+		"http://localhost.:11434/v1": false, "http://127.1:11434/v1": false, "http://x.localhost:11434": false,
+		"HTTP://localhost:11434/v1": false, "http://LOCALHOST:11434": false, "Https://[::1]:4000/v1": false,
+		"http://127.0.0.1:11434/v1": false, "ftp://127.0.0.1:9": false, "": false, "localhost:11434": false,
+	} {
+		if got := safeDefault(raw); got != want {
+			t.Errorf("safeDefault(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}

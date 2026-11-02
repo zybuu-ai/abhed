@@ -26,7 +26,9 @@ func TestMain(m *testing.M) {
 
 func TestReal(t *testing.T) {
 	for addr, want := range map[string]bool{"localhost:11434": true, "127.0.0.1:11434": true, "[::1]:4000": true,
-		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false} {
+		"0.0.0.0:11434": true, "127.0.0.1:8867": false, "10.0.0.2:11434": false, "example.com:4000": false, "bad": false,
+		"localhost.:11434": true, "LOCALHOST:4000": true, "127.1:11434": true, "0x7f000001:11434": true, "0177.0.0.1:4000": true,
+		"0:11434": true, "x.localhost:11434": true, "128.1:11434": false, "300.1:11434": false} {
 		if Real(addr) != want {
 			t.Errorf("Real(%q) = %v", addr, !want)
 		}
@@ -39,8 +41,8 @@ func TestIsolateGuards(t *testing.T) {
 	if strings.Contains(defaults.LocalModelURL, "11434") || strings.Contains(defaults.OllamaURL, "11434") {
 		t.Fatalf("defaults %s %s", defaults.LocalModelURL, defaults.OllamaURL)
 	}
-	if !strings.HasPrefix(managed.ConfigFile, os.TempDir()) {
-		t.Fatalf("managed %s", managed.ConfigFile)
+	if _, err := os.Stat(managed.ConfigFile); !os.IsNotExist(err) || strings.HasPrefix(managed.ConfigFile, "/etc/") {
+		t.Fatalf("managed %s (%v)", managed.ConfigFile, err)
 	}
 	if h, _ := os.UserHomeDir(); h == g.OrigHome || os.Getenv("ABHED_MODEL") != "" {
 		t.Fatalf("home %s", h)
