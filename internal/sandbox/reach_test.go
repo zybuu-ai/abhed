@@ -172,6 +172,8 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 		{"a package func var set from a local holding a function", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc killer() { _ = killGroupNow(1) }\n\nfunc init() {\n\tf := killer\n\tprobeHook = f")},
 		{"a package func var set by a range", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\thooks := []func(){func() { _ = killGroupNow(1) }}\n\tfor _, probeHook = range hooks {\n\t}")},
 		{"a package func var set from a map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc init() {\n\tm := map[string]func(){\"k\": func() { _ = killGroupNow(1) }}\n\tprobeHook, _ = m[\"k\"]")},
+		{"a package func var set from a package map", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks = map[string]func(){}\n\nfunc init() {\n\thooks[\"k\"] = func() { _ = killGroupNow(1) }\n\tprobeHook = hooks[\"k\"]")},
+		{"a package func var ranged from an appended package slice", sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nvar hooks []func()\n\nfunc init() {\n\thooks = append(hooks, func() { _ = killGroupNow(1) })\n\tfor _, probeHook = range hooks {\n\t}")},
 		{"another package's func var set from app", crossPackageHook(t, sandboxDir, appDir)},
 		{"a Store of another package", appRoute("var st Store\n\tst.Append()\n}\n\ntype Store interface{ Append() }\n\nfunc unusedStore() {")},
 		{"a signal behind SetListen", setListenKills(t, sandboxDir)},
@@ -198,7 +200,9 @@ func TestListeningReachCatchesTheRoutes(t *testing.T) {
 	// Clean code reached from the same hooks passes.
 	for name, o := range map[string]map[string]string{
 		"sandbox": sandboxRoute(`_ = exec.Command("/usr/sbin/lsof", "-nP")`, "os/exec"),
-		"app":     appRoute(`_ = strings.ToUpper("x")`, "strings"),
+		// A constructor's int argument is no route for a function.
+		"an int argument": sandboxRoute("probeHook()\n}\n\nvar probeHook func()\n\nfunc mk(n int) func() { return func() { _ = n } }\n\nfunc init() {\n\tn := 1\n\tprobeHook = mk(n)"),
+		"app":             appRoute(`_ = strings.ToUpper("x")`, "strings"),
 	} {
 		r, err := newReach(o)
 		if err != nil {
@@ -777,6 +781,35 @@ func pkgVarKey(obj types.Object) string {
 	return v.Pkg().Path() + ".." + v.Name()
 }
 
+// containsFunc reports a type that is, or can hold, a function: a func, or
+// a map, slice, array, channel, pointer or struct with one inside.
+func containsFunc(t types.Type, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	switch u := types.Unalias(t).Underlying().(type) {
+	case *types.Signature:
+		return true
+	case *types.Map:
+		return containsFunc(u.Key(), depth+1) || containsFunc(u.Elem(), depth+1)
+	case *types.Slice:
+		return containsFunc(u.Elem(), depth+1)
+	case *types.Array:
+		return containsFunc(u.Elem(), depth+1)
+	case *types.Chan:
+		return containsFunc(u.Elem(), depth+1)
+	case *types.Pointer:
+		return containsFunc(u.Elem(), depth+1)
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if containsFunc(u.Field(i).Type(), depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // varKeyOf names the module func variable e is, by name or qualified
 // name (pkg.Var), as pkgVarKey does, or "".
 func varKeyOf(info *types.Info, e ast.Expr) string {
@@ -884,9 +917,17 @@ func (r *reach) check(s *srcPkg, where string, node ast.Node, queue *[]item) []s
 					return false
 				}
 				if id, ok := n.(*ast.Ident); ok {
-					if v, ok := s.info.Uses[id].(*types.Var); ok && !v.IsField() && v.Pkg() != nil && v.Parent() != v.Pkg().Scope() {
+					v, ok := s.info.Uses[id].(*types.Var)
+					if !ok || v.IsField() || v.Pkg() == nil || !containsFunc(v.Type(), 0) {
+						return true
+					}
+					switch {
+					case v.Parent() != v.Pkg().Scope():
 						found = append(found, r.fset.Position(id.Pos()).String()+": the value goes through the local variable "+id.Name+
-							", which the walk does not follow (reached by "+r.path(where)+")")
+							", which can hold a function the walk does not follow (reached by "+r.path(where)+")")
+					case !isFunc(v.Type()) && inModule(v.Pkg()):
+						found = append(found, r.fset.Position(id.Pos()).String()+": the value reads a function held in "+id.Name+
+							", a package-level container the walk does not follow into (reached by "+r.path(where)+")")
 					}
 				}
 				return true

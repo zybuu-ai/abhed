@@ -21,10 +21,14 @@ All notable changes to Abhed are recorded here. The format follows
   each new worker. A program is the same one only with the same sockets
   and a process in common, so a new program on a socket address another
   left is told, and programs that stopped listening are forgotten, so a
-  long contest does not grow without bound. The "at most once a minute"
-  for a contest coming back is dropped: it could never apply, as a
-  program gone is forgotten, so every new program is told at once, at
-  most one notice per port each sweep.
+  long contest does not grow without bound. Every new program is still
+  told at once, and `_abhed/sandbox/port_contested` now carries `joined`
+  and `latestJoin` so Studio updates one entry per port in place; the
+  record (`sandbox.port_contested`, with a new `joined` field) and the log
+  take a port's first notice at once and then at most one entry per port
+  every 30 seconds, so a command that keeps starting listeners cannot
+  flood them. The "at most once a minute" for a contest coming back,
+  which could never apply, is gone.
 
 ## [1.2.9] - 2026-11-02
 

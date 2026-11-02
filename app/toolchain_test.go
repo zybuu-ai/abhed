@@ -623,6 +623,9 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	notice := r.cl.waitFor(from, "the contested port", func(m rpcMessage) bool {
 		return m.Method == "_abhed/sandbox/port_contested" && strings.Contains(string(m.Params), fmt.Sprintf(`"port":%d`, devPort))
 	})
+	if p := string(notice.Params); !strings.Contains(p, `"joined":`) || !strings.Contains(p, `"latestJoin":`) {
+		t.Fatalf("the notice carries no joined count or time: %s", p)
+	}
 	if !strings.Contains(string(notice.Params), "does not stop it") {
 		t.Fatalf("the notice does not say Abhed stops nothing: %s", notice.Params)
 	}

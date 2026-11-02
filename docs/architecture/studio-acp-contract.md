@@ -1061,7 +1061,7 @@ _abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message 
 // 1.2.9: an interactive terminal now uses the project's venv (abhed_venv)
 _abhed/terminal/venv { sessionId, terminalId, inUse }
 // 1.2.9: more than one program listens on a listen port; Abhed stops nothing
-_abhed/sandbox/port_contested { sessionId, port, message }
+_abhed/sandbox/port_contested { sessionId, port, message, joined, latestJoin }
 // 1.2.9: contested ports can no longer be seen (lsof failed)
 _abhed/sandbox/listen_watch_lost { sessionId, message }
 // engine → client request: confirm a destructive command
@@ -1117,8 +1117,13 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   same one only with the same sockets and a process in common, so a server
   recycling its workers keeps its master and stays one, a new process on a
   socket address another left is new, and a program gone is forgotten),
-  at most one notice per port per read and none held back, so a command
-  that keeps starting listeners brings one every few seconds. A server and
+  at most one notice per port per read and none held back. A later
+  `port_contested` for the same session and port replaces the earlier one
+  in place: it carries `joined`, the programs joined since the port was
+  last recorded, and `latestJoin`, the time of the latest. The record and
+  the engine's log take a port's first notice at once and then at most
+  one entry per port every 30 s, flushed when the window ends even if the
+  port has cleared; a clear does not reset the window. A server and
   the workers it forks, sharing one socket, count as one program; Abhed
   cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's

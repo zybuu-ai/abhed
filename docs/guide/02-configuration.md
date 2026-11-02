@@ -268,8 +268,11 @@ tells you within a few seconds, in every session that may listen on that
 port, and records it (`sandbox.port_contested`). It tells again within
 one read whenever a program it has not told of starts listening there,
 so a command cannot use the warning up in advance with programs of its
-own. Nothing holds a notice back, so a command that keeps starting new
-listeners there brings a notice every few seconds. A
+own. Nothing holds a notice back from you: Abhed Studio keeps one entry
+per port and updates it in place with how many programs have joined. The
+record and the log take a port's first notice at once and then at most
+one entry per port every 30 seconds, with the joins in between, so a
+command that keeps starting listeners cannot flood them. A
 server and the workers it forks share one socket and count as one
 program, as does one program listening on both `127.0.0.1` and `::1`;
 separate sockets bound with `SO_REUSEPORT` count as more than one. It

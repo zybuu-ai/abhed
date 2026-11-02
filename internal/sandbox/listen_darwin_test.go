@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -543,7 +544,7 @@ func TestContestToldWhenANewProgramJoinsAfterOneLeft(t *testing.T) {
 // A contest that cleared holds nothing back from a new program: an orphan of
 // the command leaving and a program of the person's joining within the
 // minute is told at once.
-func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
+func TestContestToldAtOnceForANewProgramAfterAClear(t *testing.T) {
 	port := freePort(t)
 	sb := listenSandbox(t, port)
 	var told atomic.Int64
@@ -568,7 +569,7 @@ func TestContestToldAtOnceForANewProgramInsideTheCooldown(t *testing.T) {
 	defer host.Close()
 	sweepListeners()
 	if told.Load() <= before {
-		t.Fatalf("a program of the person's joined within the minute: told %d, as before", told.Load())
+		t.Fatalf("a program of the person's joined after the clear: told %d, as before", told.Load())
 	}
 }
 
@@ -621,21 +622,115 @@ func TestNoteContestByProgramAndProcess(t *testing.T) {
 	server := program{name: "s0xa", pids: []int{10, 11}}
 	host := program{name: "s0xb", pids: []int{50}}
 	st, tell := noteContest(nil, []program{server, host})
-	if !tell {
-		t.Fatal("a first contest was not told")
+	if tell != 2 {
+		t.Fatalf("a first contest: told of %d programs", tell)
 	}
 	// The server recycles its worker: the master stays.
 	recycled := program{name: "s0xa", pids: []int{10, 12}}
-	if st, tell = noteContest(st, []program{recycled, host}); tell {
+	if st, tell = noteContest(st, []program{recycled, host}); tell != 0 {
 		t.Fatal("a recycled worker was told as a new program")
 	}
 	// The server's address freed and taken by a new process.
 	reused := program{name: "s0xa", pids: []int{70}}
-	if st, tell = noteContest(st, []program{reused, host}); !tell {
+	if st, tell = noteContest(st, []program{reused, host}); tell != 1 {
 		t.Fatal("a new process on a told socket address was not told")
 	}
 	// Gone: forgotten.
 	if st, _ = noteContest(st, []program{host}); len(st.told) != 1 {
 		t.Fatalf("told names kept for programs gone: %v", st.told)
+	}
+}
+
+// The record of a port churning new programs is bounded: the first at once,
+// then one per window carrying the joins since, flushed at the window's end
+// even once the port has cleared, and a clear does not reset the window;
+// every join is still told to the person at once.
+func TestContestRecordBound(t *testing.T) {
+	start := time.Now()
+	var w recordWindow
+	told, records, joined := 0, 0, 0
+	for i := 0; i < 20; i++ { // a new program every sweep for 40 s
+		now := start.Add(time.Duration(i) * 2 * time.Second)
+		told++
+		if rec, n := w.join(1, now); rec {
+			records++
+			joined += n
+		}
+	}
+	if told != 20 || records != 2 {
+		t.Fatalf("20 joins in 40 s: told %d, recorded %d times", told, records)
+	}
+	// The port clears; the rest of the window is recorded when it ends.
+	end := start.Add(38 * time.Second)
+	if due, _, _ := w.due(end.Add(10 * time.Second)); due {
+		t.Fatal("recorded before the window ended")
+	}
+	due, n, _ := w.due(start.Add(30*time.Second + 31*time.Second))
+	if !due || joined+n != 20 {
+		t.Fatalf("flushed %v with %d; recorded joins %d of 20", due, n, joined+n)
+	}
+	// Joining again just after does not reset the window.
+	if rec, _ := w.join(1, start.Add(62*time.Second)); rec {
+		t.Fatal("a join right after a record was recorded")
+	}
+	if w.spent(start.Add(200 * time.Second)) {
+		t.Fatal("a window with a join pending counted as spent")
+	}
+	if due, n, _ := w.due(start.Add(200 * time.Second)); !due || n != 1 || !w.spent(start.Add(300*time.Second)) {
+		t.Fatalf("the last join: flushed %v with %d", due, n)
+	}
+}
+
+// On real ports a churning command fills neither the record nor the log,
+// while a program of the person's joining mid-window is told in that sweep.
+func TestContestChurnIsBoundedButThePersonIsToldAtOnce(t *testing.T) {
+	ports := []int{freePort(t), freePort(t)}
+	sb := listenSandbox(t, ports...)
+	var mu sync.Mutex
+	notified, records, joined := map[int]int{}, map[int]int{}, map[int]int{}
+	SetListenWatch(sb, nil, func(c PortContested) {
+		mu.Lock()
+		defer mu.Unlock()
+		if c.Notify {
+			notified[c.Port]++
+		}
+		if c.Record {
+			records[c.Port]++
+			joined[c.Port] += c.Joined
+		}
+	}, nil)
+	for _, port := range ports {
+		// One socket held, a second one a new child's each 0.4 s (the child
+		// closes the one it inherits, so it is a program of its own).
+		churn := "import os,socket,time\np=" + strconv.Itoa(port) + "\n" +
+			"def sock():\n    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1); s.bind((\"127.0.0.1\", p)); s.listen(); return s\n" +
+			"s=sock(); print(\"listening\", flush=True)\n" +
+			"for _ in range(60):\n    pid=os.fork()\n    if pid == 0:\n        s.close(); c=sock(); time.sleep(0.4); os._exit(0)\n    os.waitpid(pid, 0)\n" +
+			"time.sleep(5)"
+		startIn(t, sb, "python3 -I -c '"+churn+"'")
+	}
+	for i := 0; i < 12; i++ {
+		time.Sleep(500 * time.Millisecond)
+		sweepListeners()
+	}
+	mu.Lock()
+	for _, port := range ports {
+		if notified[port] < 4 || records[port] != 1 {
+			mu.Unlock()
+			t.Fatalf("port %d churned: told %d times, recorded %d", port, notified[port], records[port])
+		}
+	}
+	before := notified[ports[0]]
+	mu.Unlock()
+	host, err := net.Listen("tcp", ":"+strconv.Itoa(ports[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	sweepListeners()
+	mu.Lock()
+	defer mu.Unlock()
+	if notified[ports[0]] <= before || records[ports[0]] != 1 {
+		t.Fatalf("a program of the person's mid-window: told %d (was %d), recorded %d", notified[ports[0]], before, records[ports[0]])
 	}
 }
