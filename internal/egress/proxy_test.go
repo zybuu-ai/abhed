@@ -57,7 +57,7 @@ func fakeDNS(_ context.Context, host string) ([]netip.Addr, error) {
 	case "allowed.test", "denied.test", "internal.test", "audit.test":
 		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 	}
-	return nil, fmt.Errorf("no such host %s", host)
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
 
 // issue is a credential for call on p, ended when the test ends.

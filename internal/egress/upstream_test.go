@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -244,7 +245,7 @@ func TestUpstreamChecksAddressesItCanResolve(t *testing.T) {
 	srv, port, _ := ownServer(t)
 	_ = srv
 	corp := startCorp(t, "", nil)
-	useUpstream(t, corp, func(u *Upstream) { u.Credentials = nil })
+	useUpstream(t, corp, func(u *Upstream) { u.Credentials, u.ResolveViaProxy = nil, true })
 	g := ownGuard(t, Config{Rules: []Rule{
 		{Host: "internal.test", Ports: []int{port}, Decision: "allow"},
 		{Host: "outside.test", Ports: []int{port}, Decision: "allow"},
@@ -356,7 +357,7 @@ func TestUpstreamChainsCommandsTraffic(t *testing.T) {
 	t.Cleanup(secure.Close)
 	pport, sport := portOf(t, plain.URL), portOf(t, secure.URL)
 	corp := startCorp(t, basic(corpUser, corpPass), nil)
-	up := useUpstream(t, corp, nil)
+	up := useUpstream(t, corp, func(u *Upstream) { u.ResolveViaProxy = true })
 	p, rec := startProxy(t, Config{Rules: []Rule{
 		{Host: "allowed.test", Ports: []int{pport, sport}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}},
 		{Host: "internal.test", Ports: []int{pport}, Decision: "allow"},
@@ -413,6 +414,9 @@ func TestUpstreamChainsCommandsTraffic(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("outside.test: %d", resp.StatusCode)
 	}
+	if ev := rec.wait(t, "outside.test"); ev.Resolved != "proxy" || ev.Payload()["resolved"] != "proxy" {
+		t.Fatalf("a name only the proxy resolved is not marked: %+v", ev)
+	}
 	p.Close()
 	ev := rec.wait(t, "allowed.test")
 	if ev.Upstream != up.Authority() || ev.IP != "" || ev.Decision != Allow {
@@ -465,7 +469,7 @@ func TestUpstreamRelay(t *testing.T) {
 	_, port, _ := ownServer(t)
 	corp := startCorp(t, basic(corpUser, corpPass), nil)
 	useUpstream(t, corp, func(u *Upstream) { u.NoProxy = []string{"internal.corp"} })
-	env, stop, err := UpstreamEnv()
+	env, stop, err := UpstreamEnv([]string{"outside.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,5 +554,171 @@ func TestUpstreamOverTLS(t *testing.T) {
 	SetUpstream(&Upstream{URL: host})
 	if _, err := ownGet(t, &Transport{Kind: KindRAG, Guard: Unguarded}, context.Background(), fmt.Sprintf("http://outside.test:%d/t", port)); err == nil {
 		t.Fatal("an https proxy was trusted without the bundle")
+	}
+}
+
+// slowDNS answers after the context ends, as a resolver an attacker slows.
+func slowDNS(ctx context.Context, host string) ([]netip.Addr, error) {
+	<-ctx.Done()
+	return nil, &net.DNSError{Err: "i/o timeout", Name: host, IsTimeout: true}
+}
+
+// failingDNS answers SERVFAIL.
+func failingDNS(_ context.Context, host string) ([]netip.Addr, error) {
+	return nil, &net.DNSError{Err: "server misbehaving", Name: host, IsTemporary: true}
+}
+
+// A name that does not resolve here is refused by default, before the proxy
+// is asked, and so is one whose lookup times out or fails, even with
+// resolve_via_proxy: only a definite not-found, for a host a rule names
+// exactly, goes to the proxy with the switch on, and is marked.
+func TestUpstreamResolveViaProxy(t *testing.T) {
+	_, port, _ := ownServer(t)
+	corp := startCorp(t, "", nil)
+	rules := Config{Rules: []Rule{
+		{Host: "outside.test", Ports: []int{port}, Decision: "allow"},
+		{Host: "*.wild.test", Ports: []int{port}, Decision: "allow"},
+	}}
+	get := func(g *Guard, rec *payloads, host string) error {
+		ctx := WithCaller(context.Background(), Caller{Session: "s", Record: rec.rec})
+		_, err := ownGet(t, &Transport{Kind: KindWebFetch, Guard: g}, ctx, fmt.Sprintf("http://%s:%d/r", host, port))
+		return err
+	}
+	for _, on := range []bool{false, true} {
+		useUpstream(t, corp, func(u *Upstream) { u.Credentials, u.ResolveViaProxy = nil, on })
+		var rec payloads
+		g := ownGuard(t, rules, GuardOptions{})
+		err := get(g, &rec, "outside.test")
+		if on != (err == nil) {
+			t.Fatalf("resolve_via_proxy %v: %v", on, err)
+		}
+		if !on && (!strings.Contains(err.Error(), "resolve_via_proxy") || corp.saw("outside.test")) {
+			t.Fatalf("off: %v, proxy asked %v", err, corp.saw("outside.test"))
+		}
+		if on {
+			if got := rec.all(); len(got) != 1 || got[0]["resolved"] != "proxy" {
+				t.Fatalf("not marked: %v", got)
+			}
+		}
+		// A host matched only by a wildcard is never passed unresolved.
+		if err := get(g, &rec, "x.wild.test"); err == nil || corp.saw("x.wild.test") {
+			t.Fatalf("a wildcard host went to the proxy unresolved: %v", err)
+		}
+		// A lookup that times out or fails is no not-found: refused.
+		for name, dns := range map[string]func(context.Context, string) ([]netip.Addr, error){"slow": slowDNS, "servfail": failingDNS} {
+			g2 := ownGuard(t, rules, GuardOptions{Resolve: dns})
+			if err := get(g2, &rec, "outside.test"); err == nil {
+				t.Fatalf("%s lookup, resolve_via_proxy %v: sent", name, on)
+			}
+		}
+	}
+
+	// The commands' proxy and an unguarded client with a check hold the same line.
+	useUpstream(t, corp, func(u *Upstream) { u.Credentials = nil })
+	before := len(corp.requests())
+	p, _ := startProxy(t, rules)
+	resp, err := client(t, callURL(t, p, "c"), nil).Get(fmt.Sprintf("http://outside.test:%d/", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || len(corp.requests()) != before {
+		t.Fatalf("commands, switch off: %d", resp.StatusCode)
+	}
+	tr := &Transport{Kind: KindWebFetch, Guard: Unguarded, Check: func(string, netip.AddrPort) error { return nil }, Resolve: fakeDNS}
+	if _, err := ownGet(t, tr, context.Background(), fmt.Sprintf("http://outside.test:%d/", port)); err == nil {
+		t.Fatal("an unguarded web_fetch-shaped client sent an unresolved name with the switch off")
+	}
+	useUpstream(t, corp, func(u *Upstream) { u.Credentials, u.ResolveViaProxy = nil, true })
+	if _, err := ownGet(t, tr, context.Background(), fmt.Sprintf("http://outside.test:%d/", port)); err == nil {
+		t.Fatal("an unguarded client with no allowed_hosts anchor sent an unresolved name")
+	}
+	tr.Anchored = func(h string) bool { return h == "outside.test" }
+	if _, err := ownGet(t, tr, context.Background(), fmt.Sprintf("http://outside.test:%d/a", port)); err != nil {
+		t.Fatalf("an anchored host with the switch on: %v", err)
+	}
+	tr.Resolve = slowDNS
+	if _, err := ownGet(t, tr, context.Background(), fmt.Sprintf("http://outside.test:%d/", port)); err == nil {
+		t.Fatal("a timed-out lookup was sent")
+	}
+}
+
+// The relay reaches the hosts it was started for and nothing else, without
+// asking the proxy.
+func TestUpstreamRelayRefusesOtherHosts(t *testing.T) {
+	_, port, _ := ownServer(t)
+	corp := startCorp(t, "", nil)
+	useUpstream(t, corp, func(u *Upstream) { u.Credentials = nil })
+	proxy, _, stop, err := UpstreamRelay([]string{"proxy.golang.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	pu, _ := url.Parse(proxy)
+	c := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+	resp, err := c.Get(fmt.Sprintf("http://other.test:%d/", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || len(corp.requests()) != 0 {
+		t.Fatalf("an unlisted host through the relay: %d, proxy %v", resp.StatusCode, corp.requests())
+	}
+	conn, err := net.Dial("tcp", pu.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	pass, _ := pu.User.Password()
+	fmt.Fprintf(conn, "CONNECT other.test:443 HTTP/1.1\r\nHost: other.test:443\r\nProxy-Authorization: %s\r\n\r\n", basic(pu.User.Username(), pass))
+	r, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusForbidden || len(corp.requests()) != 0 {
+		t.Fatalf("an unlisted CONNECT through the relay: %d", r.StatusCode)
+	}
+}
+
+// A destination the proxy is bypassed for is reached with the transport as
+// it was: not through the proxy, and not trusting the proxy's CA bundle.
+func TestUpstreamBypassedTrustsNoBundle(t *testing.T) {
+	bundleSrv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(bundleSrv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(bundleSrv.Certificate())
+	corp := startCorp(t, "", nil)
+	useUpstream(t, corp, func(u *Upstream) {
+		u.Credentials, u.Roots, u.Bundle, u.NoProxy = nil, pool, []*x509.Certificate{bundleSrv.Certificate()}, []string{"direct.test"}
+	})
+	// A client whose own roots do not hold the bundle's certificate.
+	tr := &Transport{Kind: KindK8s, Guard: Unguarded, Base: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool(), ServerName: "example.com"},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, strings.TrimPrefix(bundleSrv.URL, "https://"))
+		}}}
+	if _, err := ownGet(t, tr, context.Background(), "https://direct.test/"); err == nil {
+		t.Fatal("a bypassed destination trusted the proxy's CA bundle")
+	}
+	if len(corp.requests()) != 0 {
+		t.Fatal("a bypassed destination went through the proxy")
+	}
+}
+
+// A CONNECT authority with a line break or a space is refused, so no caller
+// can add a header to the proxy request.
+func TestUpstreamTunnelAuthority(t *testing.T) {
+	corp := startCorp(t, "", nil)
+	u := useUpstream(t, corp, nil)
+	for _, a := range []string{"", "host:443\r\nX-Evil: 1", "host :443", "host:443\n"} {
+		if _, err := u.DialTunnel(context.Background(), a, time.Second); err == nil {
+			t.Errorf("%q was tunnelled", a)
+		}
+	}
+	if len(corp.requests()) != 0 {
+		t.Fatal("the proxy was asked")
 	}
 }

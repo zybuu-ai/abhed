@@ -226,6 +226,9 @@ type Verdict struct {
 	Reason string
 	// AllowIPs are the internal addresses the allowing rules name.
 	AllowIPs []netip.Prefix
+	// Exact is set when an allowing rule names the host itself, not by a
+	// wildcard or the default.
+	Exact bool
 }
 
 // Allowed reports whether the request goes through.
@@ -267,6 +270,7 @@ func (p *Policy) InspectTLS() bool { return p.inspect }
 func (p *Policy) DecideHost(r Request) Verdict {
 	var ips []netip.Prefix
 	allowed, denied := "", ""
+	exact := false
 	for _, ru := range p.all() {
 		if !HostMatches(ru.host, ru.wildcard, r.Host) || !slices.Contains(ru.ports, r.Port) {
 			continue
@@ -280,6 +284,7 @@ func (p *Policy) DecideHost(r Request) Verdict {
 				allowed = ru.name
 			}
 			ips = append(ips, ru.allowIPs...)
+			exact = exact || !ru.wildcard
 		}
 	}
 	switch {
@@ -290,7 +295,7 @@ func (p *Policy) DecideHost(r Request) Verdict {
 		}
 		return v
 	case allowed != "":
-		return Verdict{Decision: Allow, Rule: allowed, Reason: "an allow rule names the host; each request inside is decided", AllowIPs: ips}
+		return Verdict{Decision: Allow, Rule: allowed, Reason: "an allow rule names the host; each request inside is decided", AllowIPs: ips, Exact: exact}
 	case p.defaultAllow:
 		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule matches and the default is allow"}
 	}
@@ -397,8 +402,10 @@ func (p *Policy) Decide(r Request) Verdict {
 		allowedBy = append(allowedBy, ru)
 	}
 	var ips []netip.Prefix
+	exact := false
 	for _, ru := range allowedBy {
 		ips = append(ips, ru.allowIPs...)
+		exact = exact || !ru.wildcard
 	}
 	switch {
 	case denied != "":
@@ -408,7 +415,7 @@ func (p *Policy) Decide(r Request) Verdict {
 		}
 		return v
 	case len(allowedBy) > 0:
-		return Verdict{Decision: Allow, Rule: allowedBy[0].name, Reason: "an allow rule matches", AllowIPs: ips}
+		return Verdict{Decision: Allow, Rule: allowedBy[0].name, Reason: "an allow rule matches", AllowIPs: ips, Exact: exact}
 	case p.defaultAllow:
 		return Verdict{Decision: Allow, Rule: "default", Reason: "no rule matches and the default is allow"}
 	}

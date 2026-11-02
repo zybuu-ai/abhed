@@ -61,6 +61,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if err != nil {
 		fail(err)
 	}
+	if err := cfg.ApplyNetwork(); err != nil {
+		fail(err)
+	}
 	registerState(cfg, workspace)
 	sessionDefs, agentsSrc, err := sessionAgents(cfg, ff, f.agentsJSON)
 	if err != nil {

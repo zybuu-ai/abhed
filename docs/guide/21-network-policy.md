@@ -506,7 +506,8 @@ commands' allowed traffic through it:
     "url": "http://proxy.corp.example:3128",
     "ca_file": "/etc/ssl/certs/corp-root.pem",
     "credentials_secret": "CORP_PROXY",
-    "no_proxy": [".corp.example", "10.0.0.0/8", "k8s-api.internal"]
+    "no_proxy": [".corp.example", "10.0.0.0/8", "k8s-api.internal"],
+    "resolve_via_proxy": false
   }
 }
 ```
@@ -514,9 +515,10 @@ commands' allowed traffic through it:
 | Key | |
 |---|---|
 | `url` | an explicit HTTP proxy, `http://host:port` or `https://host:port` (TLS to the proxy itself). No user or password, path or query: a credential in the URL is refused at load, without echoing it. A PAC file, WPAD discovery and SOCKS are not supported |
-| `ca_file` | a PEM bundle trusted beside the system's: for an `https://` proxy's certificate, and for servers a proxy that inspects TLS re-signs with the organisation's CA. It is added to a client's own roots too (a cluster's CA, a forge's CA file) |
+| `ca_file` | a PEM bundle trusted beside the system's, for connections through the proxy only: an `https://` proxy's certificate, and servers a proxy that inspects TLS re-signs with the organisation's CA. It is added to a client's own roots too (a cluster's CA, a forge's CA file) for those connections; a destination `no_proxy` names, reached directly, does not trust it |
 | `credentials_secret` | the NAME of a stored secret (`abhed secret set CORP_PROXY`) holding `user:password`, sent to the proxy as `Proxy-Authorization: Basic`. It is read at each connection, so a rotated password is used at once |
 | `no_proxy` | destinations reached directly: a host name, a domain (`.corp.example` or `*.corp.example`, which match the domain and its subdomains), an IP address or a CIDR range. A port is not supported; `*` is refused (remove `upstream_proxy` instead). Loopback (`localhost`, `127.0.0.0/8`, `::1`) is always reached directly |
+| `resolve_via_proxy` | off by default: a name that does not resolve on this machine is refused, so its address can always be checked. On, such a name (a definite "no such host" only) is sent to the proxy unchecked, for a host an allow rule names exactly (or, for `web_fetch` outside the allowlist, its `allowed_hosts` names exactly), never one matched only by a wildcard or the default; the record marks it `"resolved": "proxy"`. A managed file's value wins, and under a managed proxy the person cannot turn it on |
 
 **What goes through it**, unless `no_proxy` names the destination:
 
@@ -534,24 +536,34 @@ commands' allowed traffic through it:
 
 The allowlist decides first, every time: a request or tunnel the rules
 refuse is never sent to the corporate proxy, so the proxy can only carry
-less than the allowlist allows, never more. Before chaining, Abhed resolves
-the name itself and refuses it, as without a proxy, when it resolves to an
-internal address no rule names in `allow_ips`. Through a proxy the proxy
-resolves the name and picks the address it connects to; a name that does
-not resolve on this machine (common where only the proxy reaches outside
-DNS) is not refused for that, and the address the proxy connects to is the
-proxy's to check. The record entry carries `upstream` (the proxy's
-`host:port`) and no `ip`.
+less than the allowlist allows, never more. Before chaining a connection it
+checks (every one under the allowlist, and `web_fetch`'s always), Abhed
+resolves the name itself and refuses it, as without a proxy, when it
+resolves to an internal address no rule names in `allow_ips`; a lookup that fails in any
+other way than "no such host" (a timeout, `SERVFAIL`) is refused too, so a
+slow answer cannot skip the check. A name that does not resolve here at all
+is refused unless `resolve_via_proxy` is on (above). The proxy resolves the
+name again and picks the address it connects to, which is the proxy's to
+check: where the proxy's resolver and this machine's disagree, the check
+here is of this machine's answer. The record entry carries `upstream` (the
+proxy's `host:port`) and no `ip`.
 
 **Credentials** are sent only to the proxy, in a `Proxy-Authorization`
 header on the `CONNECT` or plain-HTTP request; the commands never see them
 (the commands' proxy adds them as it chains), and they are never in a URL,
 an error, a log line, the record or what the model sees. A program Abhed
 starts for its own downloads (`go install`, `git push`) is given a loopback
-relay with a one-time token in `HTTPS_PROXY` instead, and the relay adds the
-credentials; nothing else can use the relay. `ollama serve`, which outlives
-Abhed, is given the proxy only when it needs no credentials; with
-credentials, configure Ollama's own proxy.
+relay instead, in `HTTPS_PROXY` for `go install` and git's `http.proxy` for
+a push, with a token made for that run, and the relay adds the
+credentials. The relay reaches only the hosts that download needs (the Go
+module proxy and checksum database, or the push remote's host) and refuses
+any other target before the proxy is asked; it lives only as long as the
+program. The token is in that program's environment or configuration for
+its run, where a concurrent command that can read it could reach those
+hosts through the relay. A push to a remote `no_proxy` names goes directly,
+with no relay. `ollama serve`, which outlives Abhed, is given the proxy only
+when it is an `http://` proxy that needs neither credentials nor the CA
+bundle; otherwise configure Ollama's own proxy (and `SSL_CERT_FILE`).
 
 When the proxy is set, Abhed's clients ignore `HTTP_PROXY`, `HTTPS_PROXY`
 and `NO_PROXY` in its environment. Without it they keep their previous
@@ -559,8 +571,15 @@ behaviour: outside the allowlist they follow the environment, and under it
 they connect directly. A workspace's configuration never sets
 `network`, trusted or not. The managed configuration can force it: a
 managed `upstream_proxy` wins over the person's, and the person's
-`no_proxy` list is dropped unless the managed file names its own, so it
-cannot route around the organisation's proxy.
+`no_proxy` list and `resolve_via_proxy` are dropped unless the managed file
+names its own, so they cannot route around the organisation's proxy.
+
+The proxy is set for the whole process when a session or command starts
+(the CLI, `abhed serve`, an editor's ACP sessions, an SDK agent), never by
+loading a configuration. A process takes one: an SDK agent whose
+configuration names a different upstream proxy (or none) than one already
+built in the same process is refused, rather than either running through
+the other's; run it in a process of its own.
 
 **Not covered:** a PAC file or WPAD; SOCKS; NTLM, Kerberos or other
 challenge-response proxy authentication (Basic only); `ssh_connect` and

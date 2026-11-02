@@ -279,6 +279,9 @@ func mcpRemove(name string, out io.Writer) error {
 // mcpList shows the servers in effect in this workspace and where each came from.
 func mcpList(workspace string, trust config.TrustChoice, out io.Writer) error {
 	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: true})
+	if err == nil {
+		err = cfg.ApplyNetwork()
+	}
 	if err != nil {
 		return err
 	}

@@ -38,6 +38,9 @@ type Event struct {
 	// Upstream is the corporate proxy (host:port) the connection was chained
 	// through after the policy allowed it; "" for a direct one.
 	Upstream string
+	// Resolved is "proxy" for a chained connection whose name only the proxy
+	// resolved, so no address of it was checked here.
+	Resolved string
 	// Repeats, on a summary, is how many decisions like this one were not
 	// recorded one by one in the interval it covers.
 	Repeats int64
@@ -67,6 +70,9 @@ func (e Event) Payload() map[string]any {
 	}
 	if e.Upstream != "" {
 		m["upstream"] = e.Upstream
+	}
+	if e.Resolved != "" {
+		m["resolved"] = e.Resolved
 	}
 	return m
 }
@@ -388,11 +394,14 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(life, p.opts.DialTimeout)
-	up, ip, via, err := p.dial(ctx, t, v)
+	up, ip, via, byProxy, err := p.dial(ctx, t, v)
 	cancel()
 	ev.IP = ip
 	if via != nil {
 		ev.Upstream = via.Authority()
+	}
+	if byProxy {
+		ev.Resolved = "proxy"
 	}
 	if err != nil && life.Err() != nil {
 		ev.Decision, ev.Reason = Deny, errCallEnded.Error()
@@ -464,9 +473,13 @@ type refusal struct {
 	host string
 	addr netip.Addr
 	why  string
+	msg  string // a refusal with no address, such as a name that does not resolve here
 }
 
 func (e *refusal) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
 	if e.host != e.addr.String() {
 		return fmt.Sprintf("%s resolves to %s, %s, which no rule names in allow_ips", e.host, e.addr, e.why)
 	}
@@ -477,31 +490,34 @@ func (e *refusal) Error() string {
 // checked: the name is never resolved again. Through the upstream proxy in
 // force it connects to the proxy instead, after the same check of the
 // addresses the name has here, if any; the proxy is returned then.
-func (p *Proxy) dial(ctx context.Context, t Target, v Verdict) (net.Conn, string, *Upstream, error) {
+func (p *Proxy) dial(ctx context.Context, t Target, v Verdict) (net.Conn, string, *Upstream, bool, error) {
 	if up := CurrentUpstream(); up != nil && !up.Bypass(t.Host) {
-		for _, a := range upstreamPrecheck(ctx, p.resolve, t.Host) {
+		addrs, byProxy, err := up.precheck(ctx, p.resolve, t.Host, v.Exact && v.Decision == Allow)
+		if err != nil {
+			return nil, "", nil, false, err
+		}
+		for _, a := range addrs {
 			a = a.Unmap()
 			if p.self(netip.AddrPortFrom(a, t.Port)) {
-				return nil, a.String(), nil, &refusal{host: t.Host, addr: a, why: "this proxy itself"}
+				return nil, a.String(), nil, false, &refusal{host: t.Host, addr: a, why: "this proxy itself"}
 			}
 			if named(v.AllowIPs, a) {
 				continue
 			}
 			if why := AddrRefusal(a); why != "" {
-				return nil, a.String(), nil, &refusal{host: t.Host, addr: a, why: why}
+				return nil, a.String(), nil, false, &refusal{host: t.Host, addr: a, why: why}
 			}
 		}
 		var c net.Conn
-		var err error
 		if t.Tunnel {
 			c, err = up.DialTunnel(ctx, t.Authority(), p.opts.DialTimeout)
 		} else {
 			c, err = up.DialForward(ctx, p.opts.DialTimeout)
 		}
-		return c, "", up, err
+		return c, "", up, byProxy, err
 	}
 	c, ip, err := p.dialDirect(ctx, t, v)
-	return c, ip, nil, err
+	return c, ip, nil, false, err
 }
 
 // dialDirect is dial with no upstream proxy.

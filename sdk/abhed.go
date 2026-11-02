@@ -307,6 +307,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// The upstream proxy is process-wide: an agent with a different one than
+	// another in this process is refused, never run through the other's.
+	if err := cfg.ApplyNetwork(); err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
 	keys := untrustedModelKeys(cfg.Workspace)
 	if len(keys) > 0 && opts.Provider == nil && opts.AllowDefaultModel {
 		// Not silently: the person expects the workspace's model.

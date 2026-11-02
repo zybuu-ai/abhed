@@ -335,6 +335,9 @@ func (a *App) loadConfigWith(workspace string, set flagSettings) (config.Config,
 		return cfg, err
 	}
 	registerState(cfg, workspace)
+	if err := cfg.ApplyNetwork(); err != nil {
+		return cfg, err
+	}
 	return cfg, a.checkEdition(cfg)
 }
 

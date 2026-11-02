@@ -41,10 +41,7 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	if err := managedNeverDenies(findings); err != nil {
 		return cfg, err
 	}
-	if err := cfg.validateNetwork(); err != nil {
-		return cfg, err
-	}
-	return cfg, applyNetwork(cfg)
+	return cfg, cfg.validateNetwork()
 }
 
 // mergeManaged applies the managed file, if there is one, over cfg and

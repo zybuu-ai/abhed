@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -374,6 +375,27 @@ func (e Endpoints) goSumDB() string {
 	return "sum.golang.org"
 }
 
+// goHosts are the hosts a Go module build reaches: the module proxy's and
+// the checksum database's.
+func goHosts(e Endpoints) []string {
+	var hosts []string
+	for _, p := range strings.Split(e.goProxy(), ",") {
+		if u, err := url.Parse(strings.TrimSpace(p)); err == nil && u.Hostname() != "" {
+			hosts = append(hosts, u.Hostname())
+		}
+	}
+	sum := strings.Fields(e.goSumDB())
+	if len(sum) > 1 {
+		if u, err := url.Parse(sum[1]); err == nil && u.Hostname() != "" {
+			hosts = append(hosts, u.Hostname())
+		}
+	} else if len(sum) == 1 {
+		name, _, _ := strings.Cut(sum[0], "+")
+		hosts = append(hosts, name)
+	}
+	return hosts
+}
+
 // goBuild runs the go command; tests replace it.
 var goBuild = func(ctx context.Context, goBin string, env []string, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, goBin, args...) // #nosec G204 -- the cache's own Go, with fixed arguments
@@ -421,7 +443,7 @@ func (c Cache) installGoTool(ctx context.Context, ep Endpoints, e Extra, goroot,
 			"GOINSECURE=", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOOS=" + p.OS, "GOARCH=" + p.Arch,
 		}
 		// Through the configured upstream proxy, by a loopback relay that holds its credentials.
-		upEnv, stopRelay, err := egress.UpstreamEnv()
+		upEnv, stopRelay, err := egress.UpstreamEnv(goHosts(ep))
 		if err != nil {
 			return ExtraInstalled{}, fmt.Errorf("the upstream proxy relay: %w", err)
 		}
