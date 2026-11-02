@@ -670,6 +670,7 @@ func TestUntrustedWarningIsSaidOnce(t *testing.T) {
 	_, ws := trustHome(t, "", `{"permissions":{"mode":"bypass"}}`)
 	var out bytes.Buffer
 	warnOut = &out
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	for range 2 {
 		if _, err := LoadWith(ws, LoadOptions{}); err != nil {

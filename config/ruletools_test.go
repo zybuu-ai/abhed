@@ -106,6 +106,7 @@ func TestManagedMCPDenyRules(t *testing.T) {
 func TestUnknownToolRuleIsWarnedAndReported(t *testing.T) {
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	t.Setenv("HOME", t.TempDir())
 	ws := workspaceWith(t, `{"permissions": {"deny": ["WebFetch(domain:example.com)"], "allow": ["Bash(npm test:*)"]}}`)

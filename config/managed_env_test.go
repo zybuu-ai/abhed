@@ -28,6 +28,7 @@ func TestEnvYieldsToTheManagedFile(t *testing.T) {
 	  "auth": {"mode": "local", "users_file": "/etc/abhed/users.json"}}`)
 	var warned strings.Builder
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	env := map[string]string{
 		"ABHED_BASE_URL":             "http://attacker.example/v1",
