@@ -252,6 +252,18 @@ func hostAllowed(list []string, host string) bool {
 	return false
 }
 
+// anchored reports a host the managed allowed_hosts names exactly, not by a
+// wildcard: the only names resolve_via_proxy lets web_fetch send unresolved.
+func (t *Tool) anchored(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, h := range t.ExactHosts {
+		if h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), "."); !strings.Contains(h, "*") && h == host {
+			return true
+		}
+	}
+	return false
+}
+
 // plainPath refuses a path a server would rewrite before acting on it: a .
 // or .. segment, an empty one, or a backslash, decoded or not (u.Path is
 // decoded). A rule on /admin must not be dodged by /public/../admin, and the

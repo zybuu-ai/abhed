@@ -671,3 +671,54 @@ func TestEgressDecisionsAreReported(t *testing.T) {
 		t.Fatalf("network reported without decisions: %+v", plain.Network)
 	}
 }
+
+// The answers section lists each check with its claims; a contradicted claim
+// in the answer that was shown last is a finding, one a revision replaced is not.
+func TestAnswersSection(t *testing.T) {
+	v := func(revision string, verdict string) agent.AnswerVerdict {
+		return agent.AnswerVerdict{Mode: agent.VerifyStrict, Source: "text", Contradicted: 1, Revision: revision,
+			Claims: []agent.ClaimVerdict{{N: 1, Text: "All 15 tests pass\u202e", Verdict: verdict, Reason: "it says 15 test; #3 says 12 tests passed"}}}
+	}
+	b := (&rec{}).user("run the tests").
+		add(agent.EvAnswerVerdict, agent.ActorSystem, agent.Trusted, v("revise it", agent.ClaimContradicted)).
+		add(agent.EvAnswerVerdict, agent.ActorSystem, agent.Trusted, v("", agent.ClaimContradicted))
+	r := Analyze("s1", b.evs)
+	if len(r.Answers) != 2 || r.Answers[1].Seq != 3 {
+		t.Fatalf("answers %+v", r.Answers)
+	}
+	n := 0
+	for _, f := range r.Findings {
+		if f.Code == "contradicted-claim" {
+			n++
+			if f.Seq != 3 {
+				t.Fatalf("the finding names the answer shown: %+v", f)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want one contradicted-claim finding, got %d", n)
+	}
+	text := Text(r)
+	if !strings.Contains(text, "Answers") || !strings.Contains(text, "✗ All 15 tests pass") || strings.Contains(text, "\u202e") {
+		t.Fatalf("text:\n%s", text)
+	}
+	page, err := HTML(r)
+	if err != nil || !strings.Contains(page, "<s>All 15 tests pass") {
+		t.Fatalf("html: %v", err)
+	}
+}
+
+// A completion contract's command is the operator's: it is shown run and
+// allowed, by the operator, not left pending.
+func TestContractCommandIsAllowedByTheOperator(t *testing.T) {
+	zero := 0
+	b := (&rec{}).user("fix it").
+		add(agent.EvActionRequested, agent.ActorSystem, agent.Trusted, agent.ActionRequested{CallID: "contract_1", Tool: "bash",
+			Args: []byte(`{"command":"go test ./..."}`), Via: agent.ContractVia}).
+		add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": "contract_1", "step": "default", "by": agent.ByOperator}).
+		add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "contract_1", Tool: "bash", Content: "ok", ExitCode: &zero})
+	r := Analyze("s1", b.evs)
+	if len(r.Calls) != 1 || r.Calls[0].Decision != "allowed" || !r.Calls[0].Ran || r.Calls[0].By != agent.ByOperator {
+		t.Fatalf("calls %+v", r.Calls)
+	}
+}

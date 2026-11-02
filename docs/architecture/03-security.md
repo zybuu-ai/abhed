@@ -53,8 +53,10 @@ sockets. Outside it stay `ssh`, the `k8s_*` tools, remote RAG, a stdio server's 
 requests system services make on a command's or server's behalf: `trustd` on macOS
 fetches a certificate's AIA and OCSP URLs, and on Linux, for a stdio server, a resolver
 reached over a unix socket left visible looks names up (§5, §6,
-[Network policy](../guide/21-network-policy.md)). L5 is not built: nothing watches the
-action stream for anomalies, and the monitor is not turned on.
+[Network policy](../guide/21-network-policy.md)). L5 is partly built: the supervisor
+reviews each call after policy and may only tighten the decision (on by default, with a
+deterministic rules judge; [The supervisor](../guide/04-permissions.md#the-supervisor)),
+but nothing watches the action stream as a whole for anomalies.
 
 The key design decision is **L2**: policy never asks "does this look like a legitimate
 request?" It asks "is this action permitted for this session, regardless of why the model
@@ -158,9 +160,14 @@ Layered, because no single control is sufficient:
    them.
 5. **Egress default-deny.** With the network off, a fully injected agent's commands have
    nowhere to send data; under the allowlist, only to the destinations the rules allow.
-6. **Anomaly detection (not built).** The aim is to alert on action-sequence patterns
-   inconsistent with the stated task (mass file reads, unexpected network attempts,
-   credential-path access). Nothing does this yet.
+6. **The supervisor (built, on by default).** After policy decides, each call is reviewed
+   against what the person asked and what the session has shown: destructive work outside
+   the task, a program that is not there, a target or host nobody named or showed, a way
+   out after a credential file was read, a planted honeytoken. It may only make a decision
+   stricter, and it tells the model what to do instead
+   ([The supervisor](../guide/04-permissions.md#the-supervisor)). It judges one call at a
+   time with fixed rules (a model judge is optional and unmeasured); it is not anomaly
+   detection over the whole action stream, which is not built.
 
 **What Abhed explicitly does not claim:** that it detects prompt injection reliably.
 Detection is a mitigation layer, not the boundary. The boundary is L3 and L4.
@@ -233,14 +240,16 @@ boundary, and the consequences are worth stating plainly:
 | `ssh` | Always asks — it reports `Mutates() = true`, so no mode auto-approves it |
 | `k8s_get` | Read-only, so **auto mode approves it without a prompt** |
 | `web_search` | Asks for each search in every mode but bypass, unless an allow rule names it |
-| `k8s_apply` | Mutating, so it asks |
+| `k8s_apply` | Mutating, so it asks; each write is dry-run on the cluster first and the approval shows the diff |
+| `ssh_put`, `ssh_get` | Off unless `ssh.transfers`; mutating, so they ask unless an allow rule on `host:path` covers them; the workspace file is judged as a read or write |
 | `web_fetch` | Read-only, but it composes a URL that can carry data to the site, so with no `web_fetch.allowed_hosts` it **asks in the default, accept-edits, auto and plan modes** unless an allow rule names the URL. With `allowed_hosts`, a listed host runs unasked on the scheme's default port and asks on any other port. Bypass mode (unless a managed policy disables it) and `abhed eval` approve every ask. It refuses internal, loopback and metadata addresses on every hop and a URL holding a stored secret |
 
 `k8s_get` is the sharp edge: in an unattended or `auto` deployment, an injected
 instruction in untrusted content can drive it to read and to reach the network with no
-sandbox boundary in the way. Argument-scoped policy rules (`deny k8s_get(secrets*)`) are
-the control that applies, and they work — but whole-tool policy is otherwise the only
-thing mediating these tools.
+sandbox boundary in the way. A Secret's values are masked to their length and a keyed
+fingerprint before anything reaches the model, but its keys and metadata are read. Argument-scoped
+policy rules (`deny k8s_get(secrets*)`) are the control that applies, and they work — but
+whole-tool policy is otherwise the only thing mediating these tools.
 
 Under the allowlist, `web_fetch` and `web_search` go through the egress rules and are
 recorded as `egress.decision` events with `kind` `web_fetch` or `web_search`; `web_fetch`

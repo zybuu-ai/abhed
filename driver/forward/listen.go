@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 
+	"github.com/zybuu-ai/abhed/internal/loopport"
+
 	"github.com/zybuu-ai/abhed/driver"
 )
 
@@ -65,7 +67,9 @@ func Listen(ctx context.Context, d driver.Driver, id string, port int, opts List
 			return nil, err
 		}
 	}
-	ln, err := net.Listen("tcp", opts.Addr)
+	// Any port: on a Mac, one of Abhed's reserved range, which a debug
+	// session never reaches.
+	ln, err := loopport.ListenAddr(opts.Addr)
 	if err != nil {
 		return nil, driver.Errorf(driver.ErrUnavailable, "listening on %s: %v", opts.Addr, err)
 	}

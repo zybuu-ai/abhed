@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"html/template"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
 )
 
 //go:embed report.html.tmpl
@@ -17,13 +20,16 @@ var reportTmpl string
 // escapes by context, so a result containing markup or script renders as text;
 // the page also loads nothing from anywhere, so it opens on an air-gapped host.
 var page = template.Must(template.New("report").Funcs(template.FuncMap{
-	"n":     commas,
-	"ms":    dur,
-	"pct":   func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
-	"clock": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
-	"chart": chart,
-	"steps": steps,
-	"join":  strings.Join,
+	"n":             commas,
+	"ms":            dur,
+	"pct":           func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"clock":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
+	"chart":         chart,
+	"steps":         steps,
+	"remoteOutcome": remoteOutcome,
+	"plan":          func(h string, n int) string { return strings.TrimSpace(planLabel(h, n)) },
+	"codes":         codes,
+	"join":          strings.Join,
 	"latest": func(s []string) string {
 		if len(s) == 0 {
 			return ""
@@ -85,12 +91,51 @@ func Text(r Report) string {
 		}
 		b.WriteString("\n")
 	}
+	for _, t := range r.Toolchains {
+		fmt.Fprintf(&b, "  toolchain #%d %s %s %s: %s", t.Seq, t.Lang, t.Version, t.Platform, t.Outcome)
+		if t.Cached {
+			b.WriteString(" (installed already)")
+		} else if t.Digest != "" {
+			fmt.Fprintf(&b, " (%s, %s)", clip(t.URL, 100), clip(t.Digest, 23))
+		}
+		if t.Error != "" {
+			fmt.Fprintf(&b, " — %s", clip(t.Error, 160))
+		}
+		b.WriteString("\n")
+	}
+	for _, l := range r.LocalModel {
+		fmt.Fprintf(&b, "  ollama    #%d %s %s: %s", l.Seq, l.Op, l.Model, l.Outcome)
+		if l.Command != "" {
+			fmt.Fprintf(&b, " (%s)", clip(l.Command, 120))
+		}
+		if l.Error != "" {
+			fmt.Fprintf(&b, " — %s", clip(l.Error, 160))
+		}
+		b.WriteString("\n")
+	}
 	if n := r.Network; n != nil {
 		fmt.Fprintf(&b, "  network   %d allowed · %d refused", n.Allowed, n.Denied)
 		if n.WouldDeny > 0 {
 			fmt.Fprintf(&b, " · %d would be refused (monitor)", n.WouldDeny)
 		}
 		b.WriteString("\n")
+	}
+	if s := r.Supervisor; s != nil {
+		fmt.Fprintf(&b, "  supervisor %d reviewed · %d tightened · %d unavailable · %d corrections · %d re-plans   slowest %s",
+			s.Reviewed, s.Tightened, s.Unavailable, s.Corrections, s.Replans, dur(s.MaxLatencyMS))
+		if s.Unreviewed > 0 {
+			fmt.Fprintf(&b, "   %d not reviewed (turn budget)", s.Unreviewed)
+		}
+		if len(s.Judges) > 0 {
+			fmt.Fprintf(&b, "   judge %s", strings.Join(s.Judges, ", "))
+		}
+		b.WriteString("\n")
+		if len(s.ByCode) > 0 {
+			fmt.Fprintf(&b, "             %s\n", codes(s.ByCode))
+		}
+		for _, c := range s.Concerns {
+			fmt.Fprintf(&b, "             #%d %s %s → %s  %s: %s\n", c.Seq, c.Tool, c.Before, c.After, c.Code, clip(oneLine(c.Rationale), 100))
+		}
 	}
 	fmt.Fprintf(&b, "  record    #%d–#%d", r.Integrity.FirstSeq, r.Integrity.LastSeq)
 	if len(r.Integrity.Gaps) > 0 {
@@ -113,6 +158,38 @@ func Text(r Report) string {
 				at = fmt.Sprintf("  #%d", f.Seq)
 			}
 			fmt.Fprintf(&b, "  %-8s %s%s\n           %s\n", strings.ToUpper(string(f.Severity)), f.Title, at, f.Detail)
+		}
+	}
+
+	if len(r.Answers) > 0 {
+		b.WriteString("\n  Answers   ✓ verified · ? unverified · ✗ contradicted, against this session's record\n")
+		for _, a := range r.Answers {
+			fmt.Fprintf(&b, "  #%-4d %s (%s, %s)", a.Seq, a.Footer(), a.Mode, a.Source)
+			if a.Revision != "" {
+				b.WriteString(" · revision asked")
+			}
+			b.WriteString("\n")
+			for _, c := range a.Claims {
+				mark := "?"
+				switch c.Verdict {
+				case agent.ClaimVerified:
+					mark = "✓"
+				case agent.ClaimContradicted:
+					mark = "✗"
+				}
+				fmt.Fprintf(&b, "    %s %-60s %s\n", mark, clip(oneLine(c.Text), 60), clip(oneLine(c.Reason), 90))
+			}
+		}
+	}
+
+	if len(r.RemoteChanges) > 0 {
+		b.WriteString("\n  Remote changes\n")
+		for _, t := range r.RemoteChanges {
+			fmt.Fprintf(&b, "  %s %s\n", t.Kind, t.Name)
+			for _, c := range t.Changes {
+				fmt.Fprintf(&b, "    #%-4d %-9s %-15s %s%s\n", c.Seq, remoteOutcome(c), clip(c.Decision+byLabel(c.By), 15),
+					clip(oneLine(c.What), 70), planLabel(c.PlanHash, c.PlanStep))
+			}
 		}
 	}
 
@@ -235,4 +312,37 @@ func revision(r string) string {
 		return ""
 	}
 	return " (revision " + r + ")"
+}
+
+// remoteOutcome is how a remote change ended: its exit code, or why it has none.
+func remoteOutcome(c RemoteChange) string {
+	switch {
+	case c.Decision == "denied":
+		return "denied"
+	case !c.Ran:
+		return "not run"
+	case c.ExitCode != nil:
+		return "exit " + strconv.Itoa(*c.ExitCode)
+	case c.IsError:
+		return "failed"
+	}
+	return "ok"
+}
+
+func byLabel(by string) string {
+	if by == "" {
+		return ""
+	}
+	return " " + by
+}
+
+// planLabel names the runbook step a call was, or nothing.
+func planLabel(hash string, step int) string {
+	if hash == "" {
+		return ""
+	}
+	if len(hash) > 12 {
+		hash = hash[:12]
+	}
+	return fmt.Sprintf("   [plan %s step %d]", hash, step)
 }

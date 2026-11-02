@@ -33,6 +33,7 @@ func TestUnknownKeyWarningShowsControlBytes(t *testing.T) {
 	}
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	cfg, _ := Load(ws)
 	if len(cfg.Unknown) != 4 {
@@ -71,6 +72,7 @@ func TestManagedRefusalsShowControlBytes(t *testing.T) {
 func TestNeverAllowsWarningShowsControlBytes(t *testing.T) {
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	warnNeverAllows(nil, []string{"bash(a\x1b[2J && b\x07\x00)"})
 	if warned.Len() == 0 {

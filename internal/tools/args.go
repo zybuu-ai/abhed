@@ -273,10 +273,26 @@ type SecretArgs interface {
 // WithheldSecretArg replaces a value given where a secret's name belongs.
 const WithheldSecretArg = "[withheld: not a secret name]"
 
+// SecretPaths marks a tool that takes secret names deeper in its arguments:
+// each path is a list of keys, "*" standing for any key or list index, and
+// the string it reaches is put to its own secret(NAME) rule.
+type SecretPaths interface {
+	SecretPaths() [][]string
+}
+
+// SecretWithholder is a tool whose arguments can carry a secret's value
+// somewhere other than a secret's name, such as a Secret in a manifest:
+// WithholdSecrets returns the arguments with any such value withheld, or
+// them unchanged.
+type SecretWithholder interface {
+	WithholdSecrets(args json.RawMessage) json.RawMessage
+}
+
 // SecretNames returns the secret names a call to t asks for.
 func SecretNames(t Tool, args json.RawMessage) []string {
 	sa, ok := t.(SecretArgs)
-	if !ok {
+	sp, deep := t.(SecretPaths)
+	if !ok && !deep {
 		return nil
 	}
 	m, err := DecodeArgs(args)
@@ -284,12 +300,54 @@ func SecretNames(t Tool, args json.RawMessage) []string {
 		return nil
 	}
 	var out []string
-	for _, k := range sa.SecretArgs() {
-		if v, ok := m[k].(string); ok && v != "" {
-			out = append(out, v)
+	if ok {
+		for _, k := range sa.SecretArgs() {
+			if v, ok := m[k].(string); ok && v != "" {
+				out = append(out, v)
+			}
+		}
+	}
+	if deep {
+		for _, p := range sp.SecretPaths() {
+			walkPath(m, p, func(v any, _ func(any)) {
+				if s, ok := v.(string); ok && s != "" {
+					out = append(out, s)
+				}
+			})
 		}
 	}
 	return out
+}
+
+// walkPath calls f with each value path reaches in v, and a setter for it.
+func walkPath(v any, path []string, f func(v any, set func(any))) {
+	if len(path) == 0 {
+		return
+	}
+	key, rest := path[0], path[1:]
+	visit := func(child any, set func(any)) {
+		if len(rest) == 0 {
+			f(child, set)
+		} else {
+			walkPath(child, rest, f)
+		}
+	}
+	switch c := v.(type) {
+	case map[string]any:
+		if key == "*" {
+			for k, child := range c {
+				visit(child, func(n any) { c[k] = n })
+			}
+		} else if child, ok := c[key]; ok {
+			visit(child, func(n any) { c[key] = n })
+		}
+	case []any:
+		if key == "*" {
+			for i, child := range c {
+				visit(child, func(n any) { c[i] = n })
+			}
+		}
+	}
 }
 
 // WithholdSecretValues replaces anything but a secret's name in t's secret
@@ -297,8 +355,12 @@ func SecretNames(t Tool, args json.RawMessage) []string {
 // otherwise have it judged, shown for approval and recorded, and the record is
 // append-only. Arguments with nothing to withhold come back unchanged.
 func WithholdSecretValues(t Tool, canon json.RawMessage) json.RawMessage {
+	if sw, ok := t.(SecretWithholder); ok {
+		canon = sw.WithholdSecrets(canon)
+	}
 	sa, ok := t.(SecretArgs)
-	if !ok {
+	sp, deep := t.(SecretPaths)
+	if !ok && !deep {
 		return canon
 	}
 	m, err := DecodeArgs(canon)
@@ -306,16 +368,29 @@ func WithholdSecretValues(t Tool, canon json.RawMessage) json.RawMessage {
 		return canon
 	}
 	changed := false
-	for _, k := range sa.SecretArgs() {
-		v, found := m[k]
-		if !found {
-			continue
+	if ok {
+		for _, k := range sa.SecretArgs() {
+			v, found := m[k]
+			if !found {
+				continue
+			}
+			if s, isStr := v.(string); isStr && (s == "" || secrets.ValidName(s)) {
+				continue
+			}
+			m[k] = WithheldSecretArg
+			changed = true
 		}
-		if s, isStr := v.(string); isStr && (s == "" || secrets.ValidName(s)) {
-			continue
+	}
+	if deep {
+		for _, p := range sp.SecretPaths() {
+			walkPath(m, p, func(v any, set func(any)) {
+				if s, isStr := v.(string); isStr && (s == "" || secrets.ValidName(s)) {
+					return
+				}
+				set(WithheldSecretArg)
+				changed = true
+			})
 		}
-		m[k] = WithheldSecretArg
-		changed = true
 	}
 	if !changed {
 		return canon

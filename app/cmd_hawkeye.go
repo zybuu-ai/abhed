@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/hawkeye"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/server"
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
@@ -131,12 +132,7 @@ func hawkeyeCmd(workspace string, args []string, trust config.TrustChoice) int {
 			}
 		}
 	} else {
-		cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
-		if err != nil {
-			fail(err)
-		}
-		// Postgres when configured, otherwise the local record the CLI writes.
-		st, closeStore, err := openStore(context.Background(), cfg)
+		st, closeStore, err := hawkeyeStore(workspace, trust)
 		if err != nil {
 			fail(err)
 		}
@@ -220,4 +216,15 @@ func writeHawkeye(path string, rep hawkeye.Report) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o600) // #nosec G703 -- the operator's -out path
+}
+
+// hawkeyeStore is the store a session's events are read from: Postgres when
+// configured, otherwise the local record the CLI writes. Opening it may reach
+// the witness, so the upstream proxy is in force first.
+func hawkeyeStore(workspace string, trust config.TrustChoice) (server.EventStore, func(), error) {
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust})
+	if err != nil {
+		return nil, nil, err
+	}
+	return openStore(context.Background(), cfg)
 }

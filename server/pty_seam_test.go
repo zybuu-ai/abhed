@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -197,14 +198,18 @@ func TestEngineForegroundAsksTheHostNotTheContainer(t *testing.T) {
 	}
 	cgroup := "0::/machine.slice/libpod-0123456789abcdef.scope/container\n"
 	stat := "4242 (bash) S 1 4242 4242 34816 4242 0\n"
-	old := engineHostProc
-	t.Cleanup(func() { engineHostProc = old })
-	engineHostProc = func(_ context.Context, _ string, paths ...string) ([]byte, error) {
+	// engineHostProc and engineAskWait are package globals this test swaps:
+	// it must never be made t.Parallel().
+	old, wait := engineHostProc.Get(), engineAskWait.Get()
+	t.Cleanup(func() { engineHostProc.Set(old); engineAskWait.Set(wait) })
+	// The fake engine is a shell script; a loaded machine can take seconds to start one.
+	engineAskWait.Set(time.Minute)
+	engineHostProc.Set(func(_ context.Context, _ string, paths ...string) ([]byte, error) {
 		if len(paths) != 2 || paths[0] != "/proc/4242/cgroup" || paths[1] != "/proc/4242/stat" {
 			t.Fatalf("read %v", paths)
 		}
 		return []byte(cgroup + stat), nil
-	}
+	})
 	ask := engineForeground(exec.Command(engine, "run", "--rm", "--name", "abhed-term-x", "img"))
 	if ask == nil {
 		t.Fatal("no probe for a named container")

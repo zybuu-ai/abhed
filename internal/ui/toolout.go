@@ -81,7 +81,14 @@ type toolCall struct {
 	args    json.RawMessage
 	// asked is set when the call waited on a person: the dialog drew it.
 	asked bool
+	// byPerson is a call the person made, such as a ! command: they asked
+	// for its output, so more of it is shown.
+	byPerson bool
 }
+
+// personShownLines is how much of a person's own command output is shown
+// before the rest folds behind ctrl+o.
+const personShownLines = 40
 
 // SetWorkspace tells the renderer the workspace root, so paths in tool
 // headers, scopes and messages are shown relative to it.
@@ -212,6 +219,35 @@ func summarizeArgsRel(tool string, raw json.RawMessage, rel func(string) string)
 		return str("query")
 	case "shell_output", "shell_kill":
 		return str("shell_id")
+	case "ssh":
+		line := str("host") + " $ " + truncate(str("command"), 120)
+		if s := str("stdin_secret"); s != "" {
+			line += " (stdin: stored secret " + s + ")"
+		}
+		return line
+	case "ssh_connect":
+		who := str("addr")
+		if u := str("user"); u != "" {
+			who = u + "@" + who
+		}
+		if n := str("name"); n != "" && n != str("addr") {
+			who += " as " + n
+		}
+		return who
+	case "ssh_put":
+		from := "file " + rel(str("file"))
+		if s := str("secret"); s != "" {
+			from = "stored secret " + s
+		}
+		return str("host") + ":" + str("remote_path") + " ← " + from
+	case "ssh_get":
+		return str("host") + ":" + str("remote_path") + " → " + rel(str("file"))
+	case "k8s_get":
+		return k8sGetLine(m, str)
+	case "k8s_apply":
+		return k8sHead(m, str)
+	case "k8s_login":
+		return "cluster " + str("cluster") + " with stored secret " + str("token_secret")
 	}
 	return ""
 }
@@ -229,11 +265,11 @@ func (r *Renderer) toolHeader(tool string, args json.RawMessage) string {
 	return s.Accent("● ") + s.Bold(toolTitle(tool)) + s.Dim("(") + sum + s.Dim(")")
 }
 
-func (r *Renderer) toolRequested(d *dock, a agent.ActionRequested) {
+func (r *Renderer) toolRequested(d *dock, a agent.ActionRequested, byPerson bool) {
 	if r.tools.calls == nil {
 		r.tools.calls = map[string]*toolCall{}
 	}
-	c := &toolCall{tool: a.Tool, args: a.Args, summary: summarizeArgsRel(a.Tool, a.Args, r.rel), asked: a.RequiresApproval}
+	c := &toolCall{tool: a.Tool, args: a.Args, summary: summarizeArgsRel(a.Tool, a.Args, r.rel), asked: a.RequiresApproval, byPerson: byPerson}
 	r.tools.calls[a.CallID] = c
 	d.act.label = "Running " + toolTitle(a.Tool)
 	if a.RequiresApproval {
@@ -272,6 +308,9 @@ func (r *Renderer) toolObserved(d *dock, o agent.Observation) {
 			b.headN, b.tailN = 6, 4
 		} else if len(b.body) == 0 {
 			b.head = s.Dim("(no output) · " + strings.TrimPrefix(first, "exit 0 · "))
+		}
+		if c != nil && c.byPerson {
+			b.headN, b.tailN = personShownLines, 0
 		}
 		d.commit(b)
 	default:
@@ -428,4 +467,29 @@ func observationSummary(o agent.Observation) string {
 		return firstLine(o.Content)
 	}
 	return ""
+}
+
+// k8sGetLine names what a k8s_get reads: resource, name, namespace, where,
+// and a rollout wait.
+func k8sGetLine(m map[string]any, str func(string) string) string {
+	what := str("resource")
+	if n := str("name"); n != "" {
+		what += "/" + n
+	}
+	parts := []string{what}
+	if ns := str("namespace"); ns != "" {
+		parts = append(parts, "namespace "+ns)
+	}
+	if c := str("cluster"); c != "" {
+		parts = append(parts, "cluster "+c)
+	} else if c := str("context"); c != "" {
+		parts = append(parts, "context "+c)
+	}
+	if sel := str("selector"); sel != "" {
+		parts = append(parts, "selector "+sel)
+	}
+	if w, ok := m["wait_seconds"].(float64); ok && w > 0 {
+		parts = append(parts, fmt.Sprintf("wait %vs for the rollout", w))
+	}
+	return strings.Join(parts, " · ")
 }

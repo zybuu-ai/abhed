@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // Choosing the model from the console.
@@ -33,6 +35,9 @@ type providerInfo struct {
 	Type          string `json:"type"`
 	ContextWindow int    `json:"context_window,omitempty"`
 	Default       bool   `json:"default"`
+	// Ollama is set when a local Ollama serves it, so the picker asks
+	// /v1/ollama/status whether it is ready.
+	Ollama bool `json:"ollama,omitempty"`
 }
 
 // providers lists what this deployment can switch between.
@@ -45,10 +50,12 @@ func (s *Server) providers() []providerInfo {
 		if cfg.ModelAllowed(name) != nil {
 			continue
 		}
+		_, viaOllama := toolset.OllamaTarget(cfg, name)
 		out = append(out, providerInfo{
 			Name: name, Model: p.Model, Type: p.Type,
 			ContextWindow: p.ContextWindow,
 			Default:       name == cfg.Model.Default,
+			Ollama:        viaOllama,
 		})
 	}
 	// Stable order, or the dropdown reshuffles on every poll.
@@ -72,7 +79,7 @@ func (s *Server) resolveProvider(name string) (model.Adapter, error) {
 	if err := s.opts.Config.ModelAllowed(name); err != nil {
 		var pinned *config.ManagedError
 		if errors.As(err, &pinned) {
-			return nil, providerError(pinned.Reason)
+			return nil, refusedProvider{pinned}
 		}
 		return nil, errUnknownProvider
 	}
@@ -112,6 +119,28 @@ func (e providerError) Error() string { return string(e) }
 
 const errUnknownProvider providerError = "no such provider is configured"
 
+// refusedProvider is a configured provider the managed pin or the allowed
+// models refuse; it reads as the reason, and unwraps to the refusal.
+type refusedProvider struct{ *config.ManagedError }
+
+func (e refusedProvider) Error() string { return e.Reason }
+func (e refusedProvider) Unwrap() error { return e.ManagedError }
+
+// auditRefused logs a model or MCP server the configuration refused a
+// caller, and hands it to Options.AdminAudit as config.refused.
+func (s *Server) auditRefused(ctx context.Context, err error) {
+	var refused *config.ManagedError
+	if !errors.As(err, &refused) {
+		return
+	}
+	s.log.Warn("refused by the configuration", "key", refused.Key, "value", config.Printable(refused.Value),
+		"reason", refused.Reason, "by", UserOf(ctx))
+	if s.opts.AdminAudit != nil {
+		s.opts.AdminAudit(ctx, "config.refused", refused.Key, map[string]any{
+			"value": config.Printable(refused.Value), "reason": refused.Reason, "by": UserOf(ctx)})
+	}
+}
+
 // setSessionModel swaps the model on a session, recording the switch so the
 // record and a later resume both name the model that answers.
 func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +174,7 @@ func (s *Server) setSessionModel(w http.ResponseWriter, r *http.Request) {
 
 	adapter, err := s.resolveProvider(req.Provider)
 	if err != nil {
+		s.auditRefused(r.Context(), err)
 		// Named separately from a 404 on the session: "that provider is not
 		// configured" is a different fix from "that session is not yours".
 		WriteError(w, http.StatusBadRequest, err.Error())

@@ -41,22 +41,25 @@ func TestACallWithNoResultIsNotShownAsRun(t *testing.T) {
 	}
 }
 
-// A command the sandbox refused part of is marked, and raises a finding.
+// A command the sandbox refused part of is marked, and raises a finding,
+// when bash recorded the refusal as one of a folder every tier denies. The
+// same words with nothing to show it was the sandbox only suggest it.
 func TestASandboxRefusalIsAFinding(t *testing.T) {
-	out := "exit 0 · 58ms\nls: .abhed: Operation not permitted\n\n\nNOTE: the sandbox denied this operation. Retrying the same command will fail identically."
+	out := "exit 1 · 58ms\nls: .abhed: Operation not permitted\n\n\nNOTE: the sandbox denied this operation. Retrying the same command will fail identically."
 	r := (&rec{}).user("look").model(1200, 900, 32768)
-	for _, c := range []struct{ id, out, tier string }{
-		{"c1", out, "process"}, {"c2", "exit 0 · 3ms\na", "process"}, {"c3", out, "none"}, {"c4", out, ""},
+	for _, c := range []struct{ id, out, tier, note string }{
+		{"c1", out, "process", "abhed"}, {"c2", "exit 0 · 3ms\na", "process", ""}, {"c3", out, "none", ""}, {"c4", out, "", ""},
+		{"c5", out, "process", ""}, {"c6", out, "process", "denied"},
 	} {
 		r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: c.id, Tool: "bash", Args: json.RawMessage(`{"command":"ls .abhed"}`)})
 		r.add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": c.id, "step": "mode", "by": "policy"})
-		r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: c.id, Tool: "bash", Content: c.out, Sandbox: c.tier})
+		r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: c.id, Tool: "bash", Content: c.out, Sandbox: c.tier, SandboxNote: c.note})
 	}
 	got := Analyze("s", r.end(agent.TermCompleted).evs)
 	// Only the refusal under a sandbox counts: on the host, or with no tier on the record, it is not one.
-	for i, want := range []bool{true, false, false, false} {
-		if got.Calls[i].SandboxDenied != want {
-			t.Errorf("call %s sandbox refused %v, want %v", got.Calls[i].CallID, got.Calls[i].SandboxDenied, want)
+	for i, want := range []struct{ denied, unconfirmed bool }{{true, false}, {false, false}, {false, false}, {false, false}, {false, true}, {false, true}} {
+		if c := got.Calls[i]; c.SandboxDenied != want.denied || c.SandboxUnconfirmed != want.unconfirmed {
+			t.Errorf("call %s sandbox refused %v unconfirmed %v, want %+v", c.CallID, c.SandboxDenied, c.SandboxUnconfirmed, want)
 		}
 	}
 	if m := markOf(t, got, got.Calls[0].Seq); m != "!" {
@@ -65,8 +68,11 @@ func TestASandboxRefusalIsAFinding(t *testing.T) {
 	if m := markOf(t, got, got.Calls[1].Seq); m != "✓" {
 		t.Errorf("a clean run is marked %q", m)
 	}
-	if f := has(got, "sandbox-denied"); f == nil || f.Seq != got.Calls[0].Seq {
+	if f := has(got, "sandbox-denied"); f == nil || f.Seq != got.Calls[0].Seq || !strings.Contains(f.Detail, "Abhed's own state") {
 		t.Errorf("no sandbox-denied finding: %+v", got.Findings)
+	}
+	if f := has(got, "sandbox-unconfirmed"); f == nil || f.Seq != got.Calls[4].Seq {
+		t.Errorf("no sandbox-unconfirmed finding: %+v", got.Findings)
 	}
 }
 
@@ -90,9 +96,13 @@ func TestAttributionIsTheEventsOwn(t *testing.T) {
 	// A reviewer's refusal written before denials carried "by".
 	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c4", Tool: "write", Args: json.RawMessage(`{}`)})
 	r.add(agent.EvActionDenied, agent.ActorUser, agent.Trusted, map[string]string{"call_id": "c4", "step": "default"})
+	// A retry that took the approval of a failed attempt: carried, not reviewed.
+	r.add(agent.EvActionRequested, agent.ActorAgent, agent.Trusted, agent.ActionRequested{CallID: "c5", Tool: "edit", Args: json.RawMessage(`{}`)})
+	r.add(agent.EvActionApproved, agent.ActorSystem, agent.Trusted, map[string]string{"call_id": "c5", "step": "default", "by": "carried", "carried_from": "c0"})
+	r.add(agent.EvObservation, agent.ActorTool, agent.Untrusted, agent.Observation{CallID: "c5", Tool: "edit", Content: "ok"})
 	got := Analyze("s", r.end(agent.TermCompleted).evs)
 
-	want := []struct{ by, scope string }{{"user", ""}, {"headless", ""}, {"session-scope", "write(*)"}, {"reviewer", ""}}
+	want := []struct{ by, scope string }{{"user", ""}, {"headless", ""}, {"session-scope", "write(*)"}, {"reviewer", ""}, {"carried", ""}}
 	for i, w := range want {
 		if c := got.Calls[i]; c.By != w.by || c.Scope != w.scope {
 			t.Errorf("call %s by %q scope %q, want %q %q", c.CallID, c.By, c.Scope, w.by, w.scope)

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the Community Edition release artefacts: one archive per platform
-# holding the binary, the licence, the README and the changelog, the
-# microVM driver's two binaries (abhed-microvm and abhed-guest) for Linux,
+# holding the binary, the licence, the README, the changelog and the Linux
+# helper for its architecture (abhed-helper-linux-<arch>, pinned into the
+# binary by checksum; also published bare), the microVM driver's two binaries (abhed-microvm and abhed-guest) for Linux,
 # with -s an SPDX SBOM beside each bare binary (needs syft), plus a checksum
 # file over every abhed-* file in OUTDIR. What the release workflow runs;
 # runs the same on a laptop. Signing happens in the workflow, which has the
@@ -29,7 +30,7 @@ while getopts "v:o:p:m:sh" opt; do
     p) PLATFORMS="$OPTARG" ;;
     m) MICROVM_PLATFORMS="$OPTARG" ;;
     s) SBOM=1 ;;
-    h) sed -n '2,10p' "$0"; exit 0 ;;
+    h) sed -n '2,12p' "$0"; exit 0 ;;
     *) exit 2 ;;
   esac
 done
@@ -46,6 +47,10 @@ echo "Abhed ${VERSION}"
 echo "  embedding documentation"
 python3 "$ROOT/scripts/docsite/build.py" --embed-only >/dev/null
 
+# The helpers first: each engine build pins their checksums.
+"$ROOT/scripts/build-helpers.sh" -o "$STAGE/helpers" > "$STAGE/helper-flags"
+HELPER_FLAGS="$(cat "$STAGE/helper-flags")"
+
 for platform in $PLATFORMS; do
   os="${platform%/*}"; arch="${platform#*/}"
   name="abhed-${VERSION}-${os}-${arch}"
@@ -61,9 +66,12 @@ for platform in $PLATFORMS; do
     cgo=(CGO_ENABLED=1 "CC=clang -arch $carch" "MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-12.0}")
   fi
   env "${cgo[@]}" GOOS="$os" GOARCH="$arch" go build \
-    -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}" \
+    -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION} ${HELPER_FLAGS}" \
     -o "$dir/abhed" "$ROOT/cmd/abhed"
   cp "$ROOT/LICENSE" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$dir/"
+  # Beside the binary, where the engine looks for it.
+  cp "$STAGE/helpers/abhed-helper-linux-$arch" "$dir/"
+  cp "$STAGE/helpers/abhed-helper-linux-$arch" "$OUTDIR/abhed-helper-${VERSION}-linux-$arch"
   tar -czf "$OUTDIR/$name.tar.gz" -C "$STAGE" "$name"
   # The bare binary too, for a one-line install with curl.
   cp "$dir/abhed" "$OUTDIR/$name"

@@ -170,11 +170,11 @@ type deferredTool struct {
 func (d *deferredTool) Hidden() bool { return !d.loaded.Load() }
 
 // deferrable reports whether t can be wrapped without losing an optional
-// interface: one whose mere presence the loop reads (SecretArgs, ModeScoped,
-// FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
+// interface: one whose mere presence the loop reads (SecretArgs, SecretPaths,
+// SecretWithholder, ModeScoped, FixedArgs) or that rebuilds the tool (StoreBound) cannot be forwarded.
 func deferrable(t tools.Tool) bool {
 	switch t.(type) {
-	case tools.SecretArgs, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
+	case tools.SecretArgs, tools.SecretPaths, tools.SecretWithholder, tools.ModeScoped, tools.FixedArgs, tools.StoreBound:
 		return false
 	}
 	return true
@@ -190,6 +190,16 @@ func (d *deferredTool) MutatesCall(args json.RawMessage) bool {
 	return false
 }
 
+func (d *deferredTool) PrecheckContext(ctx context.Context, sess *tools.Session, args json.RawMessage) error {
+	return tools.Precheck(ctx, d.Tool, sess, args)
+}
+
+func (d *deferredTool) Unplan(sess *tools.Session, args json.RawMessage) {
+	if u, ok := d.Tool.(tools.Unplanner); ok {
+		u.Unplan(sess, args)
+	}
+}
+
 func (d *deferredTool) Precheck(sess *tools.Session, args json.RawMessage) error {
 	if p, ok := d.Tool.(tools.Prechecker); ok {
 		return p.Precheck(sess, args)
@@ -202,6 +212,27 @@ func (d *deferredTool) ResolveArgs(sess *tools.Session, args json.RawMessage) (j
 		return r.ResolveArgs(sess, args)
 	}
 	return nil, nil, nil
+}
+
+func (d *deferredTool) ResolveArgsContext(ctx context.Context, sess *tools.Session, args json.RawMessage) (json.RawMessage, []string, error) {
+	if r, ok := d.Tool.(tools.ContextArgResolver); ok {
+		return r.ResolveArgsContext(ctx, sess, args)
+	}
+	return d.ResolveArgs(sess, args)
+}
+
+func (d *deferredTool) FilesRead(args json.RawMessage) []string {
+	if f, ok := d.Tool.(tools.FileArgs); ok {
+		return f.FilesRead(args)
+	}
+	return nil
+}
+
+func (d *deferredTool) FilesWritten(args json.RawMessage) []string {
+	if f, ok := d.Tool.(tools.FileArgs); ok {
+		return f.FilesWritten(args)
+	}
+	return nil
 }
 
 func (d *deferredTool) Target(sess *tools.Session, args json.RawMessage) string {

@@ -30,7 +30,7 @@ const (
 )
 
 // searchDeadline is searchTimeout, a variable so a test can shorten it.
-var searchDeadline = searchTimeout
+var searchDeadline = newTunable(searchTimeout)
 
 type searchMatch struct {
 	Line int `json:"line"`
@@ -104,7 +104,7 @@ func (s *Server) searchSession(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.endSearch(r.PathValue("id"))
 
-	ctx, cancel := context.WithTimeout(r.Context(), searchDeadline)
+	ctx, cancel := context.WithTimeout(r.Context(), searchDeadline.Get())
 	defer cancel()
 	out := searchResponse{Files: []searchFile{}}
 	files := 0

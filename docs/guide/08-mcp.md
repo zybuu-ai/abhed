@@ -30,9 +30,31 @@ home folder is hidden from it, but for a home of its own,
 `~/.abhed/mcp/<server>/home`, which is its `HOME`, which it may write and
 which keeps its caches (`npx`, `uv`) between runs, and the folder it was
 installed in when that is under your home (a node version's folder, a
-toolchain's, never all of `~/.local` or `~/.cargo`), read-only. A server
+toolchain's, never all of `~/.local` or `~/.cargo`), read-only. So is the
+folder of each file its configured `args` name by absolute path under your
+home, such as the script an interpreter runs (`"command": "python3",
+"args": ["/Users/me/tools/mcp/tickets.py"]` shows `~/tools/mcp`), on every
+tier. Where that folder, or the install folder, is a folder directly in
+your home (`~/Downloads`, `~/Documents`, `~/Projects`, `~/bin`,
+`~/.local`), `~/.local/bin` or `~/.cargo/bin`, or a cloud drive's root or a
+folder directly in it (iCloud Drive and other apps' folders in
+`~/Library/Mobile Documents`, the drives in `~/Library/CloudStorage`), only
+the file itself is shown, not the folder; paths are compared without
+regard to case, as macOS's disk does. A file in your home itself,
+in a folder that holds a credential path (`~/.config`, `~/Library`) or
+inside one (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud` and the
+rest) is never shown, and a program installed in a credential folder is
+refused. A server
 whose program sits in `~/.abhed`, or directly in your home, is refused: that
-folder would show it Abhed's state. The workspace
+folder would show it Abhed's state. A server that fails to start says why:
+the end of what it wrote to stderr (its last lines, up to 1,000 characters)
+follows the error in `/mcp`, Studio and `abhed doctor`, so a missing file or
+module is named instead of only a closed pipe. It is redacted first: the
+values of the server's own configured environment (on the container and VM
+tiers too, where they travel in a file), a value its arguments name as a
+secret (`--api-token VALUE`, `-e API_KEY=VALUE`, `--header
+"Authorization: Bearer VALUE"`, `NAME_TOKEN=VALUE`), and anything shaped
+like a key or token. The workspace
 stays readable and writable, with its `.abhed` hidden. So a server cannot read
 `~/.ssh` or plant a LaunchAgent, a systemd user unit or a shell rc line.
 Files outside your home that your user can write stay writable. A server that
@@ -70,8 +92,8 @@ So its program must run in that image: a `docker`-style server, or one
 installed for macOS, does not. Before the server starts, Abhed looks for its
 program in the image (with the server's mounts) and refuses a server whose
 program is not there, or is a macOS binary, naming the program; the session's
-warning, `/mcp` and `abhed doctor` give that reason. Set `ABHED_SANDBOX_IMAGE`
-to an image with its runtime, or `host_files` to run it on the host. A tier that cannot
+warning, `/mcp` and `abhed doctor` give that reason. Set `sandbox.image` or `ABHED_SANDBOX_IMAGE`
+to an image with its runtime ([the container tier's image](02-configuration.md#the-container-tiers-image)), or `host_files` to run it on the host. A tier that cannot
 confine a server refuses it with that reason, and `host_files` is the way
 out.
 
@@ -204,9 +226,42 @@ from the managed file, your own or the workspace's.
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
 
-When the managed configuration sets the `mcp` section, `add` and `remove`
+When the managed configuration sets `mcp.servers`, `add` and `remove`
 are refused: its list replaces yours, and only it changes it. A workspace's
 servers still need workspace trust, as before.
+
+## Allowed and denied servers
+
+The managed file can say which servers may ever start, with `mcp.allowed`
+and `mcp.denied`. Each entry matches by `name`, by the `command` path the
+program resolves to, by a pinned `digest`, or by a remote server's `host`:
+
+```json
+"mcp": {
+  "allowed": [{"command": "/opt/mcp/bin/*"}, {"host": "*.mcp.corp.example"}],
+  "denied": [{"name": "shell-*"}]
+}
+```
+
+A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
+set, a server no entry matches never starts either. That holds wherever the
+server comes from:
+
+- the user's, a trusted workspace's or the managed file
+- `-mcp-config` (the run stops, naming the server and the list)
+- `abhed mcp add` (refused before anything is written when the managed lists
+  refuse it; one only your own lists refuse is written, then set aside when
+  the configuration loads)
+- the console's add (403, audited as `mcp.refused`)
+- Studio
+- a restart
+
+Each server left out is recorded as `config.refused` and shown as refused,
+with why, by `/mcp`, Studio's MCP panel and `abhed doctor`. Setting the
+lists does not make `mcp.servers` the organisation's. A lower layer's lists
+can only narrow. See
+[Allowed models and MCP servers](02-configuration.md#allowed-models-and-mcp-servers)
+for every field and the startup checks.
 
 ## Prompts as commands
 

@@ -6,17 +6,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
-// TestMain gives the tests an empty home, so none reads the developer's own
-// ~/.abhed/secrets.json; a test may set its own. A trust or conversation
-// helper process keeps the home its parent test prepared, as does a session
-// helper, whose record the parent reads afterwards.
+// TestMain keeps the tests off this machine's own configuration, managed
+// files, secrets and model services (internal/testenv); a test may set its
+// own. A trust, conversation or session helper process is this binary run
+// again by a test, and keeps the home that test prepared.
 func TestMain(m *testing.M) {
-	// No test reads this machine's managed file; a test that needs one sets its own.
-	none := filepath.Join(os.TempDir(), fmt.Sprintf("abhed-no-managed-%d", os.Getpid()))
-	managed.ConfigFile, managed.AgentsDir = filepath.Join(none, "config.json"), filepath.Join(none, "agents")
+	// The helpers that predate the marker keep their home by their own variables.
+	if os.Getenv("ABHED_TRUST_MAIN_ARGS") != "" || os.Getenv("ABHED_CONV_KEEP_HOME") != "" || os.Getenv("ABHED_SESS_WS") != "" {
+		_ = os.Setenv(testenv.Marker, "1")
+	}
+	g := testenv.Isolate()
 	// Tests re-run this binary as their own helpers; only a test that sets it
 	// sees itself inside an agent's command.
 	inAgentCommand = func() string { return "" }
@@ -28,28 +30,14 @@ func TestMain(m *testing.M) {
 	if os.Getenv("ABHED_REQUIRE_CONTAINER") == "" {
 		keepOffRealEngine()
 	}
-	if os.Getenv("ABHED_TRUST_MAIN_ARGS") != "" || os.Getenv("ABHED_CONV_KEEP_HOME") != "" || os.Getenv("ABHED_SESS_WS") != "" {
-		code := m.Run()
-		if realEngineRan() {
-			code = 1
-		}
-		os.Exit(code)
-	}
-	dir, err := os.MkdirTemp("", "abhed-home-*")
-	if err != nil {
-		panic(err)
-	}
-	_ = os.Setenv("HOME", dir)
-	_ = os.Unsetenv("ABHED_SECRETS_FILE")
 	code := m.Run()
-	_ = os.RemoveAll(dir)
 	if realEngineRan() {
 		code = 1
 	}
 	// No test leaves a record or an export in the package's own folder.
-	if left, _ := filepath.Glob("*.jsonl"); len(left) > 0 && code == 0 {
+	if left, _ := filepath.Glob("*.jsonl"); len(left) > 0 && code == 0 && !g.Helper {
 		fmt.Fprintf(os.Stderr, "a test left record files in the package: %v\n", left)
 		code = 1
 	}
-	os.Exit(code)
+	os.Exit(g.Close(code))
 }

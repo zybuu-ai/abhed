@@ -88,6 +88,7 @@ func (l *Loop) offloadIfNeeded() {
 		return
 	}
 	info.AfterTokens, _ = l.contextSize()
+	l.forgetAnswers()
 	l.record(EvContextOffloaded, ActorSystem, info)
 }
 

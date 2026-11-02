@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,13 @@ type Options struct {
 	// "report" or "off". It governs edits that would break a file's syntax.
 	// If the managed configuration sets it, it may only be made stricter.
 	SyntaxCheck string
+
+	// Supervisor overrides the monitor section: "rules" (the default),
+	// "model" (the rules, then the configured model judge) or "off". The
+	// supervisor reviews calls after policy and may only tighten a decision.
+	// Under a managed configuration that turns it on, "off" is refused, and
+	// a judge the managed file chose may not be changed.
+	Supervisor string
 
 	// Allow and Deny are policy rules, e.g. "bash(go test*)", added to the
 	// configured ones. Deny is absolute: no mode, extension or approver
@@ -182,16 +190,45 @@ type Options struct {
 	// suggest.enabled allows it. Off by default: one more model call per Run.
 	Suggest bool
 
+	// Verify checks each answer against the agent's record: off, label or
+	// strict, binding as the -verify flag does (a managed verify.mode may only
+	// be made stricter). Empty takes the configuration's verify.mode, and with
+	// that unset checks nothing unless VerifyByDefault is set. In strict mode
+	// a run whose answer stays unverified ends with an *EndedError whose
+	// Reason is unverified. Verdict reports the last check.
+	Verify string
+	// VerifyByDefault labels answers when neither Verify nor verify.mode
+	// says otherwise, as the terminal does where a person reads the answer.
+	VerifyByDefault bool
+
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
 	// for (process by default), as the CLI does. New returns an error when
 	// that tier is not available here, rather than running bash without it.
 	Sandbox bool
+
+	// Runbook, set by the operator, approves a plan's runbook for this agent
+	// before its first Run: each step made exactly as listed runs without
+	// asking Approve; any other change is put to Approve with "not in the
+	// approved plan", even where the policy alone would allow it. Deny rules,
+	// hooks and the sandbox still apply. Nil binds none.
+	Runbook *Runbook
 
 	// Store keeps the agent's record. Nil keeps it in memory, where it ends
 	// with the process; OpenLocalRecord gives the durable, chained local
 	// record the command line uses. See store.go.
 	Store Store
 }
+
+// Runbook is a plan and its steps, as exit_plan takes them. SHA256, when
+// set, is the plan hash the operator approved: one that differs is refused.
+type Runbook struct {
+	Plan   string        `json:"plan"`
+	Steps  []RunbookStep `json:"runbook"`
+	SHA256 string        `json:"sha256,omitempty"`
+}
+
+// RunbookStep is one step of a Runbook: the tool, where it runs, and what it runs.
+type RunbookStep = tools.RunbookStep
 
 // TaskInfo describes one background task.
 type TaskInfo = agent.TaskInfo
@@ -217,6 +254,8 @@ type Provider struct {
 
 // Agent is an embedded Abhed.
 type Agent struct {
+	// warnings are the configuration's repeated and unread keys, for editors.
+	warnings []string
 	registry *tools.Registry
 	loop     *agent.Loop
 	store    agent.Store
@@ -242,6 +281,8 @@ type Agent struct {
 	running int
 	// wakes are the wake runs this agent started on its own, by cancel.
 	wakes wakeRuns
+	// runbookNote gives the first Run the steps of Options.Runbook, once.
+	runbookNote string
 }
 
 // New builds an agent.
@@ -266,6 +307,11 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// The upstream proxy is process-wide: an agent with a different one than
+	// another in this process is refused, never run through the other's.
+	if err := cfg.ApplyNetwork(); err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
+	}
 	keys := untrustedModelKeys(cfg.Workspace)
 	if len(keys) > 0 && opts.Provider == nil && opts.AllowDefaultModel {
 		// Not silently: the person expects the workspace's model.
@@ -283,7 +329,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			"Options.Provider or Options.AllowDefaultModel", ErrUntrustedModel, strings.Join(keys, ", "), config.Printable(cfg.Workspace.File))
 	}
 	if cfg, err = cfg.Apply(config.Overrides{
-		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns,
+		Mode: opts.Mode, SyntaxCheck: opts.SyntaxCheck, MaxTurns: opts.MaxTurns, Supervisor: opts.Supervisor,
 		Allow: opts.Allow, Deny: opts.Deny, Warn: cfgWarn,
 	}); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
@@ -291,7 +337,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if p := opts.Provider; p != nil {
 		// A managed model.default pins the model; an endpoint the caller
 		// names is not it.
-		if err := cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		if err := cfg.EndpointRefused(config.ProviderConfig{Type: p.Type, Model: p.Model, BaseURL: p.BaseURL}); err != nil {
 			return nil, fmt.Errorf("abhed: Options.Provider: %w", err)
 		}
 		cfg.Model.Default = "embedded"
@@ -332,8 +378,10 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	// Studio hands checkpoints on; with no one to take them, "required" refuses every command.
+	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
-	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	pol := policy.New(policy.Mode(cfg.StartMode()))
 	// Set whatever the tool set holds: web_fetch with no host list asks.
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
@@ -346,11 +394,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AddAsk(cfg.Permissions.Ask...); err != nil {
 		return nil, fmt.Errorf("abhed: ask rule: %w", err)
 	}
+	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
+	if err := pol.AddAllow(toolset.ToolchainAllows(cfg)...); err != nil {
+		return nil, fmt.Errorf("abhed: sandbox.toolchains: %w", err)
+	}
 	if err := pol.AddAllow(cfg.Permissions.Allow...); err != nil {
 		return nil, fmt.Errorf("abhed: allow rule: %w", err)
 	}
 	if err := pol.AllowGitExtensions(cfg.Permissions.GitExtensions...); err != nil {
 		return nil, fmt.Errorf("abhed: permissions.git_extensions: %w", err)
+	}
+	if err := pol.AllowRemoteReads(cfg.SSH.ReadCommands...); err != nil {
+		return nil, fmt.Errorf("abhed: %w", err)
 	}
 
 	// A managed sandbox setting binds here too; otherwise bash is unsandboxed
@@ -382,6 +437,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		fence, _ = sb.(*sandbox.Fence)
 		if in, ok := sb.(sandbox.Interactive); ok {
 			bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+			bash.ShellLine = func() string { return sandbox.TerminalCommandOf(sb) }
 		}
 	}
 	// A users or secrets file kept outside .abhed is state all the same.
@@ -487,6 +543,12 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
+	if x.PlanExit {
+		loop.EnablePlanExit()
+	}
+	if !cfg.Plan.Runbooks {
+		loop.DisableRunbooks()
+	}
 	agent.NewBackground(loop, toolset.BackgroundPolicy(bgCfg, agent.WakeAuto))
 	loop.Compactor = agent.NewCompactor(adapter, loopCfg.CompactAt)
 	toolset.Summarize(loop.Compactor, set.Extensions, id)
@@ -496,9 +558,20 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 	})
 	loop.Budget = budget
+	// With no approver nobody answers an ask, so the supervisor's are denials.
+	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}
+	vcfg, err := toolset.VerifyFlag(cfg, opts.Verify)
+	if err != nil {
+		return fail(fmt.Errorf("abhed: Verify: %w", err))
+	}
+	verifier, err := toolset.Verifier(vcfg, opts.VerifyByDefault)
+	if err != nil {
+		return fail(fmt.Errorf("abhed: %w", err))
+	}
+	verifier.Install(loop)
 
 	// The loop runs on its own copy of the registry, which RunJSON must add its tool to.
 	// A surface's new session says how it started, as the command line's does.
@@ -506,12 +579,20 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		start := map[string]any{"surface": x.Surface, "headless": opts.Approve == nil, "provider": cfg.Model.Default,
 			"model": adapter.Profile().Name, "mode": string(pol.Mode), "web": toolset.WebState(cfg),
 			"workspace_trust": toolset.TrustState(opts.WorkspaceTrust, cfg.Workspace)}
+		if org := toolset.OrgPolicyState(cfg); org != nil {
+			start["org_policy"] = org
+		}
 		if _, err := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); err != nil {
 			return fail(fmt.Errorf("abhed: recording the session start: %w", err))
 		}
 		attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(sandbox.InAgentCommand()))
 		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
 			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
+		}
+		for _, g := range toolset.StartupRegistries(cfg, x.Surface) {
+			if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
+				return fail(fmt.Errorf("abhed: recording the registries open from the start: %w", err))
+			}
 		}
 	}
 	// Every agent under the fence records what qualified it, a plain SDK
@@ -522,13 +603,44 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		}
 		fence.SetRecord(agent.SandboxRecord(rec))
 	}
-	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace,
-		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn}
+	runbookNote := ""
+	if rb := opts.Runbook; rb != nil {
+		bound, err := loop.BindRunbook(orDefault(rb.Plan, "Runbook"), rb.Steps, rb.SHA256)
+		if err != nil {
+			return fail(fmt.Errorf("abhed: runbook: %w", err))
+		}
+		runbookNote = agent.RunbookPrompt(bound)
+	}
+	a := &Agent{loop: loop, store: store, set: set, id: id, registry: loop.Tools, fwd: fwd, redact: red, trust: cfg.Workspace, warnings: cfg.Warnings(),
+		cfg: cfg, current: cfg.Model.Default, sandbox: sbox, unconfine: unconfine, warn: opts.Warn, runbookNote: runbookNote}
 	a.hookWake(opts.HostWake)
 	if opts.OnEvent != nil {
 		go fwd.run(opts.OnEvent)
 	}
 	return a, nil
+}
+
+// Image is a picture given with a prompt: its media type (image/png,
+// image/jpeg, image/gif or image/webp) and its bytes.
+type Image struct {
+	MediaType string
+	Data      []byte
+}
+
+// AttachImages gives the next Run's prompt these images, for a model that
+// reads them; Run refuses them otherwise. They are held in memory for the
+// conversation and never recorded: the record keeps what the prompt's text
+// says of them, so a resumed session does not have them.
+func (a *Agent) AttachImages(imgs []Image) error {
+	if len(imgs) > 0 && !a.loop.Adapter.Profile().SupportsVision {
+		return fmt.Errorf("abhed: the model %s does not read images", a.loop.Adapter.Profile().Name)
+	}
+	blocks := make([]model.ContentBlock, 0, len(imgs))
+	for _, im := range imgs {
+		blocks = append(blocks, model.ContentBlock{Kind: model.BlockImage, MediaType: im.MediaType, Data: im.Data})
+	}
+	a.loop.AttachImages(blocks)
+	return nil
 }
 
 // Run sends a prompt and returns the agent's final message. A prompt a
@@ -537,7 +649,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 // were answered instead, the returned message is that answer.
 func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 	defer a.startRun()()
+	prompt, giveBack := a.withRunbook(prompt)
 	reason, err := a.loop.Run(ctx, prompt)
+	giveBack(reason, err)
 	if err != nil {
 		return "", err
 	}
@@ -549,7 +663,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 		return answer, &EndedError{Reason: agent.TermPromptRefused, Detail: why}
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }
@@ -602,7 +716,9 @@ func (a *Agent) RunJSON(ctx context.Context, prompt string, schema json.RawMessa
 // secrets redacted, so it may no longer match schema (see docs/guide/09-sdk.md).
 func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.RawMessage) (json.RawMessage, error) {
 	defer a.startRun()()
+	prompt, giveBack := a.withRunbook(prompt)
 	raw, reason, err := agent.RunStructured(ctx, a.loop, a.registry, prompt, schema)
+	giveBack(reason, err)
 	if err != nil {
 		var nr agent.ErrNoResult
 		if errors.As(err, &nr) {
@@ -612,7 +728,7 @@ func (a *Agent) RunStructured(ctx context.Context, prompt string, schema json.Ra
 	}
 	raw = redactJSON(a.redact, raw)
 	if reason != agent.TermCompleted {
-		return raw, &EndedError{Reason: reason}
+		return raw, &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return raw, nil
 }
@@ -648,15 +764,20 @@ func (a *Agent) Queued() int { return len(a.loop.Queued()) }
 // returns an *EndedError with Reason prompt_refused.
 func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 	defer a.startRun()()
+	note, giveBack := a.withRunbook("")
+	if note != "" {
+		a.loop.Queue(note)
+	}
 	reason, err := a.loop.RunQueued(ctx)
+	giveBack(reason, err)
 	if err != nil {
 		return "", err
 	}
 	if reason == agent.TermPromptRefused {
-		return "", &EndedError{Reason: reason} // nothing was answered
+		return "", &EndedError{Reason: reason, Detail: a.loop.EndDetail()} // nothing was answered
 	}
 	if reason != agent.TermCompleted {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }
@@ -664,6 +785,30 @@ func (a *Agent) RunQueued(ctx context.Context) (string, error) {
 // WorkspaceTrust reports whether ConfigDir's file was taken whole, and which
 // of its settings were ignored because it is not trusted.
 func (a *Agent) WorkspaceTrust() config.WorkspaceTrust { return a.trust }
+
+// ConfigWarnings are what was wrong with the configuration files the agent
+// was built from: repeated keys and keys nothing reads, one sentence each.
+func (a *Agent) ConfigWarnings() []string { return slices.Clone(a.warnings) }
+
+// AnswerVerdict is what the checks found for one answer; see Options.Verify.
+type AnswerVerdict = agent.AnswerVerdict
+
+// The parts of an AnswerVerdict, named here so a caller can use them
+// without reaching into the engine's internal packages.
+type (
+	// ClaimVerdict is what the checks found for one claim.
+	ClaimVerdict = agent.ClaimVerdict
+	// Conflict is the record entry that contradicts a claim.
+	Conflict = agent.Conflict
+	// ContractResult is what a completion contract found.
+	ContractResult = agent.ContractResult
+	// RequireResult is one required command's outcome.
+	RequireResult = agent.RequireResult
+)
+
+// Verdict is the check of the last answer, or nil when answers are not
+// checked or none has been yet.
+func (a *Agent) Verdict() *AnswerVerdict { return a.loop.LastVerdict() }
 
 // Events returns everything recorded so far.
 func (a *Agent) Events() []Event {
@@ -692,6 +837,56 @@ func (a *Agent) Fork(throughSeq int64) error {
 	return err
 }
 
+// withRunbook adds Options.Runbook's steps to the first run's prompt, once,
+// whichever entry point starts it. The func it returns, called with how
+// the run ended, gives the steps back when the run never took the prompt
+// (a hook refused it, or the run failed before it was sent), so the next
+// run carries them.
+func (a *Agent) withRunbook(prompt string) (string, func(agent.TerminalReason, error)) {
+	a.forkMu.Lock()
+	note := a.runbookNote
+	a.runbookNote = ""
+	a.forkMu.Unlock()
+	if note == "" {
+		return prompt, func(agent.TerminalReason, error) {}
+	}
+	return strings.TrimSpace(prompt + "\n\n" + note), func(reason agent.TerminalReason, err error) {
+		refused := reason == agent.TermPromptRefused || a.loop.RefusedPrompt() != ""
+		if refused && a.queued(note) || !refused && (err == nil || a.sent(note)) {
+			return
+		}
+		a.forkMu.Lock()
+		if a.runbookNote == "" {
+			a.runbookNote = note
+		}
+		a.forkMu.Unlock()
+	}
+}
+
+// queued reports whether a message still queued for the next run carries text.
+func (a *Agent) queued(text string) bool {
+	for _, q := range a.loop.Queued() {
+		if strings.Contains(q.Text, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// sent reports whether a person's message in the conversation carries
+// text, or one still queued for the next run does.
+func (a *Agent) sent(text string) bool {
+	if a.queued(text) {
+		return true
+	}
+	for _, m := range a.loop.Messages() {
+		if m.Role == model.RoleUser && strings.Contains(m.Content, text) {
+			return true
+		}
+	}
+	return false
+}
+
 // startRun counts a run in progress, after any fork under way, and returns
 // what ends it.
 func (a *Agent) startRun() func() {
@@ -716,7 +911,11 @@ func (a *Agent) ExportHTML() string { return agent.ExportHTML(a.id, a.Events()) 
 // the record refuses is not made, nor one a managed model.default pins away
 // from: an endpoint named here is not the managed model.
 func (a *Agent) SetModel(p Provider) error {
-	if err := a.cfg.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+	if err := a.cfg.EndpointRefused(config.ProviderConfig{Type: p.Type, Model: p.Model, BaseURL: p.BaseURL}); err != nil {
+		var refused *config.ManagedError
+		if errors.As(err, &refused) {
+			a.recordRefused("SetModel", refused)
+		}
 		return fmt.Errorf("abhed: SetModel: %w", err)
 	}
 	cfg := config.ProviderConfig{
@@ -819,7 +1018,7 @@ func (a *Agent) Wake(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if reason != agent.TermCompleted && reason != agent.TermWakeLimit {
-		return a.lastMessage(), &EndedError{Reason: reason}
+		return a.lastMessage(), &EndedError{Reason: reason, Detail: a.loop.EndDetail()}
 	}
 	return a.lastMessage(), nil
 }

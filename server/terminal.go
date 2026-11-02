@@ -24,4 +24,4 @@ func plainText(b []byte) string       { return termline.PlainText(b) }
 func keepTail(b []byte, n int) []byte { return termline.KeepTail(b, n) }
 
 // ttyNow asks the terminal; a variable so a test can make the ask fail.
-var ttyNow = termline.TTYNow
+var ttyNow = newTunable(termline.TTYNow)

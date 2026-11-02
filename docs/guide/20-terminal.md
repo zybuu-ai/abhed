@@ -134,6 +134,15 @@ transcript, so a change of mode or a compaction is never invisible:
   open, one line above the input says how far it has got
   (`◼ Todos 1/3 done · change the greeting`); Ctrl-T lists every item there,
   and `/todos` draws the list into the transcript.
+- **Checked answers.** A reply with a statement the record contradicts gets
+  a bold red `✗ NOT FACT` line first, and the agent one turn to correct it.
+  Under each reply, one line says what checking it
+  against the session's record found
+  (`✓ 3 verified · 1 unverified (general knowledge) · 0 contradicted`), then
+  each contradicted statement struck through with the record against it, and
+  the unverified statements about the work. `/evidence N` opens the record
+  behind statement N. `-verify off` or `verify.mode: off` turns it off
+  ([Verified answers](29-verified-answers.md)).
 - **Subagents.** A subagent starting and returning is a tree under the `task`
   call: its type, its description, its model and, for a worktree, its branch;
   then how it ended, its turns and tokens.
@@ -280,7 +289,9 @@ status as JSON on stdin (`model`, `provider`, `mode`, `session_title`, `context_
 `context_percent`, `tokens_in`, `tokens_out`, `background_tasks`,
 `sandbox_tier`, `git_branch`, `cwd` and more) and runs at most once a
 second, under the process sandbox with the network off whatever the session
-allows, and is stopped after one second; only its first 4 KB are read. Where
+allows, and is stopped after one second (`statusline.timeout_ms` raises
+that, to at most ten seconds); only its first 4 KB are read. A run that only
+took too long shows the last line the command gave. Where
 that sandbox is missing, or its script is where the agent could change it,
 it is not run, and the footer says why (see [the command
 line](18-cli.md)). Its colours

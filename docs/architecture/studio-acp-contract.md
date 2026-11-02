@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -162,10 +162,27 @@ relax them.
 
 ### 3.1a Attached context
 
-`session/prompt` takes `text`, `resource_link` and `resource` blocks
-(`embeddedContext: true`). A `text` block is the person's own words. A
-`resource_link` names a file the agent reads through its policy-checked
-tools. A `resource` is text the person attached in the editor (a selection,
+`session/prompt` takes `text`, `resource_link`, `resource` and `image`
+blocks (`embeddedContext: true`; `image` per model, §3.5). A `text` block is the
+person's own words. A `resource_link` is read by the engine before the
+prompt runs, as an `@` mention is, as the person's own call through the
+session's policy and recorded so:
+
+- a `file:` URI names a file (with `#Lm-Ln`, those lines; a symbol is sent
+  as its file and range) or a folder, given as a bounded listing;
+- an `http:` or `https:` URI is read as the person's own `web_fetch` call,
+  even while the agent's `web_fetch` tool is off: under the same deny rules,
+  egress, address and secret-in-URL checks (a URL that can never be read is
+  refused before anyone is asked), and an ask (a rule's, the supervisor's,
+  or `web_fetch`'s own when it has no allowed hosts) is put to the person as
+  a `fetch` of `web_fetch`. Only a managed configuration whose own file sets
+  `web_fetch.enabled: false` refuses it, saying so; a user's or workspace's
+  `false` does not;
+- any other URI is passed as a note naming it.
+
+A link that may not be read refuses the whole prompt (`-32001`), each reason
+said. Links share the prompt's attachment cap with `resource` blocks. A
+`resource` is text the person attached in the editor (a selection,
 a symbol, a problem the editor reports). The engine does not read the text
 itself, since the person picked it, but a `file:` URI is put to the `read`
 rules and the `.abhed` check as an `@` mention is: one that may not be read
@@ -188,10 +205,138 @@ a `resource_link` to the lines.
 | | |
 |---|---|
 | Wire | Spec config options. `session/new` returns `configOptions` with one `select` option of `category: "model"`, id `model`, whose values are configured provider **names**. `session/set_config_option {sessionId, configId: "model", value}` switches and returns every option. The older `models` field and `session/set_model` are answered too; that reply puts the new current model in `meta.currentModelId`. |
-| Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. |
+| Engine today | Done (`app/acp.go`). A switch while a prompt runs is refused with -32000. Only models a managed pin and `model.allowed` admit are offered; a switch to one `model.allowed` refuses is -32000 with a message naming the list and the model, and is recorded as `config.refused`. |
 | Not implemented in 1.2.2 | A second option, id `thought_level`, `category: "thought_level"`, values `off`, `low`, `medium`, `high`, offered only for models whose provider reports reasoning control. `config_option_update` when the engine itself changes an option (a model fallback, recorded `model.fallback`). |
 | Per-subagent model | `subagent.spawned` and the task list carry `provider` and `model` (already recorded). |
+| Configuration warnings | Added in 1.2.9. `session/new`, `load` and `resume` results carry `_meta["zybuu.ai/abhed"].configWarnings: string[]` when something is wrong with the configuration: a key written twice in one object of any file read (the last one wins; a second provider of the same name replaces the first), a setting written twice in different letter case, a key no part of Abhed reads, and each setting an untrusted workspace file could not make. One plain, redacted sentence each; absent when there are none. Studio lists them in its model picker. |
 | Security | The value is a configured name looked up in the engine's configuration. Nothing from Studio is used as an endpoint, key or model id. Descriptions never include the base URL, the key or the key's variable name. |
+
+### 3.2a A local Ollama model
+
+Added in 1.2.9; served when `features` lists `ollama`. When the person
+chooses a model that a local Ollama serves (provider `type: "ollama"`, or an
+OpenAI-compatible `base_url` on port 11434), the engine
+can say whether it works and, after the person agrees in Studio, start
+Ollama, install it or pull the model. Studio shows a card; the engine decides
+what may run.
+
+**On a switch.** The reply to `session/set_config_option` (`configId:
+"model"`) and to `session/set_model` carries `meta.ollama: OllamaStatus` when
+the chosen model is Ollama's and not ready; it is absent otherwise. This only
+reads this machine (no registry, no download host). Studio then calls
+`_abhed/ollama/status` for the full card. After `session/new` Studio calls
+`_abhed/ollama/status` once for the current model; -32602 means Ollama does
+not serve it, and nothing is shown.
+
+```ts
+interface OllamaProblem {
+  kind: "not_installed" | "not_running" | "not_pulled" | "port_busy" | "not_ready" | "start_failed"
+      | "install_failed" | "no_network" | "disk_short" | "pull_failed" | "model_not_found"
+      | "remote" | "assist_off" | "not_admin" | "in_agent" | "cancelled" | "not_ollama" | "manual_steps"
+      | "other_models_folder" | "temp_home";  // temp_home: the engine's HOME is a temporary folder, so it acts on nothing  // downloaded here, but the server answering reads another models folder; no pull is offered
+  message: string;      // one plain sentence
+  steps: string[];      // numbered manual steps, in order: commands or sentences
+  retry: boolean;       // checking again may work once the steps are done
+}
+interface OllamaStatus {
+  provider: string; model: string;  // configured name; Ollama tag
+  api: string;                      // Ollama's API root, e.g. http://127.0.0.1:11434
+  loopback: boolean;                // only then does the engine act
+  installed: boolean; binary?: string; app?: string;
+  running: boolean; version?: string; port_busy?: boolean;
+  pulled: boolean; ready: boolean;
+  downloaded?: boolean;             // not listed by the server, but in this machine's models folder
+  next?: "install" | "start" | "pull";
+  problem?: OllamaProblem;          // absent when ready
+}
+interface OllamaReport extends OllamaStatus {
+  assist: "ask" | "local" | "off";  // model.ollama.assist
+  can_act: boolean;                 // the next step may be offered
+  detail: boolean;                  // sizes were asked of the registry or download host
+  start_always: boolean;            // the person said "always start"
+  start?: { command: string; log?: string; program?: string; app_binds?: boolean };
+  install?: { kind: "run" | "open" | "manual"; command: string; source: string;
+              size?: string; steps?: string[] };
+  pull?: { command: string; source: string; bytes: number; size_known: boolean;
+           disk_free?: number; mem_total?: number; ram_needed_gb?: number; ram_estimate?: boolean;
+           warnings?: string[]; smaller?: string };
+  refusal?: OllamaProblem;          // why the next step is not offered
+  catalog: { tag: string; label: string; bytes: number; min_ram_gb: number }[];
+}
+```
+
+| Method | Params → result |
+|---|---|
+| `_abhed/ollama/status` | `{sessionId, provider?, detail?: boolean}` → `OllamaReport`. `provider` defaults to the session's current model. Reads only, and without `detail` asks nothing off this machine: the local Ollama, the disk and the memory, with a curated model's size from Abhed's list (`pull.size_known: false`). Studio's automatic status (after `session/new`, on a model switch, when polling) must not set `detail`. With `detail: true`, sent only when the person opens the install or download step, it also asks the registry or download host for the size as it is now (`detail: true` in the report), and only when that step may be offered (never under `assist: "local"` or `"off"`). Not recorded |
+| `_abhed/ollama/start` | `{sessionId, provider?, always?: boolean}` → `{started: {pid?, version, log?}, status: OllamaStatus}`, or `{status}` when it was already running. `always` keeps "always start without asking" (only after the person ticked it). Recorded `ollama.start` |
+| `_abhed/ollama/install` | `{sessionId, provider?}` → `{outcome: "ok" \| "manual", output, status}`, or `{status}` when installed. Runs `brew install ollama` where Homebrew is, or opens the macOS download page (`outcome: "manual"`: the person installs). Never runs `sudo`, nor the official Linux install script, which does: both are `manual_steps`, printed with their source. Recorded `ollama.install` |
+| `_abhed/ollama/pull` | `{sessionId, provider?, pullId}` → `{status}` when it ends ready. While it runs, notifications `_abhed/ollama/progress {sessionId, pullId, status, completed?, total?}`. Disk short, model not in the registry or no network fail before any download. Recorded `ollama.pull` |
+| `_abhed/ollama/cancel` | `{pullId}` → `{cancelled: boolean}`; the pull's reply is then -32000 with `kind: "cancelled"`. Ollama keeps what it fetched |
+| `_abhed/ollama/forget` | `{}` → `{}`: forget "always start" |
+
+**Errors.** A refusal by configuration or place (`assist_off`, `not_admin`,
+`in_agent`, `temp_home`, `remote`) is -32001; a failure (`start_failed`, `not_ready`,
+`port_busy`, `install_failed`, `pull_failed`, `disk_short`, `no_network`,
+`model_not_found`, `cancelled`, `manual_steps`, and `not_ollama` for a pull asked of a server that answers only the OpenAI API) is
+-32000. Either way `data` is `{problem: OllamaProblem, status:
+OllamaStatus}`; Studio shows `problem.message`, the numbered `problem.steps`
+and a *Check again* button. A provider Ollama does not serve, or not
+configured, is -32602.
+
+**Studio's side.** Before `start`, a modal showing `start.command` with
+*Start*, *Always start without asking* and *No* (default No; *always* is a
+widening choice). Before `install` and `pull`, a modal every time showing the
+exact `command`, `source` and size (`install.size`, or `pull.bytes` with
+`pull.warnings` and `pull.smaller`), default No. A *Stop* button sends
+`_abhed/ollama/cancel`. A `manual_steps` answer shows the steps for the
+person to run in their own terminal, outside Abhed. Not in the sandboxed
+Abhed terminal (§7.1): there `abhed ollama check` is refused as running
+inside an agent's command, and the sandbox could not install anyway.
+Nothing is sent without a click (§2.2). When `start.app_binds` is set, the
+modal says the app listens where its own settings say.
+
+| | |
+|---|---|
+| Security | The engine acts only on a loopback Ollama, as the engine's user with a minimal environment, never with `sudo`. A server it starts with `ollama serve` (always, when the program is found) is bound to `127.0.0.1`; the macOS app, opened by its path only when the program is missing, binds where its own settings say, which the engine does not control. `model.ollama.assist` (managed-lockable) is applied whatever Studio sends; inside an agent's command every action is refused. No tool exposes any of this, so the agent cannot start, install or pull. A server it started keeps running when the engine exits. Every attempt and outcome is recorded with `by: "user"` and `surface: "acp"`. |
+
+### 3.2b Language toolchains
+
+The agent's commands get the language toolchains Abhed installed, first on
+`PATH` ([Toolchains](../guide/32-toolchains.md)). The agent installs one with
+its `toolchain` tool, as an ordinary ask. Studio offers the same from its own
+UI, for instance when its Run or Test button's command exits 127, with these
+methods (`toolchain` in the session's `_meta` features). `language` is a
+language (`go`, `python`, `node`, `rust`, `java`, `maven`, `gradle`, `ruby`,
+`dotnet`) or a program one provides, as the failed command named it
+(`cargo` is rust, `mvn` maven, `python3` python, `gofmt` go).
+
+| Method | |
+|---|---|
+| `_abhed/toolchain/status` | `{sessionId, language, version?, debugger?, lsp?}` → `{language, available, version?, can_act, debugger?: {name, version, available}, lsp?: {name, version, available}, offer?: {command, title, source, size?, version?, into?, why, url, digest, registries, registries_note?, debugger?: extra, lsp?: extra}, refusal?: problem}`, where `extra` is `{name, display, version, source, url, digest, size?, note?, installed, needs?: {language, display, version, source, url, digest, size?}}`. With `lsp: true` the offer includes the language's server (gopls, basedpyright, typescript-language-server for `node`, `typescript` or `javascript`, rust-analyzer); `needs` is a language it runs on that is installed first (Node.js for basedpyright), which the modal must show, and `title` says so; `refusal.kind` is `no_lsp` where it cannot be had (Go older than 1.26, Node.js older than 22.22.2 for TypeScript's server, a platform with no build). With `debugger: true` the offer includes the language's debugger (Delve for Go, debugpy for Python; `title` names both, "Go 1.27.3 + Delve debugger 1.27.2", and `note` says how Delve is built); `refusal.kind` is `no_debugger` where it cannot be had (not a Linux amd64 or arm64 sandbox for Delve, Go older than 1.25, Python older than 3.10). `debugger` at the top says whether the session's commands have it now. `registries` are the package registry hosts the install opens to the session's commands through its egress proxy (an empty list with `registries_note` saying why none, such as `sandbox.toolchains_registries is off`); this is the one way a person opens egress outside the managed file, so **the modal must show them**. `available` and `version`: the session's commands have the language now (`into` is where an install would go, for the platform commands run on). `offer` is what an install would fetch: the version and `why` (`requested`, `pinned by <file>`, `latest stable`), the release `source`, the download `url`, its `size` and the published `digest` it is checked against; `command` is the same install from a terminal. `can_act` is false, with `refusal`, when `sandbox.toolchains` is off, inside an agent's command, or when the source has no such build. Asks the release source; installs nothing. Not recorded |
+| `_abhed/toolchain/install` | `{sessionId, language, version?, installId, debugger?, lsp?, agreed?: {version, digest, debugger_version?, debugger_digest?, lsp_version?, lsp_digest?, needs_version?, needs_digest?, registries}}`. Studio sends `agreed`: the offer's version, digests and `registries` the modal showed, and `needs_version` and `needs_digest` for a language the server runs on that comes first (`offer.lsp.needs`); if the install would now fetch anything else, or open other registries, it is refused with `changed` and nothing is installed. Fields of an extra installed already may be left out. `registries` left out opens no registries: the install is made, and its reply says they were not opened. An install without `agreed` (an older Studio) is still made, but recorded with `consent: "studio-unconfirmed"` and **opens no registries**; a later contract version will require `agreed`. → `{language, available: true, version, dir, bin, debugger?: {name, version, dir, bin, pythonpath}, lsp?: {name, version, dir, bin}, registries}` once it is verified and in place (with `debugger: true`, the debugger is planned first, and a `no_debugger` refusal installs nothing; progress for it has `status: "debugger"`); `registries` says which package registries commands can now reach (§4 of the Toolchains guide). While it runs, notifications `_abhed/toolchain/progress {sessionId, installId, status: "downloading", completed, total}`. Recorded `toolchain.install` with `by: "user"`, `surface: "acp"`, `consent: "studio"` (or `"studio-unconfirmed"` without `agreed`), and `toolchain.registry` for registries opened |
+| `_abhed/toolchain/remove` | feature `toolchain.manage`. `{sessionId, language, version?}` → `{language, platform, removed: [version]}`: the version named, else every installed version for the platform the session's commands run on. `not_installed` (-32602) when there is none. Recorded `toolchain.install` with `outcome: "removed"` |
+| `_abhed/toolchain/clean` | feature `toolchain.manage`. `{sessionId}` → `{cleaned, root}`. The engine asks the person first with its own `session/request_permission` (`meta.tool: "toolchain.clean"`, `destructive: true`, options *Remove them all* and *Keep them*); only that yes removes the whole cache, every toolchain and extra for every platform. Recorded `toolchain.install {lang: "*", outcome: "removed"}`, or `declined` |
+| `_abhed/toolchain/registries` | feature `toolchain.manage`. `{sessionId, language, registries}` → `{language, hosts, registries}`: opens a language's package registries, as an install's `agreed.registries` does, whether its tools are Abhed's toolchain or the host's own (the process tier's Node, Go…); `registries` must be the hosts `status.offer.registries` named, else `changed`. `registries_closed` (-32001) where none can be opened. Recorded `toolchain.registry` |
+| `_abhed/toolchain/cancel` | `{installId}` → `{cancelled: boolean}`; the install's reply is then -32000 with `kind: "cancelled"`, and nothing partial is left |
+
+**Errors.** `data` is `{problem: {kind, message, steps?}}`, as the Ollama
+assist's. `toolchains_off`, `in_agent` and `unavailable` are -32001;
+`unknown_language`, `bad_version`, `no_install_id` and `duplicate` are
+-32602; `no_build`, `no_debugger`, `no_lsp`, `changed`, `not_installed`, `remove_failed`, `clean_failed`, `install_failed` (including a download
+that does not match its published checksum) and `cancelled` are -32000.
+
+**Studio's side.** Before `install`, a modal showing `status.offer`'s
+`title`, the version and why, the source, the URL, the size and the
+checksum, the debugger's source and checksum when asked for, and the
+package registries the install opens to commands (`registries`, or
+`registries_note`), default No; `install` then carries `agreed`. The modal is the person's consent; the engine records it as such.
+A *Stop* button sends `_abhed/toolchain/cancel`. After an install, the next
+command of the agent finds the toolchain on `PATH`; Studio's own Run and Test
+buttons may run again.
+
+| | |
+|---|---|
+| Security | Downloads go only to each language's official release hosts, redirects included, and are checked against the checksum the project publishes (Ruby's against digests pinned in Abhed). A toolchain is unpacked into the per-user cache, refusing any entry or link that leaves it, and made read-only; commands can read it, never change it. Nothing is installed system-wide or with `sudo`. `sandbox.toolchains` (managed-lockable) is applied whatever Studio sends. |
 
 ### 3.3 Slash commands
 
@@ -243,10 +388,52 @@ sent after an error or a cancel, while an approval waits, on a replay
 (it is no measure of the context). `features` lists `suggestions`. Studio's own change is separate
 from the engine.
 
+### 3.4b Checked answers
+
+A session labels its answers unless the configuration's `verify.mode` says
+otherwise ([Verified answers](../guide/29-verified-answers.md)). After the
+reply, the engine sends one `agent_message_chunk` whose text is the footer and
+the contradicted and unverified statements as plain lines (empty for an answer
+with nothing to check), and whose `_meta["zybuu.ai/abhed"] = {verdict: …}` is
+the `answer.verdict` payload whole: each claim's `n`, `text`, `verdict`
+(`verified`, `unverified`, `contradicted`), `reason`, `evidence` (record `seq`s)
+and `conflict`, the counts, the contract's results and the revision note. An
+editor that knows the key draws ✓, ? and ✗ badges and strikes contradicted
+claims through; one that does not still shows the text. The `answer` tool's
+call sends no tool card: its text is the reply. A replay (`session/load`)
+sends the same chunk. In strict mode a run that ends unverified stops with
+`end_turn` and `_meta["zybuu.ai/abhed"].reason` `unverified`: the turn has its
+answer, and the checks could not verify it. `features` lists `answer-verdicts`.
+
 ### 3.5 Images
 
-`promptCapabilities.image` stays `false` while the engine's messages are text
-only. Studio never offers an image attachment while it is false.
+`promptCapabilities.image` is `false`, since whether a model reads images
+depends on the model: each model in the session's config options (and in
+the legacy model list) carries `_meta["zybuu.ai/abhed"].image`, true for one
+that reads images, and Studio offers an image attachment only then, checking
+again when the model changes. An `image` block (`mimeType` png,
+jpeg, gif or webp; `data` base64; at most four, 5 MB each and 10 MB in all,
+so a prompt's base64 stays well under a line's 16 MiB) goes to the model
+with the prompt when the session's model reads images (a provider's
+`extra.vision`, or a type that always does); otherwise the prompt is refused
+(`-32001`, "the model … does not read images"). Images are held in memory for
+the conversation only, never in the record: the record holds an
+`input.mention {path: "image:<type>", sha256, bytes}` and the prompt's text
+notes each image, so a resumed or forked session has the note, not the
+image. A session the engine does not run itself refuses an image, and names
+a link rather than reading it.
+
+Any message over 16 MiB on one line, its `\r\n` aside, is refused with its
+id (`-32602`, "the message is over the 16 MiB a line may hold") and the
+connection goes on. The id is looked for only as the top-level `"id"` within
+the message's first 64 KiB and 16 levels of nesting; a message whose id is
+not there is refused with a null id.
+
+Known limits, left for 1.2.10: images stay in the conversation and are sent with every later
+request, with no session-wide budget, so a long session with many images
+can reach the provider's request limit; and with many parallel tool
+results in the last turn, the Anthropic history markers can fall on
+adjacent results and miss the previous request's cache.
 
 ---
 
@@ -467,7 +654,14 @@ The same list is also a config option of `category: "mode"`.
 - The change is recorded `mode.changed {from, to, by: "user", via: "studio"}`,
   and the engine sends `current_mode_update`.
 - Plan mode's exit is the engine's `plan.proposed` / `plan.decided` flow, shown
-  as a normal ask.
+  as a normal ask: a `session/request_permission` whose `toolCall` (`kind:
+  "think"`, `_meta.plan: true`, `planHash` and `steps` when the plan has a
+  runbook) carries the plan and its steps as content, with the options
+  `plan:accept-edits`, `plan:approve` and `plan:keep-planning`. A runbook with
+  steps that cannot be undone is followed by a second request
+  (`_meta.destructive: true`, `plan:confirm` or `plan:decline`). Accepting
+  records `mode.changed` `via: plan-exit` and `plan.decided`, and the same
+  prompt turn goes on with the plan.
 
 **Engine today:** `session/set_mode` answers -32601; the mode is fixed at
 construction. **Not implemented in 1.2.2:** a loop-level mode change through the same
@@ -487,11 +681,19 @@ sends it:
               _meta: { "zybuu.ai/abhed": AskMeta } },
   options: [ { optionId: "once:<bind>",   name: "Allow once",          kind: "allow_once" },
              { optionId: "always:<bind>", name: "Always allow <scope>", kind: "allow_always" },  // only when offered
+             // 1.2.9, bash at the default step: the scopes below, each with
+             // _meta["zybuu.ai/abhed"].grant = {command?, family?, folder?, session?}
+             { optionId: "session-exact:<bind>", name: "Allow `<command>` for this session", kind: "allow_once" },
+             { optionId: "always-exact:<bind>",  name: "Always allow exactly `<command>` in this workspace", kind: "allow_always" },
+             { optionId: "always-folder:<bind>", name: "Always allow `<family> …` in <folder>", kind: "allow_always" }, // a family, below the root
+             { optionId: "always-family:<bind>", name: "Always allow `<family> …` in this workspace", kind: "allow_always" }, // a family only
              { optionId: "reject:<bind>", name: "Deny",                 kind: "reject_once" } ] }
 
 interface AskMeta {
   tool: string; step: string; reason: string; destructive: boolean;
   requestId?: string;        // the engine's action.requested id; <bind> is it
+  supervisor?: { decision: string; code: string; rationale?: string; advice?: string; judge?: string };
+                             // 1.2.9: the supervisor's verdict on the call, as recorded on action.requested
   scope?: string;            // what "always" grants, only when offered
   subagent?: string;         // a subagent's ask; toolCallId is "subagent-<requestId>"
   rule?: string;             // Not implemented in 1.2.2. The rule that asked, or "builtin:<name>"
@@ -505,6 +707,51 @@ interface AskMeta {
 - Option ids are bound to the request, so an answer meant for another ask is
   refused.
 - "Always" is never offered for destructive, screen or ask-rule steps.
+- **Bash scopes (1.2.9).** For a bash call the policy asks about by default
+  (no deny or ask rule, not destructive, not flagged by the supervisor or a
+  screen), the request also offers this exact command for the session or
+  always, and, for a command in a family Abhed knows (`go test`, `go build`,
+  `cargo test`, `npm run <script>`, `npm test`, `python -m pytest`, `pytest`,
+  `dotnet test`, `mvn test`, `gradle test` and the like), that family in the
+  session's current folder or anywhere. A line with a chain, a redirect, an
+  expansion, a quote, `~`, an assignment in front, a program named by a path,
+  or a word with an absolute path or a `..` step in any part split at `=` or
+  `:`, or a word with `@`, is offered and covered by no scope, exact or
+  family. A family grant covers only the flags on its family's list, those
+  that select, filter, repeat or report (`app/acp_grants.go` `familyFlags`);
+  a flag that names another program, script, settings file, project or output
+  path (`-exec`, `-toolexec`, `-vettool`, `-o`, `--init-script`, `-s`,
+  `--manifest-path`, `--prefix`, pytest's `-p`…) is not on any list, so such
+  a line asks. Go's `-mod` is covered only as `readonly` or `vendor`, which
+  never rewrite `go.mod` (they do not stop the build fetching what it
+  requires: what a family's build reaches is the network policy's to say),
+  and a go package only inside the module (`.`, `./…`, or a pattern whose first
+  element has no dot); for `mvn` and `gradle` no further goal or task word is
+  covered, nor, for Maven, any word with a `:`. A grant answers
+  only a later default-step ask; every rule, the destructive check, the
+  supervisor and the screens still come first. None is offered where the
+  managed configuration holds the permissions. Each is recorded as
+  `approval.scope_granted {scope, by, command?, family?, folder?, session?}`.
+  An "always" grant is kept for the workspace in Abhed's state
+  (`~/.abhed/state/workspace-grants.json`, out of every command's reach) and
+  loaded by every new or continued session of the workspace, each recorded
+  at the start as `approval.scope_granted` with `kept: "workspace"` and
+  `granted_at`; one for the session alone is never kept, and one that
+  cannot be kept holds for the session alone. The kept grants are the
+  source: a grant in an older record is not brought back once revoked. A
+  call a kept grant lets through is `action.approved` with `by:
+  "workspace-grant"` and its `scope`. The workspace is its real path, one
+  key for every case spelling where the disk ignores case, and its folder's
+  identity: a folder deleted and made again at the path starts with none.
+- **Kept grants (1.2.9, feature `grants`).** `_abhed/grants/list {sessionId}`
+  → `{workspace, managed, grants: [{id, scope, command?, family?, folder?,
+  grantedAt}]}`; `_abhed/grants/revoke {sessionId, id}` → `{revoked, scope}`,
+  forgets it and takes it from this process's open sessions of the
+  workspace at once; a session in another Abhed process (another window)
+  looks the grant up again before it would answer, and asks. Recorded
+  `permission.changed {op: "remove", list: "allow", rule, scope:
+  "workspace"}`; refused inside an agent's command, `-32602` for an unknown
+  id. With `managed` true none is loaded or offered.
 - An answer of "always" is recorded `approval.scope_granted {scope, by:
   "user"}` (**not implemented in 1.2.2**) so `session/load` can restore it.
 - A call whose input the record withheld is refused without asking, with a
@@ -538,6 +785,9 @@ interface PolicyView {
            layer: "managed" | "user" | "settings" | "workspace" | "flag" | "default" | "session" | "builtin";
            applied: boolean; ignoredBecause?: "workspace-untrusted" | "managed-override";
            note?: string }[];                     // why a session deny rule was pinned
+  allowLists?: { key: "model.allowed" | "mcp.allowed" | "mcp.denied";
+                 layer: "managed" | "user" | "settings" | "workspace";
+                 entries: string[] }[];           // absent when no list is set
 }
 ```
 
@@ -559,6 +809,27 @@ interface PolicyView {
 asks and puts it in the ask's `content` as spec `{type: "diff", path, oldText,
 newText}` and in `locations`. For files over 256 KiB only the changed hunks
 are sent, with `meta.hunksOnly: true`.
+
+### 5.5a Previewing writes
+
+A `session/prompt` whose `_meta["zybuu.ai/abhed"]` carries
+`previewWrites: true` previews every `edit` and `write` of that prompt:
+whatever the mode or a rule decided, short of a deny, it is asked (step
+`preview`, keeping an earlier ask's reason; the card's `rule` is
+`builtin:preview`, and the rule it replaced stays on the record), with its
+diff as §5.5 gives it,
+and nothing is written until the person accepts. The preview ask offers no
+scope, so no "always" grant, remembered or restored, answers it. Rejected,
+it is denied by the reviewer like any ask; accepted, it is approved and
+written. A deny stays a deny. It covers the prompt's run whether it is a
+plain prompt, a custom command or a skill, and the writes of any subagent
+it starts. It covers `edit` and `write` only: `bash`, MCP tools and
+`memory_write`, which can also change files, are not previewed. It ends with
+the prompt, except that a subagent started under preview keeps it for as long
+as it runs, a background one included, which only ever asks more. A session that cannot
+preview (one the engine does not run itself) refuses the prompt (`-32001`,
+"this session cannot preview writes"). An inline edit on a selection is a prompt with the selection
+attached (§3.1a) and this flag.
 
 ### 5.6 Workspace trust
 
@@ -709,7 +980,7 @@ interface Capabilities {
             has_pipeline: boolean; allowed_tools?: string[]; dir?: string;
             trusted: boolean; refused?: string }[];
   mcp: { name: string; transport: "stdio" | "http" | "sse";
-         status: "connected" | "starting" | "stopped" | "error"; error?: string;
+         status: "connected" | "starting" | "stopped" | "error" | "refused"; error?: string;
          tools: string[]; source: "user" | "workspace" | "managed";
          pinned: boolean;                                   // digest-pinned command or image
          refusedTools?: string[] }[];                       // offered, not registered for their name
@@ -741,9 +1012,13 @@ interface Capabilities {
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
 - **Client MCP servers are refused.** `session/new` must be sent
-  `mcpServers: []`; a non-empty list is not used and the reply's
-  `meta.mcpServersRefused` names them. MCP servers are configured in the
-  engine's configuration, under workspace trust.
+  `mcpServers: []`; a non-empty list is not used, the reply's
+  `meta.mcpServersRefused` names them and `meta.mcpServersRefusedReason` says
+  why, and each is recorded as `config.refused`. MCP servers are configured
+  in the engine's configuration, under workspace trust.
+- **Refused servers.** A server `mcp.allowed` or `mcp.denied` refuses is
+  listed in `mcp[]` with `status: "refused"` and `error` saying why. It is
+  never started, and a restart of it is refused.
 - **Security:** read-only, redacted. Untrusted workspace agents, skills,
   commands and MCP servers are listed with `trusted: false` and `refused`, so
   Studio can say why they are missing. Abhed hook extensions can veto, never
@@ -767,17 +1042,94 @@ through policy; a step needing approval in a headless run is refused.
 
 ```ts
 _abhed/terminal/create { sessionId, mode: "lines" | "interactive", cols, rows }
-  → { terminalId, tier: string, network: boolean, recorded: true }
+  → { terminalId, tier: string, network: boolean, recorded: true,
+      registries: string[], networkNote: string,    // 1.2.9: for the header
+      serves: boolean,                              // 1.2.9: a loopback server opens from the Mac
+      venv?: { path: string, inUse: boolean } }     // 1.2.9: the project's Python venv
 _abhed/terminal/input  { terminalId, data: string }     → {}
 _abhed/terminal/resize { terminalId, cols, rows }       → {}
 _abhed/terminal/kill   { terminalId }                   → {}
 // notifications
 _abhed/terminal/output { terminalId, data: string }     // base64 of the bytes
 _abhed/terminal/exit   { terminalId, code?: number, signal?: string }
+// 1.2.9: a command there was refused a package registry; offer its opening
+_abhed/toolchain/registry_refused { sessionId, terminalId, language, hosts, canOpen, why?, message }
+// 1.2.9: a command there printed the loopback address a server listens on
+_abhed/terminal/serving { sessionId, terminalId, url }
+// 1.2.9: a server there was refused its port; offer _abhed/sandbox/listen
+_abhed/terminal/listen_refused { sessionId, terminalId, canAllow, why?, message }
+// 1.2.9: an interactive terminal now uses the project's venv (abhed_venv)
+_abhed/terminal/venv { sessionId, terminalId, inUse }
+// 1.2.9: more than one program listens on a listen port; Abhed stops nothing
+_abhed/sandbox/port_contested { sessionId, port, message }
+// 1.2.9: contested ports can no longer be seen (lsof failed)
+_abhed/sandbox/listen_watch_lost { sessionId, message }
 // engine → client request: confirm a destructive command
 _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean }
 ```
 
+- **Network (1.2.9).** The terminal has the network the agent's commands
+  have: off but for the package registries open to the session through
+  the egress proxy, by the person's agreement or by configured egress rules,
+  unless the session's policy opens it. `registries` lists those open now
+  and `networkNote` says it in a line for the terminal's header. Abhed's own
+  echo, prompts and notes are not watched; a command whose output shows the egress proxy
+  refusing a known registry (`npm install` with registry.npmjs.org closed,
+  `go get` with proxy.golang.org closed) gets, once per language and
+  terminal, a line in the terminal naming the registry and how to open it,
+  and Studio gets `_abhed/toolchain/registry_refused` to offer the one-click
+  opening (`_abhed/toolchain/registries`, §3.2b), or to say why it cannot.
+- **Dev servers (1.2.9, feature `listen`).** Where `serves` is true (no
+  sandbox, or the macOS process tier with `sandbox.listen` allow or the
+  person's agreement for the workspace, and the Mac's listeners readable),
+  a command may listen, TCP only, on `sandbox.listen_ports` less Abhed's
+  reserved ports and those the Mac listens on, and the person's browser
+  reaches it. The first time a terminal's output shows a loopback address
+  on a listen port that no program outside the sandbox holds
+  (`http://localhost:5173/`), up to 16 per terminal, Studio gets
+  `_abhed/terminal/serving` to offer opening it. A server refused a port
+  where commands do listen gets a line naming the listen ports. Where
+  `serves` is false, a server refused its port (`listen EPERM`, `bind:
+  operation not permitted`) gets one line in the terminal and
+  `_abhed/terminal/listen_refused {sessionId, terminalId, canAllow, why?,
+  message}`. `_abhed/sandbox/listen {sessionId, allow}` → `{listens}` is the
+  person's agreement, or taking it back: kept for the workspace with the
+  kept grants, applied to this process's open sessions of it at once and
+  every later one; a session in another process looks it up again within
+  two seconds, before a command starts. Recorded `permission.changed {op,
+  list: "allow", rule: "sandbox(listen loopback)", scope: "workspace"}`
+  (and at a session's start where it applies); refused inside an agent's
+  command, under `sandbox.listen` off, off the macOS process tier, and
+  taking it back under `sandbox.listen` allow. An interactive terminal
+  keeps the rules it started with. Studio's consent must say that the
+  agreement covers every command in every session of the workspace, the
+  agent's too; that it is TCP on the listen ports; that, while listening is
+  on, a command can take a listen port before one of the person's programs
+  starts there and receive its connections, and that Abhed warns but does
+  not stop the command (stop it, or turn listening off); and that a
+  command can bind every address of the port. When more than one program
+  listens on a listen port, every session that may listen on it gets
+  `_abhed/sandbox/port_contested {sessionId, port, message}`, recorded
+  `sandbox.port_contested {port, listeners}`, within a few seconds: once
+  while the port stays contested (a session that starts watching during a
+  contest, or turns listening on again, is told too), again within one
+  read whenever a program not told of joins the port (programs are told
+  apart by their sockets and processes), and for the same programs coming
+  back at most once a minute. A server and
+  the workers it forks, sharing one socket, count as one program; Abhed
+  cannot prove which listener is a sandbox's and signals
+  no process. A new command's profile leaves the port out. If the Mac's
+  listeners can no longer be read, Studio gets
+  `_abhed/sandbox/listen_watch_lost {sessionId, message}`, once until they
+  can be read again.
+- **Python venv (1.2.9).** `venv` is the project's virtual environment for
+  the terminal's folder, if any. In `lines` mode its python and pip are
+  used (`inUse`); in `interactive` mode only once the person types
+  `abhed_venv`, when Studio gets `_abhed/terminal/venv {sessionId,
+  terminalId, inUse: true}`: sent only once the person typed `abhed_venv`
+  at the shell and its line came back, so a program's output alone never
+  sends it. Show it in the header. Its `bin` never comes
+  before `PATH`.
 - The shell runs in the engine's sandbox tier for the session. In `lines`
   mode each line is a `bash` call through policy; in `interactive` mode the
   shell runs whole under the sandbox and each entered line is recorded
@@ -851,6 +1203,34 @@ _abhed/review/changed  { sessionId, paths: string[] }
   protected.
 - Studio's renderer never writes a file. There is no auto-accept delay.
 
+### 7.4.1 Taking a subagent's worktree back
+
+```ts
+_abhed/worktrees/list { sessionId } → { worktrees: {
+  id, rel, branch, base,            // .abhed-worktrees/<id>, abhed/<id>, the shared commit
+  files: { path, status: "modified" | "added" | "deleted", whole?: boolean, unsupported?: string,
+           hunks: { old_start, old_count, new_start, new_count, old: string[], new: string[],
+                    before?: string[], after?: string[] }[] }[] }[] }
+_abhed/worktrees/take { sessionId, worktree, accept: { [path]: number[] }, remove?: boolean }
+  → { taken: string[], conflicts: string[], refused: string[], left: number, removed: boolean }
+```
+
+- Listed under the `worktrees` feature. Paths are the workspace's, slash
+  separated; hunk lines keep their newlines and are redacted as other text
+  the engine sends. A file a read rule withholds, in the workspace or the
+  worktree, has no hunks and `unsupported: "denied by policy"`.
+- `accept` names hunks by their index in the list. The changes are read again
+  at the take, so a stale list cannot put in a hunk the worktree no longer
+  holds; an index or path it no longer has is `refused`.
+- Each file taken is the person's write (or delete) through the engine's
+  manual path, as `reject` is: policy-checked, checkpointed, recorded
+  `by: "user"`; the editor's protected files are refused. A hunk the
+  workspace changed at, or next to, is a `conflict`, left out, never forced.
+- `remove` removes the worktree and its branch after the take, as the
+  person's recorded delete of its folder; what was not taken is lost.
+- The take is recorded as `worktree.taken`, and `_abhed/review/changed`
+  names the files written. Refused while a prompt runs, like `reject`.
+
 ### 7.5 Checkpoints and undo
 
 `_abhed/review/undoTurn {sessionId, turn}` → `{restored: {path, beforeSha256,
@@ -874,6 +1254,401 @@ resolve flow under policy. Pushing and opening a pull request are asks. The
 forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 
 ---
+
+### 7.8 Debugging (Run and Debug)
+
+```ts
+_abhed/debug/launch { sessionId, language: "go" | "python",
+                      program?: string, test?: string,   // exactly one; inside the workspace
+                      args?: string[], cwd?: string,      // cwd inside the workspace
+                      env?: { [name]: string } } → { debugId }
+_abhed/debug/send   { debugId, message: DapRequest } → {}   // passed on in the order sent
+_abhed/debug/stop   { debugId } → {}
+// notifications
+_abhed/debug/message { debugId, message: DapMessage }    // every adapter message Studio is meant to see
+_abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended", message?, problem?, dropped? }
+```
+
+- Listed under the `debug` feature. The adapter runs in the session's sandbox
+  (container or `vm` tier, or the Linux process tier with its network closed
+  or allowlisted, where bubblewrap gives it its own network namespace; with
+  the network open its loopback would be the host's); elsewhere `launch`
+  fails with `-32000` and `data.problem` `{kind: "container-setup", message,
+  steps, retry}` and `data.setup` (below), unless the person chose the
+  process tier (`processTier: true`, below).
+- `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
+  `{os, tier, ready, engine?, brew?, machine?: "none" | "stopped" |
+  "running", steps: [{id: "install-podman" | "machine-init" |
+  "machine-start" | "use-container-tier", title, command?}],
+  processTier: {available, consented, consent?}}`. `steps` are those left,
+  in order, with the exact command where there is one (`brew install
+  podman`, `podman machine init`, `podman machine start`); Studio runs them
+  in the person's terminal. `_abhed/debug/use-container {sessionId}` →
+  `{path, newSession: true, already?: true}` sets `sandbox.min_tier:
+  "container"` in the workspace's `.abhed/config.json` when it is absent or
+  weaker, keeping the rest, recorded as `debug.setup` (`use_container`); a
+  workspace already at `container` or `vm` is left alone (`already: true`).
+  It applies to a new session.
+- `launch` with `processTier: true` debugs on the process tier where
+  `processTier.available` (the macOS process tier; the Linux process tier
+  with the network open and no allowlist). Until the person allows it for the workspace, the launch's
+  judged call is put to them with the consent as its reason (`meta.step:
+  "workspace"`, or folded into the supervisor's question; on macOS that the
+  program can listen on loopback, and a Go program reach services on this
+  Mac, nothing else on the network; on Linux that it reaches those services
+  and the network),
+  with three options: `allow_once` ("Allow once": this session only,
+  nothing kept), `allow_always` ("Allow for this workspace": kept, recorded
+  as `debug.setup` `process_tier_consent`, not asked again there) and
+  `reject_once`.
+  `_abhed/debug/forget-consent {sessionId}` → `{}` forgets it (recorded,
+  `process_tier_forgotten`). On macOS the debug command alone gets loopback,
+  never Abhed's reserved port range (47600-47855, or `ABHED_LOOPBACK_PORTS`),
+  where every Abhed listener on a Mac takes its port; `debug.launched`
+  carries `loopback: true`. Python: debugpy's adapter listens on five ports
+  the engine chose outside the range before it starts (`ABHED_DAP_PORTS`,
+  removed before the program runs), binds them all on the wildcard and
+  loopback addresses first and holds them, and the command may connect,
+  bind and accept on those alone, on any of the Mac's addresses (Seatbelt's
+  localhost matches the Mac's network addresses too; the consent says so),
+  and on no other port unless the session's commands may listen
+  (`sandbox.listen`, §7.1): then, as any command, TCP on the free listen
+  ports too, on any of its addresses. Go: the command may
+  connect to each port the system hands out to listeners
+  (`net.inet.ip.portrange`) but the range, one Seatbelt rule each (the
+  profile then goes in the session's own folder), and may listen on any
+  loopback port but the range, which Seatbelt lets take the wildcard and
+  network addresses; with listening on, not on the Mac's busy ports
+  either. Both work whatever the
+  session's network. Go there is bridged by the engine's own program
+  through a socket folder the engine makes for the session in
+  `~/.abhed/run`, the only place it may make or reach a unix socket. A
+  launch the sandbox still refuses is `kind: "tier-unsupported"` with
+  steps, and a workspace agreement given for it is not kept. Go without Delve where commands run is refused
+  before anything is judged, with `kind: "adapter-missing"` and
+  `problem.install: {language: "go", debugger: true}` (Python's missing
+  debugpy likewise, `{language: "python", debugger: true}`): the
+  toolchain install (§3.2b) Studio offers in one click. Go also needs the bundled Linux helper (or `relay_binary`) as its socket bridge (`kind: "bridge-missing"`);
+  bad params are `-32602` with `kind: "invalid-request"`.
+- The program or test, its args, cwd and env make the debuggee's command line
+  (`dlv debug|test …`, `python3 …`, `python3 -m pytest …`), which is put to
+  policy and the supervisor as the person's `bash` call and recorded through
+  the manual path (`action.requested` by user, its decision, and an
+  `observation` when the session ends); a refusal is `-32001`. A policy ask
+  is taken as answered, since the person asked for the launch; an ask the
+  supervisor raises is sent to Studio as a normal
+  `session/request_permission` (`toolCall.title` `debug: <command line>`,
+  `meta.step: "monitor"`, `meta.debug: true`, options Allow once and Deny,
+  no "always"), and the launch goes ahead only on Allow; Deny, a cancel or no
+  answer is `-32001`. Then
+  `debug.launched` and, at the end, `debug.stopped` are recorded.
+- Studio sends DAP requests with `send`: `initialize` first, then breakpoints,
+  `configurationDone`, stepping and the rest. The engine sends the adapter's
+  `launch` itself once `initialize` is answered and keeps its response:
+  Studio sees `status: launched` or `status: failed` instead; a failed one's
+  `message` carries the adapter's error, its `body.error.format` with the
+  variables filled in, up to 2,000 bytes, as untrusted text. Every `status`
+  `message` is bounded the same way. Only the first response to the
+  engine's launch is taken as its verdict. Studio's own
+  `launch`, `attach`, and a `restart` with arguments are answered with a
+  failed DAP response in a `message`; a non-request is `-32602`. The
+  engine reads `seq`, `type`, `command`, `request_seq`, `success`,
+  `message`, `arguments`, `event` and `body` by their exact keys: a message
+  that repeats one, or has a key equal to one under Unicode case folding
+  without being it (`Command`, or `argumentſ` with U+017F, which Go's
+  encoding/json in Delve would read as `arguments`), is
+  `-32602` from Studio, and from the adapter is dropped, never passed on,
+  and counted (`dropped` in the final `status` and in `debug.stopped`).
+  `send`s are passed to the adapter in the order the engine read them;
+  Studio need not wait for each reply, and every `send` is answered, those
+  still queued when the session ends with an error. A header line over 1 KiB
+  or a header over 8 KiB from the adapter, or a message it cannot read, ends
+  the session at once: the adapter is ended, `status: failed` says why and
+  `debug.stopped` records `failed`. A launch whose supervisor question is
+  answered after its session closed is not started (`-32000`).
+- The adapter's `runInTerminal` and `startDebugging` never reach Studio: the
+  engine answers them with an error (`status: note`); `console` is always
+  `internalConsole`.
+- A missing debugger ends the session at once with `status: failed` and
+  `problem.kind: "adapter-missing"` and its steps. `stop` sends `disconnect`
+  (`terminateDebuggee`) and ends the adapter after three seconds; closing the
+  session or the connection stops its debug sessions.
+- The session also ends by the protocol: once the adapter answers a
+  `disconnect` Studio sent, or reports `terminated` or `exited` after Studio's
+  `terminate`, the engine closes the adapter's input (debugpy's adapter waits
+  for that), ends it if it has not gone within three seconds, sends
+  `status: ended` and records `debug.stopped` with `reason: "ended"`. Output
+  events pass as the adapter sends them; nothing is merged or held back.
+- At most four per connection, counting launches still being judged; each
+  ends after eight hours. A session closed with its ACP session or the
+  connection records `debug.stopped` with `reason: "closed"`; `stop` gives
+  `stopped`.
+- **Studio treats every `_abhed/debug/message` as untrusted sandbox output.**
+  The adapter's output can be written by the debuggee, which is workspace
+  code. Studio never acts on a reverse request or a custom event from it
+  (`runInTerminal`, `startDebugging`, `debugpyAttach` or any other), even
+  though the engine already refuses and filters these; it renders text as
+  text and opens no path or URL from it without the person's action.
+
+### 7.9 Language servers
+
+```ts
+_abhed/lsp/start { sessionId, language: "go" | "python" | "typescript" | "javascript" | "rust" | <a sandbox.language_servers name>,
+                   capabilities?: ClientCapabilities }   // the editor's; a broad default when absent
+  → { lspId, capabilities: ServerCapabilities }
+_abhed/lsp/send  { lspId, message: <LSP JSON-RPC message> } → {} | { refused: string }
+_abhed/lsp/stop  { lspId } → {}
+// notifications
+_abhed/lsp/message { lspId, message: <LSP JSON-RPC message> }
+_abhed/lsp/status  { lspId, state: "restarted" | "ended", capabilities?, restart?, reason?, message? }
+```
+
+- Listed under the `lsp` feature. One server per session and language: a
+  second `start` returns the running one, waiting for it to initialize (or
+  failing as it did). At most four per connection.
+- The server runs in the session's sandbox on any tier but `none`; its
+  command (operator-named, else the language's default) is judged as the
+  person's `bash` call and recorded as `lsp.started`; a refusal is `-32001`
+  with `data.problem.kind: "start-refused"` (the reason as its message, and
+  steps: the toolchain route for `unknown-program`). A missing server is
+  `-32000` with `data.problem.kind: "server-missing"`, whose steps start
+  with the toolchain route where Abhed installs that server, and then
+  `problem.install: {language, lsp: true}` (`node` for TypeScript's): the
+  one-click install, `_abhed/toolchain/status` then `install` with those
+  (§3.2b). After any toolchain install or removal for the session, by
+  Studio or by the agent's toolchain tool, the engine sends
+  `_abhed/toolchain/changed {sessionId, language, outcome: "ok" |
+  "removed", extra?}` (`extra` naming gopls, delve and the like); Studio
+  starts a missing server again then, with no engine restart. On the process and fence tiers
+  the server is looked for first, on the PATH commands get with the
+  toolchains' folders before the host's, and a missing one is reported
+  before anything is judged or recorded; the supervisor finds programs on
+  that same PATH.
+  A supervisor's ask on the start goes to Studio as a normal
+  `session/request_permission` (`meta.lsp: true`, `meta.step: "monitor"`,
+  Allow once or Deny); it starts only on Allow. For rust-analyzer, a
+  `rust-analyzer.toml` or `.rust-analyzer.toml` in a root, a folder under
+  it or a folder above it overrides the engine's settings, so the start is
+  put to the person the same way (`meta.step: "workspace"`, the reason
+  naming the files; no answer is Deny) even when policy would allow it, and
+  the answer is recorded. When the supervisor asks too, there is one
+  question (`meta.step: "monitor"`) whose reason carries both, recorded
+  together. The walk counts any non-folder entry with the name (links
+  included), skips `target`, `node_modules` and `.git`, and a walk stopped at
+  its bounds (50,000 entries, 12 levels) asks as if a file were found, saying
+  so. The result is kept per session while the record has no new event.
+  While it runs, rust-analyzer is stopped (`status: ended`,
+  `reason: "workspace-config-changed"`, `lsp.stopped` with that reason) when
+  an agent or subagent write or edit names such a file, when a Studio
+  `send` reports one (didOpen, didSave, didChange, didChangeWatchedFiles,
+  didCreateFiles, didRenameFiles; the send is answered `{refused}`), or when
+  a check every 10 s finds one new, changed or gone in a root or a folder
+  above it, or a file found at the start changed. The next start asks
+  again. A stop that comes while the start is still being decided (during
+  its permission question) holds: the server is not started, `lsp.stopped`
+  records the stop's reason, the start fails and `status: ended` follows;
+  once stopped, a `send` is refused, and a second `stop` ends whatever
+  process is running. The server runs as
+  `exec env GOTOOLCHAIN=local GOFLAGS= GOENV=off <command>`.
+- The engine sends `initialize` (workspace folder, the given capabilities,
+  and the engine's own `initializationOptions`, never Studio's) and
+  `initialized`; Studio must not. File URIs are the host's paths: the sandbox
+  shows the workspace at its own path. The engine's settings, sent there and
+  as its answers to `workspace/configuration` whatever Studio replies:
+  - rust-analyzer: `cargo.buildScripts.enable`, `procMacro.enable`,
+    `checkOnSave` and `cargo.autoreload` off;
+  - typescript-language-server: `tsserver.path` set to the TypeScript
+    installed beside the server, never the workspace's. A shell step before
+    the server looks only under the server's own install
+    (`<bin>/../lib/node_modules/typescript-language-server`, Abhed's layout,
+    and the package two folders above the command's link target, npm's),
+    at `<pkg>/node_modules/typescript/lib/tsserver.js` and
+    `<pkg>/../typescript/lib/tsserver.js`, links resolved; no module
+    search, `HOME` or `NODE_PATH`. A result where a command could write is
+    dropped: in the script, under the sandbox's `$HOME`, `$TMPDIR`, `/tmp`
+    or `/var/tmp`; in the engine, under a session root or the host's home
+    folder. Both exempt Abhed's toolchain cache only while the sandbox
+    mounts it read-only (`sandboxconfig.ToolchainCache`: any tier, unless
+    `sandbox.toolchains` is `off`, at its host path in containers), so the
+    toolchain's own TypeScript is taken there. No result within 15 s, or the
+    process ending first: it is killed and the start fails,
+    `server-missing`;
+  - gopls, basedpyright: their defaults (`null`).
+  What each may still run inside the sandbox: gopls runs `go list` (and, for
+  cgo packages, the cgo tool and the C compiler), no project code;
+  rust-analyzer runs `cargo metadata`, which reads the workspace's
+  `.cargo/config.toml` and can run a `rustc` or `rustc-wrapper` it names;
+  typescript-language-server runs its own TypeScript; basedpyright runs the
+  Python interpreter it finds (the sandbox's, or one a `pyrightconfig.json`
+  names) to read import paths. An operator's `sandbox.language_servers`
+  command is the operator's choice; the engine's settings still apply by
+  language.
+- `send` passes Studio's message through the filter, which takes only the
+  standard LSP 3.17 client methods (and a server's own methods reviewed as
+  running nothing; none yet): refused with `{refused}` (and, for a request,
+  an LSP error answer in a `message`) for any other method (rust-analyzer's
+  `experimental/runTest`, `rust-analyzer/runFlycheck`,
+  `rust-analyzer/rebuildProcMacros` and `rust-analyzer/reloadWorkspace`
+  among them), `initialize`, `initialized`,
+  `workspace/didChangeConfiguration`, a `workspace/executeCommand` not on
+  the server's safe list, a URI outside the session's roots, or an answer to
+  nothing the server asked. Answers to `workspace/configuration` reach the
+  server as the engine's settings above. A refused answer to a request the
+  server is waiting on also sends the server an error answer for that id.
+- URIs are checked in URI positions only (`uri`, `oldUri`, `newUri`,
+  `targetUri`, `rootUri`, `scopeUri`, `baseUri`, `sourceUri`, gopls's `URI` command
+  argument, the keys of a WorkspaceEdit's `changes` and of a report's
+  `relatedDocuments`, and `rootPath`): one there that is not an absolute
+  `file:` URI (a bare or percent-encoded path, another scheme), is under a
+  root's `.abhed` folder, or leads out of the roots through a link (the
+  deepest existing part of its path resolved) is outside. Links (`target`,
+  `href`) may also be `http` or `https`; a `file:` link is checked as a URI
+  and any other scheme is outside. Document text that starts with `file:`
+  is content, not a URI.
+- From the server: `window/showDocument` for a non-file or outside URI is
+  answered by the engine (`success: false`); in notifications and answers
+  each array item naming an outside file (and each outside key of
+  `relatedDocuments`) is dropped and the rest passes; a
+  notification outside as a whole is dropped, such an answer (or error
+  answer) reaches Studio as `null` (a `null` result). A WorkspaceEdit (an
+  object with `changes` or `documentChanges`) is never trimmed: with any
+  file or file operation outside or in `.abhed`, it is outside as a whole,
+  so a rename's answer is `null` and a code action carrying it is dropped
+  from its list; an edit is applied whole or not at all. A Command (a
+  `command` name with `arguments`) is the same: its arguments are
+  positional, so one naming anything outside is dropped whole, with the code
+  action, code lens or completion item carrying it. A request
+  naming one, a `workspace/applyEdit` whose create, rename, delete or edit
+  is outside or in `.abhed` included, is answered with an error and never
+  reaches Studio; a request reusing an id still waiting for Studio's answer
+  is answered with an error. Everything else passes to Studio.
+- A crash restarts the server (backoff 1, 2, 4, 8, 16 s, at most five), judged
+  and initialized again: `status: restarted` with its capabilities, after
+  which Studio opens its documents again. Between the crash and the restart
+  a `send` is `-32002` ("restarting"), not queued. `stop` sends `shutdown`
+  and `exit` and ends it after three seconds. `lsp.stopped` records the
+  reason (`stopped`, `closed` with its session or connection, `crashed`,
+  `failed`, `workspace-config-changed`) and the counts of messages passed and refused; requests are not
+  recorded singly.
+- Messages are read by their exact keys: one with a key twice, or two keys
+  equal under Unicode case folding (`ſ` is `s`, `K` is `k`, as Go's
+  encoding/json matches them), anywhere in it, is refused from Studio and
+  dropped from the server. Header lines and their number are bounded, a
+  message is at most 8 MiB and nests at most 256 deep.
+- Studio's `send`s reach the server in the order they were read, through one
+  queue per server (at most 256 messages or 32 MiB waiting; past that
+  `-32002`, busy) and one writer; a server with more than 1,024 messages or
+  32 MiB it has not read is ended.
+
+### 7.10 Inline completions
+
+```ts
+_abhed/complete { sessionId, uri, position: { line, character }, prefix: string, suffix: string,
+                  language?: string, trigger?: "auto" | "invoked", seq?: number,
+                  context?: { uri, text }[] }        // other open files, optional
+  → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string,
+      dropped?: string }  // why the model's answer was not used as code, such as prose
+_abhed/complete/cancel { sessionId } → {}
+```
+
+- Listed under the `complete` feature; whether completions are on is in each
+  answer: `disabled` names why not (no `model.completion`,
+  `completion.enabled: false`, a provider the configuration does not offer,
+  a managed `model.default` pin the managed file does not extend to
+  `model.completion`, or `completion.local_only` with a remote model).
+  Nothing is sent then. Only the provider's own key is sent.
+- The engine sends at most the last 6,000 characters of `prefix`, the first
+  2,000 of `suffix`, and the first 60 lines of up to three `context` files,
+  4 KiB of each and 12 KiB in all, cut between characters. A document or
+  context file outside the session's roots, one a read rule denies, one that
+  looks like keys, or Abhed's state is not sent (`refused`); every path form
+  (as named, links followed) is checked. Stored secrets and key-shaped text
+  are withheld from the whole of each text before it is cut, and from
+  `prefix`+`suffix` as one so a secret the cursor splits is withheld on both
+  sides; placeholders (`%s`, `${NAME}` with no default, `$NAME`, a bracketed
+  name, masks) are not secrets. A reply that carries one is dropped (empty `items`).
+- One request in flight per session: a newer one cancels it (`cancelled`).
+  `seq`, increasing per session, orders requests; one at or below the newest
+  seen is dropped (`cancelled`). Without it, arrival order. A short debounce;
+  at most five a second per session and ten per connection (`limited`). A
+  model error is `-32000`; a closed session's request is refused with
+  `-32602`.
+- Fill-in-the-middle on the completions endpoint for local server types and
+  `openai-compatible`, else a chat turn; a 404, 405 or 501 from the
+  completions endpoint, or a 400 saying it or `suffix` is not supported,
+  switches the session to chat. Each request is sent once, no retries; under
+  `local_only` no provider follows a redirect off the machine. Text only, no
+  tools. The answer is cleaned before it is offered: reasoning a model wrote
+  into its text (`<think>`, `analysis…final` channels) is removed, a fenced
+  block gives its code, code repeated from either side of the cursor is
+  trimmed, and an answer that reads as prose is dropped, with `dropped`
+  saying so.
+- Recorded as `completion.enabled` just before the first request is sent,
+  and again with `mode: "chat"` before a fallback's first chat request (if
+  it cannot be recorded, nothing is sent) and `completion.summary` when
+  the session closes, which counts `superseded` (replaced before sending)
+  apart from `cancelled` (after); single completions are not recorded.
+
+### 7.11 Next-edit suggestions
+
+```ts
+_abhed/nextEdit { sessionId, uri, cursor: { line, character },
+                  window: { startLine: number, text: string },   // the document's lines around the cursor
+                  recentEdits?: { uri, range: Range, oldText: string, newText: string }[],
+                  language?: string, seq?: number }
+  → { edits: { uri, range: Range, newText: string }[], disabled?: string, refused?: string,
+      limited?: string, cancelled?: string, dropped?: string }
+```
+
+- Listed under the `nextEdit` feature. The model is `model.next_edit`, or
+  `model.completion` when unset, under the same `completion.enabled`,
+  `completion.local_only`, managed pin and key rules as §7.10.
+- The engine sends at most 80 lines and 8 KiB of `window` and five recent
+  edits (1 KiB of text each), each cleaned of stored secrets and key-shaped
+  text; recent edits in a file it may not send are left out. The document
+  itself must be sendable (§7.10), or the request is `refused`.
+- The model is asked, in a chat turn, for the window as it would read after
+  the next edit; the engine diffs that against what it sent and answers with
+  edits by whole lines in `uri` only. A changed line that held a withheld
+  secret, a suggestion carrying one, prose, or a rewrite of more than half the
+  window is `dropped` with the reason.
+- Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
+  `next_edit.enabled` before the first request and `next_edit.summary` when
+  the session closes.
+
+### 7.12 Commit messages
+
+```ts
+_abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "unstaged", excluded?: number,
+                                       truncated?: boolean, disabled?: string, empty?: string, limited?: string }
+```
+
+- Listed under the `commitMessage` feature. Studio sends no diff: the engine
+  reads `git diff --cached --relative` in the session's root itself (with
+  nothing staged, the working tree's changes to tracked files: `source`
+  says which), through
+  the confined git (no external diff, no textconv, no filter or merge driver,
+  inside the sandbox where one is registered).
+- A staged file outside the roots, one a read rule denies, one that looks
+  like keys, Abhed's state, or one the repository's ignore rules name (even
+  force-added, so a repository whose `.gitignore` is `*` gets no message)
+  is left out (`excluded` counts them). The rest
+  is cleaned of stored secrets and key-shaped text and cut to 32 KiB
+  (`truncated`).
+- The model is `model.commit`, or `model.completion` when unset, under the
+  same `completion.enabled`, `completion.local_only`, managed pin and key
+  rules as §7.10, each request sent once.
+- One request at a time per session: a newer `_abhed/commitMessage` cancels
+  one still waiting, and closing the session cancels it.
+- Recorded as `commit_message.requested` before the diff goes (if it cannot
+  be recorded, nothing is sent) and `commit_message.generated` with the
+  outcome. A message that carries a secret is a JSON-RPC error; nothing
+  staged or changed, or only files that may not be read, is `empty`.
+- It always ends with a `message` or a JSON-RPC error saying why (the model
+  gave no message, it did not answer within 90 s, the changes could not be
+  read), never an empty `message` alone; `empty` is only for nothing staged
+  or changed, `disabled` and `limited` as above. Each request is logged on
+  the engine's stderr with how it ended.
 
 ## 8. Health, setup and memory
 
@@ -945,6 +1720,8 @@ them.
 | `conversation.forked` | user | from, through_seq |
 | `terminal.input` | user | line or withheld |
 | `monitor.verdict` | system | verdict, before, after (shown when present) |
+| *new* `supervisor.correction` | system | call_id, code, decision, text |
+| *new* `supervisor.replan` | system | failures, text |
 | `message.dropped` | system | |
 | *new* `mode.changed` | user | from, to, via |
 | *new* `permission.changed` | user | op, list, rule, scope |
@@ -958,6 +1735,7 @@ them.
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
 | `mcp.status` | user | server, op (`restart`), status, error |
+| `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
 An unknown type is shown with its raw payload as text. Studio never infers
@@ -976,6 +1754,7 @@ table.
 | Handshake, features | `initialize` + `meta`, `abhed version --json` | spec + meta | done |
 | Chat, thinking, plan, usage | `session/prompt`, `session/update` | spec | done: reasoning deltas, stop reasons from the terminal reason, usage `meta`; no `cost` (no price table) |
 | Next-prompt suggestion | `agent_message_chunk` + `_meta.suggestion` | spec + meta | done (§3.4a) |
+| Checked answers | `agent_message_chunk` + `_meta.verdict` | spec + meta | done (§3.4b) |
 | Models | `session/set_config_option` (`model`) | spec | done; `config_option_update` on `model.fallback` |
 | Thinking level | config option `thought_level` | spec | not yet: never offered, as no provider reports reasoning control |
 | Slash commands | `available_commands_update` | spec | done (see note 3) |
@@ -990,8 +1769,13 @@ table.
 | HawkEYE | `_abhed/hawkeye` | ext | done |
 | Subagents | `tool_call` cards + events | spec + meta | done |
 | Background tasks | `bg-<id>` cards, `_abhed/tasks/*`, `_abhed/tasks/changed` | spec + ext | list, cancel, review done; `resume` not yet |
+| Worktree take-back | `_abhed/worktrees/list`, `_abhed/worktrees/take` | ext | done in the engine (1.2.9; `worktrees` in `features`); Studio's view not yet |
+| Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
+| Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
+| Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
+| Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |
 | Host terminal | none (Studio only), removable by managed `studio.disable_host_terminal` | — | Studio; the managed key is read into `capabilities.studio` |

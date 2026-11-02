@@ -125,6 +125,7 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .dot.waiting_approval{background:var(--warn)}.dot.done{background:var(--ok)}.dot.background{background:var(--warn)}
 .badge{font-size:10px;padding:0 4px;border-radius:3px;color:var(--muted)}.badge.warn{color:var(--warn)}
 .dot.done.error,.dot.done.max_turns,.dot.done.max_budget,.dot.done.retry_exhausted,.dot.done.policy_denied,.dot.done.stalled,.dot.done.deadline{background:var(--del)}
+.dot.done.unverified{background:var(--warn)}
 .card{margin:6px 12px;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--raised)}
 .card .t{display:flex;gap:8px;align-items:baseline}
 .card .t b{font:600 12px var(--mono);overflow-wrap:anywhere}
@@ -135,6 +136,19 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .rules{margin:0 12px 6px;font:12px var(--mono);color:var(--ink-2);overflow-wrap:anywhere}
 .rules div{padding:2px 0}.rules div.warn{color:var(--warn)}.rules .k{display:inline-block;width:44px;color:var(--muted)}
 .empty{margin:8px 12px;padding:10px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--muted);font-size:12px}
+.wt{margin:10px 0 6px;border-top:1px solid var(--line-strong);padding-top:6px}
+.wt .vsub{display:flex;gap:8px;align-items:center;padding:2px 12px;font-size:12px;font-weight:600}
+.wt .vsub .meta{font:11px var(--mono);color:var(--muted);font-weight:400}
+.wtf{display:flex;gap:6px;align-items:center;padding:4px 12px 2px;font-size:12px}
+.wtnote{margin:0 12px 4px 30px;color:var(--muted);font-size:11.5px}
+.wth{display:flex;gap:6px;align-items:flex-start;padding:2px 12px 2px 18px;cursor:pointer}
+.wth input{margin-top:3px;flex:none}
+.wtd{flex:1;min-width:0;margin:0;overflow-x:auto;font-size:11.5px;line-height:1.45;border:1px solid var(--line-strong);border-radius:4px;padding:3px 6px}
+.wtd span{display:block;white-space:pre}.wtd .ctx{color:var(--muted)}
+.wtbar{display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px}
+.wtbar button{border:1px solid var(--line-strong);border-radius:4px;padding:0 8px;height:22px;background:var(--surface);color:var(--ink);font:11.5px var(--sans)}
+.wtbar button.ok{color:var(--add);border-color:var(--add)}.wtbar button:hover{filter:brightness(1.1);background:var(--sunken)}.wtbar button:disabled{opacity:.5}
+.wtres{margin:0 12px 6px;font-size:11.5px;color:var(--muted)}
 .empty code{font:11px var(--mono);color:var(--ink-2)}
 .primary{margin:8px 12px;height:30px;border-radius:6px;background:var(--accent);color:var(--on-accent);font-weight:600;flex:none}
 .primary:hover{filter:brightness(1.08)}
@@ -290,17 +304,36 @@ kbd{font:11px var(--mono);padding:1px 5px;border:1px solid var(--line-strong);bo
 .ask b{display:block;margin-bottom:2px}.ask p{margin:0 0 8px;font-size:12px;color:var(--ink-2);overflow-wrap:anywhere}
 .ask p.hidden-warn{color:var(--bad);font-weight:600}
 .ask p.hidden-field{font:11.5px/1.5 var(--mono)}
+.ask p.sup,.why.sup{font:11.5px/1.5 var(--mono)}.ask p.sup.concern{color:var(--ink);font-weight:600}
 .ask .btns{display:flex;flex-wrap:wrap;gap:6px}
 .ask button{padding:4px 10px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px}
 .ask button.yes{background:var(--ok);border-color:var(--ok);color:#fff}
 .ask button.no{color:var(--bad);border-color:var(--bad)}
 .ask .done{font:12px var(--mono);color:var(--muted)}
+.ask ol.runbook{margin:0 0 8px;padding-left:20px;font-size:12px}.ask ol.runbook li{margin:0 0 6px}
+.ask ol.runbook pre{margin:3px 0 0;padding:6px 8px;background:var(--surface);border-radius:4px;font:11.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.ask ol.runbook .undo{color:var(--bad);font-weight:600}
 .todo{border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;flex:none}
 .todo h4{margin:0 0 5px;font:600 10px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .todo div{display:flex;gap:7px;padding:1px 0}.todo .done{color:var(--muted);text-decoration:line-through}
 .todo .in_progress{color:var(--accent);font-weight:600}
 .sys{font:11.5px var(--mono);color:var(--muted);text-align:center;padding:2px 0;flex:none}
 .sys.bad{color:var(--bad)}
+/* An answer's checks: each claim badged ✓ verified, ? unverified, ✗ contradicted (struck through, with the record against it). */
+.verdict{border:1px solid var(--line);border-radius:6px;padding:5px 10px;font-size:12px;flex:none}
+.verdict summary{cursor:pointer;font:11.5px var(--mono);color:var(--ink-2)}
+.verdict.bad{border-color:var(--bad)}.verdict.unk{border-color:var(--warn)}
+.verdict .cl{display:flex;gap:7px;padding:3px 0;align-items:baseline}
+.verdict .mk{font-weight:700;flex:none;width:1em;text-align:center}
+.verdict .verified .mk{color:var(--ok)}.verdict .unverified .mk{color:var(--warn)}.verdict .contradicted .mk{color:var(--bad)}
+.verdict .contradicted .t{text-decoration:line-through}
+.verdict .t{overflow-wrap:anywhere}
+.verdict .vbanner{margin:4px 0;padding:5px 8px;border-radius:4px;background:var(--bad-bg);color:var(--bad);font-weight:700}
+.msg.agent.contradicted{box-shadow:inset 3px 0 0 var(--bad)}
+.msg .vflag{margin-top:6px;color:var(--bad);font:700 11.5px var(--sans)}
+.verdict .why{color:var(--muted);font:11px/1.45 var(--mono);overflow-wrap:anywhere}
+.verdict a.seq{color:var(--accent);cursor:pointer;text-decoration:underline}
+.call.hl,.evt.hl{outline:2px solid var(--accent);outline-offset:1px}
 .sys.woke{color:var(--accent)}
 #composer{flex:none;border-top:1px solid var(--line);padding:9px 10px;position:relative}
 #q{width:100%;min-height:54px;max-height:200px;resize:none;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);padding:8px 10px;display:block}
@@ -1418,15 +1451,16 @@ function findInFiles(){
   setView('search'); if($('sq').value) runSearch();
 }
 
+let changesGen = 0, takeNote = null;
 async function loadChanges(){
-  const box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
+  const gen = ++changesGen, box = $('changes'); if(!current){ clear(box); box.appendChild(el('div', 'empty', 'No session open.')); return; }
   let res; try{ res = await api('/v1/sessions/' + current + '/changes'); }catch(e){ clear(box); box.appendChild(el('div', 'empty', visible(e.message))); return; }
   clear(box); const files = res.files || [];
   $('b-changes').hidden = !files.length; $('b-changes').textContent = files.length;
   if(res.available === false){ box.appendChild(el('div', 'empty', 'Changes are tracked while a session runs on this server. This one was reopened from its record; continue it and new edits will appear here.')); return; }
   // Changes made by commands are found against the workspace as the session opened, within limits.
   if(res.partial) box.appendChild(el('div', 'empty', 'Changes made by commands may be missing here: ' + visible(res.partial) + '.'));
-  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save, edits the agent makes, and files changed by commands, yours or the agent\'s, appear here.')); return; }
+  if(!files.length){ box.appendChild(el('div', 'empty', 'Nothing has changed in this session yet. Files you save, edits the agent makes, and files changed by commands, yours or the agent\'s, appear here.')); loadWorktrees(box, gen); return; }
   for(const f of files){
     const row = el('button', 'row'); row.type = 'button';
     row.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
@@ -1434,6 +1468,66 @@ async function loadChanges(){
     if(f.by_command) row.title = 'Not changed through the edit tools: a command or an upload' + (f.note ? ' · ' + visible(f.note) : '');
     const m = el('span', 'meta'); m.appendChild(el('span', 'plus', '+' + f.added)); m.appendChild(document.createTextNode(' ')); m.appendChild(el('span', 'minus', '−' + f.removed));
     row.appendChild(m); row.addEventListener('click', () => openDiff(f.path)); box.appendChild(row);
+  }
+  loadWorktrees(box, gen);
+}
+
+// A subagent's worktree, taken back by hunk: each ticked hunk is put into the
+// workspace as your own write, through the permission rules, and recorded.
+async function loadWorktrees(box, gen){
+  const sid = current; let res;
+  try{ res = await api('/v1/sessions/' + sid + '/worktrees'); }catch(e){ return; }
+  const list = (res && res.worktrees) || [];
+  // A later load of the view draws its own.
+  if(gen !== changesGen || sid !== current || !box.isConnected) return;
+  // What the last take did stays in view after the reload it causes.
+  if(takeNote && takeNote.sid === sid){
+    const note = el('div', 'wt'); note.appendChild(el('div', 'vsub', 'Last take'));
+    const out = el('div', 'wtres'); takeNote.lines.forEach(l => out.appendChild(el('div', '', visible(l)))); note.appendChild(out); box.appendChild(note);
+  }
+  if(!list.length) return;
+  const empty = box.querySelector(':scope > .empty:last-child');
+  if(empty && !box.querySelector('.row')) empty.remove();
+  for(const w of list){
+    const sec = el('div', 'wt'), head = el('div', 'vsub');
+    head.appendChild(el('span', 'name mono', 'Worktree ' + visible(w.id))); head.appendChild(el('span', 'meta', visible(w.branch)));
+    sec.appendChild(head);
+    const picks = [];
+    if(!(w.files || []).length) sec.appendChild(el('div', 'wtnote', 'It changes nothing.'));
+    for(const f of w.files || []){
+      const fh = el('div', 'wtf'); fh.appendChild(el('span', 'st ' + f.status[0].toUpperCase(), f.status[0].toUpperCase()));
+      fh.appendChild(el('span', 'name mono', reveal(f.path))); sec.appendChild(fh);
+      if(f.unsupported){ sec.appendChild(el('div', 'wtnote', 'Not taken here: ' + visible(f.unsupported))); continue; }
+      (f.hunks || []).forEach((h, i) => {
+        const lab = el('label', 'wth'), cb = el('input'), pre = el('pre', 'wtd mono');
+        cb.type = 'checkbox'; cb.checked = true;
+        const line = (cls, sign, l) => pre.appendChild(el('span', cls, sign + visible(String(l).replace(/\r?\n$/, ''))));
+        if(f.whole) pre.appendChild(el('span', 'ctx', 'binary or large: taken whole'));
+        else { (h.before || []).forEach(l => line('ctx', ' ', l)); (h.old || []).forEach(l => line('minus', '-', l)); (h.new || []).forEach(l => line('plus', '+', l)); (h.after || []).forEach(l => line('ctx', ' ', l)); }
+        lab.appendChild(cb); lab.appendChild(pre); sec.appendChild(lab); picks.push({path: f.path, i, cb});
+      });
+    }
+    const bar = el('div', 'wtbar'), out = el('div', 'wtres');
+    const take = async remove => {
+      const accept = {};
+      for(const p of picks) if(p.cb.checked) (accept[p.path] = accept[p.path] || []).push(p.i);
+      if(!Object.keys(accept).length && !remove){ out.textContent = 'Tick the changes to take.'; return; }
+      if(remove && !confirm('Take the ticked changes, then remove worktree ' + visible(w.id) + ' and its branch ' + visible(w.branch) + '? What is not taken is lost.')) return;
+      bar.querySelectorAll('button').forEach(b => b.disabled = true); out.textContent = 'Taking…';
+      try{
+        const r = await api('/v1/sessions/' + sid + '/worktrees/' + encodeURIComponent(w.id) + '/take', {method: 'POST', body: JSON.stringify({accept, remove})});
+        const lines = [];
+        (r.taken || []).forEach(p => lines.push('took ' + p));
+        (r.conflicts || []).forEach(c => lines.push('conflict: ' + c + '; left as it is'));
+        (r.refused || []).forEach(c => lines.push('not taken: ' + c));
+        lines.push(r.removed ? 'removed the worktree and its branch' : (r.left ? r.left + ' change(s) not taken stay in the worktree' : 'the worktree is kept'));
+        clear(out); lines.forEach(l => out.appendChild(el('div', '', visible(l)))); takeNote = {sid, lines};
+        refreshDir(''); changesSoon(1200);
+      }catch(e){ out.textContent = visible(e.message); bar.querySelectorAll('button').forEach(b => b.disabled = false); }
+    };
+    const b1 = el('button', 'ok', 'Take ticked'), b2 = el('button', '', 'Take ticked, remove worktree');
+    b1.type = b2.type = 'button'; b1.addEventListener('click', () => take(false)); b2.addEventListener('click', () => take(true));
+    bar.appendChild(b1); bar.appendChild(b2); sec.appendChild(bar); sec.appendChild(out); box.appendChild(sec);
   }
 }
 $('changes-reload').addEventListener('click', loadChanges);
@@ -1501,6 +1595,15 @@ async function loadHawkeye(){
   box.appendChild(dl);
   const steps = Object.entries(r.policy.by_step || {}).map(([k, v]) => visible(k) + ' ' + v).join(' · ');
   if(steps){ box.appendChild(el('div', 'group', 'Policy steps')); box.appendChild(el('div', 'rules', steps)); }
+  // What reached each host and cluster, how it ended, and the runbook step it was.
+  for(const h of r.remote_changes || []){
+    box.appendChild(el('div', 'group', 'Remote changes · ' + visible(h.kind) + ' ' + visible(h.name)));
+    for(const c of h.changes || []){
+      const end = c.decision === 'denied' ? 'denied' : !c.ran ? 'not run' : c.exit_code != null ? 'exit ' + c.exit_code : c.is_error ? 'failed' : 'ok';
+      box.appendChild(el('div', 'rules', '#' + c.seq + ' ' + visible(c.what) + (c.namespace ? ' · ns ' + visible(c.namespace) : '') + ' · ' + end +
+        (c.by ? ' · by ' + visible(c.by) : '') + (c.plan_hash ? ' · plan ' + visible(c.plan_hash).slice(0, 12) + ' step ' + c.plan_step : '')));
+    }
+  }
   const fs = r.findings || []; const loud = fs.filter(f => f.severity !== 'info').length;
   $('b-hawk').hidden = !loud; $('b-hawk').textContent = loud;
   $('n-prob').textContent = fs.length ? ' ' + fs.length : '';
@@ -1820,11 +1923,13 @@ async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ providers = []; }
   if(!Array.isArray(providers)) providers = [];
   const sel = $('mdlpick');
-  if(providers.length < 2) return;
+  // One provider has no picker, but a local Ollama model still gets its card.
+  if(providers.length < 2){ const d = providers.find(p => p.default); if(d) checkOllama(d.name); return; }
   clear(sel);
   for(const p of providers){ const o = el('option', '', modelLabel(p.name, p.model)); o.value = p.name; o.selected = p.default; sel.appendChild(o); }
   sel.dataset.prev = sel.value; sel.hidden = false;
   if(current) showSessionModel(sessionList.find(x => x.id === current));
+  checkOllama(sel.value);
 }
 const modelOf = name => { const p = providers.find(x => x.name === name) || providers.find(x => x.default); return p ? p.model : caps ? caps.model.name : ''; };
 // The picker's choice for a new session, or nothing when it is the default.
@@ -1839,8 +1944,20 @@ function showSessionModel(s){
   const p = providers.find(x => x.name === s.provider) || providers.find(x => x.model === s.model);
   if(p){ sel.value = p.name; sel.dataset.prev = p.name; }
 }
+/*OLLAMA-CARD*/
+// A model a local Ollama serves gets a card when it is not ready: what is
+// wrong, the steps, and the next step for a person who may take it.
+const ollamaCard = {card: null};
+function checkOllama(name){
+  const p = providers.find(x => x.name === name);
+  if(!p || !p.ollama){ if(ollamaCard.card){ ollamaCard.card.remove(); ollamaCard.card = null; } return; }
+  ollamaCard.provider = name; ollamaCard.session = current || '';
+  ollamaCard.mount = n => add(n);
+  abhedOllama.show(ollamaCard);
+}
 async function switchModel(){
   const sel = $('mdlpick');
+  checkOllama(sel.value);
   if(!current){ sel.dataset.prev = sel.value; $('s-model').textContent = modelOf(sel.value); return; }
   sel.disabled = true;
   try{
@@ -1860,6 +1977,7 @@ function openSession(id, state, opts){
   // The mode is fixed when a session starts; the selector shows it rather than implying it can change.
   if(s && s.mode) $('mode').value = s.mode;
   showSessionModel(s);
+  { const d = providers.find(p => p.default); checkOllama((s && s.provider) || (d && d.name)); }
   $('mode').disabled = true; $('mode').title = 'Fixed when the session started. Start a new session to choose another mode.';
   $('s-mode').textContent = 'mode ' + $('mode').value;
   clear($('tree')); if(!$('v-explorer').hidden) loadTree('', $('tree'), 0);
@@ -2334,6 +2452,8 @@ function render(ev){
     // The chat is the conversation with the agent: what the person did by
     // hand is in Events, their terminal and the changes view.
     if(ev.actor === 'user'){ mineCalls.add(p.call_id); break; }
+    // The answer tool's text arrives as the agent's message; its checks as answer.verdict.
+    if(p.tool === 'answer') break;
     endThinking(at); streaming = null; streamBody = null;
     // A payload redaction could not run on is withheld whole: say so rather than draw "undefined".
     const d = el('details', 'call'), s = el('summary'); const subj = p.withheld ? p.withheld : subjectOf(p.tool, p.args);
@@ -2354,7 +2474,9 @@ function render(ev){
     if(c){ c.node.classList.add('denied'); c.res.textContent = 'denied'; c.node.appendChild(el('div', 'why', visible('denied · step ' + (p.step || '?') + byWhom(p) + ' — ' + (p.reason || '')))); }
     answered(p, c, 'denied' + byWhom(p) + (p.reason ? ' — ' + p.reason : '')); hawkSoon(); break; }
   case 'observation': {
+    if(p.tool === 'answer' && !p.is_error) break;
     const mine = mineCalls.has(p.call_id), c = mine ? null : calls.get(p.call_id); const body = p.content || '';
+    if(c) c.seq = ev.seq;  // an answer's evidence names the result by seq
     if(c){ if(p.is_error) c.node.classList.add('err'); c.res.textContent = (p.is_error ? 'error · ' : '') + (p.duration_ms != null ? p.duration_ms + 'ms' : 'done');
       c.out = body.slice(0, 6000) + (body.length > 6000 ? '\n… the record holds the rest' : ''); if(c.node.open) fillCall(c); }
     if(p.tool === 'bash') logTerminal(c ? c.subject : '', p, mine ? 'you' : 'agent');
@@ -2362,6 +2484,14 @@ function render(ev){
     if(p.tool === 'write' || p.tool === 'edit' || (p.tool === 'bash' && !mine)) treeSoon();
     if(live && !mine) waiting('Thinking'); hawkSoon(); break; }
   case 'todo.updated': drawPlan(p.items || []); break;
+  case 'answer.verdict': drawVerdict(p); break;
+  // A plan from plan mode, with its runbook, is answered here once; the record settles it.
+  case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
+  case 'plan.decided': settleAsk('plan', (p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') + (p.plan_hash ? ' · runbook ' + p.plan_hash.slice(0, 12) : '') : 'keep planning') + (p.by ? ' · by ' + visible(p.by) : '')); break;
+  case 'plan.step': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why', visible('runbook step ' + p.step + ' of ' + p.of + ' · plan ' + String(p.plan_hash || '').slice(0, 12) + byWhom(p)))); break; }
+  // What the supervisor told the model, under the call it refused; a re-plan note in the transcript.
+  case 'supervisor.correction': { const c = calls.get(p.call_id); if(c) c.node.appendChild(el('div', 'why sup', visible(p.text || ''))); break; }
+  case 'supervisor.replan': add(el('div', 'sys', visible(p.text || ''))); break;
   case 'session.started': recProvider = p.provider || null; break;
   case 'model.switched': showSwitch(p); break;
   // A suggestion's call is counted, but is no turn and says nothing of the context.
@@ -2512,6 +2642,11 @@ function drawPlan(items){
   items.forEach(i => { const r = el('div', i.status); r.appendChild(el('span', '', i.status === 'done' ? '✓' : i.status === 'in_progress' ? '▶' : '○')); r.appendChild(el('span', '', visible(i.text || ''))); todoNode.appendChild(r); });
   add(todoNode);
 }
+// The supervisor's verdict on a call, as one line: its concern and advice, or ok.
+function supChip(v){
+  const concern = v.code && v.code !== 'ok';
+  return el('p', 'sup' + (concern ? ' concern' : ''), 'supervisor: ' + (concern ? visible(v.decision || '') + ' · ' + visible(v.code) + (v.advice ? ' — ' + visible(v.advice) : '') : 'ok'));
+}
 function askApproval(p, rid){
   // An answer names its request; without one the server would apply it to whatever is pending.
   if(!rid) return;
@@ -2519,7 +2654,8 @@ function askApproval(p, rid){
   // Every field is made visible: the prompt must show exactly what allowing runs.
   const subj = subjectOf(p.tool, p.args) || '';
   a.appendChild(el('b', '', 'Allow ' + visible(p.tool) + '?')); a.appendChild(el('p', '', visible(subj) + (p.reason ? '  —  ' + visible(p.reason) : '')));
-  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v))){
+  if(p.supervisor) a.appendChild(supChip(p.supervisor));
+  if([p.tool, subj, p.reason, p.subagent, p.via, p.scope, p.args, p.supervisor && p.supervisor.advice].some(v => v && hasHidden(v))){
     a.appendChild(el('p', 'hidden-warn', '! this call contains hidden or control characters'));
     // A field the line above does not draw is shown too, so the warning points at something.
     if(p.args && typeof p.args === 'object') for(const [k, x] of Object.entries(p.args))
@@ -2548,10 +2684,65 @@ function askApproval(p, rid){
   if(p.tool === 'bash' && p.args && p.args.run_in_background === true)
     a.appendChild(el('p', 'scope-note', 'Starts in the background: it keeps running after this turn, until it ends or is stopped (Stop, or /tasks).'));
   // Say why the one-click scope is missing, so its absence does not read as a fault.
-  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command and any program off the short list are asked every time. A rule you add can allow it.'));
+  if(!p.scope) a.appendChild(el('p', 'scope-note', 'No Always allow for this call: an ask rule, a destructive command, a chained command, a call the supervisor flagged and any program off the short list are asked every time. A rule you add can allow it.'));
   btns.appendChild(mk('Allow once', 'yes', true)); if(p.scope) btns.appendChild(mk('Always allow ' + visible(p.scope) + (p.subagent ? ' in this session' : ''), '', true, p.scope)); btns.appendChild(mk('Deny', 'no', false));
   a.appendChild(btns); add(a); focusSoon(); notify('ask');
   // A pending question is never left half off screen, wherever the reader had scrolled to.
+  requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
+}
+// stepText is what a runbook step runs: its command, or its other arguments.
+function stepText(st){
+  const a = Object.assign({}, st.args || {});
+  if((st.tool === 'ssh' || st.tool === 'bash') && typeof a.command === 'string') return visible(a.command, true);
+  for(const k of ['host', 'cluster', 'namespace', 'path']) if(typeof a[k] === 'string' && String(st.target || '').includes(a[k])) delete a[k];
+  return visible(JSON.stringify(a, null, 2), true);
+}
+// planCard puts a proposed plan to the person: the plan, each runbook step
+// exactly as it will run, and the CLI's three answers. Steps with no undo are
+// asked about a second time. Accepting sends the message the server returns.
+function planCard(p){
+  settleAsk('plan', 'superseded by a newer plan');
+  const a = el('div', 'ask plan'); a.dataset.call = 'plan';
+  a.appendChild(el('b', '', 'Plan ready · proceed with this plan?')); a.appendChild(md(p.text || ''));
+  const rb = p.runbook, risky = rb ? rb.steps.filter(st => st.destructive) : [];
+  if(rb){
+    a.appendChild(el('p', 'scope-note', 'Runbook · ' + rb.steps.length + ' steps · plan ' + rb.hash.slice(0, 12) +
+      '. Approving runs each step without asking when it is made exactly as listed; any other change asks, even where a rule or the mode would allow it. Deny rules and the sandbox still apply.'));
+    const ol = el('ol', 'runbook');
+    for(const st of rb.steps){ const li = el('li'); li.appendChild(el('span', 'tool', visible(st.tool)));
+      if(st.target) li.appendChild(el('span', 'subj', ' · ' + visible(st.target)));
+      if(st.note) li.appendChild(el('span', '', ' — ' + visible(st.note)));
+      if(st.destructive) li.appendChild(el('span', 'undo', ' · no undo: ' + visible(st.destructive)));
+      li.appendChild(el('pre', '', stepText(st))); ol.appendChild(li); }
+    a.appendChild(ol);
+    if([p.text, JSON.stringify(rb.steps)].some(v => hasHidden(v))) a.appendChild(el('p', 'hidden-warn', '! this plan contains hidden or control characters'));
+  }
+  const btns = el('div', 'btns'), note = el('p', 'note');
+  const answer = async (decision, undoOK) => {
+    btns.querySelectorAll('button').forEach(x => { x.disabled = true; });
+    try{
+      const r = await api('/v1/sessions/' + current + '/plan', {method:'POST', body: JSON.stringify({decision, plan_hash: p.hash, confirm_no_undo: !!undoOK})});
+      if(r && r.settled === false){ note.textContent = 'Recorded; the plan waits for the other answers the approvers need.'; return; }
+      if(decision === 'keep-planning'){ settleAsk('plan', 'keep planning · say what to change'); $('q').focus(); return; }
+      settleAsk('plan', 'approved · mode ' + visible(r.mode || ''));
+      if(r && r.message){ $('q').value = r.message; send(); }
+    }catch(e){
+      if(e.status === 409){ settleAsk('plan', 'no longer waiting for an answer · ' + visible(e.message)); return; }
+      note.textContent = visible(e.message); btns.querySelectorAll('button').forEach(x => { x.disabled = false; });
+    }
+  };
+  const mk = (label, cls, decision) => { const b = el('button', cls, label); b.type = 'button';
+    b.addEventListener('click', () => {
+      if(decision === 'keep-planning' || !risky.length) return answer(decision);
+      // The steps with no undo were each a double confirm; they are asked about again here.
+      clear(btns); note.textContent = risky.length + ' step' + (risky.length === 1 ? '' : 's') + ' of this runbook cannot be undone: ' +
+        risky.map(st => st.index + ' (' + visible(st.destructive) + ')').join(', ') + '. They will run without asking.';
+      const no = el('button', 'no', 'No, keep planning'), yes = el('button', 'yes', 'Yes, approve the steps that cannot be undone');
+      no.type = yes.type = 'button'; no.addEventListener('click', () => answer('keep-planning')); yes.addEventListener('click', () => answer(decision, true));
+      btns.append(no, yes); no.focus();
+    }); return b; };
+  btns.append(mk('Yes, and accept edits', '', 'accept-edits'), mk('Yes, ask before each change', 'yes', 'approve'), mk('No, keep planning', 'no', 'keep-planning'));
+  a.append(note, btns); add(a); focusSoon(); notify('ask');
   requestAnimationFrame(() => { tx().scrollTop = tx().scrollHeight; });
 }
 // Focus goes to the newest open prompt once the stream has caught up, so a
@@ -2567,7 +2758,7 @@ const byWhom = p => p.by === 'reviewer' || (!p.by && p.step === 'reviewer') ? ' 
 // put to anyone, so a prompt drawn for it goes; one a person answered keeps who and what
 // scope, and a replay draws it settled, as it was decided.
 function answered(p, c, how){
-  if(p.by === 'session-scope'){
+  if(p.by === 'session-scope' || p.by === 'workspace-grant'){
     asks.delete(p.call_id);
     for(const a of tx().querySelectorAll('.ask')) if(a.dataset.call === p.call_id && a.querySelector('.btns')) a.remove();
     return;
@@ -2977,9 +3168,60 @@ function logTerminal(cmd, p, who){
   agentTerm.term.write('\r\n\x1b[36m$\x1b[0m ' + visible(cmd, true) + '\r\n' + (p.is_error ? '\x1b[31m' : '') + out + (p.is_error ? '\x1b[0m' : '') + '\r\n');
   termN++;
 }
+// drawVerdict shows the checks on an answer under it. Claims, reasons and
+// excerpts are the model's and the tools' text: shown, never obeyed.
+function drawVerdict(p){
+  const claims = p.claims || [], contract = p.contract;
+  const bad = (p.contradicted || 0) > 0 || (contract && !contract.ok), unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
+  // Nothing checkable (a greeting, general knowledge) draws nothing.
+  if(!contract && !p.revision && !bad && !unk && !(p.verified || 0)) return;
+  const d = el('details', 'verdict' + (bad ? ' bad' : unk ? ' unk' : '')); d.open = bad || unk;
+  const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  const expl = claims.filter(c => c.verdict === 'unverified' && c.explains).length;
+  // The reply streamed before it was checked: a contradiction is flagged on
+  // the reply itself and at the top of the box, where it cannot be missed.
+  if((p.contradicted || 0) > 0){
+    const n = p.contradicted, what = n + (n === 1 ? ' statement in this reply is' : ' statements in this reply are') + ' contradicted by the session\'s record';
+    const msgs = tx().querySelectorAll('.msg.agent'), last = msgs[msgs.length - 1];
+    if(last){ last.classList.add('contradicted'); last.appendChild(el('div', 'vflag', '✗ NOT FACT: ' + what + (p.revision ? '; the agent is asked to correct it' : '; see the struck-through statements below'))); }
+  }
+  d.appendChild(el('summary', '', (bad ? '✗ ' : unk || !(p.verified || 0) ? '? ' : '✓ ') + (p.verified || 0) + ' verified · ' + (p.unverified || 0) + ' unverified' +
+    (known || expl ? ' (' + [known ? (known === (p.unverified || 0) ? 'general knowledge' : known + ' general knowledge') : '', expl ? expl + ' explanation' : ''].filter(Boolean).join(', ') + ')' : '') + ' · ' + (p.contradicted || 0) + ' contradicted' +
+    (contract ? (contract.ok ? ' · contract met' : ' · contract not met') : '') + (p.revision ? ' · the agent is asked to revise once' : '')));
+  if((p.contradicted || 0) > 0) d.appendChild(el('div', 'vbanner', '✗ NOT FACT: ' + p.contradicted + ' contradicted by the session\'s record' + (p.revision ? ' · the agent is asked to correct it' : '')));
+  for(const c of claims){
+    const r = el('div', 'cl ' + (c.verdict || 'unverified')), b = el('div');
+    r.appendChild(el('span', 'mk', c.verdict === 'verified' ? '✓' : c.verdict === 'contradicted' ? '✗' : c.explains ? '·' : '?'));
+    r.title = c.explains ? 'explanation: explains what a read showed; still counts against the answer' : c.verdict || 'unverified';
+    b.appendChild(el('div', 't', visible(c.text || '')));
+    const k = c.conflict;
+    b.appendChild(el('div', 'why', visible(k && k.excerpt ? 'record' + (k.seq ? ' #' + k.seq : '') + ': ' + k.excerpt : c.reason || '')));
+    const seqs = (c.evidence || []).concat(k && k.seq ? [k.seq] : []);
+    if(seqs.length){ const e = el('div', 'why', 'evidence ');
+      for(const s of seqs){ const a = el('a', 'seq', '#' + s); a.tabIndex = 0; a.title = 'Show the tool call behind it';
+        a.addEventListener('click', () => showSeq(s)); a.addEventListener('keydown', x => { if(x.key === 'Enter') showSeq(s); }); e.appendChild(a); e.appendChild(document.createTextNode(' ')); }
+      b.appendChild(e); }
+    r.appendChild(b); d.appendChild(r);
+  }
+  if(contract && !contract.ok){
+    for(const q of contract.require || []) if(!q.ok) d.appendChild(el('div', 'why', visible('✗ required `' + (q.command || '') + '`: ' + (q.reason || ''))));
+    if((contract.protected_changed || []).length) d.appendChild(el('div', 'why', visible('✗ protected files changed: ' + contract.protected_changed.join(', '))));
+  }
+  add(d);
+}
+// showSeq opens the call an observation answered, or else its row in Events.
+function showSeq(seq){
+  const c = [...calls.values()].find(x => x.seq === seq);
+  const flash = n => { n.classList.add('hl'); n.scrollIntoView({block:'nearest'}); setTimeout(() => n.classList.remove('hl'), 1600); };
+  if(c){ c.node.open = true; fillCall(c); flash(c.node); return; }
+  setPanel('events');
+  const row = $('p-events').querySelector('.evt[data-seq="' + Number(seq) + '"]');
+  if(row) flash(row); else add(el('div', 'sys', '#' + Number(seq) + ' is older than the Events panel keeps; the session replay has it'));
+}
 function logEvent(ev, p){
   if(ev.type === 'agent.delta' || ev.type === 'agent.reasoning.delta') return;
   const box = $('p-events'), stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40, r = el('div', 'evt' + (ev.trust === 'untrusted' ? ' untrusted' : ''));
+  r.dataset.seq = ev.seq;
   r.appendChild(el('span', 's', '#' + ev.seq)); r.appendChild(el('span', 'ty', ev.type + (ev.trust === 'untrusted' ? ' · untrusted' : '')));
   // Record text is the model's and the tools': shown, never obeyed (bidi, zero-width).
   r.appendChild(el('span', 'd', visible(p.tool ? p.tool + ' ' + (p.args ? subjectOf(p.tool, p.args) : (p.content || '').slice(0, 120)) : (p.text || p.reason || p.line || p.withheld || '').slice(0, 160))));

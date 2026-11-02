@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -120,6 +121,10 @@ func outsideWritableAreas(t *testing.T) string {
 	}
 	for _, p := range parents {
 		if under([]string{tools.RealPath(p)}, sandbox.WritableAreas()) {
+			continue
+		}
+		// On Linux /tmp is no writable area, so a TMPDIR set under it is none either.
+		if runtime.GOOS == "linux" && under([]string{tools.RealPath(p)}, []string{"/tmp", "/var/tmp"}) {
 			continue
 		}
 		dir, err := os.MkdirTemp(p, ".abhed-statepaths-*")
@@ -461,5 +466,25 @@ func TestControlPlaneDatabasePlacement(t *testing.T) {
 	cfg.ControlPlane.Enabled, cfg.Storage.Driver = true, "postgres"
 	if ControlPlaneDB(cfg) != "" || CheckStatePaths(cfg, ws) != nil {
 		t.Error("a database was placed for a control plane on Postgres")
+	}
+}
+
+// The toolchain cache is named as read-only, and so exempt from the
+// language-server checks, only while the sandbox mounts it so.
+func TestToolchainCacheOnlyWhenReadOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", "")
+	cfg := config.Default()
+	root := ToolchainCache(cfg)
+	if root == "" {
+		t.Fatal("no cache with toolchains on")
+	}
+	p, err := Policy(cfg, t.TempDir())
+	if err != nil || !slices.Contains(p.ReadOnlyPaths, root) {
+		t.Fatalf("the cache %s is not read-only in %v (%v)", root, p.ReadOnlyPaths, err)
+	}
+	cfg.Sandbox.Toolchains = "off"
+	if got := ToolchainCache(cfg); got != "" {
+		t.Fatalf("toolchains off still names %q", got)
 	}
 }

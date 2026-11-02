@@ -94,4 +94,26 @@ render(ev(84, 'user.message', 'user', {text:'plain'}));
 const wn = text();
 check('the withheld secrets are named once: ' + JSON.stringify(wn),
   wn.split('not sent to the model').length === 2 && wn.includes('stored secrets API_TOKEN, DB_PASS'));
+// The answer tool's call is not drawn; the verdict under the answer badges
+// each claim, strikes through a contradicted one and names the record against it.
+__added.length = 0;
+render(ev(90, 'action.requested', 'agent', {call_id:'ans1', tool:'answer', args:{text:'All 15 tests pass.'}}));
+render(ev(91, 'observation', 'tool', {call_id:'ans1', tool:'answer', content:'Answer received'}));
+check('the answer call is not in the chat', __added.length === 0);
+render(ev(92, 'answer.verdict', 'system', {verified:1, unverified:1, contradicted:1, claims:[
+  {n:1, text:'The service listens on 8080.', verdict:'verified', load_bearing:true, evidence:[9]},
+  {n:2, text:'All 15 tests pass.', verdict:'contradicted', load_bearing:true, reason:'it says 15 test', conflict:{seq:9, excerpt:'12 tests passed'}},
+  {n:3, text:'Go is compiled\u202e.', verdict:'unverified', reason:'general knowledge; not checked against this session'}]}));
+const vd = __added[0], vt = text();
+check('the verdict is drawn: ' + JSON.stringify(vt), vd && vd.className.includes('verdict') && vt.includes('1 verified · 1 unverified (general knowledge) · 1 contradicted'));
+check('it opens when something is contradicted', vd && vd.open === true);
+check('a contradiction is bannered: ' + JSON.stringify(vt), vt.includes('✗ NOT FACT: 1 contradicted'));
+const struck = vd ? vd.querySelectorAll('.contradicted') : [];
+check('the contradicted claim is marked and its record shown', struck.length === 1 && struck[0].textContent.includes('✗') && struck[0].textContent.includes('record #9: 12 tests passed'));
+check('claim text is revealed, not obeyed', !vt.includes('\u202e'));
+__added.length = 0;
+render(ev(93, 'answer.verdict', 'system', {verified:0, unverified:0, contradicted:0, claims:[]}));
+check('an answer with nothing to check draws nothing', __added.length === 0);
+render(ev(94, 'answer.verdict', 'system', {verified:0, unverified:1, contradicted:0, claims:[{n:1, text:'Hello from the stub.', verdict:'unverified'}]}));
+check('a greeting draws nothing', __added.length === 0);
 if(!ok) process.exit(1);

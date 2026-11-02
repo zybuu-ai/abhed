@@ -29,7 +29,8 @@
         "extra": { "user": "<sso>" },
         "params": {}
       }
-    }
+    },
+    "ollama": { "assist": "ask" }
   },
   "permissions": {
     "mode": "default",
@@ -66,7 +67,10 @@
     "enabled": false
   },
   "ssh": {
-    "enabled": false
+    "enabled": false,
+    "read_commands": [],
+    "transfers": false,
+    "transfer_max_mb": 16
   },
   "limits": {
     "max_turns": 100,
@@ -93,6 +97,21 @@
   },
   "web_fetch": {
     "enabled": false
+  },
+  "verify": {
+    "critic": {
+      "enabled": false
+    },
+    "contract": {
+      "require": [],
+      "protect": []
+    }
+  },
+  "monitor": {
+    "enabled": true,
+    "judge": "rules",
+    "on_unavailable": "ask",
+    "honeytokens": []
   },
   "storage": {
     "driver": "memory",

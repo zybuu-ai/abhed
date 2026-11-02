@@ -28,6 +28,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/skills"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
 )
@@ -108,6 +109,22 @@ type Set struct {
 	// Egress judges Abhed's own requests under sandbox.network allowlist; nil
 	// otherwise. Build puts it in force until Close.
 	Egress *egress.Guard
+	// Toolchains are the toolchains commands get and the toolchain tool
+	// installs; nil when the cache has no home.
+	Toolchains *toolchain.Session
+	// SetListen lets commands listen on loopback from now on, or no longer;
+	// false where the sandbox has no such switch. Listens says whether they may.
+	SetListen func(on bool) bool
+	Listens   func() bool
+	// ListenWatch gives listening the person's agreement to look up again,
+	// who to tell when more than one program listens on a listen port, and
+	// who to tell when that can no longer be seen.
+	ListenWatch func(still func() bool, contested func(sandbox.PortContested), lost func(why string))
+	// HeldAtStart reports a port a program outside Abhed's own processes
+	// held when the last listening command started.
+	HeldAtStart func(port int) bool
+	// ListenPorts are the ports listening opens.
+	ListenPorts func() []int
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -132,6 +149,8 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		o.Bash.Secrets = o.Vault.Env
 		o.Bash.SecretNames = VaultNames(o.Vault)
 	}
+	tc := Toolchains(cfg, o.Workspace, o.Sandbox)
+	o.Bash = withToolchains(o.Bash, tc)
 	s := &Set{
 		Egress: OwnEgress(cfg),
 		Registry: tools.NewRegistry(
@@ -140,8 +159,19 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 			agent.ShellOutput{}, agent.ShellKill{},
 			agent.TodoTool{},
 		),
-		Skills: skills.NewRegistry(),
-		Agents: agent.BuiltinDefinitions(),
+		Toolchains: tc,
+		SetListen:  func(on bool) bool { return sandbox.SetListen(resolved(o.Sandbox), on) },
+		Listens:    func() bool { return sandbox.Listens(resolved(o.Sandbox)) },
+		ListenWatch: func(still func() bool, contested func(sandbox.PortContested), lost func(why string)) {
+			sandbox.SetListenWatch(resolved(o.Sandbox), still, contested, lost)
+		},
+		HeldAtStart: func(port int) bool { return sandbox.HeldAtStart(resolved(o.Sandbox), port) },
+		ListenPorts: func() []int { return sandbox.ListenPortsOf(resolved(o.Sandbox)) },
+		Skills:      skills.NewRegistry(),
+		Agents:      agent.BuiltinDefinitions(),
+	}
+	if tc != nil && !tc.Off {
+		s.Registry.Add(toolchain.Tool{S: tc})
 	}
 	// In force before anything below connects, MCP servers included.
 	// An unguarded set too, so a request naming no set amid a mix is refused.
@@ -158,6 +188,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	if o.Parts&MCP != 0 {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
+		s.Gateway.Admit, s.Gateway.PinProgram = MCPAdmit(cfg), cfg.MCPListsMatchCommands()
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {

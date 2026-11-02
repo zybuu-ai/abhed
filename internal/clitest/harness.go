@@ -4,6 +4,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/zybuu-ai/abhed/internal/clitest/vt"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
 // DefaultTimeout is how long WaitText waits.
@@ -65,12 +67,15 @@ func Binary(t testing.TB) string {
 			build.bin += ".exe"
 		}
 		pkg := "github.com/zybuu-ai/abhed/internal/managed"
+		defaultsPkg := "github.com/zybuu-ai/abhed/internal/defaults"
 		none := filepath.Join(build.dir, "no-managed")
 		// -buildvcs=false: a version stamped from the checkout differs on every
 		// commit, and the screens and /release-notes expect a development build.
 		args := []string{"build", "-buildvcs=false", "-o", build.bin, "-ldflags",
 			"-X " + pkg + ".ConfigFile=" + filepath.Join(none, "config.json") + " -X " + pkg + ".AgentsDir=" + filepath.Join(none, "agents") +
-				" -X " + pkg + ".testDirEnv=" + managedEnv}
+				" -X " + pkg + ".testDirEnv=" + managedEnv +
+				// The defaults a configuration falls back to lead to a closed port, never to Ollama.
+				" -X " + defaultsPkg + ".LocalModelURL=http://localhost:9/v1 -X " + defaultsPkg + ".OllamaURL=http://127.0.0.1:9/v1"}
 		if raceEnabled {
 			args = append(args, "-race")
 		}
@@ -95,7 +100,8 @@ func Binary(t testing.TB) string {
 // Main runs a package's tests and removes the built binary afterwards. Use
 // it from TestMain: os.Exit(clitest.Main(m)).
 func Main(m *testing.M) int {
-	code := m.Run()
+	g := testenv.Isolate()
+	code := g.Close(m.Run())
 	if build.dir != "" {
 		_ = os.RemoveAll(build.dir)
 	}
@@ -474,6 +480,9 @@ func (h *run) writeFiles() {
 		podman = "exit 1"
 	}
 	write(filepath.Join(h.root, "bin", "podman"), "#!/bin/sh\n"+podman+"\n", 0o755)
+	// An ollama first on PATH only notes that it ran, so a run that reached
+	// for one never starts the developer's real Ollama.
+	write(filepath.Join(h.root, "bin", "ollama"), "#!/bin/sh\necho \"$@\" >> \"$HOME/ollama-ran\"\nexit 1\n", 0o755)
 	// A browser opener only notes what it was asked to open, so a test can
 	// never start the developer's browser.
 	for _, opener := range []string{"open", "xdg-open"} {
@@ -496,11 +505,38 @@ func (h *run) refuseRealServices(args, env []string) {
 		}
 	}
 	for _, s := range texts {
+		if name := ollamaDefaultProvider(s); name != "" {
+			_ = os.RemoveAll(h.root) // no cleanup is registered yet
+			h.t.Fatalf("clitest: provider %q is type ollama with no base_url, which is Ollama's own 127.0.0.1:11434; give it the stub's URL", name)
+		}
 		if m := realService.FindString(s); m != "" {
 			_ = os.RemoveAll(h.root) // no cleanup is registered yet
 			h.t.Fatalf("clitest: the run names %s, a real local model service; tests use the stub", m)
 		}
 	}
+}
+
+// ollamaDefaultProvider names a provider in a configuration text that is
+// type ollama with no base_url, so would reach the real Ollama port; "" when
+// there is none or the text is not a configuration.
+func ollamaDefaultProvider(text string) string {
+	var cfg struct {
+		Model struct {
+			Providers map[string]struct {
+				Type    string `json:"type"`
+				BaseURL string `json:"base_url"`
+			} `json:"providers"`
+		} `json:"model"`
+	}
+	if json.Unmarshal([]byte(text), &cfg) != nil {
+		return ""
+	}
+	for name, p := range cfg.Model.Providers {
+		if strings.EqualFold(strings.TrimSpace(p.Type), "ollama") && strings.TrimSpace(p.BaseURL) == "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func (h *run) env() []string {
@@ -523,6 +559,9 @@ func (h *run) env() []string {
 		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=127.0.0.1",
 		"OLLAMA_HOST=127.0.0.1:9",
 		managedEnv + "=" + filepath.Join(h.root, "etc", "abhed"),
+		// The binary is under test: it finds, starts, installs and pulls no
+		// real Ollama, whatever its PATH or the standard install folders hold.
+		"ABHED_TESTENV=1",
 	}
 	switch h.o.Theme {
 	case "light":

@@ -76,7 +76,11 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 	}
 	loop := parts.Loop
 	id := "u" + acpID()
-	args, _ := json.Marshal(map[string]any{"command": sandbox.TerminalCommand, "description": "interactive Abhed terminal in the session sandbox", "interactive": true})
+	line := sandbox.TerminalCommand
+	if b.ShellLine != nil {
+		line = b.ShellLine()
+	}
+	args, _ := json.Marshal(map[string]any{"command": line, "description": "interactive Abhed terminal in the session sandbox", "interactive": true})
 	_, refused, err := loop.ManualAuthorize("bash", id, args)
 	if err != nil {
 		return refusal(errRecord, "the terminal could not be recorded, so it was not opened: %v", err)
@@ -235,12 +239,15 @@ func (c *acpConn) shellInput(t *acpTerminal, data []byte) *rpcError {
 		}
 		if refused == nil {
 			sh.gave()
+			if strings.TrimSpace(e.Line) == "abhed_venv" {
+				t.serving.typedVenv()
+			}
 			if err := sh.capture.Send(e, func() error { _, err := sh.tty.Write(k.Data); return err }); err != nil {
 				return refusal(errRefused, "the terminal has ended")
 			}
 			continue
 		}
-		c.output(t, []byte("\r\n\x1b[31m"+strings.ReplaceAll(refused.Content, "\n", "\r\n")+"\x1b[0m\r\n"))
+		c.show(t, []byte("\r\n\x1b[31m"+strings.ReplaceAll(refused.Content, "\n", "\r\n")+"\x1b[0m\r\n"))
 		// A line pasted whole has not reached the shell at all, and an empty
 		// line brings its prompt back. One typed earlier is in its buffer.
 		discard := []byte{'\r'}

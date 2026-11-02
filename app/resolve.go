@@ -140,7 +140,7 @@ func resolveCmd(workspace string, args []string, trust config.TrustChoice) int {
 	if err != nil {
 		return fail(err)
 	}
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: true})
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
 	if err != nil {
 		return fail(err)
 	}

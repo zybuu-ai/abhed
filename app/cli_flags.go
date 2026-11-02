@@ -128,6 +128,9 @@ type cliFlags struct {
 	systemPrompt    string
 	systemFile      string
 	jsonSchema      string
+	verify          string
+	runbook         string
+	runbookHash     string
 	noStdin         bool
 	skipPerms       bool
 	showVer         bool
@@ -176,6 +179,9 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.StringVar(&f.systemPrompt, "system-prompt", "", "replace the system prompt; refused under a managed configuration (recorded by sha256)")
 	fs.StringVar(&f.systemFile, "system-prompt-file", "", "replace the system prompt with this file's contents")
 	fs.StringVar(&f.jsonSchema, "json-schema", "", "with -p, deliver the answer as JSON matching this schema (inline, or @file)")
+	fs.StringVar(&f.verify, "verify", "", "check answers against the session's record: off|label|strict; strict ends an unverified run with exit 8")
+	fs.StringVar(&f.runbook, "runbook", "", "with -p, a runbook file ({\"plan\":…,\"runbook\":[…]}) approved for this run: each step made exactly as listed runs without asking; any other change asks, and so is refused")
+	fs.StringVar(&f.runbookHash, "runbook-sha256", "", "with -runbook, the plan hash the runbook must have, or the run is refused")
 	fs.BoolVar(&f.skipPerms, "dangerously-skip-permissions", false, "bypass mode after a confirmation on a terminal; refused under a managed configuration; deny rules still apply")
 	fs.BoolVar(&f.showVer, "version", false, "print version and exit")
 	fs.StringVar(&f.listenAddr, "addr", ":8080", "listen address for abhed serve")
@@ -235,6 +241,7 @@ func Main(args []string, opts ...Option) int {
 	// No background shell outlives the process that started it.
 	defer endAtExit()
 	a := newApp(opts...)
+	recordAnchors = a.anchors
 	var f cliFlags
 	fs := newFlagSet(&f)
 	// Sessions: the record keeps every one, so these pick which goes on.
@@ -398,8 +405,14 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return a.doctor(workspace, set, timeout)
 	case "providers":
 		return providersCmd()
+	case "ollama":
+		return ollamaCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
+	case "toolchain":
+		return toolchainCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "record":
 		return recordCmd(workspace, rest[1:], a.trust, os.Stdin, os.Stdout, os.Stderr)
+	case "logs":
+		return logsCmd(workspace, rest[1:], a.trust, os.Stdout, os.Stderr)
 	case "sessions":
 		return recordCmd(workspace, append([]string{"list"}, rest[1:]...), a.trust, os.Stdin, os.Stdout, os.Stderr)
 	case "hawkeye":
@@ -425,6 +438,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return logoutCmd(workspace, rest[1:], os.Stdout, os.Stderr)
 	case "profile":
 		return profileCmd(workspace, rest[1:], os.Stdout, os.Stderr)
+	case "policy":
+		return policyCmd(rest[1:], os.Stdout, os.Stderr)
 	case "sandbox":
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "pki":
@@ -498,8 +513,8 @@ var permissionModes = map[string]string{
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"sandbox": true, "secret": true, "mcp": true, "record": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
-	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true,
+	"sandbox": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
 }
 
 func isHelpArg(s string) bool {

@@ -57,10 +57,25 @@ func selfAdmin(rest []string) string {
 		if slices.Contains([]string{"use", "rm", "remove"}, verb) {
 			return "abhed profile " + verb
 		}
+	case "policy":
+		// Fetching or leaving the org policy is the person's, never a command's.
+		if verb == "refresh" || verb == "leave" {
+			return "abhed policy " + verb
+		}
 	case "sandbox":
 		// Nor reach a server's sandboxes with it.
 		if verb != "" && verb != "-h" && verb != "--help" && verb != "help" {
 			return "abhed sandbox " + verb
+		}
+	case "ollama":
+		// Starting, installing or downloading is the person's choice, never a command's.
+		if verb == "check" || verb == "install" || verb == "forget" {
+			return "abhed ollama " + verb
+		}
+	case "toolchain":
+		// An install is the person's to agree to; inside a command it would skip the ask.
+		if verb == "install" || verb == "remove" || verb == "rm" {
+			return "abhed toolchain " + verb
 		}
 	case "migrate":
 		return "abhed migrate"

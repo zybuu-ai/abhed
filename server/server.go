@@ -36,7 +36,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/index"
+	"github.com/zybuu-ai/abhed/internal/loopport"
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/metrics"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -142,11 +145,11 @@ const approvalPoll = 2 * time.Second
 // nodeStale is how long a claim survives without being refreshed. Longer than
 // any turn boundary, short enough that a node which died does not strand its
 // sessions for long. The store's own claims use the same window.
-var nodeStale = store.HolderStale
+var nodeStale = newTunable(store.HolderStale)
 
 // nodeHeartbeat refreshes the claim well inside nodeStale, so a slow write or
 // a missed tick does not make a healthy node look dead.
-var nodeHeartbeat = 30 * time.Second
+var nodeHeartbeat = newTunable(30 * time.Second)
 
 // Mount registers routes on the server's mux. It runs after the built-in
 // routes and before the middleware wraps the mux, so the handlers it
@@ -227,6 +230,13 @@ type Options struct {
 	Logger    *slog.Logger
 	// Store defaults to an in-memory store when nil.
 	Store EventStore
+	// Metrics, when set, counts what the record says and how the API is
+	// used; serving it is the caller's (abhed serve mounts or binds it).
+	Metrics *Metrics
+	// APIAudit, when set, is the chained record every mutating API request
+	// is written to with its principal, before it runs and with its outcome;
+	// a request whose first event cannot be written is refused.
+	APIAudit controlplane.AuditLog
 	// EventTap sees every event as it is appended, on the appending
 	// goroutine. It must return immediately; the telemetry exporter honours
 	// that by queueing and dropping rather than waiting. Nil means no tap.
@@ -377,6 +387,9 @@ type Options struct {
 // Server holds live sessions and serves the API.
 type Server struct {
 	opts Options
+	// releaseRetry, when set before the server starts, bounds giving a claim
+	// back in place of the package default; tests shorten it.
+	releaseRetry time.Duration
 	// muxes are the pages' shared streams; see streams.go.
 	muxes streamMuxes
 	// searching counts the workspace searches running per session, under searchMu.
@@ -498,6 +511,8 @@ type liveSession struct {
 	// time closeTerminals stops them.
 	lsps   map[string]*lspRun
 	lspGen int
+	// raConfigs is the last rust-analyzer.toml check for the editor.
+	raConfigs lsprelay.RustAnalyzerConfigCache
 	// unclaimed is a finished session opened from its record to view: its
 	// first write claims it. held is a claim taken for workbench work alone,
 	// released by release after a quiet spell with the end it was opened with.
@@ -756,8 +771,8 @@ func New(opts Options) *Server {
 		st = agent.NewMemStore()
 		tapped = st
 	}
-	if opts.EventTap != nil {
-		tapped = tapStore{EventStore: st, tap: opts.EventTap}
+	if opts.EventTap != nil || opts.Metrics != nil {
+		tapped = tapStore{EventStore: st, tap: opts.EventTap, metrics: opts.Metrics.abhed()}
 	}
 	s := &Server{
 		opts:     opts,
@@ -782,6 +797,13 @@ func New(opts Options) *Server {
 		},
 	}
 	s.streamsEnd, s.endStreamsNow = context.WithCancel(context.Background())
+	if m := opts.Metrics.abhed(); m != nil {
+		m.RunningSessions(func() int {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			return len(s.running)
+		})
+	}
 	if rec, ok := st.(SessionRecorder); ok {
 		s.sessions = rec
 	}
@@ -849,6 +871,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/events", s.untilShutdown(s.streamEvents))
+	mux.HandleFunc("GET /v1/sessions/{id}/logs", s.untilShutdown(s.streamLogs))
 	mux.HandleFunc("GET /v1/streams", s.untilShutdown(s.openStreamMux))
 	mux.Handle("POST /v1/streams/{mux}/{ch}", s.openStreamChannel(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { top.ServeHTTP(w, r) })))
 	mux.HandleFunc("DELETE /v1/streams/{mux}/{ch}", s.closeStreamChannel)
@@ -865,6 +888,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/search", s.searchSession)
 	mux.HandleFunc("GET /v1/sessions/{id}/original", s.originalFile)
 	mux.HandleFunc("POST /v1/sessions/{id}/accept", s.acceptChange)
+	mux.HandleFunc("GET /v1/sessions/{id}/worktrees", s.listWorktrees)
+	mux.HandleFunc("POST /v1/sessions/{id}/worktrees/{wt}/take", s.takeWorktree)
 	mux.HandleFunc("POST /v1/sessions/{id}/pty", s.startPTY)
 	mux.HandleFunc("POST /v1/sessions/{id}/lsp", s.startLSP)
 	mux.HandleFunc("GET /v1/sessions/{id}/lsp/{lsp}", s.untilShutdown(s.streamLSP))
@@ -906,9 +931,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}/files", s.listDownloads)
 	mux.HandleFunc("GET /v1/sessions/{id}/download", s.serveDownload)
 	mux.HandleFunc("GET /v1/providers", s.listProviders)
+	mux.HandleFunc("GET /v1/ollama/status", s.getOllamaStatus)
+	mux.HandleFunc("POST /v1/ollama/start", s.postOllamaStart)
+	mux.HandleFunc("POST /v1/ollama/install", s.postOllamaInstall)
+	mux.HandleFunc("POST /v1/ollama/pull", s.postOllamaPull)
+	mux.HandleFunc("POST /v1/ollama/forget", s.postOllamaForget)
 	mux.HandleFunc("POST /v1/sessions/{id}/model", s.setSessionModel)
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interruptSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/approve", s.approveAction)
+	mux.HandleFunc("POST /v1/sessions/{id}/plan", s.decidePlan)
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/ready", s.ready)
 	s.sandboxRoutes(mux)
@@ -1004,7 +1035,7 @@ func (s *Server) Handler() http.Handler {
 	// Order matters and is easy to get backwards: authentication must run
 	// BEFORE the layer that reads the identity, so it wraps closest to the
 	// outside. An inverted order silently yields anonymous identities.
-	handler := s.mustChangeGate(mux)
+	handler := s.mustChangeGate(s.routed(mux))
 	handler = s.requireGroup(handler)
 	handler = s.withMiddleware(handler) // reads identity, logs
 
@@ -1425,6 +1456,9 @@ type createRequest struct {
 	// Workbench opens a session with no prompt, idle until a message arrives,
 	// so the workbench has a sandbox to work in before anyone asks the agent.
 	Workbench bool `json:"workbench,omitempty"`
+	// Verify is how the session's answers are checked: off, label or strict.
+	// Unset takes verify.mode, and with that unset labels them for a person.
+	Verify string `json:"verify,omitempty"`
 }
 
 // errNotSoleOwner refuses a session on a shared server for another account.
@@ -1439,6 +1473,9 @@ func (s *Server) checkSoleOwner(user string) error {
 	}
 	return errNotSoleOwner
 }
+
+// errVerify refuses a session whose answers cannot be checked as configured.
+var errVerify = errors.New("answers cannot be checked as configured")
 
 // errBadClientID refuses a client id validClientID does not accept.
 var errBadClientID = errors.New("client_id is up to 64 letters, digits, - and _")
@@ -1471,6 +1508,8 @@ type StartSpec struct {
 	Prompt   string
 	Mode     string
 	Provider string
+	// Verify is the session's verify mode; see createRequest.
+	Verify string
 	// ClientID is echoed on the first user.message; see createRequest.
 	ClientID string
 	User     string
@@ -1552,8 +1591,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, errBadClientID.Error())
 		return
 	}
+	// Refused before anything is made: a managed mode may only be made stricter.
+	if _, err := toolset.VerifyFlag(s.opts.Config, req.Verify); err != nil {
+		WriteError(w, http.StatusBadRequest, "verify: "+err.Error())
+		return
+	}
 	spec := StartSpec{
-		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID,
+		Prompt: req.Prompt, Mode: req.Mode, Provider: req.Provider, ClientID: req.ClientID, Verify: req.Verify,
 		User: UserOf(r.Context()), Tenant: TenantOf(r.Context()), admin: s.isAdminCtx(r.Context()),
 	}
 	start := s.StartSession
@@ -1572,6 +1616,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, errBadClientID):
 			WriteError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, errVerify):
+			s.log.Error("session refused: verify", "user", spec.User, "error", err)
+			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
 		case errors.Is(err, errNotSoleOwner):
 			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
@@ -1627,6 +1674,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 	if spec.Provider != "" {
 		a, err := s.resolveProvider(spec.Provider)
 		if err != nil {
+			s.auditRefused(ctx, err)
 			return "", fmt.Errorf("provider: %w", err)
 		}
 		adapter = a
@@ -1669,6 +1717,14 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		s.forgetUnstarted(sessionID)
 		return "", fmt.Errorf("record session start: %w", err)
 	}
+	// The server's configuration, as its sandbox, which sessions share, was
+	// granted the registries from it, whatever a workspace file says.
+	for _, g := range toolset.StartupRegistries(s.opts.Config, "server") {
+		if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
+			s.forgetUnstarted(sessionID)
+			return "", fmt.Errorf("record session start: %w", err)
+		}
+	}
 	if err := recordLayer(rec, live.layer); err != nil {
 		s.forgetUnstarted(sessionID)
 		return "", err
@@ -1708,7 +1764,7 @@ func (s *Server) StartSession(ctx context.Context, spec StartSpec) (string, erro
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := loop.RunMessage(runCtx, agent.Message{Text: spec.Prompt, ClientID: spec.ClientID})
-		for endRefused(runCtx, live, reason, err); live.settle(runCtx, reason, err); endRefused(runCtx, live, reason, err) {
+		for live.settle(runCtx, reason, err) {
 			reason, err = loop.RunQueued(runCtx)
 		}
 		waitSuggestion(live)
@@ -1776,6 +1832,7 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 	if spec.Provider != "" {
 		a, err := s.resolveProvider(spec.Provider)
 		if err != nil {
+			s.auditRefused(ctx, err)
 			return "", fmt.Errorf("provider: %w", err)
 		}
 		adapter = a
@@ -1810,6 +1867,13 @@ func (s *Server) openWorkbench(ctx context.Context, spec StartSpec) (string, err
 			_ = del.DeleteSession(sessionID)
 		}
 		return "", fmt.Errorf("record session start: %w", err)
+	}
+	// The server's configuration, as its sandbox, which sessions share, was
+	// granted the registries from it, whatever a workspace file says.
+	for _, g := range toolset.StartupRegistries(s.opts.Config, "server") {
+		if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
+			return "", fmt.Errorf("record session start: %w", err)
+		}
 	}
 	if err := recordLayer(rec, live.layer); err != nil {
 		if del, ok := s.under().(agent.SessionDeleter); ok {
@@ -1871,8 +1935,11 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
+	pol.KeepAsk = toolset.KeepManagedAsks(s.opts.Config)
+	_ = pol.AddAllow(toolset.ToolchainAllows(s.opts.Config)...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
 	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
+	_ = pol.AllowRemoteReads(s.opts.Config.SSH.ReadCommands...)
 	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
@@ -1883,6 +1950,19 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 // drift in what they permit.
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
 	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
+
+	// A person reads the answer at the console or the IDE, so it is labelled
+	// unless configured otherwise; an unattended run checks only when asked.
+	// Answers that cannot be checked as configured refuse the session, as
+	// the command line and the SDK refuse to start, rather than run unchecked.
+	vcfg, err := toolset.VerifyFlag(s.opts.Config, spec.Verify)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
+	}
+	verifier, err := toolset.Verifier(vcfg, !spec.Unattended)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
+	}
 
 	workspace := s.opts.Workspace
 	var bound *sessionsandbox.Bound
@@ -1936,6 +2016,10 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	// The server reads only each file's baseline, so one copy per file is kept, not one per edit.
 	undo.KeepFirst = true
 	sess.Checkpoint = undo.Record
+	// A command's changes are shown from the session's opening snapshot, not
+	// checkpointed: the setting is kept so "required" refuses rather than runs unrecorded.
+	tc := s.opts.Config.Tools
+	sess.BashCheckpoints = tools.BashCheckpointsFrom(tc.BashCheckpoints, tc.BashCheckpointMB, tc.BashCheckpointFiles)
 
 	live := &liveSession{
 		ID: sessionID, User: spec.User, Tenant: spec.Tenant, workspace: workspace,
@@ -1997,6 +2081,11 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
 	cfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
+	// Plan mode's exit_plan; the person answers with POST /v1/sessions/{id}/plan.
+	loop.EnablePlanExit()
+	if !s.opts.Config.Plan.Runbooks {
+		loop.DisableRunbooks()
+	}
 	// Background children belong to the session. An unattended run has
 	// nobody to come back to it, so its children are joined: it waits for
 	// them, and its end, and OnEnd, come after theirs.
@@ -2025,6 +2114,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
+	loop.Monitor = toolset.Supervisor(s.opts.Config, own, spec.Unattended)
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.
@@ -2035,6 +2125,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 			loop.Suggest.Hold = live.ownerGone.Load
 		}
 	}
+	verifier.Install(loop)
 	live.Loop = loop
 	return live, loop, nil
 }
@@ -2362,7 +2453,7 @@ func (s *Server) recordedProvider(id string, events []agent.Event, rowModel stri
 
 // manualHold is how long a claim taken for workbench work alone is kept
 // after its last write, before the session is released as it was found.
-var manualHold = 2 * time.Minute
+var manualHold = newTunable(2 * time.Minute)
 
 // priorEnd is the end a session was opened with, recorded again on release.
 func priorEnd(events []agent.Event, rec store.SessionRecord) json.RawMessage {
@@ -2398,7 +2489,7 @@ func (s *Server) claimForWrite(id string, live *liveSession) error {
 	if !live.unclaimed.Load() {
 		live.holdMu.Lock()
 		if live.held {
-			live.release.Reset(manualHold)
+			live.release.Reset(manualHold.Get())
 		}
 		live.holdMu.Unlock()
 		return nil
@@ -2445,9 +2536,9 @@ func (s *Server) holdClaim(id string, live *liveSession) {
 	defer live.holdMu.Unlock()
 	live.held = true
 	if live.release == nil {
-		live.release = time.AfterFunc(manualHold, func() { s.releaseHeld(id, live, false) })
+		live.release = time.AfterFunc(manualHold.Get(), func() { s.releaseHeld(id, live, false) })
 	} else {
-		live.release.Reset(manualHold)
+		live.release.Reset(manualHold.Get())
 	}
 }
 
@@ -2553,7 +2644,7 @@ func (s *Server) releaseHeld(id string, live *liveSession, now bool) {
 	live.mu.Unlock()
 	live.holdMu.Lock()
 	if busy && !now {
-		live.release.Reset(manualHold)
+		live.release.Reset(manualHold.Get())
 		live.holdMu.Unlock()
 		return
 	}
@@ -2935,6 +3026,12 @@ func (st *streamEnd) closes(e agent.Event, running func() bool) bool {
 // streamEvents serves the session's event stream over SSE, resumable via
 // Last-Event-ID so a dropped connection does not lose the session.
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
+	s.streamSession(w, r, writeSSE)
+}
+
+// streamSession is streamEvents with each event written by write, which
+// gives it the event's seq as its SSE id.
+func (s *Server) streamSession(w http.ResponseWriter, r *http.Request, write func(http.ResponseWriter, agent.Event)) {
 	id := r.PathValue("id")
 
 	// Guarded before anything is read or written, so a RecheckStreams from
@@ -3028,7 +3125,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				endStream(w, err)
 				return
 			}
-			writeSSE(w, ev)
+			write(w, ev)
 			lastSeq = ev.Seq
 			if running {
 				end.closes(ev, runLive)
@@ -3069,7 +3166,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 				return true
 			}
 			lastSeq = e.Seq
-			writeSSE(w, e)
+			write(w, e)
 			ended = ended || end.closes(e, runLive)
 		}
 		flusher.Flush()
@@ -3408,17 +3505,6 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusAccepted, map[string]string{"session_id": id})
 }
 
-// endRefused records the end of a run a hook refused before it began, when
-// nothing waits to run on, before the session is settled: the workbench and
-// other clients leave their live state on a run's end, which such a run
-// otherwise never records.
-func endRefused(ctx context.Context, live *liveSession, reason agent.TerminalReason, err error) {
-	// A cancelled run does not go on for what is queued, so its end is recorded too.
-	if err == nil && reason == agent.TermPromptRefused && (len(live.Loop.Queued()) == 0 || ctx.Err() != nil) {
-		live.Loop.EndRefused()
-	}
-}
-
 // startRunLocked starts a run on its own goroutine: a person's message or a
 // wake. The caller holds live.mu, has checked no run is live and the server
 // is not draining, and has the session claimed; this releases live.mu. One
@@ -3437,7 +3523,7 @@ func (s *Server) startRunLocked(live *liveSession, what string, start func(ctx c
 		defer cancel()
 		live.undo.BeginTurn()
 		reason, err := start(ctx)
-		for endRefused(ctx, live, reason, err); live.settle(ctx, reason, err); endRefused(ctx, live, reason, err) {
+		for live.settle(ctx, reason, err) {
 			reason, err = live.Loop.RunQueued(ctx)
 		}
 		waitSuggestion(live)
@@ -3467,6 +3553,11 @@ func (l *liveSession) settle(ctx context.Context, reason agent.TerminalReason, e
 	// leaves a message queued after it last looked as a completed run does: it runs now.
 	if err == nil && ctx.Err() == nil && reason.RunsOnForQueued() && len(l.Loop.Queued()) > 0 {
 		return true
+	}
+	// Not going on, decided here once: a run a hook refused before it began
+	// records its end, which clients wait for to leave their running state.
+	if err == nil && reason == agent.TermPromptRefused {
+		l.Loop.EndRefused()
 	}
 	l.State = "done"
 	// Children still running, or a result still owed, keep the session
@@ -3506,7 +3597,7 @@ func (s *Server) recoverOrphan(ctx context.Context, id string, events []agent.Ev
 	if !ok || !agent.Orphaned(events) {
 		return false
 	}
-	claimed, err := oc.ClaimOrphan(ctx, id, s.holder, nodeStale)
+	claimed, err := oc.ClaimOrphan(ctx, id, s.holder, nodeStale.Get())
 	if err != nil || !claimed {
 		return false
 	}
@@ -3568,7 +3659,7 @@ func (s *Server) RecoverOrphans(ctx context.Context) int {
 }
 
 // sweepPage is how many open sessions the sweep reads at a time.
-var sweepPage = 500
+var sweepPage = newTunable(500)
 
 // OpenSessionLister is implemented by stores that can page through every
 // session not yet ended, however old, for the orphan sweep.
@@ -3580,16 +3671,16 @@ type OpenSessionLister interface {
 // by page where the store has it, otherwise from its session list.
 func (s *Server) eachOpenSession(ctx context.Context, f func(id string)) error {
 	if l, ok := s.sessions.(OpenSessionLister); ok {
-		after := ""
+		after, page := "", sweepPage.Get()
 		for ctx.Err() == nil {
-			ids, err := l.OpenSessions(ctx, after, sweepPage)
+			ids, err := l.OpenSessions(ctx, after, page)
 			if err != nil {
 				return err
 			}
 			for _, id := range ids {
 				f(id)
 			}
-			if len(ids) < sweepPage {
+			if len(ids) < page {
 				return nil
 			}
 			after = ids[len(ids)-1]
@@ -4186,6 +4277,9 @@ type approveRequest struct {
 	// Optional for older clients, which answer whichever request is pending;
 	// clients should send it.
 	RequestID string `json:"request_id,omitempty"`
+	// ConfirmUndo, for a plan's runbook (request_id plan:<hash>), confirms
+	// the steps it lists as having no undo.
+	ConfirmUndo bool `json:"confirm_no_undo,omitempty"`
 }
 
 func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
@@ -4194,6 +4288,7 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	// The session is looked up first, so an unknown one is 404 whatever the body.
 	decErr := json.NewDecoder(r.Body).Decode(&req)
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
+	owned := ok
 	if !ok {
 		live, ok = s.approverSession(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	}
@@ -4221,6 +4316,19 @@ func (s *Server) approveAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if decErr != nil {
 		badBody(w, decErr, "invalid JSON body")
+		return
+	}
+	// A plan's runbook listed in the approval queue is answered as POST /plan answers it.
+	if hash, isPlan := strings.CutPrefix(req.RequestID, planRequest); isPlan {
+		if req.Scope != "" {
+			WriteError(w, http.StatusBadRequest, "a runbook has no scope to always allow")
+			return
+		}
+		decision := planKeep
+		if req.Approved {
+			decision = planApprove
+		}
+		s.answerPlan(w, r, live, owned, decision, hash, req.ConfirmUndo, true)
 		return
 	}
 	s.answerHere(w, r, live, req)
@@ -4815,7 +4923,7 @@ func holderID(nodeID string) string {
 // The returned function stops the heartbeat and waits for a beat in flight;
 // it is safe to call more than once.
 func (s *Server) heartbeatNode(ctx context.Context, sessionID string, lost func()) func() {
-	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat, lost)
+	return s.heartbeatNodeEvery(ctx, sessionID, nodeHeartbeat.Get(), lost)
 }
 
 // heartbeatNodeEvery refreshes the claim every interval. A renewal the store
@@ -4857,7 +4965,7 @@ func (s *Server) heartbeatNodeEvery(ctx context.Context, sessionID string, every
 				case err == nil && held:
 					lastOK = sent
 					continue
-				case err != nil && time.Since(lastOK) < nodeStale-every:
+				case err != nil && time.Since(lastOK) < nodeStale.Get()-every:
 					continue // logged; the next beat tries again while the claim still reads as live
 				}
 				lostIt = ctx.Err() == nil
@@ -4897,7 +5005,7 @@ func (s *Server) releaseNode(sessionID string) {
 	}
 	// Tried again within one budget: a claim left behind holds the session
 	// from every other node until it goes stale.
-	ctx, cancel := context.WithTimeout(context.Background(), releaseRetry)
+	ctx, cancel := context.WithTimeout(context.Background(), s.releaseBudget())
 	defer cancel()
 	var err error
 	for wait := 200 * time.Millisecond; ; wait *= 2 {
@@ -4907,15 +5015,24 @@ func (s *Server) releaseNode(sessionID string) {
 		select {
 		case <-ctx.Done():
 			s.log.Warn("could not release session claim; it lapses once stale", "session", sessionID,
-				"err", err, "stale_after", nodeStale)
+				"err", err, "stale_after", nodeStale.Get())
 			return
 		case <-time.After(wait):
 		}
 	}
 }
 
-// releaseRetry bounds the tries at giving a claim back; a variable for tests.
-var releaseRetry = 10 * time.Second
+// releaseRetry bounds the tries at giving a claim back, unless the server's
+// own releaseRetry, set before it starts, is shorter (tests).
+const releaseRetry = 10 * time.Second
+
+// releaseBudget is the server's own bound on giving a claim back, or releaseRetry.
+func (s *Server) releaseBudget() time.Duration {
+	if s.releaseRetry > 0 {
+		return s.releaseRetry
+	}
+	return releaseRetry
+}
 
 // answerElsewhere records a decision for a session this node is not running,
 // and reports whether it did. The node that is waiting polls for the result,
@@ -5140,7 +5257,7 @@ func (s *Server) elsewhere(ctx context.Context, sessionID string) string {
 	if !ok {
 		return ""
 	}
-	node, err := r.NodeFor(ctx, sessionID, nodeStale)
+	node, err := r.NodeFor(ctx, sessionID, nodeStale.Get())
 	if err != nil || node == "" || node == s.opts.NodeID {
 		return ""
 	}
@@ -5206,7 +5323,7 @@ func badBody(w http.ResponseWriter, err error, msg string) {
 // ListenAndServe starts the HTTP server. With Options.TLS set every
 // connection is a TLS one.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	return s.serve(ctx, func() (net.Listener, error) { return net.Listen("tcp", s.opts.Addr) })
+	return s.serve(ctx, func() (net.Listener, error) { return loopport.ListenAddr(s.opts.Addr) })
 }
 
 // Serve is ListenAndServe on a listener the caller opened; it closes ln.
@@ -5252,7 +5369,7 @@ func (s *Server) serve(ctx context.Context, listen func() (net.Listener, error))
 		return err
 	}
 	srv.Addr = ln.Addr().String()
-	go s.sweepOrphans(ctx, nodeStale)
+	go s.sweepOrphans(ctx, nodeStale.Get())
 	go s.sweepRemovedOwners(ctx, removedOwnerSweep)
 	srv.RegisterOnShutdown(s.endStreams)
 	stopped := make(chan struct{})
@@ -5510,13 +5627,23 @@ func (s *Server) cancelRunning() {
 // subscriptions go straight through.
 type tapStore struct {
 	EventStore
-	tap func(agent.Event)
+	tap     func(agent.Event)
+	metrics *metrics.Abhed
 }
 
 func (t tapStore) Append(ev agent.Event) error {
+	start := time.Now()
 	err := t.EventStore.Append(ev)
+	if t.metrics != nil {
+		t.metrics.RecordWrite("events", time.Since(start), err)
+	}
 	if err == nil {
-		t.tap(ev)
+		if t.tap != nil {
+			t.tap(ev)
+		}
+		if t.metrics != nil {
+			t.metrics.Observe(ev)
+		}
 	}
 	return err
 }

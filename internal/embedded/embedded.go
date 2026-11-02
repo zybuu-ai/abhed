@@ -29,6 +29,9 @@ type Settings struct {
 	// Surface names the entry point (acp, rpc); a new session records it in
 	// its session.started, with the mode it runs in.
 	Surface string
+	// PlanExit offers exit_plan in plan mode; the surface takes the plan with
+	// Loop.TakePlan and puts it to the person.
+	PlanExit bool
 }
 
 type settingsKey struct{}

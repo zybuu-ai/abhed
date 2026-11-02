@@ -33,53 +33,118 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	warnOrgFallback(w, cfg)
 	warnUnknown(w, cfg.Unknown)
 	warnNeverAllows(w, cfg.Permissions.Allow)
 	warnNotYetInEffect(w, cfg)
 	findings := cfg.RuleFindings()
 	warnRuleFindings(w, findings)
-	return cfg, managedNeverDenies(findings)
+	if err := managedNeverDenies(findings); err != nil {
+		return cfg, err
+	}
+	if err := cfg.validateAllowLists(); err != nil {
+		return cfg, err
+	}
+	return cfg, cfg.validateNetwork()
 }
 
-// mergeManaged applies the managed file, if there is one, over cfg and
-// records which settings it made.
+// mergeManaged applies the managed configuration over cfg and records which
+// settings it made: the machine's managed file, if there is one, laid over
+// the signed org policy, if one applies. The file wins where both set a key.
 func mergeManaged(cfg *Config) error {
 	path := managed.ConfigFile
-	// Only nothing at the path means unmanaged; a file that cannot be read,
-	// or a link to nothing, is an error.
+	local, err := readManagedFile(path)
+	if err != nil {
+		return err
+	}
+	if local != nil {
+		// What the file sets is read twice, once into the config and once as keys;
+		// a file the two could read differently is refused, not guessed at.
+		if err := CheckManagedJSON(local); err != nil {
+			return fmt.Errorf("managed configuration %s: %w", path, err)
+		}
+	}
+	org, source := orgLayer(cfg, local)
+	if local == nil && org == nil {
+		return nil
+	}
+	var orgLists map[string]any
+	if org != nil {
+		orgLists = takeOrgLists(org)
+	}
+	data, label := local, path
+	if org != nil {
+		merged := any(org)
+		if local != nil {
+			ld, err := decodeDoc(local)
+			if err != nil {
+				return fmt.Errorf("managed configuration %s: %w", path, err)
+			}
+			merged = mergeDocs(org, ld, reflect.TypeFor[Config](), "")
+		} else {
+			label = source
+		}
+		if data, err = json.Marshal(merged); err != nil {
+			return fmt.Errorf("managed configuration: %w", err)
+		}
+		orgKeysOf(cfg, org, local)
+	}
+	if err := applyManaged(cfg, label, data); err != nil {
+		return err
+	}
+	if orgLists != nil {
+		return noteOrgLists(cfg, orgLists, source)
+	}
+	return nil
+}
+
+// readManagedFile is the managed file's contents, nil when there is none.
+// Only nothing at the path means unmanaged; a file that cannot be read, or
+// a link to nothing, is an error.
+func readManagedFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		// Nor is a folder that is a link to nothing: the file is gone, not absent.
 		dir := filepath.Dir(path)
 		if di, derr := os.Lstat(dir); derr == nil && di.Mode()&fs.ModeSymlink != 0 {
 			if _, serr := os.Stat(dir); errors.Is(serr, fs.ErrNotExist) {
-				return fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
+				return nil, fmt.Errorf("managed configuration folder %s is a link to nothing", dir)
 			}
 		}
-		return nil
+		return nil, nil
 	}
-	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		if info != nil && info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("managed configuration %s is a link to nothing", path)
+			return nil, fmt.Errorf("managed configuration %s is a link to nothing", path)
 		}
-		return fmt.Errorf("managed configuration %s was removed while it was read", path)
+		return nil, fmt.Errorf("managed configuration %s was removed while it was read", path)
 	}
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	// What the file sets is read twice, once into the config and once as keys;
-	// a file the two could read differently is refused, not guessed at.
-	if err := CheckManagedJSON(data); err != nil {
-		return fmt.Errorf("managed configuration %s: %w", path, err)
+	return data, nil
+}
+
+// applyManaged merges the managed document data, named label, over cfg.
+func applyManaged(cfg *Config, label string, data []byte) error {
+	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
+	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
+	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
+	belowLists := map[string][]string{}
+	for _, k := range orgBelowLists {
+		belowLists[k] = slices.Clone(*unionFields[k](cfg))
 	}
-	if _, err := mergeData(cfg, path, data); err != nil {
+	if _, err := mergeData(cfg, label, data); err != nil {
 		return err
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	joinManagedLists(cfg, belowLists)
+	// As the managed file says it, before a lower layer's narrowing applies.
+	cfg.managedFetchOff = cfg.ManagedSets("web_fetch.enabled") && !cfg.WebFetch.Enabled
 	cfg.managedRules = managedRuleSet(data)
+	lockOCSF(cfg, data)
 	if cfg.ManagedSets("permissions.deny") {
 		// Its deny rules join the others: a managed file may add a deny rule, never take one away.
 		cfg.Permissions.Deny = dedupe(append(slices.Clone(cfg.Permissions.Deny), below...))
@@ -90,9 +155,10 @@ func mergeManaged(cfg *Config) error {
 		cfg.Permissions.Ask = dedupe(append(slices.Clone(cfg.Permissions.Ask), belowAsk...))
 		delete(cfg.origins, "permissions.ask")
 	}
+	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
-		cfg.Unknown[i].Managed = cfg.Unknown[i].File == path
+		cfg.Unknown[i].Managed = cfg.Unknown[i].File == label
 	}
 	return nil
 }
@@ -240,6 +306,11 @@ func (c Config) ManagedSets(path string) bool {
 	return false
 }
 
+// ManagedWebFetchOff reports whether the managed file itself sets
+// web_fetch.enabled to false, as opposed to leaving it unset or a lower
+// layer turning it off.
+func (c Config) ManagedWebFetchOff() bool { return c.managedFetchOff }
+
 // AllowLocked reports whether no caller may add allow rules: the managed
 // configuration sets a permissions key, whichever one. Every surface asks this.
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
@@ -282,6 +353,21 @@ func dropLockedAllow(c *Config, userFile, workspaceFile, settingsFile string) {
 				Reason: "the managed configuration sets the permissions, so only its own permissions.git_extensions opts git extensions in"})
 		}
 		c.Permissions.GitExtensions = nil
+	}
+	// So do ssh read commands, which run on a host unasked.
+	if c.AllowLocked() && !c.ManagedSets("ssh.read_commands") && len(c.SSH.ReadCommands) > 0 {
+		for _, cmd := range c.SSH.ReadCommands {
+			file := userFile
+			switch c.RuleLayer("ssh_read_commands", cmd) {
+			case LayerSettings:
+				file = settingsFile
+			case LayerWorkspace:
+				file = workspaceFile
+			}
+			c.SetAside = append(c.SetAside, SetAsideKey{File: file, Key: "ssh.read_commands", Value: cmd,
+				Reason: "the managed configuration sets the permissions, so only its own ssh.read_commands declares remote reads"})
+		}
+		c.SSH.ReadCommands = nil
 	}
 	if !c.AllowLocked() || c.ManagedSets("permissions.allow") {
 		return
@@ -353,12 +439,29 @@ func (c Config) ModelAllowed(name string) error {
 }
 
 // PinnedAway is the refusal of a model other than the one a managed
-// model.default pins every choice to, or nil.
+// model.default pins every choice to, or of one no model.allowed list
+// admits, or nil.
 func (c Config) PinnedAway(name string) error {
 	if c.ModelPinned() && name != c.Model.Default {
-		return refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
+		return c.refuse("model.default", name, "the managed configuration sets the model to "+c.Model.Default)
+	}
+	if p, ok := c.Model.Providers[name]; ok {
+		return c.ModelListed(name, p)
+	}
+	if len(c.ModelsAllowed()) > 0 {
+		return &ManagedError{Key: "model.allowed", Value: name, File: c.firstModelLayer().file,
+			Reason: "it is not a configured provider, so the allowed models cannot admit it"}
 	}
 	return nil
+}
+
+// EndpointRefused is EndpointPinnedAway for a model named by its endpoint,
+// with the model.allowed lists applied to its type and model too.
+func (c Config) EndpointRefused(p ProviderConfig) error {
+	if err := c.EndpointPinnedAway(p.Type + " " + p.Model); err != nil {
+		return err
+	}
+	return c.ModelListed("", p)
 }
 
 // EndpointPinnedAway is the refusal of a model named by its endpoint rather
@@ -366,7 +469,7 @@ func (c Config) PinnedAway(name string) error {
 // model.default, or nil when nothing pins the model.
 func (c Config) EndpointPinnedAway(desc string) error {
 	if c.ModelPinned() {
-		return refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
+		return c.refuse("model.default", desc, "the managed configuration sets the model to "+c.Model.Default)
 	}
 	return nil
 }
@@ -398,6 +501,9 @@ type Overrides struct {
 	AdditionalDirs []string
 	// MemoryAuto, when set, turns auto memory on or off.
 	MemoryAuto *bool
+	// Supervisor is off, rules or model. Under a managed configuration it
+	// may turn the supervisor on, never off, and not change a judge it chose.
+	Supervisor string
 	// Warn, when set, takes the warnings about the rules added here, as
 	// LoadOptions.Warn does.
 	Warn func(string)
@@ -416,9 +522,14 @@ func (e *ManagedError) Error() string {
 	return fmt.Sprintf("%s %s is refused: %s (set in %s)", Printable(e.Key), Printable(e.Value), e.Reason, Printable(e.File))
 }
 
-// refuse builds a ManagedError naming the managed file.
-func refuse(key, value, reason string) error {
-	return &ManagedError{Key: key, Value: value, Reason: reason, File: managed.ConfigFile}
+// refuse builds a ManagedError naming the managed file, or the org policy
+// when that made the setting.
+func (c Config) refuse(key, value, reason string) error {
+	file := managed.ConfigFile
+	if src := c.managedSourceOf(key); src != "" {
+		file = src
+	}
+	return &ManagedError{Key: key, Value: value, Reason: reason, File: file}
 }
 
 // knownMode reports whether m names a permission mode.
@@ -444,40 +555,47 @@ func (c Config) Apply(o Overrides) (Config, error) {
 		case !knownMode(o.Mode):
 			return c, fmt.Errorf("unknown permission mode %q: want default, accept-edits, plan, auto or bypass", o.Mode)
 		case c.ManagedSets("permissions.mode") && o.Mode != c.Permissions.Mode && o.Mode != "plan":
-			return c, refuse("permissions.mode", o.Mode, fmt.Sprintf(
+			return c, c.refuse("permissions.mode", o.Mode, fmt.Sprintf(
 				"the managed configuration sets %q; only that mode or plan may be chosen", c.Permissions.Mode))
 		case c.Managed && o.Mode == "bypass":
-			return c, refuse("permissions.mode", o.Mode, "bypass mode is disabled under a managed configuration")
+			return c, c.refuse("permissions.mode", o.Mode, "bypass mode is disabled under a managed configuration")
 		}
 		c.Permissions.Mode = o.Mode
+		c.modeChosen = true
 	}
 	if o.SyntaxCheck != "" {
 		if c.ManagedSets("tools.syntax_check") && syntaxRank(o.SyntaxCheck) < syntaxRank(c.Tools.SyntaxCheck) {
-			return c, refuse("tools.syntax_check", o.SyntaxCheck, fmt.Sprintf(
+			return c, c.refuse("tools.syntax_check", o.SyntaxCheck, fmt.Sprintf(
 				"the managed configuration sets %q, which may only be made stricter", orRefuse(c.Tools.SyntaxCheck)))
 		}
 		c.Tools.SyntaxCheck = o.SyntaxCheck
 	}
+	if o.Supervisor != "" {
+		var err error
+		if c, err = c.applySupervisor(o.Supervisor); err != nil {
+			return c, err
+		}
+	}
 	if o.MaxTurns > 0 {
 		if c.ManagedSets("limits.max_turns") && c.Limits.MaxTurns > 0 && o.MaxTurns > c.Limits.MaxTurns {
-			return c, refuse("limits.max_turns", fmt.Sprint(o.MaxTurns), fmt.Sprintf(
+			return c, c.refuse("limits.max_turns", fmt.Sprint(o.MaxTurns), fmt.Sprintf(
 				"the managed configuration allows at most %d", c.Limits.MaxTurns))
 		}
 		c.Limits.MaxTurns = o.MaxTurns
 	}
 	if o.MemoryAuto != nil {
 		if c.ManagedSets("memory.auto") && *o.MemoryAuto != c.Memory.Auto {
-			return c, refuse("memory.auto", fmt.Sprint(*o.MemoryAuto), fmt.Sprintf(
+			return c, c.refuse("memory.auto", fmt.Sprint(*o.MemoryAuto), fmt.Sprintf(
 				"the managed configuration sets it to %v", c.Memory.Auto))
 		}
 		c.Memory.Auto = *o.MemoryAuto
 	}
 	if len(o.Allow) > 0 && c.AllowLocked() {
-		return c, refuse("permissions.allow", strings.Join(o.Allow, ","),
+		return c, c.refuse("permissions.allow", strings.Join(o.Allow, ","),
 			"the managed configuration sets the permissions, so allow rules may not be added")
 	}
 	if len(o.AdditionalDirs) > 0 && c.ManagedSets("additional_dirs") {
-		return c, refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
+		return c, c.refuse("additional_dirs", strings.Join(o.AdditionalDirs, ","),
 			"the managed configuration sets the additional directories, which may not be added to")
 	}
 	warnNeverAllows(warnSink(o.Warn), o.Allow)
@@ -533,7 +651,7 @@ func (c *Config) noteRuleLayer(layer string) {
 	}
 	for list, rules := range map[string][]string{
 		"allow": c.Permissions.Allow, "ask": c.Permissions.Ask, "deny": c.Permissions.Deny,
-		"git_extensions": c.Permissions.GitExtensions,
+		"git_extensions": c.Permissions.GitExtensions, "ssh_read_commands": c.SSH.ReadCommands,
 	} {
 		for _, r := range rules {
 			k := list + "\x00" + strings.TrimSpace(r)
@@ -560,13 +678,16 @@ func managedRuleSet(data []byte) map[string]bool {
 			Allow, Ask, Deny []string
 			GitExtensions    []string `json:"git_extensions"`
 		}
+		SSH struct {
+			ReadCommands []string `json:"read_commands"`
+		}
 	}
 	if json.Unmarshal(data, &m) != nil {
 		return nil
 	}
 	out := map[string]bool{}
 	for list, rules := range map[string][]string{"allow": m.Permissions.Allow, "ask": m.Permissions.Ask,
-		"deny": m.Permissions.Deny, "git_extensions": m.Permissions.GitExtensions} {
+		"deny": m.Permissions.Deny, "git_extensions": m.Permissions.GitExtensions, "ssh_read_commands": m.SSH.ReadCommands} {
 		for _, r := range rules {
 			out[list+"\x00"+strings.TrimSpace(r)] = true
 		}
@@ -591,4 +712,11 @@ func (c Config) RuleLayer(list, rule string) string {
 		return l
 	}
 	return "config"
+}
+
+// ManagedAskRule reports whether rule, as written, is an ask rule the
+// managed configuration lists: one that asks for each call, inside an
+// approved runbook too (the engine's KeepAsk is set from it).
+func (c Config) ManagedAskRule(rule string) bool {
+	return rule != "" && c.RuleLayer("ask", rule) == LayerManaged
 }

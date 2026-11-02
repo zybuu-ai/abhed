@@ -21,7 +21,7 @@
 # are pinned by digest; Dependabot moves the digests.
 # It runs on the builder's own platform and cross-compiles, so a multi-arch
 # build does not compile Go under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS build
 
 WORKDIR /src
 
@@ -111,7 +111,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
       openpyxl==3.1.5 \
       python-pptx==1.0.2 \
       reportlab==4.2.5 \
-      pypdf==6.19.0 \
+      pypdf==6.21.4 \
       $([ "$TARGETARCH" = s390x ] || echo matplotlib==3.9.2) \
       graphviz==0.20.3 \
  `# pip was only ever needed to install these; leaving it in the image is` \

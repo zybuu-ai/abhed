@@ -398,7 +398,8 @@ func TestACPUnshownScopeIsNotOffered(t *testing.T) {
 	if err != nil || ok || answer.By != agent.BySystem || len(s.always) != 0 {
 		t.Fatalf("ok %v err %v answer %+v always %v", ok, err, answer, s.always)
 	}
-	if strings.Contains(string(params), "allow_always") {
+	// The policy's scope is not offered; a bash grant names its own command.
+	if strings.Contains(string(params), `"optionId":"always:`) {
 		t.Fatalf("offered an always it could not name: %s", params)
 	}
 }

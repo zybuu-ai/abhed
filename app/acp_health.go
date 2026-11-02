@@ -47,6 +47,8 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 		return out
 	}
 	switch {
+	case len(cfg.Duplicates) > 0:
+		add("config", "Configuration", "warn", strings.Join(cfg.Warnings(), "\n"))
 	case len(cfg.Unknown) > 0:
 		add("config", "Configuration", "warn", fmt.Sprintf("%d setting(s) no part of Abhed reads", len(cfg.Unknown)))
 	default:
@@ -97,6 +99,11 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 			add("sandbox", "Sandbox", "warn", "commands run under the "+tierLabel(sb)+" tier")
 		default:
 			add("sandbox", "Sandbox", "ok", "commands run under the "+string(sb.Tier())+" tier")
+		}
+		if c, ok := sb.(*sandbox.Container); ok {
+			if w := toolchainWarnings(c, workspace); len(w) > 0 {
+				add("toolchains", "Sandbox toolchains", "warn", strings.Join(w, "\n"))
+			}
 		}
 	}
 	switch {
@@ -178,7 +185,7 @@ func (c *acpConn) doctorACP(msg rpcMessage) {
 	if p.Cwd == "" {
 		p.Cwd = c.base
 	}
-	cfg, err := config.LoadWith(p.Cwd, config.LoadOptions{Trust: config.GrantFor(trust, c.base, p.Cwd)})
+	cfg, err := loadNetworked(p.Cwd, config.LoadOptions{Trust: config.GrantFor(trust, c.base, p.Cwd)})
 	var verify func() error
 	if c.durable() {
 		verify = func() error {

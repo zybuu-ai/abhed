@@ -1,0 +1,147 @@
+package ui
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+)
+
+// maxShownClaims bounds the claims drawn under an answer; /evidence lists all.
+const maxShownClaims = 6
+
+// footerWidth is what the footer's text may take beside its mark and indent
+// on an 80-column terminal.
+const footerWidth = 76
+
+// ClaimMark is a claim's verdict as one character: ✓ verified, ? unverified,
+// ✗ contradicted.
+func ClaimMark(s Style, verdict string) string {
+	switch verdict {
+	case agent.ClaimVerified:
+		return s.Green("✓")
+	case agent.ClaimContradicted:
+		return s.Red("✗")
+	}
+	return s.Yellow("?")
+}
+
+// VerdictRows are the lines drawn under a checked answer: the footer, then
+// each contradicted claim struck through with the evidence against it, then
+// the unverified claims about the session's work.
+// hint adds where to look further, for a terminal that has /evidence. An
+// answer with nothing in it to check draws nothing.
+func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
+	// Nothing checkable (no claim, or only general knowledge and plain
+	// statements) draws nothing: a greeting earns no footer.
+	if v.Contract == nil && v.Revision == "" && v.Verified == 0 && v.Contradicted == 0 && v.Unverified == v.Unchecked() {
+		return nil
+	}
+	var rows []string
+	// The reply streamed before it was checked: a contradiction is said in a
+	// line no one can read past, before anything else.
+	if v.Contradicted > 0 {
+		what := fmt.Sprintf("%d statements in the reply above are", v.Contradicted)
+		if v.Contradicted == 1 {
+			what = "1 statement in the reply above is"
+		}
+		if v.Revision != "" {
+			rows = append(rows, "  "+s.Bold(s.Red("✗ NOT FACT: "+what+" contradicted by this session's record. The agent is asked to correct it.")))
+		} else {
+			rows = append(rows, "  "+s.Bold(s.Red("✗ NOT FACT: "+what+" contradicted by this session's record; struck through below.")))
+		}
+	} else if v.Revision != "" {
+		rows = append(rows, "  "+s.Yellow("↻ ")+s.Dim("Some of this could not be confirmed from the session's record; the agent is asked to revise it once."))
+	}
+	// ✓ only when something was verified and nothing about the work was not.
+	mark := s.Green("✓")
+	switch {
+	case v.Contradicted > 0 || (v.Contract != nil && !v.Contract.OK):
+		mark = s.Red("✗")
+	case v.Unverified > v.Unchecked() || v.Verified == 0:
+		mark = s.Yellow("?")
+	}
+	// One line at 80 columns: the hint goes only where it fits.
+	foot := clip(VisibleLine(v.Footer()), footerWidth)
+	if hint && len([]rune(foot))+len(" · /evidence N") <= footerWidth {
+		foot += " · /evidence N"
+	}
+	rows = append(rows, "  "+mark+" "+s.Dim(foot))
+	shown := 0
+	for _, c := range v.Claims {
+		if c.Verdict != agent.ClaimContradicted || shown >= maxShownClaims {
+			continue
+		}
+		shown++
+		why := c.Reason
+		if c.Conflict != nil && c.Conflict.Excerpt != "" {
+			at := ""
+			if c.Conflict.Seq > 0 {
+				at = fmt.Sprintf("#%d: ", c.Conflict.Seq)
+			}
+			why = at + c.Conflict.Excerpt
+		}
+		rows = append(rows, fmt.Sprintf("    %s %d %s", s.Red("✗"), c.N, s.Strike(VisibleLine(clip(c.Text, 140)))),
+			"      "+s.Dim("record: "+VisibleLine(clip(why, 160))))
+	}
+	for _, c := range v.Claims {
+		if c.Verdict != agent.ClaimUnverified || !c.LoadBearing || c.Explains || shown >= maxShownClaims {
+			continue
+		}
+		shown++
+		rows = append(rows, fmt.Sprintf("    %s %d %s", s.Yellow("?"), c.N, s.Dim(VisibleLine(clip(c.Text, 100))+" — "+VisibleLine(clip(c.Reason, 120)))))
+	}
+	if e := v.Explained(); e > 0 {
+		what := fmt.Sprintf("%d sentences explain", e)
+		if e == 1 {
+			what = "1 sentence explains"
+		}
+		rows = append(rows, "    "+s.Dim("· "+what+" what a read showed; not checked as work, and the answer still counts them"))
+	}
+	if c := v.Contract; c != nil && !c.OK {
+		for _, r := range c.Require {
+			if !r.OK {
+				rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("required `"+VisibleLine(clip(r.Command, 60))+"`: "+VisibleLine(clip(r.Reason, 120))))
+			}
+		}
+		if len(c.Protected) > 0 {
+			rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("protected files changed: "+VisibleLine(clip(strings.Join(c.Protected, ", "), 160))))
+		}
+		if c.ProtectPartial {
+			rows = append(rows, "    "+s.Red("✗")+" "+s.Dim("protect matches more files than are checked, so they could not all be checked"))
+		}
+	}
+	return rows
+}
+
+func clip(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
+// verdictOf reads an answer.verdict event.
+func verdictOf(ev agent.Event) (agent.AnswerVerdict, bool) {
+	var v agent.AnswerVerdict
+	if ev.Type != agent.EvAnswerVerdict || json.Unmarshal(ev.Payload, &v) != nil {
+		return v, false
+	}
+	return v, true
+}
+
+// LastVerdict is the latest answer.verdict drawn, for /evidence.
+func (r *Renderer) LastVerdict() (agent.AnswerVerdict, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.verdict == nil {
+		return agent.AnswerVerdict{}, false
+	}
+	return *r.verdict, true
+}
+
+// hiddenCall reports a call the transcript does not draw: the answer tool,
+// whose text is drawn as the reply.
+func hiddenCall(tool string) bool { return tool == agent.AnswerToolName }

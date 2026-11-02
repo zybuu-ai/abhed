@@ -12,7 +12,7 @@ install reports honestly.
 
 | Type | Notes |
 |---|---|
-| `anthropic` | Messages API; explicit prompt caching, thinking blocks |
+| `anthropic` | Messages API; explicit prompt caching (the system prompt and tools, and a rolling marker on the last two user turns so a long session reads its history from the cache), thinking blocks |
 | `openai` | chat completions |
 | `gemini` | generateContent; thought parts |
 | `watsonx` | project- or space-scoped |
@@ -155,6 +155,163 @@ A switch is recorded as a `model.switched` event (`provider`, `model`,
 `from`), each `model.call` names the model it went to, and the session list
 and HawkEYE name the model in use.
 
+## A local Ollama model
+
+When the model you choose is one a local [Ollama](https://ollama.com) serves,
+Abhed checks that it works before you rely on it, and gets it working with
+you. A provider counts as Ollama's when its `type` is `ollama`, or when an
+`openai-compatible` (or `openai`) `base_url` is on port 11434. Any other
+OpenAI-compatible endpoint is not taken for Ollama, even at the address
+`OLLAMA_HOST` names: one that is down is named as down, with no offer. Give
+an Ollama on another port `"type": "ollama"`, as first run writes it. A server there that answers
+the OpenAI API (`/v1/models`) but not Ollama's `/api/version`, such as a
+proxy in front of Ollama, counts as running.
+
+**When it checks.** At the start of an interactive `abhed` whose model is
+Ollama's, on `/model <name>`, with `/ollama`, with `abhed ollama check`, in
+the workbench and console pickers, and in Abhed Studio's model selector. It
+looks for three things, in order: is Ollama installed (`ollama` on `PATH`; in
+`/opt/homebrew/bin` or `/usr/local/bin` on macOS, or `/usr/local/bin`,
+`/usr/bin` or `/snap/bin` on Linux, for an app started without them on its
+`PATH`; or `/Applications/Ollama.app` on macOS), is its server answering at
+the provider's address (`/api/version`), and is the model pulled
+(`/api/tags`, or the OpenAI API's `/v1/models` when that fails). A model the
+server does not list but that is downloaded in your models folder
+(`OLLAMA_MODELS`, else `~/.ollama/models`) is never offered for download:
+the server answering was started with another models folder (another `HOME`
+or `OLLAMA_MODELS`), and the steps say how to find and restart it.
+Checking only reads; it never starts, installs or downloads anything, and
+it asks nothing off this machine: the automatic checks (a session's start,
+a model switch, the workbench card and Studio's status) report only what is
+local, whether the server is up and the model present, with a curated
+model's size from Abhed's own list. The registry
+(`registry.ollama.ai`) or the download host is asked for the size as it is
+now only when you open the install or download step: in a session Abhed
+first asks whether to look it up, and `/ollama` and `abhed ollama check`,
+which you run to check, look it up at once.
+
+**What it offers.** Whatever is missing, it says what is wrong in one line,
+then the numbered steps you can run yourself, for example:
+
+```
+Ollama is installed but not running at http://127.0.0.1:11434.
+To do it yourself:
+  1. OLLAMA_HOST=127.0.0.1:11434 ollama serve
+  2. ollama pull qwen3:8b
+  3. Choose local again in Abhed (in the CLI: /model local).
+```
+
+and offers the next step, asking first. You can always say no; the steps stay
+on screen and `/ollama` (or the card's *Check again*) checks again.
+
+| Step | What runs | Asks |
+|---|---|---|
+| Start the server | `ollama serve` whenever the `ollama` program is found (on `PATH`, or inside the macOS app), on macOS too, with `OLLAMA_HOST` set to `127.0.0.1` and the provider's port and `OLLAMA_MODELS` to the models folder the check reads (both shown in the command), detached in a process group of its own, with a minimal environment: `PATH`, `HOME`, the user, shell, temp and locale variables, the proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in either case), `SSL_CERT_FILE` and `SSL_CERT_DIR`, the GPU selection (`CUDA_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, `GPU_DEVICE_ORDINAL`) and `LD_LIBRARY_PATH`, `HOMEBREW_*`, and `OLLAMA_*` other than `OLLAMA_HOST`. Nothing else passes, so no provider keys, Abhed tokens or store addresses do; a token you keep in a `HOMEBREW_*` or `OLLAMA_*` variable does, output to `~/.abhed/logs/ollama-serve.log`. Only when the macOS app is installed without the program does Abhed open the app, by its path (`open /Applications/Ollama.app`), and only for the default address; the app then listens where its own settings say, which Abhed does not control. Abhed waits up to 30 seconds for it to answer, and reports at once, with the end of its log, a server that exits first | the first time; answer *always* to start it without asking from then on. The choice is kept for that program's path: a different `ollama` on `PATH` is asked about again. `abhed ollama forget`, `/ollama forget`, Studio's forget or `POST /v1/ollama/forget` takes it back |
+| Install Ollama | macOS: `brew install ollama` when Homebrew is installed, otherwise it opens the official download page (`https://ollama.com/download/mac`) and you install the signed app yourself. Linux: `brew install ollama` with Homebrew; on Arch it prints `sudo pacman -S ollama` for you to run; otherwise it prints the official script, `curl -fsSL https://ollama.com/install.sh \| sh`, with its source (`https://ollama.com/download/linux`), for you to run: the script runs `sudo` itself, so Abhed never runs it. Windows: the official installer link (`https://ollama.com/download/windows`) | every time, showing the exact command, where it comes from and its size |
+| Pull the model | `ollama pull <tag>` through the server's `/api/pull`, with progress; Esc, Ctrl-C, *Stop* or `_abhed/ollama/cancel` stops it, and Ollama keeps what it fetched, so pulling again resumes | every time, showing the command, the source (`registry.ollama.ai`), the download size from the registry's manifest, the free disk where Ollama keeps models, and a memory warning when the machine has less than the model wants |
+
+Nothing is ever installed or downloaded without that answer. What Abhed runs
+(`brew install ollama`, `ollama serve`, opening a page or the app) runs as
+you, never with `sudo`; a step that needs `sudo`, the official Linux script
+among them, is printed for you to run. A server Abhed starts with `ollama
+serve` gets `OLLAMA_HOST=127.0.0.1:<port>` whatever your environment says;
+the macOS app, opened only when the program is missing, binds where its own
+settings say. It acts only on
+an Ollama on this machine; for one at another address it shows the steps to
+run there. **Abhed does not stop a server it started** when it exits: it is
+your Ollama, and other programs may use it. Stop it as you would any other
+(quit the app, or end `ollama serve`).
+
+**Disk and memory.** Before a pull, Abhed asks the registry for the model's
+size and refuses when the disk where Ollama keeps models (`OLLAMA_MODELS`, or
+`~/.ollama/models`) has less free than the download and 2 GiB to spare. It
+compares the system's memory with what the model wants: the figure in the
+table below for a curated model, or for any other the download size plus a
+quarter and 2 GB, said to be an estimate. Too little memory is a warning, not
+a refusal, and it names the largest curated model that fits.
+
+**Curated models.** `abhed ollama models` lists them. Each tag was checked on
+24 October 2026 against the Ollama library (`ollama.com/library/<name>/tags`)
+and the registry manifest (`registry.ollama.ai/v2/library/<name>/manifests/<tag>`);
+the size is that manifest's, and a pull shows the size the registry gives then.
+
+| Model | Tag | Download | Memory it wants |
+|---|---|---|---|
+| Qwen2.5-Coder 7B | `qwen2.5-coder:7b` | 4.7 GB | 8 GB |
+| Qwen3 8B | `qwen3:8b` | 5.2 GB | 8 GB |
+| Qwen3-Coder 30B | `qwen3-coder:30b` (what `qwen3-coder:latest` pointed to) | 18.6 GB | 24 GB |
+| Gemma 4 26B | `gemma4:26b` | 18.7 GB | 24 GB |
+| Gemma 4 31B | `gemma4:31b` | 20.4 GB | 32 GB |
+
+**Turning it down or off.** `model.ollama.assist` decides what is offered:
+
+| Value | Offers |
+|---|---|
+| `ask` (default) | start, install and pull, each asked as above |
+| `local` | starting the server only; never an install or a download, and the registry is not asked for sizes: for a machine with no network, or a rule against downloads |
+| `off` | nothing: the message and the steps only |
+
+A managed configuration that sets it holds it, so `"model": {"ollama":
+{"assist": "off"}}` in `/etc/abhed/config.json` keeps every surface to
+guidance. An untrusted workspace file may only turn it down (`off` < `local`
+< `ask`).
+
+**Who may act.** Only you, choosing the model. No tool reaches any of this,
+so the agent cannot start, install or pull anything this way, and inside an
+agent's command `abhed ollama check`, `install` and `forget` are refused.
+Nor does Abhed act when its home folder is in a temporary folder (`/tmp`,
+`/var/tmp`, `/private/tmp`, `/var/folders` or `$TMPDIR`), as a test or a
+harness that drives Abhed or Studio with a scratch `HOME` gives it: the
+check still reports, but nothing is started, installed or downloaded
+(`temp_home`), so such a run never starts an Ollama that reads the scratch
+home's empty models folder. On
+`abhed serve` the steps act on the server's host, so only a signed-in
+administrator may take them. Where nobody signs in, nobody may: a request
+from the host itself could be the agent's own command or a page rebound to
+it. Anyone else sees the message and the steps, with `abhed ollama check
+<provider>` to run in a terminal on the host as the user that runs `abhed
+serve`, with its configuration; the host's paths and Ollama's version are
+shown only to an administrator. A model a server answers only through the
+OpenAI API (`/v1/models`), not Ollama's own `/api/version`, is never offered
+a pull: it may not be Ollama, so the steps are shown instead.
+
+**At a terminal only.** `abhed ollama check` and `install` offer a step only
+when both their input and output are a terminal; from a pipe, a script or a
+job they print what is wrong and the steps, and run nothing.
+
+**Recorded.** Each attempt, and how it ended, is an `ollama.start`,
+`ollama.install` or `ollama.pull` event attributed to you, with the command
+shown, the outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, or
+`manual` when the step was left to you) and why. Where it is kept depends on
+where you chose the model:
+
+| Where | Recorded in |
+|---|---|
+| The CLI, in a conversation | that conversation's record |
+| The CLI, at the start or before the first message | held, and written to the conversation's record when your first message opens it; a session that ends with no message keeps none of them |
+| `abhed ollama check` | a short session of its own in the local record, which `abhed sessions` lists and `abhed hawkeye <id>` reports on |
+| Abhed Studio | the session's record |
+| The workbench or console, with a session open and between turns | that session's record, as well as the server's log and admin audit |
+| The workbench or console, with no session open, or mid-turn | the server's log and admin audit only (`admin action` with `action` `ollama.start`, `ollama.install` or `ollama.pull`); the request itself is in the API audit as any `POST` is |
+
+HawkEYE lists the recorded ones under *Local model (Ollama)*, and the OCSF
+export maps them ([OCSF](30-ocsf-and-logs.md#classes)). `abhed serve` counts
+every attempt it handles in `abhed_ollama_actions_total`, recorded in a
+session or not; attempts in the CLI, `abhed ollama` and Studio are not
+counted there, since those processes export no metrics.
+
+**The API.** The workbench and console use `GET /v1/ollama/status?provider=<name>`
+(local only; `&detail=1`, sent when you open the install or download step,
+also asks the registry or download host for the size)
+(what was found, the next step's exact command, size and source, or why it is
+not offered, and the steps), `POST /v1/ollama/start` (`{"provider", "session_id"?,
+"always"?}`), `POST /v1/ollama/install`, `POST /v1/ollama/pull` (a stream of
+JSON lines: `{"progress": …}`, then `{"status": …}` or `{"problem": …}`;
+closing the request stops it) and `POST /v1/ollama/forget`. A refusal or
+failure answers with `{"error", "problem": {"kind", "message", "steps",
+"retry"}, "status"}`. Abhed Studio uses the `_abhed/ollama/*` methods
+([the contract](../architecture/studio-acp-contract.md#32a-a-local-ollama-model)).
+
 ## Choosing one
 
 `abhed doctor` tells you whether a model can drive the agent at all.
@@ -163,3 +320,17 @@ which are different things and are not measured by the same benchmark.
 
 Decode speed tracks *active* parameters, not total: a 27B dense model can be far
 slower than a 30B mixture-of-experts.
+
+### Prompt caching through a proxy
+
+Abhed keeps each request's prefix stable so a provider can cache it: the
+system prompt carries the date, not the time, the tools are always in the
+same order, and history is only appended to (until a compaction or an
+offload rewrites it). Anthropic is told where to cache; an
+OpenAI-compatible endpoint caches on its own, if it does at all, and says
+so in `usage.prompt_tokens_details.cached_tokens`, which Abhed records as
+`tokens_cached`. A proxy such as LiteLLM in front of a model that does not
+cache (gpt-oss on watsonx, for one) reports nothing, so `tokens_cached`
+stays 0: that is the provider, not the request. A loopback proxy also makes
+`completion.local_only` and a recorded `local: true` describe the proxy's
+address, not where the model runs.

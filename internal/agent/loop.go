@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -156,15 +158,21 @@ const (
 	ByUser     = "user"     // the person made the call themselves, at the workbench
 	// BySessionScope is an "always allow" a reviewer chose earlier in the session.
 	BySessionScope = "session-scope"
-	ByHeadless     = "headless" // nobody could be asked, and the run's fixed answer applied
-	BySystem       = "system"   // the harness, with no rule or person involved
+	// ByWorkspaceGrant is a bash grant kept for the workspace, chosen in this
+	// session or an earlier one.
+	ByWorkspaceGrant = "workspace-grant"
+	ByHeadless       = "headless" // nobody could be asked, and the run's fixed answer applied
+	// ByCarried is a person's approval of the same change, which failed with
+	// no effect, taken once by its retry; see carried_from.
+	ByCarried = "carried"
+	BySystem  = "system" // the harness, with no rule or person involved
 )
 
 // Answer is what an Approver reports when a request was settled by someone
 // other than the person it would ask; see NoteAnswer.
 type Answer struct {
 	By     string
-	Scope  string // the remembered scope that allowed it, for BySessionScope
+	Scope  string // the remembered scope that allowed it, for BySessionScope and ByWorkspaceGrant
 	Reason string // why no one answered, said in place of "rejected"
 	// Approver names the person who answered, where the approver knows them.
 	Approver string
@@ -188,7 +196,7 @@ func ExpectAnswer(ctx context.Context) (context.Context, *Answer) {
 // none of the By values is ignored, and the answer is recorded as a reviewer's.
 func NoteAnswer(ctx context.Context, a Answer) {
 	switch a.By {
-	case "", ByPolicy, ByReviewer, ByUser, BySessionScope, ByHeadless, BySystem:
+	case "", ByPolicy, ByReviewer, ByUser, BySessionScope, ByWorkspaceGrant, ByHeadless, BySystem:
 	default:
 		return
 	}
@@ -288,6 +296,9 @@ type Loop struct {
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
 	Monitor *monitor.Guard
+	// Verify, when set, checks each completed run's answer against the
+	// record before the run ends; see Verifier. Nil checks nothing.
+	Verify *Verifier
 	// OwnerActive, when set, is asked before a woken run calls the model
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
@@ -301,6 +312,8 @@ type Loop struct {
 	reasoning   []string
 	recentCalls []monitor.Recent
 	monitorMu   sync.Mutex
+	// sup is what the supervisor keeps between calls; see supervisor.go.
+	sup supervision
 
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
@@ -352,7 +365,26 @@ type Loop struct {
 	// concurrent writes to a Go map are not a race that corrupts a counter —
 	// they abort the process.
 	repeatedFailures map[string]int
-	failuresMu       sync.Mutex
+	// repeatedSuccesses counts identical calls that read without changing
+	// anything, since the last call that could; see repeatedSuccessAbort.
+	repeatedSuccesses map[string]int
+	lastAnswers       map[string][32]byte
+	failuresMu        sync.Mutex
+	// reviewedCalls are this message's calls a person approved; carried maps
+	// an edit or write that failed with no effect, by tool and file, to the
+	// call whose approval the next attempt at that file takes.
+	carryMu       sync.Mutex
+	reviewedCalls map[string]bool
+	carried       map[string]string
+	// previewWrites makes every edit and write an ask, for this run;
+	// previewParent is the loop that spawned this one, whose flag holds too.
+	previewWrites atomic.Bool
+	previewParent *Loop
+	// pendingImages are the images AttachImages gave the next message.
+	pendingImages []model.ContentBlock
+	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
+	// is the detail the last run's end recorded.
+	stuckDetail, lastDetail string
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
@@ -539,6 +571,7 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		}
 		n++
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.noteSaid(text, true)
 		l.setPrompt(text)
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
@@ -704,6 +737,7 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
+	imgs := l.takeImages() // this message's alone, sent or not
 	// Messages left queued by a run that ended first keep their place ahead
 	// of the new prompt.
 	delivered, err := l.deliverQueuedCount()
@@ -711,7 +745,15 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return TermError, err
 	}
 	l.setRefused("")
-	if why := l.promptRefused(ctx, m.Text); why != "" {
+	why := l.promptRefused(ctx, m.Text)
+	if why == "" && l.Hooks != nil && ctx.Err() != nil {
+		// Stopped while the hooks decided: not screened, so never sent, and
+		// recorded as dropped rather than kept for the next prompt.
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(),
+			Reason: "stopped before it was screened"})
+		return l.finishStopped(ctx, terminalForCancel(ctx)), nil
+	}
+	if why != "" {
 		// Said in the session, where its surface shows it, as a steer refused is.
 		l.record(EvMessageDropped, ActorSystem, DroppedMessage{ClientID: m.ClientID, Text: m.Text, QueuedAt: time.Now(), Reason: why})
 		l.setRefused(why)
@@ -730,10 +772,57 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
 		return TermError, err
 	}
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	um := model.Message{Role: model.RoleUser, Content: text}
+	if len(imgs) > 0 {
+		// The images reach the model with this message only; the record keeps what the text says of them.
+		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: text}}, imgs...)
+	}
+	l.messages = append(l.messages, um)
+	l.noteSaid(text, false)
 	l.setPrompt(text)
 	l.startMessage()
 	return l.run(ctx)
+}
+
+// PreviewWrites turns on or off asking about every edit and write, whatever
+// the mode allows, so the person sees each diff before it is written.
+func (l *Loop) PreviewWrites(on bool) { l.previewWrites.Store(on) }
+
+// PreviewingWrites reports whether this loop previews writes now.
+func (l *Loop) PreviewingWrites() bool { return l.previewing() }
+
+// previewing reports whether this loop, or the loop that spawned it, is
+// previewing writes, so a subagent's writes are put to the person too.
+func (l *Loop) previewing() bool {
+	for p := l; p != nil; p = p.previewParent {
+		if p.previewWrites.Load() {
+			return true
+		}
+	}
+	return false
+}
+
+// AttachImages gives the next RunMessage's message these images, for a
+// model that reads them. They are held in memory only, never recorded.
+func (l *Loop) AttachImages(imgs []model.ContentBlock) {
+	l.steerMu.Lock()
+	l.pendingImages = imgs
+	l.steerMu.Unlock()
+}
+
+// PendingImages is how many images wait for the next message.
+func (l *Loop) PendingImages() int {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return len(l.pendingImages)
+}
+
+func (l *Loop) takeImages() []model.ContentBlock {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	imgs := l.pendingImages
+	l.pendingImages = nil
+	return imgs
 }
 
 // EndRefused records the end of a run a hook refused before it began, for a
@@ -745,6 +834,10 @@ func (l *Loop) EndRefused() {
 	// the background tasks' last end stays the last run's.
 	l.record(EvSessionEnded, ActorSystem, l.endPayload(TermPromptRefused))
 }
+
+// EndDetail is what the last run's end said beyond its reason, such as the
+// call a retry_exhausted end gave up on.
+func (l *Loop) EndDetail() string { return l.lastDetail }
 
 // RefusedPrompt is why a hook refused the last RunMessage's own message, or
 // "" when it was sent. A run that answered earlier queued messages instead
@@ -767,6 +860,94 @@ func (l *Loop) startMessage() {
 	if n := l.Config.TurnsPerMessage; n > 0 {
 		l.Config.MaxTurns = l.turns + n
 	}
+	// A new message is a fresh start: failures repeated before it do not end it.
+	// Queued messages and wake runs start one too, so they reset the count;
+	// wake runs are bounded on their own (subagents.max_wakes_per_hour and
+	// wake_max_turns), so a reset there cannot loop without end.
+	l.failuresMu.Lock()
+	l.repeatedFailures, l.repeatedSuccesses, l.lastAnswers = nil, nil, nil
+	l.failuresMu.Unlock()
+	l.carryMu.Lock()
+	l.reviewedCalls, l.carried = nil, nil
+	l.carryMu.Unlock()
+}
+
+// carryKey names an edit or write by the file it is aimed at, the text it
+// replaces (whitespace at the end of a line aside), whether it replaces every
+// match, and the exact text it puts there, "" for other calls: only a retry
+// of the same change keeps it.
+func (l *Loop) carryKey(call model.ToolCall) string {
+	if (call.Name != "edit" && call.Name != "write") || l.Session == nil {
+		return ""
+	}
+	var a struct {
+		Path       string `json:"path"`
+		OldString  string `json:"old_string"`
+		NewString  string `json:"new_string"`
+		ReplaceAll bool   `json:"replace_all"`
+		Content    string `json:"content"`
+	}
+	if json.Unmarshal(call.Args, &a) != nil || a.Path == "" {
+		return ""
+	}
+	path, err := l.Session.Resolve(a.Path)
+	if err != nil {
+		return ""
+	}
+	if call.Name == "write" {
+		return "write\x00" + path + "\x00" + a.Content
+	}
+	lines := strings.Split(a.OldString, "\n")
+	for i := range len(lines) - 1 { // only a line a newline follows: the last may end mid-line
+		lines[i] = strings.TrimRight(lines[i], " \t\r")
+	}
+	return fmt.Sprintf("edit\x00%s\x00%s\x00%t\x00%s", path, strings.Join(lines, "\n"), a.ReplaceAll, a.NewString)
+}
+
+// takeCarried is the call whose approval this one takes, once: an earlier
+// attempt at the same change (see carryKey), in this message, that a person
+// approved and that failed without changing anything.
+// "" when there is none.
+func (l *Loop) takeCarried(call model.ToolCall) string {
+	key := l.carryKey(call)
+	if key == "" {
+		return ""
+	}
+	l.carryMu.Lock()
+	defer l.carryMu.Unlock()
+	from := l.carried[key]
+	delete(l.carried, key)
+	return from
+}
+
+// noteReviewed marks a call a person approved.
+func (l *Loop) noteReviewed(callID string) {
+	l.carryMu.Lock()
+	if l.reviewedCalls == nil {
+		l.reviewedCalls = map[string]bool{}
+	}
+	l.reviewedCalls[callID] = true
+	l.carryMu.Unlock()
+}
+
+// noteOutcome keeps the approval of a reviewed edit or write that failed, for
+// the next attempt at the same file.
+func (l *Loop) noteOutcome(call model.ToolCall, failed bool) {
+	l.carryMu.Lock()
+	reviewed := l.reviewedCalls[call.ID]
+	delete(l.reviewedCalls, call.ID)
+	l.carryMu.Unlock()
+	if !reviewed || !failed {
+		return
+	}
+	if key := l.carryKey(call); key != "" {
+		l.carryMu.Lock()
+		if l.carried == nil {
+			l.carried = map[string]string{}
+		}
+		l.carried[key] = call.ID
+		l.carryMu.Unlock()
+	}
 }
 
 // moreForTheModel reports whether a completed run has something new for the
@@ -774,17 +955,20 @@ func (l *Loop) startMessage() {
 // which it delivers now. Messages the hooks refuse, every one, leave nothing,
 // and the model is not called again on the conversation as it was.
 func (l *Loop) moreForTheModel() (bool, error) {
-	if l.Background.Pending() > 0 {
-		return true, nil
+	// Again until something gets through or nothing waits: a message that
+	// arrives while the hooks judge another is judged in turn, not passed.
+	for {
+		if l.Background.Pending() > 0 {
+			return true, nil
+		}
+		if len(l.Queued()) == 0 {
+			return false, nil
+		}
+		n, err := l.deliverQueuedCount()
+		if err != nil || n > 0 {
+			return err == nil, err
+		}
 	}
-	if len(l.Queued()) == 0 {
-		return false, nil
-	}
-	n, err := l.deliverQueuedCount()
-	if err != nil {
-		return false, err
-	}
-	return n > 0 || l.hasWork(), nil
 }
 
 // RunQueued continues the conversation with only the queued messages, for a
@@ -840,6 +1024,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.deferred = nil
 		b.mu.Unlock()
 	}
+	l.beginAnswer()
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -932,6 +1117,15 @@ turns:
 					continue
 				}
 			}
+			// The answer is checked before the run ends; a revision turn
+			// it asks for goes round again.
+			if reason == TermCompleted {
+				again, end := l.checkAnswer(ctx)
+				if again {
+					continue
+				}
+				reason = end
+			}
 			// The turn ends first; a suggestion is made after it, off the run.
 			if reason == TermCompleted {
 				return l.finishSuggesting(ctx), nil
@@ -963,7 +1157,8 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 		check = l.Compactor.ShouldCompactNow
 	}
 	l.justCompacted = false
-	should, used, err := check(l.Config.SystemPrompt, l.messages, toolDefs(l.Tools))
+	// Counted as sent: a tool of another mode is not in the request.
+	should, used, err := check(l.Config.SystemPrompt, l.messages, l.offeredDefs())
 	if err != nil || !should {
 		return err
 	}
@@ -988,8 +1183,17 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.messages = compacted
 	l.usage.Compactions++
 	l.justCompacted = true
+	l.forgetAnswers()
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
+}
+
+// forgetAnswers starts the repeated-answer count again once history is
+// rewritten: a call the model makes again may be for an answer it lost.
+func (l *Loop) forgetAnswers() {
+	l.failuresMu.Lock()
+	l.repeatedSuccesses, l.lastAnswers = nil, nil
+	l.failuresMu.Unlock()
 }
 
 // ErrNothingToCompact is Compact finding no older history to summarise.
@@ -1015,6 +1219,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	}
 	l.messages = compacted
 	l.usage.Compactions++
+	l.forgetAnswers()
 	l.record(EvCompactDone, ActorSystem, info)
 	return info, nil
 }
@@ -1075,6 +1280,8 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.runMu.Lock()
 	defer l.runMu.Unlock()
 	l.messages = append([]model.Message(nil), msgs...)
+	l.forgetSaid()
+	l.UnbindPlan() // a runbook binds the conversation that approved it, not one rebuilt from a record
 	if turns > l.turns {
 		l.turns = turns
 	}
@@ -1368,6 +1575,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 				"Stopping: the same call failed %d times without adaptation (%s).",
 				n, truncateKey(key)),
 		})
+		l.stuckDetail = fmt.Sprintf("the same call failed %d times without adaptation: %s", n, truncateKey(key))
+		return TermRetryExhausted, true, nil
+	}
+	if key, n, stuck := l.worstRepeatedSuccess(); stuck {
+		l.messages = append(l.messages, model.Message{
+			Role: model.RoleUser,
+			Content: fmt.Sprintf(
+				"Stopping: the same call gave the same answer %d times with nothing changed in between (%s).",
+				n, truncateKey(key)),
+		})
+		l.stuckDetail = fmt.Sprintf("the same call gave the same answer %d times with nothing changed in between: %s", n, truncateKey(key))
 		return TermRetryExhausted, true, nil
 	}
 	return "", false, nil
@@ -1378,6 +1596,9 @@ const (
 	repeatedFailureLimit = 3
 	// After this many, the loop gives up rather than burning the budget.
 	repeatedFailureAbort = 6
+	// The same for an identical call that changes nothing and succeeds.
+	repeatedSuccessLimit = 3
+	repeatedSuccessAbort = 6
 	// How many empty turns to nudge through before calling the run stalled.
 	emptyTurnRetries = 2
 )
@@ -1399,6 +1620,19 @@ func truncateKey(k string) string {
 // It replaces the call's arguments with their canonical encoding, so everything
 // after it, the tool included, reads the value policy judged.
 func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
+	ok, res, term := l.authorizeCall(ctx, c)
+	if !ok {
+		// What a tool readied for a call that will not run is let go now.
+		if t, found := l.Tools.Get(c.Name); found {
+			if u, isU := t.(tools.Unplanner); isU {
+				u.Unplan(l.Session, c.Args)
+			}
+		}
+	}
+	return ok, res, term
+}
+
+func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
 	tool, found := l.Tools.Get(call.Name)
 	if found && !l.offered(tool) {
@@ -1447,7 +1681,15 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 	var resolved []string
 	var unresolvable error
 	if r, ok := tool.(tools.ArgResolver); ok {
-		out, which, err := r.ResolveArgs(l.Session, canon)
+		var out json.RawMessage
+		var which []string
+		var err error
+		// One that reaches the network stops with the turn.
+		if cr, ok := tool.(tools.ContextArgResolver); ok {
+			out, which, err = cr.ResolveArgsContext(ctx, l.Session, canon)
+		} else {
+			out, which, err = r.ResolveArgs(l.Session, canon)
+		}
 		switch {
 		case err != nil:
 			unresolvable = err
@@ -1477,13 +1719,24 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		decision = policy.Result{Decision: policy.Ask, Step: "handover",
 			Reason: "this call may already have run on a process that stopped before recording its result"}
 	}
+	decision = l.filesJudged(tool, call, decision)
+	// A person previewing writes sees each edit and write before it lands:
+	// any decision but a deny becomes the preview ask, which offers no scope,
+	// so no "always" grant can answer it. An earlier ask's reason is kept.
+	if decision.Decision != policy.Deny && (call.Name == "edit" || call.Name == "write") && l.previewing() {
+		why := "the person asked to preview each change before it is written"
+		if decision.Decision == policy.Ask && decision.Reason != "" {
+			why += "; " + decision.Reason
+		}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer}
+	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
 	// deny. An allowed write the tool would refuse (into .abhed in
 	// accept-edits) was recorded approved, then refused.
 	var doomed error
-	if pc, ok := tool.(tools.Prechecker); ok && decision.Decision != policy.Deny {
-		doomed = pc.Precheck(l.Session, call.Args)
+	if decision.Decision != policy.Deny {
+		doomed = tools.Precheck(ctx, tool, l.Session, call.Args)
 	}
 	if doomed == nil && decision.Decision == policy.Ask {
 		if why := l.readFirst(ctx, tool, call); why != "" {
@@ -1507,6 +1760,12 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			decision.Reason = strings.TrimPrefix(decision.Reason+"; "+target, "; ")
 		}
 	}
+	// An approved runbook answers the ask of the call that is its next step,
+	// and makes any other change ask.
+	var planned *planHit
+	if doomed == nil {
+		decision, planned = l.planBind(ctx, tool, call, decision)
+	}
 
 	asked, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
 		CallID:           call.ID,
@@ -1519,6 +1778,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		Dropped:          dropped,
 		Resolved:         resolved,
 		Target:           target,
+		Supervisor:       l.supervisorNote(call.ID),
 	})
 	if err != nil {
 		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
@@ -1534,12 +1794,18 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		return l.deniedOwnerGone(call.ID)
 	}
 	answer := &Answer{}
+	carriedFrom := ""
 	switch decision.Decision {
 	case policy.Deny:
 		l.record(EvActionDenied, ActorSystem, withRule(map[string]string{
 			"call_id": call.ID, "reason": decision.Reason, "step": decision.Step, "by": ByPolicy,
 		}, decision))
 		// Feed the denial back so the model can choose another approach.
+		if decision.Step == "monitor" {
+			if fix := l.correction(call.ID, decision.Decision); fix != "" {
+				return false, tools.Result{Content: "Denied. " + fix, IsError: true}, ""
+			}
+		}
 		return false, tools.Result{
 			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
 			IsError: true,
@@ -1560,7 +1826,18 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		}
 		var actx context.Context
 		actx, answer = ExpectAnswer(WithRequested(WithCallID(WithRequestID(ctx, asked.ID), call.ID), asked))
-		approved, err := l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
+		var approved bool
+		var err error
+		// The mode's own ask for a file a person just approved an attempt at,
+		// which failed with no effect, is answered by that approval.
+		if decision.Step == "default" || decision.Step == "mode" {
+			carriedFrom = l.takeCarried(call)
+		}
+		if carriedFrom != "" {
+			approved, answer.By = true, ByCarried
+		} else {
+			approved, err = l.askerFor(ctx).Approve(actx, call.Name, call.Args, decision)
+		}
 		if err != nil {
 			// The request still gets an outcome, so no action.requested is
 			// left without one when the turn ends here.
@@ -1611,6 +1888,9 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 			if decision.Scope != "" {
 				msg += "It would be permitted by the rule " + decision.Scope + ", which is not configured.\n"
 			}
+			if fix := l.correction(call.ID, policy.Deny); fix != "" {
+				return false, tools.Result{Content: msg + fix, IsError: true}, ""
+			}
 			msg += "Do not retry this call or a re-worded version of it. " +
 				"Use a different tool, or explain what you need and stop."
 			return false, tools.Result{Content: msg, IsError: true}, ""
@@ -1631,11 +1911,17 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		if answer.By != "" {
 			approvedBy["by"] = answer.By
 		}
-		for k, v := range map[string]string{"scope": answer.Scope, "approver": answer.Approver, "granted_scope": answer.Granted} {
+		for k, v := range map[string]string{"scope": answer.Scope, "approver": answer.Approver, "granted_scope": answer.Granted, "carried_from": carriedFrom} {
 			if v != "" {
 				approvedBy[k] = v
 			}
 		}
+		if approvedBy["by"] == ByReviewer {
+			l.noteReviewed(call.ID)
+		}
+	}
+	if ok, res := l.planClaim(call, planned, approvedBy); !ok {
+		return false, res, ""
 	}
 	// A call runs only with its approval on record: one that ran unrecorded
 	// would be asked again, and could run again, wherever the session goes on.
@@ -1643,6 +1929,7 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 		l.noteRecordErr(err)
 		return false, tools.Result{Content: notRecorded, IsError: true}, ""
 	}
+	l.recordPlanStep(call, planned, approvedBy["by"])
 	return true, tools.Result{}, ""
 }
 
@@ -1795,6 +2082,11 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 
 	start := time.Now()
+	// The folder a command runs in, as the bash tool takes it, for the record.
+	cwd := ""
+	if call.Name == "bash" && l.Session != nil {
+		cwd = l.Session.WorkDir()
+	}
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
@@ -1811,6 +2103,8 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	if keys, ok := l.ignored.LoadAndDelete(call.ID); ok {
 		result.Content += "\n\n[ignored: " + strings.Join(keys.([]string), ", ") + " (not arguments of " + call.Name + ")]"
 	}
+
+	l.noteOutcome(call, result.IsError)
 
 	// An identical call that keeps failing means the model is not reading the
 	// error. Escalate the message rather than letting it consume every turn:
@@ -1831,26 +2125,62 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 					"what is blocking you and stop.]", result.Content, n)
 		}
 	} else {
+		key := call.Name + string(call.Args)
 		l.failuresMu.Lock()
-		delete(l.repeatedFailures, call.Name+string(call.Args))
+		delete(l.repeatedFailures, key)
+		// The same read, search or listing again, with nothing changed in
+		// between, gives the same answer: the model is going round in circles.
+		// A call that can change things starts the count again.
+		n := 0
+		switch {
+		case tools.MutatesCall(tool, call.Args):
+			l.repeatedSuccesses, l.lastAnswers = nil, nil
+		case call.Name == "task_status":
+			// Waiting on a subagent: its status is the same until it is not.
+		default:
+			if l.repeatedSuccesses == nil {
+				l.repeatedSuccesses, l.lastAnswers = map[string]int{}, map[string][32]byte{}
+			}
+			// Only the same answer counts: a poll whose output moves on is not a loop.
+			sum := sha256.Sum256([]byte(result.Content))
+			if prev, ok := l.lastAnswers[key]; ok && prev == sum {
+				l.repeatedSuccesses[key]++
+			} else {
+				l.repeatedSuccesses[key] = 1
+			}
+			l.lastAnswers[key] = sum
+			n = l.repeatedSuccesses[key]
+		}
 		l.failuresMu.Unlock()
+		if n >= repeatedSuccessLimit {
+			result.Content = fmt.Sprintf(
+				"%s\n\n[You have made this exact call %d times and had the same answer each time, with "+
+					"nothing changed in between. Use what it returned and move on, or explain what you are "+
+					"looking for and stop.]", result.Content, n)
+		}
 	}
 
 	// Tool output is untrusted: it may contain text that looks like
 	// instructions. The trust tag travels with the event (docs arch §6).
 	trust := Untrusted
-	l.noteCall(call.Name, policy.Subject(call.Name, call.Args), result.IsError)
+	l.noteCall(call.Name, policy.Subject(call.Name, call.Args), result.IsError,
+		l.Monitor != nil && !result.IsError && monitor.CredentialSeen(call.Name, string(call.Args), result.Content))
 	if _, err := l.Recorder.Record(EvObservation, ActorTool, trust, Observation{
-		CallID:     call.ID,
-		Tool:       call.Name,
-		Content:    result.Content,
-		IsError:    result.IsError,
-		Truncated:  result.Truncated,
-		ExitCode:   result.ExitCode,
-		DurationMS: elapsed.Milliseconds(),
-		Sandbox:    result.Tier,
+		CallID:      call.ID,
+		Tool:        call.Name,
+		Content:     result.Content,
+		IsError:     result.IsError,
+		Truncated:   result.Truncated,
+		ExitCode:    result.ExitCode,
+		DurationMS:  elapsed.Milliseconds(),
+		Sandbox:     result.Tier,
+		SandboxNote: result.SandboxNote,
+		Cwd:         cwd,
 	}); err != nil {
 		return result, TermError
+	}
+	for _, e := range result.Events {
+		l.record(EventType(e.Type), ActorSystem, e.Payload)
 	}
 	return result, ""
 }
@@ -1885,7 +2215,13 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
+	if reason == TermRetryExhausted && l.stuckDetail != "" && l.endDetail == "" {
+		l.endDetail = l.stuckDetail
+		defer func() { l.endDetail = "" }()
+	}
+	l.stuckDetail = ""
 	end := l.endPayload(reason)
+	l.lastDetail = end.Detail
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
 	l.observe(context.Background(), HookTurnEnd, "", string(reason))
@@ -1964,7 +2300,7 @@ func (l *Loop) contextSize() (used, window int) {
 	n, err := l.Adapter.CountTokens(model.Request{
 		System:   l.Config.SystemPrompt,
 		Messages: l.messages,
-		Tools:    toolDefs(l.Tools),
+		Tools:    l.offeredDefs(),
 	})
 	if err != nil {
 		return 0, window
@@ -2082,6 +2418,7 @@ func (l *Loop) resultLimitChars() int {
 func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalReason {
 	results := make([]callOutcome, len(calls))
 	l.ignored.Clear() // a call refused last turn never ran to take its entry
+	l.clearVerdicts()
 
 	// Phase 1: policy and approval, in order, one at a time.
 	approved := make([]bool, len(calls))
@@ -2141,6 +2478,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 		}
 	}
 
+	l.replan(results)
 	l.appendResults(calls, results, len(calls))
 	for _, o := range results {
 		if o.terminal != "" {
@@ -2156,6 +2494,19 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 		}
 	}
 	return ""
+}
+
+// worstRepeatedSuccess reports a call that has given the same answer past
+// the abort threshold with nothing changed in between.
+func (l *Loop) worstRepeatedSuccess() (string, int, bool) {
+	l.failuresMu.Lock()
+	defer l.failuresMu.Unlock()
+	for key, n := range l.repeatedSuccesses {
+		if n >= repeatedSuccessAbort {
+			return key, n, true
+		}
+	}
+	return "", 0, false
 }
 
 // worstRepeatedFailure reports a call that has failed past the abort threshold.
@@ -2423,52 +2774,44 @@ func (l *Loop) noteReasoning(text string) {
 // reviewed puts a call to the monitor and returns the decision after it,
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
-	var remit, user strings.Builder
-	for _, m := range l.messages {
-		if m.Role == model.RoleUser {
-			if remit.Len() == 0 {
-				remit.WriteString(m.Content)
-			}
-			user.WriteString(m.Content)
-			user.WriteByte('\n')
-		}
+	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	if out.Skipped == monitor.SkippedBudget {
+		// Unreviewed, and said so: in the record and in the reason every
+		// approver, and a runbook step's label, shows.
+		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
+			After: string(before.Decision), Skipped: out.Skipped})
+		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
+		return before
 	}
-	args := string(call.Args)
-	l.monitorMu.Lock()
-	thoughts := append([]string(nil), l.reasoning...)
-	recent := append([]monitor.Recent(nil), l.recentCalls...)
-	l.monitorMu.Unlock()
-	c := monitor.Case{
-		Remit: remit.String(), Reasoning: thoughts,
-		Tool: call.Name, Args: args, Mutates: mutates, Provisional: before,
-		Provenance: monitor.Trace(args, user.String()), Recent: recent,
-	}
-	out := l.Monitor.Review(ctx, c)
 	if out.Skipped != "" {
 		return before
 	}
+	l.noteVerdict(call.ID, out.Verdict)
 	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
 		CallID: call.ID, Before: string(out.Before), After: string(out.After), Code: out.Verdict.Code,
 		Confidence: out.Verdict.Confidence, Rationale: out.Verdict.Rationale, LatencyMS: out.Verdict.LatencyMS,
 		Version: out.Verdict.Version, Unavailable: out.Unavailable,
 	})
-	if !out.Tightened {
+	// An ask the supervisor has a concern with is its ask too, so no
+	// session-wide "always allow" answers it without the person.
+	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
+	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
 		return before
 	}
 	why := out.Verdict.Code
 	if out.Verdict.Rationale != "" {
 		why += " — " + out.Verdict.Rationale
 	}
-	return policy.Result{Decision: out.After, Reason: "monitor: " + why, Scope: before.Scope, Step: "monitor"}
+	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.
-func (l *Loop) noteCall(tool, subject string, isError bool) {
+func (l *Loop) noteCall(tool, subject string, isError, credential bool) {
 	l.monitorMu.Lock()
 	defer l.monitorMu.Unlock()
-	l.recentCalls = append(l.recentCalls, monitor.Recent{Tool: tool, Subject: subject, IsError: isError})
-	if len(l.recentCalls) > 5 {
-		l.recentCalls = l.recentCalls[len(l.recentCalls)-5:]
+	l.recentCalls = append(l.recentCalls, monitor.Recent{Tool: tool, Subject: subject, IsError: isError, Credential: credential})
+	if len(l.recentCalls) > 20 {
+		l.recentCalls = l.recentCalls[len(l.recentCalls)-20:]
 	}
 }
 

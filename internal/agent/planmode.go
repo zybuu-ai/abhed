@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -18,6 +20,14 @@ const (
 type planState struct {
 	mu      sync.Mutex
 	pending *PlanProposed
+	// offered is the runbook of the plan last proposed, until it is accepted
+	// or another is; bound is the one accepted, which calls are held to.
+	offered *Runbook
+	bound   *boundPlan
+	// off is plan.runbooks false: no runbook is taken.
+	off bool
+	// since is when the pending plan was proposed.
+	since time.Time
 }
 
 // EnablePlanExit gives the loop the exit_plan tool, offered only in plan
@@ -33,15 +43,53 @@ func (l *Loop) EnablePlanExit() {
 	l.Tools.Add(tools.ExitPlan{Submit: l.proposePlan})
 }
 
-func (l *Loop) proposePlan(_ context.Context, text string) error {
-	p := PlanProposed{Text: text}
+func (l *Loop) proposePlan(_ context.Context, text string, steps []tools.RunbookStep) error {
+	rb, err := l.prepareRunbook(text, steps)
+	if err != nil {
+		return fmt.Errorf("the runbook was refused: %w", err)
+	}
+	p := PlanProposed{Text: text, Runbook: rb, Hash: planTextHash(text)}
+	if rb != nil {
+		p.Hash = rb.Hash
+	}
 	if _, err := l.Recorder.Record(EvPlanProposed, ActorAgent, Trusted, p); err != nil {
 		return err
 	}
 	l.plans.mu.Lock()
 	l.plans.pending = &p
+	l.plans.since = time.Now()
+	l.plans.offered = rb
+	// A new plan lets the old runbook go: what it bound is not what is proposed now.
+	l.plans.bound = nil
 	l.plans.mu.Unlock()
 	return nil
+}
+
+// PendingPlan returns the plan the last run proposed, leaving it for TakePlan.
+func (l *Loop) PendingPlan() (PlanProposed, bool) {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	if l.plans.pending == nil {
+		return PlanProposed{}, false
+	}
+	return *l.plans.pending, true
+}
+
+// PendingPlanSince is when the plan waiting for an answer was proposed.
+func (l *Loop) PendingPlanSince() time.Time {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	return l.plans.since
+}
+
+// ReofferPlan puts a taken plan back to wait for an answer, when the answer
+// given could not be recorded; a newer plan proposed meanwhile is kept.
+func (l *Loop) ReofferPlan(p PlanProposed) {
+	l.plans.mu.Lock()
+	defer l.plans.mu.Unlock()
+	if l.plans.pending == nil {
+		l.plans.pending = &p
+	}
 }
 
 // TakePlan returns the plan the last run proposed, once.

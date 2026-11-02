@@ -158,9 +158,10 @@ const (
 
 // RunsOnForQueued reports whether a run that ended this way goes on for a
 // message queued after it last looked: it completed, a wake reached its cap,
-// or a hook refused its own message, which leaves the next one to be judged.
+// a hook refused its own message, which leaves the next one to be judged, or
+// its answer could not be verified, which says nothing of the next message.
 func (r TerminalReason) RunsOnForQueued() bool {
-	return r == TermCompleted || r == TermWakeLimit || r == TermPromptRefused
+	return r == TermCompleted || r == TermWakeLimit || r == TermPromptRefused || r == TermUnverified
 }
 
 // ExitCode maps a terminal reason to a process exit code for headless runs.
@@ -182,6 +183,8 @@ func (r TerminalReason) ExitCode() int {
 		return 6
 	case TermDeadline:
 		return 7
+	case TermUnverified:
+		return 8
 	default:
 		return 1
 	}
@@ -237,6 +240,8 @@ type ActionRequested struct {
 	// Target is where the call sends what it carries, from the operator's
 	// config, such as the server a login's token goes to.
 	Target string `json:"target,omitempty"`
+	// Supervisor is the supervisor's verdict on the call, when it gave one.
+	Supervisor *SupervisorNote `json:"supervisor,omitempty"`
 }
 
 type Observation struct {
@@ -249,11 +254,16 @@ type Observation struct {
 	DurationMS int64  `json:"duration_ms"`
 	// Sandbox is the tier a command ran under ("none" on the host), when known.
 	Sandbox string `json:"sandbox,omitempty"`
+	// SandboxNote is set when bash added a note that the sandbox refused part
+	// of the command: the credential folder named, or "denied" for none.
+	SandboxNote string `json:"sandbox_note,omitempty"`
 	// NotRun marks the answer to a call the turn ended before running.
 	NotRun bool `json:"not_run,omitempty"`
 	// OutcomeUnknown marks the answer to a call that may have run on a
 	// process that stopped before recording its result; see ContinueTurn.
 	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
+	// Cwd is the folder a bash command ran in, as the tool chose it.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 type Message struct {
@@ -811,4 +821,7 @@ type MonitorVerdict struct {
 	LatencyMS   int64   `json:"latency_ms"`
 	Version     string  `json:"version,omitempty"`
 	Unavailable bool    `json:"unavailable,omitempty"`
+	// Skipped says why the judge was not asked, as when the turn's budget of
+	// judgements was spent; the decision stands as policy made it.
+	Skipped string `json:"skipped,omitempty"`
 }

@@ -11,6 +11,7 @@
 #   extract.py ide.html ide-lines     the line-by-line terminal
 #   extract.py ide.html ide-term      the agent's terminal tab
 #   extract.py ide.html ide-call      an opened call and the plan
+#   extract.py ide.html ide-plan      a proposed plan's card and its runbook
 #   extract.py ide.html ide-lsp       a language server's file URI as a workspace path
 #   extract.py ide.html ide-files     downloads, a session's title and delete, notifications
 #   extract.py ide.html ide-review    rejecting a change in the review
@@ -34,7 +35,7 @@ def grab(fn):
     return src[i:j]
 
 sets = {
-    'render': ['function node(cls, text){','function md(text){','function lastStreamedBubble(){','function wordCount(s){',
+    'render': ['function node(cls, text){','function md(text){','function drawVerdict(p){','function lastStreamedBubble(){','function wordCount(s){',
           'function setCollapsed(wrap, on){','function collapse(wrap, on){','function setPeek(wrap, content){',
           'function makeCollapsible(wrap, hdr){','function clip(s, n){','function summarize(tool, args){',
           'function shortPath(p){','function kv(k, v){','function noticeCard(p){','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function offerNext(t){','function takeNext(e){'],
@@ -104,12 +105,15 @@ sets = {
     # From ide.html: the Events and HawkEYE panels, which draw record text.
     'ide-panels': ['const el = (tag, cls, text) => {','const clear = ','const fmt = ','function visible(s, lines){','function reveal(s, lines){','function tail(p){','function subjectOf(tool, args){',
           'function logEvent(ev, p){','async function loadHawkeye(){','function drawCaps(){'],
-    'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function bubble(cls, who, text){','const byWhom = ','function answered(p, c, how){','function render(ev){','function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','function offerNext(t){','let lastUser = ','function offerEdit(){'],
+    'ide-render': ['const el = (tag, cls, text) => {','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function bubble(cls, who, text){','const byWhom = ','function answered(p, c, how){','function render(ev){','function drawVerdict(p){','function showSeq(seq){','function subagentRow(id, p, at){','function drawStop(){','function endBg(){','function drawBg(){','function offerNext(t){','let lastUser = ','function offerEdit(){'],
     # The model picker, from console.go and from ide.html.
     'model': ['function visible(s, lines){','function reveal(s, lines){','function note(text){','function switchedText(p, was){','function modelLabel(name, model){','function lastNoteText(){','async function loadProviders(){','function chosenProvider(){','function showSessionModel(id){'],
     'ide-model': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function modelLabel(name, model){','function switchedText(p, was){','function showSwitch(p){','async function loadProviders(){','const modelOf = ','function chosenProvider(){',
           'function showSessionModel(s){','async function switchModel(){'],
     # From ide.html: an opened call's arguments and output, and the plan.
+    # From ide.html: a proposed plan's card and its runbook.
+    'ide-plan': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function hasHidden(v, depth = 0){','function mdInline(parent, s){','function md(text){',
+          'function stepText(st){','function planCard(p){','function settleAsk(callID, how){'],
     'ide-call': ['const el = (tag, cls, text) => {','const clear = ','function visible(s, lines){','function reveal(s, lines){','function fillCall(c){','function clip(text){','function drawPlan(items){'],
     # From ide.html: the agent's read-only terminal tab.
     'ide-term': ['function visible(s, lines){','function reveal(s, lines){','function logTerminal(cmd, p, who){'],

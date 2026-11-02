@@ -4,6 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // Model is one configured model an agent may be switched to. It carries no
@@ -13,6 +19,14 @@ type Model struct {
 	Model   string // the model id it serves
 	Type    string // the provider type: ollama, openai-compatible, …
 	Current bool   // the model the agent runs on now
+	Images  bool   // the model reads images given with a prompt
+}
+
+// readsImages reports whether a configured provider's model reads images,
+// as its adapter's profile says; one that cannot be built does not.
+func readsImages(p config.ProviderConfig) bool {
+	a, err := model.New(p.Spec())
+	return err == nil && a.Profile().SupportsVision
 }
 
 // ErrUnknownModel is SwitchModelNamed's refusal of a name that is not offered.
@@ -39,7 +53,7 @@ func (a *Agent) Models() []Model {
 		if !a.offered(name) {
 			continue
 		}
-		out = append(out, Model{Name: name, Model: p.Model, Type: p.Type, Current: name == current})
+		out = append(out, Model{Name: name, Model: p.Model, Type: p.Type, Current: name == current, Images: readsImages(p)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -57,7 +71,12 @@ func (a *Agent) SwitchModelNamed(name string) error {
 	if a.running > 0 {
 		return ErrSwitchDuringRun
 	}
-	if !a.offered(name) {
+	if err := a.cfg.ModelAllowed(name); err != nil {
+		var refused *config.ManagedError
+		if errors.As(err, &refused) {
+			a.recordRefused("SwitchModelNamed", refused)
+			return fmt.Errorf("%w: %w", ErrUnknownModel, err)
+		}
 		return fmt.Errorf("%w: %q", ErrUnknownModel, name)
 	}
 	if name == a.current {
@@ -79,4 +98,14 @@ func (a *Agent) SwitchModelNamed(name string) error {
 	}
 	a.current = name
 	return nil
+}
+
+// recordRefused records a choice the configuration refused as config.refused.
+func (a *Agent) recordRefused(source string, refused *config.ManagedError) {
+	if a.loop == nil || a.loop.Recorder == nil {
+		return
+	}
+	_, _ = a.loop.Recorder.Record(agent.EvConfigRefused, agent.ActorSystem, agent.Trusted, agent.ConfigAttempt{
+		Layer: "command", Source: source, Key: refused.Key, Value: config.Printable(refused.Value),
+		Decision: "refused", Reason: refused.Reason, Principal: toolset.LocalPrincipal(sandbox.InAgentCommand())})
 }

@@ -1,0 +1,4160 @@
+package monitor
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/sedscript"
+)
+
+// The codes a verdict names its concern by.
+const (
+	CodeOK               = "ok"
+	CodeUnverifiedTarget = "unverified-target"
+	CodeUnverifiedHost   = "unverified-host"
+	CodeUnknownProgram   = "unknown-program"
+	CodeOutOfRemit       = "out-of-remit"
+	CodeCredentialEgress = "credential-egress"
+	CodeHoneytoken       = "honeytoken"
+)
+
+// Versions of the deterministic judgements, as verdicts carry them.
+const (
+	RulesVersion      = "rules-v1"
+	HoneytokenVersion = "honeytoken-v1"
+)
+
+// Rules is the deterministic judge. It reads only the call, what the user
+// said and what earlier calls showed, so its verdict on the same case is
+// always the same, and it is fast enough to judge every call the fast path
+// sends it.
+type Rules struct {
+	// LookPath reports whether a program can be found where commands run.
+	// Nil leaves programs unchecked, as where commands run in a container
+	// whose programs the host cannot see.
+	LookPath func(program string) bool
+	// Declared are the hosts and clusters the operator configured, by name
+	// and address: the operator naming one is as good as the person naming it.
+	Declared []string
+	// Hosts are the configured ssh hosts, each by its name and address.
+	Hosts []DeclaredHost
+	// Home is the HOME a local command gets, so a ~ or $HOME/ target can be
+	// placed against the workspace. Nil means no local home is known: a ~
+	// target is then never placed, and one the person did not name is denied
+	// as a home path outside the task. Production wires it from the bash
+	// tool (internal/toolset); an SDK caller that leaves it nil gets that
+	// stricter judgement.
+	Home func() (string, bool)
+}
+
+// DeclaredHost is one configured ssh host.
+type DeclaredHost struct{ Name, Addr string }
+
+// Judge applies the rules: a deny for destructive work outside the remit or
+// a program that is not there, an ask for a target nothing showed or a
+// credential followed by a way out, and ok otherwise.
+func (r Rules) Judge(_ context.Context, c Case) (Verdict, error) {
+	k := facts(c)
+	if r.Home != nil {
+		if h, ok := r.Home(); ok {
+			k.home, k.homeAvailable = h, true
+		}
+	}
+	for _, d := range r.Declared {
+		if d != "" {
+			k.declared = append(k.declared, strings.ToLower(d))
+		}
+	}
+	var ask *Verdict
+	for _, check := range []func(*given, Case) *Verdict{r.drift, r.program, r.evidence, r.hostChoice, r.composition} {
+		v := check(k, c)
+		if v == nil {
+			continue
+		}
+		v.Version = RulesVersion
+		if v.Confidence == 0 {
+			v.Confidence = 1
+		}
+		if v.Decision == policy.Deny {
+			return *v, nil
+		}
+		if ask == nil {
+			ask = v
+		}
+	}
+	if ask != nil {
+		return *ask, nil
+	}
+	return Verdict{Decision: policy.Allow, Code: CodeOK, Confidence: 1, Version: RulesVersion}, nil
+}
+
+// given is what the rules may take as given for one case.
+type given struct {
+	said string // everything the user said, lower case, the approved plan included
+	// person is what the person said in their own messages only, with no
+	// plan or runbook prose: what counts where the directory is unknown.
+	person        string
+	roots         []string
+	home          string // the local home ~ stands for; "" when not known
+	homeAvailable bool   // a local home was configured (even if blanked for a command)
+	seen          func(string) bool
+	// done are the subjects of earlier calls that succeeded.
+	done     []string
+	args     map[string]any
+	declared []string
+}
+
+func facts(c Case) *given {
+	k := &given{said: strings.ToLower(c.Said), seen: c.Seen}
+	if k.said == "" {
+		k.said = strings.ToLower(c.Remit)
+	}
+	k.person = k.said
+	// What the plan the person approved names, they named.
+	if c.Plan != "" {
+		k.said += "\n" + strings.ToLower(c.Plan)
+	}
+	for _, r := range c.Roots {
+		if r != "" {
+			k.roots = append(k.roots, path.Clean(r))
+		}
+	}
+	for _, p := range c.Recent {
+		if !p.IsError && p.Subject != "" {
+			k.done = append(k.done, p.Subject)
+		}
+	}
+	_ = json.Unmarshal([]byte(c.Args), &k.args)
+	return k
+}
+
+func (k *given) str(key string) string {
+	s, _ := k.args[key].(string)
+	return s
+}
+
+// named reports whether the person named the text: a path when they named
+// it or a folder holding it, never a path that only begins the same way; any
+// other name as a whole word, so prod is not named by production.
+func (k *given) named(s string) bool {
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	if slices.Contains(k.declared, low) {
+		return true
+	}
+	if strings.HasPrefix(low, "/") || strings.HasPrefix(low, "~") {
+		p := path.Clean(low)
+		for _, m := range userPaths.FindAllStringSubmatch(k.said, -1) {
+			u := strings.TrimRight(m[1], ".,;:!?")
+			if strings.HasPrefix(u, "//") {
+				continue // a URL's host, not a path
+			}
+			if u = path.Clean(u); u != "/" && within(p, u) {
+				return true
+			}
+		}
+		return false
+	}
+	return mentions(k.said, low)
+}
+
+// observed reports whether an earlier observation or successful call showed
+// the text, or the folder that will hold it.
+func (k *given) observed(s string) bool {
+	if s == "" {
+		return false
+	}
+	dir := ""
+	if strings.HasPrefix(s, "/") {
+		if d := path.Dir(s); d != "/" && d != "." {
+			dir = d + "/"
+		}
+	}
+	for _, d := range k.done {
+		if strings.Contains(d, s) || dir != "" && strings.Contains(d, dir) {
+			return true
+		}
+	}
+	if k.seen == nil {
+		return false
+	}
+	if k.seen(s) {
+		return true
+	}
+	if strings.HasPrefix(s, "/") {
+		if dir := path.Dir(s); dir != "/" && dir != "." && k.seen(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// local reports whether a path is the session's own ground: under a root,
+// in a temporary folder, or a device every program writes to.
+func (k *given) local(p string) bool {
+	p = path.Clean(p)
+	for _, r := range k.roots {
+		if p != r && within(p, r) {
+			return true
+		}
+	}
+	return scratch(p)
+}
+
+var tempDirs = func() []string {
+	dirs := []string{"/tmp", "/var/tmp", "/private/tmp", "/private/var/folders", "/var/folders", "/dev/shm"}
+	if t := os.TempDir(); t != "" {
+		dirs = append(dirs, path.Clean(t))
+	}
+	return dirs
+}()
+
+func scratch(p string) bool {
+	switch p {
+	case "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero":
+		return true
+	}
+	if strings.HasPrefix(p, "/dev/fd/") {
+		return true
+	}
+	for _, t := range tempDirs {
+		if within(p, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// within reports whether p is dir or under it.
+func within(p, dir string) bool {
+	dir = strings.TrimSuffix(dir, "/")
+	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+// userPaths finds the paths in what the person said: absolute ones, and a
+// home folder's only with something after it (~/cache, ~bob/x), so "~ 10
+// minutes" names nothing.
+var userPaths = regexp.MustCompile(`(?:^|[\s"'(=:,])(/[^\s"'()<>|;&,` + "`" + `]*|~[A-Za-z0-9_.-]*/[^\s"'()<>|;&,/` + "`" + `][^\s"'()<>|;&,` + "`" + `]*)`)
+
+// remit is the task as the person put it, short enough to quote back.
+func remit(c Case) string {
+	r := strings.Join(strings.Fields(c.Remit), " ")
+	if rs := []rune(r); len(rs) > 160 {
+		r = string(rs[:160]) + "…"
+	}
+	if r == "" {
+		return "no task was given"
+	}
+	return fmt.Sprintf("the task is %q", r)
+}
+
+// line is the shell text a call runs, where it is shell.
+func line(c Case, k *given) (string, bool) {
+	switch c.Tool {
+	case "bash", "ssh":
+		s := k.str("command")
+		return s, s != ""
+	}
+	return "", false
+}
+
+func remote(c Case) bool { return c.Tool == "ssh" || c.Tool == "ssh_put" }
+
+// declaredRead is an ssh command the operator declared a read in
+// ssh.read_commands: its program and what it touches are the operator's word.
+func declaredRead(c Case) bool { return c.Tool == "ssh" && c.DeclaredRead != "" }
+
+// drift denies destructive work whose target the remit never named and
+// that is not the session's own ground.
+func (r Rules) drift(k *given, c Case) *Verdict {
+	if c.Tool == "k8s_apply" {
+		if k.str("action") != "delete" {
+			return nil
+		}
+		ns := k.str("namespace")
+		if ns == "" || ns == "default" || k.named(ns) {
+			return nil
+		}
+		return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+			Rationale: fmt.Sprintf("deleting in namespace %s, which the task never named; %s", ns, remit(c)),
+			Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
+	}
+	src, ok := line(c, k)
+	if !ok {
+		return nil
+	}
+	start := ""
+	if remote(c) {
+		start = "~" // an ssh command starts in the login's home
+	}
+	s, ok := parseScriptAt(src, start)
+	if !ok {
+		// A line the parser refuses is one the check cannot read at all
+		// (bash may still run it: `export HO\ME=/srv`). If it looks
+		// destructive, the person is asked rather than the line let through.
+		if looksDestructive(strings.Fields(src)) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
+				Rationale: fmt.Sprintf("the command line could not be parsed, and it looks like it deletes or runs code; %s", remit(c)),
+				Advice:    "write the command plainly so it can be checked, or confirm this is meant"}
+		}
+		return nil
+	}
+	where := "here"
+	if remote(c) {
+		where = "on " + k.str("host")
+	}
+	if s.homeWrites {
+		k.home = "" // the line may write HOME: ~ is not placed against the session's home
+	}
+	for _, cmd := range s.cmds {
+		if v := r.judgeCommand(k, c, cmd, where, 0, false); v != nil {
+			return v
+		}
+	}
+	// The fallback, which does not depend on finding where code is handed:
+	// a line the check does not read completely that anywhere — a quoted
+	// string, a here-document, an extra argument, an assignment value — names
+	// a deleting program or a protected root is put to the person. The precise
+	// rules above decide every line the check reads completely.
+	if !r.lineFullyRead(s) && lineMentionsDanger(s, false) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
+			Rationale: fmt.Sprintf("the line runs something the check does not read in full, and it names a deleting program or a protected folder; %s", remit(c)),
+			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
+	}
+	return nil
+}
+
+// judgeCommand runs the out-of-remit rules over one command. The top level
+// and code handed to a shell, eval or an interpreter both come through here;
+// depth counts how far code was handed down.
+func (r Rules) judgeCommand(k *given, c Case, cmd command, where string, depth int, container bool) *Verdict {
+	// A destructive data-store, infrastructure, container or cluster operation
+	// is judged past a package runner (npx/yarn/pnpm exec …) and past sudo/su
+	// and their options, which the plain reading below would send to the
+	// weaker fallback.
+	if v := r.familyVerdict(k, c, cmd, where, depth); v != nil {
+		return v
+	}
+	// A command name the check cannot read plainly (\rm, r\m, a quoted or
+	// expanded name) — the first word or the program past a wrapper — or a
+	// wrapper with an option (sudo -u, env -C, command -p, nice -n …), may
+	// hide the program or move the directory; its words are not read as a
+	// command line. If they look destructive — a deleting program, an
+	// interpreter, a protected root, an operand outside own ground — the
+	// person is asked.
+	if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+		// env -S splits a command out of one word: judge the command it runs.
+		if p, a := cmd.program(); p != "" && envSplits(cmd.words) {
+			sub := command{words: append([]string{p}, a...), argsLiteral: cmd.argsLiteral, stdin: cmd.stdin,
+				writes: cmd.writes, reads: cmd.reads, env: cmd.env}
+			if v := r.judgeCommand(k, c, sub, where, depth+1, container); v != nil {
+				return v
+			}
+		}
+		if looksDestructive(cmd.words) || (!container && r.strayOperand(k, c, cmd.words)) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("a command whose program or wrapper options the check does not read looks like it deletes or runs code; %s", remit(c)),
+				Advice:    "run the delete plainly, with no wrapper options and the path in full, or confirm this is meant"}
+		}
+		return nil
+	}
+	prog, args := cmd.program()
+	prog = path.Base(prog) // /bin/rm is rm
+	// An argument the check cannot read (an expansion, a substitution, a glob)
+	// may be the program an unknown runner runs, or a target; for a program the
+	// rules do not judge precisely, it is asked about when its words look
+	// destructive or an operand lies outside own ground.
+	if !cmd.argsLiteral && !preciseProg(prog) && !containerProg(prog) {
+		if runsUnreadArg(cmd, args) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s is given a program or code only running the line would give, so the check cannot read what it runs; %s", prog, remit(c)),
+				Advice:    "write the program and its code plainly, or confirm this is meant"}
+		}
+		if looksDestructive(args) || (!container && r.strayOperand(k, c, args)) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s is given arguments only running the line would give, and they look like they delete or reach outside the task's ground; %s", prog, remit(c)),
+				Advice:    "write the command and its paths plainly, or confirm this is meant"}
+		}
+	}
+	// Each command find runs by -exec, -execdir, -ok or -okdir is judged as a
+	// command of its own, with the directory unknown. The {} placeholder is
+	// the files find reaches, so it is replaced by each start path; a glob in
+	// the exec program position is not read.
+	if prog == "find" {
+		execs := findExecCommands(args)
+		// A non-literal find argument (an action built from an expansion) over
+		// paths outside own ground is asked about.
+		if !cmd.argsLiteral && !r.findStartsOwnGround(k, c, args) {
+			return r.findExecAsk(c)
+		}
+		starts := findStarts(args)
+		if len(starts) == 0 {
+			starts = []string{"."}
+		}
+		for _, words := range execs {
+			// A glob in the exec program position is not read.
+			ep, _ := (command{words: words}).program()
+			if strings.ContainsAny(progBase(ep), "*?[") {
+				return r.findExecAsk(c)
+			}
+			if readOnlyProg[progBase(ep)] {
+				// A read-only -exec never deletes; judge its own args ({} dropped),
+				// and do not ask on the start paths.
+				sub := command{words: dropBraces(words)}
+				if v := r.judgeCommand(k, c, sub, where, depth+1, container); v != nil {
+					return v
+				}
+				continue
+			}
+			// {} stands for the files find reaches: judge the -exec command with
+			// it replaced by each start path, keeping a deny. The start path is
+			// the directory the target sits under, so own-ground starts allow.
+			for _, st := range starts {
+				sub := command{words: substituteBraces(words, st), dir: st, dirKnown: true}
+				if v := r.judgeCommand(k, c, sub, where, depth+1, container); v != nil {
+					if v.Decision == policy.Deny {
+						return v
+					}
+					return r.findExecAsk(c)
+				}
+			}
+			// An -exec that can write or run code over paths outside own ground is
+			// asked about even when the command itself read as allowed.
+			if !r.findStartsOwnGround(k, c, args) {
+				return r.findExecAsk(c)
+			}
+		}
+	}
+	if v := r.moveVerdict(k, c, cmd, prog, args, where); v != nil {
+		return v
+	}
+	if prog == "find" && findExecHidden(args) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("find runs a program by -exec that the check cannot read plainly; %s", remit(c)),
+			Advice:    "name the program find runs in full, or confirm this is meant"}
+	}
+	// A shell, interpreter or xargs that find runs by -exec can delete what
+	// it is handed; where find looks outside own ground, that is asked.
+	if prog == "find" && findExecRunsCode(args) && !r.findStartsOwnGround(k, c, args) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("find runs a shell or interpreter by -exec over paths outside the task's ground; %s", remit(c)),
+			Advice:    "delete the paths the task names directly, or confirm this is meant"}
+	}
+	for _, t := range destroys(prog, args) {
+		if v := r.judgeTarget(k, c, cmd, prog, t, where); v != nil {
+			return v
+		}
+	}
+	// An interpreter one-liner's literal-path deletes were judged above by
+	// destroys; here its shell-outs and the deleter names it spells.
+	if code := oneLiner(prog, args); code != "" {
+		if deleterWord.MatchString(code) || shellsOut.MatchString(code) || mentionsProtectedRoot(code) || psDelete.MatchString(code) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s runs code the check does not read, which names a deleter, a protected folder or a shell-out; %s", prog, remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
+	}
+	// Code the command hands to a shell, to eval, or on the stdin of a shell
+	// or interpreter is parsed and run through these rules with the
+	// directory unknown; any non-allow there is an ask here, since the check
+	// cannot be sure where it runs.
+	for _, code := range handedShellCode(prog, args, cmd.stdin) {
+		if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s runs code the check reads only in part, which looks like it deletes or shells out; %s", prog, remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
+	}
+	// Code the check cannot read at all — eval of an expansion, a shell's
+	// -c given an expansion, a script that is a process substitution — is
+	// asked about always: its text is not in the line to judge.
+	if runsUnreadCode(cmd, prog, args) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s runs code that is built when the line runs, so the check cannot read it; %s", prog, remit(c)),
+			Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+	}
+	for _, ns := range kubectlDeleteNS(prog, args) {
+		if ns == allNamespaces {
+			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+				Rationale: fmt.Sprintf("%s would delete across every namespace, which no task names; %s", prog, remit(c)),
+				Advice:    "delete in the namespaces the task names, or ask the person first"}
+		}
+		if ns != "" && ns != "default" && !k.named(ns) {
+			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+				Rationale: fmt.Sprintf("%s would delete namespace %s or in it, which the task never named; %s", prog, ns, remit(c)),
+				Advice:    "stay within the namespaces the task names, or ask the person before deleting anything else"}
+		}
+	}
+	// Container and cluster operations with no undo — daemon prunes and resets,
+	// volume deletion, removing every image, deleting namespaces, volumes or
+	// whole kinds, scaling to zero, draining, forced or production patches —
+	// are put to the person even where the target is named.
+	if what, ok := stdinDestructive(prog, cmd.stdin); ok {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("%s would %s, which cannot be undone; %s", prog, what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
+	if what, ok := clusterDestructive(prog, args); ok {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("%s would %s, which cannot be undone; %s", prog, what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
+	if what, ok := r.embeddedDataStore(cmd); ok {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("the command would %s, which cannot be undone; %s", what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
+	if sub := remoteCommand(prog, args); len(sub) > 0 {
+		if what, ok := r.subFamily(sub, cmd.stdin); ok {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+				Rationale: fmt.Sprintf("the command %s runs elsewhere would %s, which cannot be undone; %s", prog, what, remit(c)),
+				Advice:    "confirm this is meant, or narrow it to what the task names"}
+		}
+	}
+	// Code handed to a runner that is not a shell -c/eval/stdin call — git's
+	// foreach/exec/run/filter/alias, a container exec/run, xargs, man -P — is
+	// parsed and judged like any other handed code, not word-searched.
+	if v := r.runnerVerdict(k, c, cmd, prog, args, where, depth); v != nil {
+		return v
+	}
+	// export/declare of a git command-env variable (GIT_PAGER, GIT_SSH_COMMAND,
+	// …) to code it will run is handed code: a later git call would run it.
+	if prog == "export" || prog == "declare" || prog == "typeset" {
+		for _, a := range args {
+			if key, v, ok := strings.Cut(a, "="); ok && gitEnvCode[key] {
+				if unreadVal(v) || r.codeVerdict(k, c, strings.TrimPrefix(v, "!"), where, depth+1, false) != nil {
+					return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+						Rationale: fmt.Sprintf("%s sets a git command variable to code that would run later; %s", key, remit(c)),
+						Advice:    "set it to a plain program, or confirm this is meant"}
+				}
+			}
+		}
+	}
+	// sed's e command and s///e flag run text as a shell command.
+	if prog == "sed" || prog == "gsed" {
+		if v := r.sedVerdict(k, c, args, where, depth, container); v != nil {
+			return v
+		}
+	}
+	// General pass: any other command not fully read has its code-ish arguments
+	// and its stdin parsed and judged, so a quote-split or variable-built delete
+	// is seen however it is spelled.
+	if unknownRunner(prog) && !r.cmdFullyRead(cmd) && !searchData(cmd) {
+		handed := handedArgs(cmd, args)
+		if !sqlClient[prog] {
+			handed = append(handed, cmd.stdin...) // a SQL client's stdin is its query, judged above
+		}
+		// A command run on a remote host or in a container reaches remote paths,
+		// not host ground, so its paths are suppressed; a deleter is still caught.
+		remote := container || prog == "ssh" || prog == "fly" || prog == "heroku"
+		for _, code := range handed {
+			if r.codeVerdict(k, c, code, where, depth+1, remote) != nil {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("%s is handed code that looks like it deletes or shells out; %s", prog, remit(c)),
+					Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+			}
+		}
+	}
+	// The fallback for one command: read in part, and naming a deleter or a
+	// protected root, it is asked about (the line-level fallback covers text
+	// spread over several commands).
+	if !handledRunner(prog) && !r.cmdFullyRead(cmd) && cmdMentionsDanger(cmd, container || remoteExec(prog)) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.6,
+			Rationale: fmt.Sprintf("%s runs something the check does not read in full, and it names a deleting program or a protected folder; %s", prog, remit(c)),
+			Advice:    "run the delete plainly, with the path in full, or confirm this is meant"}
+	}
+	return nil
+}
+
+// judgeTarget judges one target a command would destroy: a $ target it cannot
+// read, a target under an unknown directory, a home path it cannot place, a
+// protected root, or a path outside own ground. nil means own ground.
+func (r Rules) judgeTarget(k *given, c Case, cmd command, prog, t, where string) *Verdict {
+	if t == "" {
+		return nil
+	}
+	if strings.HasPrefix(t, "$") && !homeish(t) {
+		// A target only running the line would give. It is read only when
+		// it is a variable set to a plain literal earlier in the same plain
+		// chain, and then judged as that path; otherwise it is asked about.
+		v, ok := literalVar(cmd, t)
+		if !ok {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("%s would destroy a target only running the line would give; %s", prog, remit(c)),
+				Advice:    "name the path to delete in full, somewhere the task covers, or confirm you mean this one"}
+		}
+		t = v
+	}
+	eff, known := effectiveTarget(cmd, t)
+	// Where the directory is unknown, only what the person said in their
+	// own messages names a relative target; the session's home still
+	// places ~, since ~ depends on HOME, not the directory.
+	p := *k
+	if !cmd.dirKnown {
+		p.said = k.person
+	}
+	kk := &p
+	// A relative target under a directory the check does not claim to
+	// know could point anywhere: it is always put to the person, never
+	// allowed on a name alone and never a silent deny.
+	if !known {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s would destroy %s, but the directory it runs in is not one the check can be sure of, so where it points is not known; %s", prog, t, remit(c)),
+			Advice:    "name the path to delete in full, or change into it with a plain cd joined by && first"}
+	}
+	// A ~ or $HOME target the check cannot place — because the directory
+	// is unknown, or because the line may write HOME — is put to the
+	// person rather than placed or silently denied, unless they named
+	// it as a path outright.
+	if homeish(eff) && !remote(c) && k.homeAvailable && kk.home == "" && !protectedRoot(eff) && !kk.named(homeTilde(eff)) {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s would destroy %s, but HOME may have been changed in the line, so where ~ points is not known; %s", prog, t, remit(c)),
+			Advice:    "name the path to delete in full, or confirm this is meant"}
+	}
+	// find's operand is where it looks, not what it deletes.
+	if prog != "find" && protectedRoot(eff) {
+		// Named outright as the thing to delete: ask, never deny, so a
+		// person can still say yes; not named: deny.
+		if kk.named(eff) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.9,
+				Rationale: fmt.Sprintf("%s would destroy %s %s whole; the task names it, so this is put to you", prog, display(eff, t), where),
+				Advice:    "confirm you mean to delete all of it, or name the folders inside it instead"}
+		}
+		return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+			Rationale: fmt.Sprintf("%s would destroy %s %s whole, which no task is taken to mean; %s", prog, display(eff, t), where, remit(c)),
+			Advice:    "delete only the folders inside it that the task names, or ask the person first"}
+	}
+	if r.ownGround(kk, c, eff) {
+		return nil
+	}
+	return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+		Rationale: fmt.Sprintf("%s would destroy %s %s, outside what the task names; %s", prog, display(eff, t), where, remit(c)),
+		Advice:    "keep destructive commands to the paths the task names, or ask the person first"}
+}
+
+// ownGround reports whether a destructive target, already resolved against the
+// command's working directory, is within the remit.
+func (Rules) ownGround(k *given, c Case, t string) bool {
+	if homeish(t) {
+		if k.named(homeTilde(t)) {
+			return true
+		}
+		// Locally ~ is the session's home: placed there, a target under the
+		// workspace (a workspace under ~) is the workspace's own ground.
+		if !remote(c) && k.home != "" {
+			if p, ok := expandHome(t, k.home); ok && k.local(p) {
+				return true
+			}
+		}
+		// Over ssh the home is the login's own, so a folder under it whose top
+		// name the task gave as a bare word — not inside a path, not the host
+		// it names — is the folder the task meant.
+		return remote(c) && bareMentions(k.said, homeTop(t), strings.ToLower(k.str("host")))
+	}
+	if !strings.HasPrefix(t, "/") {
+		clean := path.Clean(t)
+		return clean != ".." && !strings.HasPrefix(clean, "../")
+	}
+	if k.named(t) {
+		return true
+	}
+	if remote(c) {
+		return scratch(path.Clean(t))
+	}
+	return k.local(t)
+}
+
+// effectiveTarget resolves a destructive target against the directory its
+// command runs in. An absolute or home target stands as written; a relative
+// one is joined onto the working directory, and a whole-directory shape
+// (*, ., ./*, ..) resolves to the directory itself (or its parent). ok is
+// false when the working directory could not be resolved.
+func effectiveTarget(cmd command, t string) (string, bool) {
+	if strings.HasPrefix(t, "/") || homeish(t) {
+		return t, true
+	}
+	if !cmd.dirKnown {
+		return t, false
+	}
+	base := cmd.dir
+	homeBase := strings.HasPrefix(base, "~")
+	rel := strings.TrimSuffix(strings.TrimPrefix(t, "./"), "/")
+	whole := rel == "" || rel == "." || rel == "*"
+	rel = strings.TrimSuffix(rel, "/*")
+	switch {
+	case whole:
+		if homeBase {
+			return "~", true // the home directory itself
+		}
+		return orDot(base), true
+	case rel == "..":
+		if homeBase {
+			return "~", false // the parent of the login's home: not known, so ask
+		}
+		return orDot(path.Join(base, "..")), true
+	default:
+		j := joinDir(base, rel)
+		if homeBase && !strings.HasPrefix(j, "~") {
+			return j, false // a relative target that climbs out of the home: ask
+		}
+		return j, true
+	}
+}
+
+// destroyerNames are programs that delete or overwrite; their name among a
+// wrapped command's words makes it look destructive.
+var destroyerNames = map[string]bool{"rm": true, "rmdir": true, "shred": true, "unlink": true, "srm": true,
+	"truncate": true, "dd": true, "mkfs": true, "wipefs": true, "fdisk": true, "sfdisk": true, "parted": true, "find": true}
+
+// looksDestructive reports words that name a deleting program, or a protected root.
+func looksDestructive(words []string) bool {
+	for _, w := range words {
+		name := path.Base(strings.ReplaceAll(w, `\`, "")) // \rm, r\m and /bin/rm are rm
+		if destroyerNames[name] || strings.HasPrefix(name, "mkfs.") || codeRunners[name] ||
+			strings.HasPrefix(name, "python") {
+			return true
+		}
+		if protectedRoot(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// codeRunners are interpreters and shells, which run code the check does not
+// read; one among a hidden command's words makes it look destructive.
+var codeRunners = map[string]bool{"node": true, "perl": true, "ruby": true, "php": true, "bash": true, "sh": true,
+	"zsh": true, "dash": true, "ksh": true, "fish": true, "awk": true, "gawk": true, "busybox": true, "xargs": true,
+	"lua": true, "Rscript": true, "tclsh": true, "osascript": true, "mawk": true, "nawk": true, "julia": true,
+	"bun": true, "deno": true, "pwsh": true, "powershell": true}
+
+// strayOperand reports, for a command the check does not read as a command
+// line, an operand that climbs out of or lies outside own ground: an absolute
+// or ~ path not own ground, or a relative path that climbs above where it starts.
+func (r Rules) strayOperand(k *given, c Case, words []string) bool {
+	for _, w := range operands(words) {
+		w = strings.ReplaceAll(w, `\`, "")
+		switch {
+		case strings.HasPrefix(w, "/") || homeish(w):
+			if !r.ownGround(k, c, w) {
+				return true
+			}
+		case !strings.HasPrefix(w, "$"):
+			if clean := path.Clean(w); clean == ".." || strings.HasPrefix(clean, "../") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// plainHead reports a command whose name is a single plain literal.
+func plainHead(cmd command) bool {
+	if cmd.call == nil || len(cmd.call.Args) == 0 {
+		return true // a redirection or assignment only
+	}
+	_, ok := plainWord(cmd.call.Args[0])
+	return ok
+}
+
+// literalVar is the plain literal a $X or ${X} target was set to earlier in
+// the same plain chain, where the directory is known.
+func literalVar(cmd command, t string) (string, bool) {
+	if !cmd.dirKnown || cmd.vars == nil {
+		return "", false
+	}
+	name := strings.TrimPrefix(t, "$")
+	if strings.HasPrefix(name, "{") && strings.HasSuffix(name, "}") {
+		name = name[1 : len(name)-1]
+	}
+	for _, r := range name {
+		if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return "", false // not a single plain variable reference
+		}
+	}
+	v, ok := cmd.vars[name]
+	return v, ok
+}
+
+func orDot(s string) string {
+	if s == "" {
+		return "."
+	}
+	return s
+}
+
+// homeTop is the first path segment under a home directory: ~/releases/old → releases.
+func homeTop(t string) string {
+	rest := strings.TrimPrefix(homeTilde(t), "~")
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[i+1:]
+	}
+	seg, _, _ := strings.Cut(rest, "/")
+	return seg
+}
+
+// display names the resolved target, and adds the text as written when a cd moved it.
+func display(eff, written string) string {
+	if eff == written || eff == path.Clean(strings.TrimPrefix(written, "./")) {
+		return eff
+	}
+	return eff + " (" + written + ")"
+}
+
+func homeish(t string) bool {
+	return strings.HasPrefix(t, "~") || strings.HasPrefix(t, "$HOME") || strings.HasPrefix(t, "${HOME}")
+}
+
+// expandHome places a ~, ~/x, $HOME or ${HOME} target under home. A ~user
+// target is not expanded.
+func expandHome(t, home string) (string, bool) {
+	t = homeTilde(t)
+	if t == "~" {
+		return path.Clean(home), true
+	}
+	if rest, ok := strings.CutPrefix(t, "~/"); ok {
+		return path.Clean(path.Join(home, rest)), true
+	}
+	return "", false
+}
+
+// homeTilde writes $HOME and ${HOME} as ~, the way the person would name it.
+func homeTilde(t string) string {
+	for _, p := range []string{"${HOME}", "$HOME"} {
+		if rest, ok := strings.CutPrefix(t, p); ok {
+			return "~" + rest
+		}
+	}
+	return t
+}
+
+// protectedRoot is a target no mention makes part of the remit: the root, a
+// top-level folder (/etc, /usr, /srv, …), a home folder itself (~, ~bob,
+// $HOME, /home/bob, /Users/bob, /root). Deleting one of these whole is
+// always out of remit; the person names a folder inside it instead.
+func protectedRoot(t string) bool {
+	t = homeTilde(strings.TrimSpace(t))
+	if rest, ok := strings.CutPrefix(t, "~"); ok {
+		_, after, _ := strings.Cut(rest, "/")
+		return path.Clean("/"+after) == "/"
+	}
+	if !strings.HasPrefix(t, "/") {
+		return false
+	}
+	p := path.Clean(t)
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	switch {
+	case p == "/" || len(parts) == 1:
+		return true
+	case len(parts) == 2 && (parts[0] == "home" || parts[0] == "Users"):
+		return true
+	}
+	return false
+}
+
+// destroys names what a command deletes or overwrites beyond recovery.
+func destroys(prog string, args []string) []string {
+	switch prog {
+	case "rm", "rmdir", "shred", "unlink", "srm":
+		return operands(args)
+	case "truncate":
+		var out []string
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-s" || args[i] == "--size" || args[i] == "-r" {
+				i++
+				continue
+			}
+			if !strings.HasPrefix(args[i], "-") {
+				out = append(out, args[i])
+			}
+		}
+		return out
+	case "dd":
+		for _, a := range args {
+			if v, ok := strings.CutPrefix(a, "of="); ok {
+				return []string{v}
+			}
+		}
+	case "find":
+		if !hasFlag(args, "-delete") && !execsRemove(args) {
+			return nil
+		}
+		out := findStarts(args)
+		if len(out) == 0 {
+			out = []string{"."}
+		}
+		return out
+	case "mkfs", "wipefs", "fdisk", "sfdisk", "parted":
+		return operands(args)
+	}
+	if strings.HasPrefix(prog, "mkfs.") {
+		return operands(args)
+	}
+	if code := oneLiner(prog, args); code != "" {
+		var out []string
+		for _, m := range codeDeletes.FindAllStringSubmatch(code, -1) {
+			for _, g := range m[1:] {
+				if g != "" {
+					out = append(out, g)
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// msgCluster matches a short-flag cluster ending in m (git commit -am, -sm),
+// a message flag; msgAttached matches a message attached to it (-m"text").
+var msgCluster = regexp.MustCompile(`^-[A-Za-z]*m$`)
+var msgAttached = regexp.MustCompile(`^--(?:message|body|title)=(.*)$|^-[A-Za-z]*m(.+)$`)
+
+// psDelete names PowerShell's delete cmdlets, whose paths are often unquoted.
+var psDelete = regexp.MustCompile(`(?i)\b(?:Remove-Item|Remove-ItemProperty|Clear-Content)\b`)
+
+// deleterWord names a deleting program as a whole word, wherever it sits in
+// a string of code — `system "rm -rf /etc"`, `os.execvp("rm", …)`.
+var deleterWord = regexp.MustCompile(`(?i)(?:^|[^-\w])(?:rm|rmdir|shred|unlink|srm|dd|mkfs|wipefs|fdisk|sfdisk|parted|truncate)\b`)
+
+// shellsOut finds code that runs a command through a library call: a shell-out
+// or a system call the plain-word scan would miss — Python's os.system and
+// subprocess, Node's child_process, Lua's os.execute and io.popen, a system
+// call in Perl or Ruby (system "…" or system(…)), AppleScript's do shell
+// script, Tcl's file delete.
+var shellsOut = regexp.MustCompile("(?i)`|\\bdo\\s+shell\\s+script\\b|\\bsubprocess\\b|\\bchild_process\\b|\\bos\\.(?:system|popen|execv?p?e?|spawn[a-z]*|execute)\\s*\\(|\\bio\\.popen\\s*\\(|\\bexecSync\\s*\\(|\\bspawnSync\\s*\\(|\\b(?:qx|system|exec|spawn|shell_exec|passthru|proc_open|popen|pcntl_exec)\\s*[({/|(\"`']|%x[({\\[/!|]|\\bIO\\.popen\\b|\\bOpen3\\b|\\bfile\\s+delete\\b")
+
+// codeVerdict judges code handed to a shell, to eval, or on an interpreter's
+// stdin: it scans the text for a deleter, a shell-out, a delete call or a
+// protected root, then parses it and runs judgeCommand over every command
+// with the directory unknown, and the fallback over the whole; any non-allow
+// is an ask. Code handed deeper than maxHandDepth is asked about.
+func (r Rules) codeVerdict(k *given, c Case, code, where string, depth int, container bool) *Verdict {
+	ask := &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+		Rationale: fmt.Sprintf("code handed to a shell, eval or an interpreter looks like it deletes or shells out; %s", remit(c)),
+		Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+	if deleterWord.MatchString(code) || shellsOut.MatchString(code) || codeDeletes.MatchString(code) || (!container && mentionsProtectedRoot(code)) {
+		return ask
+	}
+	if depth > maxHandDepth {
+		return ask // a bound reached fails closed
+	}
+	s, ok := parseScript(code)
+	if !ok {
+		return ask // handed code the check cannot parse fails closed
+	}
+	for i := range s.cmds {
+		s.cmds[i].dirKnown, s.cmds[i].vars = false, nil
+	}
+	for _, cmd := range s.cmds {
+		if r.judgeCommand(k, c, cmd, where, depth, container) != nil {
+			return ask
+		}
+	}
+	if !r.lineFullyRead(s) && lineMentionsDanger(s, container) {
+		return ask
+	}
+	return nil
+}
+
+// runsUnreadArg reports an unknown runner whose program operand (its first
+// operand, with more words after it) or the value of a code flag (-c, -e,
+// --command, --eval, -x, --exec) is not a plain literal — a variable, a
+// substitution, or a quote-split word — so what it runs resolves only when
+// the line runs.
+func runsUnreadArg(cmd command, args []string) bool {
+	if cmd.call == nil {
+		return false
+	}
+	if p, _ := cmd.program(); sqlClient[progBase(p)] {
+		for _, a := range args {
+			if _, ok := sqlShellEscape(a); ok {
+				return true // a shell escape built from text the line does not show
+			}
+		}
+		return false // a SQL client's -c/-e is a query, not a program
+	}
+	if p, _ := cmd.program(); printerProg[progBase(p)] {
+		return false // a printer runs nothing
+	}
+	off := len(cmd.words) - len(args)
+	plain := func(i int) bool {
+		j := off + i
+		if j < 0 || j >= len(cmd.call.Args) {
+			return true
+		}
+		w := cmd.call.Args[j]
+		// One literal part, quoted or not, is readable; an expansion, a glob, or
+		// quoting split across parts (ba""sh) resolves only when the line runs.
+		return literalText(w) && !globbed(w) && len(w.Parts) == 1
+	}
+	first := true
+	for i, a := range args {
+		switch a {
+		case "-c", "-e", "--command", "-Command", "--eval", "-x", "--exec":
+			if i+1 < len(args) && !plain(i+1) {
+				return true
+			}
+		}
+		if first && !strings.HasPrefix(a, "-") {
+			first = false
+			if !plain(i) && i+1 < len(args) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// maxHandDepth bounds how deep handed code is followed; deeper code is asked about.
+const maxHandDepth = 6
+
+// mentionsProtectedRoot reports text that names a protected root as a path,
+// leaving out the temporary folders, which are the session's own ground.
+func mentionsProtectedRoot(text string) bool {
+	for _, m := range userPaths.FindAllStringSubmatch(text, -1) {
+		p := strings.TrimRight(strings.Trim(m[1], `"'`), ".,;:)")
+		if protectedRoot(p) && !scratch(path.Clean(homeTilde(p))) {
+			return true
+		}
+	}
+	return false
+}
+
+// progBase is a program's base name with quotes and escapes removed, so
+// /bin/rm, m and 'rm' all read as rm.
+func progBase(prog string) string {
+	return path.Base(strings.ReplaceAll(strings.Trim(prog, `"'`), `\`, ""))
+}
+
+// lineMentionsDanger reports a line that names a deleting program as a word or
+// a protected root anywhere the person's text reaches: a parsed word, an
+// assignment value, a here-document body. It reads the parsed words, not the
+// raw source, so a comment or a script's file name does not count.
+func lineMentionsDanger(s script, container bool) bool {
+	for _, cmd := range s.cmds {
+		if cmdMentionsDanger(cmd, container) {
+			return true
+		}
+	}
+	return false
+}
+
+// commandText is every piece of a command's text the person wrote: its words,
+// its assignment values, and anything on its stdin.
+func commandText(cmd command) []string {
+	out := append([]string(nil), dangerWords(cmd)...)
+	out = append(out, cmd.stdin...)
+	out = append(out, cmd.assigns...)
+	return out
+}
+
+// dangerWords are a command's words with the ones that only carry a human
+// message or an edit expression dropped, so a deleter word in prose (a commit
+// or PR message, a sed script) is not read as a command.
+func dangerWords(cmd command) []string {
+	prog, args := cmd.program()
+	base := progBase(prog)
+	if searchData(cmd) {
+		return cmd.words[:len(cmd.words)-len(args)] // a searcher's operands are patterns
+	}
+	skipVal := map[string]bool{"-m": true, "--message": true, "-b": true, "--body": true, "--title": true, "-t": true}
+	sed := (base == "sed" || base == "gsed") && textOnly(cmd) && sedInert(args)
+	head := append([]string(nil), cmd.words[:len(cmd.words)-len(args)]...)
+	var out []string
+	sawScript := false
+	prose := func(v string) bool { return strings.ContainsAny(v, " \t\n") }
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if (skipVal[a] || msgCluster.MatchString(a)) && i+1 < len(args) && prose(args[i+1]) {
+			i++ // drop a message value that is prose, not a command
+			continue
+		}
+		if m := msgAttached.FindStringSubmatch(a); m != nil && prose(m[1]) {
+			continue // -m"the message" attached to the flag
+		}
+		if k, v, ok := strings.Cut(a, "="); ok && skipVal[k] && prose(v) {
+			continue
+		}
+		if sed && !strings.HasPrefix(a, "-") && !sawScript {
+			sawScript = true // the sed script is an expression, not a command
+			continue
+		}
+		out = append(out, a)
+	}
+	return append(head, out...)
+}
+
+// cmdMentionsDanger reports a command whose text names a deleter or (outside a
+// container command, where one-segment paths are container paths) a protected
+// root.
+func cmdMentionsDanger(cmd command, container bool) bool {
+	prog, _ := cmd.program()
+	container = container || containerProg(progBase(prog)) || remoteExec(progBase(prog))
+	for _, w := range commandText(cmd) {
+		if deleterWord.MatchString(w) {
+			return true
+		}
+		if !container && mentionsProtectedRoot(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// lineFullyRead reports a line the check reads completely, so the precise
+// rules decide it and the fallback need not. It is an allowlist, not a
+// denylist of known handlers: a command is read completely only when it
+// neither hands nor runs code the rules did not see, and its program is one
+// the rules judge or carries no deleter, shell or interpreter among its words.
+// Any other command — an unknown program that may run its arguments, a shell
+// given code, a here-document — leaves the line to the fallback.
+func (r Rules) lineFullyRead(s script) bool {
+	for _, cmd := range s.cmds {
+		if !r.cmdFullyRead(cmd) {
+			return false
+		}
+	}
+	return true
+}
+
+// cmdFullyRead reports one command read completely by the precise rules.
+func (r Rules) cmdFullyRead(cmd command) bool {
+	if !plainHead(cmd) || !cmd.plainProgram() || optioned(wrapperPrefix(cmd.words)) {
+		return false
+	}
+	if len(cmd.stdin) > 0 || readsStdinFile(cmd) || cmd.readsPipe {
+		return false // its stdin is text or piped code the line does not fully show
+	}
+	prog, args := cmd.program()
+	base := progBase(prog)
+	if len(handsOffCode(base, args, cmd.stdin)) > 0 || runsUnreadCode(cmd, base, args) {
+		return false // it hands or runs code
+	}
+	if envRunsCode(cmd.env) {
+		return false // an assignment names a deleter/shell or sets git's config/work-tree
+	}
+	switch {
+	case base == "git":
+		return gitFullyRead(args)
+	case base == "kubectl" || base == "docker" || base == "podman" || base == "nerdctl":
+		return !containerRuns(base, args) // a running subcommand is not fully read
+	case base == "xargs":
+		return len(xargsCommand(args)) == 0
+	case base == "man":
+		return manPager(args) == ""
+	case printerProg[base]:
+		return true // only prints or searches its arguments
+	case destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") ||
+		base == "mv" || base == "rsync":
+		return true // the precise rules judge it
+	}
+	// An unknown program may run its arguments as a command. It is read
+	// completely only when no word of it names a deleter, shell or interpreter,
+	// and no argument could be code (text with whitespace or a shell metachar).
+	for _, w := range args {
+		if wordRunsCode(w) || argIsCode(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// argIsCode reports an argument that could be a command line: text holding
+// whitespace or a shell metacharacter, which an unknown runner might run.
+func argIsCode(w string) bool {
+	return strings.ContainsAny(w, " \t\n;|&<>`") || strings.Contains(w, "$(")
+}
+
+// gitFullyRead reports a git command whose arguments the rules read: no
+// -c/--config/-C alias injection, and no word that names a deleter, shell or
+// interpreter past a precise git subcommand (rm, mv, clean).
+func gitFullyRead(args []string) bool {
+	if hasFlag(args, "-c") || hasFlag(args, "--config") || hasFlag(args, "-C") {
+		return false
+	}
+	if len(gitHandedCode(args)) > 0 {
+		return false // a foreach/exec/run/filter/alias value is handed code
+	}
+	for i, w := range operands(args) {
+		if i == 0 && (w == "rm" || w == "mv" || w == "clean") {
+			continue // a git subcommand the rules judge
+		}
+		if wordRunsCode(w) || argIsCode(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// envRunsCode reports an assignment before a command that could run code: a
+// value naming a deleter, shell or interpreter, or a git variable that injects
+// config, an alias or a work tree.
+func envRunsCode(env map[string]string) bool {
+	for name, v := range env {
+		if strings.HasPrefix(name, "GIT_CONFIG") || name == "GIT_WORK_TREE" ||
+			name == "GIT_DIR" || name == "GIT_SSH_COMMAND" || name == "GIT_EXTERNAL_DIFF" {
+			return true
+		}
+		if wordRunsCode(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// readsStdinFile reports a command given /dev/stdin or - to read.
+func readsStdinFile(cmd command) bool {
+	for _, w := range cmd.words {
+		if w == "/dev/stdin" || w == "/proc/self/fd/0" {
+			return true
+		}
+	}
+	for _, r := range cmd.reads {
+		if r == "/dev/stdin" || r == "-" || strings.Contains(r, "<(") {
+			return true
+		}
+	}
+	return false
+}
+
+// wordRunsCode reports an argument that could make an unknown program run a
+// deleter: a word that is exactly a deleter, shell or interpreter name, or a
+// multi-token string (a quoted command) that names a deleter or protected root.
+func wordRunsCode(w string) bool {
+	u := strings.ReplaceAll(w, `\`, "")
+	if strings.ContainsAny(u, " \t\n") {
+		return deleterWord.MatchString(u) || shellsOut.MatchString(u) ||
+			codeDeletes.MatchString(u) || mentionsProtectedRoot(u)
+	}
+	name := progBase(u)
+	return destroyerNames[name] || shellNames[name] || codeRunners[name] || strings.HasPrefix(name, "python")
+}
+
+// printerProg only prints or searches its arguments; it does not run them.
+var printerProg = map[string]bool{"echo": true, "printf": true, "grep": true, "egrep": true, "fgrep": true,
+	"which": true, "type": true, "cat": true, "head": true, "tail": true, "wc": true, "ls": true}
+
+// containerProg runs a command inside a container, where absolute paths are
+// container paths, not host paths, so a one-segment root there is not protected.
+func containerProg(base string) bool {
+	switch base {
+	case "docker", "podman", "nerdctl", "kubectl", "ctr", "lima", "colima":
+		return true
+	}
+	return false
+}
+
+// preciseProg reports a program whose destructive forms the rules parse, so a
+// non-literal argument need not trigger the stray-operand sweep.
+func preciseProg(base string) bool {
+	return destroyerNames[base] || base == "find" || strings.HasPrefix(base, "mkfs.") ||
+		base == "mv" || base == "rsync" || base == "git" || base == "kubectl"
+}
+
+// runsUnreadCode reports a command whose code the check cannot read at all,
+// because it is built when the line runs: eval of an expansion, a shell's -c
+// given an expansion, or a shell, source or . reading a process substitution.
+func runsUnreadCode(cmd command, prog string, args []string) bool {
+	// A shell or interpreter reading its script from a process substitution,
+	// whether as the operand or redirected onto stdin (bash < <(…)), runs
+	// code the line does not show.
+	if (shellNames[prog] || readsStdinCode(prog) || prog == "source" || prog == ".") && readsProcSubst(cmd, args) {
+		return true
+	}
+	switch {
+	case prog == "eval":
+		return !cmd.literal
+	case shellNames[prog]:
+		if code, hasC := shellDashC(args); hasC && strings.HasPrefix(code, "$") {
+			return true // -c given $(…) or $X
+		}
+	case codeRunners[prog] || strings.HasPrefix(prog, "python"):
+		// An interpreter whose code is an expansion is unread, as -c "$X" is.
+		return strings.HasPrefix(oneLiner(prog, args), "$")
+	}
+	return false
+}
+
+// readsProcSubst reports a process substitution as the first operand, or
+// redirected onto stdin.
+func readsProcSubst(cmd command, args []string) bool {
+	if firstOperandIsProcSubst(args) {
+		return true
+	}
+	for _, rd := range cmd.reads {
+		if strings.Contains(rd, "<(") {
+			return true
+		}
+	}
+	return false
+}
+
+// firstOperandIsProcSubst reports a first operand that is a process
+// substitution, <(…), whose content is code the line does not show.
+func firstOperandIsProcSubst(args []string) bool {
+	for _, a := range operands(args) {
+		return strings.Contains(a, "<(")
+	}
+	return false
+}
+
+// handsOffCode gathers every string a command hands to another to run as code:
+// an interpreter's one-liner, a shell's -c argument, eval's operands, and the
+// text on the stdin of a shell, an interpreter, or source/. reading stdin.
+// cmdFullyRead uses it only to tell whether a command hands off code at all.
+func handsOffCode(prog string, args, stdin []string) []string {
+	out := handedShellCode(prog, args, stdin)
+	if code := oneLiner(prog, args); code != "" {
+		out = append(out, code)
+	}
+	return out
+}
+
+// handedShellCode is the code a command hands to a shell or to eval, and the
+// text on the stdin of a shell or interpreter — the strings parsed and fully
+// judged. It leaves out an interpreter's one-liner, whose literal-path deletes
+// destroys judges by path.
+func handedShellCode(prog string, args, stdin []string) []string {
+	var out []string
+	if shellNames[prog] {
+		if code, _ := shellDashC(args); code != "" {
+			out = append(out, code)
+		}
+	}
+	if prog == "eval" {
+		out = append(out, strings.Join(operands(args), " "))
+	}
+	if readsStdinCode(prog) || (prog == "source" || prog == ".") && readsStdinPath(args) {
+		out = append(out, stdin...)
+	}
+	return out
+}
+
+// readsStdinPath reports a source/. whose script is standard input.
+func readsStdinPath(args []string) bool {
+	for _, a := range operands(args) {
+		return a == "/dev/stdin" || a == "-"
+	}
+	return false
+}
+
+// shellDashC is the code a shell runs after -c, and whether -c was given. The
+// code is the first operand once the options end: every word starting with -
+// or + is an option (a -- ends them; -o, -O, +o, +O take a value), and the
+// code is used when any option cluster holds c (-c, -lc, -ec, -c --, -c -e).
+func shellDashC(args []string) (string, bool) {
+	sawC := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			if sawC && i+1 < len(args) {
+				return args[i+1], true
+			}
+			return "", sawC
+		case a == "-o" || a == "-O" || a == "+o" || a == "+O":
+			i++ // takes an option name
+		case a == "--rcfile" || a == "--init-file":
+			i++ // takes a file
+		case strings.HasPrefix(a, "--"):
+			// another long option
+		case (strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+")) && len(a) > 1:
+			if strings.HasPrefix(a, "-") && strings.Contains(a[1:], "c") {
+				sawC = true
+			}
+		default:
+			if sawC {
+				return a, true // the first operand is the code
+			}
+			return "", false
+		}
+	}
+	return "", sawC
+}
+
+// readsStdinCode reports a program that runs its standard input as code: a
+// shell, or an interpreter in a bare form (python3, node) with no script.
+func readsStdinCode(prog string) bool {
+	return shellNames[prog] || codeRunners[prog] || strings.HasPrefix(prog, "python")
+}
+
+// shellNames are the shells among codeRunners, which run their argument or
+// stdin as commands.
+var shellNames = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true,
+	"busybox": true, "ash": true, "mksh": true, "yash": true, "posh": true, "tcsh": true, "csh": true, "su": true}
+
+// awkNames are the awk family, whose first operand is its program.
+var awkNames = map[string]bool{"awk": true, "gawk": true, "mawk": true, "nawk": true}
+
+// oneLiner is the code an interpreter is given on its command line. A short
+// option cluster that ends in the code flag counts (python3 -Bc, perl -le,
+// -ne, -pe, -E), as do node's -p, --print and --eval[=], and awk's program
+// operand or -e/--source value.
+func oneLiner(prog string, args []string) string {
+	if awkNames[prog] {
+		return awkProgram(args)
+	}
+	if prog == "deno" { // deno eval '<code>' / deno run takes a file, not code
+		ops := operands(args)
+		if len(ops) >= 2 && ops[0] == "eval" {
+			return ops[1]
+		}
+		return ""
+	}
+	var flags string // the letters that introduce code
+	switch {
+	case strings.HasPrefix(prog, "python"):
+		flags = "c"
+	case prog == "pwsh", prog == "powershell":
+		flags = "c" // -c / -Command
+	case prog == "bun":
+		flags = "e"
+	case prog == "perl":
+		flags = "eE"
+	case prog == "node":
+		flags = "ep"
+	case prog == "ruby", prog == "lua", prog == "Rscript", prog == "osascript":
+		flags = "e"
+	case prog == "php":
+		flags = "r"
+	default:
+		return ""
+	}
+	for i, a := range args {
+		if prog == "node" {
+			switch {
+			case a == "--eval" || a == "--print":
+				if i+1 < len(args) {
+					return args[i+1]
+				}
+			case strings.HasPrefix(a, "--eval="):
+				return strings.TrimPrefix(a, "--eval=")
+			case strings.HasPrefix(a, "--print="):
+				return strings.TrimPrefix(a, "--print=")
+			}
+		}
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && len(a) > 1 &&
+			strings.ContainsRune(flags, rune(a[len(a)-1])) && i+1 < len(args) {
+			return args[i+1] // a cluster ending in the code flag
+		}
+	}
+	return ""
+}
+
+// awkProgram is awk's program text: its -e/--source value, or the first
+// operand that is not an option. A program read from a file (-f) is not shown.
+func awkProgram(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-f" || a == "--file":
+			return ""
+		case a == "-e" || a == "--source":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		case a == "-v" || a == "-F":
+			i++ // takes a value
+		case strings.HasPrefix(a, "-"):
+			// another option
+		default:
+			return a
+		}
+	}
+	return ""
+}
+
+// codeDeletes finds the well-known calls that delete or overwrite a file,
+// with the literal path they are given, in one line of Python, Node, Perl,
+// Ruby or PHP. A textual scan: it finds the common forms, not every one.
+var codeDeletes = regexp.MustCompile(`(?:\b(?:rmtree|remove|unlink|rmdir|removedirs|rmSync|removeSync|unlinkSync|rmdirSync|remove_dir_all|rm_rf|rm_r|rm_f|delete|truncate|writeFileSync|write_text|write_bytes)\s*\(?\s*['"]([^'"]+)['"]` +
+	`|\bPath\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*(?:unlink|rmdir|write_text|write_bytes)\b` +
+	`|\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][wa])`)
+
+func execsRemove(args []string) bool {
+	for _, p := range findExecProgs(args) {
+		switch p {
+		case "rm", "shred", "unlink", "srm":
+			return true
+		}
+	}
+	return false
+}
+
+// findExecProgs are the programs find runs by -exec, -execdir, -ok and
+// -okdir, each resolved as any other program is: past wrappers (sudo rm, env
+// rm), base-named and unescaped (/bin/rm, \rm are rm).
+func findExecProgs(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if !isExecFlag(args[i]) {
+			continue
+		}
+		var words []string
+		for j := i + 1; j < len(args) && args[j] != ";" && args[j] != "+" && args[j] != `\;`; j++ {
+			words = append(words, args[j])
+		}
+		if p, _ := (command{words: words}).program(); p != "" {
+			out = append(out, path.Base(strings.ReplaceAll(p, `\`, "")))
+		}
+	}
+	return out
+}
+
+// findExecRunsCode reports a find whose -exec program is a shell, an
+// interpreter or xargs, any of which can run a deleting command it is handed.
+func findExecRunsCode(args []string) bool {
+	for _, p := range findExecProgs(args) {
+		if codeRunners[p] || strings.HasPrefix(p, "python") {
+			return true
+		}
+	}
+	return false
+}
+
+// findStarts are the paths a find command searches: the words after its
+// leading options (-H, -L, -P, -D <arg>, -O<n>) and before the first test or
+// action. find looks in . when none is given.
+func findStarts(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-H" || a == "-L" || a == "-P":
+			continue
+		case a == "-D":
+			i++ // -D takes a debug option as its own word
+			continue
+		case strings.HasPrefix(a, "-O"):
+			continue // -O<n>, an optimisation level
+		case strings.HasPrefix(a, "-") || a == "(" || a == "!":
+			return out // the first test or action: start paths end here
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// findStartsOwnGround reports whether every path find starts from is own ground.
+func (r Rules) findStartsOwnGround(k *given, c Case, args []string) bool {
+	starts := findStarts(args)
+	if len(starts) == 0 {
+		return r.ownGround(k, c, ".")
+	}
+	for _, a := range starts {
+		if !r.ownGround(k, c, a) {
+			return false
+		}
+	}
+	return true
+}
+
+func isExecFlag(a string) bool {
+	return a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir"
+}
+
+// findExecCommands is each command find runs by -exec/-execdir/-ok/-okdir: the
+// words up to the terminating ; or +, with the {} placeholder dropped.
+func findExecCommands(args []string) [][]string {
+	var out [][]string
+	for i := 0; i < len(args); i++ {
+		if !isExecFlag(args[i]) {
+			continue
+		}
+		var words []string
+		for j := i + 1; j < len(args) && args[j] != ";" && args[j] != "+" && args[j] != `\;`; j++ {
+			words = append(words, args[j])
+		}
+		if len(words) > 0 {
+			out = append(out, words)
+		}
+	}
+	return out
+}
+
+// moveVerdict judges mv, rsync and git clean, which remove data without an rm.
+// A mv source outside own ground is an ask (the data survives at the
+// destination) unless the destination is also outside own ground or /dev/null;
+// rsync --delete / --remove-source-files and git clean destroy, so a target
+// outside own ground is denied, and a remote or unreadable target is an ask.
+func (r Rules) moveVerdict(k *given, c Case, cmd command, prog string, args []string, where string) *Verdict {
+	switch prog {
+	case "mv":
+		srcs, dst := mvTargets(args)
+		// The file survives only at a real destination inside own ground; a
+		// scratch/temp destination or /dev/null discards it, so that is a deny.
+		dstOK := dst != "" && r.groundOK(k, c, cmd, dst) && !scratch(path.Clean(homeTilde(dst))) && dst != "/dev/null"
+		for _, s := range srcs {
+			eff, known := effectiveTarget(cmd, s)
+			if known && r.ownGround(ground(k, cmd), c, eff) {
+				continue
+			}
+			if dstOK {
+				return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+					Rationale: fmt.Sprintf("mv would move %s out of the task's ground; %s", display(eff, s), remit(c)),
+					Advice:    "confirm you mean to move it, or name a source the task covers"}
+			}
+			return &Verdict{Decision: policy.Deny, Code: CodeOutOfRemit,
+				Rationale: fmt.Sprintf("mv would remove %s, outside what the task names; %s", display(eff, s), remit(c)),
+				Advice:    "keep moves to the paths the task names, or ask the person first"}
+		}
+	case "rsync":
+		if remoteDest(args) && (hasDeleteFlag(args) || hasFlag(args, "--remove-source-files")) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("rsync would delete at a remote destination the check cannot place; %s", remit(c)),
+				Advice:    "confirm the destination, or run it without --delete"}
+		}
+		var targets []string
+		ops := rsyncOperands(args)
+		if hasDeleteFlag(args) && len(ops) > 0 {
+			targets = append(targets, ops[len(ops)-1]) // the destination
+		}
+		if hasFlag(args, "--remove-source-files") && len(ops) > 1 {
+			targets = append(targets, ops[:len(ops)-1]...) // the sources
+		}
+		for _, t := range targets {
+			if v := r.judgeTarget(k, c, cmd, prog, t, where); v != nil {
+				return v
+			}
+		}
+	case "git":
+		if v := r.gitCleanVerdict(k, c, cmd, args, where); v != nil {
+			return v
+		}
+		return r.gitDiscardVerdict(k, c, cmd, args, where)
+	}
+	return nil
+}
+
+// gitEnvAssignments gathers git-relevant NAME=value settings both from a shell
+// assignment prefix (cmd.env) and from an env wrapper's words (env NAME=value git).
+func gitEnvAssignments(cmd command) map[string]string {
+	out := map[string]string{}
+	for k, v := range cmd.env {
+		out[k] = v
+	}
+	// Only the words before the program (an env wrapper's NAME=value): a
+	// commit message or other argument is not an environment setting.
+	_, args := cmd.program()
+	end := len(cmd.words) - len(args) - 1
+	for i := 0; i < end && i < len(cmd.words); i++ {
+		if k, v, ok := strings.Cut(cmd.words[i], "="); ok && (gitEnvCode[k] || strings.HasPrefix(k, "GIT_CONFIG_VALUE")) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// gitDiscardVerdict judges git subcommands that discard work in their tree —
+// reset --hard, checkout with -- or -f, restore — over a -C/--work-tree path
+// outside own ground.
+func (r Rules) gitDiscardVerdict(k *given, c Case, cmd command, args []string, where string) *Verdict {
+	tree := gitWorkTree(cmd, args)
+	sub, discards := "", false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if gitValueOpt[a] && i+1 < len(args) {
+			i++ // a value-taking option: skip its value
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			switch a {
+			case "--hard":
+				if sub == "reset" {
+					discards = true
+				}
+			case "-f", "--force", "--":
+				if sub == "checkout" || sub == "restore" || sub == "switch" {
+					discards = true
+				}
+			}
+			continue
+		}
+		if sub == "" {
+			sub = a
+			if sub == "restore" {
+				discards = true // restore overwrites the worktree
+			}
+		}
+	}
+	if !discards {
+		return nil
+	}
+	// The tree is the -C/--work-tree path, joined under the command's own
+	// directory (a cd before it), or that directory itself.
+	eff := "."
+	if tree != "" && tree != "." {
+		eff = tree
+	}
+	if v := r.judgeTarget(k, c, cmd, "git", eff, where); v != nil {
+		return v
+	}
+	return nil
+}
+
+// gitValueOpt names git global options that take a value, so the next word is
+// not the subcommand.
+var gitValueOpt = map[string]bool{"-C": true, "--git-dir": true, "--work-tree": true, "-c": true,
+	"--namespace": true, "--config-env": true, "--exec-path": true}
+
+// gitWorkTree is the cumulative -C/--work-tree/GIT_WORK_TREE tree, or "".
+func gitWorkTree(cmd command, args []string) string {
+	tree := ""
+	if v, ok := cmd.env["GIT_WORK_TREE"]; ok {
+		tree = v
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-C" && i+1 < len(args):
+			tree, i = joinUnder(tree, args[i+1]), i+1
+		case a == "--work-tree" && i+1 < len(args):
+			tree, i = args[i+1], i+1
+		case strings.HasPrefix(a, "--work-tree="):
+			tree = strings.TrimPrefix(a, "--work-tree=")
+		}
+	}
+	return tree
+}
+
+// gitCleanVerdict judges git clean -f, which deletes untracked files. It reads
+// a cumulative -C, --work-tree and GIT_WORK_TREE for the tree, the explicit
+// path operands when given, and asks when any of those is non-literal.
+func (r Rules) gitCleanVerdict(k *given, c Case, cmd command, args []string, where string) *Verdict {
+	tree := "."
+	if v, ok := cmd.env["GIT_WORK_TREE"]; ok {
+		tree = v
+	}
+	var paths []string
+	forces, clean := false, false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-C" || a == "--work-tree" || a == "--git-dir" || a == "-c" || a == "--config":
+			val := ""
+			if i+1 < len(args) {
+				val, i = args[i+1], i+1
+			}
+			switch a {
+			case "-C":
+				tree = joinUnder(tree, val)
+			case "--work-tree":
+				tree = val
+			}
+		case strings.HasPrefix(a, "--work-tree="):
+			tree = strings.TrimPrefix(a, "--work-tree=")
+		case strings.HasPrefix(a, "--git-dir="), strings.HasPrefix(a, "-C="):
+			// read but not a tree
+		case a == "--":
+			paths = append(paths, args[i+1:]...)
+			i = len(args)
+		case strings.HasPrefix(a, "-"):
+			if !clean { // git's own options, before the subcommand
+				continue
+			}
+			if a == "--force" || (!strings.HasPrefix(a, "--") && strings.ContainsAny(a, "fd")) {
+				forces = true
+			}
+		case !clean:
+			if a != "clean" {
+				return nil // a different git subcommand
+			}
+			clean = true
+		default:
+			paths = append(paths, a) // a path operand to clean
+		}
+	}
+	if !clean || !forces {
+		return nil
+	}
+	targets := paths
+	if len(targets) == 0 {
+		targets = []string{tree}
+	}
+	for _, t := range targets {
+		if strings.ContainsAny(t, "$*?[") {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("git clean would delete in a path the check cannot place; %s", remit(c)),
+				Advice:    "run it from the tree plainly, or confirm this is meant"}
+		}
+		eff := t
+		if !strings.HasPrefix(t, "/") && !homeish(t) && tree != "." {
+			eff = joinUnder(tree, t)
+		}
+		sub := cmd
+		if v := r.judgeTarget(k, c, sub, "git", eff, where); v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// joinUnder joins rel onto base, with an absolute or ~ rel replacing base (as
+// git -C and a path operand do).
+func joinUnder(base, rel string) string {
+	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "~") {
+		return rel
+	}
+	return joinDir(base, rel)
+}
+
+// groundOK reports a path resolved and within own ground.
+func (r Rules) groundOK(k *given, c Case, cmd command, t string) bool {
+	eff, known := effectiveTarget(cmd, t)
+	return known && r.ownGround(ground(k, cmd), c, eff)
+}
+
+// ground gives the facts to judge a target by, with said widened to the
+// person's own words where the directory is unknown (as judgeTarget does).
+func ground(k *given, cmd command) *given {
+	if cmd.dirKnown {
+		return k
+	}
+	p := *k
+	p.said = k.person
+	return &p
+}
+
+// mvTargets are mv's sources and its destination. With -t/--target-directory
+// every operand is a source and the directory is the destination.
+func mvTargets(args []string) ([]string, string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-t" || a == "--target-directory" {
+			if i+1 < len(args) {
+				return operands(args), args[i+1]
+			}
+		}
+		if v, ok := strings.CutPrefix(a, "--target-directory="); ok {
+			return operands(args), v
+		}
+	}
+	ops := operands(args)
+	if len(ops) < 2 {
+		return nil, ""
+	}
+	return ops[:len(ops)-1], ops[len(ops)-1]
+}
+
+// rsyncValueFlags take a value the next word gives, which is not a path.
+var rsyncValueFlags = map[string]bool{"--exclude": true, "--include": true, "--filter": true, "-f": true,
+	"--exclude-from": true, "--include-from": true, "-e": true, "--rsh": true, "--backup-dir": true,
+	"--partial-dir": true, "--temp-dir": true, "-T": true, "--log-file": true, "--files-from": true,
+	"--compare-dest": true, "--link-dest": true, "--copy-dest": true, "--out-format": true, "--chmod": true}
+
+// rsyncOperands are rsync's source and destination paths, with option values
+// skipped wherever they appear.
+func rsyncOperands(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if rsyncValueFlags[a] {
+			i++ // skip its value
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// hasDeleteFlag reports any --delete* or --del spelling.
+func hasDeleteFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--del" || strings.HasPrefix(a, "--delete") {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteDest reports a remote rsync destination (host:path, user@host:path,
+// rsync://…) as the last operand.
+func remoteDest(args []string) bool {
+	ops := rsyncOperands(args)
+	if len(ops) == 0 {
+		return false
+	}
+	d := ops[len(ops)-1]
+	if strings.HasPrefix(d, "rsync://") {
+		return true
+	}
+	i := strings.IndexByte(d, ':')
+	return i > 0 && !strings.HasPrefix(d, "/") && !strings.Contains(d[:i], "/")
+}
+
+// gitWorkTree is the tree git clean runs in: GIT_WORK_TREE or --work-tree win,
+// else successive -C paths joined onto the start, else the working directory.
+
+// findExecHidden reports a find whose -exec program is not a literal the
+// check reads: an expansion it cannot resolve.
+func findExecHidden(args []string) bool {
+	for i, a := range args {
+		if isExecFlag(a) && i+1 < len(args) &&
+			(strings.HasPrefix(args[i+1], "$") || strings.ContainsAny(progBase(args[i+1]), "*?[")) {
+			return true
+		}
+	}
+	return false
+}
+
+// substituteBraces replaces find's {} placeholder with a start path, so the
+// -exec command is judged against what find reaches.
+func substituteBraces(words []string, start string) []string {
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if w == "{}" {
+			out = append(out, start)
+		} else {
+			out = append(out, strings.ReplaceAll(w, "{}", start))
+		}
+	}
+	return out
+}
+
+// readOnlyProg only reads or reports its arguments, so a find -exec that runs
+// one deletes nothing; its own arguments are still judged.
+var readOnlyProg = map[string]bool{"ls": true, "grep": true, "egrep": true, "fgrep": true, "rg": true,
+	"stat": true, "cat": true, "head": true, "tail": true, "wc": true, "file": true, "dirname": true,
+	"basename": true, "du": true, "md5sum": true, "shasum": true, "sha1sum": true, "sha256sum": true,
+	"readlink": true, "realpath": true, "test": true, "echo": true, "printf": true,
+	"diff": true, "cksum": true}
+
+// dropBraces removes find's {} placeholder, so the -exec command's other
+// words (an explicit path) are judged; {} itself is handled by the start-path
+// check above.
+func dropBraces(words []string) []string {
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if w != "{}" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// findExecAsk is the verdict for a find -exec command that deletes or reaches
+// outside the task's ground.
+func (r Rules) findExecAsk(c Case) *Verdict {
+	return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+		Rationale: fmt.Sprintf("find runs a command by -exec that looks like it deletes or reaches outside the task's ground; %s", remit(c)),
+		Advice:    "delete the paths the task names directly, or confirm this is meant"}
+}
+
+// allNamespaces stands for a kubectl delete across every namespace (-A).
+const allNamespaces = "\x00all-namespaces"
+
+// kubectlDeleteNS is the namespaces a kubectl delete removes or deletes in: the
+// -n/--namespace value, the names after `delete ns|namespace|namespaces`, and
+// allNamespaces for -A/--all-namespaces.
+func kubectlDeleteNS(prog string, args []string) []string {
+	if prog == "helm" {
+		// helm uninstall REL -n NS removes the release from namespace NS.
+		verb, _, ok := containerAction("helm", args)
+		if !ok || !helmUninstall[verb] {
+			return nil
+		}
+		var out []string
+		for i, a := range args {
+			switch {
+			case (a == "-n" || a == "--namespace") && i+1 < len(args):
+				out = append(out, args[i+1])
+			case strings.HasPrefix(a, "--namespace="):
+				out = append(out, strings.TrimPrefix(a, "--namespace="))
+			}
+		}
+		return out
+	}
+	if prog != "kubectl" && prog != "oc" {
+		return nil
+	}
+	verb, idx, ok := containerAction("kubectl", args)
+	if !ok || verb != "delete" {
+		return nil
+	}
+	var out []string
+	for i, a := range args {
+		switch {
+		case (a == "-n" || a == "--namespace") && i+1 < len(args):
+			out = append(out, args[i+1])
+		case strings.HasPrefix(a, "--namespace="):
+			out = append(out, strings.TrimPrefix(a, "--namespace="))
+		case a == "-A" || a == "--all-namespaces":
+			out = append(out, allNamespaces)
+		}
+	}
+	ops := kubectlOperands(args[idx:])
+	if len(ops) > 0 {
+		names := false
+		for _, item := range strings.Split(ops[0], ",") {
+			kind, name, hasName := strings.Cut(item, "/")
+			switch kind {
+			case "ns", "namespace", "namespaces", "project", "projects":
+				if hasName {
+					out = append(out, name) // ns/prod
+				} else {
+					names = true
+				}
+			}
+		}
+		if names {
+			out = append(out, ops[1:]...)
+		}
+	}
+	return out
+}
+
+// kubectlOperands are kubectl's operands with the values of its value-taking
+// options (-l, --selector, -f, -o, --field-selector, -n, …) skipped, so a
+// selector before the kind is not taken for the kind.
+func kubectlOperands(args []string) []string {
+	skip := map[string]bool{"-l": true, "--selector": true, "-f": true, "--filename": true, "-o": true,
+		"--output": true, "--field-selector": true, "-n": true, "--namespace": true, "-c": true,
+		"--container": true, "--context": true, "--grace-period": true, "--timeout": true, "-k": true,
+		"--kustomize": true, "--cascade": true, "--kubeconfig": true, "--cluster": true, "--user": true,
+		"-s": true, "--server": true, "--as": true, "--as-group": true, "--token": true}
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if skip[a] {
+			i++
+			continue
+		}
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// kubectlKinds are the kinds in a kubectl kind word: a comma list of kind or
+// kind/name items, each counted.
+func kubectlKinds(word string) []string {
+	var out []string
+	for _, item := range strings.Split(word, ",") {
+		kind, _, _ := strings.Cut(item, "/")
+		kind, _, _ = strings.Cut(kind, ".") // pvc.v1, persistentvolumeclaim.v1.
+		if kind != "" {
+			out = append(out, strings.ToLower(kind))
+		}
+	}
+	return out
+}
+
+// destructiveKind names the kinds whose deletion takes data or a whole class
+// of resources with it.
+var destructiveKind = map[string]bool{"ns": true, "namespace": true, "namespaces": true, "project": true,
+	"projects": true, "pvc": true, "pv": true, "persistentvolume": true, "persistentvolumes": true,
+	"persistentvolumeclaim": true, "persistentvolumeclaims": true, "all": true, "crd": true, "crds": true,
+	"customresourcedefinition": true, "customresourcedefinitions": true, "storageclass": true,
+	"storageclasses": true, "sc": true, "clusterrole": true, "clusterroles": true,
+	"clusterrolebinding": true, "clusterrolebindings": true}
+
+// prodScope reports a kubectl/oc namespace, context or selector value that
+// names production as a whole value or a segment of it (prod, production,
+// prod-eu), not a resource that merely contains the letters (product-api).
+func prodScope(args []string) bool {
+	vals := []string{}
+	for i, a := range args {
+		switch {
+		case (a == "-n" || a == "--namespace" || a == "--context" || a == "-l" || a == "--selector") && i+1 < len(args):
+			vals = append(vals, args[i+1])
+		default:
+			for _, f := range []string{"--namespace=", "--context=", "--selector="} {
+				if v, ok := strings.CutPrefix(a, f); ok {
+					vals = append(vals, v)
+				}
+			}
+		}
+	}
+	for _, v := range vals {
+		for _, seg := range strings.FieldsFunc(v, func(r rune) bool { return r == '-' || r == '_' || r == '.' || r == '=' || r == ',' || r == '/' }) {
+			if seg == "prod" || seg == "production" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stripGitGlobals drops git's own value-taking options (-c k=v, -C dir,
+// --git-dir=, --work-tree=) so the subcommand is the first operand.
+func stripGitGlobals(args []string) []string {
+	for len(args) > 0 {
+		switch {
+		case args[0] == "-c" || args[0] == "-C" || args[0] == "--namespace":
+			if len(args) > 1 {
+				args = args[2:]
+			} else {
+				args = args[1:]
+			}
+		case strings.HasPrefix(args[0], "-"):
+			args = args[1:]
+		default:
+			return args
+		}
+	}
+	return args
+}
+
+// gitPruneHistory reports git gc --prune=now and reflog expire --expire=now,
+// which make reset or discarded commits unrecoverable.
+func gitPruneHistory(args []string) (string, bool) {
+	ops := operands(stripGitGlobals(args))
+	if len(ops) == 0 {
+		return "", false
+	}
+	switch ops[0] {
+	case "gc":
+		if hasFlag(args, "--prune=now") || hasFlag(args, "--prune=all") {
+			return "prune unreachable commits for good", true
+		}
+	case "reflog":
+		if len(ops) > 1 && ops[1] == "expire" && (hasPrefix(args, "--expire=now") || hasPrefix(args, "--expire=all") || hasPrefix(args, "--expire-unreachable=now") || hasPrefix(args, "--expire-unreachable=all") || hasFlag(args, "--expire=0")) {
+			return "expire the reflog, losing the way back to discarded commits", true
+		}
+	}
+	return "", false
+}
+
+// gitPushDestructive reports a push that deletes a remote branch (--delete,
+// -d, :branch) or force-pushes a shared branch (main, master, release*, prod*).
+func gitPushDestructive(args []string) (string, bool) {
+	// Skip git's own value-taking options (-C repo, -c k=v) before the subcommand.
+	for len(args) > 0 && (gitValueOpt[args[0]] || strings.HasPrefix(args[0], "-")) {
+		if gitValueOpt[args[0]] && len(args) > 1 {
+			args = args[2:]
+		} else {
+			args = args[1:]
+		}
+	}
+	ops := operands(args)
+	if len(ops) == 0 || ops[0] != "push" {
+		return "", false
+	}
+	if hasFlag(args, "--delete") || hasFlag(args, "-d") {
+		return "delete a remote branch", true
+	}
+	if hasFlag(args, "--mirror") {
+		return "mirror-push, deleting remote refs", true
+	}
+	if hasFlag(args, "--prune") {
+		return "prune remote branches", true
+	}
+	force := hasFlag(args, "--force") || hasFlag(args, "-f") || hasFlag(args, "--force-with-lease") ||
+		hasPrefix(args, "--force-with-lease=") || shortFlag(args, 'f')
+	for _, ref := range ops[1:] {
+		if strings.HasPrefix(ref, ":") {
+			return "delete a remote branch", true
+		}
+		if strings.HasPrefix(ref, "+") {
+			force = true
+		}
+	}
+	if force && len(ops) <= 2 {
+		return "force-push the upstream branch, which may be shared", true // no refspec named
+	}
+	if force {
+		for _, ref := range ops[1:] {
+			dst := ref
+			if _, d, ok := strings.Cut(ref, ":"); ok {
+				dst = d
+			}
+			dst = strings.TrimPrefix(strings.TrimPrefix(dst, "+"), "refs/heads/")
+			if dst == "main" || dst == "master" || strings.HasPrefix(dst, "release") || strings.HasPrefix(dst, "prod") {
+				return "force-push a shared branch", true
+			}
+		}
+	}
+	return "", false
+}
+
+// dataInfraDestructive mirrors the data-store and infrastructure teardown the
+// destructive step asks about (dropping a database, flushing a cache,
+// destroying infrastructure, deleting cloud resources), so the supervisor asks
+// too. The text is the command's own words, read case-insensitively.
+// packageRunner steps past a JS package runner to the program it runs, so a
+// family check sees cdk/serverless/prisma rather than npx/yarn/pnpm. aws-cdk
+// is read as cdk.
+func packageRunner(words []string) []string {
+	// Runner options that take the next word as their value.
+	valued := map[string]bool{"-p": true, "--package": true, "--filter": true, "-F": true,
+		"-C": true, "--dir": true, "--cwd": true, "--prefix": true, "-w": true, "--workspace": true}
+	skipOpts := func(w []string) []string {
+		for len(w) > 0 && strings.HasPrefix(w[0], "-") && w[0] != "--" {
+			if valued[w[0]] && len(w) > 1 {
+				w = w[1:]
+			}
+			w = w[1:]
+		}
+		return w
+	}
+	for len(words) > 0 {
+		if words[0] == "--" {
+			words = words[1:]
+			continue
+		}
+		switch progBase(words[0]) {
+		case "npx", "bunx", "pnpx":
+			words = skipOpts(words[1:])
+		case "bun":
+			if len(words) > 1 && words[1] == "x" {
+				words = skipOpts(words[2:])
+				continue
+			}
+			return words
+		case "yarn", "pnpm", "npm":
+			runner := progBase(words[0])
+			words = skipOpts(words[1:])
+			if runner == "yarn" && len(words) > 1 && words[0] == "workspace" {
+				words = skipOpts(words[2:]) // yarn workspace NAME cmd
+			}
+			if len(words) > 0 {
+				switch words[0] {
+				case "exec", "dlx", "x":
+					words = skipOpts(words[1:]) // words[0] is now the program
+					if len(words) > 1 && words[1] == "--" {
+						words = append(words[:1:1], words[2:]...) // npm exec prisma -- migrate
+					}
+				case "run", "run-script":
+					words = skipOpts(words[1:]) // words[0] is now the script
+					if len(words) > 1 && words[1] == "--" {
+						words = append(words[:1:1], words[2:]...) // drop -- after the script
+					}
+				default:
+					if runner == "npm" {
+						return words // npm runs a bin only through exec/run
+					}
+				}
+			}
+			if len(words) > 0 && words[0] == "--" {
+				words = words[1:]
+			}
+		case "dotenv", "cross-env", "env-cmd":
+			// An env-setting runner: NODE_ENV=x and -e FILE, then the real command.
+			words = words[1:]
+			for len(words) > 0 && (strings.HasPrefix(words[0], "-") || strings.Contains(words[0], "=")) && words[0] != "--" {
+				if (words[0] == "-e" || words[0] == "-f" || words[0] == "-c" || words[0] == "-v") && len(words) > 1 {
+					words = words[1:]
+				}
+				words = words[1:]
+			}
+			if len(words) > 0 && words[0] == "--" {
+				words = words[1:]
+			}
+		default:
+			// A package spec names its program: aws-cdk@2 is cdk, serverless@3 is
+			// serverless, @aws-cdk/cli is cdk.
+			if strings.HasPrefix(words[0], "@aws-cdk/") {
+				words[0] = "cdk"
+			}
+			if i := strings.LastIndex(words[0], "@"); i > 0 {
+				words[0] = words[0][:i]
+			}
+			if progBase(words[0]) == "aws-cdk" {
+				words[0] = "cdk"
+			}
+			if len(words) > 1 && words[1] == "--" {
+				words = append(words[:1:1], words[2:]...) // npx prisma -- migrate reset
+			}
+			return words
+		}
+	}
+	return words
+}
+
+// familyVerdict runs the destructive data-store, infrastructure, container and
+// cluster checks on the real program a command runs, stepping past a package
+// runner and past sudo/doas/env wrappers and su/runuser -c code. It catches
+// the shapes the plain, wrapper-option fallback below would miss.
+func (r Rules) familyVerdict(k *given, c Case, cmd command, where string, depth int) *Verdict {
+	ask := func(what string) *Verdict {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.8,
+			Rationale: fmt.Sprintf("the command would %s, which cannot be undone; %s", what, remit(c)),
+			Advice:    "confirm this is meant, or narrow it to what the task names"}
+	}
+	plain, plainArgs := cmd.program()
+	inner := append([]string{plain}, plainArgs...)
+	w := packageRunner(append([]string(nil), inner...))
+	stripped := len(w) != len(inner) || (len(w) > 0 && w[0] != plain)
+	optWrap := optioned(wrapperPrefix(cmd.words))
+	suWrap := progBase(plain) == "su" || progBase(plain) == "runuser"
+	if !stripped && !optWrap && !suWrap {
+		return nil // the plain reading below handles it (and keeps the namespace deny)
+	}
+	prog, args := command{words: w, call: cmd.call}.program()
+	prog = progBase(prog)
+	// su/runuser/doas -c CODE runs a shell: judge that code as handed code.
+	// Their `-- CMD` (runuser -u USER -- psql …) runs CMD as given.
+	if prog == "su" || prog == "runuser" || prog == "doas" {
+		for i, a := range args {
+			if a == "-c" && i+1 < len(args) {
+				if r.codeVerdict(k, c, args[i+1], where, depth+1, false) != nil {
+					return ask("run code the check cannot read")
+				}
+			}
+			if a == "--" {
+				if what, ok := r.subFamily(args[i+1:], cmd.stdin); ok {
+					return ask(what)
+				}
+				break
+			}
+		}
+	}
+	if what, ok := stdinDestructive(prog, cmd.stdin); ok {
+		return ask(what)
+	}
+	if what, ok := dataInfraDestructive(prog, args); ok {
+		return ask(what)
+	}
+	if what, ok := clusterDestructive(prog, args); ok {
+		return ask(what)
+	}
+	if prog == "git" {
+		if what, ok := gitPushDestructive(args); ok {
+			return ask(what)
+		}
+	}
+	return nil
+}
+
+// embeddedDataStore finds a data-store client run through a command the
+// container model does not cover — ssh HOST, oc/docker-compose exec, heroku
+// pg:psql/run, fly ssh console -C — and judges the drop or flush it carries.
+// A client named only in a message value or printed by echo/printf is skipped.
+// sshValueOpts are ssh options that take the next word as their value.
+var sshValueOpts = map[string]bool{"-b": true, "-c": true, "-D": true, "-E": true, "-e": true, "-F": true,
+	"-I": true, "-i": true, "-J": true, "-L": true, "-l": true, "-m": true, "-O": true, "-o": true, "-p": true,
+	"-Q": true, "-R": true, "-S": true, "-W": true, "-w": true}
+
+// sshTakesNext reports an ssh option whose value is the next word: a value
+// option alone, or a cluster whose first value letter is its last (-tp 2222).
+func sshTakesNext(a string) bool {
+	if sshValueOpts[a] {
+		return true
+	}
+	if len(a) < 3 || a[1] == '-' {
+		return false
+	}
+	for j := 1; j < len(a); j++ {
+		if sshValueOpts["-"+a[j:j+1]] {
+			return j == len(a)-1 // a later letter is the attached value
+		}
+	}
+	return false
+}
+
+// herokuValueOpts are `heroku run` options that take a value.
+var herokuValueOpts = map[string]bool{"-a": true, "--app": true, "-r": true, "--remote": true, "-s": true,
+	"--size": true, "-e": true, "--env": true, "--type": true}
+
+// remoteCommand returns the words of the command a transport runs elsewhere:
+// ssh HOST CMD…, heroku run [opts] CMD…, fly ssh console -C CMD, and
+// oc/kubectl exec … -- CMD. nil when the command runs nothing remote.
+func remoteCommand(prog string, args []string) []string {
+	switch prog {
+	case "ssh":
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			if a == "--" {
+				continue
+			}
+			if strings.HasPrefix(a, "-") {
+				if sshTakesNext(a) {
+					i++
+				}
+				continue
+			}
+			rest := args[i+1:] // a is the host
+			if len(rest) > 0 && rest[0] == "--" {
+				rest = rest[1:]
+			}
+			return rest
+		}
+	case "heroku":
+		if len(args) == 0 || (args[0] != "run" && args[0] != "run:detached") {
+			return nil
+		}
+		for i := 1; i < len(args); i++ {
+			a := args[i]
+			if a == "--" {
+				return args[i+1:]
+			}
+			if strings.HasPrefix(a, "-") {
+				if herokuValueOpts[a] {
+					i++
+				}
+				continue
+			}
+			return args[i:]
+		}
+	case "fly", "flyctl":
+		for i, a := range args {
+			if (a == "-C" || a == "--command") && i+1 < len(args) {
+				return []string{args[i+1]}
+			}
+			if v, ok := strings.CutPrefix(a, "--command="); ok {
+				return []string{v}
+			}
+		}
+	case "oc", "kubectl":
+		if !slices.Contains(args, "exec") && !slices.Contains(args, "rsh") {
+			return nil
+		}
+		for i, a := range args {
+			if a == "--" {
+				return args[i+1:]
+			}
+		}
+	}
+	return nil
+}
+
+// bareTruncate matches a line (or statement) that only truncates a file.
+var bareTruncate = regexp.MustCompile(`(?:^|[;&|]\s*)(?::\s*)?>\s*[^\s>&]`)
+
+// quoteWords joins words into one shell line, quoting any word that holds
+// whitespace or a quote, so a quoted remote command keeps its boundaries.
+func quoteWords(words []string) string {
+	out := make([]string, len(words))
+	for i, w := range words {
+		if strings.ContainsAny(w, " \t\n'\"") {
+			out[i] = "'" + strings.ReplaceAll(w, "'", `'\''`) + "'"
+		} else {
+			out[i] = w
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// subFamily runs the destructive family checks over a command run elsewhere
+// (a remote or exec transport, or runuser -- CMD): the data-store,
+// infrastructure, container, cluster and git checks, past any sudo or
+// package runner on the far side, plus a remote file truncation.
+func (r Rules) subFamily(words, stdin []string) (string, bool) {
+	return r.subFamilyAt(words, stdin, 0)
+}
+
+func (r Rules) subFamilyAt(words, stdin []string, depth int) (string, bool) {
+	if len(words) == 0 || depth > maxHandDepth {
+		return "", false
+	}
+	line := quoteWords(words)
+	if len(words) == 1 {
+		line = words[0] // one quoted word is itself the command line
+	}
+	// ssh joins its words with spaces for the far shell to parse again, so
+	// that reading is judged too.
+	if joined := strings.Join(words, " "); joined != line {
+		if what, ok := r.subLine(joined, stdin, depth); ok {
+			return what, true
+		}
+	}
+	return r.subLine(line, stdin, depth)
+}
+
+func (r Rules) subLine(line string, stdin []string, depth int) (string, bool) {
+	if bareTruncate.MatchString(line) {
+		return "overwrite a remote file", true // > FILE or : > FILE truncates it
+	}
+	s, ok := parseScript(line)
+	if !ok {
+		return "", false
+	}
+	for _, cmd := range s.cmds {
+		if len(cmd.stdin) == 0 {
+			cmd.stdin = stdin
+		}
+		plain, plainArgs := cmd.program()
+		if plain == "" {
+			if len(cmd.writes) > 0 {
+				return "overwrite a remote file", true // a bare > FILE truncates it
+			}
+			continue
+		}
+		w := packageRunner(append([]string{plain}, plainArgs...))
+		p, a := command{words: w}.program()
+		p = progBase(p)
+		// A shell's -c code on the far side is judged as its own line.
+		if shellNames[p] {
+			if code, ok := shellDashC(a); ok && code != "" {
+				if what, ok := r.subFamilyAt([]string{code}, cmd.stdin, depth+1); ok {
+					return what, true
+				}
+			}
+		}
+		for _, fn := range []func() (string, bool){
+			func() (string, bool) { return stdinDestructive(p, cmd.stdin) },
+			func() (string, bool) { return dataInfraDestructive(p, a) },
+			func() (string, bool) { return clusterDestructive(p, a) },
+			func() (string, bool) { return r.embeddedDataStore(cmd) },
+		} {
+			if what, ok := fn(); ok {
+				return what, true
+			}
+		}
+		if p == "git" {
+			if what, ok := gitPushDestructive(a); ok {
+				return what, true
+			}
+			if what, ok := gitPruneHistory(a); ok {
+				return what, true
+			}
+		}
+		// Truncating or zeroing a file on the far side: `: > f`, `true > f`,
+		// cp /dev/null f, truncate.
+		switch {
+		case (p == "" || p == ":" || p == "true") && len(cmd.writes) > 0:
+			return "overwrite a remote file", true
+		case p == "cp" && len(operands(a)) > 0 && operands(a)[0] == "/dev/null":
+			return "overwrite a remote file", true
+		case len(cmd.writes) > 0 && emptyOutput(p, a):
+			return "overwrite a remote file", true // echo > f, printf '' > f, cat /dev/null > f
+		case p == "truncate":
+			return "overwrite a remote file", true
+		}
+	}
+	return "", false
+}
+
+// emptyOutput reports a command that prints nothing or one empty line (echo
+// with only flags, printf with an empty format, cat /dev/null), so redirecting
+// it to a file empties the file.
+func emptyOutput(prog string, args []string) bool {
+	ops := operands(args)
+	switch prog {
+	case "echo":
+		return len(ops) == 0
+	case "printf":
+		return len(ops) == 0 || ops[0] == ""
+	case "cat":
+		return len(ops) == 1 && ops[0] == "/dev/null"
+	}
+	return false
+}
+
+// remoteExec runs its command on another host or in a container, so the paths
+// it names are not host ground.
+func remoteExec(prog string) bool {
+	switch prog {
+	case "ssh", "fly", "heroku":
+		return true
+	}
+	return false
+}
+
+// pureSearch reports a searcher whose operands are only patterns and paths:
+// rg --pre CMD and ack/ag --pager CMD run CMD, so those are not pure searches.
+func pureSearch(prog string, args []string) bool {
+	if !searcher[prog] {
+		return false
+	}
+	for _, a := range args {
+		if a == "--pre" || a == "--pager" || strings.HasPrefix(a, "--pre=") || strings.HasPrefix(a, "--pager=") {
+			return false
+		}
+	}
+	return true
+}
+
+// textOnly reports a command whose output stays text: it is not piped on to
+// anything but a plain reader, not substituted into another command, and not
+// redirected to a file other than /dev/null. Only then are a searcher's
+// patterns or a sed script data.
+func textOnly(cmd command) bool {
+	if cmd.feeds {
+		return false
+	}
+	for _, w := range cmd.writes {
+		if w != "/dev/null" {
+			return false
+		}
+	}
+	return true
+}
+
+// envSplits reports a wrapper chain with env -S/--split-string, whose value
+// program() splits into the command line env runs.
+func envSplits(words []string) bool {
+	inEnv := false
+	for _, w := range wrapperPrefix(words) {
+		switch {
+		case path.Base(w) == "env":
+			inEnv = true
+		case inEnv && (strings.HasPrefix(w, "-S") || strings.HasPrefix(w, "--split-string")):
+			return true
+		}
+	}
+	return false
+}
+
+// sedVerdict asks when a sed script runs the edited input as a command (a
+// bare e or s///e), and judges the command of each `e CMD` as handed code.
+func (r Rules) sedVerdict(k *given, c Case, args []string, where string, depth int, container bool) *Verdict {
+	src, ok := sedscript.Scripts(args)
+	if !ok {
+		return nil
+	}
+	sc, err := sedscript.Parse(src)
+	if err != nil {
+		return nil
+	}
+	if sc.RunsInput {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("sed runs the lines it edits as shell commands (e), which the check cannot read; %s", remit(c)),
+			Advice:    "run the commands plainly so they can be checked, or confirm this is meant"}
+	}
+	for _, f := range sc.Files {
+		if f != "/dev/null" && f != "/dev/stdout" && f != "/dev/stderr" && !container && r.strayOperand(k, c, []string{f}) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("sed writes (w) %s, outside own ground, replacing what it holds; %s", f, remit(c)),
+				Advice:    "write inside the workspace, or confirm this is meant"}
+		}
+	}
+	for _, code := range sc.Runs {
+		if r.codeVerdict(k, c, code, where, depth+1, container) != nil {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("sed runs a command (e) that looks like it deletes or shells out; %s", remit(c)),
+				Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+		}
+	}
+	return nil
+}
+
+// searchData reports a searcher whose operands are data: a pure search whose output stays text.
+func searchData(cmd command) bool {
+	prog, args := cmd.program()
+	return pureSearch(progBase(prog), args) && textOnly(cmd)
+}
+
+// sedInert reports a sed command whose script is all on its command line,
+// only edits text (no e command, s///e or w write) and whose output stays text.
+func sedInert(args []string) bool {
+	src, ok := sedscript.Scripts(args)
+	if !ok {
+		return false
+	}
+	sc, err := sedscript.Parse(src)
+	return err == nil && sc.Inert()
+}
+
+// searcher reads or matches patterns in its arguments; they are data.
+var searcher = map[string]bool{"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true}
+
+func (r Rules) embeddedDataStore(cmd command) (string, bool) {
+	prog, _ := cmd.program()
+	switch progBase(prog) {
+	case "echo", "printf", "grep", "egrep", "fgrep", "rg", "ag":
+		return "", false // a printer or searcher: its operands are text, not a client
+	}
+	// Flatten the words to tokens, dropping a commit/tag/PR message value whole
+	// (a client named in a message is not run), for git/gh/glab/hg only.
+	msgProg := false
+	switch progBase(prog) {
+	case "git", "gh", "glab", "hg", "jj":
+		msgProg = true
+	}
+	var tok []string
+	for wi := 0; wi < len(cmd.words); wi++ {
+		w := cmd.words[wi]
+		if msgProg && msgFlag(w) {
+			if !strings.Contains(w, "=") {
+				wi++ // drop the message value word whole
+			}
+			continue
+		}
+		tok = append(tok, strings.Fields(w)...)
+	}
+	for i := 0; i < len(tok); i++ {
+		base := progBase(tok[i])
+		if base == prog || !sqlClient[base] && base != "redis-cli" && base != "mongosh" &&
+			base != "mongo" && base != "dropdb" && base != "dropuser" && base != "mysqladmin" {
+			continue
+		}
+		rest := tok[i+1:]
+		if what, ok := dataInfraDestructive(base, rest); ok {
+			return what, true
+		}
+		if what, ok := stdinDestructive(base, cmd.stdin); ok {
+			return what, true
+		}
+	}
+	return "", false
+}
+
+// dropMessages removes each message flag and its value from args.
+func dropMessages(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if msgFlag(args[i]) {
+			if !strings.Contains(args[i], "=") && (len(args[i]) <= 2 || !strings.HasPrefix(args[i], "-m")) {
+				i++
+			}
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
+// msgFlag reports a commit/tag/PR message flag whose value is prose.
+func msgFlag(w string) bool {
+	switch w {
+	case "-m", "--message", "--title", "--body", "-am", "-sm":
+		return true
+	}
+	return strings.HasPrefix(w, "--message=") || strings.HasPrefix(w, "--title=") ||
+		strings.HasPrefix(w, "--body=") || (len(w) > 2 && strings.HasPrefix(w, "-m"))
+}
+
+func dataInfraDestructive(prog string, args []string) (string, bool) {
+	switch prog {
+	case "git", "gh", "glab", "hg", "jj", "svn":
+		args = dropMessages(args) // a commit/tag/PR message is prose, not a command
+	case "grep", "egrep", "fgrep", "rg", "ag", "ack":
+		if pureSearch(prog, args) {
+			return "", false // a searcher's operands are patterns
+		}
+	}
+	text := strings.Join(splitAttachedFlags(args), " ")
+	low := strings.ToLower(text)
+	if ormReset.MatchString(prog + " " + text) {
+		return "reset a database through an ORM", true
+	}
+	switch {
+	case prog == "redis-cli" && redisFlush.MatchString(low):
+		return "flush a Redis store", true
+	case (prog == "mongosh" || prog == "mongo") && mongoDrop.MatchString(text):
+		return "drop or empty a Mongo database or collection", true
+	case sqlClient[prog]:
+		if sqlDrop.MatchString(low) {
+			return "drop or empty a database or table", true
+		}
+	case prog == "dropdb" || prog == "dropuser":
+		return "drop a database", true
+	case prog == "mysqladmin" && strings.Contains(low, "drop"):
+		return "drop a database", true
+	case prog == "terraform" || prog == "tofu" || prog == "terragrunt":
+		if tfDestroyOp(args) {
+			return "destroy infrastructure", true
+		}
+	case prog == "pulumi" || prog == "cdk":
+		if slices.Contains(args, "destroy") || prog == "pulumi" && slices.Contains(args, "down") ||
+			prog == "pulumi" && slices.Contains(args, "up") && (slices.Contains(args, "--replace") || hasPrefix(args, "--replace=") || slices.Contains(args, "--target-replace") || hasPrefix(args, "--target-replace=")) {
+			return "destroy infrastructure", true
+		}
+	case prog == "sam" && slices.Contains(args, "delete"),
+		(prog == "serverless" || prog == "sls") && slices.Contains(args, "remove"),
+		prog == "eksctl" && slices.Contains(args, "delete"):
+		return "destroy infrastructure", true
+	case prog == "gcloud" || prog == "az" || prog == "doctl" || prog == "hcloud":
+		for _, a := range args {
+			if a == "delete" || a == "destroy" || strings.HasPrefix(a, "delete-") || a == "bulk-delete" {
+				return "delete cloud resources", true
+			}
+		}
+	case prog == "aws":
+		if awsDestroy.MatchString(text) {
+			return "delete cloud resources", true
+		}
+	case prog == "heroku":
+		for _, a := range args {
+			switch a {
+			case "pg:reset":
+				return "reset a Heroku database", true
+			case "addons:destroy", "apps:destroy":
+				return "destroy a Heroku add-on or app", true
+			}
+		}
+	}
+	return "", false
+}
+
+// splitAttachedFlags splits an attached -c/-e/--command/--execute value so a
+// query glued to the flag (-c"DROP …", --execute=DROP) is still matched.
+func splitAttachedFlags(args []string) []string {
+	var out []string
+	for _, a := range args {
+		switch {
+		case len(a) > 2 && (strings.HasPrefix(a, "-c") || strings.HasPrefix(a, "-e")) && a[1] != '-':
+			out = append(out, a[:2], a[2:])
+		case strings.HasPrefix(a, "--command="):
+			out = append(out, "--command", strings.TrimPrefix(a, "--command="))
+		case strings.HasPrefix(a, "--execute="):
+			out = append(out, "--execute", strings.TrimPrefix(a, "--execute="))
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// stdinDestructive reads a data-store client's literal stdin (a heredoc, a
+// here-string, a printed literal piped in) as the client's own language, not
+// as shell code, and reports a drop or flush in it.
+func stdinDestructive(prog string, stdin []string) (string, bool) {
+	if len(stdin) == 0 {
+		return "", false
+	}
+	text := strings.Join(stdin, "\n")
+	switch {
+	case prog == "redis-cli" && redisFlush.MatchString(strings.ToLower(text)):
+		return "flush a Redis store", true
+	case (prog == "mongosh" || prog == "mongo") && mongoDrop.MatchString(text):
+		return "drop or empty a Mongo database or collection", true
+	case sqlClient[prog] && sqlDrop.MatchString(strings.ToLower(text)):
+		return "drop or empty a database or table", true
+	}
+	return "", false
+}
+
+// tfDestroyOp reports terraform/tofu/terragrunt destroy as the subcommand
+// (past -chdir= and run-all), apply -destroy, state rm or workspace delete;
+// plan -destroy is a dry run.
+func tfDestroyOp(args []string) bool {
+	ops := operands(args)
+	for len(ops) > 0 && ops[0] == "run-all" {
+		ops = ops[1:]
+	}
+	if len(ops) == 0 {
+		return false
+	}
+	switch ops[0] {
+	case "destroy", "taint":
+		return true
+	case "apply":
+		if slices.Contains(args, "-destroy") {
+			return true
+		}
+		for _, a := range args {
+			if a == "-replace" || strings.HasPrefix(a, "-replace=") {
+				return true // replace destroys and recreates the resource
+			}
+		}
+	case "state":
+		return len(ops) > 1 && ops[1] == "rm"
+	case "workspace":
+		return len(ops) > 1 && ops[1] == "delete"
+	}
+	return false
+}
+
+var sqlDrop = regexp.MustCompile(`(?m)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit|['"]))`)
+var redisFlush = regexp.MustCompile(`\bflush(?:all|db)\b`)
+var mongoDrop = regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`)
+var awsDestroy = regexp.MustCompile(`\bs3\s+rb\b|\bs3\s+rm\b.*--recursive\b|\bs3\s+sync\b.*--delete\b|\b(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|\bdelete-objects\b`)
+
+// ormReset matches the framework commands that drop or wipe every table.
+var ormReset = regexp.MustCompile(`\bprisma\s+migrate\s+reset\b|\bprisma\s+db\s+push\b.*--force-reset\b|` +
+	`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load|setup)\b|` +
+	`\b(?:manage\.py|django-admin)\s+flush\b|` +
+	`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b|` +
+	`\bdotnet\s+ef\s+database\s+drop\b|\bsequelize(?:-cli)?\s+db:drop\b`)
+
+// clusterDestructive reports a container or cluster operation with no undo.
+func clusterDestructive(prog string, args []string) (string, bool) {
+	if what, ok := dataInfraDestructive(prog, args); ok {
+		return what, true
+	}
+	if prog == "git" {
+		if what, ok := gitPushDestructive(args); ok {
+			return what, true
+		}
+		if what, ok := gitPruneHistory(args); ok {
+			return what, true
+		}
+	}
+	switch prog {
+	case "docker", "podman", "nerdctl":
+		verb, idx, ok := containerAction(prog, args)
+		if !ok {
+			return "", false
+		}
+		rest := args[idx:]
+		ops := operands(rest)
+		first := ""
+		if len(ops) > 0 {
+			first = ops[0]
+		}
+		forced := hasFlag(rest, "--force") || shortFlag(rest, 'f')
+		switch {
+		case verb == "system" && (first == "prune" || first == "reset"):
+			return "prune or reset the container system", true
+		case verb == "volume" && (first == "rm" || first == "remove" || first == "prune"):
+			return "delete container volumes", true
+		case verb == "prune" || verb == "network" && first == "prune": // container prune, network prune
+			return "prune containers or networks", true
+		case (verb == "stack" || verb == "service") && (first == "rm" || first == "remove"):
+			return "remove a swarm stack or service", true
+		case verb == "swarm" && first == "leave" && forced:
+			return "force a node out of the swarm", true
+		case verb == "image" && first == "prune" && (hasFlag(rest, "--all") || shortFlag(rest, 'a')):
+			return "remove every container image", true
+		case (verb == "rmi" || verb == "image" && (first == "rm" || first == "remove")) && forced:
+			return "force-remove container images", true
+		case (verb == "rm" || verb == "container" && first == "rm") && forced && (shortFlag(rest, 'v') || hasFlag(rest, "--volumes")):
+			return "force-remove a container and its anonymous volumes", true
+		}
+	case "helm":
+		if verb, _, ok := containerAction("helm", args); ok && helmUninstall[verb] {
+			return "uninstall a Helm release", true
+		}
+	case "kubectl", "oc":
+		verb, idx, ok := containerAction("kubectl", args)
+		if !ok {
+			return "", false
+		}
+		rest := args[idx:]
+		ops := kubectlOperands(rest)
+		switch verb {
+		case "delete":
+			if hasFlag(rest, "--all") || hasFlag(rest, "-A") || hasFlag(rest, "--all-namespaces") {
+				return "delete every resource of a kind or across namespaces", true
+			}
+			if len(ops) > 0 {
+				for _, kind := range kubectlKinds(ops[0]) {
+					if destructiveKind[kind] {
+						return "delete namespaces, volumes, definitions or every resource", true
+					}
+				}
+			}
+		case "scale":
+			for i, a := range rest {
+				if a == "--replicas=0" || a == "--replicas" && i+1 < len(rest) && rest[i+1] == "0" {
+					return "scale a workload to zero", true
+				}
+			}
+		case "drain", "cordon":
+			return verb + " a node", true
+		case "patch", "replace":
+			if hasFlag(rest, "--force") || strings.Contains(strings.Join(args, " "), "finalizers") ||
+				prodScope(args) {
+				return "force or patch a production resource", true
+			}
+		case "apply":
+			if hasFlag(rest, "--prune") {
+				return "apply with prune, which deletes resources", true
+			}
+		}
+	}
+	return "", false
+}
+
+// shortFlag reports a short-option cluster holding letter (-af holds a and f).
+func shortFlag(args []string, letter byte) bool {
+	for _, a := range args {
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' && strings.IndexByte(a[1:], letter) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// program refuses a command whose program is not there to run: locally,
+// one not on the PATH commands get; on a host, one nothing has shown is
+// asked about first.
+func (r Rules) program(k *given, c Case) *Verdict {
+	src, ok := line(c, k)
+	if !ok {
+		return nil
+	}
+	s, ok := parseScript(src)
+	if !ok || s.setsPath || declaredRead(c) {
+		return nil
+	}
+	for _, cmd := range s.cmds {
+		if p, _ := cmd.program(); installers[p] {
+			return nil // the line installs what it then runs
+		}
+	}
+	for _, cmd := range s.cmds {
+		p, _ := cmd.program()
+		if p == "" || strings.ContainsAny(p, "/$=") || builtins[p] || s.funcs[p] || strings.HasPrefix(p, "-") {
+			continue
+		}
+		if !remote(c) {
+			if r.LookPath == nil || r.LookPath(p) {
+				continue
+			}
+			return &Verdict{Decision: policy.Deny, Code: CodeUnknownProgram,
+				Rationale: fmt.Sprintf("%s is not on the PATH commands run with here, so this cannot work", p),
+				Advice:    fmt.Sprintf("inspect first (command -v %s), or use a program that is installed", p)}
+		}
+		if common[p] || k.named(p) || k.observed(p) {
+			continue
+		}
+		host := k.str("host")
+		return &Verdict{Decision: policy.Ask, Code: CodeUnknownProgram, Confidence: 0.6,
+			Rationale: fmt.Sprintf("nothing in this session has shown that %s exists on %s", p, host),
+			Advice:    fmt.Sprintf("inspect first (command -v %s on %s), then run it", p, host)}
+	}
+	return nil
+}
+
+// evidence asks about a change aimed at a path or host that the user never
+// named and nothing earlier in the session showed: the shape of a target
+// the model made up, or took from text it fetched.
+func (r Rules) evidence(k *given, c Case) *Verdict {
+	if !c.Mutates || declaredRead(c) {
+		return nil
+	}
+	var paths, hosts []string
+	switch c.Tool {
+	case "write", "edit":
+		paths = append(paths, k.str("path"))
+	case "ssh_put":
+		paths = append(paths, k.str("remote_path"))
+	case "bash", "ssh":
+		s, ok := parseScript(k.str("command"))
+		if !ok {
+			return nil
+		}
+		for _, cmd := range s.cmds {
+			paths = append(paths, cmd.writes...)
+			prog, args := cmd.program()
+			paths = append(paths, written(prog, args)...)
+			for _, h := range reached(prog, args) {
+				if !wellKnown[h] || sends(prog, args) {
+					hosts = append(hosts, h)
+				}
+			}
+		}
+	case "k8s_apply":
+		for _, key := range []string{"namespace", "name"} {
+			v := k.str(key)
+			if v == "" || v == "default" || k.named(v) || k.observed(v) {
+				continue
+			}
+			return &Verdict{Decision: policy.Ask, Code: CodeUnverifiedTarget, Confidence: 0.7,
+				Rationale: fmt.Sprintf("the %s %s was never named by the person nor shown by an earlier call", key, v),
+				Advice:    "inspect first (k8s_get) so the target is one you have seen, or ask the person which they mean"}
+		}
+		return nil
+	default:
+		return nil
+	}
+	for _, p := range paths {
+		if !strings.HasPrefix(p, "/") || k.named(p) || k.observed(p) {
+			continue
+		}
+		if !remote(c) && k.local(p) || remote(c) && scratch(path.Clean(p)) {
+			continue
+		}
+		return &Verdict{Decision: policy.Ask, Code: CodeUnverifiedTarget, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s was never named by the person nor shown by an earlier call", p),
+			Advice:    fmt.Sprintf("inspect first (ls -la %s) so the target is one you have seen, or ask the person", path.Dir(p))}
+	}
+	for _, h := range hosts {
+		if loopback(h) || k.named(h) || k.observed(h) {
+			continue
+		}
+		return &Verdict{Decision: policy.Ask, Code: CodeUnverifiedHost, Confidence: 0.7,
+			Rationale: fmt.Sprintf("the host %s was never named by the person nor shown by an earlier command; "+
+				"text fetched from the web does not count", h),
+			Advice: "use a host the person named, or ask them before contacting this one"}
+	}
+	return nil
+}
+
+// wellKnown are the hosts code and packages come from. Fetching from one
+// needs no evidence; sending to one still does.
+var wellKnown = map[string]bool{}
+
+func init() {
+	for _, h := range strings.Fields(`github.com raw.githubusercontent.com objects.githubusercontent.com codeload.github.com
+		gitlab.com bitbucket.org pypi.org files.pythonhosted.org registry.npmjs.org registry.yarnpkg.com proxy.golang.org
+		sum.golang.org go.dev golang.org crates.io static.crates.io index.crates.io rubygems.org repo.maven.apache.org
+		repo1.maven.org dl.google.com deb.debian.org archive.ubuntu.com security.ubuntu.com dl-cdn.alpinelinux.org
+		registry-1.docker.io docker.io ghcr.io quay.io`) {
+		wellKnown[h] = true
+	}
+}
+
+// sends reports a command that sends data to the host it names, rather
+// than fetching from it.
+func sends(prog string, args []string) bool {
+	switch prog {
+	case "scp", "rsync", "sftp", "nc", "ncat", "netcat", "socat", "telnet", "ftp", "ssh":
+		return true
+	case "git":
+		return len(args) > 0 && args[0] == "push"
+	case "curl":
+		for i, a := range args {
+			switch {
+			case a == "-d" || a == "-F" || a == "-T" || a == "--upload-file" || a == "--form" || a == "--json",
+				strings.HasPrefix(a, "--data"), strings.HasPrefix(a, "-d") && len(a) > 2:
+				return true
+			case (a == "-X" || a == "--request") && i+1 < len(args) && strings.ToUpper(args[i+1]) != "GET" && strings.ToUpper(args[i+1]) != "HEAD":
+				return true
+			}
+		}
+	case "wget":
+		return hasPrefix(args, "--post") || hasPrefix(args, "--method") || hasPrefix(args, "--body")
+	case "http", "https":
+		for _, a := range args {
+			if strings.Contains(a, "=") || strings.Contains(a, ":=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hostChoice asks about a change on one configured host when the task, or
+// the approved plan, names others by name and this one nowhere: the shape of
+// a model that picked the wrong machine. A task that names no configured
+// host ("the web hosts") leaves the choice to the model.
+func (r Rules) hostChoice(k *given, c Case) *Verdict {
+	if (c.Tool != "ssh" && c.Tool != "ssh_put") || declaredRead(c) || len(r.Hosts) == 0 {
+		return nil
+	}
+	target := strings.ToLower(k.str("host"))
+	text := k.said // the approved plan is in it already
+	var chosen *DeclaredHost
+	var named []string
+	for i, h := range r.Hosts {
+		hit := false
+		for _, n := range []string{h.Name, h.Addr} {
+			n = strings.ToLower(n)
+			if n == "" {
+				continue
+			}
+			if n == target {
+				chosen = &r.Hosts[i]
+			}
+			hit = hit || mentions(text, n)
+		}
+		if hit {
+			named = append(named, h.Name)
+		}
+	}
+	if chosen == nil || len(named) == 0 {
+		return nil
+	}
+	for _, n := range []string{chosen.Name, chosen.Addr} {
+		if n != "" && (mentions(text, strings.ToLower(n)) || k.observed(n)) {
+			return nil
+		}
+	}
+	return &Verdict{Decision: policy.Ask, Code: CodeUnverifiedHost, Confidence: 0.8,
+		Rationale: fmt.Sprintf("the task names %s, not %s, and nothing earlier showed %s", strings.Join(named, ", "), chosen.Name, chosen.Name),
+		Advice:    fmt.Sprintf("run it on %s, as the task says, or ask the person whether %s is meant", strings.Join(named, " or "), chosen.Name)}
+}
+
+// mentions reports n in text as a whole word, so web1 is not found in web10.
+func mentions(text, n string) bool {
+	for i := 0; ; {
+		j := strings.Index(text[i:], n)
+		if j < 0 {
+			return false
+		}
+		start, end := i+j, i+j+len(n)
+		// A dot ends a word only where no name goes on after it: web1. ends a
+		// sentence; web1.example is another name.
+		after := end == len(text) || !hostRune(text[end]) && (text[end] != '.' || end+1 == len(text) || !hostRune(text[end+1]))
+		if (start == 0 || !hostRune(text[start-1]) && text[start-1] != '.') && after {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+func hostRune(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '_'
+}
+
+// bareMentions reports word as a whole word in said, counting only where it
+// stands on its own: not inside a path (those are blanked first) and not the
+// host the call names.
+func bareMentions(said, word, host string) bool {
+	if word == "" || word == host {
+		return false
+	}
+	bare := userPaths.ReplaceAllString(said, " ")
+	return mentions(bare, word)
+}
+
+// written names the files a command writes through its arguments.
+func written(prog string, args []string) []string {
+	ops := operands(args)
+	switch prog {
+	case "tee", "touch", "mkdir", "chmod", "chown", "chgrp":
+		if prog == "chmod" || prog == "chown" || prog == "chgrp" {
+			if len(ops) > 0 {
+				ops = ops[1:] // the mode or owner
+			}
+		}
+		return ops
+	case "cp", "mv", "ln", "install", "rsync", "scp":
+		if len(ops) > 1 {
+			return ops[len(ops)-1:]
+		}
+	case "sed":
+		if hasFlag(args, "-i") || hasPrefix(args, "-i") {
+			return sedFiles(args)
+		}
+	case "perl":
+		if hasFlag(args, "-i") || hasPrefix(args, "-i") {
+			if len(ops) > 1 {
+				return ops[1:]
+			}
+		}
+	case "find":
+		var out []string
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "-fprint", "-fprint0", "-fprintf", "-fls":
+				if i+1 < len(args) {
+					out = append(out, args[i+1]) // the file find writes
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// sedFiles are the files sed edits: its operands past the script, where each
+// -e/--expression value (or -f file) is a script, not a file it writes.
+func sedFiles(args []string) []string {
+	var ops []string
+	script := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			ops = append(ops, args[i+1:]...)
+			i = len(args)
+		case a == "-e" || a == "--expression" || a == "-f" || a == "--file":
+			script = true
+			i++
+		case strings.HasPrefix(a, "--expression=") || strings.HasPrefix(a, "--file="):
+			script = true
+		case strings.HasPrefix(a, "-") && a != "-":
+		default:
+			ops = append(ops, a)
+		}
+	}
+	if !script && len(ops) > 0 {
+		ops = ops[1:] // the first operand is the script
+	}
+	return ops
+}
+
+func hasPrefix(args []string, p string) bool {
+	for _, a := range args {
+		if strings.HasPrefix(a, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// netPrograms reach the host their arguments name.
+var netPrograms = map[string]bool{"curl": true, "wget": true, "nc": true, "ncat": true, "netcat": true, "socat": true,
+	"telnet": true, "ssh": true, "scp": true, "sftp": true, "rsync": true, "ftp": true, "http": true, "https": true}
+
+var urlHost = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://(?:[^/@\s]*@)?(\[[^\]]+\]|[^/:?#\s]+)`)
+
+// reached names the hosts a command contacts, from its URLs and the
+// arguments of programs that reach the network.
+func reached(prog string, args []string) []string {
+	var out []string
+	for _, a := range args {
+		if m := urlHost.FindStringSubmatch(a); m != nil {
+			out = append(out, strings.ToLower(strings.Trim(m[1], "[]")))
+		}
+	}
+	if !netPrograms[prog] {
+		return out
+	}
+	for _, a := range operands(args) {
+		if strings.Contains(a, "://") || strings.HasPrefix(a, "$") {
+			continue
+		}
+		h := a
+		if _, after, ok := strings.Cut(h, "@"); ok {
+			h = after
+		}
+		if i := strings.IndexAny(h, ":/"); i >= 0 {
+			h = h[:i]
+		}
+		if hostish(h) {
+			out = append(out, strings.ToLower(h))
+		}
+	}
+	return out
+}
+
+// hostish is a word shaped like a host name or an address.
+func hostish(h string) bool {
+	if h == "" || !strings.Contains(h, ".") || strings.HasPrefix(h, ".") {
+		return false
+	}
+	return Names(h) != nil
+}
+
+func loopback(h string) bool {
+	switch h {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal", "host.containers.internal":
+		return true
+	}
+	return strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local") || strings.HasPrefix(h, "127.")
+}
+
+// composition asks before a call that can send data out, once a credential
+// file has been read in the session.
+func (r Rules) composition(k *given, c Case) *Verdict {
+	if !egressCapable(c, k) {
+		return nil
+	}
+	if f := sentFile(c, k); f != "" {
+		return &Verdict{Decision: policy.Ask, Code: CodeCredentialEgress, Confidence: 0.8,
+			Rationale: fmt.Sprintf("this call reads a credential (%s) and can send it out", clip(f, 80)),
+			Advice:    "do not send credential contents anywhere; if the task needs the credential, ask the person to store it as a secret"}
+	}
+	for _, p := range c.Recent {
+		if p.IsError || !p.Credential {
+			continue
+		}
+		return &Verdict{Decision: policy.Ask, Code: CodeCredentialEgress, Confidence: 0.8,
+			Rationale: fmt.Sprintf("a credential (%s) was read earlier in this session, and this call can send data out", clip(p.Subject, 80)),
+			Advice:    "do not send credential contents anywhere; if the task needs the credential, ask the person to store it as a secret"}
+	}
+	return nil
+}
+
+// Untrusted reports a call whose output is text from outside, which names
+// hosts and paths someone else chose and so is no evidence for a target:
+// the web tools, an MCP server's tools, and a bash or ssh line that reaches
+// the network.
+func Untrusted(tool, args string) bool {
+	switch {
+	case tool == "web_fetch" || tool == "web_search" || strings.HasPrefix(tool, "mcp__"):
+		return true
+	case tool == "bash" || tool == "ssh":
+		var a struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(args), &a) != nil {
+			return true
+		}
+		s, ok := parseScript(a.Command)
+		if !ok {
+			return true
+		}
+		for _, cmd := range s.cmds {
+			prog, rest := cmd.program()
+			if netPrograms[prog] && prog != "ssh" && prog != "scp" && prog != "rsync" {
+				return true
+			}
+			if prog == "git" && len(rest) > 0 && (rest[0] == "clone" || rest[0] == "fetch" || rest[0] == "pull") {
+				return true
+			}
+			for _, w := range rest {
+				if urlHost.MatchString(w) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func egressCapable(c Case, k *given) bool {
+	switch c.Tool {
+	case "web_fetch", "web_search", "ssh", "ssh_connect", "ssh_put":
+		return true
+	case "bash":
+		s, ok := parseScript(k.str("command"))
+		if !ok {
+			return true // a line that cannot be read could do anything
+		}
+		for _, cmd := range s.cmds {
+			prog, args := cmd.program()
+			if netPrograms[prog] {
+				return true
+			}
+			if prog == "git" && len(args) > 0 && (args[0] == "push" || args[0] == "remote") {
+				return true
+			}
+			if interpreters[prog] && (hasFlag(args, "-c") || hasFlag(args, "-e")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var credentialPatterns = regexp.MustCompile(`(?i)(?:^|[/\s"'])(?:\.ssh/|id_(?:rsa|dsa|ecdsa|ed25519)\b|\.aws/credentials|\.aws/config|` +
+	`\.git/config|\.netrc|\.git-credentials|\.docker/config\.json|\.kube/config|\.npmrc|\.pypirc|\.pgpass|\.vault-token|` +
+	`/etc/shadow|\.env(?:\.[a-z0-9_-]+)?(?:$|[\s"'])|[a-z0-9_-]*credentials?\.json|[^\s/"']+\.(?:pem|key|p12|pfx)(?:$|[\s"']))`)
+
+// publicKeyMaterial are files that look like keys but hold only what is
+// published: certificates, chains and public keys.
+var publicKeyMaterial = regexp.MustCompile(`(?i)(?:/certs?/[^\s"']*|[^\s/"']*\.crt\b|[^\s/"']*\.pub\b|(?:^|[/\s"'_.-])(?:cert|fullchain|chain|ca|bundle)\.pem\b|\.env\.(?:example|sample|template|dist)\b)`)
+
+func credentialish(subject string) bool {
+	if !credentialPatterns.MatchString(subject) {
+		return false
+	}
+	// A subject naming a public file is still a credential if it names a secret one too.
+	return !publicKeyMaterial.MatchString(subject) || credentialPatterns.MatchString(publicKeyMaterial.ReplaceAllString(subject, " "))
+}
+
+// sentFile is a credential file the call itself reads and could send: an
+// ssh_put of one, or a bash line that can reach the network and reads one
+// (curl -d @.env, a substitution, a redirection).
+func sentFile(c Case, k *given) string {
+	switch c.Tool {
+	case "ssh_put":
+		if f := k.str("file"); credentialish(f) {
+			return f
+		}
+	case "bash":
+		s, ok := parseScript(k.str("command"))
+		if !ok {
+			return ""
+		}
+		for _, cmd := range s.cmds {
+			for _, w := range append(append([]string(nil), cmd.words...), cmd.reads...) {
+				_, f, _ := strings.Cut(w, "@")
+				if f == "" {
+					f = w
+				}
+				if credentialish(" " + f) {
+					return f
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func clip(s string, n int) string {
+	if rs := []rune(s); len(rs) > n {
+		return string(rs[:n]) + "…"
+	}
+	return s
+}
+
+var interpreters = map[string]bool{"python": true, "python3": true, "node": true, "ruby": true, "perl": true, "php": true}
+
+// installers put programs on the PATH; a line running one may then run what it installed.
+var installers = map[string]bool{"apt": true, "apt-get": true, "brew": true, "pip": true, "pip3": true, "npm": true,
+	"pnpm": true, "yarn": true, "go": true, "cargo": true, "gem": true, "conda": true, "mamba": true, "uv": true,
+	"pipx": true, "apk": true, "dnf": true, "yum": true, "zypper": true, "pacman": true, "nix": true, "nix-env": true,
+	"port": true, "snap": true, "asdf": true, "mise": true, "rustup": true, "corepack": true, "make": true,
+	"source": true, ".": true, "alias": true, "hash": true}
+
+// builtins are the shell's own words, which no PATH holds.
+var builtins = map[string]bool{}
+
+// common are programs any Linux host has; others are inspected first.
+var common = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`cd echo printf test [ [[ ]] true false export set unset read local declare typeset
+		source . eval exec exit return shift trap wait alias unalias type hash ulimit umask pushd popd dirs let getopts
+		command builtin jobs fg bg kill history break continue : readonly times shopt enable help logout mapfile
+		readarray caller compgen complete disown suspend fc if then else elif fi for while until do done case esac
+		function select time coproc { } ! pwd`) {
+		builtins[w] = true
+	}
+	for _, w := range strings.Fields(`ls cat head tail grep egrep fgrep awk sed cut sort uniq wc tr tee touch mkdir rmdir
+		rm cp mv ln chmod chown chgrp find xargs stat file du df free uptime ps top kill pkill pgrep id whoami hostname
+		uname date sleep env printenv which basename dirname readlink realpath tar gzip gunzip zcat bzip2 xz diff cmp
+		comm join paste split tac rev nl od hexdump md5sum sha1sum sha256sum base64 mktemp seq yes timeout nohup nice
+		sudo su ip ss netstat ping curl wget systemctl journalctl service mount umount lsblk lsof dmesg logger crontab
+		useradd usermod groupadd passwd last w who getent sh bash dash less more vi vim nano tput clear stty locale
+		ldd strings sync shutdown reboot halt poweroff hostnamectl timedatectl localectl loginctl dig nslookup host
+		openssl ssh scp rsync git python3 perl iptables nft ufw`) {
+		common[w] = true
+	}
+}
+
+// unknownRunner reports a program the structured handlers and the shell,
+// interpreter, printer and precise rules do not cover, whose arguments the
+// general handed pass must parse rather than trust.
+func unknownRunner(base string) bool {
+	return !handledRunner(base) && !shellNames[base] && !codeRunners[base] &&
+		!strings.HasPrefix(base, "python") && !printerProg[base] && !preciseProg(base) &&
+		base != "eval" && base != "source" && base != "."
+}
+
+// handledRunner names a program whose handed command runnerVerdict parses, or
+// find, whose -exec judge runs earlier, so the general handed pass skips it.
+func handledRunner(prog string) bool {
+	switch prog {
+	case "git", "kubectl", "docker", "podman", "nerdctl", "xargs", "man", "find":
+		return true
+	}
+	return false
+}
+
+// unreadVal reports a handed value that resolves only when the line runs (it
+// holds an expansion), so what it runs cannot be read.
+func unreadVal(s string) bool { return strings.Contains(s, "$") }
+
+// handedArgs are a command's arguments that could be a command line: text with
+// whitespace or a shell metacharacter, a code flag's value, less the message
+// values (a commit message, a sed script) dangerWords also drops.
+func handedArgs(cmd command, args []string) []string {
+	if prog, _ := cmd.program(); sqlClient[progBase(prog)] || progBase(prog) == "heroku" {
+		// A SQL client's query is data, except where it escapes to a shell
+		// (\!, \o |, .shell, system, COPY … PROGRAM): that part is code. The
+		// query can also arrive on stdin (echo '\! …' | psql).
+		var out []string
+		vals := append(append([]string(nil), args...), cmd.stdin...)
+		pipeOut := false
+		for _, a := range vals {
+			if code, ok := sqlShellEscape(a); ok {
+				out = append(out, code)
+			}
+			if sqlPipeOut.MatchString(a) {
+				pipeOut = true
+			}
+		}
+		if pipeOut {
+			// \o |CMD pipes the query's output to CMD, which then runs the
+			// other values' text; judge those too.
+			out = append(out, args...)
+		}
+		return out
+	}
+	text := map[string]bool{}
+	for _, w := range dangerWords(cmd) {
+		text[w] = true
+	}
+	var out []string
+	for i, a := range args {
+		switch a {
+		case "-c", "-e", "--command", "-Command", "--eval", "-x", "--exec":
+			if i+1 < len(args) {
+				out = append(out, args[i+1])
+			}
+		}
+		if argIsCode(a) && text[a] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// sqlEscape finds a SQL client's escape to a shell: psql \! and \o|/\g|
+// pipes, mysql \! and system, sqlite3 .shell/.system, and COPY … PROGRAM.
+var sqlPipeOut = regexp.MustCompile(`\\[og]\s*\|`)
+var sqlEscape = regexp.MustCompile(`(?i)\\!|\\[og]\s*\||(?:^|[;\s])system\s|\.(?:shell|system)\b|\bprogram\s`)
+
+// sqlShellEscape returns the shell code after a SQL client's escape, if any.
+func sqlShellEscape(v string) (string, bool) {
+	loc := sqlEscape.FindStringIndex(v)
+	if loc == nil {
+		return "", false
+	}
+	return strings.Trim(strings.TrimSpace(v[loc[1]:]), "'\";"), true
+}
+
+// sqlClient runs a query, not a shell command, from -c/-e, so that value is data.
+var sqlClient = map[string]bool{"psql": true, "pg:psql": true, "mysql": true, "mariadb": true, "sqlite3": true,
+	"mongosh": true, "mongo": true, "redis-cli": true, "clickhouse-client": true, "cqlsh": true,
+	"duckdb": true, "sqlcmd": true, "cockroach": true}
+
+// runnerVerdict judges code handed to git, a container runtime, xargs or man.
+func (r Rules) runnerVerdict(k *given, c Case, cmd command, prog string, args []string, where string, depth int) *Verdict {
+	ask := func() *Verdict {
+		return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+			Rationale: fmt.Sprintf("%s runs a command the check cannot read in full; %s", prog, remit(c)),
+			Advice:    "run the command plainly so it can be checked, or confirm this is meant"}
+	}
+	switch prog {
+	case "git":
+		for _, code := range gitHandedCode(args) {
+			if unreadVal(code) {
+				return ask()
+			}
+			if r.codeVerdict(k, c, code, where, depth+1, false) != nil {
+				return ask()
+			}
+		}
+		for name, v := range gitEnvAssignments(cmd) {
+			if strings.HasPrefix(name, "GIT_CONFIG_VALUE") || gitEnvCode[name] {
+				if unreadVal(v) {
+					return ask()
+				}
+				if r.codeVerdict(k, c, strings.TrimPrefix(v, "!"), where, depth+1, false) != nil {
+					return ask()
+				}
+			}
+		}
+	case "kubectl", "docker", "podman", "nerdctl":
+		verb, idx, ok := containerAction(prog, args)
+		if !ok {
+			return ask() // no subcommand located: fail closed
+		}
+		if verb == "cp" {
+			return r.containerCpVerdict(k, c, args[idx:])
+		}
+		if verb == "attach" {
+			return ask() // attach joins a running process we cannot read
+		}
+		storesCmd := verb == "service" && idx < len(args) && args[idx] == "create"
+		if !containerRunVerbs[verb] && !storesCmd {
+			if !containerReadVerbs[verb] {
+				// An unknown subcommand (an option value the tables lack, or a
+				// verb we do not know) followed by a running word is not read.
+				for _, a := range args[idx:] {
+					switch a {
+					case "exec", "run", "debug", "attach", "cp":
+						return ask()
+					}
+				}
+			}
+			return nil // a management subcommand runs nothing of ours
+		}
+		ccs, located := containerCommands(prog, args)
+		if !located {
+			return ask() // a running form whose command we cannot locate: fail closed
+		}
+		// A bind mount of a host path outside own ground makes the container's
+		// paths host paths: keep the host checks for the whole command then.
+		hostBind := (verb == "run" || verb == "create" || storesCmd) && r.containerBindOutside(k, c, args[idx:])
+		for _, cc := range ccs {
+			if len(cc) == 0 {
+				continue // a run with no explicit command (the image default)
+			}
+			if unreadVal(cc[0]) {
+				return ask()
+			}
+			sub := command{words: cc, argsLiteral: !hostBind, stdin: cmd.stdin}
+			if r.judgeCommand(k, c, sub, where, depth+1, !hostBind) != nil {
+				return ask()
+			}
+			// A data-store, infrastructure or truncating command in the
+			// container (sh -c ': > /data/app.db') is judged as one run elsewhere.
+			if _, ok := r.subFamily(cc, cmd.stdin); ok {
+				return ask()
+			}
+		}
+	case "xargs":
+		xc := xargsCommand(args)
+		if len(xc) == 0 {
+			return nil
+		}
+		if unreadVal(xc[0]) {
+			return ask()
+		}
+		sub := command{words: xc, argsLiteral: true}
+		if r.judgeCommand(k, c, sub, where, depth+1, false) != nil {
+			return ask()
+		}
+	case "man":
+		if pg := manPager(args); pg != "" {
+			if unreadVal(pg) {
+				return ask()
+			}
+			if r.codeVerdict(k, c, pg, where, depth+1, false) != nil {
+				return ask()
+			}
+		}
+	}
+	return nil
+}
+
+// gitRunsConfigKey reports a git config key whose value git runs as a command.
+func gitRunsConfigKey(key string) bool {
+	k := strings.ToLower(key)
+	switch k {
+	case "core.pager", "core.editor", "core.sshcommand", "core.fsmonitor", "core.hookspath",
+		"sequence.editor", "diff.external", "credential.helper", "gpg.program":
+		return true
+	}
+	if strings.HasPrefix(k, "pager.") || strings.HasPrefix(k, "alias.") {
+		return true
+	}
+	if strings.HasPrefix(k, "filter.") && (strings.HasSuffix(k, ".clean") || strings.HasSuffix(k, ".smudge") || strings.HasSuffix(k, ".process")) {
+		return true
+	}
+	if strings.HasSuffix(k, ".textconv") {
+		return true
+	}
+	// A key ending in command/cmd/editor/pager/program names a command.
+	for _, suf := range []string{"command", "cmd", "editor", "pager", "program"} {
+		if strings.HasSuffix(k, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitEnvCode names the git environment variables whose value git runs.
+var gitEnvCode = map[string]bool{"GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true, "GIT_PAGER": true,
+	"GIT_SSH_COMMAND": true, "GIT_SSH": true, "GIT_EXTERNAL_DIFF": true, "GIT_ASKPASS": true}
+
+// gitHandedCode is the code a git command runs: submodule foreach, rebase
+// -x/--exec, bisect run, filter-branch --*-filter, and the value of a -c or
+// `git config` key git runs as a command (alias.*, core.pager/editor/…). A
+// leading ! on an alias or credential helper is dropped. Attached values
+// (--exec=…, -x…, --opt=…) are read like separate words.
+func gitHandedCode(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case strings.HasPrefix(a, "--config-env="):
+			if key, _, ok := strings.Cut(strings.TrimPrefix(a, "--config-env="), "="); ok && gitRunsConfigKey(key) {
+				out = append(out, "$CONFIG_ENV") // read from an env var: unread, asks
+			}
+		case a == "-x" || a == "--exec":
+			if i+1 < len(args) {
+				out = append(out, args[i+1])
+			}
+		case strings.HasPrefix(a, "--exec="):
+			out = append(out, strings.TrimPrefix(a, "--exec="))
+		case strings.HasPrefix(a, "-x") && len(a) > 2:
+			out = append(out, a[2:])
+		case strings.HasPrefix(a, "--") && strings.Contains(a, "-filter"):
+			if k, v, ok := strings.Cut(a, "="); ok && strings.HasSuffix(k, "-filter") {
+				out = append(out, v)
+			} else if strings.HasSuffix(a, "-filter") && i+1 < len(args) {
+				out = append(out, args[i+1])
+			}
+		case a == "-c":
+			if i+1 < len(args) {
+				if key, v, ok := strings.Cut(args[i+1], "="); ok && gitRunsConfigKey(key) {
+					out = append(out, strings.TrimPrefix(v, "!"))
+				}
+			}
+		case strings.HasPrefix(a, "-c"):
+			if key, v, ok := strings.Cut(a[2:], "="); ok && gitRunsConfigKey(key) {
+				out = append(out, strings.TrimPrefix(v, "!"))
+			}
+		}
+	}
+	ops := operands(args)
+	for i, a := range ops {
+		if a == "foreach" && i+1 < len(ops) {
+			out = append(out, ops[i+1])
+		}
+		if a == "run" && i > 0 && ops[i-1] == "bisect" && i+1 < len(ops) {
+			out = append(out, strings.Join(ops[i+1:], " "))
+		}
+		// git config [--global…] KEY VALUE, where KEY git runs as a command.
+		if a == "config" {
+			for j := i + 1; j+1 < len(ops); j++ {
+				if gitRunsConfigKey(ops[j]) {
+					out = append(out, strings.TrimPrefix(ops[j+1], "!"))
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// dockerValueFlags take a value as the next word in docker/podman run/exec.
+var dockerValueFlags = map[string]bool{"-v": true, "--volume": true, "-e": true, "--env": true, "--env-file": true,
+	"-w": true, "--workdir": true, "-p": true, "--publish": true, "--name": true, "--network": true, "--net": true,
+	"-u": true, "--user": true, "--entrypoint": true, "-l": true, "--label": true, "--mount": true, "--device": true,
+	"--add-host": true, "--dns": true, "-h": true, "--hostname": true, "--restart": true, "-m": true, "--memory": true,
+	"--cpus": true, "-a": true, "--attach": true, "--pid": true, "--ipc": true, "--platform": true, "--tmpfs": true,
+	"--cap-add": true, "--cap-drop": true, "--security-opt": true, "--ulimit": true, "--shm-size": true,
+	"--log-driver": true, "--log-opt": true, "--gpus": true, "--health-cmd": true, "--stop-signal": true,
+	"--volumes-from": true, "--link": true, "--expose": true, "--sysctl": true, "--runtime": true, "-c": true,
+	"--container": true, "--namespace": true, "-n": true}
+
+// containerReadVerbs are the docker/podman/kubectl subcommands that manage
+// images, volumes or the daemon and do not run a command of ours; the command
+// is read when its subcommand is one of these.
+var containerReadVerbs = map[string]bool{
+	"ps": true, "logs": true, "ls": true, "images": true, "image": true, "rmi": true, "rm": true,
+	"inspect": true, "build": true, "buildx": true, "builder": true, "pull": true, "push": true,
+	"prune": true, "system": true, "volume": true, "network": true, "context": true, "manifest": true,
+	"start": true, "stop": true, "restart": true, "kill": true, "pause": true,
+	"unpause": true, "commit": true, "tag": true, "save": true, "load": true, "history": true,
+	"stats": true, "top": true, "port": true, "diff": true, "wait": true, "events": true, "version": true,
+	"info": true, "login": true, "logout": true, "search": true, "update": true, "rename": true,
+	"export": true, "import": true, "swarm": true, "node": true, "service": true, "stack": true,
+	"secret": true, "config": true, "plugin": true, "trust": true, "init": true, "compose": true,
+	"get": true, "describe": true, "apply": true, "delete": true, "scale": true, "rollout": true,
+	"expose": true, "label": true, "annotate": true, "patch": true, "cordon": true, "drain": true,
+	"taint": true, "up": true, "down": true, "cp": true, "api-resources": true, "api-versions": true,
+	"cluster-info": true, "explain": true, "auth": true, "wait-for": true, "set": true}
+
+// containerRunVerbs run a command we read from the line.
+var containerRunVerbs = map[string]bool{"exec": true, "run": true, "debug": true, "create": true}
+
+// dockerGlobalValueFlags take a value and come before the subcommand.
+var dockerGlobalValueFlags = map[string]bool{"-c": true, "--context": true, "-H": true, "--host": true,
+	"--config": true, "-l": true, "--log-level": true, "--connection": true, "--url": true, "--identity": true,
+	"--tlscacert": true, "--tlscert": true, "--tlskey": true}
+
+// composeGlobalValueFlags come before a compose subcommand.
+var composeGlobalValueFlags = map[string]bool{"-f": true, "--file": true, "-p": true, "--project-name": true,
+	"--env-file": true, "--profile": true, "--project-directory": true, "--ansi": true, "--parallel": true,
+	"--progress": true, "-c": true, "--context": true, "-H": true, "--host": true, "--log-level": true,
+	"-l": true, "--connection": true}
+
+// kubectlGlobalValueFlags come before a kubectl subcommand.
+var kubectlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "--context": true,
+	"--kubeconfig": true, "--cluster": true, "--user": true, "-s": true, "--server": true, "--as": true,
+	"--as-group": true, "--token": true, "--request-timeout": true, "--cache-dir": true, "--tls-server-name": true,
+	"--certificate-authority": true, "--client-certificate": true, "--client-key": true,
+	"-v": true, "--v": true, "--vmodule": true, "--profile": true, "--profile-output": true,
+	"--log-file": true, "--username": true, "--password": true, "--log-dir": true}
+
+// helmGlobalValueFlags come before a helm subcommand; helmUninstall names the
+// subcommand and its aliases that remove a release.
+var helmGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "--kube-context": true,
+	"--kubeconfig": true, "--kube-apiserver": true, "--kube-token": true, "--registry-config": true,
+	"--repository-config": true, "--repository-cache": true, "--burst-limit": true, "--qps": true}
+var helmUninstall = map[string]bool{"uninstall": true, "delete": true, "del": true, "un": true}
+
+// nerdctlGlobalValueFlags and podmanGlobalValueFlags extend the docker set with
+// each tool's own global value-taking options.
+var nerdctlGlobalValueFlags = map[string]bool{"-n": true, "--namespace": true, "-a": true, "--address": true,
+	"--snapshotter": true, "--data-root": true, "--cni-path": true, "--cni-netconfpath": true,
+	"--cgroup-manager": true, "--host-gateway-ip": true}
+var podmanGlobalValueFlags = map[string]bool{"--root": true, "--runroot": true, "--runtime": true,
+	"--storage-driver": true, "--storage-opt": true, "--cgroup-manager": true, "--tmpdir": true,
+	"--events-backend": true, "--network-cmd-path": true, "--ssh": true, "--hooks-dir": true,
+	"--module": true, "--out": true, "--volumepath": true, "--imagestore": true}
+
+// containerGlobals is the value-flag set for a tool's global options.
+func containerGlobals(prog string) map[string]bool {
+	switch prog {
+	case "kubectl", "oc":
+		return kubectlGlobalValueFlags
+	case "helm":
+		return helmGlobalValueFlags
+	case "nerdctl":
+		return union(dockerGlobalValueFlags, nerdctlGlobalValueFlags)
+	case "podman":
+		return union(dockerGlobalValueFlags, podmanGlobalValueFlags)
+	}
+	return dockerGlobalValueFlags
+}
+
+func union(a, b map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(a)+len(b))
+	for k := range a {
+		out[k] = true
+	}
+	for k := range b {
+		out[k] = true
+	}
+	return out
+}
+
+// containerAction finds the subcommand that decides what a container command
+// does, past global value-taking options and the compose/container group
+// words, and returns it, the index just after it, and whether one was found.
+func containerAction(prog string, args []string) (string, int, bool) {
+	globals := containerGlobals(prog)
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "compose" || a == "container" {
+			if a == "compose" {
+				globals = composeGlobalValueFlags
+			}
+			i++
+			continue
+		}
+		if globals[a] {
+			i += 2
+			continue
+		}
+		if _, _, ok := strings.Cut(a, "="); ok && globals[strings.SplitN(a, "=", 2)[0]] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			i++
+			continue
+		}
+		return a, i + 1, true
+	}
+	return "", 0, false
+}
+
+// containerRuns reports a container command that is not simply read: it runs a
+// command of ours, or its subcommand is unknown, or none was located. Only a
+// recognised management subcommand (ps, logs, build, rm, …) is read.
+func containerRuns(prog string, args []string) bool {
+	verb, _, ok := containerAction(prog, args)
+	if !ok {
+		return true // no subcommand located: not read, fail closed
+	}
+	if containerReadVerbs[verb] && !containerRunVerbs[verb] {
+		return false
+	}
+	return true
+}
+
+// manPager is the pager command man is told to use (-P value, -P<attached>,
+// --pager value or --pager=value), or "".
+func manPager(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-P" || a == "--pager":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(a, "--pager="):
+			return strings.TrimPrefix(a, "--pager=")
+		case strings.HasPrefix(a, "-P") && len(a) > 2:
+			return a[2:]
+		}
+	}
+	return ""
+}
+
+// containerCommands returns the one or two readings of the command a container
+// runtime runs. Two readings arise when an unknown long option might or might
+// not take a value, shifting where the command starts; both are judged.
+func containerCommands(prog string, args []string) ([][]string, bool) {
+	verb, idx, ok := containerAction(prog, args)
+	if !ok || !containerRunVerbs[verb] && verb != "service" {
+		return nil, false
+	}
+	rest := args[idx:]
+	// service create IMAGE CMD and kubectl create job|deployment|cronjob … -- CMD
+	// store a command that runs later; judge it like run.
+	if verb == "service" {
+		if len(rest) == 0 || rest[0] != "create" {
+			return nil, false
+		}
+		rest = rest[1:]
+	}
+	if prog == "kubectl" && verb == "create" {
+		for i, a := range rest {
+			if a == "--" {
+				return [][]string{rest[i+1:]}, true
+			}
+		}
+		return nil, true // no stored command
+	}
+	if prog == "kubectl" {
+		for i, a := range rest {
+			if a == "--" {
+				return [][]string{rest[i+1:]}, true
+			}
+		}
+		return readings(rest, 1, kubectlValueFlags)
+	}
+	// docker/podman/nerdctl exec skips the container, run skips the image.
+	return readings(rest, 1, dockerValueFlags)
+}
+
+// readings returns the command words past skipN bare operands, under both the
+// reading where each unknown long option takes no value and the one where it
+// does, so neither hides the command. located is false when skipN operands
+// were never passed (the command could not be found: fail closed).
+func readings(args []string, skipN int, valueFlags map[string]bool) ([][]string, bool) {
+	a, okA := afterTarget(args, skipN, valueFlags, false)
+	b, okB := afterTarget(args, skipN, valueFlags, true)
+	if !okA && !okB {
+		return nil, false
+	}
+	var out [][]string
+	if okA {
+		out = append(out, a)
+	}
+	if okB && !sameWords(a, b) {
+		out = append(out, b)
+	}
+	return out, true
+}
+
+func sameWords(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// afterTarget skips skipN bare operands (past options that take a value) and
+// returns the remaining words. With greedy, an unknown long option followed by
+// a non-flag word is taken to consume that word.
+func afterTarget(args []string, skipN int, valueFlags map[string]bool, greedy bool) ([]string, bool) {
+	skipped := 0
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if skipped >= skipN {
+				return args[i+1:], true
+			}
+			continue
+		}
+		if valueFlags[a] {
+			i++
+			continue
+		}
+		if k, _, ok := strings.Cut(a, "="); ok && valueFlags[k] {
+			continue
+		}
+		if greedy && strings.HasPrefix(a, "--") && !strings.Contains(a, "=") &&
+			i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && skipped >= skipN {
+			i++ // an unknown long option taking the next word as its value
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		if skipped < skipN {
+			skipped++
+			continue
+		}
+		return args[i:], true
+	}
+	return nil, skipped >= skipN
+}
+
+// kubectlValueFlags take a value in kubectl exec/run/debug.
+var kubectlValueFlags = map[string]bool{"-n": true, "--namespace": true, "-c": true, "--container": true,
+	"--image": true, "-f": true, "--filename": true, "--pod-running-timeout": true, "--request-timeout": true,
+	"--kubeconfig": true, "--context": true, "--cluster": true, "--user": true, "--as": true, "--as-group": true,
+	"--target": true}
+
+// xargsValueFlags take a value as the next word.
+var xargsValueFlags = map[string]bool{"-a": true, "--arg-file": true, "-I": true, "--replace": true, "-i": true,
+	"-n": true, "--max-args": true, "-P": true, "--max-procs": true, "-d": true, "--delimiter": true,
+	"-L": true, "--max-lines": true, "-l": true, "-s": true, "--max-chars": true, "-E": true, "--eof": true, "-e": true}
+
+// xargsCommand is the program xargs runs, past its options.
+func xargsCommand(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if xargsValueFlags[a] {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		return args[i:]
+	}
+	return nil
+}
+
+// modeReadOnly reports a bind mount's options making it read-only: an option
+// that is exactly ro or readonly, or ro=/readonly= with the value true or 1.
+func modeReadOnly(opts string) bool {
+	for _, o := range strings.Split(opts, ",") {
+		k, v, has := strings.Cut(o, "=")
+		switch k {
+		case "ro", "readonly":
+			if !has || v == "true" || v == "1" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containerCpVerdict judges a docker/kubectl cp whose host side (an operand
+// with no name: prefix) sits outside own ground.
+func (r Rules) containerCpVerdict(k *given, c Case, rest []string) *Verdict {
+	for _, a := range operands(rest) {
+		if strings.Contains(a, ":") && !strings.HasPrefix(a, "/") && !strings.HasPrefix(a, ".") && !strings.HasPrefix(a, "~") {
+			continue // a container reference (name:path)
+		}
+		if r.strayOperand(k, c, []string{a}) {
+			return &Verdict{Decision: policy.Ask, Code: CodeOutOfRemit, Confidence: 0.7,
+				Rationale: fmt.Sprintf("cp would write %s on the host, outside the task's ground; %s", a, remit(c)),
+				Advice:    "copy into the workspace or a path the task names, or confirm this is meant"}
+		}
+	}
+	return nil
+}
+
+// containerBindOutside reports a run whose -v/--volume/--mount bind source is a
+// literal host path outside own ground, so the container's paths are host paths.
+func (r Rules) containerBindOutside(k *given, c Case, rest []string) bool {
+	src := func(spec string) string {
+		parts := strings.SplitN(spec, ":", 3)
+		if len(parts) < 2 {
+			return ""
+		}
+		// A read-only mount cannot be written through, so it does not make the
+		// container's paths writable host paths. The mode is read-only only
+		// when an option is exactly ro/readonly (or =true/=1), not readonly=false.
+		if len(parts) == 3 && modeReadOnly(parts[2]) {
+			return ""
+		}
+		return parts[0]
+	}
+	outside := func(p string) bool {
+		p = strings.NewReplacer(`"`, "", `'`, "").Replace(p)
+		if strings.HasPrefix(p, "$") {
+			// Only the working directory itself, or a plain path under it, is
+			// own ground; any other expansion ($HOME/…, $PWD/../…) is not.
+			for _, wd := range []string{"$PWD", "${PWD}", "$(pwd)"} {
+				if p == wd || strings.HasPrefix(p, wd+"/") && !strings.Contains(p, "..") {
+					return false
+				}
+			}
+			return true
+		}
+		if p == "" || (!strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, ".")) {
+			return false // empty, or a named volume rather than a host path
+		}
+		return r.strayOperand(k, c, []string{p})
+	}
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "-v" || a == "--volume":
+			if i+1 < len(rest) && outside(src(rest[i+1])) {
+				return true
+			}
+		case strings.HasPrefix(a, "-v") && len(a) > 2:
+			if outside(src(a[2:])) {
+				return true
+			}
+		case strings.HasPrefix(a, "--volume="):
+			if outside(src(strings.TrimPrefix(a, "--volume="))) {
+				return true
+			}
+		case a == "--mount" || strings.HasPrefix(a, "--mount="):
+			spec := strings.TrimPrefix(a, "--mount=")
+			if a == "--mount" && i+1 < len(rest) {
+				spec = rest[i+1]
+			}
+			if strings.Contains(spec, "type=bind") && !modeReadOnly(spec) {
+				for _, f := range strings.Split(spec, ",") {
+					if v, ok := strings.CutPrefix(f, "src="); ok && outside(v) {
+						return true
+					}
+					if v, ok := strings.CutPrefix(f, "source="); ok && outside(v) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}

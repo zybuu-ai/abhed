@@ -418,9 +418,9 @@ func (r *routingMem) snapshot() (int, bool) {
 // The node keeps its claim fresh while only children run, for a started
 // session and for one continued by a message, and lets go once they end.
 func TestHeartbeatWhileOnlyChildrenRun(t *testing.T) {
-	old := nodeHeartbeat
-	nodeHeartbeat = 20 * time.Millisecond
-	defer func() { nodeHeartbeat = old }()
+	old := nodeHeartbeat.Get()
+	nodeHeartbeat.Set(20 * time.Millisecond)
+	defer func() { nodeHeartbeat.Set(old) }()
 	rm := &routingMem{MemStore: agent.NewMemStore()}
 	b := newBGServer(t, rm, "one", "two")
 	b.s.opts.NodeID = "node-a"
@@ -707,9 +707,9 @@ func TestClaimAndIdleDeliveryDoNotDeadlock(t *testing.T) {
 // Deleting or draining a session with a child running stops its heartbeat
 // and releases its claim: nothing refreshes a session that is gone.
 func TestDeleteAndDrainStopTheHeartbeat(t *testing.T) {
-	old := nodeHeartbeat
-	nodeHeartbeat = 20 * time.Millisecond
-	defer func() { nodeHeartbeat = old }()
+	old := nodeHeartbeat.Get()
+	nodeHeartbeat.Set(20 * time.Millisecond)
+	defer func() { nodeHeartbeat.Set(old) }()
 	for _, how := range []string{"delete", "drain"} {
 		rm := &routingMem{MemStore: agent.NewMemStore()}
 		b := newBGServer(t, rm, "one")
@@ -996,9 +996,9 @@ func TestFailedHoldAnswers503(t *testing.T) {
 // The sweep reaches every open session, page after page, not only the
 // newest few.
 func TestSweepPagesThroughEveryOpenSession(t *testing.T) {
-	old := sweepPage
-	sweepPage = 2
-	t.Cleanup(func() { sweepPage = old })
+	old := sweepPage.Get()
+	sweepPage.Set(2)
+	t.Cleanup(func() { sweepPage.Set(old) })
 	st := &durableMem{MemStore: agent.NewMemStore(), rows: map[string]store.SessionRecord{}, ended: map[string]bool{}, orphaned: map[string]bool{}}
 	names := []string{"a", "b", "c", "d", "e"}
 	a := newBGServer(t, st, names...)

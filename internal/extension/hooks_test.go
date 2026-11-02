@@ -189,3 +189,17 @@ func TestMatchFoldsCommandNames(t *testing.T) {
 		t.Fatal("a case-folded command skipped the hook")
 	}
 }
+
+// A decision cancelled while the hook decides is not mistaken for the next
+// one's: the owed reply is read first, so the next message gets its own.
+func TestCancelledDecisionDoesNotAnswerTheNext(t *testing.T) {
+	h, _ := hostOf(t, Config{Name: "slowgate.sh", Events: []Event{EvUserPromptSubmit}})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if why := h.Veto(ctx, EvUserPromptSubmit, Request{Content: "fine"}); why != "" {
+		t.Fatalf("a cancelled decision refused: %q", why)
+	}
+	if why := h.Veto(context.Background(), EvUserPromptSubmit, Request{Content: "the forbidden thing"}); why != "that topic is off limits" {
+		t.Fatalf("the next message got %q, not its own refusal", why)
+	}
+}

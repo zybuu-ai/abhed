@@ -56,7 +56,26 @@ func ignored(st WorkspaceTrust, key string) bool {
 // leafPaths lists every setting of t as the dotted paths a file writes; a map
 // or a list is one setting.
 func leafPaths(prefix string, t reflect.Type) []string {
-	if t.Kind() != reflect.Struct {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	// A list or map is one setting, and the fields of its element are its parts.
+	if (t.Kind() == reflect.Slice || t.Kind() == reflect.Map) && prefix != "" {
+		e := t.Elem()
+		for e.Kind() == reflect.Pointer {
+			e = e.Elem()
+		}
+		out := []string{prefix}
+		if e.Kind() == reflect.Struct && !reflect.PointerTo(e).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+			for _, p := range leafPaths(prefix, e) {
+				if p != prefix {
+					out = append(out, p)
+				}
+			}
+		}
+		return out
+	}
+	if t.Kind() != reflect.Struct || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]()) {
 		return []string{prefix}
 	}
 	var out []string
@@ -179,6 +198,8 @@ func TestUntrustedWorkspaceAppliesWhatTightens(t *testing.T) {
 		{"a budget where there was none", "", `{"limits":{"max_budget_tokens":1000}}`, "limits.max_budget_tokens", func(c Config) bool { return c.Limits.MaxBudgetTokens == 1000 }},
 		{"stricter syntax check", `{"tools":{"syntax_check":"off"}}`, `{"tools":{"syntax_check":"report"}}`, "tools.syntax_check", func(c Config) bool { return c.Tools.SyntaxCheck == "report" }},
 		{"skills off", "", `{"skills":{"disabled":true}}`, "skills.disabled", func(c Config) bool { return c.Skills.Disabled }},
+		{"listen off", "", `{"sandbox":{"listen":"off"}}`, "sandbox.listen", func(c Config) bool { return c.Sandbox.Listen == "off" }},
+		{"listen ask from allow", `{"sandbox":{"listen":"allow"}}`, `{"sandbox":{"listen":"ask"}}`, "sandbox.listen", func(c Config) bool { return c.Sandbox.Listen == "ask" }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, ws := trustHome(t, c.user, c.file)
@@ -649,6 +670,7 @@ func TestUntrustedWarningIsSaidOnce(t *testing.T) {
 	_, ws := trustHome(t, "", `{"permissions":{"mode":"bypass"}}`)
 	var out bytes.Buffer
 	warnOut = &out
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	for range 2 {
 		if _, err := LoadWith(ws, LoadOptions{}); err != nil {

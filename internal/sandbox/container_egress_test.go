@@ -49,6 +49,11 @@ exec)
     while IFS= read -r l; do export "$l"; done < "$envfile"
   fi
   exec env $envs "$@" ;;
+run)
+  # Attached, as a container runs: it ends when its input closes.
+  cat >/dev/null; exit 0 ;;
+inspect)
+  echo true; exit 0 ;;
 esac
 exit 0
 `, log, relayInside, self)
@@ -96,7 +101,7 @@ func TestContainerCommandReachesTheProxyThroughTheRelay(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	calls := string(b)
-	for _, want := range []string{"run --rm -d", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none",
+	for _, want := range []string{"run --rm -i", "--label " + egressOwnerLabel + "=", "-v /opt/abhed-linux:" + relayInside + ":ro", "--network none",
 		"--env-file ", "exec -i --user " + stdiorelay.User(os.Getuid()) + " " + egressPrefix} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("no %q in the engine's calls:\n%s", want, calls)
@@ -233,13 +238,22 @@ func TestContainerCloseRemovesEveryCallsContainer(t *testing.T) {
 	}
 }
 
-// Close tears the calls' containers down together, so it takes about one
-// removal however many stand, and still waits for every one.
+// Close tears the calls' containers down together, not one after another,
+// and still waits for every one. Each removal waits until all three have
+// started: removals made one at a time never get there, and say so.
 func TestContainerCloseTearsCallsDownTogether(t *testing.T) {
 	inner, log := fakeEngine(t)
-	engine := filepath.Join(t.TempDir(), "slow-engine")
-	slow := "#!/bin/sh\nif [ \"$1\" = rm ]; then sleep 1; fi\nexec " + inner + " \"$@\"\n"
-	if err := os.WriteFile(engine, []byte(slow), 0o755); err != nil { // #nosec G306 -- a test script that must run
+	dir := t.TempDir()
+	engine, starts := filepath.Join(dir, "barrier-engine"), filepath.Join(dir, "starts")
+	barrier := "#!/bin/sh\nif [ \"$1\" = rm ]; then\n" +
+		"  echo start >> '" + starts + "'\n" +
+		"  i=0\n" +
+		"  while [ \"$(grep -c start '" + starts + "')\" -lt 3 ]; do\n" +
+		"    i=$((i+1)); if [ $i -gt 400 ]; then echo alone >> '" + starts + "'; break; fi\n" +
+		"    sleep 0.05\n" +
+		"  done\n" +
+		"fi\nexec " + inner + " \"$@\"\n"
+	if err := os.WriteFile(engine, []byte(barrier), 0o755); err != nil { // #nosec G306 -- a test script that must run
 		t.Fatal(err)
 	}
 	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
@@ -277,7 +291,57 @@ func TestContainerCloseTearsCallsDownTogether(t *testing.T) {
 	if n := strings.Count(string(b), "rm -f"); n < 3 {
 		t.Fatalf("Close returned with %d of 3 containers removed:\n%s", n, b)
 	}
-	if took > 2500*time.Millisecond {
-		t.Fatalf("Close took %v for three one-second removals: one after another", took)
+	// A removal left waiting alone for the others means they ran in turn.
+	if sb, _ := os.ReadFile(starts); strings.Contains(string(sb), "alone") || strings.Count(string(sb), "start") < 3 {
+		t.Fatalf("the removals did not run together (each waits up to 20 s for the other two):\n%s", sb)
+	}
+	// A loose ceiling: removals in turn would wait out the barrier, 20 s or more.
+	if took > 15*time.Second {
+		t.Fatalf("Close took %v", took)
+	}
+}
+
+// A call still starting its container when the sandbox closes is stopped
+// and its container removed before Close returns.
+func TestContainerCloseWaitsForACallStillStarting(t *testing.T) {
+	inner, log := fakeEngine(t)
+	engine := filepath.Join(t.TempDir(), "slow-run-engine")
+	slow := "#!/bin/sh\nif [ \"$1\" = run ]; then echo \"$*\" >> " + log + "; sleep 2; fi\nexec " + inner + " \"$@\"\n"
+	if err := os.WriteFile(engine, []byte(slow), 0o755); err != nil { // #nosec G306 -- a test script that must run
+		t.Fatal(err)
+	}
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "allowed.test", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	c := &Container{runtime: engine, available: true, policy: Policy{Workspace: ws, Egress: pol, RelayBinary: "/opt/abhed-linux"}}
+	c.once.Do(func() {})
+	old := containerHostOS
+	containerHostOS = "darwin"
+	t.Cleanup(func() { containerHostOS = old })
+	set := make(chan struct{})
+	go func() {
+		defer close(set)
+		_, _ = c.Command(WithLaunch(context.Background(), Launch{CallID: "call-starting"}), ws, "echo ran").CombinedOutput()
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "run --rm -i") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the container was never started")
+		}
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-set:
+	default:
+		t.Fatal("Close returned while a call was still starting its container")
+	}
+	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "rm -f") {
+		t.Fatalf("the starting call's container was not removed:\n%s", b)
 	}
 }

@@ -332,7 +332,7 @@ gets, and every admission rule, is in [Container drivers](23-container-drivers.m
 | `gpus` | managed only | CDI device names a sandbox may ask for, such as `nvidia.com/gpu=all`. |
 | `cpus` | managed only | CPUs each sandbox may use, 2 when unset. |
 | `seccomp_profile` | managed only | A seccomp profile file in place of the engine's default; `unconfined` is refused. |
-| `relay_binary` | managed only | A Linux build of Abhed for the engine's architecture, at an absolute path the engine's host can see, run inside each container as the egress relay where the engine is in a VM or on another host. Without it the network allowlist is refused there. See [Container drivers](23-container-drivers.md#network). |
+| `relay_binary` | managed only | A Linux build of Abhed (or of `abhed-helper`) for the engine's architecture, at an absolute path the engine's host can see, run inside each container as the egress relay where the engine is in a VM or on another host. Unset, the helper shipped beside the `abhed` binary is used when it matches the checksum the build pins; with neither, the network allowlist is refused there. See [Container drivers](23-container-drivers.md#network). |
 | `name_prefix` | any configuration | What every container's name starts with, `abhed-sbx-` when unset: letters, digits, `_`, `.` and `-`, starting with a letter or digit, at most 64; anything else stops `abhed serve` at start. Two servers sharing one engine, such as a test run beside a real one, keep apart by it. Containers made under an earlier prefix are not found under a new one. |
 
 Each managed-only key widens what a sandbox can reach or loosens a bound, so
@@ -420,7 +420,7 @@ every other route.
 | `GET /v1/sandboxes/{id}:forward?port=N` | a WebSocket: a byte stream to a port inside the sandbox |
 | `POST /v1/sandboxes/{id}:ssh` | `200 {host_alias, user, host_key, fingerprint, known_hosts, relay, subprotocol, generation}` |
 | `GET /v1/sandboxes/{id}:ssh` | a WebSocket: the SSH relay |
-| `GET /v1/sandboxes/{id}:events?after=&limit=` | `200 {items, next}`: the sandbox's record, oldest first |
+| `GET /v1/sandboxes/{id}:events?after=&limit=` | `200 {items, next}`: the sandbox's record, oldest first; `&format=ocsf` (and `&version=`) gives each row as OCSF API Activity ([OCSF events and logs](30-ocsf-and-logs.md)) |
 | `POST /v1/sandbox-templates` `{name, description?, driver?, labels?, settings?}` | `201`, the template; administrators only |
 | `GET /v1/sandbox-templates?selector=&limit=&after=` | `200 {items, next}` |
 | `GET /v1/sandbox-templates/{name}` | `200`, with `ETag` |

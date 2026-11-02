@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -26,8 +27,10 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -73,6 +76,13 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		return 1
 	}
 	provider, err := cfg.Provider()
+	// A model the allowed-models list refuses is shown with why, and not probed.
+	var notAllowed *config.ManagedError
+	if errors.As(err, &notAllowed) && notAllowed.Key == "model.allowed" {
+		provider, err = cfg.Model.Providers[cfg.Model.Default], nil
+	} else {
+		notAllowed = nil
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 1
@@ -89,6 +99,18 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	fmt.Printf("mode        %s\n", modeLabel(cfg))
 	if line := managedLine(cfg); line != "" {
 		fmt.Printf("managed     %s\n", line)
+	}
+	if s := cfg.OrgPolicy; s.Status != "" && s.Status != orgpolicy.StatusNone {
+		fmt.Printf("org policy  %s\n", config.Printable(s.OrgPolicyLine()))
+	}
+	if cfg.Org.Required && len(cfg.Org.Keys) == 0 && cfg.ManagedSets("org_policy") {
+		fmt.Printf("            ⚠ %s\n", config.OrgUnpinnedWarning)
+	}
+	for _, line := range allowListLines(cfg) {
+		fmt.Println(line)
+	}
+	if notAllowed != nil {
+		fmt.Printf("            ⚠ %v\n", notAllowed)
 	}
 	if cfg.Settings.Name != "" {
 		fmt.Printf("settings    %s\n", config.Printable(cfg.Settings.Name))
@@ -115,6 +137,14 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("sandbox     %s — %s\n", label, sb.Describe())
 		for _, w := range limitWarnings(cfg, sb.Tier()) {
 			fmt.Printf("            ⚠ %s\n", w)
+		}
+		if c, ok := sb.(*sandbox.Container); ok {
+			for _, w := range toolchainWarnings(c, workspace) {
+				fmt.Printf("            ⚠ %s\n", w)
+			}
+		}
+		for _, line := range toolchainLines(cfg, workspace, sb) {
+			fmt.Printf("toolchains  %s\n", line)
 		}
 		// MCP servers' containers a killed Abhed left, removed as a session
 		// would; only when one is set to run in a container.
@@ -186,6 +216,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
 	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
+	fmt.Printf("supervisor  %s\n", supervisorDoctor(cfg))
 	vaultErr := vaultLoads()
 	if vaultErr != nil {
 		fmt.Printf("secrets     UNAVAILABLE — %v\n", vaultErr)
@@ -269,6 +300,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
+		gw.Admit, gw.PinProgram = toolset.MCPAdmit(cfg), cfg.MCPListsMatchCommands()
 		// The servers are started as a session starts them: their files
 		// confined, and under the allowlist their network too.
 		if own := toolset.OwnEgress(cfg); own != nil {
@@ -302,6 +334,10 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	fmt.Println()
 
+	if notAllowed != nil {
+		fmt.Println("endpoint    not probed: the allowed models do not admit it; choose one they admit with -model or model.default")
+		return 1
+	}
 	// The workspace named a model that waits for trust: the default in its
 	// place is not what this workspace would use, so it is not probed.
 	if modelAwaitsTrust(cfg) {
@@ -659,16 +695,16 @@ func printNotInEffect(w io.Writer, cfg config.Config) bool {
 	return len(keys) > 0
 }
 
-// printUnknown lists the configuration's unknown keys and reports whether there were any.
+// printUnknown lists the configuration's repeated and unknown keys and reports whether there were any.
 func printUnknown(w io.Writer, cfg config.Config) bool {
-	for i, u := range cfg.Unknown {
+	for i, line := range cfg.Warnings() {
 		label := "            "
 		if i == 0 {
 			label = "config      "
 		}
-		fmt.Fprintf(w, "%s%s  ⚠\n", label, u)
+		fmt.Fprintf(w, "%s%s  ⚠\n", label, line)
 	}
-	return len(cfg.Unknown) > 0
+	return len(cfg.Unknown)+len(cfg.Duplicates) > 0
 }
 
 // modelAwaitsTrust reports an untrusted workspace that sets the model while
@@ -711,7 +747,14 @@ func managedLine(cfg config.Config) string {
 	if !cfg.Managed {
 		return ""
 	}
-	return fmt.Sprintf("%s (sets %d setting(s))", config.Printable(managed.ConfigFile), len(cfg.ManagedKeys))
+	var from []string
+	if _, err := os.Stat(managed.ConfigFile); err == nil {
+		from = append(from, config.Printable(managed.ConfigFile))
+	}
+	if cfg.OrgPolicy.Status != "" && cfg.OrgPolicy.Status != orgpolicy.StatusNone {
+		from = append(from, "the org policy")
+	}
+	return fmt.Sprintf("%s (sets %d setting(s))", strings.Join(from, " and "), len(cfg.ManagedKeys))
 }
 
 // sessionLine says how long a browser sign-in lasts, when one does.
@@ -789,4 +832,130 @@ func confinedStdioServers(cfg config.Config) bool {
 		}
 	}
 	return false
+}
+
+// toolchainWarnings name the toolchains the workspace looks like it needs
+// that the container tier's image lacks, and how to give it one that has them.
+func toolchainWarnings(c *sandbox.Container, workspace string) []string {
+	need := sandbox.ProjectToolchains(workspace)
+	if len(need) == 0 {
+		return nil
+	}
+	programs := make([]string, len(need))
+	for i, tc := range need {
+		programs[i] = tc.Program
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	img := sandbox.SandboxImage()
+	missing, err := c.MissingPrograms(ctx, programs)
+	if errors.Is(err, sandbox.ErrImageNotPresent) {
+		return []string{fmt.Sprintf("toolchains in the sandbox image %s not checked: %v", img, err)}
+	}
+	if err != nil || len(missing) == 0 {
+		return nil
+	}
+	// A toolchain Abhed installed is on commands' PATH, whatever the image has.
+	root, _ := toolchain.DefaultRoot()
+	cache := toolchain.Cache{Root: root}
+	linux := toolset.PlatformOf(c)
+	var kinds, progs, images []string
+	for _, tc := range need {
+		l, _ := toolchain.ForProgram(tc.Program)
+		if _, have := cache.Best(linux, toolchain.Spec{Lang: l.Name}); have && root != "" {
+			continue
+		}
+		if slices.Contains(missing, tc.Program) {
+			kinds, progs, images = append(kinds, tc.Name), append(progs, tc.Program), append(images, tc.Image)
+		}
+	}
+	if len(kinds) == 0 {
+		return nil
+	}
+	suggest := "such as " + images[0]
+	if len(images) > 1 {
+		suggest = "an image of your own with all of them"
+	}
+	return []string{fmt.Sprintf("the workspace looks like a %s project, but the sandbox image %s has no %s; Abhed installs it on demand when a command needs it (sandbox.toolchains, docs/guide/32-toolchains.md), or set sandbox.image or ABHED_SANDBOX_IMAGE to an image that has it, %s (docs/guide/02-configuration.md#the-container-tiers-image)",
+		andList(kinds), img, andList(progs), suggest)}
+}
+
+// toolchainLines say, for each language the workspace looks like it needs,
+// whether the toolchain cache has it for the platform commands run on.
+func toolchainLines(cfg config.Config, workspace string, sb sandbox.Sandbox) []string {
+	root, err := toolchain.DefaultRoot()
+	if err != nil {
+		return nil
+	}
+	cache := toolchain.Cache{Root: root}
+	p := toolset.PlatformOf(sb)
+	mode := orDefault(cfg.Sandbox.Toolchains, "ask")
+	out := []string{fmt.Sprintf("installs %s; cache %s (%s)", mode, root, p)}
+	pins := toolchain.PinsFrom(workspace)
+	for _, n := range toolchain.Needs(workspace) {
+		l, _ := toolchain.Find(n.Lang)
+		spec := toolchain.Spec{Lang: n.Lang}
+		if pin, ok := pins[n.Lang]; ok {
+			spec = pin.Spec
+		}
+		if in, ok := cache.Best(p, spec); ok {
+			out = append(out, fmt.Sprintf("%s ✓ %s, needed by %s", l.Display, in.Version, n.Why))
+			continue
+		}
+		hint := "the agent asks to install it when a command needs it"
+		switch mode {
+		case "off":
+			hint = "sandbox.toolchains is off, so it is not installed"
+		case "auto":
+			hint = "installed when a command needs it"
+		}
+		out = append(out, fmt.Sprintf("%s · not installed, needed by %s: %s, or run abhed toolchain install %s -platform %s", l.Display, n.Why, hint, spec, p))
+	}
+	for _, in := range cache.List(p, "") {
+		out = append(out, fmt.Sprintf("cached %s %s", in.Lang, in.Version))
+	}
+	return out
+}
+
+// andList joins words as a sentence does: "a", "a and b", "a, b and c".
+func andList(words []string) string {
+	if len(words) <= 1 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+}
+
+// allowListLines are doctor's lines for the allowed models and the MCP
+// server lists, each with the file that set it.
+func allowListLines(cfg config.Config) []string {
+	var out []string
+	from := func(l config.AllowList) string {
+		if l.Managed {
+			return "managed"
+		}
+		return config.Printable(l.File)
+	}
+	for _, l := range cfg.ModelsAllowed() {
+		out = append(out, fmt.Sprintf("models      only %s (%s)", strings.Join(l.Entries, ", "), from(l)))
+	}
+	for _, l := range cfg.MCPLists() {
+		what := "mcp allow   "
+		if l.Denied {
+			what = "mcp deny    "
+		}
+		entries := strings.Join(l.Entries, ", ")
+		if len(l.Entries) == 0 {
+			entries = "none"
+		}
+		out = append(out, fmt.Sprintf("%s%s (%s)", what, entries, from(l)))
+	}
+	for _, k := range cfg.SetAside {
+		switch k.Key {
+		case "mcp.servers":
+			out = append(out, fmt.Sprintf("            ⚠ MCP server %s is not started: %s", config.Printable(k.Value), k.Reason))
+		case "model.fallback", "model.completion", "model.next_edit", "model.commit", "suggest.model", "verify.critic.model", "monitor.model":
+			out = append(out, fmt.Sprintf("            ⚠ %s %s is not used: %s", k.Key, config.Printable(k.Value), k.Reason))
+		}
+	}
+	return out
 }

@@ -44,11 +44,15 @@ type headlessOpts struct {
 	// attempts are the configuration changes that did not take effect,
 	// recorded after the start.
 	attempts []agent.ConfigAttempt
+	// grants are the package registries open from the start.
+	grants []agent.ToolchainRegistry
 	// provider names the model, for an error that says what to do.
 	providerName string
 	provider     config.ProviderConfig
 	// fallback, when set, records its moves in this run's record.
 	fallback *fallbackAdapter
+	// runbook is the runbook -runbook approved for this run, nil without one.
+	runbook *runbookSpec
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
@@ -98,7 +102,20 @@ func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bo
 	case prompt == "":
 		return in, nil
 	}
-	return prompt + "\n\nInput from stdin:\n" + in, nil
+	// Piped data is the person's attachment, not their words.
+	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil
+}
+
+// stdinHeader opens piped stdin in a -p task.
+const stdinHeader = "\n\nInput from stdin. "
+
+// withRunbook adds the runbook prompt to a task, before any piped stdin, so
+// it stays with the person's words and outside the attached data.
+func withRunbook(task, prompt string) string {
+	if i := strings.Index(task, stdinHeader); i >= 0 {
+		return task[:i] + "\n\n" + prompt + task[i:]
+	}
+	return strings.TrimSpace(task + "\n\n" + prompt)
 }
 
 // stdinIsPipe reports whether stdin is a pipe or a file rather than a
@@ -347,11 +364,16 @@ func recordResumedMode(rec *agent.Recorder, events []agent.Event, now, via strin
 // qualified it and gives it the record. Any of these that cannot be recorded
 // is an error, as the SDK refuses to build the agent, and closes the fence so
 // no command runs.
-func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.ConfigAttempt, fence *sandbox.Fence) error {
+func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.ConfigAttempt, grants []agent.ToolchainRegistry, fence *sandbox.Fence) error {
 	var err error
 	if start != nil {
 		if _, e := rec.Record(agent.EvSessionStarted, agent.ActorSystem, agent.Trusted, start); e != nil {
 			err = fmt.Errorf("recording the session start: %w", e)
+		}
+		for _, g := range grants {
+			if _, e := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); e != nil && err == nil {
+				err = fmt.Errorf("recording the registries open from the start: %w", e)
+			}
 		}
 	}
 	if err == nil {
@@ -382,12 +404,15 @@ type resultLine struct {
 	IsError    bool            `json:"is_error"`
 	Result     string          `json:"result"`
 	Structured json.RawMessage `json:"structured_output,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	SessionID  string          `json:"session_id"`
-	NumTurns   int             `json:"num_turns"`
-	DurationMS int64           `json:"duration_ms"`
-	ExitCode   int             `json:"exit_code"`
-	Usage      resultUsage     `json:"usage"`
+	// Verdict is what the checks found for the last answer, when answers
+	// are verified.
+	Verdict    *agent.AnswerVerdict `json:"verdict,omitempty"`
+	Error      string               `json:"error,omitempty"`
+	SessionID  string               `json:"session_id"`
+	NumTurns   int                  `json:"num_turns"`
+	DurationMS int64                `json:"duration_ms"`
+	ExitCode   int                  `json:"exit_code"`
+	Usage      resultUsage          `json:"usage"`
 	// Omitted names the event types this output left out, so a reader of the
 	// capture can tell a gap where they sat from a missing event.
 	Omitted []agent.EventType `json:"omitted,omitempty"`
@@ -448,6 +473,13 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Provider = appCfg.Model.Default
+	// A structured result is checked by its schema, not as prose, and the
+	// contract gates an answer, which a structured run does not give.
+	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
+		v.Install(loop)
+	} else if o.schema != nil && appCfg.Verify.Contract.On() {
+		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")
+	}
 	// The factory's budget, so the subagents' spend and the loop's are one.
 	loop.Budget = budget
 	seed(loop)
@@ -457,7 +489,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
 	}
-	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.fence); err != nil {
+	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.grants, o.fence); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
 	}
@@ -477,6 +509,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 	toolset.Summarize(loop.Compactor, extHost, sessionID)
 	toolset.Hook(loop, extHost, func(s string, _ bool) { fmt.Fprintf(os.Stderr, "abhed: %s\n", s) })
+	// Nobody answers a -p run's asks, so the supervisor's asks are denials with their correction.
+	loop.Monitor = toolset.Supervisor(appCfg, registry, true)
 	if extHost != nil && extHost.Len() > 0 {
 		recordFired(extHost, func() *agent.Recorder { return rec })
 	}
@@ -486,7 +520,22 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		structured json.RawMessage
 		ran        bool
 	)
+	if !appCfg.Plan.Runbooks {
+		loop.DisableRunbooks()
+	}
+	if o.runbook != nil {
+		rb, err := loop.BindRunbook(o.runbook.text, o.runbook.steps, o.runbook.hash)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: -runbook: %v\n", err)
+			return 2
+		}
+		fmt.Fprintf(os.Stderr, "abhed: runbook bound: %d steps, plan %s\n", len(rb.Steps), rb.Hash)
+		o.runbook.prompt = agent.RunbookPrompt(rb)
+	}
 	runOne := func(task string) {
+		if o.runbook != nil && !ran {
+			task = withRunbook(task, o.runbook.prompt)
+		}
 		ran = true
 		if o.schema != nil {
 			structured, reason, err = agent.RunStructured(ctx, loop, loop.Tools, task, o.schema)
@@ -536,7 +585,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
 			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
-			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}}
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict()}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
 		}

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ type Postgres struct {
 
 	owners        OwnerPolicy
 	ownerAccounts func() ([]*auth.User, error)
+	log           *slog.Logger
 
 	// keys caches the payload ciphers of sessions written lately; see seal.go.
 	keys keyCache
@@ -83,6 +85,8 @@ type Config struct {
 	// position and hash) at the end of each run, for a witness outside the
 	// database. It must not block; an error it has is its own to report.
 	Anchor func(tenant, session string, pos int64, hash string)
+	// Logger, when set, is where the store's own warnings go; nil is slog's default.
+	Logger *slog.Logger
 }
 
 func DefaultConfig(dsn string) Config {
@@ -149,7 +153,7 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 			"(see docs/guide/02-configuration.md)")
 	}
 
-	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts,
+	p := &Postgres{pool: pool, tenant: cfg.Tenant, subs: make(map[string][]chan agent.Event), owners: cfg.Owners, ownerAccounts: cfg.OwnerAccounts, log: cfg.Logger,
 		anchor: cfg.Anchor}
 	if cfg.SingleRole {
 		if err := p.Migrate(ctx); err != nil {
@@ -203,6 +207,14 @@ func Open(ctx context.Context, cfg Config) (*Postgres, error) {
 		}
 		return nil, err
 	}
+	if err := refusePublicCreate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err := checkCommitOrder(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	p.protected = true
 	return p, nil
 }
@@ -240,7 +252,8 @@ DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['events', 'checkpoints', 'sessions', 'approvals', 'models', 'schema_version',
                            'sandboxes', 'sandbox_idempotency', 'sandbox_audit',
-                           'sandbox_templates', 'owner_changes', 'session_keys'] LOOP
+                           'sandbox_templates', 'owner_changes', 'session_keys', 'chain_pre', 'ocsf_cursors',
+                           'commit_shift'] LOOP
     IF to_regclass(t) IS NOT NULL THEN
       EXECUTE format('LOCK TABLE %I IN ACCESS EXCLUSIVE MODE NOWAIT', t);
     END IF;
@@ -318,7 +331,28 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 				"Set storage.tenant to match the tenant your requests carry, or run a "+
 				"store per tenant", s.Tenant, p.tenant)
 	}
-	_, err := p.pool.Exec(ctx, `
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create session %s: %w", s.ID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// A subagent's row is made under its parent's append lock, which a delete
+	// of the parent's tree holds: it waits out a delete in progress and is
+	// then refused, or commits first and is found by the delete's re-read.
+	if s.ParentID != "" {
+		var deleted bool
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('events/' || $1, 0))`, s.ParentID); err != nil {
+			return fmt.Errorf("create session %s: %w", s.ID, err)
+		}
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND deleted_at IS NOT NULL)`,
+			s.ParentID).Scan(&deleted); err != nil {
+			return fmt.Errorf("create session %s: %w", s.ID, err)
+		}
+		if deleted {
+			return fmt.Errorf("create session %s under %s: %w", s.ID, s.ParentID, ErrSessionDeleted)
+		}
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO sessions (id, tenant_id, user_id, workspace, model,
 		                      prompt_hash, harness_version, mode, parent_id, started_at, prompt,
 		                      node_id, node_seen_at)
@@ -327,6 +361,9 @@ func (p *Postgres) CreateSession(ctx context.Context, s SessionRecord) error {
 		s.ID, s.Tenant, s.User, s.Workspace, s.Model,
 		s.PromptHash, s.HarnessVersion, s.Mode, s.ParentID, s.StartedAt,
 		truncatePrompt(s.Prompt), s.Holder)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		// An id already taken is another session's record; writing into it would merge the two.
 		var pgErr *pgconn.PgError
@@ -487,6 +524,10 @@ func (p *Postgres) appendAs(ev agent.Event, holder string) error {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return fmt.Errorf("append event for unknown session %s: call CreateSession first", ev.SessionID)
+		}
+		// Deleted while this append waited for the session's lock.
+		if errors.As(err, &pgErr) && pgErr.Code == "ABD01" {
+			return fmt.Errorf("append event %s/%d: session %s: %w", ev.SessionID, ev.Seq, ev.SessionID, ErrSessionDeleted)
 		}
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
@@ -1087,27 +1128,74 @@ func (p *Postgres) NodeFor(ctx context.Context, sessionID string, stale time.Dur
 func (p *Postgres) DeleteSession(sessionID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// The session's subagents go with it: their records hold its work. They
-	// are marked the same way, so their rows stay for the audit too.
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := tx.Query(ctx, `
-		WITH RECURSIVE tree(id) AS (
-			SELECT id FROM sessions WHERE id = $1
-			UNION
-			SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
-		)
-		SELECT id FROM tree`, sessionID)
+	ids, err := p.LockSessionTree(ctx, tx, sessionID)
 	if err != nil {
+		return err
+	}
+	if err := p.DeleteSessionTx(ctx, tx, ids); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("delete session %s: %w", sessionID, err)
 	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("delete session %s: %w", sessionID, err)
+	p.Forget(ids)
+	return nil
+}
+
+// LockSessionTree takes, in tx, the append lock of the session and of each
+// of its subagents, in order, and returns their ids. Until tx ends no event
+// is added to any of them, and one waiting is refused once a delete in tx
+// commits. A caller can check the tree under the locks, then delete it with
+// DeleteSessionTx in the same tx.
+func (p *Postgres) LockSessionTree(ctx context.Context, tx pgx.Tx, root string) ([]string, error) {
+	locked := map[string]bool{}
+	var ids []string
+	// Read again once the locks are held: a subagent made under a member
+	// while they were taken committed before its lock was granted here.
+	for {
+		rows, err := tx.Query(ctx, `
+			WITH RECURSIVE tree(id) AS (
+				SELECT id FROM sessions WHERE id = $1
+				UNION
+				SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
+			)
+			SELECT id FROM tree ORDER BY id`, root)
+		if err != nil {
+			return nil, fmt.Errorf("lock session %s: %w", root, err)
+		}
+		tree, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return nil, fmt.Errorf("lock session %s: %w", root, err)
+		}
+		grew := false
+		// The lock abhed_events_chain takes for each insert.
+		for _, id := range tree {
+			if locked[id] {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('events/' || $1, 0))`, id); err != nil {
+				return nil, fmt.Errorf("lock session %s: %w", id, err)
+			}
+			locked[id], grew = true, true
+			ids = append(ids, id)
+		}
+		if !grew {
+			slices.Sort(ids)
+			return ids, nil
+		}
 	}
+}
+
+// DeleteSessionTx marks the sessions ids (a tree LockSessionTree gave)
+// deleted in tx, as DeleteSession does. Once tx commits, call Forget(ids).
+// The session's subagents go with it: their records hold its work. They are
+// marked the same way, so their rows stay for the audit too.
+func (p *Postgres) DeleteSessionTx(ctx context.Context, tx pgx.Tx, ids []string) error {
 	for _, q := range []string{
 		`UPDATE sessions SET deleted_at = now(), deleted_by = user_id WHERE id = ANY($1) AND deleted_at IS NULL`,
 		`UPDATE sessions SET prompt = '', title = '' WHERE id = ANY($1)`,
@@ -1115,16 +1203,18 @@ func (p *Postgres) DeleteSession(sessionID string) error {
 		`DELETE FROM session_keys WHERE session_id = ANY($1)`,
 	} {
 		if _, err := tx.Exec(ctx, q, ids); err != nil {
-			return fmt.Errorf("delete session %s: %w", sessionID, err)
+			return fmt.Errorf("delete sessions %v: %w", ids, err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("delete session %s: %w", sessionID, err)
-	}
+	return nil
+}
+
+// Forget drops this process's copies of the deleted sessions' keys, after a
+// DeleteSessionTx has committed.
+func (p *Postgres) Forget(ids []string) {
 	for _, id := range ids {
 		p.keys.drop(id)
 	}
-	return nil
 }
 
 // SaveCheckpoint records a file's prior content, backing /undo.
@@ -1255,4 +1345,12 @@ func redactDSN(dsn string) string {
 		}
 	}
 	return dsn
+}
+
+// logger is the store's logger, slog's default when none was given.
+func (p *Postgres) logger() *slog.Logger {
+	if p.log != nil {
+		return p.log
+	}
+	return slog.Default()
 }

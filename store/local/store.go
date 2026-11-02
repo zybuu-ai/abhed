@@ -48,6 +48,10 @@ type Options struct {
 	// OnClose runs after Close has synced every held session, so an anchor
 	// can send the last heads before the process ends.
 	OnClose func()
+	// OnAppend, when set, is given each line once it is written, with its
+	// chain links, for a reader that derives its own log from the record. It
+	// runs on the writer's goroutine and must not block.
+	OnAppend func(Sealed)
 }
 
 // DefaultDir is ~/.abhed/records.
@@ -70,6 +74,7 @@ type Store struct {
 	anchor       func(tenant, session string, head Head)
 	witnessed    func(tenant, session string) ([]WitnessedHead, error)
 	onClose      func()
+	onAppend     func(Sealed)
 
 	mu     sync.Mutex
 	held   map[string]*session
@@ -170,7 +175,7 @@ func Open(opts Options) (*Store, error) {
 		red = nil // a typed nil redacts nothing, and must not be called
 	}
 	s := &Store{
-		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor, witnessed: opts.Witnessed, onClose: opts.OnClose,
+		root: root, dir: dir, tenant: tenant, user: opts.User, redact: red, anchor: anchor, witnessed: opts.Witnessed, onClose: opts.OnClose, onAppend: opts.OnAppend,
 		held: map[string]*session{}, subs: map[string][]chan agent.Event{},
 	}
 	s.blobs = &blobStore{dir: filepath.Join(dir, "blobs", "sha256")}
@@ -596,6 +601,7 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 		return fmt.Errorf("append event %s/%d: %w", ev.SessionID, ev.Seq, err)
 	}
 	h.size += int64(len(line))
+	end := h.size
 	h.last = Head{Lines: h.last.Lines + 1, Seq: ev.Seq, Hash: l.Hash}
 	h.seqs[ev.Seq] = ev.ID
 	h.events = insertEvent(h.events, ev)
@@ -615,6 +621,9 @@ func (s *Store) appendHeld(h *session, ev agent.Event) error {
 	h.mu.Unlock()
 
 	s.publish(ev)
+	if s.onAppend != nil {
+		s.onAppend(Sealed{Event: ev, Prev: l.Prev, Hash: l.Hash, End: end})
+	}
 	if ended && h.child {
 		// A subagent's lock goes with its last end; a resume takes it again.
 		_ = s.Release(h.id)
@@ -1134,6 +1143,11 @@ type Sealed struct {
 	agent.Event
 	Prev string
 	Hash string
+	// End is the file offset just past the line, where the next one starts;
+	// zero where it is not known, as from SealedSince.
+	End int64
+	// Raw is the line byte for byte, without its newline; set by LinesFrom.
+	Raw []byte
 }
 
 // SealedSince returns a session's lines after seq, in seq order, read from

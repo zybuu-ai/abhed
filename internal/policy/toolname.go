@@ -16,6 +16,7 @@ var builtinTools = map[string]bool{
 	"task_cancel": true, "recall": true, "shell_output": true, "shell_kill": true,
 	"web_search": true, "web_fetch": true, "search": true, "skill": true, "result": true,
 	"k8s_get": true, "k8s_apply": true, "k8s_login": true, "ssh": true, "ssh_connect": true,
+	"ssh_put": true, "ssh_get": true,
 	"secret": true, "delete": true, "mkdir": true, "rename": true, "forge_pr": true,
 }
 

@@ -123,6 +123,9 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `sandbox.max_memory_mb`, `max_procs`, `terminal_idle_minutes` | **applied** only when lower than the value in effect; zero means the default (4096, 512 and 30) |
 | `sandbox.terminal` | **applied** only for `lines` |
 | `sandbox.read_only_paths` | ignored: it mounts more of the host into the sandbox |
+| `sandbox.toolchains` | **applied** only when stricter: auto, then ask, then off |
+| `sandbox.toolchains_preapproved` | ignored: an install that needs no ask |
+| `sandbox.toolchains_registries` | **applied** only for `off` |
 | `limits.max_tokens`, `max_budget_tokens`, `max_subagents` | **applied** only when lower; zero means unlimited, so any positive value is lower |
 | `limits.max_turns` | **applied** only when lower; zero means no turns, so nothing is lower |
 | `limits.max_parallel_subagents` | **applied** only when lower; zero means the tool's cap of 8 |
@@ -131,14 +134,33 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
-| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
+| `verify.mode` | **applied** only when stricter (off < label < strict), and unset counts as `label`, so a workspace never turns labels off |
+| `verify.answer_tool` | **applied** only when true |
+| `verify.contract.protect` | **applied**, added to the protected files already there |
+| `verify.contract.require`, `verify.contract.timeout_ms` | ignored: a required command is a process the harness runs |
+| `verify.critic` | ignored: a model receives the session's tool output |
+| `tools.bash_checkpoints` | **applied** only when `required` |
+| `tools.bash_checkpoint_mb`, `tools.bash_checkpoint_files` | ignored: they set how much of the workspace is held in memory |
+| `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
+| `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
-| `model` (`default`, `providers`, any `base_url`) | ignored: the provider receives the code |
+| `plan.runbooks` | **applied** only when false |
+| `mode.default` | **applied** only as `plan` or `default`, and only narrower than the mode sessions would start in |
+| `monitor.enabled` | **applied** only when true |
+| `monitor.on_unavailable` | **applied** only for `deny` |
+| `monitor.max_per_turn` | **applied** only when more calls are reviewed; zero means no bound, so it is the most |
+| `monitor.honeytokens` | **applied**, added to the ones already there |
+| `monitor` (other keys: `judge`, `endpoint`, `model`, `api_key_env`, `timeout_ms`) | ignored: a judge endpoint receives the conversation |
+| `model` (`default`, `providers`, `completion`, any `base_url`) | ignored: the provider receives the code |
+| `model.allowed` | **applied** as a narrowing: every list set must admit a model, so it only takes models away; a list with a malformed entry is ignored, so a repository cannot stop Abhed starting |
+| `completion.enabled` | **applied** only when false |
+| `completion.local_only` | **applied** only when true |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
-| `mcp` | ignored: a server is a process or an endpoint |
+| `mcp.allowed`, `mcp.denied` | **applied** as a narrowing: an allow list must also admit a server, and a deny entry only stops one; a list with a malformed entry is ignored |
+| `mcp` (other keys) | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |
 | `agents.disabled` | **applied** only when true |
 | `agents.dirs` | ignored: a definition is instructions and a model choice |
@@ -146,7 +168,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `context` | ignored: `memory_files` are read into the prompt. The thresholds wait for trust with the rest |
 | `retrieval` | ignored: `embed_base_url` receives the code |
 | `rag` | ignored: a corpus URL and its headers are egress |
-| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts` | ignored: each names an endpoint, hosts, credentials or machines. The web ones are set aside even when trusted |
+| `web_search` (other keys), `web_fetch` (other keys), `k8s` (other keys), `ssh.hosts`, `ssh.connect_hosts`, `ssh.read_commands` | ignored: each names an endpoint, hosts, credentials or machines, or lets a remote command run unasked. The web ones are set aside even when trusted |
 | `storage` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `auth` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
 | `server` | ignored, and `serve`, `user` and `migrate` refuse to run (below) |
@@ -161,6 +183,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `control_plane.interceptors` | ignored, trusted or not, as in the user's own file: only the managed configuration sets what admits sandbox calls |
 | `control_plane.ha` | ignored, trusted or not: only an operator's file (the user's own or the managed one) joins the server to replicas and names the relay's key, never a file that arrives with a repository |
 | `sandbox.language_servers` | ignored, trusted or not: only an operator's file (the user's own or the managed one) names the program the workbench editor starts as a file is opened |
+| `sandbox.image` | ignored, trusted or not: only an operator's file names the image the container tier runs commands in |
 | an unknown key | ignored, and reported as before |
 
 A deny or ask rule that does not parse is set aside and named with the parse

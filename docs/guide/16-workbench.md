@@ -20,13 +20,21 @@ on, laid out the way an editor is.
 The composer's model picker, shown when more than one provider is configured,
 chooses the model a new session starts on and switches the open one between
 turns; the status bar names the model the last call went to
-([switching models](03-providers.md#switching-mid-session)).
+([switching models](03-providers.md#switching-mid-session)). For a model a local Ollama serves that is not ready, a card in the
+conversation says what is wrong and lists the steps to run, and offers the
+next one (start Ollama, install it, download the model) with its exact
+command, source and size, asking before it runs. Only a signed-in
+administrator of the server is offered the step; others, and everyone on a
+server where nobody signs in, see the steps, with `abhed ollama check` to
+run on the server's host
+([A local Ollama model](03-providers.md#a-local-ollama-model)). The console
+shows the same card.
 
 | Where | What it shows |
 |---|---|
 | **Explorer** | the session's workspace; click a file to open it in the editor. New file, new folder, rename (F2), delete, download and upload are on its toolbar and right-click menu, and files dropped on a folder go into it |
 | **Search** | text or a regular expression across the workspace, with match case and whole word; results grouped by file, a click opens the line |
-| **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change |
+| **Changes** | files the agent changed or you saved, each opening for review: accept or reject change by change; below them, each subagent worktree's changes by hunk, to [take into the workspace](14-parallel-subagents.md#taking-a-worktree-back) |
 | **Files** | the documents, images, spreadsheets and archives at the top of the workspace, each a click from downloading ([files in and out](#files-in-and-out)) |
 | **Tools** | every tool the agent has, whether it asks before running, and the permission rules in force |
 | **Extensions** | configured extensions and the events they hook, connected MCP servers, loaded skills |
@@ -103,6 +111,29 @@ and format character written out, as tool output is, and none is offered
 that urges past a safeguard or towards something destructive.
 `suggest.enabled: false` turns it off
 ([Configuration](02-configuration.md#suggestions)).
+
+**Checked answers.** A reply holding a statement the session's record
+contradicts is flagged on the reply itself (`✗ NOT FACT`, with a red edge),
+and the agent gets one turn to correct it. Under each reply, a box lists what checking it against
+the session's record found: each statement with a ✓ (verified), ? (unverified)
+or ✗ (contradicted, struck through, with the record entry against it). It
+opens by itself when a statement is contradicted or a statement about the work
+is unverified, and each `#seq` opens the tool call the statement rests on. The
+statements and excerpts are the model's and the tools' text, shown with every
+control and format character written out. A session's `verify` setting, or
+`verify.mode`, changes or turns it off ([Verified answers](29-verified-answers.md)).
+**A plan from plan mode.** A session started in plan mode can propose a plan
+with `exit_plan`. It is shown as a card with the plan and, when it has a
+[runbook](28-runbooks.md), every step as it will run, with the CLI's three
+answers. Steps that cannot be undone are asked about a second time. Either
+yes leaves plan mode, for `default`, or for `accept-edits` when that is the
+server's configured mode, binds the runbook, and sends the message the
+conversation goes on with. The answer is `POST /v1/sessions/{id}/plan` with
+`decision` (`accept-edits`, `approve` or `keep-planning`), the `plan_hash`
+from `plan.proposed`, and `confirm_no_undo: true` when a step cannot be
+undone; it is taken only between turns, from the session's owner, while the
+process that ran the plan holds it. A plan left after a restart is proposed
+again. The console shows the same card.
 
 **Sending while the agent works.** Send stays enabled during a run. A message
 sent then is not a reason to cancel the step in progress: it is queued, shown
@@ -410,8 +441,33 @@ process tier, a container with a terminal on the container tier), in the
 workspace root. Variables, aliases, functions, history, tab completion, `vim`
 and the like work as in any shell, within what the tier allows. The first lines
 of each tab say what contains it, for example
-`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`; the
-prompt itself is the shell's own. On the `none` tier the
+`sandbox: process (sandbox-exec) · workspace: /srv/repo · network: off`. The
+terminal has the network the agent's commands have: off unless the session's
+policy opens it, but for the package registries open to the session, by
+your agreement (from Toolchains in Abhed Studio, or when the agent asks) or
+by the configuration's egress rules, which the header then names. A command
+whose output shows a known registry refused, such as `npm install` or `go
+get`, prints a line naming the registry and how to open it, and Abhed Studio
+offers to open it. A project's Python virtual environment is named in the
+header but not used until you type `abhed_venv`
+([Toolchains](32-toolchains.md#the-projects-virtual-environment)). On macOS a dev server started there can
+listen once you agree for the workspace ([`sandbox.listen`](02-configuration.md)):
+Abhed Studio offers it when a server is refused its port, then offers to
+open the address the server prints in your browser. A shell on the host, with the host's
+network and no sandbox, is Abhed Studio's *New Host Terminal*; the
+prompt itself is the shell's own. On the macOS process tier the shell is
+your own where it can run there: `zsh` when your login shell (`SHELL`) is
+zsh, else the newest `bash` 4 or later installed outside your home (Homebrew's),
+else macOS's `/bin/bash`; a shell inside home is never used, as home is closed
+to commands. zsh starts with no start-up file but Abhed's own (`zsh -d -i`
+with a `.zshrc` in the sandbox's caches that commands cannot change: the
+sandbox prompt, history in memory, the toolchains on `PATH` and the note for
+a missing program), and the terminal is judged and recorded as `zsh -d -i`.
+Bash reads none (`bash --noprofile --norc -i`). Either keeps from your login
+environment only your language and time zone (`LANG`, `LC_*`, `TZ`), editor
+(`EDITOR`, `VISUAL`) and colour settings (`COLORTERM`, `CLICOLOR`,
+`LSCOLORS`, `LS_COLORS`, `LESS`, `TERM_PROGRAM`). Linux and the container
+tier run bash. On the `none` tier the
 banner says in red that commands run directly on the host, and so does the
 status bar.
 
@@ -724,7 +780,7 @@ open.
 - **Files over 4 MB are read-only**, shown in part.
 - **Changes made by commands are found by comparison, within limits.** As
   a session opens, the server notes every file in the workspace (outside
-  `.git`, `node_modules` and `.abhed`) with its size, time and hash, and keeps
+  `.git`, `node_modules`, `.abhed` and the subagents' `.abhed-worktrees`) with its size, time and hash, and keeps
   the text of files up to 1 MB, 16 MB in all. A file a shell command changed,
   created or removed since then, yours or the agent's, is listed under
   **Changes** beside the edit tools' changes and can be reviewed and accepted
@@ -807,17 +863,37 @@ changing and closing a file, hover, definition, `shutdown`, `exit`,
 such as `workspace/executeCommand`, which can have a server run programs the
 policy never judged, is refused with 403. The server's `initialize` is made by
 Abhed from the workspace and the editor's capabilities, whatever the page
-sent, so `initializationOptions` (where a server such as gopls takes its
-environment and build flags) never reach it, and an answer to the server's
+sent, so the page's `initializationOptions` (where a server such as gopls
+takes its environment and build flags) never reach it; Abhed sends its own
+for the language, as for Abhed Studio
+([Language servers](33-language-servers.md#what-a-server-may-still-run)):
+rust-analyzer's build scripts, proc macros, check on save and autoreload
+off, and typescript-language-server pinned to the TypeScript installed
+beside it. And an answer to the server's
 own requests must be `null` or a list of nulls; any other answer is refused
 with 403. On a tier this version does not
 know, as on none, no server starts. A server's header lines are bounded, and
 a page that falls 16 MiB behind its messages has its stream ended. What
 it says is untrusted: the editor shows hovers and diagnostics as plain
 markdown with hidden characters marked. A definition in another workspace
-file opens it in a tab; one outside the workspace is not offered. Settings a
-server asks the editor for are left at the server's defaults; set a server's
-options in its own files or on its command line in `language_servers`.
+file opens it in a tab; one outside the workspace is not offered. When a
+server asks for its settings (`workspace/configuration`), Abhed answers it
+with the same settings and the page never sees the question; other servers
+keep their defaults. Set a server's other options on its command line in
+`language_servers`; a command the operator names there still gets the
+settings for its language.
+
+typescript-language-server starts only once the TypeScript installed beside
+it is found (in the server's own install, never where a command could have
+put it: the workspace, or a home or temporary folder outside Abhed's
+toolchain cache); without one the start is refused with 409. A
+`rust-analyzer.toml` or `.rust-analyzer.toml` in or above the session's
+folders would override rust-analyzer's settings, and the workbench has no
+one to ask on the spot, so rust-analyzer is not started (409, naming the
+file, or saying the check could not look at every folder): start it from
+Abhed Studio, which asks you, or remove the file. One that appears or
+changes while it runs (checked every 10 seconds in the session's folders
+and the folders above them), or that the editor opens or saves, stops it.
 Every language server runs with `GOTOOLCHAIN=local`, which the record of its
 start notes, so a `toolchain` line in a `go.mod`, saved or only typed in the
 editor, cannot have the go command fetch and run another Go; whatever else

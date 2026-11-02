@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,8 +24,10 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 	"github.com/zybuu-ai/abhed/store/local"
@@ -69,6 +72,36 @@ var heldAskWait = 30 * time.Minute
 
 // reviewLinger is how long a review window stays open after its last answer.
 var reviewLinger = 5 * time.Minute
+
+// promptExit runs as a prompt's handler returns, after its reply; tests use
+// it to hold that moment. Replacing it is safe only while no app test runs
+// in parallel (t.Parallel), since it is one variable for every prompt.
+var promptExit = func() {}
+
+// previewWrites reads previewWrites from a prompt's _meta. Read loosely,
+// since it can only tighten what the prompt may do.
+func previewWrites(meta map[string]json.RawMessage) bool {
+	for _, key := range []string{acpMetaKey, acpLegacyMetaKey} {
+		var m struct {
+			PreviewWrites bool `json:"previewWrites"`
+		}
+		if json.Unmarshal(meta[key], &m) == nil && m.PreviewWrites {
+			return true
+		}
+	}
+	return false
+}
+
+// attachImages gives a session's next prompt its images, where the session can take them.
+func attachImages(a acpAgent, imgs []abhed.Image) error {
+	if ia, ok := a.(interface{ AttachImages([]abhed.Image) error }); ok {
+		return ia.AttachImages(imgs)
+	}
+	if len(imgs) > 0 {
+		return errors.New("this session cannot take images")
+	}
+	return nil
+}
 
 // newACPAgent builds a session. A variable so tests can replace it.
 var newACPAgent = func(ctx context.Context, opts abhed.Options) (acpAgent, error) {
@@ -167,7 +200,10 @@ type acpSession struct {
 	undo *agent.UndoLog
 	// readOnly says why the session takes no prompt: its record failed verification.
 	readOnly string
-	cancel   context.CancelFunc
+	// raConfigs is the session's last rust-analyzer.toml check, dropped on
+	// any action and whenever a watch fires.
+	raConfigs lsprelay.RustAnalyzerConfigCache
+	cancel    context.CancelFunc
 	// mcpRestart is set while the person's MCP restart runs: no prompt or
 	// other restart starts until it ends, since they share the connection.
 	mcpRestart bool
@@ -175,6 +211,9 @@ type acpSession struct {
 	// always holds the "allow always" scopes the editor chose, so the same
 	// kind of call is not asked again in this session.
 	always map[string]string
+	// grants are the bash scopes the editor chose beyond the policy's own:
+	// an exact command or a family, perhaps in a folder (acp_grants.go).
+	grants []bashGrant
 	// subAsks are the subagent asks shown as tool calls, by request id, so
 	// their answer settles the card and no other subagent.action draws one.
 	subAsks map[string]bool
@@ -300,6 +339,8 @@ type acpConn struct {
 	base    string // the workspace given on the command line, when cwd is absent
 	// trust is -trust-workspace, the default for every session's cwd.
 	trust config.TrustChoice
+	// noNetwork is a network configuration that would not go in force; no org fetch goes without it.
+	noNetwork bool
 	// ctx ends every agent and prompt on a stop signal, and busy holds the
 	// exit that follows until a prompt has ended; nil for neither.
 	ctx  context.Context
@@ -328,6 +369,18 @@ type acpConn struct {
 	// terms are the sandboxed terminals, by id (§7.1).
 	termMu sync.Mutex
 	terms  map[string]*acpTerminal
+	// debugs are the person's debug sessions, by id (§7.8).
+	debugMu sync.Mutex
+	debugs  map[string]*acpDebug
+	// debugReserved are slots held by launches still being judged.
+	debugReserved int
+	// lsps are the person's language servers, by id (§7.9).
+	lspMu sync.Mutex
+	lsps  map[string]*acpLSP
+	// comps are each session's inline completions (§7.10).
+	compMu   sync.Mutex
+	comps    map[string]*acpCompleter
+	compRate bucket
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.
@@ -380,6 +433,7 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	defer stopper.stop()
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
+	c.orgPolicyAtConnect(os.Stderr)
 	c.useRecord(workspace, trust)
 	err := c.run(os.Stdin)
 	c.closeRecord()
@@ -405,10 +459,20 @@ func (c *acpConn) run(in io.Reader) error {
 // gone; the replies to requests still running follow (see drain).
 func (c *acpConn) serve(in io.Reader) error {
 	defer c.inputClosed()
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64<<10), 16<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
+	rd := bufio.NewReaderSize(in, 64<<10)
+	for {
+		line, head, tooLong, err := readLine(rd, acpLineMax)
+		if tooLong {
+			// Refused, and the connection goes on: one oversized message ends no session.
+			c.reply(requestID(head), nil, refusal(errParams, "the message is over the %d MiB a line may hold; send less (fewer or smaller images)", acpLineMax>>20))
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
 		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
@@ -422,6 +486,12 @@ func (c *acpConn) serve(in io.Reader) error {
 			c.answer(msg)
 		case msg.ID == nil:
 			c.notify(msg)
+		case msg.Method == "_abhed/debug/send":
+			// In the order read, so the adapter gets Studio's messages in order.
+			c.debugEnqueue(msg)
+		case msg.Method == "_abhed/lsp/send":
+			// Queued as read: a language server needs Studio's edits in order.
+			c.lspEnqueue(msg)
 		default:
 			// A prompt runs for as long as the model does; the loop must keep
 			// reading for the cancel and the permission answers meanwhile.
@@ -432,7 +502,102 @@ func (c *acpConn) serve(in io.Reader) error {
 			}()
 		}
 	}
-	return sc.Err()
+}
+
+// acpLineMax is the most one message may hold.
+const acpLineMax = 16 << 20
+
+// readLine reads one line of at most max bytes, without its newline. A
+// longer line is read to its end and dropped: tooLong is set and head holds
+// its first bytes, where a request's id is.
+func readLine(rd *bufio.Reader, max int) (line, head []byte, tooLong bool, err error) {
+	for {
+		chunk, err := rd.ReadSlice('\n')
+		if !tooLong {
+			// Room for the line's \r\n, which is not counted against max.
+			if len(line)+len(chunk) > max+2 {
+				tooLong = true
+				head = append(append([]byte(nil), line[:min(len(line), headMax)]...), chunk...)
+				head = head[:min(len(head), headMax)]
+				line = nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case err != nil && (!errors.Is(err, io.EOF) || len(line) == 0 || tooLong):
+			return nil, head, tooLong, err
+		}
+		line = bytes.TrimRight(line, "\r\n")
+		if len(line) > max {
+			return nil, append([]byte(nil), line[:min(len(line), headMax)]...), true, nil
+		}
+		return line, head, tooLong, nil
+	}
+}
+
+// headMax is how much of a too-long line is kept to find its id in, and
+// idDepth how deep the walk for it goes before it gives up.
+const (
+	headMax = 64 << 10
+	idDepth = 16
+)
+
+// requestID is the top-level id at the head of a message too long to parse,
+// or nil: the first headMax bytes are walked token by token, so an "id"
+// nested in params is never taken for it, and the walk stops past idDepth.
+func requestID(head []byte) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(head[:min(len(head), headMax)]))
+	dec.UseNumber()
+	depth, atKey, object := 0, false, false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				depth++
+				if depth == 1 {
+					object = d == '{'
+				}
+				if depth > idDepth {
+					return nil
+				}
+				atKey = depth == 1 && object
+			default:
+				depth--
+				atKey = depth == 1 && object // after a value closes, a key comes next
+			}
+			continue
+		}
+		if depth != 1 || !object {
+			continue
+		}
+		if !atKey {
+			atKey = true
+			continue
+		}
+		atKey = false
+		if k, _ := tok.(string); k != "id" {
+			continue
+		}
+		v, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		switch x := v.(type) {
+		case string:
+			b, _ := json.Marshal(x)
+			return b
+		case json.Number:
+			return json.RawMessage(x.String())
+		}
+		return nil
+	}
 }
 
 func (c *acpConn) send(v any) {
@@ -567,6 +732,8 @@ func (c *acpConn) closeAll() {
 		c.shut(s)
 	}
 	c.killTerminals("")
+	c.killDebugs("")
+	c.killLSPs("")
 }
 
 // shut ends a session's hold: its prompt and review window stop, its
@@ -583,6 +750,9 @@ func (c *acpConn) shut(s *acpSession) {
 	}
 	// The terminals' last lines are recorded before the end is.
 	c.killTerminals(s.id)
+	c.killDebugs(s.id)
+	c.killLSPs(s.id)
+	c.completionSummary(s)
 	c.unsubscribeSession(s.id)
 	s.recordClosed(cancel != nil)
 	s.agent.Close()
@@ -729,11 +899,22 @@ func (c *acpConn) newSession(msg rpcMessage) {
 	// those the client names are not started.
 	if refused := mcpNames(p.MCPServers); len(refused) > 0 {
 		metaOf(res)["mcpServersRefused"] = refused
+		metaOf(res)["mcpServersRefusedReason"] = acpMCPRefused
+		if s.inner && s.parts.Loop != nil && s.parts.Loop.Recorder != nil {
+			for _, name := range refused {
+				_, _ = s.parts.Loop.Recorder.Record(agent.EvConfigRefused, agent.ActorSystem, agent.Trusted, agent.ConfigAttempt{
+					Layer: "command", Source: "session/new mcpServers", Key: "mcp.servers", Value: name,
+					Decision: "refused", Reason: acpMCPRefused, Principal: toolset.LocalPrincipal(inAgentCommand())})
+			}
+		}
 	}
 	cmds := commandsUpdate(s)
 	c.reply(msg.ID, res, nil)
 	c.sessionUpdate(s.id, cmds)
 }
+
+// acpMCPRefused is why the MCP servers a client names in session/new are not started.
+const acpMCPRefused = "the engine starts only the MCP servers its own configuration names, under workspace trust and its MCP server lists"
 
 // mcpNames are the names of the MCP servers a client offered.
 func mcpNames(servers []json.RawMessage) []string {
@@ -766,6 +947,9 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
+	if !c.noNetwork {
+		orgPolicyAtStart(c.ctx, os.Stderr)
+	}
 	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]string{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()
@@ -802,10 +986,12 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		},
 		// The editor shows a next prompt in its input after a turn.
 		Suggest: true,
+		// A person reads the answer there, so it is labelled unless configured otherwise.
+		VerifyByDefault: true,
 	}
 	// The editor's own files in the workspace are out of the agent's reach (§2.6).
 	s.protected = protectedPaths(o.cwd)
-	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp"}
+	settings := embedded.Settings{Protect: s.protected, ProtectGit: true, Surface: "acp", PlanExit: true}
 	if c.durable() {
 		rec, err := c.record()
 		if err != nil {
@@ -823,11 +1009,14 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 	}
 	s.agent = a
 	s.parts, s.inner = embedded.Of(a)
+	s.loadKeptGrants()
+	s.loadListen(c)
 	if s.inner {
 		s.undo = agent.NewUndoLog(s.parts.Session.RestoreFile, s.parts.Session.RemoveFile)
 		loop := s.parts.Loop
 		s.undo.Persist = checkpointSaverFor(func() *agent.Loop { return loop }, s.parts.Store)
 		s.parts.Session.Checkpoint = s.undo.Record
+		s.parts.Session.BashCheckpoint = s.undo.RecordBefore
 		s.parts.Session.Guard = s.dirtyGuard
 	}
 	if r, ok := a.(trustReporter); ok {
@@ -857,7 +1046,35 @@ func (c *acpConn) sessionResult(s *acpSession) map[string]any {
 	if r, ok := s.agent.(trustReporter); ok {
 		metaOf(res)["workspaceTrust"] = r.WorkspaceTrust()
 	}
+	// What is wrong with the configuration, for the model list (§3.2): repeated
+	// and unread keys, and the workspace settings an untrusted file could not make.
+	if w := configWarnings(s.agent); len(w) > 0 {
+		metaOf(res)["configWarnings"] = w
+	}
 	return res
+}
+
+// configWarner reports the configuration's problems, one sentence each.
+type configWarner interface{ ConfigWarnings() []string }
+
+// configWarnings are an agent's configuration warnings and its workspace
+// file's ignored keys, each redacted and on one printable line.
+func configWarnings(a any) []string {
+	var out []string
+	if w, ok := a.(configWarner); ok {
+		out = append(out, w.ConfigWarnings()...)
+	}
+	if r, ok := a.(trustReporter); ok {
+		if ws := r.WorkspaceTrust(); ws.File != "" && !ws.Trusted {
+			for _, k := range ws.Ignored {
+				out = append(out, fmt.Sprintf("%s: %s is not used while the workspace configuration is untrusted", config.Printable(ws.File), config.Printable(k.Key)))
+			}
+		}
+	}
+	for i, w := range out {
+		out[i] = ui.VisibleLine(redacted(w))
+	}
+	return out
 }
 
 // promptText splits the prompt into the person's words and what they attached,
@@ -888,8 +1105,6 @@ func promptText(blocks []json.RawMessage) (said, attachedText string, mentions [
 			room = max(0, room-int(m.Bytes))
 			attached = append(attached, block)
 			mentions = append(mentions, m)
-		case "resource_link":
-			fmt.Fprintf(&b, "\n\n(See %s%s)", blk.Name, map[bool]string{true: " at " + blk.URI, false: ""}[blk.URI != ""])
 		}
 	}
 	if len(attached) > 0 {
@@ -986,8 +1201,9 @@ var lineFragment = regexp.MustCompile(`^L(\d+)-L(\d+)$`)
 
 func (c *acpConn) prompt(msg rpcMessage) {
 	var p struct {
-		SessionID string            `json:"sessionId"`
-		Prompt    []json.RawMessage `json:"prompt"`
+		SessionID string                     `json:"sessionId"`
+		Prompt    []json.RawMessage          `json:"prompt"`
+		Meta      map[string]json.RawMessage `json:"_meta"`
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	s := c.session(p.SessionID)
@@ -1026,7 +1242,18 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}
 	// The turn ends before its reply, so the next prompt never finds it open.
 	var endOnce sync.Once
-	end := func() { endOnce.Do(func() { cancel(); s.endTurn() }) }
+	// What this prompt set on the session is undone as its turn ends, before
+	// the reply lets the next prompt in, so it can never undo the next one's.
+	var undo []func()
+	end := func() {
+		endOnce.Do(func() {
+			for i := len(undo) - 1; i >= 0; i-- {
+				undo[i]()
+			}
+			cancel()
+			s.endTurn()
+		})
+	}
 	defer end()
 
 	text, attached, mentions := promptText(p.Prompt)
@@ -1044,6 +1271,22 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "%s", why))
 		return
 	}
+	// Links and images are read now, and refuse the prompt whole if one cannot be.
+	used := 0
+	for _, m := range mentions {
+		used += int(m.Bytes)
+	}
+	links, err := c.linkedAttachments(ctx, s, p.Prompt, mentionMaxBytes-used)
+	if err == nil && links.why != "" {
+		err = errors.New(links.why)
+	}
+	if err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	mentions = append(mentions, links.mentions...)
+	attached += links.text
 	// What the person attached is recorded where it reaches the model.
 	withAttached := func(prompt string) string {
 		for _, m := range mentions {
@@ -1051,11 +1294,35 @@ func (c *acpConn) prompt(msg rpcMessage) {
 		}
 		return prompt + attached
 	}
+	// Under preview, every edit and write of this prompt is put to the person
+	// with its diff, a command's or skill's run and its subagents' included;
+	// a session that cannot do that refuses the prompt rather than write unseen.
+	if previewWrites(p.Meta) {
+		if !s.inner || s.parts.Loop == nil {
+			end()
+			c.reply(msg.ID, nil, refusal(errPolicy, "this session cannot preview writes"))
+			return
+		}
+		s.parts.Loop.PreviewWrites(true)
+		undo = append(undo, func() { s.parts.Loop.PreviewWrites(false) })
+	}
+	// The images go with this prompt's run, whichever runs it, and no later one.
+	if err := attachImages(s.agent, links.images); err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	undo = append(undo, func() { _ = attachImages(s.agent, nil) })
+	defer promptExit()
 	s.undo.BeginTurn()
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {
 		_, err = s.agent.Run(ctx, withAttached(text))
+		// A plan the run proposed is put to the editor; accepted, the turn goes on with it.
+		if next := c.decidePlan(ctx, s, err); next != "" {
+			_, err = s.agent.Run(ctx, next)
+		}
 	}
 	// Every session/update of the run goes out before the reply that ends it.
 	flushed, cancelFlush := context.WithTimeout(context.Background(), flushWait)
@@ -1065,6 +1332,13 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	var ended *abhed.EndedError
 	if stop == "refusal" && err != nil && !errors.As(err, &ended) {
 		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n" + err.Error())})
+	} else if stop == "refusal" && errors.As(err, &ended) && ended.Reason != agent.TermPromptRefused {
+		// The reason is said in the chat, so the editor has something to point to.
+		why := ui.EndedText(ended.Reason, ended.Detail)
+		if ended.Detail != "" {
+			why += ": " + redacted(ended.Detail)
+		}
+		c.sessionUpdate(s.id, map[string]any{"sessionUpdate": "agent_message_chunk", "content": textBlock("\n\n" + why + ". Send another message to go on.")})
 	}
 	res := map[string]any{"stopReason": stop}
 	if reason != "" {
@@ -1099,6 +1373,9 @@ func stopReason(ctx context.Context, err error) (stop, reason string) {
 		return "cancelled", string(ended.Reason)
 	case agent.TermMaxBudget:
 		return "max_tokens", "budget"
+	case agent.TermUnverified:
+		// The turn ended with its answer; the checks could not verify it.
+		return "end_turn", string(ended.Reason)
 	}
 	return "refusal", string(ended.Reason)
 }
@@ -1115,6 +1392,19 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if remembered {
 		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.BySessionScope, Scope: scope})
 		return true, nil
+	}
+	// A bash grant answers only the policy's default ask, never a rule's,
+	// the destructive check's, the supervisor's or a screen's.
+	command, grantable := s.grantable(tool, args, d)
+	if grantable {
+		if g, ok := s.grantFor(command); ok {
+			by := abhed.BySessionScope
+			if !g.Session {
+				by = abhed.ByWorkspaceGrant
+			}
+			abhed.NoteAnswer(ctx, abhed.Answer{By: by, Scope: g.scopeOf()})
+			return true, nil
+		}
 	}
 	// The request names the call its tool_call update names, and its options
 	// carry the engine's request id so an answer meant for another ask is refused.
@@ -1163,6 +1453,7 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	// The editor is shown the request as recorded (redacted when the session has
 	// a redactor); outside a loop there is no record, only the call's own values.
 	shown, reason, shownScope, via := args, d.Reason, scope, ""
+	var supervisor *agent.SupervisorNote
 	if rec, ok := agent.RequestedOf(ctx); ok {
 		// A person cannot review input the record withheld, so it is not asked.
 		if rec.Withheld {
@@ -1172,6 +1463,8 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 			return false, nil
 		}
 		shown, reason, shownScope, via = rec.Args, rec.Reason, rec.Scope, rec.Via
+		// The supervisor's verdict as the record holds it, for the card (studio-acp-contract.md §5.2).
+		supervisor = rec.Supervisor
 	}
 	offerAlways := scope != "" && shownScope != ""
 	once, always, reject := "once:"+bind, "always:"+bind, "reject:"+bind
@@ -1179,11 +1472,27 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 	if offerAlways {
 		options = append(options, map[string]any{"optionId": always, "name": "Always allow " + ui.VisibleLine(shownScope), "kind": "allow_always"})
 	}
+	var grantOpts []grantOption
+	// Offered only when the card shows the command as it runs.
+	if grantable && bashCommandOf(shown) == command {
+		grantOpts = bashGrantOptions(command, s.workDir(), s.workRoot(), bind)
+		for _, g := range grantOpts {
+			kind := "allow_always"
+			if g.grant.Session {
+				kind = "allow_once"
+			}
+			options = append(options, map[string]any{"optionId": g.id, "name": ui.VisibleLine(g.label), "kind": kind,
+				"_meta": map[string]any{acpMetaKey: map[string]any{"grant": g.grant}}})
+		}
+	}
 	options = append(options, map[string]any{"optionId": reject, "name": "Deny", "kind": "reject_once"})
 	meta := map[string]any{"tool": tool, "step": d.Step, "reason": reason, "destructive": destructive(tool, args, d),
 		"rule": ruleOf(d)}
 	if requestID != "" {
 		meta["requestId"] = requestID
+	}
+	if supervisor != nil {
+		meta["supervisor"] = supervisor
 	}
 	if via != "" {
 		meta["via"] = via
@@ -1259,6 +1568,21 @@ func (c *acpConn) askEditor(ctx context.Context, s *acpSession, tool string, arg
 		return true, nil
 	case out.Outcome.OptionID == once:
 		return true, nil
+	case grantChosen(grantOpts, out.Outcome.OptionID) != nil:
+		g := *grantChosen(grantOpts, out.Outcome.OptionID)
+		// Kept for the workspace, outside every command's reach, for its next
+		// sessions; one that cannot be kept holds for this session alone.
+		if !g.Session && s.inner && s.parts.Session != nil {
+			if err := keepGrant(s.parts.Session.Root, g); err != nil {
+				warnf("the grant %s could not be kept for the workspace, so it holds for this session alone: %v", g.scopeOf(), err)
+				g.Session = true
+			}
+		}
+		s.addGrant(g)
+		abhed.NoteAnswer(ctx, abhed.Answer{By: abhed.ByReviewer, Granted: g.scopeOf()})
+		// Recorded either way; one for the session alone is not restored.
+		s.record(agent.EvApprovalScopeGranted, g.grantRecord())
+		return true, nil
 	case out.Outcome.OptionID == reject:
 		return false, nil
 	}
@@ -1333,6 +1657,10 @@ func (c *acpConn) awaitAskable(ctx context.Context, s *acpSession, task, callID 
 
 // ruleOf names what made the ask: the rule as written, or the built-in step.
 func ruleOf(d abhed.Decision) string {
+	// The preview asked, whatever rule it replaced; that rule stays on the record.
+	if d.Step == "preview" {
+		return "builtin:preview"
+	}
 	if d.Rule != "" {
 		return d.Rule
 	}
@@ -1355,7 +1683,7 @@ func destructive(tool string, args json.RawMessage, d abhed.Decision) bool {
 	if d.Step == "destructive" {
 		return true
 	}
-	if tool != "bash" {
+	if tool != "bash" && tool != "ssh" {
 		return false
 	}
 	var a struct {

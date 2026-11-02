@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -516,4 +517,353 @@ func TestCommandHomeFollowsTheBashTool(t *testing.T) {
 			t.Errorf("%s: %q %v", name, dir, visible)
 		}
 	}
+}
+
+// Container and cluster operations with no undo need confirmation; everyday
+// reads, builds and dev resets do not.
+func TestContainerClusterDestructive(t *testing.T) {
+	cases := map[string]bool{
+		"docker system prune -af --volumes":                                true,
+		"docker system prune":                                              true,
+		"podman system reset -f":                                           true,
+		"docker volume rm pgdata":                                          true,
+		"docker volume prune -af":                                          true,
+		"podman volume rm --all":                                           true,
+		"docker image prune -a":                                            true,
+		"docker image prune --all -f":                                      true,
+		"docker rmi -f app:dev":                                            true,
+		"docker image rm --force app":                                      true,
+		"kubectl delete ns prod":                                           true,
+		"kubectl delete namespaces a b":                                    true,
+		"kubectl --context prod delete ns/prod":                            true,
+		"kubectl delete pvc data-db-0":                                     true,
+		"kubectl delete all --all -A":                                      true,
+		"kubectl delete pods --all":                                        true,
+		"kubectl delete deploy web --all-namespaces":                       true,
+		"kubectl scale deploy/db --replicas=0":                             true,
+		"kubectl scale deploy db --replicas 0":                             true,
+		"kubectl drain node-1 --ignore-daemonsets":                         true,
+		"kubectl cordon node-1":                                            true,
+		"kubectl -n prod patch deploy db -p x":                             true,
+		"kubectl patch pvc data -p '{\"metadata\":{\"finalizers\":null}}'": true,
+		"kubectl apply -f k8s/ --prune -l app=x":                           true,
+
+		"oc delete project prod":                true,
+		"oc delete projects a b":                true,
+		"helm uninstall web -n prod":            true,
+		"helm delete web":                       true,
+		"helm list -n prod":                     false,
+		"helm upgrade --install web ./chart":    false,
+		"oc get projects":                       false,
+		"docker system df":                      false,
+		"docker image prune -f":                 false,
+		"docker volume ls":                      false,
+		"docker images":                         false,
+		"docker rmi app:old":                    false,
+		"docker compose down -v":                false,
+		"kubectl get ns":                        false,
+		"kubectl delete pod web-1":              false,
+		"kubectl delete pod mypod-ns-1":         false,
+		"kubectl scale deploy/web --replicas=3": false,
+		"kubectl rollout restart deploy/web":    false,
+		"kubectl apply -f k8s/":                 false,
+		"kubectl uncordon node-1":               false,
+		"kubectl patch deploy web -p x":         false,
+	}
+	for cmd, want := range cases {
+		what, got := IsDestructive(cmd)
+		if got != want {
+			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
+
+// Round-17 classes: comma kind lists, data-store drops, infrastructure
+// teardown; and per-command matching so a word from another command in the
+// line does not decide, with reads staying unprompted.
+func TestSegmentDestructive(t *testing.T) {
+	cases := map[string]bool{
+		"kubectl delete sts,pvc -l app=db":                      true,
+		"kubectl delete statefulset/db,pvc/data-db":             true,
+		"oc delete sts,pvc -l app=db":                           true,
+		"kubectl delete -l app=db pvc":                          true,
+		"oc delete pvc data":                                    true,
+		"oc scale dc/db --replicas=0":                           true,
+		"oc delete all --all":                                   true,
+		"kubectl delete crd widgets.example.com":                true,
+		"kubectl delete storageclass fast":                      true,
+		"kubectl delete clusterrolebinding admin":               true,
+		"psql -c 'drop table users'":                            true,
+		"psql -c 'DROP DATABASE app'":                           true,
+		"mysql -e 'truncate orders'":                            true,
+		"psql -c 'delete from users'":                           true,
+		"docker exec db dropdb app":                             true,
+		"mysqladmin -f drop prod":                               true,
+		"redis-cli FLUSHALL":                                    true,
+		"redis-cli -n 2 flushdb":                                true,
+		"mongosh app --eval 'db.dropDatabase()'":                true,
+		"terraform destroy -auto-approve":                       true,
+		"terraform apply -destroy -auto-approve":                true,
+		"terraform state rm aws_db_instance.main":               true,
+		"tofu destroy":                                          true,
+		"pulumi destroy --yes":                                  true,
+		"gcloud sql instances delete prod":                      true,
+		"az group delete -n prod --yes":                         true,
+		"aws s3 rb s3://prod-bucket --force":                    true,
+		"aws s3 rm s3://b/x --recursive":                        true,
+		"aws ec2 terminate-instances --instance-ids i-1":        true,
+		"aws rds delete-db-instance --db-instance-identifier p": true,
+		"aws cloudformation delete-stack --stack-name p":        true,
+		"doctl compute droplet delete web":                      true,
+		"hcloud server delete web":                              true,
+
+		"docker stack rm prod":                          true,
+		"docker service rm db":                          true,
+		"docker swarm leave --force":                    true,
+		"docker container prune -f":                     true,
+		"podman network prune":                          true,
+		"git push --delete origin main":                 true,
+		"git push origin :main":                         true,
+		"git push -f origin feat":                       true,
+		"git push origin feat":                          false,
+		"git push -u origin feat":                       false,
+		"docker swarm leave":                            false,
+		"docker rm db":                                  false,
+		"docker network rm net":                         false,
+		"git rm src/x.go":                               false,
+		"psql -c 'select 1'":                            false,
+		"psql -c 'delete from users where id = 1'":      false,
+		"mysql -e 'show databases'":                     false,
+		"redis-cli PING":                                false,
+		"terraform plan":                                false,
+		"terraform apply -auto-approve":                 false,
+		"gcloud compute instances list":                 false,
+		"az group list":                                 false,
+		"aws s3 ls s3://b":                              false,
+		"aws ec2 describe-instances":                    false,
+		"kubectl delete pod web-1 && kubectl get all":   false,
+		"kubectl get pods -A && echo delete":            false,
+		"helm list && grep uninstall notes.txt":         false,
+		"kubectl patch deploy product-api -p x":         false,
+		"kubectl get deploy -n prod":                    false,
+		"kubectl -n product patch deploy x -p y":        false,
+		"kubectl patch deploy x -p y --context prod-eu": true,
+		"kubectl -n production replace -f x.yaml":       true,
+	}
+	for cmd, want := range cases {
+		what, got := IsDestructive(cmd)
+		if got != want {
+			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
+
+// Round-18: quoted multi-statement queries, qualified tables, stdin and
+// heredoc SQL, Mongo drops, ORM resets and the wider teardown families.
+func TestDataStoreDestructive(t *testing.T) {
+	cases := map[string]bool{
+		`psql -c "BEGIN; TRUNCATE users; COMMIT;"`:         true,
+		`psql -c "select 1; drop table users"`:             true,
+		`psql -c 'DELETE FROM public.users;'`:              true,
+		`psql -c "DELETE FROM \"users\""`:                  true,
+		`psql -c 'alter table users drop column email'`:    true,
+		"psql <<EOF\nDROP TABLE users;\nEOF":               true,
+		"echo 'DROP DATABASE app;' | psql":                 true,
+		"mysql app <<< 'drop table orders'":                true,
+		"mongosh --eval 'db.users.drop()'":                 true,
+		"mongosh app --eval 'db.users.deleteMany({})'":     true,
+		"npx prisma migrate reset --force":                 true,
+		"npx prisma db push --force-reset":                 true,
+		"rails db:drop":                                    true,
+		"bin/rails db:reset":                               true,
+		"python manage.py flush --noinput":                 true,
+		"php artisan migrate:fresh --force":                true,
+		"php artisan db:wipe --force":                      true,
+		"dotnet ef database drop --force":                  true,
+		"npx sequelize-cli db:drop":                        true,
+		"terragrunt run-all destroy":                       true,
+		"terraform workspace delete prod":                  true,
+		"cdk destroy --force":                              true,
+		"sam delete --no-prompts":                          true,
+		"serverless remove --stage prod":                   true,
+		"eksctl delete cluster --name prod":                true,
+		"aws s3api delete-bucket --bucket b":               true,
+		"aws lambda delete-function --function-name api":   true,
+		"aws ecr batch-delete-image --repository-name app": true,
+		"az storage blob delete-batch -s data":             true,
+		"kubectl delete PVC data-0":                        true,
+		"git push --mirror origin":                         true,
+
+		"terraform apply -replace=aws_db_instance.main -auto-approve":                  true,
+		"terraform taint aws_db_instance.main":                                         true,
+		"tofu apply -replace module.db -auto-approve":                                  true,
+		"bin/rails db:migrate:reset":                                                   true,
+		"rails db:purge":                                                               true,
+		"rails db:truncate_all":                                                        true,
+		"bin/rails db:schema:load":                                                     true,
+		"php artisan migrate:refresh --seed":                                           true,
+		"php artisan migrate:rollback":                                                 true,
+		"git push --prune origin":                                                      true,
+		"git reflog expire --expire=now --all && git gc --prune=now":                   true,
+		"git gc --prune=now":                                                           true,
+		"gcloud firestore bulk-delete --collection-ids=users":                          true,
+		"aws ec2 deregister-image --image-id ami-1":                                    true,
+		"aws s3api delete-objects --bucket b --delete file://k.json":                   true,
+		"docker rm -fv db":                                                             true,
+		"psql -c 'DELETE FROM users WHERE true'":                                       true,
+		"npx cdk destroy --force":                                                      true,
+		"npx serverless remove":                                                        true,
+		"sudo -u postgres psql -c 'DROP DATABASE app'":                                 true,
+		`docker exec db psql -U postgres -c "DROP DATABASE app"`:                       true,
+		`docker exec -it -u postgres db psql -c "TRUNCATE users"`:                      true,
+		`docker-compose exec db psql -c "DROP TABLE users"`:                            true,
+		`docker compose -f prod.yml exec -T db mysql -e "drop database app"`:           true,
+		`podman exec -i db mysql -uroot <<< "DROP DATABASE app"`:                       true,
+		`kubectl exec -i postgres-0 -- psql -U postgres -c "DROP DATABASE app"`:        true,
+		`kubectl exec -n prod -c db postgres-0 -- psql -c "DROP TABLE t"`:              true,
+		`oc exec postgres-0 -- psql -c "DROP DATABASE app"`:                            true,
+		`kubectl exec redis-0 -- redis-cli FLUSHALL`:                                   true,
+		`docker exec cache redis-cli flushall`:                                         true,
+		`docker exec mongo mongosh app --eval "db.dropDatabase()"`:                     true,
+		`ssh db1 'psql -c "DROP DATABASE app"'`:                                        true,
+		`ssh db1 psql -c "'DROP TABLE users'"`:                                         true,
+		`heroku pg:psql -a app -c "DROP TABLE users"`:                                  true,
+		`heroku run -a app psql -c "DROP TABLE users"`:                                 true,
+		`fly ssh console -C "psql -c 'DROP TABLE users'"`:                              true,
+		"npx serverless@3 remove":                                                      true,
+		"pulumi up --replace urn:pulumi:dev::app::aws:rds/instance:Instance::db --yes": true,
+		"bin/rails db:setup":                                                           true,
+		`mysql -e "DELETE FROM users WHERE 1"`:                                         true,
+		"npx prisma@5 migrate reset --force":                                           true,
+		"npx sequelize-cli@6 db:drop":                                                  true,
+		"npm run prisma -- migrate reset --force":                                      true,
+		"npx cdk@2 -- destroy --force":                                                 true,
+		"heroku pg:reset DATABASE -a app --confirm app":                                true,
+		"heroku addons:destroy heroku-postgresql -a app --confirm app":                 true,
+		"heroku apps:destroy app --confirm app":                                        true,
+		"git reflog expire --expire=all --all":                                         true,
+		"pulumi up --target-replace urn --yes":                                         true,
+		`ssh prod ": > /srv/data/app.db"`:                                              true,
+		`ssh prod "> /srv/data/app.db"`:                                                true,
+		`ssh prod "cp /dev/null /srv/data/app.db"`:                                     true,
+		"sed -n '1e rm -rf /srv/data' notes.txt":                                       true,
+		`sed 's/.*/rm -rf \/srv\/data/e' notes.txt`:                                    true,
+		"sed -i 's/x/y/; 1e rm -rf /srv/data' notes.txt":                               true,
+		"sed -ne '1e dropdb app' notes.txt":                                            true,
+		`sed -n '/DROP TABLE/p' down.sql | psql app`:                                   true,
+		`grep -h "DROP TABLE" down.sql | psql app`:                                     true,
+		`grep "^rm -rf" cleanup.txt | sh`:                                              true,
+		`grep "rm -rf" cleanup.txt | xargs -0 sh -c`:                                   true,
+		`grep "rm -rf" cleanup.txt | tee run.sh | sh`:                                  true,
+		`grep "rm -rf" cleanup.txt > run.sh`:                                           true,
+		`sh -c "$(grep 'rm -rf' cleanup.txt)"`:                                         true,
+		"ack --pager='rm -rf /srv/data' x":                                             true,
+		"ag --pager 'rm -rf /srv/data' x":                                              true,
+		"gsutil -m rm -r gs://backups/git":                                             true,
+		`grep -rn "DROP TABLE" migrations/`:                                            false,
+		`grep -rn "rm -rf" scripts/ | head`:                                            false,
+		`grep -rn "DROP TABLE" db/ | wc -l`:                                            false,
+		"sed -i '/dropdb/d' scripts/teardown.sh":                                       false,
+		`git commit -m "Run psql migrations; drop table guard added"`:                  false,
+		`git commit -m "docs: explain how psql handles DROP TABLE"`:                    false,
+		`git commit -am "mysql -e DROP DATABASE wrapper removed"`:                      false,
+		`git tag -a v1 -m "dropdb app no longer runs"`:                                 false,
+		`gh issue create --title "terraform destroy ran in CI" --body "seen twice"`:    false,
+		`git commit --message="redis-cli FLUSHALL guarded"`:                            false,
+		`rg "psql -c DROP TABLE" docs/`:                                                false,
+		`grep -rl dropdb scripts/`:                                                     false,
+		`sudo grep -r "dropdb" /etc`:                                                   false,
+		`rg -n "TRUNCATE|DROP DATABASE" db/`:                                           false,
+		"sed -i 's/rm -rf build/make clean/' Makefile":                                 false,
+		`ssh prod "ls > /tmp/out"`:                                                     false,
+		"ssh prod uptime > /tmp/uptime.txt":                                            false,
+		`echo "psql -c 'DROP TABLE users'"`:                                            false,
+		`git tag -m "psql: drop table support" v1.2`:                                   false,
+		`gh pr create --title "psql drop table fix" --body "x"`:                        false,
+		"gcloud compute instances create web --boot-disk-auto-delete":                  false,
+		"gcloud compute instances set-disk-auto-delete web --auto-delete":              false,
+		"terraform plan -replace=aws_db_instance.main":                                 false,
+		"git commit -m \"psql: fix drop table bug\"":                                   false,
+		"php artisan migrate":                                                          false,
+		"rails db:migrate":                                                             false,
+		"echo 'select 1' | psql":                                                       false,
+		"psql app <<'SQL'\nselect count(*) from users;\nSQL":                           false,
+		`psql -c "select 1; select 2"`:                                                 false,
+		"psql -c 'delete from users where id = 1'":                                     false,
+		"npx prisma migrate dev":                                                       false,
+		"npx prisma generate":                                                          false,
+		"python manage.py migrate":                                                     false,
+		"terraform plan -destroy":                                                      false,
+		"aws ec2 describe-instances":                                                   false,
+		"mongosh app --eval 'db.users.find({})'":                                       false,
+	}
+	for cmd, want := range cases {
+		what, got := IsDestructive(cmd)
+		if got != want {
+			t.Errorf("IsDestructive(%q) = %v (%s), want %v", cmd, got, what, want)
+		}
+	}
+}
+
+// TestDestructiveStaysAsked guards against a narrowing that silently drops a
+// command the destructive step used to ask about: every line in the file must
+// still ask.
+func TestDestructiveStaysAsked(t *testing.T) {
+	data, err := os.ReadFile("testdata/destructive_asked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		n++
+		cmd := strings.ReplaceAll(line, "⏎", "\n")
+		if _, ok := IsDestructive(cmd); !ok {
+			t.Errorf("no longer asked: %q", cmd)
+		}
+	}
+	if n < 1000 {
+		t.Fatalf("only %d lines read", n)
+	}
+}
+
+// A command that cannot find a program is told what NotFound says of it,
+// whichever shell said it was missing; a command that succeeded is not.
+func TestBashSaysHowToGetAMissingProgram(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewSession(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	b := Bash{NotFound: func(d, p string) string {
+		asked = append(asked, p)
+		if p == "go" {
+			return "install go with the toolchain tool"
+		}
+		return ""
+	}}
+	for cmd, want := range map[string]bool{
+		`echo "bash: go: command not found" >&2; exit 127`:      true,
+		`echo "sh: 1: go: not found" >&2; exit 127`:             true,
+		`echo "env: 'go': No such file or directory"; exit 127`: true,
+		`echo "bash: zork: command not found"; exit 127`:        false,
+		`echo "bash: go: command not found"; exit 0`:            false,
+	} {
+		res := b.Run(context.Background(), s, mustJSONArgs(t, map[string]string{"command": cmd}))
+		if got := strings.Contains(res.Content, "install go with the toolchain tool"); got != want {
+			t.Errorf("%s: %v\n%s", cmd, got, res.Content)
+		}
+	}
+}
+
+func mustJSONArgs(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

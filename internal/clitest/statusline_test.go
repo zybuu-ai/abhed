@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const statuslineConfig = `{"sandbox":{"min_tier":"none"},"statusline":{"command":"grep -o '\"provider\":\"[a-z]*\"'; printf '\\033]0;pwned\\007'"},` +
+// The command is given ten seconds a run, the most allowed: a loaded machine
+// can take longer than the default second to start it, and that limit is
+// not what these tests are about.
+const statuslineConfig = `{"sandbox":{"min_tier":"none"},"statusline":{"timeout_ms":10000,"command":"grep -o '\"provider\":\"[a-z]*\"'; printf '\\033]0;pwned\\007'"},` +
 	`"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"{{MODEL_URL}}","model":"stub-model","context_window":32768}}}}`
 
 // The user's statusline command reads the status as JSON and its output is
@@ -34,7 +37,11 @@ func TestStatuslineFromUserConfig(t *testing.T) {
 	if h.Screen().Title() == "pwned" {
 		t.Fatal("the statusline set the terminal title")
 	}
-	h.Settle()
+	// The status line command redraws the footer as it answers: the panel is
+	// asked for once the screen is idle and has stopped changing, so the
+	// keys do not land in the middle of a redraw.
+	waitIdle(h)
+	h.WaitQuiet(300*time.Millisecond, 10*time.Second)
 	h.Type("/status\r")
 	h.WaitText("statusline")
 	closePanel(h)

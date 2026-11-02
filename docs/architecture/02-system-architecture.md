@@ -9,8 +9,8 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  ACCESS PLANE                                                            │
-│  abhed CLI (Go, static binary) │ Web console (TS) │ REST/gRPC + SSE API  │
-│  IDE bridge (LSP)              │ OIDC/SAML SSO    │ Tenant-scoped RBAC   │
+│  abhed CLI (Go, static binary) │ Web console (TS) │ REST + SSE API       │
+│  IDE bridge (LSP)              │ OIDC SSO         │ Tenant-scoped RBAC   │
 └─────────────────────────────────┬────────────────────────────────────────┘
                                   │  session protocol (event stream)
 ┌─────────────────────────────────▼────────────────────────────────────────┐
@@ -18,7 +18,7 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 │                                                                          │
 │   ┌────────────┐   ┌──────────────┐   ┌───────────────┐  ┌────────────┐ │
 │   │ Orchestr.  │──▶│ Context Mgr  │──▶│ Policy Engine │─▶│ Tool Router│ │
-│   │ step(state)│   │ compact/JIT  │   │ 7-step order  │  │ MCP+native │ │
+│   │ step(state)│   │ compact/JIT  │   │ 8-step order  │  │ MCP+native │ │
 │   └─────┬──────┘   └──────────────┘   └───────────────┘  └─────┬──────┘ │
 │         │                                                       │        │
 │   ┌─────▼──────┐   ┌──────────────┐   ┌───────────────┐        │        │
@@ -52,6 +52,9 @@ Abhed splits into four planes so the air-gap boundary falls on a single, auditab
 │  separate egress host with content audit is a target design, not built.  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+The access plane has no gRPC API and no SAML: the API is REST with server-sent
+events, and single sign-on is OIDC (Team and Enterprise editions).
 
 **Why this split:** the control plane is where the 7.80× harness variance lives (P1), so
 it must be independently versionable and testable. The inference plane is swappable by
@@ -191,7 +194,7 @@ consistency benchmark is Abhed's differentiating asset.
 
 ```
  tenant ─┬─▶ access (authn/authz) ─┬─▶ control (policy) ─┬─▶ tools ─┬─▶ execution
-         │   OIDC, tenant scope     │   7-step ordered    │  MCP     │  sandbox
+         │   OIDC, tenant scope     │   8-step ordered    │  MCP     │  sandbox
          │                          │   deny is absolute  │  gateway │  no egress
          └──────────────────────────┴─────────────────────┴──────────┴─ audit (all)
 ```

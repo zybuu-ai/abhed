@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // Event is one decision, as the record keeps it: never a body, a header
@@ -33,6 +35,12 @@ type Event struct {
 	BytesOut int64
 	// Synthetic is the resolver's address the command connected to, which named Host.
 	Synthetic string
+	// Upstream is the corporate proxy (host:port) the connection was chained
+	// through after the policy allowed it; "" for a direct one.
+	Upstream string
+	// Resolved is "proxy" for a chained connection whose name only the proxy
+	// resolved, so no address of it was checked here.
+	Resolved string
 	// Repeats, on a summary, is how many decisions like this one were not
 	// recorded one by one in the interval it covers.
 	Repeats int64
@@ -59,6 +67,12 @@ func (e Event) Payload() map[string]any {
 	}
 	if e.Synthetic != "" {
 		m["synthetic"] = e.Synthetic
+	}
+	if e.Upstream != "" {
+		m["upstream"] = e.Upstream
+	}
+	if e.Resolved != "" {
+		m["resolved"] = e.Resolved
 	}
 	return m
 }
@@ -163,39 +177,15 @@ func Start(opts Options) (*Proxy, error) {
 	return p, nil
 }
 
-// listenLoopback takes a random port on 127.0.0.1 and, when asked, the same on
-// [::1]; a port whose IPv6 half is taken is dropped and retried.
+// listenLoopback takes a port on 127.0.0.1 and, when asked, the same on
+// [::1]: on a Mac one of Abhed's reserved range (loopport), which a debug
+// session's loopback never reaches; elsewhere any free one.
 func listenLoopback(v6 bool) ([]net.Listener, error) {
-	for range 20 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return nil, fmt.Errorf("egress: listening on loopback: %w", err)
-		}
-		if !v6 {
-			return []net.Listener{ln}, nil
-		}
-		port := ln.Addr().(*net.TCPAddr).Port
-		ln6, err := net.Listen("tcp", net.JoinHostPort("::1", fmt.Sprint(port)))
-		if err == nil {
-			return []net.Listener{ln, ln6}, nil
-		}
-		_ = ln.Close()
-		if !ipv6Loopback() {
-			// No IPv6 loopback here: no process can hold [::1] either.
-			return listenLoopback(false)
-		}
-	}
-	return nil, errors.New("egress: no loopback port free on both 127.0.0.1 and [::1]")
-}
-
-// ipv6Loopback reports whether [::1] can be listened on at all.
-func ipv6Loopback() bool {
-	ln, err := net.Listen("tcp", "[::1]:0")
+	lns, err := loopport.ListenBoth(v6)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("egress: listening on loopback: %w", err)
 	}
-	_ = ln.Close()
-	return true
+	return lns, nil
 }
 
 // ListenUnix serves the proxy on a unix socket as well, for a relay inside
@@ -404,9 +394,15 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(life, p.opts.DialTimeout)
-	up, ip, err := p.dial(ctx, t, v)
+	up, ip, via, byProxy, err := p.dial(ctx, t, v)
 	cancel()
 	ev.IP = ip
+	if via != nil {
+		ev.Upstream = via.Authority()
+	}
+	if byProxy {
+		ev.Resolved = "proxy"
+	}
 	if err != nil && life.Err() != nil {
 		ev.Decision, ev.Reason = Deny, errCallEnded.Error()
 		p.record(ev)
@@ -423,6 +419,11 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		}
 		ev.Reason = v.Reason + "; dial failed: " + err.Error()
 		p.record(ev)
+		var refused *UpstreamRefused
+		if errors.As(err, &refused) {
+			writeStatus(c, http.StatusBadGateway, "abhed egress: "+refused.Error()+"\n", nil)
+			return
+		}
 		writeStatus(c, http.StatusBadGateway, "abhed egress: could not reach "+t.Authority()+"\n", nil)
 		return
 	}
@@ -456,7 +457,7 @@ func (p *Proxy) handleAs(raw net.Conn, bound *Call) {
 		p.tunnel(c, br, cu, true)
 		return
 	}
-	p.forward(c, req, t, cu)
+	p.forward(c, req, t, cu, via)
 }
 
 func kindOf(method string) string {
@@ -472,9 +473,13 @@ type refusal struct {
 	host string
 	addr netip.Addr
 	why  string
+	msg  string // a refusal with no address, such as a name that does not resolve here
 }
 
 func (e *refusal) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
 	if e.host != e.addr.String() {
 		return fmt.Sprintf("%s resolves to %s, %s, which no rule names in allow_ips", e.host, e.addr, e.why)
 	}
@@ -482,8 +487,41 @@ func (e *refusal) Error() string {
 }
 
 // dial resolves the host, checks every address, and connects to one it
-// checked: the name is never resolved again.
-func (p *Proxy) dial(ctx context.Context, t Target, v Verdict) (net.Conn, string, error) {
+// checked: the name is never resolved again. Through the upstream proxy in
+// force it connects to the proxy instead, after the same check of the
+// addresses the name has here, if any; the proxy is returned then.
+func (p *Proxy) dial(ctx context.Context, t Target, v Verdict) (net.Conn, string, *Upstream, bool, error) {
+	if up := CurrentUpstream(); up != nil && !up.Bypass(t.Host) {
+		addrs, byProxy, err := up.precheck(ctx, p.resolve, t.Host, v.Exact && v.Decision == Allow)
+		if err != nil {
+			return nil, "", nil, false, err
+		}
+		for _, a := range addrs {
+			a = a.Unmap()
+			if p.self(netip.AddrPortFrom(a, t.Port)) {
+				return nil, a.String(), nil, false, &refusal{host: t.Host, addr: a, why: "this proxy itself"}
+			}
+			if named(v.AllowIPs, a) {
+				continue
+			}
+			if why := AddrRefusal(a); why != "" {
+				return nil, a.String(), nil, false, &refusal{host: t.Host, addr: a, why: why}
+			}
+		}
+		var c net.Conn
+		if t.Tunnel {
+			c, err = up.DialTunnel(ctx, t.Authority(), p.opts.DialTimeout)
+		} else {
+			c, err = up.DialForward(ctx, p.opts.DialTimeout)
+		}
+		return c, "", up, byProxy, err
+	}
+	c, ip, err := p.dialDirect(ctx, t, v)
+	return c, ip, nil, false, err
+}
+
+// dialDirect is dial with no upstream proxy.
+func (p *Proxy) dialDirect(ctx context.Context, t Target, v Verdict) (net.Conn, string, error) {
 	addrs, err := p.resolve(ctx, t.Host)
 	if err != nil {
 		return nil, "", err
@@ -578,9 +616,9 @@ func closeWrite(c net.Conn) {
 var hopHeaders = []string{"Proxy-Authorization", "Proxy-Connection", "Connection", "Keep-Alive",
 	"Proxy-Authenticate", "Te", "Trailer", "Upgrade"}
 
-// forward sends a plain HTTP request to the checked address and copies the
-// response back, then closes.
-func (p *Proxy) forward(c net.Conn, req *http.Request, t Target, up *counted) {
+// forward sends a plain HTTP request to the checked address, or in absolute
+// form to the upstream proxy via, and copies the response back, then closes.
+func (p *Proxy) forward(c net.Conn, req *http.Request, t Target, up *counted, via *Upstream) {
 	for _, f := range strings.Split(req.Header.Get("Connection"), ",") {
 		if f = strings.TrimSpace(f); f != "" {
 			req.Header.Del(f)
@@ -593,8 +631,20 @@ func (p *Proxy) forward(c net.Conn, req *http.Request, t Target, up *counted) {
 	req.Host = t.URL.Host
 	req.RequestURI = ""
 	req.Close = true
+	write := req.Write
+	if via != nil {
+		auth, err := via.ForwardHeader()
+		if err != nil {
+			writeStatus(c, http.StatusBadGateway, "abhed egress: the upstream proxy's credentials could not be read\n", nil)
+			return
+		}
+		if auth != "" {
+			req.Header.Set("Proxy-Authorization", auth)
+		}
+		write = req.WriteProxy
+	}
 	// The body is read from the client past the header limit.
-	if err := req.Write(up); err != nil {
+	if err := write(up); err != nil {
 		writeStatus(c, http.StatusBadGateway, "abhed egress: sending the request failed\n", nil)
 		return
 	}

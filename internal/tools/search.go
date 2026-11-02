@@ -311,6 +311,21 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	root := s.Root
+	// A glob in path, as models often write it, is split into the folder it
+	// starts from and the glob below it.
+	if base, pattern, isGlob := splitPathGlob(a.Path, func(p string) bool {
+		path, err := s.Resolve(p)
+		if err != nil {
+			return false
+		}
+		_, err = os.Lstat(path)
+		return err == nil
+	}); isGlob {
+		if a.Glob != "" {
+			return errf("path %q is a glob and glob is set too. Put the folder in path and the pattern in glob, e.g. path %q, glob %q.", a.Path, base, pattern)
+		}
+		a.Path, a.Glob = base, pattern
+	}
 	if a.Path != "" {
 		resolved, err := s.Resolve(a.Path)
 		if err != nil {
@@ -515,4 +530,25 @@ func truncateLine(s string) string {
 		return s[:300] + " [...]"
 	}
 	return s
+}
+
+// splitPathGlob splits a path holding * or ? (the glob characters
+// compileGlob reads) into the folder before the first segment that has one
+// ("" for the root) and the rest. A path that exists as written, as exists
+// says (inside the session only), such as a folder named a*b, is never split.
+func splitPathGlob(p string, exists func(string) bool) (string, string, bool) {
+	if !strings.ContainsAny(p, "*?") || exists(p) {
+		return "", "", false
+	}
+	segs := strings.Split(filepath.ToSlash(p), "/")
+	for i, seg := range segs {
+		if strings.ContainsAny(seg, "*?") {
+			base := strings.Join(segs[:i], "/")
+			if base == "" && strings.HasPrefix(p, "/") {
+				base = "/"
+			}
+			return filepath.FromSlash(base), strings.Join(segs[i:], "/"), true
+		}
+	}
+	return "", "", false
 }

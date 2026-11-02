@@ -279,7 +279,9 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	if st.Trusted {
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
-		servers := maps.Clone(cfg.Sandbox.LanguageServers)
+		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
+		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
+		network := cfg.Network.clone()
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -289,6 +291,11 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		keepHA(cfg, path, data, ha, before, prior)
 		keepLanguageServers(cfg, path, data, servers, before, prior)
+		keepOperatorOnly(cfg, path, data, before, prior, "network", "a workspace never routes Abhed's connections or trusts a CA",
+			func() { cfg.Network = network })
+		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
+			func() { cfg.Sandbox.Image = image })
+		keepListen(cfg, path, data, before, prior, listen, listenPorts)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -319,6 +326,18 @@ func keepHA(cfg *Config, path string, data []byte, ha HAConfig, before []string,
 func keepLanguageServers(cfg *Config, path string, data []byte, servers map[string][]string, before []string, prior map[string]origin) {
 	keepOperatorOnly(cfg, path, data, before, prior, "sandbox.language_servers", "a workspace never names a language server",
 		func() { cfg.Sandbox.LanguageServers = servers })
+}
+
+// keepListen keeps sandbox.listen and sandbox.listen_ports the operator's,
+// trusted workspace or not: a repository never turns listening on or names
+// the ports, and may only make sandbox.listen stricter.
+func keepListen(cfg *Config, path string, data []byte, before []string, prior map[string]origin, listen string, ports []string) {
+	keepOperatorOnly(cfg, path, data, before, prior, "sandbox.listen_ports", "a workspace never names the ports commands may listen on",
+		func() { cfg.Sandbox.ListenPorts = ports })
+	if ws := cfg.Sandbox.Listen; listenRank[ws] <= listenRank[listen] {
+		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.listen", "a workspace may only make sandbox.listen stricter",
+			func() { cfg.Sandbox.Listen = listen })
+	}
 }
 
 // keepOperatorOnly undoes what a trusted workspace's file set under section,
@@ -395,6 +414,7 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 	dec.UseNumber()
 	_ = dec.Decode(&raw)
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
+	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
 	// A rule that does not parse is set aside here, so it cannot stop Abhed starting.
 	for key, list := range map[string]*[]string{"permissions.deny": &ws.Permissions.Deny, "permissions.ask": &ws.Permissions.Ask} {
 		var ok []string
@@ -418,6 +438,10 @@ func tighten(cfg *Config, path string, data []byte, st *WorkspaceTrust) error {
 		r := ruleFor(s.key)
 		if r.apply != nil && r.apply(cfg, &ws) {
 			st.Applied = append(st.Applied, s.key)
+			if allowListKey(s.key) {
+				// Applied with the other layers' lists: it can only narrow them.
+				noteAllowLayerFrom(cfg, &ws, path, []string{s.key})
+			}
 			if WebKey(s.key) {
 				// Applied again over the managed file, which may turn it on.
 				in := webIntent{key: s.key, file: path, layer: LayerWorkspace}
@@ -635,12 +659,43 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 	return st, nil
 }
 
+// allowListOK takes an untrusted file's model.allowed, mcp.allowed or
+// mcp.denied, which only narrow, when every entry of each it sets is well
+// formed; a malformed one is ignored, so a repository cannot stop Abhed starting.
+func allowListOK(key string) func(_, ws *Config) bool {
+	return func(_, ws *Config) bool {
+		l := allowLayer{file: "workspace"}
+		switch key { // only the list being applied is judged: a malformed one never discards another
+		case "model.allowed":
+			l.models, l.setsModels = ws.Model.Allowed, ws.Model.Allowed != nil
+		case "mcp.allowed":
+			l.mcpAllowed, l.setsMCPAllowed = ws.MCP.Allowed, ws.MCP.Allowed != nil
+		case "mcp.denied":
+			l.mcpDenied, l.setsMCPDenied = ws.MCP.Denied, ws.MCP.Denied != nil
+		}
+		return (Config{allowLayers: []allowLayer{l}}).validateAllowLists() == nil
+	}
+}
+
+func allowListKey(k string) bool {
+	return k == "model.allowed" || k == "mcp.allowed" || k == "mcp.denied"
+}
+
 // fieldRule classifies one setting of a workspace file. apply is nil for a
 // setting that is always ignored when untrusted; otherwise it applies the
 // value when it tightens and reports whether it did.
 type fieldRule struct {
 	apply func(dst, ws *Config) bool
 	why   string
+}
+
+// unionFields are the lists union rules add to, by setting.
+var unionFields = map[string]func(*Config) *[]string{}
+
+// unionRule is key's rule that adds the file's entries to a list.
+func unionRule(key string, field func(*Config) *[]string, why string) fieldRule {
+	unionFields[key] = field
+	return fieldRule{union(field), why}
 }
 
 // ruleFor finds the rule for a dotted path, or for the nearest section above it.
@@ -662,29 +717,35 @@ func ruleFor(key string) fieldRule {
 // workspaceRules is the classification in workspace-trust.md. Every setting
 // must resolve to an entry here; TestEveryConfigFieldIsClassified holds that.
 var workspaceRules = map[string]fieldRule{
-	"permissions.deny":           {union(func(c *Config) *[]string { return &c.Permissions.Deny }), "added to the deny rules"},
-	"permissions.ask":            {union(func(c *Config) *[]string { return &c.Permissions.Ask }), "added to the ask rules"},
+	"permissions.deny":           unionRule("permissions.deny", func(c *Config) *[]string { return &c.Permissions.Deny }, "added to the deny rules"),
+	"permissions.ask":            unionRule("permissions.ask", func(c *Config) *[]string { return &c.Permissions.Ask }, "added to the ask rules"),
 	"permissions.mode":           {narrowMode, "only plan or default, and only narrower than the current mode"},
 	"permissions.allow":          {nil, "an allow rule widens what runs unasked"},
 	"permissions.git_extensions": {nil, "a git extension opted in runs unasked"},
 
-	"sandbox.min_tier":              {raiseTier, "only a stronger tier"},
-	"sandbox.allow_network":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
-	"sandbox.max_memory_mb":         {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
-	"sandbox.max_procs":             {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
-	"sandbox.readable_home":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.ReadableHome }), "only false"},
-	"sandbox.shared_caches":         {onlyFalse(func(c *Config) *bool { return &c.Sandbox.SharedCaches }), "only false"},
-	"sandbox.max_cpu_percent":       {lower(func(c *Config) *int { return &c.Sandbox.MaxCPUPercent }, zeroIs(200)), "only lower"},
-	"sandbox.terminal":              {onlyLines, "only lines"},
-	"sandbox.terminal_idle_minutes": {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
-	"sandbox.read_only_paths":       {nil, "mounts more of the host into the sandbox"},
-	"sandbox.protect_git":           {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
-	"sandbox.language_servers":      {nil, "a language server is a process"},
-	"sandbox.tier":                  {nil, "chooses what confines commands, in place of the strongest available"},
-	"fence":                         {nil, "tunes the fence tier's limits"},
-	"sandbox.network":               {nil, "managed only: turns on the egress allowlist"},
-	"sandbox.microvm_socket":        {nil, "managed only: names the microVM driver"},
-	"egress":                        {nil, "managed only: names the destinations commands reach"},
+	"sandbox.min_tier":               {raiseTier, "only a stronger tier"},
+	"sandbox.allow_network":          {onlyFalse(func(c *Config) *bool { return &c.Sandbox.AllowNetwork }), "only false"},
+	"sandbox.max_memory_mb":          {lower(func(c *Config) *int { return &c.Sandbox.MaxMemoryMB }, zeroIs(4096)), "only lower"},
+	"sandbox.max_procs":              {lower(func(c *Config) *int { return &c.Sandbox.MaxProcs }, zeroIs(512)), "only lower"},
+	"sandbox.readable_home":          {onlyFalse(func(c *Config) *bool { return &c.Sandbox.ReadableHome }), "only false"},
+	"sandbox.shared_caches":          {onlyFalse(func(c *Config) *bool { return &c.Sandbox.SharedCaches }), "only false"},
+	"sandbox.max_cpu_percent":        {lower(func(c *Config) *int { return &c.Sandbox.MaxCPUPercent }, zeroIs(200)), "only lower"},
+	"sandbox.terminal":               {onlyLines, "only lines"},
+	"sandbox.terminal_idle_minutes":  {lower(func(c *Config) *int { return &c.Sandbox.TerminalIdleMinutes }, zeroIs(30)), "only lower"},
+	"sandbox.read_only_paths":        {nil, "mounts more of the host into the sandbox"},
+	"sandbox.toolchains":             {stricterToolchains, "only stricter: auto, then ask, then off"},
+	"sandbox.toolchains_preapproved": {nil, "an install that needs no ask"},
+	"sandbox.toolchains_registries":  {onlyRegistriesOff, "only off"},
+	"sandbox.listen":                 {stricterListen, "only stricter: allow, then ask, then off"},
+	"sandbox.listen_ports":           {nil, "names the ports commands may listen on (an operator's setting: not from a workspace, trusted or not)"},
+	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
+	"sandbox.language_servers":       {nil, "a language server is a process"},
+	"sandbox.image":                  {nil, "chooses the image commands run in"},
+	"sandbox.tier":                   {nil, "chooses what confines commands, in place of the strongest available"},
+	"fence":                          {nil, "tunes the fence tier's limits"},
+	"sandbox.network":                {nil, "managed only: turns on the egress allowlist"},
+	"sandbox.microvm_socket":         {nil, "managed only: names the microVM driver"},
+	"egress":                         {nil, "managed only: names the destinations commands reach"},
 
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
@@ -699,7 +760,10 @@ var workspaceRules = map[string]fieldRule{
 	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},
 	"subagents.wake_max_turns":        {lower(func(c *Config) *int { return &c.Subagents.WakeMaxTurns }, zeroIs(8)), "only lower"},
 
-	"tools.syntax_check": {stricterSyntax, "only stricter"},
+	"tools.syntax_check":          {stricterSyntax, "only stricter"},
+	"tools.bash_checkpoints":      {onlyRequired, "only required"},
+	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
+	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
 
 	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
@@ -713,11 +777,15 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.enabled":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
 	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
 	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
+	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
+	"ssh.transfers":          {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
+	"ssh.transfer_max_mb":    {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
 	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
 	"skills.dirs":            {nil, "a skill is instructions to the agent"},
 	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
 	"agents.dirs":            {nil, "a definition is instructions and a model choice"},
 	"telemetry":              {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
+	"network":                {nil, "routes Abhed's connections through a proxy, with credentials and trusted CAs"},
 
 	"commands.dirs":       {nil, "a command is instructions to the agent"},
 	"rules.dirs":          {nil, "a rule is instructions to the agent"},
@@ -726,24 +794,39 @@ var workspaceRules = map[string]fieldRule{
 	"memory.import_depth": {lower(func(c *Config) *int { return &c.Memory.ImportDepth }, zeroIs(defaultImportDepth)), "only lower"},
 	"cli":                 {nil, "only the managed configuration sets it"},
 	"record":              {nil, "only the managed configuration sets it"},
+	"org_policy":          {nil, "only the managed configuration says where the org policy comes from"},
 	"hooks":               {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
+	"plan.runbooks":       {onlyFalse(func(c *Config) *bool { return &c.Plan.Runbooks }), "only false"},
+	"mode.default":        {narrowDefaultMode, "only plan or default, and only narrower than the mode sessions start in"},
 	"suggest.model":       {nil, "a provider receives the conversation"},
 
-	"additional_dirs":  {nil, "widens the directories the agent may reach"},
-	"model":            {nil, "a provider and its base_url receive the code"},
-	"custom_providers": {nil, "a provider and its base_url receive the code"},
-	"context":          {nil, "memory_files are read into the prompt; the rest waits for trust"},
-	"rag":              {nil, "a corpus URL and headers are egress"},
-	"mcp":              {nil, "an MCP server is a process or endpoint"},
-	"retrieval":        {nil, "embed_base_url receives the code"},
-	"extensions":       {nil, "an extension is a process"},
-	"storage":          {nil, "where the record goes and with which credentials"},
-	"server":           {nil, "deployment settings for serve"},
-	"control_plane":    {nil, "turns on an API that runs commands, and sets its limits"},
-	"schedules":        {nil, "prompts the server runs on its own"},
-	"auth":             {nil, "who may sign in"},
+	"monitor.enabled":        {onlyTrue(func(c *Config) *bool { return &c.Monitor.Enabled }), "only true"},
+	"monitor.on_unavailable": {stricterUnavailable, "only deny"},
+	"monitor.max_per_turn":   {moreReviews, "only more calls reviewed"},
+	"monitor.honeytokens":    unionRule("monitor.honeytokens", func(c *Config) *[]string { return &c.Monitor.Honeytokens }, "added to the honeytokens"),
+	"monitor":                {nil, "a judge endpoint receives the conversation"},
+
+	"additional_dirs":       {nil, "widens the directories the agent may reach"},
+	"model.ollama.assist":   {tighterAssist, "only tighter: off < local < ask"},
+	"completion.enabled":    {completionOff, "only false"},
+	"completion.local_only": {onlyTrue(func(c *Config) *bool { return &c.Completion.LocalOnly }), "only true"},
+	"model.allowed":         {allowListOK("model.allowed"), "only narrows: each list set must admit a model"},
+	"mcp.allowed":           {allowListOK("mcp.allowed"), "only narrows: each list set must admit a server"},
+	"mcp.denied":            {allowListOK("mcp.denied"), "only adds servers that never start"},
+	"model":                 {nil, "a provider and its base_url receive the code"},
+	"custom_providers":      {nil, "a provider and its base_url receive the code"},
+	"context":               {nil, "memory_files are read into the prompt; the rest waits for trust"},
+	"rag":                   {nil, "a corpus URL and headers are egress"},
+	"mcp":                   {nil, "an MCP server is a process or endpoint"},
+	"retrieval":             {nil, "embed_base_url receives the code"},
+	"extensions":            {nil, "an extension is a process"},
+	"storage":               {nil, "where the record goes and with which credentials"},
+	"server":                {nil, "deployment settings for serve"},
+	"control_plane":         {nil, "turns on an API that runs commands, and sets its limits"},
+	"schedules":             {nil, "prompts the server runs on its own"},
+	"auth":                  {nil, "who may sign in"},
 
 	"control_plane.kubernetes":   {nil, "only the managed configuration sets it"},
 	"control_plane.interceptors": {nil, "only the managed configuration sets it"},
@@ -845,6 +928,15 @@ func onlyFalse(field func(*Config) *bool) func(dst, ws *Config) bool {
 	}
 }
 
+func completionOff(dst, ws *Config) bool {
+	if e := ws.Completion.Enabled; e == nil || *e {
+		return false
+	}
+	off := false
+	dst.Completion.Enabled = &off
+	return true
+}
+
 func onlyTrue(field func(*Config) *bool) func(dst, ws *Config) bool {
 	return func(dst, ws *Config) bool {
 		if !*field(ws) {
@@ -858,13 +950,63 @@ func onlyTrue(field func(*Config) *bool) func(dst, ws *Config) bool {
 // modeRank orders the modes from narrowest to widest.
 var modeRank = map[string]int{"plan": 0, "default": 1, "accept-edits": 2, "auto": 3, "bypass": 4}
 
+// onlyRegistriesOff applies a workspace's sandbox.toolchains_registries only
+// when it turns the registries off.
+func onlyRegistriesOff(dst, ws *Config) bool {
+	if ws.Sandbox.ToolchainsRegistries != "off" {
+		return false
+	}
+	dst.Sandbox.ToolchainsRegistries = "off"
+	return true
+}
+
+// listenRank orders sandbox.listen from loosest to strictest.
+var listenRank = map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}
+
+// stricterListen applies a workspace's sandbox.listen only when it is
+// stricter: allow, then ask, then off.
+func stricterListen(dst, ws *Config) bool {
+	if listenRank[ws.Sandbox.Listen] <= listenRank[dst.Sandbox.Listen] {
+		return false
+	}
+	dst.Sandbox.Listen = ws.Sandbox.Listen
+	return true
+}
+
+// toolchainRank orders sandbox.toolchains from loosest to strictest.
+var toolchainRank = map[string]int{"auto": 0, "": 1, "ask": 1, "off": 2}
+
+// stricterToolchains applies a workspace's sandbox.toolchains only when it is
+// stricter than what is set.
+func stricterToolchains(dst, ws *Config) bool {
+	v, ok := toolchainRank[ws.Sandbox.Toolchains]
+	if !ok || v <= toolchainRank[dst.Sandbox.Toolchains] {
+		return false
+	}
+	dst.Sandbox.Toolchains = ws.Sandbox.Toolchains
+	return true
+}
+
 func narrowMode(dst, ws *Config) bool {
 	m := ws.Permissions.Mode
-	cur, ok := modeRank[orDefaultMode(dst.Permissions.Mode)]
+	cur, ok := modeRank[dst.StartMode()]
 	if (m != "plan" && m != "default") || !ok || modeRank[m] > cur {
 		return false
 	}
 	dst.Permissions.Mode = m
+	dst.modeChosen = true
+	return true
+}
+
+// narrowDefaultMode takes an untrusted workspace's mode.default only where
+// it starts sessions in a narrower mode than they would start in.
+func narrowDefaultMode(dst, ws *Config) bool {
+	m := ws.Mode.Default
+	cur, ok := modeRank[dst.StartMode()]
+	if (m != "plan" && m != "default") || !ok || modeRank[m] > cur {
+		return false
+	}
+	dst.Mode.Default = m
 	return true
 }
 
@@ -890,11 +1032,31 @@ func raiseTier(dst, ws *Config) bool {
 	return true
 }
 
+// assistRank orders model.ollama.assist from doing least to most.
+var assistRank = map[string]int{"off": 0, "local": 1, "ask": 2}
+
+func tighterAssist(dst, ws *Config) bool {
+	want, ok := assistRank[strings.ToLower(strings.TrimSpace(ws.Model.Ollama.Assist))]
+	if !ok || want > assistRank[dst.OllamaAssist()] {
+		return false
+	}
+	dst.Model.Ollama.Assist = strings.ToLower(strings.TrimSpace(ws.Model.Ollama.Assist))
+	return true
+}
+
 func onlyLines(dst, ws *Config) bool {
 	if ws.Sandbox.Terminal != "lines" {
 		return false
 	}
 	dst.Sandbox.Terminal = "lines"
+	return true
+}
+
+func onlyRequired(dst, ws *Config) bool {
+	if ws.Tools.BashCheckpoints != "required" {
+		return false
+	}
+	dst.Tools.BashCheckpoints = "required"
 	return true
 }
 

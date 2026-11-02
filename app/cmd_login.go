@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -13,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/zybuu-ai/abhed/profiles"
 )
@@ -83,6 +86,9 @@ func profileName(raw string) string {
 }
 
 func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
+	if !profileNetwork(errOut) {
+		return 1
+	}
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	name := fs.String("profile", "", "profile name (default: the server's host and port)")
@@ -93,8 +99,11 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	cert := fs.String("cert", "", "client certificate, for a server that asks for one (PEM)")
 	key := fs.String("key", "", "client certificate key (PEM)")
 	allowHTTP := fs.Bool("allow-http", false, "allow plain http to a host other than this machine")
+	var policyKeys policyKeyFlag
+	fs.Var(&policyKeys, "policy-key", "pin this org policy signing key (base64 Ed25519 or PEM; repeatable) instead of the one the server offers")
+	orgPolicy := fs.Bool("org-policy", false, "take the server's signed org policy without asking")
 	fs.Usage = func() {
-		fmt.Fprintln(errOut, "usage: abhed login [flags] URL\n  Signs this command line in to an Abhed server and saves it as a profile.")
+		fmt.Fprintln(errOut, "usage: abhed login [flags] URL\n  Signs this command line in to an Abhed server and saves it as a profile.\n  When the server serves a signed org policy, it asks before taking it (or -org-policy).")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -159,7 +168,10 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 	switch {
 	case d.AuthMode == "none" || d.AuthMode == "":
 		fmt.Fprintf(out, "%s asks for no sign-in; saved it as profile %s.\n", base, *name)
-		return saveProfile(path, reg, *name, p, errOut)
+		if code := saveProfile(path, reg, *name, p, errOut); code != 0 {
+			return code
+		}
+		return enrollAfterLogin(ctx, path, *name, p, enrolOptions{given: policyKeys, accept: *orgPolicy || len(policyKeys) > 0, confirm: askYes}, out, errOut)
 	case len(d.Methods) == 0:
 		return fail(fmt.Errorf("%s (auth.mode %s) does not offer command-line sign-in; its operator can turn on auth.cli.enabled", base, d.AuthMode))
 	}
@@ -230,6 +242,15 @@ func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
 		until = ", until " + p.ExpiresAt.Local().Format("2 Jan 15:04")
 	}
 	fmt.Fprintf(out, "Signed in to %s as %s (profile %s%s).\n", base, p.Username, *name, until)
+	return enrollAfterLogin(ctx, path, *name, p, enrolOptions{given: policyKeys, accept: *orgPolicy || len(policyKeys) > 0, confirm: askYes}, out, errOut)
+}
+
+// enrollAfterLogin takes the server's signed org policy, if it serves one.
+func enrollAfterLogin(ctx context.Context, path, name string, p *profiles.Profile, o enrolOptions, out, errOut io.Writer) int {
+	if err := enrollOrgPolicy(ctx, path, name, p, o, out, errOut); err != nil {
+		fmt.Fprintf(errOut, "abhed: org policy: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
@@ -244,6 +265,9 @@ func saveProfile(path string, reg *profiles.File, name string, p *profiles.Profi
 }
 
 func logoutCmd(workspace string, args []string, out, errOut io.Writer) int {
+	if !profileNetwork(errOut) {
+		return 1
+	}
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	name := fs.String("profile", "", "profile to sign out (default: the current one)")
@@ -323,6 +347,9 @@ func retryLogouts(path string, reg *profiles.File, out io.Writer) {
 }
 
 func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
+	if !profileNetwork(errOut) {
+		return 1
+	}
 	usage := func() int {
 		fmt.Fprintln(errOut, "usage: abhed profile list | use NAME | rm NAME")
 		return 2
@@ -430,4 +457,15 @@ func hostOf(raw string) string {
 		return ""
 	}
 	return u.Host
+}
+
+// askYes asks on the terminal and reports a yes; with no terminal it is no.
+var askYes = func(prompt string) bool {
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
+		return false
+	}
+	fmt.Fprint(os.Stderr, prompt)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	a := strings.ToLower(strings.TrimSpace(line))
+	return a == "y" || a == "yes"
 }

@@ -26,7 +26,7 @@ var (
 	abnormal = map[string]string{
 		"error": "the run failed", "stalled": "the model stopped making progress",
 		"max_turns": "the turn limit was reached", "max_budget": "the token budget was spent",
-		"shutdown": "the server shut down mid-turn", "retry_exhausted": "the model endpoint kept failing",
+		"shutdown": "the server shut down mid-turn", "retry_exhausted": "the model kept making the same call without getting anywhere",
 		"policy_denied": "policy ended the run", "deadline": "the run's time limit passed",
 	}
 
@@ -56,6 +56,23 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 	out := []Finding{}
 	add := func(sev Severity, code, title, detail string, seq int64) {
 		out = append(out, Finding{Severity: sev, Code: code, Title: title, Detail: detail, Seq: seq})
+	}
+
+	// An answer shown with a claim the record contradicts, or ended unverified.
+	for _, a := range r.Answers {
+		if a.Revision != "" {
+			continue // a revision followed; the next verdict is what was shown last
+		}
+		for _, c := range a.Claims {
+			if c.Verdict == agent.ClaimContradicted {
+				add(Warn, "contradicted-claim", "An answer made a claim the record contradicts",
+					fmt.Sprintf("%q — %s. It was shown struck through, not as fact.", clip(c.Text, 160), clip(c.Reason, 200)), a.Seq)
+			}
+		}
+		if a.Contract != nil && !a.Contract.OK {
+			add(Warn, "contract-unmet", "The completion contract was not met",
+				"The run could not end completed: a required command failed or a protected file changed.", a.Seq)
+		}
 	}
 
 	// The record first: everything else in the report stands on it.
@@ -156,9 +173,14 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 			add(Info, "denied", "Denied: "+c.Tool,
 				fmt.Sprintf("%s — %s (step %q, by %s).", clip(c.Subject, 160), c.Reason, c.Step, c.settledBy()), c.Seq)
 		}
-		if c.SandboxDenied {
+		switch {
+		case c.SandboxDenied:
 			add(Info, "sandbox-denied", "The sandbox refused part of a command",
-				fmt.Sprintf("%s — the command ran, but the sandbox denied an operation in it, whatever its exit status says.", clip(c.Subject, 160)), c.Seq)
+				fmt.Sprintf("%s — the sandbox %s. Whatever its exit status says, that part did not happen.", clip(c.Subject, 160), signals(c.Sandbox)), c.Seq)
+		case c.SandboxUnconfirmed:
+			add(Info, "sandbox-unconfirmed", "A sandboxed command was refused an operation",
+				fmt.Sprintf("%s — its output says an operation was not permitted. Nothing in the record says the sandbox refused it: "+
+					"no signal from the fence or git protection, and no folder every tier denies. It may be the system's own permissions.", clip(c.Subject, 160)), c.Seq)
 		}
 		if strings.Contains(c.Output, "[secret:") {
 			add(Warn, "secret-redacted", "A stored secret's value was written out and redacted",
@@ -251,6 +273,15 @@ func findings(r Report, evs []agent.Event, opt Options) []Finding {
 
 	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Severity] < rank[out[j].Severity] })
 	return out
+}
+
+// signals words what the sandbox refused, each with the event that shows it.
+func signals(ss []SandboxSignal) string {
+	parts := make([]string, 0, len(ss))
+	for _, s := range ss {
+		parts = append(parts, fmt.Sprintf("%s (#%d, %s)", s.What, s.Seq, s.Source))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // borrowedHosts flags an allowed call that names a host the user never

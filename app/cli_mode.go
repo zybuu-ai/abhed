@@ -330,18 +330,37 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		}
 	}
 	choices = append(choices, ui.Choice{ID: planKeep, Label: "No, keep planning (tell it what to change)"})
+	body := []ui.Block{{Kind: ui.BlockMarkdown, Text: plan.Text}}
+	why := "proposed by the agent with exit_plan; it changes nothing until you answer"
+	if rb := plan.Runbook; rb != nil {
+		body = append(body, ui.Block{Kind: ui.BlockMarkdown, Text: runbookMarkdown(rb)})
+		why += fmt.Sprintf("; yes approves its %d runbook steps: each runs without asking when it is made exactly as listed, and any other change asks", len(rb.Steps))
+	}
 	answer, err := surface.Dialog(ctx, ui.DialogSpec{
 		Kind:    ui.DialogChoice,
 		Title:   "Proceed with this plan?",
-		Body:    []ui.Block{{Kind: ui.BlockMarkdown, Text: plan.Text}},
+		Body:    body,
 		Choices: choices,
 		Default: planKeep,
-		Why:     "proposed by the agent with exit_plan; it changes nothing until you answer",
+		Why:     why,
 	})
 	to := map[string]policy.Mode{planAcceptEdits: policy.ModeAcceptEdits, planAskEach: policy.ModeDefault}[answer]
+	if err == nil && to != "" {
+		// Steps with no undo are confirmed again, as each would have been asked.
+		if risky := destructiveSteps(plan.Runbook); len(risky) > 0 {
+			if yes, cerr := surface.Dialog(ctx, runbookConfirm(risky)); cerr != nil || yes != ui.ChoiceYes {
+				to = ""
+			}
+		}
+	}
 	if err != nil || to == "" {
 		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "still in plan mode; say what to change"})
+		return ""
+	}
+	if err := st.loop.PlanOffered(plan); err != nil {
+		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so planning goes on: " + err.Error()})
 		return ""
 	}
 	if err := modes.Set(ctx, to, agent.ViaPlanExit); err != nil {
@@ -349,9 +368,37 @@ func decidePlan(ctx context.Context, st *cliState, pol *policy.Engine, surface u
 		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the mode was not changed, so planning goes on: " + err.Error()})
 		return ""
 	}
-	st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)})
+	decided := agent.PlanDecided{Decision: agent.PlanAccepted, ToMode: string(to)}
+	if rb := plan.Runbook; rb != nil {
+		decided.PlanHash, decided.Runbook = rb.Hash, rb
+	}
+	// The answer is on record before it binds anything; one the record did
+	// not take binds no runbook, so each step asks.
+	if _, err := st.loop.Recorder.Record(agent.EvPlanDecided, agent.ActorUser, agent.Trusted, decided); err != nil {
+		// Back to plan mode, with the plan waiting again: an answer the record
+		// does not hold leaves nothing in force.
+		st.loop.UnbindPlan()
+		st.loop.ReofferPlan(plan)
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the plan's answer could not be recorded, so " +
+			backToPlan(ctx, modes) + " and the plan is put to you again after the next turn: " + err.Error()})
+		return ""
+	}
+	if err := st.loop.AcceptPlan(plan); err != nil {
+		// The accepted answer did not take effect: back to plan mode, and on
+		// the record. The plan stays pending so it is put to the person again.
+		where := backToPlan(ctx, modes)
+		st.recordCLI(agent.EvPlanDecided, agent.PlanDecided{Decision: agent.PlanKeepPlanning})
+		st.loop.ReofferPlan(plan)
+		surface.Append(ui.Block{Kind: ui.BlockError, Text: "the runbook was not bound, so " + where +
+			" and the plan is put to you again after the next turn: " + err.Error()})
+		return ""
+	}
+	st.loop.SetApprovedPlan(plan.Text)
 	if !st.recordsLive() {
 		surface.Append(ui.Block{Kind: ui.BlockNotice, Text: "mode: " + string(to)})
+	}
+	if rb := plan.Runbook; rb != nil {
+		return fmt.Sprintf("The plan is approved (mode %s). Carry it out.\n", to) + agent.RunbookPrompt(*rb)
 	}
 	return fmt.Sprintf("The plan is approved (mode %s). Carry it out.", to)
 }
@@ -373,7 +420,7 @@ var modeFlagGiven bool
 // the configuration.
 func resumedVia(now string, cfg config.Config) string {
 	switch {
-	case now != orDefault(cfg.Permissions.Mode, "default"):
+	case now != cfg.StartMode():
 		return viaCarried
 	case modeFlagGiven:
 		return agent.ViaFlag
@@ -388,7 +435,7 @@ func (c *cliState) carryState() {
 		return p.typ == agent.EvModeChanged || p.typ == agent.EvWorkspaceDirAdded
 	})
 	var carried []pendingEvent
-	if start := policy.Mode(orDefault(c.appCfg.Permissions.Mode, "default")); c.pol != nil && c.pol.Mode != start {
+	if start := policy.Mode(c.appCfg.StartMode()); c.pol != nil && c.pol.Mode != start {
 		carried = append(carried, pendingEvent{agent.EvModeChanged, agent.ModeChanged{
 			From: string(start), To: string(c.pol.Mode), By: agent.ByUser, Via: viaCarried}})
 	}
@@ -396,4 +443,14 @@ func (c *cliState) carryState() {
 		carried = append(carried, pendingEvent{agent.EvWorkspaceDirAdded, d})
 	}
 	c.pending = append(carried, c.pending...)
+}
+
+// backToPlan puts the session back into plan mode after a plan answer did
+// not take effect, and says where that left it: the reply must not claim plan
+// mode when the change back could not be made.
+func backToPlan(ctx context.Context, modes *cliModes) string {
+	if err := modes.Set(ctx, policy.ModePlan, agent.ViaPlanExit); err != nil {
+		return "the session could not be put back into plan mode (" + err.Error() + ")"
+	}
+	return "the session stays in plan mode"
 }

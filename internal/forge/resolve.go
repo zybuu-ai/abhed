@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,6 +273,42 @@ func (w *Work) checkSecrets(ctx context.Context, repo string) error {
 	return nil
 }
 
+// pushProxy is the git configuration that sends a push to url through the
+// configured upstream proxy, by a loopback relay that holds its credentials
+// and reaches the remote's host alone; none when there is no proxy or
+// no_proxy names the remote.
+func pushProxy(url string) ([][2]string, func(), error) {
+	up := egress.CurrentUpstream()
+	rh := remoteHost(url)
+	if up == nil || rh == "" || up.Bypass(rh) {
+		return nil, func() {}, nil
+	}
+	// The remote's host and port as the URL names them; the relay reaches nothing else.
+	proxy, _, stop, err := egress.UpstreamRelay([]string{remoteAuthority(url)})
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("the upstream proxy relay: %w", err)
+	}
+	return [][2]string{{"http.proxy", proxy}}, stop, nil
+}
+
+// remoteAuthority is a push URL's host, with its port when it names one.
+func remoteAuthority(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// remoteHost is a push URL's host, or "".
+func remoteHost(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
 func push(ctx context.Context, repo, worktree, url, scope, branch, auth, caFile string, env []string) error {
 	if err := globalConfigWritable(ctx, worktree); err != nil {
 		return err
@@ -325,6 +362,12 @@ func push(ctx context.Context, repo, worktree, url, scope, branch, auth, caFile 
 	if caFile != "" {
 		config = append(config, [2]string{"http." + scope + ".sslCAInfo", caFile})
 	}
+	viaProxy, stopRelay, err := pushProxy(url)
+	if err != nil {
+		return err
+	}
+	defer stopRelay()
+	config = append(config, viaProxy...)
 	cmd := bare.CommandWith(ctx, config, at, "push", url, "refs/heads/"+branch+":refs/heads/"+branch)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb

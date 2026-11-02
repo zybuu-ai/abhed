@@ -156,6 +156,12 @@ func (s *Stub) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 		return
 	}
+	// Ollama's own API is not served, as by any OpenAI-compatible server
+	// that is not Ollama, and a probe of it takes no turn of the script.
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
 	// The next-prompt call after a turn takes no turn of the script.
 	if bytes.Contains(body, []byte("predict the next message")) {
 		w.Header().Set("Content-Type", "text/event-stream")

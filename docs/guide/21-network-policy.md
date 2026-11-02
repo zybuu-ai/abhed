@@ -30,6 +30,12 @@ model client, `web_fetch`, `web_search`, MCP servers over HTTP, and the
 network of stdio MCP servers. See "Abhed's own requests" below. Outside the
 allowlist none of this changes how they connect.
 
+Outside the managed file, one setting opens the proxy too, to package
+registries only: `sandbox.toolchains_registries` lets a person's agreement to
+a language's toolchain open that language's official registries to commands
+where the network is otherwise off ([Toolchains](32-toolchains.md#package-registries)).
+Under the allowlist it adds nothing unless the managed file names it.
+
 ## Configuration
 
 ```json
@@ -355,6 +361,24 @@ Linux release binaries and `make build` are built without cgo; a plain
 `go build` on a machine with a C compiler is not, and its warning says to
 build with `CGO_ENABLED=0`.
 
+On the **fence** tier in `mount_namespace` mode the launcher serves the same
+resolver in the command's network namespace: it binds port 53 there with
+`CAP_NET_BIND_SERVICE` in its own user namespace, binds the session's
+`resolv.conf` read-only over `/etc/resolv.conf` (over the file it links to,
+when it is a link), and then drops every capability before the command
+starts, as for its other mounts. The resolver answers over UDP and TCP, so
+glibc, Go and musl resolvers all resolve. In this mode alone the seccomp
+filter also lets a command make inet and inet6 UDP sockets (not raw, ICMP or
+UDP-Lite ones): the namespace holds only its loopback and no route, the
+command holds no capability to add an interface or a route, and the filter
+refuses new namespaces, so UDP reaches nothing but the namespace's own
+loopback, where only the resolver listens; a datagram to any other address
+fails with "network unreachable". Landlock lets a command connect over TCP
+to port 53 beside the proxy's. Where
+`/etc/resolv.conf` is not a file, Abhed logs a warning once and names
+resolve nothing, as before. In `landlock_only` mode there is no network
+namespace and no resolver.
+
 On **macOS** Seatbelt cannot redirect DNS, so there is no in-sandbox
 resolver and no `dns` record. The profile already refuses both ways a
 command could resolve: a UDP or TCP socket to any DNS server, and the
@@ -447,7 +471,8 @@ name once, refuses the same internal addresses the proxy refuses unless the
 allowing rule names them in `allow_ips`, and connects only to an address it
 checked; a pooled connection is checked again against each request's rule
 before it is reused. It never uses `HTTP_PROXY` or `HTTPS_PROXY` from
-Abhed's environment, so it sees where each connection goes. A denied
+Abhed's environment, so it sees where each connection goes; a corporate
+proxy is configured instead, as `network.upstream_proxy` (next section). A denied
 request is never sent: the tool gets an error naming the rule and the
 reason, and the model client's caller sees the same error.
 
@@ -468,6 +493,139 @@ the model's endpoint. It never falls back to the open network.
 Requests made outside any session, such as an MCP server's connection when
 Abhed starts and the legacy SSE stream it keeps open, are judged the same
 way but written to Abhed's log rather than a record.
+
+## A corporate upstream proxy
+
+Where every connection must leave through the organisation's proxy, name it
+once and Abhed sends all of its own traffic and, under the allowlist, the
+commands' allowed traffic through it:
+
+```json
+"network": {
+  "upstream_proxy": {
+    "url": "http://proxy.corp.example:3128",
+    "ca_file": "/etc/ssl/certs/corp-root.pem",
+    "credentials_secret": "CORP_PROXY",
+    "no_proxy": [".corp.example", "10.0.0.0/8", "k8s-api.internal"],
+    "resolve_via_proxy": false
+  }
+}
+```
+
+| Key | |
+|---|---|
+| `url` | an explicit HTTP proxy, `http://host:port` or `https://host:port` (TLS to the proxy itself). No user or password, path or query: a credential in the URL is refused at load, without echoing it. A PAC file, WPAD discovery and SOCKS are not supported |
+| `ca_file` | a PEM bundle trusted beside the system's, for connections through the proxy only: an `https://` proxy's certificate, and servers a proxy that inspects TLS re-signs with the organisation's CA. It is added to a client's own roots too (a cluster's CA, a forge's CA file) for those connections; a destination `no_proxy` names, reached directly, does not trust it |
+| `credentials_secret` | the NAME of a stored secret (`abhed secret set CORP_PROXY`) holding `user:password`, sent to the proxy as `Proxy-Authorization: Basic`. It is read at each connection, so a rotated password is used at once |
+| `no_proxy` | destinations reached directly: a host name, a domain (`.corp.example` or `*.corp.example`, which match the domain and its subdomains), an IP address or a CIDR range. A port is not supported; `*` is refused (remove `upstream_proxy` instead). Loopback (`localhost`, `127.0.0.0/8`, `::1`) is always reached directly |
+| `resolve_via_proxy` | off by default: a name that does not resolve on this machine is refused, so its address can always be checked. On, such a name (a definite "no such host" only) is sent to the proxy unchecked, for a host an allow rule names exactly (or, for `web_fetch` outside the allowlist, the managed file's `allowed_hosts` names exactly; a narrowing of a managed wildcard does not count), never one matched only by a wildcard or the default; the record marks it `"resolved": "proxy"`. A managed file's value wins, and under a managed proxy the person cannot turn it on |
+
+**What goes through it**, unless `no_proxy` names the destination:
+
+- the model clients (each provider, the supervisor's model judge, the code
+  index's embeddings, onboarding's model check). The CLI's quick check that
+  something answers at the model's address is not made through a proxy: the
+  model host is neither resolved nor dialled here, and the first model call
+  says whether it answers;
+- `web_fetch`, `web_search`, MCP servers over HTTP, `rag` retrieval, the
+  `k8s_*` tools and `abhed resolve`'s forge API calls and `git push`;
+- toolchain downloads (and the `go install` Abhed runs for Delve and gopls),
+  Ollama installs and registry lookups, and `abhed ollama`'s calls to an
+  Ollama server on another machine (one on this machine is reached
+  directly);
+- `abhed login` and the other profile calls to an Abhed server, the org
+  policy fetch (the proxy is in force before it; an org policy never sets
+  the proxy), and the record's witness;
+- under the allowlist, the commands' allowed traffic, chained by Abhed's
+  egress proxy: a `CONNECT` tunnel to the proxy for HTTPS and every
+  tunnel, and plain HTTP in absolute form.
+
+The allowlist decides first, every time: a request or tunnel the rules
+refuse is never sent to the corporate proxy, so the proxy can only carry
+less than the allowlist allows, never more. Before chaining a connection it
+checks (every one under the allowlist, and `web_fetch`'s always), Abhed
+resolves the name itself and refuses it, as without a proxy, when it
+resolves to an internal address no rule names in `allow_ips`; a lookup that fails in any
+other way than "no such host" (a timeout, `SERVFAIL`) is refused too, so a
+slow answer cannot skip the check. A name that does not resolve here at all
+is refused unless `resolve_via_proxy` is on (above). The proxy resolves the
+name again and picks the address it connects to, which is the proxy's to
+check: where the proxy's resolver and this machine's disagree, the check
+here is of this machine's answer. The record entry carries `upstream` (the
+proxy's `host:port`) and no `ip`.
+
+**Credentials** are sent only to the proxy, in a `Proxy-Authorization`
+header on the `CONNECT` or plain-HTTP request; the commands never see them
+(the commands' proxy adds them as it chains), and they are never in a URL,
+an error, a log line, the record or what the model sees. A program Abhed
+starts for its own downloads (`go install`, `git push`) is given a loopback
+relay instead, in `HTTPS_PROXY` for `go install` and git's `http.proxy` for
+a push, with a token made for that run, and the relay adds the
+credentials. The relay reaches only the hosts that download needs (the Go
+module proxy and checksum database, or the push remote's host) and refuses
+any other target, and any other port (443 for a tunnel and 80 for plain
+HTTP, or the port the endpoint's URL names), before the proxy is asked; it
+lives only as long as the
+program. The token is in that program's environment or configuration for
+its run, where a concurrent command that can read it could reach those
+hosts through the relay. A push to a remote `no_proxy` names goes directly,
+with no relay. `ollama serve`, which outlives Abhed, is given the proxy only
+when it is an `http://` proxy that needs neither credentials nor the CA
+bundle; otherwise configure Ollama's own proxy (and `SSL_CERT_FILE`).
+
+When the proxy is set, Abhed's clients ignore `HTTP_PROXY`, `HTTPS_PROXY`
+and `NO_PROXY` in its environment. Without it they keep their previous
+behaviour: outside the allowlist they follow the environment, and under it
+they connect directly. A workspace's configuration never sets
+`network`, trusted or not. The managed configuration can force it: a
+managed `upstream_proxy` wins over the person's, and the person's
+`no_proxy` list and `resolve_via_proxy` are dropped unless the managed file
+names its own, so they cannot route around the organisation's proxy.
+
+The proxy is set for the whole process when a session or command starts
+(the CLI, `abhed serve`, an editor's ACP sessions, an SDK agent), never by
+loading a configuration. A process takes one: an SDK agent whose
+configuration names a different upstream proxy (or none) than one already
+built in the same process is refused, rather than either running through
+the other's; run it in a process of its own.
+
+After changing `network.upstream_proxy`, a managed one included, restart
+a running `abhed serve` and the editor's connection. Until then their new
+sessions are refused, and their background work (the record's witness and
+shipping, the org policy refresh) keeps the proxy the process started
+with, or goes without one.
+
+Every subcommand that connects (`abhed record`, `abhed hawkeye`, `abhed
+policy refresh`, `abhed login`, `abhed mcp`, `abhed resolve`, `abhed
+index`, `abhed toolchain`, `abhed ollama`, `abhed eval`, `abhed doctor`,
+`abhed sandbox`) puts the proxy in force before it does, and the CLI and an editor's
+connection put it in force before they fetch the org policy. When the
+network configuration cannot go in force (a CA bundle that does not
+read, say), an editor's connection fetches no org policy at all.
+`abhed sandbox`'s streams (`exec -i`, `connect`, `cp`, `forward`, and
+`ssh` through `connect --stdio`) reach the server by a `CONNECT` tunnel
+through the proxy, also for an `http://` server, so the proxy must allow
+`CONNECT` to the server's port. They trust the CA bundle as the REST calls
+do, so a proxy that inspects TLS breaks neither.
+
+When a model call fails at the proxy (the proxy is not answering, it
+refuses the tunnel or asks for credentials, or the call comes back 502, 503
+or 504), the error names the proxy and the model host; an answer the model
+server gave itself is reported as the server's. A provider's default
+endpoint, with no `base_url`, is taken to go through the proxy. And
+`/doctor` says the endpoint answered only when a call through the proxy
+did.
+
+**Not covered:** a PAC file or WPAD; SOCKS; a name under `.localhost`
+(`app.localhost`), which is always reached directly, though only `localhost`
+itself is certain to be this machine (on macOS such a name is looked up in
+DNS, outside the proxy); NTLM, Kerberos or other
+challenge-response proxy authentication (Basic only); `ssh_connect` and
+other raw TCP connections, which stay direct; commands outside the
+allowlist, which use the network as the sandbox gives it; and programs that
+keep their own proxy settings (a stdio MCP server, an extension). The
+stand-alone `abhed egress-proxy` reads only its own `-config` egress
+section and never chains to `network.upstream_proxy`.
 
 ### Stdio MCP servers
 
@@ -516,8 +674,8 @@ allowlist, naming why, rather than opening the network in its place.
 |---|---|
 | process, Linux (bubblewrap) | **Enforced.** The command has its own network namespace with loopback only. A small relay inside it, Abhed's own binary, listens where the proxy variables point and passes each connection to the proxy's unix socket, which is bound into the sandbox, and serves the session's resolver (see Names). Nothing else leaves: a client that ignores the proxy variables has no route out. |
 | process, macOS (Seatbelt) | **Enforced.** The profile denies all network use except outbound to `localhost` on the proxy's port. Seatbelt names no loopback address but `localhost`, which is both `127.0.0.1` and `::1`, so the proxy holds the port on both and no other process can take the `::1` half. A client that ignores the proxy variables is refused by the sandbox. So are the LaunchServices and Apple event services (`com.apple.coreservices.*`, `com.apple.CoreServices.*` and `com.apple.lsd.*`, the `coreservices` and `lsd` part matched in any case; the whole family is denied, which also cuts Handoff's clipboard and the shared file lists), on every network setting: `open` still runs but exits non-zero without handing the URL to a browser, and `osascript` cannot send Apple events to another app. Other system services are not: `trustd` fetches the issuer (AIA) and revocation (OCSP) URLs of a certificate a command asks it to verify, itself, outside the proxy and unrecorded, so a crafted certificate reaches any host and path. Commands cannot resolve names themselves (see Names); the proxy resolves them. Other loopback ports are refused, as with the network off, so `NO_PROXY` gives nothing here. A command can read a concurrent command's token and the environment of an MCP server Abhed started; Abhed's own environment is hidden (see [Per-call credentials](#per-call-credentials)). |
-| fence (Linux preview) | **Enforced in `mount_namespace` mode.** Each command has a network namespace holding only its loopback, where the launcher relays the proxy's port to its call's own socket on the host; seccomp allows inet TCP stream sockets alone (not MPTCP or SCTP, which Landlock's TCP rules do not hold) and Landlock TCP connect to that port alone. In `landlock_only` mode there is no network namespace and Landlock filters ports, not addresses, so a command could reach its call's proxy port number on any host: refused there unless the managed `fence.egress_port_only` accepts it. |
-| container, vm | **Enforced, through a relay.** Each command runs in a container of its own with no network (`--network none`). A relay inside it, a Linux build of Abhed bound in read-only, listens on the container's loopback at the proxy's port and carries each connection over a long-lived `engine exec`'s stdio to the call's own socket on the session's proxy on the host, at most 128 at once; the relay runs as a user of its own (uid 65534, or 65533 if commands run as 65534), so a command cannot write to its output or signal it, and the relay binary must be readable and executable by that user; the command then runs by a second `exec` with the call's proxy variables, passed to the engine in an `--env-file` only your user can read, removed when the call ends, so the token is neither in an argument nor in the engine CLI's own environment, and the container is removed when the call ends. On a Linux host with a local engine the relay is this binary; where the engine is in a VM (Docker Desktop, a Podman machine) or on another host (`DOCKER_HOST`, `CONTAINER_HOST`) it is the build the managed `control_plane.podman.relay_binary` or `control_plane.docker.relay_binary` names, and without one the tier is refused, never given the network. The workbench terminal on these tiers gets no network under the allowlist. Each command starts a container and two `exec`s, so commands start slower than without the allowlist. |
+| fence (Linux preview) | **Enforced in `mount_namespace` mode.** Each command has a network namespace holding only its loopback, where the launcher relays the proxy's port to its call's own socket on the host; seccomp allows inet TCP stream sockets (not MPTCP or SCTP, which Landlock's TCP rules do not hold) and UDP datagram sockets, which reach only that loopback, alone, and Landlock TCP connect to that port and the session resolver's port 53 alone (see [Names](#names-dns)). In `landlock_only` mode there is no network namespace and Landlock filters ports, not addresses, so a command could reach its call's proxy port number on any host: refused there unless the managed `fence.egress_port_only` accepts it. |
+| container, vm | **Enforced, through a relay.** Each command runs in a container of its own with no network (`--network none`). A relay inside it, a Linux build of Abhed bound in read-only, listens on the container's loopback at the proxy's port and carries each connection over a long-lived `engine exec`'s stdio to the call's own socket on the session's proxy on the host, at most 128 at once; the relay runs as a user of its own (uid 65534, or 65533 if commands run as 65534), so a command cannot write to its output or signal it, and the relay binary must be readable and executable by that user; the command then runs by a second `exec` with the call's proxy variables, passed to the engine in an `--env-file` only your user can read, removed when the call ends, so the token is neither in an argument nor in the engine CLI's own environment, and the container is removed when the call ends. On a Linux host with a local engine the relay is this binary; where the engine is in a VM (Docker Desktop, a Podman machine) or on another host (`DOCKER_HOST`, `CONTAINER_HOST`) it is the build the managed `control_plane.podman.relay_binary` or `control_plane.docker.relay_binary` names, else the `abhed-helper` shipped beside the binary when it matches the checksum the build pins, and without either the tier is refused, never given the network. The workbench terminal on these tiers gets no network under the allowlist. Each command starts a container and two `exec`s, so commands start slower than without the allowlist. |
 | none | **Refused.** Nothing stops a command on the host from ignoring the proxy variables. |
 
 Without a sandbox that blocks direct sockets, proxy variables are only
@@ -536,7 +694,8 @@ names the tier and says whether it holds it.
 whose only route out is to it, such as a Kubernetes egress pod that a
 NetworkPolicy lets only one sandbox reach. Every connection on its port is
 counted as one call's, whatever proxy credentials the client sends, so the
-network policy in front of it is what decides who may use it.
+network policy in front of it is what decides who may use it. It connects
+directly; it does not chain to a corporate upstream proxy.
 
 ```bash
 abhed egress-proxy -listen :3128 -config /etc/abhed-egress/egress.json -call sbx-42

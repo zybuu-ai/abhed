@@ -478,3 +478,49 @@ func TestStatuslineRejudgingHoldsNoMoreFiles(t *testing.T) {
 		t.Fatalf("open files grew from %d to %d over 20 folders added", before, after)
 	}
 }
+
+// A run that takes too long on a busy machine shows the command's last line,
+// not nothing: /status's row stays, as the footer's does.
+func TestStatuslineSlowRunShowsTheLastLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	ws := t.TempDir()
+	cfg := config.Default()
+	cfg.Sandbox.MinTier = "none"
+	cfg.Statusline.Command = "sleep 5; echo late"
+	if _, _, _, err := statuslineSandbox(cfg, ws, nil); errors.Is(err, errNoProcessSandbox) {
+		t.Skipf("no process sandbox here: %v", err)
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	old := statuslineTimeout
+	statuslineTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { statuslineTimeout = old })
+	st := &cliState{appCfg: cfg, workspace: ws}
+	if got := st.statusLine(context.Background(), "default"); got != "" {
+		t.Fatalf("with no line yet: %q", got)
+	}
+	st.noteStatusline("model stub · 12%")
+	for range 2 {
+		if got := st.statusLine(context.Background(), "default"); got != "model stub · 12%" {
+			t.Fatalf("a slow run: %q", got)
+		}
+	}
+}
+
+// statusline.timeout_ms sets one run's limit, at most ten seconds.
+func TestStatuslineLimitFromConfig(t *testing.T) {
+	cfg := config.Default()
+	if got := statuslineLimit(cfg); got != statuslineTimeout {
+		t.Fatalf("default %s", got)
+	}
+	cfg.Statusline.TimeoutMS = 2500
+	if got := statuslineLimit(cfg); got != 2500*time.Millisecond {
+		t.Fatalf("2500 ms: %s", got)
+	}
+	cfg.Statusline.TimeoutMS = 60000
+	if got := statuslineLimit(cfg); got != 10*time.Second {
+		t.Fatalf("capped: %s", got)
+	}
+}

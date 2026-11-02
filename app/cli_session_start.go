@@ -55,7 +55,7 @@ func (f sessionFlags) resuming() bool { return f.Continue || f.Resume != "" || f
 // bare -r does not read one as an argument.
 var valueFlags = map[string]bool{"p": true, "mode": true, "model": true, "C": true, "add-dir": true,
 	"max-turns": true, "output-format": true, "allow": true, "deny": true, "addr": true,
-	"r": true, "resume": true, "n": true, "name": true}
+	"r": true, "resume": true, "n": true, "name": true, "verify": true}
 
 // bareResume takes out a -r or --resume that names no session, which the
 // flag package would refuse, and reports that the person wants to pick one.

@@ -167,7 +167,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			var made *abhed.Agent
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: config.GrantFor(trust, workspace, ws), AllowDefaultModel: true,
-				Allow: req.Allow, Deny: req.Deny,
+				Allow: req.Allow, Deny: req.Deny, Verify: req.Verify,
+				Runbook: req.Runbook,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
@@ -258,9 +259,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			cancelFlush()
 			if err != nil {
 				emit(rpcResponse{ID: req.ID, Type: "error", Error: err.Error(),
-					Answer: answer})
+					Answer: answer, Verdict: a.Verdict()})
 			} else {
-				emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer})
+				emit(rpcResponse{ID: req.ID, Type: "answer", Answer: answer, Verdict: a.Verdict()})
 			}
 			done()
 
@@ -400,6 +401,11 @@ type rpcRequest struct {
 	// a background task for cancel_task.
 	Wake   string `json:"wake,omitempty"`
 	TaskID string `json:"task_id,omitempty"`
+	// Verify, on start, is off, label or strict: how each answer is checked
+	// against the record. Unset takes verify.mode, off when that is unset.
+	Verify string `json:"verify,omitempty"`
+	// Runbook, on start, is a runbook the host approves for the session.
+	Runbook *abhed.Runbook `json:"runbook,omitempty"`
 }
 
 type rpcResponse struct {
@@ -414,6 +420,9 @@ type rpcResponse struct {
 	Tasks []abhed.TaskInfo `json:"tasks,omitempty"`
 	// WorkspaceTrust, on ready, says whether the workspace file applied whole.
 	WorkspaceTrust *config.WorkspaceTrust `json:"workspace_trust,omitempty"`
+	// Verdict, on a prompt's answer or error, is the check of that answer
+	// when answers are checked.
+	Verdict *abhed.AnswerVerdict `json:"verdict,omitempty"`
 }
 
 // rpcRunsOn reports whether a prompt's run goes on for messages queued as it

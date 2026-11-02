@@ -256,6 +256,11 @@ type Output struct {
 
 // Run executes a command and waits for it.
 func (h *Host) Run(ctx context.Context, command string, timeout time.Duration) (*Output, error) {
+	return h.RunInput(ctx, command, timeout, nil)
+}
+
+// RunInput is Run with stdin given to the command; nil gives it none.
+func (h *Host) RunInput(ctx context.Context, command string, timeout time.Duration, stdin []byte) (*Output, error) {
 	client, err := h.connect(ctx)
 	if err != nil {
 		return nil, err
@@ -271,6 +276,9 @@ func (h *Host) Run(ctx context.Context, command string, timeout time.Duration) (
 	// with it, and the model cannot read that much anyway.
 	session.Stdout = &limitedWriter{w: &stdout, limit: 1 << 20}
 	session.Stderr = &limitedWriter{w: &stderr, limit: 256 << 10}
+	if stdin != nil {
+		session.Stdin = bytes.NewReader(stdin)
+	}
 
 	if timeout == 0 {
 		timeout = 2 * time.Minute
@@ -311,6 +319,20 @@ func (h *Host) Close() error {
 		return err
 	}
 	return nil
+}
+
+// drop closes c, and forgets it when it is still h's connection, so the
+// next call dials again; another connection h holds now is left alone.
+func (h *Host) drop(c *ssh.Client) {
+	if c == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.client == c {
+		h.client = nil
+	}
+	h.mu.Unlock()
+	_ = c.Close()
 }
 
 func asExitError(err error, target **ssh.ExitError) bool {

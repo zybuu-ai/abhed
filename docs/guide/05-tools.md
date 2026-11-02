@@ -15,12 +15,42 @@
 | `web_search` | five providers: duckduckgo, brave, tavily, serper, searxng; off by default, and only the managed configuration turns it on ([Web search](02-configuration.md#web-search)) |
 | `web_fetch` | read one web page as text, through Abhed rather than the shell; off by default |
 | `ssh`, `ssh_connect` | remote execution, off by default |
+| `ssh_put`, `ssh_get` | file transfer over SFTP, off by default (`ssh.transfers`) |
 | `k8s_get`, `k8s_apply`, `k8s_login` | Kubernetes, read-only by default |
+
+A path given to `read`, `write`, `edit`, `glob` or `grep` may be absolute or
+relative to the workspace root (never to where a `cd` left `bash`). Either
+way it must stay in the workspace or an added directory, and the rules match
+it in both spellings.
+
+`edit` matches `old_string` exactly. When it matches nowhere exactly but
+matches one place line for line once leading and trailing whitespace is set
+aside, such as two tabs sent where the file has one, it is applied there:
+`new_string` is re-indented to the file's indentation, and the result says it
+was matched loosely and at which line. Its indentation must map onto the
+file's one for one and in the same order, so no line moves into or out of a
+block; a place nested differently is refused. Two such places are refused,
+as an exact double match is, and any difference other than indentation is
+not matched.
+
+When a person approved an `edit` or `write` that then failed without
+changing anything, a retry of the very same change in the same message
+takes that approval instead of asking again, once: the same file, the same
+`old_string` (whitespace at the end of a line before a newline aside), the
+same `replace_all` and exactly the same new text, or for `write` the same
+content. Anything else is asked about again,
+and a carried approval never carries on. It is recorded with `by: carried`
+and `carried_from` naming the call the person approved. A rule's, the
+supervisor's or a preview's ask is asked again.
 
 `write` creates a new file's missing folders, inside the workspace and never
 in Abhed's state, so a new file in a new folder needs no shell approval in
 `accept-edits` or `auto` mode. A write that fails takes back the folders it made,
 and `/undo` of the new file removes them while they are empty.
+
+`grep` also takes a glob in `path`, such as `docs/**/*.md`: the folder before
+the first glob segment is searched, held to the workspace as any path, with
+the rest as its `glob`.
 
 `glob` and `grep` pass over vendored and build folders (`node_modules`,
 `vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
@@ -127,9 +157,18 @@ verified against the system roots and the configured CA; a URL is refused
 before any request, and the approval prompt names the cluster and its server.
 `k8s_get` and `k8s_apply` then take `cluster` to use that login.
 `k8s_apply` takes one object per call; a JSON list is refused with a message
-that says to apply each item in its own call.
+that says to apply each item in its own call. Each write is dry-run on the
+cluster before the approval, which shows what would change; `rollback`
+returns a Deployment to an earlier revision, and `k8s_get` with
+`wait_seconds` waits for a rollout. `secret_from` builds a Secret from
+stored secrets, each under its own `secret(NAME)` rule, and workspace
+files, so a TLS key never passes through the model. `k8s_get` shows a
+Secret's keys with each value's length and a fingerprint that compares
+only while that Abhed runs, never the value or its plain hash.
 `ssh_connect` sends a password only to a host whose key is already in
-`known_hosts`.
+`known_hosts`. `ssh` takes `stdin_secret`, a stored secret's NAME, to give a
+remote command a password or key on stdin, and `ssh_put` sends a workspace
+file or a stored secret to a host, so neither passes through the model.
 
 A login or a connected host belongs to the session that made it and that
 session's subagents, and ends with it. Another session on the same server,

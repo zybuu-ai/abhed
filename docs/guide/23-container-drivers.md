@@ -67,8 +67,8 @@ A container is tier `container`. A sandbox whose `Spec.MinTier`, or whose
 
 ## Images
 
-The default image is `ABHED_SANDBOX_IMAGE`, as for the container tier, or
-`Options.Image`. A sandbox may ask for another with `Config["image"]` only
+The default image is `Options.Image`, or the container tier's
+(`sandbox.image`, then `ABHED_SANDBOX_IMAGE`). A sandbox may ask for another with `Config["image"]` only
 when it is listed in `Options.Images`. The image's own entrypoint is not
 run; the image needs `/bin/sh` and `sleep`.
 
@@ -141,11 +141,19 @@ certificate variables point there.
 
 Where the engine runs in a VM (Docker Desktop, Podman on macOS and
 Windows) or elsewhere (`DOCKER_HOST=tcp://…`), a host socket cannot reach
-the container. There the relay is a Linux build of Abhed for the engine's
-architecture that you name in `control_plane.<engine>.relay_binary`
-(managed only), at an absolute path the engine's host can see (under your
-home folder for Podman's and Docker Desktop's VMs, which share it). It is
-bound in read-only, and the driver runs it with a long-lived `exec` as a
+the container. There the relay is `abhed-helper-linux-<arch>`, the small
+Linux helper a release ships beside the `abhed` binary (in the archive, as a
+bare download, and in the desktop app), for the architecture Abhed itself
+runs on. Abhed uses it only when it matches the sha256 pinned into the
+binary at build time, from a checked copy under your cache folder
+(`~/Library/Caches/abhed/helper` on macOS, `~/.cache/abhed/helper` on
+Linux), which Podman's and Docker Desktop's VMs can see; a build with no
+pin, such as `go install`, uses none. The managed
+`control_plane.<engine>.relay_binary` names a Linux build of Abhed or of
+the helper to use instead, at an absolute path the engine's host can see
+(under your home folder for those VMs, which share it); for an engine on
+another host, whose own file system does not hold the cache, set it. The
+relay is bound in read-only, and the driver runs it with a long-lived `exec` as a
 user of its own, uid 65534 (65533 if the sandbox's user is 65534), so the
 sandbox's commands can neither write to its output nor signal it; the
 binary must be readable and executable by that user. It is never
@@ -157,9 +165,19 @@ and output to the proxy on this host, at most 128 at once; a connection
 over that is closed, and a stream the relay opens twice is closed.
 The container still has no network. The sandbox is ready only once the
 relay listens; an exec that ends is started again while the sandbox runs,
-and connections made meanwhile fail rather than go anywhere else. Without
-`relay_binary`, `Create` fails with `unavailable` rather than run without
-the allowlist.
+and connections made meanwhile fail rather than go anywhere else. With
+neither `relay_binary` nor a matching helper, `Create` fails with
+`unavailable`, saying why, rather than run without the allowlist.
+
+The helper does three things and nothing else: the relay in front of a
+command (`__abhed_egress_relay`), the relay over an exec
+(`__abhed_egress_relay_stdio`), and the debugger's bridge
+(`__abhed_dap_bridge unix:PATH`), which joins its own input and output to a
+debug adapter's socket inside the container, so the engine reaches it
+through an `exec` with no published port
+([Debugging](31-debugging.md)). `scripts/build-helpers.sh` builds the
+helpers reproducibly and prints the `-ldflags` that pin them into an engine
+build.
 
 ## Lifecycle
 

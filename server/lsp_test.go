@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -181,10 +182,10 @@ func TestLanguageServerRefusals(t *testing.T) {
 
 func TestLSPFraming(t *testing.T) {
 	br := bufio.NewReader(strings.NewReader("Content-Type: x\r\nContent-Length: 2\r\n\r\n{}Content-Length: 99999999999\r\n\r\n"))
-	if m, err := readLSPMessage(br); err != nil || string(m) != "{}" {
+	if m, err := lsprelay.Read(br); err != nil || string(m) != "{}" {
 		t.Fatalf("%q %v", m, err)
 	}
-	if _, err := readLSPMessage(br); err == nil {
+	if _, err := lsprelay.Read(br); err == nil {
 		t.Fatal("an oversized message was read")
 	}
 }
@@ -198,7 +199,7 @@ func TestLSPHeaderBounded(t *testing.T) {
 		"many headers": strings.Repeat("X-Pad: 1\r\n", 100) + "Content-Length: 2\r\n\r\n{}",
 	} {
 		br := bufio.NewReaderSize(strings.NewReader(in), 64<<10)
-		if _, err := readLSPMessage(br); err == nil || !strings.Contains(err.Error(), "header too long") {
+		if _, err := lsprelay.Read(br); err == nil || !strings.Contains(err.Error(), "header too long") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -376,7 +377,7 @@ func TestLSPGoplsRunsNothingThePageNames(t *testing.T) {
 		return res.StatusCode
 	}
 	env, _ := json.Marshal(map[string]any{"env": map[string]string{"GOPACKAGESDRIVER": driver, "GOFLAGS": "-toolexec=" + driver}})
-	uri := lspURI(wb.workspace)
+	uri := lsprelay.URI(wb.workspace)
 	post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"` + uri + `","initializationOptions":` + string(env) + `,"capabilities":{"workspace":{"configuration":true}}}}`)
 	post(`{"jsonrpc":"2.0","method":"initialized","params":{}}`)
 	post(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"` + uri + `/a.go","languageId":"go","version":1,"text":"package m\n\nfunc A() {}\n"}}}`)
@@ -501,5 +502,261 @@ func TestLanguageServerKeepsTheLocalGo(t *testing.T) {
 	}
 	if !said {
 		t.Fatal("the record does not say the language server runs with GOTOOLCHAIN=local")
+	}
+}
+
+// The workbench sends the server files in any of the session's folders,
+// added and skill folders too, and a document whose text starts with file:
+// is content, not a file to refuse; a file outside them is still refused.
+func TestLSPAllowsTheSessionsFolders(t *testing.T) {
+	roots := []string{"/w", "/extra"}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///extra/x.go","languageId":"go","version":1,"text":"package x"}}}`,
+		`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///w/a.go","version":2},"contentChanges":[{"text":"file:///etc/passwd starts this line"}]}}`,
+	} {
+		if _, ok := lspAllowedIn([]byte(m), "/w", roots, nil); !ok {
+			t.Errorf("refused %s", m)
+		}
+	}
+	if _, ok := lspAllowedIn([]byte(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///etc/passwd","text":""}}}`), "/w", roots, nil); ok {
+		t.Fatal("a file outside the session's folders was passed")
+	}
+}
+
+// fakeConfigLSP echoes its initializationOptions, asks for its settings, and
+// reports the answer it got in a log message.
+const fakeConfigLSP = `import json, sys
+def send(m):
+    b = json.dumps(m).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(b) + b); sys.stdout.flush()
+while True:
+    n = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: sys.exit(0)
+        line = line.strip()
+        if not line: break
+        k, v = line.split(b":", 1)
+        if k.lower() == b"content-length": n = int(v)
+    m = json.loads(sys.stdin.buffer.read(n))
+    if m.get("method") == "initialize":
+        send({"jsonrpc":"2.0","id":m["id"],"result":{"capabilities":{},"serverInfo":{"name":json.dumps(m["params"].get("initializationOptions"))}}})
+        send({"jsonrpc":"2.0","id":"cfg","method":"workspace/configuration","params":{"items":[{"section":"rust-analyzer"},{"section":"other"}]}})
+    elif m.get("id") == "cfg":
+        send({"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"settings " + json.dumps(m.get("result"))}})
+`
+
+// The engine gives a server its settings: they ride in initialize, and its
+// workspace/configuration question is answered by the engine, not the page.
+func TestLSPEngineSettings(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "fake_config_lsp.py")
+	if err := os.WriteFile(script, []byte(fakeConfigLSP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wb, _ := lspBench(t, "process", func(c *config.Config) {
+		py, _ := exec.LookPath("python3")
+		c.Sandbox.LanguageServers["rust"] = []string{py, script}
+	})
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"})
+	var start lspStartResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	srv := httptest.NewServer(wb.h)
+	defer srv.Close()
+	base := "/v1/sessions/" + wb.session + "/lsp/" + start.ID
+	req, _ := http.NewRequest("GET", srv.URL+base, nil)
+	req.Header.Set("X-Abhed-Tenant", "acme")
+	res, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by the deferred call below
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	events := make(chan string, 16)
+	go func() {
+		sc := bufio.NewScanner(res.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		for sc.Scan() {
+			if d, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+				if raw, err := base64.StdEncoding.DecodeString(d); err == nil && len(raw) > 0 {
+					events <- string(raw)
+				}
+			}
+		}
+		close(events)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	lspSend(t, srv.URL, base, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"initializationOptions": map[string]any{"procMacro": map[string]any{"enable": true}}}})
+	var got []string
+	deadline := time.After(10 * time.Second)
+	for len(got) < 2 {
+		select {
+		case e := <-events:
+			if strings.Contains(e, "workspace/configuration") {
+				t.Fatalf("the page was asked for the settings: %s", e)
+			}
+			got = append(got, e)
+		case <-deadline:
+			t.Fatalf("got %q", got)
+		}
+	}
+	all := strings.Join(got, "\n")
+	if !strings.Contains(all, `\"procMacro\": {\"enable\": false}`) || strings.Contains(all, `\"enable\": true`) {
+		t.Errorf("initialize did not carry the engine's options: %s", all)
+	}
+	if !strings.Contains(all, `settings [{\"cargo\"`) || !strings.Contains(all, `\"checkOnSave\": false}, null]`) {
+		t.Errorf("configuration was not the engine's: %s", all)
+	}
+	_ = wb.send("acme", "DELETE", "lsp/"+start.ID, nil)
+}
+
+// A workspace rust-analyzer.toml would override the engine's settings; the
+// workbench has no one to ask, so rust-analyzer does not start.
+func TestLSPRustAnalyzerConfigRefused(t *testing.T) {
+	wb, _ := lspBench(t, "process", func(c *config.Config) {
+		py, _ := exec.LookPath("python3")
+		c.Sandbox.LanguageServers["rust"] = []string{py, "-c", "pass"}
+	})
+	if err := os.MkdirAll(filepath.Join(wb.workspace, "crates", "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wb.workspace, "crates", "a", ".rust-analyzer.toml"), []byte("[cargo]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "rust-analyzer.toml") {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// typescript-language-server starts only with the TypeScript installed
+// beside it, and is refused when there is none.
+func TestLSPTypeScriptPinned(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	// Abhed's toolchain cache, under the home folder as it really is.
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache", "abhed", "toolchains")
+	oldRoot := lspToolchainRoot
+	lspToolchainRoot = func(config.Config) string { return cache }
+	t.Cleanup(func() { lspToolchainRoot = oldRoot })
+	top := filepath.Join(cache, "darwin-arm64", "node", "22.20.0")
+	bin := filepath.Join(top, "bin", "typescript-language-server")
+	script := filepath.Join(top, "fake.py")
+	for path, body := range map[string]string{
+		script: fakeConfigLSP,
+		bin:    "#!/bin/sh\nexec " + py + " " + script + "\n",
+		filepath.Join(top, "lib", "node_modules", "typescript-language-server", "package.json"): "{}",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := lspTSWait
+	lspTSWait = 5 * time.Second
+	t.Cleanup(func() { lspTSWait = old })
+	start := func() *httptest.ResponseRecorder {
+		wb, _ := lspBench(t, "process", func(c *config.Config) {
+			c.Sandbox.LanguageServers["typescript"] = []string{bin}
+		})
+		return wb.send("acme", "POST", "lsp", lspStartRequest{Language: "typescript"})
+	}
+	if rec := start(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "TypeScript") {
+		t.Fatalf("started without a TypeScript beside it: %d %s", rec.Code, rec.Body)
+	}
+	ts := filepath.Join(top, "lib", "node_modules", "typescript", "lib", "tsserver.js")
+	if err := os.MkdirAll(filepath.Dir(ts), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ts, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if rec := start(); rec.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	// Under the home folder but outside the cache, it is refused.
+	lspToolchainRoot = func(config.Config) string { return filepath.Join(home, "elsewhere") }
+	if rec := start(); rec.Code != http.StatusConflict {
+		t.Fatalf("a TypeScript under home outside the cache was taken: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A rust-analyzer.toml that appears while rust-analyzer runs, or that the
+// page opens or saves, stops it; the next start is refused while it is there.
+func TestLSPRustAnalyzerStopsOnConfigChange(t *testing.T) {
+	oldEvery := lsprelay.RustAnalyzerWatchEvery
+	lsprelay.RustAnalyzerWatchEvery = 50 * time.Millisecond
+	t.Cleanup(func() { lsprelay.RustAnalyzerWatchEvery = oldEvery })
+	script := filepath.Join(t.TempDir(), "fake_lsp.py")
+	if err := os.WriteFile(script, []byte(fakeLSP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bench := func() *workbench {
+		wb, _ := lspBench(t, "process", func(c *config.Config) {
+			py, _ := exec.LookPath("python3")
+			c.Sandbox.LanguageServers["rust"] = []string{py, script}
+		})
+		return wb
+	}
+	stoppedFor := func(wb *workbench) bool {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			for _, e := range wb.events() {
+				if e.Type == agent.EvObservation && strings.Contains(string(e.Payload), "stopped: workspace-config-changed") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	// The watch.
+	wb := bench()
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"}); rec.Code != http.StatusOK {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	if err := os.WriteFile(filepath.Join(wb.workspace, "rust-analyzer.toml"), []byte("[procMacro]\nenable = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !stoppedFor(wb) {
+		t.Fatal("a new rust-analyzer.toml did not stop the server")
+	}
+	if rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"}); rec.Code != http.StatusConflict {
+		t.Fatalf("restarted with the file there: %d %s", rec.Code, rec.Body)
+	}
+	// The page saving one.
+	wb = bench()
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "rust"})
+	var start lspStartResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &start) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	save := map[string]any{"jsonrpc": "2.0", "method": "textDocument/didSave", "params": map[string]any{"textDocument": map[string]any{"uri": "file://" + wb.workspace + "/crates/a/rust-analyzer.toml"}}}
+	if rec := wb.send("acme", "POST", "lsp/"+start.ID, save); rec.Code != http.StatusConflict {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	if !stoppedFor(wb) {
+		t.Fatal("saving a rust-analyzer.toml did not stop the server")
+	}
+}
+
+// A configured server that is not on the PATH commands get is refused as
+// not installed, before anything is judged or run.
+func TestLSPMissingServerNotJudged(t *testing.T) {
+	wb, _ := lspBench(t, "process", func(c *config.Config) {
+		c.Sandbox.LanguageServers["go"] = []string{"abhed-no-such-server-x1"}
+	})
+	rec := wb.send("acme", "POST", "lsp", lspStartRequest{Language: "go"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not installed") || !strings.Contains(rec.Body.String(), "abhed toolchain install -lsp go") {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	for _, e := range wb.events() {
+		if e.Type == agent.EvActionRequested {
+			t.Fatalf("a start that cannot run was judged: %s", e.Payload)
+		}
 	}
 }

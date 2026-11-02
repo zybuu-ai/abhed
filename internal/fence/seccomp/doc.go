@@ -5,7 +5,7 @@
 // keyrings, stack a filter of its own over the fence's, or signal the Abhed
 // process that launched it.
 //
-// Command returns the one profile, "command/3", built for one Abhed process
+// Command returns the one profile, "command/4", built for one Abhed process
 // and its process group. Its Program is classic BPF,
 // assembled here in pure Go for amd64, arm64 and s390x from per-architecture
 // system-call tables: it first checks the architecture and kills the process

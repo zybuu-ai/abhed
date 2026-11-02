@@ -78,7 +78,7 @@ func (d *durableMem) ClaimNode(_ context.Context, id, holder string) error {
 		d.holders, d.seen = map[string]string{}, map[string]time.Time{}
 	}
 	// As Postgres: never taken from another live holder.
-	if h := d.holders[id]; h != "" && h != holder && time.Since(d.seen[id]) < nodeStale {
+	if h := d.holders[id]; h != "" && h != holder && time.Since(d.seen[id]) < nodeStale.Get() {
 		return store.ErrHeldElsewhere
 	}
 	d.holders[id], d.seen[id] = holder, time.Now()
@@ -571,9 +571,9 @@ func TestUnusedMessageClaimIsGivenBack(t *testing.T) {
 // the hold would have expired, the turn's end is the only end recorded.
 func TestMessageTakesOverAWorkbenchHold(t *testing.T) {
 	v := newViewRig(t)
-	hold := manualHold
-	manualHold = 100 * time.Millisecond
-	t.Cleanup(func() { manualHold = hold })
+	hold := manualHold.Get()
+	manualHold.Set(100 * time.Millisecond)
+	t.Cleanup(func() { manualHold.Set(hold) })
 	v.view()
 	live := v.live()
 	if _, err := live.Loop.Recorder.Record(agent.EvChangeAccepted, agent.ActorUser, agent.Trusted, map[string]any{"path": "a"}); err != nil {
@@ -586,7 +586,7 @@ func TestMessageTakesOverAWorkbenchHold(t *testing.T) {
 	for deadline := time.Now().Add(3 * time.Second); !v.ended() && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(4 * manualHold)
+	time.Sleep(4 * manualHold.Get())
 	events := v.checkSeqs()
 	var ends []agent.SessionEnded
 	for _, ev := range events[len(before):] {

@@ -325,6 +325,26 @@ func TestBashTimeoutEndsADetachedChild(t *testing.T) {
 	}
 }
 
+// A command refused a package registry is told which, and how to open it.
+func TestBashRegistryNote(t *testing.T) {
+	s, dir := setup(t)
+	none := sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command
+	b := Bash{Sandbox: none, Isolation: Isolation{Tier: "process"}, RegistryNote: func(command, output string) string {
+		if strings.Contains(output, "proxy.golang.org") {
+			return "NOTE: go's registry"
+		}
+		return ""
+	}}
+	res := run(t, b, s, bashArgs{Command: `echo 'Get "https://proxy.golang.org/x": Forbidden'; exit 1`, Description: "x"})
+	if !strings.Contains(res.Content, "NOTE: go's registry") || strings.Contains(res.Content, "this sandbox has no network access") {
+		t.Fatalf("%s", res.Content)
+	}
+	res = run(t, b, s, bashArgs{Command: `echo "curl: (6) Could not resolve host: example.com"; exit 6`, Description: "x"})
+	if !strings.Contains(res.Content, "this sandbox has no network access") {
+		t.Fatalf("%s", res.Content)
+	}
+}
+
 // A command that failed reaching for the network in a sandbox without one is
 // told why, and pointed at the web tools, even when a pipe hid the exit code.
 func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
@@ -352,6 +372,16 @@ func TestBashNetworkHintOnlyWhenTheSandboxCutTheNetwork(t *testing.T) {
 		{"a local server not running", off, `echo "curl: (7) Failed to connect to localhost port 8080"; exit 7`, false},
 		{"an ordinary failure", off, `echo "FAIL: TestParse"; exit 1`, false},
 		{"a rust build error", off, `echo "error[E0433]: failed to resolve: use of undeclared crate or module ` + "`serde`" + `"; exit 101`, false},
+		{"the egress proxy's 403, network off", off, `echo 'go: Get "https://proxy.golang.org/x/@v/list": Forbidden'; exit 1`, true},
+		{"pip's tunnel refused", off, `echo "Tunnel connection failed: 403 Forbidden"; exit 1`, true},
+		{"a 403 with the network on", on, `echo "Tunnel connection failed: 403 Forbidden"; exit 1`, false},
+		{"a local server's 403, network off", off, `echo "GET http://127.0.0.1:8080/api: 403 Forbidden"; exit 1`, false},
+		{"a test's 403 text, network off", off, `echo "--- FAIL: TestAuth: want 403 Forbidden"; exit 1`, false},
+		{"npm's 403 through the proxy", off, `echo "npm error 403 403 Forbidden - GET https://registry.npmjs.org/left-pad"; exit 1`, true},
+		{"npm 9+'s refused CONNECT", off, "echo 'npm error code EINVALIDRESPONSE'; echo 'npm error Invalid status code `403` connecting to proxy'; exit 1", true},
+		{"uv's refused tunnel", off, `echo "error: Request failed after 3 retries: unsuccessful tunnel"; exit 1`, true},
+		{"Gradle's 403 from a registry", off, `echo "Could not GET 'https://repo.maven.apache.org/maven2/x.pom'. Received status code 403 from server: Forbidden"; exit 1`, true},
+		{"Gradle's 403 from a local server", off, `echo "Could not GET 'http://localhost:8081/x.pom'. Received status code 403 from server: Forbidden"; exit 1`, false},
 	} {
 		res := run(t, tc.bash, s, bashArgs{Command: tc.command, Description: "x"})
 		if got := strings.Contains(res.Content, "this sandbox has no network access"); got != tc.hint {
@@ -500,5 +530,29 @@ func TestCtrlBAfterTheTimeoutDoesNotMoveTheCommand(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "timed out") {
 		t.Errorf("result: %q", res.Content)
+	}
+}
+
+// The note bash adds is recorded with the result as what it names, so the
+// record need not be read for its words: a folder the sandbox denies, or none.
+func TestBashRecordsWhatItsSandboxNoteNames(t *testing.T) {
+	s, dir := setup(t)
+	home, _ := os.UserHomeDir()
+	sb := Bash{Sandbox: sandbox.NewNone(sandbox.DefaultPolicy(dir)).Command, Isolation: Isolation{Tier: "process"}}
+	for cmd, want := range map[string]string{
+		`echo "cat: ` + home + `/.ssh/id_rsa: Operation not permitted"; exit 1`: "ssh",
+		`echo "cat: ` + home + `/.netrc: Operation not permitted"; exit 1`:      "credentials",
+		`echo "ls: .abhed/records: Operation not permitted"; exit 1`:            "abhed",
+		`echo "chown: f: Operation not permitted"; exit 1`:                      "denied",
+		`echo "cat: ./project/.netrc: Operation not permitted"; exit 1`:         "denied",
+		`echo "chown: f: Operation not permitted"`:                              "",
+		`echo "no such file"; exit 1`:                                           "",
+	} {
+		if res := run(t, sb, s, bashArgs{Command: cmd, Description: "print"}); res.SandboxNote != want {
+			t.Errorf("%s: note %q, want %q", cmd, res.SandboxNote, want)
+		}
+	}
+	if res := run(t, Bash{}, s, bashArgs{Command: `echo "x: Operation not permitted"; exit 1`, Description: "print"}); res.SandboxNote != "" {
+		t.Errorf("a note on the host: %q", res.SandboxNote)
 	}
 }

@@ -57,7 +57,12 @@ The last line of `json` and `stream-json` is the result:
 ```
 
 `subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
-`retry_exhausted`, …); `error` is present when the run failed. `stream-json`
+`retry_exhausted`, …); `error` is present when the run failed.
+`retry_exhausted` means the model kept making the same call without getting
+anywhere: it failed the same way six times, or a read-only call gave the
+same answer six times with nothing changed in between (it is warned after
+three). The end's detail names the call, and the next message starts the
+count again. `stream-json`
 without `-include-partial-messages` adds
 `"omitted":["agent.delta","agent.reasoning.delta"]`, the event types it left
 out, so `abhed hawkeye` can tell the gaps they leave from missing events. Policy
@@ -96,6 +101,27 @@ from a file is named on stderr), and makes the
 answer a JSON value that matches it ([Structured output](13-structured-output.md)).
 With `-output-format text`, stdout is only that JSON; with `json` or
 `stream-json` it is the result line's `structured_output`.
+
+### Checked answers
+
+`-verify label` checks the answer's statements against what the run
+observed and prints the labels under it; `-verify strict` also gives the agent
+one revision turn when a statement about its work is not verified, then exits
+`8` if it still is not, so CI fails closed. Unset, `-p` checks nothing unless
+`verify.mode` says so. With `json` or `stream-json`, the check is the
+`answer.verdict` event and the result line's `verdict`. A managed
+`verify.mode` may only be made stricter. See [Verified answers](29-verified-answers.md).
+
+### Runbooks
+
+`-runbook FILE` approves a plan's runbook for the run: the file holds
+`exit_plan`'s own arguments, `{"plan": …, "runbook": […]}`, so a plan
+proposed in a conversation can be saved and run unattended.
+`-runbook-sha256` pins the plan hash you reviewed, and a file that hashes
+otherwise is refused. The steps, made exactly as listed, run without asking;
+any other change asks, which a headless run refuses. The binding is recorded
+as `plan.proposed` and `plan.decided` with `via: operator`, and stderr names
+the hash ([Runbooks](28-runbooks.md)).
 
 ### Limits and instructions
 
@@ -150,6 +176,7 @@ which includes `-p` in a script; `-mode bypass` is the explicit spelling.
 | `2` | bad invocation, or the turn limit |
 | `3` | token budget |
 | `5` | model retries exhausted |
+| `8` | unverified: with `-verify strict` or a completion contract, the answer or the contract could not be verified after one revision turn ([Verified answers](29-verified-answers.md)) |
 | `130` | interrupted (SIGINT) |
 | `143` | terminated (SIGTERM); a hang-up is `129` |
 
@@ -192,8 +219,8 @@ send(method="prompt", prompt="fix the failing tests")
 
 | Method | |
 |---|---|
-| `start` | open a session — `workspace`, `mode`, `allow`, `deny` |
-| `prompt` | send a prompt, get the final answer — `prompt` |
+| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
+| `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` when answers are checked |
 | `steer` | redirect a run in progress — the text in `prompt` |
 | `usage` | tokens, turns, compactions |
 | `export` | the HTML transcript |
@@ -219,7 +246,9 @@ and will read it before its answer, `queued` when it will lead that
 session's next prompt instead. A `steered` steer is read even when a
 `user_prompt_submit` hook refuses the prompt itself: the prompt is answered
 with an error `abhed: ended as prompt_refused: <reason>` whose `answer` is
-the answer to the steer, or, if the hook refuses that too, the error alone. A queued steer the session never reads, because
+the answer to the steer, or, if the hook refuses that too, the error alone.
+When the steer's own run ends otherwise (at the turn limit, say), its error
+follows the refusal on a second line of the same `error`. A queued steer the session never reads, because
 `quit`, the end of input or a new `start` came first, is named in an
 `{"type":"error"}` line rather than dropped silently. Every other request, a
 second `prompt` included, waits for the running prompt and is answered in the
@@ -542,7 +571,13 @@ end. These endpoints, like the session's approvals, answer only its owner.
 A session's `state` in the list is `running`, `waiting_approval`, `idle` or
 `done`. A `done` session also has a `reason`, how its last run ended as
 recorded: `completed`, `user_interrupt`, `shutdown`, `deadline`, `stalled`,
-`error`, `max_turns` and the rest.
+`error`, `max_turns`, `unverified` and the rest.
+
+`POST /v1/sessions` takes `verify` (`off`, `label` or `strict`). A session
+someone watches at the console or the IDE labels its answers unless the
+configuration says otherwise; an unattended one checks only when asked. A
+managed `verify.mode` may only be made stricter: a looser one is refused with
+400.
 
 Sending a message to a session that is already working **steers** it rather than
 being refused.

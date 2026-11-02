@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,10 +19,14 @@ import (
 type fenceEgress struct {
 	once  sync.Once
 	proxy *egress.Proxy
-	dir   string
-	caDir string // the inspection CA bundle's folder, when the policy inspects TLS
-	err   error
-	eg    *egressState
+	// dnsOnce starts the session's resolver for mount mode; dns is set once
+	// it serves, and names then resolve inside the command's namespace.
+	dnsOnce sync.Once
+	dns     bool
+	dir     string
+	caDir   string // the inspection CA bundle's folder, when the policy inspects TLS
+	err     error
+	eg      *egressState
 }
 
 // fenceEgressSpec is the proxy socket a launcher's relay joins and the address
@@ -29,6 +34,10 @@ type fenceEgress struct {
 type fenceEgressSpec struct {
 	Sock   string `json:"sock"`
 	Listen string `json:"listen"`
+	// DNS is the resolver's socket the launcher serves 127.0.0.1:53 from,
+	// and ResolvConf the file bound over /etc/resolv.conf; "" for none.
+	DNS        string `json:"dns,omitempty"`
+	ResolvConf string `json:"resolv_conf,omitempty"`
 }
 
 // fenceCall is what one command is given to reach the proxy.
@@ -97,8 +106,39 @@ func (e *fenceEgress) call(ctx context.Context, pol *egress.Policy, mounts bool)
 	if mounts {
 		fc.port = e.proxy.Addr().Port()
 		fc.relay = &fenceEgressSpec{Sock: c.Socket(), Listen: e.proxy.Addr().String()}
+		if e.startDNS() {
+			fc.relay.DNS, fc.relay.ResolvConf = filepath.Join(e.dir, "dns.sock"), filepath.Join(e.dir, "resolv.conf")
+		}
 	}
 	return fc, nil
+}
+
+// startDNS serves the session's resolver once, for commands in a network
+// namespace of their own, and reports whether it does. Where /etc/resolv.conf
+// is not a file to bind over, names stay unresolved, as before.
+func (e *fenceEgress) startDNS() bool {
+	e.dnsOnce.Do(func() {
+		if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err != nil || !regularFile(real) {
+			slog.Warn("egress: /etc/resolv.conf is not a file to bind over, so names will not resolve inside the fence")
+			return
+		}
+		if err := e.proxy.ListenDNS(filepath.Join(e.dir, "dns.sock")); err != nil {
+			slog.Warn("egress: the fence's resolver did not start, so names will not resolve inside it", "err", err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(e.dir, "resolv.conf"), []byte(resolvConf), 0o644); err != nil { // #nosec G306 -- read inside the fence
+			slog.Warn("egress: the fence's resolv.conf was not written, so names will not resolve inside it", "err", err)
+			return
+		}
+		e.dns = true
+	})
+	return e.dns
+}
+
+// regularFile reports whether path is a regular file.
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // close stops the proxy and removes its socket's folder.

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/profiles"
 	"github.com/zybuu-ai/abhed/wsconn"
 )
@@ -378,6 +379,10 @@ func (cl *client) dial(ctx context.Context, path, proto string) (*wsconn.Conn, e
 	if err != nil {
 		return nil, err
 	}
+	// Through the upstream proxy, its CA bundle is trusted too, as for the REST calls.
+	if u, err := url.Parse(cl.p.URL); err == nil {
+		tc = egress.UpstreamTLS(u.Hostname(), tc)
+	}
 	refreshed := false
 	refresh := func() bool {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -394,7 +399,7 @@ func (cl *client) dial(ctx context.Context, path, proto string) (*wsconn.Conn, e
 	for {
 		dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		ws, err := wsconn.Dial(dctx, cl.p.URL+path, wsconn.DialOptions{Header: cl.authHeader(),
-			Protocols: []string{proto}, TLSConfig: tc})
+			Protocols: []string{proto}, TLSConfig: tc, NetDial: egress.DialUpstream})
 		cancel()
 		if err == nil {
 			return ws, nil

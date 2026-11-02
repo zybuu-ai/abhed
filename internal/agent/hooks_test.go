@@ -393,3 +393,84 @@ func TestEndRefusedRecordsTheEndOnly(t *testing.T) {
 		t.Fatalf("the recorded end: %s", end.Reason)
 	}
 }
+
+// stallingHooks decides a prompt only when the run is stopped, as a hook
+// still deciding when the person presses Stop.
+type stallingHooks struct {
+	fakeHooks
+	deciding chan struct{}
+}
+
+func (s *stallingHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
+	if strings.Contains(text, "unscreened") {
+		close(s.deciding)
+		<-ctx.Done()
+		return ""
+	}
+	return s.fakeHooks.PromptSubmitted(ctx, sessionID, text)
+}
+
+// A prompt stopped while the hooks decide is never sent: it is recorded as
+// dropped, not as the person's message, and the next prompt does not carry it.
+func TestPromptStoppedWhileScreenedIsNotSent(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{{text: "fine"}}, policy.ModeDefault, true)
+	hooks := &stallingHooks{deciding: make(chan struct{})}
+	l.Hooks = hooks
+	ctx, cancel := context.WithCancelCause(context.Background())
+	go func() { <-hooks.deciding; cancel(Interrupt{Detail: InterruptKept}) }()
+	if reason, err := l.RunMessage(ctx, Message{Text: "an unscreened secret plan", ClientID: "c-1"}); err != nil || reason != TermUserInterrupt {
+		t.Fatalf("%s %v", reason, err)
+	}
+	evs, _ := store.Events("sess1")
+	var d DroppedMessage
+	for _, e := range evs {
+		switch e.Type {
+		case EvUserMessage:
+			t.Fatalf("an unscreened prompt was recorded as sent: %s", e.Payload)
+		case EvMessageDropped:
+			_ = json.Unmarshal(e.Payload, &d)
+		}
+	}
+	if d.ClientID != "c-1" || !strings.Contains(d.Reason, "before it was screened") {
+		t.Fatalf("recorded as dropped: %+v", d)
+	}
+	if _, err := l.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range l.Adapter.(*scriptedAdapter).gotRequests {
+		for _, m := range req.Messages {
+			if strings.Contains(m.Content, "unscreened") {
+				t.Fatal("the unscreened prompt reached the model with the next one")
+			}
+		}
+	}
+}
+
+// arrivingHooks queues another message while it judges one, as a person
+// typing while the hook decides, and refuses both.
+type arrivingHooks struct {
+	fakeHooks
+	l *Loop
+}
+
+func (a *arrivingHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
+	if text == "forbidden one" {
+		a.l.Steer("forbidden two")
+	}
+	return a.fakeHooks.PromptSubmitted(ctx, sessionID, text)
+}
+
+// A message that arrives while the hook judges another, both refused, does
+// not get the model called again on the conversation as it was.
+func TestRefusedSteerArrivingWhileJudgedCallsNoModel(t *testing.T) {
+	l, _, _ := harness(t, []scriptedTurn{{text: "first"}, {text: "never"}}, policy.ModeDefault, true)
+	l.Hooks = &arrivingHooks{fakeHooks: fakeHooks{refusePrompt: "forbidden"}, l: l}
+	sa := l.Adapter.(*scriptedAdapter)
+	l.Adapter = &steerOnCall{scriptedAdapter: sa, steer: func() { l.Steer("forbidden one") }}
+	if reason, err := l.Run(context.Background(), "hello"); err != nil || reason != TermCompleted {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if n := len(sa.gotRequests); n != 1 {
+		t.Fatalf("the model was called %d times, want once", n)
+	}
+}

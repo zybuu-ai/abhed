@@ -207,9 +207,33 @@ func (m *Manager) resolve(sess *tools.Session, raw json.RawMessage, apply bool) 
 	ns := str("namespace")
 	clusterWide := kubescope.ClusterScopedResource(resource)
 	if apply && str("action") == "apply" {
+		sf, err := decodeSecretFrom(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sf != nil {
+			// The values are read when the call runs; the rules, the
+			// approver and the record read the Secret without them.
+			skel, err := sf.skeleton()
+			if err != nil {
+				return nil, nil, err
+			}
+			if m := str("manifest"); strings.TrimSpace(m) != "" && m != string(skel) {
+				return nil, nil, fmt.Errorf("give a manifest or secret_from, not both")
+			}
+			set("manifest", string(skel))
+		}
+		if m := str("manifest"); m == withheldManifest {
+			return nil, nil, fmt.Errorf("the manifest is not one JSON object, so it cannot be applied (convert YAML "+
+				"to JSON first), and it was withheld from the record since it may hold a Secret's values. "+
+				"For a Secret: %s", secretFromHint)
+		}
 		mf, err := checkManifest(str("manifest"))
 		if err != nil {
 			return nil, nil, err
+		}
+		if mf != nil && hasSecretValues(mf.Object) {
+			return nil, nil, fmt.Errorf("%s", secretInManifest)
 		}
 		kind := ""
 		if mf != nil {
@@ -454,6 +478,7 @@ func (GetTool) Mutates() bool { return false }
 func (GetTool) Description() string {
 	return "Read from a Kubernetes cluster: list or describe resources, and fetch pod logs. " +
 		"Read-only — it cannot create, change or delete anything. " +
+		"With wait_seconds it waits for a Deployment's rollout to finish. " +
 		"Use resource plural names as kubectl does (pods, deployments, services, nodes, events)."
 }
 
@@ -468,7 +493,8 @@ func (GetTool) Schema() json.RawMessage {
     "context":{"type":"string","description":"Kubeconfig context naming the cluster. Omit for the current context."},
     "selector":{"type":"string","description":"Label selector, e.g. app=web."},
     "container":{"type":"string","description":"For logs: which container in the pod."},
-    "tail":{"type":"integer","description":"For logs: how many trailing lines. Default 200."}
+    "tail":{"type":"integer","description":"For logs: how many trailing lines. Default 200."},
+    "wait_seconds":{"type":"integer","description":"For one deployment named in name: wait up to this many seconds (at most 600) for its rollout to finish, instead of polling. Says whether it finished, failed or is still going."}
   },
   "required":["resource"]
 }`)
@@ -483,6 +509,8 @@ type getArgs struct {
 	Selector  string `json:"selector"`
 	Container string `json:"container"`
 	Tail      int    `json:"tail"`
+	// WaitSeconds waits for a Deployment's rollout.
+	WaitSeconds int `json:"wait_seconds"`
 }
 
 func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -501,6 +529,9 @@ func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessa
 	if a.Resource == "logs" {
 		return t.logs(ctx, c, a)
 	}
+	if a.WaitSeconds > 0 {
+		return t.wait(ctx, c, a)
+	}
 
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
@@ -514,7 +545,7 @@ func (t GetTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessa
 	if err != nil {
 		return errf("%v", err)
 	}
-	return tools.Result{Content: render(a.Resource, data)}
+	return tools.Result{Content: render(kubescope.Resource(a.Resource), data)}
 }
 
 func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
@@ -549,7 +580,43 @@ func (t GetTool) logs(ctx context.Context, c *Cluster, a getArgs) tools.Result {
 
 // ---------------------------------------------------------------- write tool
 
-type ApplyTool struct{ M *Manager }
+type ApplyTool struct {
+	M *Manager
+	// Secret returns a stored secret's value, for secret_from; nil means no store.
+	Secret func(name string) (string, error)
+}
+
+// BindStore is the tool reading secret_from's secrets from v instead.
+func (t ApplyTool) BindStore(v *secrets.Store) tools.Tool {
+	t.Secret = v.Value
+	return t
+}
+
+// SecretArgs marks the tool as taking secrets by name; they are all in
+// secret_from, which SecretPaths names.
+func (ApplyTool) SecretArgs() []string { return nil }
+
+// SecretPaths puts each stored secret secret_from reads to a secret(NAME) rule.
+func (ApplyTool) SecretPaths() [][]string {
+	return [][]string{{"secret_from", "data", "*", "secret"}}
+}
+
+// FilesRead are the workspace files secret_from reads, each judged as a read.
+func (ApplyTool) FilesRead(raw json.RawMessage) []string {
+	sf, err := decodeSecretFrom(raw)
+	if err != nil || sf == nil {
+		return nil
+	}
+	var out []string
+	for _, k := range sf.keys() {
+		if f := sf.Data[k].File; f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func (ApplyTool) FilesWritten(json.RawMessage) []string { return nil }
 
 // ResolveArgs puts the call in the form it runs in, its cluster and
 // namespace named, so policy judges what the call changes.
@@ -567,22 +634,38 @@ func (ApplyTool) Mutates() bool { return true }
 
 func (ApplyTool) Description() string {
 	return "Change a Kubernetes cluster: apply a manifest, scale a workload, delete a resource, " +
-		"or restart a rollout. Every call requires human approval. " +
-		"Prefer k8s_get first to confirm what you are about to change."
+		"restart a rollout, or roll a Deployment back to an earlier revision. Every call requires " +
+		"human approval, and is dry-run on the cluster first where its credential is at hand; " +
+		"a call the dry run refuses comes back with the cluster's reason and changes nothing. " +
+		"Prefer k8s_get first to confirm what you are about to change, and k8s_get with " +
+		"wait_seconds after a restart or rollback to wait for the rollout. " +
+		"To create a Secret, such as a TLS certificate and key, use secret_from with stored " +
+		"secret NAMES and workspace files: never put a key or password in a manifest."
 }
 
 func (ApplyTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
-    "action":{"type":"string","enum":["apply","delete","scale","restart"],"description":"What to do."},
+    "action":{"type":"string","enum":["apply","delete","scale","restart","rollback"],"description":"What to do. rollback undoes a Deployment's rollout to an earlier revision, as kubectl rollout undo does."},
     "manifest":{"type":"string","description":"For apply: the resource as JSON or YAML-free JSON."},
     "resource":{"type":"string","description":"For delete/scale/restart: resource type, plural."},
     "name":{"type":"string","description":"For delete/scale/restart: the resource name."},
     "namespace":{"type":"string","description":"Namespace. Omit for the context's default."},
     "cluster":{"type":"string","description":"A declared cluster this session logged in to with k8s_login."},
     "context":{"type":"string","description":"Kubeconfig context naming the cluster."},
-    "replicas":{"type":"integer","description":"For scale: the desired replica count."}
+    "replicas":{"type":"integer","description":"For scale: the desired replica count."},
+    "revision":{"type":"integer","description":"For rollback: the revision to return to. Omit for the one before the current."},
+    "secret_from":{"type":"object","description":"For apply, instead of a manifest: build a Secret whose values Abhed reads itself, so they never pass through you. Each data key names a stored secret (by NAME) or a workspace file (absolute path).",
+      "properties":{
+        "name":{"type":"string","description":"The Secret's name."},
+        "type":{"type":"string","enum":["Opaque","kubernetes.io/tls"],"description":"Default Opaque. kubernetes.io/tls needs keys tls.crt and tls.key."},
+        "data":{"type":"object","description":"Key to source, e.g. {\"tls.crt\":{\"file\":\"/work/site.crt\"},\"tls.key\":{\"secret\":\"SITE_TLS_KEY\"}}.",
+          "additionalProperties":{"type":"object","properties":{
+            "secret":{"type":"string","description":"NAME of a stored secret. Never the value."},
+            "file":{"type":"string","description":"Absolute path of a workspace file."}}}}
+      },
+      "required":["name","data"]}
   },
   "required":["action"]
 }`)
@@ -597,6 +680,9 @@ type applyArgs struct {
 	Namespace string `json:"namespace"`
 	Context   string `json:"context"`
 	Replicas  *int   `json:"replicas"`
+	Revision  int    `json:"revision"`
+	// SecretFrom builds a Secret from stored secrets and workspace files.
+	SecretFrom *secretFrom `json:"secret_from"`
 }
 
 // Target tells the person approving a write which cluster it changes, at
@@ -607,7 +693,13 @@ func (t ApplyTool) Target(sess *tools.Session, raw json.RawMessage) string {
 	if json.Unmarshal(raw, &a) != nil || t.M == nil {
 		return ""
 	}
-	return t.M.where(sess, a.Cluster, a.Context)
+	where := t.M.where(sess, a.Cluster, a.Context)
+	if p, ok := t.M.peek(sess, raw); ok && p.preview != "" {
+		where = strings.TrimPrefix(where+"; "+p.preview, "; ")
+	} else if sf, err := decodeSecretFrom(raw); err == nil && sf != nil {
+		where = strings.TrimPrefix(where+"; "+sf.sources(), "; ")
+	}
+	return where
 }
 
 func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
@@ -619,41 +711,123 @@ func (t ApplyTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMes
 	if err != nil {
 		return errf("%v", err)
 	}
-
-	switch a.Action {
-	case "apply":
-		return t.apply(ctx, c, a)
-	case "delete":
-		return t.delete(ctx, c, a)
-	case "scale":
-		return t.scale(ctx, c, a)
-	case "restart":
-		return t.restart(ctx, c, a)
+	// The request the dry run checked and the approver saw is the one sent.
+	req := t.M.takePlanned(sess, raw)
+	if req == nil || req.masked != nil {
+		approved := req
+		if req, err = t.plan(ctx, sess, c, a); err != nil {
+			return errf("%v", err)
+		}
+		if approved != nil && !sameValues(approved.masked, req.masked) {
+			return errf("Not applied: a value secret_from reads changed after the call was approved; " +
+				"make the call again to approve the new value.")
+		}
 	}
-	return errf("unknown action %q (want apply, delete, scale or restart)", a.Action)
+	data, err := c.send(ctx, req, false)
+	if err != nil {
+		return errf("%v%s", err, req.hint)
+	}
+	return tools.Result{Content: req.done(data)}
 }
 
-func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+// request is one write k8s_apply sends: built once, dry-run before the
+// approval, and sent as it was built.
+type request struct {
+	method, path, contentType string
+	body                      []byte
+	// live is the object's path as it stands, read for the dry run's diff.
+	live string
+	// done is what the model is told once the cluster has answered.
+	done func(data []byte) string
+	// hint follows the cluster's error when the request fails.
+	hint string
+	// dryBody, when set, is what the dry run sends instead of body: a
+	// Secret's placeholders. masked is then the data the dry run's answer
+	// is shown with, and about says where the values come from.
+	dryBody []byte
+	masked  map[string]any
+	about   string
+}
+
+// send sends req, as a server-side dry run when dryRun is set.
+func (c *Cluster) send(ctx context.Context, req *request, dryRun bool) ([]byte, error) {
+	path, body := req.path, req.body
+	if dryRun && req.dryBody != nil {
+		body = req.dryBody
+	}
+	if dryRun {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		path += sep + "dryRun=All"
+	}
+	if req.method == "PATCH" {
+		return c.doPatch(ctx, path, body, req.contentType)
+	}
+	return c.Do(ctx, req.method, path, body)
+}
+
+// plan builds the request a call sends, refusing one that cannot be sent.
+func (t ApplyTool) plan(ctx context.Context, sess *tools.Session, c *Cluster, a applyArgs) (*request, error) {
+	switch a.Action {
+	case "apply":
+		return t.apply(sess, c, a)
+	case "delete":
+		return t.delete(c, a)
+	case "scale":
+		return t.scale(c, a)
+	case "restart":
+		return t.restart(c, a)
+	case "rollback":
+		return t.rollback(ctx, c, a)
+	}
+	return nil, fmt.Errorf("unknown action %q (want apply, delete, scale, restart or rollback)", a.Action)
+}
+
+func (t ApplyTool) apply(sess *tools.Session, c *Cluster, a applyArgs) (*request, error) {
+	if a.SecretFrom != nil {
+		sf, err := decodeSecretFrom(mustJSON(map[string]any{"secret_from": a.SecretFrom}))
+		if err != nil {
+			return nil, err
+		}
+		skel, err := sf.skeleton()
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(a.Manifest) != "" && a.Manifest != string(skel) {
+			return nil, fmt.Errorf("give a manifest or secret_from, not both")
+		}
+		a.Manifest, a.SecretFrom = string(skel), nil
+		req, err := t.apply(sess, c, a)
+		if err != nil {
+			return nil, err
+		}
+		return req, t.secretRequest(sess, req, sf)
+	}
 	if strings.TrimSpace(a.Manifest) == "" {
-		return errf("apply needs a manifest.")
+		return nil, fmt.Errorf("apply needs a manifest")
 	}
 	mf, err := kubescope.DecodeManifest(a.Manifest)
 	if err != nil {
-		return errf("%v. Convert YAML to JSON first.", err)
+		return nil, fmt.Errorf("%w. Convert YAML to JSON first", err)
+	}
+	if hasSecretValues(mf.Object) {
+		return nil, fmt.Errorf("%s", secretInManifest)
 	}
 	kind, apiVersion, name := mf.Kind, mf.APIVersion, mf.Name
 	if kind == "" || apiVersion == "" {
-		return errf("manifest needs both apiVersion and kind.")
+		return nil, fmt.Errorf("manifest needs both apiVersion and kind")
 	}
 	// One object, in one namespace, is what the approval and the rules judged.
 	if _, list := mf.Object["items"]; list || strings.HasSuffix(kind, "List") {
-		return errf("apply takes one object per call; apply each item of the %s on its own.", kind)
+		return nil, fmt.Errorf("apply takes one object per call; apply each item of the %s on its own", kind)
 	}
 	if name == "" {
-		return errf("manifest metadata.name is required.")
+		return nil, fmt.Errorf("manifest metadata.name is required")
 	}
 	if !kubescope.ValidKind(kind) || !kubescope.ValidAPIVersion(apiVersion) {
-		return errf("the manifest's kind %q or apiVersion %q cannot stand in a request path.", kind, apiVersion)
+		return nil, fmt.Errorf("the manifest's kind %q or apiVersion %q cannot stand in a request path", kind, apiVersion)
 	}
 	ns := a.Namespace
 	if ns == "" {
@@ -661,15 +835,18 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 			ns = c.Namespace
 		}
 	}
-	if err := checkSegments(ns, name, ""); err != nil || ns == "*" {
-		return errf("the manifest's name and namespace must each stand as one path segment: %v", err)
+	if ns == "*" {
+		return nil, fmt.Errorf("the manifest's namespace cannot be '*'")
+	}
+	if err := checkSegments(ns, name, ""); err != nil {
+		return nil, fmt.Errorf("the manifest's name and namespace must each stand as one path segment: %w", err)
 	}
 	ns, name = url.PathEscape(ns), url.PathEscape(name)
 
 	base := apiBase(apiVersion) + "/" + pluralFor(kind)
 	namespaced, known := kubescope.KindScope(kind)
 	if !known {
-		return errf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash.", kind)
+		return nil, fmt.Errorf("the scope of kind %s is not known, so what it changes cannot be judged; apply it with kubectl through bash", kind)
 	}
 	if namespaced {
 		base = apiBase(apiVersion) + "/namespaces/" + ns + "/" + pluralFor(kind)
@@ -677,61 +854,57 @@ func (t ApplyTool) apply(ctx context.Context, c *Cluster, a applyArgs) tools.Res
 
 	// Server-side apply: one PATCH that creates or updates, so there is no
 	// read-modify-write race between checking existence and writing.
-	path := base + "/" + name + "?fieldManager=abhed&force=true"
 	// The bytes sent are the canonical encoding the rules and the approver saw.
-	data, err := c.doPatch(ctx, path, mf.Canonical, "application/apply-patch+yaml")
-	if err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Applied %s/%s in %s.\n%s",
-		kind, name, ns, summarize(data))}
+	return &request{method: "PATCH", path: base + "/" + name + "?fieldManager=abhed&force=true",
+		contentType: "application/apply-patch+yaml", body: mf.Canonical, live: base + "/" + name,
+		done: func(data []byte) string {
+			return fmt.Sprintf("Applied %s/%s in %s.\n%s", kind, name, ns, summarize(data))
+		}}, nil
 }
 
-func (t ApplyTool) delete(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+func (t ApplyTool) delete(c *Cluster, a applyArgs) (*request, error) {
 	if a.Resource == "" || a.Name == "" {
-		return errf("delete needs resource and name.")
+		return nil, fmt.Errorf("delete needs resource and name")
 	}
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
-		return errf("%v", err)
+		return nil, err
 	}
-	if _, err := c.Do(ctx, "DELETE", path, nil); err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Deleted %s/%s.", a.Resource, a.Name)}
+	return &request{method: "DELETE", path: path, live: path, done: func([]byte) string {
+		return fmt.Sprintf("Deleted %s/%s.", a.Resource, a.Name)
+	}}, nil
 }
 
-func (t ApplyTool) scale(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+func (t ApplyTool) scale(c *Cluster, a applyArgs) (*request, error) {
 	if a.Resource == "" || a.Name == "" || a.Replicas == nil {
-		return errf("scale needs resource, name and replicas.")
+		return nil, fmt.Errorf("scale needs resource, name and replicas")
 	}
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
-		return errf("%v", err)
+		return nil, err
 	}
 	body := []byte(fmt.Sprintf(`{"spec":{"replicas":%d}}`, *a.Replicas))
-	if _, err := c.doPatch(ctx, path+"/scale", body, "application/merge-patch+json"); err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Scaled %s/%s to %d replicas.",
-		a.Resource, a.Name, *a.Replicas)}
+	return &request{method: "PATCH", path: path + "/scale", body: body,
+		contentType: "application/merge-patch+json", live: path + "/scale", done: func([]byte) string {
+			return fmt.Sprintf("Scaled %s/%s to %d replicas.", a.Resource, a.Name, *a.Replicas)
+		}}, nil
 }
 
-func (t ApplyTool) restart(ctx context.Context, c *Cluster, a applyArgs) tools.Result {
+func (t ApplyTool) restart(c *Cluster, a applyArgs) (*request, error) {
 	if a.Resource == "" || a.Name == "" {
-		return errf("restart needs resource and name.")
+		return nil, fmt.Errorf("restart needs resource and name")
 	}
 	path, err := resourcePath(c, a.Resource, a.Namespace, a.Name)
 	if err != nil {
-		return errf("%v", err)
+		return nil, err
 	}
 	// The same annotation kubectl rollout restart sets.
 	body := []byte(`{"spec":{"template":{"metadata":{"annotations":` +
 		`{"abhed.restartedAt":"` + nowRFC3339() + `"}}}}}`)
-	if _, err := c.doPatch(ctx, path, body, "application/strategic-merge-patch+json"); err != nil {
-		return errf("%v", err)
-	}
-	return tools.Result{Content: fmt.Sprintf("Restarted %s/%s.", a.Resource, a.Name)}
+	return &request{method: "PATCH", path: path, body: body,
+		contentType: "application/strategic-merge-patch+json", live: path, done: func([]byte) string {
+			return fmt.Sprintf("Restarted %s/%s.", a.Resource, a.Name)
+		}}, nil
 }
 
 // ---------------------------------------------------------------- rendering
@@ -746,7 +919,7 @@ func render(resource string, data []byte) string {
 	}
 	if err := json.Unmarshal(data, &list); err != nil || list.Items == nil {
 		// A single object: strip the noisiest fields and return it.
-		return summarize(data)
+		return summarizeAs(data, resource == "secrets")
 	}
 	if len(list.Items) == 0 {
 		return "No " + resource + " found."
@@ -807,11 +980,21 @@ func statusOf(item map[string]any) string {
 }
 
 // summarize removes the fields that dominate a manifest's size and carry no
-// information a question depends on.
-func summarize(data []byte) string {
+// information a question depends on. A Secret's values are masked.
+func summarize(data []byte) string { return summarizeAs(data, false) }
+
+// summarizeAs is summarize, masking the object as a Secret's also when
+// secret is set, whatever kind it says it is.
+func summarizeAs(data []byte, secret bool) string {
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
+		if secret {
+			return "[withheld: a Secret's response that could not be read as JSON]"
+		}
 		return string(data)
+	}
+	if secret || isSecret(obj) {
+		maskSecret(obj)
 	}
 	if meta, ok := obj["metadata"].(map[string]any); ok {
 		for _, noise := range []string{"managedFields", "resourceVersion", "uid",
@@ -929,6 +1112,25 @@ func pluralFor(kind string) string {
 		return k[:len(k)-1] + "ies"
 	}
 	return k + "s"
+}
+
+// sameValues reports whether two plans' masked values, length and
+// fingerprint per key, are the same.
+func sameValues(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func errf(format string, a ...any) tools.Result {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -76,6 +77,8 @@ type Gateway struct {
 	refused map[string]refusal
 	// pending are servers being connected, whose names are already taken.
 	pending map[string]bool
+	// policyRefused are the servers Admit refused; their failed entry says why.
+	policyRefused map[string]bool
 	// unconfined are the stdio servers started with no sandbox, with why.
 	unconfined map[string]string
 	// closed is set by Close; a connection finishing after it is closed, not kept.
@@ -102,11 +105,47 @@ type Gateway struct {
 	// Egress is the tool set's egress guard for HTTP servers, egress.Unguarded
 	// outside the allowlist; nil uses the request's.
 	Egress *egress.Guard
-	calls  serverCallers
+	// Admit, when set, judges every server before it starts or is reached,
+	// whatever added it, given the programs a stdio server's command resolves
+	// to on its own PATH; a server it refuses is never started, is listed
+	// with why, and a restart does not start it. A remote server's redirect
+	// to another host is judged by it too.
+	Admit func(cfg ServerConfig, programs []string) error
+	// PinProgram starts a stdio server that has no digest at the exact
+	// program Admit was shown, resolved once on its own PATH, rather than
+	// letting the launch look the command up again.
+	PinProgram bool
+	calls      serverCallers
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}}
+	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
+}
+
+// ErrNotAdmitted wraps Admit's refusal of a server.
+var ErrNotAdmitted = errors.New("not started: the configuration's MCP server lists refuse it")
+
+// admit is Admit's answer for cfg, wrapped so it can be told from a failure.
+func (g *Gateway) admit(cfg ServerConfig) error {
+	if g.Admit == nil {
+		return nil
+	}
+	var programs []string
+	if cfg.URL == "" && cfg.Command != "" {
+		programs = Programs(cfg.Command, ServerEnv(cfg.Env))
+	}
+	return g.admitPrograms(cfg, programs)
+}
+
+// admitPrograms is admit for programs already resolved.
+func (g *Gateway) admitPrograms(cfg ServerConfig, programs []string) error {
+	if g.Admit == nil {
+		return nil
+	}
+	if err := g.Admit(cfg, programs); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotAdmitted, err)
+	}
+	return nil
 }
 
 // Connect starts and initializes the enabled servers. A server that fails to
@@ -138,6 +177,19 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 			errs = append(errs, fmt.Errorf("mcp server %+q: invalid server name (letters, digits, _ and - only, up to 64)", cfg.Name))
 			continue
 		}
+		if err := g.admit(cfg); err != nil {
+			g.mu.Lock()
+			if _, live := g.clients[cfg.Name]; !live {
+				g.configs[cfg.Name], g.failed[cfg.Name] = cfg, err
+				g.policyRefused[cfg.Name] = true
+			}
+			g.mu.Unlock()
+			errs = append(errs, fmt.Errorf("mcp server %q: %w", cfg.Name, err))
+			continue
+		}
+		g.mu.Lock()
+		delete(g.policyRefused, cfg.Name)
+		g.mu.Unlock()
 		// Checked and reserved under one lock, so two servers added at once
 		// cannot both pass; the reservation ends when the connection does.
 		if err := g.reserve(cfg, enabled); err != nil {
@@ -163,6 +215,9 @@ func (g *Gateway) Connect(ctx context.Context, configs []ServerConfig) []error {
 func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error {
 	if !validServerName.MatchString(cfg.Name) {
 		return fmt.Errorf("invalid server name %q (letters, digits, _ and - only)", cfg.Name)
+	}
+	if err := g.admit(cfg); err != nil {
+		return err
 	}
 	if cfg.Command == "" && cfg.URL == "" {
 		return fmt.Errorf("no command or url configured")
@@ -191,7 +246,11 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 				return fmt.Errorf("header %s: environment variable %s is not set", k, envVar)
 			}
 		}
-		transport, err = NewHTTPTransport(life, HTTPConfig{URL: cfg.URL, Headers: headers, Egress: g.Egress})
+		hc := HTTPConfig{URL: cfg.URL, Headers: headers, Egress: g.Egress}
+		if g.Admit != nil {
+			hc.CheckRedirect = g.redirectCheck(cfg)
+		}
+		transport, err = NewHTTPTransport(life, hc)
 	} else {
 		transport, err = g.startStdio(life, cfg)
 	}
@@ -267,6 +326,9 @@ type ServerStatus struct {
 	NameRefused bool
 	// Unconfined is why a stdio server was started with no sandbox, if it was.
 	Unconfined string
+	// NotAdmitted is set for a server the configuration's MCP lists refused;
+	// Err says why. It is never started.
+	NotAdmitted bool
 }
 
 // MarkUnconfined notes that the stdio server name was started with no
@@ -293,7 +355,7 @@ func (g *Gateway) Servers() []ServerStatus {
 	defer g.mu.RUnlock()
 	var out []ServerStatus
 	for name, cfg := range g.configs {
-		st := ServerStatus{Name: name, Transport: "stdio", Err: g.failed[name], Unconfined: g.unconfined[name]}
+		st := ServerStatus{Name: name, Transport: "stdio", Err: g.failed[name], Unconfined: g.unconfined[name], NotAdmitted: g.policyRefused[name]}
 		if cfg.URL != "" {
 			st.Transport = "http"
 		}
@@ -655,4 +717,21 @@ var injectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bnew instructions?\b`),
 	regexp.MustCompile(`(?i)do not (tell|inform|mention to) the user`),
 	regexp.MustCompile(`(?i)without (asking|informing|telling) the user`),
+}
+
+// redirectCheck judges a remote server's redirect to another host as that
+// server reached at the new address, so an admitted host cannot hand the
+// connection to one the lists refuse.
+func (g *Gateway) redirectCheck(cfg ServerConfig) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if len(via) > 0 && strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+			return nil
+		}
+		moved := cfg
+		moved.URL = req.URL.String()
+		return g.admitPrograms(moved, nil)
+	}
 }

@@ -3,6 +3,8 @@ package model
 import (
 	"fmt"
 	"os"
+
+	"github.com/zybuu-ai/abhed/internal/defaults"
 )
 
 // Registrations for every provider that speaks the OpenAI chat-completions
@@ -22,8 +24,9 @@ func init() {
 	// repetition_penalty, which hosted APIs do not define.
 	Register("vllm", "vLLM server (OpenAI-compatible, /v1)",
 		parallelCalls(openAIStyle("http://127.0.0.1:8000/v1", SamplingLocal())))
-	Register("ollama", "Ollama (OpenAI-compatible endpoint, /v1)",
-		openAIStyle("http://127.0.0.1:11434/v1", SamplingLocal()))
+	Register("ollama", "Ollama (OpenAI-compatible endpoint, /v1)", func(sp Spec) (Adapter, error) {
+		return openAIStyle(defaults.OllamaURL, SamplingLocal())(sp)
+	})
 	Register("llamacpp", "llama.cpp server (OpenAI-compatible, /v1)",
 		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
 	Register("tgi", "Hugging Face Text Generation Inference (/v1)",
@@ -78,10 +81,10 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 			// An OpenAI-shaped endpoint authenticates with a bearer token
 			// either way, so a subscription token and an API key take the same
 			// path here. Only the source differs.
-			key = firstNonEmptyString(
-				s.Get("oauth_token"),
-				os.Getenv("OPENAI_API_KEY"),
-			)
+			key = s.Get("oauth_token")
+			if key == "" && !s.NoAmbientKey {
+				key = os.Getenv("OPENAI_API_KEY")
+			}
 		}
 		a := NewOpenAICompatible(base, key, s.Model, profile)
 		a.Defaults = s.Params

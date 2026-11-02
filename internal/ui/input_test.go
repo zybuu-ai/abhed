@@ -116,12 +116,17 @@ func TestBracketedPasteIsOnePrompt(t *testing.T) {
 // and all, within a millisecond. It is still one prompt.
 func TestRawPasteIsOnePrompt(t *testing.T) {
 	g := newRig(t, 80, 24)
+	// The paste's keys arrive with no gap whatever the machine's load, and
+	// the Enter after it comes well after, as a person presses it.
+	clock := newFakeClock()
+	g.lr.d.now = clock.Now
 	var lines []string
 	for i := 1; i <= 25; i++ {
 		lines = append(lines, "raw line "+strings.Repeat("y", i))
 	}
 	g.keys(strings.Join(lines, "\r"))
 	g.waitText("[Pasted text #1 +25 lines]")
+	clock.advance(time.Second)
 	g.out.mark()
 	g.keys("\r")
 	got, _ := g.line()

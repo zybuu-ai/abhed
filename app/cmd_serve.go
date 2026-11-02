@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/k8s"
+	"github.com/zybuu-ai/abhed/internal/loopport"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
 	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
@@ -128,6 +130,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	fmt.Printf("web search  %s\n", webSearchLabel(cfg))
 	fmt.Printf("web fetch   %s\n", webFetchLabel(cfg))
+	fmt.Printf("supervisor  %s\n", toolset.SupervisorLabel(cfg))
 	if line, failed := extensionsLabel(cfg, set); line != "" {
 		fmt.Printf("extensions  %s\n", line)
 		// Every session runs without a veto that did not start, so it is said where the operator looks.
@@ -202,6 +205,13 @@ func (a *App) serveCmd(workspace, addr string) int {
 		return 1
 	}
 	defer closeStore()
+	// The OCSF file stops before the store it reads closes.
+	stopOCSF, err := serveOCSF(cfg, eventStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer stopOCSF()
 	// Before the store closes: the egress summaries still owed go to it.
 	defer set.CloseEgress()
 
@@ -222,6 +232,23 @@ func (a *App) serveCmd(workspace, addr string) int {
 		}
 	}
 
+	// Metrics only when server.metrics asks; the API audit always.
+	sm, err := newServeMetrics(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
+	cpHooks := a.cpHooks
+	if sm != nil {
+		cpHooks = append(slices.Clip(cpHooks), sm.auditHook())
+	}
+	audit, auditLabel, closeAudit, err := apiAudit(context.Background(), cfg, eventStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 1
+	}
+	defer closeAudit()
+
 	// The sandbox control plane, only when the configuration turns it on.
 	var cp *controlplane.Service
 	var exposed *expose.Server
@@ -230,7 +257,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 	if cfg.ControlPlane.Enabled {
 		live := openVault().Live()
 		built, err := buildControlPlane(context.Background(), cfg, workspace, eventStore,
-			func(text string) string { return string(live.Redact([]byte(text))) }, a.cpHooks...)
+			func(text string) string { return string(live.Redact([]byte(text))) }, cpHooks...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
@@ -297,6 +324,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 		SessionSandboxes:    perSession,
 		SoleOwner:           iso.sole,
 		SandboxAPIAdminOnly: iso.adminAPI,
+		APIAudit:            audit,
+	}
+	if sm != nil {
+		opts.Metrics = sm.m
+		opts.Mounts = append(opts.Mounts, sm.mount)
 	}
 	if tlsL != nil {
 		opts.TLS = tlsL.Config()
@@ -321,6 +353,11 @@ func (a *App) serveCmd(workspace, addr string) int {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 2
 		}
+	}
+	// Answers must be checkable as configured before any session starts.
+	if _, err := toolset.Verifier(cfg, true); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
 	}
 	srv := server.New(opts)
 	// Every session's egress proxy stops with the server, before the store
@@ -383,8 +420,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	// banner names the port it got, not ":0".
 	var ln net.Listener
 	shown := addr
-	if _, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
-		if ln, err = net.Listen("tcp", addr); err != nil {
+	if _, port, err := net.SplitHostPort(addr); err == nil && loopport.AnyPort(port) {
+		// On a Mac, a port of Abhed's reserved range (internal/loopport).
+		if ln, err = loopport.ListenAddr(addr); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 1
 		}
@@ -410,6 +448,18 @@ func (a *App) serveCmd(workspace, addr string) int {
 		// Not embedded in this build; say where the same pages are, once,
 		// here — never from a page, which must stay usable with no route out.
 		fmt.Printf("  docs      %s (not embedded in this build)\n", docsite.PublicURL)
+	}
+
+	fmt.Printf("  audit     %s\n", auditLabel)
+	if sm != nil {
+		addr := ""
+		if sm.listen != "" {
+			if addr, err = sm.run(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+				return 1
+			}
+		}
+		fmt.Printf("  metrics   %s\n", sm.label(addr, cfg.Auth.Mode != "" && cfg.Auth.Mode != "none"))
 	}
 
 	serve := srv.ListenAndServe
@@ -445,6 +495,7 @@ func serveSandbox(cfg config.Config, workspace string) (config.Config, sandbox.S
 	// The workbench terminal's shell runs under the same backend as the agent's commands.
 	if in, ok := sb.(sandbox.Interactive); ok {
 		bash.Shell, bash.Isolation.Backend = in.Shell, in.Backend()
+		bash.ShellLine = func() string { return sandbox.TerminalCommandOf(sb) }
 	}
 	return cfg, sb, bash, nil
 }

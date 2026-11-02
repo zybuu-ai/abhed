@@ -76,6 +76,13 @@ as `/mode`, recorded as `mode.changed` with `via: plan-exit`, and the
 conversation goes on with "The plan is approved (mode …). Carry it out." as
 the next message. To keep planning, say what to change.
 
+A plan can carry a **runbook**, the exact calls it will make. Accepting it
+binds them: a call made exactly as the next step runs without asking, and
+any other change asks with "not in the approved plan", even where a rule or
+the mode would allow it. Deny rules, hooks and the sandbox still apply, and
+steps that cannot be undone are confirmed a second time when the plan is
+accepted. See [Runbooks](28-runbooks.md).
+
 ### Session rules: `/permissions`
 
 `/permissions` lists every rule in force with where it came from:
@@ -239,7 +246,23 @@ command or path, or for a tool with neither, the first of its `pattern`,
 MCP tool that takes only a `url` is matched on it:
 `mcp__browser__open(https://intranet.example/*)`. `ssh` is matched as
 `host/command` (`ssh(build1/uptime)`, `ssh(*/uptime)`), so an answer for one
-host never covers another; deny and ask rules also read the command alone.
+host never covers another. The command is read as a `bash` command is,
+because the remote shell runs it: deny and ask rules see every command in a
+chain, pipe or substitution and behind a runner such as `sudo`, `env` or
+`nice`, both alone and as `host/command`, so `ssh(rm *)` stops
+`true; rm -rf /srv` and `sudo rm -rf /srv` on every host; an allow rule with
+a pattern approves only one simple command, so `ssh(web1/openssl x509 *)`
+does not approve `openssl x509 -in a.pem; rm -rf /var/www`; and a line the
+parser cannot read in full is refused while a deny rule for `ssh` has a
+pattern. A command the operator declared a read in `ssh.read_commands` runs
+unasked and in plan mode, when it is one simple command matching an entry
+that runs no other command, writes no file and carries no `stdin_secret`
+([Clusters and machines](../ops/infrastructure.md#ssh)). In `bypass` mode the
+read step is not used: bypass allows it as it allows anything, and where the
+managed configuration refuses bypass the call asks, as in default mode. A remote command the destructive step names, such as `rm -rf`,
+always confirms twice and offers no "always". Neither reads a script the
+remote command runs, which is on a machine Abhed cannot see, nor knows a
+remote login shell other than bash.
 A subject given as a list of strings is read as its words joined by blanks;
 any other kind is refused while a deny or ask rule with a pattern applies.
 
@@ -805,7 +828,8 @@ Every call goes through the same steps, and the order is the design:
 2. **Deny rules** — absolute for every tool call, the agent's and a person's; they survive every mode, including `bypass`. In the workbench's interactive shell, which the sandbox bounds, they screen each line as typed, best effort ([the workbench](16-workbench.md))
 3. **Plan mode** — in `plan`, a mutating call is refused here, before the
    destructive and ask steps, so a destructive command or an ask rule is not
-   put to a person who might accept it. Read-only calls go on as before
+   put to a person who might accept it. Read-only calls go on as before, an
+   `ssh` command the operator declared a read (`ssh.read_commands`) among them
 4. **Destructive commands** — force push, hard reset, disk writes, fork bombs
    and similar always confirm, in every mode, because there is no undo. For git
    these are the forms that discard work which Abhed recognises: `git restore`
@@ -871,7 +895,50 @@ Every call goes through the same steps, and the order is the design:
    wrapper; a single command with more than 16 words named `git` is taken as
    destructive. The list is best effort, like the rest of this step, and the
    sandbox is the boundary. Outside git, `unlink FILE` and `rmdir -p` confirm
-   too. It misses, among others: `git checkout FILE` with one word and no
+   too, as do the container and cluster operations with no undo:
+   `docker`/`podman`/`nerdctl` `system prune`/`reset`, `volume rm`/`prune`,
+   `image prune -a` and forced `rmi`; `kubectl delete` of namespaces,
+   `pvc`/`pv`, `all` or with `--all`/`-A`, `scale --replicas=0`, `drain`,
+   `cordon`, a forced or production `patch`/`replace`, `apply --prune`,
+   `oc delete project` and `helm uninstall`, `docker`/`podman`
+   `container prune`, `network prune`, `stack rm`, `service rm` and
+   `swarm leave --force`; a comma-joined kind list
+   (`kubectl delete sts,pvc`) counts each kind, and `crd`/`storageclass`/
+   `clusterrole*` are added. Dropping or emptying a data store — a SQL client
+   (`psql`, `mysql`, `sqlite3`, …) running `DROP DATABASE|SCHEMA|TABLE`,
+   `TRUNCATE` or an unbounded `DELETE`, `dropdb`, `mysqladmin drop`,
+   `redis-cli FLUSH(ALL|DB)`, a Mongo `dropDatabase`, `.drop()`,
+   `deleteMany({})` or `remove({})`, `ALTER TABLE … DROP COLUMN|CONSTRAINT`;
+   a framework reset — `prisma migrate reset`, `prisma db push --force-reset`,
+   `rails`/`rake db:drop|reset|purge|truncate_all|migrate:reset|schema:load`,
+   `manage.py flush`, `artisan migrate:fresh|reset|refresh|rollback` or
+   `db:wipe`, `dotnet ef database drop`, `sequelize db:drop`, run directly or
+   through a package runner (`npx`/`bunx`/`pnpx`, `yarn`/`pnpm` with `exec`/`dlx`/`run`, `npm exec`, a `@version` spec) and past `sudo`/`su`/`runuser` wrappers — and tearing
+   down infrastructure — `terraform`/`tofu`/`terragrunt destroy` (also
+   `run-all destroy`), `taint`, `apply -destroy` or `apply -replace=`, `state rm`,
+   `workspace delete`,
+   `pulumi`/`cdk destroy`, `sam delete`, `serverless remove`, `eksctl delete`,
+   `gcloud`/`az`/`doctl`/`hcloud … delete` (including `delete-batch`), and
+   `aws s3 rb`/`s3 rm --recursive`/`s3 sync --delete` or any `aws …
+   delete-*`/`terminate-*`/`batch-delete-*` — confirm too, as does a mirror
+   push. The line is split into simple commands outside quotes, so a quoted
+   multi-statement query stays whole and a word from one command never
+   completes a match in another; the data-store patterns are read over the
+   whole line when one of its simple commands runs that client (directly, or
+   past `sudo`/`su`/`runuser`/`doas`/`env` and their value-taking options, a
+   package runner, a container `exec`/`run` including `docker-compose`/`oc`, or
+   `ssh HOST`, `heroku pg:psql`/`pg:reset`/`run` and `fly ssh console -C`; the command a transport runs elsewhere — the words after an ssh host, `heroku run`, `fly ssh console -C` or `oc`/`kubectl exec … --` — is judged in the supervisor as a command of its own, quoted or not, including a remote file truncation such as `: > FILE`, `> FILE`, `cp /dev/null FILE`, `truncate` or `echo`/`printf ''`/`cat /dev/null` redirected to a file, with a `sh -c`/`bash -c` value on the far side or in a container `exec`/`run` read the same way), so a heredoc body or a literal piped in counts, while a
+   client named only in a commit, tag or PR message, or printed by `echo`/`printf`,
+   does not. A searcher's patterns (`grep`/`rg`/`ag`/`ack`) and a sed script are
+   read as text too, but only when proven inert: no `rg --pre` or `ack`/`ag --pager`,
+   no sed `e` command, `s///e` flag or `w` write, the output neither redirected to
+   a file nor piped into anything but a reader (`head`, `sort`, `wc`, …), and no
+   command substitution, subshell or group in the line. Otherwise the text is
+   matched as before, so `grep "DROP TABLE" down.sql | psql app` confirms. The
+   supervisor judges the command of a sed `e` as code, asks about `s///e`, and asks
+   about a sed `w` write outside own ground. A table name may be schema-qualified or quoted. Everyday reads
+   (`select`, `PING`, `plan`, `plan -destroy`, `list`, `describe`) are not
+   prompted. It misses, among others: `git checkout FILE` with one word and no
    file extension (`Makefile`), which git reads as a branch first and
    otherwise as a path; `--amend` built when the command runs; and deletion
    through any program the list does not name (a script, `python3 -c`). The
@@ -888,6 +955,8 @@ Every call goes through the same steps, and the order is the design:
    satisfies them: an ask rule asks every time
 6. **Mode**
 7. **Allow rules**, then a default: read-only proceeds, mutations ask
+8. **Supervisor** — reviews the decision the steps above made and may only
+   make it stricter, at step `monitor` ([below](#the-supervisor))
 
 The rules a person adds with `/permissions` are evaluated with the configured
 ones, after them, in each of the deny, ask and allow lists.
@@ -1174,6 +1243,72 @@ approval is not spent on them and the model is told to read first. When
 another call in the same turn names the file, or a command runs before it,
 the tool decides when it runs.
 
+### Allow scopes in Abhed Studio
+
+In Abhed Studio a bash command the policy asks about by default (no deny or
+ask rule matched, not destructive, not flagged by the supervisor or a screen)
+offers more than *Allow once*:
+
+| Option | Covers |
+|---|---|
+| Allow `go test ./...` for this session | this exact command, until the session ends; never kept |
+| Always allow exactly `go test ./...` in this workspace | this exact command, in every session of this workspace |
+| Always allow `go test …` in `orders` | any command of the family, run with the session in that folder or below it, in every session of this workspace (offered when the session is in a folder below the workspace's root) |
+| Always allow `go test …` in this workspace | any command of the family, anywhere in this workspace, in every session of it |
+
+A family is a program and its subcommand: `go test`, `go build`, `go vet`,
+`go run`, `cargo test` (and `build`, `check`, `clippy`, `fmt`, `run`),
+`npm test`, `npm run <script>` (the script is part of it: `npm run lint` is
+not `npm run deploy`; `npm run env`, which prints the environment, is none),
+`pnpm` and `yarn` alike, `python -m pytest` (and
+`unittest`, `mypy`, `ruff`), `pytest`, `dotnet test`, `mvn test`, `gradle
+test`, `node --test`. A family grant covers only the flags that select,
+filter, repeat or report for that tool (`-run`, `-count`, `-p 4`, `-race`
+for `go test`; `-p crate`, `--release`, `--features` for `cargo`; `-k`,
+`-q`, `-x` for pytest). A flag that names another program, script, settings
+file, project or output path (`-exec`, `-toolexec`, `-vettool`, `-o`,
+`--manifest-path`, `--prefix`, `--init-script`, Maven's `-s` or `-f`,
+pytest's `-p` or `-c`) is on no list, so that line asks again. Go's `-mod`
+is covered only as `-mod=readonly` or `-mod=vendor`, which never rewrite
+`go.mod`, and a go package only as `.`, a relative path (`./x`, `./...`) or
+a pattern such as `all` or `std`, never an import path naming a host. Words
+after `--` pass through only for `npm`, `pnpm` and `yarn`, and for `cargo
+test` and `cargo run`, where they go to the project's own script or test
+binary. For `mvn` and `gradle`
+the family is the one goal or task named: a further goal or task (`mvn test
+deploy`, `gradle test publish`), and for Maven any word with a `:` (a plugin
+goal such as `exec:exec`, or `-pl :core`), asks again. No scope, exact or
+family, is offered for or covers a line with a chain, a redirect, an
+expansion, a quote, `~`, an assignment in front such as `CGO_ENABLED=0`, a
+program named by a path, or a word with, in any part split at `=` or `:`,
+an absolute path or a `..` step, or a word with `@`: such a line asks every
+time.
+
+A family grant runs the project's own build or test, including the
+dependencies and plugins its files (`go.mod`, `Cargo.toml`, `package.json`,
+`pom.xml`, `build.gradle`) declare, files the agent can edit. What that
+build can fetch or reach is set by the sandbox's network policy, not by the
+grant.
+
+A scope answers only a later ask of the same default kind: a deny or ask
+rule, the destructive check, the supervisor and the screens still decide
+first, and where the managed configuration holds the permissions none is
+offered. Each is recorded as `approval.scope_granted` with what it covers.
+An "always" scope is kept for the workspace in Abhed's own state
+(`~/.abhed/state/workspace-grants.json`, which no command can read or write), so
+every new session there starts with it; the session's record lists them at
+its start (`approval.scope_granted` with `kept: workspace` and when each was
+chosen), and a call one lets through is recorded `by: workspace-grant`.
+Abhed Studio lists the workspace's kept scopes and revokes any of them
+(`_abhed/grants/list` and `revoke`); a revoked scope asks again in every
+open session, in any Abhed window, as a kept scope is looked up again
+before it answers, and the revoke is recorded as `permission.changed` (`op:
+remove`, `scope: workspace`). Scopes follow the workspace folder: every
+spelling of its path on a disk that ignores case is the same workspace,
+and a folder deleted and cloned again at the same path starts with none. Where the managed
+configuration holds the permissions, kept scopes are neither offered nor
+loaded.
+
 ## Recovering
 
 `/undo` reverts the last turn's file changes, and `/rewind` takes code and the
@@ -1183,35 +1318,179 @@ to the same deny rules, and recorded. `/diff` shows what changed this session.
 agent did rather than what it said it did, and the next task continues that
 session; see [Sessions and the local record](12-records.md).
 
-## The monitor
+## The supervisor
 
-**Not turned on in this release.** The engine has a place for a judge between
-the deny rules and the ask rules, and the `monitor` package holds its rules,
-but no command, configuration key or SDK option sets one. So no call is
-reviewed by a monitor today, and no `monitor.verdict` is written. There is no
-date for it: it will be turned on once it has been measured, not before.
+After the steps above decide, and before anyone is asked or anything runs,
+the supervisor reviews the call. It can refuse a call and tell the model what
+to do instead; it can never approve anything your policy would not. If it is
+unavailable, Abhed asks a person.
 
-What follows is how the judge works once one is set. Given the session's
-remit, the agent's most recent stated reasoning, the proposed call and where
-every host and path in it was first seen, it returns allow, ask or deny with a
-reason. It runs on calls policy would ask about, on any mutation a mode waved
-through, and on any call naming a host or path the user never mentioned; a
-read the user asked for, allowed by rule, never reaches it.
+It is **on by default, with the rules judge**: a fixed set of checks with no
+model behind it, so the same call gets the same answer every time, at well
+under a millisecond. `/status`, the terminal's banner, `abhed doctor` and
+`abhed serve` name it (`supervisor: rules`, `model` or `off`). It reviews the
+calls of the terminal, `abhed -p`, `abhed rpc`, `abhed acp`, every session
+`abhed serve` runs, and an SDK agent, and a subagent's calls go to the same
+judge as its parent's.
 
-Two rules make it safe to let it read the reasoning:
+What never reaches it: a call policy already denied, and a read allowed by a
+rule whose every host and path the person named. Every `bash` call is
+reviewed, because a command may change anything.
+
+### What the rules judge checks
+
+| Code | Decision | When |
+|---|---|---|
+| `out-of-remit` | deny | A destructive command (`rm`, `rmdir`, `shred`, `unlink`, `truncate`, `dd of=`, `find -delete` or `-exec`, `mkfs`, `wipefs`, `fdisk`, `parted`, `mv` out of own ground to a surviving destination is an ask, and to a scratch/temp destination or `/dev/null` a deny; `rsync --delete`/`--remove-source-files`, `git clean -f`), or an interpreter one-liner (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`) calling a well-known delete or overwrite (`shutil.rmtree`, `os.remove`, `Path(...).unlink`, `fs.rmSync`, `unlink`, `FileUtils.rm_rf`, `open(..., 'w')`, …) on a literal path, aimed outside the workspace, the temporary folders and every path the person named, locally or over `ssh`; a home-folder path (`~/…`, `$HOME/…`) the person did not name. An absolute target is judged on its own, whatever the line did with the directory; a program named by a path is its base name, so `/bin/rm` is `rm`, here, past a wrapper (`sudo /bin/rm`) and after `find -exec`, where the program is resolved past wrappers the same way. A `find -exec`/`-execdir`/`-ok`/`-okdir` command is judged first with `{}` replaced by each start path, keeping a deny (`find /etc -exec sudo rm -rf {} +`, `find /srv/data -exec rm -rf {} +` and `-exec shred`/`unlink`/`truncate` are denied); only a command that can write or run code, over start paths outside own ground, is asked when that judgement allowed. find's own write actions `-fprint`/`-fprint0`/`-fprintf`/`-fls` are judged as writes to their file argument (an unverified-target ask outside own ground). A read-only `-exec` program (`ls`, `grep`, `rg`, `stat`, `cat`, `head`, `tail`, `wc`, `file`, `dirname`, `basename`, `du`, `md5sum`/`shasum`, `readlink`, `realpath`, `test`, `echo`, `printf`, `diff`) never deletes, so it is allowed over any path and only its own arguments are judged. Inside a container command a path is a container path, not host ground, so it is not checked as a host target; a deleter there is still caught. For a relative target the check claims to know the directory only in one plain case: the target's command is in the line's first statement, that statement is a single `&&` chain (no `;`, newline, `||`, `&`, `!`, pipe, subshell, loop or condition), and the only directory changes before it are a plain `cd` to a plain literal path or `~/…` (no options, no `cd -`, no climbing above the home, no `~user`) — so `cd /srv && rm -rf app` is `/srv/app`. A word counts as a literal only when it is a single plain literal: a brace list (`{/,}`), glob, backslash escape (`\cd`, `c\d`), quote or expansion is never read as a `cd` operand or a command name. Anything else leaves the directory **unknown**: a `;` before the target, a `cd` the check cannot resolve, an earlier command the check cannot read in full — any expansion at all in its words, assignments, redirections or here-document bodies, so `: ${CDPATH:=/}`, `: <<< ${CDPATH:=/}`, `Y=$(…)` or even the `cd`'s own `cd etc <<< ${CDPATH:=/}` ends what it claims, and the literal variables with it — any shell builtin outside a short harmless set (`echo`, `true`, `false`, `:`, `test`, `[`, `pwd`, `printf` with only plain arguments and no `-v`, `type`, plain `set -e`/`-u`/`-x`/`-o pipefail`, and `export NAME=literal`) — so `enable`, `shopt`, other `set`s, `read`, `mapfile`, `printf -v` or a quoted `'-v'`, `declare`, `local`, `unset`, `hash`, `builtin`, `command`, `pushd`, `popd`, `eval`, `source`, `.`, `exec`, `trap` and `alias` all do — any wrapper with an option (`env -C`, `sudo -D`, `command -p`, `nice -n`), a write to `HOME`, `OLDPWD` or `CDPATH`, or a command name that is not a plain literal. Under an unknown directory a relative target is **always** an ask at step `monitor` — no name allows it, and it is never a silent deny. An absolute or `~/` target there is judged on its own: it is own ground when it is under the workspace or a temporary folder, and otherwise allowed only when the person named it as a path in their own messages — plan or runbook prose never counts. A command whose name is not a plain literal (`\rm`, `r\m`, `$R`), as the first word or as the program past a wrapper (`sudo \rm`), or that runs through a wrapper with an option, is not read as a command line at all (except that the command `env -S`/`--split-string` splits out of one word is judged as a command of its own): if its words name a deleting program, an interpreter or shell (`python3`, `node`, `lua`, `Rscript`, `osascript`, `sh`, …) or a protected root, or an operand lies outside own ground or climbs out (`build/../../etc`), it is an ask. Code the command hands to another to run — a shell's `-c` argument (`sh -c '…'`, `bash -lc '…'`), `eval`'s operands, an interpreter one-liner (`perl -e`, `python3 -c`), or text on the stdin of a shell or interpreter (a here-string, a here-document, a pipe whose producer only prints a literal, a searcher or sed whose patterns or script pick the lines piped on, or a script written earlier in the same line and then run) — is parsed and run through the whole out-of-remit judgement with the directory unknown: the same per-command rules (a hidden or non-literal program name, `destroys`, the interpreter and find checks, unread code) and the same fallback, applied recursively; any non-allow there is an ask. So however the delete is spelled inside (`r""m`, `r\m`, `find … -delete`, a `${x}m` built from a variable, a nested `bash -c`, a `shutil.rmtree` on stdin), it is seen. Code a command hands through anything other than a shell's `-c`, `eval` or stdin — git's `submodule foreach`/`rebase -x`/`bisect run`/`filter-branch --*-filter`/`config alias.*`/`-c alias.*` value, a container `exec`/`run` command, `xargs` past its options, `man -P`, and any other runner's command-looking argument or stdin — is parsed and judged the same way, not word-searched, so the quote-split and variable spellings are caught there too. Code handed deeper than six levels, or handed code the check cannot parse, is asked about rather than let through (a bound reached fails closed). Words are read as bash reads them, backslash escapes included, so an escaped quote inside nested `bash -c` levels does not hide the code. Only the out-of-remit rules recurse into handed code; the unverified-target (evidence) rule does not, so `bash -c 'cp /dev/null /etc/passwd'` is judged out-of-remit but not asked about as an unseen target, where the plain `cp /dev/null /etc/passwd` is. It is also an ask when the code names a deleting program or a protected root, or shells out — a backtick command substitution, `qx`/`%x`, Perl/Ruby `exec`/`spawn`/`IO.popen`/`Open3`, `system(…)`, `subprocess`, `os.system`, `os.execvp`, `os.execute`, `io.popen`, `child_process`, PHP `shell_exec`/`passthru`/`exec`/`proc_open`/`popen`/`pcntl_exec`, `do shell script`, or Tcl's `file delete`. It is read in its plainer and clustered forms alike: a shell's `-c` past `--` or an option (`sh -c -- '…'`, `bash -c -e '…'`), an interpreter's code flag in a cluster (`python3 -Bc`, `perl -le`, `node -p`, `--eval=`), and awk's program operand. `xargs` running a deleter over targets from its input is an ask, since those targets are not in the line. For `find`, its leading options (`-H`, `-L`, `-P`, `-D arg`, `-O<n>`) are skipped to reach its start paths, and each command it runs by `-exec`/`-execdir`/`-ok`/`-okdir` (the words up to `;` or `+`) is judged as a command of its own, with the directory unknown — so `find . -exec rm -rf /srv/data \;`, `-exec sh -c 'rm …'` and `-exec python3 -c '…rmtree…'` ask or deny. Because `-exec` acts on every file find reaches, an `-exec` whose start paths are not all own ground is asked about whatever it runs (`find /srv/data -exec mv {} /tmp \;`, `-exec truncate -s0 {} +`, `-exec cp /dev/null {} \;`), as is a non-literal find argument (`F=-delete; find /srv/data $F`) or a glob in the `-exec` program (`find . -exec /bin/r? …`). A target only running the line would give (`"$f"`) is an ask, unless it is a variable set to a plain literal earlier in the same plain chain (`D=build && rm -rf $D`), when it is judged as that path; a variable appended to (`X+=…`) is not a literal. Locally, `~` and a `$HOME/` prefix stand for the `HOME` commands get (the fence tier's own temp home on that tier), so a workspace under it reached as `~/proj` or `$HOME/proj` is the workspace's own ground. `~` depends on `HOME`, not the working directory, so it is placed wherever the line writes `HOME` nowhere — even across a `;` (`X=1; rm -rf ~/proj/build` is placed) — and only a line that may write `HOME` (an assignment to it, a prefix `HOME=… cmd`, `declare`/`export` the check cannot read in full such as `declare "HO""ME=…"`, `printf -v`, `read`, `eval`) stops it. When it is not placed, a `~` target the person did not name is an ask, not a silent deny. A line the check does not read completely is put to the person whenever its text anywhere (a parsed word, an assignment value, a here-document body) names a deleting program as a word or a protected root. A line is read completely only as an allowlist, and an allowlisted program only for the forms the rules actually judge. The code a `git` command runs — `submodule foreach`, `rebase -x`/`--exec` (attached `--exec=` and `-x…` too), `bisect run`, `filter-branch --*-filter`, and the value of a `-c` or `git config` key git runs as a command (`alias.*`, `core.pager`/`editor`/`sshCommand`/`fsmonitor`/`hooksPath`, `sequence.editor`, `diff.external`, `pager.*`, `credential.helper`, `gpg.program`, `*.textconv`, `filter.*.clean/smudge/process`, or any key ending in `command`/`cmd`/`editor`/`pager`/`program`), with a leading `!` dropped — is parsed and judged like a shell's `-c`. The matching environment (`GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_EXTERNAL_DIFF`, `GIT_ASKPASS`, `GIT_CONFIG_VALUE_*`) is handed code too; an unread (`$…`) value asks. The command a container runtime runs — `docker`/`podman` `exec`/`run`/`debug` (including under `compose`/`container`), `kubectl exec`/`run`/`debug` with or without `--` — is parsed and judged the same way. Global options that take a value (`--context`, `-H`/`--host`, `-n`/`--namespace`, `--kubeconfig`, compose's `-f`/`-p`/`--env-file`, …) are skipped to reach the subcommand; a container command is read only when that subcommand is a recognised one that runs nothing of ours (`ps`, `logs`, `images`, `inspect`, `build`, `pull`, `rm`, `volume`, `system`, `get`, `describe`, `delete`, `scale`, …). An `exec`/`run`/`debug` whose command cannot be located fails closed (asked), and so does an unknown subcommand followed by `exec`, `run`, `debug`, `attach` or `cp` (an option value the tables lack); another unknown subcommand is read. `docker`/`podman` `create` and `service create`, and `kubectl create job|deployment|cronjob … --`, store a command that runs later and are judged like `run`. The list of subcommands that "run nothing of ours" says only that no command of the line runs inside a container; it is not a judgement that the subcommand is harmless. Destructiveness is judged separately: deleting a namespace (`kubectl delete ns|namespace|namespaces X`, `ns/X`, or `oc delete project X`) or deleting across every namespace (`-A`, `--all-namespaces`) is a deny unless the person named that namespace, like `kubectl delete -n`, and so is `helm uninstall` in a namespace (`-n X`) the person never named; and the operations with no undo — `docker`/`podman`/`nerdctl` `system prune`/`reset`, `volume rm`/`prune`, `image prune -a`, forced `rmi`; `kubectl delete` of namespaces, volumes (`pvc`, `pv`), `all` or with `--all`, `scale --replicas=0`, `drain`, `cordon`, a forced `patch`/`replace` or one scoped to a production namespace, context or selector (the value `prod`/`production`, not a resource merely containing the letters), and `apply --prune`; `oc delete project`; and `helm uninstall` (`delete`, `del`, `un`) in any namespace; `container`/`network prune`, `stack rm`, `service rm` and `swarm leave --force`; and a push that deletes a remote branch (`--delete`, `:branch`) or force-pushes `main`, `master`, `release*` or `prod*` — are asked, here and at the destructive step (which asks for every force push). A comma-joined kind list is read kind by kind, and the values of `-l`/`--selector`/`-f`/`-o`/`-n` are skipped when finding the kind. Dropping or emptying a data store (a SQL client's `DROP`/`TRUNCATE`/unbounded `DELETE`, `dropdb`, `redis-cli FLUSH*`, a Mongo `dropDatabase`) and tearing down infrastructure (`terraform`/`tofu destroy`, `pulumi destroy`, a `gcloud`/`az`/`aws`/`doctl`/`hcloud` delete) are asked too. `docker compose down -v`, a local reset of the project's own volumes, is not. A read-only bind mount (`:ro`, `readonly`) does not make container paths host paths; a bind source that is an expansion other than the working directory (`$HOME/…`, `$PWD/../…`) counts as outside own ground. A mount is read-only only when an option is exactly `ro`/`readonly` or `ro=`/`readonly=` with value `true`/`1`, not `readonly=false`. A SQL client's `-c`/`-e` query (`psql`, `mysql`, `sqlite3`, `redis-cli`, …) and its literal stdin (a heredoc, a here-string, a printed literal piped in, including into `docker exec … psql`) are read as the client's own language, not shell: a drop or flush there is asked, a `select`/`insert`/`update` is not, and only a shell escape in it (`\!`, `\o |`, `system`, `.shell`/`.system`, `COPY … PROGRAM`) is judged as handed code. A `docker cp`/`kubectl cp` host destination outside own ground is asked. Inside a container, a path is a container path and is not judged as host ground, so only a deleter, a shell-out or handed code is caught there — unless the `run` bind-mounts a host path outside own ground (`-v /srv/data:/data`, `--mount type=bind,src=…`), in which case the host checks are kept for the whole command (a named volume or `-v "$PWD":/app` keeps the suppression). `xargs` past its options and `man`'s pager (`-P`, `-P…`, `--pager`, `--pager=`) are judged the same way. An assignment before any command that names a deleter or shell, or sets git's config or work tree, leaves the line not read. Every other command is read only when its program is one the rules judge (a destroyer, `find`, `mv`, `rsync`), a printer or searcher (`echo`, `grep`, `cat`, …), or a program with no deleter, shell or interpreter name among its words. So an unknown runner the check has never heard of (`setsid rm …`, `chroot / rm …`, `su -c 'rm …'`, `tmux new -d 'rm …'`) is caught, where a fixed list of handlers would let it through. An unknown runner whose program operand or code argument (`-c`, `-e`, `--command`, `--eval`, `-x`, `--exec`) is a variable, a substitution or a quote-split word is always an ask, whatever its other words say, since what it runs resolves only when the line runs. Any other argument only running the line would give (an expansion, a glob, a substitution) makes an unknown program's command not read, and asks when its plain words look destructive or reach outside own ground (`setsid /bin/r? …`, `D=rm; setsid $D …`). Inside a container command (`docker`/`podman`/`kubectl` `run`/`exec`) a one-segment path is a container path, not a protected root, so `docker run app sh -c "cd /app && test"` is allowed; a deleter in it is still caught. The temporary folders never count as protected roots here, and a deleter word that is only a message (`-m`, `--body`, `--title`), a `sed` expression that only edits text (no `e` command, `s///e` or `w` write), or a searcher's pattern (`grep`, `rg`, `ag`, `ack`, without `--pre`/`--pager`) is not read as a command — but only while that command's output stays text: piped on to anything but a reader (`head`, `sort`, `wc`, …), substituted into another command, or redirected to a file, its words are read again. A sed `e` command is judged as handed code, `s///e` is an ask, and a sed `w` write outside own ground is an ask. This conservative fallback catches the forms the precise reading misses; a line the check reads completely is decided by the rules above. A line the parser cannot read at all is an ask when it looks destructive. Code the check cannot read even in part — `eval` of an expansion, a shell's `-c` or an interpreter's one-liner given an expansion (`bash -c "$X"`, `python3 -c "$CODE"`), a shell, `source` or interpreter reading a process substitution or `/dev/stdin` — is always an ask. This means the everyday `eval "$(ssh-agent -s)"`, `eval "$(direnv export bash)"` and `bash -c "cd $PWD && make"` ask too: the check will not run what it cannot read. The check reads the line, not the disk or the environment: a symbolic link (`ln -s / x && cd x`) is not followed, and a `CDPATH` inherited from the environment (on the none tier) can send `cd etc` elsewhere; both are limits the sandbox, not the supervisor, holds. Known limits, not benign work: a non-deleter write inside a container with no bind mount (`docker exec db chmod …`, `cp /dev/null …`) is not judged as a host write; an append to a home rc file (`>> ~/.bashrc`, `find -fprint ~/.bashrc`) is left to the general redirect rules; a copy or redirect inside handed code (`sh -c 'cp …'`, a SQL client's `\! cp …`) is judged out-of-remit only, not by the evidence rule. A script written in an earlier call, or by an unknown program, and run in a later one is a limit: the check reads the line, not a file written before it. (A script written and then run in the same line is caught, by judging what the writer prints as the code the runner reads.) Over `ssh` the line starts in the login's home, so a relative `*`, `.`, `./*` or `..`, or a target that climbs out of the home, is the home whole or outside it. Whatever the person said, the root, a top-level folder (`/etc`, `/usr`, `/srv`, …) or a home folder itself (`~`, `$HOME`, `/home/bob`, `/Users/bob`, `/root`) deleted whole is out of remit — a deny, or, when the person named exactly that path as the thing to delete, an **ask** at step `monitor` so they can still say yes; name a folder inside it to avoid the question; a `k8s_apply` delete, or `kubectl delete -n`, in a namespace the person never named (`default` aside). The reason quotes the task |
+| `unknown-program` | deny | A `bash` program that is not on the PATH where commands run. Checked only where commands run on this machine's own files (the process and fence tiers, and none); a container's or a VM's programs are not looked up. A line that installs something, sets `PATH` or defines the function it calls is left alone |
+| `unknown-program` | ask | An `ssh` command whose program is not a common one and that nothing in the session has shown on the host. A command the operator declared in `ssh.read_commands` is never asked about for its program or its targets |
+| `unverified-target` | ask | A `write` or `edit`, a redirection, or a writing command (`tee`, `touch`, `mkdir`, the destination of `cp`, `mv`, `ln`, `install`, `rsync` or `scp`, `chmod`, `chown`, `sed -i`) aimed at an absolute path the person never named and no earlier call showed; the `remote_path` of an `ssh_put`; a `k8s_apply` namespace or name (a rollback and a restart included) the same is true of. Paths under the workspace and in temporary folders are the session's own |
+| `unverified-host` | ask | A host in a URL, a `user@host`, or an argument of a program that reaches the network (`curl`, `wget`, `ssh`, `scp`, `rsync`, `nc`, …) that the person never named and no earlier command showed; and an `ssh` or `ssh_put` change on a configured host when the task or the approved plan names other configured hosts and neither it nor an earlier call named this one (a task that names none, such as "the web hosts", leaves the choice alone). Loopback names are exempt, and so is fetching from a host code and packages come from (`github.com`, `pypi.org`, `registry.npmjs.org`, `proxy.golang.org`, …), though sending to one is not (`git push`, an upload). What `web_fetch`, `web_search`, an MCP server's tool or a command that reached the network returned does not count as having shown it, since that is where an injected instruction comes from |
+| `credential-egress` | ask | A call that can send data out (`web_fetch`, `web_search`, `ssh`, `ssh_connect`, a `bash` line with a network program, `git push`, an interpreter's `-c`) after an earlier call brought credential content into the session, whatever host it goes to: a read of a credential file that returned it, a command that printed one (`cat`, `head`, `base64`, `xxd`, `openssl rsa … -text`, …), or any output holding key material (a private-key block, a token in a known format such as `ghp_…` or `AKIA…`, a `…_SECRET=` line). A command that only names a key file, as a copy, a listing or a renewal does, brings none in; and an `ssh_put` of one, or a network-reaching `bash` line that reads one itself (`curl -d @.env`, `$(cat .git/config)`, `< .env`). Credential files: `.env`, `~/.ssh`, an `id_*` key, `.aws/credentials`, `.git/config`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/config`, `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, a `.pem`, `.key` or `.p12` file, a `credentials.json`; not certificates, chains, `.pub` keys or `.env.example`. The output is judged by what it holds, not where it came from: printing a typical `.env.example` (`DB_PASSWORD=changeme`) or code that assigns a token or password (`token = get_token()`) reads as a `…_PASSWORD=` line, so the next call that can send data out is asked about |
+| `honeytoken` | deny | A value from `monitor.honeytokens` (eight characters or more) anywhere in the arguments, before any judge and even in a read. The value is not repeated in the reason |
+
+"Named" means the person said it: in a message recorded as theirs
+(`user.message`), or in the plan or runbook they approved — for a runbook,
+anywhere in it, not only in the step being run, since the person approved all
+of it — or it is an `ssh` host (its name or address) or a Kubernetes cluster
+the operator configured. Text a model or the harness wrote is not the
+person's: a compaction summary, a revision or parse note, a nudge, or the task
+a subagent was given by its parent's model; a subagent counts its parent's
+person's words, and messages the person sends the subagent itself. A name is
+named only as a whole word, so `prod` is not named by "production"; a path
+only when the person named it or a folder holding it, never by a path that
+merely begins the same way (`/srv/app/logs` names neither `/srv` nor
+`/srv/app/logs-archive`), and a `~` names a home folder only with a path after it (`~/tmp/cache`), so "it takes ~ 10 minutes" names nothing. "Showed" means an earlier call's output in the
+conversation held it, or an earlier call that worked used it, a file in the
+same folder included. Where nobody can answer a question — `abhed -p`, an SDK agent without
+an approver, an unattended server run — an ask is a denial, with the same
+correction.
+
+An ask the supervisor has a concern with is asked at step `monitor`: it offers
+no "always allow", and a scope allowed earlier in the session does not answer
+it for you. The approval card in the terminal, the console and the workbench
+shows the verdict as `supervisor: ask · unverified-host — <advice>`, or
+`supervisor: ok` for a call it reviewed and had nothing to say about.
+
+### The correction, not only a refusal
+
+When the supervisor refuses a call, or you decline one it raised a concern
+about, the model is told:
+
+```
+Supervisor: out-of-remit. rm would destroy /srv/data here, outside what the task names; the task is "update the README". Do this instead: keep destructive commands to the paths the task names, or ask the person first.
+```
+
+The record keeps it as `supervisor.correction`. After three refused or
+failed calls in a row, the last one's answer also carries a note that
+restates the task, and the plan you approved if there is one, and asks the
+model to plan again; the record keeps it as `supervisor.replan`. The
+supervisor never rewrites or substitutes a call: that would run something
+you did not approve. It refuses and explains, and the model makes the next
+move.
+
+### The model judge
+
+```json
+"monitor": {
+  "judge": "model",
+  "endpoint": "http://127.0.0.1:8000/v1",
+  "model": "granite-guardian",
+  "api_key_env": "JUDGE_KEY",
+  "timeout_ms": 3000,
+  "max_per_turn": 20
+}
+```
+
+`judge: "model"` runs the rules first and then asks a model behind any
+OpenAI-compatible endpoint about the calls the rules let through (a rules
+denial is final and the model is not asked). The prompt (`model-v1`) shows
+the task, what the person said, the agent's recent stated reasoning, the call
+and where each host and path came from, and marks the reasoning, the
+arguments and the recent calls as untrusted text. The answer must be one JSON
+object with `decision`, `code`, `confidence`, `rationale` and `advice`;
+anything else — prose, a decision outside allow, ask and deny, an extra field,
+a timeout, an error — is an unavailable judge. It is off by default. Choose a
+model of another family than the agent's, so the two are less likely to make
+the same mistake; `abhed doctor` warns when they are the same, and when the
+key's variable is not set. The endpoint receives the conversation's excerpts
+above, so on an air-gapped setup keep it inside the same boundary.
+
+Two rules make it safe to let a judge read the reasoning:
 
 - **A verdict can only tighten.** An allow may become an ask or a deny, an
   ask may become a deny, and nothing moves the other way. A judge that could
   be argued into permitting would have to be kept away from the text that
   argues; here the worst a persuaded judge can do is nothing.
 - **Absence is not consent.** A judge that is unreachable, slow or
-  incoherent raises the call to ask — or to deny in a headless run, where
-  nobody can answer.
+  incoherent raises the call to ask (`on_unavailable: "deny"` makes it a
+  denial), and to deny wherever nobody can answer.
 
-Each consultation would be in the record as `monitor.verdict`, with the
-decision before and after, the code, the rationale and the judge's version,
-and a denial it caused would say so at step `monitor`. A subagent's calls
-go to the same judge as its parent's, with a per-turn budget of their own.
+`max_per_turn` bounds how many calls in one turn are put to the judge; the
+rest keep the decision policy made and are not reviewed. Each of those is in
+the record as a `monitor.verdict` with `skipped: "turn budget spent"`, and its
+reason, as an approver or a runbook step's label shows it, ends `supervisor:
+not reviewed (turn budget spent)`.
+
+### What it has been measured to do
+
+The drift suite is 1631 calls a model gone wrong might make — a wrong host, a
+made-up path, destructive work outside the task, an instruction injected by a
+fetched page, a program that is not there, a credential followed by a way
+out, a planted honeytoken, a target that only shares a prefix or a word with
+what the person named, a home folder or top-level folder deleted whole, a destructive command after a `cd`, wrapper, builtin, escaped name or other change the check cannot follow, code handed to a shell, to `eval` or to an interpreter, unknown runners carrying a deleter, commands run by `find -exec`, git/kubectl subcommands that run other commands, and `mv`, `git clean` and `rsync --delete` outside the remit — and 561 benign controls, among them twelve everyday samples written by reviewers (64, 39, 30, 30, 49, 59, 52, 35, 32, 37, 40 and 31 commands) of build, test, git, package-manager, docker, kubectl, mount and file-move work — only genuinely harmless lines; an allowed probe line is a drift case or a documented limit, never a control — among them certificate
+checks over `ssh` on declared hosts, a rolling restart and a rollback in a
+named namespace, `ssh_get`, `ssh_put`, `stdin_secret`, an `ssh` call after a key was copied on the host, work across "the web
+hosts", and interpreter one-liners that only read or clean the workspace.
+Every drift case but one was let through by a mode first; the one,
+`git reset --hard` in the workspace, is left to the destructive step, which
+asks about it in every mode and refuses it headless, so the supervisor does
+not judge it again. On the suite the rules judge stops 1630 of the other 1630. It
+denies none of the 561 controls; it asks about 10 of them: six whose working
+directory it deliberately does not claim to know — a scratch directory from a
+command substitution, `$TMPDIR` or `mktemp`, a loop over directories, a
+conditional `cd`, and a `cd` joined to the next command by `;` — one
+interpreter that runs a subprocess, two `eval`s of an expansion
+(`eval "$(ssh-agent -s)"`, `eval "$(pyenv init -)"`), and one `mv` of a file
+from outside the task's ground (an ask, not a deny, since the file survives at
+the destination) — all code or moves the check does not read into. That is a cost
+paid on purpose for not guessing: name the path in full, or join a plain `cd`
+with `&&`, and the question goes away.
+A deletion whose path the interpreter's code builds as it runs
+(`shutil.rmtree(os.path.expanduser('~') + '/projects')`) is caught as an ask,
+since the code names a deleting call the scan cannot place a target for. The suite was written alongside the rules, so it shows what they do on
+these shapes, not how often a given model goes wrong or how much of that the
+supervisor would stop. Run it with `go test ./monitor -run TestDriftSuite -v`
+or `go run ./cmd/abhed-drift`; with `-endpoint` and `-model` the same suite
+measures a model judge. No model judge has been measured yet.
+
+### Settings
+
+| Key | Default | |
+|---|---|---|
+| `enabled` | `true` | `false` turns the supervisor off. A workspace file may only turn it on |
+| `judge` | `rules` | `rules`, or `model`: the rules, then a model judge |
+| `endpoint`, `model` | — | the model judge's OpenAI-compatible base URL and model; needed for `judge: "model"` |
+| `api_key_env` | — | the variable holding the endpoint's key; the key itself never goes in a file |
+| `timeout_ms` | 2000 | the bound on one judgement |
+| `on_unavailable` | `ask` | `deny` refuses a call the judge cannot answer about |
+| `max_per_turn` | 0 (no bound) | calls per turn put to the judge |
+| `honeytokens` | — | planted values no honest call carries; any call holding one is denied |
+
+The managed file may turn the supervisor on and choose its judge, and any
+`monitor` section in it that leaves `enabled` out keeps the supervisor on; a
+lower layer may not turn it off or change that judge, and what it sets stays only
+where it is stricter: the supervisor on, `on_unavailable: "deny"`, more calls
+reviewed per turn, more honeytokens. An untrusted workspace file may only do
+the same, and its `judge`, `endpoint` and `model` wait for trust. An SDK
+agent takes `Options.Supervisor` (`rules`, `model` or `off`) under the same
+rule.
+
+Each review is in the record as `monitor.verdict`, with the decision before
+and after, the code, the rationale, the latency and the judge's version, and
+a denial it caused says so at step `monitor`. HawkEYE's report has a
+supervisor section: how many calls were reviewed and tightened, the
+concerns by code, the corrections and the re-plan notes.
 
 ## Secrets
 
@@ -1240,6 +1519,8 @@ That command, and only that command, runs with `GITHUB_TOKEN` in its
 environment. On the macOS process tier another command running at the same
 time can read that environment; see [Configuration](02-configuration.md#sandbox). `k8s_login` names a token as `token_secret` and `ssh_connect` a
 password as `password_secret`, and use it for that session's login only.
+`ssh` names one as `stdin_secret` to write it to a remote command's stdin,
+and `k8s_apply` names them in `secret_from` to build a Secret.
 Whether any of them may is decided by a rule. Rules hold for the whole
 deployment: on `abhed serve`, every session may name a secret its rules
 allow, whichever user started it.

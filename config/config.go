@@ -18,12 +18,16 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 )
 
 type Config struct {
@@ -59,6 +63,8 @@ type Config struct {
 	Schedules []ScheduleConfig `json:"schedules,omitempty"`
 	Auth      AuthConfig       `json:"auth"`
 	Tools     ToolsConfig      `json:"tools,omitempty"`
+	// Network governs how Abhed's own connections leave the machine.
+	Network NetworkConfig `json:"network,omitzero"`
 
 	// CLI tunes the interactive command line.
 	CLI CLIConfig `json:"cli,omitempty"`
@@ -78,6 +84,17 @@ type Config struct {
 	Studio StudioConfig `json:"studio,omitempty"`
 	// Suggest governs the next-prompt suggestion shown after a turn.
 	Suggest SuggestConfig `json:"suggest,omitempty"`
+	// Verify governs answer verification and the completion contract.
+	Verify VerifyConfig `json:"verify,omitempty"`
+	// Completion bounds an editor's inline completions (model.completion names the provider).
+	Completion CompletionConfig `json:"completion,omitzero"`
+	// Monitor governs the supervisor, which may only tighten a decision.
+	Monitor MonitorConfig `json:"monitor,omitempty"`
+	// Plan governs what an accepted plan may carry.
+	Plan PlanConfig `json:"plan,omitempty"`
+	// Mode is the default mode new sessions start in where permissions.mode
+	// names none.
+	Mode ModeConfig `json:"mode,omitzero"`
 	// Fence tunes the fence tier (sandbox.tier "fence"), a Linux preview.
 	Fence FenceConfig `json:"fence,omitempty"`
 	// Egress is the rules of the egress proxy that sandbox.network
@@ -85,16 +102,30 @@ type Config struct {
 	Egress egress.Config `json:"egress,omitempty"`
 	// ControlPlane serves /v1/sandboxes from `abhed serve`. Off by default.
 	ControlPlane ControlPlaneConfig `json:"control_plane,omitempty"`
+	// Org is the machine's say over the signed org policy. Managed only.
+	Org OrgPolicyConfig `json:"org_policy,omitzero"`
 
+	// OrgPolicy is what loading decided about the signed org policy.
+	OrgPolicy OrgPolicyStatus `json:"-"`
 	// Managed is set when the config came from the org-managed path.
 	Managed bool `json:"-"`
 	// ManagedKeys are the settings the managed file made, as sorted dotted
 	// paths such as permissions.mode. See ManagedSets and Apply.
 	ManagedKeys []string `json:"-"`
+	// managedFetchOff is the managed file's own web_fetch.enabled false.
+	managedFetchOff bool
+	// fetchAnchors are the managed web_fetch.allowed_hosts entries named
+	// exactly that the lower layers' narrowing kept.
+	fetchAnchors []string
 	// Unknown lists the keys in the files that no setting reads.
 	Unknown []UnknownKey `json:"-"`
+	// Duplicates are keys written twice in one object of a file read; the last one wins.
+	Duplicates []DuplicateKey `json:"-"`
 	// SetKeys are the settings any file made, as dotted paths; see Sets.
 	SetKeys []string `json:"-"`
+	// modeChosen is set where permissions.mode was chosen for this run, by an
+	// override or a workspace narrowing it, over the built-in default.
+	modeChosen bool
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
 	// SetAside are settings a file made that its layer may not make, such
@@ -115,6 +146,13 @@ type Config struct {
 	origins    map[string]origin
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
+	// allowLayers are each file's own model.allowed and mcp lists, applied
+	// together; see ModelListed and MCPAdmitted.
+	allowLayers []allowLayer
+	// orgListFile names the org policy's own allow-list layer, when it has one.
+	orgListFile string
+	// monitorLocked is set when the managed file keeps the supervisor on.
+	monitorLocked bool
 	// managedRules are the rules the managed file itself lists, by list and
 	// rule as ruleLayers keys them.
 	managedRules map[string]bool
@@ -157,6 +195,9 @@ type RulesConfig struct {
 // status as JSON on stdin.
 type StatuslineConfig struct {
 	Command string `json:"command,omitempty"`
+	// TimeoutMS bounds one run of the command, in milliseconds: unset is one
+	// second, and at most ten seconds is taken.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
 // MemoryConfig governs what the agent remembers between sessions.
@@ -184,6 +225,27 @@ type RecordConfig struct {
 	// Witness is where each head of the record is sent as it is written, so
 	// the record can be checked against what the machine's owner cannot rewrite.
 	Witness WitnessConfig `json:"witness,omitempty"`
+	// OCSF is a JSONL file of the record as OCSF events.
+	OCSF OCSFConfig `json:"ocsf,omitempty"`
+	// Ship sends each session's record to the org server as it is written.
+	// Managed only, and normally set by the org policy.
+	Ship ShipConfig `json:"ship,omitzero"`
+}
+
+// ShipConfig is record shipping to the org server signed in with abhed login.
+type ShipConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxBacklogMB is how much unshipped record is held before each start
+	// warns and records it (512).
+	MaxBacklogMB int `json:"max_backlog_mb,omitempty"`
+}
+
+// MaxBacklog is the backlog limit in bytes.
+func (s ShipConfig) MaxBacklog() int64 {
+	if s.MaxBacklogMB > 0 {
+		return int64(s.MaxBacklogMB) << 20
+	}
+	return 512 << 20
 }
 
 // WitnessConfig names an off-host witness for the record's heads. Managed only.
@@ -220,6 +282,35 @@ type FenceConfig struct {
 	// AllowRoot lets the fence run as root (Landlock ABI 6 or later), with
 	// the files under /etc only root may read hidden. Managed only.
 	AllowRoot bool `json:"allow_root,omitempty"`
+}
+
+// ModeConfig is the workspace's default mode: the mode a person chose for
+// it, which new sessions there start in, such as Studio's session/new. Never
+// bypass, which is chosen for a session each time; permissions.mode, when
+// set, wins, and a managed mode binds as always.
+type ModeConfig struct {
+	Default string `json:"default,omitempty"`
+}
+
+// StartMode is the mode a new session starts in: permissions.mode, else
+// mode.default, else default.
+func (c Config) StartMode() string {
+	chosen := c.modeChosen || c.Sets("permissions.mode") || c.Permissions.Mode != "" && c.Permissions.Mode != "default"
+	switch {
+	case chosen:
+		return c.Permissions.Mode
+	case c.Mode.Default != "" && c.Mode.Default != "bypass" && knownMode(c.Mode.Default):
+		return c.Mode.Default
+	}
+	return orDefaultMode(c.Permissions.Mode)
+}
+
+// PlanConfig governs plans from plan mode.
+type PlanConfig struct {
+	// Runbooks lets an accepted plan's runbook answer its steps' asks. On by
+	// default; false makes every step ask as any call does. A workspace may
+	// only turn it off, and a managed value binds either way.
+	Runbooks bool `json:"runbooks"`
 }
 
 type SuggestConfig struct {
@@ -281,6 +372,10 @@ var managedOnly = map[string]string{
 	"record.dir":                         "only the managed configuration moves the record",
 	"record.retention_days":              "only the managed configuration sets how long the record is kept",
 	"record.witness":                     "only the managed configuration says where the record's heads are witnessed",
+	"record.ocsf.path":                   "only the managed configuration moves the record's OCSF file",
+	"record.ocsf.locked":                 "only the managed configuration locks the record's OCSF file",
+	"record.ship":                        "only the managed configuration ships the record to the org server",
+	"org_policy":                         "only the managed configuration says where the org policy comes from",
 	"hooks.disabled":                     "only the managed configuration switches hooks off, since that removes their vetoes",
 	"hooks.managed_only":                 "only the managed configuration limits hooks to its own extensions",
 	"studio.disable_host_terminal":       "only the managed configuration removes Studio's host terminal",
@@ -357,6 +452,14 @@ func clearManagedOnly(c *Config, key string) {
 		c.Record.Dir = ""
 	case "record.retention_days":
 		c.Record.RetentionDays = 0
+	case "record.ocsf.path":
+		c.Record.OCSF.Path = ""
+	case "record.ocsf.locked":
+		c.Record.OCSF.Locked = false
+	case "record.ship":
+		c.Record.Ship = ShipConfig{}
+	case "org_policy":
+		c.Org = OrgPolicyConfig{}
 	case "hooks.disabled":
 		c.Hooks.Disabled = false
 	case "hooks.managed_only":
@@ -552,6 +655,104 @@ type ModelConfig struct {
 	// Fallback names configured providers, in order, to move to when the
 	// default is unreachable or refuses access. The move is recorded.
 	Fallback []string `json:"fallback,omitempty"`
+	// Ollama is what Abhed may do when a person chooses a model that a
+	// local Ollama serves and it is not working yet.
+	Ollama OllamaConfig `json:"ollama,omitzero"`
+	// Completion names the provider an editor's inline completions use;
+	// none turns them off.
+	Completion string `json:"completion,omitempty"`
+	// NextEdit and Commit name the providers an editor's next-edit
+	// suggestions and commit messages use; unset, they use Completion.
+	NextEdit string `json:"next_edit,omitempty"`
+	Commit   string `json:"commit,omitempty"`
+	// Allowed lists the models a session may run on, as provider-type/model
+	// patterns where * is any run of characters (anthropic/claude-*). Unset
+	// allows every configured model. Each layer that sets it must admit a
+	// model, so a lower layer can only narrow the managed list.
+	Allowed []string `json:"allowed,omitempty"`
+	// AllowedLoopback false refuses, under the organisation's model.allowed,
+	// an endpoint on this machine, which may relay anywhere; unset admits it.
+	AllowedLoopback *bool `json:"allowed_loopback,omitempty"`
+}
+
+// EditorModel is the provider an editor feature uses and the key that named
+// it: "complete", "next_edit" or "commit", the last two falling back to
+// model.completion.
+func (c Config) EditorModel(feature string) (name, key string) {
+	switch feature {
+	case "next_edit":
+		if c.Model.NextEdit != "" {
+			return c.Model.NextEdit, "model.next_edit"
+		}
+	case "commit":
+		if c.Model.Commit != "" {
+			return c.Model.Commit, "model.commit"
+		}
+	}
+	return c.Model.Completion, "model.completion"
+}
+
+// CompletionConfig bounds editor inline completions. A layer below the
+// managed file, and a workspace file, may only turn them off or keep them
+// to this machine.
+type CompletionConfig struct {
+	// Enabled false turns completions off; unset leaves them on when
+	// model.completion names a provider.
+	Enabled *bool `json:"enabled,omitempty"`
+	// LocalOnly keeps completions to a provider on this machine: the code
+	// around the cursor goes nowhere else.
+	LocalOnly bool `json:"local_only,omitempty"`
+}
+
+// EditorAIOn reports whether a feature has a model and completion.enabled
+// has not turned the editor's model features off.
+func (c Config) EditorAIOn(feature string) bool {
+	name, _ := c.EditorModel(feature)
+	return name != "" && (c.Completion.Enabled == nil || *c.Completion.Enabled)
+}
+
+// CompletionsOn reports whether completions are configured and not turned off.
+func (c Config) CompletionsOn() bool {
+	return c.Model.Completion != "" && (c.Completion.Enabled == nil || *c.Completion.Enabled)
+}
+
+// localTypes are the provider types whose default endpoint is on this machine.
+var localTypes = map[string]bool{"ollama": true, "vllm": true, "llamacpp": true, "tgi": true, "sglang": true}
+
+// OnThisMachine reports whether the provider's endpoint is on this machine:
+// a loopback address or localhost, or a local server type left at its default.
+func (p ProviderConfig) OnThisMachine() bool {
+	if p.BaseURL == "" {
+		return localTypes[p.Type]
+	}
+	u, err := url.Parse(p.BaseURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
+}
+
+// OllamaConfig governs getting a chosen Ollama model working.
+type OllamaConfig struct {
+	// Assist is ask (the default: offer to start Ollama, install it and pull
+	// the model, asking each time), local (offer to start it only; never
+	// install or download) or off (say what is wrong and the steps, and do
+	// nothing). A managed configuration that sets it holds it.
+	Assist string `json:"assist,omitempty"`
+}
+
+// OllamaAssist is model.ollama.assist, ask when unset.
+func (c Config) OllamaAssist() string {
+	switch a := strings.ToLower(strings.TrimSpace(c.Model.Ollama.Assist)); a {
+	case "local", "off":
+		return a
+	}
+	return "ask"
 }
 
 type ProviderConfig struct {
@@ -1069,6 +1270,8 @@ type ServerConfig struct {
 	// workspace and sandbox, as before 1.2.8. Unset, a server with more than
 	// one account gives each session a sandbox of its own.
 	SharedSessions bool `json:"shared_sessions,omitempty"`
+	// Metrics serves Prometheus metrics; off unless enabled. See metrics.go.
+	Metrics ServerMetricsConfig `json:"metrics,omitempty"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -1238,6 +1441,14 @@ type SSHConfig struct {
 	// ConnectHosts, when set, are the only addresses ssh_connect may reach:
 	// "10.0.0.5", "*.lab.example" or "vm.example:2222", matched without case.
 	ConnectHosts []string `json:"connect_hosts,omitempty"`
+	// ReadCommands are commands an ssh call may run as a read, on any host:
+	// "uptime" or "systemctl status *", each one simple command. A matching
+	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
+	ReadCommands []string `json:"read_commands,omitempty"`
+	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
+	Transfers bool `json:"transfers,omitempty"`
+	// TransferMaxMB bounds one transfer; 0 is 16.
+	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
 }
 
 type SSHHostConfig struct {
@@ -1286,6 +1497,12 @@ type RAGCorpusConfig struct {
 // does not run: discovery does not imply trust (docs §03 T4).
 type MCPConfig struct {
 	Servers []MCPServerConfig `json:"servers,omitempty"`
+	// Allowed and Denied judge every server before it starts, whatever
+	// configured or added it: one Denied matches, or no Allowed entry
+	// matches when the list is set, never starts. A lower layer can only
+	// narrow the managed lists.
+	Allowed []MCPMatch `json:"allowed,omitempty"`
+	Denied  []MCPMatch `json:"denied,omitempty"`
 }
 
 type MCPServerConfig struct {
@@ -1322,6 +1539,36 @@ type SandboxConfig struct {
 	// of allow_network. Managed only.
 	Network       string   `json:"network,omitempty"`
 	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
+	// Toolchains is whether Abhed installs a language toolchain a command
+	// needs: "ask" (the default) asks once per language and major version,
+	// "auto" installs without asking, "off" never does. A workspace file may
+	// only make it stricter.
+	Toolchains string `json:"toolchains,omitempty"`
+	// ToolchainsPreapproved are installs that need no ask, such as "go" or
+	// "python@3.12". Not from a workspace file until it is trusted.
+	ToolchainsPreapproved []string `json:"toolchains_preapproved,omitempty"`
+	// ToolchainsRegistries is whether commands may reach a language's
+	// official package registries through the session's egress proxy where
+	// the network is otherwise off: "ask" (the default) opens a language's
+	// registries with the person's agreement to its toolchain, "allow" opens
+	// them all, "off" none. The one way egress opens outside the managed
+	// file; under a managed network it adds nothing unless the managed file
+	// names it. A workspace file may only set off.
+	ToolchainsRegistries string `json:"toolchains_registries,omitempty"`
+	// Listen is whether commands on the macOS process tier may listen on
+	// loopback and accept there, so a dev server opens in the person's
+	// browser: "ask" (the default) once the person agrees for the
+	// workspace, "allow" always, "off" never. TCP only, on ListenPorts
+	// alone, never on Abhed's reserved ports or one the Mac listens on. An
+	// operator's setting: a workspace file, trusted or not, may only make it
+	// stricter.
+	Listen string `json:"listen,omitempty"`
+	// ListenPorts are the ports a command may listen on where listening is
+	// on: "N" or "N-M", above 1024, at most 512 in all. Empty is
+	// DefaultListenPorts, common dev-server ports that avoid databases,
+	// caches and consoles (5432, 3306, 6379, 27017, 5000, 8080, 8090, 8888).
+	// An operator's setting: never from a workspace file, trusted or not.
+	ListenPorts []string `json:"listen_ports,omitempty"`
 	// MaxMemoryMB applies on every tier but none and the macOS process tier;
 	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
@@ -1337,6 +1584,9 @@ type SandboxConfig struct {
 	// folder but the known credential paths, as before 1.2.8, in place of
 	// only the toolchain folders, the workspace and read_only_paths.
 	ReadableHome bool `json:"readable_home,omitempty"`
+	// Image is the container tier's image in place of ABHED_SANDBOX_IMAGE,
+	// such as one with the project's toolchains. Never from a workspace file.
+	Image string `json:"image,omitempty"`
 	// Terminal is how the workbench terminal runs: "shell" (the default), one
 	// interactive shell per tab, or "lines", each line judged before it runs.
 	Terminal string `json:"terminal,omitempty"`
@@ -1422,7 +1672,7 @@ func Default() Config {
 			Providers: map[string]ProviderConfig{
 				"local": {
 					Type:    "openai-compatible",
-					BaseURL: "http://localhost:11434/v1", // Ollama's default
+					BaseURL: defaults.LocalModelURL, // Ollama's default
 					// gemma4:26b, chosen by measurement rather than benchmark
 					// (docs/ops/model-selection.md). It is MoE — 128 experts,
 					// 8 active — so it decodes at ~35 tok/s on an M3 Pro where
@@ -1497,6 +1747,8 @@ func Default() Config {
 		// that deliberately crosses the boundary.
 		WebSearch: WebSearchConfig{Enabled: false, Provider: "duckduckgo", MaxResults: 5},
 		Suggest:   SuggestConfig{Enabled: true},
+		Plan:      PlanConfig{Runbooks: true},
+		Monitor:   MonitorConfig{Enabled: true},
 		CLI:       CLIConfig{Title: true, Copy: true, Notify: "auto"},
 	}
 }
@@ -1552,8 +1804,11 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	userAllowlistNarrows(&cfg)
 
 	applyEnv(&cfg)
+	narrowToAllowLists(&cfg)
 	w := warnSink(o.Warn)
+	warnOrgFallback(w, cfg)
 	warnUnknown(w, cfg.Unknown)
+	warnDuplicates(w, cfg.Duplicates)
 	warnSetAside(w, cfg.SetAside)
 	warnNotYetInEffect(w, cfg)
 	warnNeverAllows(w, cfg.Permissions.Allow)
@@ -1561,6 +1816,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	if !o.Quiet {
 		warnUntrusted(w, cfg.Workspace)
 	}
+	managedNetwork(&cfg)
 	return cfg, cfg.Validate()
 }
 
@@ -1602,7 +1858,10 @@ func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
-	cfg.SetKeys = append(cfg.SetKeys, managedKeys(data)...)
+	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
+	keys := managedKeys(data)
+	cfg.SetKeys = append(cfg.SetKeys, keys...)
+	noteAllowLayer(cfg, path, keys)
 	return data, nil
 }
 
@@ -1693,7 +1952,23 @@ func (c Config) Provider() (ProviderConfig, error) {
 //
 // The name is looked up in the configured map, never treated as an endpoint.
 // That is what stops a caller pointing the agent at a host of their choosing.
+//
+// A model no model.allowed list admits is refused with a ManagedError, so
+// every caller that resolves a provider, the default included, holds the list.
 func (c Config) ProviderNamed(name string) (ProviderConfig, error) {
+	p, err := c.providerNamed(name)
+	if err != nil {
+		return p, err
+	}
+	if err := c.ModelListed(name, p); err != nil {
+		return ProviderConfig{}, err
+	}
+	return p, nil
+}
+
+// providerNamed is ProviderNamed without the allowed-models list, for
+// checking a configuration's own consistency.
+func (c Config) providerNamed(name string) (ProviderConfig, error) {
 	p, found := c.Model.Providers[name]
 	if !found {
 		return ProviderConfig{}, fmt.Errorf(
@@ -1722,9 +1997,24 @@ type ToolsConfig struct {
 	// SyntaxCheck is what edit and write do with a change that would leave a
 	// file that parsed no longer parsing: "refuse" (the default), "report" or "off".
 	SyntaxCheck string `json:"syntax_check,omitempty"`
+	// BashCheckpoints is what is kept of the workspace before each bash
+	// command, so /undo and /rewind take its changes back: "on" (the
+	// default), "off", or "required", which refuses a command when the
+	// snapshot is not whole.
+	BashCheckpoints string `json:"bash_checkpoints,omitempty"`
+	// BashCheckpointMB bounds the content held for it (32 when zero), and
+	// BashCheckpointFiles the files looked at (20000 when zero).
+	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
+	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
 }
 
 func (c Config) Validate() error {
+	if err := c.validateAllowLists(); err != nil {
+		return err
+	}
+	if err := c.validateNetwork(); err != nil {
+		return err
+	}
 	switch c.Subagents.Wake {
 	case "", "off", "notify", "auto":
 	default:
@@ -1741,6 +2031,29 @@ func (c Config) Validate() error {
 				strings.Join(DefaultModeCycle, ", "), m)
 		}
 	}
+	switch c.Sandbox.Toolchains {
+	case "", "ask", "auto", "off":
+	default:
+		return fmt.Errorf("sandbox.toolchains is %q; use ask, auto or off", c.Sandbox.Toolchains)
+	}
+	switch c.Sandbox.ToolchainsRegistries {
+	case "", "ask", "allow", "off":
+	default:
+		return fmt.Errorf("sandbox.toolchains_registries is %q; use ask, allow or off", c.Sandbox.ToolchainsRegistries)
+	}
+	switch c.Sandbox.Listen {
+	case "", "ask", "allow", "off":
+	default:
+		return fmt.Errorf("sandbox.listen is %q; use ask, allow or off", c.Sandbox.Listen)
+	}
+	if _, err := ParseListenPorts(c.Sandbox.ListenPorts); err != nil {
+		return fmt.Errorf("sandbox.listen_ports: %w", err)
+	}
+	for _, p := range c.Sandbox.ToolchainsPreapproved {
+		if _, err := toolchain.ParseSpec(p); err != nil {
+			return fmt.Errorf("sandbox.toolchains_preapproved: %w", err)
+		}
+	}
 	switch c.Sandbox.Network {
 	case "", NetworkAllowlist:
 	default:
@@ -1751,6 +2064,12 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.Monitor.validate(); err != nil {
+		return err
+	}
+	if err := c.Record.OCSF.validate(); err != nil {
+		return err
 	}
 	if c.Record.RetentionDays < 0 {
 		return fmt.Errorf("record.retention_days is %d; use a number of days, or 0 to keep the record until it is pruned", c.Record.RetentionDays)
@@ -1765,10 +2084,13 @@ func (c Config) Validate() error {
 				m, strings.Join(providerNames(c.Model.Providers), ", "))
 		}
 	}
+	if err := c.validateVerify(); err != nil {
+		return err
+	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
 	}
-	p, err := c.Provider()
+	p, err := c.providerNamed(c.Model.Default)
 	if err != nil {
 		return err
 	}
@@ -1787,6 +2109,9 @@ func (c Config) Validate() error {
 	if c.Permissions.Mode != "" && !knownMode(c.Permissions.Mode) {
 		return fmt.Errorf("unknown permission mode %q", c.Permissions.Mode)
 	}
+	if c.Mode.Default != "" && (!knownMode(c.Mode.Default) || c.Mode.Default == "bypass") {
+		return fmt.Errorf("mode.default %q is not a mode a session may start in (plan, default, accept-edits or auto)", c.Mode.Default)
+	}
 	// Checked here so every path fails on a bad rule, not only the CLI.
 	for _, l := range []struct {
 		name  string
@@ -1804,6 +2129,9 @@ func (c Config) Validate() error {
 	if err := new(policy.Engine).AllowGitExtensions(c.Permissions.GitExtensions...); err != nil {
 		return fmt.Errorf("permissions.git_extensions: %w", err)
 	}
+	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
+		return err
+	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
 	}
@@ -1819,6 +2147,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("unknown auth.mode %q (want none, local, proxy or oidc)", c.Auth.Mode)
 	}
 	if err := c.validateTLS(); err != nil {
+		return err
+	}
+	if err := c.Server.Metrics.validate(); err != nil {
 		return err
 	}
 	if err := c.validateCLILogin(); err != nil {
@@ -1849,6 +2180,11 @@ func (c Config) Validate() error {
 	if err := c.K8s.validateClusters(); err != nil {
 		return err
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Model.Ollama.Assist)) {
+	case "", "ask", "local", "off":
+	default:
+		return fmt.Errorf("unknown model.ollama.assist %q (want ask, local or off)", c.Model.Ollama.Assist)
+	}
 	switch strings.ToLower(c.WebSearch.Provider) {
 	case "", "duckduckgo", "ddg", "brave", "tavily", "serper", "searxng":
 	default:
@@ -1874,6 +2210,19 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown tools.syntax_check %q (want refuse, report or off)", c.Tools.SyntaxCheck)
 	}
+	for key, n := range map[string]string{"model.completion": c.Model.Completion, "model.next_edit": c.Model.NextEdit, "model.commit": c.Model.Commit} {
+		if _, ok := c.Model.Providers[n]; n != "" && !ok {
+			return fmt.Errorf("%s names %q, which is not one of model.providers", key, n)
+		}
+	}
+	switch c.Tools.BashCheckpoints {
+	case "", "on", "off", "required":
+	default:
+		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
+		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")
+	}
 	switch c.Sandbox.MinTier {
 	case "none", "process", "container", "vm", "":
 	default:
@@ -1891,6 +2240,9 @@ func (c Config) Validate() error {
 	case "", "shell", "lines":
 	default:
 		return fmt.Errorf("unknown sandbox.terminal %q (want shell or lines)", c.Sandbox.Terminal)
+	}
+	if img := c.Sandbox.Image; img != "" && (strings.HasPrefix(img, "-") || strings.ContainsAny(img, " \t\r\n\x00")) {
+		return fmt.Errorf("sandbox.image %q is not an image reference", img)
 	}
 	for lang, argv := range c.Sandbox.LanguageServers {
 		if !languageID.MatchString(lang) {
@@ -2093,4 +2445,46 @@ func (c Config) validateCLILogin() error {
 func jsonObject(raw json.RawMessage) bool {
 	var m map[string]json.RawMessage
 	return json.Unmarshal(raw, &m) == nil && m != nil
+}
+
+// DefaultListenPorts are the ports commands may listen on when
+// sandbox.listen_ports is empty: Next.js, Rails and Express (3000-3009),
+// Angular (4200), Astro (4321), Vite (5173-5179) and Django or
+// python3 -m http.server (8000-8009). None is a database, cache or console
+// port, nor macOS's own (5000 and 7000 are AirPlay).
+var DefaultListenPorts = []string{"3000-3009", "4200", "4321", "5173-5179", "8000-8009"}
+
+// maxListenPorts bounds how many ports one configuration may open.
+const maxListenPorts = 512
+
+// ParseListenPorts is sandbox.listen_ports as port numbers, sorted, each
+// once; DefaultListenPorts when it is empty.
+func ParseListenPorts(spec []string) ([]int, error) {
+	if len(spec) == 0 {
+		spec = DefaultListenPorts
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, s := range spec {
+		a, b, ranged := strings.Cut(strings.TrimSpace(s), "-")
+		lo, err1 := strconv.Atoi(strings.TrimSpace(a))
+		hi, err2 := lo, error(nil)
+		if ranged {
+			hi, err2 = strconv.Atoi(strings.TrimSpace(b))
+		}
+		if err1 != nil || err2 != nil || lo <= 1024 || hi > 65535 || hi < lo {
+			return nil, fmt.Errorf("%q is not a port or range above 1024 (\"3000\" or \"3000-3009\")", s)
+		}
+		for p := lo; p <= hi; p++ {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+			if len(out) > maxListenPorts {
+				return nil, fmt.Errorf("more than %d ports", maxListenPorts)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out, nil
 }

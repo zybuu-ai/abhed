@@ -14,7 +14,7 @@ import (
 // embeddings, so a session start embeds only the chunks that changed; the
 // rest of the index is not kept.
 func buildIndexCmd(workspace string, trust config.TrustChoice) int {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1

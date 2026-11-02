@@ -52,12 +52,13 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 	defer restoreStreams()
 	// The banner is drawn once the terminal has said what its background
 	// is, in the theme that suits it, and joins the transcript.
-	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace,
-		sandboxLabel, storageLabel(appCfg)))
+	fmt.Print(ui.Banner(s, a.version, provider.Model, workspace, sandboxLabel, storageLabel(appCfg), toolset.SupervisorLabel(appCfg)))
 	fmt.Printf("\n%s\n\n", s.Dim("Type a task, or /help. Esc interrupts, Ctrl-C twice exits."))
 	start.sandbox.noteIfNone(os.Stderr)
 	// The endpoint check started with the session. A server that is down is
 	// named now; one still being dialled is left to the first task.
+	// A model a local Ollama serves is also checked below, with what it lacks offered.
+	_, viaOllama := toolset.OllamaTarget(appCfg, appCfg.Model.Default)
 	if err := start.probe.firstResult(100 * time.Millisecond); err != nil {
 		fmt.Printf("  %s %s\n", s.Red("!"), friendlyModelError(err, appCfg.Model.Default, provider))
 	}
@@ -164,10 +165,17 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.EnablePlanExit()
+		if !sessionState.appCfg.Plan.Runbooks {
+			loop.DisableRunbooks()
+		}
 		loop.SetAdapter(sessionState.adapter)
 		loop.Provider = sessionState.appCfg.Model.Default
 		loop.Budget = turnBudget
 		loop.Suggest = cliSuggester(sessionState.appCfg, editor)
+		if v, err := toolset.Verifier(sessionState.appCfg, true); err == nil {
+			v.Install(loop)
+		}
+		loop.Monitor = toolset.Supervisor(sessionState.appCfg, registry, false)
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.
@@ -201,6 +209,9 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		return loop
 	}
 	defer sessionState.endBackground()
+	if viaOllama && !sessionState.ensureOllamaFor(ctx, sessionState.surface, appCfg.Model.Default, false) {
+		sessionState.surface.Append(ui.Block{Kind: ui.BlockNotice, Text: appCfg.Model.Default + " is not ready; /ollama checks it again, /model chooses another"})
+	}
 	// -c, -r and --fork-session choose the conversation before the first prompt.
 	startSession(ctx, sessionState, r)
 

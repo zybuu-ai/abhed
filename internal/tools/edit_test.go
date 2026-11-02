@@ -203,14 +203,25 @@ func TestWorkspaceEscapeRefused(t *testing.T) {
 	}
 }
 
-func TestRelativePathRejectedWithSuggestion(t *testing.T) {
-	s, _ := setup(t)
-	res := run(t, Read{}, s, readArgs{Path: "src/main.go"})
-	if !res.IsError || !strings.Contains(res.Content, "must be absolute") {
-		t.Fatalf("expected absolute-path guidance, got: %s", res.Content)
+// A relative path is read from the workspace root, whatever a cd did, and
+// held to the same confinement as an absolute one.
+func TestRelativePathIsReadFromTheRoot(t *testing.T) {
+	s, dir := setup(t)
+	for _, d := range []string{"src", "other"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !strings.Contains(res.Content, "Did you mean") {
-		t.Fatalf("error should suggest the absolute form: %s", res.Content)
+	writeFile(t, filepath.Join(dir, "src", "main.go"), "package main\n")
+	s.Cwd = filepath.Join(dir, "other")
+	res := run(t, Read{}, s, readArgs{Path: "src/main.go"})
+	if res.IsError || !strings.Contains(res.Content, "package main") {
+		t.Fatalf("a relative path was not read from the root: %s", res.Content)
+	}
+	for _, escape := range []string{"../outside.txt", "src/../../outside.txt", ".abhed/policy.json"} {
+		if res := run(t, Read{}, s, readArgs{Path: escape}); !res.IsError {
+			t.Fatalf("relative %q got out: %s", escape, res.Content)
+		}
 	}
 }
 
@@ -285,5 +296,87 @@ func TestAtomicWriteLeavesNoTempFiles(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".abhed-") {
 			t.Fatalf("temp file left behind: %s", e.Name())
 		}
+	}
+}
+
+// Indentation alone may differ: a unique line-for-line match once leading
+// whitespace is set aside is applied, re-indented to the file's, and said.
+func TestEditToleratesIndentationOnly(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "sum.go")
+	writeFile(t, p, "package x\n\nfunc sum(xs []int) int {\n\ttotal := 0\n\tfor _, x := range xs {\n\t\ttotal += x\n\t}\n\treturn total\n}\n")
+	run(t, Read{}, s, readArgs{Path: p})
+	res := run(t, Edit{}, s, editArgs{Path: p,
+		OldString: "\t\ttotal := 0\n\t\tfor _, x := range xs {\n\t\t\ttotal += x",
+		NewString: "\t\ttotal := 1\n\t\tfor _, x := range xs {\n\t\t\ttotal *= x"})
+	if res.IsError || !strings.Contains(res.Content, "Matched loosely at line 4") {
+		t.Fatalf("%s", res.Content)
+	}
+	got, _ := os.ReadFile(p)
+	want := "package x\n\nfunc sum(xs []int) int {\n\ttotal := 1\n\tfor _, x := range xs {\n\t\ttotal *= x\n\t}\n\treturn total\n}\n"
+	if string(got) != want {
+		t.Fatalf("got\n%q\nwant\n%q", got, want)
+	}
+
+	// Spaces for tabs too.
+	run(t, Read{}, s, readArgs{Path: p})
+	res = run(t, Edit{}, s, editArgs{Path: p, OldString: "    return total", NewString: "    return total + 0"})
+	if got, _ := os.ReadFile(p); res.IsError || !strings.Contains(string(got), "\n\treturn total + 0\n") {
+		t.Fatalf("%s\n%s", res.Content, got)
+	}
+}
+
+// Two places that match once indentation is set aside refuse, and nothing
+// that differs in more than indentation is matched.
+func TestEditLooseMatchStillRefusesAmbiguityAndContent(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "a.go")
+	body := "func a() {\n\tx++\n}\n\nfunc b() {\n\t\tx++\n}\n"
+	writeFile(t, p, body)
+	run(t, Read{}, s, readArgs{Path: p})
+	res := run(t, Edit{}, s, editArgs{Path: p, OldString: "   x++", NewString: "   x--"})
+	if !res.IsError || !strings.Contains(res.Content, "2 places") {
+		t.Fatalf("%s", res.Content)
+	}
+	res = run(t, Edit{}, s, editArgs{Path: p, OldString: "\t\tx +=1", NewString: "\t\tx--"})
+	if !res.IsError || !strings.Contains(res.Content, "not found") {
+		t.Fatalf("%s", res.Content)
+	}
+	if got, _ := os.ReadFile(p); string(got) != body {
+		t.Fatalf("the file changed: %q", got)
+	}
+}
+
+// A file with CRLF line ends keeps them through a loose match.
+func TestEditLooseMatchKeepsCRLF(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "w.txt")
+	writeFile(t, p, "a\r\n\tb\r\nc\r\n")
+	run(t, Read{}, s, readArgs{Path: p})
+	res := run(t, Edit{}, s, editArgs{Path: p, OldString: "  b", NewString: "  B"})
+	if got, _ := os.ReadFile(p); res.IsError || string(got) != "a\r\n\tB\r\nc\r\n" {
+		t.Fatalf("%s %q", res.Content, got)
+	}
+}
+
+// A loose match that would move a line into or out of a block is refused:
+// the reviewer's case, where cleanup() would have gone inside if c:.
+func TestEditLooseMatchKeepsNesting(t *testing.T) {
+	s, dir := setup(t)
+	p := filepath.Join(dir, "m.py")
+	body := "def f(c):\n    if c:\n        do()\n    cleanup()\n"
+	writeFile(t, p, body)
+	run(t, Read{}, s, readArgs{Path: p})
+	res := run(t, Edit{}, s, editArgs{Path: p,
+		OldString: "if c:\n    do()\n    cleanup()",
+		NewString: "if c:\n    do()\n    cleanup()\n    log()"})
+	if got, _ := os.ReadFile(p); !res.IsError || !strings.Contains(res.Content, "nested differently") || string(got) != body {
+		t.Fatalf("%s\n%s", res.Content, got)
+	}
+	// Two old indentations onto one in the file is refused too.
+	writeFile(t, p, "a\n  b\n  c\n")
+	run(t, Read{}, s, readArgs{Path: p})
+	if res := run(t, Edit{}, s, editArgs{Path: p, OldString: "a\n  b\n    c", NewString: "a\n  b\n    C"}); !res.IsError {
+		t.Fatalf("%s", res.Content)
 	}
 }

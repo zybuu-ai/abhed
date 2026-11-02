@@ -66,19 +66,19 @@ CREATE TRIGGER account_changes_no_truncate BEFORE TRUNCATE ON account_changes
 CREATE OR REPLACE FUNCTION abhed_users_noted() RETURNS trigger AS $$
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    INSERT INTO account_changes (username, change, new_groups, new_tenant, by_role)
+    INSERT INTO public.account_changes (username, change, new_groups, new_tenant, by_role)
     VALUES (NEW.username, 'created', NEW.groups, NEW.tenant, session_user);
   ELSIF TG_OP = 'DELETE' THEN
-    INSERT INTO account_changes (username, change, old_groups, old_tenant, by_role)
+    INSERT INTO public.account_changes (username, change, old_groups, old_tenant, by_role)
     VALUES (OLD.username, 'removed', OLD.groups, OLD.tenant, session_user);
   ELSIF NEW.groups IS DISTINCT FROM OLD.groups OR NEW.tenant IS DISTINCT FROM OLD.tenant
         OR NEW.username IS DISTINCT FROM OLD.username THEN
-    INSERT INTO account_changes (username, change, old_groups, new_groups, old_tenant, new_tenant, by_role)
+    INSERT INTO public.account_changes (username, change, old_groups, new_groups, old_tenant, new_tenant, by_role)
     VALUES (NEW.username, 'changed', OLD.groups, NEW.groups, OLD.tenant, NEW.tenant, session_user);
   END IF;
   RETURN NULL;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp;
 
 DROP TRIGGER IF EXISTS users_noted ON users;
 CREATE TRIGGER users_noted AFTER INSERT OR UPDATE OR DELETE ON users

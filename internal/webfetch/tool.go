@@ -83,6 +83,9 @@ type Tool struct {
 	// AllowedHosts, when set, is every host the tool may fetch: "example.com"
 	// or "*.example.com". Internal addresses stay refused whatever it says.
 	AllowedHosts []string
+	// ExactHosts are the hosts the managed allowed_hosts names exactly; with
+	// resolve_via_proxy only these may go to the upstream proxy unresolved.
+	ExactHosts []string
 	// Secrets reads the stored values for each call; a URL holding one is
 	// refused. Nil checks nothing, for a deployment with no store.
 	Secrets func() (*secrets.Redactor, error)
@@ -115,7 +118,7 @@ func (*Tool) FixedArgs() {}
 // BindStore is a copy refusing URLs that hold a value stored in v instead.
 func (t *Tool) BindStore(v *secrets.Store) tools.Tool {
 	// Every field but the call count, which is the copy's own.
-	return &Tool{AllowedHosts: t.AllowedHosts, Secrets: v.LoadRedactor, MaxBytes: t.MaxBytes,
+	return &Tool{AllowedHosts: t.AllowedHosts, ExactHosts: t.ExactHosts, Secrets: v.LoadRedactor, MaxBytes: t.MaxBytes,
 		MaxChars: t.MaxChars, Timeout: t.Timeout, lookup: t.lookup, permit: t.permit, Guard: t.Guard}
 }
 
@@ -248,7 +251,7 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 		// No proxy from the environment, so the address check sees where the
 		// connection goes; under the allowlist this tool's check follows the guard's.
 		Transport: &egress.Transport{
-			Kind: egress.KindWebFetch, Check: t.addrCheck, Guard: t.Guard,
+			Kind: egress.KindWebFetch, Check: t.addrCheck, Resolve: t.resolve, Anchored: t.anchored, Guard: t.Guard,
 			Base: &http.Transport{
 				DialContext:            t.dial,
 				DisableKeepAlives:      true,

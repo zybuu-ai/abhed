@@ -102,8 +102,8 @@ var sweepServersOnce sync.Once
 // kept because their owner could not be checked here.
 type ServerSweep struct{ Removed, Unchecked []string }
 
-// SweepServers removes, once per process, the server containers an Abhed
-// process on this host left when it was killed. A container without the owner
+// SweepServers removes, once per process, the server and egress relay
+// containers an Abhed process on this host left when it was killed. A container without the owner
 // label, or whose owner cannot be read, is never touched.
 func (c *Container) SweepServers(ctx context.Context) ServerSweep {
 	var sw ServerSweep
@@ -111,30 +111,46 @@ func (c *Container) SweepServers(ctx context.Context) ServerSweep {
 	return sw
 }
 
+// sweptKinds are the labels a sweep reads, each with the name prefixes it
+// may remove under: the label decides, the prefix keeps the sweep to Abhed's
+// own names (a build before this one named a server's egress container so).
+var sweptKinds = []struct {
+	label    string
+	prefixes func() []string
+	what     string
+}{
+	{serverOwnerLabel, func() []string { return []string{serverPrefix, egressPrefix} }, "an MCP server's container"},
+	{egressOwnerLabel, func() []string { return []string{egressPrefix} }, "a command's egress relay container"},
+}
+
 func (c *Container) sweepServers(ctx context.Context) ServerSweep {
 	var sw ServerSweep
-	out, err := c.engineCmd(ctx, "ps", "-a", "--filter", "label="+serverOwnerLabel, "--format", "{{.Names}}").Output()
-	if err != nil {
-		return sw
-	}
-	for _, name := range strings.Fields(string(out)) {
-		// The label decides; the prefix only keeps the sweep to Abhed's own
-		// names (a build before this one named a server's egress container so).
-		if !strings.HasPrefix(name, serverPrefix) && !strings.HasPrefix(name, egressPrefix) {
-			continue
-		}
-		raw, err := c.engineCmd(ctx, "inspect", "--format", `{{index .Config.Labels "`+serverOwnerLabel+`"}}`, name).Output()
+	for _, kind := range sweptKinds {
+		out, err := c.engineCmd(ctx, "ps", "-a", "--filter", "label="+kind.label, "--format", "{{.Names}}").Output()
 		if err != nil {
 			continue
 		}
-		label := strings.TrimSpace(string(raw))
-		switch ownerOfLabel(label) {
-		case ownerEnded:
-			c.removeNow(name)
-			slog.Warn("removed an MCP server's container left by an Abhed process that ended", "container", name, "owner", label)
-			sw.Removed = append(sw.Removed, name)
-		case ownerUnchecked:
-			sw.Unchecked = append(sw.Unchecked, name)
+		for _, name := range strings.Fields(string(out)) {
+			ours := false
+			for _, p := range kind.prefixes() {
+				ours = ours || strings.HasPrefix(name, p)
+			}
+			if !ours {
+				continue
+			}
+			raw, err := c.engineCmd(ctx, "inspect", "--format", `{{index .Config.Labels "`+kind.label+`"}}`, name).Output()
+			if err != nil {
+				continue
+			}
+			label := strings.TrimSpace(string(raw))
+			switch ownerOfLabel(label) {
+			case ownerEnded:
+				c.removeNow(name)
+				slog.Warn("removed "+kind.what+" left by an Abhed process that ended", "container", name, "owner", label)
+				sw.Removed = append(sw.Removed, name)
+			case ownerUnchecked:
+				sw.Unchecked = append(sw.Unchecked, name)
+			}
 		}
 	}
 	return sw
@@ -143,6 +159,6 @@ func (c *Container) sweepServers(ctx context.Context) ServerSweep {
 // sweptNote tells the person of containers SweepServers removed.
 func sweptNote(sw ServerSweep) {
 	if len(sw.Removed) > 0 {
-		fmt.Fprintf(os.Stderr, "abhed: removed %d MCP server container(s) an Abhed process left when it was killed: %s\n", len(sw.Removed), strings.Join(sw.Removed, ", "))
+		fmt.Fprintf(os.Stderr, "abhed: removed %d container(s) an Abhed process left when it was killed: %s\n", len(sw.Removed), strings.Join(sw.Removed, ", "))
 	}
 }

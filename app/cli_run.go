@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
@@ -22,7 +24,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
 	"github.com/zybuu-ai/abhed/internal/webfetch"
-	"golang.org/x/term"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 )
 
 func run(a *App, workspace string, f *cliFlags) int {
@@ -57,11 +59,21 @@ func run(a *App, workspace string, f *cliFlags) int {
 			return 2
 		}
 	}
+	if err := orgPolicyAfterNetwork(ctx, workspace, config.LoadOptions{Trust: a.trust, Quiet: true,
+		Settings: settings, SettingsName: settingsName}, os.Stderr); err != nil {
+		fail(err)
+	}
 	cfg, err := loadSession(workspace, a.trust, !headless, settings, settingsName)
 	if err != nil {
 		fail(err)
 	}
+	if err := cfg.ApplyNetwork(); err != nil {
+		fail(err)
+	}
 	registerState(cfg, workspace)
+	if !headless && cfg.OrgPolicy.Status != orgpolicy.StatusNone {
+		keepOrgPolicyFresh(ctx, cfg.Org.Refresh(), os.Stderr)
+	}
 	sessionDefs, agentsSrc, err := sessionAgents(cfg, ff, f.agentsJSON)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -91,13 +103,23 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
 		fail(err)
 	}
+	if cfg, err = toolset.VerifyFlag(cfg, f.verify); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: -verify: %v\n", err)
+		return 2
+	}
+	// Checked here so a critic whose model cannot be had stops the start,
+	// rather than leaving answers unchecked.
+	if _, err := toolset.Verifier(cfg, !headless); err != nil {
+		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
+		return 2
+	}
 	cfg, mcpSrc, err := mcpFlags(cfg, ff, f.mcpConfig, f.strictMCP)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
 	}
 	if role != nil {
-		from := policy.Mode(orDefault(cfg.Permissions.Mode, "default"))
+		from := policy.Mode(cfg.StartMode())
 		if to := agent.RoleMode(from, role.PermissionMode); to != from {
 			if cfg, err = cfg.Apply(config.Overrides{Mode: string(to)}); err != nil {
 				fail(err)
@@ -157,8 +179,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 		fail(err)
 	}
+	sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 
-	pol := policy.New(policy.Mode(orDefault(cfg.Permissions.Mode, "default")))
+	// A -mode flag is chosen over mode.default, as permissions.mode is.
+	pol := policy.New(policy.Mode(cfg.StartMode()))
 	pol.AskReadOnly = webfetch.AskReadOnly(cfg.WebFetch.Enabled, cfg.WebFetch.AllowedHosts)
 	pol.Managed = cfg.Managed
 	pol.Roots = sess.PolicyRoots
@@ -167,8 +191,11 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Session = &policy.Overlay{}
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
+	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
+	must(pol.AddAllow(toolset.ToolchainAllows(cfg)...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
+	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))
 
 	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {
@@ -264,6 +291,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	sysPrompt.record(start)
 	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
 	start["web"] = toolset.WebState(cfg)
+	if org := toolset.OrgPolicyState(cfg); org != nil {
+		start["org_policy"] = org
+	}
 	attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand()))
 
 	// The CLI uses whatever the config selects. Previously this was hardcoded
@@ -309,8 +339,14 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 
 	if headless {
-		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start, fence: fenceOf(sb), attempts: attempts,
+		o := headlessOpts{format: f.format, partial: f.partial, verbose: f.verbose, schema: schema, start: start, fence: fenceOf(sb), attempts: attempts, grants: toolset.StartupRegistries(cfg, "cli"),
 			providerName: cfg.Model.Default, provider: provider, fallback: fallback}
+		if f.runbook != "" {
+			if o.runbook, err = loadRunbookFile(f.runbook, f.runbookHash); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: -runbook: %v\n", err)
+				return 2
+			}
+		}
 		prompt := f.task()
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
@@ -332,7 +368,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 			// Said, not fatal: the person is at the prompt already. The fence is
 			// closed, and a record that cannot be written ends the first turn
 			// before the model is asked, as Loop.Run refuses on it.
-			if err := recordStart(rec, resumedStart(start, after), attempts, fenceOf(sb)); err != nil {
+			if err := recordStart(rec, resumedStart(start, after), attempts, toolset.StartupRegistries(cfg, "tui"), fenceOf(sb)); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			}
 		}, onOpen: func(rec *agent.Recorder) {
@@ -508,6 +544,10 @@ func checkHeadlessFlags(f *cliFlags) int {
 		return 2
 	}
 	switch {
+	case !f.print.on && f.runbook != "":
+		return bad("-runbook needs -p: in a conversation, the plan card approves a runbook")
+	case f.runbookHash != "" && f.runbook == "":
+		return bad("-runbook-sha256 needs -runbook")
 	case !f.print.on && f.jsonSchema != "":
 		return bad("-json-schema needs -p: a structured answer is for a script")
 	case !f.print.on && f.inputFormat != "text":
@@ -542,7 +582,7 @@ func skipPermissions(cfg config.Config, f *cliFlags, confirm func(config.Config)
 // -dangerously-skip-permissions.
 func startPayload(cfg config.Config, f *cliFlags, headless bool, model string) map[string]any {
 	return map[string]any{"surface": "cli", "headless": headless, "provider": cfg.Model.Default, "model": model,
-		"mode": orDefault(cfg.Permissions.Mode, "default"), "bypass_confirmed": f.skipPerms}
+		"mode": cfg.StartMode(), "bypass_confirmed": f.skipPerms}
 }
 
 // confirmBypass asks, on a terminal, before -dangerously-skip-permissions

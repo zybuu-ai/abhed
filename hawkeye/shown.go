@@ -1,6 +1,9 @@
 package hawkeye
 
-import "github.com/zybuu-ai/abhed/internal/ui"
+import (
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/ui"
+)
 
 // shown returns a copy of the report for a reader, with every record-derived
 // string made visible: bidi, zero-width and control characters cannot reorder
@@ -14,8 +17,14 @@ func shown(r Report) Report {
 		c.CallID, c.Tool, c.Args, c.Subject, c.Decision, c.Step = v(c.CallID), v(c.Tool), v(c.Args), v(c.Subject), v(c.Decision), v(c.Step)
 		c.By, c.Scope, c.Approver, c.GrantedScope, c.Reason = v(c.By), v(c.Scope), v(c.Approver), v(c.GrantedScope), v(c.Reason)
 		c.Actor, c.Via, c.Output = v(c.Actor), v(c.Via), ui.VisibleOutput(c.Output)
-		c.Rule, c.Layer = v(c.Rule), v(c.Layer)
+		c.Rule, c.Layer, c.PlanHash = v(c.Rule), v(c.Layer), v(c.PlanHash)
 		return c
+	})
+	r.RemoteChanges = shownRemote(r.RemoteChanges)
+	r.Toolchains = each(r.Toolchains, func(t ToolchainStep) ToolchainStep {
+		t.Lang, t.Version, t.Platform, t.Outcome, t.Why = v(t.Lang), v(t.Version), v(t.Platform), v(t.Outcome), v(t.Why)
+		t.Source, t.URL, t.Digest, t.Consent, t.Error, t.By, t.Surface = v(t.Source), v(t.URL), v(t.Digest), v(t.Consent), v(t.Error), v(t.By), v(t.Surface)
+		return t
 	})
 	if r.Policy.ByStep != nil {
 		by := make(map[string]int, len(r.Policy.ByStep))
@@ -45,6 +54,23 @@ func shown(r Report) Report {
 		})
 		r.Network = &n
 	}
+	if r.Supervisor != nil {
+		s := *r.Supervisor
+		if s.ByCode != nil {
+			by := make(map[string]int, len(s.ByCode))
+			for k, n := range s.ByCode {
+				by[v(k)] += n
+			}
+			s.ByCode = by
+		}
+		s.Judges = each(s.Judges, func(j string) string { return v(j) })
+		s.Concerns = each(s.Concerns, func(c SupervisorVerdict) SupervisorVerdict {
+			c.CallID, c.Tool, c.Subject, c.Before, c.After = v(c.CallID), v(c.Tool), v(c.Subject), v(c.Before), v(c.After)
+			c.Code, c.Rationale = v(c.Code), v(c.Rationale)
+			return c
+		})
+		r.Supervisor = &s
+	}
 	r.Compactions = each(r.Compactions, func(c Compaction) Compaction { c.Trigger = v(c.Trigger); return c })
 	r.Subagents = each(r.Subagents, func(s Subagent) Subagent {
 		s.Description, s.Type, s.Reason, s.Session = v(s.Description), v(s.Type), v(s.Reason), v(s.Session)
@@ -56,6 +82,29 @@ func shown(r Report) Report {
 		return a
 	})
 	r.Files = each(r.Files, func(f FileTouch) FileTouch { f.Path = v(f.Path); return f })
+	r.Answers = each(r.Answers, func(a Answer) Answer {
+		a.Source, a.Outcome, a.Revision = v(a.Source), v(a.Outcome), v(a.Revision)
+		a.Claims = each(a.Claims, func(c agent.ClaimVerdict) agent.ClaimVerdict {
+			c.Text, c.Kind, c.Verdict, c.Reason, c.Critic = v(c.Text), v(c.Kind), v(c.Verdict), v(c.Reason), v(c.Critic)
+			c.Cited, c.Checked = each(c.Cited, v), each(c.Checked, v)
+			if c.Conflict != nil {
+				k := *c.Conflict
+				k.CallID, k.Excerpt = v(k.CallID), v(k.Excerpt)
+				c.Conflict = &k
+			}
+			return c
+		})
+		if a.Contract != nil {
+			k := *a.Contract
+			k.Protected = each(k.Protected, v)
+			k.Require = each(k.Require, func(q agent.RequireResult) agent.RequireResult {
+				q.Command, q.Reason = v(q.Command), v(q.Reason)
+				return q
+			})
+			a.Contract = &k
+		}
+		return a
+	})
 	r.Findings = each(r.Findings, func(f Finding) Finding {
 		f.Code, f.Title, f.Detail = v(f.Code), v(f.Title), v(f.Detail)
 		return f

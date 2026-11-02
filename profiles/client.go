@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
 // NormalizeURL checks a server URL and drops a trailing slash. Plain http is
@@ -78,7 +80,8 @@ func (p *Profile) HTTPClient() (*http.Client, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = tc
 	tr.Proxy = http.ProxyFromEnvironment
-	return &http.Client{Transport: tr, Timeout: 60 * time.Second,
+	// The configured upstream proxy, when there is one, in place of the environment's.
+	return &http.Client{Transport: egress.ApplyUpstream(tr), Timeout: 60 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
 				return http.ErrUseLastResponse

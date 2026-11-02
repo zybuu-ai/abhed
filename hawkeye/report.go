@@ -7,7 +7,11 @@
 // machine from an exported file, years after the session ran.
 package hawkeye
 
-import "time"
+import (
+	"time"
+
+	"github.com/zybuu-ai/abhed/internal/agent"
+)
 
 // Report is everything HawkEYE derives from one session.
 type Report struct {
@@ -30,14 +34,23 @@ type Report struct {
 	// PolicyLayers are the policy layers an edition added to the session, as
 	// its policy.layer events recorded them, in order.
 	PolicyLayers []PolicyLayer `json:"policy_layers,omitempty"`
+	// LocalModel are the person's attempts to start, install or pull a
+	// local Ollama for the session's model, as ollama.* events recorded them.
+	LocalModel []LocalModelStep `json:"local_model,omitempty"`
+	// Toolchains are the language toolchains installed for the session's
+	// commands, as toolchain.install events recorded them.
+	Toolchains []ToolchainStep `json:"toolchains,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
 	Offloads    []Offload     `json:"offloads,omitempty"`
 	Subagents   []Subagent    `json:"subagents,omitempty"`
 	Files       []FileTouch   `json:"files,omitempty"`
-	Findings    []Finding     `json:"findings"`
-	Integrity   Integrity     `json:"integrity"`
+	// RemoteChanges are the commands and cluster writes sent to each host
+	// and cluster, with how each ended and the runbook step it was.
+	RemoteChanges []RemoteTarget `json:"remote_changes,omitempty"`
+	Findings      []Finding      `json:"findings"`
+	Integrity     Integrity      `json:"integrity"`
 
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.
@@ -46,6 +59,18 @@ type Report struct {
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.
 	SubagentActions []SubagentAction `json:"subagent_actions,omitempty"`
+
+	// Supervisor is what the supervisor reviewed and said; nil when it left nothing in the record.
+	Supervisor *SupervisorStats `json:"supervisor,omitempty"`
+	// Answers are the checks on the session's answers, in order, as each
+	// answer.verdict recorded them.
+	Answers []Answer `json:"answers,omitempty"`
+}
+
+// Answer is one answer.verdict and where the record holds it.
+type Answer struct {
+	Seq int64 `json:"seq"`
+	agent.AnswerVerdict
 }
 
 type Totals struct {
@@ -123,17 +148,26 @@ type Call struct {
 
 	// Ran is set only when the record holds the call's result.
 	Ran bool `json:"ran"`
-	// SandboxDenied marks a command the sandbox refused part of.
-	SandboxDenied bool `json:"sandbox_denied,omitempty"`
+	// SandboxDenied marks a command the record shows the sandbox refused part
+	// of, and Sandbox says what, each from its own evidence.
+	SandboxDenied bool            `json:"sandbox_denied,omitempty"`
+	Sandbox       []SandboxSignal `json:"sandbox,omitempty"`
+	// SandboxUnconfirmed marks a command under a sandbox whose output says an
+	// operation was not permitted, with nothing in the record saying the
+	// sandbox refused it rather than the system's own permissions.
+	SandboxUnconfirmed bool `json:"sandbox_unconfirmed,omitempty"`
 	// NetworkDenied counts the connections and requests of this call the
 	// egress allowlist refused, from its egress.decision events.
-	NetworkDenied int    `json:"network_denied,omitempty"`
-	IsError       bool   `json:"is_error"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
-	Truncated     bool   `json:"truncated"`
-	DurationMS    int64  `json:"duration_ms"`
-	Output        string `json:"output,omitempty"`
-	OutputLen     int    `json:"output_len"`
+	NetworkDenied int  `json:"network_denied,omitempty"`
+	IsError       bool `json:"is_error"`
+	ExitCode      *int `json:"exit_code,omitempty"`
+	// PlanHash and PlanStep name the approved runbook step the call was.
+	PlanHash   string `json:"plan_hash,omitempty"`
+	PlanStep   int    `json:"plan_step,omitempty"`
+	Truncated  bool   `json:"truncated"`
+	DurationMS int64  `json:"duration_ms"`
+	Output     string `json:"output,omitempty"`
+	OutputLen  int    `json:"output_len"`
 }
 
 type PolicyStats struct {
@@ -146,6 +180,18 @@ type PolicyStats struct {
 }
 
 // PolicyLayer is one policy.layer event: the rules an edition added.
+// ToolchainStep is one toolchain.install.
+type ToolchainStep struct {
+	Seq int64 `json:"seq"`
+	agent.ToolchainAction
+}
+
+// LocalModelStep is one ollama.start, ollama.install or ollama.pull.
+type LocalModelStep struct {
+	Seq int64 `json:"seq"`
+	agent.OllamaAction
+}
+
 type PolicyLayer struct {
 	Seq      int64    `json:"seq"`
 	Name     string   `json:"layer"`
@@ -268,4 +314,15 @@ type Integrity struct {
 	// Unsure is set when a gap could be omitted deltas but the capture does not
 	// say it left any out: HawkEYE cannot tell, and counts it as missing.
 	Unsure bool `json:"unsure,omitempty"`
+}
+
+// SandboxSignal is one thing the sandbox refused in a call, from the event
+// that shows it.
+type SandboxSignal struct {
+	Seq int64 `json:"seq"`
+	// Source is the evidence: "cgroup" (the fence's limits), "seccomp" (the
+	// fence's system-call filter), "git" (git protection), or "bash" (bash's note on an error naming a folder every
+	// sandbox tier denies).
+	Source string `json:"source"`
+	What   string `json:"what"`
 }

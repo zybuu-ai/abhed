@@ -14,6 +14,10 @@ import (
 // sandboxCmd is `abhed sandbox`, a server's sandboxes from this command
 // line, as the profile abhed login saved.
 func sandboxCmd(workspace string, args []string, in io.Reader, out, errOut io.Writer) int {
+	// Its REST calls and streams go to the server through the upstream proxy.
+	if !profileNetwork(errOut) {
+		return sandboxcli.ExitFailed
+	}
 	path, err := profilesPath(workspace)
 	if err != nil {
 		_, _ = io.WriteString(errOut, "abhed: "+err.Error()+"\n")

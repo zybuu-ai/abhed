@@ -1255,3 +1255,46 @@ func TestRelayBinaryIsNeverRelabelled(t *testing.T) {
 		t.Fatalf("the relay binary's mount: %s", got)
 	}
 }
+
+// With no relay_binary where the engine is in a VM, the helper shipped with
+// the engine is bound in as the relay; with none, the sandbox is refused
+// and says why.
+func TestShippedHelperIsTheRelayWithNoRelayBinary(t *testing.T) {
+	pol, err := egress.Compile(egress.Config{Rules: []egress.Rule{{Host: "example.com", Decision: "allow"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOS, oldHelper := hostOS, bundledHelper
+	t.Cleanup(func() { hostOS, bundledHelper = oldOS, oldHelper })
+	hostOS = "darwin"
+	bundledHelper = func(string) (string, string) { return "", "this build of Abhed ships no Linux helper for arm64" }
+	f := &fakeRunner{podman: true}
+	d, ws := testDriver(t, f, Options{}, func(p *sandbox.Policy) { p.Egress = pol })
+	if _, err := d.Create(context.Background(), spec(ws)); !errors.Is(err, driver.ErrUnavailable) ||
+		!strings.Contains(err.Error(), "ships no Linux helper") || len(f.find("run")) != 0 {
+		t.Fatalf("no relay and no helper: %v", err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundledHelper = func(string) (string, string) { return "/cache/abhed/helper/abc/abhed-helper-linux-arm64", "" }
+	f = &fakeRunner{podman: true}
+	f.commandFor = func(ctx context.Context, args []string) *exec.Cmd {
+		if len(args) < 2 || args[len(args)-2] != stdiorelay.Arg {
+			return nil
+		}
+		return exec.CommandContext(ctx, exe, stdiorelay.Arg, "127.0.0.1:0")
+	}
+	d, ws = testDriver(t, f, Options{}, func(p *sandbox.Policy) { p.Egress = pol })
+	if _, err := d.Create(context.Background(), spec(ws)); err != nil {
+		t.Fatal(err)
+	}
+	if got := joined(f.runCall(t)); !strings.Contains(got, " -v /cache/abhed/helper/abc/abhed-helper-linux-arm64:/run/abhed-egress/relay:ro ") {
+		t.Fatalf("the helper is not bound in read-only as the relay: %s", got)
+	}
+	if err := d.Delete(context.Background(), "sbx_0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+}

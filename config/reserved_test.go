@@ -15,6 +15,7 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var out bytes.Buffer
 			warnOut = &out
+			freshWarnings(t)
 			t.Cleanup(func() { warnOut = os.Stderr })
 			warnedMu.Lock()
 			clear(warned)
@@ -34,6 +35,7 @@ func TestSettingsNotYetInEffectAreWarned(t *testing.T) {
 	}
 	var out bytes.Buffer
 	warnOut = &out
+	freshWarnings(t)
 	// Wired settings are no longer warned about: the Shift-Tab cycle, hooks.disabled
 	// and the statusline all take effect.
 	withManaged(t, `{"permissions":{"mode":"default"},"cli":{"mode_cycle":["plan","default"]},"hooks":{"disabled":true},"statusline":{"command":"s.sh"}}`)

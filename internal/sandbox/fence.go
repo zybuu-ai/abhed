@@ -371,9 +371,7 @@ func fenceSystemFor() []string {
 // of the rest of the home, the skills or the commands' temp.
 func (f *Fence) serverSpec(files serverFiles) landlock.Spec {
 	run := append(slices.Clone(fenceSystemFor()), files.outsideHome(f.policy.ReadOnlyPaths)...)
-	if files.prefix != "" {
-		run = append(run, files.prefix)
-	}
+	run = append(run, files.shown()...)
 	s := landlock.Spec{
 		Exec:    absAll(run),
 		Read:    []string{"/proc", "/sys"},
@@ -428,7 +426,7 @@ func (f *Fence) ServerCommand(ctx context.Context, name string, argv, env []stri
 	if err := serverProgramMissing(argv[0], env); err != nil {
 		return nil, err
 	}
-	files, err := serverFilesIn(name, argv[0], env, PathForms(f.policy.Workspace))
+	files, err := serverFilesIn(name, argv, env, PathForms(f.policy.Workspace))
 	if err != nil {
 		return nil, err
 	}
@@ -840,6 +838,10 @@ func everySpelling(name string) []string {
 // workspace that can no longer be listed to look for one.
 const EvFenceStatePlanted = "fence.state_planted"
 
+// EvFenceDenied is what the fence refused a command, as Abhed answered it:
+// the call, the source ("seccomp") and each refused system call's count.
+const EvFenceDenied = "fence.denied"
+
 // plantedPrefix begins the name a planted .abhed, or an entry of the covered
 // one, is renamed to; no part of Abhed reads it.
 const plantedPrefix = ".abhed-planted-"
@@ -1070,7 +1072,8 @@ var fenceKeep = []string{"PATH", "LANG", "LC_ALL", "TERM",
 // env is an allowlist, as on the process tier. Home is unreachable, so HOME,
 // TMPDIR and the caches point into the session's private temp.
 func (f *Fence) env() []string {
-	out := []string{"ABHED_SANDBOX=" + string(f.Tier()), vimInitEnv()}
+	// SHELL set, bash looks up no user, whose NSS sockets seccomp refuses.
+	out := []string{"ABHED_SANDBOX=" + string(f.Tier()), vimInitEnv(), "SHELL=/bin/bash"}
 	for _, k := range fenceKeep {
 		if v := os.Getenv(k); v != "" {
 			out = append(out, k+"="+v)

@@ -66,6 +66,7 @@ func TestManagedKeysFoldAsTheDecoderDoes(t *testing.T) {
 	withManaged(t, `{"ſandbox": {"min_tier": "none"}}`)
 	var warned strings.Builder
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	cfg, err := Load(t.TempDir())
 	if err != nil {
@@ -146,6 +147,7 @@ func TestLoadWarnTakesTheWarnings(t *testing.T) {
 	}
 	var stderr strings.Builder
 	warnOut = &stderr
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	for i := 0; i < 2; i++ {
 		var got []string
@@ -164,5 +166,28 @@ func TestLoadWarnTakesTheWarnings(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "no_such_key_g20") {
 		t.Fatalf("without Warn, nothing on stderr: %q", stderr.String())
+	}
+}
+
+// ManagedWebFetchOff is the managed file's own false, not a lower layer's
+// narrowing of a managed true, nor a managed file that leaves it unset.
+func TestManagedWebFetchOff(t *testing.T) {
+	for managedJSON, want := range map[string]bool{
+		`{"web_fetch":{"enabled":false}}`:                              true,
+		`{"web_fetch":{"enabled":true,"allowed_hosts":["a.example"]}}`: false,
+		`{"permissions":{"mode":"default"}}`:                           false,
+	} {
+		withManaged(t, managedJSON)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		_ = os.MkdirAll(filepath.Join(home, ".abhed"), 0o700)
+		_ = os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(`{"web_fetch":{"enabled":false}}`), 0o600)
+		cfg, err := Load(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.ManagedWebFetchOff(); got != want {
+			t.Errorf("%s: %v, want %v", managedJSON, got, want)
+		}
 	}
 }

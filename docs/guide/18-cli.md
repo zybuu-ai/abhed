@@ -33,7 +33,9 @@ more often a mistyped command than a task.
 | `-settings FILE` | a settings file, or inline JSON, for this run; see below |
 | `-mcp-config FILE`, `-strict-mcp-config` | MCP servers for this run, and whether they are the only ones; see below |
 | `-agents JSON`, `-agent NAME` | subagent definitions for this run, and a role to run the session as; see below |
+| `-verify MODE` | `off`, `label` or `strict`: how each answer is checked against the session's record; a managed mode may only be made stricter — [Verified answers](29-verified-answers.md) |
 | `-p`, `-output-format`, `-input-format`, `-no-stdin`, `-json-schema`, `-include-partial-messages`, `-verbose` | headless runs: see [Automation](10-automation.md#headless) |
+| `-runbook FILE`, `-runbook-sha256 HASH` | with `-p`, approve a plan's runbook for the run, pinned to the hash you reviewed: see [Runbooks](28-runbooks.md#headless-runs) |
 
 These flags come before a subcommand or after it: `abhed -C ~/src/app
 doctor` and `abhed doctor -C ~/src/app` are the same. Before or after a
@@ -54,7 +56,12 @@ ARGS`) is read as one of these.
 ```bash
 abhed sessions                 # this workspace's sessions, latest active first (abhed record list)
 abhed -r                       # pick one to resume
+abhed logs -f                  # the latest session's record as it is written, one line an event
 ```
+
+`abhed logs` reads the record as a log: shorthand, OCSF or its own lines,
+filtered by time and type, with a cursor file to resume from
+([OCSF events and logs](30-ocsf-and-logs.md#abhed-logs)).
 
 Inside a session, `/resume` or `/switch` alone opens the picker: type to
 filter it, Enter opens the first match, and the session you are in is marked
@@ -90,8 +97,10 @@ temporary folder, so name only files you wrote or have read.
   servers is enabled unless it says `"enabled": false`; a server with the
   name of a configured one replaces it for the run. With
   `-strict-mcp-config` only these servers start. When the managed
-  configuration sets the `mcp` section, `-mcp-config` is refused and
-  `-strict-mcp-config` leaves the organisation's servers as they are.
+  configuration sets `mcp.servers`, `-mcp-config` is refused and
+  `-strict-mcp-config` leaves the organisation's servers as they are. A
+  server that `mcp.allowed` or `mcp.denied` refuses stops the run, naming
+  the server and the list.
 - **`-agents`** gives subagent definitions as
   `{"name": {"description": …, "prompt": …, "tools": […], …}}`, with the keys
   of a definition file and `prompt` for its instructions. Each is checked
@@ -113,13 +122,24 @@ to do.
 | Command | |
 |---|---|
 | `/model` | pick a configured model: its id, context window, and whether it is local |
-| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on |
+| `/model NAME` | switch to a configured provider, keeping the conversation; recorded. It does not check that the model answers: if the next turn fails, the error is followed by the `/model` line that goes back to the model you were on. A local Ollama model is the exception: it is checked first, and what it lacks offered ([A local Ollama model](03-providers.md#a-local-ollama-model)); when it is still not ready you choose whether to switch anyway, and No stays |
+| `/ollama` | check the current model's local Ollama again and offer each missing step (start, install, pull), asking before each |
+| `/ollama forget` | take back "always start Ollama without asking" |
 | `/effort low\|medium\|high` | the reasoning effort, where the provider takes one |
 | `/effort on\|off` | thinking on or off, where the provider has the switch |
 | `/effort default` | back to the provider's own setting |
 
 `/model` offers only configured providers, never an endpoint typed at the
 prompt, and a managed `model.default` is not switched.
+
+`abhed ollama check [provider]` does the same from a shell before any
+session, and offers a step only at a terminal: from a pipe or a script it
+prints the problem and the steps and runs nothing. Abhed never runs the
+official Linux install script; it prints it for you. `abhed ollama status [-json] [-detail]` only reports, asking nothing off this machine unless `-detail` asks the registry for sizes,
+`abhed ollama models` lists the curated models with their sizes, and `abhed
+ollama forget` takes back "always start". With input piped in, a session
+does not ask: it prints what is wrong and the steps, so a piped line is never
+taken as an answer.
 
 ### Fallback
 
@@ -143,6 +163,7 @@ provider is refused under a managed `model.default`, as `/model` is.
 | `/status` | model, mode, workspace and branch, sandbox, record, session, context use, the turn limit and what it counts, token budget, background tasks, trust, managed settings |
 | `/usage` (or `/cost`) | tokens, cache hit rate, prefill saving, compactions, and a breakdown by subagent and by tool source |
 | `/todos` | the agent's task list as it stands; Ctrl-T lists the open items above the input — [The terminal](20-terminal.md#what-the-harness-does) |
+| `/evidence [N \| #seq]` | the checks on the last answer: every statement with its verdict, or the record behind statement N, or one entry of the record — [Verified answers](29-verified-answers.md#where-you-see-it) |
 | `/copy` | put the last reply on the clipboard through the terminal (OSC 52); `cli.copy: false` turns it off — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard) |
 | `/config` | each setting and where it comes from: managed, a file, or the default |
 | `/config set KEY VALUE` | set `model.default`, `permissions.mode`, `sandbox.allow_network`, `limits.max_turns`, `tools.syntax_check` or `statusline.command` in your own `~/.abhed/config.json`, for the next session |

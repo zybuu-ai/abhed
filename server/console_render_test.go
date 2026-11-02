@@ -343,6 +343,8 @@ const $ = id => els[id] || (els[id] = new El('div'));
 let current = null, providers = [], sessionsSeen = [], sessionList = [], caps = null, recProvider = null;
 Object.defineProperty(El.prototype, 'lastElementChild', {get(){ return this.childNodes[this.childNodes.length - 1] || null; }});
 const add = n => __root.appendChild(n);
+// The Ollama card is tested on its own (TestOllamaCard); here it notes which provider it was asked about.
+globalThis.__ollama = []; const checkOllama = name => __ollama.push(name);
 El.prototype.removeChild = function(c){ this.childNodes.splice(this.childNodes.indexOf(c), 1); return c; };
 Object.defineProperty(El.prototype, 'firstChild', {get(){ return this.childNodes[0] || null; }});
 globalThis.__posted = []; let __fail = null;

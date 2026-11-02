@@ -201,6 +201,12 @@ func TestExecHelperRunsOnlyForARequestThatIsSent(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		// A later call's live read and dry run, made with the token already
+		// in hand, are not writes.
+		if r.Method != http.MethodDelete || r.URL.Query().Get("dryRun") != "" {
+			fmt.Fprint(w, `{"kind":"Pod","metadata":{"name":"web"}}`)
+			return
+		}
 		deletes.Add(1)
 		fmt.Fprint(w, `{"kind":"Status","status":"Success"}`)
 	}))

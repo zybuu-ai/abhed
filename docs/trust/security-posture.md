@@ -82,10 +82,20 @@ per session) runs sandboxes through drivers (`driver/`):
 An `abhed serve` with more than one account, or able to gain one, gives
 each session a sandbox of its own by default; `server.shared_sessions`
 keeps every account in the server's one workspace, where one account's
-agent can read and change another's files. The tenancy red team has not yet
-exercised `/v1/sandboxes` ownership, the `:ssh` relay, `:expose` or the
-per-session boundary, so no isolation claim is made for them beyond what the
-code and its tests show.
+agent can read and change another's files. Between two accounts of one
+tenant, tests show that one account cannot list, read, change, start, stop,
+exec in, attach to, forward to, `ssh` into (the details or the relay),
+expose, copy from or into, snapshot, restore, read the events of or delete
+the other's sandbox, nor reach the other's exposure: each refusal is the
+same 404, word for word, as for a sandbox or exposure that does not exist,
+refused before a stream is opened, recorded nowhere and changing nothing; a
+list, a page cursor or a selector shows only the caller's own; an
+`Idempotency-Key` is the caller's own; and sandbox ids are 64 random bits
+(exposure ids 128) (`server/sandbox_tenancy_test.go`, with the per-session
+tests in `server/session_sandbox_test.go`). The same was checked against a
+running `abhed serve` with two local accounts and the `process` driver on
+macOS. This is the project's own testing, not an independent red team. An
+administrator of the tenant still sees every sandbox in it.
 
 **Policy engine order.** Every tool call is evaluated in a fixed order,
 documented at the top of `internal/policy/policy.go`:
@@ -544,7 +554,8 @@ reaches the proxy only through a relay in its own network namespace and on
 macOS Seatbelt allows only the proxy's port; the fence in `mount_namespace`
 mode, or otherwise with the managed `fence.egress_port_only`; and
 the container and vm tiers through a relay, refused where the engine is
-remote and no `relay_binary` is set), the model client, `web_fetch`,
+remote and neither `relay_binary` nor a helper matching the build's pinned
+checksum is there), the model client, `web_fetch`,
 `web_search`, MCP servers over HTTP, `ssh_connect`, the `k8s_*` tools, `rag`
 over HTTP and `abhed resolve`'s forge API and push (judged in Abhed's
 process, request by request), and stdio MCP servers' direct sockets
@@ -625,10 +636,13 @@ owned the tables, so it could truncate them or switch the triggers off. With
 **What is not covered.** The owner role and any database superuser can still
 alter the record; that is what owning a database means. Keep those credentials
 off the server host. Postgres events are hash-chained per session by a
-trigger, and with a managed `record.witness` each head is also sent off the
-host, so `abhed record verify` detects a record cut back, re-chained or
-restored from an older copy. Without a witness the owner role can still
-rewrite the chain consistently.
+trigger, in the insert's own transaction, and `abhed record verify`
+recomputes every hash itself rather than trusting a function the owner could
+replace. It finds a row edited, removed, reordered, or written with the
+trigger off. With a managed `record.witness` each head is also sent off the
+host, so it also detects a record cut back, re-chained or restored from an
+older copy. Without a witness the owner role can still rewrite the chain
+consistently, or cut its end.
 
 **`FORCE ROW LEVEL SECURITY`**, not just `ENABLE`. The schema comment explains
 why this specific word matters: a table's owner bypasses ordinary RLS, and
@@ -637,7 +651,8 @@ alone leaves the isolation policy silently inert. This was found by
 `TestRowLevelSecurityIsolatesTenants`, which could read another tenant's rows
 until `FORCE` was added (`README.md`'s evidence-discipline section tells the
 same story). Every tenant table (`sessions`, `events`, `checkpoints`,
-`approvals`, the sandbox tables, `owner_changes` and `session_keys`) carries
+`approvals`, the sandbox tables, `owner_changes`, `session_keys` and
+`ocsf_cursors`) carries
 `ENABLE` and `FORCE` together, with a tenant policy on each.
 
 **Separate database roles, and the app refuses to run as the wrong one.**
@@ -748,6 +763,12 @@ Stated plainly rather than buried:
   `container` and `vm` tiers the sandbox's deny on `~/.abhed` and the state paths
   still holds; on `none` nothing stands behind the check. Run
   a tier other than `none` wherever the agent must not administer Abhed.
+- **No anomaly detection over the action stream.** The supervisor, on by
+  default, reviews each call after policy with fixed rules and may only make
+  a decision stricter ([The supervisor](../guide/04-permissions.md#the-supervisor)).
+  It judges one call at a time against what the session has shown; nothing
+  alerts on a pattern across many calls. Its drift suite was written
+  alongside its rules, and the optional model judge has not been measured.
 - **A small team.** Zybuu is a small company. There is no security team, no
   on-call rotation, and no bus-factor mitigation beyond what is written down
   in this repository. See `SECURITY.md` for the

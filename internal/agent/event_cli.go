@@ -1,5 +1,7 @@
 package agent
 
+import "time"
+
 // Events the interactive CLI records about the person's own actions: modes,
 // rules, directories, mentions, commands, memory, session names and branches,
 // restores, plans, model fallback, hooks and record repair. Rewind reuses
@@ -101,6 +103,17 @@ type MCPStatus struct {
 type ScopeGranted struct {
 	Scope string `json:"scope"`
 	By    string `json:"by"`
+	// A bash grant names the exact command or the family (go test) it
+	// covers, the folder it is limited to, and whether it is for this
+	// session alone, which a later load does not restore.
+	Command string `json:"command,omitempty"`
+	Family  string `json:"family,omitempty"`
+	Folder  string `json:"folder,omitempty"`
+	Session bool   `json:"session,omitempty"`
+	// Kept is "workspace" for a grant the session started with, kept for its
+	// workspace from an earlier session, chosen at GrantedAt.
+	Kept      string     `json:"kept,omitempty"`
+	GrantedAt *time.Time `json:"granted_at,omitempty"`
 }
 
 // ManualEdit is the payload of manual.edit: a save the person made in their
@@ -221,12 +234,24 @@ type FileRestored struct {
 // PlanProposed is the payload of plan.proposed.
 type PlanProposed struct {
 	Text string `json:"text"`
+	// Hash names the plan an answer is for: its runbook's hash, which covers
+	// the text, or for a plan without one the hash of its text alone.
+	Hash string `json:"hash,omitempty"`
+	// Runbook is the plan's steps, canonical and hashed; nil for a plan without one.
+	Runbook *Runbook `json:"runbook,omitempty"`
 }
 
 // PlanDecided is the payload of plan.decided.
 type PlanDecided struct {
 	Decision string `json:"decision"` // accept, or keep-planning
 	ToMode   string `json:"to_mode,omitempty"`
+	// PlanHash and Runbook name the runbook an accept bound; Via is operator
+	// when the operator's setting, not a person's answer, approved it.
+	PlanHash string   `json:"plan_hash,omitempty"`
+	Runbook  *Runbook `json:"runbook,omitempty"`
+	Via      string   `json:"via,omitempty"`
+	// By is the signed-in person who answered, where the surface knows them.
+	By string `json:"by,omitempty"`
 }
 
 // ModelFallback is the payload of model.fallback.

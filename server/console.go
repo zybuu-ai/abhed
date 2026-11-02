@@ -47,7 +47,7 @@ func WithHome(page, home string) string {
 		`<a href="`+esc+`" class="home" title="Back to `+label+`">`+label+` <span aria-hidden="true">&#8599;</span></a>`)
 }
 
-var consoleHTML = brandify(strings.ReplaceAll(`<!doctype html>
+var consoleHTML = brandify(withOllamaCard(strings.ReplaceAll(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -139,6 +139,17 @@ button,select,textarea,input{font:inherit;color:inherit}
 .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .led.up{background:var(--done);box-shadow:0 0 0 3px var(--done-bg)}
 .led.down{background:var(--error);box-shadow:0 0 0 3px var(--error-bg)}
+/* An answer's checks: ✓ verified, ? unverified, ✗ contradicted (struck through, with the record against it). */
+.verdict{border:1px solid var(--line);border-radius:6px;padding:5px 10px;margin:6px 0;font-size:12px}
+.verdict.bad{border-color:var(--error)}.verdict.unk{border-color:var(--waiting)}
+.verdict .vsum{font-family:var(--mono);color:var(--muted)}
+.verdict .vbanner,.said .vflag{margin:4px 0;padding:4px 8px;border-radius:4px;background:var(--error-bg);color:var(--error);font-weight:700}
+.said.contradicted{box-shadow:inset 3px 0 0 var(--error)}
+.verdict .cl{display:flex;gap:7px;padding:2px 0}
+.verdict .mk{font-weight:700;width:1em;flex:none;text-align:center}
+.verdict .verified .mk{color:var(--done)}.verdict .unverified .mk{color:var(--waiting)}.verdict .contradicted .mk{color:var(--error)}
+.verdict .contradicted .t{text-decoration:line-through}
+.verdict .why{color:var(--muted);font-family:var(--mono);font-size:11px;overflow-wrap:anywhere}
 .who-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none;
   border-radius:11px;background:var(--sunken);border:1px solid var(--line);
   font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
@@ -481,6 +492,7 @@ select{background:var(--sunken);border:1px solid var(--line);border-radius:6px;
 .approve h4{margin:0 0 4px;font-family:var(--mono);font-size:11.5px;color:var(--waiting)}
 .approve p{margin:0 0 9px;font-size:12px;color:var(--ink-2)}
 .approve p.hidden-warn{color:var(--danger);font-weight:600}
+.approve p.sup{font-family:var(--mono);font-size:11px}.approve p.sup.concern{color:var(--ink);font-weight:600}
 .approve pre{font-family:var(--mono);font-size:11px;background:var(--sunken);
   border-radius:5px;padding:9px;margin:0 0 10px;color:var(--ink-2);
   white-space:pre-wrap;overflow-wrap:anywhere}
@@ -870,7 +882,9 @@ let recProvider = null;
 let sessionsSeen = [];
 async function loadProviders(){
   try{ providers = await api('/v1/providers'); }catch{ return; }
-  if(!Array.isArray(providers) || providers.length < 2) return;
+  if(!Array.isArray(providers)) return;
+  // One provider has no picker, but a local Ollama model still gets its card.
+  if(providers.length < 2){ const d = providers.find(p => p.default); if(d) checkOllama(d.name); return; }
 
   const sel = $('mdlpick');
   sel.textContent = '';
@@ -885,8 +899,10 @@ async function loadProviders(){
   sel.hidden = false;
   sel.dataset.prev = sel.value;
   if(current) showSessionModel(current);
+  checkOllama(sel.value);
 
   sel.onchange = async () => {
+    checkOllama(sel.value);
     // With no session yet the choice applies to the next one: createSession carries it.
     if(!current){ sel.dataset.prev = sel.value; return; }
     sel.disabled = true;
@@ -906,6 +922,18 @@ async function loadProviders(){
       sel.disabled = false;
     }
   };
+}
+
+/*OLLAMA-CARD*/
+// A model a local Ollama serves gets a card when it is not ready: what is
+// wrong, the steps, and the next step for a person who may take it.
+const ollamaCard = {card: null};
+function checkOllama(name){
+  const p = providers.find(x => x.name === name);
+  if(!p || !p.ollama){ if(ollamaCard.card){ ollamaCard.card.remove(); ollamaCard.card = null; } return; }
+  ollamaCard.provider = name; ollamaCard.session = current || '';
+  ollamaCard.mount = n => { const t = $('tx'); if(!t) return; t.appendChild(n); t.scrollTop = t.scrollHeight; };
+  abhedOllama.show(ollamaCard);
 }
 
 // One wording for a switch, so the reply and its recorded event show as one line;
@@ -1520,7 +1548,11 @@ function render(ev){
       break;
     }
 
+    case 'answer.verdict': drawVerdict(p); break;
+
     case 'action.requested': {
+      // The answer tool's text arrives as the reply; its checks as answer.verdict.
+      if(p.tool === 'answer') break;
       hideThinking();
       // A tool call ends the current streamed reply.
       streamEl = null; streamBody = null;
@@ -1542,6 +1574,7 @@ function render(ev){
     }
 
     case 'observation': {
+      if(p.tool === 'answer' && !p.is_error) break;
       const wrap = calls.get(p.call_id) || turnEl || newTurn();
       if(p.is_error) wrap.classList.add('err');
 
@@ -1602,6 +1635,9 @@ function render(ev){
       wrap.appendChild(node('out err', 'denied — ' + visible(p.reason || 'no reason given')));
       break;
     }
+    // What the supervisor told the model, and its re-plan note: text of the record, shown, never obeyed.
+    case 'supervisor.correction': (calls.get(p.call_id) || turnEl || newTurn()).appendChild(node('note', visible(p.text || ''))); break;
+    case 'supervisor.replan': (turnEl || newTurn()).appendChild(node('note', visible(p.text || ''))); break;
 
     // In the turn, as its calls are, so they read before the answer that follows them.
     // Task names, results and reasons are the model's or a command's text: shown, never obeyed.
@@ -1673,6 +1709,10 @@ function render(ev){
       turnEl = null;
       break;
     }
+
+    // A plan from plan mode, with its runbook, is answered once; the record settles it.
+    case 'plan.proposed': if(ev.actor === 'agent') planCard(p); break;
+    case 'plan.decided': settlePlan(p.decision === 'accept' ? 'approved · mode ' + visible(p.to_mode || '') : 'keep planning'); break;
 
     case 'session.ended': {
       hideThinking();
@@ -1779,6 +1819,45 @@ function shortPath(p){
 }
 
 function clip(s, n){ return s.length > n ? s.slice(0,n) + '\n… ' + (s.length-n) + ' more characters' : s; }
+
+// drawVerdict shows the checks on an answer under it, as the workbench does.
+// A contradiction is flagged on the reply itself too: it streamed before it
+// was checked. Claims and excerpts are the model's and the tools' text.
+function drawVerdict(p){
+  const claims = p.claims || [], contract = p.contract;
+  const n = p.contradicted || 0, bad = n > 0 || (contract && !contract.ok);
+  const unk = claims.some(c => c.verdict === 'unverified' && c.load_bearing);
+  // Nothing checkable (a greeting, general knowledge) draws nothing.
+  if(!contract && !p.revision && !bad && !unk && !(p.verified || 0)) return;
+  if(n > 0){
+    const last = lastStreamedBubble(), bubble = last ? last.el : null;
+    const said = (turnEl || $('tx')).querySelectorAll('.said:not(.user)');
+    const target = bubble || said[said.length - 1];
+    if(target){ target.classList.add('contradicted');
+      target.appendChild(node('vflag', '\u2717 NOT FACT: ' + n + (n === 1 ? ' statement in this reply is' : ' statements in this reply are') +
+        ' contradicted by the session\'s record' + (p.revision ? '; the agent is asked to correct it' : '; see below'))); }
+  }
+  const box = node('verdict' + (bad ? ' bad' : unk ? ' unk' : ''));
+  const known = claims.filter(c => c.verdict === 'unverified' && !c.load_bearing).length;
+  const expl = claims.filter(c => c.verdict === 'unverified' && c.explains).length;
+  if(n > 0) box.appendChild(node('vbanner', '\u2717 NOT FACT: ' + n + ' contradicted by the session\'s record' + (p.revision ? ' \u00b7 the agent is asked to correct it' : '')));
+  box.appendChild(node('vsum', (p.verified || 0) + ' verified \u00b7 ' + (p.unverified || 0) + ' unverified' +
+    (known || expl ? ' (' + [known ? (known === (p.unverified || 0) ? 'general knowledge' : known + ' general knowledge') : '', expl ? expl + ' explanation' : ''].filter(Boolean).join(', ') + ')' : '') + ' \u00b7 ' + n + ' contradicted' +
+    (contract ? (contract.ok ? ' \u00b7 contract met' : ' \u00b7 contract not met') : '')));
+  for(const c of claims){
+    const r = node('cl ' + (c.verdict || 'unverified')), b = node('');
+    r.appendChild(node('mk', c.verdict === 'verified' ? '\u2713' : c.verdict === 'contradicted' ? '\u2717' : c.explains ? '\u00b7' : '?'));
+    b.appendChild(node('t', visible(c.text || '')));
+    const k = c.conflict;
+    b.appendChild(node('why', visible(k && k.excerpt ? 'record' + (k.seq ? ' #' + k.seq : '') + ': ' + k.excerpt : c.reason || '')));
+    r.appendChild(b); box.appendChild(r);
+  }
+  if(contract && !contract.ok){
+    for(const q of contract.require || []) if(!q.ok) box.appendChild(node('why', visible('\u2717 required "' + (q.command || '') + '": ' + (q.reason || ''))));
+    if((contract.protected_changed || []).length) box.appendChild(node('why', visible('\u2717 protected files changed: ' + contract.protected_changed.join(', '))));
+  }
+  (turnEl || $('tx')).appendChild(box);
+}
 
 // lastStreamedBubble finds the reply bubble the deltas were writing into, so
 // agent.message can reconcile with it even when the stream reference is gone.
@@ -1937,9 +2016,15 @@ function approval(p, rid){
     args = argsJSON(typeof p.args === 'string' ? JSON.parse(p.args) : p.args);
   }catch{ args = visible(String(p.args), true); }
   // The warning reads the values themselves: stringify would turn a CR or ESC into plain text.
-  if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args].some(v => v && hasHidden(v)))
+  if([p.tool, p.reason, p.subagent, p.via, p.scope, p.args, p.supervisor && p.supervisor.advice].some(v => v && hasHidden(v)))
     card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this call contains hidden or control characters'}));
   if(p.reason) card.appendChild(Object.assign(document.createElement('p'), {textContent: visible(p.reason)}));
+  // The supervisor's verdict: its concern and what it advised, or ok.
+  if(p.supervisor){
+    const v = p.supervisor, concern = v.code && v.code !== 'ok';
+    card.appendChild(Object.assign(document.createElement('p'), {className: 'sup' + (concern ? ' concern' : ''),
+      textContent: 'supervisor: ' + (concern ? visible(v.decision || '') + ' · ' + visible(v.code) + (v.advice ? ' — ' + visible(v.advice) : '') : 'ok')}));
+  }
   // A subagent's ask answers for the session: a scope allowed here covers the agent too.
   if(p.subagent) card.appendChild(Object.assign(document.createElement('p'),
     {className: 'scope-note', textContent: 'Asked by subagent ' + visible(p.subagent) + '. Always allow applies to the whole session: the agent and every subagent.'}));
@@ -2009,6 +2094,64 @@ function approval(p, rid){
   const host = (p.call_id && calls.get(p.call_id)) || $('tx');
   host.appendChild(card);
   if(p.call_id) approvals.set(p.call_id, card);
+}
+
+// planCard puts a proposed plan to the person: the plan, each runbook step
+// exactly as it will run, and the three answers the CLI offers. Steps with
+// no undo are confirmed a second time; accepting sends the server's message.
+let planEl = null;
+function planCard(p){
+  settlePlan('superseded by a newer plan');
+  const card = node('approve');
+  const h = document.createElement('h4'); h.textContent = 'Plan ready — proceed with this plan?'; card.appendChild(h);
+  const text = node('', visible(p.text || '', true)); text.style.cssText = 'white-space:pre-wrap;font-size:12px;margin:0 0 9px'; card.appendChild(text);
+  const rb = p.runbook, risky = rb ? rb.steps.filter(st => st.destructive) : [];
+  if(rb){
+    card.appendChild(Object.assign(document.createElement('p'), {className: 'scope-note', textContent: 'Runbook · ' + rb.steps.length + ' steps · plan ' + rb.hash.slice(0, 12) +
+      '. Approving runs each step without asking when it is made exactly as listed; any other change asks.'}));
+    for(const st of rb.steps){
+      const a = Object.assign({}, st.args || {});
+      const what = (st.tool === 'ssh' || st.tool === 'bash') && typeof a.command === 'string' ? a.command : JSON.stringify(a, null, 2);
+      card.appendChild(Object.assign(document.createElement('p'), {textContent: st.index + '. ' + visible(st.tool) + (st.target ? ' · ' + visible(st.target) : '') +
+        (st.destructive ? ' · no undo: ' + visible(st.destructive) : '')}));
+      const pre = document.createElement('pre'); pre.textContent = visible(what, true); card.appendChild(pre);
+    }
+    if([p.text, JSON.stringify(rb.steps)].some(v => hasHidden(v)))
+      card.appendChild(Object.assign(document.createElement('p'), {className: 'hidden-warn', textContent: '! this plan contains hidden or control characters'}));
+  }
+  const row = node('row'), note = node('note');
+  const answer = async (decision, undoOK) => {
+    row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    try{
+      const r = await api('/v1/sessions/' + current + '/plan', {method:'POST', body: JSON.stringify({decision, plan_hash: p.hash, confirm_no_undo: !!undoOK})});
+      if(r && r.settled === false){ note.textContent = 'Recorded; the plan waits for the other answers the approvers need.'; return; }
+      if(decision === 'keep-planning'){ settlePlan('keep planning · say what to change'); return; }
+      settlePlan('approved · mode ' + visible(r.mode || ''));
+      if(r && r.message){ $('q').value = r.message; send(); }
+    }catch(e){
+      if(/no plan is waiting|another plan/i.test(e.message)){ settlePlan('no longer waiting for an answer'); return; }
+      note.textContent = visible(e.message); row.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    }
+  };
+  const mk = (label, cls, decision) => { const b = Object.assign(document.createElement('button'), {className: cls, textContent: label});
+    b.onclick = () => {
+      if(decision === 'keep-planning' || !risky.length) return answer(decision);
+      row.replaceChildren();
+      note.textContent = risky.length + ' step' + (risky.length === 1 ? '' : 's') + ' of this runbook cannot be undone and will run without asking.';
+      const no = Object.assign(document.createElement('button'), {className: 'no', textContent: 'No, keep planning'});
+      const yes = Object.assign(document.createElement('button'), {className: 'yes', textContent: 'Yes, approve the steps that cannot be undone'});
+      no.onclick = () => answer('keep-planning'); yes.onclick = () => answer(decision, true);
+      row.append(no, yes);
+    }; return b; };
+  row.append(mk('Yes, and accept edits', 'no', 'accept-edits'), mk('Yes, ask before each change', 'yes', 'approve'), mk('No, keep planning', 'no', 'keep-planning'));
+  card.append(note, row);
+  $('tx').appendChild(card); planEl = card;
+}
+function settlePlan(how){
+  if(!planEl) return;
+  const card = planEl; planEl = null;
+  const row = card.querySelector('.row'); if(row) row.remove();
+  card.appendChild(node('note', how));
 }
 
 // resolveApproval replaces a pending card with its outcome.
@@ -2688,7 +2831,7 @@ setInterval(health, 10000);
 setInterval(refresh, 5000);
 </script>
 </body>
-</html>`, "\x00", ""))
+</html>`, "\x00", "")))
 
 // authDisabledHTML is shown when someone reaches /login or /logout on a server
 // running without authentication. It says what is true and what to change,

@@ -339,9 +339,14 @@ var errNotRunning = errors.New("not running")
 // call is Call that reports an extension that did not answer: one already
 // dead, or one that crashed, hung or answered with nonsense now. A cancelled
 // context is not the extension's failure and reports none.
-func (e *Extension) call(ctx context.Context, req Request) (Reply, error) {
+func (e *Extension) call(ctx context.Context, req Request) (_ Reply, err error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	unlock := true
+	defer func() {
+		if unlock {
+			e.mu.Unlock()
+		}
+	}()
 	if e.dead {
 		return Reply{}, errNotRunning
 	}
@@ -375,9 +380,23 @@ func (e *Extension) call(ctx context.Context, req Request) (Reply, error) {
 	}()
 
 	timeout := time.NewTimer(e.cfg.Timeout)
-	defer timeout.Stop()
 	select {
 	case <-ctx.Done():
+		// The reply still owed is read before the next request is sent, or it
+		// would be taken as the answer to that one; the caller does not wait.
+		unlock = false
+		go func() {
+			defer e.mu.Unlock()
+			defer timeout.Stop()
+			select {
+			case r := <-done:
+				if r.err != nil {
+					e.die("%v", r.err)
+				}
+			case <-timeout.C:
+				e.die("did not answer %s within %s", req.Event, e.cfg.Timeout)
+			}
+		}()
 		return Reply{}, nil
 	case <-timeout.C:
 		// A hung extension is not retried: the read goroutine still owns the
@@ -385,6 +404,7 @@ func (e *Extension) call(ctx context.Context, req Request) (Reply, error) {
 		e.die("did not answer %s within %s", req.Event, e.cfg.Timeout)
 		return Reply{}, fmt.Errorf("did not answer within %s", e.cfg.Timeout)
 	case r := <-done:
+		timeout.Stop()
 		if r.err != nil {
 			e.die("%v", r.err)
 			return Reply{}, r.err

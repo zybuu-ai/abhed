@@ -19,6 +19,23 @@ type serverFiles struct {
 	home       string   // the server's own, its HOME
 	prefix     string   // the server's install folder under the home, read-only; "" when outside it
 	workspaces []string // writable, as the session's
+	// scripts are the folders, under the home, of files the server's
+	// configured arguments name, such as the script an interpreter runs:
+	// read-only, as its install folder is.
+	scripts []string
+	// files are single files shown read-only, where their folder is not:
+	// a program or script directly in a top-level folder of the home.
+	files []string
+}
+
+// shown are what under the home the server reads: its install folder, its
+// scripts' folders and the single files shown without their folder.
+func (f serverFiles) shown() []string {
+	var out []string
+	if f.prefix != "" {
+		out = append(out, f.prefix)
+	}
+	return append(append(out, f.scripts...), f.files...)
 }
 
 var serverNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]`)
@@ -39,12 +56,13 @@ func (f serverFiles) outsideHome(ps []string) []string {
 }
 
 // serverFilesFor works out a server's confinement and makes its home.
-func (s *Process) serverFilesFor(name, program string, env []string) (serverFiles, error) {
-	return serverFilesIn(name, program, env, s.workspaces())
+func (s *Process) serverFilesFor(name string, argv, env []string) (serverFiles, error) {
+	return serverFilesIn(name, argv, env, s.workspaces())
 }
 
 // serverFilesIn is a server's confinement with workspaces writable, its home made.
-func serverFilesIn(name, program string, env, workspaces []string) (serverFiles, error) {
+func serverFilesIn(name string, argv, env, workspaces []string) (serverFiles, error) {
+	program := argv[0]
 	real, err := os.UserHomeDir()
 	if err != nil {
 		return serverFiles{}, fmt.Errorf("sandbox: no home folder to hide from the server: %w", err)
@@ -57,13 +75,105 @@ func serverFilesIn(name, program string, env, workspaces []string) (serverFiles,
 	if err := os.MkdirAll(f.home, 0o700); err != nil {
 		return serverFiles{}, fmt.Errorf("sandbox: the server's own home: %w", err)
 	}
-	f.prefix = installPrefix(real, resolveIn(program, env))
-	// Its install folder is shown to it: never Abhed's state, nor a folder holding it.
+	resolved := resolveIn(program, env)
+	f.prefix = installPrefix(real, resolved)
+	// Its install folder is shown to it: never Abhed's state, nor a folder
+	// holding it or credentials; a top-level folder only as the program.
 	if state := filepath.Join(real, stateDir); f.prefix != "" && (insideAny(f.prefix, []string{state}) || insideAny(state, []string{f.prefix})) {
 		return serverFiles{}, fmt.Errorf("sandbox: the server's program %s is installed in %s, which holds Abhed's state (%s) and is never shown to a server; "+
 			"install it in a folder of its own, or set \"host_files\": true on the server", program, f.prefix, state)
 	}
+	if f.prefix != "" {
+		switch homeShown(real, f.prefix) {
+		case showNothing:
+			return serverFiles{}, fmt.Errorf("sandbox: the server's program %s is installed in %s, which holds Abhed's state or credentials and is never shown to a server; "+
+				"install it in a folder of its own, or set \"host_files\": true on the server", program, f.prefix)
+		case showFile:
+			f.prefix, f.files = "", []string{resolved}
+		}
+	}
+	scripts, files := scriptFolders(real, argv[1:])
+	f.scripts, f.files = scripts, append(f.files, files...)
 	return f, nil
+}
+
+// scriptFolders are the folders of the existing files under home that args
+// name by absolute path, such as `python3 ~/tools/mcp/server.py`: the
+// server's own code, from the configuration; files are the files themselves
+// where their folder is not shown (homeShown).
+func scriptFolders(home string, args []string) (folders, files []string) {
+	for _, a := range args {
+		if !filepath.IsAbs(a) {
+			continue
+		}
+		p := a
+		if r, err := filepath.EvalSymlinks(a); err == nil {
+			p = r
+		}
+		fi, err := os.Stat(p)
+		if err != nil || !fi.Mode().IsRegular() || !insideAny(p, []string{home}) {
+			continue
+		}
+		switch homeShown(home, filepath.Dir(p)) {
+		case showFolder:
+			if !slices.Contains(folders, filepath.Dir(p)) {
+				folders = append(folders, filepath.Dir(p))
+			}
+		case showFile:
+			if !slices.Contains(files, p) {
+				files = append(files, p)
+			}
+		}
+	}
+	return folders, files
+}
+
+// What of a folder under home a server is shown.
+const (
+	showNothing = iota // credentials or Abhed's state: not even the file
+	showFile           // a top-level or broad folder: only the named file
+	showFolder         // a folder of its own: all of it, read-only
+)
+
+// homeShown is how much of dir, under home, a server may read: nothing in a
+// credential folder or Abhed's state, nor in home or another folder that
+// holds one of them (a file named there may be a credential); only the file
+// itself in a folder directly in home (~/Downloads, ~/Projects, ~/bin,
+// ~/.local), in ~/.local/bin or ~/.cargo/bin, and in a cloud drive's root
+// or one folder below it (iCloud Drive and other apps' iCloud folders in
+// ~/Library/Mobile Documents, ~/Library/CloudStorage's drives); otherwise
+// the folder. Paths are compared without case, as macOS's disk does.
+func homeShown(home, dir string) int {
+	state := filepath.Join(home, stateDir)
+	if insideAny(dir, []string{state}) {
+		return showNothing
+	}
+	holds := insideAny(state, []string{dir})
+	for _, c := range HomeSecrets {
+		sec := filepath.Join(home, c)
+		if insideAny(dir, []string{sec}) {
+			return showNothing
+		}
+		holds = holds || insideAny(sec, []string{dir})
+	}
+	if holds {
+		return showNothing
+	}
+	below := func(root string, max int) bool {
+		rest, ok := Within(dir, root)
+		return ok && len(rest) <= max
+	}
+	switch {
+	case below(home, 1),
+		below(filepath.Join(home, ".local", "bin"), 0), below(filepath.Join(home, ".cargo", "bin"), 0),
+		// A cloud drive's root and the folders directly in it: a drive
+		// (CloudStorage/<drive>) or an app's iCloud folder (Mobile
+		// Documents/<container>), and one level below.
+		below(filepath.Join(home, "Library", "Mobile Documents"), 2),
+		below(filepath.Join(home, "Library", "CloudStorage"), 2):
+		return showFile
+	}
+	return showFolder
 }
 
 // serverProgramMissing says a host server's program is not there to run: a
@@ -119,12 +229,13 @@ func installPrefix(home, program string) string {
 		return ""
 	}
 	dir := filepath.Dir(program)
-	if filepath.Base(dir) != "bin" {
+	if !strings.EqualFold(filepath.Base(dir), "bin") {
 		return dir
 	}
 	parent := filepath.Dir(dir)
 	for _, broad := range []string{home, filepath.Join(home, ".local"), filepath.Join(home, ".cargo")} {
-		if parent == broad {
+		// Compared without case, as macOS's disk does.
+		if rest, ok := Within(parent, broad); ok && len(rest) == 0 {
 			return dir
 		}
 	}
@@ -135,8 +246,8 @@ func installPrefix(home, program string) string {
 // workspace's state; they come after the root is bound.
 func (f serverFiles) bwrapArgs() []string {
 	args := []string{"--tmpfs", f.realHome}
-	if f.prefix != "" {
-		args = append(args, "--ro-bind", f.prefix, f.prefix)
+	for _, d := range f.shown() {
+		args = append(args, "--ro-bind", d, d)
 	}
 	args = append(args, "--bind", f.home, f.home)
 	for _, ws := range f.workspaces {
@@ -159,8 +270,8 @@ func (f serverFiles) seatbeltRules() string {
 	for _, h := range PathForms(f.realHome) {
 		fmt.Fprintf(&b, "(deny file-read-data file-write* (subpath %q))\n", h)
 	}
-	if f.prefix != "" {
-		fmt.Fprintf(&b, "(allow file-read-data (subpath %q))\n", f.prefix)
+	for _, d := range f.shown() {
+		fmt.Fprintf(&b, "(allow file-read-data (subpath %q))\n", d)
 	}
 	fmt.Fprintf(&b, "(allow file-read-data file-write* (subpath %q))\n", f.home)
 	for _, ws := range f.workspaces {

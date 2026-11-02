@@ -129,6 +129,11 @@ type Policy struct {
 	// network only through the session's egress proxy, which applies this
 	// policy, and AllowNetwork is not read. Other tiers refuse it.
 	Egress *egress.Policy
+	// OptionalEgress, when Egress is not set, is a proxy for commands Select
+	// uses only where the chosen tier can hold it, never trading a tier for
+	// it: the package registries a person opens for toolchains. Where it
+	// cannot be held, the network stays as AllowNetwork says.
+	OptionalEgress *egress.Policy
 	// ReadOnlyPaths are additional paths mounted read-only (toolchains, caches).
 	ReadOnlyPaths []string
 	// ReadableFiles are single files a command may read, and run, even where
@@ -158,6 +163,14 @@ type Policy struct {
 	// cgroup per command, else each process's data); on macOS MaxProcs alone.
 	MaxMemoryMB int
 	MaxProcs    int
+	// ListenLoopback lets commands on the macOS process tier listen and
+	// accept, outside Abhed's reserved ports and the Mac's busy ones, without
+	// connecting to loopback: a dev server the person opens in their
+	// browser (sandbox.listen allow; SetListen turns it on later).
+	ListenLoopback bool
+	// ListenPorts are the only ports listening opens (sandbox.listen_ports),
+	// TCP alone, less Abhed's reserved ports and those the Mac listens on.
+	ListenPorts []int
 	// ReadableHome lets the macOS process tier read all of home but the
 	// HomeSecrets; otherwise only the toolchain folders there are readable.
 	ReadableHome bool
@@ -249,9 +262,21 @@ func Select(p Policy) (Sandbox, error) {
 		NewProcess(p),
 		NewNone(p),
 	}
+	// Each tier with the optional proxy where it can hold one, else without.
+	var withProxy []Sandbox
+	if p.OptionalEgress != nil && p.Egress == nil {
+		q := p
+		q.Egress = p.OptionalEgress
+		withProxy = []Sandbox{NewGVisor(q), NewContainer(q), NewProcess(q), nil}
+	}
 
 	var tried []string
-	for _, c := range candidates {
+	for i, c := range candidates {
+		if withProxy != nil && withProxy[i] != nil {
+			if ok, _ := withProxy[i].Available(); ok && withProxy[i].Tier().Strength() >= p.MinTier.Strength() {
+				return withProxy[i], nil
+			}
+		}
 		available, why := c.Available()
 		if !available {
 			tried = append(tried, fmt.Sprintf("%s (%s)", c.Tier(), why))
@@ -268,6 +293,22 @@ func Select(p Policy) (Sandbox, error) {
 			"Install gVisor (runsc) or a container runtime, or lower sandbox.min_tier "+
 			"in config — but do not run untrusted repositories below tier %q",
 		p.MinTier, strings.Join(tried, "; "), TierProcess)
+}
+
+// EgressOf is the egress policy a sandbox's commands go through, or nil
+// when they reach the network as AllowNetwork says.
+func EgressOf(sb Sandbox) *egress.Policy {
+	switch s := sb.(type) {
+	case *Process:
+		return s.policy.Egress
+	case *Container:
+		return s.policy.Egress
+	case *Fence:
+		return s.policy.Egress
+	case interface{ EgressPolicy() *egress.Policy }:
+		return s.EgressPolicy()
+	}
+	return nil
 }
 
 // checkHidden refuses a hidden folder that a read-only path or a skills

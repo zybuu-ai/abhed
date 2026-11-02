@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/zybuu-ai/abhed/config"
 	abhed "github.com/zybuu-ai/abhed/sdk"
 )
 
@@ -34,6 +35,12 @@ func modelDescription(m abhed.Model) string {
 	return m.Model + " (" + m.Type + ")"
 }
 
+// modelMeta is what Studio reads of a model beyond its name: whether it
+// reads images, so an image is offered only with a model that does (§3.5).
+func modelMeta(m abhed.Model) map[string]any {
+	return map[string]any{acpMetaKey: map[string]any{"image": m.Images}}
+}
+
 func currentModel(models []abhed.Model) string {
 	for _, m := range models {
 		if m.Current {
@@ -47,7 +54,7 @@ func currentModel(models []abhed.Model) string {
 func modelConfigOptions(models []abhed.Model) []any {
 	opts := make([]any, 0, len(models))
 	for _, m := range models {
-		opts = append(opts, map[string]any{"value": m.Name, "name": m.Name, "description": modelDescription(m)})
+		opts = append(opts, map[string]any{"value": m.Name, "name": m.Name, "description": modelDescription(m), "_meta": modelMeta(m)})
 	}
 	return []any{map[string]any{
 		"id": modelConfigID, "name": "Model", "description": "The configured model this session runs on",
@@ -59,7 +66,7 @@ func modelConfigOptions(models []abhed.Model) []any {
 func legacyModelState(models []abhed.Model) map[string]any {
 	avail := make([]any, 0, len(models))
 	for _, m := range models {
-		avail = append(avail, map[string]any{"modelId": m.Name, "name": m.Name, "description": modelDescription(m)})
+		avail = append(avail, map[string]any{"modelId": m.Name, "name": m.Name, "description": modelDescription(m), "_meta": modelMeta(m)})
 	}
 	return map[string]any{"currentModelId": currentModel(models), "availableModels": avail}
 }
@@ -80,9 +87,12 @@ func (c *acpConn) switchModel(sessionID, name string) (modelSwitcher, *rpcError)
 	if running {
 		return nil, &rpcError{Code: errRefused, Message: "a prompt is running in this session; change the model once it ends"}
 	}
+	var refused *config.ManagedError
 	switch err := m.SwitchModelNamed(name); {
 	case err == nil:
 		return m, nil
+	case errors.As(err, &refused) && refused.Key == "model.allowed":
+		return nil, &rpcError{Code: errRefused, Message: refused.Error()}
 	case errors.Is(err, abhed.ErrSwitchDuringRun):
 		return nil, &rpcError{Code: errRefused, Message: "a prompt is running in this session; change the model once it ends"}
 	case errors.Is(err, abhed.ErrUnknownModel):
@@ -127,7 +137,13 @@ func (c *acpConn) setConfigOption(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.reply(msg.ID, map[string]any{"configOptions": c.configOptions(c.session(p.SessionID))}, nil)
+	s := c.session(p.SessionID)
+	out := map[string]any{"configOptions": c.configOptions(s)}
+	// A local Ollama model that is not ready says so, for Studio's card (§3.2a).
+	if st := c.ollamaMeta(s, value); st != nil {
+		out["_meta"] = map[string]any{acpMetaKey: map[string]any{"ollama": st}}
+	}
+	c.reply(msg.ID, out, nil)
 }
 
 // setModel answers the unstable session/set_model; its result has no fields,
@@ -143,6 +159,9 @@ func (c *acpConn) setModel(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	c.reply(msg.ID, map[string]any{"_meta": map[string]any{acpMetaKey: map[string]any{
-		"currentModelId": currentModel(m.Models())}}}, nil)
+	meta := map[string]any{"currentModelId": currentModel(m.Models())}
+	if st := c.ollamaMeta(c.session(p.SessionID), p.ModelID); st != nil {
+		meta["ollama"] = st
+	}
+	c.reply(msg.ID, map[string]any{"_meta": map[string]any{acpMetaKey: meta}}, nil)
 }

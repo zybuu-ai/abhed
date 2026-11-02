@@ -106,6 +106,8 @@ type cliState struct {
 	// statuslineSlow once a first run that ran out of time went unsaid.
 	statuslineWarned bool
 	statuslineSlow   bool
+	// statuslineLast is the command's last output, from the footer or /status.
+	statuslineLast string
 	// statuslineSB is the statusline's own sandbox, chosen at its first run.
 	// statuslineRoots are the granted folders it was judged against; a
 	// change to them judges it again. statuslineMu guards all of these.
@@ -195,6 +197,7 @@ func (c *cliState) fresh() {
 		c.undo = agent.NewUndoLog(c.sess.RestoreFile, c.sess.RemoveFile)
 		c.undo.Persist = checkpointSaver(c)
 		c.sess.Checkpoint = c.undo.Record
+		c.sess.BashCheckpoint = c.undo.RecordBefore
 		if c.checkpoint != nil {
 			c.sess.Checkpoint = c.checkpoint(c.undo.Record)
 		}

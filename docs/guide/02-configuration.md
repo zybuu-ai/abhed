@@ -31,11 +31,13 @@ configuration](#trusting-the-workspace-configuration).
 
 | Section | What it controls |
 |---|---|
-| `model` | providers and which one is default — [Models](03-providers.md) |
+| `model` | providers and which one is default — [Models](03-providers.md); `ollama.assist` (`ask`, `local` or `off`): what Abhed offers when a chosen local Ollama model is not working yet — [A local Ollama model](03-providers.md#a-local-ollama-model); `completion`: the provider Studio's inline completions use, and `next_edit` and `commit` for its next-edit suggestions and commit messages (each falls back to `completion`) — [Inline completions](34-inline-completions.md); `allowed`: the only models any session may use — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
+| `completion` | `enabled` and `local_only`: turn Studio's model features (inline completions, next-edit suggestions, commit messages) off, or keep them to a model on this machine — [Inline completions](34-inline-completions.md) |
 | `permissions` | what runs unattended — [Permissions](04-permissions.md) |
+| `mode` | `default`: the mode new sessions start in where `permissions.mode` names none, such as the CLI's and Studio's new chats in this workspace; a `-mode` flag is chosen over it (`plan`, `default`, `accept-edits` or `auto`; never `bypass`, which is chosen for a session each time). `permissions.mode`, when set, wins, and a managed mode binds. An untrusted workspace file may only set it narrower than sessions would start in |
 | `context` | compaction threshold and memory files |
 | `limits` | turn, token and subagent budgets |
-| `sandbox` | process isolation and network access; `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md) |
+| `sandbox` | process isolation and network access; `toolchains`, `toolchains_preapproved` and `toolchains_registries`: languages installed on demand for commands and their package registries — [Toolchains](32-toolchains.md); `tier`: `fence` chooses the fence preview — [below](#the-fence-tier-preview-linux); `terminal`: whether the workbench terminal is a shell (`shell`, the default) or checks each line (`lines`) — [The workbench](16-workbench.md); `listen`: whether commands on macOS may listen on loopback for a dev server (`ask`, `allow`, `off`) — [below](#sandbox) |
 | `fence` | `cpu_percent`: the fence tier's CPU bound; `socketcall`, and the managed `egress_port_only` and `allow_root` — [below](#the-fence-tier-preview-linux) |
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
@@ -45,8 +47,9 @@ configuration](#trusting-the-workspace-configuration).
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
-| `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
+| `mcp` | Model Context Protocol servers — [MCP](08-mcp.md); `allowed` and `denied`: which servers may ever start — [Allowed models and MCP servers](#allowed-models-and-mcp-servers) |
 | `custom_providers` | providers added without a rebuild |
+| `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
@@ -54,8 +57,11 @@ configuration](#trusting-the-workspace-configuration).
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
-| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file) |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
+| `verify` | whether each answer is checked against the session's record (`off`, `label`, `strict`), the critic, and the completion contract — [below](#verified-answers), [Verified answers](29-verified-answers.md) |
+| `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
+| `plan` | `runbooks` (`true`): whether an accepted plan's runbook answers its steps' asks. `false` turns it off, and a plan with a runbook is refused; a workspace file may only turn it off, and a managed value binds either way — [Runbooks](28-runbooks.md#turning-runbooks-off) |
 | `cli` | the interactive terminal: `title` (`true`), `notify` (`auto`, `bel`, `osc9` or `off`) and `copy` (`true`) — [The terminal](20-terminal.md#the-title-notifications-and-the-clipboard); `mode_cycle`, managed only, narrows Shift-Tab |
 
 ## Context
@@ -223,7 +229,67 @@ workspace and a few shared folders, not only the workspace:
   paths again, and `read_only_paths` names a folder they need. `"shared_caches": true` lets commands write the real
   folders again, shared with the rest of your machine, where a command can
   leave a file a program outside the sandbox later reads; a workspace file
-  can only turn it off.
+  can only turn it off. Even then, the toolchain cache, the Linux helper's
+  copies and every `read_only_paths` folder stay unwritable, except a
+  `read_only_paths` folder that holds the workspace: it gets no write deny,
+  so where a temp or cache area lies inside it, that part stays writable.
+
+On macOS a command cannot listen for connections until you agree for the
+workspace (`"listen": "ask"`, the default): a dev server refused its port
+in Abhed Studio's terminal (`listen EPERM`) brings the offer. Once you
+agree, every command in every session of the workspace, the agent's
+included, may listen, so `npm run dev` opens in your browser. `"allow"`
+lets commands listen without asking and cannot be taken back from Studio;
+`"off"` never lets them. Both `listen` and `listen_ports` are an operator's
+settings, read from your own or the managed file: a workspace file, even a
+trusted one, can only make `listen` stricter and cannot set `listen_ports`.
+Taking it back from Studio reaches this window's sessions at once, and
+another window's within two seconds, before its next command starts.
+
+Listening is TCP only, and only on the ports in `"listen_ports"`: by
+default `["3000-3009", "4200", "4321", "5173-5179", "8000-8009"]` (Next.js,
+Rails and Express, Angular, Astro, Vite, Django and `python3 -m
+http.server`), chosen to leave out databases, caches and consoles (5432,
+3306, 6379, 27017, 8080, 8090, 8888) and macOS's own AirPlay ports (5000,
+7000). Each entry is a port or a range above 1024, at most 512 in all. A
+UDP bind, or any other port, is refused,
+and so are Abhed's own reserved ports (47600-47855, or
+`ABHED_LOOPBACK_PORTS`) and a listen port one of your programs already
+listens on (another user's ports the kernel itself keeps). Commands that
+listen still connect to nothing on loopback but the egress proxy.
+
+While listening is on, a command can take a listen port before one of your
+programs starts on it, and receive that program's connections. Your
+program still starts (Go, Node and Python servers bind every address with
+`SO_REUSEADDR`), but connections to `127.0.0.1` reach the command. Abhed
+warns you but does not stop the command: it reads the Mac's listeners every
+two seconds, and when more than one program listens on a listen port it
+tells you within a few seconds, in every session that may listen on that
+port, and records it (`sandbox.port_contested`). It tells again within
+one read whenever a program it has not told of starts listening there,
+so a command cannot use the warning up in advance with programs of its
+own; only the same programs coming back after the port cleared are told
+at most once a minute. A
+server and the workers it forks share one socket and count as one
+program, as does one program listening on both `127.0.0.1` and `::1`;
+separate sockets bound with `SO_REUSEPORT` count as more than one. It
+cannot prove which of two programs is the sandbox's, so it signals
+neither. Stop the
+command yourself, or turn listening off. A new command is not given a port
+one of your programs holds. If the Mac's listeners can no longer be read,
+Studio says so. A program of yours that binds `127.0.0.1` itself instead
+fails to start, as the port is taken. Keep your own servers off the listen
+ports, or narrow them.
+
+The sandbox cannot keep a command, the agent's included, from binding
+every address of a listen port, `0.0.0.0` too. In tests connections to the
+Mac's network address were not delivered to such a server, but bind
+`127.0.0.1` or `localhost` to be sure. Listening needs `lsof` to read the
+Mac's listeners; where it fails, commands do not listen and Studio says so.
+It works the same where each command has a temp folder of its own
+(`abhed serve`'s instances). An interactive terminal opened before you agreed keeps
+its old rules. On Linux, the container and the vm tiers a server inside the
+sandbox is not reachable from the host.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command
@@ -357,6 +423,49 @@ saying so and pointing at `web_search` and `web_fetch`. A command that exits 0
 gets the note only when it ran a network client (`curl`, `wget`, `git fetch`,
 `npm`, `pip` and the like) and the failure is in its last five lines, so
 output that merely mentions such an error, a log being read, does not.
+
+### The container tier's image
+
+The container tier runs each command in `docker.io/library/debian:bookworm-slim`
+unless told otherwise. It has a shell, coreutils and little else: no Go,
+Node, Python or Rust, so a project's build or tests fail there with
+`command not found`. This is what most Macs get, since the container tier is
+picked over the process tier when an engine is running. Name an image that
+has the toolchains the project needs:
+
+```json
+"sandbox": { "image": "docker.io/library/golang:1.26-bookworm" }
+```
+
+or, for one run, `ABHED_SANDBOX_IMAGE=docker.io/library/golang:1.26-bookworm abhed`.
+`sandbox.image` wins over the variable, so an image the managed file sets
+cannot be changed with it. A workspace file cannot set it, trusted or not:
+a repository does not choose what its commands run in.
+
+| Project | Image that has its toolchain |
+|---|---|
+| Go | `docker.io/library/golang:1.26-bookworm` |
+| Node | `docker.io/library/node:22-bookworm-slim` |
+| Python | `docker.io/library/python:3.12-slim-bookworm` |
+| Rust | `docker.io/library/rust:1-slim-bookworm` |
+
+A project that needs more than one toolchain needs an image of your own with
+all of them. Whatever the image, the tier runs it the same way: no network
+unless `allow_network` or the allowlist says so, a read-only root, every
+capability dropped, the workspace mounted and a throwaway `/tmp`. The image
+needs `/bin/sh`. Pull it once (`podman pull …`) before a session, since a
+command has no network to pull it with; pin it by digest where a tag must
+not move under you. The MCP servers the container and vm tiers confine run
+from the same image.
+
+`abhed doctor` looks at the workspace's top folder for `go.mod`/`go.work`,
+`package.json`, `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile`
+and `Cargo.toml`, and when the container tier's image lacks `go`, `node`,
+`python3` or `cargo`, says so on the `sandbox` line with the image to use.
+It knows the default image has none of them; any other it looks in only
+when the engine already has it, in a container with no network, no
+capabilities, a read-only root and an unprivileged user, and never pulls one
+to look.
 
 ### The fence tier (preview, Linux)
 
@@ -571,13 +680,20 @@ without running anything.
   stdin, stdout and stderr through the descriptors it was given, but cannot
   open `/dev/ptmx` or any `/dev/pts/*`, so it can neither read nor write your
   other terminals.
-- **System calls.** The seccomp filter (profile `command/3`) refuses ptrace,
+- **System calls.** The seccomp filter (profile `command/4`) refuses ptrace,
   namespaces, mounts, bpf, kernel keyrings, loading modules and a filter of
   the command's own. It also refuses signals aimed at Abhed: `kill`,
   `tkill`, `tgkill`, `rt_sigqueueinfo` and `rt_tgsigqueueinfo` naming Abhed's
   process id, `kill` of its process group or of every process (`kill -1`),
   and `pidfd_send_signal` altogether, since a filter cannot see whom a pidfd
   names. Each command also runs in a process group apart from Abhed's.
+  In `mount_namespace` mode, on Linux 5.7 or later, each refused call is
+  sent to Abhed (seccomp user notification), which answers it with the same
+  EPERM and counts it; the command, in its own PID namespace, cannot see
+  the listener to answer its own. `process.launched` says
+  `seccomp_notify: true` then. If Abhed is gone the kernel refuses the call
+  with ENOSYS instead. In `landlock_only`, or on an older kernel, the filter
+  refuses with EPERM itself and nothing is counted.
 - **Network.** All or nothing. With `allow_network` false every `socket()` is
   refused, and Landlock refuses TCP as well (plain TCP only: since Linux 6.14
   Landlock leaves MPTCP and SCTP alone, so the `socket()` refusal is what
@@ -595,7 +711,8 @@ without running anything.
   connect only to the session's egress proxy's port. In `mount_namespace`
   mode each command also gets a network namespace of its own holding only its
   loopback, where the launcher relays that port to the proxy's socket on the
-  host, so the proxy is the one way out. In `landlock_only` there is no
+  host, so the proxy is the one way out; there UDP sockets are allowed too,
+  for the session's resolver, as they reach only that loopback. In `landlock_only` there is no
   network namespace, and Landlock filters ports, not addresses, so a command
   could reach that port number on any host; the fence refuses the allowlist
   there unless the managed `fence.egress_port_only` is `true`, which accepts
@@ -630,7 +747,9 @@ without running anything.
   process limit (`pids_max` the forks refused in its own cgroup,
   `session_pids_max` those refused at the session's limit while it ran,
   which on Linux 6.14 and later are counted only there and may include
-  another command's), and `fence.state_planted` a `.abhed` found in the workspace.
+  another command's), `fence.denied` the system calls seccomp refused a
+  command, counted by name (`calls`, such as `"socket(unix)": 2`), when it
+  sends them to Abhed, and `fence.state_planted` a `.abhed` found in the workspace.
   `process.launched` names its `source`: `call` for a tool call or a `!`
   command, `harness` for one Abhed runs itself within a session. When
   `fence.qualified` cannot be recorded, the command line closes the fence
@@ -876,6 +995,14 @@ no allowed_hosts configured") unless an allow rule such as
 allow rule or `allowed_hosts`; `abhed eval` approves every ask, so an eval
 run with `web_fetch` on and no host list fetches any public URL.
 
+One exception to "off by default": a web page a person links in Abhed
+Studio is read as that person's own `web_fetch` call even while `web_fetch`
+is off, under the same deny rules, address and secret checks. It asks as
+above when no `allowed_hosts` names the site, unless an allow rule names
+it. A user's or workspace's `web_fetch.enabled: false` does not stop it;
+only the managed file's own `"enabled": false` does. See
+[Input and memory](19-input-and-memory.md#in-abhed-studio).
+
 A wildcard over a single label, such as `*.com`, is refused. Be careful with
 wildcards over shared hosting — `*.github.io`, `*.vercel.app`,
 `*.s3.amazonaws.com`, `*.githubusercontent.com` — where anyone can publish a
@@ -939,6 +1066,35 @@ stop, during a wake, while an approval waits, or while the person is typing;
 an ask that arrives while it is being made stops it, and one that arrives
 after it was offered takes it away.
 
+## Verified answers
+
+```json
+"verify": {
+  "mode": "strict",
+  "answer_tool": true,
+  "critic": {"enabled": true, "model": "reviewer"},
+  "contract": {"require": ["go test ./..."], "protect": ["*_test.go", ".github/**"]}
+}
+```
+
+Each answer's statements are checked against what the session observed and
+labelled verified, unverified or contradicted. The whole of it is in
+[Verified answers](29-verified-answers.md).
+
+| Key | Default | |
+|---|---|---|
+| `mode` | unset | `off`, `label` or `strict`. Unset is `label` in the terminal, the workbench and console, and Abhed Studio, and `off` for `-p`, `rpc`, unattended runs and the SDK. `label` adds a model call only when a statement is contradicted, for one revision turn. `-verify`, rpc's `start`, a session's `verify` and `Options.Verify` set it per run, and may only make a managed value stricter. A workspace file may only raise it, never below `label` |
+| `answer_tool` | on in `strict`, off otherwise | offers the agent the `answer` tool, which carries each claim's evidence. A workspace file may only turn it on |
+| `critic.enabled` | `false` | a model checks each verified claim against its evidence and may only downgrade it; it fails closed. One model call per answer with a verified claim |
+| `critic.model` | the session's | a configured provider to ask instead. Neither it nor `critic.enabled` is taken from a workspace file until it is trusted |
+| `critic.timeout_ms` | `30000` | how long the critic may take |
+| `contract.require` | none | commands the harness runs in the sandbox after the last change; each must exit 0 for the run to end `completed`. Not taken from an untrusted workspace file |
+| `contract.protect` | none | globs of files a run must not change. A workspace file may add to them |
+| `contract.timeout_ms` | the bash tool's | how long each required command may take |
+
+A run that strict mode or a contract cannot verify ends `unverified`, and
+`abhed -p` exits 8.
+
 ## Storage
 
 ```json
@@ -965,6 +1121,12 @@ configuration:
 `record.retention_days` prunes sessions last used longer ago than that when
 the record is opened, leaving a tombstone for each. Unset, nothing is removed
 unless you run `abhed record prune`.
+
+`record.ocsf` writes the local record to a rotated JSONL file of OCSF events
+as it is recorded: `enabled`, `version` (`1.8.0`, `1.5.0`, `1.3.0` or
+`1.1.0`), `max_mb` and `keep` may be set in your own file; `path` and
+`locked`, which makes the managed `record.ocsf` the whole of it, only in the
+managed file ([OCSF events and logs](30-ocsf-and-logs.md#the-ocsf-file)).
 
 **Two roles, not one.** The audit record is only as protected as the role that
 writes it. Database triggers refuse an `UPDATE`, a `DELETE` or a `TRUNCATE` on
@@ -996,7 +1158,9 @@ rewritten, so the runtime role cannot make a live session's record
 unreadable. Every owner change is written to `owner_changes`, and every
 change to an account's groups or tenant to `account_changes`, by triggers
 that run as the tables' owner: the runtime role can read those tables but
-neither write nor skip a row. Keep the owner's credentials off the host that
+neither write nor skip a row. The OCSF file's cursors in `ocsf_cursors`
+(`record.ocsf` on `abhed serve`) are read, inserted and moved forward,
+never removed. Keep the owner's credentials off the host that
 runs the server; whoever holds them can alter the record (see
 [the Postgres record](12-records.md#the-postgres-record) for the chain and
 witness that show it). After an upgrade
@@ -1023,10 +1187,91 @@ the difference is exact: the record is then protected against application bugs
 and stray statements, and **not** against anyone holding the server's database
 credentials. `abhed doctor` and the startup banner say which mode is in force.
 
+**The runtime role must not create in schema `public`,** by any route: a
+role that can add a function or operator there can stand in for one the
+record's triggers call. Every role the runtime role belongs to counts,
+with or without `INHERIT`, since `SET ROLE` reaches them all, and so does
+owning the schema (on Postgres 15 and later, owning the database). Postgres
+13 and 14 grant `CREATE` on `public` to `PUBLIC`, so there the owner role
+usually creates in `public` only through that grant, and the schema
+belongs to the superuser. The fix is two statements, in this order, and on
+13 and 14 it is a superuser step:
+
+```sql
+GRANT CREATE ON SCHEMA public TO abhed_owner;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
+`abhed migrate` runs both itself where its role may (it owns `public` or
+inherits from the role that does), and never revokes `PUBLIC`'s grant while
+the owner role would be left without `CREATE`. Otherwise it refuses and
+prints the statements to run, the first only when the owner needs it,
+naming each route the runtime role has (`PUBLIC`, a grant to it, a role it
+belongs to, ownership); a runtime server that can create there refuses to
+start with the same message. The revoke is database-wide: if other
+applications share the database on Postgres 13 or 14 and create in
+`public` through `PUBLIC`, grant their roles `CREATE` first. On a managed
+Postgres service where neither the schema's owner nor a superuser is
+reachable, ask the provider to run the statements, or use
+`storage.single_role` and accept the weaker guarantee it describes above.
+
 **Do not connect as a superuser,** in either mode. Row-level security is what
 isolates tenants, and Postgres does not apply it to a superuser or a
 `BYPASSRLS` role, not even with `FORCE`. Abhed checks and refuses, because a
 control that is silently off is worse than one that is visibly missing.
+
+### Backing up and restoring
+
+`scripts/backup/abhed-backup.sh` writes a logical dump of the database with
+`pg_dump` and a tarball of the state folders you name (the server's
+`~/.abhed`, `/etc/abhed`). Dump as a role that reads every tenant's rows past
+row security, not as the runtime role:
+
+```sql
+CREATE ROLE abhed_backup LOGIN PASSWORD '…' NOSUPERUSER BYPASSRLS;
+GRANT pg_read_all_data TO abhed_backup;
+```
+
+Give the connection string without its password and put the password in a
+`PGPASSFILE` (or `~/.pgpass`) or `PGPASSWORD`: the scripts refuse a
+connection string that carries one, since the database clients would show it
+to every local user in the process list. Use client tools of the server's
+major version. `abhed-backup.service` and `abhed-backup.timer` beside the
+script are an example schedule.
+
+`scripts/backup/abhed-restore.sh` restores a dump, as a superuser, into an
+empty database, in one transaction that stops at the first error, and
+refuses a database that already has tables. `ABHED_RESTORE_CREATE_ROLES`
+names the owner and runtime roles to make if they are missing, as plain
+login roles without a password; it changes no role that exists and makes no
+other. A full dump creates the record's triggers after its rows are loaded,
+so every chain position, hash and `commit_tx` is kept as it was. Never
+restore with `--data-only` into a database that already has the schema: the
+record's triggers then run on every row, and the restore stops at the first
+event.
+
+Then, before any server starts, run `abhed migrate` as the owner, and `abhed
+record verify` and `abhed record audit`. The script runs all three when
+`ABHED_BIN`, `ABHED_MIGRATE_DATABASE_URL` and `ABHED_DATABASE_URL` are set.
+Restored into a cluster whose transaction counter is behind the one the dump
+came from, `abhed migrate` raises `commit_shift` so the OCSF file's cursor
+and an edition's SIEM delivery go on without skipping new events. A runtime
+server started on such a database before the migrate refuses, naming
+`abhed migrate`.
+
+A physical copy (`pg_basebackup`, or WAL archiving) keeps transaction ids
+as they were and needs none of this beyond the two checks. With
+`record.witness`, a restore from before the witness's last head fails
+`abhed record verify` for the sessions written since: that is the record
+showing the restore.
+
+`scripts/backup/restore-test.sh` checks all three ways (a logical restore
+into the same cluster, into a fresh one whose counter is behind, and a
+physical copy) in throwaway containers, with the restore script running the
+migrate and both checks and restoring a state tarball. The OCSF file's
+cursor is in the database and goes back with it; lines the file already
+holds for events after the backup point stay in the file, though those
+events are not in the restored database.
 
 ## Stopping the server
 
@@ -1068,6 +1313,108 @@ A second SIGTERM, or a SIGINT (Ctrl-C) sent after the first, does not cut the
 drain short: once shutdown has begun, both are ignored, and the server exits
 when the drain budget and the waits above have run out. To stop it sooner,
 send SIGKILL, and accept that turns still running then record no end.
+
+## Metrics and the API audit
+
+```json
+"server": { "metrics": { "enabled": true, "listen": "127.0.0.1:9464" } }
+```
+
+`abhed serve` serves Prometheus metrics only when `server.metrics.enabled` is
+set; off, nothing is counted. With `listen` set they are on that address
+alone, at `/metrics`, apart from the API; a `listen` other than a loopback
+address needs `token_env`, the name of an environment variable holding a
+bearer token the scraper sends, or the server refuses to start. Without
+`listen` they are at `/metrics` on the API's own address, for administrators
+only (the `auth.admin_group`), so a server with sign-in off has nobody who
+can read them there and should use `listen`.
+
+What is counted, all from the session record, the control plane's audit and
+the API, never from a command, a path, a host or anything a person or model
+wrote:
+
+| Metric | Labels |
+|---|---|
+| `abhed_policy_decisions_total` | `decision` (allow, ask, deny), `step`, `tool` |
+| `abhed_approvals_total` | `result` (approved, rejected, unanswered, interrupted, withheld, owner, ...), `by`, `tool` |
+| `abhed_supervisor_verdicts_total`, `abhed_supervisor_judge_seconds` | `code`, `before`, `after` |
+| `abhed_supervisor_corrections_total`, `abhed_supervisor_replans_total` | `code` |
+| `abhed_egress_decisions_total`, `abhed_egress_bytes_total` | `kind`, `decision`; `direction` |
+| `abhed_tool_duration_seconds` | `tool`, `outcome` (ok, error, not_run, unknown) |
+| `abhed_model_calls_total`, `abhed_model_call_seconds`, `abhed_model_first_token_seconds`, `abhed_model_tokens_total` | `model`, `purpose`, `outcome`; `kind` (in, out, cached) |
+| `abhed_plan_decisions_total`, `abhed_approval_scopes_granted_total`, `abhed_answer_claims_total` | `decision`, `via`; `verdict` |
+| `abhed_sessions_started_total`, `abhed_sessions_ended_total`, `abhed_sessions_live` | `reason` |
+| `abhed_sandbox_operations_total`, `abhed_sandbox_bound_total` | `action`, `outcome`; `driver`, `tier` |
+| `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
+| `abhed_fence_denied_total` | `source` (the fence tier's system-call profile, as its `fence.denied` names it), `call` (a system call that profile refuses) |
+| `abhed_lsp_starts_total` | `language` (`go`, `python`, `typescript`, `javascript`, `rust`, or `other`): language servers started for editors; a restart after a crash counts again — [Language servers](33-language-servers.md) |
+| `abhed_lsp_messages_total` | `language`, `outcome` (`passed`, `refused`): editors' messages to language servers, counted when each server ends |
+| `abhed_ollama_actions_total` | `op` (`start`, `install`, `pull`), `outcome` (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`): a person's attempts to get a local Ollama model working — [A local Ollama model](03-providers.md#a-local-ollama-model) |
+| `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |
+| `abhed_audit_events_total` | `source` (api, sandbox), `outcome` |
+| `abhed_http_requests_total`, `abhed_http_request_seconds` | `route` (the pattern, such as `POST /v1/sessions/{id}/messages`), `method`, `code` |
+| `abhed_config_refused_total` | `kind` (refused, narrowed) |
+
+A label takes the values its list names, or a configured name (a tool, a
+model, a driver); anything else is counted as `other`, and each metric keeps
+at most 500 label sets. Egress decisions Abhed makes for its own requests
+outside any session, and anything an exporter outside this process does, are
+not counted here.
+
+Every API request that changes something (any method but GET, HEAD and
+OPTIONS) and reaches its route is written to the control-plane audit record
+with its principal,
+before it runs and again with its outcome: its action is `api:` and the
+route pattern, and its detail the method, the route, the tenant, the
+caller's address and what the route's wildcards took, never the body or the
+query. A request whose first event cannot be written is refused with 503
+and nothing is changed. What is audited is what got past sign-in: a request
+turned away before it reaches a route (refused sign-in, a cross-origin
+request, the rate limit, a required group or password change) changes
+nothing and is in the request log, not the audit. Sign-in routes record
+`anonymous`, since nobody is signed in yet. The record is the tenant's `sandbox_audit` table on Postgres,
+chained per tenant beside the sandbox operations, or
+`<records>/<tenant>/audit/api.jsonl` (under `record.dir`, or
+`~/.abhed/records`) without it, chained line by line the same way.
+`abhed record audit` checks the chain, and with the control plane on
+SQLite also the control plane's own record (its sandbox operations and the
+reconciler's events), chained the same way since this release; rows written
+before are counted as unchained. The outcome event of a POST that answers
+with JSON names what it created, from the answer's `id`, `session_id` or
+`name` field when that is a short identifier (`created.id`, ...), so a new
+session or sandbox can be found by its id; nothing else of the answer is
+kept.
+
+Left out: the two routes that only open and close a channel of the
+workbench's read-only stream, and requests to a sandbox's exposed service
+(under `/v1/exposed/`), which are traffic to a person's own app rather than a
+change to the control plane; the exposure itself is made and removed through
+audited sandbox routes, and the app's paths and tokens are kept out of the
+audit. The metrics count those requests by the prefix alone, and a request's
+method is counted only if it is a standard HTTP method (`other` if not). Two more get one event a request, the
+`requested` one, and no outcome, since a client calls them every few keys:
+a terminal's input (`POST /v1/sessions/{id}/pty/{pty}/input`) and a message
+to a language server (`POST /v1/sessions/{id}/lsp/{lsp}`). A refused write
+still stops them. What was typed is not in the audit: a shell's lines are in
+the session record as `terminal.input`, by the person; what a program reads
+is recorded nowhere, since it may be a password typed with echo off.
+
+What the audit costs on Postgres, measured with the opt-in
+`ABHED_AUDIT_LOAD=1 go test ./store -run TestAuditWriteLoad` against
+Postgres 16 in a podman VM on an Apple M3 Pro laptop, the server's default
+pool of 10 connections, one tenant, 1,000 writes per client:
+
+| Concurrent writers | Writes per second | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| 1 | 2,871 | 0.33 ms | 0.39 ms | 0.96 ms | 1.6 ms |
+| 5 | 4,451 | 1.05 ms | 1.5 ms | 2.1 ms | 9.4 ms |
+| 20 | 4,211 | 4.5 ms | 5.9 ms | 10.4 ms | 49 ms |
+
+A tenant's writes share one chain lock, so they do not get faster past a few
+writers: at 20 a write waits about 4.5 ms, and a request, which writes
+twice, about 9 ms more than it did. That is one machine with no network
+between server and database, not a promise; a database across a network
+adds its round trip to each write.
 
 ## Accounts
 
@@ -1151,7 +1498,7 @@ Later sources win, except that an org-managed file cannot be overridden:
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
-`record.witness`, `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
+`record.witness`, `record.ocsf.path`, `record.ocsf.locked`, `hooks.disabled`, `hooks.managed_only`, `cli.mode_cycle`,
 `studio.disable_host_terminal`, `sandbox.network` (which your own file may
 use only to narrow `allow_network`), `sandbox.microvm_socket`,
 `fence.egress_port_only`, every key under `egress`,
@@ -1188,13 +1535,19 @@ configuration says `default`), not only `bypass`. A nested run narrows with
 ### The managed file
 
 `/etc/abhed/config.json` belongs to the organisation. It is read last, so each
-key it sets replaces what the user and project files said. A list it sets,
+key it sets replaces what the user and project files said. An organisation can
+also sign a policy on its server for every laptop that signs in to it; that
+[signed org policy](35-org-policy.md) is laid under this file, which wins
+where both make a setting, and the two together are the managed
+configuration this section describes. A list it sets,
 such as `permissions.allow`, replaces the lower files' list; so does a map
 entry, such as one provider under `model.providers`. `permissions.deny` and
 `permissions.ask` are the exceptions: the managed rules are added to the
 deny and ask rules already in force (the built-in ones,
 `~/.abhed/config.json`, `-settings` and a trusted workspace's file), so a
-managed file can add a deny rule or a question but never take one away. `/permissions` shows each rule with the layer it came from. Its
+managed file can add a deny rule or a question but never take one away. The
+same holds for `verify.contract.protect` and `monitor.honeytokens`: a
+managed list adds protected files and honeytokens, never drops one. `/permissions` shows each rule with the layer it came from. Its
 presence makes the policy engine managed: `bypass` mode is refused wherever
 it comes from. A call that bypass would approve asks as in default mode, and
 the reason names the managed file; `abhed doctor` shows the mode as
@@ -1288,8 +1641,212 @@ A managed `model.default` pins the model on every surface: `-model`,
 it starts, an editor over `abhed acp`, subagents, and the SDK's
 `SwitchModelNamed`, `SetModel` and `Options.Provider` all refuse another
 model. Fallbacks under a managed default are only those the managed
-`model.fallback` names. Without a managed `model.default`, any provider a
-file defines may be chosen, and the SDK's `Provider` names any endpoint.
+`model.fallback` names. Studio's inline completions are pinned too: under a
+managed `model.default`, a `model.completion` (or `model.next_edit`,
+`model.commit`) naming another provider is refused unless the managed file
+sets that key itself
+([Inline completions](34-inline-completions.md#turning-it-on)). Without a managed `model.default` or
+`model.allowed`, any provider a file defines may be chosen, and the SDK's
+`Provider` names any endpoint. To allow several models rather than pin one,
+see [Allowed models and MCP servers](#allowed-models-and-mcp-servers).
+
+### Allowed models and MCP servers
+
+A managed `model.default` pins one model. To allow several, the managed
+file lists them in `model.allowed`, and lists the MCP servers that may start
+in `mcp.allowed` and `mcp.denied`:
+
+```json
+{
+  "model": {"allowed": ["anthropic/claude-*", "ollama/qwen3:*", "openai-compatible/corp-*"]},
+  "mcp": {
+    "allowed": [
+      {"name": "github", "digest": "sha256:9f2c…"},
+      {"command": "/opt/mcp/bin/*"},
+      {"host": "*.mcp.corp.example"}
+    ],
+    "denied": [{"name": "shell-*"}]
+  }
+}
+```
+
+**Models.** Each `model.allowed` entry is a pattern over a provider's
+`type` and the `model` it serves, written `type/model`. `*` stands for any
+run of characters, `/` included. The configured provider's own name is not
+matched, since any layer can choose a name. A provider is admitted when a
+pattern matches it, and every other one is refused on every surface:
+
+- the default model when a session starts, `-model`, `/model` and a custom
+  command's `model`
+- the console's picker and the sessions it starts or switches
+- Studio's model picker and `session/set_config_option` or `session/set_model`
+  over `abhed acp`
+- the SDK's `SwitchModelNamed`, `SetModel` and `Options.Provider`
+- subagents, including a definition's `model`
+- `model.completion`, `model.next_edit` and `model.commit`
+- `suggest.model`, `verify.critic.model` and a supervisor `monitor.model`
+- each `model.fallback` and `-fallback-model` name
+
+The refusal names `model.allowed`, the model as `type/model` and the
+patterns. A choice made in a session is recorded as `config.refused` with
+the decision `refused`. The console's refusal also goes to the server log
+and the admin audit hook. A fallback the list refuses is dropped, and a
+`suggest.model` or `verify.critic.model` it refuses is left unset, so the
+session's own model does that work. A completion, next-edit or commit model
+it refuses is turned away when the editor asks for it. A supervisor judge
+model it refuses is never asked, so each call it would judge gets
+`monitor.on_unavailable`. Each of these is set aside at load, recorded as
+`config.refused` with the decision `set_aside`, and listed by `abhed
+doctor`. A default model the list refuses does not stop the configuration
+loading. It stops the session from starting with the reason: choose an
+admitted model with `-model`, or change `model.default`.
+
+**Endpoints.** A pattern judges the provider's type and model name, not
+where the requests go. When the managed file or the org policy sets
+`model.allowed`, every input that decides where a model's requests go is
+bound as well:
+
+- `base_url`
+- watsonx's `iam_url`, where the key is sent for a token
+- a vertex type's `region` and `project_id`, which are written into the host
+- a custom provider type's own `base_url`
+- the supervisor judge's `monitor.endpoint`
+
+Each input is bound when one of these holds:
+
+- It is left unset, so the type's own endpoint is used. A vertex `region`
+  and `project_id` must then be plain names of letters, digits and hyphens.
+  The vertex adapters now refuse any other value with or without a list.
+- It points at this machine (`localhost` or a loopback address).
+- The machine's managed file sets it. That means its provider entry under
+  `model.providers`, its `custom_providers`, or its `monitor.endpoint`. A
+  managed provider entry is one setting, every field included, and
+  `ABHED_BASE_URL` cannot change it. An org policy never sets these: they
+  name endpoints, and the laptop sets them aside.
+
+Anything else is refused, and the refusal says where the requests would
+have gone. That covers:
+
+- a `base_url` from a lower file or from `ABHED_BASE_URL`
+- an `iam_url`
+- a custom type a lower file defines
+- a judge endpoint a lower file sets
+- an endpoint an SDK embedder names off this machine
+
+A lower file's explicit `base_url` is refused even when it equals the
+type's public endpoint, such as `https://api.anthropic.com`. Leave it unset
+instead. A user's or workspace's own list, without one from the
+organisation, judges type and model only.
+
+**This machine.** An endpoint on this machine is admitted because Ollama and
+the other local servers live there. But a loopback listener can relay
+anywhere: a LiteLLM proxy, an `ssh -L` tunnel, or Ollama's own
+cloud-offloaded models. A pattern such as `ollama/*` admits those `-cloud`
+tags. Abhed does not see where such a relay sends the requests. A managed
+`"model": {"allowed_loopback": false}` refuses endpoints on this machine
+under the list, including a type whose own endpoint is local (`ollama`,
+`vllm`, `llamacpp`, `tgi`, `sglang`) and the built-in `local` provider. A
+provider the managed file defines there is still admitted. An org policy may
+set `allowed_loopback` to `false`, which only narrows, and never to `true`.
+
+Defining the providers in the managed file does not by itself pin the
+endpoint, since a lower file may still add a provider on this machine. Only
+two things pin it outright:
+
+- a managed `model.default` to a provider the managed file defines, which
+  pins the model and therefore its endpoint (an org policy's pin may name
+  only such a provider; a managed pin to a provider a lower file defines
+  takes that file's endpoint)
+- `allowed_loopback: false` together with managed providers
+
+The egress allowlist does not judge the model's endpoint: that endpoint is
+allowed implicitly ([Network policy](21-network-policy.md)).
+
+While a list is set, a model id holding `..` as a path segment, `?`, `#`,
+`%` or `\` is refused, since some types put the id in the request's path.
+A supervisor judge (`monitor.model`) is matched as
+`openai-compatible/<monitor.model>`, because it is reached over that API
+whatever serves it. A pattern such as `anthropic/claude-*` does not admit
+it. Embedding models (`retrieval.embed_model` at `retrieval.embed_base_url`) are
+not covered by `model.allowed`, though they too are sent workspace content.
+
+**MCP servers.** Each `mcp.allowed` or `mcp.denied` entry is an object.
+A server matches an entry when every field the entry sets matches it:
+
+| Field | Matches |
+|---|---|
+| `name` | the configured name; `*` for any run of characters |
+| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above. While any entry matches by `command`, a server is started at exactly the path that was judged, with links followed, not looked up again. That includes a container engine whose image a `digest` pins. Started unconfined, the program is still given the configured name as its `argv[0]`. A confined start passes the resolved path as `argv[0]`, since the sandbox's launcher runs that path, so a multi-call program reached through a link sees its real name there |
+| `digest` | the `sha256:` digest the server's configuration pins. For a program file, Abhed hashes the file before it starts the server, so a program that does not match never runs. For a container engine (`docker`, `podman`, `nerdctl`) whose `run` names the image by that digest, the digest pins the image and nothing is hashed. An allow entry then admits the server only when it also has a `command` that matches the engine's path, as found or with links followed, since anything can be named `docker`. A deny entry matches the digest either way |
+| `host` | a remote server's URL host; `*.example.com` matches any subdomain. Hosts are compared in the ASCII form a connection dials, as IDNA maps them, so `ｅｖｉｌ.com` is `evil.com`. Under any list, a URL whose host cannot be mapped is refused, and so is a numeric form other than a plain IP (`2130706433`, `0x7f.1`, `127.1`). A redirect to another host is judged as the server reached there |
+
+An entry with no field, a field Abhed does not know, a `command` that is not
+an absolute path, a malformed `digest`, or a `host` with a scheme, port or
+path stops Abhed at startup. So does an entry that sets `host` together
+with `command` or `digest`. A `name` alone matches whatever program a lower
+file runs under that name. To bind the program itself, use `command`,
+`digest` or `host`. An empty `mcp.allowed` list allows no server.
+
+What `command` and `digest` bind has limits:
+
+- `command` matches the program, never its arguments. An interpreter or
+  engine path (`npx`, `uvx`, `python3`, `node`, `docker`) admits whatever
+  package, script or image it is told to run.
+- For a container engine, `digest` pins only the image, and an allow entry
+  must name the engine with `command` as well, for example
+  `{"command": "/usr/local/bin/docker", "digest": "sha256:…"}`. The arguments
+  still choose the entrypoint and the mounts (`--entrypoint`, `-v /:/host`).
+- On the container tier a `command` entry judges the host's program, and
+  the server is started at that path inside the sandbox.
+- `digest` binds the file's contents; `command` alone binds only its path.
+
+A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
+set, a server no entry matches never starts either. This covers servers from
+every source:
+
+- the user's, a trusted workspace's and the managed `mcp.servers`
+- `-mcp-config` and `abhed mcp add`
+- one an administrator adds through the console (refused with 403, and
+  audited as `mcp.refused`)
+- one Studio adds
+- a reconnect with `/mcp restart` or Studio's restart
+
+The servers an editor names in ACP `session/new` are never started under any
+configuration. The reply's `mcpServersRefusedReason` says so, and each is
+recorded.
+
+The lists are applied when the configuration loads. A server they refuse is
+taken out and recorded as `config.refused` with the decision `set_aside`, the
+reason naming the list. `/mcp`, Studio's MCP panel and `abhed doctor` show it
+as refused, with why. The gateway that starts servers checks every server
+again just before it starts, so one added later is judged the same way.
+
+**Narrowing.** The lists only narrow. `~/.abhed/config.json`, `-settings`
+and a workspace's file may set `model.allowed` and `mcp.allowed`
+too, but each list that is set must admit a model or server. A workspace
+file's lists apply whether or not it is trusted, since they can only take
+away. A malformed list in an untrusted workspace file is ignored with a
+warning rather than stopping Abhed. So a lower list
+can leave out what the managed list allows, and cannot add to it. A lower
+`mcp.denied` adds to the managed one. Without a managed file, a user's own
+lists still bind their sessions. Setting `mcp.allowed` or `mcp.denied` in
+the managed file does not make its `mcp.servers` the organisation's: the
+user's and workspace's servers stay theirs to change, within the lists.
+
+**Fail closed.** A list that cannot be read in the managed file, the user's
+file, `-settings` or a trusted workspace's file stops Abhed at startup,
+naming the file, rather than leaving the list unenforced. That covers:
+
+- an empty `model.allowed`, which would refuse every model
+- a pattern without a `/` or with whitespace
+- an MCP entry as described above
+- a value of the wrong type
+
+**Where to see them.** `abhed doctor` prints each list with the file that
+set it, and every model and server it left out. `/permissions` prints the
+same lines. The policy views show them too: `allowLists` in Studio's policy
+view (ACP `_abhed/capabilities`), and `allow_lists` in the console's
+`/v1/sessions/{id}/permissions`.
 
 Run `abhed doctor` after any change. It reports what is actually in effect,
 which is not always what the file appears to say. With Postgres storage it

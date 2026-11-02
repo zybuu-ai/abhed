@@ -171,7 +171,7 @@ func FuzzReadFrame(f *testing.F) {
 	f.Add(clientFrame(true, opPing, []byte("x")), true)
 	f.Add(serverFrame(opBinary, bytes.Repeat([]byte("z"), 300)), false)
 	f.Fuzz(func(t *testing.T, data []byte, masked bool) {
-		fr, err := readFrame(bytes.NewReader(data), masked, 1024)
+		fr, err := readFrame(bytes.NewReader(data), masked, 1024, -1)
 		if err != nil {
 			return
 		}
@@ -405,4 +405,50 @@ func TestLastReadMovesWhileAFrameArrives(t *testing.T) {
 		t.Fatal("LastRead stood still while the frame's bytes kept arriving")
 	}
 	<-done
+}
+
+// A frame declaring more than its message may still take is refused at its
+// header, before anything is allocated for it or its payload waited for.
+func TestFrameOverTheMessageLimitIsRefusedAtItsHeader(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := newConn(a, nil, false, Limits{MaxFrame: 4 << 20, MaxMessage: 1 << 20}, "")
+	key := [4]byte{1, 2, 3, 4}
+	header := appendFrame(nil, true, opBinary, make([]byte, 2<<20), &key)[:14] // the header and mask only
+	go func() { _, _ = b.Write(header); _, _ = io.Copy(io.Discard, b) }()
+	done := make(chan error, 1)
+	go func() { _, _, err := c.ReadMessage(); done <- err }()
+	select {
+	case err := <-done:
+		if !IsClose(err, CloseTooBig) {
+			t.Fatalf("read: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a frame over the message limit was waited for")
+	}
+}
+
+// chunkReader records the largest read asked of it.
+type chunkReader struct {
+	r       io.Reader
+	largest int
+}
+
+func (c *chunkReader) Read(p []byte) (int, error) {
+	c.largest = max(c.largest, len(p))
+	return c.r.Read(p)
+}
+
+// A large payload is read, and so allocated, a chunk at a time.
+func TestFramePayloadIsReadInChunks(t *testing.T) {
+	key := [4]byte{1, 2, 3, 4}
+	data := appendFrame(nil, true, opBinary, bytes.Repeat([]byte("x"), 1<<20), &key)
+	cr := &chunkReader{r: bytes.NewReader(data)}
+	f, err := readFrame(cr, true, 1<<20, 1<<20)
+	if err != nil || len(f.payload) != 1<<20 {
+		t.Fatalf("%v, %d bytes", err, len(f.payload))
+	}
+	if cr.largest > frameChunk {
+		t.Fatalf("a read of %d bytes was asked at once", cr.largest)
+	}
 }

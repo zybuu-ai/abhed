@@ -218,3 +218,40 @@ func TestSearchSkipsWorktrees(t *testing.T) {
 		}
 	}
 }
+
+// A glob in grep's path is split into its folder and a glob below it, held
+// to the workspace like any path; a glob in both path and glob gets a hint.
+func TestGrepTakesAGlobInPath(t *testing.T) {
+	s, dir := seedRepo(t)
+	for _, p := range []string{"pkg/**/*.go", filepath.Join(dir, "pkg", "**", "*.go"), "**/auth*.go"} {
+		res := run(t, Grep{}, s, grepArgs{Pattern: "package auth", Path: p})
+		if res.IsError || !strings.Contains(res.Content, "auth.go") || strings.Contains(res.Content, "main.go") {
+			t.Fatalf("%s: %s", p, res.Content)
+		}
+	}
+	if res := run(t, Grep{}, s, grepArgs{Pattern: "x", Path: "../**/*.go"}); !res.IsError {
+		t.Fatalf("a glob out of the workspace was searched: %s", res.Content)
+	}
+	if res := run(t, Grep{}, s, grepArgs{Pattern: "x", Path: "pkg/*.go", Glob: "*.ts"}); !res.IsError || !strings.Contains(res.Content, "glob is set too") {
+		t.Fatalf("%s", res.Content)
+	}
+}
+
+// A folder named with brackets, as app/[id] in web frameworks, is a path,
+// not a glob: it is searched as written and takes a glob of its own.
+func TestGrepPathWithBrackets(t *testing.T) {
+	s, dir := seedRepo(t)
+	p := filepath.Join(dir, "app", "[id]", "page.tsx")
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte("export default function Page() {}\n"), 0o644)
+	for _, args := range []grepArgs{
+		{Pattern: "Page", Path: "app/[id]"},
+		{Pattern: "Page", Path: "app/[id]", Glob: "*.tsx"},
+		{Pattern: "Page", Path: filepath.Join(dir, "app", "[id]")},
+	} {
+		res := run(t, Grep{}, s, args)
+		if res.IsError || !strings.Contains(res.Content, "page.tsx") {
+			t.Fatalf("%+v: %s", args, res.Content)
+		}
+	}
+}

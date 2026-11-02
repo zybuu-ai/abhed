@@ -68,7 +68,7 @@ func TestHeadlessPipedLogIsContext(t *testing.T) {
 	t.Parallel()
 	h := piped(t, Opts{Args: []string{"-p", "why did this fail?", "-output-format", "json"}, Stdin: "error: build broke at step 3\n", Script: `text "step 3"`})
 	req := lastRequestText(t, h)
-	if !strings.Contains(req, "why did this fail?") || !strings.Contains(req, "Input from stdin:") || !strings.Contains(req, "build broke at step 3") {
+	if !strings.Contains(req, "why did this fail?") || !strings.Contains(req, "Input from stdin") || !strings.Contains(req, "build broke at step 3") {
 		t.Fatalf("the log did not reach the model with the question:\n%s", req)
 	}
 	if resultOf(t, h.Stdout())["exit_code"] != float64(0) {
@@ -291,5 +291,16 @@ func TestPositionalPrompt(t *testing.T) {
 		if code := b.Wait(time.Second); code != 2 || !strings.Contains(b.Stderr(), "did you mean abhed -p") {
 			t.Fatalf("%v: exit %d:\n%s", args, code, b.Stderr())
 		}
+	}
+}
+
+// A -json-schema run gives a result, not an answer, so a configured
+// completion contract is said not to apply rather than silently skipped.
+func TestSchemaRunNamesTheUncheckedContract(t *testing.T) {
+	cfg := strings.Replace(DefaultUserConfig, `{"sandbox"`, `{"verify":{"contract":{"require":["true"]}},"sandbox"`, 1)
+	h := piped(t, Opts{UserConfig: cfg, Args: []string{"-p", "count", "-json-schema", `{"type":"object","properties":{"n":{"type":"integer"}}}`},
+		Script: `tool result {"n":1}`})
+	if !strings.Contains(h.Stderr(), "verify.contract is not checked for a -json-schema run") {
+		t.Fatalf("stderr:\n%s", h.Stderr())
 	}
 }

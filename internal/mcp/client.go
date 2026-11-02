@@ -19,14 +19,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
 
 const protocolVersion = "2025-06-18"
@@ -120,13 +125,13 @@ func (c *Client) Initialize(ctx context.Context) error {
 	})
 	raw, err := c.call(ctx, "initialize", params)
 	if err != nil {
-		return fmt.Errorf("initialize %s: %w", c.name, err)
+		return c.withStderr(fmt.Errorf("initialize %s: %w", c.name, err))
 	}
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
-		return fmt.Errorf("initialized notification: %w", err)
+		return c.withStderr(fmt.Errorf("initialized notification: %w", err))
 	}
 	if err := c.refreshTools(ctx); err != nil {
-		return err
+		return c.withStderr(err)
 	}
 	var init struct {
 		Capabilities struct {
@@ -416,6 +421,25 @@ func (c *Client) readLoop() {
 	}
 }
 
+// stderrTailer is a transport that keeps the end of what its server wrote
+// to stderr.
+type stderrTailer interface {
+	StderrTail(wait time.Duration) string
+}
+
+// withStderr adds to err the end of what the server wrote to stderr, which
+// says why a server that died at the start did: "broken pipe" alone does not.
+func (c *Client) withStderr(err error) error {
+	t, ok := c.transport.(stderrTailer)
+	if !ok {
+		return err
+	}
+	if tail := t.StderrTail(time.Second); tail != "" {
+		return fmt.Errorf("%w; the server wrote: %s", err, tail)
+	}
+	return err
+}
+
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
@@ -435,18 +459,198 @@ type StdioTransport struct {
 	// cleanup removes what the server runs in, such as its container, which
 	// killing the engine's client would leave running.
 	cleanup func()
+	// stderr keeps the end of what the server writes to stderr; stderrDone
+	// closes when it has written all it will.
+	stderr     *tailBuffer
+	stderrDone chan struct{}
+	// env and argv are the server's own environment and command line, as
+	// configured, which its stderr is redacted against.
+	env, argv []string
+}
+
+// stderrKeep is how much of a server's stderr is kept: its last lines.
+const stderrKeep = 4 << 10
+
+// tailBuffer keeps the last stderrKeep bytes written to it.
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > stderrKeep {
+		b.buf = append([]byte(nil), b.buf[len(b.buf)-stderrKeep:]...)
+	}
+	b.mu.Unlock()
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// StderrTail is the end of the server's stderr, its last lines, printable
+// and bounded, waiting up to wait for a server that is ending to finish
+// writing.
+func (t *StdioTransport) StderrTail(wait time.Duration) string {
+	if t.stderr == nil {
+		return ""
+	}
+	if t.stderrDone != nil {
+		select {
+		case <-t.stderrDone:
+		case <-time.After(wait):
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(t.redact(t.stderr.String())), "\n")
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	out := strings.Map(func(r rune) rune {
+		if r == '\t' || r >= ' ' && r != 0x7f {
+			return r
+		}
+		return ' '
+	}, strings.Join(lines, " | "))
+	if len(out) > 1000 {
+		out = "…" + out[len(out)-1000:]
+	}
+	return strings.TrimSpace(out)
+}
+
+// envKept are the variables whose values are no secret and stay in a
+// server's stderr as written.
+var envKept = map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "TERM": true, "USER": true,
+	"LOGNAME": true, "SHELL": true, "PWD": true, "TZ": true}
+
+// redact takes out of a server's stderr what could be a secret before it is
+// told anywhere: each value of the server's own environment but the plain
+// ones above, an argument after a flag that names a token, key, secret or
+// password, and anything shaped like a key or token.
+func (t *StdioTransport) redact(text string) string {
+	env, args := t.env, t.argv
+	if env == nil && t.cmd != nil {
+		env = t.cmd.Env
+	}
+	if args == nil && t.cmd != nil {
+		args = t.cmd.Args
+	}
+	var values []string
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && !envKept[k] && !strings.HasPrefix(k, "LC_") && len(v) >= 6 {
+			values = append(values, v)
+		}
+	}
+	for i, a := range args {
+		low := strings.ToLower(a)
+		next := ""
+		if i+1 < len(args) {
+			next = args[i+1]
+		}
+		switch {
+		case low == "-e" || low == "--env":
+			// docker run -e NAME=VALUE: the value, when NAME names a secret
+			if k, v, ok := strings.Cut(next, "="); ok && namesSecret(strings.ToLower(k)) {
+				values = append(values, v)
+			}
+		case strings.HasPrefix(low, "--env="):
+			if k, v, ok := strings.Cut(strings.TrimPrefix(a, "--env="), "="); ok && namesSecret(strings.ToLower(k)) {
+				values = append(values, v)
+			}
+		case low == "-h" || low == "--header":
+			values = append(values, headerSecret(next)...)
+		case strings.HasPrefix(low, "--header="):
+			values = append(values, headerSecret(a[len("--header="):])...)
+		case strings.HasPrefix(a, "-H") && len(a) > 2:
+			// -HAuthorization: Bearer VALUE, -H=…
+			values = append(values, headerSecret(strings.TrimPrefix(a[2:], "="))...)
+		case strings.HasPrefix(low, "-") && !strings.HasPrefix(low, "--no-") && namesSecret(low):
+			// --api-token VALUE, --token=VALUE; not a following flag
+			if _, v, ok := strings.Cut(a, "="); ok {
+				values = append(values, v)
+			} else if !flagLike.MatchString(next) {
+				values = append(values, next)
+			}
+		default:
+			// NAME=VALUE given as an argument
+			if k, v, ok := strings.Cut(a, "="); ok && !strings.HasPrefix(k, "-") && namesSecret(strings.ToLower(k)) {
+				values = append(values, v)
+			}
+		}
+	}
+	values = slices.DeleteFunc(values, func(v string) bool { return len(v) < 6 })
+	// Longest first, so a value inside another is not left half there.
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	for _, v := range values {
+		// As written, and as a server may print it: URL-encoded or inside a
+		// JSON string.
+		quoted, _ := json.Marshal(v)
+		for _, form := range []string{v, url.QueryEscape(v), url.PathEscape(v), strings.Trim(string(quoted), `"`)} {
+			text = strings.ReplaceAll(text, form, "[secret]")
+		}
+	}
+	text, _ = secretfiles.RedactContent(text)
+	return text
+}
+
+// flagLike is an argument that is itself a flag, not a flag's value.
+var flagLike = regexp.MustCompile(`^(?:-[A-Za-z]|--[a-z][a-z0-9-]*)$`)
+
+// headerSecret is what to hide of an HTTP header argument ("Name: value"):
+// for Authorization, Proxy-Authorization, Cookie, Set-Cookie, a session
+// header or one named as a secret (X-Api-Key, X-Auth-Token), its value and
+// the credential after its scheme (Bearer, Basic, Token).
+func headerSecret(h string) []string {
+	k, v, ok := strings.Cut(h, ":")
+	name := strings.ToLower(strings.TrimSpace(k))
+	secret := namesSecret(name) || name == "authorization" || strings.Contains(name, "cookie") || strings.Contains(name, "session")
+	if !ok || !secret {
+		return nil
+	}
+	v = strings.TrimSpace(v)
+	out := []string{v}
+	if f := strings.Fields(v); len(f) == 2 {
+		out = append(out, f[1])
+	}
+	return out
+}
+
+// namesSecret reports whether a lower-cased name says it holds a secret.
+func namesSecret(low string) bool {
+	for _, w := range []string{"token", "key", "secret", "pass", "credential", "auth"} {
+		if strings.Contains(low, w) {
+			return true
+		}
+	}
+	return false
 }
 
 func NewStdioTransport(ctx context.Context, command string, args []string, env []string) (*StdioTransport, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
 	// Never nil, which would inherit Abhed's whole environment and its keys.
 	cmd.Env = append([]string{}, env...)
-	return startStdio(cmd, command)
+	return startStdio(cmd, command, env, append([]string{command}, args...))
+}
+
+// newStdioTransportAt starts the program at path with argv[0] set to name,
+// as a shell would show it the name it was run by.
+func newStdioTransportAt(ctx context.Context, path, name string, args []string, env []string) (*StdioTransport, error) {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Args[0] = name
+	cmd.Env = append([]string{}, env...)
+	return startStdio(cmd, name, env, append([]string{name}, args...))
 }
 
 // startStdio starts cmd, built to run the server command, and speaks to it
-// over its stdin and stdout.
-func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
+// over its stdin and stdout. env and argv are the server's own, as
+// configured: what its stderr is redacted against, whatever cmd wraps them
+// in (a container engine's command, with the environment in a file).
+func startStdio(cmd *exec.Cmd, command string, env, argv []string) (*StdioTransport, error) {
 	if cmd.Env == nil {
 		cmd.Env = []string{}
 	}
@@ -458,18 +662,27 @@ func startStdio(cmd *exec.Cmd, command string) (*StdioTransport, error) {
 	if err != nil {
 		return nil, err
 	}
-	// stderr is deliberately discarded rather than merged: a server that logs
-	// to stderr would otherwise corrupt the JSON-RPC stream.
-	cmd.Stderr = io.Discard
-
+	// stderr is kept apart, never merged into the JSON-RPC stream, and only
+	// its end is kept: it is told when the server fails to start.
+	errPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start MCP server %q: %w", command, err)
 	}
-	return &StdioTransport{
+	t := &StdioTransport{
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: bufio.NewReaderSize(stdout, 1<<20),
-	}, nil
+		stderr: &tailBuffer{}, stderrDone: make(chan struct{}),
+		env: append([]string{}, env...), argv: append([]string{}, argv...),
+	}
+	go func() {
+		defer close(t.stderrDone)
+		_, _ = io.Copy(t.stderr, errPipe)
+	}()
+	return t, nil
 }
 
 func (t *StdioTransport) Send(_ context.Context, payload []byte) error {

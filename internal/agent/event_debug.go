@@ -1,0 +1,54 @@
+package agent
+
+// Events a person's debug session records (docs/guide/31-debugging.md and
+// the editor protocol's _abhed/debug methods). The launch itself is the
+// person's bash call before it, with its decision and observation.
+const (
+	// EvDebugLaunched is a debug session started; see DebugLaunched.
+	EvDebugLaunched EventType = "debug.launched"
+	// EvDebugStopped is a debug session ended; see DebugStopped.
+	EvDebugStopped EventType = "debug.stopped"
+	// EvDebugSetup is a person's choice about where debugging runs; see
+	// DebugSetup.
+	EvDebugSetup EventType = "debug.setup"
+)
+
+// DebugSetup is the payload of debug.setup: the person raised the
+// workspace's tier to the container (use_container, with the file written),
+// agreed to debug it on the process tier with loopback open
+// (process_tier_consent), or took that back (process_tier_forgotten).
+type DebugSetup struct {
+	Action    string `json:"action"`
+	Workspace string `json:"workspace"`
+	Path      string `json:"path,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+}
+
+// DebugLaunched is the payload of debug.launched.
+type DebugLaunched struct {
+	DebugID  string `json:"debug_id"`
+	CallID   string `json:"call_id"`
+	Language string `json:"language"`
+	// Command is the debuggee's command line, as policy judged it.
+	Command string `json:"command"`
+	Tier    string `json:"tier"`
+	// Bridge names the socket bridge Delve's session runs through, and
+	// whether its checksum was pinned by the build.
+	Bridge       string `json:"bridge,omitempty"`
+	BridgePinned bool   `json:"bridge_pinned,omitempty"`
+	// Loopback is set for a session on the process tier with loopback open
+	// to the debug command, on the person's agreement for the workspace.
+	Loopback bool `json:"loopback,omitempty"`
+}
+
+// DebugStopped is the payload of debug.stopped.
+type DebugStopped struct {
+	DebugID    string `json:"debug_id"`
+	CallID     string `json:"call_id"`
+	Reason     string `json:"reason"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+	// Dropped counts the adapter's messages not passed to the editor because
+	// they could not be read unambiguously.
+	Dropped int `json:"dropped,omitempty"`
+}

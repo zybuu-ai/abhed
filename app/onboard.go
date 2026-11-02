@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/defaults"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
@@ -264,13 +266,23 @@ func dialAddr(base string) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
-// run dials once, with a 500 ms limit, and remembers a refusal.
+// probeDial is the probe's direct dial; tests replace it to see it used.
+var probeDial = func(ctx context.Context, addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 500 * time.Millisecond}
+	return d.DialContext(ctx, "tcp", addr)
+}
+
+// run dials once, with a 500 ms limit, and remembers a refusal. Through an
+// upstream proxy it dials nothing: the model host is neither resolved nor
+// reached directly, and the first real call, through the proxy, decides.
 func (e *endpointProbe) run(ctx context.Context) error {
-	if e.addr == "" {
+	if e.addr == "" || viaUpstream(e.addr) {
+		e.mu.Lock()
+		e.down, e.at = nil, time.Now()
+		e.mu.Unlock()
 		return nil
 	}
-	d := net.Dialer{Timeout: 500 * time.Millisecond}
-	conn, err := d.DialContext(ctx, "tcp", e.addr)
+	conn, err := probeDial(ctx, e.addr)
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -326,6 +338,22 @@ func friendlyModelError(err error, name string, p config.ProviderConfig) string 
 		where = "the " + p.Type + " endpoint"
 	}
 	next := "Run `abhed doctor` to check the configuration, `abhed init` to write one, or set ABHED_BASE_URL to use another endpoint for this run."
+	var se *model.StatusError
+	msg := friendlyCause(err, name, p, where, next)
+	// A local Ollama that is down or lacks the model: also what is wrong with it, and the steps.
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &se) && se.Status == http.StatusNotFound {
+		if steps := ollamaSteps(context.Background(), name, p); steps != "" {
+			msg += "\n" + steps + "\nOr run `abhed ollama check " + name + "`, which offers each step and asks before it runs one."
+		}
+	}
+	return msg
+}
+
+// friendlyCause is friendlyModelError's first part: what failed and the next step.
+func friendlyCause(err error, name string, p config.ProviderConfig, where, next string) string {
+	if msg, ok := proxiedFailure(err, name, p, where, next); ok {
+		return msg
+	}
 	var dns *net.DNSError
 	var se *model.StatusError
 	var ne net.Error
@@ -388,7 +416,7 @@ func firstRunNeeded(workspace string) bool {
 func ollamaBase() string {
 	h := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
 	if h == "" {
-		return "http://localhost:11434/v1"
+		return defaults.LocalModelURL
 	}
 	if !strings.Contains(h, "://") {
 		h = "http://" + h
@@ -411,7 +439,7 @@ func listModels(ctx context.Context, base, key string) ([]string, error) {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Transport: egress.UpstreamRoundTripper{}}).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +580,8 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 				fmt.Fprintf(out, "  %q is not one of the choices.\n", pick)
 				continue
 			}
-			name, p = "ollama", config.ProviderConfig{Type: "openai-compatible", BaseURL: base, Model: choices[n-1]}
+			// Written as Ollama's, so a later session checks it and offers what it lacks, on any port.
+			name, p = "ollama", config.ProviderConfig{Type: "ollama", BaseURL: base, Model: choices[n-1]}
 		}
 	}
 
@@ -758,4 +787,86 @@ func writeUserConfig(name string, p config.ProviderConfig, autoMemory bool) (str
 		return path, err
 	}
 	return path, f.Close()
+}
+
+// viaUpstream reports whether connections to addr go through the upstream
+// proxy in force.
+func viaUpstream(addr string) bool {
+	up := egress.CurrentUpstream()
+	if up == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	return !up.Bypass(host)
+}
+
+// proxyFor is the authority of the upstream proxy a model's calls go
+// through, or "" when they go directly. A provider's default endpoint (no
+// base_url) is a public host, taken to go through the proxy in force.
+func proxyFor(base string) string {
+	up := egress.CurrentUpstream()
+	if up == nil {
+		return ""
+	}
+	if base == "" {
+		return up.Authority()
+	}
+	if addr := dialAddr(base); addr == "" || !viaUpstream(addr) {
+		return ""
+	}
+	return up.Authority()
+}
+
+// proxiedFailure names the upstream proxy when a model call through it
+// failed at the proxy: the proxy not answering, its refusal of the tunnel,
+// or a 502, 503 or 504 the call came back with. An answer the model server
+// gave is never put on the proxy.
+func proxiedFailure(err error, name string, p config.ProviderConfig, where, next string) (string, bool) {
+	up := proxyFor(p.BaseURL)
+	if up == "" || err == nil {
+		return "", false
+	}
+	host := dialAddr(p.BaseURL)
+	if host == "" {
+		host = where
+	}
+	var se *model.StatusError
+	if errors.As(err, &se) {
+		if se.Status != http.StatusBadGateway && se.Status != http.StatusServiceUnavailable && se.Status != http.StatusGatewayTimeout {
+			return "", false
+		}
+		return fmt.Sprintf("%d %s for %s (model %q) through the upstream proxy %s: the proxy, or the server behind it, did not complete the call. "+
+			"Check that the model server is up and that the proxy may reach it. %s", se.Status, http.StatusText(se.Status), host, name, up, next), true
+	}
+	var unreach *egress.UpstreamUnreachable
+	var op *net.OpError
+	if errors.As(err, &unreach) || errors.As(err, &op) && op.Op == "proxyconnect" {
+		return fmt.Sprintf("The upstream proxy %s is not answering, so %s (model %q) could not be reached. "+
+			"Check network.upstream_proxy and that the proxy is up. %s", up, host, name, next), true
+	}
+	status := 0
+	var refused *egress.UpstreamRefused
+	var ue *url.Error
+	if errors.As(err, &refused) {
+		status = refused.Status
+	} else if errors.As(err, &ue) && ue.Err != nil && errors.Unwrap(ue.Err) == nil {
+		// Go's own CONNECT reports the proxy's refusal as its status text and nothing else.
+		for _, c := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusForbidden, http.StatusProxyAuthRequired} {
+			if ue.Err.Error() == http.StatusText(c) {
+				status = c
+			}
+		}
+	}
+	switch status {
+	case 0:
+		return "", false
+	case http.StatusProxyAuthRequired:
+		return fmt.Sprintf("The upstream proxy %s asked for credentials (407) for %s (model %q): check network.upstream_proxy.credentials_secret "+
+			"and the user:password stored under that name. %s", up, host, name, next), true
+	}
+	return fmt.Sprintf("The upstream proxy %s answered %d %s for %s (model %q): it did not reach the model server, or would not. "+
+		"Check that the server is up and that the proxy lets this machine reach it. %s", up, status, http.StatusText(status), host, name, next), true
 }

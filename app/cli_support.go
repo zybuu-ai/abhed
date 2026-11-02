@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	root "github.com/zybuu-ai/abhed"
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/ui"
 )
 
@@ -46,20 +47,7 @@ func slashDoctor(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 			rows = append(rows, []string{"sandbox", string(sb.Tier()) + " — " + sb.Describe()})
 		}
 	}
-	p := st.provider
-	probe := newEndpointProbe(p)
-	if err := probe.run(ctx); err != nil {
-		rows = append(rows, []string{"endpoint", friendlyModelError(err, st.appCfg.Model.Default, p)})
-	} else {
-		switch called, err := probeToolCalling(ctx, p); {
-		case err != nil:
-			rows = append(rows, []string{"endpoint", "answers; tool calling: " + friendlyModelError(err, st.appCfg.Model.Default, p)})
-		case called:
-			rows = append(rows, []string{"endpoint", "answers, and the model calls tools"})
-		default:
-			rows = append(rows, []string{"endpoint", "answers, but the model did not call the tool it was given"})
-		}
-	}
+	rows = append(rows, []string{"endpoint", endpointRow(ctx, st.provider, st.appCfg.Model.Default)})
 	if st.set != nil && st.set.Gateway != nil {
 		for _, s := range st.set.Gateway.Servers() {
 			switch {
@@ -196,4 +184,28 @@ func openLink(ctx context.Context, link string) (<-chan struct{}, error) {
 		close(reaped)
 	}()
 	return reaped, nil
+}
+
+// endpointRow is /doctor's endpoint result: whether the model answers and
+// calls tools. Through a proxy the probe dials nothing, so only a call that
+// came back through it says the endpoint answers.
+func endpointRow(ctx context.Context, p config.ProviderConfig, name string) string {
+	if err := newEndpointProbe(p).run(ctx); err != nil {
+		return friendlyModelError(err, name, p)
+	}
+	answers := "answers"
+	up := proxyFor(p.BaseURL)
+	if up != "" {
+		answers = "answers through the upstream proxy " + up
+	}
+	switch called, err := probeToolCalling(ctx, p); {
+	case err != nil && up != "":
+		return friendlyModelError(err, name, p)
+	case err != nil:
+		return "answers; tool calling: " + friendlyModelError(err, name, p)
+	case called:
+		return answers + ", and the model calls tools"
+	default:
+		return answers + ", but the model did not call the tool it was given"
+	}
 }

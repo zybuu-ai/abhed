@@ -178,6 +178,10 @@ func (m Middleware) authenticate(r *http.Request) (id *Identity, p Provider, fai
 			if err := m.check(r.Context(), id); err != nil {
 				return nil, nil, failRefused, err
 			}
+			// Held to the request as a session or a token is, as Authorize says.
+			if err := m.authorize(r, id); err != nil {
+				return nil, nil, failForbidden, err
+			}
 		}
 		return id, nil, failNone, nil
 	}

@@ -2,8 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,14 +104,200 @@ func TestServerInstallFolderNeverHoldsState(t *testing.T) {
 		if err := os.WriteFile(prog, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := serverFilesIn("s", prog, nil, nil); err == nil || !strings.Contains(err.Error(), "holds Abhed's state") {
+		if _, err := serverFilesIn("s", []string{prog}, nil, nil); err == nil || !strings.Contains(err.Error(), "holds Abhed's state") {
 			t.Errorf("%s: %v", rel, err)
 		}
 	}
 	ok := filepath.Join(home, "tools", "srv", "bin", "srv")
 	_ = os.MkdirAll(filepath.Dir(ok), 0o755)
 	_ = os.WriteFile(ok, []byte("#!/bin/sh\n"), 0o755)
-	if f, err := serverFilesIn("s", ok, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
+	if f, err := serverFilesIn("s", []string{ok}, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
 		t.Fatalf("an ordinary install folder: %+v %v", f, err)
+	}
+}
+
+// A server's code named by its configured arguments, under the home, is
+// readable to it, as its install folder is; never home itself, a broad
+// folder, Abhed's state or a folder of credentials.
+func TestServerScriptFoldersReadable(t *testing.T) {
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	mk := func(rel string) string {
+		p := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("echo ok\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	script := mk(".qa/mcp/ticket.sh")
+	f, err := serverFilesIn("s", []string{"/bin/sh", script, "--flag", "relative.py"}, nil, nil)
+	if err != nil || !slices.Equal(f.scripts, []string{filepath.Dir(script)}) {
+		t.Fatalf("scripts %v %v", f.scripts, err)
+	}
+	if !strings.Contains(f.seatbeltRules(), fmt.Sprintf("(allow file-read-data (subpath %q))", filepath.Dir(script))) ||
+		!slices.Contains(f.bwrapArgs(), filepath.Dir(script)) {
+		t.Fatalf("not shown: %s %v", f.seatbeltRules(), f.bwrapArgs())
+	}
+	// Credentials, Abhed's state, and home or a folder holding them:
+	// nothing, not even the file.
+	for _, rel := range []string{".ssh/x.py", ".aws/cli/x.py", ".abhed/x.py", ".config/gcloud/x.py", "top.py", ".config/x.py", "Library/x.py"} {
+		if dirs, files := scriptFolders(home, []string{mk(rel)}); len(dirs)+len(files) != 0 {
+			t.Errorf("%s made %v %v readable", rel, dirs, files)
+		}
+	}
+	// A folder directly in home and iCloud Drive's root: the file alone.
+	for _, rel := range []string{"Documents/server.py", "Desktop/server.py",
+		"Downloads/server.py", "Projects/server.py", "Library/Mobile Documents/com~apple~CloudDocs/server.py"} {
+		p := mk(rel)
+		if dirs, files := scriptFolders(home, []string{p}); len(dirs) != 0 || !slices.Equal(files, []string{p}) {
+			t.Errorf("%s: folders %v files %v", rel, dirs, files)
+		}
+	}
+	// A script's own folder inside one of them is shown, and only it.
+	own := mk("Downloads/mcp-tickets/server.py")
+	if dirs, _ := scriptFolders(home, []string{own}); !slices.Equal(dirs, []string{filepath.Dir(own)}) {
+		t.Errorf("a script's own folder in Downloads: %v", dirs)
+	}
+	// The server runs its script from there, confined, on macOS.
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if _, err := exec.LookPath("sandbox-exec"); err != nil {
+		t.Skip("no sandbox-exec")
+	}
+	ws := t.TempDir()
+	sb := NewProcess(DefaultPolicy(ws))
+	cmd, err := sb.ServerCommand(context.Background(), "tickets", []string{"/bin/sh", script}, []string{"PATH=/usr/bin:/bin"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ok") {
+		t.Fatalf("the server could not run its own script: %v %s", err, out)
+	}
+}
+
+// A program's install folder follows the same rule: one directly in home
+// shows the program alone; one in a credential folder is refused.
+func TestServerInstallPrefixIsNotATopLevelFolder(t *testing.T) {
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	mk := func(rel string) string {
+		p := filepath.Join(home, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	dl := mk("Downloads/mcp-server")
+	f, err := serverFilesIn("s", []string{dl}, nil, nil)
+	if err != nil || f.prefix != "" || !slices.Equal(f.shown(), []string{dl}) {
+		t.Fatalf("a program in Downloads: %+v %v", f, err)
+	}
+	if _, err := serverFilesIn("s", []string{mk(".ssh/tool")}, nil, nil); err == nil || !strings.Contains(err.Error(), "credentials") {
+		t.Fatalf("a program in ~/.ssh: %v", err)
+	}
+	own := mk("tools/srv/bin/srv")
+	if f, err := serverFilesIn("s", []string{own}, nil, nil); err != nil || f.prefix != filepath.Join(home, "tools", "srv") {
+		t.Fatalf("an install folder of its own: %+v %v", f, err)
+	}
+}
+
+// homeShown compares without case, as macOS's disk does, so a different
+// spelling of a folder gets what the folder gets.
+func TestHomeShownIgnoresCase(t *testing.T) {
+	home := "/Users/me"
+	for dir, want := range map[string]int{
+		"/Users/me/Downloads":             showFile,
+		"/USERS/ME/Downloads":             showFile,
+		"/Users/me/downloads/mcp-tickets": showFolder,
+		"/Users/me/.local/BIN":            showFile,
+		"/users/me/.cargo/Bin":            showFile,
+		"/Users/me/bin":                   showFile,
+		"/Users/me/library/Mobile Documents/com~apple~clouddocs":     showFile,
+		"/Users/me/Library/Mobile Documents/com~apple~CloudDocs/a":   showFile,
+		"/Users/me/Library/Mobile Documents/iCloud~md~obsidian":      showFile,
+		"/Users/me/Library/Mobile Documents/com~apple~CloudDocs/a/b": showFolder,
+		"/Users/me/Library/CloudStorage/Dropbox":                     showFile,
+		"/Users/me/library/cloudstorage/GoogleDrive-me@x.com/sub":    showFile,
+		"/Users/me/Library/CloudStorage/OneDrive-X/a/b":              showFolder,
+		"/Users/me/.SSH":      showNothing,
+		"/Users/me/.Abhed/x":  showNothing,
+		"/Users/ME":           showNothing,
+		"/Users/me/tools/srv": showFolder,
+	} {
+		if got := homeShown(home, dir); got != want {
+			t.Errorf("%s: %d, want %d", dir, got, want)
+		}
+	}
+}
+
+// On a case-insensitive disk, a case variant of a top-level folder shows
+// only the file, through the script and program paths alike.
+func TestServerCaseVariantsShowOnlyTheFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("a case-insensitive disk")
+	}
+	home := t.TempDir()
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		home = r
+	}
+	t.Setenv("HOME", home)
+	mk := func(rel string) {
+		p := filepath.Join(home, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("Downloads/server.py")
+	mk("Downloads/mcp-server")
+	mk(".local/bin/x.py")
+	mk("Library/Mobile Documents/com~apple~CloudDocs/server.py")
+	upper := strings.ToUpper(home)
+	for _, variant := range []string{upper + "/Downloads/server.py", home + "/downloads/server.py", home + "/.local/BIN/x.py",
+		home + "/library/Mobile Documents/com~apple~clouddocs/server.py"} {
+		if _, err := os.Stat(variant); err != nil {
+			t.Skip("the disk is case-sensitive")
+		}
+		if dirs, files := scriptFolders(home, []string{variant}); len(dirs) != 0 || len(files) != 1 {
+			t.Errorf("%s: folders %v files %v", variant, dirs, files)
+		}
+	}
+	prog := upper + "/Downloads/mcp-server"
+	f, err := serverFilesIn("s", []string{prog}, nil, nil)
+	if err != nil || f.prefix != "" || len(f.files) != 1 {
+		t.Fatalf("a program at %s: %+v %v", prog, f, err)
+	}
+}
+
+// installPrefix compares without case: a case variant of ~/bin, ~/.local/bin
+// or ~/.cargo/bin is that folder, never all of home or ~/.local.
+func TestInstallPrefixIgnoresCase(t *testing.T) {
+	home := "/Users/me"
+	for prog, want := range map[string]string{
+		"/USERS/ME/bin/prog":         "/USERS/ME/bin",
+		"/Users/me/BIN/prog":         "/Users/me/BIN",
+		"/Users/me/.LOCAL/bin/prog":  "/Users/me/.LOCAL/bin",
+		"/users/me/.cargo/Bin/prog":  "/users/me/.cargo/Bin",
+		"/Users/me/tools/srv/BIN/x":  "/Users/me/tools/srv",
+		"/Users/me/tools/srv/prog/x": "/Users/me/tools/srv/prog",
+	} {
+		if got := installPrefix(home, prog); got != want {
+			t.Errorf("%s: %q, want %q", prog, got, want)
+		}
+		if got := installPrefix(home, prog); homeShown(home, got) == showFolder && strings.HasSuffix(strings.ToLower(got), "/bin") && !strings.Contains(got, "tools") {
+			t.Errorf("%s: %s shown whole", prog, got)
+		}
 	}
 }

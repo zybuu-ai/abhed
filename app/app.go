@@ -44,6 +44,7 @@ type App struct {
 	serverOpts []ServerOptionsHook
 	serveHooks []ServeHook
 	cpHooks    []ControlPlaneHook
+	anchors    []AnchorBuilder
 	// trust is -trust-workspace: the say the command line gives over the
 	// workspace's own configuration file.
 	trust config.TrustChoice
@@ -70,7 +71,9 @@ func newApp(opts ...Option) *App {
 
 // WithVersion sets the version the binary reports. The linker sets it on
 // the main package, so the main package passes it here.
-func WithVersion(v string) Option { return func(a *App) { a.version = v } }
+func WithVersion(v string) Option {
+	return func(a *App) { a.version = v; productVersion.Store(v) }
+}
 
 // WithEdition names the edition, for the version line and for the message
 // that refuses a config this binary cannot honour.
@@ -201,17 +204,21 @@ var subcommands = []subcommand{
 	{name: "trust", about: "show, grant or revoke trust in the workspace's .abhed/config.json"},
 	{name: "doctor", about: "check the configuration, the model endpoint and the sandbox", trust: true},
 	{name: "providers", about: "list the model provider types this build supports"},
+	{name: "toolchain", about: "language toolchains for the agent's commands: install, list, remove", trust: true},
+	{name: "ollama", about: "check a local Ollama model and offer what it lacks: check, status, models, forget", trust: true},
 	{name: "user", about: "manage local accounts: add, list, passwd, remove, import", trust: true},
 	{name: "secret", about: "manage stored secrets: set, list, rm"},
 	{name: "login", about: "sign this command line in to an Abhed server and save it as a profile"},
 	{name: "logout", about: "sign the current profile (or -profile NAME) out"},
 	{name: "profile", about: "the servers this command line knows: list, use, rm"},
+	{name: "policy", about: "the signed org policy this machine takes: status, show, refresh, leave"},
 	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
 	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
 	{name: "record", about: "the local record: list, show, verify, export, prune", trust: true},
+	{name: "logs", about: "the record as a log: shorthand, OCSF or its own lines, -f to follow, -cursor to resume", trust: true},
 	{name: "sessions", about: "list recorded sessions, latest first: record list (-all, -n N, -json)", trust: true},
 	{name: "hawkeye", about: "report on a session, from its id or an exported events file", trust: true},
 	{name: "migrate", about: "apply the database schema as the owning role", trust: true},
@@ -324,7 +331,7 @@ type flagSettings struct {
 }
 
 func (a *App) loadConfigWith(workspace string, set flagSettings) (config.Config, error) {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: a.trust, Settings: set.data, SettingsName: set.name})
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: a.trust, Settings: set.data, SettingsName: set.name})
 	if err != nil {
 		return cfg, err
 	}

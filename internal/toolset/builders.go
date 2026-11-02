@@ -43,6 +43,19 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 	return out
 }
 
+// MCPAdmit is the gateway's check of every server against the
+// configuration's mcp.allowed and mcp.denied lists, nil when none is set.
+// programs are what a stdio server's command resolves to, as the gateway
+// found them.
+func MCPAdmit(cfg config.Config) func(mcp.ServerConfig, []string) error {
+	if !cfg.HasMCPLists() {
+		return nil
+	}
+	return func(s mcp.ServerConfig, programs []string) error {
+		return cfg.MCPAdmitted(config.NewMCPServer(s.Name, s.Command, s.Args, s.Digest, s.URL, programs))
+	}
+}
+
 // WebFetchTool constructs web_fetch when enabled, or returns nil. It reads
 // vault on each call, so a secret stored while the session runs is covered,
 // and refuses a URL holding a stored value. With no vault it cannot check a
@@ -58,7 +71,7 @@ func WebFetchTool(cfg config.Config, vault *secrets.Store) *webfetch.Tool {
 		load = vault.LoadRedactor
 	}
 	ruled := append(append([]string(nil), cfg.Permissions.Deny...), cfg.Permissions.Ask...)
-	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts,
+	return &webfetch.Tool{AllowedHosts: cfg.WebFetch.AllowedHosts, ExactHosts: cfg.WebFetchAnchors(),
 		Secrets: load, MaxChars: cfg.WebFetch.MaxChars, PathRuled: webfetch.PathRuled(ruled)}
 }
 
@@ -155,8 +168,12 @@ func ModelResolver(cfg config.Config) func(string) (model.Adapter, error) {
 	offered := OfferedModels(cfg)
 	return func(name string) (model.Adapter, error) {
 		avail := strings.Join(offered, ", ")
-		if cfg.PinnedAway(name) != nil {
-			return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
+		if err := cfg.PinnedAway(name); err != nil {
+			var me *config.ManagedError
+			if errors.As(err, &me) && me.Key == "model.default" {
+				return nil, fmt.Errorf("the organisation's configuration pins the model to %s", cfg.Model.Default)
+			}
+			return nil, err
 		}
 		if !slices.Contains(offered, name) {
 			return nil, fmt.Errorf("it is not a configured provider; available: %s", avail)
@@ -234,7 +251,7 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		out = append(out, k8s.GetTool{M: mgr},
 			k8s.LoginTool{M: mgr, Secret: secret, SecretNames: secretNames})
 		if cfg.K8s.AllowWrites {
-			out = append(out, k8s.ApplyTool{M: mgr})
+			out = append(out, k8s.ApplyTool{M: mgr, Secret: secret})
 		}
 	}
 
@@ -258,7 +275,12 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		if cfg.SSH.Transfers {
+			// Held in memory whole, so bounded at 1 GiB whatever is configured.
+			limit := int64(min(max(cfg.SSH.TransferMaxMB, 0), 1024)) << 20
+			out = append(out, remote.PutTool{R: reg, Secret: secret, Max: limit}, remote.GetTool{R: reg, Max: limit})
+		}
 	}
 	return out
 }

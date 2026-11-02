@@ -18,6 +18,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/sedscript"
 )
 
 // ExitStatus is a process's exit code, or for one ended by a signal the
@@ -65,6 +66,22 @@ type Bash struct {
 	// Forward, when set, passes named variables already in a command's Env
 	// into what Sandbox built, in place of sandbox.ForwardEnv.
 	Forward func(cmd *exec.Cmd, names []string)
+	// ShellLine is the line the interactive terminal is judged and recorded
+	// as; nil is bash's.
+	ShellLine func() string
+	// NotFound, when set, says what a command run in dir that could not
+	// find program can do about it, such as install the toolchain; "" says nothing.
+	NotFound func(dir, program string) string
+	// Provides reports whether the toolchains put program first on PATH for
+	// a command in dir, inside the sandbox: the supervisor counts such a
+	// program as there, as a command finds it. Nil when none are given.
+	Provides func(dir, program string) bool
+	// NetworkNote, when set, is added to the note a command that could not
+	// reach the network gets, such as how to open a package registry.
+	NetworkNote string
+	// RegistryNote, when set, says what a command refused a package
+	// registry can do, naming the language; "" when it names none.
+	RegistryNote func(command, output string) string
 }
 
 // Isolation describes the sandbox in force: its tier, the mechanism that
@@ -188,6 +205,9 @@ var destructivePatterns = []struct {
 }{
 	{regexp.MustCompile(`\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf]`), "recursive/forced delete"},
 	{regexp.MustCompile(`\bgit\s+push\s+.*--force(?:-with-lease)?\b`), "force push"},
+	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--mirror\b`), "mirror push (deletes remote refs)"},
+	{regexp.MustCompile(`\bgit\b.*\spush\b.*\s--prune\b`), "prune remote branches"},
+	{regexp.MustCompile(`\bgit\b.*\sgc\b.*--prune=(?:now|all)\b|\bgit\b.*\sreflog\s+expire\b.*--expire(?:-unreachable)?=(?:now|all|0)`), "make discarded commits unrecoverable"},
 	{regexp.MustCompile(`\bgit\s+reset\s+--hard\b`), "hard reset"},
 	{regexp.MustCompile(`\bgit\s+clean\s+.*-[a-zA-Z]*f`), "forced clean"},
 	{regexp.MustCompile(`\b(mkfs|fdisk|dd)\b`), "disk operation"},
@@ -207,6 +227,204 @@ var destructivePatterns = []struct {
 	{regexp.MustCompile(`\bgit\s+branch\s+-D\b`), "force branch delete"},
 	{regexp.MustCompile(`\bunlink\s+\S`), "delete via unlink"},
 	{regexp.MustCompile(`\brmdir\b.*\s(?:-[a-zA-Z]*p[a-zA-Z]*|--parents?)\b`), "delete parent folders (rmdir -p)"},
+}
+
+// segmentPatterns are matched against each simple command of a line on its
+// own (the line split on ;, &, |, ( and )), so a word from one command never
+// completes a match begun in another. They cover the operations with no undo
+// on containers, clusters, data stores and cloud infrastructure.
+var segmentPatterns = []struct {
+	re   *regexp.Regexp
+	what string
+}{
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bsystem\s+(?:prune|reset)\b`), "container system prune/reset"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bvolume\s+(?:rm|remove|prune)\b`), "container volume delete"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:container|network)\s+prune\b`), "prune containers or networks"},
+	{regexp.MustCompile(`\b(?:docker|podman)\b.*\b(?:stack|service)\s+(?:rm|remove)\b`), "remove a swarm stack or service"},
+	{regexp.MustCompile(`\b(?:docker|podman)\b.*\bswarm\s+leave\b.*(?:\s-f\b|\s--force\b)`), "force a node out of the swarm"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\bimage\s+prune\b.*(?:\s-[a-zA-Z]*a|\s--all\b)`), "remove all container images"},
+	{regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b.*\b(?:rmi|image\s+(?:rm|remove))\b.*(?:\s-[a-zA-Z]*f|\s--force\b)`), "forced image removal"},
+	{regexp.MustCompile(`(?i)\b(?:kubectl|oc)\b.*\bdelete\b.*[\s,](?:ns|namespaces?|projects?|pvc|pv|persistentvolumes?|persistentvolumeclaims?|all|crds?|customresourcedefinitions?|storageclass(?:es)?|sc|clusterroles?|clusterrolebindings?)(?:[\s/,.]|$)`), "cluster delete of namespaces, volumes, definitions or every resource"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bdelete\b.*\s(?:--all\b|--all-namespaces\b|-A\b)`), "cluster delete across all resources or namespaces"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bscale\b.*--replicas[=\s]+0\b`), "scale a workload to zero"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\s(?:drain|cordon)\b`), "drain or cordon a node"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\s(?:patch|replace)\b.*(?:--force\b|finalizers)`), "forced patch/replace"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b(?:.*(?:-n|--namespace|--context|-l|--selector)[=\s]+(?:[\w.]*[-_.=])?prod(?:uction)?(?:[-_.,][\w.,=-]*)?\b.*\s(?:patch|replace)\b|.*\s(?:patch|replace)\b.*(?:-n|--namespace|--context|-l|--selector)[=\s]+(?:[\w.]*[-_.=])?prod(?:uction)?(?:[-_.,][\w.,=-]*)?\b)`), "production patch/replace"},
+	{regexp.MustCompile(`\b(?:kubectl|oc)\b.*\bapply\b.*--prune\b`), "apply with prune (deletes resources)"},
+	{regexp.MustCompile(`\bhelm\b.*\s(?:uninstall|delete|del|un)(?:\s|$)`), "uninstall a Helm release"},
+	// Framework database resets that drop or wipe every table.
+	{regexp.MustCompile(`\bprisma(?:@[\w.-]+)?\s+(?:--\s+)?migrate\s+reset\b|\bprisma(?:@[\w.-]+)?\s+(?:--\s+)?db\s+push\b.*--force-reset\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:rails|rake)\b.*\bdb:(?:drop|reset|purge|truncate_all|migrate:reset|schema:load|setup)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:manage\.py|django-admin)\s+flush\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bartisan\s+(?:migrate:fresh|migrate:reset|migrate:refresh|migrate:rollback|db:wipe)\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bdotnet\s+ef\s+database\s+drop\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\bsequelize(?:-cli)?(?:@[\w.-]+)?\s+(?:--\s+)?db:drop\b`), "reset a database through an ORM"},
+	{regexp.MustCompile(`\b(?:dropdb|dropuser)\b`), "drop a database"},
+	{regexp.MustCompile(`(?i)\bmysqladmin\b.*\bdrop\b`), "drop a database"},
+	// Infrastructure teardown.
+	{regexp.MustCompile(`\b(?:terraform|tofu|terragrunt)\b.*\s(?:destroy\b|taint\b|apply\b.*\s-(?:destroy|replace)[=\s]|state\s+rm\b|workspace\s+delete\b)`), "destroy infrastructure"},
+	{regexp.MustCompile(`\b(?:pulumi|cdk)(?:@[\w.-]+)?\b.*\s(?:destroy|down)\b|\bpulumi\b.*\sup\b.*--(?:target-)?replace\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\bsam\s+delete\b|\b(?:serverless|sls)(?:@[\w.-]+)?\s+remove\b|\beksctl\s+delete\b`), "destroy infrastructure"},
+	{regexp.MustCompile(`\bheroku\b.*\s(?:pg:reset|addons:destroy|apps:destroy)\b`), "reset or destroy a Heroku database, add-on or app"},
+	{regexp.MustCompile(`\bssh\b.*(?:[\s'"]:\s*>|['"]\s*>\s*\S|\bcp\s+/dev/null\s)`), "overwrite a remote file"},
+	{regexp.MustCompile(`\b(?:gcloud|az|doctl|hcloud)\b.*\s(?:delete|destroy|bulk-delete|delete-[\w-]+)(?:\s|$)`), "delete cloud resources"},
+	{regexp.MustCompile(`\baws\b.*\s(?:s3\s+rb\b|s3\s+rm\b.*--recursive\b|s3\s+sync\b.*--delete\b|(?:batch-)?(?:delete|terminate|deregister)-[\w-]+\b|delete-objects\b)`), "delete cloud resources"},
+}
+
+// dataStorePatterns are matched against the whole line when any simple
+// command in it runs the named client, so a query split across a quoted
+// multi-statement string, a heredoc body or a pipe into the client is read.
+var dataStorePatterns = []struct {
+	clients map[string]bool
+	body    *regexp.Regexp
+	what    string
+}{
+	{map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true, "sqlcmd": true,
+		"clickhouse-client": true, "cockroach": true, "duckdb": true, "cqlsh": true, "pg:psql": true},
+		regexp.MustCompile(`(?im)\bdrop\s+(?:database|schema|table|keyspace)\b|\btruncate\b|\bdelete\s+from\s+[\w."\\` + "`" + `\[\]]+\s*(?:;|$|['"])|\balter\s+table\s+\S+\s+drop\s+(?:column|constraint)\b|\bdelete\s+from\s+\S+\s+where\s+(?:true\b|1\s*=\s*1\b|1\s*(?:;|$|--|limit|['"]))`),
+		"drop or empty a database or table"},
+	{map[string]bool{"redis-cli": true}, regexp.MustCompile(`(?i)\bflush(?:all|db)\b`), "flush a Redis store"},
+	{map[string]bool{"mongosh": true, "mongo": true},
+		regexp.MustCompile(`dropDatabase|\.drop\(\s*\)|\.deleteMany\(\s*\{\s*\}\s*\)|\.remove\(\s*\{\s*\}\s*\)`),
+		"drop or empty a Mongo database or collection"},
+}
+
+// fieldsOutsideQuotes splits on whitespace that sits outside single or double
+// quotes, so a quoted argument (a commit message, a query) is one field; the
+// quotes are then removed.
+func fieldsOutsideQuotes(s string) []string {
+	var out []string
+	var b strings.Builder
+	var q byte
+	flush := func() {
+		if b.Len() > 0 {
+			out = append(out, b.String())
+			b.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case q != 0:
+			if c == q {
+				q = 0
+			} else {
+				b.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			q = c
+		case c == ' ' || c == '\t' || c == '\n':
+			flush()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	flush()
+	return out
+}
+
+// runsClient reports a line in which one of the given programs is the program
+// word of a simple command — its first word, or the word after sudo/doas/su/env
+// options, a package runner, or a docker/kubectl exec/run and its --.
+func runsClient(command string, clients map[string]bool) bool {
+	for _, part := range splitSimple(command) {
+		// Split on whitespace outside quotes, so a quoted message or query stays
+		// one token; quotes are then stripped from each token.
+		words := fieldsOutsideQuotes(part)
+		if len(words) == 0 {
+			continue
+		}
+		// A bare echo/printf command prints its arguments, and a searcher's
+		// operands are patterns, not programs; a client named there is text.
+		first := strings.TrimSuffix(CommandName(path.Base(words[0])), ".exe")
+		if first == "echo" || first == "printf" || searcherProg[first] && !searcherRuns(words[1:]) {
+			continue
+		}
+		// A client counts when it is a whole word anywhere in the command,
+		// except as the value of a message flag of a git-family program (so a
+		// commit, tag or PR message naming a client is not read as running it).
+		_, prog := simpleProgram(words)
+		msgProg := msgProgram[prog]
+		for i := 0; i < len(words); i++ {
+			if msgProg && msgFlagWord(words[i]) {
+				if !strings.Contains(words[i], "=") && (len(words[i]) <= 2 || !strings.HasPrefix(words[i], "-m")) {
+					i++ // the message is the next word
+				}
+				continue
+			}
+			w := strings.TrimSuffix(CommandName(path.Base(words[i])), ".exe")
+			if clients[w] {
+				return true
+			}
+			// A quoted command line (ssh HOST '…', -c '…', fly -C '…') is read too.
+			if strings.ContainsAny(words[i], " \t\n") && runsClient(words[i], clients) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// msgFlagWord reports a commit/tag/PR message flag, whose value is prose, not
+// a command: -m/--message/--title/--body, their -am/-sm clusters and attached
+// (-m"…", --message=…) forms.
+func msgFlagWord(w string) bool {
+	switch w {
+	case "-m", "--message", "--title", "--body", "-am", "-sm", "-cm":
+		return true
+	}
+	if strings.HasPrefix(w, "--message=") || strings.HasPrefix(w, "--title=") || strings.HasPrefix(w, "--body=") {
+		return true
+	}
+	return len(w) > 2 && strings.HasPrefix(w, "-m") // -m"text" attached
+}
+
+// splitSimple splits a line into its simple commands on ;, &, |, ( ) and
+// newlines that sit outside quotes, so a quoted query is kept whole.
+func splitSimple(line string) []string {
+	var parts []string
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(line):
+			b.WriteByte(c)
+			b.WriteByte(line[i+1])
+			i++
+			continue
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case strings.IndexByte(";&|()\n", c) >= 0:
+			parts = append(parts, b.String())
+			b.Reset()
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return append(parts, b.String())
+}
+
+// segmentDestructive reports a segment pattern matching one simple command,
+// or a data-store pattern matching a line that runs that client.
+func segmentDestructive(command string) (string, bool) {
+	for _, part := range splitSimple(command) {
+		for _, d := range segmentPatterns {
+			if d.re.MatchString(part) {
+				return d.what, true
+			}
+		}
+	}
+	for _, d := range dataStorePatterns {
+		if runsClient(command, d.clients) && d.body.MatchString(command) {
+			return d.what, true
+		}
+	}
+	return "", false
 }
 
 // Note on completeness: this list cannot be exhaustive. Shell affords endless
@@ -292,6 +510,10 @@ func (c Canonical) Unreadable() string {
 }
 
 func destructiveText(command string, gitExtensions map[string]bool) (string, bool) {
+	raw := command
+	// A commit/tag/PR message value and a searcher's patterns are text, not a
+	// command: drop them before the patterns read the line.
+	command = sanitizeData(command)
 	// Where case is ignored, the program names are lowered too; that only adds a match.
 	folded := foldProgramNames(command)
 	for _, d := range destructivePatterns {
@@ -302,7 +524,272 @@ func destructiveText(command string, gitExtensions map[string]bool) (string, boo
 	if rmForced(command) {
 		return "recursive/forced delete", true
 	}
-	return gitDestructive(command, gitExtensions)
+	if what, ok := segmentDestructive(command); ok {
+		return what, true
+	}
+	if folded != command {
+		if what, ok := segmentDestructive(folded); ok {
+			return what, true
+		}
+	}
+	return gitDestructive(raw, gitExtensions)
+}
+
+// sanitizeData returns the line with each commit/tag/PR message value (for
+// git/gh/glab/hg/jj/svn), each searcher's operands (grep/rg/ag/ack) and each
+// inert sed script removed, so text that only names a deleter or a client is
+// not matched. Searcher and sed text is data only when it is proven inert: no
+// rg --pre or ack/ag --pager, no sed e command, s///e flag or w write, the
+// output not redirected to a file and not piped into anything but a reader
+// (head, sort, wc …), and no substitution or group in the line.
+func sanitizeData(command string) string {
+	out := command
+	stages := splitStages(command)
+	opaque := lineHasSubst(command)
+	for k, st := range stages {
+		part := st.text
+		fields := fieldsOutsideQuotes(part)
+		pi, first := simpleProgram(fields)
+		if pi < 0 {
+			continue
+		}
+		textOK := !opaque && !redirectsOut(part) && !feedsRunner(stages, k)
+		var kept []string
+		changed := false
+		switch {
+		case searcherProg[first]:
+			if !textOK || searcherRuns(fields[pi+1:]) {
+				continue
+			}
+			kept, changed = fields[:pi+1], len(fields) > pi+1
+		case first == "sed" || first == "gsed":
+			if !textOK {
+				continue
+			}
+			kept, changed = sedWithoutScript(fields, pi)
+		case msgProgram[first]:
+			for i := 0; i < len(fields); i++ {
+				if i > pi && msgFlagWord(fields[i]) {
+					changed = true
+					if !strings.Contains(fields[i], "=") && (len(fields[i]) <= 2 || !strings.HasPrefix(fields[i], "-m")) {
+						i++
+					}
+					continue
+				}
+				kept = append(kept, fields[i])
+			}
+		}
+		if changed && strings.Contains(out, part) {
+			out = strings.Replace(out, part, " "+joinQuoted(kept)+" ", 1)
+		}
+	}
+	return out
+}
+
+// msgProgram are the programs whose -m/--message/--title/--body value is prose.
+var msgProgram = map[string]bool{"git": true, "gh": true, "glab": true, "hg": true, "svn": true, "jj": true}
+
+// searcherProg are the searchers whose operands are patterns and paths.
+var searcherProg = map[string]bool{"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true}
+
+// pipeReader are programs that only read, filter or show what is piped to them.
+var pipeReader = map[string]bool{"head": true, "tail": true, "wc": true, "sort": true, "uniq": true, "less": true,
+	"more": true, "cut": true, "tr": true, "column": true, "nl": true, "cat": true}
+
+// simpleProgram is the index and base name of a simple command's program, past
+// sudo/doas/env, their options and NAME=value assignments; -1 when there is none.
+func simpleProgram(fields []string) (int, string) {
+	pi := 0
+	for pi < len(fields) {
+		b := strings.TrimSuffix(CommandName(path.Base(fields[pi])), ".exe")
+		if b == "sudo" || b == "doas" || b == "env" || strings.HasPrefix(fields[pi], "-") || strings.Contains(fields[pi], "=") {
+			if (fields[pi] == "-u" || fields[pi] == "-g") && pi+1 < len(fields) {
+				pi++
+			}
+			pi++
+			continue
+		}
+		return pi, b
+	}
+	return -1, ""
+}
+
+// searcherRuns reports a searcher option that runs a command: rg --pre, ack/ag --pager.
+func searcherRuns(args []string) bool {
+	for _, a := range args {
+		if a == "--pre" || a == "--pager" || strings.HasPrefix(a, "--pre=") || strings.HasPrefix(a, "--pager=") {
+			return true
+		}
+	}
+	return false
+}
+
+// sedWithoutScript drops sed's script words when the script is all on the
+// command line and only edits text; otherwise it reports no change.
+func sedWithoutScript(fields []string, pi int) ([]string, bool) {
+	args := fields[pi+1:]
+	src, ok := sedscript.Scripts(args)
+	if !ok {
+		return nil, false
+	}
+	if s, err := sedscript.Parse(src); err != nil || !s.Inert() {
+		return nil, false
+	}
+	kept := append([]string(nil), fields[:pi+1]...)
+	sawExpr := false
+	for _, a := range args {
+		if a == "-e" || a == "--expression" || strings.HasPrefix(a, "--expression=") {
+			sawExpr = true
+		}
+	}
+	script := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case (a == "-e" || a == "--expression") && i+1 < len(args):
+			i++
+		case strings.HasPrefix(a, "--expression="):
+		case !sawExpr && !script && !strings.HasPrefix(a, "-"):
+			script = true
+		default:
+			kept = append(kept, a)
+		}
+	}
+	return kept, true
+}
+
+// stage is one simple command of a line and whether a pipe sends its output on.
+type stage struct {
+	text  string
+	piped bool
+}
+
+// splitStages splits a line like splitSimple, recording for each simple
+// command whether a single | or |& (not ||) follows it.
+func splitStages(line string) []stage {
+	var out []stage
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(line):
+			b.WriteByte(c)
+			b.WriteByte(line[i+1])
+			i++
+			continue
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case strings.IndexByte(";&|()\n", c) >= 0:
+			piped := false
+			if c == '|' {
+				if i+1 < len(line) && line[i+1] == '|' {
+					i++
+				} else {
+					piped = true
+					if i+1 < len(line) && line[i+1] == '&' {
+						i++
+					}
+				}
+			} else if c == '&' && i+1 < len(line) && line[i+1] == '&' {
+				i++
+			}
+			out = append(out, stage{text: b.String(), piped: piped})
+			b.Reset()
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return append(out, stage{text: b.String()})
+}
+
+// feedsRunner reports a stage whose output is piped on to anything but a
+// reader (or a searcher that runs nothing).
+func feedsRunner(stages []stage, k int) bool {
+	for j := k; j+1 < len(stages) && stages[j].piped; j++ {
+		fields := fieldsOutsideQuotes(stages[j+1].text)
+		pi, prog := simpleProgram(fields)
+		if pi < 0 {
+			return true
+		}
+		if pipeReader[prog] {
+			continue
+		}
+		if searcherProg[prog] && !searcherRuns(fields[pi+1:]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// lineHasSubst reports a command or process substitution, a subshell or a
+// brace group anywhere in the line, where a searcher's output could reach a
+// runner without a plain pipe.
+func lineHasSubst(line string) bool {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(line):
+			i++
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '`' || (c == '$' && i+1 < len(line) && line[i+1] == '('):
+			return true
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(' || c == ')' || c == '{' || c == '}':
+			return true
+		}
+	}
+	return false
+}
+
+// redirectsOut reports a simple command whose output is redirected to a file
+// (other than /dev/null or another descriptor).
+func redirectsOut(part string) bool {
+	var quote byte
+	for i := 0; i < len(part); i++ {
+		c := part[i]
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(part):
+			i++
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '>':
+			j := i + 1
+			for j < len(part) && (part[j] == '>' || part[j] == '|') {
+				j++
+			}
+			if j < len(part) && part[j] == '&' {
+				i = j
+				continue // >&2: another descriptor
+			}
+			for j < len(part) && (part[j] == ' ' || part[j] == '\t') {
+				j++
+			}
+			if !strings.HasPrefix(part[j:], "/dev/null") {
+				return true
+			}
+			i = j
+		}
+	}
+	return false
 }
 
 // rmForced finds rm's recursive or force flags anywhere among its words, as
@@ -403,6 +890,10 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("No secrets are configured on this deployment; run the command without `secrets`.")
 	}
 	if a.Background {
+		// Its changes are never checkpointed, which "required" does not allow.
+		if s.BashCheckpoints.Mode == BashCheckpointRequired {
+			return errf("Refused: tools.bash_checkpoints is \"required\", and a command run in the background is not checkpointed. Run it in the foreground. Nothing was run.")
+		}
 		return b.background(ctx, s, a)
 	}
 
@@ -453,6 +944,11 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		defer detach.running.Store(false)
 	}
 
+	snap, err := s.beforeBash(ctx)
+	if err != nil {
+		endProc()
+		return errf("%v", err)
+	}
 	cmd, err := b.command(procCtx, s.Cwd, a)
 	if err != nil {
 		endProc()
@@ -468,10 +964,25 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	start := time.Now()
 	content, truncated, held, detached, err := output.run(cmd, bashOutputWait, started, move)
 	elapsed := time.Since(start)
+	// What it changed up to here; once moved to the background, nothing more.
+	snapNote := s.afterBash(snap)
 	if detached {
-		return b.moveToBackground(ctx, host, output, cmd, endProc, a, start)
+		res := b.moveToBackground(ctx, host, output, cmd, endProc, a, start)
+		if snapNote != "" {
+			res.Content = withNote(res.Content, snapNote)
+		}
+		return res
 	}
 	endProc()
+	res := b.finish(ctx, runCtx, s, a, content, truncated, held, err, elapsed, timeout)
+	if snapNote != "" {
+		res.Content = withNote(res.Content, snapNote)
+	}
+	return res
+}
+
+// finish turns a foreground command's end into its result.
+func (b Bash) finish(ctx, runCtx context.Context, s *Session, a bashArgs, content string, truncated, held bool, err error, elapsed, timeout time.Duration) Result {
 
 	// The run's own limit, not this call's: raising timeout_ms would not help.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -524,20 +1035,44 @@ func (b Bash) run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	// A non-zero exit is a valid observation the model must reason about, not a
 	// tool failure. Never convert a failing test run into an error.
 	header := fmt.Sprintf("exit %d · %s", exitCode, elapsed.Round(time.Millisecond))
+	note := ""
 	// On the host the same text is the operating system's refusal, not a sandbox's.
 	// Any exit code: a pipeline's last command can succeed after curl failed.
-	if b.network() == networkOff && networkFailed(a.Command, content, exitCode) {
-		content = withNote(content, networkHint)
-	} else if hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
+	if missing := b.notFoundNote(s.Cwd, content, exitCode); missing != "" {
+		content = withNote(content, missing)
+	} else if b.network() == networkOff && (networkFailed(a.Command, content, exitCode) || exitCode != 0 && proxyRefused(content)) {
+		// With the network off a 403 is the egress proxy's: no registry is open yet.
+		content = withNote(content, b.networkNote(a.Command, content))
+	} else if kind, hint := sandboxHint(content); hint != "" && exitCode != 0 && b.ranTier() != "none" {
 		// A command that succeeded was not stopped: git warns of .abhed and still exits 0.
 		content = withNote(content, hint)
+		note = kind
 	}
 	return Result{
-		Content:   header + "\n" + content,
-		Truncated: truncated,
-		ExitCode:  &exitCode,
-		NoOutput:  noOutput,
+		Content:     header + "\n" + content,
+		Truncated:   truncated,
+		ExitCode:    &exitCode,
+		NoOutput:    noOutput,
+		SandboxNote: note,
 	}
+}
+
+// notFoundRE finds a program the shell could not find: bash's "go: command
+// not found", dash's "sh: 1: go: not found", env's "env: 'node': No such file".
+var notFoundRE = regexp.MustCompile(`(?m)(?:^|: )'?([A-Za-z0-9_.+-]{1,40})'?: (?:command not found|not found|No such file or directory)\s*$`)
+
+// notFoundNote is what NotFound says of the first program a failed command
+// could not find, or "".
+func (b Bash) notFoundNote(dir, content string, exitCode int) string {
+	if b.NotFound == nil || exitCode == 0 {
+		return ""
+	}
+	for _, m := range notFoundRE.FindAllStringSubmatch(content, 8) {
+		if note := b.NotFound(dir, m[1]); note != "" {
+			return note
+		}
+	}
+	return ""
 }
 
 // withNote puts a note after the output with one blank line between, however the output ends.
@@ -764,6 +1299,53 @@ func networkFailed(command, output string, exitCode int) bool {
 	return networkFailure(strings.Join(lines, "\n"))
 }
 
+// networkNote is what a command that could not reach the network is told:
+// how to open the package registry it was refused, where it names one.
+func (b Bash) networkNote(command, output string) string {
+	if b.RegistryNote != nil {
+		if n := b.RegistryNote(command, output); n != "" {
+			return n
+		}
+	}
+	return strings.TrimSpace(networkHint + " " + b.NetworkNote)
+}
+
+// proxyPhrases are what clients print only for a proxy's refusal: the
+// egress proxy's own text, and curl's, pip's, Go's, npm 9+'s and uv's for a
+// refused CONNECT.
+var proxyPhrases = regexp.MustCompile(`(?i)abhed egress:|tunnel connection failed: 403|received HTTP code 403 from proxy|` +
+	`CONNECT tunnel failed, response 403|proxyconnect tcp|invalid status code .?403.? connecting to proxy|unsuccessful tunnel`)
+
+// forbiddenLine is a 403 a client reports for a URL: Go's `Get "https://…": Forbidden`, npm's `403 Forbidden - GET https://…`,
+// Gradle's `Could not GET 'https://…'. Received status code 403 from server: Forbidden`.
+var forbiddenLine = regexp.MustCompile(`(?i)(?:": Forbidden\b|\b403 Forbidden\b|\bE403\b|status code 403 from server)`)
+
+// httpsHost is the host of an https URL in a line.
+var httpsHost = regexp.MustCompile(`https://([^\s/"':]+)`)
+
+// ProxyRefused is proxyRefused for a terminal's output, which no bash call wraps.
+func ProxyRefused(output string) bool { return proxyRefused(output) }
+
+// proxyRefused reports output from the session's egress proxy refusing a
+// client: its own phrases, or a 403 on a line naming a remote https URL, as
+// the proxy refuses those; a local server's 403 is not it.
+func proxyRefused(output string) bool {
+	if proxyPhrases.MatchString(output) {
+		return true
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if !forbiddenLine.MatchString(line) {
+			continue
+		}
+		for _, m := range httpsHost.FindAllStringSubmatch(line, -1) {
+			if h := strings.ToLower(m[1]); h != "localhost" && !strings.HasPrefix(h, "127.") && h != "[" && h != "0.0.0.0" && strings.Contains(h, ".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // networkHint says why a command that reached for the network failed. Without
 // it a model that ran curl sees only "could not resolve host", and neither it
 // nor the user learns that the sandbox, not the site, is the reason.
@@ -783,10 +1365,14 @@ const networkHint = "NOTE: this sandbox has no network access, so the command co
 //
 // The failure is worth catching precisely because the agent usually has a
 // better route: a native tool that holds the credential outside the sandbox.
-func sandboxHint(output string) string {
+//
+// kind is the folder named ("kube", "ssh", "aws", "gnupg"), "credentials"
+// for another of sandbox.HomeSecrets, or "abhed" for Abhed's own state, which
+// the sandbox tiers deny; or "denied" when the output names none of them.
+func sandboxHint(output string) (kind, hint string) {
 	if !strings.Contains(output, "operation not permitted") &&
 		!strings.Contains(output, "Operation not permitted") {
-		return ""
+		return "", ""
 	}
 	for _, c := range []struct{ path, hint string }{
 		{".kube", "Abhed's sandbox blocks reads of ~/.kube, so kubectl and oc cannot " +
@@ -803,10 +1389,21 @@ func sandboxHint(output string) string {
 			"signing step themselves."},
 	} {
 		if strings.Contains(output, c.path) {
-			return "NOTE: " + c.hint + " Do not retry this command; it will fail the same way."
+			return strings.TrimPrefix(c.path, "."), "NOTE: " + c.hint + " Do not retry this command; it will fail the same way."
 		}
 	}
-	return "NOTE: the sandbox denied this operation. Retrying the same command will " +
+	kind = "denied"
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		for _, c := range sandbox.HomeSecrets {
+			if strings.Contains(output, filepath.Join(home, c)) || strings.Contains(output, "~/"+c) {
+				kind = "credentials"
+			}
+		}
+	}
+	if strings.Contains(output, ".abhed") {
+		kind = "abhed" // Abhed's own state, which every tier denies
+	}
+	return kind, "NOTE: the sandbox denied this operation. Retrying the same command will " +
 		"fail identically — either use a native Abhed tool for this, or tell the user " +
 		"what needs to change."
 }

@@ -44,6 +44,12 @@ var runtimeGrants = []struct{ table, privileges string }{
 	{"sandbox_idempotency", "SELECT, INSERT, UPDATE, DELETE"},
 	{"sandbox_audit", "SELECT, INSERT"},
 	{"sandbox_templates", "SELECT, INSERT, DELETE"},
+	// Written once by a migration; the server only reads it.
+	{"chain_pre", "SELECT"},
+	// The OCSF file's cursors move forward; none is removed.
+	{"ocsf_cursors", "SELECT, INSERT, UPDATE"},
+	// Raised only by a migrate; every insert and commit-ordered read reads it.
+	{"commit_shift", "SELECT"},
 }
 
 // Extension lets an edition add its own tables in the same pass, so they are
@@ -120,6 +126,11 @@ func Provision(ctx context.Context, cfg ProvisionConfig) error {
 	defer func() {
 		_, _ = lock.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('abhed.provision'))`)
 	}()
+	// Before the schema: a runtime role that can create in public could
+	// have made a table the schema is about to.
+	if err := closePublicCreate(ctx, lock, owner, cfg.RuntimeRole); err != nil {
+		return err
+	}
 
 	if err := applySchema(ctx, pool); err != nil {
 		return err
@@ -213,8 +224,13 @@ var privilegeList = func() *regexp.Regexp {
 }()
 
 // recordTables are the append-only records: the session events and the
-// control plane's sandbox audit, which an older schema does not have yet.
-var recordTables = []string{"events", "sandbox_audit"}
+// control plane's sandbox audit, which an older schema does not have yet; and
+// chain_pre, which says which events are from before the chain, which the
+// server may only read: a row it could add would excuse an unchained event.
+var recordTables = []struct {
+	name     string
+	noInsert bool
+}{{"events", false}, {"sandbox_audit", false}, {"chain_pre", true}}
 
 // recordExposure reports how the connected role could alter an append-only
 // record, or "" when it cannot. It is asked of the database rather than
@@ -222,16 +238,21 @@ var recordTables = []string{"events", "sandbox_audit"}
 func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	var how []string
 	for _, table := range recordTables {
-		var owns, canUpdate, canDelete, canTruncate bool
+		var owns, canInsert, canUpdate, canDelete, canTruncate bool
+		// Every role it is a member of counts, INHERIT or not: SET ROLE
+		// reaches them all.
 		err := pool.QueryRow(ctx, `
 			SELECT pg_has_role(current_user, c.relowner, 'MEMBER'),
-			       has_any_column_privilege(current_user, c.oid, 'UPDATE'),
-			       has_table_privilege(current_user, c.oid, 'DELETE'),
-			       has_table_privilege(current_user, c.oid, 'TRUNCATE')
-			FROM pg_class c WHERE c.oid = to_regclass('public.' || $1)`, table).
-			Scan(&owns, &canUpdate, &canDelete, &canTruncate)
+			       bool_or(has_any_column_privilege(r.oid, c.oid, 'INSERT')),
+			       bool_or(has_any_column_privilege(r.oid, c.oid, 'UPDATE')),
+			       bool_or(has_table_privilege(r.oid, c.oid, 'DELETE')),
+			       bool_or(has_table_privilege(r.oid, c.oid, 'TRUNCATE'))
+			FROM pg_class c, pg_roles r
+			WHERE c.oid = to_regclass('public.' || $1) AND pg_has_role(current_user, r.oid, 'MEMBER')
+			GROUP BY c.relowner`, table.name).
+			Scan(&owns, &canInsert, &canUpdate, &canDelete, &canTruncate)
 		if errors.Is(err, pgx.ErrNoRows) {
-			if table == "events" {
+			if table.name == "events" {
 				return "", errNoSchema
 			}
 			continue
@@ -240,15 +261,15 @@ func recordExposure(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 			return "", fmt.Errorf("check record privileges: %w", err)
 		}
 		if owns {
-			how = append(how, "owns the "+table+" table, so it can disable the append-only triggers or drop it")
+			how = append(how, "owns the "+table.name+" table, so it can disable the append-only triggers or drop it")
 			continue
 		}
 		for _, p := range []struct {
 			name string
 			can  bool
-		}{{"UPDATE", canUpdate}, {"DELETE", canDelete}, {"TRUNCATE", canTruncate}} {
+		}{{"INSERT", canInsert && table.noInsert}, {"UPDATE", canUpdate}, {"DELETE", canDelete}, {"TRUNCATE", canTruncate}} {
 			if p.can {
-				how = append(how, "holds "+p.name+" on "+table)
+				how = append(how, "holds "+p.name+" on "+table.name)
 			}
 		}
 	}
@@ -261,7 +282,9 @@ var errNoSchema = errors.New("the schema has not been applied")
 // The runtime role cannot add them, so a missing one is found at start rather
 // than as a failed write the first time someone answers an approval.
 var requiredColumns = [][2]string{{"approvals", "answer_scope"}, {"approvals", "ended_at"}, {"approvals", "request_id"}, {"users", "revocations"}, {"sessions", "title"},
-	{"events", "inserted_at"}, {"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"}}
+	{"events", "inserted_at"}, {"events", "hash"}, {"owner_changes", "by_role"}, {"session_keys", "key"},
+	{"chain_pre", "pre_rows"}, {"events", "commit_tx"}, {"ocsf_cursors", "commit_pos"},
+	{"commit_shift", "shift"}}
 
 // missingColumns names the required columns the connected database lacks.
 func missingColumns(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {

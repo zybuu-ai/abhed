@@ -9,13 +9,17 @@ model you point it at, and records everything it does.
 |---|---|
 | [Getting started](01-getting-started.md) | install, first run, the shape of a session |
 | [Configuration](02-configuration.md) | models, permissions, storage, every setting |
-| [Models and providers](03-providers.md) | the twenty providers, sampling parameters, subscriptions |
+| [Models and providers](03-providers.md) | the twenty providers, a local Ollama model, sampling parameters, subscriptions |
 | [Permissions and safety](04-permissions.md) | what the agent may do, and how you decide |
+| [Runbooks](28-runbooks.md) | approve a plan's exact calls once; each step then runs without asking, and anything else asks |
+| [Toolchains](32-toolchains.md) | Go, Python, Node, Rust, Java with Maven and Gradle, Ruby and .NET installed on demand, verified, for the sandbox's commands |
 | [Network policy](21-network-policy.md) | the egress allowlist: which destinations commands reach, and the record of each |
 | [The microVM driver](24-microvm.md) | experimental: sandboxes as Firecracker microVMs on Linux with KVM, or Virtualization.framework VMs on macOS; what is and is not isolated |
 | [The command line](18-cli.md) | flags, `/model`, `/status`, `/config`, the status line, `/mcp` and the other panels |
 | [The terminal](20-terminal.md) | the interactive CLI: keys, pastes, approvals, the footer, themes |
 | [TLS and command-line sign-in](26-tls-and-cli-login.md) | `serve` over HTTPS with reload and two certificates, client certificates, `abhed pki`, `abhed login` and profiles |
+| [Signed org policy](35-org-policy.md) | the managed layer an org server signs: `abhed login`, pinned keys and rotation, precedence under `/etc/abhed`, refresh, max age, the fail-closed fallback, `abhed policy` |
+| [Shipping the record](36-record-shipping.md) | `record.ship`: each session's chained record sent to the org server as it is written, resumable offline, `abhed record ship` |
 
 ## Extending it
 
@@ -34,12 +38,17 @@ model you point it at, and records everything it does.
 | [Automation](10-automation.md) | headless runs, `resolve` for issues on GitHub, GitLab and Gitea, RPC, and editors over ACP |
 | [Sessions and audit](11-sessions.md) | replay, forking, export, what is recorded |
 | [Sessions and the local record](12-records.md) | `-c`, `-r`, rewind, checkpoints, `abhed record verify`, what tamper-evident means |
+| [OCSF events and logs](30-ocsf-and-logs.md) | the record as OCSF 1.8 (or 1.5, 1.3, 1.1) events: `abhed logs`, the `record.ocsf` file, the logs stream; what maps to which class |
 | [HawkEYE](15-hawkeye.md) | what a session did: tokens, the policy step behind each call, findings |
 | [The workbench](16-workbench.md) | `/ide`: the agent beside the code, tools, extensions, terminal and findings |
+| [Debugging](31-debugging.md) | Studio's Run and Debug: Delve and debugpy in the session's sandbox, the debuggee judged and recorded as your call |
+| [Language servers](33-language-servers.md) | Studio's editor intelligence: gopls, basedpyright, typescript-language-server and rust-analyzer in the session's sandbox, filtered both ways |
+| [Inline completions](34-inline-completions.md) | Studio's ghost text from a completion model: fill in the middle on a local coding model, bounded context, `completion.local_only` |
 | [Sandboxes over the API](22-sandboxes.md) | `/v1/sandboxes`: create, run commands in, stop and restart sandboxes; templates; the `abhed sandbox` command; `serve -check`; `/v1/ready` |
 | [Container drivers](23-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
 | [Snapshots and forwarding](25-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |
 | [Structured output](13-structured-output.md) | a typed answer that matches a schema, on every provider |
+| [Verified answers](29-verified-answers.md) | each statement of an answer checked against what the session observed: verified, unverified or contradicted; strict mode and the completion contract |
 | [Parallel subagents](14-parallel-subagents.md) | several at once, each in its own git worktree |
 | [Running on Kubernetes](27-kubernetes.md) | the Helm chart: the restricted pod, probes, preflight, TLS, Postgres, ingress and OpenShift |
 | [Agent definitions](17-agent-definitions.md) | subagent roles of your own: instructions, tools, model |

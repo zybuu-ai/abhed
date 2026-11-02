@@ -32,6 +32,7 @@ func TestUnknownKeysAreReportedNotRefused(t *testing.T) {
 	}
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 
 	cfg, err := Load(ws)
@@ -95,6 +96,7 @@ func TestLoadMarksUnknownKeysInTheManagedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	warnOut = io.Discard
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 
 	cfg, err := Load(ws)

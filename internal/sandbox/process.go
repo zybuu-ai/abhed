@@ -14,7 +14,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/loopport"
 )
 
 // Process confines a command with OS process-level primitives: macOS
@@ -22,6 +25,20 @@ import (
 type Process struct {
 	policy  Policy
 	backend string // "sandbox-exec" | "bwrap"
+	// listen is SetListen's: commands may listen on loopback from now on.
+	listen atomic.Bool
+	// listenStill, onPortContested and onListenWatchLost are SetListenWatch's.
+	listenStill       atomic.Pointer[func() bool]
+	onPortContested   atomic.Pointer[func(PortContested)]
+	onListenWatchLost atomic.Pointer[func(why string)]
+	// watchLost is set once the person was told the watch is lost.
+	watchLost atomic.Bool
+	// lastBusy are the ports the Mac listened on when the last profile that
+	// let commands listen was made: a command could not take those.
+	lastBusy atomic.Pointer[[]int]
+	// notices are what this sandbox was told of each contested listen
+	// port; guarded by watching.mu.
+	notices map[int]*portNotice
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -50,7 +67,10 @@ type Process struct {
 	// caches is the folder holding this sandbox's own toolchain caches on
 	// Seatbelt, made at its first command; "" when it could not be.
 	cachesOnce sync.Once
-	caches     string
+	// zdotdir holds a zsh terminal's start-up file, in the sandbox's own
+	// caches, denied to commands' writes from the first command on.
+	zdotdir atomic.Pointer[string]
+	caches  string
 
 	// tmp is this sandbox's own temp folder under PrivateTemp, made at its
 	// first command; tmpErr says why it could not be.
@@ -377,6 +397,12 @@ func (s *Process) seatbeltProfile() string { return s.seatbeltProfileFor(0) }
 // seatbeltProfileFor is the profile for a command whose session's egress
 // proxy holds port; 0 is none.
 func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
+	return s.seatbeltProfileWith(port, loopback{}, readable...)
+}
+
+// seatbeltProfileWith is seatbeltProfileFor, with loopback ports open when
+// loopback is set (WithLoopback) and readable also readable under home.
+func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(allow default)\n\n")
 	// Home holds credentials no list names, so little is readable there; first,
@@ -387,9 +413,14 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 			fmt.Fprintf(&b, "(deny file-read* (subpath %q))\n", h)
 			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", h)
 		}
-		allow := append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...)
+		allow := append(append(append(s.workspaces(), formsOf(s.policy.ReadOnlyPaths)...), homeToolchains(home)...), nonEmpty(readable)...)
 		for _, p := range allow {
 			fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", p)
+		}
+		// The folders on the way to them can be stat'ed, not listed or read:
+		// Node's realpath, Python's and Java's path checks lstat each one.
+		for _, d := range ancestorsWithin(allow, PathForms(home)) {
+			fmt.Fprintf(&b, "(allow file-read-metadata (literal %q))\n", d)
 		}
 		b.WriteString("\n")
 	}
@@ -427,6 +458,15 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 
 	if s.policy.PrivateTemp {
 		s.privateTempRules(&b, readable)
+	}
+
+	// Read-only paths (the toolchain cache) and the Linux helper's copies stay
+	// unwritable whatever shared_caches, a temp area or a cache area allows.
+	if ro := s.readOnlyWriteDenies(); len(ro) > 0 {
+		b.WriteString("\n;; Read-only paths: the toolchain cache and the Linux helper.\n")
+		for _, p := range ro {
+			fmt.Fprintf(&b, "(deny file-write* (subpath %q))\n", p)
+		}
 	}
 
 	// Other sandboxes' folders: after the temp, cache and read-only allows,
@@ -516,6 +556,65 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 		if s.policy.Egress != nil && port != 0 {
 			fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", port)
 		}
+		// A debug session the person agreed to: loopback ports, both ways,
+		// and no other address.
+		if lb.on {
+			b.WriteString(";; Loopback, for a debug adapter and its program, which the person agreed to.\n")
+			if lb.wide() {
+				b.WriteString("(allow network-outbound (remote ip \"localhost:*\"))\n")
+			}
+			if lb.ephemeral {
+				// The ports the system hands out, one rule each: Seatbelt does
+				// not reliably let a later deny for one port carve it out of
+				// localhost:*, so the allow names every port, and never one of
+				// Abhed's reserved range.
+				lo, hi := loopport.Ephemeral()
+				for p := lo; p <= hi; p++ {
+					if !loopport.In(p) {
+						fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", p)
+					}
+				}
+			}
+			for _, p := range lb.ports {
+				fmt.Fprintf(&b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", p)
+				fmt.Fprintf(&b, "(allow network-inbound (local ip \"localhost:%d\"))\n", p)
+				fmt.Fprintf(&b, "(allow network-bind (local ip \"localhost:%d\"))\n", p)
+			}
+			if len(lb.ports) == 0 {
+				// A rule names "localhost", but Seatbelt lets it bind the
+				// wildcard address too, which the network can reach; with
+				// ports named, the command holds every address of each.
+				b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
+				b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+				// But never a port of Abhed's reserved range, on any address,
+				// so it cannot take a range listener's port or its LAN side.
+				denyRange(&b, nil)
+			}
+		}
+		// A dev server the person opens in their browser, where commands may
+		// listen: it listens and accepts on loopback, connects to nothing
+		// there, and binds neither Abhed's reserved ports nor one the Mac
+		// listens on. A debug session's named ports stay its own.
+		if busy, ok := s.listenable(); ok {
+			b.WriteString(";; Listening on loopback, for a dev server: TCP on the listen ports alone; no loopback connection out.\n")
+			if lb.on && len(lb.ports) == 0 {
+				// The debug session binds any loopback port already, and its
+				// block denied Abhed's reserved range: carve out the Mac's
+				// busy ports too, one deny per port.
+				for _, p := range busy {
+					if !loopport.Applies() || !loopport.In(p) {
+						fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+					}
+				}
+			} else {
+				// One rule per port, TCP only: a UDP bind, or any other port,
+				// the reserved range among them, is refused.
+				for _, p := range s.listenPorts(busy) {
+					fmt.Fprintf(&b, "(allow network-bind (local tcp \"localhost:%d\"))\n", p)
+					fmt.Fprintf(&b, "(allow network-inbound (local tcp \"localhost:%d\"))\n", p)
+				}
+			}
+		}
 		// Nor a view of the host's network: its interfaces, addresses and
 		// routes, as bwrap's --unshare-net gives on Linux.
 		b.WriteString("(deny sysctl-read (sysctl-name-prefix \"net.route\"))\n")
@@ -549,6 +648,175 @@ func (s *Process) seatbeltProfileFor(port uint16, readable ...string) string {
 		}
 	}
 	return b.String()
+}
+
+// denyRange denies binding each port of Abhed's reserved range, where the
+// rule applies, but the ones named in keep.
+func denyRange(b *strings.Builder, keep []uint16) {
+	if !loopport.Applies() {
+		return
+	}
+	lo, hi := loopport.Range()
+	for p := lo; p <= hi; p++ {
+		if !slices.Contains(keep, uint16(p)) { // #nosec G115 -- a TCP port
+			fmt.Fprintf(b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+		}
+	}
+}
+
+// listening reports whether commands may listen now: so configured or
+// agreed, and the agreement still kept (another process may have taken it
+// back).
+func (s *Process) listening() bool {
+	if s.backend != "sandbox-exec" {
+		return false
+	}
+	if s.policy.ListenLoopback {
+		return true
+	}
+	if !s.listen.Load() {
+		return false
+	}
+	if f := s.listenStill.Load(); f != nil && !(*f)() {
+		s.listen.Store(false)
+		return false
+	}
+	return true
+}
+
+// listenable is the Mac's busy ports when commands may listen on loopback,
+// and puts the sandbox among those watched for a contested port.
+func (s *Process) listenable() ([]int, bool) {
+	if !s.listening() {
+		return nil, false
+	}
+	busy, ok := hostListeners()
+	if ok {
+		held := s.heldByOthers(busy)
+		s.lastBusy.Store(&held)
+		watchListeners(s)
+	}
+	return busy, ok
+}
+
+// heldByOthers are the busy ports some listener outside everything this
+// Abhed started holds: a later command's run does not mark the port of a
+// server Abhed started as another program's. The parent table is read
+// first and a port is judged Abhed's only on a read of the listeners taken
+// after it, so a pid reused in between reads as foreign.
+func (s *Process) heldByOthers(busy []int) []int {
+	parents := processParents()
+	cached, ok := readListeners()
+	if !ok {
+		return busy
+	}
+	var maybeOurs []int
+	for _, p := range busy {
+		if ownTree(cached, p, parents) {
+			maybeOurs = append(maybeOurs, p)
+		}
+	}
+	fresh := cached
+	if len(maybeOurs) > 0 {
+		if fresh, ok = readListenersWithin(0); !ok {
+			return busy
+		}
+	}
+	var out []int
+	for _, p := range busy {
+		if !slices.Contains(maybeOurs, p) || !ownTree(fresh, p, parents) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// listenWatchLost tells the owner, once until the watch is found again,
+// that a contested port can no longer be seen.
+func (s *Process) listenWatchLost(why string) {
+	if s.watchLost.Swap(true) {
+		return
+	}
+	if f := s.onListenWatchLost.Load(); f != nil {
+		(*f)(why)
+	}
+}
+
+func (s *Process) listenWatchFound() { s.watchLost.Store(false) }
+
+// listenPorts are the ports listening opens to a command: the configured
+// ones, less Abhed's reserved range and those the Mac listens on.
+func (s *Process) listenPorts(busy []int) []int {
+	var out []int
+	for _, p := range s.policy.ListenPorts {
+		if loopport.Applies() && loopport.In(p) || slices.Contains(busy, p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// SetListen lets sb's commands listen on loopback from their next start, or
+// with on false no longer; false where sb is not the macOS process tier.
+func SetListen(sb Sandbox, on bool) bool {
+	p, ok := sb.(*Process)
+	if !ok || p.backend != "sandbox-exec" {
+		return false
+	}
+	p.listen.Store(on)
+	return true
+}
+
+// SetListenWatch gives sb what listening needs from its owner: still, whether
+// the person's agreement is still kept; contested, told when more than one
+// program listens on one of its listen ports; and lost, told once when that
+// can no longer be seen.
+func SetListenWatch(sb Sandbox, still func() bool, contested func(PortContested), lost func(why string)) {
+	p, ok := sb.(*Process)
+	if !ok {
+		return
+	}
+	if still != nil {
+		p.listenStill.Store(&still)
+	}
+	if contested != nil {
+		p.onPortContested.Store(&contested)
+	}
+	if lost != nil {
+		p.onListenWatchLost.Store(&lost)
+	}
+}
+
+// HeldAtStart reports whether port was busy, held by a program outside
+// everything this Abhed started, when sb's last command that may listen
+// started; such a port's server is never one of Abhed's.
+func HeldAtStart(sb Sandbox, port int) bool {
+	p, ok := sb.(*Process)
+	if !ok {
+		return false
+	}
+	busy := p.lastBusy.Load()
+	return busy != nil && slices.Contains(*busy, port)
+}
+
+// Listens reports whether sb's commands may listen on loopback now, which
+// takes the Mac's listeners being readable.
+func Listens(sb Sandbox) bool {
+	p, ok := sb.(*Process)
+	if !ok || !p.listening() {
+		return false
+	}
+	_, read := hostListeners()
+	return read
+}
+
+// ListenPortsOf are the ports sb's commands may listen on when listening.
+func ListenPortsOf(sb Sandbox) []int {
+	if p, ok := sb.(*Process); ok {
+		return slices.Clone(p.policy.ListenPorts)
+	}
+	return nil
 }
 
 // HomeSecrets are the files and folders under home that hold credentials,
@@ -653,8 +921,60 @@ func (s *Process) Shell(ctx context.Context, cwd string) *exec.Cmd {
 	if err != nil {
 		return &exec.Cmd{Err: err}
 	}
-	return hangUp(s.wrapEgress(ctx, cwd, append(env, shellEnv(s.Tier())...), eg, shellArgv...))
+	choice := s.shell()
+	env = append(append(env, shellEnv(s.Tier())...), loginEnv()...)
+	if z := s.zdotdir.Load(); choice.zsh && z != nil {
+		if err := s.writeZshrc(); err != nil {
+			choice = bashChoice(shellArgv[0])
+		} else {
+			env = append(env, "ZDOTDIR="+*z)
+		}
+	}
+	return hangUp(s.wrapEgress(ctx, cwd, env, eg, choice.argv...))
 }
+
+// shell is the terminal's shell: the person's preferred one on macOS, where
+// the sandbox's own caches can hold zsh's start-up file, else bash.
+func (s *Process) shell() shellChoice {
+	if s.backend != "sandbox-exec" {
+		return bashChoice(shellArgv[0])
+	}
+	choice := hostShell()
+	if !choice.zsh {
+		return choice
+	}
+	s.ownCaches()
+	z := s.zdotdir.Load()
+	if z == nil {
+		return bashChoice(shellArgv[0])
+	}
+	return choice
+}
+
+// writeZshrc writes the zsh terminal's start-up file afresh, as each
+// terminal starts, so whatever stood there before is not what runs.
+func (s *Process) writeZshrc() error {
+	z := s.zdotdir.Load()
+	if z == nil {
+		return errors.New("no folder for zsh's start-up file")
+	}
+	rc := filepath.Join(*z, ".zshrc")
+	if err := os.Remove(rc); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(rc, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- the sandbox's own start-up file
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(zshrc(s.Tier())); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// ShellLine is the line the terminal is judged and recorded as.
+func (s *Process) ShellLine() string { return s.shell().line }
 
 // Backend names the mechanism: sandbox-exec or bwrap.
 func (s *Process) Backend() string { return s.backend }
@@ -662,6 +982,11 @@ func (s *Process) Backend() string { return s.backend }
 // wrapEgress runs argv inside the backend's confinement; under the
 // allowlist eg is the session's proxy, its one way out.
 func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *egressState, argv ...string) *exec.Cmd {
+	if lb := loopbackOf(ctx); s.policy.Egress != nil && (lb.wide() || lb.ephemeral && !loopport.Applies()) {
+		// Loopback would also reach the egress proxies, other calls' and
+		// other sessions', with allowlists this command was never given.
+		return &exec.Cmd{Err: ErrLoopbackUnderEgress}
+	}
 	if s.policy.Egress != nil && eg.port() == 0 {
 		return &exec.Cmd{Err: errors.New("sandbox: the command was not run: the egress proxy has not started")}
 	}
@@ -676,10 +1001,22 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 				}
 			}
 		}
-		profile := s.seatbeltProfileFor(eg.portFor(egressCallOf(ctx)), eg.caFolder())
+		profile := s.seatbeltProfileWith(eg.portFor(egressCallOf(ctx)), loopbackOf(ctx), append([]string{eg.caFolder()}, readOnlyPathsOf(ctx)...)...) +
+			seatbeltPrivateDirs(privateDirsOf(ctx))
 		// -p takes the profile inline, avoiding a temp file the command could
-		// itself tamper with.
-		cmd := s.bounded(ctx, "sandbox-exec", append([]string{"-p", profile}, argv...))
+		// itself tamper with. One too long for the command line (a port rule
+		// each, for a debug command) goes in the folder the engine made for
+		// this command alone, in .abhed, which sandbox-exec reads before the
+		// command runs and no other command can reach.
+		args := []string{"-p", profile}
+		if dirs := privateDirsOf(ctx); len(profile) > 128<<10 && len(dirs) > 0 {
+			f := filepath.Join(dirs[0], "profile.sb")
+			if err := os.WriteFile(f, []byte(profile), 0o600); err != nil {
+				return &exec.Cmd{Err: fmt.Errorf("sandbox: the command was not run: its profile: %w", err)}
+			}
+			args = []string{"-f", f}
+		}
+		cmd := s.bounded(ctx, "sandbox-exec", append(args, argv...))
 		cmd.Dir = cwd
 		cmd.Env = env
 		return cmd
@@ -766,6 +1103,12 @@ func (s *Process) wrapEgress(ctx context.Context, cwd string, env []string, eg *
 		}
 		for _, p := range append(s.policy.ReadOnlyPaths[:len(s.policy.ReadOnlyPaths):len(s.policy.ReadOnlyPaths)], protected...) {
 			args = append(args, "--ro-bind-try", p, p)
+		}
+		for _, p := range readOnlyPathsOf(ctx) {
+			args = append(args, "--ro-bind", p, p)
+		}
+		for _, p := range privateDirsOf(ctx) {
+			args = append(args, "--tmpfs", p)
 		}
 		// State kept outside .abhed is hidden where a bind above would show
 		// it: a folder by an empty one, a file by /dev/null.
@@ -873,6 +1216,31 @@ func (s *Process) procLimit() uint64 {
 // workspaces are the workspace as given and with its links resolved.
 func (s *Process) workspaces() []string { return PathForms(s.policy.Workspace) }
 
+// readOnlyWriteDenies are the forms of the read-only paths and the helper's
+// cache folder that no command may write; one holding the workspace is left
+// out, as denying it would take the workspace away.
+func (s *Process) readOnlyWriteDenies() []string {
+	paths := append([]string(nil), s.policy.ReadOnlyPaths...)
+	if root, err := helperCacheRoot(); err == nil {
+		paths = append(paths, root)
+	}
+	// A zsh terminal's start-up file, which no command may change.
+	if z := s.zdotdir.Load(); z != nil {
+		paths = append(paths, *z)
+	}
+	var out []string
+	for _, p := range formsOf(paths) {
+		holds := false
+		for _, ws := range s.workspaces() {
+			holds = holds || insideAny(ws, []string{p})
+		}
+		if !holds {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // protectedInside are the write-protected paths, in both forms, that lie in
 // the workspace; a mount for one outside it would only show it to the command.
 func (s *Process) protectedInside() []string {
@@ -953,8 +1321,18 @@ func (s *Process) ownCaches() map[string]string {
 				parent = t
 			}
 		}
+		reapStaleTemps()
 		if d, err := os.MkdirTemp(parent, "abhed-caches-"); err == nil {
+			markOwned(d)
 			s.caches = d
+			// Named with the caches, before any command runs, so every
+			// command's profile denies writing it.
+			if s.backend == "sandbox-exec" && hostShell().zsh {
+				dir := filepath.Join(d, "zsh")
+				if os.Mkdir(dir, 0o700) == nil {
+					s.zdotdir.Store(&dir)
+				}
+			}
 		}
 	})
 	if s.caches == "" {
@@ -1020,11 +1398,13 @@ func (s *Process) privateTemp() (string, error) {
 		if t := userTemp(); t != "" && s.backend != "bwrap" {
 			parent = t
 		}
+		reapStaleTemps()
 		d, err := os.MkdirTemp(parent, "abhed-tmp-")
 		if err != nil {
 			s.tmpErr = err
 			return
 		}
+		markOwned(d)
 		if real, err := filepath.EvalSymlinks(d); err == nil {
 			d = real
 		}
@@ -1234,6 +1614,25 @@ var (
 
 // homeToolchains are the home paths commands may read, from the lists above,
 // environment variables and PATH, never home itself.
+// ancestorsWithin are the folders strictly between each of roots and each
+// of paths inside it, once each.
+func ancestorsWithin(paths, roots []string) []string {
+	var out []string
+	for _, p := range paths {
+		for _, r := range roots {
+			if _, in := Within(p, r); !in {
+				continue
+			}
+			for d := filepath.Dir(p); d != filepath.Clean(r) && d != filepath.Dir(d); d = filepath.Dir(d) {
+				if !slices.Contains(out, d) {
+					out = append(out, d)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func homeToolchains(home string) []string {
 	var out []string
 	add := func(p string) {
@@ -1293,4 +1692,34 @@ func homeToolchains(home string) []string {
 		}
 	}
 	return out
+}
+
+// nonEmpty is ps without its empty entries.
+func nonEmpty(ps []string) []string {
+	var out []string
+	for _, p := range ps {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// seatbeltPrivateDirs are the rules for folders the engine made for one
+// command alone (WithPrivateDirs), such as a debugger's socket folder:
+// readable and writable, and a unix socket made and reached there, nowhere
+// else. Last in the profile, so they win over the temp areas' denies.
+func seatbeltPrivateDirs(dirs []string) string {
+	var b strings.Builder
+	for _, d := range dirs {
+		for _, p := range PathForms(d) {
+			fmt.Fprintf(&b, "(allow file-read* file-write* (subpath %q))\n", p)
+			fmt.Fprintf(&b, "(allow network-bind (local unix-socket (subpath %q)))\n", p)
+			fmt.Fprintf(&b, "(allow network-outbound (remote unix-socket (subpath %q)))\n", p)
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n;; Folders made for this command alone.\n" + b.String()
 }

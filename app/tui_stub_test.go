@@ -30,6 +30,8 @@ type tuiStub struct {
 	firstText  time.Time
 	requests   int
 	lastPrompt string
+	// bodies are every request's body, as sent.
+	bodies []string
 	// hold, when set, pauses a reply before its first text until released.
 	hold chan struct{}
 	// suggestion answers the next-prompt call, "" as NONE; suggestCalls
@@ -188,6 +190,9 @@ func (s *tuiStub) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
+	s.mu.Lock()
+	s.bodies = append(s.bodies, string(body))
+	s.mu.Unlock()
 	var req struct {
 		Messages []struct {
 			Role    string          `json:"role"`

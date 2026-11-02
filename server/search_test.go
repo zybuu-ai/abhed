@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 )
@@ -140,8 +139,7 @@ func TestSearchSaysWhatCutItShort(t *testing.T) {
 	if _, r := wb.search("hit", ""); !r.Files[0].Truncated || len(r.Files[0].Matches) != maxSearchPerFile {
 		t.Fatalf("per-file cap not reported: %+v", r.Files[0].Truncated)
 	}
-	defer func(d time.Duration) { searchDeadline = d }(searchDeadline)
-	searchDeadline = 0
+	defer searchDeadline.Set(searchDeadline.Set(0))
 	if _, r := wb.search("hit", ""); !r.Truncated || r.Why != "time" {
 		t.Fatalf("time limit: truncated=%v why=%q", r.Truncated, r.Why)
 	}

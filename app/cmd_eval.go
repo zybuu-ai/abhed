@@ -38,7 +38,7 @@ var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(ca
 // how a harness change is judged. Per P10 the report carries behavioural flags
 // alongside the score, because identical pass rates hide different behaviour.
 func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) int {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -89,6 +89,7 @@ func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) in
 		if sess.Syntax, err = tools.ParseSyntaxMode(cfg.Tools.SyntaxCheck); err != nil {
 			return nil, eval.Result{}, err
 		}
+		sess.BashCheckpoints = tools.BashCheckpointsFrom(cfg.Tools.BashCheckpoints, cfg.Tools.BashCheckpointMB, cfg.Tools.BashCheckpointFiles)
 		vault := openVault()
 		// Skills, the web tools, the todo list and subagents are part of the
 		// agent under test, not extras: a corpus exercising one would

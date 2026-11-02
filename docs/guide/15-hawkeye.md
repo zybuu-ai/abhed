@@ -88,10 +88,14 @@ capture does not say it left any out.
 | Findings | rules over the record, each naming its evidence by sequence number |
 | Context per turn | what each turn sent to the model, how much of it was served from cache, where an offload moved results out to the record, where compaction cut, and how often the agent used `recall` to go back |
 | Policy layers | the rules an edition added to the session as a layer of their own, such as a Team workspace's ([Policy layers](04-permissions.md#policy-layers-from-an-edition)), from its `policy.layer` events: name, revision, rules, allow rules set aside, and how many decisions the layer's rules made (`policy_layers` and `policy.by_layer` in the JSON) |
+| Local model (Ollama) | each start, install or pull of a local Ollama a person chose for the session's model, from its `ollama.*` events: the step, the model, how it ended (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`) and why, and the exact command shown (`local_model` in the JSON) — [A local Ollama model](03-providers.md#a-local-ollama-model) |
 | Calls | every tool call followed through: arguments, decision, **the policy step that made it**, who let it through (and the remembered scope, if one did), duration, exit code, output. A call is marked run (✓) only when the record holds its result; one with none is marked not run (`-`), and one the sandbox refused part of, or whose connections the egress allowlist refused (`network_denied`), is marked `!` |
+| Supervisor | when the [supervisor](04-permissions.md#the-supervisor) left anything in the record: how many calls it reviewed and tightened, how often its judge was unavailable, the corrections it sent the model and the re-plan notes, its concerns by code with each one's call, and the judge's version (`supervisor` in the JSON) |
 | Turns | per-turn tokens, time to first token, total latency |
+| Remote changes | per host and per cluster, every `ssh` command and `k8s_apply` write in order: the address or server the approval named, the decision and who made it, the exit code (or `denied`, `not run`, `failed`), and the [runbook](28-runbooks.md) step it was (`remote_changes` in the JSON) |
 | Files | what the file tools read and wrote |
 | Subagents | what was delegated, how it ended, what it cost |
+| Answers | each check of an answer against the record, from its `answer.verdict`: the counts, the mode and whether the agent cited its evidence, and every statement with ✓, ? or ✗ and why (`answers` in the JSON) — [Verified answers](29-verified-answers.md) |
 
 The tokens in the summary and per turn are the conversation's own model
 calls. A next-prompt suggestion's call (`model.call` with `purpose:
@@ -120,7 +124,9 @@ while the ask waited), `unanswered` (no one answered: the wait timed out, input 
 client could not ask, or the approver failed) or
 `withheld` (the ask's record could not be redacted, so no one was asked) or
 `owner` (the session's owner lost access). `handover` asks again about a
-call a stopped process may already have run.
+call a stopped process may already have run. `workspace` asks about a start
+a workspace file would change, such as rust-analyzer's with a
+`rust-analyzer.toml` ([Language servers](33-language-servers.md)).
 A call a policy layer's rule decided also names the rule and the layer.
 
 ## Findings
@@ -138,13 +144,16 @@ and none of them is a model's opinion.
 | `broken-edit` | info | an `edit` or `write` was refused, because it would have left a file that parsed no longer parsing or its new text was a pasted diff; the file was left as it was |
 | `output-cap` | warn | a turn spent the whole output budget reasoning and made no tool call; the loop nudged it and lowered the effort |
 | `secret-redacted` | warn | a stored secret's value was written out by a command or the model and redacted before the record |
+| `contradicted-claim` | warn | an answer shown last (no revision followed it) made a statement the record contradicts; it was shown struck through, not as fact ([Verified answers](29-verified-answers.md)) |
+| `contract-unmet` | warn | the completion contract was not met: a required command failed or was not run, or a protected file changed |
 | `abnormal-end` | warn | the session ended as anything other than completed or a user interrupt |
 | `repeated-failure` | warn | the same call failed three times unchanged |
 | `context-pressure` | warn | a turn used 85% or more of the window |
 | `subagent-destructive` | warn | a subagent was allowed a destructive command; the detail says who allowed it and names the subagent's session |
 | `denied` | info | a call was refused; the detail says by whom, from the event's `by` (policy, reviewer, the person, headless, or system for a request that ended unanswered), and names the `approver` where the record does |
 | `subagent-denied` | info | a subagent's call was refused, from the parent's `subagent.action`; the detail says by whom and names the subagent's session |
-| `sandbox-denied` | info | a `bash` command ran under a sandbox tier (its observation's `sandbox` is not `none`) but the sandbox refused an operation in it, whatever its exit status says; records without the tier do not raise it |
+| `sandbox-denied` | info | the record shows the sandbox refused part of a command, whatever its exit status says: the fence's `fence.limit` says it killed processes at the memory limit or refused new ones at a process limit; its `fence.denied` names the system calls seccomp refused; git protection (`sandbox.git_planted`, `sandbox.git_linked`, `sandbox.git_walk_bounded` with `refused: true`) did not run it; or, under a sandbox tier, `bash` recorded an operation not permitted on a path the sandbox denies (`sandbox_note`: a credential folder or file in the home folder, or Abhed's own state). The detail names each, with the event it is from |
+| `sandbox-unconfirmed` | info | a `bash` command under a sandbox tier was refused an operation (`sandbox_note: denied`, or, in a record from before 1.2.9, bash's note in its output), and nothing in the record says the sandbox refused it rather than the system's own permissions: a `chown` to root, a `kill` of another user's process, a write the sandbox's file rules or the fence's seccomp or Landlock refused all read the same |
 | `network-denied` | info | the egress allowlist refused a connection or request, from its `egress.decision` events, not from the command's output; one finding per call and destination, naming the call (or Abhed's own model, web or MCP request), the rule and how many times. A command can still exit 0 |
 | `network-would-deny` | info | in `monitor` mode, the allowlist let through what it would have refused |
 | `truncated` | info | tool results were cut before the model saw them |
@@ -165,6 +174,27 @@ server that makes the report. The command line reads only the record, which
 cannot tell a shell still open from a server that stopped with one open, so
 there `no-end` is still raised and says a shell was open.
 
+`sandbox-denied` reads what the sandbox recorded, not the words of the
+output, which a program can print for reasons of its own. On a labelled set
+of 32 calls (`hawkeye/b15_test.go`), 18 run on a Mac on the host and under
+the process tier, the label being whether the sandboxed run was refused
+something the host run was not, and 14 built from the fence's and git
+protection's events in the shapes they are written on Linux (the fence's
+seccomp refusals checked there for real by `TestFenceRecordsSeccompRefusals`):
+`sandbox-denied` had a precision of 1.00 and a recall of 0.83 (15 found,
+none wrong, 3 missed). Reading the output's words alone, as HawkEYE did
+before 1.2.9, had a precision of 0.62 and a recall of 0.56: it took a
+`chown` to root, a `kill` of process 1 and a program printing "Operation not
+permitted" for the sandbox, and missed every memory kill, process-limit
+refusal and git refusal. The three it still misses are refusals no event
+records: a write the process tier's file rules refused, seccomp refusing a
+call in `landlock_only` mode (which keeps no listener), and Landlock
+refusing a write. Landlock reports its refusals only through the kernel's
+audit log, from Linux 6.15 (Landlock ABI 7), which an unprivileged process
+cannot read; so those stay `sandbox-unconfirmed`, or show only as the
+command's own error. Thirty-two calls show the finding is not wrong on the
+cases measured; they are too few to prove a rate of 0.99.
+
 `borrowed-host` is the one worth understanding. All tool output is untrusted,
 and an injected instruction usually has to name somewhere to send things. A
 call to a host that only tool output supplied is that shape — and it is also
@@ -183,9 +213,11 @@ read and not a verdict.
 - **It does not see every file inside `bash`.** File access is counted from
   the file tools' arguments; guessing paths out of a shell command would
   report things that did not happen. What the sandbox itself records about a
-  command is read: the egress proxy's decisions, a fence limit hit, and a
-  `.abhed` planted in the workspace. No sandbox tier records each file a
-  command opens, so that stays out of the report.
+  command is read: the egress proxy's decisions, a fence limit hit, git
+  protection refusing a command, and a `.abhed` planted in the workspace. No
+  sandbox tier records each file a command opens, nor each operation
+  Landlock refuses, nor what seccomp refuses outside `mount_namespace`
+  mode, so those stay out of the report.
 - **Records written by v0.2.0 or earlier have no per-turn events.** The summary falls
   back to the session's own totals and the context chart is omitted.
 

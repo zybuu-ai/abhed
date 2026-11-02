@@ -1,0 +1,269 @@
+package agent
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"github.com/zybuu-ai/abhed/internal/model"
+)
+
+// The regression pin: every corpus case by name and a hash of its text and
+// steps, and every strict answer the reviews raised. ABHED_WRITE_VERIFY_PIN=1 re-pins.
+type verifyPin struct {
+	Corpus []pinCase   `json:"corpus"`
+	Strict []pinStrict `json:"strict"`
+}
+
+type pinCase struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Hash string `json:"hash"`
+}
+
+// caseHash is a hash of what a case says and the calls it rests on.
+func caseHash(c CorpusCase) string {
+	b, _ := json.Marshal(struct {
+		Kind, Want, Text string
+		Claim            *Claim
+		Steps            []CorpusStep
+	}{c.Kind, c.Want, c.Text, c.Claim, c.Steps})
+	return fmt.Sprintf("%x", sha256.Sum256(b))[:16]
+}
+
+type pinStrict struct {
+	Scenario string `json:"scenario"`
+	Reply    string `json:"reply"`
+	Want     string `json:"want"`
+}
+
+const pinPath = "testdata/verify_pin.json"
+
+func TestRegressionPin(t *testing.T) {
+	raw, err := os.ReadFile(pinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pin verifyPin
+	if err := json.Unmarshal(raw, &pin); err != nil {
+		t.Fatal(err)
+	}
+	rep := RunCorpus()
+	got := map[string]CorpusResult{}
+	for _, r := range rep.Results {
+		got[r.Name] = r
+	}
+	if os.Getenv("ABHED_WRITE_VERIFY_PIN") == "1" {
+		have := map[string]int{}
+		for i, c := range pin.Corpus {
+			have[c.Name] = i
+		}
+		for _, r := range rep.Results {
+			if _, pinned := have[r.Name]; r.Kind != "planted" && r.Kind != "control" && !pinned {
+				continue
+			}
+			if i, ok := have[r.Name]; ok {
+				pin.Corpus[i].Hash, pin.Corpus[i].Kind = caseHash(r.CorpusCase), r.Kind
+			} else {
+				pin.Corpus = append(pin.Corpus, pinCase{Name: r.Name, Kind: r.Kind, Hash: caseHash(r.CorpusCase)})
+			}
+		}
+		out, _ := json.MarshalIndent(pin, "", "  ")
+		if err := os.WriteFile(pinPath, append(out, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range pin.Corpus {
+		r, ok := got[c.Name]
+		switch {
+		case !ok:
+			t.Errorf("pinned case %q is gone from the corpus", c.Name)
+		case c.Kind != r.Kind || c.Hash != caseHash(r.CorpusCase):
+			t.Errorf("pinned case %q changed (kind, text or steps); re-pin it on purpose with ABHED_WRITE_VERIFY_PIN=1", c.Name)
+		case c.Kind == "planted" && (r.Got == ClaimVerified || !r.LoadBearing || r.Explains):
+			t.Errorf("planted %q: %s (load-bearing %v, explanation %v): %s", c.Name, r.Got, r.LoadBearing, r.Explains, r.Reason)
+		case c.Kind == "control" && r.Got != ClaimVerified:
+			t.Errorf("control %q stopped verifying: %s", c.Name, r.Reason)
+		}
+	}
+	for _, s := range pin.Strict {
+		if reason := pinRun(t, s.Scenario, s.Reply); string(reason) != s.Want {
+			t.Errorf("strict %s %q: ended %s, want %s", s.Scenario, s.Reply, reason, s.Want)
+		}
+	}
+}
+
+// pinRun runs one strict-mode answer after the calls its scenario makes,
+// with the real read and edit tools.
+func pinRun(t *testing.T, scenario, reply string) TerminalReason {
+	t.Helper()
+	sum := "package calc\n\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n\t}\n\treturn total\n}\n"
+	plain := "package calc\n\n// Sum adds the numbers in nums.\nfunc Sum(nums []int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t}\n\treturn total\n}\n"
+	type edit struct{ old, new string }
+	scenarios := map[string]struct {
+		file, text string
+		edit       *edit
+		setup      string // a command run after the edit, before bash
+		bash       string
+		then       string // a second command after bash
+		before     string // a command run before the read
+		prep       string // a shell line run in the workspace before the session
+	}{
+		"read-sum":     {file: "sum.go", text: sum},
+		"explain-sum":  {file: "sum.go", text: plain},
+		"add-continue": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"}},
+		"flip-debug":   {file: "app.env", text: "DEBUG=false\nCACHE=false\nTIMEOUT=30\n", edit: &edit{"DEBUG=false", "DEBUG=true"}},
+		"routes-orders": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
+			edit: &edit{"\tr.Get(\"/orders\", orders)", "\tr.With(requireAuth).Get(\"/orders\", orders)"}},
+		"run-12": {bash: "printf '12 tests passed\\n'"},
+		"delete-panic": {file: "sum.go", text: "package calc\n\nfunc Sum(nums []int, max int) int {\n\ttotal := 0\n\tfor _, n := range nums {\n\t\ttotal += n\n\t\tif total > max {\n\t\t\tpanic(\"overflow\")\n\t\t}\n\t}\n\treturn total\n}\n\nfunc Product(nums []int) int {\n\tp := 1\n\tfor _, n := range nums {\n\t\tp *= n\n\t}\n\treturn p\n}\n",
+			edit: &edit{"\t\tif total > max {\n\t\t\tpanic(\"overflow\")\n\t\t}\n", ""}},
+		"yaml-worker": {file: "config.yaml", text: "api:\n  replicas: 2\nworker:\n  replicas: 2\n", edit: &edit{"worker:\n  replicas: 2", "worker:\n  replicas: 5"}},
+		"go-header":   {file: "sum.go", text: plain, edit: &edit{"func Sum(nums []int) int {\n\ttotal := 0\n", "func Sum(nums []int) int {\n\tif len(nums) == 0 {\n\t\treturn 0\n\t}\n\ttotal := 0\n"}},
+		"py-decorator": {file: "views.py", text: "@app.route('/admin')\ndef admin():\n    pass\n\n@app.route('/orders')\ndef orders():\n    pass\n",
+			edit: &edit{"@app.route('/orders')\ndef orders():", "@app.route('/orders')\n@login_required\ndef orders():"}},
+		"lint-golangci": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho 0 issues.\\n' > golangci-lint && chmod +x golangci-lint", bash: "./golangci-lint run ./..."},
+		"lint-ruff": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho All checks passed!\\n' > ruff && chmod +x ruff", bash: "./ruff check ."},
+		"test-go": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho ok calc 0.01s\\n' > go && chmod +x go", bash: "./go test ./..."},
+		"build-go": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\nexit 0\\n' > go && chmod +x go", bash: "./go build ./..."},
+		"build-cargo-warn": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho \"warning: unused variable: x\"\\necho \"warning: calc (lib) generated 1 warning\"\\necho \"Finished dev target(s) in 0.52s\"\\n' > cargo && chmod +x cargo", bash: "./cargo build"},
+		"make-gcc-warn": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho \"main.c:4:9: warning: unused variable x\"\\n' > make && chmod +x make", bash: "./make"},
+		"make-quiet": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho \"cc -o app main.o\"\\n' > make && chmod +x make", bash: "./make"},
+		"mvn-warn": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho \"[WARNING] App.java uses a deprecated API.\"\\necho \"[INFO] BUILD SUCCESS\"\\n' > mvn && chmod +x mvn", bash: "./mvn compile"},
+		"lint-golangci-problems": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho \"sum.go:3:1: x is unused (unused)\"\\necho \"1 issues:\"\\n' > golangci-lint && chmod +x golangci-lint", bash: "./golangci-lint run ./..."},
+		"lint-then-test": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho 0 issues.\\n' > golangci-lint && chmod +x golangci-lint && printf '#!/bin/sh\\necho ok calc 0.01s\\n' > go && chmod +x go",
+			bash:  "./golangci-lint run ./...", then: "./go test ./..."},
+		"build-cargo-debug": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho Finished dev target in 0.52s\\n' > cargo && chmod +x cargo", bash: "./cargo build"},
+		"build-cargo-release": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho Finished release target in 2.10s\\n' > cargo && chmod +x cargo", bash: "./cargo build --release"},
+		"build-npm-prod": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho vite v5.4.0 building for production...\\n' > npm && chmod +x npm", bash: "./npm run build"},
+		"build-then-lint": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\nexit 0\\n' > go && chmod +x go && printf '#!/bin/sh\\nexit 0\\n' > eslint && chmod +x eslint",
+			bash:  "./go build ./...", then: "./eslint ."},
+		"build-then-golangci": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\nexit 0\\n' > go && chmod +x go && printf '#!/bin/sh\\necho 0 issues.\\n' > golangci-lint && chmod +x golangci-lint",
+			bash:  "./go build ./...", then: "./golangci-lint run ./..."},
+		"pytest-mypy-fail": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho 12 passed in 0.9s\\n' > pytest && chmod +x pytest && printf '#!/bin/sh\\necho Found 1 error in 1 file\\nexit 1\\n' > mypy && chmod +x mypy",
+			bash:  "./pytest", then: "./mypy ."},
+		"pytest-mypy-clean": {file: "sum.go", text: plain, edit: &edit{"\t\ttotal += n\n", "\t\tif n < 0 {\n\t\t\tcontinue\n\t\t}\n\t\ttotal += n\n"},
+			setup: "printf '#!/bin/sh\\necho 12 passed in 0.9s\\n' > pytest && chmod +x pytest && printf '#!/bin/sh\\necho Success: no issues found\\n' > mypy && chmod +x mypy",
+			bash:  "./pytest", then: "./mypy ."},
+		"merge-markers": {file: "app.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n"},
+		"merge-resolved-clean": {file: "app.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
+			edit: &edit{"<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "const port = 9090\n"}, bash: "grep -rn '^<<<<<<<' ."},
+		"merge-git-two": {file: "a.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
+			before: "printf '#!/bin/sh\\necho CONFLICT \\(content\\): Merge conflict in a.go\\necho CONFLICT \\(content\\): Merge conflict in b.go\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
+			edit:   &edit{"<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n", "const port = 9090\n"}, bash: "grep -n '<<<<<<<' a.go"},
+		"merge-clean-then-test": {file: "sum.go", text: sum,
+			setup: "printf '#!/bin/sh\\necho Merge made by the ort strategy.\\n' > git && chmod +x git && printf '#!/bin/sh\\necho ok calc 0.01s\\n' > go && chmod +x go",
+			bash:  "./git merge feature", then: "./go test ./..."},
+		"merge-abort": {file: "a.go", text: "package main\n\n<<<<<<< HEAD\nconst port = 8080\n=======\nconst port = 9090\n>>>>>>> feature\n",
+			before: "printf '#!/bin/sh\\n[ \"$2\" = --abort ] \\&\\& exit 0\\necho CONFLICT \\(content\\): Merge conflict in a.go\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
+			bash:   "./git merge --abort"},
+		"merge-moddel-ours": {before: "printf '#!/bin/sh\\ncase \"$2\" in --abort) exit 0;; -s) echo Merge made by the ours strategy.; exit 0;; esac\\necho \"CONFLICT (modify/delete): a.go deleted in feature and modified in HEAD.\"\\necho Automatic merge failed\\nexit 1\\n' > git && chmod +x git && ./git merge feature",
+			bash: "./git merge --abort", then: "./git merge -s ours feature"},
+		"rebase-moddel-x": {before: `printf '%s\n' '#!/bin/sh' 'case "$2" in --abort) exit 0;; -s) echo Successfully rebased and updated refs/heads/feature.; exit 0;; esac' "printf 'Rebasing (1/1)\\rCONFLICT (modify/delete): a.go deleted in HEAD and modified in 4104aa2.\\n'" 'exit 1' > git && chmod +x git && ./git rebase main`,
+			bash: "./git rebase --abort", then: "./git rebase -s ours main"},
+		"pull-autostash": {before: `printf '%s\n' '#!/bin/sh' 'echo Fast-forward' 'echo Applying autostash resulted in conflicts.' 'echo Your changes are safe in the stash.' > git && chmod +x git`,
+			bash: "./git pull"},
+		"sub-tests": {prep: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > services/orders/go && chmod +x services/orders/go",
+			bash: "cd services/orders && ./go test ./..."},
+		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
+		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
+			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
+	}
+	sc, ok := scenarios[scenario]
+	if !ok {
+		t.Fatalf("no scenario %q", scenario)
+	}
+	l, _, ad, dir := verifyHarness(t, VerifyStrict, false, nil)
+	if sc.prep != "" {
+		cmd := exec.Command("sh", "-c", sc.prep)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("prep: %v: %s", err, out)
+		}
+	}
+	var turns []scriptedTurn
+	if sc.before != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.before})}})
+	}
+	if sc.file != "" {
+		path := filepath.Join(dir, sc.file)
+		if err := os.WriteFile(path, []byte(sc.text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("read", map[string]string{"path": path})}})
+		if sc.edit != nil {
+			turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("edit", map[string]string{"path": path, "old_string": sc.edit.old, "new_string": sc.edit.new})}})
+		}
+	}
+	if sc.setup != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.setup})}})
+	}
+	if sc.bash != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.bash})}})
+	}
+	if sc.then != "" {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": sc.then})}})
+	}
+	turns = append(turns, scriptedTurn{text: reply}, scriptedTurn{text: reply})
+	ad.turns = turns
+	reason, _ := l.Run(context.Background(), "do it")
+	return reason
+}
+
+// Reports worded like advice or a plan are claims: a label before a colon,
+// a step told in order, "I can confirm", "I couldn't find", a subject that
+// starts like an imperative.
+func TestReportsAreKept(t *testing.T) {
+	for _, s := range []string{
+		"Test results: 12 passed, 0 failed.", "Test results: all 12 tests passed.", "Run results: all 12 tests passed.",
+		"I can confirm the tests pass.", "I can confirm all 12 tests pass.", "I can confirm `Sum` now skips negatives with `continue`.",
+		"I couldn't find any references to `DEBUG` in the codebase.", "I could not find any other callers of `Sum`.",
+		"I can't find any callers of `Sum` outside `sum.go`.",
+		"Next, I set `DEBUG` to `true` in `config/app.env`.", "Next, I put `requireAuth` in front of `/admin`.",
+		"Test coverage is now 92% for `Sum`.", "Test suite passes with `go test ./...`.",
+		"You can see `Sum` now skips negatives with `continue`.", "You will notice `Sum` now skips negatives with `continue`.",
+		"If you look at `sum.go`, `Sum` now skips negatives with `continue`.", "Check `sum.go`: `Sum` now skips negatives with `continue`.",
+		"See `sum.go`: `Sum` now skips negatives with `continue`.", "Review the diff: `Sum` now skips negatives with `continue`.",
+		"I'll note that `Sum` now skips negatives with `continue`.",
+		"Follow-up: I added `continue` to `Sum`.", "Optional: I also renamed `total` to `sum`.",
+		"Suggestion: I added `continue` to `Sum`, so review it.", "Tip: all 12 tests pass.",
+		"See the output above: all 12 tests pass.", "See the test output: all 12 tests pass.",
+		"Test passes now.", "Test `TestSum` passes now.", "Review of the diff shows no issues.",
+	} {
+		if got := splitClaims(s); len(got) != 1 {
+			t.Errorf("%q: kept %q, want one claim", s, got)
+		}
+	}
+	for _, s := range []string{"Next, I would refactor `Sum` to use `range`.", "Run `go test ./...` to confirm.", "I'll update the docs next.",
+		"Run `go test ./...` to confirm everything passes.", "Run `go test ./...` and check that all tests pass.",
+		"Verify the build passes in CI.", "Use `go test -run TestSum` to see that it passes.",
+		"Next steps: add tests for negatives and update the docs.", "Recommendation: add a test for negatives.",
+		"Follow-up: add a test for the negative case.", "I'll point out the change in the release notes.",
+		"Test it with `go test ./...`; it should pass.", "Check that `TestSum` passes after you pull.", "TODO: add a test for negatives.",
+		"Check for nil slices before calling `Sum`."} {
+		if got := splitClaims(s); len(got) != 0 {
+			t.Errorf("%q: kept %q", s, got)
+		}
+	}
+}

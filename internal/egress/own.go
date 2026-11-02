@@ -94,7 +94,7 @@ type Guard struct {
 
 	mu       sync.Mutex
 	sessions map[string]*ownSession
-	pools    map[*Transport]*http.Transport // each client's pool as this guard sends it
+	pools    map[poolKey]http.RoundTripper // each client's pool as this guard sends it
 	closed   bool
 	done     chan struct{}
 	wg       sync.WaitGroup
@@ -186,7 +186,9 @@ func (g *Guard) Close() {
 		g.pools = nil
 		g.mu.Unlock()
 		for _, c := range pools {
-			c.CloseIdleConnections()
+			if ci, ok := c.(interface{ CloseIdleConnections() }); ok {
+				ci.CloseIdleConnections()
+			}
 		}
 		close(g.done)
 		g.wg.Wait()
@@ -339,6 +341,12 @@ type Transport struct {
 	Model func() []string
 	// Check is the client's own address check, applied after the policy's.
 	Check func(host string, a netip.AddrPort) error
+	// Resolve is the client's own resolver, which Check's addresses come
+	// from through an upstream proxy outside the allowlist; nil is the system's.
+	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// Anchored reports a host the managed configuration names exactly for this
+	// client, which resolve_via_proxy may pass unresolved outside the allowlist only.
+	Anchored func(host string) bool
 	// Guard is the guard of the client's tool set, Unguarded outside the
 	// allowlist; nil uses the request's, then the one installed.
 	Guard *Guard
@@ -366,9 +374,51 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	if g == nil || g == Unguarded {
-		return t.base().RoundTrip(req)
+		// Through the upstream proxy the client's own address check runs on
+		// the addresses the name has here, as its dialer then dials the proxy.
+		if up := CurrentUpstream(); up != nil && t.Check != nil && !up.Bypass(req.URL.Hostname()) {
+			if err := t.precheck(req); err != nil {
+				closeBody(req)
+				return nil, err
+			}
+		}
+		return t.unguarded().RoundTrip(req)
 	}
 	return g.roundTrip(t, req)
+}
+
+// precheck applies t.Check to the addresses req's host resolves to here.
+func (t *Transport) precheck(req *http.Request) error {
+	host, port, _, err := ownTarget(req.URL)
+	if err != nil {
+		return err
+	}
+	resolve := t.Resolve
+	if resolve == nil {
+		resolve = func(ctx context.Context, h string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip", h)
+		}
+	}
+	anchored := t.Anchored != nil && t.Anchored(host)
+	addrs, _, err := CurrentUpstream().precheck(req.Context(), resolve, host, anchored)
+	if err != nil {
+		return err
+	}
+	for _, a := range addrs {
+		if err := t.Check(host, netip.AddrPortFrom(a.Unmap(), port)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unguarded is t's own transport for a request no guard judges: through the
+// upstream proxy in force, or as the client made it.
+func (t *Transport) unguarded() http.RoundTripper {
+	if CurrentUpstream() == nil {
+		return t.base()
+	}
+	return UpstreamTransport(t.Base)
 }
 
 // closeBody closes a request's body that will not be sent, as a RoundTripper must.
@@ -385,12 +435,21 @@ func (t *Transport) CloseIdleConnections() {
 	}
 }
 
+// poolKey is one client's pool for one upstream proxy, or none.
+type poolKey struct {
+	t  *Transport
+	up *Upstream
+}
+
 // pool is t's Base with g's dialer and no proxy from the environment, so the
-// address check sees where it goes; a closed guard keeps no pool.
-func (g *Guard) pool(t *Transport) *http.Transport {
+// address check sees where it goes; through the upstream proxy in force when
+// there is one. A closed guard keeps no pool.
+func (g *Guard) pool(t *Transport) http.RoundTripper {
+	up := CurrentUpstream()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if c := g.pools[t]; c != nil {
+	k := poolKey{t: t, up: up}
+	if c := g.pools[k]; c != nil {
 		return c
 	}
 	var c *http.Transport
@@ -402,16 +461,20 @@ func (g *Guard) pool(t *Transport) *http.Transport {
 	c.Proxy = nil
 	c.DialContext = g.dial
 	c.DialTLSContext = nil
+	var rt http.RoundTripper = c
+	if up != nil {
+		rt = up.Apply(c)
+	}
 	// A pool that keeps no connection, as web_fetch's, a new one per call, is not kept.
 	if g.closed || c.DisableKeepAlives || len(g.pools) >= maxPools {
 		c.DisableKeepAlives = true
-		return c
+		return rt
 	}
 	if g.pools == nil {
-		g.pools = map[*Transport]*http.Transport{}
+		g.pools = map[poolKey]http.RoundTripper{}
 	}
-	g.pools[t] = c
-	return c
+	g.pools[k] = rt
+	return rt
 }
 
 // verdictKey carries a judged request's ownVerdict to the dialer.
@@ -423,6 +486,9 @@ type ownVerdict struct {
 	allowIPs []netip.Prefix
 	anyAddr  bool // the model's endpoint: its own address, whatever it is
 	check    func(string, netip.AddrPort) error
+	// via is the upstream proxy the request goes through, whose own address
+	// the connection then has; nil for a direct request.
+	via *Upstream
 
 	mu      sync.Mutex
 	ip      string
@@ -472,6 +538,9 @@ func (o *ownVerdict) fail(err error) {
 // gotConn checks the address of the connection the request is given, which
 // may have been dialled for another request with other allow_ips.
 func (o *ownVerdict) gotConn(info httptrace.GotConnInfo) {
+	if o.via != nil {
+		return // the proxy's own address; the name was checked before
+	}
 	ta, ok := info.Conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
 		_ = info.Conn.Close()
@@ -493,6 +562,12 @@ func (g *Guard) dial(ctx context.Context, network, addr string) (net.Conn, error
 	ov, _ := ctx.Value(verdictKey{}).(*ownVerdict)
 	if ov == nil {
 		return nil, errors.New("abhed egress: a connection for no judged request is refused")
+	}
+	// The upstream proxy the operator configured is reached as it is: its
+	// address is the operator's choice, often an internal one.
+	if ov.via != nil && strings.EqualFold(addr, ov.via.Authority()) {
+		d := net.Dialer{Timeout: g.opts.DialTimeout}
+		return d.DialContext(ctx, network, addr)
 	}
 	host, ps, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -630,6 +705,43 @@ func (g *Guard) roundTrip(t *Transport, req *http.Request) (*http.Response, erro
 		ev.BytesOut = req.ContentLength
 	}
 	ov := &ownVerdict{host: host, allowIPs: v.AllowIPs, anyAddr: model, check: t.Check}
+	if up := CurrentUpstream(); up != nil && !up.Bypass(host) {
+		// Chained after the decision: the proxy resolves the name, so the
+		// addresses it has here are checked first, where it has any.
+		ov.via, ev.Upstream = up, up.Authority()
+		// Under the allowlist only its own exact rule anchors; Anchored is for the unguarded path.
+		anchored := model || v.Exact && v.Decision == Allow
+		addrs, byProxy, perr := up.precheck(req.Context(), g.resolve, host, anchored)
+		if perr != nil {
+			closeBody(req)
+			ev.Decision, ev.Rule, ev.Reason = Deny, "dns", perr.Error()
+			g.record(c, ev)
+			return nil, &DeniedError{Host: host, Port: port, Rule: "dns", Reason: perr.Error()}
+		}
+		if byProxy {
+			ev.Resolved = "proxy"
+		}
+		for _, a := range addrs {
+			if err := ov.addrOK(netip.AddrPortFrom(a.Unmap(), port)); err != nil {
+				break
+			}
+		}
+		ov.mu.Lock()
+		refused, failed := ov.refused, ov.failed
+		ov.mu.Unlock()
+		if refused != nil || failed != nil {
+			closeBody(req)
+			ev.Decision = Deny
+			if refused != nil {
+				ev.Reason = refused.Error()
+				g.record(c, ev)
+				return nil, &DeniedError{Host: host, Port: port, Rule: v.Rule, Reason: refused.Error()}
+			}
+			ev.Rule, ev.Reason = t.Kind, failed.Error()
+			g.record(c, ev)
+			return nil, failed
+		}
+	}
 	ctx := context.WithValue(req.Context(), verdictKey{}, ov)
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: ov.gotConn})
 	resp, err := g.pool(t).RoundTrip(req.WithContext(ctx))

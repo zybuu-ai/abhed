@@ -17,7 +17,6 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
-	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // Budget enforces hierarchical spend limits across a session and its subagents.
@@ -684,6 +683,9 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		}
 		if f.Session != nil {
 			session.Syntax = f.Session.Syntax
+			// The checkpoint mode carries over, so "required" refuses here
+			// too: nothing keeps a worktree's bash changes for undo.
+			session.BashCheckpoints = f.Session.BashCheckpoints
 			// The editor's files in the worktree are as out of reach as the parent's.
 			session.Guard = f.Session.Guard
 			// Still the parent's conversation: a login it made carries over.
@@ -737,14 +739,20 @@ func (f *SubagentFactory) build(parent *parentLink, def *Definition, registry *t
 		}
 	}
 	sub.Provider = provider
+	// A parent previewing writes previews its subagents' writes too: one
+	// started under preview keeps it, even past the prompt that started it.
+	if parent != nil && parent.loop != nil {
+		sub.previewParent = parent.loop
+		sub.previewWrites.Store(parent.loop.previewing())
+	}
 	// A subagent's calls reach the same person, so the same hooks screen them.
 	if parent != nil && parent.loop != nil && parent.loop.Hooks != nil {
 		sub.Hooks = childHooks{parent.loop.Hooks}
 	}
 	// The parent's judge reviews the child's calls too, with a turn budget of the child's own.
 	if parent != nil && parent.loop != nil && parent.loop.Monitor != nil {
-		g := parent.loop.Monitor
-		sub.Monitor = &monitor.Guard{Monitor: g.Monitor, Timeout: g.Timeout, OnUnavailable: g.OnUnavailable, MaxPerTurn: g.MaxPerTurn}
+		sub.Monitor = parent.loop.Monitor.Child()
+		sub.sup.parent = parent.loop
 	}
 	// The child spends from the parent's allowance turn by turn, so it stops
 	// when the session's budget runs out rather than after it.
@@ -1073,6 +1081,7 @@ type parentLink struct {
 // asParent marks ctx as coming from this loop, for the subagents a tool spawns.
 func (l *Loop) asParent(ctx context.Context) context.Context {
 	asks := l.askQueue(ctx)
+	ctx = l.markPlanBound(ctx)
 	return context.WithValue(ctx, parentKey{}, &parentLink{
 		approver: l.Approver, rec: l.Recorder, asks: asks, depth: l.depth, fail: l.noteRecordErr,
 		adapter: l.Adapter, provider: l.Provider, loop: l,

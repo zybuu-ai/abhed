@@ -6,6 +6,1493 @@ All notable changes to Abhed are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-11-02
+
+### Upgrading from 1.2.8
+
+- A web page a person links in Abhed Studio is fetched as that person's own
+  call, with an ask when no `allowed_hosts` names it, even while `web_fetch`
+  is off; a user's or workspace's own `web_fetch.enabled: false` does not
+  stop it. Only the managed file's own `web_fetch.enabled: false` refuses it,
+  so a managed deployment that relied on the default must now set it to
+  false.
+- On a Mac, Abhed's own listeners that do not name their port (egress
+  proxies, each command's proxy port, `abhed sandbox forward` without a
+  local port, `abhed serve`, `server.metrics.listen` and `abhed
+  egress-proxy` on port 0, the sign-in callback) now take their ports from
+  47600 to 47855 only, 256 ports shared by every Abhed on the Mac, and
+  fail, saying so, when that range is full. If another program on the Mac
+  uses those ports, or a large parallel run needs more, set
+  `ABHED_LOOPBACK_PORTS` to another range (`lo-hi`, at least 16 ports above
+  1024), the same for every Abhed process there; a value that is not valid
+  is warned about and the default used.
+- A confined MCP stdio server whose program or script sits directly in a
+  top-level folder of your home (`~/Downloads`, `~/bin`, `~/Projects`),
+  in `~/.local/bin` or `~/.cargo/bin`, now sees only that file, where 1.2.8
+  showed it the whole folder: a server that reads files beside its program
+  there stops working. Move it into a folder of its own (such as
+  `~/tools/<server>/`), or set `"host_files": true` on it. A server whose
+  program is installed in a credential folder (`~/.ssh`, `~/.aws`,
+  `~/.config/gcloud` and the like), or a folder holding one, is refused.
+- First run now writes the Ollama model you choose as `"type": "ollama"`
+  (it wrote `openai-compatible`). Both use the same local sampling set; the
+  `ollama` type does not send `parallel_tool_calls`. A configuration already
+  written is not changed. The new check that gets a local Ollama model
+  working applies to `"type": "ollama"` at any address and to an
+  OpenAI-compatible `base_url` on port 11434; for an Ollama on another port
+  written as `openai-compatible`, set its `type` to `ollama`, or move
+  `~/.abhed/config.json` aside and run `abhed` again to redo first run.
+- The supervisor is on by default, with its rules judge. Every surface
+  reviews each call after policy, and a call it has a concern with is asked
+  about, or refused with a correction for the model: destructive commands
+  outside the workspace and the paths you named, a program not on the PATH,
+  a change aimed at a path or host neither you nor an earlier call named, and
+  a call that can send data out after a credential file was read. In
+  `abhed -p`, an SDK agent without an approver and an unattended server run,
+  its asks are refusals. An ask it raised offers no "always allow". Set
+  `"monitor": {"enabled": false}` in your own file to turn it off; a managed
+  file may keep it on.
+- The reason of a call the supervisor refused starts `supervisor:` instead
+  of `monitor:`.
+- The supervisor counts more output as credential content: JWTs, Slack
+  webhook URLs, Stripe live and test-mode keys, bearer tokens, passwords in
+  URLs and secret-named URL parameters, and tokens run into other text, besides every shape it counted
+  before, which it still counts as it did.
+- Answers are checked and labelled by default in the terminal, the workbench
+  and console, and Abhed Studio. A reply with a statement the record
+  contradicts gets one more model call, the agent's revision turn, and an
+  ACP editor gets one more `agent_message_chunk` after each checked reply,
+  carrying the labels as text and the verdict in `_meta`. Set
+  `"verify": {"mode": "off"}` to turn it off; `-p`, rpc and the SDK check
+  nothing unless asked.
+- Commands run through `bash` are checkpointed by default: before each one
+  the workspace's files are noted and copied in memory, up to 20,000 files
+  and 32 MiB (2 MiB a file). Set `"tools": {"bash_checkpoints": "off"}` to
+  stop it, or lower `tools.bash_checkpoint_files` and
+  `tools.bash_checkpoint_mb`.
+- `ssh` rules read the remote command as bash's: an allow rule with a pattern
+  now approves one simple command, so a rule written for a chain (`ssh(web1/a
+  && b)`) or relying on what follows a pattern no longer matches; write one
+  rule per command. A destructive remote command always asks twice.
+- An accepted plan's runbook answers its own steps by default, and any other
+  change during it asks. Set `"plan": {"runbooks": false}` to have every call
+  judged by policy alone.
+- Sessions on `abhed serve` and in Studio started in plan mode now have
+  plan mode's `exit_plan`, and a proposed plan waits for the person's answer
+  (`POST /v1/sessions/{id}/plan`, or Studio's permission request) before
+  anything changes. A session not started in plan mode is unaffected.
+- `k8s_apply` refuses a `manifest` that is, or holds, a Secret with `data`
+  or `stringData`, and withholds its values from the record; build such a
+  Secret with `secret_from` from stored secrets and workspace files.
+- `abhed serve` writes every API request that changes something to the
+  control-plane audit record, with who made it, before it runs and with its
+  outcome, and answers 503 without making the change when that record
+  cannot be written. With Postgres it is the tenant's `sandbox_audit` table;
+  without, the new file `<records>/<tenant>/audit/api.jsonl` under
+  `record.dir` or `~/.abhed/records`.
+- Postgres: this release takes the schema from version 10 to 17. Run
+  `abhed migrate` as the owner role before starting a server as the runtime
+  role; a runtime-role server refuses a schema older than 17 and says to
+  migrate, and a `storage.single_role` server applies it itself. Version 11
+  adds the `chain_pre` table; 12 adds `events.commit_tx`; 13 adds the
+  `ocsf_cursors` table; 14 replaces the trigger that chains events (same
+  hash, one trigger per insert instead of two) and drops the GIN index on
+  `events.payload`. Payloads are sealed, so that index held ciphertext, but a
+  query of yours that filters events by payload (`payload @> …`) now scans
+  the table; add your own index if you rely on one. 15 has that trigger
+  refuse a row for a session deleted while the insert waited for its lock.
+  16 replaces version 12's commit-order index with `events_commit_tx_idx`,
+  which row security lets the commit-ordered scan use; `abhed migrate` builds
+  it in its transaction, holding appends to `events` until it is built, so
+  on a large table run it in a quiet window. 17 adds the `commit_shift`
+  table. `commit_tx` is a transaction id, so after a logical restore
+  (`pg_dump`, `pg_restore`) into a cluster whose transaction counter is
+  behind the one that wrote the record, new events would sort before rows a
+  commit-ordered reader (`record.ocsf`, an edition's SIEM delivery) had
+  already passed, and it would never see them. Each `abhed migrate` raises
+  the shift, while it holds the tables, just past the highest `commit_tx`
+  when that is ahead of the cluster; new events and the readers' horizon both
+  add it. It stays 0 in a database the cluster wrote, is never lowered, and
+  the runtime role only reads it. A runtime server refuses to start, naming
+  `abhed migrate`, on a database whose commit order is ahead of the cluster,
+  as after a restore that skipped the migrate.
+- HawkEYE's `sandbox-denied` no longer fires on the words of a command's
+  output alone. A call whose output says an operation was not permitted,
+  with nothing in the record to show the sandbox refused it, is now
+  `sandbox-unconfirmed`, and records from before 1.2.9 read that way.
+- The vertex-anthropic and vertex-gemini adapters refuse a `region` or
+  `project_id` that is not a plain name of letters, digits and hyphens. Both
+  are written into the request's host, and anything else could move it. A
+  domain-scoped project id (`example.com:proj`) needs a `base_url` instead.
+- `model.allowed`, `mcp.allowed` and `mcp.denied` are new keys. A
+  configuration that sets none of them behaves as before. One that sets a
+  list Abhed cannot read stops at startup, naming the file and the entry, so
+  check a new list with `abhed doctor` before rolling it out. Under a managed
+  `model.default`, the SDK's `SwitchModelNamed` refusal still `errors.Is`
+  `ErrUnknownModel`, and now also unwraps to the `config.ManagedError` that
+  says why.
+
+### Security
+
+- golang.org/x/net 0.60.0 (CVE-2026-78669 and four more) and, in the container image,
+  pypdf 6.21.4 (ten HIGH findings in 6.19.0); DOMPurify 3.4.17 in the
+  workbench editor bundle (GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr).
+
+- `-p` with piped stdin: the piped data reaches the model as an attached
+  block, fenced and marked as data rather than the person's words, and a
+  `-runbook` prompt goes before it, with the person's text.
+- Postgres: the record's triggers read some tables by unqualified name
+  with no `search_path` of their own, and Postgres looks in a session's
+  temporary schema first for a table unless told otherwise. So the runtime
+  role, the server's own database credentials, could make a temporary table
+  that stood in for the real one: a `sessions` table that called a live
+  session deleted let it delete that session's sealing key, leaving its
+  sealed payloads unreadable for good (`abhed_session_keys_guard`); a
+  `pg_class` naming it the sessions table's owner let it give a session to
+  another owner, recorded as legitimate, and undo a deletion
+  (`abhed_sessions_guard`); and an `events` or `sandbox_audit` table chose
+  the next row's chain position and link (`abhed_chain_insert`, which chained
+  both tables in 1.2.8; `abhed record verify` and `abhed record audit` show
+  the fork). Every function in the schema now names its tables with their
+  schema and sets `search_path = pg_catalog, public, pg_temp`, as does the
+  accounts table's trigger. Someone without the runtime role's credentials
+  could not do any of this. Affects 1.2.8 (schema versions 8 to 10). The
+  fix is in schema version 17: run `abhed migrate` as the owner before
+  starting this release's servers, which refuse an older schema.
+- Postgres: a runtime role that could create objects in schema `public`
+  could define a function or operator that a trigger resolved before the
+  built-in one. Postgres before 15 grants that to every role through
+  `PUBLIC`. `abhed migrate` now finds every route (`PUBLIC`, a
+  grant to the runtime role, a role it belongs to with or without
+  `INHERIT`, ownership of the schema or, on 15 and later, of the database),
+  closes `PUBLIC`'s grant itself where it may, and refuses while any
+  other remains, printing what to run as the schema's owner
+  or a superuser: `GRANT CREATE ON SCHEMA public TO <owner>; REVOKE CREATE
+  ON SCHEMA public FROM PUBLIC;`, the first only when the owner role creates
+  there only through `PUBLIC`. Where its role owns `public` it runs both
+  itself, and it never revokes `PUBLIC`'s grant while that would leave the
+  owner role unable to create. A runtime server with any such route refuses
+  to start with the same message. Upgrading on Postgres 13 or 14 with the
+  default rights, where the schema belongs to the superuser, needs that
+  superuser step before `abhed migrate` completes. The revoke changes a
+  database-wide right: other applications on the same database that create
+  in `public` through `PUBLIC` need a grant of their own first. On Postgres
+  15 and later, a runtime role that owns the database, or holds `CREATE` on
+  `public` directly or through a group, used to start and now refuses. The
+  check that the runtime role cannot alter the record also counts every
+  role it belongs to, with or without `INHERIT`. A managed service that
+  gives no superuser: ask the provider, or use `storage.single_role`.
+- A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
+  still deciding on it went unscreened: it was recorded as sent and
+  reached the model with the next message. It is now recorded as
+  `message.dropped` ("stopped before it was screened") and never sent.
+  The hook's answer still owed is read before the next message is put to
+  it, which could otherwise have taken that answer as its own. Affects
+  1.2.3 to 1.2.8.
+- Built with Go 1.26.10 (`go.mod`, CI, the release workflow and the image),
+  which fixes GO-2026-6809 in `crypto/x509`; 1.26.9 is affected.
+- Toolchains, before release: archive extraction refuses any entry made
+  through a symbolic link, a hard link to anything but a file already
+  unpacked, and any link that resolves outside the toolchain, so a chain of
+  links cannot write outside the cache. The macOS process tier denies writes
+  to the toolchain cache and the Linux helper's copies even with
+  `shared_caches`, and the helper is hashed in full before each bind and
+  never used for an engine on another host. Deny and ask rules on
+  `toolchain(<lang>@…)` also hold for `<lang>+debugger@…`. Under a managed
+  hold on the permissions, `toolchains: auto` and `toolchains_preapproved`
+  each add allow rules only when the managed file sets that key itself.
+  Studio's toolchain offer names the package registries an install opens,
+  and its install refuses one that changed since the offer, registries
+  included; an install that sends no agreement is recorded as unconfirmed
+  and opens no registries. Every link in a toolchain must resolve to a path
+  that exists inside it, no link's target may pass through another link, and
+  the install's own files are created exclusively, so a dangling link
+  cannot carry Abhed's marker write outside the cache.
+
+- `ssh` rules matched the remote command as plain text. A deny rule such
+  as `ssh(rm *)` did not stop `true; rm -rf /srv` or `sudo rm -rf /srv`,
+  an allow rule such as `ssh(web1/openssl x509 *)` also approved anything
+  chained after the command (`openssl x509 -in a.pem; rm -rf /var/www`),
+  and a remote `rm -rf` got a plain question. The command is now read as a
+  `bash` command is: deny and ask rules see each command in a chain, pipe
+  or substitution and behind `sudo`, `env`, `nice` and the other runners;
+  an allow rule with a pattern approves only one simple command; a line
+  that cannot be parsed in full is refused while a deny rule for `ssh` has
+  a pattern; a destructive remote command always confirms twice with no
+  "always"; and "don't ask again" offers no scope for a chain or a
+  wildcard.
+- `k8s_get` of a Secret returned its `data` to the model, and so to the
+  record and every screen: only metadata noise was stripped. A Secret's
+  values, in `data`, `stringData` and kubectl's last-applied annotation, are
+  now shown as each key with the value's length and a fingerprint, for a
+  single Secret, a list, and what the cluster answers a `k8s_apply` of one.
+  The fingerprint is an HMAC-SHA256 under a random key Abhed makes when it
+  starts and never writes anywhere, cut to 12 hex digits: two compare only
+  while that Abhed runs, and unlike a plain sha256 it cannot be used to
+  guess a short value offline.
+- `abhed record verify` on Postgres asked the database's own
+  `abhed_chain_verify` whether a chain held, which the tables' owner could
+  replace with one that passes any chain, and counted an event inserted
+  with the chain's trigger off as "from before the chain" rather than a
+  failure. Abhed now recomputes every hash itself from the rows, and fails
+  an event with no chain unless the migration counted it as there before
+  the chain began.
+
+### Added
+
+- Signed org policy. `abhed login` to a server that serves one asks before
+  taking it (or `-org-policy`, or `-policy-key` with a key given out of
+  band; no question when `/etc/abhed` names the server). Abhed then fetches
+  the policy, checks its Ed25519 signature against a key pinned at sign-in
+  (signed statements rotate the pins, and must keep the signer; trust on
+  first use over plain http is refused), checks it is for the signed-in
+  person and tenant and not an earlier epoch, keeps it in
+  `~/.abhed/org-policy.json` and applies it as a managed layer above the
+  user, `-settings` and workspace files and below `/etc/abhed/config.json`,
+  which wins where both set a key; deny and ask rules from both are kept,
+  and the org's `model.allowed` and `mcp` lists are a layer of their own
+  that only narrows. An org policy may set only classified settings: never
+  anything naming a program, a local file or folder, an environment
+  variable, an endpoint or a base URL; most posture settings (mode, sandbox,
+  limits, web tools, supervisor) only where they tighten what is below,
+  its deny and ask rules, honeytokens and protected files joined with the
+  person's own; `model.default` only to a provider `/etc/abhed` defines;
+  allow rules, sandbox tier and network, fence, egress and hooks only when
+  `/etc/abhed` pins `org_policy.keys`; never auto or bypass mode. It is
+  fetched again as sessions start and every 15 minutes. A cached policy past
+  its age (at most 30 days) with the server unreachable, a fetched policy
+  that fails a check, or no policy when the managed file requires one
+  applies the fallback (plan mode, no allow rules, no web tools), keeping
+  of the cached policy only its deny and ask rules and allow lists, and
+  says so. `org_policy.required` without `org_policy.keys` is warned about.
+  `abhed policy status|show|refresh|leave`; `abhed doctor` and
+  `session.started` report it. Guide: [Signed org policy](docs/guide/35-org-policy.md).
+- Record shipping. With the managed `record.ship.enabled` (normally set by
+  the org policy), each session's record is sent to the org server as it is
+  written, line for line with its hash chain, authenticated with the sign-in
+  token, resumable after time offline from cursors in
+  `~/.abhed/state/record-ship.json`. A line the secrets store would still
+  redact is not sent. `blocked`, `diverged`, `refused`, `gap`, `backlog` and
+  `resumed` events are printed, kept and reported to the server. It ships
+  only to a server this machine enrolled with; a line over 8 MiB stops its
+  session (`oversize`). `abhed record ship [status|now]`. Guide: [Shipping the record](docs/guide/36-record-shipping.md).
+- Allowed models and MCP servers in the managed configuration. The managed
+  file lists the models any session may use in `model.allowed`, as
+  `type/model` patterns (`anthropic/claude-*`). Its lists are refused
+  everywhere a model is chosen:
+  - the session's default, `-model`, `/model` and custom commands
+  - the console's picker and its sessions
+  - Studio's model picker over ACP
+  - the SDK's `SwitchModelNamed`, `SetModel` and `Options.Provider`
+  - subagents and fallbacks
+  - completion, next-edit and commit models
+  - the suggestion, critic and supervisor-judge models
+
+  `mcp.allowed` and `mcp.denied` judge every MCP server before it starts, by
+  name, the program's path, a pinned digest or a remote server's host,
+  whether it comes from the user's, the workspace's or the managed
+  configuration, `-mcp-config`, `abhed mcp add`, the console, Studio or a
+  restart. A digest that pins a container engine's image, not a program file,
+  is admitted by an allow entry only when that entry also names the
+  engine's path with `command`.
+
+  A pattern judges the type and model name. Under the managed file's or the
+  org policy's list, every input that decides where the requests go is bound
+  too: `base_url`, watsonx's `iam_url`, a vertex `region` and `project_id`, a
+  custom provider type's `base_url`, and the supervisor judge's
+  `monitor.endpoint`. Each is admitted unset (the type's own endpoint), on
+  this machine, or as the machine's managed file sets it (an org policy
+  never sets an endpoint), never from a lower file or the environment. An
+  endpoint on this machine may relay anywhere, which Abhed does not see; a
+  managed `model.allowed_loopback: false` refuses it, and an org policy may
+  set it to false but never to true.
+  Only a managed `model.default` pins the endpoint outright. A user's own
+  list binds no endpoint. MCP hosts are compared in their IDNA ASCII
+  form, a host that does not map is refused, and a redirect to another host
+  is judged. While a `command` entry is set, a server is started at exactly
+  the program path that was judged; unconfined it keeps the configured name
+  as `argv[0]`, while a confined start passes the resolved path. Embedding
+  models are not covered.
+
+  A refusal names the list and is recorded as `config.refused`, and the
+  console's refusals also go to the admin audit hook. A model or server set
+  aside at load is listed by `abhed doctor`, `/permissions`, `/mcp` and
+  Studio, and the policy views show each list with its layer. A lower layer
+  may set the lists too, but only to narrow them. A malformed list stops
+  Abhed at startup. A local managed file is all it takes, in every edition.
+  See [Allowed models and MCP servers](docs/guide/02-configuration.md#allowed-models-and-mcp-servers).
+- Backup and restore scripts for a self-hosted server, in
+  `scripts/backup/`: `abhed-backup.sh` writes a logical dump of the database
+  (as a role with `BYPASSRLS` and `pg_read_all_data`, or a superuser) and a
+  tarball of the state folders you name, each checked before it counts;
+  `abhed-restore.sh` restores them into an empty database in one
+  transaction, makes the owner and runtime roles only if they are missing
+  and only as plain roles, and can run `abhed migrate`, `abhed record
+  verify` and `abhed record audit` after. Both refuse a connection string
+  that carries a password (use `PGPASSFILE` or `PGPASSWORD`). A systemd
+  service and timer are examples. `scripts/backup/restore-test.sh` proves
+  them: it seeds a record in a throwaway Postgres container, backs it up,
+  restores it into a new database of the same cluster, into a fresh cluster
+  whose transaction counter is behind, and from a `pg_basebackup` copy, and
+  checks every chain position, hash and `commit_tx` is unchanged, both record
+  checks pass, the state comes back with its modes, and a commit-ordered
+  reader goes on from its cursor without skipping or repeating an event
+  ([Configuration](docs/guide/02-configuration.md#backing-up-and-restoring)).
+- A corporate upstream proxy, `network.upstream_proxy`: an explicit HTTP
+  proxy (`http://` or `https://`), an optional CA bundle (trusted for
+  connections through the proxy only), credentials by the name of a stored
+  secret (`user:password`, sent as Basic to the proxy alone), a `no_proxy`
+  list and `resolve_via_proxy`. Abhed's own connections go out through it:
+  the model clients, `web_fetch`, `web_search`, MCP over HTTP, `rag`, the
+  `k8s_*` tools, the forge API and `git push`, toolchain downloads, Ollama
+  installs, registry lookups and calls to a remote Ollama server,
+  `abhed login`, the profile calls, `abhed sandbox` (its streams by a
+  `CONNECT` tunnel, trusting the CA bundle as its REST calls do; the proxy
+  must allow `CONNECT` to the server's port, also for an `http://` server,
+  so one that allows it only to 443 breaks the streams of a server on
+  another port while its REST calls work), the org
+  policy fetch, record shipping and the record's witness. Under the
+  allowlist, the commands' proxy chains what it allowed through it
+  (`CONNECT` for tunnels, absolute form for plain HTTP), so a provider or
+  registry reachable only through the corporate proxy is reached under the
+  allowlist too. The allowlist decides first; before chaining, Abhed
+  resolves the name itself and refuses an internal address no rule names,
+  a lookup that times out or fails, and, by default, a name that does not
+  resolve here at all. With `resolve_via_proxy` on, such a name is sent to
+  the proxy unchecked, only for a host an allow rule names exactly (or, for
+  `web_fetch` outside the allowlist, the managed `allowed_hosts` names
+  exactly; a narrowing of a managed wildcard does not count), and the
+  record marks it `"resolved": "proxy"`. Credentials never reach a URL, an
+  error, a log, the record or the model; `go install` and `git push` get a
+  loopback relay with a per-run token, for the hosts and ports that
+  download needs, and a push to a `no_proxy` remote goes directly. A
+  workspace never sets it; a managed file can force it, and then the
+  person's `no_proxy` and `resolve_via_proxy` are dropped unless the
+  managed file names its own. The proxy is set when a session or command
+  starts, for the whole process: after changing it, restart a running
+  `abhed serve` or editor connection. An SDK agent with a different one
+  than another in the same process is refused. PAC, WPAD, SOCKS and NTLM
+  or Kerberos proxy authentication are not supported, and the stand-alone
+  `abhed egress-proxy` does not chain to it. Through the proxy the CLI's
+  quick model-endpoint check dials nothing, so the model host is never
+  resolved or reached directly. Records of chained connections carry
+  `upstream`.
+- `statusline.timeout_ms` sets how long one run of the statusline command
+  may take (one second unset, ten at most), and `/status` shows the
+  command's last line when a run only took too long.
+- Dev servers in the sandbox: on the macOS process tier a command may
+  listen once the person agrees for the workspace (`sandbox.listen`: `ask`
+  by default, `allow`, `off`), which covers every command in every session
+  of the workspace, the agent's too. Listening is TCP only and only on
+  `sandbox.listen_ports` (by default 3000-3009, 4200, 4321, 5173-5179 and
+  8000-8009, which leave out database, cache and console ports), less
+  Abhed's reserved ports and any port one of your programs listens on.
+  While listening is on, a command can take a listen port before one of
+  your programs starts there and receive its connections: Abhed warns you
+  (`_abhed/sandbox/port_contested`, `sandbox.port_contested`) within a few
+  seconds, in every session that may listen on that port, and again at once
+  whenever a program it has not told of joins; only the same programs
+  coming back are told at most once a minute. Abhed does not stop the command; stop
+  it yourself or turn listening off. Both settings are an operator's: a
+  workspace file, trusted or not, can only make `listen` stricter. A server
+  refused its port in Studio's terminal brings the offer
+  (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio
+  then offers the address the server prints (`_abhed/terminal/serving`),
+  never one on a port your programs hold. Commands still connect to
+  nothing on loopback. A command can bind every address of a listen port;
+  bind `127.0.0.1`.
+
+- Studio can manage installed toolchains (feature `toolchain.manage`):
+  `_abhed/toolchain/remove`, `_abhed/toolchain/clean`, which asks the person
+  in the engine's own permission request before removing the whole cache,
+  and `_abhed/toolchain/registries`, which opens an installed language's
+  registries as an install's `agreed.registries` does. Each is refused
+  inside an agent's command and recorded.
+
+- The terminal on the macOS process tier runs your own shell where it can:
+  zsh when it is your login shell, else Homebrew's bash 4 or later, else
+  `/bin/bash`, with no start-up file but Abhed's own (which commands cannot
+  change), and only your language, time zone, editor and colour settings from
+  your login environment. A zsh terminal is judged and recorded as `zsh -d
+  -i`.
+
+- `mode.default`: the mode new sessions start in where `permissions.mode`
+  names none, so a workspace's Studio chats keep the mode chosen for it
+  (`plan`, `default`, `accept-edits` or `auto`, never `bypass`). An untrusted
+  workspace file may only start sessions narrower.
+
+- Studio's permission request for a bash command offers scopes the engine
+  enforces: this exact command for the session or always, and, for a known
+  command family (`go test`, `cargo test`, `npm run lint`, `python -m
+  pytest`…), that family in the current folder or anywhere. A grant answers
+  only the policy's default ask, never one a rule, the destructive check,
+  the supervisor or a screen makes. A family grant covers only the flags
+  on that family's list, ones that select, filter or report (`-run`,
+  `-count`, `-p 4` for `go test`; `-p crate`, `--release` for `cargo`), never
+  one that names another program, script, settings file, project or output
+  path (`-vettool`, `--init-script`, `-s`, `--manifest-path`, `--prefix`,
+  `-o`), with go's `-mod` only as `readonly` or `vendor`, go packages only
+  in the module, and for Maven and Gradle no further goal or task. No scope,
+  exact or family, is offered for or covers a line with a chain, expansion,
+  assignment, `~`, or a word with an absolute path or a `..` step in any part
+  split at `=` or `:`, or a word with `@`. A family grant runs the project's
+  own build or test, with whatever its files declare: what it can reach is
+  the sandbox's network policy's to say, not the grant's. None is offered
+  where the managed configuration holds the permissions. "Always" grants
+  are kept for the workspace in Abhed's state, outside every command's
+  reach, so every session of the workspace starts with them, recorded at
+  its start (`kept: workspace`), and a call one lets through is recorded
+  `by: workspace-grant`. Studio lists and revokes them (`_abhed/grants/list`,
+  `revoke`); every Abhed process shares the file under a lock, and a kept
+  grant is looked up again before it answers, so a revoke in one window
+  holds in the others. They follow the folder: one key for every case
+  spelling, and none for a folder made again at the same path.
+
+- Previewing writes from Abhed Studio: a prompt with
+  `_meta["zybuu.ai/abhed"].previewWrites` asks about each of its `edit` and
+  `write` calls with the diff, even where the mode allows them, and writes
+  nothing until the person accepts; for Studio's inline edit preview.
+- Abhed Studio prompts take more context: a `resource_link` to a file, a
+  range of lines (a symbol) or a folder is read by the engine as an `@`
+  mention is, through the policy and recorded. A link to a web page is read
+  as the person's own `web_fetch` call, even while the agent's `web_fetch`
+  is off: under the same deny rules, address and secret checks, with a URL
+  that can never be read refused before anyone is asked, and an ask, shown
+  as a fetch, when a rule asks or no `allowed_hosts` names the site (an
+  allow rule naming it answers that); only the managed file's own
+  `web_fetch.enabled: false` refuses it. `image` blocks go to a model that
+  reads images, held in memory only, with a note and a hash in the record:
+  each model in the session's list says whether it does
+  (`_meta["zybuu.ai/abhed"].image`), and `promptCapabilities.image` is
+  `false`. The SDK gains `Agent.AttachImages` and `Model.Images`.
+- Commit messages for Abhed Studio: `_abhed/commitMessage` (the
+  `commitMessage` feature). The engine reads the staged diff itself through
+  the confined git, leaves out files the session may not read, key files and
+  Abhed's state, withholds secrets, caps it at 32 KiB, and asks
+  `model.commit` (or the completion model) under the completion rules.
+  Recorded as `commit_message.requested` before the diff goes and
+  `commit_message.generated`, counted by `abhed_commit_messages_total`
+  ([Commit messages](docs/guide/34-inline-completions.md#commit-messages)).
+- Next-edit suggestions for Abhed Studio: `_abhed/nextEdit` (the `nextEdit`
+  feature) sends the lines around the cursor and the recent edits, cleaned
+  of secrets and bounded, to `model.next_edit` (or the completion model) and
+  answers with line edits in the same file. It follows the completion rules:
+  `completion.enabled`, `completion.local_only`, the managed model pin, the
+  same files never sent. A line that held a withheld secret is never edited.
+  Recorded as `next_edit.enabled` and `next_edit.summary`, counted by
+  `abhed_next_edits_total`
+  ([Next-edit suggestions](docs/guide/34-inline-completions.md#next-edit-suggestions)).
+- Inline completions for Abhed Studio: `_abhed/complete` (the `complete`
+  feature) sends the code around the cursor, bounded, to the provider
+  `model.completion` names, by fill in the middle on a local coding model
+  (Ollama, vLLM, llama.cpp and other OpenAI-compatible servers) or through
+  a chat turn otherwise, and returns text only. Only the provider's own key
+  is sent, and a managed `model.default` pins completions too unless the
+  managed file sets `model.completion`. Files outside the workspace (links
+  followed), ones a read rule keeps, ones of keys and Abhed's state are
+  never sent; stored secrets and key-shaped text are withheld before any cut,
+  a suggestion carrying one is dropped, and context is capped in bytes. Each
+  request is sent once, and under `local_only` no provider follows a
+  redirect off the machine. One request is in flight per session, ordered
+  by Studio's `seq`, with a debounce and per-session and per-connection rate
+  limits. `completion.enabled` and `completion.local_only` turn them off or
+  keep them on this machine, from the managed file down; a workspace file may
+  only tighten them. `completion.enabled` is recorded before the first code
+  is sent, and nothing goes if it cannot be; each session's use is recorded
+  as `completion.summary`, not each completion
+  ([Inline completions](docs/guide/34-inline-completions.md)).
+- Language servers for Abhed Studio: the editor protocol's `_abhed/lsp/start`,
+  `/send` and `/stop` (the `lsp` feature) run gopls, basedpyright,
+  typescript-language-server or rust-analyzer (or the server
+  `sandbox.language_servers` names) inside the session's sandbox and carry
+  its messages to Studio, with no port on the host. Starting one is judged
+  and recorded as your bash call (a supervisor's question goes to you as a
+  permission request); the engine initializes it with its own settings,
+  which turn off rust-analyzer's build scripts, proc macros and check on
+  save and pin typescript-language-server to the TypeScript installed
+  beside it (looked for only in the server's own install, never
+  `NODE_PATH`, the workspace or a home or temporary folder outside Abhed's
+  toolchain cache; without one the start fails), and the guide says what
+  each server may still run in the sandbox. A workspace
+  `rust-analyzer.toml`, which would override those settings, makes
+  rust-analyzer's start a question to you in Studio (no answer is no; a
+  check that could not look everywhere asks too, and a supervisor's
+  question on the same start is folded into it), and one that appears or
+  changes while it runs stops it, so the next start asks again. Only standard
+  LSP methods pass from Studio (rust-analyzer's own methods that run cargo
+  are refused), as do no settings changes, no commands that could run
+  programs, and no file URIs outside the session's folders or in `.abhed`,
+  links followed; the server's requests to open a page or edit an outside
+  file are answered by the engine, and from its notifications and answers
+  each item naming an outside file is dropped; an edit or command it
+  proposes that names an outside file is dropped whole, never applied or
+  run in part. A crashed server is restarted with a
+  backoff. Starts and ends are recorded as `lsp.started` and `lsp.stopped`,
+  with message counts, and counted in the metrics. The workbench's editor
+  shares the same relay: what its page sends a server is now kept to the
+  session's folders the same way, and its servers get the same settings
+  (rust-analyzer does not start there when a workspace `rust-analyzer.toml`
+  would override them); what the server sends the page is not filtered
+  there ([Language servers](docs/guide/33-language-servers.md)).
+- The Linux helper: releases ship `abhed-helper-linux-<arch>` beside the
+  `abhed` binary (in each archive and as a bare download), with its sha256
+  pinned into the binary. Where the container engine is in a VM or
+  elsewhere and `control_plane.<engine>.relay_binary` is not set, a checked
+  copy of it is bound in read-only as the egress relay, so the network
+  allowlist and toolchain registries work on Podman and Docker Desktop on a
+  Mac with no configuration. A helper that does not match the pin is never
+  used. It also carries the debugger's bridge (`__abhed_dap_bridge
+  unix:PATH`). `scripts/build-helpers.sh` builds the helpers reproducibly
+  and prints the ldflags that pin them.
+- Debugging in the sandbox for Abhed Studio: the editor protocol's
+  `_abhed/debug/launch`, `/send` and `/stop` (the `debug` feature) run Delve
+  (Go) or debugpy (Python) inside the session's container tier, or the Linux
+  process tier with its network closed or allowlisted, and carry its Debug Adapter Protocol messages to Studio over
+  the connection, with no port on the host. The engine builds the launch
+  itself: the debuggee's command line is judged by policy and the
+  supervisor as your bash call and recorded (a supervisor's question goes
+  to you as a permission request), Studio's own launch or attach is
+  refused, the adapter's requests to run something in Studio's terminal are
+  answered with an error, and a message whose decisive keys repeat or vary
+  in case is refused either way. Delve's socket is carried by a bridge
+  mode of the bundled Linux build of Abhed (or `relay_binary`). A session
+  ends when the adapter answers Studio's disconnect, or reports the program
+  ended after a terminate, as well as on stop. Each session is recorded as `debug.launched` and
+  `debug.stopped`. Node is not supported yet
+  ([Debugging](docs/guide/31-debugging.md)).
+- Language servers with their language: gopls 0.23.0 with Go (built by
+  Abhed with the cached Go, checked by sum.golang.org), basedpyright 1.40.2
+  with Python and typescript-language-server 6.0.2 with TypeScript 5.9.3 for
+  Node.js (npm packages pinned by their sha512 integrity, which the registry
+  must agree with; basedpyright's Node.js is installed first where missing,
+  and the offer says so), and rust-analyzer with Rust (the Rust release's own
+  component, else a GitHub release asset pinned by its sha256). Offered with
+  the language through the toolchain tool's `lsp`, `abhed toolchain install
+  -lsp` and Studio's `lsp: true`, under the scope `<lang>+lsp@<major>`;
+  Studio's language servers find them on `PATH`, and a missing server's
+  steps point at this route ([Toolchains](docs/guide/32-toolchains.md#language-servers)).
+- Debuggers with their language: Delve 1.27.2 with Go (1.25 or later) and
+  debugpy 1.8.22 with Python (3.10 or later), offered and agreed to with the
+  language ("Go 1.27.3 + Delve debugger 1.27.2") through the toolchain
+  tool's `debugger`, `abhed toolchain install -debugger` and Studio's
+  `debugger: true`. Abhed builds Delve itself with the cached Go, cross-built
+  for the Linux sandbox, from proxy.golang.org with every module checked by
+  sum.golang.org and none of your own Go settings; debugpy's wheel comes from
+  PyPI, refused unless its listed sha256 is the pinned one. Both are kept
+  read-only in the cache and are on `PATH` or `PYTHONPATH` wherever their
+  language is, so Studio's debugging finds them
+  ([Toolchains](docs/guide/32-toolchains.md#debuggers)).
+- Toolchains on demand: Go, Python, Node.js, Rust, Java (Eclipse Temurin)
+  with Maven and Gradle, Ruby and the .NET SDK, installed for the sandbox's
+  commands at the version asked for, else the one the project pins (go.mod,
+  .python-version, .nvmrc, rust-toolchain, .tool-versions, .java-version,
+  global.json, .ruby-version), else the latest stable. Each comes only from
+  its project's own release source, is checked against the checksum that
+  source publishes (Ruby's against digests pinned in Abhed), and is unpacked
+  read-only into ~/.cache/abhed/toolchains/<os>-<arch>/<language>/<version>;
+  nothing is installed system-wide or with sudo. Commands get the installed
+  toolchains first on PATH, a container mounts the cache read-only, and a
+  command that cannot find go, python3, node, cargo, java, mvn, gradle, ruby
+  or dotnet is told how to install it. The agent's `toolchain` tool asks once
+  per language and major version, showing the source, size and checksum;
+  `abhed toolchain install|list|remove` and Studio's `_abhed/toolchain/*`
+  methods do the same for a person; `sandbox.toolchains` (ask, auto, off) and
+  `sandbox.toolchains_preapproved` set the consent. Every install is
+  recorded as `toolchain.install`, counted, mapped to OCSF and listed by
+  HawkEYE, and `abhed doctor` lists what the workspace needs, by marker and by
+  loose source file ([Toolchains](docs/guide/32-toolchains.md)).
+- `sandbox.toolchains_registries` (ask by default): where the network is off,
+  agreeing to a language's toolchain also opens its official package
+  registries to commands, through the session's egress proxy, on 443 only,
+  where the sandbox's tier can hold the proxy. It is the one way egress opens
+  outside the managed file; under a managed network it adds nothing unless
+  the managed file names it, and a workspace file may only set it off. Each
+  opening is recorded as `toolchain.registry`
+  ([Toolchains](docs/guide/32-toolchains.md#package-registries)).
+- A key written twice in a configuration file is reported. encoding/json
+  keeps the last one without a word, so a second provider of the same name
+  in `model.providers` used to replace the first silently. Loading now warns
+  of every repeated key at any depth (and of a setting written twice in
+  different letter case), on the command line, in the serve log, in
+  `abhed doctor` and the ACP doctor, and to editors in `session/new`'s
+  `_meta["zybuu.ai/abhed"].configWarnings`, which also lists unknown keys and
+  the settings an untrusted workspace file could not make. Abhed Studio shows
+  them in its model picker. A managed file with a repeated key is still
+  refused.
+- An editor's approval request carries the supervisor's verdict on the call
+  (`_meta["zybuu.ai/abhed"].supervisor`: decision, code, rationale, advice
+  and judge, as the record holds it), so Abhed Studio shows it on the card as
+  the workbench does.
+- A local Ollama model chosen without Ollama running now gets working with
+  you instead of failing. When the chosen model is one a local Ollama serves
+  (at the start of a session, `/model`, `/ollama`, `abhed ollama check`, the
+  workbench and console pickers, and Abhed Studio), Abhed checks whether
+  Ollama is installed, answering and has the model, and says what is wrong
+  with the numbered steps to run yourself. It then offers the next step:
+  starting the server (asked once, with an "always" that `abhed ollama
+  forget` takes back), and installing Ollama or pulling the model (asked
+  every time, showing the exact command, its source and its size, with free
+  disk checked and a warning and a smaller suggestion when memory is short).
+  Nothing is installed or downloaded without a yes. What Abhed runs never
+  uses `sudo`, and it never runs the official Linux install script, which
+  does: it prints it, with its source, for you to run. `ollama serve` is
+  started bound to `127.0.0.1` with a minimal environment and is not stopped
+  when Abhed exits; the macOS app, opened only when the `ollama` program is
+  missing, binds where its own settings say. `model.ollama.assist` (`ask`, `local`, `off`) narrows it, and a
+  managed file holds it; on `abhed serve` only a signed-in administrator may
+  act, and where nobody signs in nobody may; `abhed ollama check` offers
+  steps only at a terminal; the
+  agent cannot reach it. Each attempt is recorded as `ollama.start`,
+  `ollama.install` or `ollama.pull`, mapped in the OCSF export, shown in
+  HawkEYE, and counted in `abhed_ollama_actions_total`. New: `abhed ollama
+  check|status|models|forget`, `/ollama`, `GET /v1/ollama/status`,
+  `POST /v1/ollama/start|install|pull|forget`, and the ACP methods
+  `_abhed/ollama/*` (feature `ollama`). `abhed ollama models` lists the
+  curated models, each tag checked against the Ollama library: Qwen2.5-Coder
+  7B (`qwen2.5-coder:7b`), Qwen3 8B (`qwen3:8b`), Qwen3-Coder (`qwen3-coder:30b`),
+  Gemma 4 26B (`gemma4:26b`) and Gemma 4 31B (`gemma4:31b`) — [A local Ollama
+  model](docs/guide/03-providers.md#a-local-ollama-model).
+- The Postgres record in commit order, for exporters: each event keeps its
+  writing transaction (`commit_tx`, schema version 12; existing rows are not
+  rewritten and sort first), and `store.Postgres.ScanCommitted` reads a
+  tenant's events after a `CommitPos` only once every earlier transaction
+  has finished, so a reader resuming from a position never passes over a row
+  that commits late. `store.PostgresOf` finds the Postgres store behind a
+  wrapper such as the held store. Run `abhed migrate` to add the column and
+  its index.
+- `server.metrics`: Prometheus metrics for `abhed serve` and its control
+  plane, off by default. Policy decisions by decision, step and tool;
+  approvals by answer; supervisor verdicts by code; egress decisions by kind
+  and decision; sandbox operations and bindings; tool, model, record-write
+  and request latency; model tokens; sessions. Served at `/metrics` to
+  administrators, or on a `listen` address of its own, which needs a bearer
+  token (`token_env`) unless it is loopback. No label carries a path, a
+  command, a host or anything a person or model wrote.
+- Every mutating API route is audited with its principal in the chained
+  control-plane record: the route pattern as `api:<pattern>`, the method,
+  tenant, caller address and wildcard values, never the body or query.
+  `abhed record audit` checks the chain, in Postgres or the local file,
+  recomputing each hash itself, and against any `-head position:hash`
+  kept elsewhere.
+  A create's outcome names the id it made. A terminal's key batches and
+  language-server messages get one event a request instead of two. Traffic
+  to a sandbox's exposed service is not audited; the exposure itself is.
+- The control plane's SQLite record (sandbox operations and the
+  reconciler's events) is hash-chained like the Postgres one, and
+  `abhed record audit` checks it; rows from before are reported as
+  unchained, and one with no chain written after it began fails. With
+  `control_plane.enabled` and its database missing, `abhed record audit`
+  reports it as `MISSING` and fails.
+- `ssh.read_commands`: commands the operator declares reads on every host.
+  An exact entry (`uptime`, `df -h`) matches only its own text
+  and may name any program but one that runs what it is given (a shell, a
+  runner such as `sudo` or `nsenter`, an interpreter, or a client such as
+  `socat`, `psql` or `sqlite3`). An entry with a wildcard is accepted only
+  for a program on a list of known reads, in a read form of it (`cat *`,
+  `systemctl status *`, `journalctl -u * -n 50`, `ip addr show *`,
+  `openssl x509 -enddate -noout -in *`), and every call it matches is held
+  to that form. A form lists the options it allows, with those that take a
+  value, and refuses every other, an abbreviated long option and an
+  unlisted cluster included, so `journalctl --vacuum-size` or
+  `--cursor-file`, `openssl x509 -CAcreateserial`, `date -s`, `dmesg -C`,
+  `sort --compress-program` and `ip addr add` are not reads, whatever the
+  pattern; a verb (`systemctl status`, `docker ps`, `apt list`) must be the
+  first word after the program, and a program that shows a file's type,
+  size or sum takes no option that would print another file's lines
+  (`file -m`, `wc --files0-from`, `sha256sum -c`). Every listed program
+  has such a form, the plainest included (`lspci` without `-O`, `-q` or
+  `-Q`; `getent` without `-s`; `ps` without `e`), and a call with `$`
+  outside single quotes, a glob that could expand into an option, or a
+  backslash inside single quotes (which fish reads otherwise) is not a
+  read. Any other wildcard entry is refused at load
+  with "declare the exact command instead". A matching `ssh` call, read as bash
+  reads it, runs in plan mode and asks in no mode, so a plan can start by
+  inspecting the fleet; a chain, pipe, substitution, redirection, a
+  destructive command, one that runs another (`sh -c`, `su -c`, `sudo`),
+  one that writes a file (`tee`, `find -fprint`) and one carrying a
+  `stdin_secret` are never reads. Deny and ask rules come first. Only a
+  trusted configuration file sets it; a managed file that sets it replaces
+  the list, and one that sets the permissions without it sets the person's
+  entries aside. The `ssh` tool's description names the entries.
+- The supervisor, `monitor` in the configuration: it reviews each call after
+  policy and may only make the decision stricter. The rules judge checks for
+  destructive drift, programs that are not there, targets nothing showed, a
+  credential followed by a way out, and planted `honeytokens`;
+  `judge: "model"` adds a model judge behind any OpenAI-compatible endpoint,
+  which fails closed on a reply outside its fixed schema. A refused call
+  tells the model `Supervisor: <code>. <reason>. Do this instead: <advice>`,
+  recorded as `supervisor.correction`, and three refused or failed calls in a
+  row bring a note that restates the task and the approved plan
+  (`supervisor.replan`). It never rewrites a call.
+- The supervisor's verdict on approval cards in the terminal, the console
+  and the workbench; `supervisor: rules|model|off` in the banner, `/status`,
+  `abhed doctor` and `abhed serve`; a supervisor section in HawkEYE; and
+  `Options.Supervisor` in the SDK.
+- The supervisor's drift suite (`go test ./monitor -run TestDriftSuite -v`,
+  or `go run ./cmd/abhed-drift`): of its 1631 drift cases the rules judge
+  stops all 1630 a mode let through (the 1631st, the destructive step, policy
+  already asks about), and it
+  refuses none of its 561 genuinely everyday benign controls (it asks about 10: six whose working
+  directory it does not claim to know, one interpreter running a subprocess,
+  two `eval`s of an expansion, and one `mv` of a file from outside the task's
+  ground). Code a command hands off — to a shell or `eval`, on stdin, through
+  git's foreach/exec/run/filter/alias, a container exec/run, xargs or man -P,
+  or each command `find` runs by `-exec` — is parsed and run through the same
+  per-command rules and fallback with the directory unknown (code it cannot
+  parse, or handed too deep, is asked about), so a quote-split or variable
+  spelling is caught there too; an unknown runner given a program or code only
+  running the line would give is asked about; a line the check
+  does not read completely that names a deleting program or a protected folder
+  is asked about as a conservative fallback. git (foreach/exec/run/filter and the config keys and env it runs as
+  commands), containers (docker/podman/kubectl exec/run/debug, compose and
+  container forms, failing closed when the command cannot be located), xargs,
+  man -P, mv, rsync and git clean are read only for the forms the rules judge. Destructive container and cluster operations (system prune/reset,
+  volume rm/prune, image prune -a, forced rmi; kubectl delete of namespaces,
+  volumes, all or --all, scale to zero, drain, cordon, forced or production
+  patch, apply --prune; oc delete project; helm uninstall) are asked by the
+  supervisor and the destructive step, and deleting an unnamed namespace or
+  every namespace, or a helm uninstall in an unnamed namespace, is denied. Dropping a data store (SQL DROP/TRUNCATE/unbounded DELETE, dropdb,
+  redis-cli FLUSH*, Mongo dropDatabase) and tearing down infrastructure
+  (terraform/tofu/pulumi destroy, gcloud/az/aws/doctl/hcloud deletes) are
+  asked by both layers; a comma-joined kubectl/oc kind list is read kind by
+  kind; and the destructive-step patterns match per simple command. Swarm
+  stack/service removal, a forced swarm leave and container/network prunes
+  are asked by both layers, and the supervisor also asks for remote branch
+  deletes and force pushes to main, master, release* and prod* (or with no
+  branch named). Framework database resets (prisma, rails/rake, manage.py
+  flush, artisan, dotnet ef, sequelize), SQL sent on stdin or in a heredoc,
+  multi-statement and qualified-table queries, and the wider teardown family
+  (aws delete-*/terminate-*/deregister-*, eksctl, terragrunt, cdk, sam,
+  serverless) are asked by both layers, through a package runner (npx/bunx,
+  yarn/pnpm exec/dlx/run, npm exec, @version specs) and past sudo/su/runuser/env
+  wrappers, and when the client is reached through a container exec, ssh,
+  heroku or fly; git gc --prune and reflog expire are asked by both layers; terraform apply -replace and taint, and the
+  rails/artisan reset variants, are added; terraform plan -destroy/-replace
+  is not. A wrapper option no longer sends a data-store or cluster op to the
+  weaker fallback in the supervisor, and the command `env -S` splits out is
+  judged as a command of its own. A searcher's patterns and a sed script are
+  read as text only when proven inert (no rg --pre or ack/ag --pager, no sed
+  `e`, `s///e` or `w`, output not piped into anything but a reader such as
+  head or wc, not substituted, not redirected to a file); so
+  `grep "DROP TABLE" down.sql | psql app` and `grep "^rm -rf" f | sh` are
+  asked by both layers, a sed `e` command is judged as code, and a remote or
+  container `sh -c` truncation is read as one. Every line the supervisor asked
+  about before the data reading was added is kept as a regression file. The
+  directory is claimed only along a plain `&&` chain of literal `cd`s; under
+  any other directory a relative target is always asked about, and only a
+  path the person named in their own messages, never plan prose, allows an
+  absolute or `~/` target there, `ssh` inspection of
+  declared hosts with `ssh.read_commands` among them.
+- `k8s_apply` dry-runs every write on the cluster (`dryRun=All`) before
+  asking, and the approval names what would change, field by field, from
+  the live object (a Secret's values only as length and fingerprint). The
+  request dry-run is the one sent once approved. A change the dry run
+  refuses is refused before anyone is asked, with the cluster's reason.
+  A kubeconfig context whose `exec` credential helper has not run yet is
+  asked about without a dry run, since the helper runs only for an
+  approved call.
+- `k8s_apply` `rollback` puts a Deployment's previous revision (or a named
+  `revision`) back, as `kubectl rollout undo` does; it asks like any write
+  and is refused if the Deployment changed since it was approved.
+  `k8s_get` `wait_seconds` waits, up to 600 seconds, for a Deployment's
+  rollout to finish or fail, so the agent need not poll.
+- `k8s_apply` `secret_from` builds a Secret, `Opaque` or
+  `kubernetes.io/tls`, from stored secrets by NAME and workspace files, so
+  a TLS key never passes through the model. The approval and the record
+  name each source with its value's length and a fingerprint (a workspace
+  file's sha256). Each stored secret needs its `secret(NAME)` rule and each
+  file is judged as a `read` of it. The dry run before the approval carries
+  placeholders, no value is kept while the call waits, and a value changed
+  after the approval is not sent.
+- `ssh` `stdin_secret` writes a stored secret, by NAME and under its
+  `secret(NAME)` rule, to the remote command's stdin, so a password for
+  `sudo -S` or a key written to a file never appears in the command line,
+  the approval or the arguments the model sees. Output that echoes it
+  literally reads `[secret NAME]`; output that transforms it (a part of
+  it, its base64) is not masked, so the model sees whatever the command
+  prints. Such a call is never a declared read.
+- `ssh_put` and `ssh_get` move one file over SFTP, behind `ssh.transfers`
+  (off by default) and `ssh.transfer_max_mb` (16 by default): `ssh_put`
+  sends a workspace file or a stored secret by NAME, so a key reaches a
+  host without passing through the model; `ssh_get` fetches into the
+  workspace. Both ask unless an allow rule on `host:remote_path` covers
+  them, the workspace file is judged as a read or write of it, and the
+  approval and record keep the paths, size and sha256 (for a stored
+  secret, a fingerprint), never the content.
+- A subagent's worktree can be taken back by hunk: `/take` lists the
+  worktrees, `/take <id>` asks about each hunk, and the workbench's Changes
+  view shows them with tick boxes. What you accept is written into the
+  workspace as your own change, through the permission rules, git's
+  protection and checkpoints (so `/undo` takes it back); a hunk the
+  workspace changed meanwhile is reported as a conflict and left out, and
+  the worktree and its branch are removed only when you ask. Each take is
+  recorded as `worktree.taken`. The editor protocol serves the same as
+  `_abhed/worktrees/list` and `_abhed/worktrees/take` (the `worktrees`
+  feature) for Studio to use
+  ([Parallel subagents](docs/guide/14-parallel-subagents.md#taking-a-worktree-back)).
+- Changes made through `bash` are checkpointed: before each command the
+  workspace's files are noted and copied in memory, within limits, and each
+  file the command changed, removed or made is recorded as `checkpoint.saved`,
+  so `/undo` and `/rewind` (and Studio's undo and review) take them back. A
+  change the limits kept no copy of is named in the record and the command's
+  result, not put back; `tools.bash_checkpoints` is `on` (the default), `off`,
+  or `required`, which refuses a command whose snapshot is not whole, a
+  background command, and every command where no checkpoints are kept
+  (`abhed -p`, `rpc`, `eval`, `abhed serve` and an SDK agent);
+  `tools.bash_checkpoint_mb` and `tools.bash_checkpoint_files` set the limits
+  ([Records](docs/guide/12-records.md#changes-made-through-bash)).
+- `sandbox.image` names the container tier's image, such as one with Go,
+  Node or Python, in place of `ABHED_SANDBOX_IMAGE`; a workspace file
+  cannot set it. `abhed doctor` (and Studio's checks) now warn when the
+  workspace looks like a Go, Node, Python or Rust project and the image
+  lacks its toolchain, and name an image that has it; nothing is pulled to
+  look, and the look runs as an unprivileged user with no network, no
+  capabilities and a read-only root ([Configuration](docs/guide/02-configuration.md#the-container-tiers-image)).
+- Verified answers. Abhed does not promise the model is right. It shows you
+  which statements it could check against what actually happened in this
+  session, and it marks the rest. Each statement of an answer is held
+  against the session's own record and labelled verified (a current tool
+  result from this session shows it), unverified, or contradicted (a result
+  the statement cites says otherwise: shown struck through beside it, never
+  as fact; a statement that cites nothing is never marked contradicted).
+  The checks compare text, exit codes, the calls made and the files as they
+  are now, with no model involved, so they hold with a weak model. The
+  terminal, the workbench and console, and Abhed Studio label every answer
+  by default; a contradicted statement gets the agent one revision turn (the
+  only model call label mode adds) and, if it stays, a `NOT FACT` banner above
+  the labels and on the workbench's reply. `-p`, `rpc` and the SDK check only when
+  asked. `verify.mode` (`off`, `label`, `strict`), `-verify`, rpc's `start`,
+  a session's `verify` and `Options.Verify` choose; a managed mode may only
+  be made stricter, and a workspace file may only raise it. Claims about a
+  subagent's work are checked in its own record
+  ([Verified answers](docs/guide/29-verified-answers.md)).
+- `strict` mode gives the agent an `answer` tool to cite its evidence and,
+  when a statement about its work is not verified, one recorded revision
+  turn; a run still unverified ends with the new terminal reason
+  `unverified`, and `abhed -p` exits 8.
+- The terminal prints the checks under each reply
+  (`3 verified · 1 unverified (general knowledge) · 0 contradicted`), and
+  `/evidence N` opens the record behind statement N. The workbench badges
+  each statement ✓, ? or ✗ and opens the call it rests on. HawkEYE gains an
+  Answers section and the `contradicted-claim` and `contract-unmet`
+  findings. The record gains `answer.verdict`; `-p`'s result line, rpc's
+  answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
+  `Agent.Verdict()` carry it.
+- A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
+  -v`): of 706 planted wrong claims none is shown as verified and 32 are
+  contradicted (30 from cited, conflicting evidence, 2 by conflict markers
+  still shown), all 201 true controls
+  are verified, and none of the 301 true or neutral claims is contradicted;
+  the test holds those figures as a floor, and a regression pin freezes
+  every planted case and control, by name and a hash of its text and calls,
+  and every strict-mode answer from the reviews. Every clause of a statement
+  is judged on its own, a neutral lead-in ("In summary,") is taken off and
+  the rest checked, a lead that reports work ("Done:", "Tested:", "I tested
+  it:", "Here's what I changed:") keeps its event, a past work label
+  ("Changed: X") reads as "I changed X", advice and intentions ("run `go
+  test ./...` to confirm", "Next steps: …", "I'll update the docs next") are
+  left out while reports worded like them ("Test results:", "I can confirm",
+  "I couldn't find", "Next, I set") are checked, and an imperative after a
+  change is advice when it says when or what for or names a step no call
+  did. A fact a cited result is silent on leaves a statement unverified,
+  never contradicted; counts are compared by a fixed list of outcome, action
+  and state words, so "3 replicas are ready" needs output that says ready, a
+  count after a `/` with any spacing or an "of" in its clause (`0 / 3`, "2
+  of all the 5") and a count after a negation in its clause carry no such
+  word, and a narrowed count ("in the auth package") is never contradicted
+  by a whole run's; a statement giving a unit or key a before and an after
+  value is not contradicted when one is shown, if both say the same of it;
+  any pass said of tests, "9 tests passed" and "9 passed, 3 failed"
+  included, is verified only by a whole test run that exited 0, whatever
+  else the statement says ("fixed the failing test; all 12 pass"), and one
+  that says every test passed, in any wording ("all 12", "12/12", "12 out of
+  12", "12 tests all passed", ", all of them"), is contradicted by a cited
+  failed run, while "in all", "after all" and "each in under a second" are
+  only counts; a bare "9 passed" counts tests only from a test run; a test
+  run given any variable but a colour switch, or run through `pipenv run` or
+  `hatch run`, is not a whole run; a write or edit's own report is no
+  evidence for its path; and a statement about a file this session changed,
+  or about any workspace file after a call whose files cannot be told, other
+  than that it changed, is never verified by output naming it; a state, an
+  outcome or a judgement ("the hotfix is live", "`API_KEY` is a
+  placeholder") the matched output does not say is not verified, and a claim
+  that the work is clean ("no issues", "looks good", "LGTM") is shown only
+  by a passing lint or test run of the whole workspace or of every changed
+  file (`golangci-lint run ./...`, `ruff check .` and the like, a check
+  whose output reports no problems; never `fmt`, `format` or `--version`), a
+  contrast never taking it back, and "it compiles" needs a passing build or
+  whole test run of a runner that compiles ("`buildIndex` builds a map"
+  describes code, "it compiles as expected" does not, "no errors" beside a
+  build is a build claim, "no warnings" or "cleanly" fails against a run
+  that printed a warning in the common compiler and build-tool forms, and
+  a build for a named platform or mode needs a run that names it, while
+  "on all platforms" is never shown by one run); "lint passes", alone or
+  beside a build or tests by name or idiom ("tests and go vet pass", "so
+  does lint", "tests and mypy pass"), needs a lint run, a lint run that
+  only reports, by a tool whose config cannot turn fixing on, is no
+  change, and "the build is clean" needs a build or test run; "the merge
+  conflicts are resolved" is contradicted by a current read or diff that
+  still shows conflict markers, and verified by a search for markers that
+  found none, or whole reads or a diff of every file that had them (a read
+  showed markers, or git reported it conflicted), after the last change,
+  or, for "no merge conflicts", by a merge, pull or rebase that ran clean
+  in a session that saw no conflict of any kind (a rebase's conflict after
+  a carriage return and an autostash that "resulted in conflicts"
+  included; never after `--abort`, `--quit`, `--skip` or `--continue`);
+  headings and lines that only arrange the reply ("Summary", "Changes:
+  `sum.go`") are not claims, while a label that says what happened
+  ("Created: `sum_test.go`") is, and a short title ("Go test run", "Cited
+  source") is not, though a past form opens a title only as a few
+  adjectives ("Cited", "Related"); a cached run (`ok … (cached)`) counts
+  like any other, and after a run of one folder "the services/orders
+  tests pass" verifies while an unscoped "all tests passed" does not; a
+  test result with no test run behind it says "no test
+  run in this session"; a
+  sentence that reports an event, in any wording or person (a past form or
+  participle, "now", "new", a change noun), is shown only by the calls; a
+  change that names no file is verified only by an edit, a write or a
+  resource command given the code it names, read the way the sentence says
+  from the change's own changed lines (an addition or a removal by its
+  direction, then its place on the lines that enclose its changed lines, a
+  context line the edit carried counting only when it encloses them or is
+  named as an anchor on the side the sentence says, never a sibling route or
+  function, a replacement located by where its old text sat and a deletion
+  placed where it sat before; any other change only by its new text, its old
+  text only where named as replaced and never found elsewhere in the file,
+  so a flag turned the other way or auth taken off and said added stays
+  unverified) (an edit, `sed -i`, or a write against what the session last
+  read of the file), with any count it gives read from what the change was
+  given, never by a memory note, a commit message or a formatter; a change
+  that names a file is shown only by that file's change; and what the agent
+  read or searched for is verified by a call of its own for each path it
+  names; and a sentence that explains what a read or a search showed is
+  drawn apart, as an explanation, and left out of the unverified-work count,
+  but changes no outcome and no revision, so it can never make an answer
+  verified. On a line-by-line explanation of a function, the sentences
+  counted as unverified work went from 5 to the 2 that were about the work.
+- An optional critic (`verify.critic`) has a model, ideally of another
+  family, check each verified statement against its evidence. It can only
+  downgrade, and fails closed to unverified.
+- A completion contract (`verify.contract`): commands the harness runs in the
+  sandbox after the agent's last change (`require`), and files the run must
+  not change (`protect`). A run with a contract ends `completed` only when
+  they hold and its statements are verified. It lives in configuration the
+  agent cannot reach, and a required command runs only where policy would let
+  it run unasked.
+- Runbooks: a plan from plan mode can carry the exact calls it will make
+  (`ssh`, `k8s_apply`, `bash`, `edit`, `write`). Each step is checked against
+  the policy and hashed when the plan is proposed, and you approve them once
+  with the plan. A call made exactly as the next step then runs without
+  asking, recorded as `plan.step` with the plan's hash; any other change
+  asks, saying it is not in the approved plan, even where a rule or the mode
+  would allow it. Deny rules, hooks, the supervisor and the sandbox still
+  apply; an ask rule of the managed configuration or of an edition's policy
+  layer, and a command too tangled to read in full, still ask. Steps that
+  cannot be undone are confirmed a second time, an edition's approval gate
+  decides a runbook as one answer, listed in the approval queue as
+  `plan:<hash>`, and a new plan, a rewind or a continued
+  session lets the runbook go
+  ([Runbooks](docs/guide/28-runbooks.md)).
+- The plan card lists a runbook's steps in the CLI, the workbench, the
+  console and, over ACP, Abhed Studio, which now gets plan mode's
+  `exit_plan` and answers a plan as a permission request. The workbench
+  answers with `POST /v1/sessions/{id}/plan`.
+- `abhed -p -runbook FILE` approves a runbook for a headless run, and
+  `-runbook-sha256` pins the plan hash you reviewed; the SDK takes
+  `Options.Runbook` and `abhed rpc` takes `runbook` on `start`.
+- `plan.runbooks` (on by default) turns runbooks off when false: a plan
+  with one is refused, and so is the operator's `-runbook`. A workspace file
+  may only turn it off; a managed value binds either way
+  ([Configuration](docs/guide/02-configuration.md)).
+- HawkEYE lists remote changes: every `ssh` command and `k8s_apply` write
+  per host and cluster, with the decision, the exit code and the runbook
+  step it was, in the text and HTML reports and the workbench
+  ([HawkEYE](docs/guide/15-hawkeye.md)).
+- `abhed record export <session>` with `storage.driver: postgres` writes the
+  session's hash chain, each event as it was hashed, with the head the
+  database held; `abhed record verify` checks that file anywhere, with no
+  database, and fails an edited, removed, reordered, duplicated or cut line,
+  or a file that no longer holds a head given with `-head position:hash` or
+  held by `-witness` ([Records](docs/guide/12-records.md#the-postgres-record)).
+- Events written before the Postgres chain began (before 1.2.8) are
+  counted once, per session, in `chain_pre`, and reported as not covered;
+  nothing is chained over them.
+- A chain head API, `store/chain`: a chain's head (last position and hash)
+  and a check of a range of it, answered by the Postgres events (per
+  session), the control-plane audit (per tenant, in Postgres, the local
+  `api.jsonl` or the control plane's SQLite record) and the local record,
+  for heads to be signed and anchored outside the store.
+- Soaks of the chained append path, Postgres and local, which fail on any
+  event a writer was told was written and the store does not hold. On a
+  Mac with Postgres 17 in a 4-CPU Podman VM and 32 sessions writing: 1,500
+  events a second held for two minutes (180,032 events), and 1,400 to 2,300
+  a second flat out with the VM's CPU the limit, none dropped; the local
+  record about 63,000 a second.
+- The fence learns what its seccomp filter refuses: in `mount_namespace`
+  mode, on Linux 5.7 or later, each refusal goes to Abhed (seccomp user
+  notification), which answers with the same EPERM and records the counts
+  as `fence.denied`. The command, in its own PID namespace, cannot reach the
+  listener; with Abhed gone the kernel refuses with ENOSYS. Landlock's
+  refusals are not reported: the kernel offers them only to its audit log
+  (Linux 6.15), which an unprivileged process cannot read.
+- HawkEYE reads the sandbox's own events for `sandbox-denied`: the fence's
+  memory kills and process-limit refusals (`fence.limit`), seccomp's
+  refusals (`fence.denied`), git protection's
+  refusals, and bash's note, now recorded with the result as
+  `sandbox_note`. The detail names each and the event it is from. On a
+  labelled set of 32 calls its precision is 1.00 and its recall 0.83,
+  against 0.62 and 0.56 for the output's words alone
+  ([HawkEYE](docs/guide/15-hawkeye.md#findings)).
+- The record as OCSF events. Every record type maps to an OCSF 1.8.0 class:
+  API Activity (with the AI Operation profile's model, role and tokens) for
+  messages, model calls, calls, decisions and results; File System, Process,
+  Network, HTTP and SSH Activity; Device Config State Change for modes,
+  rules, policy layers and refused settings; Detection Finding for the
+  supervisor's and the answer checker's verdicts, the fence's refused system
+  calls (`fence.denied`, Denied and Blocked) and planted state; and
+  Application Lifecycle for sessions and subagents. Each event is derived
+  from one chained line and keeps that line's seq, id, chain links and
+  payload, so the line can be rebuilt from it and its hash checked; it holds
+  no more than the record, redactions included. Events can be taken down to
+  OCSF 1.5.0, 1.3.0 or 1.1.0, what an older version lacks kept under
+  `unmapped`. The schema facts are the published schema's, checked by the
+  tests for every event written ([OCSF events and logs](docs/guide/30-ocsf-and-logs.md)).
+- `abhed logs`: the local record as one line an event, as OCSF, or as its
+  own chained lines, for one session or all of them, with `-f` to follow,
+  `-since`, `-after`, `-type`, and `-cursor FILE`, which keeps the last seq
+  read of each session so a reader that restarts goes on where it stopped.
+- `record.ocsf`: with `enabled`, the command line's record writes each line
+  to a rotated JSONL file of OCSF events (`version`, `max_mb`, `keep`) beside
+  the record, with a cursor that survives a restart: lines recorded while it
+  was off are written when it next starts, and processes sharing the file
+  never write a line twice. `record.ocsf.path` and `record.ocsf.locked`
+  (the managed `record.ocsf` is then the whole of it) are managed only; a
+  managed path's folder is state commands cannot reach. `abhed serve` writes
+  its own file from its store: from Postgres, one server at a time holds an
+  advisory lock and keeps the cursors in the new `ocsf_cursors` table
+  (schema version 13, `abhed migrate`), so another takes over where it
+  stopped and no event is written by two.
+- `GET /v1/sessions/{id}/logs` streams a session's record as OCSF events or
+  shorthand over SSE, on the events stream's sign-in, ownership check and
+  seq cursor (`Last-Event-ID`, `?after=`), with `?version=` and `?type=`.
+  `GET /v1/sandboxes/{id}:events?format=ocsf` gives a page of a sandbox's
+  control-plane record as OCSF API Activity, and `abhed record audit -format
+  ocsf` every row of the control plane's audit chains: the principal as the
+  actor, an API request's method, route, path, caller and created ids, and
+  each row's chain, position and links, with a stable `metadata.uid` from
+  its place in the chain.
+
+### Changed
+
+- A managed `verify.contract.protect` now joins the protected files a
+  person's or workspace's file lists, as deny and ask rules do, rather than
+  replacing them: from the managed file or the org policy, a null, empty or
+  other list no longer drops a protected file.
+
+- `plan.proposed` carries the plan's `hash`, and its `runbook` when it has
+  one; `plan.decided` carries the `plan_hash` and runbook an accept bound,
+  and on a server who answered (`by`)
+  ([Data model](docs/architecture/10-data-model.md)).
+- A `bash` command's `observation` carries `cwd`, the folder the tool ran it
+  in, as it followed a lone `cd`
+  ([Data model](docs/architecture/10-data-model.md)).
+- An `observation` of `bash` carries `sandbox_note` when bash added a note
+  that an operation was not permitted under a sandbox: the credential path
+  or Abhed's own state the output named, or `denied`
+  ([Data model](docs/architecture/10-data-model.md)).
+- Postgres schema version 14 makes each event insert cheaper with the same
+  hash: the chain's trigger uses fixed queries and renders only the hashed
+  columns (about 120 down to 30 microseconds a row), sets `inserted_at`
+  itself instead of a second trigger, and the unused GIN index on the
+  sealed `payload` is dropped. Apply it with `abhed migrate`. Each event
+  stays its own transaction; the rate many sessions reach is bound by the
+  database's log flushes, and the records guide says how to raise it
+  without giving up durability.
+- A `bash` note now also names a refusal of a credential file the sandbox
+  denies other than `~/.ssh`, `~/.kube`, `~/.aws` and `~/.gnupg` (such as
+  `~/.netrc` or `~/.config/gh`), and of Abhed's own state.
+
+### Fixed
+
+- `auth.Middleware.Authorize` now runs on an identity a trusted proxy's
+  headers give (`auth.mode` `proxy`), as it does on a session or a token, so
+  an edition that holds a caller to some requests only holds a proxied
+  caller too. Before, the trusted-header branch skipped it.
+
+- Commit messages leave out a file the repository's ignore rules name even
+  when it is force-added (a repository whose `.gitignore` is `*` gets none),
+  and withhold the value of a key whose name says secret, in any case, in
+  JSON, YAML, `=` files (`.properties`, `.env`, TOML, Python), JS objects
+  and YAML block scalars (`internal_api_key`, `clientSecret`, `dbPass`,
+  `password=`), on a diff's added and removed lines too, a block scalar
+  whose value changed under an unchanged key included; a type, a variable,
+  a template, Python that only assigns to such a name, or a key that only
+  names a secret (`passwordFile`, `token_url`) is left alone, and a block
+  scalar's lines are withheld one by one, its sibling keys kept. Next-edit
+  cleans its window whole, so a block scalar there is withheld too.
+- An agent that makes the same read-only call with the same answer again
+  and again is told so after three and stopped after six, with the reason
+  named (`retry_exhausted`); the next message goes on. A call that can
+  change things, a changed answer, a compaction and each new message start
+  the count again, and polling a subagent's status is not counted.
+- Next-edit suggestions take the window's line ends: CRLF or LF as the
+  window has them, no trailing spaces the model added (the person's own,
+  such as a Markdown hard break, are kept), and the last line's newline as
+  it was; the model is asked to apply a rename to every use in the window.
+- The SDK's `Model` gains `Images` (whether the model reads images). For
+  Studio builds that read it: `_abhed/commitMessage` now answers a reply
+  with no message, or one carrying a secret, with an error rather than
+  `dropped`.
+- Commands, Studio's Run and Test among them, did not use the project's
+  Python virtual environment, so pytest installed in `.venv` was "not
+  installed". The nearest `.venv` or `venv` in the workspace is now used,
+  with `VIRTUAL_ENV` set. As the agent can write it, only its python and pip
+  come first; its `bin` goes after the rest of `PATH`, so nothing placed
+  there (a `git`, a `node`) replaces a program found elsewhere, and a venv
+  linked from outside the workspace is not used. An interactive terminal
+  names the venv and uses it only once you type `abhed_venv`.
+
+- A command in Studio's terminal refused a package registry (`npm install`,
+  `go get`) showed only a 403. It now prints which language's registry was
+  refused and how to open it, and Studio is sent an offer to open it; opening
+  a language's registries no longer needs Abhed's toolchain for it, so the
+  host's own Node or Go on the process tier can use them. The terminal's
+  header says what it can reach: the agent's network, with the registries
+  open to the session by agreement or by configured egress rules. Only what
+  commands print is watched, not the typed line's echo.
+
+- Generate Commit Message in Abhed Studio could end with nothing shown:
+  with nothing staged it answered only "nothing is staged", and a model that
+  gave no message (a reasoning model can spend 512 tokens thinking) came
+  back as an empty message with a reason rather than an error. It now uses
+  the working tree's changes when nothing is staged, gives the model room
+  (2,048 tokens, 90 s), ends with a message or a clear error, and logs each
+  request.
+- Next-edit suggestions no longer offer an edit that changes only
+  whitespace at a line's end, which left the line looking the same.
+- Debugging on this Mac could not start: every default session's commands
+  go out through Abhed's egress proxy (the allowlist, or the package-registry
+  proxy every session has unless `sandbox.toolchains_registries` is off),
+  and loopback was refused to the debug command there. Every Abhed listener
+  on a Mac that does not name its port (egress proxies, each command's
+  proxy port, port forwards, `abhed serve`, metrics and `abhed
+  egress-proxy` on port 0, the sign-in callback) now takes its port from a
+  reserved range, 47600 to 47855 or `ABHED_LOOPBACK_PORTS`, and a debug
+  command may never reach that range: the rule was "never every loopback
+  port", it is now "never the reserved range". Python's adapter listens on
+  five ports chosen outside the range before it starts, which it holds on
+  the wildcard and loopback addresses for its whole life, and only those
+  are opened to it; the program may listen on those five on any of the
+  Mac's addresses, and on no other port unless the session's commands may
+  listen (`sandbox.listen`): then, as any command, TCP on the free listen
+  ports (`sandbox.listen_ports`), on any of the Mac's addresses, so a dev
+  server can be debugged with listening on (else use the container tier). Go may
+  reach each port the system hands out to listeners (49152 to 65535) but
+  the range, one rule each, older Abhed releases' proxies on the Mac
+  included, and a Go program being debugged can listen where the network
+  reaches, but never on a port of the range (the consent and the guide say
+  so). Both debug on the macOS process tier in the default
+  configuration. Delve is built for macOS too, offered and installed with
+  Go like any debugger; a Go launch without Delve offers the install before
+  anything is judged. A workspace agreement to debug on this Mac is kept
+  only once a session has started.
+- Language servers: a missing server's problem carries the one-click
+  toolchain install (`install: {language, lsp: true}`) and plain steps, and
+  the engine tells Studio when a toolchain or server was installed or
+  removed (`_abhed/toolchain/changed`), so a new server starts without an
+  engine restart.
+
+- When a `user_prompt_submit` hook refuses every waiting message, ones
+  queued while the hook decided are now counted too, so the model is not
+  called again on the conversation as it was. Affects 1.2.3 to 1.2.8.
+- The server records a refused run's end at the point it decides the run
+  does not go on, so a client no longer misses that end when messages
+  were queued as the run was cancelled. Affects 1.2.8.
+- A WebSocket frame over the message limit is refused at its header,
+  before its payload is read, and large payloads are read a chunk at a
+  time instead of all at once. Affects 1.2.8.
+- Closing a session on the container tier stops calls still starting their
+  container and waits for those containers to be removed, where they could
+  be left running. Affects 1.2.8.
+- Previewing writes now asks about every `edit` and `write` short of a
+  deny, so an "always" grant no longer answers it; it covers a custom
+  command's or skill's run and its subagents' writes, and a session that
+  cannot preview refuses the prompt. A prompt's images are capped at 10 MB
+  in all, and a message over 16 MiB (its line ending aside) is refused with
+  its id instead of ending the connection; the id is looked for only in the
+  message's first 64 KiB and 16 levels of nesting, and the refusal carries
+  a null id when it is not there. `grep` no longer takes a `path` with `[` (such as
+  `app/[id]`) for a glob.
+- Anthropic sessions mark the last two user turns for the prompt cache, so
+  a long session reads its history from the cache rather than paying for it
+  again each turn; before, only the system prompt and tools were cached.
+- `grep` takes a glob in `path` (`docs/**/*.md`), searching the folder before
+  the glob with the rest as its pattern, instead of refusing it.
+- A carried approval for a failed `edit` or `write` now needs the retry to
+  be the same change: the same `old_string` (whitespace at line ends aside),
+  the same `replace_all`, and exactly the same new text or content. It is recorded `by: carried`
+  and never carries on. A loose `edit` match is refused when its lines are
+  nested differently from the file's.
+- Debugging without a container engine: a debug launch that needs the
+  container tier now returns a `container-setup` problem with what is
+  missing on this machine and the exact steps (install Podman, `podman
+  machine init`, `podman machine start`, put the workspace on the container
+  tier), which Studio walks through; `_abhed/debug/status-tier` reports the
+  same, and `_abhed/debug/use-container` raises the workspace's tier. Or, on
+  the person's choice and agreement (Allow once, or Allow for this workspace,
+  kept and recorded as `debug.setup`), the macOS process tier debugs with
+  loopback ports open to the debug command alone (never under the egress
+  allowlist); the Linux process tier with an open network
+  takes the same agreement.
+- An MCP stdio server whose code lives under your home outside the
+  workspace failed with only "broken pipe": the folder of a script its
+  configured arguments name is now readable to it, as its install folder
+  is, and a server that fails to start shows the end of its stderr in the
+  error, redacted against its own environment, the secrets its arguments
+  carry (`-e NAME=…`, `--header "Authorization: …"`) and key shapes. Where
+  that folder is a folder directly in your home (`~/Downloads`,
+  `~/Projects`, `~/bin`, `~/.local`), `~/.local/bin`, `~/.cargo/bin` or a
+  cloud drive's root, only the file itself is shown; nothing in home
+  itself, a folder holding credentials or a credential folder is, and a
+  program installed in a credential folder is refused.
+
+- `abhed toolchain clean` removes the whole toolchain cache, which a plain
+  `rm -rf` cannot, as installed toolchains are read-only; and `abhed
+  toolchain` takes its flags after the languages too, as `abhed doctor`
+  writes them.
+- A command the sandbox refused a package registry (`go get`, `pip
+  install`, `npm install` through the egress proxy) got a bare 403 or
+  Forbidden. It is now told which language's registry was refused and to
+  call the toolchain tool for it, which asks the person and opens it.
+
+- Studio's toolchain install looped on "The offer changed" with the same
+  offer: the engine required `agreed.registries`, which Studio does not
+  send, and the fields of an extra installed already. Those are no longer
+  required; an agreement without `registries` installs and opens none.
+
+- macOS process tier: every Node program failed with `EPERM ... lstat` on
+  a folder above the workspace, as Node's realpath stats each one and home
+  was closed to that too. The folders on the way to the workspace, the
+  read-only paths and the toolchains can now be stat'ed, not listed or read.
+- Toolchains: with a `GOROOT` set on the host, an installed Go first on
+  `PATH` mixed two Go versions and every build failed. An active Go now sets
+  its own `GOROOT` and `GOTOOLCHAIN=local`, and the host's `PYTHONHOME`,
+  `GEM_HOME`, `RUBYOPT`, `RUSTC`, `NODE_PATH` and the like are unset while
+  their toolchain is active.
+- The macOS process tier's own caches and temp folders (`abhed-caches-…`,
+  `abhed-tmp-…`) piled up in `$TMPDIR` when an Abhed process ended without
+  closing its sandbox. Each now records its owner, and the next sandbox
+  removes those whose owner has ended, by that record and name only; folders
+  left by earlier builds carry no record and are not touched.
+- Abhed Studio's Go, Python and Rust language servers never started: the
+  supervisor looked for the server on the engine's own `PATH`, without the
+  toolchains Abhed installs for the sandbox, and refused it as an unknown
+  program before the install offer could appear, with the reason only in
+  the log. The supervisor now finds programs on the `PATH` commands get,
+  toolchain folders first (which also lets the agent run a toolchain's `go`
+  or `cargo`); a server that is not there is offered for install
+  (`server-missing`) before anything is judged, in Studio and the
+  workbench; and a refused start reaches Studio as a `start-refused`
+  problem with its reason and steps.
+
+- Inline completions from a chat or reasoning model: the reply is cleaned of
+  reasoning, fences, prose and code repeated from around the cursor, asked
+  at a low temperature, and an answer that reads as prose is dropped with
+  `dropped` saying why, instead of being offered as code.
+- The file tools take a path relative to the workspace root, held to the
+  same confinement and rules as an absolute one, instead of refusing it with
+  "path must be absolute".
+- After a `retry_exhausted` end, the next message runs: the count of
+  repeated failures starts again with each message. The end names the call
+  that kept failing, and Abhed Studio is told the reason in the chat.
+- `edit` applies a change whose only difference from the file is
+  indentation, re-indented to the file's, when it matches one place, and
+  says so. An approved `edit` or `write` that failed without effect hands
+  its approval to the next attempt at the same file in the message, once.
+- A run with a temporary home folder, as a test or a harness that drives
+  Abhed or Studio with a scratch `HOME` gives it, could start a real
+  `ollama serve` that then held port 11434 reading the scratch home's empty
+  models folder. Abhed now starts, installs and downloads nothing when its
+  home is in a temporary folder (`temp_home`), and the CLI test harness
+  marks the binaries it runs as under test and puts a stand-in `ollama`
+  first on their `PATH`.
+
+- A local Ollama model that is downloaded was offered for download again
+  when the server answering on its port had been started with another
+  models folder (another `HOME` or `OLLAMA_MODELS`). The check now looks in
+  the models folder too: such a model is never offered for download, and
+  the problem (`other_models_folder`) says how to find and restart that
+  server. A server Abhed starts is given the models folder the check reads,
+  shown in its command; the model list falls back to `/v1/models` when
+  `/api/tags` fails; and `ollama` is found in `/opt/homebrew/bin` and
+  `/usr/local/bin` (`/usr/bin` and `/snap/bin` on Linux) when an app's
+  `PATH` lacks them.
+
+- A command's egress relay container (`abhed-egr-…`) outlived an Abhed
+  that was killed. It now runs attached, its main process ending when the
+  input Abhed holds closes, so it exits and removes itself however Abhed
+  ends; it is labelled with its owner (`abhed.egress.owner`), and the first
+  such command after a start removes any an ended Abhed on this host left,
+  by that label and name only.
+
+- Toolchains: Ruby could not load its standard library or RubyGems, nor on
+  Linux its own `libruby`, because its builds name the build machine's
+  folders; its commands now get `RUBYLIB` and `GEM_PATH` for where it is,
+  and a Linux Ruby a wrapper first on `PATH` that gives Ruby alone its
+  `LD_LIBRARY_PATH`. A Linux Ruby bundles libyaml 0.2.5 from
+  Debian 12's package, its sha256 pinned, so YAML, RubyGems and Bundler work
+  on the default image; OpenSSL is not bundled (see the Toolchains guide).
+- Toolchains: a Linux build unpacked on macOS (for the container tier) failed
+  when its archive held names differing only in case, as Python's terminfo
+  does; the second of such a pair is now skipped on a case-insensitive disk,
+  except that a file takes the place of a link, which would otherwise point
+  at itself.
+- Postgres: an event appended while its session was being deleted could be
+  written into the deleted session, because the insert's check ran before it
+  waited for the session's chain lock. The chain trigger now refuses the row
+  once it holds the lock (schema version 15), and a delete takes the locks of
+  the whole session tree first, so an append either lands before the delete
+  or is refused after it. `store.Postgres.LockSessionTree`,
+  `DeleteSessionTx` and `Forget` let an edition check a session under those
+  locks and delete it in the same transaction. Run `abhed migrate`.
+- On a Mac, a Podman CLI that hung while Abhed asked it for its machine's
+  socket was killed alone: a helper it had started kept running, and its
+  open pipe held the query a second past its bound. The query now runs in
+  a process group of its own, which a timeout kills whole.
+- In the terminal UI the output of a `!` command was shown twice: under
+  the call and again below it. It is now shown once, under the call, with
+  up to 40 lines before the rest folds behind ctrl+o. Without the terminal
+  UI (a line view), a failing `!` command's output was also shown twice;
+  it is now shown once.
+- On the fence tier in `mount_namespace` mode under the egress allowlist, a
+  command resolved no name, an allowed one included (`getent hosts` gave
+  nothing), while the process tier resolved it through the session's
+  resolver; requests through the proxy worked. The fence now serves the
+  same resolver in the command's network namespace, over UDP and TCP: an
+  allowed name resolves to its `198.18.0.0/15` address, with glibc, Go
+  and musl alike, and is recorded as a `dns` decision, and any other gets
+  NXDOMAIN. To let it, the seccomp filter (now profile `command/4`) allows
+  UDP sockets in that mode alone, where the namespace holds only loopback
+  and a datagram can reach nothing else.
+- The workbench's Changes view no longer lists the files in a subagent's
+  worktree (`.abhed-worktrees/`) as the workspace's own changes; they are
+  reviewed and taken on their own.
+- Studio's review no longer shows a file whose content was not kept before
+  the change (one that holds keys, or one a read rule denies) as a whole
+  file added from nothing.
+- The context size that decides when to offload and compact, and that
+  `session.ended` records, counts only the tools the model is offered in the
+  current mode, so a tool of another mode no longer brings compaction early.
+- On Postgres, a subagent's session could be created under a session
+  whose delete was under way, and outlive it. It is now created under its
+  parent's lock and refused once the parent is deleted, and a delete reads
+  the tree again after taking its locks.
+
+### Go API
+
+From `apidiff -m` between v1.2.8 and this release (internal packages left
+out):
+
+- Added for the signed org policy: `config.Config.Org` (`org_policy`),
+  `config.Config.OrgPolicy`, `config.OrgPolicyConfig` and its `Machine` and
+  `Refresh`, `config.OrgPolicyStatus` and its `OrgPolicyLine`,
+  `config.ShipConfig` and `config.RecordConfig.Ship` (`record.ship`) with
+  `MaxBacklog`, `config.CheckOrgPolicy`, `config.MachineOrgPolicy`,
+  `config.Config.FromOrg`, `config.LayerOrg` and `config.OrgUnpinnedWarning`.
+- Changed: `config.ManagedError.File` names the org policy ("the org policy
+  from URL", or "the org policy fallback") rather than a path when the
+  setting refused came from it; a caller that opens `File` as a path must
+  check that it is one. A `config.AllowList.Layer` may be `org`.
+- Added: `store/local.Sealed.Raw`, set by `LinesFrom`; `local.SegmentLine`,
+  `local.CheckSegment`, `local.WriteExport`, `local.ExportWriter` and `local.VerifyLines`, for a
+  server that checks shipped lines and exports them in the record's format.
+- Added: packages `orgpolicy` (statements, DSSE envelopes, the state file,
+  `Evaluate` and `Accept`) and `recordship` (the batch format and the
+  shipper), experimental until 2.0.
+- Added: `config.Config.ManagedWebFetchOff`, whether the managed file
+  itself sets `web_fetch.enabled` to false; `abhed.Model.Images`.
+- Added: `config.ModelConfig.Allowed`, `config.MCPConfig.Allowed` and
+  `Denied`, `config.MCPMatch`, `config.MCPServer`, `config.MCPServerOf`,
+  `config.ModelID`, `config.AllowList`, and `Config.ModelListed`,
+  `Config.ModelsAllowed`, `Config.MCPAdmitted`, `Config.MCPLists`,
+  `Config.HasMCPLists` and `Config.EndpointRefused`.
+  `Config.ProviderNamed` and `Config.PinnedAway` now also refuse a model
+  outside `model.allowed`. `config.NormalHost`,
+  `Config.MCPListsMatchCommands`, `Config.JudgeListed`,
+  `Config.LoopbackAllowed` and `config.ModelConfig.AllowedLoopback`.
+- Changed behaviour, same signatures, in `sdk`: `SwitchModelNamed` refused
+  by a managed pin or `model.allowed` still `errors.Is` `ErrUnknownModel`
+  and now also unwraps to `config.ManagedError`; `SetModel` and
+  `Options.Provider` refuse a model, or a remote endpoint, that
+  `model.allowed` does not admit; a refused `SetModel` or
+  `SwitchModelNamed` is recorded as `config.refused`.
+
+- Changed behaviour, same signatures: on a Mac, `server.Server.ListenAndServe`
+  with an `Options.Addr` asking for any port (`:0`, or an empty port) now
+  listens on a port of Abhed's reserved loopback range (47600 to 47855, or
+  `ABHED_LOOPBACK_PORTS`), not one the system picks, and fails with
+  `loopport.ErrExhausted` wrapped when that range is full. Name a port to
+  keep it as before.
+
+- Incompatible: `hawkeye.Call` gains `Sandbox`, a slice, and
+  `monitor.Guard` now holds a mutex and a slice, so neither is comparable any
+  more: code that compares two values of either with `==` or uses one as a
+  map key no longer compiles. Compare a `Call`'s fields, and use a `*Guard`.
+- New packages: `ocsf`, `store/chain` and the command `cmd/abhed-drift`.
+- `app`: `AnchorBuilder`, `MetricsPath`, `RecordHead` and `WithRecordAnchor`.
+- `config`: the `Config` fields `Monitor`, `Plan`, `Verify` and
+  `Duplicates`, and its methods `ManagedAskRule` and `Warnings`; the type
+  `DuplicateKey`; the types `ContractConfig`, `MonitorConfig`,
+  `OCSFConfig`, `PlanConfig`, `ServerMetricsConfig`, `VerifyConfig` and
+  `VerifyCriticConfig`; `OCSFVersions` and `VerifyRank`;
+  `Overrides.Supervisor`; `RecordConfig.OCSF`; `SSHConfig.ReadCommands`,
+  `SSHConfig.Transfers` and `SSHConfig.TransferMaxMB`;
+  `SandboxConfig.Image`; `ServerConfig.Metrics`; and
+  `ToolsConfig.BashCheckpoints`, `BashCheckpointMB` and `BashCheckpointFiles`.
+- `hawkeye`: `Answer`, `Call.PlanHash`, `Call.PlanStep`, `Call.Sandbox`,
+  `Call.SandboxUnconfirmed`, `RemoteChange`, `RemoteTarget`,
+  `Report.Answers`, `Report.RemoteChanges`, `Report.Supervisor`,
+  `SandboxSignal`, `SupervisorStats` and `SupervisorVerdict`.
+- `monitor`: `(*Guard).Child`, `Guard.Honeytokens` and `Guard.Unattended`;
+  the `Case` fields `DeclaredRead`, `Plan`, `Roots`, `Said` and `Seen`;
+  `Provenance.Observed`; `Recent.Credential`; `Verdict.Advice` and
+  `Verdict.Correction`; the judges `Rules`, `Model` and `Chain`; the codes
+  `CodeOK`, `CodeCredentialEgress`, `CodeHoneytoken`, `CodeOutOfRemit`,
+  `CodeUnknownProgram`, `CodeUnverifiedHost` and `CodeUnverifiedTarget`;
+  `CredentialSeen`, `DeclaredHost`, `SkippedBudget`, `TraceSeen` and
+  `Untrusted`; `RulesVersion`, `HoneytokenVersion` and `PromptVersion`; and
+  the `Rules` fields `LookPath`, `Declared`, `Hosts` and `Home` (a
+  `func() (string, bool)` giving the HOME commands get); and the drift
+  suite's `DriftCase`, `DriftCases`, `DriftDeclared`, `DriftHome`,
+  `DriftHomeDir`, `DriftHoneytoken`, `DriftHosts`, `DriftPATH`,
+  `DriftReport`, `DriftResult` and `RunDrift`.
+- `sdk`: `(*Agent).ConfigWarnings`, `(*Agent).Verdict`, `Options.Runbook`, `Options.Supervisor`,
+  `Options.Verify` and `Options.VerifyByDefault`, and the types
+  `AnswerVerdict`, `ClaimVerdict`, `Conflict`, `ContractResult`,
+  `RequireResult`, `Runbook` and `RunbookStep`, and the constant
+  `ByWorkspaceGrant`.
+- `server`: `APIAuditPrefix`, `Metrics` and `NewMetrics`, `Mutating`,
+  `Options.APIAudit`, `Options.Metrics`, `StartSpec.Verify`, `ApprovalAnswer.StepTools` and
+  `PendingAsk.StepTools`.
+- `store`: the `*Postgres` methods `AuditChain`, `AuditLinks`, `AuditRows`,
+  `CommitEnd`, `DeleteSessionTx`, `EventChain`, `ExportChain`, `Forget`,
+  `LockSessionTree`, `OCSFWriter`, `ScanCommitted` and `VerifyAuditChain`; `(*Sandboxes).AuditChainName` and
+  `(*Sandboxes).AuditLinks`; `AuditChainName`, `CommitPos`,
+  `ParseCommitPos`, `PostgresOf`, `OCSFCursor`, `OCSFWriter` and
+  `ErrOCSFStandby`; `Config.Logger`; and `ChainReport.PreChain` and
+  `ChainReport.Reason`.
+- `store/local`: the `*Store` methods `Chain`, `LinesFrom`, `SessionIDs`
+  and `Size`; `AuditChain`, `AuditChainName`, `AuditFile`, `AuditPath`,
+  `AuditReport`, `AuditRows`, `LineHash`, `OpenAudit` and `VerifyAudit`;
+  `Options.OnAppend`; and `Sealed.End`.
+- `store/sqlite`: the `*Store` methods `AuditChain`, `AuditChainName`,
+  `AuditLinks`, `AuditRows` and `VerifyAuditChain`; and `AuditChainName`
+  and the type `ChainReport`.
+- For a local Ollama model: `config.OllamaConfig`, `ModelConfig.Ollama` and
+  `Config.OllamaAssist`; `hawkeye.LocalModelStep` and `Report.LocalModel`.
+- For toolchains on demand: `config.SandboxConfig.Toolchains`,
+  `ToolchainsPreapproved` and `ToolchainsRegistries`; `hawkeye.ToolchainStep`
+  and `Report.Toolchains`.
 
 ## [1.2.8] - 2026-10-14
 

@@ -312,13 +312,13 @@ func TestCommandProfileDecisions(t *testing.T) {
 // silently filtering nothing.
 func TestUnknownSyscallRefused(t *testing.T) {
 	for _, arch := range archNames {
-		_, err := build(arch, []rule{{name: "no_such_call", errno: errEPERM}})
+		_, err := build(arch, []rule{{name: "no_such_call", errno: errEPERM}}, false)
 		if err == nil || !strings.Contains(err.Error(), `no system call "no_such_call" on `+arch) {
 			t.Errorf("%s: %v", arch, err)
 		}
 	}
 	// Calls only one architecture has.
-	if _, err := build("arm64", []rule{{name: "open", errno: errEPERM}}); err == nil {
+	if _, err := build("arm64", []rule{{name: "open", errno: errEPERM}}, false); err == nil {
 		t.Error("arm64 built a rule for open, which it does not have")
 	}
 	if _, err := testCommand(false).Program("riscv64"); err == nil || !strings.Contains(err.Error(), "riscv64") {
@@ -380,7 +380,7 @@ func TestDescribe(t *testing.T) {
 	for _, arch := range archNames {
 		off := testCommand(false).describe(arch)
 		on := testCommand(true).describe(arch)
-		for _, want := range []string{"seccomp command/3 on linux/" + arch, "kills other architectures",
+		for _, want := range []string{"seccomp command/4 on linux/" + arch, "kills other architectures",
 			"process tampering (ptrace, process_vm_readv, process_vm_writev, kcmp, pidfd_getfd)",
 			"clone with namespace flags", "clone3 with ENOSYS", "pivot_root, chroot", "io_uring_register",
 			"kexec_file_load", "keyrings (keyctl, add_key, request_key)", "prctl PR_SET_SECCOMP", "sha256 ",

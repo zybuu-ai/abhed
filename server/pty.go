@@ -427,7 +427,11 @@ func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSe
 	}
 
 	id := "u" + newSessionID()
-	args, _ := json.Marshal(map[string]any{"command": sandbox.TerminalCommand, "description": "interactive terminal in the session sandbox", "interactive": true})
+	line := sandbox.TerminalCommand
+	if b.ShellLine != nil {
+		line = b.ShellLine()
+	}
+	args, _ := json.Marshal(map[string]any{"command": line, "description": "interactive terminal in the session sandbox", "interactive": true})
 	if _, refused, err := live.Loop.ManualAuthorize("bash", id, args); err != nil {
 		writeUnrecorded(w, err, "the terminal could not be recorded, so it was not opened")
 		return
@@ -453,7 +457,7 @@ func (s *Server) startShell(w http.ResponseWriter, r *http.Request, live *liveSe
 	if cfg.Sandbox.TerminalIdleMinutes > 0 {
 		shell.idle = time.Duration(cfg.Sandbox.TerminalIdleMinutes) * time.Minute
 	}
-	run, err := s.launch(live, sess, id, sandbox.TerminalCommand, cmd, cancel, req.Cols, req.Rows, UserOf(r.Context()), shell)
+	run, err := s.launch(live, sess, id, line, cmd, cancel, req.Cols, req.Rows, UserOf(r.Context()), shell)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -915,14 +919,14 @@ func (p *ptyRun) follow(chunk []byte) {
 	// The first output is the shell's prompt, and the foreground
 	// group then is the shell's own.
 	if p.local && p.shellPgrp.Load() == 0 {
-		if fg, _, ok := ttyNow(p.tty); ok {
+		if fg, _, ok := ttyNow.Get()(p.tty); ok {
 			p.shellPgrp.Store(int64(fg))
 		}
 	}
 	switch {
 	case p.prompt == nil:
 	case p.local:
-		fg, canonical, ok := ttyNow(p.tty)
+		fg, canonical, ok := ttyNow.Get()(p.tty)
 		p.prompt.Output(chunk, ok && !p.isProgram(fg), canonical)
 	default:
 		p.prompt.OutputUnasked(chunk)
@@ -959,7 +963,7 @@ func (p *ptyRun) ask(e *enteredLine) {
 		return
 	}
 	e.Program = false
-	fg, canonical, ok := ttyNow(p.tty)
+	fg, canonical, ok := ttyNow.Get()(p.tty)
 	if !ok {
 		e.Ahead = true
 		return
@@ -986,7 +990,7 @@ func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 	}
 	engine := cmd.Path
 	return func() (bool, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), engineAskWait)
+		ctx, cancel := context.WithTimeout(context.Background(), engineAskWait.Get())
 		defer cancel()
 		return hostForeground(ctx, engine, name)
 	}
@@ -994,7 +998,7 @@ func engineForeground(cmd *exec.Cmd) func() (bool, bool) {
 
 // engineHostProc reads files under the engine host's /proc. A variable so a
 // test can stand in for a Linux host.
-var engineHostProc = func(ctx context.Context, engine string, paths ...string) ([]byte, error) {
+var engineHostProc = newTunable(func(ctx context.Context, engine string, paths ...string) ([]byte, error) {
 	if runtime.GOOS == "linux" {
 		var out []byte
 		for _, p := range paths {
@@ -1011,7 +1015,7 @@ var engineHostProc = func(ctx context.Context, engine string, paths ...string) (
 	}
 	// The machine's own cat, never the container's.
 	return enginecli.Command(ctx, engine, append([]string{"machine", "ssh", "cat"}, paths...)...).Output()
-}
+})
 
 // hostForeground is engineForeground's answer for one container.
 func hostForeground(ctx context.Context, engine, name string) (program, ok bool) {
@@ -1031,7 +1035,7 @@ func hostForeground(ctx context.Context, engine, name string) (program, ok bool)
 	if runtime.GOOS != "linux" && !strings.Contains(filepath.Base(engine), "podman") {
 		return dockerTopForeground(ctx, engine, name, pid)
 	}
-	b, err := engineHostProc(ctx, engine, fmt.Sprintf("/proc/%d/cgroup", pid), fmt.Sprintf("/proc/%d/stat", pid))
+	b, err := engineHostProc.Get()(ctx, engine, fmt.Sprintf("/proc/%d/cgroup", pid), fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return false, false
 	}
@@ -1066,8 +1070,9 @@ func dockerTopForeground(ctx context.Context, engine, name string, pid int) (pro
 	return false, false
 }
 
-// engineAskWait bounds asking the engine at a line's Enter.
-const engineAskWait = 3 * time.Second
+// engineAskWait bounds asking the engine at a line's Enter. A variable so a
+// test under load is not decided by the clock.
+var engineAskWait = newTunable(3 * time.Second)
 
 // foregroundIsProgram reads a /proc/<pid>/stat line: whether the terminal's
 // foreground group (tpgid) is set and is not the process's own group.
@@ -1108,7 +1113,7 @@ func (p *ptyRun) holdTyped(live *liveSession, data []byte) {
 	}
 	for _, k := range p.held.Keys(data) {
 		if e := k.Enter; e != nil {
-			_, canonical, ok := ttyNow(p.tty)
+			_, canonical, ok := ttyNow.Get()(p.tty)
 			if !asked || !ok || canonical {
 				e.Secret = true
 				p.held.Hold(e)
@@ -1136,7 +1141,7 @@ func (p *ptyRun) programTook(data []byte) termline.Took {
 	if !p.local {
 		return termline.TookNothing
 	}
-	fg, canonical, ok := ttyNow(p.tty)
+	fg, canonical, ok := ttyNow.Get()(p.tty)
 	if !ok || !p.isProgram(fg) {
 		return termline.TookNothing
 	}

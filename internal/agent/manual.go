@@ -126,6 +126,148 @@ func (l *Loop) ManualAuthorize(call, id string, args json.RawMessage) (tools.Too
 	return tool, nil, nil
 }
 
+// ManualAsk puts a supervisor's ask about a person's own action to the
+// person, and reports whether they approved it.
+type ManualAsk func(ctx context.Context, decision policy.Result) (bool, error)
+
+// ManualAuthorizeReviewed is ManualAuthorize with the supervisor's review
+// after policy, for a person's action that starts something the agent's own
+// call would, such as a debug session: it may only make the decision
+// stricter, and its verdict is in the record. A policy ask is taken as
+// answered, since the person asked for the action; an ask the supervisor
+// raised is put to the person with ask, and the action goes ahead only on
+// their approval. No ask, an error or no answer refuses it.
+func (l *Loop) ManualAuthorizeReviewed(ctx context.Context, call, id string, args json.RawMessage, ask ManualAsk) (tools.Tool, *tools.Result, error) {
+	return l.ManualAuthorizeAsking(ctx, call, id, args, ask, "")
+}
+
+// ManualAuthorizeAsking is ManualAuthorizeReviewed that also puts the
+// action to the person, with why as the reason, whenever why is set and
+// policy and the supervisor would let it run: for an action the engine
+// knows a workspace file can change, such as a rust-analyzer.toml that
+// overrides the engine's settings. It is recorded as an ask at step
+// "workspace"; no ask, an error or no answer refuses it. When the
+// supervisor asks about it too, the one question it puts carries both
+// reasons, and both are recorded with it.
+func (l *Loop) ManualAuthorizeAsking(ctx context.Context, call, id string, args json.RawMessage, ask ManualAsk, why string) (tools.Tool, *tools.Result, error) {
+	tool, found := l.Tools.Get(call)
+	if !found {
+		return nil, nil, fmt.Errorf("unknown tool %q", call)
+	}
+	if call == "bash" {
+		_ = l.noteTrustedStartup()
+	}
+	mutates := tools.MutatesCall(tool, args)
+	decision := l.Policy.Evaluate(call, mutates, args)
+	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	answer := Unanswered
+	if l.Monitor != nil && decision.Decision != policy.Deny {
+		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
+		if decision.Decision == policy.Ask && decision.Step == "monitor" {
+			// One question carries both reasons: the person answering the
+			// supervisor also hears what the workspace changes.
+			if why != "" {
+				decision.Reason += "; and " + why
+			}
+			var ok bool
+			err := errors.New("no one to ask")
+			if ask != nil {
+				ok, err = ask(ctx, decision)
+			}
+			switch {
+			case err != nil:
+				decision = policy.Result{Decision: policy.Deny, Reason: decision.Reason + "; not answered", Step: "unanswered"}
+			case ok:
+				answer = Confirmed
+			default:
+				answer = Declined
+			}
+		}
+	}
+	if why != "" && decision.Decision != policy.Deny && answer == Unanswered {
+		decision = policy.Result{Decision: policy.Ask, Reason: why, Step: "workspace"}
+		var ok bool
+		err := errors.New("no one to ask")
+		if ask != nil {
+			ok, err = ask(ctx, decision)
+		}
+		switch {
+		case err != nil:
+			decision = policy.Result{Decision: policy.Deny, Reason: why + "; not answered", Step: "unanswered"}
+		case ok:
+			answer = Confirmed
+		default:
+			answer = Declined
+		}
+	}
+	refused, err := l.manualDecide(call, id, args, decision, answer)
+	if err != nil || refused != nil {
+		return nil, refused, err
+	}
+	return tool, nil, nil
+}
+
+// ManualRunTool runs tool as the person's own call, the tool given rather
+// than looked up, for an action the person takes themselves with a tool the
+// agent may not have, such as reading a page they link while the agent's
+// web_fetch is off. Policy, the secret checks and the supervisor judge it as
+// any call: a deny refuses it, and any ask, a rule's included, is put to the
+// person with ask; no ask, an error or no answer refuses it. askOf, when
+// set, is the tool's own read-only ask (such as web_fetch's with no allowed
+// hosts), judged as policy judges it for the agent's calls when the tool is
+// on, so an allow rule that names the call answers it. A call the tool's
+// Precheck refuses is refused before anyone is asked.
+func (l *Loop) ManualRunTool(ctx context.Context, sess *tools.Session, tool tools.Tool, id string, args json.RawMessage, ask ManualAsk, askOf func(subject string) string) (tools.Result, error) {
+	call := tool.Name()
+	mutates := tools.MutatesCall(tool, args)
+	pol := l.Policy
+	if askOf != nil {
+		pol = pol.WithReadOnlyAsk(call, askOf)
+	}
+	decision := pol.Evaluate(call, mutates, args)
+	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
+		decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+	}
+	if decision.Decision != policy.Deny {
+		if err := tools.Precheck(ctx, tool, sess, args); err != nil {
+			decision = policy.Result{Decision: policy.Deny, Reason: err.Error(), Step: "precheck"}
+		}
+	}
+	if l.Monitor != nil && decision.Decision != policy.Deny {
+		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
+	}
+	answer := Unanswered
+	if decision.Decision == policy.Ask {
+		ok, err := false, errors.New("no one to ask")
+		if ask != nil {
+			ok, err = ask(ctx, decision)
+		}
+		switch {
+		case err != nil:
+			decision = policy.Result{Decision: policy.Deny, Reason: decision.Reason + "; not answered", Step: "unanswered"}
+		case ok:
+			answer = Confirmed
+		default:
+			answer = Declined
+		}
+	}
+	refused, err := l.manualDecide(call, id, args, decision, answer)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	if refused != nil {
+		return *refused, nil
+	}
+	start := time.Now()
+	result := tool.Run(l.withLaunch(ctx, id), sess, args)
+	if red := l.Recorder.redactor(); red != nil {
+		result.Content = redactedText(red.Redact, result.Content)
+	}
+	return result, l.ManualObserve(id, call, result, time.Since(start))
+}
+
 // namesSecret applies the file-name secret check to the name an explorer
 // action creates: a new folder's path, or a rename's new path.
 func (l *Loop) namesSecret(action string, args json.RawMessage) string {
@@ -181,8 +323,13 @@ func (l *Loop) ManualAuthorizeTyped(id string, args json.RawMessage, answer Conf
 	return tool, nil, "", nil
 }
 
+// manualDecide records a person's action as the policy, and the person's
+// answer, decided it. answer must be what the person said to the very ask
+// decision names (Confirmed or Declined), or Unanswered when nothing was put
+// to them: an answered ask is recorded requires_approval and confirmed, so a
+// caller must never pass Confirmed for an ask the person did not see.
 func (l *Loop) manualDecide(call, id string, args json.RawMessage, decision policy.Result, answer Confirmation) (*tools.Result, error) {
-	asked := answer != Unanswered && decision.Decision == policy.Ask && decision.Step == "destructive"
+	asked := answer != Unanswered && decision.Decision == policy.Ask
 	if _, err := l.Recorder.Record(EvActionRequested, ActorUser, Trusted, ActionRequested{
 		CallID: id, Tool: call, Args: args, Reason: decision.Reason, Scope: decision.Offer(), RequiresApproval: asked,
 	}); err != nil {
@@ -217,7 +364,7 @@ func (l *Loop) ManualObserve(id, call string, result tools.Result, took time.Dur
 	_, err := l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{
 		CallID: id, Tool: call, Content: result.Content, IsError: result.IsError,
 		Truncated: result.Truncated, ExitCode: result.ExitCode,
-		DurationMS: took.Milliseconds(), Sandbox: result.Tier,
+		DurationMS: took.Milliseconds(), Sandbox: result.Tier, SandboxNote: result.SandboxNote,
 	})
 	return err
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/secrets"
+	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -56,6 +57,7 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		}
 	}
 	p := sandbox.DefaultPolicy(workspace)
+	sandbox.SetConfiguredImage(cfg.Sandbox.Image)
 	if cfg.Sandbox.MinTier != "" {
 		p.MinTier = sandbox.Tier(cfg.Sandbox.MinTier)
 	}
@@ -68,7 +70,15 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 		// The allowlist replaces allow_network: the proxy is the only way out.
 		p.Egress, p.AllowNetwork = pol, false
 	}
+	if err := registryEgress(cfg, &p); err != nil {
+		return sandbox.Policy{}, err
+	}
 	p.ReadOnlyPaths = cfg.Sandbox.ReadOnlyPaths
+	// The toolchain cache, which commands read and never write: a container
+	// mounts it read-only, so the toolchains Abhed installed are there.
+	if root := toolchainCache(cfg); root != "" {
+		p.ReadOnlyPaths = append(append([]string(nil), p.ReadOnlyPaths...), root)
+	}
 	p.WriteProtected = cfg.Sandbox.WriteProtected
 	p.ProtectGit, p.GitRequired = cfg.Sandbox.GitProtected()
 	p.ScopeSignals = cfg.Sandbox.ScopeSignals
@@ -98,12 +108,12 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.MaxCPUPercent = cfg.Sandbox.MaxCPUPercent
 	p.MemoryRequired = cfg.Sets("sandbox.max_memory_mb")
 	p.SharedCaches = cfg.Sandbox.SharedCaches
-	// The container tier picks its engine later; either engine's relay serves.
-	p.RelayBinary = cfg.ControlPlane.Podman.RelayBinary
-	if p.RelayBinary == "" {
-		p.RelayBinary = cfg.ControlPlane.Docker.RelayBinary
-	}
+	p.RelayBinary = RelayBinary(cfg)
 	p.ReadableHome = cfg.Sandbox.ReadableHome
+	p.ListenLoopback = cfg.Sandbox.Listen == "allow"
+	if ports, err := config.ParseListenPorts(cfg.Sandbox.ListenPorts); err == nil {
+		p.ListenPorts = ports
+	}
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall
@@ -238,6 +248,10 @@ func StatePaths(cfg config.Config, workspace string) []string {
 		if real, err := filepath.EvalSymlinks(records); err == nil && real != records {
 			out = append(out, real)
 		}
+	}
+	// A managed record.ocsf.path's folder holds the record's OCSF copy and its cursor.
+	if p := cfg.Record.OCSF.Path; p != "" {
+		out = append(out, filepath.Dir(p))
 	}
 	out = append(out, controlPlaneFiles(cfg)...)
 	return append(out, cfg.Record.Also...)
@@ -468,6 +482,18 @@ func under(spellings, dirs []string) bool {
 	return false
 }
 
+// RelayBinary is the Linux build of Abhed a session's sandbox runs inside
+// itself, as the egress relay and the debug bridge: the managed Podman
+// relay_binary, else Docker's. The container tier picks its engine later,
+// and both are managed-only builds of the engine, so either serves; the
+// sandbox and the debug bridge use this one rule.
+func RelayBinary(cfg config.Config) string {
+	if b := cfg.ControlPlane.Podman.RelayBinary; b != "" {
+		return b
+	}
+	return cfg.ControlPlane.Docker.RelayBinary
+}
+
 // NetworkOpen reports whether cfg gives commands the network with no
 // allowlist, so git run for them on the host reaches no more than they could.
 func NetworkOpen(cfg config.Config) bool {
@@ -487,4 +513,59 @@ func Isolation(cfg config.Config, tier string) tools.Isolation {
 		iso.AllowedHosts, iso.DefaultAllow = pol.AllowedHosts(), pol.DefaultAllow()
 	}
 	return iso
+}
+
+// ToolchainCache is the toolchain cache root the sandbox mounts read-only
+// for cfg, or "" when it does not (sandbox.toolchains off). While it is
+// mounted read-only, a file there is one no command could have written.
+func ToolchainCache(cfg config.Config) string { return toolchainCache(cfg) }
+
+// toolchainCache is the toolchain cache, made so a container can mount it,
+// or "" where sandbox.toolchains is off or it cannot be made.
+func toolchainCache(cfg config.Config) string {
+	if cfg.Sandbox.Toolchains == "off" {
+		return ""
+	}
+	root, err := toolchain.DefaultRoot()
+	if err != nil || (toolchain.Cache{Root: root}).Prepare() != nil {
+		return ""
+	}
+	return root
+}
+
+// RegistriesOpenable reports whether a person may open package registries
+// to commands: sandbox.toolchains_registries is not off, and where the
+// managed file holds the network, it names the setting itself.
+func RegistriesOpenable(cfg config.Config) bool {
+	if cfg.Sandbox.ToolchainsRegistries == "off" || cfg.Sandbox.Toolchains == "off" {
+		return false
+	}
+	managedNet := cfg.ManagedSets("sandbox.allow_network") || cfg.ManagedSets("sandbox.network") || cfg.ManagedSets("egress")
+	return !managedNet || cfg.ManagedSets("sandbox.toolchains_registries")
+}
+
+// registryEgress gives p the proxy package registries are opened through:
+// under the managed allowlist, its own policy, which the registries join
+// only where the managed file names them; where the network is off, a
+// proxy that denies everything until a registry is opened, used where the
+// tier can hold one. With "allow", every registry is open from the start.
+func registryEgress(cfg config.Config, p *sandbox.Policy) error {
+	if !RegistriesOpenable(cfg) {
+		return nil
+	}
+	pol := p.Egress
+	if pol == nil {
+		if p.AllowNetwork {
+			return nil // the network is open already
+		}
+		var err error
+		if pol, err = egress.Compile(egress.Config{}); err != nil {
+			return err
+		}
+		p.OptionalEgress = pol
+	}
+	if cfg.Sandbox.ToolchainsRegistries == "allow" {
+		return pol.Grant("sandbox.toolchains_registries allow", toolchain.AllRegistries())
+	}
+	return nil
 }

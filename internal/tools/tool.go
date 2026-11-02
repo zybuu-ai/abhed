@@ -53,6 +53,31 @@ type Prechecker interface {
 	Precheck(sess *Session, args json.RawMessage) error
 }
 
+// ContextPrechecker is a Prechecker whose check reaches elsewhere, such as a
+// cluster's dry run, and so stops with ctx, which ends with the turn.
+type ContextPrechecker interface {
+	PrecheckContext(ctx context.Context, sess *Session, args json.RawMessage) error
+}
+
+// Unplanner is a tool that readies something for a call before it is
+// approved, such as the request a dry run checked; Unplan lets it go when
+// the call is refused or not approved.
+type Unplanner interface {
+	Unplan(sess *Session, args json.RawMessage)
+}
+
+// Precheck runs t's check of a call, with ctx when it takes one; nil when t
+// makes none.
+func Precheck(ctx context.Context, t Tool, sess *Session, args json.RawMessage) error {
+	if pc, ok := t.(ContextPrechecker); ok {
+		return pc.PrecheckContext(ctx, sess, args)
+	}
+	if pc, ok := t.(Prechecker); ok {
+		return pc.Precheck(sess, args)
+	}
+	return nil
+}
+
 // ArgResolver fills in what a call leaves to the session, such as the one
 // cluster it logged in to, and puts what it names in the one form the tool
 // uses, so that policy, the approver and the record judge what the call will
@@ -62,6 +87,13 @@ type Prechecker interface {
 // reads it: the arguments cannot be put in a form the tool would run.
 type ArgResolver interface {
 	ResolveArgs(sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
+}
+
+// ContextArgResolver is an ArgResolver whose resolving reaches the network,
+// such as a release source. The loop gives it the turn's context, so a
+// cancelled turn stops it.
+type ContextArgResolver interface {
+	ResolveArgsContext(ctx context.Context, sess *Session, args json.RawMessage) (out json.RawMessage, resolved []string, err error)
 }
 
 // Targeter names where a call sends what it carries, such as the server a
@@ -122,6 +154,18 @@ type Result struct {
 	// NoOutput marks a bash result whose output was empty, so a terminal can
 	// leave out the "[no output]" placeholder without guessing from the text.
 	NoOutput bool
+	// SandboxNote is the kind of refusal bash put a sandbox note in Content
+	// for (see sandboxHint), "" when it put none; recorded with the result.
+	SandboxNote string
+	// Events are recorded after the result, as the system's, such as a
+	// toolchain install the call made.
+	Events []Event
+}
+
+// Event is one event a tool's result asks the loop to record.
+type Event struct {
+	Type    string
+	Payload any
 }
 
 func ok(format string, a ...any) Result {

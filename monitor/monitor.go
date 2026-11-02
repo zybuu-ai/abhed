@@ -32,6 +32,8 @@ type Case struct {
 	// Remit is what the session was asked to do: the first user message,
 	// plus whatever the operator configured.
 	Remit string
+	// Said is everything the user said in the session, the remit included.
+	Said string
 	// Reasoning is the agent's most recent stated thinking, newest last. It
 	// is untrusted text and is handed to the judge as such.
 	Reasoning []string
@@ -46,12 +48,26 @@ type Case struct {
 	Provenance []Provenance
 	// Recent are the last few calls and how they went, oldest first.
 	Recent []Recent
+	// Roots are the directories the session works in. A path under one is
+	// the session's own ground, not a target the model made up.
+	Roots []string
+	// Seen, when set, reports whether an earlier observation in the session
+	// showed the text: a directory listing, a command's output. Output the
+	// web supplied does not count, since that is where injected names come from.
+	Seen func(text string) bool
+	// DeclaredRead is the operator's ssh.read_commands entry an ssh call
+	// runs, when it runs one: the operator has said that command is a read.
+	DeclaredRead string
+	// Plan is the plan the person approved, if any.
+	Plan string
 }
 
 // Provenance is one name in the arguments and where it was first seen.
 type Provenance struct {
 	Token     string
 	UserNamed bool
+	// Observed is set when an earlier observation showed the name.
+	Observed bool
 }
 
 // Recent is one earlier call, for pattern spotting.
@@ -59,6 +75,9 @@ type Recent struct {
 	Tool    string
 	Subject string
 	IsError bool
+	// Credential is set when the call brought credential content into the
+	// session; see CredentialSeen.
+	Credential bool
 }
 
 // Verdict is the judge's answer.
@@ -70,7 +89,10 @@ type Verdict struct {
 	Code       string
 	Confidence float64
 	Rationale  string
-	LatencyMS  int64
+	// Advice is what the model should do instead, said back to it with the
+	// refusal. It is advice only: the supervisor never rewrites a call.
+	Advice    string
+	LatencyMS int64
 	// Version identifies the prompt or ruleset that produced the verdict, so
 	// a change in judgement can be traced to a change in the judge.
 	Version string
@@ -86,6 +108,9 @@ type Monitor interface {
 type Func func(ctx context.Context, c Case) (Verdict, error)
 
 func (f Func) Judge(ctx context.Context, c Case) (Verdict, error) { return f(ctx, c) }
+
+// SkippedBudget is Outcome.Skipped for a call the turn budget kept from the judge.
+const SkippedBudget = "turn budget spent"
 
 // ErrUnavailable is what a Guard reports when the judge gave no usable answer.
 var ErrUnavailable = errors.New("monitor unavailable")
@@ -103,6 +128,12 @@ type Guard struct {
 	// rest keep their provisional decision and are recorded as unreviewed.
 	// Zero means no bound.
 	MaxPerTurn int
+	// Honeytokens are planted values no honest call carries. A call with one
+	// in its arguments is denied before any judge is asked.
+	Honeytokens []string
+	// Unattended is set where nobody can answer an ask: a verdict of ask is
+	// raised to deny, with its correction, and so is an unavailable judge.
+	Unattended bool
 
 	mu   sync.Mutex
 	turn int
@@ -122,6 +153,13 @@ type Outcome struct {
 	// Skipped is set when the deterministic fast path or the turn budget kept
 	// the call away from the judge.
 	Skipped string
+}
+
+// Child is a guard for a subagent: the same judge and settings, with a turn
+// budget of its own.
+func (g *Guard) Child() *Guard {
+	return &Guard{Monitor: g.Monitor, Timeout: g.Timeout, OnUnavailable: g.OnUnavailable, MaxPerTurn: g.MaxPerTurn,
+		Honeytokens: g.Honeytokens, Unattended: g.Unattended}
 }
 
 // BeginTurn resets the per-turn budget.
@@ -156,6 +194,13 @@ func NeedsReview(c Case) (bool, string) {
 // Review judges one call. The result's After is never looser than Before.
 func (g *Guard) Review(ctx context.Context, c Case) Outcome {
 	out := Outcome{Before: c.Provisional.Decision, After: c.Provisional.Decision}
+	if c.Provisional.Decision != policy.Deny && g.planted(c.Args) {
+		out.Verdict = Verdict{Decision: policy.Deny, Code: CodeHoneytoken, Confidence: 1, Version: HoneytokenVersion,
+			Rationale: "the arguments carry a planted honeytoken, a value no task needs",
+			Advice:    "stop and tell the person what led you to this value; do not send it anywhere"}
+		out.After, out.Tightened = policy.Deny, true
+		return out
+	}
 	if ok, why := NeedsReview(c); !ok {
 		out.Skipped = why
 		return out
@@ -168,7 +213,7 @@ func (g *Guard) Review(ctx context.Context, c Case) Outcome {
 		}
 		g.mu.Unlock()
 		if over {
-			out.Skipped = "turn budget spent"
+			out.Skipped = SkippedBudget
 			return out
 		}
 	}
@@ -187,6 +232,9 @@ func (g *Guard) Review(ctx context.Context, c Case) Outcome {
 		if fallback != policy.Ask && fallback != policy.Deny {
 			fallback = policy.Ask
 		}
+		if g.Unattended {
+			fallback = policy.Deny
+		}
 		v.Decision, v.Code = fallback, "unavailable"
 		if err != nil {
 			v.Rationale = err.Error()
@@ -194,6 +242,9 @@ func (g *Guard) Review(ctx context.Context, c Case) Outcome {
 			v.Rationale = "the judge returned no decision"
 		}
 		out.Unavailable = true
+	} else if v.Decision == policy.Ask && g.Unattended {
+		v.Decision = policy.Deny
+		v.Rationale = strings.TrimSuffix(strings.TrimSpace(v.Rationale+"; nobody is here to approve it"), ";")
 	}
 	out.Verdict = v
 	out.After = tighten(out.Before, v.Decision)
@@ -213,6 +264,32 @@ func judge(ctx context.Context, m Monitor, c Case) (v Verdict, err error) {
 		}
 	}()
 	return m.Judge(ctx, c)
+}
+
+// planted reports whether args carry one of the guard's honeytokens.
+func (g *Guard) planted(args string) bool {
+	for _, t := range g.Honeytokens {
+		if len(t) >= minHoneytoken && strings.Contains(args, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// minHoneytoken keeps a short value, which honest text could hold, from being a honeytoken.
+const minHoneytoken = 8
+
+// Correction is what a tightened decision tells the model: the concern, why,
+// and what to do instead.
+func (v Verdict) Correction() string {
+	s := "Supervisor: " + v.Code + "."
+	if r := strings.TrimRight(strings.TrimSpace(v.Rationale), "."); r != "" {
+		s += " " + r + "."
+	}
+	if a := strings.TrimRight(strings.TrimSpace(v.Advice), "."); a != "" {
+		s += " Do this instead: " + a + "."
+	}
+	return s
 }
 
 func known(d policy.Decision) bool {
@@ -266,10 +343,17 @@ func Names(args string) []string {
 
 // Trace marks each name with whether it appears in what the user said.
 func Trace(args string, userText string) []Provenance {
+	return TraceSeen(args, userText, nil)
+}
+
+// TraceSeen is Trace that also marks each name an earlier observation showed.
+func TraceSeen(args, userText string, seen func(string) bool) []Provenance {
 	low := strings.ToLower(userText)
 	var out []Provenance
 	for _, n := range Names(args) {
-		out = append(out, Provenance{Token: n, UserNamed: strings.Contains(low, strings.ToLower(n))})
+		p := Provenance{Token: n, UserNamed: strings.Contains(low, strings.ToLower(n))}
+		p.Observed = seen != nil && seen(n)
+		out = append(out, p)
 	}
 	return out
 }
