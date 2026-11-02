@@ -648,10 +648,19 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 // allowListOK takes an untrusted file's model.allowed, mcp.allowed or
 // mcp.denied, which only narrow, when every entry of each it sets is well
 // formed; a malformed one is ignored, so a repository cannot stop Abhed starting.
-func allowListOK(_, ws *Config) bool {
-	l := allowLayer{file: "workspace", models: ws.Model.Allowed, mcpAllowed: ws.MCP.Allowed, mcpDenied: ws.MCP.Denied,
-		setsModels: ws.Model.Allowed != nil, setsMCPAllowed: ws.MCP.Allowed != nil, setsMCPDenied: ws.MCP.Denied != nil}
-	return (Config{allowLayers: []allowLayer{l}}).validateAllowLists() == nil
+func allowListOK(key string) func(_, ws *Config) bool {
+	return func(_, ws *Config) bool {
+		l := allowLayer{file: "workspace"}
+		switch key { // only the list being applied is judged: a malformed one never discards another
+		case "model.allowed":
+			l.models, l.setsModels = ws.Model.Allowed, ws.Model.Allowed != nil
+		case "mcp.allowed":
+			l.mcpAllowed, l.setsMCPAllowed = ws.MCP.Allowed, ws.MCP.Allowed != nil
+		case "mcp.denied":
+			l.mcpDenied, l.setsMCPDenied = ws.MCP.Denied, ws.MCP.Denied != nil
+		}
+		return (Config{allowLayers: []allowLayer{l}}).validateAllowLists() == nil
+	}
 }
 
 func allowListKey(k string) bool {
@@ -780,9 +789,9 @@ var workspaceRules = map[string]fieldRule{
 	"model.ollama.assist":   {tighterAssist, "only tighter: off < local < ask"},
 	"completion.enabled":    {completionOff, "only false"},
 	"completion.local_only": {onlyTrue(func(c *Config) *bool { return &c.Completion.LocalOnly }), "only true"},
-	"model.allowed":         {allowListOK, "only narrows: each list set must admit a model"},
-	"mcp.allowed":           {allowListOK, "only narrows: each list set must admit a server"},
-	"mcp.denied":            {allowListOK, "only adds servers that never start"},
+	"model.allowed":         {allowListOK("model.allowed"), "only narrows: each list set must admit a model"},
+	"mcp.allowed":           {allowListOK("mcp.allowed"), "only narrows: each list set must admit a server"},
+	"mcp.denied":            {allowListOK("mcp.denied"), "only adds servers that never start"},
 	"model":                 {nil, "a provider and its base_url receive the code"},
 	"custom_providers":      {nil, "a provider and its base_url receive the code"},
 	"context":               {nil, "memory_files are read into the prompt; the rest waits for trust"},

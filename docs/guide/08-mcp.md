@@ -249,7 +249,9 @@ server comes from:
 
 - the user's, a trusted workspace's or the managed file
 - `-mcp-config` (the run stops, naming the server and the list)
-- `abhed mcp add` (refused before anything is written)
+- `abhed mcp add` (refused before anything is written when the managed lists
+  refuse it; one only your own lists refuse is written, then set aside when
+  the configuration loads)
 - the console's add (403, audited as `mcp.refused`)
 - Studio
 - a restart

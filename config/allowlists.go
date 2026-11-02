@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path"
 	"slices"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"golang.org/x/net/idna"
 )
 
 // MCPMatch is one entry of mcp.allowed or mcp.denied. A server matches when
@@ -66,7 +68,7 @@ type MCPServer struct {
 func MCPServerOf(s MCPServerConfig) MCPServer {
 	out := MCPServer{Name: s.Name, Digest: s.Digest, URL: s.URL}
 	if s.URL == "" && s.Command != "" {
-		out.Programs = mcp.Programs(s.Command, s.Env)
+		out.Programs = mcp.Programs(s.Command, mcp.ServerEnv(s.Env))
 	}
 	return out
 }
@@ -186,6 +188,11 @@ func checkMCPMatch(m MCPMatch) error {
 	if m.Host != "" && (strings.ContainsAny(m.Host, "/:@ ") || strings.Contains(strings.TrimPrefix(m.Host, "*."), "*")) {
 		return errors.New("host is a host name, optionally *.example.com, with no scheme, port or path")
 	}
+	if m.Host != "" {
+		if _, err := NormalHost(strings.TrimPrefix(m.Host, "*.")); err != nil {
+			return fmt.Errorf("host: %w", err)
+		}
+	}
 	if (m.Command != "" || m.Digest != "") && m.Host != "" {
 		return errors.New("command and digest match a server Abhed starts, host one it reaches; an entry cannot be both")
 	}
@@ -230,21 +237,61 @@ func ModelID(p ProviderConfig) string { return p.Type + "/" + p.Model }
 // only narrow the managed one. name says which configured provider it is.
 func (c Config) ModelListed(name string, p ProviderConfig) error {
 	id := ModelID(p)
+	value := id
+	if name != "" {
+		value = name + " (" + id + ")"
+	}
+	// A model id that could step out of its place in a request path is not
+	// matched: * would admit gemini-2.5-flash/../other.
+	if l := c.firstModelLayer(); l.setsModels && strings.ContainsAny(p.Model, "?#%\\") || l.setsModels && slices.Contains(strings.Split(p.Model, "/"), "..") {
+		return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
+			Reason: "a model id holding .., ?, #, % or \\ is not matched against model.allowed in " + c.listOwner(l.file)}
+	}
+	org := false
 	for _, l := range c.layersOrSelf() {
 		if !l.setsModels {
 			continue
 		}
 		if !slices.ContainsFunc(l.models, func(pat string) bool { return glob(pat, id) }) {
-			who := listOwner(l.file)
-			value := id
-			if name != "" {
-				value = name + " (" + id + ")"
-			}
 			return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
-				Reason: who + "'s model.allowed admits only " + strings.Join(l.models, ", ")}
+				Reason: "model.allowed in " + c.listOwner(l.file) + " admits only " + strings.Join(l.models, ", ")}
 		}
+		org = org || c.managedList(l.file)
+	}
+	// Under the organisation's list a model is admitted at its provider's own
+	// endpoint, or at one the managed file or org policy defines: a lower
+	// file's base_url would send an admitted model's traffic anywhere.
+	if org && !c.endpointBound(name, p) {
+		l := c.firstModelLayer()
+		for _, x := range c.layersOrSelf() {
+			if x.setsModels && c.managedList(x.file) {
+				l = x
+				break
+			}
+		}
+		return &ManagedError{Key: "model.allowed", Value: value, File: l.file,
+			Reason: "model.allowed in " + c.listOwner(l.file) + " admits a model only at its provider's own endpoint, on this machine, or at a provider the managed configuration or org policy defines, and this one is sent to " + PrintableURL(p.BaseURL)}
 	}
 	return nil
+}
+
+// endpointBound reports a provider whose endpoint is its type's own (no
+// base_url, or the built-in entry's unchanged), on this machine (a loopback
+// address), or one the managed file or org policy defines whole.
+func (c Config) endpointBound(name string, p ProviderConfig) bool {
+	if p.BaseURL == "" || loopbackURL(p.BaseURL) {
+		return true // the type's own endpoint, or one on this machine
+	}
+	if name == "" {
+		return false // an endpoint an embedder names
+	}
+	if c.ManagedSets("model.providers." + name) {
+		return true // a managed entry is one setting, base_url included; the environment cannot change it
+	}
+	if d, ok := Default().Model.Providers[name]; ok && d.BaseURL == p.BaseURL && d.Type == p.Type {
+		return true
+	}
+	return false
 }
 
 // ModelsAllowed are the model.allowed patterns in force, each list on its
@@ -304,6 +351,20 @@ func (c Config) MCPLists() []AllowList {
 	return out
 }
 
+// MCPListsMatchCommands reports whether any MCP list has an entry that
+// matches a program by path, so a server must be started at the exact path
+// it was judged by.
+func (c Config) MCPListsMatchCommands() bool {
+	for _, l := range c.layersOrSelf() {
+		for _, m := range append(slices.Clone(l.mcpAllowed), l.mcpDenied...) {
+			if m.Command != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HasMCPLists reports whether any mcp.allowed or mcp.denied list is in force.
 func (c Config) HasMCPLists() bool { return len(c.MCPLists()) > 0 }
 
@@ -324,14 +385,17 @@ func (m MCPMatch) matches(s MCPServer) bool {
 		}
 	}
 	if m.Host != "" {
-		u, err := url.Parse(s.URL)
-		if s.URL == "" || err != nil || u.Hostname() == "" {
+		host, err := urlHost(s.URL)
+		if err != nil {
 			return false
 		}
-		host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-		want := strings.ToLower(m.Host)
-		if sub, ok := strings.CutPrefix(want, "*."); ok {
-			if !strings.HasSuffix(host, "."+sub) {
+		sub, wild := strings.CutPrefix(m.Host, "*.")
+		want, err := NormalHost(sub)
+		if err != nil {
+			return false
+		}
+		if wild {
+			if !strings.HasSuffix(host, "."+want) {
 				return false
 			}
 		} else if host != want {
@@ -341,31 +405,109 @@ func (m MCPMatch) matches(s MCPServer) bool {
 	return true
 }
 
+// NormalHost is a host name in the ASCII form a connection dials: mapped
+// and checked by IDNA (UTS 46) as net/http maps it, lowercase, with no
+// trailing dot; an IP literal as written. A name that does not map is an
+// error, so a name written in look-alike or fullwidth characters is judged
+// as the host it reaches, or refused.
+func NormalHost(h string) (string, error) {
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return "", errors.New("no host")
+	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return ip.String(), nil
+	}
+	if isASCII(h) {
+		return strings.ToLower(h), nil // dialled as written, as net/http does
+	}
+	a, err := idna.Lookup.ToASCII(h)
+	if err != nil || a == "" || !isASCII(a) {
+		return "", fmt.Errorf("%q is not a host name that can be read", Printable(h))
+	}
+	return strings.TrimSuffix(strings.ToLower(a), "."), nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// urlHost is the normal host of a server URL.
+func urlHost(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if raw == "" || err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("%q has no host that can be read", Printable(raw))
+	}
+	return NormalHost(u.Hostname())
+}
+
 // MCPAdmitted is the refusal of an MCP server a deny list names or an allow
 // list leaves out, or nil. Every layer's allow list must admit it and no
 // layer's deny list may name it, so a lower layer can only narrow.
 func (c Config) MCPAdmitted(s MCPServer) error {
 	layers := c.layersOrSelf()
+	// A remote server whose host cannot be read as the host it dials is not
+	// judged by matching: under any list it is refused.
+	if s.URL != "" && c.HasMCPLists() {
+		if _, err := urlHost(s.URL); err != nil {
+			l := c.firstMCPLayer()
+			return &ManagedError{Key: "mcp.servers", Value: s.Name, File: l.file,
+				Reason: "its URL host cannot be read as a host name (" + err.Error() + "), so the MCP server lists cannot judge it"}
+		}
+	}
 	for _, l := range layers {
 		for _, m := range l.mcpDenied {
 			if m.matches(s) {
 				return &ManagedError{Key: "mcp.denied", Value: s.Name, File: l.file,
-					Reason: fmt.Sprintf("%s lists it in mcp.denied (%s)", listOwner(l.file), m)}
+					Reason: fmt.Sprintf("mcp.denied in %s matches it (%s)", c.listOwner(l.file), m)}
 			}
 		}
 	}
 	for _, l := range layers {
 		if l.setsMCPAllowed && !slices.ContainsFunc(l.mcpAllowed, func(m MCPMatch) bool { return m.matches(s) }) {
 			return &ManagedError{Key: "mcp.allowed", Value: s.Name, File: l.file,
-				Reason: listOwner(l.file) + "'s mcp.allowed list does not match it"}
+				Reason: "mcp.allowed in " + c.listOwner(l.file) + " does not match it"}
 		}
 	}
 	return nil
 }
 
-func listOwner(file string) string {
-	if file == managed.ConfigFile {
+// firstMCPLayer is the first layer that sets an MCP list.
+func (c Config) firstMCPLayer() allowLayer {
+	for _, l := range c.layersOrSelf() {
+		if l.setsMCPAllowed || l.setsMCPDenied {
+			return l
+		}
+	}
+	return allowLayer{}
+}
+
+// firstModelLayer is the first layer that sets model.allowed.
+func (c Config) firstModelLayer() allowLayer {
+	for _, l := range c.layersOrSelf() {
+		if l.setsModels {
+			return l
+		}
+	}
+	return allowLayer{}
+}
+
+// listOwner names who set a list, as a refusal says it. A workspace file's
+// list applies whether or not the workspace is trusted, so trusting it does
+// not lift the list; taking the list out of that file does.
+func (c Config) listOwner(file string) string {
+	switch {
+	case file == managed.ConfigFile:
 		return "the managed configuration"
+	case file != "" && file == c.orgListFile:
+		return Printable(file) // already "the org policy from …"
+	case file != "" && file == c.Workspace.File:
+		return "the workspace file " + Printable(file) + " (a narrowing that applies trusted or not; take the list out of that file to lift it)"
 	}
 	return Printable(file)
 }
@@ -457,4 +599,19 @@ func fileOf(err error) string {
 // machine's file or the org policy.
 func (c Config) managedList(file string) bool {
 	return file == managed.ConfigFile || (file != "" && file == c.orgListFile)
+}
+
+// loopbackURL reports a URL whose host is this machine: localhost or a
+// loopback address.
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

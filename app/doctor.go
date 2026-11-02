@@ -297,7 +297,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	}
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
-		gw.Admit = toolset.MCPAdmit(cfg)
+		gw.Admit, gw.PinProgram = toolset.MCPAdmit(cfg), cfg.MCPListsMatchCommands()
 		// The servers are started as a session starts them: their files
 		// confined, and under the allowlist their network too.
 		if own := toolset.OwnEgress(cfg); own != nil {

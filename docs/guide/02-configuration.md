@@ -1656,10 +1656,32 @@ doctor`. A default model the list refuses does not stop the configuration
 loading. It stops the session from starting with the reason: choose an
 admitted model with `-model`, or change `model.default`.
 
-`openai-compatible` reaches any endpoint that speaks that API. A pattern
-such as `openai-compatible/*` therefore admits whatever server a lower file
-names. Pair it with the egress allowlist ([Network policy](21-network-policy.md))
-when that matters.
+**Endpoints.** A pattern judges the provider's type and model name, not
+where the requests go. Every type takes a `base_url`, so the endpoint is
+bound separately. When the managed file or the org policy sets
+`model.allowed`, a model is admitted only at one of three endpoints:
+
+- its type's own endpoint, with no `base_url`
+- an endpoint on this machine (`localhost` or a loopback address)
+- the endpoint of a provider the managed file or the org policy defines
+
+A managed provider entry is one setting, `base_url` included, and
+`ABHED_BASE_URL` cannot change it. A `base_url` from a lower file or from
+`ABHED_BASE_URL` is refused, and so is an endpoint an SDK embedder names off
+this machine; the refusal says where the requests would have gone. A user's
+or workspace's own list, without one from the organisation, judges type and
+model only. To pin the endpoint as well as the model, define the providers
+in the managed file, or pin one with a managed `model.default`. The egress
+allowlist does not judge the model's endpoint: that endpoint is allowed
+implicitly ([Network policy](21-network-policy.md)).
+
+While a list is set, a model id holding `..` as a path segment, `?`, `#`,
+`%` or `\` is refused, since some types put the id in the request's path.
+A supervisor judge (`monitor.model`) is matched as
+`openai-compatible/<monitor.model>`, because it is reached over that API
+whatever serves it. A pattern such as `anthropic/claude-*` does not admit
+it. Embedding models (`retrieval.embed_model` at `retrieval.embed_base_url`) are
+not covered by `model.allowed`, though they too are sent workspace content.
 
 **MCP servers.** Each `mcp.allowed` or `mcp.denied` entry is an object.
 A server matches an entry when every field the entry sets matches it:
@@ -1667,9 +1689,9 @@ A server matches an entry when every field the entry sets matches it:
 | Field | Matches |
 |---|---|
 | `name` | the configured name; `*` for any run of characters |
-| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above |
+| `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above. While any entry matches by `command`, a server without a `digest` is started at exactly the path that was judged, with links followed, not looked up again |
 | `digest` | the `sha256:` digest the server's configuration pins. Abhed checks the program, or the image the digest names, before it starts the server, so a server whose program does not match never runs |
-| `host` | a remote server's URL host; `*.example.com` matches any subdomain |
+| `host` | a remote server's URL host; `*.example.com` matches any subdomain. Hosts are compared in the ASCII form a connection dials, as IDNA maps them, so `ｅｖｉｌ.com` is `evil.com`. Under any list, a URL whose host cannot be mapped is refused, and a redirect to another host is judged as the server reached there |
 
 An entry with no field, a field Abhed does not know, a `command` that is not
 an absolute path, a malformed `digest`, or a `host` with a scheme, port or
@@ -1677,6 +1699,17 @@ path stops Abhed at startup. So does an entry that sets `host` together
 with `command` or `digest`. A `name` alone matches whatever program a lower
 file runs under that name. To bind the program itself, use `command`,
 `digest` or `host`. An empty `mcp.allowed` list allows no server.
+
+What `command` and `digest` bind has limits:
+
+- `command` matches the program, never its arguments. An interpreter or
+  engine path (`npx`, `uvx`, `python3`, `node`, `docker`) admits whatever
+  package, script or image it is told to run.
+- For a container engine, `digest` pins only the image. The arguments still
+  choose the entrypoint and the mounts (`--entrypoint`, `-v /:/host`).
+- On the container tier a `command` entry judges the host's program, and
+  the server is started at that path inside the sandbox.
+- `digest` binds the file's contents; `command` alone binds only its path.
 
 A server any `mcp.denied` entry matches never starts. When `mcp.allowed` is
 set, a server no entry matches never starts either. This covers servers from

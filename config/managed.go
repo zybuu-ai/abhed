@@ -447,7 +447,7 @@ func (c Config) PinnedAway(name string) error {
 		return c.ModelListed(name, p)
 	}
 	if len(c.ModelsAllowed()) > 0 {
-		return &ManagedError{Key: "model.allowed", Value: name, File: managed.ConfigFile,
+		return &ManagedError{Key: "model.allowed", Value: name, File: c.firstModelLayer().file,
 			Reason: "it is not a configured provider, so the allowed models cannot admit it"}
 	}
 	return nil
