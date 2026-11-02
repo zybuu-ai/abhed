@@ -39,8 +39,8 @@ func TestIsolateGuards(t *testing.T) {
 	if strings.Contains(defaults.LocalModelURL, "11434") || strings.Contains(defaults.OllamaURL, "11434") {
 		t.Fatalf("defaults %s %s", defaults.LocalModelURL, defaults.OllamaURL)
 	}
-	if !strings.HasPrefix(managed.ConfigFile, os.TempDir()) {
-		t.Fatalf("managed %s", managed.ConfigFile)
+	if _, err := os.Stat(managed.ConfigFile); !os.IsNotExist(err) || strings.HasPrefix(managed.ConfigFile, "/etc/") {
+		t.Fatalf("managed %s (%v)", managed.ConfigFile, err)
 	}
 	if h, _ := os.UserHomeDir(); h == g.OrigHome || os.Getenv("ABHED_MODEL") != "" {
 		t.Fatalf("home %s", h)

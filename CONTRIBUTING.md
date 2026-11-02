@@ -30,6 +30,9 @@ Some tests need more:
   `-short` to run them.
 - Postgres integration tests need `ABHED_TEST_DSN` pointed at a real database
   (`store`).
+- A package whose tests link `internal/managed` (most do) needs
+  `func TestMain(m *testing.M) { testenv.Main(m) }`, so its tests never read
+  this machine's managed files; `internal/testenv` fails the build without it.
 - The `fence-s390x` CI job runs the fence's kernel tests on a self-hosted
   Linux on Z runner, and only on a push to `zybuu-ai/abhed`, never on a pull
   request. A self-hosted runner on a public repository runs whatever a

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
@@ -28,6 +29,15 @@ import (
 // Marker is set in the environment of an isolated test binary, so a helper
 // process it runs keeps the home and variables its parent test prepared.
 const Marker = "ABHED_TESTENV"
+
+// privateEnv names, for a helper, the parent's private folder, so the helper
+// points its managed paths there and makes no folder of its own to leave
+// behind: a helper usually exits from inside a test, before any Close.
+const privateEnv = "ABHED_TESTENV_PRIVATE"
+
+// fallbackAddr is where the defaults lead when no stub can listen, as in a
+// helper running in a sandbox with no network.
+const fallbackAddr = "127.0.0.1:9"
 
 // scrubbed are variables that choose a model, a key, or a file Abhed reads
 // in place of the home folder's. A test that needs one sets its own.
@@ -56,6 +66,10 @@ type Guard struct {
 	// private holds the managed paths' missing folder; only this process
 	// can make anything in it.
 	private string
+	// fallback is set when no stub could listen and the defaults lead to
+	// fallbackAddr; a dial there is then a hit. Tests use that closed port
+	// for an endpoint that refuses, so it is a hit only then.
+	fallback atomic.Bool
 }
 
 func (g *Guard) note(s string) {
@@ -82,18 +96,32 @@ func (g *Guard) Hits() []string {
 // a test relies on: it stops the stub and removes the home.
 func Isolate() *Guard {
 	g := &Guard{OrigHome: os.Getenv("HOME")}
-	// Under a 0700 folder of this process's own, so no other user can make
-	// the missing folder and plant a managed file in it.
-	private, err := os.MkdirTemp("", "abhed-no-managed-")
-	if err != nil {
-		panic("testenv: " + err.Error())
+	// The managed paths lead to a missing folder where no other user can make
+	// it and plant a managed file. Beside the test binary when only this user
+	// can write there, as in the folder go test builds it in: nothing is made,
+	// so a helper that exits from inside a test, with or without the
+	// marker, leaves nothing behind. Otherwise a helper reuses its parent's
+	// private folder, and anything else makes one.
+	exe, _ := os.Executable()
+	switch parent := os.Getenv(privateEnv); {
+	case exe != "" && privateDir(filepath.Dir(exe)):
+		managed.MoveTo(filepath.Join(exe+".no-managed", "none"))
+	case os.Getenv(Marker) != "" && filepath.IsAbs(parent):
+		managed.MoveTo(filepath.Join(parent, "none"))
+	default:
+		private, err := os.MkdirTemp("", "abhed-no-managed-")
+		if err != nil {
+			panic("testenv: " + err.Error())
+		}
+		g.private = private
+		managed.MoveTo(filepath.Join(private, "none"))
+		_ = os.Setenv(privateEnv, private)
 	}
-	g.private = private
-	managed.MoveTo(filepath.Join(private, "none"))
 
 	// A helper a test runs in a sandbox with no network cannot listen; its
-	// defaults then lead to a closed port instead of the stub.
-	stub := "http://127.0.0.1:9"
+	// defaults then lead to a closed port, and a dial there is noted like a
+	// call to the stub.
+	stub := "http://" + fallbackAddr
 	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
 		g.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			g.note("the default model endpoint: " + r.Method + " " + r.URL.Path)
@@ -103,6 +131,8 @@ func Isolate() *Guard {
 		g.srv.Listener = ln
 		g.srv.Start()
 		stub = g.srv.URL
+	} else {
+		g.fallback.Store(true)
 	}
 	defaults.LocalModelURL = stub + "/v1"
 	defaults.OllamaURL = stub + "/v1"
@@ -113,6 +143,10 @@ func Isolate() *Guard {
 			dial = (&net.Dialer{}).DialContext
 		}
 		t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == fallbackAddr && g.fallback.Load() {
+				g.note("the default model endpoint, at " + addr + " (no stub could listen)")
+				return nil, fmt.Errorf("testenv: %s is the default model endpoint; tests use a stub", addr)
+			}
 			if Real(addr) {
 				g.note("a real model service at " + addr)
 				return nil, fmt.Errorf("testenv: %s is a real local model service; tests use a stub", addr)

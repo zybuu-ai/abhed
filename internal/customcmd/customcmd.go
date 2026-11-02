@@ -118,7 +118,7 @@ func ReadDir(dir string) ([]File, []error) {
 				continue
 			}
 			if len(out) == MaxFiles {
-				errs = append(errs, fmt.Errorf("more than %d custom commands in %s; the rest are not read", MaxFiles, dir))
+				errs = append(errs, fmt.Errorf("more than %d custom commands in %s; the rest are not read", MaxFiles, filepath.Clean(dir)))
 				return
 			}
 			data, err := readFile(p)
