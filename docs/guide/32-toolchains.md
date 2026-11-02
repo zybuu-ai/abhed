@@ -267,6 +267,11 @@ first, as shell functions that bash commands started from them inherit. Its
 such as `pytest` where the system has none, is found there, but a `git`,
 `node` or `ssh` placed in it never replaces the one found elsewhere. Run
 `python3 -m pytest` to be sure of the venv's pytest; Studio's Run Tests does.
+The functions reach only what a shell runs: `env python3`, a script that
+starts `#!/usr/bin/env python3`, and a program that starts Python itself
+without a shell (tox, nox, pre-commit hooks, an editor's test runner) get
+the system's Python, though `VIRTUAL_ENV` names the venv. Give those the
+venv's interpreter by its path, `.venv/bin/python`.
 
 In an interactive terminal the venv is not used until you say so: the
 terminal names it before its first prompt, Studio's header shows it, and

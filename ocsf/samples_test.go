@@ -136,6 +136,7 @@ var samples = []sample{
 	{agent.EvToolchainRegistry, agent.ActorSystem, `{"lang":"go","hosts":["proxy.golang.org","sum.golang.org"],"consent":"call","by":"agent","surface":"tool"}`},
 	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"refused","provider":"local","model":"qwen3:8b","problem":"assist_off","error":"Abhed is set not to install or download anything here","by":"user","surface":"server"}`},
 	{agent.EvDebugSetup, agent.ActorUser, `{"action":"process_tier_consent","workspace":"/w","call_id":"u-2"}`},
+	{agent.EvSandboxListenerEnded, agent.ActorSystem, `{"port":5173,"pid":4242}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

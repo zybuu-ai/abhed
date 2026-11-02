@@ -688,6 +688,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.toolchains_preapproved": {nil, "an install that needs no ask"},
 	"sandbox.toolchains_registries":  {onlyRegistriesOff, "only off"},
 	"sandbox.listen":                 {stricterListen, "only stricter: allow, then ask, then off"},
+	"sandbox.listen_ports":           {nil, "names the ports commands may listen on"},
 	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.language_servers":       {nil, "a language server is a process"},
 	"sandbox.image":                  {nil, "chooses the image commands run in"},

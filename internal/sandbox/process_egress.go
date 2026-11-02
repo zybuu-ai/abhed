@@ -491,6 +491,7 @@ func (s *Process) EndSession(id string) error {
 // Close stops every session's egress proxy and removes their sockets' folders,
 // and the sandbox's own caches. Later commands are refused.
 func (s *Process) Close() error {
+	unwatchListeners(s)
 	ss := &s.egress
 	ss.mu.Lock()
 	ss.closed = true

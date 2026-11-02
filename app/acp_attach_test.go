@@ -192,24 +192,32 @@ func TestStudioImagesGoWithTheCommandAndNoFurther(t *testing.T) {
 			t.Fatalf("%s: %+v", text, res.Error)
 		}
 	}
-	last := func() string {
+	// The agent's own request for a prompt, found by its text and its tools:
+	// a background request may come after it.
+	turn := func(text string) string {
 		v.model.mu.Lock()
 		defer v.model.mu.Unlock()
-		return v.model.bodies[len(v.model.bodies)-1]
+		for i := len(v.model.bodies) - 1; i >= 0; i-- {
+			if b := v.model.bodies[i]; strings.Contains(b, text) && strings.Contains(b, `"tools"`) {
+				return b
+			}
+		}
+		t.Fatalf("no request for %q", text)
+		return ""
 	}
 	command := base64.StdEncoding.EncodeToString([]byte("command image"))
 	prompt("/look this", img("command image"))
-	if !strings.Contains(last(), command) {
+	if !strings.Contains(turn("Look at this"), command) {
 		t.Fatal("the command's run did not carry the image")
 	}
 	builtin := base64.StdEncoding.EncodeToString([]byte("builtin image"))
 	prompt("/diff", img("builtin image"))
 	prompt("plain")
-	if strings.Contains(last(), builtin) {
+	if strings.Contains(turn("plain"), builtin) {
 		t.Fatal("an image given with a built-in command reached a later prompt")
 	}
-	if strings.Count(last(), command) != 1 {
-		t.Fatalf("the command's image was attached again: %d", strings.Count(last(), command))
+	if n := strings.Count(turn("plain"), command); n != 1 {
+		t.Fatalf("the command's image was attached again: %d", n)
 	}
 }
 
