@@ -240,7 +240,9 @@ in Abhed Studio's terminal (`listen EPERM`) brings the offer. Once you
 agree, every command in every session of the workspace, the agent's
 included, may listen, so `npm run dev` opens in your browser. `"allow"`
 lets commands listen without asking and cannot be taken back from Studio;
-`"off"` never lets them; a workspace file can only make it stricter.
+`"off"` never lets them. Both `listen` and `listen_ports` are an operator's
+settings, read from your own or the managed file: a workspace file, even a
+trusted one, can only make `listen` stricter and cannot set `listen_ports`.
 Taking it back from Studio reaches this window's sessions at once, and
 another window's within two seconds, before its next command starts.
 
@@ -249,8 +251,8 @@ default `["3000-3009", "4200", "4321", "5173-5179", "8000-8009"]` (Next.js,
 Rails and Express, Angular, Astro, Vite, Django and `python3 -m
 http.server`), chosen to leave out databases, caches and consoles (5432,
 3306, 6379, 27017, 8080, 8090, 8888) and macOS's own AirPlay ports (5000,
-7000). Each entry is a port or a range above 1024, at most 512 in all; a
-workspace file cannot set it. A UDP bind, or any other port, is refused,
+7000). Each entry is a port or a range above 1024, at most 512 in all. A
+UDP bind, or any other port, is refused,
 and so are Abhed's own reserved ports (47600-47855, or
 `ABHED_LOOPBACK_PORTS`) and a listen port one of your programs already
 listens on (another user's ports the kernel itself keeps). Commands that
@@ -259,12 +261,21 @@ listen still connect to nothing on loopback but the egress proxy.
 A command can take a listen port before one of your programs starts on it.
 Your program then still starts (Go, Node and Python servers bind every
 address with `SO_REUSEADDR`), but connections to `127.0.0.1` would reach the
-command. Abhed reads the Mac's listeners every two seconds and ends a
-sandboxed command's listener on a port where one of your programs now
-listens too, then tells you and records it (`sandbox.listener_ended`); in
-those two seconds the command can still take what is sent there. A program
-of yours that binds `127.0.0.1` itself instead fails to start, as the port
-is taken. Keep your own servers off the listen ports, or narrow them.
+command. Abhed reads the Mac's listeners every two seconds. When one of
+your programs now listens on a port a command holds, it ends every process
+of that session's sandbox, its terminals and the agent's running commands
+among them, so nothing there can listen on the port again (a new command
+is not given a port your program holds), and tells you and records it in
+that session alone (`sandbox.listener_ended`). Until then, up to two
+seconds, the command can still take what is sent there. Abhed ends only a
+process it can prove is one of that sandbox's: each such sandbox's profile
+carries a mark of its own, which the system's sandbox check confirms for
+the running process, whatever program it runs; a process confined by any
+other profile, Apple's or another tool's, is never touched. If the Mac's
+listeners can no longer be read, Studio says so, and commands that already
+listen keep their ports. A program of yours that binds `127.0.0.1` itself
+instead fails to start, as the port is taken. Keep your own servers off
+the listen ports, or narrow them.
 
 The sandbox cannot keep a command, the agent's included, from binding
 every address of a listen port, `0.0.0.0` too. In tests connections to the

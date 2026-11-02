@@ -312,9 +312,12 @@ All notable changes to Abhed are recorded here. The format follows
   `sandbox.listen_ports` (by default 3000-3009, 4200, 4321, 5173-5179 and
   8000-8009, which leave out database, cache and console ports), less
   Abhed's reserved ports and any port one of your programs listens on. A
-  sandboxed listener on a port where one of your programs starts listening
-  too is ended within two seconds, and you are told
-  (`_abhed/sandbox/listener_ended`, `sandbox.listener_ended`). A server
+  sandboxed command on a port where one of your programs starts listening
+  too has its whole session sandbox ended within two seconds, and that
+  session alone is told (`_abhed/sandbox/listener_ended`,
+  `sandbox.listener_ended`); only a process the sandbox's own profile mark
+  proves is Abhed's is ever ended. Both settings are an operator's: a
+  workspace file, trusted or not, can only make `listen` stricter. A server
   refused its port in Studio's terminal brings the offer
   (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio
   then offers the address the server prints (`_abhed/terminal/serving`),
@@ -1095,9 +1098,9 @@ All notable changes to Abhed are recorded here. The format follows
   the wildcard and loopback addresses for its whole life, and only those
   are opened to it; the program may listen on those five on any of the
   Mac's addresses, and on no other port unless the session's commands may
-  listen (`sandbox.listen`): then, as any command, on any port but the
-  range and the Mac's busy ones, where the network reaches, so a dev server
-  can be debugged with listening on (else use the container tier). Go may
+  listen (`sandbox.listen`): then, as any command, TCP on the free listen
+  ports (`sandbox.listen_ports`), on any of the Mac's addresses, so a dev
+  server can be debugged with listening on (else use the container tier). Go may
   reach each port the system hands out to listeners (49152 to 65535) but
   the range, one rule each, older Abhed releases' proxies on the Mac
   included, and a Go program being debugged can listen where the network

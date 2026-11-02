@@ -492,6 +492,7 @@ func (s *Process) EndSession(id string) error {
 // and the sandbox's own caches. Later commands are refused.
 func (s *Process) Close() error {
 	unwatchListeners(s)
+	s.dropListenMark()
 	ss := &s.egress
 	ss.mu.Lock()
 	ss.closed = true

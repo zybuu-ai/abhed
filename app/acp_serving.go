@@ -33,6 +33,16 @@ type servingWatch struct {
 	sent    map[string]bool
 	refused bool
 	venv    bool
+	// typed is set once the person typed abhed_venv: only then does the
+	// line it prints count, so a program cannot make the header claim it.
+	typed bool
+}
+
+// typedVenv notes the person typed abhed_venv at the shell.
+func (w *servingWatch) typedVenv() {
+	w.mu.Lock()
+	w.typed = true
+	w.mu.Unlock()
 }
 
 // servingURL is a loopback address a server prints, such as Vite's
@@ -56,6 +66,9 @@ var listenRefused = regexp.MustCompile(`(?i)\blisten (EPERM|EACCES)\b|\bbind: (o
 // listenOffer says whether the person can let commands listen here, and
 // why not.
 func listenOffer(parts embedded.Parts, tier string) (bool, string) {
+	if ok, why := sandbox.ListenSupported(); !ok {
+		return false, why
+	}
 	switch {
 	case runtime.GOOS != "darwin" || tier != "process":
 		return false, "only the macOS process tier lets a server in the sandbox be reached from the host"
@@ -76,7 +89,7 @@ func (c *acpConn) watchServing(t *acpTerminal, chunk []byte) {
 	if len(text) > 2048 {
 		text = text[len(text)-2048:]
 	}
-	inUse := !w.venv && strings.Contains(text, venvInUseMark)
+	inUse := w.typed && !w.venv && strings.Contains(text, venvInUseMark)
 	if inUse {
 		w.venv = true
 		c.notification("_abhed/terminal/venv", map[string]any{"sessionId": t.session.id, "terminalId": t.id, "inUse": true})
@@ -283,7 +296,8 @@ func (s *acpSession) loadListen(c *acpConn) {
 
 // watchListening gives the session's sandbox the agreement to look up again,
 // as another process may take it back, and tells the person, and the
-// record, of a listener ended because a program of theirs took its port.
+// record, when its commands were ended because a program of theirs took a
+// port one of them held, or when that can no longer be seen.
 func (s *acpSession) watchListening(c *acpConn) {
 	if s.parts.Set == nil || s.parts.Set.ListenWatch == nil || s.parts.Session == nil {
 		return
@@ -303,12 +317,17 @@ func (s *acpSession) watchListening(c *acpConn) {
 			return kept
 		}
 	}
-	s.parts.Set.ListenWatch(still, func(port, pid int) {
-		msg := fmt.Sprintf("a program of yours started listening on port %d, which a sandboxed command held; the command's listener (process %d) was ended, so the connections go to your program.", port, pid)
+	s.parts.Set.ListenWatch(still, func(e sandbox.ListenerEnded) {
+		msg := fmt.Sprintf("a program of yours started listening on port %d, which a command in this session's sandbox held; that sandbox's commands (%d processes) were ended, so the connections go to your program.", e.Port, e.Ended)
 		warnf("%s", msg)
-		if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxListenerEnded, agent.ActorSystem, agent.Trusted, agent.SandboxListenerEnded{Port: port, PID: pid}); err != nil {
+		if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxListenerEnded, agent.ActorSystem, agent.Trusted,
+			agent.SandboxListenerEnded{Port: e.Port, PID: e.PID, Ended: e.Ended}); err != nil {
 			warnf("the record did not take %s: %v", agent.EvSandboxListenerEnded, err)
 		}
-		c.notification("_abhed/sandbox/listener_ended", map[string]any{"sessionId": s.id, "port": port, "message": msg})
+		c.notification("_abhed/sandbox/listener_ended", map[string]any{"sessionId": s.id, "port": e.Port, "message": msg})
+	}, func(why string) {
+		msg := "Abhed can no longer see a command taking a port one of your programs listens on: " + why + ". Commands that already listen keep their ports."
+		warnf("%s", msg)
+		c.notification("_abhed/sandbox/listen_watch_lost", map[string]any{"sessionId": s.id, "message": msg})
 	})
 }

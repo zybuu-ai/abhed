@@ -1553,14 +1553,15 @@ type SandboxConfig struct {
 	// loopback and accept there, so a dev server opens in the person's
 	// browser: "ask" (the default) once the person agrees for the
 	// workspace, "allow" always, "off" never. TCP only, on ListenPorts
-	// alone, never on Abhed's reserved ports or one the Mac listens on. A
-	// workspace file may only make it stricter.
+	// alone, never on Abhed's reserved ports or one the Mac listens on. An
+	// operator's setting: a workspace file, trusted or not, may only make it
+	// stricter.
 	Listen string `json:"listen,omitempty"`
 	// ListenPorts are the ports a command may listen on where listening is
 	// on: "N" or "N-M", above 1024, at most 512 in all. Empty is
 	// DefaultListenPorts, common dev-server ports that avoid databases,
 	// caches and consoles (5432, 3306, 6379, 27017, 5000, 8080, 8090, 8888).
-	// Not from a workspace file.
+	// An operator's setting: never from a workspace file, trusted or not.
 	ListenPorts []string `json:"listen_ports,omitempty"`
 	// MaxMemoryMB applies on every tier but none and the macOS process tier;
 	// MaxProcs on every tier but none.

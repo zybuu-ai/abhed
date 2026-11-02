@@ -280,6 +280,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
 		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
+		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
 		network := cfg.Network.clone()
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
@@ -294,6 +295,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 			func() { cfg.Network = network })
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
+		keepListen(cfg, path, data, before, prior, listen, listenPorts)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -324,6 +326,18 @@ func keepHA(cfg *Config, path string, data []byte, ha HAConfig, before []string,
 func keepLanguageServers(cfg *Config, path string, data []byte, servers map[string][]string, before []string, prior map[string]origin) {
 	keepOperatorOnly(cfg, path, data, before, prior, "sandbox.language_servers", "a workspace never names a language server",
 		func() { cfg.Sandbox.LanguageServers = servers })
+}
+
+// keepListen keeps sandbox.listen and sandbox.listen_ports the operator's,
+// trusted workspace or not: a repository never turns listening on or names
+// the ports, and may only make sandbox.listen stricter.
+func keepListen(cfg *Config, path string, data []byte, before []string, prior map[string]origin, listen string, ports []string) {
+	keepOperatorOnly(cfg, path, data, before, prior, "sandbox.listen_ports", "a workspace never names the ports commands may listen on",
+		func() { cfg.Sandbox.ListenPorts = ports })
+	if ws := cfg.Sandbox.Listen; listenRank[ws] <= listenRank[listen] {
+		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.listen", "a workspace may only make sandbox.listen stricter",
+			func() { cfg.Sandbox.Listen = listen })
+	}
 }
 
 // keepOperatorOnly undoes what a trusted workspace's file set under section,
@@ -714,7 +728,7 @@ var workspaceRules = map[string]fieldRule{
 	"sandbox.toolchains_preapproved": {nil, "an install that needs no ask"},
 	"sandbox.toolchains_registries":  {onlyRegistriesOff, "only off"},
 	"sandbox.listen":                 {stricterListen, "only stricter: allow, then ask, then off"},
-	"sandbox.listen_ports":           {nil, "names the ports commands may listen on"},
+	"sandbox.listen_ports":           {nil, "names the ports commands may listen on (an operator's setting: not from a workspace, trusted or not)"},
 	"sandbox.protect_git":            {nil, "turned off, commands can plant a hook or fsmonitor your next git command runs"},
 	"sandbox.language_servers":       {nil, "a language server is a process"},
 	"sandbox.image":                  {nil, "chooses the image commands run in"},
@@ -937,11 +951,13 @@ func onlyRegistriesOff(dst, ws *Config) bool {
 	return true
 }
 
+// listenRank orders sandbox.listen from loosest to strictest.
+var listenRank = map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}
+
 // stricterListen applies a workspace's sandbox.listen only when it is
 // stricter: allow, then ask, then off.
 func stricterListen(dst, ws *Config) bool {
-	rank := map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}
-	if rank[ws.Sandbox.Listen] <= rank[dst.Sandbox.Listen] {
+	if listenRank[ws.Sandbox.Listen] <= listenRank[dst.Sandbox.Listen] {
 		return false
 	}
 	dst.Sandbox.Listen = ws.Sandbox.Listen
