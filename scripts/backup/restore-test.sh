@@ -108,7 +108,10 @@ check() {
     ABHED_RESTORE_FILE="$WORK/fingerprint.json" go test ./store/ -run '^TestRestoreCheck$' -count=1 -v) \
     > "$WORK/$name-check.log" 2>&1 || { cat "$WORK/$name-check.log"; return 1; }
   grep -q -- '--- PASS: TestRestoreCheck' "$WORK/$name-check.log"
-  echo "  shift after migrate: $(sql "$name" "$db" -At -c 'SELECT shift FROM commit_shift')"
+  local shifted
+  shifted="$(sql "$name" "$db" -At -c 'SELECT shift FROM public.commit_shift')"
+  [ -n "$shifted" ] || { echo "could not read commit_shift on $P-$name" >&2; return 1; }
+  echo "  shift after migrate: $shifted"
   grep -c '^ok' "$WORK/$name-verify.log" | sed 's/^/  sessions verified: /'
   grep '^ok' "$WORK/$name-audit.log" | sed 's/^/  /'
   results+=("$name: PASS")

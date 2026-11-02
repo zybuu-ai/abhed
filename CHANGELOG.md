@@ -137,15 +137,22 @@ All notable changes to Abhed are recorded here. The format follows
   sealed payloads unreadable for good (`abhed_session_keys_guard`); a
   `pg_class` naming it the sessions table's owner let it give a session to
   another owner, recorded as legitimate, and undo a deletion
-  (`abhed_sessions_guard`); a `sessions` table got an event into a deleted
-  session (`abhed_events_chain`); and a `sandbox_audit` table chose the next
-  audit row's chain link (`abhed_chain_insert`; `abhed record audit` showed
+  (`abhed_sessions_guard`); and an `events` or `sandbox_audit` table chose
+  the next row's chain position and link (`abhed_chain_insert`, which chained
+  both tables in 1.2.8; `abhed record verify` and `abhed record audit` show
   the fork). Every function in the schema now names its tables with their
   schema and sets `search_path = pg_catalog, public, pg_temp`, as does the
   accounts table's trigger. Someone without the runtime role's credentials
   could not do any of this. Affects 1.2.8 (schema versions 8 to 10). The
   fix is in schema version 17: run `abhed migrate` as the owner before
   starting this release's servers, which refuse an older schema.
+- Postgres before 15 lets every role create objects in schema `public`, so
+  a runtime role there could define a function or operator that a trigger
+  resolved before the built-in one. `abhed migrate` now revokes `CREATE` on
+  `public` from `PUBLIC` where its role may (as the schema's owner), and
+  refuses, saying what to run, while the runtime role can still create
+  there; a runtime server that can refuses to start. Postgres 15 and later
+  grant no such right, so nothing changes there.
 - A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
   still deciding on it went unscreened: it was recorded as sent and
   reached the model with the next message. It is now recorded as
