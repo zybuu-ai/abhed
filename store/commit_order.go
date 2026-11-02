@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
@@ -71,7 +74,7 @@ func (p *Postgres) ScanCommitted(ctx context.Context, pos CommitPos, limit int, 
 	// The bare column, not a COALESCE of it, so under row security the bound
 	// is an index condition (events_commit_tx_idx) rather than a filter over
 	// every row of the tenant.
-	_, err := p.scanCommitted(ctx, `commit_tx IS NOT NULL AND commit_tx < abhed_commit_horizon()
+	_, err := p.scanCommitted(ctx, `commit_tx IS NOT NULL AND commit_tx < public.abhed_commit_horizon()
 		AND commit_tx >= $1::text::xid8 AND (commit_tx, created_at, session_id, seq) > ($1::text::xid8, $2, $3, $4)
 		ORDER BY commit_tx, created_at, session_id, seq LIMIT $5`,
 		[]any{strconv.FormatUint(pos.Tx, 10), pos.At, pos.Session, pos.Seq, limit}, fn)
@@ -130,4 +133,31 @@ func PostgresOf(s any) (*Postgres, bool) {
 		return pg, pg != nil
 	}
 	return nil, false
+}
+
+// errCommitOrderAhead is a restored record whose commit order is ahead of
+// this cluster: abhed migrate has not run since the restore.
+var errCommitOrderAhead = errors.New("the record's commit order is ahead of this database cluster, as after a " +
+	"restore from another cluster: new events would sort before ones already exported. " +
+	"Run `abhed migrate` as the owner before starting (see docs/guide/02-configuration.md)")
+
+// checkCommitOrder refuses a database where some event's commit_tx is at or
+// past where the next transaction would sort: a restore that skipped abhed
+// migrate. It only reads, and assigns no transaction id; row security holds
+// it to the server's tenant.
+func checkCommitOrder(ctx context.Context, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) error {
+	var ahead bool
+	err := pool.QueryRow(ctx, `
+		SELECT COALESCE(max(commit_tx)::text::numeric >=
+		       pg_snapshot_xmax(pg_current_snapshot())::text::numeric + (SELECT shift FROM public.commit_shift), false)
+		  FROM public.events WHERE commit_tx IS NOT NULL`).Scan(&ahead)
+	if err != nil {
+		return fmt.Errorf("check the record's commit order: %w", err)
+	}
+	if ahead {
+		return errCommitOrderAhead
+	}
+	return nil
 }

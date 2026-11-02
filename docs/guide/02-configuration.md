@@ -1180,31 +1180,41 @@ control that is silently off is worse than one that is visibly missing.
 ### Backing up and restoring
 
 `scripts/backup/abhed-backup.sh` writes a logical dump of the database with
-`pg_dump`, the roles without their passwords, and a tarball of the state
-folders you name (the server's `~/.abhed`, `/etc/abhed`). Dump as a role that
-reads every tenant's rows past row security, not as the runtime role:
+`pg_dump` and a tarball of the state folders you name (the server's
+`~/.abhed`, `/etc/abhed`). Dump as a role that reads every tenant's rows past
+row security, not as the runtime role:
 
 ```sql
 CREATE ROLE abhed_backup LOGIN PASSWORD '…' NOSUPERUSER BYPASSRLS;
 GRANT pg_read_all_data TO abhed_backup;
 ```
 
-Use client tools of the server's major version. `abhed-backup.service` and
-`abhed-backup.timer` beside it are an example schedule.
+Give the connection string without its password and put the password in a
+`PGPASSFILE` (or `~/.pgpass`) or `PGPASSWORD`: the scripts refuse a
+connection string that carries one, since the database clients would show it
+to every local user in the process list. Use client tools of the server's
+major version. `abhed-backup.service` and `abhed-backup.timer` beside the
+script are an example schedule.
 
 `scripts/backup/abhed-restore.sh` restores a dump, as a superuser, into an
-empty database, in one transaction that stops at the first error. A full
-dump creates the record's triggers after its rows are loaded, so every
-chain position, hash and `commit_tx` is kept as it was. Never restore with
-`--data-only` into a database that already has the schema: the record's
-triggers then run on every row, which they are not written to do (tried
-with `pg_restore --data-only`, the restore stops at the first event). Then, before any server starts, run `abhed migrate` as the owner
-and `abhed record verify` and `abhed record audit` (the script runs all
-three when `ABHED_BIN`, `ABHED_MIGRATE_DATABASE_URL` and
-`ABHED_DATABASE_URL` are set). Restored into a cluster whose transaction
-counter is behind the one the dump came from, `abhed migrate` raises
-`commit_shift` so the OCSF file's cursor and an edition's SIEM delivery go
-on without skipping new events.
+empty database, in one transaction that stops at the first error, and
+refuses a database that already has tables. `ABHED_RESTORE_CREATE_ROLES`
+names the owner and runtime roles to make if they are missing, as plain
+login roles without a password; it changes no role that exists and makes no
+other. A full dump creates the record's triggers after its rows are loaded,
+so every chain position, hash and `commit_tx` is kept as it was. Never
+restore with `--data-only` into a database that already has the schema: the
+record's triggers then run on every row, and the restore stops at the first
+event.
+
+Then, before any server starts, run `abhed migrate` as the owner, and `abhed
+record verify` and `abhed record audit`. The script runs all three when
+`ABHED_BIN`, `ABHED_MIGRATE_DATABASE_URL` and `ABHED_DATABASE_URL` are set.
+Restored into a cluster whose transaction counter is behind the one the dump
+came from, `abhed migrate` raises `commit_shift` so the OCSF file's cursor
+and an edition's SIEM delivery go on without skipping new events. A runtime
+server started on such a database before the migrate refuses, naming
+`abhed migrate`.
 
 A physical copy (`pg_basebackup`, or WAL archiving) keeps transaction ids
 as they were and needs none of this beyond the two checks. With
@@ -1214,10 +1224,11 @@ showing the restore.
 
 `scripts/backup/restore-test.sh` checks all three ways (a logical restore
 into the same cluster, into a fresh one whose counter is behind, and a
-physical copy) in throwaway containers. The OCSF file's cursor is in the
-database and goes back with it; lines the file already holds for events
-after the backup point stay in the file, though those events are not in the
-restored database.
+physical copy) in throwaway containers, with the restore script running the
+migrate and both checks and restoring a state tarball. The OCSF file's
+cursor is in the database and goes back with it; lines the file already
+holds for events after the backup point stay in the file, though those
+events are not in the restored database.
 
 ## Stopping the server
 

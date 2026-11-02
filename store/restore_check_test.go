@@ -122,7 +122,7 @@ func TestRestoreSeed(t *testing.T) {
 	}
 	// Interleaved, so the table's order is not any one session's order.
 	for i := int64(1); i <= 6; i++ {
-		for _, id := range append(ids, sub) {
+		for _, id := range append(append([]string{}, ids...), sub) {
 			if err := p.Append(ev(id, i, agent.EvAgentMessage, agent.Trusted, map[string]any{"n": i, "s": id})); err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,8 @@ func TestRestoreSeed(t *testing.T) {
 	}
 	cursor, scanned := scanAll(t, p, CommitPos{})
 	fp := readFingerprint(t, p)
-	fp.Sessions, fp.Deleted, fp.Live = append(ids, sub), ids[2], ids[1]
+	fp.Sessions = append(append([]string{}, ids...), sub)
+	fp.Deleted, fp.Live = ids[2], ids[1]
 	fp.Cursor, fp.Scanned = cursor.String(), len(scanned)
 	if len(fp.Events) != 24 || len(fp.Audit) < 5 || fp.Scanned != 24 {
 		t.Fatalf("seeded %d events, %d audit rows, scanned %d", len(fp.Events), len(fp.Audit), fp.Scanned)

@@ -8,8 +8,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# Holds ABHED_BACKUP_DSN (and PGPASSWORD, or use ~/.pgpass), ABHED_BACKUP_STATE
-# and ABHED_BACKUP_DIR; mode 0600, owned by root.
+# Holds ABHED_BACKUP_DSN (with no password in it), PGPASSFILE naming a 0600
+# password file for that role, ABHED_BACKUP_STATE and ABHED_BACKUP_DIR; mode
+# 0600, owned by root.
 EnvironmentFile=/etc/abhed/backup.env
 ExecStart=/opt/abhed/scripts/backup/abhed-backup.sh
 User=abhed-backup
