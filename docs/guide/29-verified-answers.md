@@ -434,9 +434,15 @@ counts (`12 tests`, `replicas: 3`). Then:
     the person typed since the last checked answer, attachments left out:
     when that names folders (`services/orders`), asks about nothing wider
     ("all", "every", "whole", "repo", "project", "full", "complete",
-    "other", "rest", "nothing else", "globally", "CI" and the like), and
-    every known change lies inside those folders, a run over every one of
-    them covers it. A claim that names a scope or another part ("the whole
+    "other", "rest", "nothing else", "globally", "CI", "just", "besides",
+    "including", "dependents", "downstream", "callers", "e2e",
+    "integration", "frontend" and the like), joins to a folder only
+    another named folder or a verb ("services/orders and tell me", not
+    "services/orders and billing"), names a folder in every sentence that
+    asks about tests, a build or lint ("You only ran services/orders. Run
+    the tests." asks about more), and every known change lies inside those
+    folders, a run over every one of them covers it. Data piped to `-p`
+    is an attachment, not the person's words. A claim that names a scope or another part ("the whole
     build", "tests pass in all services", "everything works") keeps the
     whole-workspace rule, and a subagent's task never counts as what the
     person asked. A cached run (`ok … (cached)`) counts like any other;
