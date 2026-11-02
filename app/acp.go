@@ -339,6 +339,8 @@ type acpConn struct {
 	base    string // the workspace given on the command line, when cwd is absent
 	// trust is -trust-workspace, the default for every session's cwd.
 	trust config.TrustChoice
+	// noNetwork is a network configuration that would not go in force; no org fetch goes without it.
+	noNetwork bool
 	// ctx ends every agent and prompt on a stop signal, and busy holds the
 	// exit that follows until a prompt has ended; nil for neither.
 	ctx  context.Context
@@ -431,7 +433,11 @@ func acpCmd(workspace string, build acpBuild, trust config.TrustChoice) int {
 	defer stopper.stop()
 	c := &acpConn{out: os.Stdout, version: build.Version, build: build, base: workspace, trust: trust, ctx: stopper.ctx, busy: stopper.busy,
 		sessions: map[string]*acpSession{}, pending: map[int64]chan rpcMessage{}}
-	orgPolicyAtStart(stopper.ctx, os.Stderr)
+	// The proxy first, so the org policy fetch takes it; without it there is no fetch.
+	c.noNetwork = !profileNetwork(os.Stderr)
+	if !c.noNetwork {
+		orgPolicyAtStart(stopper.ctx, os.Stderr)
+	}
 	if mc, err := config.MachineOrgPolicy(); err == nil {
 		keepOrgPolicyFresh(stopper.ctx, mc.Refresh(), os.Stderr)
 	}
@@ -948,7 +954,9 @@ func metaOf(res map[string]any) map[string]any {
 // openSession builds a session's agent, in the record when the connection
 // keeps one, and adds it to the connection.
 func (c *acpConn) openSession(o openOptions) (*acpSession, *rpcError) {
-	orgPolicyAtStart(c.ctx, os.Stderr)
+	if !c.noNetwork {
+		orgPolicyAtStart(c.ctx, os.Stderr)
+	}
 	s := &acpSession{id: o.id, cwd: o.cwd, trust: o.trust, always: map[string]string{}}
 	if s.id == "" {
 		s.id = "s-" + acpID()

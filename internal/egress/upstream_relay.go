@@ -18,11 +18,12 @@ import (
 
 // UpstreamEnv is the environment a program Abhed starts for its own
 // downloads (a Go module build, say) needs to go out through the upstream
-// proxy in force, and a function that ends it; nil and a no-op with none.
-// The program is given a loopback relay with a one-time token, never the
-// proxy's credentials, which the relay adds itself.
-func UpstreamEnv() (env []string, stop func(), err error) {
-	proxy, np, stop, err := UpstreamRelay()
+// proxy in force to hosts, and a function that ends it; nil and a no-op with
+// none. The program is given a loopback relay with a per-run token, never the
+// proxy's credentials, which the relay adds itself; the relay reaches hosts
+// alone.
+func UpstreamEnv(hosts []string) (env []string, stop func(), err error) {
+	proxy, np, stop, err := UpstreamRelay(hosts)
 	if err != nil || proxy == "" {
 		return nil, stop, err
 	}
@@ -30,16 +31,17 @@ func UpstreamEnv() (env []string, stop func(), err error) {
 		"NO_PROXY=" + np, "no_proxy=" + np}, stop, nil
 }
 
-// UpstreamRelay starts a loopback relay to the upstream proxy in force and
-// returns its URL, with the one-time token as its user, the no_proxy list
-// for the program's own settings, and the function that ends it; "" and a
-// no-op with no upstream proxy.
-func UpstreamRelay() (proxy, noProxy string, stop func(), err error) {
+// UpstreamRelay starts a loopback relay to the upstream proxy in force, for
+// hosts alone (the ones the download needs), and returns its URL with a
+// per-run token as its user, the no_proxy list for the program's own
+// settings, and the function that ends it; "" and a no-op with no upstream
+// proxy. Any other target is refused before the proxy is asked.
+func UpstreamRelay(hosts []string) (proxy, noProxy string, stop func(), err error) {
 	u := CurrentUpstream()
 	if u == nil {
 		return "", "", func() {}, nil
 	}
-	r, err := startRelay(u)
+	r, err := startRelay(u, hosts)
 	if err != nil {
 		return "", "", func() {}, err
 	}
@@ -51,6 +53,7 @@ func UpstreamRelay() (proxy, noProxy string, stop func(), err error) {
 // holder of its token alone.
 type relay struct {
 	u     *Upstream
+	hosts map[string]bool // the only hosts it reaches
 	ln    net.Listener
 	token string
 	want  string // the Proxy-Authorization its clients send
@@ -62,7 +65,7 @@ type relay struct {
 	closed bool
 }
 
-func startRelay(u *Upstream) (*relay, error) {
+func startRelay(u *Upstream, hosts []string) (*relay, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -74,7 +77,12 @@ func startRelay(u *Upstream) (*relay, error) {
 	}
 	tok := hex.EncodeToString(b)
 	r := &relay{u: u, ln: ln, token: tok, want: "Basic " + base64.StdEncoding.EncodeToString([]byte("abhed:"+tok)),
-		conns: map[net.Conn]bool{}}
+		conns: map[net.Conn]bool{}, hosts: map[string]bool{}}
+	for _, h := range hosts {
+		if h = strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), ".")); h != "" {
+			r.hosts[h] = true
+		}
+	}
 	r.wg.Add(1)
 	go r.serve()
 	return r, nil
@@ -143,6 +151,18 @@ func (r *relay) handle(c net.Conn) {
 	if subtle.ConstantTimeCompare([]byte(req.Header.Get("Proxy-Authorization")), []byte(r.want)) != 1 {
 		writeStatus(c, http.StatusProxyAuthRequired, "abhed relay: not this relay's client\n",
 			http.Header{"Proxy-Authenticate": {`Basic realm="abhed"`}})
+		return
+	}
+	target := req.Host
+	if req.Method != http.MethodConnect && req.URL != nil {
+		target = req.URL.Host
+	}
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		host = target
+	}
+	if !r.hosts[strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))] {
+		writeStatus(c, http.StatusForbidden, "abhed relay: "+host+" is not a host this download needs\n", nil)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -1811,10 +1811,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		warnUntrusted(w, cfg.Workspace)
 	}
 	managedNetwork(&cfg)
-	if err := cfg.Validate(); err != nil {
-		return cfg, err
-	}
-	return cfg, applyNetwork(cfg)
+	return cfg, cfg.Validate()
 }
 
 // mergeFile merges the workspace's or the home directory's config. One with a

@@ -344,6 +344,9 @@ type Transport struct {
 	// Resolve is the client's own resolver, which Check's addresses come
 	// from through an upstream proxy outside the allowlist; nil is the system's.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// Anchored reports a host the client's own configuration names exactly
+	// (web_fetch's allowed_hosts), which resolve_via_proxy may pass unresolved.
+	Anchored func(host string) bool
 	// Guard is the guard of the client's tool set, Unguarded outside the
 	// allowlist; nil uses the request's, then the one installed.
 	Guard *Guard
@@ -396,7 +399,12 @@ func (t *Transport) precheck(req *http.Request) error {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", h)
 		}
 	}
-	for _, a := range upstreamPrecheck(req.Context(), resolve, host) {
+	anchored := t.Anchored != nil && t.Anchored(host)
+	addrs, _, err := CurrentUpstream().precheck(req.Context(), resolve, host, anchored)
+	if err != nil {
+		return err
+	}
+	for _, a := range addrs {
 		if err := t.Check(host, netip.AddrPortFrom(a.Unmap(), port)); err != nil {
 			return err
 		}
@@ -701,7 +709,18 @@ func (g *Guard) roundTrip(t *Transport, req *http.Request) (*http.Response, erro
 		// Chained after the decision: the proxy resolves the name, so the
 		// addresses it has here are checked first, where it has any.
 		ov.via, ev.Upstream = up, up.Authority()
-		for _, a := range upstreamPrecheck(req.Context(), g.resolve, host) {
+		anchored := model || v.Exact && v.Decision == Allow || t.Anchored != nil && t.Anchored(host)
+		addrs, byProxy, perr := up.precheck(req.Context(), g.resolve, host, anchored)
+		if perr != nil {
+			closeBody(req)
+			ev.Decision, ev.Rule, ev.Reason = Deny, "dns", perr.Error()
+			g.record(c, ev)
+			return nil, &DeniedError{Host: host, Port: port, Rule: "dns", Reason: perr.Error()}
+		}
+		if byProxy {
+			ev.Resolved = "proxy"
+		}
+		for _, a := range addrs {
 			if err := ov.addrOK(netip.AddrPortFrom(a.Unmap(), port)); err != nil {
 				break
 			}

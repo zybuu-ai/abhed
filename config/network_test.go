@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/pem"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -27,31 +28,49 @@ func testBundle(t *testing.T) string {
 
 func loadSettings(t *testing.T, body string) (Config, error) {
 	t.Helper()
-	t.Cleanup(func() { egress.SetUpstream(nil) })
+	t.Cleanup(egress.ResetUpstreamForTest)
 	return LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(body), SettingsName: "s.json"})
 }
 
-// network.upstream_proxy loads into the process's upstream proxy, with its
-// CA bundle and no_proxy list; a malformed one stops the load, and one with
-// a credential in the URL is refused without echoing it.
+// network.upstream_proxy builds the upstream proxy, with its CA bundle,
+// credentials and no_proxy list; loading puts nothing in force, and
+// ApplyNetwork does, once per process.
 func TestUpstreamProxyConfig(t *testing.T) {
 	bundle := testBundle(t)
 	cfg, err := loadSettings(t, `{"network":{"upstream_proxy":{"url":"http://proxy.corp.test:3128","ca_file":"`+bundle+
-		`","credentials_secret":"CORP_PROXY","no_proxy":[".corp.test","10.0.0.0/8"]}}}`)
+		`","credentials_secret":"CORP_PROXY","no_proxy":[".corp.test","10.0.0.0/8"],"resolve_via_proxy":true}}}`)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if egress.CurrentUpstream() != nil {
+		t.Fatal("loading the configuration changed the process's upstream proxy")
+	}
+	if err := cfg.ApplyNetwork(); err != nil {
 		t.Fatal(err)
 	}
 	up := egress.CurrentUpstream()
 	if up == nil || up.URL.String() != "http://proxy.corp.test:3128" || up.Credentials == nil || up.Roots == nil ||
-		len(up.Bundle) != 1 || !slices.Equal(up.NoProxy, []string{".corp.test", "10.0.0.0/8"}) {
+		len(up.Bundle) != 1 || !slices.Equal(up.NoProxy, []string{".corp.test", "10.0.0.0/8"}) || !up.ResolveViaProxy {
 		t.Fatalf("upstream %+v from %+v", up, cfg.Network.UpstreamProxy)
 	}
 	if _, _, _, err := up.Credentials(); err == nil || !strings.Contains(err.Error(), "CORP_PROXY") {
 		t.Fatalf("a missing secret: %v", err)
 	}
-	// A configuration without one leaves none in force.
-	if _, err := loadSettings(t, `{}`); err != nil || egress.CurrentUpstream() != nil {
-		t.Fatalf("no proxy: %v %v", err, egress.CurrentUpstream())
+	// The same again is accepted; another, or none, in the same process is refused.
+	if err := cfg.ApplyNetwork(); err != nil {
+		t.Fatalf("the same proxy again: %v", err)
+	}
+	other, err := loadSettings(t, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	egress.SetUpstream(up) // loadSettings' cleanup runs at the end, not here
+	if err := other.ApplyNetwork(); !errors.Is(err, egress.ErrUpstreamConflict) || egress.CurrentUpstream() != up {
+		t.Fatalf("a second, different proxy: %v", err)
+	}
+	// Loading the managed configuration alone leaves it as it is.
+	if _, err := LoadManaged(); err != nil || egress.CurrentUpstream() != up {
+		t.Fatalf("LoadManaged changed the upstream: %v", err)
 	}
 
 	for body, want := range map[string]string{
@@ -59,6 +78,7 @@ func TestUpstreamProxyConfig(t *testing.T) {
 		`{"network":{"upstream_proxy":{"url":"socks5://proxy:1080"}}}`:                               "SOCKS",
 		`{"network":{"upstream_proxy":{"url":"http://proxy:3128/proxy.pac"}}}`:                       "PAC",
 		`{"network":{"upstream_proxy":{"url":""}}}`:                                                  "empty",
+		`{"network":{"upstream_proxy":{"url":"http://prøxy.corp:3128"}}}`:                            "ASCII",
 		`{"network":{"upstream_proxy":{"url":"http://proxy:3128","ca_file":"/nonexistent"}}}`:        "ca_file",
 		`{"network":{"upstream_proxy":{"url":"http://proxy:3128","no_proxy":["*"]}}}`:                "may not be *",
 		`{"network":{"upstream_proxy":{"url":"http://proxy:3128","no_proxy":["host:443"]}}}`:         "port",
@@ -78,9 +98,8 @@ func TestUpstreamProxyConfig(t *testing.T) {
 // A workspace never sets the proxy, trusted or not: it would route the
 // model's traffic and trust a CA of its choosing.
 func TestUpstreamProxyNotFromAWorkspace(t *testing.T) {
-	t.Cleanup(func() { egress.SetUpstream(nil) })
 	for _, trust := range []bool{false, true} {
-		_, ws := trustHome(t, `{}`, `{"network":{"upstream_proxy":{"url":"http://attacker.test:8080"}}}`)
+		_, ws := trustHome(t, `{}`, `{"network":{"upstream_proxy":{"url":"http://attacker.test:8080","resolve_via_proxy":true}}}`)
 		o := LoadOptions{Quiet: true}
 		if trust {
 			o.Trust = TrustGranted
@@ -89,38 +108,58 @@ func TestUpstreamProxyNotFromAWorkspace(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Network.UpstreamProxy != nil || egress.CurrentUpstream() != nil {
+		if cfg.Network.UpstreamProxy != nil {
 			t.Fatalf("trusted %v: a workspace set the proxy: %+v", trust, cfg.Network.UpstreamProxy)
 		}
 	}
 }
 
 // The managed file can force the proxy: it wins over the person's, and the
-// person's no_proxy list cannot widen what reaches the network directly.
+// person's no_proxy list and resolve_via_proxy cannot widen it; the person's
+// credentials name stays, as their own account at the proxy.
 func TestUpstreamProxyManaged(t *testing.T) {
-	t.Cleanup(func() { egress.SetUpstream(nil) })
 	withManaged(t, `{"network":{"upstream_proxy":{"url":"http://proxy.corp.test:3128"}}}`)
-	body := []byte(`{"network":{"upstream_proxy":{"url":"http://mine.test:1","no_proxy":["*.example.com"],"credentials_secret":"MINE"}}}`)
+	body := []byte(`{"network":{"upstream_proxy":{"url":"http://mine.test:1","no_proxy":["*.example.com"],"credentials_secret":"MINE","resolve_via_proxy":true}}}`)
 	cfg, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: body, SettingsName: "s.json"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := cfg.Network.UpstreamProxy
-	if p == nil || p.URL != "http://proxy.corp.test:3128" || len(p.NoProxy) != 0 || p.CredentialsSecret != "MINE" {
+	if p == nil || p.URL != "http://proxy.corp.test:3128" || len(p.NoProxy) != 0 || p.CredentialsSecret != "MINE" || p.ResolveViaProxy {
 		t.Fatalf("managed proxy: %+v", p)
 	}
-	if up := egress.CurrentUpstream(); up == nil || up.Authority() != "proxy.corp.test:3128" || len(up.NoProxy) != 0 {
-		t.Fatalf("in force: %+v", up)
-	}
-	withManaged(t, `{"network":{"upstream_proxy":{"url":"http://proxy.corp.test:3128","no_proxy":[".corp.test"]}}}`)
+	withManaged(t, `{"network":{"upstream_proxy":{"url":"http://proxy.corp.test:3128","no_proxy":[".corp.test"],"resolve_via_proxy":true}}}`)
 	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: body, SettingsName: "s.json"})
-	if err != nil || !slices.Equal(cfg.Network.UpstreamProxy.NoProxy, []string{".corp.test"}) {
-		t.Fatalf("managed no_proxy: %+v %v", cfg.Network.UpstreamProxy, err)
+	if err != nil || !slices.Equal(cfg.Network.UpstreamProxy.NoProxy, []string{".corp.test"}) || !cfg.Network.UpstreamProxy.ResolveViaProxy {
+		t.Fatalf("managed no_proxy and resolve_via_proxy: %+v %v", cfg.Network.UpstreamProxy, err)
 	}
-	// A program that reads the managed file alone gets it too.
-	egress.SetUpstream(nil)
-	if _, err := LoadManaged(); err != nil || egress.CurrentUpstream() == nil {
-		t.Fatalf("LoadManaged: %v %v", err, egress.CurrentUpstream())
+	// The managed file alone gives it too, credentials and all it names.
+	m, err := LoadManaged()
+	if err != nil || m.Network.UpstreamProxy == nil || m.Network.UpstreamProxy.URL != "http://proxy.corp.test:3128" {
+		t.Fatalf("LoadManaged: %+v %v", m.Network.UpstreamProxy, err)
+	}
+}
+
+// A managed upstream_proxy written as {} is refused (it names no URL), and
+// as null leaves the person's proxy with its no_proxy as it is.
+func TestUpstreamProxyManagedEmptyAndNull(t *testing.T) {
+	body := []byte(`{"network":{"upstream_proxy":{"url":"http://mine.test:1","no_proxy":[".mine.test"]}}}`)
+	withManaged(t, `{"network":{"upstream_proxy":{}}}`)
+	if _, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: body, SettingsName: "s.json"}); err != nil {
+		// The person's URL stays under an empty managed object, so this loads.
+		t.Fatalf("managed {}: %v", err)
+	}
+	withManaged(t, `{"network":{"upstream_proxy":{}}}`)
+	if _, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true}); err == nil {
+		t.Fatal("a managed {} with no URL anywhere loaded")
+	}
+	withManaged(t, `{"network":{"upstream_proxy":null}}`)
+	cfg, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: body, SettingsName: "s.json"})
+	if err != nil {
+		t.Fatalf("managed null: %v", err)
+	}
+	if cfg.Network.UpstreamProxy != nil {
+		t.Fatalf("a managed null left a proxy: %+v", cfg.Network.UpstreamProxy)
 	}
 }
 

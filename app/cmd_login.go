@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -82,7 +83,27 @@ func profileName(raw string) string {
 	return n
 }
 
+// profileNetwork puts the person's and the managed configuration's upstream
+// proxy in force for a command that calls a server, as a session would.
+func profileNetwork(errOut io.Writer) bool {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		var cfg config.Config
+		if cfg, err = config.LoadWith(home, config.LoadOptions{Quiet: true}); err == nil {
+			err = cfg.ApplyNetwork()
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "abhed: the network configuration: %v\n", err)
+		return false
+	}
+	return true
+}
+
 func loginCmd(workspace string, args []string, out, errOut io.Writer) int {
+	if !profileNetwork(errOut) {
+		return 1
+	}
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	name := fs.String("profile", "", "profile name (default: the server's host and port)")
@@ -258,6 +279,9 @@ func saveProfile(path string, reg *profiles.File, name string, p *profiles.Profi
 }
 
 func logoutCmd(workspace string, args []string, out, errOut io.Writer) int {
+	if !profileNetwork(errOut) {
+		return 1
+	}
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	name := fs.String("profile", "", "profile to sign out (default: the current one)")
@@ -337,6 +361,9 @@ func retryLogouts(path string, reg *profiles.File, out io.Writer) {
 }
 
 func profileCmd(workspace string, args []string, out, errOut io.Writer) int {
+	if !profileNetwork(errOut) {
+		return 1
+	}
 	usage := func() int {
 		fmt.Fprintln(errOut, "usage: abhed profile list | use NAME | rm NAME")
 		return 2

@@ -234,6 +234,18 @@ func canonicalPort(p string) (string, error) {
 
 // hostAllowed applies the operator's allowlist: "example.com" names that host,
 // "*.example.com" any host under it. An empty list allows every public host.
+// anchored reports a host allowed_hosts names exactly, not by a wildcard:
+// the only names resolve_via_proxy lets web_fetch send to the proxy unresolved.
+func (t *Tool) anchored(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, h := range t.AllowedHosts {
+		if h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), "."); !strings.HasPrefix(h, "*") && h == host {
+			return true
+		}
+	}
+	return false
+}
+
 func hostAllowed(list []string, host string) bool {
 	if len(list) == 0 {
 		return true

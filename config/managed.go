@@ -45,10 +45,7 @@ func LoadManagedWith(o LoadOptions) (Config, error) {
 	if err := cfg.validateAllowLists(); err != nil {
 		return cfg, err
 	}
-	if err := cfg.validateNetwork(); err != nil {
-		return cfg, err
-	}
-	return cfg, applyNetwork(cfg)
+	return cfg, cfg.validateNetwork()
 }
 
 // mergeManaged applies the managed configuration over cfg and records which
