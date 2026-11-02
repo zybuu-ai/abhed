@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/profiles"
 	"github.com/zybuu-ai/abhed/wsconn"
 )
@@ -394,7 +395,7 @@ func (cl *client) dial(ctx context.Context, path, proto string) (*wsconn.Conn, e
 	for {
 		dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		ws, err := wsconn.Dial(dctx, cl.p.URL+path, wsconn.DialOptions{Header: cl.authHeader(),
-			Protocols: []string{proto}, TLSConfig: tc})
+			Protocols: []string{proto}, TLSConfig: tc, NetDial: egress.DialUpstream})
 		cancel()
 		if err == nil {
 			return ws, nil

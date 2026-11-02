@@ -785,3 +785,29 @@ func TestUpstreamTunnelAuthority(t *testing.T) {
 		t.Fatal("the proxy was asked")
 	}
 }
+
+// DialUpstream tunnels to a host the proxy carries and dials loopback, or a
+// no_proxy host, directly.
+func TestDialUpstream(t *testing.T) {
+	_, port, _ := ownServer(t)
+	corp := startCorp(t, "", nil)
+	useUpstream(t, corp, func(u *Upstream) { u.Credentials, u.NoProxy = nil, []string{"direct.test"} })
+	ctx := context.Background()
+	c, err := DialUpstream(ctx, "tcp", fmt.Sprintf("far.test:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	if !corp.saw(fmt.Sprintf("far.test:%d", port)) {
+		t.Fatalf("not tunnelled: %v", corp.requests())
+	}
+	before := len(corp.requests())
+	c, err = DialUpstream(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	if _, err := DialUpstream(ctx, "tcp", fmt.Sprintf("direct.test:%d", port)); err == nil || len(corp.requests()) != before {
+		t.Fatalf("loopback or a no_proxy host went through the proxy: %v %v", err, corp.requests())
+	}
+}

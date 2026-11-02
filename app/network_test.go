@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress/upstreamtest"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/profiles"
 )
 
 const testProxy = "proxy.corp.test:3128"
@@ -77,6 +79,10 @@ func TestNetworkedCommandsPutTheProxyInForce(t *testing.T) {
 			return nil
 		},
 		"mcp list": func(ws string) error { return mcpList(ws, config.TrustRefused, io.Discard) },
+		"sandbox list": func(ws string) error {
+			sandboxCmd(ws, []string{"list"}, strings.NewReader(""), io.Discard, io.Discard)
+			return nil
+		},
 		"profile list": func(ws string) error {
 			profileCmd(ws, []string{"list"}, io.Discard, io.Discard)
 			return nil
@@ -233,5 +239,80 @@ func TestWitnessPostsThroughTheUpstreamProxy(t *testing.T) {
 	w.Close(5 * time.Second)
 	if got.Load() != 1 || !corp.Saw("witness.corp.test") || other.Saw("witness.corp.test") {
 		t.Fatalf("posts %d, configured proxy %v, environment's %v", got.Load(), corp.Saw("witness.corp.test"), other.Saw("witness.corp.test"))
+	}
+}
+
+// A model call that fails at the upstream proxy names the proxy and the
+// host, for the proxy's refusal of a tunnel and for a 502 through it.
+func TestModelFailureThroughTheProxyNamesIt(t *testing.T) {
+	egress.ResetUpstreamForTest()
+	t.Cleanup(egress.ResetUpstreamForTest)
+	corp := upstreamtest.Start(t)
+	corp.Use(t, "", "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	p := config.ProviderConfig{Type: "openai-compatible", BaseURL: fmt.Sprintf("https://llm.corp.test:%d/v1", closed), Model: "m"}
+	// The error Go's own CONNECT gives for the proxy's 502.
+	resp, cerr := (&http.Client{Transport: egress.UpstreamRoundTripper{}, Timeout: 5 * time.Second}).Get(p.BaseURL + "/models")
+	if cerr == nil {
+		_ = resp.Body.Close()
+		t.Fatal("a closed port answered")
+	}
+	for name, e := range map[string]error{
+		"tunnel":   cerr,
+		"refused":  &egress.UpstreamRefused{Proxy: corp.Addr(), Target: "llm.corp.test:443", Status: http.StatusBadGateway},
+		"http 502": &model.StatusError{Status: http.StatusBadGateway, Attempts: 4},
+		"http 504": &model.StatusError{Status: http.StatusGatewayTimeout, Attempts: 4},
+	} {
+		got := friendlyModelError(e, "m", p)
+		if !strings.Contains(got, "upstream proxy "+corp.Addr()) || !strings.Contains(got, "llm.corp.test") {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	// Directly, nothing about a proxy is said.
+	egress.SetUpstream(nil)
+	if got := friendlyModelError(&model.StatusError{Status: http.StatusBadGateway, Attempts: 4}, "m", p); strings.Contains(got, "proxy") {
+		t.Errorf("direct: %s", got)
+	}
+}
+
+// Record shipping and the org policy fetch reach their server through the
+// configured upstream proxy, and a proxy named by HTTP_PROXY sees nothing.
+func TestShippingAndOrgFetchGoThroughTheUpstreamProxy(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.NotFound(w, nil)
+	}))
+	t.Cleanup(srv.Close)
+	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+	server := "http://org.corp.test:" + port
+	corp, other := upstreamtest.Start(t), upstreamtest.Start(t)
+	networkHome(t, `{"upstream_proxy":{"url":"http://`+corp.Addr()+`"}}`)
+	t.Setenv("HTTP_PROXY", "http://"+other.Addr())
+	if !profileNetwork(io.Discard) {
+		t.Fatal("the network configuration did not go in force")
+	}
+	pf := filepath.Join(t.TempDir(), "profiles.json")
+	p := &profiles.Profile{URL: server, Token: "tok", TokenType: "Bearer"}
+	if err := profiles.Save(pf, &profiles.File{Version: 1, Current: "corp", Profiles: map[string]*profiles.Profile{"corp": p}}); err != nil {
+		t.Fatal(err)
+	}
+	ship := shipTarget{url: server, profile: "corp", profilesFile: pf}.doer()
+	if _, _, err := ship(context.Background(), http.MethodPost, "/v1/records", "application/json", []byte("{}")); err != nil {
+		t.Fatalf("ship: %v", err)
+	}
+	if !corp.Saw(server+"/v1/records") || other.Saw("org.corp.test") {
+		t.Fatalf("shipping: configured proxy %v, environment's %v", corp.Saw(server+"/v1/records"), other.Saw("org.corp.test"))
+	}
+	if _, err := orgFetch(context.Background(), pf, "corp", p); !errors.Is(err, errNoOrgPolicy) {
+		t.Fatalf("org fetch: %v", err)
+	}
+	if !corp.Saw(server+orgPolicyPath) || other.Saw("org.corp.test") || hits.Load() != 2 {
+		t.Fatalf("org fetch: configured proxy %v, environment's %v, server %d", corp.Saw(server+orgPolicyPath), other.Saw("org.corp.test"), hits.Load())
 	}
 }
