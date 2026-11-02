@@ -45,7 +45,9 @@ func (g *Gateway) startStdio(life context.Context, cfg ServerConfig) (*StdioTran
 		if err := g.admitPrograms(cfg, programs); err != nil {
 			return nil, err
 		}
-		if filepath.IsAbs(command) && command != real {
+		// Only a digest that pinned the file resolved command itself; any other
+		// command is the configured one, links and all, and real replaces it.
+		if cfg.Digest != "" && filepath.IsAbs(command) && command != real {
 			return nil, fmt.Errorf("%w: its program resolved to %s when judged and %s when checked against its digest", ErrNotAdmitted, real, command)
 		}
 		command, pinned = real, true

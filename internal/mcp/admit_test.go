@@ -76,10 +76,16 @@ func TestGatewayStartsTheProgramItJudged(t *testing.T) {
 		name, command string
 		args          []string
 		digest        string
+		// link names the program by an absolute path through a symlink;
+		// fileDigest pins that program's contents.
+		link, fileDigest bool
 	}{
-		{"plain", "probe-mcp", nil, ""},
+		{name: "plain", command: "probe-mcp"},
 		// A digest that pins an engine's image leaves the engine to be judged by path.
-		{"engine with a pinned image", "docker", []string{"run", image}, "sha256:" + strings.Repeat("a", 64)},
+		{name: "engine with a pinned image", command: "docker", args: []string{"run", image}, digest: "sha256:" + strings.Repeat("a", 64)},
+		// An absolute command through a link (/opt/homebrew/bin/npx) starts, with or without a digest.
+		{name: "absolute link", command: "probe-mcp", link: true},
+		{name: "absolute link with a file digest", command: "probe-mcp", link: true, fileDigest: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			allowed, other, marks := t.TempDir(), t.TempDir(), t.TempDir()
@@ -91,6 +97,21 @@ func TestGatewayStartsTheProgramItJudged(t *testing.T) {
 			}
 			write(allowed, "allowed")
 			write(other, "other")
+			command, digest := c.command, c.digest
+			if c.link {
+				links := t.TempDir() // under /var on macOS, itself a link
+				command = filepath.Join(links, c.command)
+				if err := os.Symlink(filepath.Join(allowed, c.command), command); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.fileDigest {
+				d, err := fileDigest(filepath.Join(allowed, c.command))
+				if err != nil {
+					t.Fatal(err)
+				}
+				digest = d
+			}
 			t.Setenv("PATH", other+string(os.PathListSeparator)+os.Getenv("PATH"))
 			realAllowed, _ := filepath.EvalSymlinks(allowed)
 			var judged []string
@@ -108,8 +129,13 @@ func TestGatewayStartsTheProgramItJudged(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = g.Connect(ctx, []ServerConfig{{Name: "probe", Command: c.command, Args: c.args, Digest: c.digest,
+			errs := g.Connect(ctx, []ServerConfig{{Name: "probe", Command: command, Args: c.args, Digest: digest,
 				Env: []string{"PATH=" + allowed}, Enabled: true}})
+			for _, err := range errs {
+				if errors.Is(err, ErrNotAdmitted) {
+					t.Fatalf("refused: %v", err)
+				}
+			}
 			if _, err := os.Stat(filepath.Join(marks, "other")); err == nil {
 				t.Fatal("the binary on Abhed's own PATH ran in place of the admitted one")
 			}
