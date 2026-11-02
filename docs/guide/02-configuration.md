@@ -265,8 +265,11 @@ program still starts (Go, Node and Python servers bind every address with
 warns you but does not stop the command: it reads the Mac's listeners every
 two seconds, and when more than one program listens on a listen port it
 tells you within a few seconds, in every session that may listen on that
-port, and records it (`sandbox.port_contested`): once while the port stays
-contested, and at most once a minute for a port that comes and goes. A
+port, and records it (`sandbox.port_contested`). It tells again at once
+when more programs listen there than it last told of, or when one of
+yours joins a contest of Abhed's own processes, so a command cannot use
+the warning up in advance; the same contest coming back is told at most
+once a minute. A
 server and the workers it forks share one socket and count as one
 program, as does one program listening on both `127.0.0.1` and `::1`;
 separate sockets bound with `SO_REUSEPORT` count as more than one. It

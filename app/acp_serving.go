@@ -180,8 +180,8 @@ func contestedOrUnread(port int) bool {
 	return n < 0 || n > 1
 }
 
-// heldAtStart reports whether a program other than the sandbox's commands
-// held port when its last listening command started.
+// heldAtStart reports whether a program outside everything this Abhed
+// started held port when the sandbox's last listening command started.
 func (t *acpTerminal) heldAtStart(port int) bool {
 	parts, e := innerOf(t.session)
 	return e != nil || parts.Set == nil || parts.Set.HeldAtStart == nil || parts.Set.HeldAtStart(port)

@@ -1110,9 +1110,12 @@ _abhed/terminal/confirm { terminalId, command, reason } → { confirmed: boolean
   command can bind every address of the port. When more than one program
   listens on a listen port, every session that may listen on it gets
   `_abhed/sandbox/port_contested {sessionId, port, message}`, recorded
-  `sandbox.port_contested {port, listeners}`, within a few seconds, once
+  `sandbox.port_contested {port, listeners}`, within a few seconds: once
   while the port stays contested (a session that starts watching during a
-  contest is told too) and at most once a minute per port. A server and
+  contest, or turns listening on again, is told too), again at once when
+  more programs listen than last told or a listener outside everything
+  Abhed started joins, and for the same contest coming back at most once a
+  minute. A server and
   the workers it forks, sharing one socket, count as one program; Abhed
   cannot prove which listener is a sandbox's and signals
   no process. A new command's profile leaves the port out. If the Mac's

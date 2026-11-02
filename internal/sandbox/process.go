@@ -36,10 +36,9 @@ type Process struct {
 	// lastBusy are the ports the Mac listened on when the last profile that
 	// let commands listen was made: a command could not take those.
 	lastBusy atomic.Pointer[[]int]
-	// toldNow and lastTold are the contested listen ports this sandbox was
-	// told of, while they stay so, and when; guarded by watching.mu.
-	toldNow  map[int]bool
-	lastTold map[int]time.Time
+	// notices are what this sandbox was told of each contested listen
+	// port; guarded by watching.mu.
+	notices map[int]*portNotice
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -700,18 +699,32 @@ func (s *Process) listenable() ([]int, bool) {
 	return busy, ok
 }
 
-// heldByOthers are the busy ports some listener outside Abhed's own process
-// tree holds: a later command's run does not mark the port of a server this
-// sandbox started as another program's.
+// heldByOthers are the busy ports some listener outside everything this
+// Abhed started holds: a later command's run does not mark the port of a
+// server Abhed started as another program's. The parent table is read
+// first and a port is judged Abhed's only on a read of the listeners taken
+// after it, so a pid reused in between reads as foreign.
 func (s *Process) heldByOthers(busy []int) []int {
-	all, ok := readListeners()
+	parents := processParents()
+	cached, ok := readListeners()
 	if !ok {
 		return busy
 	}
-	parents := processParents()
+	var maybeOurs []int
+	for _, p := range busy {
+		if ownTree(cached, p, parents) {
+			maybeOurs = append(maybeOurs, p)
+		}
+	}
+	fresh := cached
+	if len(maybeOurs) > 0 {
+		if fresh, ok = readListenersWithin(0); !ok {
+			return busy
+		}
+	}
 	var out []int
 	for _, p := range busy {
-		if !ownTree(all, p, parents) {
+		if !slices.Contains(maybeOurs, p) || !ownTree(fresh, p, parents) {
 			out = append(out, p)
 		}
 	}
@@ -775,9 +788,9 @@ func SetListenWatch(sb Sandbox, still func() bool, contested func(PortContested)
 	}
 }
 
-// HeldAtStart reports whether port was busy, held by a program other than
-// sb's commands, when sb's last command that may listen started; such a
-// port's server is never a sandboxed one.
+// HeldAtStart reports whether port was busy, held by a program outside
+// everything this Abhed started, when sb's last command that may listen
+// started; such a port's server is never one of Abhed's.
 func HeldAtStart(sb Sandbox, port int) bool {
 	p, ok := sb.(*Process)
 	if !ok {

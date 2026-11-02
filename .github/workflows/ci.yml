@@ -588,7 +588,7 @@ jobs:
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|ContestNotice|ForkedServer|NoListenCodeSignals|SignalCheck|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|ContestNotice|ContestToldAgain|ForkedServer|ListeningReach|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
@@ -596,8 +596,9 @@ jobs:
                    TestProcessSandboxDeniesHomeSecretsThroughALink \
                    TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices \
                    TestSandboxAllowsToolchainTempDir \
-                   TestDevServerListensOnLoopback TestContestedPortIsToldNotStopped TestNoListenCodeSignalsAProcess \
-                   TestContestNoticeReachesLateWatchersAndCoolsDown TestForkedServerIsNotAContest TestSignalCheckCatchesTheBypasses \
+                   TestDevServerListensOnLoopback TestContestedPortIsToldNotStopped TestListeningReachesNoSignal \
+                   TestContestNoticeReachesLateWatchersAndCoolsDown TestForkedServerIsNotAContest TestListeningReachCatchesTheRoutes \
+                   TestContestToldAgainWhenAProgramJoins TestContestToldAgainAfterListeningComesBack \
                    TestDebugLoopbackAndListenCompose; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
