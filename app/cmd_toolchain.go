@@ -78,10 +78,7 @@ func toolchainCmd(workspace string, args []string, trust config.TrustChoice, std
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 2
 	}
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: true})
-	if err == nil {
-		err = cfg.ApplyNetwork()
-	}
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1

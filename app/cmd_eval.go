@@ -38,10 +38,7 @@ var evalAllow = []string{"bash(go *)", "bash(npm *)", "bash(python *)", "bash(ca
 // how a harness change is judged. Per P10 the report carries behavioural flags
 // alongside the score, because identical pass rates hide different behaviour.
 func evalCmd(workspace, corpusDir, jsonPath string, trust config.TrustChoice) int {
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust})
-	if err == nil {
-		err = cfg.ApplyNetwork()
-	}
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1

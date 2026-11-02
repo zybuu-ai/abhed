@@ -70,10 +70,7 @@ func ollamaCmd(workspace string, args []string, trust config.TrustChoice, stdin 
 		fmt.Fprintf(stderr, "abhed: unknown ollama command %q\n%s", verb, ollamaUsage)
 		return 2
 	}
-	cfg, err := config.LoadWith(workspace, config.LoadOptions{Trust: trust, Quiet: true})
-	if err == nil {
-		err = cfg.ApplyNetwork()
-	}
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
 	if err != nil {
 		fmt.Fprintf(stderr, "abhed: %v\n", err)
 		return 1

@@ -558,7 +558,9 @@ relay instead, in `HTTPS_PROXY` for `go install` and git's `http.proxy` for
 a push, with a token made for that run, and the relay adds the
 credentials. The relay reaches only the hosts that download needs (the Go
 module proxy and checksum database, or the push remote's host) and refuses
-any other target before the proxy is asked; it lives only as long as the
+any other target, and any other port (443 for a tunnel and 80 for plain
+HTTP, or the port the endpoint's URL names), before the proxy is asked; it
+lives only as long as the
 program. The token is in that program's environment or configuration for
 its run, where a concurrent command that can read it could reach those
 hosts through the relay. A push to a remote `no_proxy` names goes directly,
@@ -581,6 +583,20 @@ loading a configuration. A process takes one: an SDK agent whose
 configuration names a different upstream proxy (or none) than one already
 built in the same process is refused, rather than either running through
 the other's; run it in a process of its own.
+
+After changing `network.upstream_proxy`, a managed one included, restart
+a running `abhed serve` and the editor's connection. Until then their new
+sessions are refused, and their background work (the record's witness and
+shipping, the org policy refresh) keeps the proxy the process started
+with, or goes without one.
+
+Every subcommand that connects (`abhed record`, `abhed hawkeye`, `abhed
+policy refresh`, `abhed login`, `abhed mcp`, `abhed resolve`, `abhed
+index`, `abhed toolchain`, `abhed ollama`, `abhed eval`, `abhed doctor`)
+puts the proxy in force before it does, and the CLI and an editor's
+connection put it in force before they fetch the org policy. When the
+network configuration cannot go in force (a CA bundle that does not
+read, say), an editor's connection fetches no org policy at all.
 
 **Not covered:** a PAC file or WPAD; SOCKS; NTLM, Kerberos or other
 challenge-response proxy authentication (Basic only); `ssh_connect` and
