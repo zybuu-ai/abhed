@@ -23,6 +23,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The completion contract's check of protected files could hang the end of
+  a run. A protected file swapped for a link to `/dev/zero` or a pipe was
+  read without end, and a sparse file of any size was hashed in full. A
+  protected file is now opened only as a plain file, never through a link
+  or waiting on a pipe or device. Past 256 MiB it is named by its size,
+  time and inode instead of hashed, so a change to it is still seen.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by
