@@ -1183,13 +1183,33 @@ the difference is exact: the record is then protected against application bugs
 and stray statements, and **not** against anyone holding the server's database
 credentials. `abhed doctor` and the startup banner say which mode is in force.
 
-**The runtime role must not create in schema `public`.** Postgres before 15
-grants that to every role, and a role that can add a function or operator
-there can stand in for one the record's triggers call. `abhed migrate`
-revokes it from `PUBLIC` where its role owns the schema, and otherwise
-refuses until the schema's owner or a superuser runs `REVOKE CREATE ON
-SCHEMA public FROM PUBLIC`; a runtime server that can create there refuses
-to start. On Postgres 15 and later nothing needs doing.
+**The runtime role must not create in schema `public`,** by any route: a
+role that can add a function or operator there can stand in for one the
+record's triggers call. Every role the runtime role belongs to counts,
+with or without `INHERIT`, since `SET ROLE` reaches them all, and so does
+owning the schema (on Postgres 15 and later, owning the database). Postgres
+13 and 14 grant `CREATE` on `public` to `PUBLIC`, so there the owner role
+usually creates in `public` only through that grant, and the schema
+belongs to the superuser. The fix is two statements, in this order, and on
+13 and 14 it is a superuser step:
+
+```sql
+GRANT CREATE ON SCHEMA public TO abhed_owner;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
+`abhed migrate` runs both itself where its role may (it owns `public` or
+belongs to the role that does), and never revokes `PUBLIC`'s grant while
+the owner role would be left without `CREATE`. Otherwise it refuses and
+prints the statements to run, the first only when the owner needs it,
+naming each route the runtime role has (`PUBLIC`, a grant to it, a role it
+belongs to, ownership); a runtime server that can create there refuses to
+start with the same message. The revoke is database-wide: if other
+applications share the database on Postgres 13 or 14 and create in
+`public` through `PUBLIC`, grant their roles `CREATE` first. On a managed
+Postgres service where neither the schema's owner nor a superuser is
+reachable, ask the provider to run the statements, or use
+`storage.single_role` and accept the weaker guarantee it describes above.
 
 **Do not connect as a superuser,** in either mode. Row-level security is what
 isolates tenants, and Postgres does not apply it to a superuser or a

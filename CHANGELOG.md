@@ -153,13 +153,28 @@ All notable changes to Abhed are recorded here. The format follows
   could not do any of this. Affects 1.2.8 (schema versions 8 to 10). The
   fix is in schema version 17: run `abhed migrate` as the owner before
   starting this release's servers, which refuse an older schema.
-- Postgres before 15 lets every role create objects in schema `public`, so
-  a runtime role there could define a function or operator that a trigger
-  resolved before the built-in one. `abhed migrate` now revokes `CREATE` on
-  `public` from `PUBLIC` where its role may (as the schema's owner), and
-  refuses, saying what to run, while the runtime role can still create
-  there; a runtime server that can refuses to start. Postgres 15 and later
-  grant no such right, so nothing changes there.
+- Postgres: a runtime role that could create objects in schema `public`
+  could define a function or operator that a trigger resolved before the
+  built-in one. Postgres before 15 grants that to every role through
+  `PUBLIC`. `abhed migrate` now closes every route it finds (`PUBLIC`, a
+  grant to the runtime role, a role it belongs to with or without
+  `INHERIT`, ownership of the schema or, on 15 and later, of the database)
+  and refuses while one remains, printing what to run as the schema's owner
+  or a superuser: `GRANT CREATE ON SCHEMA public TO <owner>; REVOKE CREATE
+  ON SCHEMA public FROM PUBLIC;`, the first only when the owner role creates
+  there only through `PUBLIC`. Where its role owns `public` it runs both
+  itself, and it never revokes `PUBLIC`'s grant while that would leave the
+  owner role unable to create. A runtime server with any such route refuses
+  to start with the same message. Upgrading on Postgres 13 or 14 with the
+  default rights, where the schema belongs to the superuser, needs that
+  superuser step before `abhed migrate` completes. The revoke changes a
+  database-wide right: other applications on the same database that create
+  in `public` through `PUBLIC` need a grant of their own first. On Postgres
+  15 and later, a runtime role that owns the database, or holds `CREATE` on
+  `public` directly or through a group, used to start and now refuses. The
+  check that the runtime role cannot alter the record also counts every
+  role it belongs to, with or without `INHERIT`. A managed service that
+  gives no superuser: ask the provider, or use `storage.single_role`.
 - A message stopped (Stop, Esc) while a `user_prompt_submit` hook was
   still deciding on it went unscreened: it was recorded as sent and
   reached the model with the next message. It is now recorded as

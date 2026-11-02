@@ -92,6 +92,7 @@ jobs:
           psql -h localhost -U abhed -d abhed_test \
             -c "CREATE ROLE abhed_app LOGIN PASSWORD 'abhed';" \
             -c "GRANT ALL ON SCHEMA public TO abhed_app;" \
+            -c "ALTER SCHEMA public OWNER TO abhed_app;" \
             -c "CREATE ROLE abhed_runtime LOGIN PASSWORD 'abhed';"
 
       - name: go test
@@ -112,17 +113,21 @@ jobs:
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+          # Recreates Postgres 13 and 14's default rights in a database of its own.
+          ABHED_TEST_SUPERUSER_DSN: postgres://abhed:abhed@localhost:5432/postgres?sslmode=disable
         run: |
           set -euo pipefail
-          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox|TestOwnerTamper|TestPreChain|TestGoVerifier|TestAnUnchainedRow|TestARowAtATaken|TestNoSubagentSession|TestOCSFCommitPos' > record.log 2>&1 || { cat record.log; exit 1; }
+          go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox|TestOwnerTamper|TestPreChain|TestGoVerifier|TestAnUnchainedRow|TestARowAtATaken|TestNoSubagentSession|TestOCSFCommitPos|TestMigrateClosesCreateOnPublic|TestMigrateOnPostgres14DefaultRights|TestTemporaryTablesDoNotStandIn|TestCommitOrderSurvives' > record.log 2>&1 || { cat record.log; exit 1; }
           for t in TestRuntimeRoleCannotAlterTheRecord TestRuntimeRoleCanDoItsJob TestOpenRefusesARoleThatCanAlterTheRecord TestTruncateIsRefused \
                    TestSandboxStoreConformance TestSandboxesAreTenantScoped TestSandboxAuditIsAppendOnlyForTheRuntimeRole \
                    TestRuntimeRoleCannotMarkPreChainRows TestOwnerTamperIsDetected TestPreChainRowsAreMarkedNotChained TestGoVerifierAgreesWithTheTrigger \
                    TestRuntimeRoleThatCanMarkPreChainRowsIsRefused TestRuntimeRoleCannotSetCommitTx TestAnUnchainedRowAfterTheChainFails \
-                   TestARowAtATakenPositionFails TestNoSubagentSessionUnderADeletedParent TestOCSFCommitPos; do
+                   TestARowAtATakenPositionFails TestNoSubagentSessionUnderADeletedParent TestOCSFCommitPos \
+                   TestMigrateClosesCreateOnPublic TestMigrateOnPostgres14DefaultRights \
+                   TestTemporaryTablesDoNotStandInForTheRecordsOwn TestCommitOrderSurvivesARestoreIntoAnotherCluster; do
             grep -q -- "--- PASS: $t" record.log || { echo "$t did not run and pass:"; grep -- "$t" record.log || true; exit 1; }
           done
-          echo "all seventeen ran and passed"
+          echo "all twenty-one ran and passed"
 
       # A tag can be moved to other code, and the release jobs hold the signing
       # identity: every action is used by full commit, its version in a comment.
