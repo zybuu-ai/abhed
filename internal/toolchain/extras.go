@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/filelock"
 )
 
@@ -419,6 +420,13 @@ func (c Cache) installGoTool(ctx context.Context, ep Endpoints, e Extra, goroot,
 			"GOPROXY=" + ep.goProxy(), "GOSUMDB=" + ep.goSumDB(), "GONOSUMDB=", "GONOSUMCHECK=", "GOPRIVATE=", "GONOPROXY=",
 			"GOINSECURE=", "GOFLAGS=-mod=mod", "CGO_ENABLED=0", "GOOS=" + p.OS, "GOARCH=" + p.Arch,
 		}
+		// Through the configured upstream proxy, by a loopback relay that holds its credentials.
+		upEnv, stopRelay, err := egress.UpstreamEnv()
+		if err != nil {
+			return ExtraInstalled{}, fmt.Errorf("the upstream proxy relay: %w", err)
+		}
+		defer stopRelay()
+		env = append(env, upEnv...)
 		out, err := goBuild(ctx, filepath.Join(goroot, "bin", "go"), env, tmp,
 			"install", "-trimpath", t.pkg+"@v"+e.Version)
 		if err != nil {

@@ -325,6 +325,15 @@ func push(ctx context.Context, repo, worktree, url, scope, branch, auth, caFile 
 	if caFile != "" {
 		config = append(config, [2]string{"http." + scope + ".sslCAInfo", caFile})
 	}
+	// Through the configured upstream proxy, by a loopback relay that holds its credentials.
+	proxy, noProxy, stopRelay, err := egress.UpstreamRelay()
+	if err != nil {
+		return fmt.Errorf("the upstream proxy relay: %w", err)
+	}
+	defer stopRelay()
+	if proxy != "" {
+		config = append(config, [2]string{"http.proxy", proxy}, [2]string{"http.noProxy", noProxy})
+	}
 	cmd := bare.CommandWith(ctx, config, at, "push", url, "refs/heads/"+branch+":refs/heads/"+branch)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb

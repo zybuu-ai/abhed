@@ -49,6 +49,7 @@ configuration](#trusting-the-workspace-configuration).
 | `extensions` | processes that can intercept — [Extensions](07-extensions.md) |
 | `mcp` | Model Context Protocol servers — [MCP](08-mcp.md) |
 | `custom_providers` | providers added without a rebuild |
+| `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name and a `no_proxy` list; never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
 | `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
