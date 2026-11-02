@@ -66,6 +66,7 @@ func TestManagedKeysFoldAsTheDecoderDoes(t *testing.T) {
 	withManaged(t, `{"ſandbox": {"min_tier": "none"}}`)
 	var warned strings.Builder
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	cfg, err := Load(t.TempDir())
 	if err != nil {
@@ -146,6 +147,7 @@ func TestLoadWarnTakesTheWarnings(t *testing.T) {
 	}
 	var stderr strings.Builder
 	warnOut = &stderr
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	for i := 0; i < 2; i++ {
 		var got []string

@@ -21,6 +21,7 @@ func TestAllowRuleThatNeverMatchesIsWarned(t *testing.T) {
 	}
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 
 	cfg, err := Load(ws)
@@ -43,6 +44,7 @@ func TestAllowRuleThatNeverMatchesIsWarned(t *testing.T) {
 func TestAppliedAllowRuleThatNeverMatchesIsWarned(t *testing.T) {
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	if _, err := Default().Apply(Overrides{Allow: []string{"bash(make && make install)", "bash(make*)"}}); err != nil {
 		t.Fatal(err)

@@ -322,6 +322,7 @@ func TestManagedLockDropsFileAllowRules(t *testing.T) {
 				`{"permissions":{"allow":["bash(rm*)","bash(*)"]}}`)
 			var warned bytes.Buffer
 			warnOut = &warned
+			freshWarnings(t)
 			t.Cleanup(func() { warnOut = os.Stderr })
 			cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
 			if err != nil {

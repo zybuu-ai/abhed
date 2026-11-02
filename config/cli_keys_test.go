@@ -61,6 +61,7 @@ func TestTrustedWorkspaceCannotMakeManagedOnlySettings(t *testing.T) {
 	  "cli":{"mode_cycle":["plan"]}, "record":{"dir":"/tmp/x","retention_days":3}, "hooks":{"disabled":true}}`)
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
 	if err != nil {
@@ -97,6 +98,7 @@ func TestUserFileManagedOnlySettings(t *testing.T) {
 	_, ws := trustHome(t, `{"memory":{"auto":true,"import_depth":3},"record":{"retention_days":30},"hooks":{"disabled":true}}`, "")
 	var warned bytes.Buffer
 	warnOut = &warned
+	freshWarnings(t)
 	t.Cleanup(func() { warnOut = os.Stderr })
 	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
 	if err != nil {
