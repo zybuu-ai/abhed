@@ -2,13 +2,18 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/embedded"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/termline"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -27,6 +32,7 @@ type servingWatch struct {
 	tail    string
 	sent    map[string]bool
 	refused bool
+	venv    bool
 }
 
 // servingURL is a loopback address a server prints, such as Vite's
@@ -70,6 +76,11 @@ func (c *acpConn) watchServing(t *acpTerminal, chunk []byte) {
 	if len(text) > 2048 {
 		text = text[len(text)-2048:]
 	}
+	inUse := !w.venv && strings.Contains(text, venvInUseMark)
+	if inUse {
+		w.venv = true
+		c.notification("_abhed/terminal/venv", map[string]any{"sessionId": t.session.id, "terminalId": t.id, "inUse": true})
+	}
 	if !t.serves {
 		refused := !w.refused && listenRefused.MatchString(text)
 		if refused {
@@ -86,8 +97,9 @@ func (c *acpConn) watchServing(t *acpTerminal, chunk []byte) {
 	// The last partial line waits for the rest of the address.
 	cut := strings.LastIndexAny(text, "\r\n")
 	w.tail = text[cut+1:]
+	done := text[:cut+1]
 	var found []string
-	for _, u := range servingURL.FindAllString(text[:cut+1], -1) {
+	for _, u := range servingURL.FindAllString(done, -1) {
 		if w.sent == nil {
 			w.sent = map[string]bool{}
 		}
@@ -96,10 +108,65 @@ func (c *acpConn) watchServing(t *acpTerminal, chunk []byte) {
 			found = append(found, u)
 		}
 	}
+	outside := !w.refused && listenRefused.MatchString(done)
+	if outside {
+		w.refused = true
+	}
 	w.mu.Unlock()
+	ports := t.listenPorts()
 	for _, u := range found {
+		// Only a listen port nothing of the host's holds can be a sandboxed server's.
+		if port := urlPort(u); t.tier != "none" && (!slices.Contains(ports, port) || sandbox.HostHolds(port)) {
+			continue
+		}
 		c.notification("_abhed/terminal/serving", map[string]any{"sessionId": t.session.id, "terminalId": t.id, "url": u})
 	}
+	if outside && t.tier != "none" {
+		c.show(t, []byte("\r\nabhed: commands here may listen only on TCP ports "+portList(ports)+
+			" (sandbox.listen_ports), and not on one a program of yours already listens on; start the server on one of them.\r\n"))
+	}
+}
+
+// venvInUseMark is in the line abhed_venv prints once the venv is in use.
+const venvInUseMark = ": its python and pip come first;"
+
+// urlPort is a serving URL's port, or 0.
+func urlPort(u string) int {
+	rest := u[strings.Index(u, "://")+3:]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i]
+	}
+	p, _ := strconv.Atoi(rest[strings.LastIndexByte(rest, ':')+1:])
+	return p
+}
+
+// portList says ports briefly, runs as ranges: 3000-3009, 4200.
+func portList(ports []int) string {
+	var parts []string
+	for i := 0; i < len(ports); {
+		j := i
+		for j+1 < len(ports) && ports[j+1] == ports[j]+1 {
+			j++
+		}
+		if j > i {
+			parts = append(parts, fmt.Sprintf("%d-%d", ports[i], ports[j]))
+		} else {
+			parts = append(parts, strconv.Itoa(ports[i]))
+		}
+		i = j + 1
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// listenPorts are the ports a server in t's sandbox may listen on.
+func (t *acpTerminal) listenPorts() []int {
+	if parts, e := innerOf(t.session); e == nil && parts.Set != nil && parts.Set.ListenPorts != nil {
+		return parts.Set.ListenPorts()
+	}
+	return nil
 }
 
 // offerListen tells the terminal, once, that the sandbox refused a server
@@ -111,7 +178,8 @@ func (c *acpConn) offerListen(t *acpTerminal) {
 	}
 	note := "the sandbox does not let commands listen for connections in this workspace."
 	if canAllow {
-		note += " Allow it from Studio (Let Commands Listen), then start the server again, bound to 127.0.0.1 (in a new terminal, for an interactive one)."
+		note += " Allow it from Studio (Let Commands Listen): every command in every session of this workspace, the agent's too, may then listen on TCP ports " +
+			portList(t.listenPorts()) + ". Then start the server again on one of them (in a new terminal, for an interactive one)."
 	} else {
 		note += " It cannot be allowed here: " + why + "."
 	}
@@ -151,6 +219,10 @@ func (c *acpConn) sandboxListen(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errPolicy, "changing what commands may listen on is refused inside an agent's command (%s)", why))
 		return
 	}
+	if !*p.Allow && parts.Config.Sandbox.Listen == "allow" {
+		c.reply(msg.ID, nil, refusal(errPolicy, "sandbox.listen is allow in the configuration, so it cannot be taken back here"))
+		return
+	}
 	if *p.Allow {
 		ok, why := listenOffer(parts, "process")
 		if ok && !parts.Set.SetListen(true) {
@@ -172,6 +244,9 @@ func (c *acpConn) sandboxListen(msg rpcMessage) {
 		if other.inner && other.parts.Session != nil && other.parts.Set != nil && other.parts.Set.SetListen != nil &&
 			grantsKey(other.parts.Session.Root) == root && other.parts.Config.Sandbox.Listen != "allow" {
 			other.parts.Set.SetListen(*p.Allow)
+			if *p.Allow {
+				other.watchListening(c)
+			}
 		}
 	}
 	op := "add"
@@ -186,20 +261,54 @@ func (c *acpConn) sandboxListen(msg rpcMessage) {
 const listenRule = "sandbox(listen loopback)"
 
 // loadListen lets a new or continued session's commands listen where the
-// person agreed for its workspace under sandbox.listen ask.
-func (s *acpSession) loadListen() {
+// person agreed for its workspace under sandbox.listen ask, and watches
+// what listening needs under ask or allow.
+func (s *acpSession) loadListen(c *acpConn) {
 	if !s.inner || s.parts.Session == nil || s.parts.Set == nil || s.parts.Set.SetListen == nil {
 		return
 	}
 	switch s.parts.Config.Sandbox.Listen {
 	case "", "ask":
-	default:
+		if at := listenAgreed(s.parts.Session.Root); at != nil && s.parts.Set.SetListen(true) {
+			if _, err := s.parts.Loop.Recorder.Record(agent.EvPermissionChanged, agent.ActorSystem, agent.Trusted,
+				agent.PermissionChanged{Op: "add", List: "allow", Rule: listenRule, Scope: "workspace", By: agent.ByUser}); err != nil {
+				warnf("the record did not take %s: %v", agent.EvPermissionChanged, err)
+			}
+		}
+		s.watchListening(c)
+	case "allow":
+		s.watchListening(c)
+	}
+}
+
+// watchListening gives the session's sandbox the agreement to look up again,
+// as another process may take it back, and tells the person, and the
+// record, of a listener ended because a program of theirs took its port.
+func (s *acpSession) watchListening(c *acpConn) {
+	if s.parts.Set == nil || s.parts.Set.ListenWatch == nil || s.parts.Session == nil {
 		return
 	}
-	if at := listenAgreed(s.parts.Session.Root); at != nil && s.parts.Set.SetListen(true) {
-		if _, err := s.parts.Loop.Recorder.Record(agent.EvPermissionChanged, agent.ActorSystem, agent.Trusted,
-			agent.PermissionChanged{Op: "add", List: "allow", Rule: listenRule, Scope: "workspace", By: agent.ByUser}); err != nil {
-			warnf("the record did not take %s: %v", agent.EvPermissionChanged, err)
+	root := s.parts.Session.Root
+	var still func() bool
+	if s.parts.Config.Sandbox.Listen != "allow" {
+		var mu sync.Mutex
+		var at time.Time
+		var kept bool
+		still = func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			if time.Since(at) > 2*time.Second {
+				kept, at = listenAgreed(root) != nil, time.Now()
+			}
+			return kept
 		}
 	}
+	s.parts.Set.ListenWatch(still, func(port, pid int) {
+		msg := fmt.Sprintf("a program of yours started listening on port %d, which a sandboxed command held; the command's listener (process %d) was ended, so the connections go to your program.", port, pid)
+		warnf("%s", msg)
+		if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxListenerEnded, agent.ActorSystem, agent.Trusted, agent.SandboxListenerEnded{Port: port, PID: pid}); err != nil {
+			warnf("the record did not take %s: %v", agent.EvSandboxListenerEnded, err)
+		}
+		c.notification("_abhed/sandbox/listener_ended", map[string]any{"sessionId": s.id, "port": port, "message": msg})
+	})
 }

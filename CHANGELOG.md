@@ -181,16 +181,21 @@ All notable changes to Abhed are recorded here. The format follows
 ### Added
 
 - Dev servers in the sandbox: on the macOS process tier a command may
-  listen on loopback once the person agrees for the workspace
-  (`sandbox.listen`: `ask` by default, `allow`, `off`). A server refused its
-  port in Studio's terminal brings the offer
+  listen once the person agrees for the workspace (`sandbox.listen`: `ask`
+  by default, `allow`, `off`), which covers every command in every session
+  of the workspace, the agent's too. Listening is TCP only and only on
+  `sandbox.listen_ports` (by default 3000-3009, 4200, 4321, 5173-5179 and
+  8000-8009, which leave out database, cache and console ports), less
+  Abhed's reserved ports and any port one of your programs listens on. A
+  sandboxed listener on a port where one of your programs starts listening
+  too is ended within two seconds, and you are told
+  (`_abhed/sandbox/listener_ended`, `sandbox.listener_ended`). A server
+  refused its port in Studio's terminal brings the offer
   (`_abhed/terminal/listen_refused`, `_abhed/sandbox/listen`), and Studio
-  then offers the address the server prints (`_abhed/terminal/serving`).
-  Commands still connect to nothing on loopback, and cannot bind Abhed's
-  reserved ports nor a port one of your programs listens on, so a
-  sandboxed server never takes connections meant for a local service. A
-  server bound to `0.0.0.0` is reachable from the network; bind
-  `127.0.0.1`.
+  then offers the address the server prints (`_abhed/terminal/serving`),
+  never one on a port your programs hold. Commands still connect to
+  nothing on loopback. A command can bind every address of a listen port;
+  bind `127.0.0.1`.
 
 - Studio can manage installed toolchains (feature `toolchain.manage`):
   `_abhed/toolchain/remove`, `_abhed/toolchain/clean`, which asks the person

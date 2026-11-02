@@ -18,6 +18,8 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
@@ -1500,11 +1502,16 @@ type SandboxConfig struct {
 	// Listen is whether commands on the macOS process tier may listen on
 	// loopback and accept there, so a dev server opens in the person's
 	// browser: "ask" (the default) once the person agrees for the
-	// workspace, "allow" always, "off" never. A listener there is reachable
-	// from the network when bound to every address. Never on Abhed's
-	// reserved ports or one the Mac listens on. A workspace file may only
-	// make it stricter.
+	// workspace, "allow" always, "off" never. TCP only, on ListenPorts
+	// alone, never on Abhed's reserved ports or one the Mac listens on. A
+	// workspace file may only make it stricter.
 	Listen string `json:"listen,omitempty"`
+	// ListenPorts are the ports a command may listen on where listening is
+	// on: "N" or "N-M", above 1024, at most 512 in all. Empty is
+	// DefaultListenPorts, common dev-server ports that avoid databases,
+	// caches and consoles (5432, 3306, 6379, 27017, 5000, 8080, 8090, 8888).
+	// Not from a workspace file.
+	ListenPorts []string `json:"listen_ports,omitempty"`
 	// MaxMemoryMB applies on every tier but none and the macOS process tier;
 	// MaxProcs on every tier but none.
 	MaxMemoryMB int `json:"max_memory_mb"`
@@ -1955,6 +1962,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("sandbox.listen is %q; use ask, allow or off", c.Sandbox.Listen)
 	}
+	if _, err := ParseListenPorts(c.Sandbox.ListenPorts); err != nil {
+		return fmt.Errorf("sandbox.listen_ports: %w", err)
+	}
 	for _, p := range c.Sandbox.ToolchainsPreapproved {
 		if _, err := toolchain.ParseSpec(p); err != nil {
 			return fmt.Errorf("sandbox.toolchains_preapproved: %w", err)
@@ -2351,4 +2361,46 @@ func (c Config) validateCLILogin() error {
 func jsonObject(raw json.RawMessage) bool {
 	var m map[string]json.RawMessage
 	return json.Unmarshal(raw, &m) == nil && m != nil
+}
+
+// DefaultListenPorts are the ports commands may listen on when
+// sandbox.listen_ports is empty: Next.js, Rails and Express (3000-3009),
+// Angular (4200), Astro (4321), Vite (5173-5179) and Django or
+// python3 -m http.server (8000-8009). None is a database, cache or console
+// port, nor macOS's own (5000 and 7000 are AirPlay).
+var DefaultListenPorts = []string{"3000-3009", "4200", "4321", "5173-5179", "8000-8009"}
+
+// maxListenPorts bounds how many ports one configuration may open.
+const maxListenPorts = 512
+
+// ParseListenPorts is sandbox.listen_ports as port numbers, sorted, each
+// once; DefaultListenPorts when it is empty.
+func ParseListenPorts(spec []string) ([]int, error) {
+	if len(spec) == 0 {
+		spec = DefaultListenPorts
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, s := range spec {
+		a, b, ranged := strings.Cut(strings.TrimSpace(s), "-")
+		lo, err1 := strconv.Atoi(strings.TrimSpace(a))
+		hi, err2 := lo, error(nil)
+		if ranged {
+			hi, err2 = strconv.Atoi(strings.TrimSpace(b))
+		}
+		if err1 != nil || err2 != nil || lo <= 1024 || hi > 65535 || hi < lo {
+			return nil, fmt.Errorf("%q is not a port or range above 1024 (\"3000\" or \"3000-3009\")", s)
+		}
+		for p := lo; p <= hi; p++ {
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+			if len(out) > maxListenPorts {
+				return nil, fmt.Errorf("more than %d ports", maxListenPorts)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out, nil
 }

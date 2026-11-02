@@ -235,20 +235,45 @@ workspace and a few shared folders, not only the workspace:
 
 On macOS a command cannot listen for connections until you agree for the
 workspace (`"listen": "ask"`, the default): a dev server refused its port
-in Abhed Studio's terminal (`listen EPERM`) brings the offer, and once you
-agree every session of the workspace may listen, so `npm run dev` opens in
-your browser; take it back from Studio. `"allow"` lets commands listen
-without asking, `"off"` never; a workspace file can only make it stricter.
-Commands that listen still connect to nothing on loopback but the egress
-proxy, and cannot bind Abhed's own reserved ports (47600-47855, or
-`ABHED_LOOPBACK_PORTS`) nor a port one of your programs already listens
-on, so a sandboxed server never takes the connections meant for a local
-database or console (another user's ports the kernel itself refuses).
-The sandbox cannot tell a server bound to `127.0.0.1` from one bound to
-`0.0.0.0`, which your network reaches: bind `127.0.0.1` or `localhost`.
-An interactive terminal opened before you agreed keeps its old rules.
-On Linux, the container and the vm tiers a server inside the sandbox is
-not reachable from the host.
+in Abhed Studio's terminal (`listen EPERM`) brings the offer. Once you
+agree, every command in every session of the workspace, the agent's
+included, may listen, so `npm run dev` opens in your browser. `"allow"`
+lets commands listen without asking and cannot be taken back from Studio;
+`"off"` never lets them; a workspace file can only make it stricter.
+Taking it back from Studio reaches this window's sessions at once, and
+another window's within two seconds, before its next command starts.
+
+Listening is TCP only, and only on the ports in `"listen_ports"`: by
+default `["3000-3009", "4200", "4321", "5173-5179", "8000-8009"]` (Next.js,
+Rails and Express, Angular, Astro, Vite, Django and `python3 -m
+http.server`), chosen to leave out databases, caches and consoles (5432,
+3306, 6379, 27017, 8080, 8090, 8888) and macOS's own AirPlay ports (5000,
+7000). Each entry is a port or a range above 1024, at most 512 in all; a
+workspace file cannot set it. A UDP bind, or any other port, is refused,
+and so are Abhed's own reserved ports (47600-47855, or
+`ABHED_LOOPBACK_PORTS`) and a listen port one of your programs already
+listens on (another user's ports the kernel itself keeps). Commands that
+listen still connect to nothing on loopback but the egress proxy.
+
+A command can take a listen port before one of your programs starts on it.
+Your program then still starts (Go, Node and Python servers bind every
+address with `SO_REUSEADDR`), but connections to `127.0.0.1` would reach the
+command. Abhed reads the Mac's listeners every two seconds and ends a
+sandboxed command's listener on a port where one of your programs now
+listens too, then tells you and records it (`sandbox.listener_ended`); in
+those two seconds the command can still take what is sent there. A program
+of yours that binds `127.0.0.1` itself instead fails to start, as the port
+is taken. Keep your own servers off the listen ports, or narrow them.
+
+The sandbox cannot keep a command, the agent's included, from binding
+every address of a listen port, `0.0.0.0` too. In tests connections to the
+Mac's network address were not delivered to such a server, but bind
+`127.0.0.1` or `localhost` to be sure. Listening needs a build that can tell
+a sandboxed process from yours (the release builds can) and needs `lsof`
+to read the Mac's listeners; where either fails, commands do not listen
+and Studio says so. An interactive terminal opened before you agreed keeps
+its old rules. On Linux, the container and the vm tiers a server inside the
+sandbox is not reachable from the host.
 
 `/private/tmp` and `/private/var/tmp` are writable to commands on macOS by
 design: tools expect a shared temp area there, so keep nothing in them a command

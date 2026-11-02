@@ -111,6 +111,9 @@ func policy(cfg config.Config, workspace, base string, stateRoots []string) (san
 	p.RelayBinary = RelayBinary(cfg)
 	p.ReadableHome = cfg.Sandbox.ReadableHome
 	p.ListenLoopback = cfg.Sandbox.Listen == "allow"
+	if ports, err := config.ParseListenPorts(cfg.Sandbox.ListenPorts); err == nil {
+		p.ListenPorts = ports
+	}
 	p.Tier = sandbox.Tier(cfg.Sandbox.Tier)
 	p.CPUPercent = cfg.Fence.CPUPercent
 	p.FenceSocketcall = cfg.Fence.Socketcall

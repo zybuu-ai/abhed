@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,11 +16,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/loopport"
+	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/toolchain"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
@@ -507,7 +511,22 @@ func TestRegistriesOpenWithoutAToolchain(t *testing.T) {
 // terminal's server is reachable, its address sent to Studio once, and a
 // new session starts with it, until the person takes it back.
 func TestTerminalLetsAServerListen(t *testing.T) {
-	r := newStudioRig(t, "")
+	if runtime.GOOS != "darwin" {
+		t.Skip("listening is switched only on the macOS process tier")
+	}
+	free := func() int {
+		for {
+			ports, err := sandbox.FreeLoopbackPorts(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p := int(ports[0]); !loopport.In(p) {
+				return p
+			}
+		}
+	}
+	devPort, hostPort := free(), free()
+	r := newStudioRig(t, fmt.Sprintf(`,"sandbox":{"listen_ports":["%d","%d"]}`, devPort, hostPort))
 	id := r.open()
 	type termReply struct {
 		TerminalID string `json:"terminalId"`
@@ -519,26 +538,33 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 		r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "lines", "cols": 80, "rows": 24}, &tr)
 		return tr
 	}
+	input := func(tid, line string) int {
+		from := r.cl.mark()
+		r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": tid, "data": line + "\r"}, nil)
+		return from
+	}
 	first := term(id)
-	if runtime.GOOS != "darwin" || first.Tier != "process" {
+	if first.Tier != "process" {
 		t.Skipf("listening is switched only on the macOS process tier, not %s", first.Tier)
 	}
 	if first.Serves {
 		t.Fatal("commands listen before the person agreed")
 	}
-	from := r.cl.mark()
-	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": first.TerminalID,
-		"data": `printf 'Error: listen %s: operation not permitted 127.0.0.1:5173\n' EPERM` + "\r"}, nil)
-	r.cl.waitFor(from, "the listen offer", func(m rpcMessage) bool {
+	from := input(first.TerminalID, `printf 'Error: listen %s: operation not permitted 127.0.0.1:5173\n' EPERM`)
+	offer := r.cl.waitFor(from, "the listen offer", func(m rpcMessage) bool {
 		return m.Method == "_abhed/terminal/listen_refused" && strings.Contains(string(m.Params), `"canAllow":true`)
 	})
+	// The offer says whom the agreement covers, and on which ports.
+	if p := string(offer.Params); !strings.Contains(p, "every session of this workspace, the agent's too") || !strings.Contains(p, strconv.Itoa(devPort)) {
+		t.Fatalf("offer %s", p)
+	}
 	r.cl.refused(errParams, "_abhed/sandbox/listen", map[string]any{"sessionId": id})
 	var got struct {
 		Listens bool `json:"listens"`
 	}
 	r.cl.ok("_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true}, &got)
 	if !got.Listens {
-		t.Fatal("not listening after the person agreed")
+		t.Skip("listening is not available here: the Mac's listeners cannot be read, or this build cannot tell a sandboxed process")
 	}
 	if changed, _ := r.recorded(id, agent.EvPermissionChanged); len(changed) != 1 || changed[0]["rule"] != listenRule || changed[0]["op"] != "add" {
 		t.Fatalf("recorded %v", changed)
@@ -547,23 +573,54 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	if !second.Serves {
 		t.Fatal("a new terminal does not serve")
 	}
-	from = r.cl.mark()
+	// A host program on the other listen port: its address is never offered.
+	host, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
 	// Split, so the typed line's echo holds no address.
-	line := `printf '  Local:   http://%s:5173/app\n' localhost; printf 'again http://localhost:5173/app\n'`
-	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": second.TerminalID, "data": line + "\r"}, nil)
+	from = input(second.TerminalID, fmt.Sprintf(`printf '  Local:   http://%%s:%d/app\n' localhost; printf 'again http://localhost:%d/app\n'; printf 'host http://localhost:%d/\n'; printf 'out http://localhost:9/\n'`, devPort, devPort, hostPort))
+	want := fmt.Sprintf(`"url":"http://localhost:%d/app"`, devPort)
 	r.cl.waitFor(from, "the serving address", func(m rpcMessage) bool {
-		return m.Method == "_abhed/terminal/serving" && strings.Contains(string(m.Params), `"url":"http://localhost:5173/app"`)
+		return m.Method == "_abhed/terminal/serving" && strings.Contains(string(m.Params), want)
 	})
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	n := 0
 	for _, m := range r.cl.since(from) {
 		if m.Method == "_abhed/terminal/serving" {
 			n++
+			if !strings.Contains(string(m.Params), want) {
+				t.Fatalf("offered %s", m.Params)
+			}
 		}
 	}
 	if n != 1 {
 		t.Fatalf("sent %d times", n)
 	}
+	// A server refused a port outside the listen ports is told which it may use.
+	from = input(second.TerminalID, `printf 'Error: listen %s: operation not permitted 127.0.0.1:9\n' EPERM`)
+	waitOutput(r.cl, from, second.TerminalID, "may listen only on TCP ports")
+
+	// A program of the person's that listens on a port a sandboxed server
+	// holds ends that server, and the person and the record are told. An
+	// interactive terminal, so the server runs while the test goes on.
+	var shell termReply
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 120, "rows": 24}, &shell)
+	from = input(shell.TerminalID, fmt.Sprintf(`python3 -I -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1", %d)); s.listen(); print("serv"+"ing", flush=True); time.sleep(30)'`, devPort))
+	waitOutput(r.cl, from, shell.TerminalID, "serving")
+	taker, err := net.Listen("tcp", fmt.Sprintf(":%d", devPort))
+	if err != nil {
+		t.Fatalf("the host could not listen beside the sandboxed server: %v", err)
+	}
+	defer taker.Close()
+	r.cl.waitFor(from, "the ended listener", func(m rpcMessage) bool {
+		return m.Method == "_abhed/sandbox/listener_ended" && strings.Contains(string(m.Params), fmt.Sprintf(`"port":%d`, devPort))
+	})
+	if ended, actors := r.recorded(id, agent.EvSandboxListenerEnded); len(ended) == 0 || actors[0] != agent.ActorSystem {
+		t.Fatalf("recorded %v %v", ended, actors)
+	}
+
 	// Kept for the workspace: a new session starts listening, recorded.
 	id2 := r.open()
 	if !term(id2).Serves {
@@ -580,4 +637,46 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	inAgentCommand = func() string { return "ABHED_SESSION is set" }
 	defer func() { inAgentCommand = old }()
 	r.cl.refused(errPolicy, "_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": true})
+}
+
+// Under sandbox.listen allow the person cannot take listening back, so the
+// record never shows a revoke that did not happen.
+func TestListenAllowCannotBeTakenBack(t *testing.T) {
+	r := newStudioRig(t, `,"sandbox":{"listen":"allow"}`)
+	id := r.open()
+	r.cl.refused(errPolicy, "_abhed/sandbox/listen", map[string]any{"sessionId": id, "allow": false})
+	if changed, _ := r.recorded(id, agent.EvPermissionChanged); len(changed) != 0 {
+		t.Fatalf("recorded %v", changed)
+	}
+}
+
+// An interactive terminal names the project's venv as not in use; once the
+// person types abhed_venv, Studio is told it is.
+func TestTerminalVenvInUseAfterAbhedVenv(t *testing.T) {
+	r := newStudioRig(t, "")
+	v := filepath.Join(r.ws, ".venv")
+	r.write(".venv/pyvenv.cfg", "home = /usr/bin\n")
+	if err := os.MkdirAll(filepath.Join(v, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/usr/bin/python3", filepath.Join(v, "bin", "python")); err != nil {
+		t.Fatal(err)
+	}
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+		Venv       *struct {
+			Path  string `json:"path"`
+			InUse bool   `json:"inUse"`
+		} `json:"venv"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 120, "rows": 24}, &term)
+	if term.Venv == nil || term.Venv.InUse || term.Venv.Path != v {
+		t.Fatalf("venv %+v", term.Venv)
+	}
+	from := r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "abhed_venv\r"}, nil)
+	r.cl.waitFor(from, "the venv in use", func(m rpcMessage) bool {
+		return m.Method == "_abhed/terminal/venv" && strings.Contains(string(m.Params), `"inUse":true`)
+	})
 }

@@ -27,6 +27,9 @@ type Process struct {
 	backend string // "sandbox-exec" | "bwrap"
 	// listen is SetListen's: commands may listen on loopback from now on.
 	listen atomic.Bool
+	// listenStill and onListenerEnded are SetListenWatch's.
+	listenStill     atomic.Pointer[func() bool]
+	onListenerEnded atomic.Pointer[func(port, pid int)]
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.
@@ -581,24 +584,26 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 		// there, and binds neither Abhed's reserved ports nor one the Mac
 		// listens on. A debug session's named ports stay its own.
 		if busy, ok := s.listenable(); ok {
-			b.WriteString(";; Listening on loopback, for a dev server; no loopback connection out.\n")
-			if !lb.on || len(lb.ports) > 0 {
-				b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
-				b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
-			}
-			deny := func(p int) {
-				if !slices.Contains(lb.ports, uint16(p)) { // #nosec G115 -- a TCP port
-					fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p)
+			b.WriteString(";; Listening on loopback, for a dev server: TCP on the listen ports alone; no loopback connection out.\n")
+			if lb.on && len(lb.ports) == 0 {
+				// The debug session binds any loopback port already: carve out
+				// Abhed's reserved ports and the Mac's busy ones.
+				deny := func(p int) { fmt.Fprintf(&b, "(deny network-bind (local ip \"localhost:%d\"))\n", p) }
+				if loopport.Applies() {
+					lo, hi := loopport.Range()
+					for p := lo; p <= hi; p++ {
+						deny(p)
+					}
 				}
-			}
-			if loopport.Applies() {
-				lo, hi := loopport.Range()
-				for p := lo; p <= hi; p++ {
+				for _, p := range busy {
 					deny(p)
 				}
-			}
-			for _, p := range busy {
-				deny(p)
+			} else {
+				// One rule per port, TCP only: a UDP bind, or any other port, is refused.
+				for _, p := range s.listenPorts(busy) {
+					fmt.Fprintf(&b, "(allow network-bind (local tcp \"localhost:%d\"))\n", p)
+					fmt.Fprintf(&b, "(allow network-inbound (local tcp \"localhost:%d\"))\n", p)
+				}
 			}
 		}
 		// Nor a view of the host's network: its interfaces, addresses and
@@ -636,12 +641,50 @@ func (s *Process) seatbeltProfileWith(port uint16, lb loopback, readable ...stri
 	return b.String()
 }
 
-// listenable is the Mac's busy ports when commands may listen on loopback.
+// listening reports whether commands may listen now: so configured or
+// agreed, the agreement still kept (another process may have taken it
+// back), and a build that can find a takeover.
+func (s *Process) listening() bool {
+	if s.backend != "sandbox-exec" || !canTellSandboxed {
+		return false
+	}
+	if s.policy.ListenLoopback {
+		return true
+	}
+	if !s.listen.Load() {
+		return false
+	}
+	if f := s.listenStill.Load(); f != nil && !(*f)() {
+		s.listen.Store(false)
+		return false
+	}
+	return true
+}
+
+// listenable is the Mac's busy ports when commands may listen on loopback,
+// and puts the sandbox among those watched for a takeover.
 func (s *Process) listenable() ([]int, bool) {
-	if !s.policy.ListenLoopback && !s.listen.Load() {
+	if !s.listening() {
 		return nil, false
 	}
-	return hostListeners()
+	busy, ok := hostListeners()
+	if ok {
+		watchListeners(s)
+	}
+	return busy, ok
+}
+
+// listenPorts are the ports listening opens to a command: the configured
+// ones, less Abhed's reserved range and those the Mac listens on.
+func (s *Process) listenPorts(busy []int) []int {
+	var out []int
+	for _, p := range s.policy.ListenPorts {
+		if loopport.Applies() && loopport.In(p) || slices.Contains(busy, p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // SetListen lets sb's commands listen on loopback from their next start, or
@@ -655,10 +698,39 @@ func SetListen(sb Sandbox, on bool) bool {
 	return true
 }
 
-// Listens reports whether sb's commands may listen on loopback now.
+// SetListenWatch gives sb what listening needs from its owner: still, whether
+// the person's agreement is still kept, and ended, told of a sandboxed
+// listener ended because a program of the person's took its port too.
+func SetListenWatch(sb Sandbox, still func() bool, ended func(port, pid int)) {
+	p, ok := sb.(*Process)
+	if !ok {
+		return
+	}
+	if still != nil {
+		p.listenStill.Store(&still)
+	}
+	if ended != nil {
+		p.onListenerEnded.Store(&ended)
+	}
+}
+
+// Listens reports whether sb's commands may listen on loopback now, which
+// takes the Mac's listeners being readable.
 func Listens(sb Sandbox) bool {
 	p, ok := sb.(*Process)
-	return ok && p.backend == "sandbox-exec" && (p.policy.ListenLoopback || p.listen.Load())
+	if !ok || !p.listening() {
+		return false
+	}
+	_, read := hostListeners()
+	return read
+}
+
+// ListenPortsOf are the ports sb's commands may listen on when listening.
+func ListenPortsOf(sb Sandbox) []int {
+	if p, ok := sb.(*Process); ok {
+		return slices.Clone(p.policy.ListenPorts)
+	}
+	return nil
 }
 
 // HomeSecrets are the files and folders under home that hold credentials,
