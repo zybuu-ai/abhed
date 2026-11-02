@@ -86,6 +86,8 @@ func TestGatewayStartsTheProgramItJudged(t *testing.T) {
 		// An absolute command through a link (/opt/homebrew/bin/npx) starts, with or without a digest.
 		{name: "absolute link", command: "probe-mcp", link: true},
 		{name: "absolute link with a file digest", command: "probe-mcp", link: true, fileDigest: true},
+		// An engine named by an absolute link whose image a digest pins (/usr/local/bin/docker).
+		{name: "engine by absolute link with a pinned image", command: "docker", args: []string{"run", image}, digest: "sha256:" + strings.Repeat("a", 64), link: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			allowed, other, marks := t.TempDir(), t.TempDir(), t.TempDir()
