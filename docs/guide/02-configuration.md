@@ -258,32 +258,28 @@ and so are Abhed's own reserved ports (47600-47855, or
 listens on (another user's ports the kernel itself keeps). Commands that
 listen still connect to nothing on loopback but the egress proxy.
 
-A command can take a listen port before one of your programs starts on it.
-Your program then still starts (Go, Node and Python servers bind every
-address with `SO_REUSEADDR`), but connections to `127.0.0.1` would reach the
-command. Abhed reads the Mac's listeners every two seconds. When one of
-your programs now listens on a port a command holds, it ends every process
-of that session's sandbox, its terminals and the agent's running commands
-among them, so nothing there can listen on the port again (a new command
-is not given a port your program holds), and tells you and records it in
-that session alone (`sandbox.listener_ended`). Until then, up to two
-seconds, the command can still take what is sent there. Abhed ends only a
-process it can prove is one of that sandbox's: each such sandbox's profile
-carries a mark of its own, which the system's sandbox check confirms for
-the running process, whatever program it runs; a process confined by any
-other profile, Apple's or another tool's, is never touched. If the Mac's
-listeners can no longer be read, Studio says so, and commands that already
-listen keep their ports. A program of yours that binds `127.0.0.1` itself
-instead fails to start, as the port is taken. Keep your own servers off
-the listen ports, or narrow them.
+While listening is on, a command can take a listen port before one of your
+programs starts on it, and receive that program's connections. Your
+program still starts (Go, Node and Python servers bind every address with
+`SO_REUSEADDR`), but connections to `127.0.0.1` reach the command. Abhed
+warns you but does not stop the command: it reads the Mac's listeners every
+two seconds, and when more than one program listens on a listen port it
+tells you, in every session that may listen on that port, and records it
+(`sandbox.port_contested`), once while the port stays contested. It cannot
+prove which of the two is the sandbox's, so it signals neither. Stop the
+command yourself, or turn listening off. A new command is not given a port
+one of your programs holds. If the Mac's listeners can no longer be read,
+Studio says so. A program of yours that binds `127.0.0.1` itself instead
+fails to start, as the port is taken. Keep your own servers off the listen
+ports, or narrow them.
 
 The sandbox cannot keep a command, the agent's included, from binding
 every address of a listen port, `0.0.0.0` too. In tests connections to the
 Mac's network address were not delivered to such a server, but bind
-`127.0.0.1` or `localhost` to be sure. Listening needs a build that can tell
-a sandboxed process from yours (the release builds can) and needs `lsof`
-to read the Mac's listeners; where either fails, commands do not listen
-and Studio says so. An interactive terminal opened before you agreed keeps
+`127.0.0.1` or `localhost` to be sure. Listening needs `lsof` to read the
+Mac's listeners; where it fails, commands do not listen and Studio says so.
+It works the same where each command has a temp folder of its own
+(`abhed serve`'s instances). An interactive terminal opened before you agreed keeps
 its old rules. On Linux, the container and the vm tiers a server inside the
 sandbox is not reachable from the host.
 

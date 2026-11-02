@@ -119,7 +119,8 @@ type Set struct {
 	// ListenWatch gives listening the person's agreement to look up again
 	// and who to tell of a listener ended for a host program's port;
 	// ListenPorts are the ports listening opens.
-	ListenWatch func(still func() bool, ended func(sandbox.ListenerEnded), lost func(why string))
+	ListenWatch func(still func() bool, contested func(sandbox.PortContested), lost func(why string))
+	HeldAtStart func(port int) bool
 	ListenPorts func() []int
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
@@ -158,9 +159,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		Toolchains: tc,
 		SetListen:  func(on bool) bool { return sandbox.SetListen(resolved(o.Sandbox), on) },
 		Listens:    func() bool { return sandbox.Listens(resolved(o.Sandbox)) },
-		ListenWatch: func(still func() bool, ended func(sandbox.ListenerEnded), lost func(why string)) {
-			sandbox.SetListenWatch(resolved(o.Sandbox), still, ended, lost)
+		ListenWatch: func(still func() bool, contested func(sandbox.PortContested), lost func(why string)) {
+			sandbox.SetListenWatch(resolved(o.Sandbox), still, contested, lost)
 		},
+		HeldAtStart: func(port int) bool { return sandbox.HeldAtStart(resolved(o.Sandbox), port) },
 		ListenPorts: func() []int { return sandbox.ListenPortsOf(resolved(o.Sandbox)) },
 		Skills:      skills.NewRegistry(),
 		Agents:      agent.BuiltinDefinitions(),

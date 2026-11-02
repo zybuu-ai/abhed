@@ -3,8 +3,10 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -30,9 +32,6 @@ func listenSandbox(t *testing.T, ports ...int) *Process {
 	t.Helper()
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {
 		t.Skip("no sandbox-exec")
-	}
-	if !canTellSandboxed {
-		t.Skip("this build cannot tell a sandboxed process (no cgo)")
 	}
 	p := DefaultPolicy(t.TempDir())
 	p.ListenLoopback = true
@@ -83,7 +82,7 @@ func TestDevServerListensOnLoopback(t *testing.T) {
 	if out, err := off.Command(context.Background(), t.TempDir(), serve).CombinedOutput(); err == nil {
 		t.Fatalf("listened without the option: %s", out)
 	}
-	if canTellSandboxed {
+	{
 		// The person's agreement turns it on for the commands started after.
 		freshListeners()
 		want := `(allow network-bind (local tcp "localhost:` + strconv.Itoa(port) + `"))`
@@ -207,160 +206,117 @@ func pyListen(port int) string {
 	return `python3 -I -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); print("listening", flush=True); time.sleep(50)' ` + strconv.Itoa(port)
 }
 
-// A sandbox's mark proves its own processes alone: not another Abhed
-// sandbox's, not a sandbox-exec with another profile, not this process.
-func TestListenMarkProvesTheSandbox(t *testing.T) {
-	a, b := listenSandbox(t, freePort(t)), listenSandbox(t, freePort(t))
-	a.seatbeltProfileWith(0, loopback{})
-	b.seatbeltProfileWith(0, loopback{})
-	inA := startIn(t, a, "echo up; sleep 30")
-	inB := startIn(t, b, "echo up; sleep 30")
-	other := exec.Command("sandbox-exec", "-p", "(version 1)\n(allow default)\n(deny file-read* (subpath \"/usr/share/doc\"))\n", "/bin/sh", "-c", "echo up; sleep 30")
-	out, _ := other.StdoutPipe()
-	if err := other.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = other.Process.Kill(); _ = other.Wait() }()
-	_, _ = bufio.NewReader(out).ReadString('\n')
-	ma := a.listenMark()
-	if !ma.owns(inA.Process.Pid) || ma.owns(inB.Process.Pid) || ma.owns(other.Process.Pid) || ma.owns(os.Getpid()) {
-		t.Fatalf("the mark proves the wrong processes: a %v b %v other %v self %v",
-			ma.owns(inA.Process.Pid), ma.owns(inB.Process.Pid), ma.owns(other.Process.Pid), ma.owns(os.Getpid()))
-	}
-	if markedSandboxOf(inB.Process.Pid) != b || markedSandboxOf(other.Process.Pid) != nil {
-		t.Fatal("a process is put in the wrong sandbox")
-	}
-}
-
-// A program of the person's that starts listening on a port a sandboxed
-// command holds (a wildcard bind with SO_REUSEADDR, Go's default, succeeds
-// beside it) ends that sandbox's commands, and only its owner is told;
-// another sandbox's command, and a process another profile confines on the
-// same port, are left alone.
-func TestHostListenerEndsASandboxedOne(t *testing.T) {
-	port := freePort(t)
-	sb, bystander := listenSandbox(t, port), listenSandbox(t, port)
-	var ended, told atomic.Int64
-	SetListenWatch(sb, nil, func(e ListenerEnded) {
-		if e.Port == port && e.Ended > 0 {
-			ended.Store(int64(e.PID))
+// A program of the person's that starts listening on a listen port a
+// sandboxed command holds (a wildcard bind with SO_REUSEADDR, Go's default,
+// succeeds beside it) is told to the sandboxes whose listen port it is,
+// once while it stays contested, and nothing is stopped; a new command is
+// not given the port. Under PrivateTemp too.
+func TestContestedPortIsToldNotStopped(t *testing.T) {
+	for _, private := range []bool{false, true} {
+		port := freePort(t)
+		sb, elsewhere := listenSandbox(t, port), listenSandbox(t, freePort(t))
+		if private {
+			sb.policy.PrivateTemp = true
 		}
-	}, nil)
-	SetListenWatch(bystander, nil, func(ListenerEnded) { told.Add(1) }, nil)
-	bystander.seatbeltProfileWith(0, loopback{})
-	quiet := startIn(t, bystander, "echo up; sleep 30")
-	other := exec.Command("sandbox-exec", "-p", "(version 1)\n(allow default)\n", "/bin/sh", "-c", "echo up; sleep 30")
-	o, _ := other.StdoutPipe()
-	if err := other.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = other.Process.Kill(); _ = other.Wait() }()
-	_, _ = bufio.NewReader(o).ReadString('\n')
-
-	cmd := startIn(t, sb, pyListen(port))
-	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		t.Fatalf("the host could not listen beside it: %v", err)
-	}
-	defer host.Close()
-	sweepListeners()
-	if !exited(cmd, 10*time.Second) {
-		t.Fatal("the sandboxed listener was not ended")
-	}
-	if ended.Load() == 0 || told.Load() != 0 {
-		t.Fatalf("told: owner %d, bystander %d", ended.Load(), told.Load())
-	}
-	if exited(quiet, 300*time.Millisecond) || exited(other, 300*time.Millisecond) {
-		t.Fatal("a process of another sandbox was ended")
-	}
-	if !HostHolds(port) {
-		t.Fatal("the host's listener is not seen as the host's")
-	}
-}
-
-// A command that starts its listener again in a loop is ended whole: after
-// one sweep every connection reaches the person's program.
-func TestTakeoverRestartLoopIsEndedWhole(t *testing.T) {
-	port := freePort(t)
-	sb := listenSandbox(t, port)
-	loop := startIn(t, sb, `while true; do `+pyListen(port)+`; done`)
-	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close()
-	go func() {
-		for {
-			c, err := host.Accept()
-			if err != nil {
-				return
+		var told, other atomic.Int64
+		SetListenWatch(sb, nil, func(c PortContested) {
+			if c.Port == port && c.Listeners >= 2 {
+				told.Add(1)
 			}
-			_, _ = c.Write([]byte("host\n"))
-			_ = c.Close()
-		}
-	}()
-	sweepListeners()
-	if !exited(loop, 10*time.Second) {
-		t.Fatal("the loop survived")
-	}
-	time.Sleep(500 * time.Millisecond)
-	for i := range 30 {
-		c, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), time.Second)
+		}, nil)
+		SetListenWatch(elsewhere, nil, func(PortContested) { other.Add(1) }, nil)
+		elsewhere.seatbeltProfileWith(0, loopback{})
+
+		cmd := startIn(t, sb, pyListen(port))
+		host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 		if err != nil {
-			t.Fatalf("connection %d: %v", i, err)
+			t.Fatalf("private %v: the host could not listen beside it: %v", private, err)
 		}
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		line, _ := bufio.NewReader(c).ReadString('\n')
-		_ = c.Close()
-		if line != "host\n" {
-			t.Fatalf("connection %d reached %q, not the person's program", i, line)
+		sweepListeners()
+		sweepListeners()
+		if told.Load() != 1 || other.Load() != 0 {
+			t.Fatalf("private %v: told %d, another sandbox %d", private, told.Load(), other.Load())
+		}
+		if exited(cmd, 500*time.Millisecond) {
+			t.Fatalf("private %v: the sandboxed command was stopped", private)
+		}
+		freshListeners()
+		if strings.Contains(sb.seatbeltProfileWith(0, loopback{}), `(local tcp "localhost:`+strconv.Itoa(port)+`")`) || !HeldAtStart(sb, port) {
+			t.Fatalf("private %v: a new command is given the contested port", private)
+		}
+		// Told again only after it stopped being contested.
+		_ = host.Close()
+		sweepListeners()
+		host, err = net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sweepListeners()
+		_ = host.Close()
+		if told.Load() != 2 {
+			t.Fatalf("private %v: told %d times after a second contest", private, told.Load())
 		}
 	}
 }
 
-// Swapping the listener's program on disk for one signed into the App
-// Sandbox changes nothing: the mark is in the running profile.
-func TestTakeoverSurvivesASwappedProgram(t *testing.T) {
-	port := freePort(t)
-	sb := listenSandbox(t, port)
-	ws := sb.policy.Workspace
-	run := filepath.Join(ws, "run")
-	if out, err := exec.Command("cp", "/usr/bin/nc", run).CombinedOutput(); err != nil {
-		t.Skipf("no nc to copy: %v %s", err, out)
+// Nothing that watches listening may signal a process: no call that sends
+// a signal is in listen_ports.go, and the files that do send one are the
+// known ones, which signal only the command's own process tree or group,
+// or a container or helper Abhed itself started.
+func TestNoListenCodeSignalsAProcess(t *testing.T) {
+	known := map[string]bool{
+		"group_unix.go": true, "tree_darwin.go": true, "session_darwin.go": true, "fence_linux.go": true,
+		"container.go": true, "container_egress.go": true, "shell.go": true,
 	}
-	entitled := filepath.Join(t.TempDir(), "entitled")
-	ent := filepath.Join(t.TempDir(), "ent.plist")
-	_ = os.WriteFile(ent, []byte(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.app-sandbox</key><true/></dict></plist>`), 0o644)
-	if out, err := exec.Command("cp", "/usr/bin/nc", entitled).CombinedOutput(); err != nil {
-		t.Fatal(err, string(out))
-	}
-	if out, err := exec.Command("codesign", "-f", "-s", "-", "--entitlements", ent, entitled).CombinedOutput(); err != nil {
-		t.Skipf("cannot sign a copy: %v %s", err, out)
-	}
-	cmd := startIn(t, sb, "echo up; exec "+run+" -l 127.0.0.1 "+strconv.Itoa(port))
-	time.Sleep(300 * time.Millisecond)
-	if err := os.Rename(entitled, run); err != nil {
-		t.Fatal(err)
-	}
-	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close()
-	sweepListeners()
-	if !exited(cmd, 10*time.Second) {
-		t.Fatal("a swapped program kept its listener")
+	fset := token.NewFileSet()
+	files, _ := filepath.Glob("*.go")
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			name := sel.Sel.Name
+			// syscall.Kill(pid, sig) and the like; (*os.Process).Kill() and .Signal(sig).
+			kill := (name == "Kill" || name == "Tgkill") && len(call.Args) >= 2 && !signalZero(call) ||
+				name == "Kill" && len(call.Args) == 0 || name == "Signal" && len(call.Args) == 1 && !isPkg(sel.X)
+			if !kill {
+				return true
+			}
+			if f == "listen_ports.go" || !known[f] {
+				t.Errorf("%s: %s sends a signal; only the command's own tree may be signalled", fset.Position(call.Pos()), name)
+			}
+			return true
+		})
 	}
 }
 
-func TestTakenOver(t *testing.T) {
-	all := []listener{{port: 3000, pid: 10}, {port: 3000, pid: 20}, {port: 3001, pid: 10}, {port: 3002, pid: 30}, {port: 3002, pid: 31}, {port: 5432, pid: 40}, {port: 5432, pid: 10}}
-	inside := func(pid int) bool { return pid == 10 || pid == 30 || pid == 31 }
-	got := takenOver(all, map[int]bool{3000: true, 3001: true, 3002: true}, inside)
-	// 3000: host 20 beside sandboxed 10; 3002: both sandboxed; 5432 is not a listen port.
-	if len(got) != 1 || got[0] != (listener{port: 3000, pid: 10}) {
-		t.Fatalf("%v", got)
+// isPkg reports syscall or unix, whose Signal is a type, not a send.
+func isPkg(x ast.Expr) bool {
+	id, ok := x.(*ast.Ident)
+	return ok && (id.Name == "syscall" || id.Name == "unix")
+}
+
+// signalZero reports a Kill(pid, 0), which only asks whether pid exists.
+func signalZero(call *ast.CallExpr) bool {
+	if len(call.Args) != 2 {
+		return false
 	}
+	if lit, ok := call.Args[1].(*ast.BasicLit); ok {
+		return lit.Value == "0"
+	}
+	return false
 }
 
 func TestParseListeners(t *testing.T) {
@@ -426,36 +382,5 @@ func TestDebugLoopbackAndListenCompose(t *testing.T) {
 		count(pyOn, `(allow network-bind (local ip "localhost:`+strconv.Itoa(int(port))+`"))`) != 1 ||
 		count(pyOn, `(allow network-bind (local tcp "localhost:`+strconv.Itoa(devPort)+`"))`) != 1 {
 		t.Fatalf("Python debug with listening on has other rules than intended:\n%s", pyOn)
-	}
-}
-
-// A listener another profile confines, on a listen port a program of the
-// person's then takes too, is no command of Abhed's and is never ended.
-func TestOtherSandboxListenerIsNeverEnded(t *testing.T) {
-	port := freePort(t)
-	sb := listenSandbox(t, port)
-	var told atomic.Int64
-	SetListenWatch(sb, nil, func(ListenerEnded) { told.Add(1) }, nil)
-	sb.seatbeltProfileWith(0, loopback{})
-	other := exec.Command("sandbox-exec", "-p", "(version 1)\n(allow default)\n(deny file-read* (subpath \"/usr/share/doc\"))\n", "/usr/bin/python3", "-I", "-c",
-		`import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); print("listening", flush=True); time.sleep(30)`, strconv.Itoa(port))
-	o, _ := other.StdoutPipe()
-	if err := other.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = other.Process.Kill(); _ = other.Wait() }()
-	if line, _ := bufio.NewReader(o).ReadString('\n'); !strings.Contains(line, "listening") {
-		t.Skipf("the other sandbox's listener did not start: %q", line)
-	}
-	host, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close()
-	freshListeners()
-	sweepListeners()
-	sweepListeners()
-	if exited(other, 500*time.Millisecond) || told.Load() != 0 {
-		t.Fatal("a listener another profile confines was ended")
 	}
 }

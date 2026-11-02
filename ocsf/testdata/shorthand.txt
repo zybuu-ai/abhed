@@ -114,4 +114,4 @@
 2026-10-19T11:59:57.123Z s-1#116 API:Open registries INFO toolchain.registry
 2026-10-19T11:59:58.123Z s-1#117 API:Create INFO ollama pull qwen3:8b: refused
 2026-10-19T11:59:59.123Z s-1#118 API:Debug setup INFO debug.setup
-2026-10-19T12:00:00.123Z s-1#119 API:Listener ended INFO sandbox.listener_ended
+2026-10-19T12:00:00.123Z s-1#119 API:Port contested INFO sandbox.port_contested

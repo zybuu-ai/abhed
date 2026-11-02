@@ -583,12 +583,12 @@ jobs:
       # The Seatbelt profile is only exercised on macOS: every process-sandbox
       # boundary test must run here, none skipped, with the probe that a
       # command cannot reach LaunchServices to open a URL or an app, and the
-      # listen boundary: TCP on listen ports only, and a takeover ended only
-      # in the sandbox its mark proves.
+      # listen boundary: TCP on listen ports only, a contested port told and
+      # nothing signalled.
       - name: Every process-sandbox boundary runs under Seatbelt
         run: |
           set -euo pipefail
-          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ListenMark|HostListener|Takeover|OtherSandboxListener|TakenOver|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
+          go test ./internal/sandbox/ -run 'ProcessSandbox|ReadableFile|LaunchServices|ToolchainTempDir|DevServerListens|ContestedPort|NoListenCodeSignals|DebugLoopbackAndListen' -count=1 -v > seatbelt.log 2>&1 || { cat seatbelt.log; exit 1; }
           if grep -q -- "--- SKIP" seatbelt.log; then
             echo "a boundary test skipped under Seatbelt:"; grep -B3 -- "--- SKIP" seatbelt.log; exit 1
           fi
@@ -596,9 +596,8 @@ jobs:
                    TestProcessSandboxDeniesHomeSecretsThroughALink \
                    TestSeatbeltRefusesLaunchServices TestSeatbeltToolsWorkWithoutLaunchServices TestServerProfileDeniesLaunchServices \
                    TestSandboxAllowsToolchainTempDir \
-                   TestDevServerListensOnLoopback TestListenMarkProvesTheSandbox TestHostListenerEndsASandboxedOne \
-                   TestTakeoverRestartLoopIsEndedWhole TestTakeoverSurvivesASwappedProgram TestOtherSandboxListenerIsNeverEnded \
-                   TestTakenOver TestDebugLoopbackAndListenCompose; do
+                   TestDevServerListensOnLoopback TestContestedPortIsToldNotStopped TestNoListenCodeSignalsAProcess \
+                   TestDebugLoopbackAndListenCompose; do
             grep -q -- "--- PASS: $t " seatbelt.log || { echo "$t did not run and pass:"; grep -- "$t" seatbelt.log || true; exit 1; }
           done
           echo "$(grep -c -- "--- PASS" seatbelt.log) boundary tests ran under Seatbelt"

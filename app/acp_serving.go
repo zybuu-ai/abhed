@@ -66,9 +66,6 @@ var listenRefused = regexp.MustCompile(`(?i)\blisten (EPERM|EACCES)\b|\bbind: (o
 // listenOffer says whether the person can let commands listen here, and
 // why not.
 func listenOffer(parts embedded.Parts, tier string) (bool, string) {
-	if ok, why := sandbox.ListenSupported(); !ok {
-		return false, why
-	}
 	switch {
 	case runtime.GOOS != "darwin" || tier != "process":
 		return false, "only the macOS process tier lets a server in the sandbox be reached from the host"
@@ -128,8 +125,10 @@ func (c *acpConn) watchServing(t *acpTerminal, chunk []byte) {
 	w.mu.Unlock()
 	ports := t.listenPorts()
 	for _, u := range found {
-		// Only a listen port nothing of the host's holds can be a sandboxed server's.
-		if port := urlPort(u); t.tier != "none" && (!slices.Contains(ports, port) || sandbox.HostHolds(port)) {
+		// Only a listen port that a program of the person's did not hold when the
+		// command started, and that one program alone listens on, can be a
+		// sandboxed server's.
+		if port := urlPort(u); t.tier != "none" && (!slices.Contains(ports, port) || t.heldAtStart(port) || sandbox.ListenersOn(port) > 1) {
 			continue
 		}
 		c.notification("_abhed/terminal/serving", map[string]any{"sessionId": t.session.id, "terminalId": t.id, "url": u})
@@ -174,6 +173,13 @@ func portList(ports []int) string {
 	return strings.Join(parts, ", ")
 }
 
+// heldAtStart reports whether a program other than the sandbox's commands
+// held port when its last listening command started.
+func (t *acpTerminal) heldAtStart(port int) bool {
+	parts, e := innerOf(t.session)
+	return e != nil || parts.Set == nil || parts.Set.HeldAtStart == nil || parts.Set.HeldAtStart(port)
+}
+
 // listenPorts are the ports a server in t's sandbox may listen on.
 func (t *acpTerminal) listenPorts() []int {
 	if parts, e := innerOf(t.session); e == nil && parts.Set != nil && parts.Set.ListenPorts != nil {
@@ -192,7 +198,7 @@ func (c *acpConn) offerListen(t *acpTerminal) {
 	note := "the sandbox does not let commands listen for connections in this workspace."
 	if canAllow {
 		note += " Allow it from Studio (Let Commands Listen): every command in every session of this workspace, the agent's too, may then listen on TCP ports " +
-			portList(t.listenPorts()) + ". Then start the server again on one of them (in a new terminal, for an interactive one)."
+			portList(t.listenPorts()) + ". A command can then take one of those ports before a program of yours starts there and receive its connections; Abhed warns you but does not stop the command. Then start the server again on one of them (in a new terminal, for an interactive one)."
 	} else {
 		note += " It cannot be allowed here: " + why + "."
 	}
@@ -296,8 +302,8 @@ func (s *acpSession) loadListen(c *acpConn) {
 
 // watchListening gives the session's sandbox the agreement to look up again,
 // as another process may take it back, and tells the person, and the
-// record, when its commands were ended because a program of theirs took a
-// port one of them held, or when that can no longer be seen.
+// record, when more than one program listens on one of its listen ports, or
+// when that can no longer be seen. Abhed tells; it never stops a command.
 func (s *acpSession) watchListening(c *acpConn) {
 	if s.parts.Set == nil || s.parts.Set.ListenWatch == nil || s.parts.Session == nil {
 		return
@@ -317,16 +323,16 @@ func (s *acpSession) watchListening(c *acpConn) {
 			return kept
 		}
 	}
-	s.parts.Set.ListenWatch(still, func(e sandbox.ListenerEnded) {
-		msg := fmt.Sprintf("a program of yours started listening on port %d, which a command in this session's sandbox held; that sandbox's commands (%d processes) were ended, so the connections go to your program.", e.Port, e.Ended)
+	s.parts.Set.ListenWatch(still, func(e sandbox.PortContested) {
+		msg := fmt.Sprintf("more than one program now listens on port %d, one of this workspace's listen ports: a command in the sandbox may be taking connections meant for a program of yours there. Abhed does not stop it: stop the command yourself, or turn listening off.", e.Port)
 		warnf("%s", msg)
-		if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxListenerEnded, agent.ActorSystem, agent.Trusted,
-			agent.SandboxListenerEnded{Port: e.Port, PID: e.PID, Ended: e.Ended}); err != nil {
-			warnf("the record did not take %s: %v", agent.EvSandboxListenerEnded, err)
+		if _, err := s.parts.Loop.Recorder.Record(agent.EvSandboxPortContested, agent.ActorSystem, agent.Trusted,
+			agent.SandboxPortContested{Port: e.Port, Listeners: e.Listeners}); err != nil {
+			warnf("the record did not take %s: %v", agent.EvSandboxPortContested, err)
 		}
-		c.notification("_abhed/sandbox/listener_ended", map[string]any{"sessionId": s.id, "port": e.Port, "message": msg})
+		c.notification("_abhed/sandbox/port_contested", map[string]any{"sessionId": s.id, "port": e.Port, "message": msg})
 	}, func(why string) {
-		msg := "Abhed can no longer see a command taking a port one of your programs listens on: " + why + ". Commands that already listen keep their ports."
+		msg := "Abhed can no longer see a port of yours contested by a sandboxed command: " + why + "."
 		warnf("%s", msg)
 		c.notification("_abhed/sandbox/listen_watch_lost", map[string]any{"sessionId": s.id, "message": msg})
 	})
