@@ -272,3 +272,37 @@ func TestStudioCommitMessageRotatedBlockSecret(t *testing.T) {
 		t.Fatalf("sent %.600s", sent)
 	}
 }
+
+// The same with the file's last line, the value, ending without a newline:
+// git's "\ No newline at end of file" marker does not end the block.
+func TestStudioCommitMessageRotatedBlockSecretNoFinalNewline(t *testing.T) {
+	model := newFIMServer(t, "Rotate the password")
+	r := completionRig(t, model.URL, "")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.ws, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	r.write("values.yaml", "db:\n  user: bob\n  password: |\n    OldBlockSecret1")
+	git("add", "values.yaml")
+	git("commit", "-q", "-m", "first")
+	r.write("values.yaml", "db:\n  user: bob\n  password: |\n    NewBlockSecret2")
+	git("add", "values.yaml")
+	id := r.open()
+	var res struct {
+		Message string `json:"message"`
+	}
+	r.cl.ok("_abhed/commitMessage", map[string]any{"sessionId": id}, &res)
+	if res.Message != "Rotate the password" {
+		t.Fatalf("%+v", res)
+	}
+	model.mu.Lock()
+	sent := strings.Join(model.bodies, "\n")
+	model.mu.Unlock()
+	if strings.Contains(sent, "OldBlockSecret1") || strings.Contains(sent, "NewBlockSecret2") || !strings.Contains(sent, "user: bob") {
+		t.Fatalf("sent %.600s", sent)
+	}
+}

@@ -142,10 +142,11 @@ Studio never sends a diff. A staged file the session may not read, one that
 looks like keys, or Abhed's state is left out of what is sent; the rest has
 stored secrets and key-shaped text withheld, the diff's added and removed
 lines included (a block scalar whose value changed under an unchanged key
-too), with ten lines of context around each change, and is cut to 32 KiB. A file the repository's ignore rules
-name is left out even when it was force-added, so a repository that ignores
-everything and force-adds its files (a dotfiles repository, say) gets no
-message. The model is `model.commit`, or the completion model, under the
+too, with or without a newline at the file's end), with ten lines of context
+around each change, and is cut to 32 KiB. A file the repository's ignore
+rules name is left out even when it was force-added, so a repository that
+ignores everything and force-adds its files (a dotfiles repository, say)
+gets no message. The model is `model.commit`, or the completion model, under the
 same rules as completions.
 
 Withholding is by shape, not a guarantee. A stored secret's value is always
