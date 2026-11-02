@@ -125,6 +125,9 @@ type Set struct {
 	HeldAtStart func(port int) bool
 	// ListenPorts are the ports listening opens.
 	ListenPorts func() []int
+	// FlushListen records now the contested-port joins still held back, as
+	// the session ends.
+	FlushListen func()
 	// extensionTools names the tools extensions provided.
 	extensionTools []string
 	uninstall      func()
@@ -167,6 +170,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		},
 		HeldAtStart: func(port int) bool { return sandbox.HeldAtStart(resolved(o.Sandbox), port) },
 		ListenPorts: func() []int { return sandbox.ListenPortsOf(resolved(o.Sandbox)) },
+		FlushListen: func() { sandbox.FlushListenRecords(resolved(o.Sandbox)) },
 		Skills:      skills.NewRegistry(),
 		Agents:      agent.BuiltinDefinitions(),
 	}

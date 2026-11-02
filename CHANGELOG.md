@@ -21,7 +21,20 @@ All notable changes to Abhed are recorded here. The format follows
   each new worker. A program is the same one only with the same sockets
   and a process in common, so a new program on a socket address another
   left is told, and programs that stopped listening are forgotten, so a
-  long contest does not grow without bound.
+  long contest does not grow without bound. Every new program is still
+  told at once, and `_abhed/sandbox/port_contested` now carries `joined`
+  and `latestJoin` so Studio updates one entry per port in place; the
+  record (`sandbox.port_contested`, with a new `joined` field) and the log
+  take a port's first notice at once and then at most one entry per port
+  every 30 seconds, so a command that keeps starting listeners cannot
+  flood them; joins still held back are recorded when the session closes,
+  before its end, a turn running or not. The "at most once a minute" for
+  a contest coming back, which could never apply, is gone.
+- When Abhed Studio ends its input and stops the engine at once, the
+  engine now finishes closing its sessions (their ends, the terminals'
+  last lines) before it exits: a stop signal that comes while stdin is
+  open waits up to 250 ms for it to end, so a lone SIGTERM now exits
+  after about a quarter of a second.
 
 ## [1.2.9] - 2026-11-02
 

@@ -623,6 +623,9 @@ func TestTerminalLetsAServerListen(t *testing.T) {
 	notice := r.cl.waitFor(from, "the contested port", func(m rpcMessage) bool {
 		return m.Method == "_abhed/sandbox/port_contested" && strings.Contains(string(m.Params), fmt.Sprintf(`"port":%d`, devPort))
 	})
+	if p := string(notice.Params); !strings.Contains(p, `"joined":`) || !strings.Contains(p, `"latestJoin":`) {
+		t.Fatalf("the notice carries no joined count or time: %s", p)
+	}
 	if !strings.Contains(string(notice.Params), "does not stop it") {
 		t.Fatalf("the notice does not say Abhed stops nothing: %s", notice.Params)
 	}
@@ -746,5 +749,107 @@ func TestForkedDevServerIsOffered(t *testing.T) {
 		if m.Method == "_abhed/sandbox/port_contested" {
 			t.Fatalf("a forked server was told as a contest: %s", m.Params)
 		}
+	}
+}
+
+// A join a contested port's window still holds is recorded when the session
+// closes, before its end.
+func TestPendingContestJoinsAreRecordedBeforeTheEnd(t *testing.T) {
+	pendingJoinsBeforeTheEnd(t, false)
+}
+
+// Closing while a turn runs records them before the cancelled turn records
+// its end.
+func TestPendingContestJoinsAreRecordedBeforeTheEndOfARunningTurn(t *testing.T) {
+	pendingJoinsBeforeTheEnd(t, true)
+}
+
+func pendingJoinsBeforeTheEnd(t *testing.T, running bool) {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		t.Skip("listening is switched only on the macOS process tier")
+	}
+	var port int
+	for {
+		ports, err := sandbox.FreeLoopbackPorts(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if port = int(ports[0]); !loopport.In(port) {
+			break
+		}
+	}
+	r := newStudioRig(t, fmt.Sprintf(`,"sandbox":{"listen":"allow","listen_ports":["%d"]}`, port))
+	id := r.open()
+	var shell struct {
+		TerminalID string `json:"terminalId"`
+		Tier       string `json:"tier"`
+		Serves     bool   `json:"serves"`
+	}
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 200, "rows": 24}, &shell)
+	if shell.Tier != "process" || !shell.Serves {
+		if shell.Tier == "process" && sandbox.ListenersReadable() {
+			t.Fatal("not listening under sandbox.listen allow, though the Mac's listeners can be read")
+		}
+		t.Skipf("listening is not available here (tier %s)", shell.Tier)
+	}
+	// Two programs of the command's own: the port's first notice, recorded at once.
+	from := r.cl.mark()
+	two := fmt.Sprintf(`python3 -I -c 'import os,socket,time
+def sock():
+    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1); s.bind(("127.0.0.1", %d)); s.listen(); return s
+if os.fork() == 0:
+    c=sock(); time.sleep(30); os._exit(0)
+s=sock(); print("two"+"up", flush=True); time.sleep(30)'`, port)
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": shell.TerminalID, "data": two + "\r"}, nil)
+	waitOutput(r.cl, from, shell.TerminalID, "twoup")
+	r.cl.waitFor(from, "the first notice", func(m rpcMessage) bool { return m.Method == "_abhed/sandbox/port_contested" })
+	if running {
+		// A turn held open by a model that does not answer until the test ends.
+		asked := make(chan struct{}, 1)
+		hold := make(chan struct{})
+		t.Cleanup(func() { close(hold) })
+		r.model.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			select {
+			case asked <- struct{}{}:
+			default:
+			}
+			select {
+			case <-hold:
+			case <-req.Context().Done():
+			}
+		})
+		go r.cl.call("session/prompt", map[string]any{"sessionId": id, "prompt": []any{map[string]any{"type": "text", "text": "wait"}}})
+		<-asked
+	}
+	// A program of the person's joins inside the record's window.
+	from = r.cl.mark()
+	host, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	r.cl.waitFor(from, "the person's program told", func(m rpcMessage) bool { return m.Method == "_abhed/sandbox/port_contested" })
+	if got, _ := r.recorded(id, agent.EvSandboxPortContested); len(got) != 1 {
+		t.Fatalf("recorded inside the window: %v", got)
+	}
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	var contested, ended []int
+	joined := 0.0
+	for i, ev := range r.events(id) {
+		switch ev.Type {
+		case agent.EvSandboxPortContested:
+			contested = append(contested, i)
+			var p map[string]any
+			_ = json.Unmarshal(ev.Payload, &p)
+			if j, ok := p["joined"].(float64); ok {
+				joined += j
+			}
+		case agent.EvSessionEnded:
+			ended = append(ended, i)
+		}
+	}
+	if len(contested) != 2 || len(ended) == 0 || contested[1] > ended[len(ended)-1] || joined < 3 {
+		t.Fatalf("running %v: records at %v (joined %v in all), ends at %v", running, contested, joined, ended)
 	}
 }

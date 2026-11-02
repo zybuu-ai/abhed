@@ -39,6 +39,9 @@ type Process struct {
 	// notices are what this sandbox was told of each contested listen
 	// port; guarded by watching.mu.
 	notices map[int]*portNotice
+	// windows bound the records of each contested listen port; guarded by
+	// watching.mu, and kept while listening goes off and on.
+	windows map[int]*recordWindow
 
 	// Whether bwrap may mount a fresh /proc and /dev: a hardened container
 	// refuses, which looked like an agent failure. Probed once.

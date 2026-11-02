@@ -276,7 +276,12 @@ that is running, and the command it was running with everything that command
 started, wait for it to record its end, then exit with 128 plus the signal's
 number (130, 143, 129), as a shell reports a process the signal ended. A
 second signal exits at once. Before, the signal ended the process outright and
-left the command running.
+left the command running. Once its standard input has ended, `abhed acp`
+closes its sessions, recording each one's end, before it exits on a signal,
+for up to 30 seconds or until a second signal; a signal that comes while
+stdin is still open waits up to 250 ms for it to end, as an editor that
+stops the engine ends stdin and signals at once, so a lone SIGTERM exits
+after about a quarter of a second.
 
 ## Resolving an issue
 
