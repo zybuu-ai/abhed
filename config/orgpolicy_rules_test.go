@@ -183,7 +183,7 @@ var unionSamples = map[string]string{
 // docAt is a JSON document setting the dotted path to v.
 func docAt(path string, v any) string {
 	parts := strings.Split(path, ".")
-	var x any = v
+	x := v
 	for i := len(parts) - 1; i >= 0; i-- {
 		x = map[string]any{parts[i]: x}
 	}

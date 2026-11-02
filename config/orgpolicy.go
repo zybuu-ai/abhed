@@ -385,14 +385,9 @@ func (j orgStrip) extra(p string, v any) string {
 var unionLists = map[string]bool{"permissions.deny": true, "permissions.ask": true,
 	"monitor.honeytokens": true, "verify.contract.protect": true}
 
-// orgJoinedBack are the union-ruled settings whose org entries are joined
-// with the layers below, never replacing them: deny and ask in applyManaged,
-// honeytokens in monitorBelow, the rest in joinManagedLists. Every union-ruled
-// tighten key must be here; TestUnionRuledOrgKeysAreJoinedBack holds it.
-var orgJoinedBack = map[string]bool{"permissions.deny": true, "permissions.ask": true,
-	"monitor.honeytokens": true, "verify.contract.protect": true}
-
-// orgBelowLists are the lists joinOrgLists joins back, by key.
+// orgBelowLists are the union-ruled lists joinManagedLists joins back; deny
+// and ask join in applyManaged, honeytokens in monitorBelow.
+// TestUnionRuledListsOnlyGrow checks every union-ruled list does.
 var orgBelowLists = []string{"verify.contract.protect"}
 
 // joinManagedLists joins back the lists below that the managed layer set,
