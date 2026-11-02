@@ -286,7 +286,9 @@ All notable changes to Abhed are recorded here. The format follows
   name, the program's path, a pinned digest or a remote server's host,
   whether it comes from the user's, the workspace's or the managed
   configuration, `-mcp-config`, `abhed mcp add`, the console, Studio or a
-  restart.
+  restart. A digest that pins a container engine's image, not a program file,
+  is admitted by an allow entry only when that entry also names the
+  engine's path with `command`.
 
   A pattern judges the type and model name. Under the managed file's or the
   org policy's list, every input that decides where the requests go is bound

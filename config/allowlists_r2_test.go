@@ -199,3 +199,35 @@ func TestOrgPolicyCannotWidenLoopback(t *testing.T) {
 		t.Error("allowed_loopback true from the org was taken")
 	}
 }
+
+// A digest that pins an engine's image is admitted by an allow entry only with
+// the engine's path named in the same entry; a deny entry by digest alone
+// still matches it.
+func TestImagePinnedServers(t *testing.T) {
+	d := "sha256:" + strings.Repeat("c", 64)
+	srv := MCPServerOf(MCPServerConfig{Name: "github", Command: "/Users/me/x/docker", Args: []string{"run", "a@" + d}, Digest: d})
+	if !srv.ImagePinned {
+		t.Fatal("an engine's image pin was not seen")
+	}
+	srv.Programs = []string{"/Users/me/x/docker"}
+	cfg := Default()
+	cfg.MCP.Allowed = []MCPMatch{{Name: "github", Digest: d}}
+	refusedBy(t, cfg.MCPAdmitted(srv), "mcp.allowed")
+	cfg.MCP.Allowed = []MCPMatch{{Name: "github", Digest: d, Command: "/usr/local/bin/docker"}}
+	refusedBy(t, cfg.MCPAdmitted(srv), "mcp.allowed")
+	srv.Programs = []string{"/usr/local/bin/docker"}
+	if err := cfg.MCPAdmitted(srv); err != nil {
+		t.Fatalf("the engine's path and the image: %v", err)
+	}
+	// A file digest is not an image pin: a digest-only entry admits it.
+	file := MCPServerOf(MCPServerConfig{Name: "github", Command: "/opt/gh-mcp", Digest: d})
+	if file.ImagePinned {
+		t.Fatal("a file digest read as an image pin")
+	}
+	cfg.MCP.Allowed = []MCPMatch{{Name: "github", Digest: d}}
+	if err := cfg.MCPAdmitted(file); err != nil {
+		t.Fatalf("a file digest: %v", err)
+	}
+	cfg.MCP.Allowed, cfg.MCP.Denied = nil, []MCPMatch{{Digest: d}}
+	refusedBy(t, cfg.MCPAdmitted(srv), "mcp.denied")
+}

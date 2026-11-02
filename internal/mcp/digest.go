@@ -90,6 +90,19 @@ const (
 	pinFile
 )
 
+// PinsImage reports a digest that pins the image a container engine's run
+// names rather than the program file: the command's base name is an engine
+// and its run's image is that digest. Nothing is hashed then, so the program
+// itself is bound only by its path.
+func PinsImage(command string, args []string, digest string) bool {
+	want := strings.ToLower(strings.TrimSpace(digest))
+	if want == "" || !containerEngines[engineName(command)] {
+		return false
+	}
+	a := strings.ToLower(runImage(args))
+	return imageByDigest.MatchString(a) && strings.HasSuffix(a, "@"+want)
+}
+
 // pinnedCommand is pinnedProgram without the kind.
 func pinnedCommand(cfg ServerConfig, env []string) (string, error) {
 	c, _, err := pinnedProgram(cfg, env)
@@ -113,10 +126,8 @@ func pinnedProgram(cfg ServerConfig, env []string) (string, pinKind, error) {
 	if cfg.URL != "" {
 		return "", pinNone, errors.New("digest pins a program Abhed starts; a URL server's cannot be checked, so remove digest or run the server over stdio")
 	}
-	if containerEngines[engineName(cfg.Command)] {
-		if a := runImage(cfg.Args); imageByDigest.MatchString(strings.ToLower(a)) && strings.HasSuffix(strings.ToLower(a), "@"+want) {
-			return cfg.Command, pinImage, nil
-		}
+	if PinsImage(cfg.Command, cfg.Args, want) {
+		return cfg.Command, pinImage, nil
 	}
 	path, err := resolveProgram(cfg.Command, env)
 	if err != nil {

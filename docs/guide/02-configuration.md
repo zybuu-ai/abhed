@@ -1772,7 +1772,7 @@ A server matches an entry when every field the entry sets matches it:
 |---|---|
 | `name` | the configured name; `*` for any run of characters |
 | `command` | the absolute path of the program a stdio server's command resolves to on its own `PATH`, as found or with links followed; `*` as above. While any entry matches by `command`, a server is started at exactly the path that was judged, with links followed, not looked up again. That includes a container engine whose image a `digest` pins. Started unconfined, the program is still given the configured name as its `argv[0]`. A confined start passes the resolved path as `argv[0]`, since the sandbox's launcher runs that path, so a multi-call program reached through a link sees its real name there |
-| `digest` | the `sha256:` digest the server's configuration pins. Abhed checks the program, or the image the digest names, before it starts the server, so a server whose program does not match never runs |
+| `digest` | the `sha256:` digest the server's configuration pins. For a program file, Abhed hashes the file before it starts the server, so a program that does not match never runs. For a container engine (`docker`, `podman`, `nerdctl`) whose `run` names the image by that digest, the digest pins the image and nothing is hashed. An allow entry then admits the server only when it also has a `command` that matches the engine's resolved path, since anything can be named `docker`. A deny entry matches the digest either way |
 | `host` | a remote server's URL host; `*.example.com` matches any subdomain. Hosts are compared in the ASCII form a connection dials, as IDNA maps them, so `ｅｖｉｌ.com` is `evil.com`. Under any list, a URL whose host cannot be mapped is refused, and so is a numeric form other than a plain IP (`2130706433`, `0x7f.1`, `127.1`). A redirect to another host is judged as the server reached there |
 
 An entry with no field, a field Abhed does not know, a `command` that is not
@@ -1787,8 +1787,10 @@ What `command` and `digest` bind has limits:
 - `command` matches the program, never its arguments. An interpreter or
   engine path (`npx`, `uvx`, `python3`, `node`, `docker`) admits whatever
   package, script or image it is told to run.
-- For a container engine, `digest` pins only the image. The arguments still
-  choose the entrypoint and the mounts (`--entrypoint`, `-v /:/host`).
+- For a container engine, `digest` pins only the image, and an allow entry
+  must name the engine with `command` as well, for example
+  `{"command": "/usr/local/bin/docker", "digest": "sha256:…"}`. The arguments
+  still choose the entrypoint and the mounts (`--entrypoint`, `-v /:/host`).
 - On the container tier a `command` entry judges the host's program, and
   the server is started at that path inside the sandbox.
 - `digest` binds the file's contents; `command` alone binds only its path.

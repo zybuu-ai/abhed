@@ -63,11 +63,14 @@ type MCPServer struct {
 	Programs []string
 	Digest   string
 	URL      string
+	// ImagePinned is set when the digest pins the image a container engine
+	// runs, not the program file: the engine itself is then bound only by path.
+	ImagePinned bool
 }
 
 // MCPServerOf is what the lists judge of a configured server.
 func MCPServerOf(s MCPServerConfig) MCPServer {
-	out := MCPServer{Name: s.Name, Digest: s.Digest, URL: s.URL}
+	out := MCPServer{Name: s.Name, Digest: s.Digest, URL: s.URL, ImagePinned: s.URL == "" && mcp.PinsImage(s.Command, s.Args, s.Digest)}
 	if s.URL == "" && s.Command != "" {
 		out.Programs = mcp.Programs(s.Command, mcp.ServerEnv(s.Env))
 	}
@@ -447,6 +450,21 @@ func (m MCPMatch) matches(s MCPServer) bool {
 			return false
 		}
 	}
+	return m.matchesHost(s)
+}
+
+// admits is matches for an allow entry: a digest that pins an engine's image
+// binds nothing about the engine, so such a server is admitted by a digest
+// entry only when the same entry also names the engine's path by command.
+func (m MCPMatch) admits(s MCPServer) bool {
+	if m.Digest != "" && s.ImagePinned && m.Command == "" {
+		return false
+	}
+	return m.matches(s)
+}
+
+// matchesHost is the host part of matches.
+func (m MCPMatch) matchesHost(s MCPServer) bool {
 	if m.Host != "" {
 		host, err := urlHost(s.URL)
 		if err != nil {
@@ -548,7 +566,7 @@ func (c Config) MCPAdmitted(s MCPServer) error {
 		}
 	}
 	for _, l := range layers {
-		if l.setsMCPAllowed && !slices.ContainsFunc(l.mcpAllowed, func(m MCPMatch) bool { return m.matches(s) }) {
+		if l.setsMCPAllowed && !slices.ContainsFunc(l.mcpAllowed, func(m MCPMatch) bool { return m.admits(s) }) {
 			return &ManagedError{Key: "mcp.allowed", Value: s.Name, File: l.file,
 				Reason: "mcp.allowed in " + c.listOwner(l.file) + " does not match it"}
 		}
