@@ -2,17 +2,21 @@ package clitest
 
 import (
 	"bytes"
+	"context"
 	crand "crypto/rand"
+	"debug/buildinfo"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +55,7 @@ func Binary(t testing.TB) string {
 		// must be built as below, with the same -ldflags.
 		if bin := os.Getenv(BinaryEnv); bin != "" {
 			build.bin = bin
+			build.err = checkBinary(bin)
 			return
 		}
 		build.dir, build.err = os.MkdirTemp("", "clitest-bin-")
@@ -66,16 +71,10 @@ func Binary(t testing.TB) string {
 		if runtime.GOOS == "windows" {
 			build.bin += ".exe"
 		}
-		pkg := "github.com/zybuu-ai/abhed/internal/managed"
-		defaultsPkg := "github.com/zybuu-ai/abhed/internal/defaults"
-		none := filepath.Join(build.dir, "no-managed")
 		// -buildvcs=false: a version stamped from the checkout differs on every
 		// commit, and the screens and /release-notes expect a development build.
 		args := []string{"build", "-buildvcs=false", "-o", build.bin, "-ldflags",
-			"-X " + pkg + ".ConfigFile=" + filepath.Join(none, "config.json") + " -X " + pkg + ".AgentsDir=" + filepath.Join(none, "agents") +
-				" -X " + pkg + ".testDirEnv=" + managedEnv +
-				// The defaults a configuration falls back to lead to a closed port, never to Ollama.
-				" -X " + defaultsPkg + ".LocalModelURL=http://localhost:9/v1 -X " + defaultsPkg + ".OllamaURL=http://127.0.0.1:9/v1"}
+			strings.Join(testLDFlags(filepath.Join(build.dir, "no-managed")), " ")}
 		if raceEnabled {
 			args = append(args, "-race")
 		}
@@ -90,6 +89,7 @@ func Binary(t testing.TB) string {
 		// The first exec of a new binary pays for the system's checks of it,
 		// which no start-up budget is about.
 		_ = exec.Command(build.bin, "-version").Run() // #nosec G204 -- the binary this test process built
+		build.err = checkBinary(build.bin)
 	})
 	if build.err != nil {
 		t.Fatalf("clitest: %v", build.err)
@@ -919,4 +919,125 @@ func (s screen) String() string            { return s.s.Text() }
 func (s screen) Cell(row, col int) Cell {
 	c := s.s.Cell(row, col)
 	return Cell{Rune: c.Rune, Width: c.Width, Attrs: Attrs(c.Attrs)}
+}
+
+const (
+	managedPkg  = "github.com/zybuu-ai/abhed/internal/managed"
+	defaultsPkg = "github.com/zybuu-ai/abhed/internal/defaults"
+)
+
+// managedVars are every path internal/managed reads the organisation's
+// files from, each moved by the test build.
+var managedVars = map[string]string{
+	"ConfigFile": "config.json", "AgentsDir": "agents", "MemoryDir": "",
+	"CommandsDir": "commands", "StylesDir": "styles",
+}
+
+// testLDFlags are the -X flags of the test build: every managed path under
+// none, which does not exist, the hook naming the run's managed directory,
+// and the defaults a configuration falls back to at a closed port, never a
+// real model service.
+func testLDFlags(none string) []string {
+	var f []string
+	for _, v := range slices.Sorted(maps.Keys(managedVars)) { // sorted, so the build is cached
+		f = append(f, "-X", managedPkg+"."+v+"="+filepath.Join(none, managedVars[v]))
+	}
+	return append(f, "-X", managedPkg+".testDirEnv="+managedEnv,
+		"-X", defaultsPkg+".LocalModelURL=http://localhost:9/v1", "-X", defaultsPkg+".OllamaURL=http://127.0.0.1:9/v1")
+}
+
+// checkBinary refuses a binary that could read this machine's managed files
+// or reach a real model service: first by its build information, without
+// running it, then by running it once against a marker.
+func checkBinary(bin string) error {
+	if err := checkBuildFlags(bin); err != nil {
+		return err
+	}
+	return checkMarker(bin)
+}
+
+// checkBuildFlags reads the binary's -ldflags from its build information.
+// Each -X above must be there with the full package path, since the linker
+// ignores a flag whose symbol it cannot find: the hook, every managed path
+// away from /etc/abhed, and both defaults at an address that is not a real
+// model service.
+func checkBuildFlags(bin string) error {
+	bi, err := buildinfo.ReadFile(bin)
+	if err != nil {
+		return fmt.Errorf("%s: read its build information: %w", bin, err)
+	}
+	var ldflags string
+	for _, s := range bi.Settings {
+		if s.Key == "-ldflags" {
+			ldflags = s.Value
+		}
+	}
+	x := map[string]string{}
+	f := strings.Fields(ldflags)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "-X" {
+			if k, v, ok := strings.Cut(f[i+1], "="); ok {
+				x[k] = v
+			}
+		}
+	}
+	if x[managedPkg+".testDirEnv"] != managedEnv {
+		return fmt.Errorf("%s was not built with -X %s.testDirEnv=%s (its -ldflags: %q); build it as clitest.Binary does",
+			bin, managedPkg, managedEnv, ldflags)
+	}
+	for v := range managedVars {
+		p := x[managedPkg+"."+v]
+		if c := filepath.Clean(p); !filepath.IsAbs(p) || c == "/etc/abhed" || strings.HasPrefix(c, "/etc/abhed/") {
+			return fmt.Errorf("%s was not built with -X %s.%s set away from /etc/abhed (got %q)", bin, managedPkg, v, p)
+		}
+	}
+	for _, v := range []string{"LocalModelURL", "OllamaURL"} {
+		u := x[defaultsPkg+"."+v]
+		hp := strings.TrimPrefix(strings.TrimPrefix(u, "http://"), "https://")
+		hp, _, _ = strings.Cut(hp, "/")
+		if u == "" || testenv.Real(hp) {
+			return fmt.Errorf("%s was not built with -X %s.%s at an address that is not a real model service (got %q)",
+				bin, defaultsPkg, v, u)
+		}
+	}
+	return nil
+}
+
+// checkMarker runs the binary once, with an empty home and its managed
+// directory holding a configuration, and requires its doctor to report that
+// file in force.
+func checkMarker(bin string) error {
+	dir, err := os.MkdirTemp("", "clitest-marker-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	mdir, home, ws := filepath.Join(dir, "managed"), filepath.Join(dir, "home"), filepath.Join(dir, "ws")
+	for _, d := range []string{mdir, home, ws} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+	marker := filepath.Join(mdir, "config.json")
+	if err := os.WriteFile(marker, []byte(`{"limits":{"max_turns":7}}`+"\n"), 0o600); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "doctor", "--json", "-timeout", "1s") // #nosec G204 -- the binary under test, fixed arguments
+	cmd.Dir = ws
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + os.TempDir(), managedEnv + "=" + mdir}
+	out, _ := cmd.Output() // the doctor exits 1 when the model does not answer
+	var rep struct {
+		Checks []struct{ ID, Detail string }
+	}
+	if err := json.Unmarshal(out, &rep); err != nil {
+		return fmt.Errorf("%s: its doctor did not report as JSON: %w\n%s", bin, err, out)
+	}
+	for _, c := range rep.Checks {
+		if c.ID == "managed" && strings.Contains(c.Detail, "in force from "+marker) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s did not take its managed configuration from %s, so it may read this machine's:\n%s", bin, marker, out)
 }

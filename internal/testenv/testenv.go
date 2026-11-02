@@ -53,6 +53,9 @@ type Guard struct {
 	hits   []string
 	srv    *httptest.Server
 	home   string
+	// private holds the managed paths' missing folder; only this process
+	// can make anything in it.
+	private string
 }
 
 func (g *Guard) note(s string) {
@@ -79,15 +82,30 @@ func (g *Guard) Hits() []string {
 // a test relies on: it stops the stub and removes the home.
 func Isolate() *Guard {
 	g := &Guard{OrigHome: os.Getenv("HOME")}
-	none := filepath.Join(os.TempDir(), fmt.Sprintf("abhed-no-managed-%d", os.Getpid()))
-	managed.ConfigFile, managed.AgentsDir = filepath.Join(none, "config.json"), filepath.Join(none, "agents")
+	// Under a 0700 folder of this process's own, so no other user can make
+	// the missing folder and plant a managed file in it.
+	private, err := os.MkdirTemp("", "abhed-no-managed-")
+	if err != nil {
+		panic("testenv: " + err.Error())
+	}
+	g.private = private
+	managed.MoveTo(filepath.Join(private, "none"))
 
-	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.note("the default model endpoint: " + r.Method + " " + r.URL.Path)
-		http.Error(w, `{"error":{"message":"a test reached the default model endpoint; give it a stub"}}`, http.StatusServiceUnavailable)
-	}))
-	defaults.LocalModelURL = g.srv.URL + "/v1"
-	defaults.OllamaURL = g.srv.URL + "/v1"
+	// A helper a test runs in a sandbox with no network cannot listen; its
+	// defaults then lead to a closed port instead of the stub.
+	stub := "http://127.0.0.1:9"
+	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		g.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			g.note("the default model endpoint: " + r.Method + " " + r.URL.Path)
+			http.Error(w, `{"error":{"message":"a test reached the default model endpoint; give it a stub"}}`, http.StatusServiceUnavailable)
+		}))
+		_ = g.srv.Listener.Close()
+		g.srv.Listener = ln
+		g.srv.Start()
+		stub = g.srv.URL
+	}
+	defaults.LocalModelURL = stub + "/v1"
+	defaults.OllamaURL = stub + "/v1"
 
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		dial := t.DialContext
@@ -165,7 +183,12 @@ func Real(addr string) bool {
 // Close stops the stub and removes the home, and returns code, or 1 when
 // anything reached a model endpoint no test may use.
 func (g *Guard) Close(code int) int {
-	g.srv.Close()
+	if g.srv != nil {
+		g.srv.Close()
+	}
+	if g.private != "" {
+		_ = os.RemoveAll(g.private)
+	}
 	if g.home != "" {
 		_ = os.RemoveAll(g.home)
 	}

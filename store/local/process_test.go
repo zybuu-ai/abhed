@@ -16,6 +16,8 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/store"
+
+	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
 // The child half of the process tests: it writes to a session until it is
@@ -25,7 +27,7 @@ func TestMain(m *testing.M) {
 		child(role, os.Getenv("ABHED_RECORD_DIR"))
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	testenv.Main(m)
 }
 
 // child writes or holds until it is killed; it returns only on a failure.

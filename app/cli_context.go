@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -622,9 +623,6 @@ func memoryAuto(e *cmdEnv, args []string) error {
 // appended to the system prompt of this and each later conversation of the
 // session.
 
-// managedStyleDir is the organisation's styles; a variable for tests.
-var managedStyleDir = filepath.Join("/etc", "abhed", "styles")
-
 // styleMark begins the style section of the system prompt.
 const styleMark = "\n\n## Output style ("
 
@@ -637,7 +635,7 @@ type outputStyle struct {
 func loadStyles() []outputStyle {
 	var out []outputStyle
 	seen := map[string]bool{}
-	dirs := [][2]string{{managedStyleDir, "managed"}}
+	dirs := [][2]string{{managed.StylesDir, "managed"}}
 	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs, [2]string{filepath.Join(home, ".abhed", "styles"), "user"})
 	}
