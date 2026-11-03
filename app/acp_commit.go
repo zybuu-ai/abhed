@@ -221,7 +221,7 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		// A clear error, not an empty answer: the person asked for a message.
 		why := orDefault(res.Dropped, "the commit model gave no message")
 		if res.Dropped == "" && res.OutputTokens >= commitMaxTokens {
-			why += " (it spent its tokens before writing one)"
+			why += fmt.Sprintf(" (it used all %d of its tokens without writing one; a model that thinks may need model.commit set to a provider whose thinking can be turned off)", commitMaxTokens)
 		}
 		fail(refusal(errRefused, "%s", why))
 	default:

@@ -323,16 +323,46 @@ func CommitMessageByChat(ctx context.Context, a Adapter, diff string, maxTokens 
 		t := 0.2
 		r.Temperature = &t
 	}
+	// A thinking model can spend the whole budget thinking and write nothing;
+	// a commit message needs none. Only the OpenAI-shaped adapter sends the switch.
+	_, sendsThink := a.(*OpenAICompatible)
+	if sendsThink && a.Profile().Sampling.Think {
+		off := false
+		r.Params.Think = &off
+	}
+	res, started, err := commitMessageOnce(ctx, a, r)
+	if err != nil && r.Params.Think != nil && !started && refusedRequest(err) && ctx.Err() == nil {
+		// A server that refuses the switch outright is asked once more without it.
+		first := res
+		r.Params.Think = nil
+		res, _, err = commitMessageOnce(ctx, a, r)
+		res.InputTokens += first.InputTokens
+		res.OutputTokens += first.OutputTokens
+	}
+	return res, err
+}
+
+// refusedRequest is a 400 or 422 from the endpoint: the request itself was refused.
+func refusedRequest(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && (se.Status == http.StatusBadRequest || se.Status == http.StatusUnprocessableEntity)
+}
+
+// commitMessageOnce makes one request; started says whether any chunk came
+// back, and on an error the result still carries the usage seen.
+func commitMessageOnce(ctx context.Context, a Adapter, r Request) (CommitMessageResult, bool, error) {
 	ch, err := a.Complete(ctx, r)
 	if err != nil {
-		return CommitMessageResult{}, err
+		return CommitMessageResult{}, false, err
 	}
 	var b strings.Builder
 	var res CommitMessageResult
+	started := false
 	for c := range ch {
 		if c.Err != nil {
-			return CommitMessageResult{}, c.Err
+			return res, started, c.Err
 		}
+		started = true
 		if c.Type == ChunkText {
 			b.WriteString(c.Text)
 		}
@@ -354,5 +384,5 @@ func CommitMessageByChat(ctx context.Context, a Adapter, diff string, maxTokens 
 		text = m[1]
 	}
 	res.Text = strings.TrimSpace(text)
-	return res, nil
+	return res, true, nil
 }

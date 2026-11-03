@@ -29,6 +29,20 @@ All notable changes to Abhed are recorded here. The format follows
   protected file is now opened only as a plain file, never through a link
   or waiting on a pipe or device. Past 256 MiB it is named by its size,
   time and inode instead of hashed, so a change to it is still seen.
+- Generate Commit Message asks with thinking off on providers of the
+  OpenAI-compatible kind whose type takes the `think` switch (Ollama and
+  the other local servers, Together, and `openai-compatible` or custom
+  providers), so a thinking model no longer spends the whole
+  2,048-token budget thinking and writes no message. A server that
+  refuses the switch with a 400 or 422 before answering is asked once
+  more without it; nothing else is retried, and the record counts the
+  tokens of both requests. When a message still comes back empty after
+  the full budget, the error says so and names `model.commit`.
+- `abhed record verify` no longer prints warnings about session settings,
+  such as egress settings set aside, which buried its answer about the
+  chain. Warnings about `record`, `storage`, `network` and `org_policy`
+  settings, a misspelled key close to one of them, and the org policy's
+  own, are still given, since they change what verify checks.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by
