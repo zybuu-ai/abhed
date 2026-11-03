@@ -124,10 +124,10 @@ func readLine(line, cwd string) lineFacts {
 }
 
 type lineReader struct {
-	cwd   string
-	start string // the folder the line started in
-	pyEnv bool   // a PYTHON… variable set on its own, which a later python may see
-	lf    *lineFacts
+	cwd    string
+	start  string // the folder the line started in
+	envSet bool   // a variable set on its own (HOME=, PATH=), which a later command may see
+	lf     *lineFacts
 	// shape stays true while the line is one && chain of simple commands.
 	shape bool
 	// unresolved: a change of folder that could not be followed, so the
@@ -229,9 +229,7 @@ func (r *lineReader) add(c simpleCmd) {
 func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	redirected, redirectKnown, someRedirect := redirectTargets(st)
 	if len(call.Args) == 0 {
-		for _, a := range call.Assigns {
-			r.pyEnv = r.pyEnv || strings.HasPrefix(a.Name.Value, "PYTHON")
-		}
+		r.envSet = r.envSet || len(call.Assigns) > 0
 		r.redirectsOnly(st)
 		return // assignments alone
 	}
@@ -300,10 +298,11 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 		r.add(c)
 		return
 	}
-	// A unittest run after a cd out of the folder, or beside a PYTHON…
-	// variable, runs code from elsewhere.
-	unittestAway := (r.movedOut() || r.pyEnv) && len(words) > 2 && words[1] == "-m" && words[2] == "unittest"
-	if pureReader(words) && !unittestAway {
+	// A unittest run after a cd out of the folder, or a test run after any
+	// variable set on its own (PATH=, GOFLAGS=), runs code from elsewhere.
+	unittest := len(words) > 2 && words[1] == "-m" && words[2] == "unittest"
+	away := unittest && r.movedOut() || r.envSet && (unittest || filepath.Base(words[0]) == "go")
+	if pureReader(words) && !away {
 		c.pure, c.writes = !someRedirect, someRedirect
 		c.known, c.targets = redirectKnown, redirected
 	} else {

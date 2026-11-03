@@ -4909,6 +4909,56 @@
       "name": "a printed unittest summary after the run's own",
       "kind": "planted",
       "hash": "8bb0ffd64ea31060"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.migrate_db.py`",
+      "kind": "planted",
+      "hash": "75e8184d9ab12b6a"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest test_x.migrate.py`",
+      "kind": "planted",
+      "hash": "bc1442b5fef9be19"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.Fixtures`",
+      "kind": "planted",
+      "hash": "ffcbf72f86041ce6"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest test_pkg.Evil`",
+      "kind": "planted",
+      "hash": "8c097bf017dacc31"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.Make_fixtures.MigTest`",
+      "kind": "planted",
+      "hash": "1a8ef5b2f55c9102"
+    },
+    {
+      "name": "a read out of date after `HOME=/tmp/h; python3 -m unittest`",
+      "kind": "planted",
+      "hash": "0854ddc547dbc9a5"
+    },
+    {
+      "name": "a read out of date after `PATH=/tmp/evil:$PATH; go test ./...`",
+      "kind": "planted",
+      "hash": "0e0e51cb83fd4489"
+    },
+    {
+      "name": "a read out of date after `GOFLAGS=-exec=/tmp/x; go test ./...`",
+      "kind": "planted",
+      "hash": "7494792047fde869"
+    },
+    {
+      "name": "a read still current after `python3 -m unittest tests/test_tip.py`",
+      "kind": "control",
+      "hash": "999369fcafe4e5e2"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests/latest.py`",
+      "kind": "planted",
+      "hash": "6197243fb614fbf2"
     }
   ],
   "strict": [

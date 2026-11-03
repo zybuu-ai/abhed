@@ -374,23 +374,15 @@ func insidePath(p string) bool {
 	return p != "" && !filepath.IsAbs(p) && !strings.ContainsAny(p, "$~") && !slices.Contains(strings.Split(filepath.ToSlash(p), "/"), "..")
 }
 
-// testName is a test module, file or folder: every folder and file in a
-// path, and every lower-case part of a dotted name, starts with "test"
-// (tests/test_tip.py, tests.test_tip.TipTest.test_a); a class is not judged.
+// testName is a test module, file or folder: split on "/" and ".", every
+// part has "test" in it and every lower-case part starts with it
+// (tests/test_tip.py, tests.test_tip.TipTest.test_a).
 func testName(n string) bool {
-	n = strings.TrimPrefix(filepath.ToSlash(n), "./")
-	var parts []string
-	if strings.Contains(n, "/") || strings.HasSuffix(n, ".py") {
-		parts = strings.Split(strings.TrimSuffix(strings.TrimSuffix(n, "/"), ".py"), "/")
-	} else {
-		for _, p := range strings.Split(n, ".") {
-			if p != "" && !unicode.IsUpper([]rune(p)[0]) {
-				parts = append(parts, p)
-			}
-		}
-	}
+	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(n), "./"), "/"), ".py")
+	parts := strings.FieldsFunc(n, func(r rune) bool { return r == '/' || r == '.' })
 	for _, p := range parts {
-		if !strings.HasPrefix(strings.ToLower(p), "test") {
+		low := strings.ToLower(p)
+		if !strings.Contains(low, "test") || !unicode.IsUpper([]rune(p)[0]) && !strings.HasPrefix(low, "test") {
 			return false
 		}
 	}
