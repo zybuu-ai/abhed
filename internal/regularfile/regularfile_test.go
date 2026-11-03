@@ -70,3 +70,33 @@ func TestOpenRefusesASwapAfterTheLook(t *testing.T) {
 		})
 	}
 }
+
+// A file that is not there, or that may not be read, is reported as that,
+// not as "not a plain file".
+func TestOpenKeepsOtherErrors(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := Open(filepath.Join(dir, "none")); !errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotRegular) {
+		t.Fatalf("missing: %v", err)
+	}
+	gone := filepath.Join(dir, "gone")
+	if err := os.WriteFile(gone, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := afterLstat
+	t.Cleanup(func() { afterLstat = old })
+	afterLstat = func(p string) { _ = os.Remove(p) }
+	if _, _, err := Open(gone); !errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotRegular) {
+		t.Fatalf("removed after the look: %v", err)
+	}
+	afterLstat = old
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.WriteFile(locked, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Open(locked); !errors.Is(err, os.ErrPermission) || errors.Is(err, ErrNotRegular) {
+		t.Fatalf("unreadable: %v", err)
+	}
+}

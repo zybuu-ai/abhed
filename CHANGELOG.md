@@ -19,7 +19,17 @@ All notable changes to Abhed are recorded here. The format follows
   `_abhed/debug/use-container`; the terminal and the server never call it.
   The config is now written to a fresh, randomly named file made with
   `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
-  a device, or over 1 MiB, is refused instead of followed or waited on.
+  a device, or over 4 MiB, is refused instead of followed or waited on.
+
+### Upgrading from 1.2.9
+
+- A workspace's `.abhed/config.json` that leads out of the workspace, by
+  its own link or through a `.abhed` that is a link, is now refused, and so
+  is one that is a link to no file (1.2.9 read that as no config). The
+  session does not start until it is a plain file or a link inside the
+  workspace. A link inside the workspace, and any link at your home
+  folder's `~/.abhed/config.json`, still work; a config above the opened
+  folder must be copied in, or the folder above opened instead.
 
 ### Fixed
 
@@ -28,7 +38,8 @@ All notable changes to Abhed are recorded here. The format follows
   read without end, and a sparse file of any size was hashed in full. A
   protected file is now opened only as a plain file, never through a link
   or waiting on a pipe or device. Past 256 MiB it is named by its size,
-  time and inode instead of hashed, so a change to it is still seen.
+  times (modification and change) and inode instead of hashed, so a
+  change to it, even one that puts its modification time back, is still seen.
 - Generate Commit Message asks with thinking off on providers of the
   OpenAI-compatible kind whose type takes the `think` switch (Ollama and
   the other local servers, Together, and `openai-compatible` or custom
@@ -43,6 +54,21 @@ All notable changes to Abhed are recorded here. The format follows
   chain. Warnings about `record`, `storage`, `network` and `org_policy`
   settings, a misspelled key close to one of them, and the org policy's
   own, are still given, since they change what verify checks.
+- A repository could stall every session's start. A `.abhed/config.json`
+  that was a pipe, or a link to `/dev/zero`, was waited on or read without
+  end as soon as Abhed opened the workspace. The file is now read only when
+  it is a plain file of at most 4 MiB, or a link to one inside the
+  workspace, and a pipe or device is never waited on. A link out of the
+  workspace is refused; in your home folder `~/.abhed/config.json` may
+  still link anywhere. The error names the file and says what to do
+  ([The workspace file](docs/guide/02-configuration.md#the-workspace-file)).
+- `abhed init` wrote the starter config through a `.abhed/config.json` that
+  a repository had made a link, overwriting the file it named. It now
+  writes a fresh file and renames it into place.
+- A lock file beside a state file in a folder a repository controls, such
+  as the workspace's `users.json.lock`, was opened through a link, which made
+  an empty file at the path the link named, or waited on a pipe. It is now
+  opened without following a link or waiting, and must be a plain file.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by

@@ -1,7 +1,9 @@
 # Configuration
 
 Abhed reads `.abhed/config.json` from the workspace. `abhed init` writes a
-starter file; everything below is optional and has a default.
+starter file; everything below is optional and has a default. The file must
+be a plain file of at most 4 MiB, or a link to one inside the workspace; see
+[The workspace file](#the-workspace-file).
 
 The workspace file is untrusted until you trust its exact contents, because a
 repository can ship one. Until then Abhed applies only what makes it stricter
@@ -1498,6 +1500,37 @@ Later sources win, except that an org-managed file cannot be overridden:
 5. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
 6. command-line flags and the SDK's `Options`
 7. **managed settings**, which nothing below can loosen
+
+### The workspace file
+
+A repository chooses what is at `.abhed/config.json`, so Abhed opens it
+inside the workspace, the folder Abhed opened, and reads it only when it is
+one of these:
+
+- a plain file of at most 4 MiB
+- a link whose target is a plain file inside the workspace, such as one
+  config shared within a monorepo (`.abhed/config.json ->
+  ../shared/abhed.json`, which is `<workspace>/shared/abhed.json`)
+
+A link, or a link along the way such as a `.abhed` that is itself a link,
+that leads out of the workspace is refused. So are a link that leads to no
+file, a pipe or a device (`/dev/zero`, say), and a larger file. The session
+does not start, and the error names the file once and says what to do. A
+config above the opened folder, such as a monorepo root's over a
+subproject, is outside it: copy the file into the subproject, or open the
+monorepo root as the workspace. The file is opened relative to the
+workspace, so no folder swapped on the way can redirect it, and a pipe is
+never waited on. Whether the file is your own, so trusted as yours, is
+decided on the file that was read, never by looking the name up again.
+
+When the workspace is your home folder, the file is your own
+`~/.abhed/config.json`. A link there may point anywhere, such as into your
+dotfiles; it must still lead to a plain file of at most 4 MiB.
+
+Studio's debug setup, which raises `sandbox.min_tier` in this file, does not
+write through a link: when the file is a link it asks you to set the tier in
+the file the link points to. `abhed init` writes a fresh file and renames it
+into place, so a link at that name is replaced, not written through.
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,

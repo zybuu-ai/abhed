@@ -230,8 +230,9 @@ var maxHashBytes int64 = 256 << 20
 
 // hashFile hashes the plain file at p. A link, pipe or device in its place is
 // "unreadable", never followed or waited on. A file larger than maxHashBytes
-// (a sparse file can be any size) is named by its size, time and inode
-// instead, so a change to it is still seen.
+// (a sparse file can be any size) is named by its size, modification and
+// change times and inode instead: the change time, which no user can set
+// back, still shows an in-place rewrite.
 func hashFile(p string) string {
 	f, fi, err := regularfile.Open(p)
 	if err != nil {
@@ -239,7 +240,7 @@ func hashFile(p string) string {
 	}
 	defer func() { _ = f.Close() }()
 	if fi.Size() > maxHashBytes {
-		return fmt.Sprintf("large:%d:%d:%d", fi.Size(), fi.ModTime().UnixNano(), regularfile.ID(fi))
+		return fmt.Sprintf("large:%d:%d:%d:%d", fi.Size(), fi.ModTime().UnixNano(), regularfile.ChangeTime(fi), regularfile.ID(fi))
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, io.LimitReader(f, maxHashBytes)); err != nil {

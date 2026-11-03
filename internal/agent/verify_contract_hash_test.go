@@ -76,3 +76,35 @@ func TestHashFileBoundsALargeFile(t *testing.T) {
 		t.Fatal("a change to a large file was not seen")
 	}
 }
+
+// An in-place rewrite of a large file that puts its modification time back
+// is still seen: the change time cannot be set back.
+func TestHashFileSeesARewriteWithItsTimeRestored(t *testing.T) {
+	old := maxHashBytes
+	maxHashBytes = 1 << 10
+	t.Cleanup(func() { maxHashBytes = old })
+	p := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(p, make([]byte, 4<<10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := hashFile(p)
+	time.Sleep(20 * time.Millisecond)
+	f, err := os.OpenFile(p, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("changed"), 100); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if err := os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if again := hashFile(p); again == first {
+		t.Fatalf("a same-size rewrite with its time put back was not seen: %s", again)
+	}
+}

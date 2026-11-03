@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/debugrelay"
 	"github.com/zybuu-ai/abhed/internal/enginecli"
@@ -266,9 +267,6 @@ func (c *acpConn) debugUseContainer(msg rpcMessage) {
 	c.reply(msg.ID, map[string]any{"path": path, "newSession": true}, nil)
 }
 
-// maxWorkspaceConfig bounds the workspace config raiseWorkspaceTier reads.
-const maxWorkspaceConfig = 1 << 20
-
 // raiseWorkspaceTier sets sandbox.min_tier in workspace/.abhed/config.json
 // to tier when it is absent or weaker, keeping the rest of the file; a
 // stronger one is left as it is (raised false).
@@ -279,10 +277,14 @@ func raiseWorkspaceTier(workspace string, tier sandbox.Tier) (string, bool, erro
 		return "", false, errors.New(dir + " is a link")
 	}
 	cfg := map[string]any{}
-	if _, err := os.Lstat(path); err == nil {
-		// Read only as a plain file of bounded size: a link, a pipe or a device
-		// a repository put there is refused, never followed or waited on.
-		b, err := regularfile.Read(path, maxWorkspaceConfig)
+	if fi, err := os.Lstat(path); err == nil {
+		// Writing replaces the file, which would turn a link into a copy, so a
+		// link is left for the person to edit; a pipe or device is refused,
+		// never waited on, and the size bound is the session's own.
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", false, errors.New(path + " is a link; set sandbox.min_tier in the file it points to")
+		}
+		b, err := regularfile.Read(path, config.MaxWorkspaceConfig)
 		if err != nil {
 			return "", false, err
 		}
