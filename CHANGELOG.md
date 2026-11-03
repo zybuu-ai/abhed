@@ -23,6 +23,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- A workspace other than your home folder whose config is your own
+  `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
+  longer trusted as your own file without asking; trust it once with
+  `abhed trust grant`. In the home folder nothing changes.
 - A workspace's `.abhed/config.json` that leads out of the workspace, by
   its own link or through a `.abhed` that is a link, is now refused, and so
   is one that is a link to no file (1.2.9 read that as no config). The

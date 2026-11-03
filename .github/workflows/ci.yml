@@ -649,6 +649,17 @@ jobs:
             jq -e --arg t "$t" 'select(.Test == $t and .Action == "pass")' case.json >/dev/null || { echo "$t did not run and pass"; exit 1; }
           done
 
+      # The workspace config's second-name refusal reads the link count from
+      # the opened file's handle; it must hold on NTFS too.
+      - name: A workspace config with a second name is refused
+        run: |
+          set -euo pipefail
+          go test -count=1 -v -run '^TestConfigWithASecondNameIsRefused$' ./config/ > names.log 2>&1 || { cat names.log; exit 1; }
+          go test -count=1 -v -run '^TestOfFileCountsNames$' ./internal/nlink/ >> names.log 2>&1 || { cat names.log; exit 1; }
+          for t in TestConfigWithASecondNameIsRefused TestOfFileCountsNames; do
+            grep -q -- "--- PASS: $t " names.log || { echo "$t did not run and pass"; cat names.log; exit 1; }
+          done
+
       # Holding a pinned statusline script open would lock it on Windows.
       - name: A pinned file stays free to rename and remove
         run: |

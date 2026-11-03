@@ -30,3 +30,13 @@ func pathCount(path string, _ os.FileInfo) uint64 {
 	}
 	return uint64(d.NumberOfLinks)
 }
+
+// OfFile reads the open file's link count from its own handle, so what is
+// counted is the file that was opened; 1 when it cannot be read.
+func OfFile(f *os.File) uint64 {
+	var d syscall.ByHandleFileInformation
+	if err := syscall.GetFileInformationByHandle(syscall.Handle(f.Fd()), &d); err != nil {
+		return 1
+	}
+	return uint64(d.NumberOfLinks)
+}

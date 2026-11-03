@@ -23,3 +23,26 @@ func TestLinkedCountsASecondName(t *testing.T) {
 		t.Fatalf("two names: %d %v", n, err)
 	}
 }
+
+// OfFile counts the names of the open file itself.
+func TestOfFileCountsNames(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if n := OfFile(f); n != 1 {
+		t.Fatalf("one name: %d", n)
+	}
+	if err := os.Link(p, filepath.Join(dir, "b")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if n := OfFile(f); n != 2 {
+		t.Fatalf("two names: %d", n)
+	}
+}
