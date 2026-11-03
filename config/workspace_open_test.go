@@ -260,3 +260,39 @@ func TestDanglingWorkspaceConfigLink(t *testing.T) {
 		t.Fatalf("a dangling link: %v", err)
 	}
 }
+
+// Only the home folder's own config is "home": a dotfiles folder opened as
+// a workspace, whose config leads to the person's real config file, is
+// judged by hash like any other workspace.
+func TestHomeReasonOnlyInTheHomeFolder(t *testing.T) {
+	withManaged(t, `{}`)
+	t.Setenv(TrustEnv, "")
+	home := os.Getenv("HOME")
+	dotfiles := filepath.Join(home, "dotfiles")
+	real := filepath.Join(dotfiles, "abhed", "config.json")
+	for _, d := range []string{filepath.Dir(real), filepath.Join(home, ".abhed"), filepath.Join(dotfiles, ".abhed")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(real, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(home, ".abhed", "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../abhed/config.json", filepath.Join(dotfiles, ".abhed", "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadWith(dotfiles, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.Reason == "home" || cfg.Workspace.Trusted {
+		t.Fatalf("a workspace other than home was trusted as home: %+v", cfg.Workspace)
+	}
+	cfg, err = LoadWith(home, LoadOptions{Quiet: true})
+	if err != nil || cfg.Workspace.Reason != "home" {
+		t.Fatalf("the home folder: %v %+v", err, cfg.Workspace)
+	}
+}

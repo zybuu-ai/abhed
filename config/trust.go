@@ -271,14 +271,12 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	if err != nil {
 		return st, err // it names the file and what to do
 	}
-	if n := nlink.Of(opened); n > 1 {
-		return st, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
-	}
 	st.File, st.SHA256 = path, hashOf(data)
 	afterWorkspaceRead(path)
-	// The file read is the user's own: decided on the file opened, never by
-	// looking the name up again, which a swapped folder could redirect.
-	if userFile != "" && isUserFile(opened, userFile) {
+	// The workspace is the home folder and the file read is the user's own:
+	// decided on the file opened, never by looking the name up again, which a
+	// swapped folder could redirect. Elsewhere the bytes are judged by hash.
+	if userFile != "" && isHome(workspace) && isUserFile(opened, userFile) {
 		st.Trusted, st.Reason = true, "home"
 		return st, nil
 	}
@@ -394,6 +392,10 @@ func readOpened(f *os.File, path string) ([]byte, os.FileInfo, error) {
 	}
 	if fi.Size() > MaxWorkspaceConfig {
 		return nil, nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+	}
+	// Counted on the opened file (its handle on Windows), not by name.
+	if n := nlink.OfFile(f); n > 1 {
+		return nil, nil, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
 	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxWorkspaceConfig+1))
 	if err != nil {

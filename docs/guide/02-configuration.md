@@ -1513,15 +1513,18 @@ one of these:
   ../shared/abhed.json`, which is `<workspace>/shared/abhed.json`)
 
 A link, or a link along the way such as a `.abhed` that is itself a link,
-that leads out of the workspace is refused. So are a link that leads to no
-file, a pipe or a device (`/dev/zero`, say), and a larger file. The session
-does not start, and the error names the file once and says what to do. A
+that leads out of the workspace to a config is refused; a `.abhed` that
+leads out to a folder with no `config.json` means the workspace has no
+config. A link that leads to no file, a pipe or a device (`/dev/zero`,
+say), and a larger file are refused too. The session does not start, and
+the error names the file once and says what to do. A
 config above the opened folder, such as a monorepo root's over a
 subproject, is outside it: copy the file into the subproject, or open the
 monorepo root as the workspace. The file is opened relative to the
 workspace, so no folder swapped on the way can redirect it, and a pipe is
 never waited on. Whether the file is your own, so trusted as yours, is
-decided on the file that was read, never by looking the name up again.
+decided on the file that was read, never by looking the name up again,
+and only when the workspace is your home folder.
 
 When the workspace is your home folder, the file is your own
 `~/.abhed/config.json`. A link there may point anywhere, such as into your
