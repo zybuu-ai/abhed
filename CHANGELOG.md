@@ -19,7 +19,14 @@ All notable changes to Abhed are recorded here. The format follows
   `_abhed/debug/use-container`; the terminal and the server never call it.
   The config is now written to a fresh, randomly named file made with
   `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
-  a device, or over 1 MiB, is refused instead of followed or waited on.
+  a device, or over 4 MiB, is refused instead of followed or waited on.
+
+### Upgrading from 1.2.9
+
+- A workspace's `.abhed/config.json` that is a link out of the workspace is
+  now refused, and the session does not start until it is a plain file or a
+  link inside the workspace. A link inside the workspace, and any link at
+  your home folder's `~/.abhed/config.json`, still work.
 
 ### Fixed
 
@@ -28,11 +35,16 @@ All notable changes to Abhed are recorded here. The format follows
   read without end, and a sparse file of any size was hashed in full. A
   protected file is now opened only as a plain file, never through a link
   or waiting on a pipe or device. Past 256 MiB it is named by its size,
-  time and inode instead of hashed, so a change to it is still seen.
+  times (modification and change) and inode instead of hashed, so a
+  change to it, even one that puts its modification time back, is still seen.
 - A repository could stall every session's start. A `.abhed/config.json`
   that was a pipe, or a link to `/dev/zero`, was waited on or read without
-  end as soon as Abhed opened the workspace. The file is now opened without
-  following a link or waiting on a pipe, and its size is bounded.
+  end as soon as Abhed opened the workspace. The file is now read only when
+  it is a plain file of at most 4 MiB, or a link to one inside the
+  workspace, and a pipe or device is never waited on. A link out of the
+  workspace is refused; in your home folder `~/.abhed/config.json` may
+  still link anywhere. The error names the file and says what to do
+  ([The workspace file](docs/guide/02-configuration.md#the-workspace-file)).
 - `abhed init` wrote the starter config through a `.abhed/config.json` that
   a repository had made a link, overwriting the file it named. It now
   writes a fresh file and renames it into place.

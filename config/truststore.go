@@ -261,6 +261,9 @@ func InitWorkspace(workspace string) (string, error) {
 		return path, err
 	}
 	_, werr := f.Write(data)
+	if werr == nil {
+		werr = f.Sync() // durable before it takes the name
+	}
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}

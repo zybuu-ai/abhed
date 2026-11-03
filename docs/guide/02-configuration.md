@@ -1,7 +1,9 @@
 # Configuration
 
 Abhed reads `.abhed/config.json` from the workspace. `abhed init` writes a
-starter file; everything below is optional and has a default.
+starter file; everything below is optional and has a default. The file must
+be a plain file of at most 4 MiB, or a link to one inside the workspace; see
+[The workspace file](#the-workspace-file).
 
 The workspace file is untrusted until you trust its exact contents, because a
 repository can ship one. Until then Abhed applies only what makes it stricter
@@ -1498,6 +1500,31 @@ Later sources win, except that an org-managed file cannot be overridden:
 5. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
 6. command-line flags and the SDK's `Options`
 7. **managed settings**, which nothing below can loosen
+
+### The workspace file
+
+A repository chooses what is at `.abhed/config.json`, so Abhed reads it only
+when it is one of these:
+
+- a plain file of at most 4 MiB
+- a link whose real target is a plain file inside the workspace, such as one
+  config shared across a monorepo (`.abhed/config.json ->
+  ../../shared/abhed.json`)
+
+A link that leaves the workspace, a pipe or a device (`/dev/zero`, say), and
+a larger file are refused, and the session does not start. The error names
+the file once and says what to do: make it a plain file, or point the link
+inside the workspace. Reading never waits on a pipe or follows a link
+swapped in at the last moment.
+
+When the workspace is your home folder, the file is your own
+`~/.abhed/config.json`. A link there may point anywhere, such as into your
+dotfiles; it must still lead to a plain file of at most 4 MiB.
+
+Studio's debug setup, which raises `sandbox.min_tier` in this file, does not
+write through a link: when the file is a link it asks you to set the tier in
+the file the link points to. `abhed init` writes a fresh file and renames it
+into place, so a link at that name is replaced, not written through.
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,

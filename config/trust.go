@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -264,11 +265,11 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		return st, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
 	}
 	data, err := readWorkspaceConfig(workspace, path)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
 	}
 	if err != nil {
-		return st, fmt.Errorf("read %s: %w", path, err)
+		return st, err // it names the file and what to do
 	}
 	st.File, st.SHA256 = path, hashOf(data)
 	// The workspace is the home directory: this is the user's own file.
@@ -314,22 +315,43 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	return st, tighten(cfg, path, data, &st)
 }
 
-// maxWorkspaceConfig bounds a workspace's .abhed/config.json.
-const maxWorkspaceConfig = 4 << 20
+// MaxWorkspaceConfig bounds a workspace's .abhed/config.json, wherever it is read.
+const MaxWorkspaceConfig = 4 << 20
 
-// readWorkspaceConfig reads the workspace's config. A repository chooses
-// what is at that path, so it is read only as a plain file of bounded size:
-// a link, or a pipe or device such as /dev/zero, is refused rather than
-// followed or waited on, which would hang every session's start. In the home
-// folder it is the person's own file, which may be a link to their dotfiles.
+// readWorkspaceConfig reads the workspace's config. A repository chooses what
+// is at that path, so only a plain file of bounded size is read: a pipe or a
+// device such as /dev/zero is refused rather than waited on or read without
+// end, which would hang every session's start. A link is followed when its
+// real target is a plain file inside the workspace (a shared config in a
+// monorepo); one leaving the workspace is refused. In the home folder the
+// file is the person's own, and a link may point anywhere.
 func readWorkspaceConfig(workspace, path string) ([]byte, error) {
-	if isHome(workspace) {
-		return os.ReadFile(path) // #nosec G304 -- the person's own ~/.abhed/config.json
-	}
-	if _, err := os.Lstat(path); err != nil {
+	fi, err := os.Lstat(path)
+	if err != nil {
 		return nil, err
 	}
-	return regularfile.Read(path, maxWorkspaceConfig)
+	target := path
+	if fi.Mode()&os.ModeSymlink != 0 {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s is a link that does not lead to a file; make it a plain JSON file", path)
+		}
+		if !isHome(workspace) {
+			root, err := filepath.EvalSymlinks(workspace)
+			if err != nil || (real != root && !strings.HasPrefix(real, root+string(filepath.Separator))) {
+				return nil, fmt.Errorf("%s is a link to %s, outside the workspace; make it a plain file, or a link to one inside the workspace", path, real)
+			}
+		}
+		target = real
+	}
+	data, err := regularfile.Read(target, MaxWorkspaceConfig)
+	switch {
+	case errors.Is(err, regularfile.ErrNotRegular):
+		return nil, fmt.Errorf("%s is not a plain file (a pipe or a device, say); make it a plain JSON file", path)
+	case errors.Is(err, regularfile.ErrTooLarge):
+		return nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+	}
+	return data, err
 }
 
 // keepHA restores control_plane.ha as it was before a trusted workspace's

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // ErrNotRegular is a path that is not a plain file, or that changed to
@@ -34,8 +35,11 @@ func Open(path string) (*os.File, os.FileInfo, error) {
 	}
 	afterLstat(path)
 	f, err := openNoFollow(path)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, nil, fmt.Errorf("%s: %w", path, ErrNotRegular) // a link swapped in after the look
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, ErrNotRegular)
+		return nil, nil, fmt.Errorf("%s: %w", path, err) // not there any more, or not permitted: kept as it is
 	}
 	now, err := f.Stat()
 	if err != nil || !now.Mode().IsRegular() || !os.SameFile(before, now) {

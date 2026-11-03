@@ -29,6 +29,9 @@ func unlockFile(f *os.File) error {
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 }
 
+// openLock opens or makes the lock file. Unlike on unix it follows a link or
+// junction at the name; making one needs privilege or Developer Mode, and git
+// does not check out symlinks on Windows by default.
 func openLock(lock string) (*os.File, error) {
 	return os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- a lock file beside the caller's own file
 }
