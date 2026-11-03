@@ -51,11 +51,13 @@ type acpShell struct {
 	// shellPgrp is the shell's own process group, 0 until it is known; until
 	// then every line is judged as the shell's.
 	shellPgrp atomic.Int64
-	leader    sandbox.Leader
-	inputMu   sync.Mutex
-	mu        sync.Mutex
-	tail      []byte
-	pumped    chan struct{}
+	// root is the process Abhed started for the shell.
+	root    int
+	leader  sandbox.Leader
+	inputMu sync.Mutex
+	mu      sync.Mutex
+	tail    []byte
+	pumped  chan struct{}
 	// prompt follows whether the shell is back at its prompt.
 	prompt *termline.Prompt
 	// sawProgram and jobsOff keep each log line about the foreground to once.
@@ -112,6 +114,7 @@ func (c *acpConn) startShell(t *acpTerminal, parts embedded.Parts, bash tools.To
 		local:   iso.Tier == "process" || iso.Tier == "none",
 		capture: termline.NewCapture(id, func(in agent.TerminalInput) { _ = loop.ManualTerminalInput(in) }),
 		leader:  sandbox.Lead(cmd),
+		root:    cmd.Process.Pid,
 		prompt:  termline.NewPrompt(),
 	}
 	if sh.local {
@@ -323,8 +326,12 @@ var (
 // shellNames are the shells an interactive terminal runs.
 var shellNames = map[string]bool{"bash": true, "zsh": true}
 
+// starters may stand between the process Abhed starts and its shell:
+// bubblewrap's own child and the egress relay.
+var starters = map[string]bool{"bwrap": true, "relay": true}
+
 // settle takes the group in front as the shell's once its leader is a shell at
-// its line editor whose parent is no shell: never a starter, nor a nested shell.
+// its line editor that Abhed started, directly or through a starter only.
 func (sh *acpShell) settle() {
 	if !sh.local || sh.shellPgrp.Load() != 0 {
 		return
@@ -333,16 +340,37 @@ func (sh *acpShell) settle() {
 	if !ok || fg <= 0 || canonical {
 		return
 	}
+	// A process can rename itself, so the name alone proves nothing; the
+	// group is fixed once, before anything typed can run, and by ancestry.
 	name, ppid, pgid, ok := processOf(fg)
-	if !ok || pgid != fg || !shellNames[name] {
-		return
-	}
-	if parent, _, _, ok := processOf(ppid); !ok || shellNames[parent] {
+	if !ok || pgid != fg || !shellNames[name] || !sh.startedByAbhed(fg, ppid) {
 		return
 	}
 	if sh.shellPgrp.CompareAndSwap(0, int64(fg)) {
 		fmt.Fprintf(os.Stderr, "abhed: acp: terminal %s: the shell's process group is %d\n", sh.id, fg)
 	}
+}
+
+// startedByAbhed reports whether pid is the process Abhed started, or reaches
+// it through starters alone; a shell under sh -c or any other wrapper does not.
+func (sh *acpShell) startedByAbhed(pid, ppid int) bool {
+	if sh.root <= 0 {
+		return false
+	}
+	if pid == sh.root {
+		return true
+	}
+	for range 8 {
+		if ppid == sh.root {
+			return true
+		}
+		name, next, _, ok := processOf(ppid)
+		if !ok || !starters[name] {
+			return false
+		}
+		ppid = next
+	}
+	return false
 }
 
 func (sh *acpShell) isProgram(fg int) bool {

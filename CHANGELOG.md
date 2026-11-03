@@ -23,14 +23,14 @@ All notable changes to Abhed are recorded here. The format follows
 - Studio's interactive terminal could take every line typed in it for a
   program's input, so the deny rules never judged it. The shell's process
   group was taken from the terminal's first output; wherever something
-  printed before the shell took the terminal (the start of a terminal in a
-  project with a Python venv, not yet released), that group was not the
+  printed before the shell took the terminal, that group was not the
   shell's, and each line after went through unjudged. The shell's group is
   now learned only from the kernel: the group in front whose leader is the
-  shell, started by no other shell, reading keys at its prompt. Until then every line is judged as the
-  shell's. Affected: the process and none tiers on Linux since 1.2.3, only
-  where output came before the shell's prompt; no released start-up is
-  known to print first.
+  shell, reading keys at its prompt, started by Abhed directly or through
+  bubblewrap and the egress relay alone. Until then every line is judged as
+  the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
+  wherever anything printed before bash took the terminal; known to occur in
+  1.2.9 in a project with a Python venv, whose start-up notice prints first.
 
 ### Fixed
 
@@ -48,7 +48,9 @@ All notable changes to Abhed are recorded here. The format follows
   "always allow" for the old one when the file system reused its inode; a
   folder's identity now includes its birth time on Linux and macOS. Grants
   kept before 1.3.0 still match by device and inode until they are kept
-  again, so until then they can still follow a re-created folder.
+  again, so until then they can still follow a re-created folder. One kept
+  with a birth time, read where the file system gives none, no longer
+  matches, so its commands are asked about again.
 - A bash command's checkpoint missed a same-size rewrite on a file system
   whose timestamps are coarse (seconds, or a clock tick), so its /undo had
   nothing to take back: a file whose mtime is within two seconds of the

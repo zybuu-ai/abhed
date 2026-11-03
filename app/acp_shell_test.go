@@ -107,9 +107,9 @@ func TestShellNoticesNoJobControl(t *testing.T) {
 }
 
 // The shell's group is learned only from a shell leading the group in front
-// at its line editor, whose parent is no shell: a starter in front, a shell
-// reading a line in canonical mode (a wrapper script), or a nested shell is
-// never taken for it.
+// at its line editor that Abhed started, directly or through bubblewrap and
+// the relay: a starter in front, a wrapper in canonical mode, a member that is
+// not the leader, or a shell under sh -c or a nested shell is never taken.
 func TestShellGroupIsTheShellsOwn(t *testing.T) {
 	var fg int
 	var canonical bool
@@ -120,19 +120,23 @@ func TestShellGroupIsTheShellsOwn(t *testing.T) {
 	}
 	procs := map[int]proc{
 		1:  {"abhed", 0, 1},
-		10: {"abhed", 1, 10}, // a starter
+		5:  {"bwrap", 1, 5},  // what Abhed started
+		6:  {"bwrap", 5, 5},  // bubblewrap's child
+		10: {"relay", 6, 10}, // the egress relay, printing first
 		20: {"bash", 10, 20}, // the shell
-		21: {"bash", 10, 20}, // a member of its group, not its leader
+		21: {"bash", 20, 20}, // a member of its group, not its leader
 		30: {"zsh", 20, 30},  // a shell the shell started
+		40: {"sh", 10, 40},   // a wrapper
+		41: {"bash", 40, 41}, // a shell under it
 	}
 	fake := func(pid int) (string, int, int, bool) { p, ok := procs[pid]; return p.name, p.ppid, p.pgid, ok }
 	testProcess.Store(&fake)
 	t.Cleanup(func() { testProcess.Store(nil) })
-	sh := &acpShell{local: true, prompt: termline.NewPrompt()}
+	sh := &acpShell{local: true, root: 5, prompt: termline.NewPrompt()}
 	for _, c := range []struct {
 		fg        int
 		canonical bool
-	}{{10, false}, {99, false}, {20, true}, {21, false}, {30, false}} {
+	}{{10, false}, {99, false}, {20, true}, {21, false}, {30, false}, {41, false}} {
 		fg, canonical = c.fg, c.canonical
 		sh.settle()
 		if got := sh.shellPgrp.Load(); got != 0 {
@@ -150,5 +154,11 @@ func TestShellGroupIsTheShellsOwn(t *testing.T) {
 	}
 	if !sh.isProgram(30) {
 		t.Fatal("a nested shell was taken for the shell")
+	}
+	// Where Abhed starts the shell itself (none tier, sandbox-exec), it is the shell.
+	direct := &acpShell{local: true, root: 20, prompt: termline.NewPrompt()}
+	direct.settle()
+	if got := direct.shellPgrp.Load(); got != 20 {
+		t.Fatalf("a shell Abhed started itself: group %d, want 20", got)
 	}
 }

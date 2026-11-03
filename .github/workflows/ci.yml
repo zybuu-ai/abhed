@@ -232,8 +232,10 @@ jobs:
           if go list -deps ./cmd/abhed | grep -q '/ee/'; then
             echo "cmd/abhed depends on an ee/ package"; exit 1
           fi
-          # Any deploy/ path fails unless it is a known open form (the Helm
-          # chart, a test's fixture, a kubectl resource); the script lists them.
+          # Any path into the private deployment tree fails unless it is a
+          # named open form (the Helm chart, a test's fixture); the script
+          # lists them and checks itself against its probes first.
+          python3 scripts/ci/edition-boundary.py --self-test
           python3 scripts/ci/edition-boundary.py
 
   # The process tier on Linux is bubblewrap, and denying network needs a
