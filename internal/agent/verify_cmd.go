@@ -88,7 +88,7 @@ func readLine(line, cwd string) lineFacts {
 		return lf
 	}
 	lf.parsed = true
-	r := &lineReader{cwd: cwd, lf: &lf, shape: len(file.Stmts) == 1}
+	r := &lineReader{cwd: cwd, start: cwd, lf: &lf, shape: len(file.Stmts) == 1}
 	r.stmts(file.Stmts, len(file.Stmts) == 1)
 	lf.inspect, lf.known = true, true
 	seenOutput := false
@@ -124,8 +124,9 @@ func readLine(line, cwd string) lineFacts {
 }
 
 type lineReader struct {
-	cwd string
-	lf  *lineFacts
+	cwd   string
+	start string // the folder the line started in
+	lf    *lineFacts
 	// shape stays true while the line is one && chain of simple commands.
 	shape bool
 	// unresolved: a change of folder that could not be followed, so the
@@ -133,6 +134,12 @@ type lineReader struct {
 	unresolved bool
 	// top is set while the statement being read is at the top of the line.
 	top bool
+}
+
+// movedOut: a cd took the line out of the folder it started in, or to a
+// folder not followed, so a relative path no longer names the workspace.
+func (r *lineReader) movedOut() bool {
+	return r.unresolved || r.cwd != r.start && (r.start == "" || !strings.HasPrefix(r.cwd, r.start+"/"))
 }
 
 func (r *lineReader) stmts(list []*syntax.Stmt, follow bool) {
@@ -262,7 +269,11 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	wrapped := assigned || len(unwrapped) != len(words)
 	// Variables that only colour output or point imports at the workspace
 	// (PYTHONPATH=.) leave a reader a reader.
-	assigned = assigned && !harmlessEnv(assignedNames(call, raw, unwrapped))
+	if names := assignedNames(call, raw, unwrapped); readerEnv(names) {
+		// A relative PYTHONPATH names the workspace only from where it began.
+		pyPath := slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, "PYTHONPATH") })
+		assigned = assigned && pyPath && r.movedOut()
+	}
 	words = unwrapped
 	if len(words) == 0 {
 		// A runner alone, as env, writes only where it is redirected.
@@ -715,17 +726,23 @@ func equalWords(a, b []string) bool {
 	return true
 }
 
-// envName is the name of a NAME=value word, marked unsafe ("PYTHONPATH*")
-// when PYTHONPATH points anywhere but inside the workspace.
+// envName is the name of a NAME=value word. PYTHONPATH is marked by where
+// it points: "PYTHONPATH" for the folder itself (.), "PYTHONPATH~" for
+// folders inside it, "PYTHONPATH*" for anywhere else.
 func envName(w string) string {
 	name, v, _ := strings.Cut(w, "=")
 	if name != "PYTHONPATH" {
 		return name
 	}
+	here := true
 	for _, p := range strings.Split(v, ":") {
-		if p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "$~") || slices.Contains(strings.Split(filepath.ToSlash(p), "/"), "..") {
+		if !insidePath(p) {
 			return name + "*"
 		}
+		here = here && filepath.Clean(p) == "."
+	}
+	if !here {
+		return name + "~"
 	}
 	return name
 }

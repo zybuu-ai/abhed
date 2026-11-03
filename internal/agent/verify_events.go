@@ -907,22 +907,46 @@ func codeHas(e *evidenceText, nt string) bool {
 	return sq != "" && (&evidenceText{norm: squeezeCode(e.norm)}).hasLiteral(sq)
 }
 
-// squeezeCode drops a space unless it separates two word characters.
+// squeezeCode drops a space beside a word character or a bracket, outside
+// quoted strings; one between two word characters, or between two operator
+// or punctuation characters (`a < -b`, `a - -b`), stays.
 func squeezeCode(s string) string {
 	var b strings.Builder
+	var quote byte
 	for i := 0; i < len(s); i++ {
-		if s[i] == ' ' {
+		c := s[i]
+		switch {
+		case quote != 0:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				b.WriteByte(s[i])
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+		case c == ' ':
 			j := i
 			for j < len(s) && s[j] == ' ' {
 				j++
 			}
-			if i > 0 && j < len(s) && isAlnum(s[i-1]) && isAlnum(s[j]) {
-				b.WriteByte(' ')
+			if i > 0 && j < len(s) {
+				l, r := s[i-1], s[j]
+				if isAlnum(l) && isAlnum(r) || isOperator(l) && isOperator(r) {
+					b.WriteByte(' ')
+				}
 			}
 			i = j - 1
 			continue
 		}
-		b.WriteByte(s[i])
+		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// isOperator is punctuation other than a bracket or a quote.
+func isOperator(c byte) bool {
+	return !isAlnum(c) && c != ' ' && !strings.ContainsRune("()[]{}\"'`", rune(c))
 }

@@ -420,8 +420,9 @@ counts (`12 tests`, `replicas: 3`). Then:
     `-c`, `pytest -k` or `--collect-only`, `cargo test --no-run` and anything
     else not read as a plain run leave it out);
   - is given no variable but `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR` or
-    `CLICOLOR_FORCE`, which only colour its output, or a `PYTHONPATH`
-    of folders inside the workspace (`PYTHONPATH=.`): any other
+    `CLICOLOR_FORCE`, which only colour its output, or `PYTHONPATH=.`
+    (a `PYTHONPATH` of other folders inside the workspace, such as `src`,
+    can import another copy, so the run is not whole): any other
     (`GOFLAGS=-run=TestA`, `PYTEST_ADDOPTS='-k x'`, `CI=true`), before it or
     through `env`, may filter it or change what passes. Runners that load
     variables from a file are not read either: `pipenv run` (the project's
@@ -430,8 +431,10 @@ counts (`12 tests`, `replicas: 3`). Then:
     run is not one of a known kind;
   - covers, by path, the packages or folders the statement names, or the
     whole workspace (`./...` from the workspace) when it names none.
-    A cached run (`ok … (cached)`) counts like any other, and unittest's
-    "Ran 3 tests … OK" counts 3 passed (not "OK (skipped=1)");
+    A cached run (`ok … (cached)`) counts like any other. For `python -m
+    unittest`, a pattern (`-p`, or discover's second word) selects, and a
+    start folder other than the workspace narrows; its own last summary,
+    "Ran 3 tests … OK", counts 3 passed (not "OK (skipped=1)");
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -499,7 +502,8 @@ counts (`12 tests`, `replicas: 3`). Then:
   workspace, as a statement's is. Code a statement names is compared with
   the spacing around operators and brackets ignored, so `amount * percent`
   matches an edit that wrote `amount*percent`, and "I changed `Tip` to
-  return …" is met by a change inside `Tip`.
+  return …" is met by a change inside `Tip`. Spacing inside a quoted
+  string, or between two operators (`a < -b` is not `a<-b`), still counts.
 - **"I ran `Y`" is checked against the commands.** It is verified when Y, as
   written (assignments and the program's path included), perhaps with more
   arguments after it, is a line's first command, or any command of an `&&`
@@ -693,7 +697,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 706 plant a wrong claim. Some cite the result that shows them wrong
+session. 743 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -785,11 +789,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 706
+tail, a port not listening, a file not in a response). Today none of the 743
 planted claims is shown as verified (32 are contradicted: 30 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 201 controls are verified,
-and none of the 301 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 223 controls are verified,
+and none of the 323 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -799,7 +803,7 @@ mode on an answer whose only unverified sentence is an explanation: it is
 still unverified, gets the revision with that sentence in the note, and ends
 unverified. A regression pin (`TestRegressionPin`,
 `internal/agent/testdata/verify_pin.json`) freezes every planted case and
-control, by name and by a hash of its text and calls, and 147 strict-mode
+control, by name and by a hash of its text and calls, and 151 strict-mode
 answers from the reviews: it fails if a case is changed without being pinned
 again, a planted claim ever verifies, a control stops verifying, or a strict
 answer ends otherwise than pinned. The test fails if a planted claim is
@@ -832,7 +836,9 @@ makes them.
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test
   runners other than `go test` and `python -m unittest` given only test
-  names and output flags, pytest, whose config can turn on writing,
+  names (each starting with "test"), folders inside the workspace, a
+  pattern starting with "test" and output flags, pytest, whose config can
+  turn on writing,
   `golangci-lint`, `ruff`, and linters run
   with `--fix`) counts as a possible
   change with unknown files, so
@@ -886,7 +892,9 @@ makes them.
   or sent to `/dev/null`, are not read as conflict reports. A
   modify/delete conflict resolved by `git rm` and a commit leaves "I
   resolved the merge conflicts" unverified, since no read can show the
-  markers gone. Conflicts left by `git apply -3` or `git checkout -m`
+  markers gone. A change said with no direction and the function it was made in
+  ("I edited `calc.go` so that `Product` skips zeros with `continue`") is
+  matched by its code and place, not by the prose between them. Conflicts left by `git apply -3` or `git checkout -m`
   are not read as conflicts git reported, and a synthetic progress line
   that puts a status code after a carriage return (`\rUU `) counts as
   one. "The pull was clean" is not read as a merge claim, so it is not

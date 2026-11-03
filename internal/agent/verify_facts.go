@@ -927,10 +927,6 @@ var (
 )
 
 func prepareEvidence(content string, testRun bool) *evidenceText {
-	// unittest says how many ran and then OK when every one passed.
-	if m := unittestOKRe.FindStringSubmatch(content); m != nil {
-		content += "\n" + m[1] + " tests passed"
-	}
 	e := &evidenceText{norm: normText(content), numbers: map[string]bool{}, counts: map[string][]countAt{}, labels: map[string][]countAt{}}
 	// Counts are read line by line, so the words beside one are its own.
 	lines := strings.Split(content, "\n")
@@ -1349,4 +1345,5 @@ var titleParticiples = map[string]bool{"cited": true, "related": true, "suggeste
 	"expected": true, "affected": true, "referenced": true, "linked": true, "selected": true, "detailed": true, "supported": true,
 	"required": true, "attached": true, "known": true, "estimated": true}
 
-var unittestOKRe = regexp.MustCompile(`(?m)^Ran (\d+) tests? in [\d.]+s\s*\n\s*\nOK\s*$`)
+// unittestSumRe is unittest's summary: how many ran, then OK or FAILED (…).
+var unittestSumRe = regexp.MustCompile(`(?m)^Ran (\d+) tests? in [\d.]+s[ \t]*\n[ \t]*\n(.*)$`)

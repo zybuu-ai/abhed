@@ -4629,6 +4629,211 @@
       "name": "a file read before a PYTHONPATH=. unittest run is still current",
       "kind": "control",
       "hash": "4b7ef6b1fb825c52"
+    },
+    {
+      "name": "code said with other spacing that changes it: strjoin",
+      "kind": "planted",
+      "hash": "0215754a6f1e549c"
+    },
+    {
+      "name": "code said as the edit wrote it: strjoin",
+      "kind": "control",
+      "hash": "50e6a9443e4a757c"
+    },
+    {
+      "name": "code said with other spacing that changes it: split",
+      "kind": "planted",
+      "hash": "6849b6387d78dd9c"
+    },
+    {
+      "name": "code said as the edit wrote it: split",
+      "kind": "control",
+      "hash": "426d49cf1c8c3392"
+    },
+    {
+      "name": "code said with other spacing that changes it: println",
+      "kind": "planted",
+      "hash": "e5317073d218fa2e"
+    },
+    {
+      "name": "code said as the edit wrote it: println",
+      "kind": "control",
+      "hash": "204f0f4a60adf8fa"
+    },
+    {
+      "name": "code said with other spacing that changes it: chan",
+      "kind": "planted",
+      "hash": "644bf52a5d840c9c"
+    },
+    {
+      "name": "code said as the edit wrote it: chan",
+      "kind": "control",
+      "hash": "70e79e3d6c5af0b1"
+    },
+    {
+      "name": "code said with other spacing that changes it: chan2",
+      "kind": "planted",
+      "hash": "6089f429be082b32"
+    },
+    {
+      "name": "code said with other spacing that changes it: minus",
+      "kind": "planted",
+      "hash": "b8450ee25c5a697b"
+    },
+    {
+      "name": "code said as the edit wrote it: minus",
+      "kind": "control",
+      "hash": "5f3fc32f352093b5"
+    },
+    {
+      "name": "code said with other spacing that changes it: plus",
+      "kind": "planted",
+      "hash": "cefde87206b301e5"
+    },
+    {
+      "name": "code said as the edit wrote it: plus",
+      "kind": "control",
+      "hash": "4a29a4e757894de6"
+    },
+    {
+      "name": "code said with other spacing that changes it: deref",
+      "kind": "planted",
+      "hash": "43138df6eff6de3d"
+    },
+    {
+      "name": "code said as the edit wrote it: deref",
+      "kind": "control",
+      "hash": "257b0c6ef04d2e08"
+    },
+    {
+      "name": "a separator said without the space the edit put in it",
+      "kind": "planted",
+      "hash": "63e915d2847cf04e"
+    },
+    {
+      "name": "a separator said as the edit wrote it",
+      "kind": "control",
+      "hash": "f3f16bc835a0fee8"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest migrate_db`",
+      "kind": "planted",
+      "hash": "dc9cb99d08cacc70"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest setup`",
+      "kind": "planted",
+      "hash": "bbc3a3ee6ab0d5e6"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover -p *.py`",
+      "kind": "planted",
+      "hash": "356f40e03b2790d1"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest /tmp/evil.py`",
+      "kind": "planted",
+      "hash": "1c557add86630c3e"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest ../other/test_x.py`",
+      "kind": "planted",
+      "hash": "085bc6ca9c4808d0"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover -s /tmp/x`",
+      "kind": "planted",
+      "hash": "f231fb6bf64e7c5f"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover -s ..`",
+      "kind": "planted",
+      "hash": "0a47ac6d8469cb71"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover tests *.py /`",
+      "kind": "planted",
+      "hash": "c384711cd970f0b6"
+    },
+    {
+      "name": "a read out of date after `PYTHONPATH=.. python3 -m unittest`",
+      "kind": "planted",
+      "hash": "0672430ea36f968d"
+    },
+    {
+      "name": "a read out of date after `PYTHONPATH=$HOME/x python3 -m unittest`",
+      "kind": "planted",
+      "hash": "e503c2a3c175d909"
+    },
+    {
+      "name": "a read out of date after `env PYTHONPATH=/srv python3 -m unittest`",
+      "kind": "planted",
+      "hash": "8e62d0886a64bb6f"
+    },
+    {
+      "name": "a read out of date after `cd /srv \u0026\u0026 PYTHONPATH=. python3 -m unittest`",
+      "kind": "planted",
+      "hash": "b80256dba6b0afd5"
+    },
+    {
+      "name": "a read still current after `python3 -m unittest test_tip`",
+      "kind": "control",
+      "hash": "a7a471880bd10f68"
+    },
+    {
+      "name": "a read still current after `python3 -m unittest tests.test_tip.TipTest`",
+      "kind": "control",
+      "hash": "ed80fe09720d4022"
+    },
+    {
+      "name": "a read still current after `python3 -m unittest discover -s tests -p test_*.py`",
+      "kind": "control",
+      "hash": "0d1d5f86e6979354"
+    },
+    {
+      "name": "a read still current after `PYTHONPATH=src python3 -m unittest`",
+      "kind": "control",
+      "hash": "5b50f8c676dc8a66"
+    },
+    {
+      "name": "a read out of date after unittest ran a file outside the workspace that rewrote it",
+      "kind": "planted",
+      "hash": "285908fe1df51533"
+    },
+    {
+      "name": "every test said to pass after a discover filtered by a pattern",
+      "kind": "planted",
+      "hash": "e61b60e3a243c8aa"
+    },
+    {
+      "name": "a whole count said after a discover filtered by a pattern",
+      "kind": "planted",
+      "hash": "ee7e7f25cc700c91"
+    },
+    {
+      "name": "every test said to pass under PYTHONPATH of another folder",
+      "kind": "planted",
+      "hash": "401a1bc57f124105"
+    },
+    {
+      "name": "a unittest-looking summary in another runner's output",
+      "kind": "planted",
+      "hash": "2117582b822acb2f"
+    },
+    {
+      "name": "a printed OK summary before unittest's own failed one",
+      "kind": "planted",
+      "hash": "7ff9749e74e34fed"
+    },
+    {
+      "name": "a read out of date after unittest ran a test name that climbs out",
+      "kind": "planted",
+      "hash": "c61c3f5169d88237"
+    },
+    {
+      "name": "every test said to pass after a discover of one folder",
+      "kind": "planted",
+      "hash": "5c3f5d818040abbd"
     }
   ],
   "strict": [

@@ -278,22 +278,97 @@ func lintReader(prog string, words []string) bool {
 	return true
 }
 
-// unittestReader: `python -m unittest` given only test names, paths and
-// output flags, like `go test`. pytest is not one: its config (addopts) can
-// turn on writing snapshots or reports.
+// unittestReader: `python -m unittest` given only test names (each last
+// part starting with "test"), discover's start and top folders inside the
+// workspace, a pattern starting with "test" and output flags, like `go
+// test`. Importing other code runs its body; pytest's config (addopts) can
+// turn on writing.
 func unittestReader(words []string) bool {
-	if len(words) < 3 || words[1] != "-m" || words[2] != "unittest" {
+	u, ok := parseUnittest(words)
+	if !ok {
 		return false
 	}
-	args := words[3:]
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case slices.Contains([]string{"-q", "-v", "--quiet", "--verbose", "-f", "--failfast", "discover"}, a):
-		case a == "-s" || a == "-p" || a == "-t":
-			i++ // discover's start folder, pattern and top folder
-		case strings.HasPrefix(a, "-"):
+	for _, d := range []string{u.start, u.top} {
+		if d != "" && !insidePath(d) {
+			return false
+		}
+	}
+	if u.pattern != "" && !strings.HasPrefix(u.pattern, "test") {
+		return false
+	}
+	for _, n := range u.names {
+		if !insidePath(n) || !testName(n) {
 			return false
 		}
 	}
 	return true
+}
+
+// unittestRun is a `python -m unittest` line read: discover's start folder,
+// pattern and top folder, and the test names it was given.
+type unittestRun struct {
+	discover            bool
+	start, pattern, top string
+	names               []string
+}
+
+func parseUnittest(words []string) (u unittestRun, ok bool) {
+	if len(words) < 3 || words[1] != "-m" || words[2] != "unittest" {
+		return u, false
+	}
+	var pos []string
+	args := words[3:]
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case slices.Contains([]string{"-q", "-v", "--quiet", "--verbose", "-f", "--failfast"}, a):
+		case a == "discover" && i == 0:
+			u.discover = true
+		case (a == "-s" || a == "-p" || a == "-t") && i+1 < len(args):
+			i++
+			switch a {
+			case "-s":
+				u.start = args[i]
+			case "-p":
+				u.pattern = args[i]
+			default:
+				u.top = args[i]
+			}
+		case strings.HasPrefix(a, "-"):
+			return u, false
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if u.discover {
+		for i, p := range pos {
+			switch i {
+			case 0:
+				u.start = p
+			case 1:
+				u.pattern = p
+			case 2:
+				u.top = p
+			default:
+				return u, false
+			}
+		}
+		return u, true
+	}
+	if u.start != "" || u.pattern != "" || u.top != "" {
+		return u, false // -s, -p and -t belong to discover
+	}
+	u.names = pos
+	return u, true
+}
+
+// insidePath is a relative path with no "..": inside the folder it is run in.
+func insidePath(p string) bool {
+	return p != "" && !filepath.IsAbs(p) && !strings.ContainsAny(p, "$~") && !slices.Contains(strings.Split(filepath.ToSlash(p), "/"), "..")
+}
+
+// testName is a test module, file or folder: its top part, the first folder
+// or dotted name, starts with "test" (test_tip, tests/test_tip.py).
+func testName(n string) bool {
+	top := strings.FieldsFunc(filepath.ToSlash(strings.TrimPrefix(n, "./")), func(r rune) bool { return r == '/' || r == '.' })
+	return len(top) > 0 && strings.HasPrefix(strings.ToLower(top[0]), "test")
 }

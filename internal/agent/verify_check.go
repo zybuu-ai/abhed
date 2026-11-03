@@ -239,7 +239,7 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			_ = json.Unmarshal(r.a.Args, &args)
 			// A file tool resolves a relative path against the workspace, as
 			// a claim's path is read; this session's own calls only.
-			if args.Path != "" && !filepath.IsAbs(args.Path) && at == nil && ix.workDir != "" && o.Tool != "bash" && o.Tool != "ssh" {
+			if args.Path != "" && !filepath.IsAbs(args.Path) && at == nil && ix.workDir != "" && (readers[o.Tool] || o.Tool == "write" || o.Tool == "edit") {
 				args.Path = filepath.Join(ix.workDir, args.Path)
 			}
 			rec.command, rec.path, rec.args, rec.argMap = args.Command, args.Path, argText(r.a.Args), argMap(r.a.Args)
@@ -254,6 +254,13 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				}
 				line = readLine(args.Command, dir)
 				rec.inspect, rec.selfStale = line.parsed && line.inspect, line.selfStale
+				// unittest ends with how many ran and OK when every one passed:
+				// its own summary, the last, on a unittest run only.
+				if _, ok := parseUnittest(line.final); ok && line.shape {
+					if ms := unittestSumRe.FindAllStringSubmatch(o.Content, -1); len(ms) > 0 && strings.TrimSpace(ms[len(ms)-1][2]) == "OK" {
+						rec.content += "\n" + ms[len(ms)-1][1] + " tests passed"
+					}
+				}
 				rec.line, rec.cwd = line, o.Cwd
 			}
 			mut := false
