@@ -433,8 +433,9 @@ counts (`12 tests`, `replicas: 3`). Then:
     whole workspace (`./...` from the workspace) when it names none.
     A cached run (`ok … (cached)`) counts like any other. For `python -m
     unittest`, a pattern (`-p`, or discover's second word) selects, and a
-    start folder other than the workspace narrows; its own last summary,
-    "Ran 3 tests … OK", counts 3 passed (not "OK (skipped=1)");
+    start folder other than the workspace narrows; its summary, "Ran 3
+    tests … OK", counts 3 passed when it is the only one in the output
+    (not "OK (skipped=1)");
   - exited 0 after the last call that may have changed anything.
 - **"I changed X" is checked against the calls.** It is verified by the last
   call that changed X, as the statement writes it, when that call succeeded:
@@ -502,8 +503,9 @@ counts (`12 tests`, `replicas: 3`). Then:
   workspace, as a statement's is. Code a statement names is compared with
   the spacing around operators and brackets ignored, so `amount * percent`
   matches an edit that wrote `amount*percent`, and "I changed `Tip` to
-  return …" is met by a change inside `Tip`. Spacing inside a quoted
-  string, or between two operators (`a < -b` is not `a<-b`), still counts.
+  return …" is met by a change inside `Tip`. Spacing between two operators
+  (`a < -b` is not `a<-b`) still counts, and code with a quote or comment
+  in it (`', '.join`, `# …`) must match exactly.
 - **"I ran `Y`" is checked against the commands.** It is verified when Y, as
   written (assignments and the program's path included), perhaps with more
   arguments after it, is a line's first command, or any command of an `&&`
@@ -697,7 +699,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 743 plant a wrong claim. Some cite the result that shows them wrong
+session. 757 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -789,11 +791,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 743
+tail, a port not listening, a file not in a response). Today none of the 757
 planted claims is shown as verified (32 are contradicted: 30 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 223 controls are verified,
-and none of the 323 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 224 controls are verified,
+and none of the 324 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -836,8 +838,10 @@ makes them.
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test
   runners other than `go test` and `python -m unittest` given only test
-  names (each starting with "test"), folders inside the workspace, a
-  pattern starting with "test" and output flags, pytest, whose config can
+  names (every folder, file and lower-case dotted part starting with
+  "test"), folders inside the workspace, a pattern starting with "test",
+  no discover word given twice or both ways, no `cd` out of the folder and
+  no `PYTHON…` variable set beside it, and output flags, pytest, whose config can
   turn on writing,
   `golangci-lint`, `ruff`, and linters run
   with `--fix`) counts as a possible

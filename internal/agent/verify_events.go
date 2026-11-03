@@ -903,6 +903,11 @@ func codeHas(e *evidenceText, nt string) bool {
 	if e.hasLiteral(nt) {
 		return true
 	}
+	// Code with a quote or a comment in it is matched exactly: where its
+	// strings and comments end is not read.
+	if strings.ContainsAny(nt, "'\"`#") || strings.Contains(nt, "//") || strings.Contains(nt, "/*") {
+		return false
+	}
 	sq := squeezeCode(nt)
 	return sq != "" && (&evidenceText{norm: squeezeCode(e.norm)}).hasLiteral(sq)
 }

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // The known readers: the few programs that, in the forms allowed here, change
@@ -316,7 +317,7 @@ func parseUnittest(words []string) (u unittestRun, ok bool) {
 	if len(words) < 3 || words[1] != "-m" || words[2] != "unittest" {
 		return u, false
 	}
-	var pos []string
+	var pos, flags []string
 	args := words[3:]
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
@@ -325,6 +326,10 @@ func parseUnittest(words []string) (u unittestRun, ok bool) {
 			u.discover = true
 		case (a == "-s" || a == "-p" || a == "-t") && i+1 < len(args):
 			i++
+			if slices.Contains(flags, a) {
+				return u, false // given twice: which one Python takes is not read
+			}
+			flags = append(flags, a)
 			switch a {
 			case "-s":
 				u.start = args[i]
@@ -340,6 +345,9 @@ func parseUnittest(words []string) (u unittestRun, ok bool) {
 		}
 	}
 	if u.discover {
+		if len(pos) > 0 && len(flags) > 0 {
+			return u, false // positionals and -s/-p/-t mixed: Python's choice is not read
+		}
 		for i, p := range pos {
 			switch i {
 			case 0:
@@ -366,9 +374,25 @@ func insidePath(p string) bool {
 	return p != "" && !filepath.IsAbs(p) && !strings.ContainsAny(p, "$~") && !slices.Contains(strings.Split(filepath.ToSlash(p), "/"), "..")
 }
 
-// testName is a test module, file or folder: its top part, the first folder
-// or dotted name, starts with "test" (test_tip, tests/test_tip.py).
+// testName is a test module, file or folder: every folder and file in a
+// path, and every lower-case part of a dotted name, starts with "test"
+// (tests/test_tip.py, tests.test_tip.TipTest.test_a); a class is not judged.
 func testName(n string) bool {
-	top := strings.FieldsFunc(filepath.ToSlash(strings.TrimPrefix(n, "./")), func(r rune) bool { return r == '/' || r == '.' })
-	return len(top) > 0 && strings.HasPrefix(strings.ToLower(top[0]), "test")
+	n = strings.TrimPrefix(filepath.ToSlash(n), "./")
+	var parts []string
+	if strings.Contains(n, "/") || strings.HasSuffix(n, ".py") {
+		parts = strings.Split(strings.TrimSuffix(strings.TrimSuffix(n, "/"), ".py"), "/")
+	} else {
+		for _, p := range strings.Split(n, ".") {
+			if p != "" && !unicode.IsUpper([]rune(p)[0]) {
+				parts = append(parts, p)
+			}
+		}
+	}
+	for _, p := range parts {
+		if !strings.HasPrefix(strings.ToLower(p), "test") {
+			return false
+		}
+	}
+	return len(parts) > 0
 }

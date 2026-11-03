@@ -126,6 +126,7 @@ func readLine(line, cwd string) lineFacts {
 type lineReader struct {
 	cwd   string
 	start string // the folder the line started in
+	pyEnv bool   // a PYTHON… variable set on its own, which a later python may see
 	lf    *lineFacts
 	// shape stays true while the line is one && chain of simple commands.
 	shape bool
@@ -228,6 +229,9 @@ func (r *lineReader) add(c simpleCmd) {
 func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 	redirected, redirectKnown, someRedirect := redirectTargets(st)
 	if len(call.Args) == 0 {
+		for _, a := range call.Assigns {
+			r.pyEnv = r.pyEnv || strings.HasPrefix(a.Name.Value, "PYTHON")
+		}
 		r.redirectsOnly(st)
 		return // assignments alone
 	}
@@ -296,7 +300,10 @@ func (r *lineReader) call(st *syntax.Stmt, call *syntax.CallExpr, follow bool) {
 		r.add(c)
 		return
 	}
-	if pureReader(words) {
+	// A unittest run after a cd out of the folder, or beside a PYTHON…
+	// variable, runs code from elsewhere.
+	unittestAway := (r.movedOut() || r.pyEnv) && len(words) > 2 && words[1] == "-m" && words[2] == "unittest"
+	if pureReader(words) && !unittestAway {
 		c.pure, c.writes = !someRedirect, someRedirect
 		c.known, c.targets = redirectKnown, redirected
 	} else {

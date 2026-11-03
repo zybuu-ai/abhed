@@ -4834,6 +4834,81 @@
       "name": "every test said to pass after a discover of one folder",
       "kind": "planted",
       "hash": "5c3f5d818040abbd"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover tests -s ../evil`",
+      "kind": "planted",
+      "hash": "d43df7e1ed15e8f6"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover tests -s /tmp/evil`",
+      "kind": "planted",
+      "hash": "8c4a5897a3d095eb"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover . test_x -p *.py`",
+      "kind": "planted",
+      "hash": "2b5ff00e85a070a9"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest discover -s tests -s ../evil`",
+      "kind": "planted",
+      "hash": "670159f4c327c0cf"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests/make_fixtures.py`",
+      "kind": "planted",
+      "hash": "f431e0f70a4140a5"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.migrate_db`",
+      "kind": "planted",
+      "hash": "4ef908c2b12fef49"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest testdata/gen.py`",
+      "kind": "planted",
+      "hash": "1a73e32b96f22981"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.migrate_db.MigTest.test_a`",
+      "kind": "planted",
+      "hash": "f8dfa34bbad54684"
+    },
+    {
+      "name": "a read out of date after `cd /tmp/evil \u0026\u0026 python3 -m unittest`",
+      "kind": "planted",
+      "hash": "7babbbb4c9f92e00"
+    },
+    {
+      "name": "a read out of date after `cd /tmp/evil \u0026\u0026 python3 -m unittest test_x`",
+      "kind": "planted",
+      "hash": "8027c5b72146a71e"
+    },
+    {
+      "name": "a read out of date after `PYTHONPATH=/tmp/evil; python3 -m unittest`",
+      "kind": "planted",
+      "hash": "40547837839acdef"
+    },
+    {
+      "name": "a read still current after `python3 -m unittest tests.test_tip.TipTest.test_a`",
+      "kind": "control",
+      "hash": "d954d4fa96438bc5"
+    },
+    {
+      "name": "a separator said without its space, after a comment with an apostrophe",
+      "kind": "planted",
+      "hash": "7871c88d1e50bb57"
+    },
+    {
+      "name": "a string said without its space, after an escaped quote",
+      "kind": "planted",
+      "hash": "031f2ac078689c55"
+    },
+    {
+      "name": "a printed unittest summary after the run's own",
+      "kind": "planted",
+      "hash": "8bb0ffd64ea31060"
     }
   ],
   "strict": [

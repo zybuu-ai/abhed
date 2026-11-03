@@ -254,11 +254,11 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				}
 				line = readLine(args.Command, dir)
 				rec.inspect, rec.selfStale = line.parsed && line.inspect, line.selfStale
-				// unittest ends with how many ran and OK when every one passed:
-				// its own summary, the last, on a unittest run only.
+				// unittest ends with how many ran and OK when every one passed,
+				// read on a unittest run only, and only when there is one.
 				if _, ok := parseUnittest(line.final); ok && line.shape {
-					if ms := unittestSumRe.FindAllStringSubmatch(o.Content, -1); len(ms) > 0 && strings.TrimSpace(ms[len(ms)-1][2]) == "OK" {
-						rec.content += "\n" + ms[len(ms)-1][1] + " tests passed"
+					if ms := unittestSumRe.FindAllStringSubmatch(o.Content, -1); len(ms) == 1 && strings.TrimSpace(ms[0][2]) == "OK" {
+						rec.content += "\n" + ms[0][1] + " tests passed"
 					}
 				}
 				rec.line, rec.cwd = line, o.Cwd
