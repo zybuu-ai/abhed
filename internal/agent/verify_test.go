@@ -175,7 +175,8 @@ func TestSuccessNeedsExitZeroAfterLastEdit(t *testing.T) {
 // A command that only reads does not count as a change; one that writes does.
 func TestInspectionCommands(t *testing.T) {
 	for _, c := range []string{"go test ./...", "git status && git diff", "ls -la | wc -l", "cat a.txt 2>/dev/null",
-		"grep -rn foo .", "cd sub && go vet ./...", "sed -n '1,20p' f", "rg -n foo"} {
+		"grep -rn foo .", "cd sub && go vet ./...", "sed -n '1,20p' f", "rg -n foo", "python3 -m unittest",
+		"PYTHONPATH=. python3 -m unittest -v", "python -m unittest discover -s tests"} {
 		if !inspectionCommand(c) {
 			t.Errorf("%q reads only", c)
 		}
@@ -183,7 +184,8 @@ func TestInspectionCommands(t *testing.T) {
 	for _, c := range []string{"rm -rf x", "echo hi > a.txt", "sed -i s/a/b/ f", "git commit -m x", "go mod tidy",
 		"find . -delete", "curl -o x https://h", "npm install", "cat $(whoami)", "tee out.txt",
 		// Test runners, linters and build tools may write: snapshots, reports, fixes, outputs.
-		"npm test", "python -m pytest -q", "make test", "go test -coverprofile=c.out ./...", "sort --out=f f",
+		"npm test", "python -m pytest -q", "pytest -q", "python3 -m unittest --buffer", "PYTHONPATH=/srv/old python3 -m unittest",
+		"UPDATE=1 python3 -m unittest", "make test", "go test -coverprofile=c.out ./...", "sort --out=f f",
 		"sed --in-pl s/a/b/ f", "sed -n 's/a/b/w out' f", "ls f | xargs rm", "env > f", "git grep -O foo", "rg --pre x foo",
 		"uniq a b", "git -C sub status"} {
 		if inspectionCommand(c) {

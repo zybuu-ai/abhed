@@ -97,10 +97,22 @@ func commandKind(words []string) string {
 }
 
 // colourEnv are variables that change only how a run's output is coloured,
-// never what runs or how it is judged. Any other variable set for a run
+// or point Python's imports at the folder itself (PYTHONPATH=.), never what
+// runs or how it is judged. Any other variable set for a run
 // (GOFLAGS=-run=X, PYTEST_ADDOPTS='-k x', CI, UPDATE) may filter it or change
 // what passes, so the run is not taken as a whole one.
-var colourEnv = map[string]bool{"NO_COLOR": true, "FORCE_COLOR": true, "CLICOLOR": true, "CLICOLOR_FORCE": true}
+var colourEnv = map[string]bool{"NO_COLOR": true, "FORCE_COLOR": true, "CLICOLOR": true, "CLICOLOR_FORCE": true, "PYTHONPATH": true}
+
+// readerEnv leaves a reader a reader: colour, and a PYTHONPATH inside the
+// folder (PYTHONPATH=src), which may change what is imported but not where.
+func readerEnv(names []string) bool {
+	for _, n := range names {
+		if !colourEnv[n] && n != "PYTHONPATH~" {
+			return false
+		}
+	}
+	return true
+}
 
 func harmlessEnv(names []string) bool {
 	for _, n := range names {
@@ -164,7 +176,21 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 			pats = append(pats, scopePat{dir: filepath.Join(dir, op), rec: rec})
 		}
 		return pats, true
-	case "pytest", "python", "python3":
+	case "python", "python3":
+		if len(words) > 2 && words[1] == "-m" && words[2] == "unittest" {
+			// A pattern or test names select; a start folder other than the
+			// workspace narrows it.
+			u, ok := parseUnittest(words)
+			if !ok || u.pattern != "" || len(u.names) > 0 {
+				return nil, false
+			}
+			if u.start != "" && filepath.Clean(u.start) != "." {
+				return []scopePat{{dir: filepath.Join(dir, u.start), rec: true}}, true
+			}
+			return whole, true
+		}
+		fallthrough
+	case "pytest":
 		start := 1
 		if prog != "pytest" {
 			start = 3 // python -m pytest

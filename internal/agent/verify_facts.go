@@ -1344,3 +1344,6 @@ func headingLine(t string) bool {
 var titleParticiples = map[string]bool{"cited": true, "related": true, "suggested": true, "proposed": true, "recommended": true,
 	"expected": true, "affected": true, "referenced": true, "linked": true, "selected": true, "detailed": true, "supported": true,
 	"required": true, "attached": true, "known": true, "estimated": true}
+
+// unittestSumRe is unittest's summary: how many ran, then OK or FAILED (…).
+var unittestSumRe = regexp.MustCompile(`(?m)^Ran (\d+) tests? in [\d.]+s[ \t]*\n[ \t]*\n(.*)$`)

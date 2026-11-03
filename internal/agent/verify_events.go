@@ -193,15 +193,15 @@ func (ix *recordIndex) changeTexts() []changeText {
 		}
 		switch m.tool {
 		case "edit":
-			out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, old: a.OldString, new: a.NewString})
+			out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.path, old: a.OldString, new: a.NewString})
 		case "write":
-			before, known := ix.before(a.Path, m.pos, out)
+			before, known := ix.before(m.path, m.pos, out)
 			if !known {
-				out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, new: a.Content, fresh: true, full: a.Content, created: m.created})
+				out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.path, new: a.Content, fresh: true, full: a.Content, created: m.created})
 				continue
 			}
 			oldL, newL := lineDiff(before, a.Content)
-			out = append(out, changeText{seq: m.seq, pos: m.pos, path: a.Path, old: oldL, new: newL, full: a.Content})
+			out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.path, old: oldL, new: newL, full: a.Content})
 		case "bash", "ssh":
 			if o, n, file, ok := sedEdit(a.Command); ok && m.tool == "bash" {
 				out = append(out, changeText{seq: m.seq, pos: m.pos, path: m.sedPath(file, ix), old: o, new: n})
@@ -349,7 +349,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 				before, _ := ix.before(ct.path, ct.pos, nil)
 				placeE = prepareEvidence(codeLines(enclosing(ix.fileAfter(ct), before, ct.new, ct.old), ct.path), false)
 			}
-			return placeE.hasLiteral(nt)
+			return codeHas(placeE, nt)
 		}
 		isFile := func(nt string) bool {
 			return ct.path != "" && (nt == normText(filepath.Base(ct.path)) || nt == normText(ct.path) || strings.HasSuffix(normText(ct.path), "/"+nt))
@@ -359,7 +359,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		hit, added := "", false
 		for _, t := range tokens {
 			nt := normText(t)
-			inOld, inNew := oldE.hasLiteral(nt), newE.hasLiteral(nt)
+			inOld, inNew := codeHas(oldE, nt), codeHas(newE, nt)
 			switch {
 			case isFile(nt):
 				if hit == "" && path == "" {
@@ -375,7 +375,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		// early"): every token on a line enclosing the changed lines.
 		if hit == "" && f.dir == "" {
 			for _, t := range tokens {
-				if nt := normText(t); ctxE.hasLiteral(nt) && after(nt) && !oldE.hasLiteral(nt) {
+				if nt := normText(t); codeHas(ctxE, nt) && after(nt) && !codeHas(oldE, nt) {
 					hit = t
 					break
 				}
@@ -387,7 +387,7 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 		ok := hit != ""
 		for _, t := range tokens {
 			nt := normText(t)
-			inOld, inNew := oldE.hasLiteral(nt), newE.hasLiteral(nt)
+			inOld, inNew := codeHas(oldE, nt), codeHas(newE, nt)
 			switch {
 			case t == hit || isFile(nt) || inNew:
 			case inOld && (f.oldNamed[nt] || f.dir == "remove"):
@@ -397,8 +397,10 @@ func (ix *recordIndex) changeNamed(f facts, path string) (finding, *evidenceText
 				if !anchorSide(f.anchorNamed[nt], nt, ct.new, put) && !anchorSide(f.anchorNamed[nt], nt, ix.fileAfter(ct), put) {
 					ok = false
 				}
-			case (added || f.inNamed[nt]) && !inOld && after(nt):
-			case !inOld && ctxE.hasLiteral(nt) && after(nt):
+			// The code a change was made in, named beside what it put in ("I
+			// changed `Tip` to return `x`"): a line enclosing the change.
+			case (added || f.inNamed[nt] || f.dir == "") && !inOld && after(nt):
+			case !inOld && codeHas(ctxE, nt) && after(nt):
 			default:
 				ok = false
 			}
@@ -893,4 +895,63 @@ var checkLeadRe = regexp.MustCompile(`^(?:(?:i|we|i've|we've) )?(?:\w+ly )?(?:te
 func lookOnly(s string) bool {
 	low := normText(backtickRe.ReplaceAllString(s, " "))
 	return observeRe.MatchString(low) && len(eventWords(observeRe.ReplaceAllString(low, " "))) == 0
+}
+
+// codeHas finds code in a change as hasLiteral does, and also with the
+// spacing around operators and brackets ignored: `a * b` is `a*b`.
+func codeHas(e *evidenceText, nt string) bool {
+	if e.hasLiteral(nt) {
+		return true
+	}
+	// Code with a quote or a comment in it is matched exactly: where its
+	// strings and comments end is not read.
+	if strings.ContainsAny(nt, "'\"`#") || strings.Contains(nt, "//") || strings.Contains(nt, "/*") {
+		return false
+	}
+	sq := squeezeCode(nt)
+	return sq != "" && (&evidenceText{norm: squeezeCode(e.norm)}).hasLiteral(sq)
+}
+
+// squeezeCode drops a space beside a word character or a bracket, outside
+// quoted strings; one between two word characters, or between two operator
+// or punctuation characters (`a < -b`, `a - -b`), stays.
+func squeezeCode(s string) string {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				b.WriteByte(s[i])
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+		case c == ' ':
+			j := i
+			for j < len(s) && s[j] == ' ' {
+				j++
+			}
+			if i > 0 && j < len(s) {
+				l, r := s[i-1], s[j]
+				if isAlnum(l) && isAlnum(r) || isOperator(l) && isOperator(r) {
+					b.WriteByte(' ')
+				}
+			}
+			i = j - 1
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// isOperator is punctuation other than a bracket or a quote.
+func isOperator(c byte) bool {
+	return !isAlnum(c) && c != ' ' && !strings.ContainsRune("()[]{}\"'`", rune(c))
 }

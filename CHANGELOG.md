@@ -73,6 +73,18 @@ All notable changes to Abhed are recorded here. The format follows
   as the workspace's `users.json.lock`, was opened through a link, which made
   an empty file at the path the link named, or waited on a pipe. It is now
   opened without following a link or waiting, and must be a plain file.
+- Verified answers marked true statements unverified after a fix and a
+  passing test run. An edit given a relative path (`tip.py`) was not
+  matched to the file the statement named; `python3 -m unittest` counted
+  as a possible change to every file, so what was read before them went
+  out of date (it is now a reader only for test names, each lower-case
+  part starting with "test" and each upper-case part holding "Test",
+  workspace folders and a test pattern), and `PYTHONPATH=.` made the run
+  not a whole one; unittest's "Ran 3 tests … OK" did not count 3 passed;
+  and code said with other spacing (`amount * percent` for
+  `amount*percent`) or named by the function it was changed in did not
+  match. Each is now read as it is, and none can verify a statement the
+  calls do not show.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by

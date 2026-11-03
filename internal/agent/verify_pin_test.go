@@ -113,6 +113,7 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		then       string // a second command after bash
 		before     string // a command run before the read
 		prep       string // a shell line run in the workspace before the session
+		relEdit    bool   // the edit names its file relative to the workspace
 	}{
 		"read-sum":     {file: "sum.go", text: sum},
 		"explain-sum":  {file: "sum.go", text: plain},
@@ -186,6 +187,12 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 			bash: "./git pull"},
 		"sub-tests": {prep: "mkdir -p services/orders && printf '#!/bin/sh\\necho \"ok  example.com/mono/orders/internal/store (cached)\"\\n' > services/orders/go && chmod +x services/orders/go",
 			bash: "cd services/orders && ./go test ./..."},
+		"py-tip": {file: "tip.py", text: "def tip(amount, percent):\n    return amount * percent // 100\n", relEdit: true,
+			edit:  &edit{"    return amount * percent // 100\n", "    return (amount * percent + 50) // 100\n"},
+			setup: "printf '#!/bin/sh\\necho ...\\necho ------\\necho Ran 3 tests in 0.001s\\necho\\necho OK\\n' > python3 && chmod +x python3", bash: "PYTHONPATH=. ./python3 -m unittest"},
+		"go-tip": {file: "tip.go", text: "package receipts\n\nfunc Tip(amount, percent int) int {\n\treturn amount * percent / 100\n}\n",
+			edit:  &edit{"\treturn amount * percent / 100\n", "\treturn (amount*percent + 50) / 100\n"},
+			setup: "printf '#!/bin/sh\\necho ok example.com/receipts 0.21s\\n' > go && chmod +x go", bash: "./go test ./..."},
 		"make-test": {file: "Makefile", text: "test:\n\t@echo 12 tests passed\n", bash: "make test"},
 		"routes-context": {file: "routes.go", text: "package web\n\nfunc routes(r chi.Router) {\n\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)\n}\n",
 			edit: &edit{"\tr.Get(\"/admin\", admin)\n\tr.Get(\"/orders\", orders)", "\tr.Get(\"/admin\", admin)\n\tr.With(requireAuth).Get(\"/orders\", orders)"}},
@@ -213,7 +220,11 @@ func pinRun(t *testing.T, scenario, reply string) TerminalReason {
 		}
 		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("read", map[string]string{"path": path})}})
 		if sc.edit != nil {
-			turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("edit", map[string]string{"path": path, "old_string": sc.edit.old, "new_string": sc.edit.new})}})
+			ep := path
+			if sc.relEdit {
+				ep = sc.file
+			}
+			turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("edit", map[string]string{"path": ep, "old_string": sc.edit.old, "new_string": sc.edit.new})}})
 		}
 	}
 	if sc.setup != "" {
