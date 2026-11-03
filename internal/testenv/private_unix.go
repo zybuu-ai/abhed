@@ -25,7 +25,7 @@ func checkPrivate(dir string) (string, error) {
 	}
 	me := os.Getuid()
 	for d, leaf := p, true; ; d, leaf = filepath.Dir(d), false {
-		fi, err := os.Lstat(d)
+		fi, err := os.Lstat(d) // #nosec G703 -- tests' own temp folder, checked to be private before use
 		if err != nil {
 			return "", err
 		}

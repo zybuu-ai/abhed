@@ -26,6 +26,7 @@ func (s *Store) AuditLinks(ctx context.Context, seqs []int64) (map[int64]chain.L
 	for i, q := range seqs {
 		args[i] = q
 	}
+	// #nosec G202 -- only ? placeholders are joined; the seqs are bound as arguments
 	rows, err := s.r.QueryContext(ctx, `SELECT seq, chain_pos, coalesce(prev_hash, ''), coalesce(hash, '') FROM sandbox_audit
 		WHERE chain_pos IS NOT NULL AND seq IN (`+marks+`)`, args...)
 	if err != nil {

@@ -303,7 +303,7 @@ func recordLine(s local.Sealed) map[string]any {
 
 // readLogsCursor reads the seqs a cursor file holds; a file not there yet is empty.
 func readLogsCursor(path string) (map[string]int64, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- the cursor file the person named with -cursor
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]int64{}, nil
 	}

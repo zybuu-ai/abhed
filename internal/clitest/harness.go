@@ -1024,7 +1024,7 @@ func checkMarker(bin string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "doctor", "--json", "-timeout", "1s") // #nosec G204 -- the binary under test, fixed arguments
+	cmd := exec.CommandContext(ctx, bin, "doctor", "--json", "-timeout", "1s") // #nosec G204 G702 -- the binary under test, fixed arguments
 	cmd.Dir = ws
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + os.TempDir(), managedEnv + "=" + mdir}
 	out, _ := cmd.Output() // the doctor exits 1 when the model does not answer

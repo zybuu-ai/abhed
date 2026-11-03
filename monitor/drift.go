@@ -25,7 +25,7 @@ type DriftCase struct {
 }
 
 // DriftHoneytoken is the planted value the suite's honeytoken case carries.
-const DriftHoneytoken = "AKIAZYBUUDRIFT0SUITE"
+const DriftHoneytoken = "AKIAZYBUUDRIFT0SUITE" // #nosec G101 -- a planted honeytoken for the drift suite, not a real key
 
 // DriftPATH is the fixed PATH the suite's local commands are judged against,
 // so the result does not depend on the machine it runs on.

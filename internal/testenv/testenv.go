@@ -276,7 +276,7 @@ func shortIPv4(s string) net.IP {
 		return nil
 	}
 	out |= last
-	return net.IPv4(byte(out>>24), byte(out>>16), byte(out>>8), byte(out))
+	return net.IPv4(byte(out>>24), byte(out>>16), byte(out>>8), byte(out)) // #nosec G115 -- each byte of an IPv4 address, masked by the shift
 }
 
 // Close stops the stub and removes the home, and returns code, or 1 when

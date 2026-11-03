@@ -84,8 +84,8 @@ var contentPatterns = []contentPattern{
 // secretName is an ALL_CAPS identifier one of whose words names a secret;
 // secretNames allows the word plural, for a value that holds several.
 const (
-	secretName  = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIALS?)(?:_[A-Z0-9]+)*`
-	secretNames = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIAL)S?(?:_[A-Z0-9]+)*`
+	secretName  = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIALS?)(?:_[A-Z0-9]+)*` // #nosec G101 -- a pattern that recognises secret names, not a secret
+	secretNames = `(?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|KEY|APIKEY|CREDENTIAL)S?(?:_[A-Z0-9]+)*` // #nosec G101 -- a pattern that recognises secret names, not a secret
 )
 
 // jsonString is one JSON string, read left to right so quotes pair up.
