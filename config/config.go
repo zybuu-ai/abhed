@@ -608,6 +608,24 @@ func valueIn(data []byte, key string) string {
 	return out
 }
 
+// warnScoped gives only the warnings about settings whose key want accepts.
+func warnScoped(w warnSink, c Config, want func(string) bool) {
+	warnUnknown(w, slices.DeleteFunc(slices.Clone(c.Unknown), func(u UnknownKey) bool { return !want(u.Path) }))
+	warnDuplicates(w, slices.DeleteFunc(slices.Clone(c.Duplicates), func(d DuplicateKey) bool {
+		return !want(strings.TrimPrefix(d.Path+"."+d.Key, "."))
+	}))
+	warnSetAside(w, slices.DeleteFunc(slices.Clone(c.SetAside), func(k SetAsideKey) bool { return !want(k.Key) }))
+	for _, k := range c.NotYetInEffect() {
+		if want(k) {
+			w.emit("reserved\x00"+k, NotYetInEffectMessage(k))
+		}
+	}
+	if want("permissions") {
+		warnNeverAllows(w, c.Permissions.Allow)
+		warnRuleFindings(w, c.RuleFindings())
+	}
+}
+
 // warnSetAside warns of each set-aside setting.
 func warnSetAside(w warnSink, keys []SetAsideKey) {
 	for _, k := range keys {
@@ -1807,12 +1825,16 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 	narrowToAllowLists(&cfg)
 	w := warnSink(o.Warn)
 	warnOrgFallback(w, cfg)
-	warnUnknown(w, cfg.Unknown)
-	warnDuplicates(w, cfg.Duplicates)
-	warnSetAside(w, cfg.SetAside)
-	warnNotYetInEffect(w, cfg)
-	warnNeverAllows(w, cfg.Permissions.Allow)
-	warnRuleFindings(w, cfg.RuleFindings())
+	if o.WarnFor == nil {
+		warnUnknown(w, cfg.Unknown)
+		warnDuplicates(w, cfg.Duplicates)
+		warnSetAside(w, cfg.SetAside)
+		warnNotYetInEffect(w, cfg)
+		warnNeverAllows(w, cfg.Permissions.Allow)
+		warnRuleFindings(w, cfg.RuleFindings())
+	} else {
+		warnScoped(w, cfg, o.WarnFor)
+	}
 	if !o.Quiet {
 		warnUntrusted(w, cfg.Workspace)
 	}

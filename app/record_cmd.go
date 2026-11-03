@@ -55,9 +55,8 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 	// The witness and record shipping connect through the upstream proxy.
 	o := config.LoadOptions{Trust: trust, Quiet: true}
 	if args[0] == "verify" {
-		// Verify reads only where the record is and its witness: warnings about
-		// settings for sessions would only bury its answer.
-		o.Warn = func(string) {}
+		// Verify's answer depends only on these; warnings about session settings would bury it.
+		o.WarnFor = verifyWarns
 	}
 	cfg, err := loadNetworked(workspace, o)
 	if err != nil {
@@ -97,6 +96,17 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 		return c.ship(args[1:])
 	}
 	return usage()
+}
+
+// verifyWarns are the settings whose warnings verify keeps: where the record
+// is, how it is stored and witnessed, and the org policy.
+func verifyWarns(key string) bool {
+	for _, p := range []string{"record", "storage", "org_policy"} {
+		if key == p || strings.HasPrefix(key, p+".") {
+			return true
+		}
+	}
+	return false
 }
 
 type recordCtx struct {

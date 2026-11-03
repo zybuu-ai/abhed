@@ -46,6 +46,9 @@ type LoadOptions struct {
 	// Warn, when set, takes each of this load's warnings instead of stderr,
 	// every time, for an embedder that shows or drops them itself.
 	Warn func(string)
+	// WarnFor, when set, limits the warnings about settings to those whose key
+	// it accepts; the org policy's own warnings are always given.
+	WarnFor func(key string) bool
 	// Settings is a file the person named for this run (-settings), merged
 	// over their own file as one of their own: managed-only keys are set
 	// aside, and the managed file still binds. SettingsName says where it came from.
