@@ -162,3 +162,101 @@ func TestWorkspaceConfigLinkInsideTheWorkspace(t *testing.T) {
 		t.Fatalf("a link out of the workspace: %v", err)
 	}
 }
+
+// The file read decides whose it is, not the name looked up again: a shared
+// folder swapped after the read for one whose config links to the person's
+// own file does not make the repository's bytes count as the trusted home
+// config.
+func TestHomeTrustIsDecidedOnTheFileRead(t *testing.T) {
+	withManaged(t, `{}`)
+	t.Setenv(TrustEnv, "")
+	home := os.Getenv("HOME")
+	userFile := filepath.Join(home, ".abhed", "config.json")
+	if err := os.MkdirAll(filepath.Dir(userFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	shared, decoy := filepath.Join(ws, "shared"), filepath.Join(ws, "decoy")
+	for _, d := range []string{shared, decoy, filepath.Join(ws, ".abhed")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(shared, "abhed.json"), []byte(`{"permissions":{"mode":"auto"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(userFile, filepath.Join(decoy, "abhed.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../shared/abhed.json", filepath.Join(ws, ".abhed", "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	old := afterWorkspaceRead
+	t.Cleanup(func() { afterWorkspaceRead = old })
+	afterWorkspaceRead = func(string) {
+		// Swap the shared folder for the decoy between the read and the decision.
+		_ = os.Rename(shared, shared+".gone")
+		_ = os.Rename(decoy, shared)
+	}
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.Trusted || cfg.Workspace.Reason == "home" {
+		t.Fatalf("repository bytes were trusted as home: %+v", cfg.Workspace)
+	}
+}
+
+// A .abhed that is itself a link out of the workspace, or a link through a
+// folder that leads out of it, is refused when a config is there: the file
+// is opened inside the workspace's real root.
+func TestWorkspaceConfigCannotLeaveTheRoot(t *testing.T) {
+	for _, kind := range []string{".abhed is a link out", "link through a folder that leads out"} {
+		t.Run(kind, func(t *testing.T) {
+			withManaged(t, `{}`)
+			ws, outside := t.TempDir(), t.TempDir()
+			if err := os.MkdirAll(filepath.Join(outside, ".abhed"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(outside, ".abhed", "config.json"), []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if kind == ".abhed is a link out" {
+				if err := os.Symlink(filepath.Join(outside, ".abhed"), filepath.Join(ws, ".abhed")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.Symlink(filepath.Join(outside, ".abhed"), filepath.Join(ws, "evil")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("../evil/config.json", filepath.Join(ws, ".abhed", "config.json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := LoadWith(ws, LoadOptions{Quiet: true}); err == nil || !strings.Contains(err.Error(), "inside the workspace") {
+				t.Fatalf("a config out of the workspace was read: %v", err)
+			}
+		})
+	}
+}
+
+// A dangling link is not "no config": it stops the session and says so.
+func TestDanglingWorkspaceConfigLink(t *testing.T) {
+	withManaged(t, `{}`)
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".abhed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../nowhere.json", filepath.Join(ws, ".abhed", "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadWith(ws, LoadOptions{Quiet: true}); err == nil || !strings.Contains(err.Error(), "leads to no file") {
+		t.Fatalf("a dangling link: %v", err)
+	}
+}

@@ -1,4 +1,4 @@
-//go:build linux || openbsd || solaris || illumos || aix
+//go:build linux || openbsd || dragonfly
 
 package regularfile
 

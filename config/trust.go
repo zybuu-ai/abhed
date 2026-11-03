@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/zybuu-ai/abhed/internal/nlink"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -259,21 +261,21 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		st.AgentsTrusted, st.AgentsReason = decideAgents(st, o)
 	}
 	path := filepath.Join(workspace, ".abhed", "config.json")
-	if n, err := nlink.Linked(path); err != nil {
-		return st, fmt.Errorf("read %s: %w", path, err)
-	} else if n > 0 {
-		return st, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
-	}
-	data, err := readWorkspaceConfig(workspace, path)
+	data, opened, err := readWorkspaceConfig(workspace, path)
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
 	}
 	if err != nil {
 		return st, err // it names the file and what to do
 	}
+	if n := nlink.Of(opened); n > 1 {
+		return st, fmt.Errorf("refusing to load the configuration: %w", nlink.Refusal(path, n))
+	}
 	st.File, st.SHA256 = path, hashOf(data)
-	// The workspace is the home directory: this is the user's own file.
-	if userFile != "" && sameFile(path, userFile) {
+	afterWorkspaceRead(path)
+	// The file read is the user's own: decided on the file opened, never by
+	// looking the name up again, which a swapped folder could redirect.
+	if userFile != "" && isUserFile(opened, userFile) {
 		st.Trusted, st.Reason = true, "home"
 		return st, nil
 	}
@@ -318,40 +320,92 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 // MaxWorkspaceConfig bounds a workspace's .abhed/config.json, wherever it is read.
 const MaxWorkspaceConfig = 4 << 20
 
-// readWorkspaceConfig reads the workspace's config. A repository chooses what
-// is at that path, so only a plain file of bounded size is read: a pipe or a
-// device such as /dev/zero is refused rather than waited on or read without
-// end, which would hang every session's start. A link is followed when its
-// real target is a plain file inside the workspace (a shared config in a
-// monorepo); one leaving the workspace is refused. In the home folder the
-// file is the person's own, and a link may point anywhere.
-func readWorkspaceConfig(workspace, path string) ([]byte, error) {
-	fi, err := os.Lstat(path)
+// afterWorkspaceRead runs between reading the workspace config and deciding
+// whose it is; tests swap folders there.
+var afterWorkspaceRead = func(string) {}
+
+// readWorkspaceConfig reads the workspace's config and returns the opened
+// file's own FileInfo. A repository chooses what is at that path, so it is
+// opened inside the workspace's real root (os.Root): a link may lead
+// anywhere inside it (a config shared within a monorepo) but not out of it,
+// whichever folder on the way is a link or is swapped meanwhile. Only a plain
+// file of bounded size is read; a pipe or device is never waited on. In the
+// home folder the file is the person's own, and a link may point anywhere.
+func readWorkspaceConfig(workspace, path string) ([]byte, os.FileInfo, error) {
+	if isHome(workspace) {
+		return readHomeConfig(path)
+	}
+	root, err := os.OpenRoot(canonical(workspace))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	target := path
-	if fi.Mode()&os.ModeSymlink != 0 {
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return nil, fmt.Errorf("%s is a link that does not lead to a file; make it a plain JSON file", path)
+	defer func() { _ = root.Close() }()
+	rel := filepath.Join(".abhed", "config.json")
+	if fi, err := root.Lstat(rel); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if _, err := root.Stat(rel); errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("%s is a link that leads to no file; make it a plain JSON file, or remove it", path)
 		}
-		if !isHome(workspace) {
-			root, err := filepath.EvalSymlinks(workspace)
-			if err != nil || (real != root && !strings.HasPrefix(real, root+string(filepath.Separator))) {
-				return nil, fmt.Errorf("%s is a link to %s, outside the workspace; make it a plain file, or a link to one inside the workspace", path, real)
-			}
-		}
-		target = real
 	}
-	data, err := regularfile.Read(target, MaxWorkspaceConfig)
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, nil, err
+	case errors.Is(err, os.ErrPermission):
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	case err != nil:
+		if _, lerr := os.Lstat(path); errors.Is(lerr, os.ErrNotExist) {
+			return nil, nil, lerr // nothing there, wherever .abhed leads
+		}
+		return nil, nil, fmt.Errorf("%s cannot be read inside the workspace (%w); make it a plain file, or a link to one inside the workspace", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	return readOpened(f, path)
+}
+
+// readHomeConfig reads the person's own ~/.abhed/config.json, which may be a
+// link into their dotfiles: followed, then read as a bounded plain file.
+func readHomeConfig(path string) ([]byte, os.FileInfo, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, _, err := regularfile.Open(real)
 	switch {
 	case errors.Is(err, regularfile.ErrNotRegular):
-		return nil, fmt.Errorf("%s is not a plain file (a pipe or a device, say); make it a plain JSON file", path)
-	case errors.Is(err, regularfile.ErrTooLarge):
-		return nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+		return nil, nil, fmt.Errorf("%s is not a plain file (a pipe or a device, say); make it a plain JSON file", path)
+	case err != nil:
+		return nil, nil, err
 	}
-	return data, err
+	defer func() { _ = f.Close() }()
+	return readOpened(f, path)
+}
+
+// readOpened reads an opened config: a plain file of at most MaxWorkspaceConfig.
+func readOpened(f *os.File, path string) ([]byte, os.FileInfo, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s is not a plain file (a pipe or a device, say); make it a plain JSON file", path)
+	}
+	if fi.Size() > MaxWorkspaceConfig {
+		return nil, nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxWorkspaceConfig+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(data) > MaxWorkspaceConfig {
+		return nil, nil, fmt.Errorf("%s is larger than the %d MiB a workspace config may be", path, MaxWorkspaceConfig>>20)
+	}
+	return data, fi, nil
+}
+
+// isUserFile reports whether the opened file is the person's own config.
+func isUserFile(opened os.FileInfo, userFile string) bool {
+	uf, err := os.Stat(userFile)
+	return err == nil && os.SameFile(opened, uf)
 }
 
 // keepHA restores control_plane.ha as it was before a trusted workspace's
@@ -432,15 +486,6 @@ func decide(st WorkspaceTrust, o LoadOptions) (bool, string) {
 		return true, "stored"
 	}
 	return false, "declined"
-}
-
-func sameFile(a, b string) bool {
-	ia, err := os.Stat(a)
-	if err != nil {
-		return false
-	}
-	ib, err := os.Stat(b)
-	return err == nil && os.SameFile(ia, ib)
 }
 
 // tighten applies the settings of an untrusted file that only make Abhed

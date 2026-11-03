@@ -1,4 +1,4 @@
-//go:build darwin || freebsd || netbsd || dragonfly
+//go:build darwin || freebsd || netbsd
 
 package regularfile
 

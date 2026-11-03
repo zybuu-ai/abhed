@@ -1503,19 +1503,25 @@ Later sources win, except that an org-managed file cannot be overridden:
 
 ### The workspace file
 
-A repository chooses what is at `.abhed/config.json`, so Abhed reads it only
-when it is one of these:
+A repository chooses what is at `.abhed/config.json`, so Abhed opens it
+inside the workspace, the folder Abhed opened, and reads it only when it is
+one of these:
 
 - a plain file of at most 4 MiB
-- a link whose real target is a plain file inside the workspace, such as one
-  config shared across a monorepo (`.abhed/config.json ->
-  ../../shared/abhed.json`)
+- a link whose target is a plain file inside the workspace, such as one
+  config shared within a monorepo (`.abhed/config.json ->
+  ../shared/abhed.json`, which is `<workspace>/shared/abhed.json`)
 
-A link that leaves the workspace, a pipe or a device (`/dev/zero`, say), and
-a larger file are refused, and the session does not start. The error names
-the file once and says what to do: make it a plain file, or point the link
-inside the workspace. Reading never waits on a pipe or follows a link
-swapped in at the last moment.
+A link, or a link along the way such as a `.abhed` that is itself a link,
+that leads out of the workspace is refused. So are a link that leads to no
+file, a pipe or a device (`/dev/zero`, say), and a larger file. The session
+does not start, and the error names the file once and says what to do. A
+config above the opened folder, such as a monorepo root's over a
+subproject, is outside it: copy the file into the subproject, or open the
+monorepo root as the workspace. The file is opened relative to the
+workspace, so no folder swapped on the way can redirect it, and a pipe is
+never waited on. Whether the file is your own, so trusted as yours, is
+decided on the file that was read, never by looking the name up again.
 
 When the workspace is your home folder, the file is your own
 `~/.abhed/config.json`. A link there may point anywhere, such as into your

@@ -23,10 +23,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
-- A workspace's `.abhed/config.json` that is a link out of the workspace is
-  now refused, and the session does not start until it is a plain file or a
-  link inside the workspace. A link inside the workspace, and any link at
-  your home folder's `~/.abhed/config.json`, still work.
+- A workspace's `.abhed/config.json` that leads out of the workspace, by
+  its own link or through a `.abhed` that is a link, is now refused, and so
+  is one that is a link to no file (1.2.9 read that as no config). The
+  session does not start until it is a plain file or a link inside the
+  workspace. A link inside the workspace, and any link at your home
+  folder's `~/.abhed/config.json`, still work; a config above the opened
+  folder must be copied in, or the folder above opened instead.
 
 ### Fixed
 
