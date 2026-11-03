@@ -299,7 +299,6 @@ func TestSplitIsBoundedAndFailsClosed(t *testing.T) {
 	}
 }
 
-// fastestEvaluate is the best of three times for one decision on command.
 // plainOfLength is the time a command of n bytes of ordinary words takes:
 // the linear cost every line pays, the yardstick for a hostile one.
 func plainOfLength(e *Engine, n int) time.Duration {
@@ -307,6 +306,7 @@ func plainOfLength(e *Engine, n int) time.Duration {
 	return fastestEvaluate(e, "echo "+words[:max(n-5, 0)])
 }
 
+// fastestEvaluate is the best of three times for one decision on command.
 func fastestEvaluate(e *Engine, command string) time.Duration {
 	best := time.Duration(1 << 62)
 	for range 3 {

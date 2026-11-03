@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -927,7 +928,6 @@ func TestStudioInteractiveTerminalJudgesLinesInAVenvProject(t *testing.T) {
 	var term struct {
 		TerminalID string `json:"terminalId"`
 	}
-	from := r.cl.mark()
 	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
 	prompted := func(s string) bool {
 		p := strings.TrimRight(termline.PlainText([]byte(s)), " ")
@@ -948,5 +948,63 @@ func TestStudioInteractiveTerminalJudgesLinesInAVenvProject(t *testing.T) {
 	at = r.cl.mark()
 	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "curl example.com\r"}, nil)
 	wait(at, func(s string) bool { return strings.Contains(s, "Denied") && prompted(s) })
-	_ = from
+}
+
+// What starts the shell may hold the terminal, and print, while the person
+// already types; the shell's lines after are still put to the deny rules.
+func TestStudioInteractiveTerminalJudgesLinesAfterAKeyAtTheStart(t *testing.T) {
+	r := newStudioRig(t, `,"permissions":{"deny":["bash(echo zzdenied*)"]}`)
+	// The starter's group is in front until the shell is let take it.
+	const starter = 4242424
+	var starting atomic.Bool
+	starting.Store(true)
+	fakeTTY(t, func(f *os.File) (int, bool, bool) {
+		fg, canonical, ok := termline.TTYNow(f)
+		if ok && starting.Load() {
+			fg = starter
+		}
+		return fg, canonical, ok
+	})
+	id := r.open()
+	var term struct {
+		TerminalID string `json:"terminalId"`
+	}
+	at := r.cl.mark()
+	r.cl.ok("_abhed/terminal/create", map[string]any{"sessionId": id, "mode": "interactive", "cols": 80, "rows": 24}, &term)
+	var got strings.Builder
+	wait := func(from int, pred func(string) bool) {
+		t.Helper()
+		got.Reset()
+		r.cl.waitFor(from, "shell output", func(m rpcMessage) bool {
+			got.WriteString(terminalOutput([]rpcMessage{m}, term.TerminalID))
+			return pred(termline.PlainText([]byte(got.String())))
+		})
+	}
+	prompted := func(s string) bool {
+		p := strings.TrimRight(s, " ")
+		return strings.HasSuffix(p, "$") || strings.HasSuffix(p, "#")
+	}
+	wait(at, prompted)
+	// A key while the starter has the terminal, then the shell takes it.
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": " "}, nil)
+	starting.Store(false)
+	at = r.cl.mark()
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "echo zzdenied$((6*7))\r"}, nil)
+	wait(at, func(s string) bool {
+		return (strings.Contains(s, "Denied") || strings.Contains(s, "zzdenied42")) && prompted(s)
+	})
+	if out := termline.PlainText([]byte(got.String())); strings.Contains(out, "zzdenied42") || !strings.Contains(out, "Denied") {
+		t.Fatalf("the denied line was not refused: %q", out)
+	}
+	// The shell's group is known now, so a program it starts is told apart.
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "cat\r"}, nil)
+	waitForProgram(t, r, term.TerminalID)
+	r.cl.ok("_abhed/terminal/input", map[string]any{"terminalId": term.TerminalID, "data": "\x04exit\r"}, nil)
+}
+
+// fakeTTY stands in for asking the terminal until the test ends.
+func fakeTTY(t *testing.T, f func(*os.File) (int, bool, bool)) {
+	t.Helper()
+	testTTY.Store(&f)
+	t.Cleanup(func() { testTTY.Store(nil) })
 }

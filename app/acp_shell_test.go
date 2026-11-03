@@ -61,8 +61,7 @@ func TestShellLineTypedAheadOfThePrompt(t *testing.T) {
 // Where asking the terminal fails, a line cannot be confirmed as typed at the
 // prompt with echo on, so it counts as typed ahead.
 func TestShellLineIsAheadWhenTheAskFails(t *testing.T) {
-	ttyNow = func(*os.File) (int, bool, bool) { return 0, false, false }
-	t.Cleanup(func() { ttyNow = termline.TTYNow })
+	fakeTTY(t, func(*os.File) (int, bool, bool) { return 0, false, false })
 	sh := &acpShell{local: true, prompt: termline.NewPrompt()}
 	sh.prompt.Output([]byte("$ "), true, false)
 	e := &termline.Entered{Line: "hunter22", Whole: true}
@@ -104,5 +103,52 @@ func TestShellNoticesNoJobControl(t *testing.T) {
 	}
 	if jobControlOff([]byte("(sandbox: process) ws $ ")) {
 		t.Fatal("a prompt was taken for the no-job-control notice")
+	}
+}
+
+// The shell's group is learned only from a shell leading the group in front
+// at its line editor, whose parent is no shell: a starter in front, a shell
+// reading a line in canonical mode (a wrapper script), or a nested shell is
+// never taken for it.
+func TestShellGroupIsTheShellsOwn(t *testing.T) {
+	var fg int
+	var canonical bool
+	fakeTTY(t, func(*os.File) (int, bool, bool) { return fg, canonical, true })
+	type proc struct {
+		name       string
+		ppid, pgid int
+	}
+	procs := map[int]proc{
+		1:  {"abhed", 0, 1},
+		10: {"abhed", 1, 10}, // a starter
+		20: {"bash", 10, 20}, // the shell
+		21: {"bash", 10, 20}, // a member of its group, not its leader
+		30: {"zsh", 20, 30},  // a shell the shell started
+	}
+	fake := func(pid int) (string, int, int, bool) { p, ok := procs[pid]; return p.name, p.ppid, p.pgid, ok }
+	testProcess.Store(&fake)
+	t.Cleanup(func() { testProcess.Store(nil) })
+	sh := &acpShell{local: true, prompt: termline.NewPrompt()}
+	for _, c := range []struct {
+		fg        int
+		canonical bool
+	}{{10, false}, {99, false}, {20, true}, {21, false}, {30, false}} {
+		fg, canonical = c.fg, c.canonical
+		sh.settle()
+		if got := sh.shellPgrp.Load(); got != 0 {
+			t.Fatalf("group %d (canonical %v) taken for the shell's", c.fg, c.canonical)
+		}
+		e := &termline.Entered{Line: "x"}
+		if sh.ask(e); e.Program {
+			t.Fatal("a line was taken for a program's while the shell's group is unknown")
+		}
+	}
+	fg, canonical = 20, false
+	sh.settle()
+	if got := sh.shellPgrp.Load(); got != 20 {
+		t.Fatalf("shell group %d, want 20", got)
+	}
+	if !sh.isProgram(30) {
+		t.Fatal("a nested shell was taken for the shell")
 	}
 }

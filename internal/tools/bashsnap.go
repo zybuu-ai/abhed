@@ -105,6 +105,9 @@ type snapEntry struct {
 	sum *[32]byte
 }
 
+// snapInfo stats a file the walk found; a variable so a test can coarsen it.
+var snapInfo = func(d fs.DirEntry) (fs.FileInfo, error) { return d.Info() }
+
 // racyWindow is how close to a snapshot a file's mtime may be and its stat
 // still miss a rewrite: a coarse clock, or a file system keeping seconds only.
 const racyWindow = 2 * time.Second
@@ -182,7 +185,7 @@ func (s *Session) walkWorkspace(ctx context.Context, prev map[string]snapEntry, 
 			snap.partial = true
 			return filepath.SkipAll
 		}
-		info, err := d.Info()
+		info, err := snapInfo(d)
 		if err != nil {
 			return nil //nolint:nilerr // gone since it was listed
 		}
@@ -198,7 +201,8 @@ func (s *Session) walkWorkspace(ctx context.Context, prev map[string]snapEntry, 
 			switch {
 			case secretfiles.Match(path) != "":
 				e.why = "it looks like a file of keys or credentials"
-				if e.size <= bashSnapshotFileBytes {
+				// Read only where its stat could hide a rewrite, and only to hash it.
+				if e.size <= bashSnapshotFileBytes && e.racy(snap.at) {
 					if data, err := s.readFile(path); err == nil {
 						sum := sha256.Sum256(data)
 						e.sum = &sum
