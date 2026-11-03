@@ -610,7 +610,7 @@ func valueIn(data []byte, key string) string {
 
 // warnScoped gives only the warnings about settings whose key want accepts.
 func warnScoped(w warnSink, c Config, want func(string) bool) {
-	warnUnknown(w, slices.DeleteFunc(slices.Clone(c.Unknown), func(u UnknownKey) bool { return !want(u.Path) }))
+	warnUnknown(w, slices.DeleteFunc(slices.Clone(c.Unknown), func(u UnknownKey) bool { return !want(u.Path) && (u.Suggest == "" || !want(u.Suggest)) }))
 	warnDuplicates(w, slices.DeleteFunc(slices.Clone(c.Duplicates), func(d DuplicateKey) bool {
 		return !want(strings.TrimPrefix(d.Path+"."+d.Key, "."))
 	}))

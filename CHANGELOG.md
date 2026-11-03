@@ -19,9 +19,9 @@ All notable changes to Abhed are recorded here. The format follows
   the full budget, the error says so and names `model.commit`.
 - `abhed record verify` no longer prints warnings about session settings,
   such as egress settings set aside, which buried its answer about the
-  chain. Warnings about `record`, `storage` and `org_policy` settings,
-  and the org policy's own, are still given, since they change what
-  verify checks.
+  chain. Warnings about `record`, `storage`, `network` and `org_policy`
+  settings, a misspelled key close to one of them, and the org policy's
+  own, are still given, since they change what verify checks.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by

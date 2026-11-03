@@ -99,9 +99,10 @@ A session is its id, a unique id prefix, its name, or the path of its file.
 }
 
 // verifyWarns are the settings whose warnings verify keeps: where the record
-// is, how it is stored and witnessed, and the org policy.
+// is, how it is stored and witnessed, the network the witness is reached
+// through, and the org policy.
 func verifyWarns(key string) bool {
-	for _, p := range []string{"record", "storage", "org_policy"} {
+	for _, p := range []string{"record", "storage", "network", "org_policy"} {
 		if key == p || strings.HasPrefix(key, p+".") {
 			return true
 		}

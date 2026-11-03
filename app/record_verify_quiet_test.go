@@ -31,6 +31,11 @@ func TestRecordVerifyHasNoConfigWarnings(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	write := func(cfg string) {
+		if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	run := func(sub string) string {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestRecordVerifyQuietHelper$")
 		cmd.Dir = t.TempDir()
@@ -50,5 +55,13 @@ func TestRecordVerifyHasNoConfigWarnings(t *testing.T) {
 	}
 	if !strings.Contains(out, "session(s) checked") {
 		t.Fatalf("verify did not run:\n%s", out)
+	}
+	// A misspelled section, or a misspelled proxy setting the witness goes through, still warns.
+	write(`{"recod":{"witness":{"file":"/x"}},"storag":{"driver":"postgres"},"network":{"upstream_proxi":{"url":"http://p:3128"}}}`)
+	out = run("verify")
+	for _, k := range []string{"recod", "storag", "network.upstream_proxi"} {
+		if !strings.Contains(out, "unknown key "+k+" ") {
+			t.Fatalf("verify dropped the warning about %s:\n%s", k, out)
+		}
 	}
 }
