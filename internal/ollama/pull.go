@@ -149,8 +149,8 @@ func (e Env) CheckFit(ctx context.Context, t Target, st Status) (Fit, *Problem) 
 			f.DiskFree = free
 			if f.Bytes > 0 && free < uint64(f.Bytes)+diskMargin {
 				p := e.problem(KindDiskShort, fmt.Sprintf("%s needs %s and leaves room to spare, but only %s is free where Ollama keeps models (%s).",
-					t.Model, HumanBytes(f.Bytes), HumanBytes(int64(free)), e.ModelsDir), t, st)
-				p.Steps = append([]string{"Free at least " + HumanBytes(f.Bytes+diskMargin-int64(free)) + " there, or choose a smaller model"}, p.Steps...)
+					t.Model, HumanBytes(f.Bytes), HumanBytes(int64(free)), e.ModelsDir), t, st) // #nosec G115 -- free bytes shown to a person; beyond 8 EiB it would only print oddly
+				p.Steps = append([]string{"Free at least " + HumanBytes(f.Bytes+diskMargin-int64(free)) + " there, or choose a smaller model"}, p.Steps...) // #nosec G115 -- free is below the size needed here, so the difference is positive and small
 				return f, p
 			}
 		} else {
@@ -161,7 +161,7 @@ func (e Env) CheckFit(ctx context.Context, t Target, st Status) (Fit, *Problem) 
 	if e.MemTotal != nil {
 		if mem, err := e.MemTotal(); err == nil {
 			f.MemTotal = mem
-			gb := int(mem / (1 << 30))
+			gb := int(mem / (1 << 30)) // #nosec G115 -- memory in GiB fits an int
 			if f.RAMNeededGB > 0 && gb < f.RAMNeededGB {
 				w := fmt.Sprintf("%s wants about %d GB of memory and this machine has %d GB; it may be very slow or fail to load.", t.Model, f.RAMNeededGB, gb)
 				if s, ok := Smaller(t.Model, gb); ok {

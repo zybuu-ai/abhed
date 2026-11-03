@@ -174,7 +174,7 @@ type refuseTransport struct{}
 func (refuseTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, errUnderTest }
 
 func run(ctx context.Context, path string, args []string, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- the ollama or package-manager program found on PATH, run only after the person agrees
 	cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = env, stdin, stdout, stderr
 	return cmd.Run()
 }

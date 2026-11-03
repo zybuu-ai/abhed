@@ -640,7 +640,7 @@ func NewStdioTransport(ctx context.Context, command string, args []string, env [
 // newStdioTransportAt starts the program at path with argv[0] set to name,
 // as a shell would show it the name it was run by.
 func newStdioTransportAt(ctx context.Context, path, name string, args []string, env []string) (*StdioTransport, error) {
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...) // #nosec G204 -- the program path the MCP lists judged, started at exactly that path
 	cmd.Args[0] = name
 	cmd.Env = append([]string{}, env...)
 	return startStdio(cmd, name, env, append([]string{name}, args...))

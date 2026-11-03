@@ -140,10 +140,10 @@ func (c *sftpClient) Close() error {
 
 type buf struct{ bytes.Buffer }
 
-func (b *buf) u8(v byte)    { b.WriteByte(v) }
+func (b *buf) u8(v byte)    { _ = b.WriteByte(v) }
 func (b *buf) u32(v uint32) { _ = binary.Write(&b.Buffer, binary.BigEndian, v) }
 func (b *buf) u64(v uint64) { _ = binary.Write(&b.Buffer, binary.BigEndian, v) }
-func (b *buf) str(s []byte) { b.u32(uint32(len(s))); b.Write(s) }
+func (b *buf) str(s []byte) { b.u32(uint32(len(s))); _, _ = b.Write(s) } // #nosec G115 -- an SFTP string: a path, handle or one chunk of data, far below 4 GiB
 
 type reader struct {
 	b   []byte
@@ -214,9 +214,9 @@ func (r *reader) attrs() attrs {
 
 func (c *sftpClient) send(typ byte, body []byte) error {
 	var b buf
-	b.u32(uint32(len(body) + 1))
+	b.u32(uint32(len(body) + 1)) // #nosec G115 -- a packet body holds at most one chunk of data and a handle
 	b.u8(typ)
-	b.Write(body)
+	_, _ = b.Write(body) // a bytes.Buffer write does not fail
 	_, err := c.w.Write(b.Bytes())
 	return err
 }
@@ -369,7 +369,7 @@ func (c *sftpClient) writeAll(ctx context.Context, handle, data []byte) error {
 		end := min(off+chunk, len(data))
 		if err := c.status(fxpWrite, func(b *buf) {
 			b.str(handle)
-			b.u64(uint64(off))
+			b.u64(uint64(off)) // #nosec G115 -- a write offset, counted up from 0
 			b.str(data[off:end])
 		}); err != nil {
 			return err
@@ -386,7 +386,7 @@ func (c *sftpClient) readAll(ctx context.Context, handle []byte, limit int64) ([
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		off := uint64(out.Len())
+		off := uint64(out.Len()) // #nosec G115 -- a buffer length, never negative
 		rt, r, err := c.call(fxpRead, func(b *buf) {
 			b.str(handle)
 			b.u64(off)
@@ -498,7 +498,7 @@ func (h *Host) get(ctx context.Context, open func() (*sftpClient, error), path s
 		return nil, fmt.Errorf("open %s on %s: %w", path, h.cfg.Name, err)
 	}
 	defer func() { _ = c.close(handle) }()
-	if a, err := c.fstat(handle); err == nil && a.hasSize && a.size > uint64(limit) {
+	if a, err := c.fstat(handle); err == nil && a.hasSize && a.size > uint64(limit) { // #nosec G115 -- limit is a positive transfer bound set by the tool
 		return nil, fmt.Errorf("%s on %s is %d bytes, more than the %d a transfer may carry", path, h.cfg.Name, a.size, limit)
 	}
 	data, err := c.readAll(ctx, handle, limit)
