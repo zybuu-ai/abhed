@@ -498,6 +498,8 @@ var (
 	stepPyUt3Flagsgo     = CorpusStep{ID: "t1337", Tool: "bash", Args: map[string]any{"command": "GOFLAGS=-exec=/tmp/x; go test ./..."}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
 	stepPyUt3Pyfile      = CorpusStep{ID: "t133p", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests/test_tip.py"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
 	stepPyUt3Latest      = CorpusStep{ID: "t133l", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests/latest.py"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
+	stepPyUt4Latestcls   = CorpusStep{ID: "t1340", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.Latest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
+	stepPyUt4Contest     = CorpusStep{ID: "t1341", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.Contest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
 )
@@ -1689,6 +1691,8 @@ func CorpusCases() []CorpusCase {
 		{Name: "a read out of date after `GOFLAGS=-exec=/tmp/x; go test ./...`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt3Flagsgo), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "a read still current after `python3 -m unittest tests/test_tip.py`", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt3Pyfile), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "a read out of date after `python3 -m unittest tests/latest.py`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt3Latest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		{Name: "a read out of date after `python3 -m unittest tests.Latest`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt4Latestcls), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		{Name: "a read out of date after `python3 -m unittest tests.Contest`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt4Contest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

@@ -375,14 +375,15 @@ func insidePath(p string) bool {
 }
 
 // testName is a test module, file or folder: split on "/" and ".", every
-// part has "test" in it and every lower-case part starts with it
-// (tests/test_tip.py, tests.test_tip.TipTest.test_a).
+// lower-case part starts with "test" and every upper-case part has "Test"
+// or "TEST" in it (tests/test_tip.py, tests.test_tip.TipTest.test_a).
 func testName(n string) bool {
 	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(n), "./"), "/"), ".py")
 	parts := strings.FieldsFunc(n, func(r rune) bool { return r == '/' || r == '.' })
 	for _, p := range parts {
 		low := strings.ToLower(p)
-		if !strings.Contains(low, "test") || !unicode.IsUpper([]rune(p)[0]) && !strings.HasPrefix(low, "test") {
+		upper := unicode.IsUpper([]rune(p)[0])
+		if upper && !strings.Contains(p, "Test") && !strings.Contains(p, "TEST") || !upper && !strings.HasPrefix(low, "test") {
 			return false
 		}
 	}

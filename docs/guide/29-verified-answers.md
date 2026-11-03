@@ -699,7 +699,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 766 plant a wrong claim. Some cite the result that shows them wrong
+session. 768 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -791,7 +791,7 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 766
+tail, a port not listening, a file not in a response). Today none of the 768
 planted claims is shown as verified (32 are contradicted: 30 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
 shows; the rest unverified), all 225 controls are verified,
@@ -838,8 +838,8 @@ makes them.
   strict mode's exit code is the gate for a script.
 - The checks lean to "unverified": most shell work (builds, scripts, test
   runners other than `go test` and `python -m unittest` given only test
-  names (split on "/" and ".", every part has "test" in it and every
-  lower-case part starts with it), folders inside the workspace, a
+  names (split on "/" and ".", every lower-case part starts with "test"
+  and every upper-case part has "Test" or "TEST" in it), folders inside the workspace, a
   pattern starting with "test", no discover word given twice or both
   ways, no `cd` out of the folder, and output flags; neither it nor `go
   test` is a reader after a variable set on its own earlier in the line

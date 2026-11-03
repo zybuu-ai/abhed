@@ -12,12 +12,14 @@ All notable changes to Abhed are recorded here. The format follows
   passing test run. An edit given a relative path (`tip.py`) was not
   matched to the file the statement named; `python3 -m unittest` counted
   as a possible change to every file, so what was read before them went
-  out of date (it is now a reader only for test names, workspace folders
-  and a test pattern), and `PYTHONPATH=.` made the run not a whole one;
-  unittest's "Ran 3 tests … OK" did not count 3 passed; and code said with
-  other spacing (`amount * percent` for `amount*percent`) or named by the
-  function it was changed in did not match. Each is now read as it is, and
-  none can verify a statement the calls do not show.
+  out of date (it is now a reader only for test names, each lower-case
+  part starting with "test" and each upper-case part holding "Test",
+  workspace folders and a test pattern), and `PYTHONPATH=.` made the run
+  not a whole one; unittest's "Ran 3 tests … OK" did not count 3 passed;
+  and code said with other spacing (`amount * percent` for
+  `amount*percent`) or named by the function it was changed in did not
+  match. Each is now read as it is, and none can verify a statement the
+  calls do not show.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by
@@ -919,7 +921,7 @@ All notable changes to Abhed are recorded here. The format follows
   answer, ACP (`_meta` `verdict`, feature `answer-verdicts`) and
   `Agent.Verdict()` carry it.
 - A false-claim corpus (`go test ./internal/agent -run TestFalseClaimCorpus
-  -v`): of 766 planted wrong claims none is shown as verified and 32 are
+  -v`): of 768 planted wrong claims none is shown as verified and 32 are
   contradicted (30 from cited, conflicting evidence, 2 by conflict markers
   still shown), all 225 true controls
   are verified, and none of the 325 true or neutral claims is contradicted;

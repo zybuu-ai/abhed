@@ -4959,6 +4959,16 @@
       "name": "a read out of date after `python3 -m unittest tests/latest.py`",
       "kind": "planted",
       "hash": "6197243fb614fbf2"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.Latest`",
+      "kind": "planted",
+      "hash": "c0bb2a879ef9a432"
+    },
+    {
+      "name": "a read out of date after `python3 -m unittest tests.Contest`",
+      "kind": "planted",
+      "hash": "4fbbb864dca62ea5"
     }
   ],
   "strict": [
