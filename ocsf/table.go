@@ -380,10 +380,12 @@ func mapHook(b *builder) {
 	case "block":
 		b.decision(false, 2)
 		b.severity(3)
-	case "annotate", "ask":
+	case "annotate", "ask", "continue", "none":
 		b.profile("security_control")
 		b.set("action_id", 3)
 		b.set("action", "Observed")
+	case "error":
+		b.status(2, "", b.str("reason"))
 	}
 	b.set("message", "hook "+b.str("extension")+": "+b.str("verdict"))
 }

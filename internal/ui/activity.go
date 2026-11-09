@@ -143,9 +143,13 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		if json.Unmarshal(ev.Payload, &h) != nil {
 			return nil
 		}
+		// A simple hook that ran with no objection is in the record, not the activity.
+		if h.Verdict == "none" {
+			return nil
+		}
 		verdict := field(h.Verdict, 20)
 		switch h.Verdict {
-		case "block":
+		case "block", "error":
 			verdict = s.Red(verdict)
 		case "ask":
 			verdict = s.Yellow(verdict)

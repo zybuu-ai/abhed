@@ -159,6 +159,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `completion.local_only` | **applied** only when true |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
+| `hooks.run` | ignored: each simple hook is a command or an endpoint sent the events it takes. Trusted, a workspace's hooks are added to the user's, and none replaces a managed hook |
 | `mcp.allowed`, `mcp.denied` | **applied** as a narrowing: an allow list must also admit a server, and a deny entry only stops one; a list with a malformed entry is ignored |
 | `mcp` (other keys) | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |

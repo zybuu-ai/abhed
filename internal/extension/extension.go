@@ -93,7 +93,7 @@ const (
 // observeOnly are the events whose reply can change nothing; an extension
 // may take them asynchronously.
 var observeOnly = map[Event]bool{EvTurnEnd: true, EvSubagentEnd: true, EvNotification: true,
-	EvSessionStart: true, EvSessionEnd: true}
+	EvSessionStart: true, EvSessionEnd: true, EvSubagentStart: true, EvPostCompact: true, EvToolFailure: true}
 
 // ObserveOnly reports whether an event's reply can change nothing.
 func ObserveOnly(ev Event) bool { return observeOnly[ev] }
@@ -156,6 +156,8 @@ type Reply struct {
 	Summary string `json:"summary,omitempty"`
 	// Cancel answers before_compact: leave the history alone this time.
 	Cancel bool `json:"cancel,omitempty"`
+	// Continue answers stop: do not finish yet, and do what Reason says.
+	Continue bool `json:"continue,omitempty"`
 }
 
 // ToolDef is a tool an extension provides.
@@ -211,6 +213,8 @@ type Extension struct {
 	match []policy.Rule
 	// lastErr is why the extension stopped being asked, once it has.
 	lastErr atomic.Value
+	// hook, for a simple hook, runs it once per event in place of a process.
+	hook *hookRunner
 }
 
 const defaultTimeout = 5 * time.Second
@@ -340,6 +344,9 @@ var errNotRunning = errors.New("not running")
 // dead, or one that crashed, hung or answered with nonsense now. A cancelled
 // context is not the extension's failure and reports none.
 func (e *Extension) call(ctx context.Context, req Request) (_ Reply, err error) {
+	if e.hook != nil {
+		return e.hook.run(ctx, req)
+	}
 	e.mu.Lock()
 	unlock := true
 	defer func() {
@@ -433,6 +440,9 @@ func (e *Extension) die(format string, args ...any) {
 
 // Close shuts the extension down.
 func (e *Extension) Close() error {
+	if e.hook != nil {
+		return nil
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.dead {

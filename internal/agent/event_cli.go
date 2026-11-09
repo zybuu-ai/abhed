@@ -265,7 +265,16 @@ type ModelFallback struct {
 type HookFired struct {
 	Extension string `json:"extension"`
 	Event     string `json:"event"`
-	Verdict   string `json:"verdict"` // block, ask or annotate; never allow
+	// Verdict is block, ask, annotate or continue; a simple hook's run is
+	// also none (no objection) or error. Never allow.
+	Verdict string `json:"verdict"`
+	// The rest are a simple hook's: command or http, the layer it came
+	// from, why it decided or failed, its exit status, and how long it ran.
+	Kind       string `json:"kind,omitempty"`
+	Layer      string `json:"layer,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
 // RecordRepaired is the payload of record.repaired.

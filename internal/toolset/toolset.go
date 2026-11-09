@@ -186,6 +186,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, err := range s.Extensions.Load(ctx, specs) {
 			warn("%v", err)
 		}
+		// Simple hooks run per event: commands in bash's sandbox, requests under the egress guard.
+		if o.Parts&Vetoes != 0 {
+			for _, err := range s.Extensions.LoadHooks(cfg.HookSpecs(), HookEnv(o.Bash, o.Workspace, s.Guard())) {
+				warn("%v", err)
+			}
+		}
 	}
 	// MCP servers extend the tool surface. Every remote tool is namespaced and
 	// routes through the policy engine, since Abhed cannot know what it does.
@@ -525,7 +531,10 @@ type HostHooks struct {
 	Note func(text string, refused bool)
 }
 
-var _ agent.Hooks = HostHooks{}
+var (
+	_ agent.Hooks     = HostHooks{}
+	_ agent.StopHooks = HostHooks{}
+)
 
 func (h HostHooks) note(s string, refused bool) {
 	if h.Note != nil {
@@ -552,6 +561,17 @@ func (h HostHooks) PermissionRequested(ctx context.Context, pol *policy.Engine, 
 
 func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
 	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
+}
+
+// Stop asks the stop hooks whether the run may end; the agent is told which
+// hook sent it back, and why.
+func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) string {
+	name, why := h.Host.OnStop(ctx, sessionID, answer)
+	if why == "" {
+		return ""
+	}
+	h.note("the "+name+" hook asked the agent to continue: "+why, false)
+	return "The " + name + " hook asks you to continue before finishing: " + why
 }
 
 // Hook gives loop the extensions' hooks at its own points, when any are loaded.

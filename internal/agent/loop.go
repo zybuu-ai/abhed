@@ -387,6 +387,8 @@ type Loop struct {
 	stuckDetail, lastDetail string
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
+	// stopContinues counts the times stop hooks sent this run back to work.
+	stopContinues int
 	// ignored holds, by call id, the argument keys a tool did not take, told to the model with its result.
 	ignored sync.Map
 
@@ -450,10 +452,24 @@ type Hooks interface {
 
 // Events Hooks.Observe is told of.
 const (
-	HookTurnEnd      = "turn_end"
-	HookSubagentEnd  = "subagent_end"
-	HookNotification = "notification"
+	HookTurnEnd       = "turn_end"
+	HookSubagentStart = "subagent_start"
+	HookSubagentEnd   = "subagent_end"
+	HookNotification  = "notification"
+	HookPostCompact   = "post_compact"
+	HookToolFailure   = "tool_failure"
 )
+
+// StopHooks are Hooks that may send a completed run back to work: Stop
+// returns what the agent is to do instead of finishing, or "". The loop asks
+// at most MaxStopContinues times a run; the calls it then makes are judged
+// by policy as any other.
+type StopHooks interface {
+	Stop(ctx context.Context, sessionID, answer string) (instruction string)
+}
+
+// MaxStopContinues bounds how often stop hooks may send one run back to work.
+const MaxStopContinues = 3
 
 // childHooks are a parent's hooks as a subagent sees them: its calls are
 // screened and announced, but its task is not a person's message and its
@@ -463,7 +479,7 @@ type childHooks struct{ Hooks }
 func (childHooks) PromptSubmitted(context.Context, string, string) string { return "" }
 
 func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
-	if event == HookNotification {
+	if event == HookNotification || event == HookToolFailure {
 		c.Hooks.Observe(ctx, event, sessionID, tool, detail)
 	}
 }
@@ -1025,6 +1041,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		b.mu.Unlock()
 	}
 	l.beginAnswer()
+	l.stopContinues = 0
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -1126,6 +1143,10 @@ turns:
 				}
 				reason = end
 			}
+			// A stop hook may send the run back to work, a bounded number of times.
+			if reason == TermCompleted && l.stopHookContinues(ctx) {
+				continue
+			}
 			// The turn ends first; a suggestion is made after it, off the run.
 			if reason == TermCompleted {
 				return l.finishSuggesting(ctx), nil
@@ -1185,6 +1206,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.justCompacted = true
 	l.forgetAnswers()
 	l.record(EvCompactDone, ActorSystem, info)
+	l.observe(ctx, HookPostCompact, "", "auto")
 	return nil
 }
 
@@ -1221,6 +1243,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	l.usage.Compactions++
 	l.forgetAnswers()
 	l.record(EvCompactDone, ActorSystem, info)
+	l.observe(ctx, HookPostCompact, "", "manual")
 	return info, nil
 }
 
@@ -2087,11 +2110,18 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	if call.Name == "bash" && l.Session != nil {
 		cwd = l.Session.WorkDir()
 	}
+	_, isTask := tool.(Task)
+	if isTask {
+		l.observe(ctx, HookSubagentStart, call.Name, string(call.Args))
+	}
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
-	if _, isTask := tool.(Task); isTask {
+	if isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
+	}
+	if result.IsError {
+		l.observe(ctx, HookToolFailure, call.Name, result.Content)
 	}
 	// A secret's value is stripped from the result before the model and the
 	// record see it, so the model never holds a value it could echo elsewhere.
@@ -2267,6 +2297,30 @@ func (l *Loop) permissionRefused(ctx context.Context, call model.ToolCall, decis
 	}
 	l.Hooks.Observe(ctx, HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
 	return ""
+}
+
+// stopHookContinues asks the stop hooks whether the run may end, and when
+// one asks it to go on, gives the model that instruction and reports true.
+func (l *Loop) stopHookContinues(ctx context.Context) bool {
+	sh, ok := l.Hooks.(StopHooks)
+	if !ok || l.depth > 0 || l.stopContinues >= MaxStopContinues ||
+		l.turns >= l.Config.MaxTurns || l.Budget.Exhausted() {
+		return false
+	}
+	answer := ""
+	for i := len(l.messages) - 1; i >= 0; i-- {
+		if l.messages[i].Role == model.RoleAssistant {
+			answer = l.messages[i].Content
+			break
+		}
+	}
+	instruction := sh.Stop(ctx, l.sessionID(), answer)
+	if instruction == "" {
+		return false
+	}
+	l.stopContinues++
+	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: instruction})
+	return true
 }
 
 // observe tells the hooks of something they may only watch.

@@ -4,6 +4,10 @@ An extension changes how the agent behaves without forking it. Extensions are
 separate processes speaking line-delimited JSON on stdin and stdout, so they can
 be written in any language and need no build step in Abhed.
 
+For a check that needs no long-lived process, a [simple hook](#simple-hooks)
+runs one command, or POSTs to one endpoint, per event. It takes the same
+events and follows the same rule.
+
 ## The one rule
 
 **An extension may veto, never permit.**
@@ -46,18 +50,30 @@ exactly one reply.
 | `user_prompt_submit` | before a message you send is recorded and sent | `block` it; the model never sees it, and it is recorded as `message.dropped` with the reason. You are told why: in the terminal and the workbench, on stderr for `-p`, `abhed rpc` and `abhed acp` (rpc's and acp's answers say `prompt_refused` too), and in the SDK as an `*EndedError` whose `Reason` is `prompt_refused` and `Detail` the reason. A steering message typed during a run that is blocked is recorded as dropped the same way |
 | `permission_request` | before a call is put to you, a subagent's included | `block` it. Nothing in the reply approves the call; `allow` is ignored |
 | `turn_end` | the agent has finished answering, with the reason it stopped | nothing; it only observes |
-| `subagent_end` | a subagent the agent waited on has returned | nothing; it only observes |
+| `subagent_start` | the agent starts a subagent; `tool` is `task` or `tasks`, `content` its arguments | nothing; it only observes |
+| `subagent_end` | a subagent the agent waited on has returned (the subagent's stop) | nothing; it only observes |
 | `notification` | the agent needs you, as when a call waits for approval | nothing; it only observes |
+| `tool_failure` | a tool ran and failed, a subagent's included; `content` is its output | nothing; it only observes |
+| `post_compact` | history was summarized; `content` is `auto` or `manual` | nothing; it only observes |
+| `stop` | the agent is about to finish answering; `content` is its answer | `continue` with a `reason` (or `block`): the agent is sent back to work with the reason as its instruction, at most 3 times a run |
 
 Declaring no `events` subscribes to the events up to `session_end` above; the
-five after it are sent only to an extension that names them. An empty reply
+ones after it are sent only to an extension that names them. An empty reply
 `{}` means no opinion.
 
-Each hook that blocks, forces an ask or answers with a `reason` or `log` is
-recorded as `hook.fired`, with the extension, the event and its verdict:
-`block`, `ask` or `annotate`. There is no `allow`. `/hooks` in the CLI lists
-the configured extensions with the layer each came from, the events it takes,
-its matcher and whether it is running, or why it stopped.
+`stop` is asked after the answer has passed [verification](29-verified-answers.md),
+and only of the main agent: a subagent's end is `subagent_end`. A `stop` hook
+that fails, or answers nothing, lets the run end. The calls a continued run
+makes are judged by policy as any other; a hook that asks to continue grants
+nothing. The run also ends when it reaches its turn or budget limit, however
+often a hook asks.
+
+Each hook that blocks, forces an ask, asks the agent to continue or answers
+with a `reason` or `log` is recorded as `hook.fired`, with the extension, the
+event and its verdict: `block`, `ask`, `continue` or `annotate`. There is no
+`allow`. `/hooks` in the CLI lists the configured extensions and simple hooks
+with the layer each came from, the events it takes, its matcher and whether it
+is running, or why it stopped.
 
 A `tool_call` is not always one call. The workbench Explorer's New folder,
 rename and delete arrive as `mkdir`, `rename` and `delete`, with a `path` (and
@@ -89,8 +105,9 @@ new one; a hook that keeps a count or a log should expect that.
   (on Windows also what a program needs to start), then its `env`, which
   wins. A variable given an empty value, `"GITHUB_TOKEN": ""`, passes your
   own value of it. Before 1.2.8 an extension inherited everything.
-- `async` sends the events that only observe (`turn_end`, `subagent_end`,
-  `notification`, `session_start`, `session_end`) without waiting for a reply.
+- `async` sends the events that only observe (`turn_end`, `subagent_start`,
+  `subagent_end`, `notification`, `tool_failure`, `post_compact`,
+  `session_start`, `session_end`) without waiting for a reply.
 - A workspace's extensions start only once the workspace is trusted.
 - `hooks.disabled`, which only the managed configuration sets, turns hooks
   off: each extension keeps only the tools it provides, is sent no hook
@@ -99,6 +116,74 @@ new one; a hook that keeps a count or a log should expect that.
   same for every extension the managed file did not configure, including
   those an SDK program passes: only the organisation's extensions take hook
   events. `/hooks` marks the others "tools only".
+
+## Simple hooks
+
+A simple hook is a command, or an HTTP endpoint, run once for each event it
+takes. It needs no protocol loop: it reads one event and exits.
+
+```json
+"hooks": {
+  "run": [
+    { "name": "no-push", "events": ["tool_call"], "match": ["bash(git push*)"],
+      "command": "echo 'pushes go through review' >&2; exit 2" },
+    { "name": "tests-first", "events": ["stop"], "command": "./scripts/stop-check.sh",
+      "timeout_ms": 60000 },
+    { "name": "audit", "events": ["tool_failure", "turn_end"],
+      "url": "https://audit.example.com/abhed", "headers": {"Authorization": "Bearer …"} }
+  ]
+}
+```
+
+**A command hook** gets the event on stdin, as the same JSON an extension is
+sent, and its exit status decides:
+
+| Exit | Means |
+|---|---|
+| `0` | go on. It may print a JSON reply on stdout; only `block`, `ask`, `continue`, `reason` and `log` are read. Plain text is ignored |
+| `2` | block, with stderr as the reason. On `stop`, continue, with stderr as the instruction |
+| anything else, or no exit within the timeout | the hook failed |
+
+It runs in the session's sandbox, at the tier and in the workspace the
+agent's own commands run in, with the same environment: what the sandbox
+hides from a command, it hides from a hook. The timeout is `timeout_ms`,
+10 seconds when unset.
+
+**An HTTP hook** is POSTed the event as JSON, with `headers`. A `2xx` answer
+goes on, and its body, if any, is read as the same JSON reply; any other
+status, a redirect, or no answer within the timeout is a failure. The request
+is one of Abhed's own, so under `sandbox.network: allowlist` it goes only
+where an egress rule allows, judged as kind `hook`; an endpoint not on the
+allowlist is a failure.
+
+A simple hook follows the extension's rule and fails the same way: it can
+block a call or ask for it, never approve one; a `tool_call` or
+`permission_request` hook that fails refuses the call it failed on; for the
+other events a failure is skipped. It can take `tool_call`,
+`permission_request`, `user_prompt_submit`, `stop`, `tool_result` (to observe
+it; a simple hook rewrites nothing), `tool_failure`, `turn_end`,
+`subagent_start`, `subagent_end`, `post_compact` and `notification`.
+
+Every run is recorded as `hook.fired`, whatever came of it, with `kind`
+(`command` or `http`), the `layer` the hook came from, the `reason`, the
+`exit_code` and `duration_ms`. A run with no objection has the verdict
+`none`, and one that failed `error`; neither is drawn in the terminal's
+activity. Name each hook uniquely, apart from the extensions too.
+
+**Layers.** Each layer adds to `hooks.run` rather than replacing it: the user's
+file, then a trusted workspace's, then the managed configuration's. A later
+layer's hook of the same name replaces the earlier one's, and the managed file
+is applied last, so no lower layer can remove or change a managed hook. A
+workspace's hooks run only once the workspace is trusted; an untrusted file's
+are set aside and named. The org policy never sets them. `hooks.disabled`
+turns every simple hook off, and `hooks.managed_only` leaves only the managed
+file's. A hook that could not run as written (no name, both or neither of
+`command` and `url`, an event it cannot take, a `match` that does not parse)
+stops Abhed loading, rather than leaving a veto silently missing.
+
+`abhed serve` runs each command hook under the server's own sandbox, not a
+session's own sandbox when the edition gives sessions one, and records each
+run in the session it ran for.
 
 ## Worked examples
 

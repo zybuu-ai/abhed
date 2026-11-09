@@ -35,6 +35,24 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- Simple hooks: `hooks.run` runs one command, or POSTs to one HTTP endpoint,
+  per event, with no extension process to write. A command gets the event
+  as JSON on stdin and runs in the session's sandbox at its tier; exit 0
+  goes on, exit 2 blocks with stderr as the reason, and any other exit or a
+  timeout refuses a `tool_call` or `permission_request`. An HTTP hook's
+  request is judged by the egress allowlist. A hook can block or ask, never
+  approve. Each layer adds hooks, a workspace's only once it is trusted, and
+  no lower layer removes or changes a managed one. Every run is recorded as
+  `hook.fired` with its kind, layer, exit status and duration. See
+  [Extensions](docs/guide/07-extensions.md#simple-hooks).
+- Hook events `subagent_start`, `tool_failure`, `post_compact` and `stop`,
+  for extensions and simple hooks alike. A `stop` hook can send the agent
+  back to work with an instruction, at most 3 times a run. `hook.fired` is
+  now also recorded by `abhed serve` and the SDK, in the session the hook
+  fired for.
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of

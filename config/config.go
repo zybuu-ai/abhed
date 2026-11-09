@@ -335,6 +335,28 @@ type HooksConfig struct {
 	// ManagedOnly sends hook events only to the managed file's extensions;
 	// every other keeps only the tools it provides. Managed only.
 	ManagedOnly bool `json:"managed_only,omitempty"`
+	// Run are the simple hooks: a command or an HTTP endpoint per event. Each
+	// layer adds to them, and a later layer's hook of the same name replaces
+	// the earlier one's, so no lower layer removes a managed hook.
+	Run []HookConfig `json:"run,omitempty"`
+}
+
+// HookConfig is one simple hook. A command gets the event as JSON on stdin
+// and runs in the session's sandbox: exit 0 goes on, exit 2 blocks with
+// stderr as the reason. A url is POSTed the event instead, under the egress
+// allowlist. Either can only make a decision stricter.
+type HookConfig struct {
+	Name    string   `json:"name"`
+	Events  []string `json:"events"`
+	Command string   `json:"command,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	// Headers are sent with an HTTP hook's request.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Match narrows tool events to the calls a rule matches, e.g. bash(git *).
+	Match     []string `json:"match,omitempty"`
+	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	// Layer is the layer the hook came from, as loading credits it.
+	Layer string `json:"-"`
 }
 
 // SetAsideKey is a setting a file made that was left out, and why.
@@ -1876,9 +1898,14 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
+	// Simple hooks are the exception: each file adds to them.
+	below := cfg.Hooks.Run
+	cfg.Hooks.Run = nil
 	if err := json.Unmarshal(data, cfg); err != nil {
+		cfg.Hooks.Run = below
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	cfg.Hooks.Run = joinHooks(below, cfg.Hooks.Run)
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
 	keys := managedKeys(data)
@@ -2086,6 +2113,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.validateHooks(); err != nil {
+		return err
 	}
 	if err := c.Monitor.validate(); err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -30,6 +31,12 @@ const (
 	VerdictBlock    = "block"
 	VerdictAsk      = "ask"
 	VerdictAnnotate = "annotate"
+	// VerdictContinue is a stop hook sending the agent back to work.
+	VerdictContinue = "continue"
+	// VerdictNone is a simple hook that ran and had no objection, and
+	// VerdictError one that failed; each run of one is recorded.
+	VerdictNone  = "none"
+	VerdictError = "error"
 )
 
 // Fired is one hook's verdict on one event: it blocked, forced an ask, or
@@ -39,6 +46,13 @@ type Fired struct {
 	Event     Event
 	Verdict   string
 	Reason    string
+	// The rest are a simple hook's: its kind, layer and session, its exit
+	// status when it was a command that exited, and how long it took.
+	Kind      string
+	Layer     string
+	SessionID string
+	ExitCode  *int
+	Duration  time.Duration
 }
 
 // SetOnFired sets what is told of each hook that fired, for the record.
@@ -46,6 +60,13 @@ func (h *Host) SetOnFired(f func(Fired)) {
 	h.firedMu.Lock()
 	h.onFired = f
 	h.firedMu.Unlock()
+}
+
+// fire records an extension's verdict; a simple hook records its own runs.
+func (h *Host) fire(e *Extension, f Fired) {
+	if e.hook == nil {
+		h.fired(f)
+	}
 }
 
 func (h *Host) fired(f Fired) {
@@ -145,26 +166,26 @@ func (h *Host) onToolCall(ctx context.Context, sessionID, tool string, args json
 		case errors.Is(err, errNotRunning):
 			reply = Reply{Ask: true, Reason: "extension " + e.Name() + " is not running, so each call it would have screened is asked"}
 		case err != nil:
-			reply = Reply{Block: true, Reason: "extension " + e.Name() + " did not answer (" + err.Error() + "), so the call is refused"}
+			reply = Reply{Block: true, Reason: e.label() + " did not answer (" + err.Error() + "), so the call is refused"}
 		}
 		if reply.Block {
 			// The first block is final: nothing another extension says can
 			// unblock it, so there is no reason to keep asking.
 			out.Block = true
-			out.Reason = firstNonEmpty(reply.Reason, "blocked by extension "+e.Name())
-			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictBlock, Reason: out.Reason})
+			out.Reason = firstNonEmpty(reply.Reason, "blocked by "+e.label())
+			h.fire(e, Fired{Extension: e.Name(), SessionID: sessionID, Event: EvToolCall, Verdict: VerdictBlock, Reason: out.Reason})
 			return out
 		}
 		if reply.Ask {
 			out.Ask = true
-			why := firstNonEmpty(reply.Reason, "extension "+e.Name()+" requires approval")
+			why := firstNonEmpty(reply.Reason, e.label()+" requires approval")
 			if out.Reason == "" {
 				out.Reason = why
 			}
-			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictAsk, Reason: why})
+			h.fire(e, Fired{Extension: e.Name(), SessionID: sessionID, Event: EvToolCall, Verdict: VerdictAsk, Reason: why})
 		} else if reply.Reason != "" || reply.Log != "" {
 			// A hook that only explains itself is on the record, as for every other event.
-			h.fired(Fired{Extension: e.Name(), Event: EvToolCall, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
+			h.fire(e, Fired{Extension: e.Name(), SessionID: sessionID, Event: EvToolCall, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
 		}
 		if len(reply.Args) > 0 {
 			// A later extension sees the rewritten arguments, so a chain
@@ -188,15 +209,15 @@ func (h *Host) Veto(ctx context.Context, ev Event, req Request) string {
 		}
 		reply, err := e.call(ctx, req)
 		if err != nil && ev == EvPermissionRequest && !errors.Is(err, errNotRunning) {
-			reply = Reply{Block: true, Reason: "extension " + e.Name() + " did not answer (" + err.Error() + "), so the call is refused"}
+			reply = Reply{Block: true, Reason: e.label() + " did not answer (" + err.Error() + "), so the call is refused"}
 		}
 		switch {
 		case reply.Block:
-			why := firstNonEmpty(reply.Reason, "blocked by extension "+e.Name())
-			h.fired(Fired{Extension: e.Name(), Event: ev, Verdict: VerdictBlock, Reason: why})
+			why := firstNonEmpty(reply.Reason, "blocked by "+e.label())
+			h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: ev, Verdict: VerdictBlock, Reason: why})
 			return why
 		case reply.Ask || reply.Reason != "" || reply.Log != "":
-			h.fired(Fired{Extension: e.Name(), Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
+			h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
 		}
 	}
 	return ""
@@ -228,7 +249,7 @@ func (h *Host) Observe(ctx context.Context, ev Event, req Request) {
 			continue
 		}
 		if reply := e.Call(ctx, req); reply.Reason != "" || reply.Log != "" {
-			h.fired(Fired{Extension: e.Name(), Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
+			h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
 		}
 	}
 }
@@ -398,4 +419,23 @@ func (h *Host) OnBeforeCompact(ctx context.Context, sessionID string, msgs []Mes
 		}
 	}
 	return summary, false
+}
+
+// OnStop asks the hooks that take stop whether the agent may finish, and
+// returns what to do instead, from the first that asks it to continue. A hook
+// that fails lets it finish: stopping is the safe way to fail.
+func (h *Host) OnStop(ctx context.Context, sessionID, answer string) (name, instruction string) {
+	for _, e := range h.exts {
+		if !e.Subscribed(EvStop) {
+			continue
+		}
+		reply, err := e.call(ctx, Request{Event: EvStop, SessionID: sessionID, Content: answer})
+		if err != nil || !reply.Continue && !reply.Block {
+			continue
+		}
+		why := firstNonEmpty(reply.Reason, "the "+e.Name()+" hook asks you to continue: the task is not finished")
+		h.fire(e, Fired{Extension: e.Name(), SessionID: sessionID, Event: EvStop, Verdict: VerdictContinue, Reason: why})
+		return e.Name(), why
+	}
+	return "", ""
 }

@@ -1,10 +1,16 @@
 package config
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
 )
 
 // Spec converts a provider config into the model package's neutral form.
@@ -155,4 +161,91 @@ func (c Config) RegisterCustomProviders() []error {
 		})
 	}
 	return model.LoadCustom(defs)
+}
+
+// joinHooks is the simple hooks below with a file's added: one of the same
+// name replaces the earlier, so a later layer, the managed one last, holds it.
+func joinHooks(below, added []HookConfig) []HookConfig {
+	if added == nil {
+		return below
+	}
+	out := make([]HookConfig, 0, len(below)+len(added))
+	for _, h := range below {
+		if !slices.ContainsFunc(added, func(a HookConfig) bool { return a.Name == h.Name }) {
+			out = append(out, h)
+		}
+	}
+	return append(out, added...)
+}
+
+// HookSpecs converts the simple hooks to the extension package's form.
+// hooks.disabled leaves none, and hooks.managed_only only the managed file's.
+func (c Config) HookSpecs() []extension.HookConfig {
+	if c.Hooks.Disabled {
+		return nil
+	}
+	out := make([]extension.HookConfig, 0, len(c.Hooks.Run))
+	for _, h := range c.Hooks.Run {
+		if c.Hooks.ManagedOnly && h.Layer != LayerManaged {
+			continue
+		}
+		events := make([]extension.Event, 0, len(h.Events))
+		for _, ev := range h.Events {
+			events = append(events, extension.Event(ev))
+		}
+		out = append(out, extension.HookConfig{
+			Name: h.Name, Events: events, Command: h.Command, URL: h.URL,
+			Headers: h.Headers, Match: h.Match, Layer: h.Layer,
+			Timeout: time.Duration(h.TimeoutMS) * time.Millisecond,
+		})
+	}
+	return out
+}
+
+// validateHooks refuses a simple hook that could not run as written, so a
+// hook meant to block is never silently missing.
+func (c Config) validateHooks() error {
+	seen := map[string]bool{}
+	for _, e := range c.Extensions {
+		seen[e.Name] = true
+	}
+	for _, h := range c.Hooks.Run {
+		if h.Name == "" {
+			return errors.New("hooks.run: each hook needs a name")
+		}
+		if seen[h.Name] {
+			return fmt.Errorf("hooks.run: %q names another hook or an extension", h.Name)
+		}
+		seen[h.Name] = true
+		if (h.Command == "") == (h.URL == "") {
+			return fmt.Errorf("hooks.run %q: set one of command and url", h.Name)
+		}
+		if h.URL != "" {
+			u, err := url.Parse(h.URL)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("hooks.run %q: url must be an http or https URL", h.Name)
+			}
+		}
+		if len(h.Events) == 0 {
+			return fmt.Errorf("hooks.run %q: list the events it takes", h.Name)
+		}
+		for _, ev := range h.Events {
+			if !slices.Contains(extension.HookEvents, extension.Event(ev)) {
+				names := make([]string, 0, len(extension.HookEvents))
+				for _, e := range extension.HookEvents {
+					names = append(names, string(e))
+				}
+				return fmt.Errorf("hooks.run %q: %q is not an event a hook takes; use %s", h.Name, ev, strings.Join(names, ", "))
+			}
+		}
+		for _, m := range h.Match {
+			if _, err := policy.ParseRule(m); err != nil {
+				return fmt.Errorf("hooks.run %q: match: %w", h.Name, err)
+			}
+		}
+		if h.TimeoutMS < 0 {
+			return fmt.Errorf("hooks.run %q: timeout_ms may not be negative", h.Name)
+		}
+	}
+	return nil
 }
