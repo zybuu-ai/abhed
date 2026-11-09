@@ -31,6 +31,11 @@ All notable changes to Abhed are recorded here. The format follows
   the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
   wherever anything printed before bash took the terminal; known to occur in
   1.2.9 in a project with a Python venv, whose start-up notice prints first.
+- `grep` returned matches from files a read deny rule covers.
+  `deny: ["read(secrets/**)"]` refused the `read` tool, but a `grep` over the
+  workspace still printed the matching lines of `secrets/` to the model.
+  Every `grep` result is now held to the read deny rules, and a file they
+  cover is left out with its matches and count.
 
 ### Upgrading from 1.2.9
 
@@ -45,6 +50,16 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. A link inside the workspace, and any link at your home
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
+
+### Changed
+
+- `grep` is about ten times faster on a large repository. It now skips the
+  files a `.gitignore` excludes (unless `path` names them), reads the rest
+  in parallel, and, when ripgrep is on `PATH` at start-up, lets one `rg`
+  run narrow the files by a literal every match contains. On an 11.2k-file
+  checkout a search went from 9–17 s to about 0.4–1 s, with or without
+  ripgrep. Results, path rules and redaction are the same on both paths;
+  only gitignored files no longer show up unless asked for by `path`.
 
 ### Fixed
 

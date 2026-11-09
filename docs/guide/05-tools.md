@@ -52,6 +52,20 @@ and `/undo` of the new file removes them while they are empty.
 the first glob segment is searched, held to the workspace as any path, with
 the rest as its `glob`.
 
+`grep` also passes over the files a `.gitignore` excludes, the workspace's
+own and those below it, as git reads them (`!` takes a file back), unless
+`path` names the file or a folder inside an ignored one. It reads the files
+left in parallel. When ripgrep (`rg`) is on `PATH` as Abhed starts, one
+`rg` run beside the walk narrows which files are read: it is given only a
+literal that every match must contain, as a fixed string, and no
+configuration or environment of its own. An `rg` inside the workspace or an
+added directory is never run. Either way, what reaches the model is Abhed's
+own read and match: each file is read inside the workspace, never through a
+link or into Abhed's state, a file a read deny rule covers is left out with
+its matches (`deny: ["read(secrets/**)"]` keeps `secrets/` out of `grep`
+too), and secret values are redacted. A pattern with no such literal, or
+one matched without case beyond ASCII, is searched without ripgrep.
+
 `glob` and `grep` pass over vendored and build folders (`node_modules`,
 `vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
 names such a folder anywhere in its pattern, such as

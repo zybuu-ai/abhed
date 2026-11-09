@@ -31,9 +31,8 @@ type Confined struct {
 	root  *os.Root
 	dirs  []string // the root's spellings: resolved, then as given
 	state *StateSet
-	// The folder ReadEntry last read from, kept open for the next entry.
-	walkDir *os.Root
-	walkRel string
+	// The reader ReadEntry uses, which keeps the folder it last read from open.
+	walk EntryReader
 }
 
 // Confine opens dir as a root. alt are other spellings of the same folder
@@ -53,9 +52,7 @@ func (set *StateSet) Confine(dir string, alt ...string) (*Confined, error) {
 }
 
 func (c *Confined) Close() {
-	if c.walkDir != nil {
-		_ = c.walkDir.Close()
-	}
+	c.walk.Close()
 	_ = c.root.Close()
 }
 
@@ -316,20 +313,50 @@ func ReadInWorkspace(workspace, path string) ([]byte, error) {
 // it, if it is still the entry walked and not a state file. Cheaper than
 // ReadFile: the walk has already judged the path, so only identity is asked.
 func (c *Confined) ReadEntry(rel string, walked os.FileInfo) ([]byte, error) {
-	// A walk reads a folder's files one after another, so the folder is kept
-	// open between them.
-	if dir := filepath.Dir(rel); c.walkDir == nil || c.walkRel != dir {
-		if c.walkDir != nil {
-			_ = c.walkDir.Close()
-			c.walkDir = nil
-		}
-		d, err := c.folder(rel)
+	if c.walk.c == nil {
+		c.walk.c = c
+	}
+	return c.walk.Read(rel, walked, -1)
+}
+
+// EntryReader reads entries of one Confined as ReadEntry does. Each
+// goroutine reading in parallel takes its own; the Confined is shared.
+type EntryReader struct {
+	c *Confined
+	// The folder last read from, kept open for the next entry: a walk reads
+	// a folder's files one after another.
+	dir *os.Root
+	rel string
+}
+
+// Entries is a reader of c's entries for one goroutine. Close it before c.
+func (c *Confined) Entries() *EntryReader { return &EntryReader{c: c} }
+
+// Read is ReadEntry, reading at most limit bytes when limit is not negative;
+// a longer file is an error. With walked nil, the entry is looked at here,
+// in its folder held open, and read only if it is a regular file, not a link.
+func (r *EntryReader) Read(rel string, walked os.FileInfo, limit int64) ([]byte, error) {
+	if dir := filepath.Dir(rel); r.dir == nil || r.rel != dir {
+		r.Close()
+		d, err := r.c.folder(rel)
 		if err != nil {
 			return nil, err
 		}
-		c.walkDir, c.walkRel = d, dir
+		r.dir, r.rel = d, dir
 	}
-	f, err := c.walkDir.Open(filepath.Base(rel))
+	if walked == nil {
+		info, err := r.dir.Lstat(filepath.Base(rel))
+		switch {
+		case err != nil:
+			return nil, err
+		case !info.Mode().IsRegular():
+			return nil, errNotRegular
+		case limit >= 0 && info.Size() > limit:
+			return nil, errTooLarge
+		}
+		walked = info
+	}
+	f, err := r.dir.Open(filepath.Base(rel))
 	if err != nil {
 		return nil, outside(err)
 	}
@@ -338,10 +365,31 @@ func (c *Confined) ReadEntry(rel string, walked os.FileInfo) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !os.SameFile(info, walked) || c.state.HasFile(info) {
+	if !os.SameFile(info, walked) || r.c.state.HasFile(info) {
 		return nil, ErrState
 	}
-	return io.ReadAll(f)
+	if limit < 0 {
+		return io.ReadAll(f)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err == nil && int64(len(data)) > limit {
+		return nil, errTooLarge
+	}
+	return data, err
+}
+
+// errTooLarge is a file past the limit a reader was given.
+var errTooLarge = errors.New("the file is larger than the limit")
+
+// errNotRegular is an entry that is a link, a folder or a device.
+var errNotRegular = errors.New("not a regular file")
+
+// Close closes the folder the reader holds open.
+func (r *EntryReader) Close() {
+	if r.dir != nil {
+		_ = r.dir.Close()
+		r.dir = nil
+	}
 }
 
 func createTemp(d *os.Root) (*os.File, string, error) {
