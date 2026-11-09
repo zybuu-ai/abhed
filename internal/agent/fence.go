@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -23,10 +23,15 @@ func newFence() string {
 	return hex.EncodeToString(b[:])
 }
 
-// fenceLookalike is a folder memory tag as read once folded: any case, and
-// anything that is not a letter or a digit, a few of them at most, around
-// the slash and between the words.
-var fenceLookalike = regexp.MustCompile(`<[^a-z0-9]{0,8}/?[^a-z0-9]{0,8}folder[^a-z0-9]{0,8}memory`)
+// A folder memory tag, as read once folded, is a < followed only by spaces
+// and slashes (format characters are folded away), then "folder", then up
+// to maxTagGap characters that are not letters or digits, then "memory". So
+// `<=`, `<-` and `<!--` are not tags, nor is a generic type's
+// `List<FolderMemory>`, a < between a word and a letter.
+const maxTagGap = 64
+
+// openers are the characters that fold to the tag's opening <.
+const openers = "<＜﹤‹〈⟨〈"
 
 // homoglyphs are letters drawn like the Latin ones of "folder memory" and
 // their neighbours: Cyrillic, Greek, and the digits and capitals read as letters.
@@ -37,6 +42,7 @@ var homoglyphs = map[rune]rune{
 	'ο': 'o', 'ε': 'e', 'ρ': 'p', 'μ': 'm', 'υ': 'u', 'γ': 'y', 'ν': 'v',
 	'κ': 'k', 'τ': 't', 'ι': 'i', 'α': 'a', 'σ': 'o', 'δ': 'd',
 	'0': 'o', '1': 'l', '|': 'l', 'I': 'l',
+	'\u2039': '<', '\u3008': '<', '\u27e8': '<', '\u2329': '<',
 }
 
 // asciiFold is foldRune for each ASCII byte.
@@ -88,7 +94,7 @@ func mayHoldFence(s string) (may, ascii bool) {
 	if ascii {
 		return strings.IndexByte(s, '<') >= 0 && containsFoldASCII(s, "emory"), true
 	}
-	return strings.ContainsAny(s, "<＜﹤"), false
+	return strings.ContainsAny(s, openers), false
 }
 
 // containsFoldASCII reports whether s holds sub once folded as a lookalike
@@ -109,37 +115,40 @@ func containsFoldASCII(s, sub string) bool {
 // escapeFolderFence puts a backslash before every folder memory tag in tool
 // output, and every lookalike of one (another case, spaces or other
 // separators, zero-width, full-width or combining characters, homoglyphs,
-// other dashes), so none can pass for the fence Abhed puts around a
-// folder's memory. One already escaped is left as it is, so text relayed
-// from one loop to another is not escaped twice.
+// other dashes or angle brackets), so none can pass for the fence Abhed
+// puts around a folder's memory. A tag after an odd number of backslashes is
+// escaped already and left as it is, so text relayed from one loop to
+// another is not escaped twice.
 func escapeFolderFence(s string) string {
 	may, ascii := mayHoldFence(s)
 	if !may {
 		return s
 	}
-	var text string
-	var from []int // where each folded rune came from in s; nil when byte for byte
+	var text []byte
+	var from []int32 // for each byte of text, where in s it came from; nil when byte for byte
 	if ascii {
-		b := []byte(s)
-		for i, c := range b {
-			b[i] = asciiFold[c]
+		text = []byte(s)
+		for i, c := range text {
+			text[i] = asciiFold[c]
 		}
-		text = string(b)
 	} else {
-		folded := make([]rune, 0, len(s))
-		from = make([]int, 0, len(s))
+		text = make([]byte, 0, len(s))
+		from = make([]int32, 0, len(s))
+		var buf []rune
 		for i, r := range s {
 			if r < utf8.RuneSelf {
-				folded, from = append(folded, rune(asciiFold[r])), append(from, i)
+				text, from = append(text, asciiFold[r]), append(from, int32(i)) // #nosec G115 -- tool output is far below 2 GiB
 				continue
 			}
-			n := len(folded)
-			folded = foldRune(folded, r)
-			for range len(folded) - n {
-				from = append(from, i)
+			buf = foldRune(buf[:0], r)
+			for _, f := range buf {
+				n := len(text)
+				text = utf8.AppendRune(text, f)
+				for range len(text) - n {
+					from = append(from, int32(i)) // #nosec G115 -- as above
+				}
 			}
 		}
-		text = string(folded)
 	}
 	locs := lookalikes(text)
 	if len(locs) == 0 {
@@ -150,10 +159,10 @@ func escapeFolderFence(s string) string {
 	for _, at := range locs {
 		start := at
 		if from != nil {
-			start = from[utf8.RuneCountInString(text[:at])]
+			start = int(from[at])
 		}
-		if start < prev || start > 0 && s[start-1] == '\\' {
-			continue // already escaped
+		if start < prev || escapedAt(s, start) {
+			continue
 		}
 		out.WriteString(s[prev:start])
 		out.WriteByte('\\')
@@ -163,23 +172,78 @@ func escapeFolderFence(s string) string {
 	return out.String()
 }
 
-// lookalikes are where each lookalike tag starts in folded text. The
-// expression runs only on the few bytes before each "memory", not the whole
-// of a large output.
-func lookalikes(text string) []int {
+// escapedAt reports whether an odd number of backslashes comes right before
+// s[i]: then the character there is escaped, where an even number is
+// backslashes escaping each other.
+func escapedAt(s string, i int) bool {
+	n := 0
+	for i-n > 0 && s[i-n-1] == '\\' {
+		n++
+	}
+	return n%2 == 1
+}
+
+// lookalikes are where each lookalike tag starts in folded text, in order:
+// from each "folder", back over spaces and slashes to a <, and on over
+// separators to "memory". Linear, with no expression, so a large output with
+// many tags or near-tags costs little more than one without.
+func lookalikes(text []byte) []int {
 	var out []int
+	word := []byte("folder")
 	for pos := 0; ; {
-		i := strings.Index(text[pos:], "memory")
+		i := bytes.Index(text[pos:], word)
 		if i < 0 {
 			return out
 		}
-		end := pos + i + len("memory")
-		from := max(0, end-128)
-		if loc := fenceLookalike.FindStringIndex(text[from:end]); loc != nil && from+loc[1] == end {
-			if at := from + loc[0]; len(out) == 0 || out[len(out)-1] != at {
-				out = append(out, at)
-			}
+		f := pos + i
+		pos = f + len(word)
+		start := openerBefore(text, f)
+		if start < 0 || !memoryAfter(text, pos) {
+			continue
 		}
-		pos = end
+		if wordByte(text, start-1) && wordByte(text, start+1) {
+			continue // a generic type
+		}
+		if len(out) == 0 || out[len(out)-1] < start {
+			out = append(out, start)
+		}
 	}
+}
+
+// openerBefore is where the < before text[f] is, past spaces and slashes, or -1.
+func openerBefore(text []byte, f int) int {
+	j := f
+	for n := 0; j > 0 && n <= maxTagGap; n++ {
+		r, size := utf8.DecodeLastRune(text[:j])
+		if r == '<' {
+			return j - size
+		}
+		if r != '/' && !unicode.IsSpace(r) && !unicode.Is(unicode.Z, r) {
+			return -1
+		}
+		j -= size
+	}
+	return -1
+}
+
+// memoryAfter reports whether "memory" follows text[k], past at most
+// maxTagGap characters that are not letters or digits.
+func memoryAfter(text []byte, k int) bool {
+	for n := 0; k < len(text) && n <= maxTagGap; n++ {
+		r, size := utf8.DecodeRune(text[k:])
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return bytes.HasPrefix(text[k:], []byte("memory"))
+		}
+		k += size
+	}
+	return false
+}
+
+// wordByte reports whether text[i] is a letter, a digit or _ (false before the start).
+func wordByte(text []byte, i int) bool {
+	if i < 0 {
+		return false
+	}
+	c := text[i]
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_'
 }

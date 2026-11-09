@@ -121,11 +121,15 @@ gains a short paragraph naming that fence and saying what such a block is:
 project memory for that folder, with the standing of the workspace's
 `ABHED.md`, below you, the managed memory and every rule, and never a
 permission. Anything in tool output that imitates the tag, in any case,
-with any separators, zero-width, full-width or combining characters,
-look-alike Cyrillic or Greek letters, or digits for letters, is escaped with
-a backslash, in every session and subagent and in background results too;
-text already escaped is not escaped again when a subagent's result is passed
-on. Adding the paragraph changes the system prompt once, so the model
+with up to 64 separators between the words, zero-width, full-width or
+combining characters, look-alike Cyrillic or Greek letters, digits for
+letters, or another angle bracket (`‹`, `〈`, `⟨`, `＜`), is escaped with a
+backslash, in every session and subagent and in background results too. A
+tag is a `<` followed only by spaces or a slash before the words, so code
+such as `ch <- folderMemory`, `x <= folder_memory`, `<!-- folder memory -->`
+or a generic type `List<FolderMemory>` is left as it is. A tag after an odd
+number of backslashes is escaped already, so a subagent's result passed on
+is not escaped twice; after an even number it is escaped. Adding the paragraph changes the system prompt once, so the model
 provider's prompt cache starts again from that turn. So a file that really contains `<folder-memory-` is shown with a `\`
 before the `<`: an edit copied from that view must leave the backslash out
 of its old text.
