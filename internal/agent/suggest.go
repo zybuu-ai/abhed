@@ -244,6 +244,7 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	l.usage.ColdPrefillTokens += usage.InputTokens - usage.CachedInputTokens
 	l.usageMu.Unlock()
 	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
+	mc.CostUSD = l.chargeCall(mc.Model, usage)
 	// Closed: the call still went out, so its model.call is recorded; the suggestion is not.
 	stale := closed || err != nil || ctx.Err() != nil || l.hasWork() || l.Background.dueSoon() || l.suggestionHeld(sg)
 	if !stale {

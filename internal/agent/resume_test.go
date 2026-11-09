@@ -495,7 +495,7 @@ func TestCarriedSpendCountsAResumedChildOnce(t *testing.T) {
 	if _, err := r.f.Spawn(r.ctx(), SubagentRequest{Prompt: "more", Resume: id}); err != nil {
 		t.Fatal(err)
 	}
-	tokens, spawned := CarriedSpend(r.events(t))
+	tokens, spawned, _ := CarriedSpend(r.events(t))
 	if live := r.f.Budget.Spent(); tokens != live || spawned != 2 {
 		t.Fatalf("carried %d tokens and %d spawns; the budget spent %d", tokens, spawned, live)
 	}
@@ -509,7 +509,7 @@ func TestCarriedSpendCountsSessionlessReturns(t *testing.T) {
 		_, _ = rec.Record(EvSubagentReturn, ActorAgent, Trusted, map[string]any{"tokens_in": 5, "tokens_out": 5})
 	}
 	evs, _ := store.Events("p")
-	if tokens, _ := CarriedSpend(evs); tokens != 20 {
+	if tokens, _, _ := CarriedSpend(evs); tokens != 20 {
 		t.Fatalf("carried %d, want 20", tokens)
 	}
 }

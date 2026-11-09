@@ -153,6 +153,33 @@ invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
 
+`max_budget_usd` caps the session's cost in US dollars the same way,
+subagents included. A run that reaches it ends `max_budget` (exit `3`) and
+records `budget.stopped` with what was spent. With a dollar cap set, a model
+that has no price is refused before any call is made, rather than run at a
+guessed cost.
+
+### Prices
+
+Each model call is priced from its model's name as sent to the provider,
+in US dollars per million tokens. Abhed carries the published list prices of
+some hosted models; `pricing` sets others, or overrides the list:
+
+```json
+"pricing": {
+  "gemma4:26b": {"input": 0, "output": 0},
+  "acme-large": {"input": 3, "output": 15, "cached_input": 0.3, "cache_write": 3.75}
+}
+```
+
+`cached_input` and `cache_write` default to the input price. A model with no
+price is shown as unpriced: its cost is in no total and is never guessed. A
+price with a negative figure is no price. `pricing` is an operator's
+setting: a workspace's configuration cannot set it, trusted or not, since a
+lower price would stretch a dollar budget. The cost of each call is in its
+`model.call` event (`cost_usd`), and the session's in `session.ended`;
+`/usage`, `-p -output-format json`, HawkEYE and Studio show them.
+
 ## Background tasks
 
 ```json

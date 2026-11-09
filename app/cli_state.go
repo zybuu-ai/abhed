@@ -215,6 +215,8 @@ func usageSince(before, after agent.Usage) agent.Usage {
 		ColdPrefillTokens: after.ColdPrefillTokens - before.ColdPrefillTokens,
 		Turns:             after.Turns - before.Turns,
 		Compactions:       after.Compactions - before.Compactions,
+		CostUSD:           after.CostUSD - before.CostUSD,
+		Unpriced:          after.Unpriced,
 	}
 }
 
@@ -225,4 +227,6 @@ func (c *cliState) accumulate(u agent.Usage) {
 	c.total.ColdPrefillTokens += u.ColdPrefillTokens
 	c.total.Turns += u.Turns
 	c.total.Compactions += u.Compactions
+	c.total.CostUSD += u.CostUSD
+	c.total.Unpriced = c.total.Unpriced || u.Unpriced
 }

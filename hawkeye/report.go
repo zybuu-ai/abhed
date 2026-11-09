@@ -84,6 +84,10 @@ type Totals struct {
 	// CacheReported is false when no turn's provider gave a cached-token
 	// figure, so a zero rate means unknown, not a cold cache.
 	CacheReported bool `json:"cache_reported"`
+	// CostUSD is what the priced calls cost; Unpriced marks a call to a model
+	// with no price, left out of it.
+	CostUSD  float64 `json:"cost_usd"`
+	Unpriced bool    `json:"unpriced,omitempty"`
 	// ModelMS and ToolMS split the wall clock between waiting on the model
 	// and waiting on tools, which is the first question about a slow session.
 	ModelMS    int64 `json:"model_ms"`
@@ -109,8 +113,10 @@ type Turn struct {
 	TokensCached int    `json:"tokens_cached"`
 	// CacheReported is false when the provider gave no cached-token figure.
 	CacheReported bool `json:"cache_reported,omitempty"`
-	Window        int  `json:"context_window"`
-	CutOff        bool `json:"cut_off,omitempty"`
+	// CostUSD is the call's cost; nil when its model has no price.
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	Window  int      `json:"context_window"`
+	CutOff  bool     `json:"cut_off,omitempty"`
 	// Estimated marks tokens the harness estimated for a reply stopped early.
 	Estimated    bool   `json:"estimated,omitempty"`
 	FirstTokenMS int64  `json:"first_token_ms"`

@@ -422,6 +422,10 @@ type resultUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	CachedTokens int `json:"cached_tokens"`
+	// CostUSD is what the run's priced calls cost; Unpriced marks a call to
+	// a model with no price, whose cost is not in it and is not guessed.
+	CostUSD  float64 `json:"cost_usd"`
+	Unpriced bool    `json:"unpriced,omitempty"`
 }
 
 func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o headlessOpts,
@@ -585,7 +589,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
 			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
-			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict()}
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens, u.CostUSD, u.Unpriced}, Verdict: loop.LastVerdict()}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
 		}
@@ -594,6 +598,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		}
 		if err != nil {
 			res.Error = friendlyModelError(err, o.providerName, o.provider)
+		}
+		if reason == agent.TermMaxBudget && res.Error == "" {
+			res.Error = budgetStopMessage(store, sessionID)
 		}
 		b, _ := json.Marshal(res)
 		fmt.Println(string(b))
@@ -647,7 +654,41 @@ func printUsage(r *ui.Renderer, u agent.Usage) {
 	if u.Compactions > 0 {
 		line += fmt.Sprintf(" · %d compaction(s)", u.Compactions)
 	}
+	if c := costText(u.CostUSD, u.Unpriced); c != "" {
+		line += " · " + c
+	}
 	fmt.Printf("%s\n", s.Dim(line))
+}
+
+// costText is a cost as shown: dollars, with a note when some calls went to
+// a model with no price, or "" when nothing was priced or spent.
+func costText(usd float64, unpriced bool) string {
+	switch {
+	case unpriced && usd > 0:
+		return fmt.Sprintf("$%.4f (some calls unpriced)", usd)
+	case unpriced:
+		return "cost unpriced"
+	case usd > 0:
+		return fmt.Sprintf("$%.4f", usd)
+	}
+	return ""
+}
+
+// budgetStopMessage is what the record says stopped the run at its budget.
+func budgetStopMessage(store server.EventStore, sessionID string) string {
+	events, err := store.Events(sessionID)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == agent.EvBudgetStopped {
+			var b agent.BudgetStopped
+			if json.Unmarshal(events[i].Payload, &b) == nil {
+				return b.Message
+			}
+		}
+	}
+	return ""
 }
 
 // withheldNoteOf is the note a user.message that withheld stored secrets

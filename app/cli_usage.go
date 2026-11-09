@@ -36,13 +36,63 @@ func slashUsage(_ context.Context, e *cmdEnv, _ []string) (bool, error) {
 		rows = append(rows, []string{"prefill saving", fmt.Sprintf("%.1fx", savings)})
 	}
 	rows = append(rows, []string{"compactions", strconv.Itoa(u.Compactions)})
+	rows = append(rows, []string{"cost", orDefault(costText(u.CostUSD, u.Unpriced), "$0")})
+	if st.loop != nil && st.loop.Budget != nil && st.loop.Budget.MaxUSD > 0 {
+		b := st.loop.Budget
+		rows = append(rows, []string{"dollar budget", fmt.Sprintf("$%.4f of $%.2f, subagents included", b.SpentUSD(), b.MaxUSD)})
+	}
 	blocks := []ui.Block{{Kind: ui.BlockTable, Rows: rows}}
 	if events, err := st.store.Events(st.sessionID); err == nil {
 		if b := usageBreakdown(events); len(b) > 1 {
 			blocks = append(blocks, ui.Block{Kind: ui.BlockTable, Rows: b})
 		}
+		if t := turnCosts(events, 20); len(t) > 1 {
+			blocks = append(blocks, ui.Block{Kind: ui.BlockTable, Rows: t})
+		}
 	}
 	return false, e.ui.Panel(context.Background(), ui.PanelSpec{Title: "Usage", Body: blocks})
+}
+
+// turnCosts is the last n turns' model calls with their cost, from the
+// record; a call to a model with no price shows "unpriced".
+func turnCosts(events []agent.Event, n int) [][]string {
+	type turn struct {
+		model           string
+		in, out, cached int
+		usd             float64
+		unpriced        bool
+	}
+	var order []int
+	turns := map[int]*turn{}
+	for _, ev := range events {
+		if ev.Type != agent.EvModelCall {
+			continue
+		}
+		var c agent.ModelCall
+		if json.Unmarshal(ev.Payload, &c) != nil || c.Purpose != "" {
+			continue
+		}
+		t := turns[c.Turn]
+		if t == nil {
+			t = &turn{}
+			turns[c.Turn] = t
+			order = append(order, c.Turn)
+		}
+		t.model = c.Model
+		t.in, t.out, t.cached = t.in+c.TokensIn, t.out+c.TokensOut, t.cached+c.TokensCached
+		if c.CostUSD != nil {
+			t.usd += *c.CostUSD
+		} else if c.TokensIn+c.TokensOut > 0 {
+			t.unpriced = true
+		}
+	}
+	rows := [][]string{{"turn", "model", "tokens in", "tokens out", "cached", "cost"}}
+	for _, k := range order[max(0, len(order)-n):] {
+		t := turns[k]
+		rows = append(rows, []string{strconv.Itoa(k), t.model, strconv.Itoa(t.in), strconv.Itoa(t.out), strconv.Itoa(t.cached),
+			orDefault(costText(t.usd, t.unpriced), "$0")})
+	}
+	return rows
 }
 
 // usageBreakdown is tokens by subagent, and tool calls by where the tool
@@ -206,6 +256,14 @@ func slashStatus(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	budget := "none"
 	if cfg.Limits.MaxBudgetTokens > 0 {
 		budget = fmt.Sprintf("%d tokens, shared with subagents", cfg.Limits.MaxBudgetTokens)
+	}
+	if cfg.Limits.MaxBudgetUSD > 0 {
+		usd := fmt.Sprintf("$%.2f, shared with subagents", cfg.Limits.MaxBudgetUSD)
+		if budget == "none" {
+			budget = usd
+		} else {
+			budget += "; " + usd
+		}
 	}
 	rows := [][]string{{"", ""},
 		{"model", fmt.Sprintf("%s (%s)", m.Model, m.Provider)},

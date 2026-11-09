@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -115,6 +116,7 @@ type cliFlags struct {
 	addDirs         multiFlag
 	maxTurns        int
 	maxBudget       int
+	maxBudgetUSD    float64
 	format          string
 	inputFormat     string
 	partial         bool
@@ -163,6 +165,7 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.Var(&f.addDirs, "add-dir", "comma-separated extra directories the agent may read and write; repeatable")
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "override the turn limit")
 	fs.IntVar(&f.maxBudget, "max-budget-tokens", 0, "end the run once it has used this many tokens (exit 3)")
+	fs.Float64Var(&f.maxBudgetUSD, "max-budget-usd", 0, "end the run once it has cost this many US dollars, subagents included (exit 3); a model with no price is refused")
 	fs.StringVar(&f.format, "output-format", "text", "text|json|stream-json: json and stream-json write one event per line, then a result line")
 	fs.StringVar(&f.inputFormat, "input-format", "text", "text|stream-json: with -p, stream-json reads one user message per line on stdin")
 	fs.BoolVar(&f.noStdin, "no-stdin", false, "with -p, do not read stdin, as with < /dev/null; for a loop that reads a list on stdin")
@@ -678,5 +681,22 @@ func budgetFlag(cfg config.Config, tokens int) (config.Config, error) {
 			Reason: fmt.Sprintf("the managed configuration sets it to %d, and a flag may only lower it", cfg.Limits.MaxBudgetTokens), File: managed.ConfigFile}
 	}
 	cfg.Limits.MaxBudgetTokens = tokens
+	return cfg, nil
+}
+
+// usdBudgetFlag applies -max-budget-usd. Under a managed or org dollar cap
+// it may only lower it.
+func usdBudgetFlag(cfg config.Config, usd float64) (config.Config, error) {
+	switch {
+	case usd == 0:
+		return cfg, nil
+	case usd < 0 || math.IsNaN(usd) || math.IsInf(usd, 0):
+		return cfg, fmt.Errorf("-max-budget-usd must be a positive number of US dollars, not %v", usd)
+	}
+	if cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0 && usd > cfg.Limits.MaxBudgetUSD {
+		return cfg, &config.ManagedError{Key: "limits.max_budget_usd", Value: strconv.FormatFloat(usd, 'f', -1, 64),
+			Reason: fmt.Sprintf("the managed configuration sets it to %v, and a flag may only lower it", cfg.Limits.MaxBudgetUSD), File: managed.ConfigFile}
+	}
+	cfg.Limits.MaxBudgetUSD = usd
 	return cfg, nil
 }

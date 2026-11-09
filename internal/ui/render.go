@@ -358,6 +358,13 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 	case agent.EvSessionWoken:
 		d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("woke to act on background results")})
 
+	case agent.EvBudgetStopped:
+		var b agent.BudgetStopped
+		if json.Unmarshal(ev.Payload, &b) == nil {
+			r.endReply(d, "")
+			d.commit(&rawBlock{text: "  " + s.Yellow("!") + " " + VisibleLine(b.Message)})
+		}
+
 	case agent.EvTodoUpdated:
 		if b := r.todoEvent(ev); b != nil {
 			r.endReply(d, "")
@@ -490,7 +497,7 @@ func endedText(reason agent.TerminalReason, detail string) string {
 	case agent.TermMaxTurns:
 		return "Stopped at the turn limit (max_turns)"
 	case agent.TermMaxBudget:
-		return "Stopped at the token budget (max_budget)"
+		return "Stopped at the budget (max_budget)"
 	case agent.TermRetryExhausted:
 		return "Stopped: the model kept making the same call without getting anywhere (retry_exhausted)"
 	case agent.TermStalled:
@@ -655,6 +662,12 @@ func (r *Renderer) lineEvent(ev agent.Event) {
 	case agent.EvSessionWoken:
 		if !r.quiet {
 			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("◆"), s.Dim("woke to act on background results"))
+		}
+
+	case agent.EvBudgetStopped:
+		var b agent.BudgetStopped
+		if json.Unmarshal(ev.Payload, &b) == nil {
+			fmt.Fprintf(r.w, "  %s %s\n", s.Yellow("!"), VisibleLine(b.Message))
 		}
 
 	case agent.EvTodoUpdated:

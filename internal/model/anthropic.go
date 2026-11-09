@@ -455,6 +455,8 @@ func (c *Anthropic) stream(ctx context.Context, resp *http.Response, out chan<- 
 		case "message_start":
 			if ev.Message != nil && ev.Message.Usage != nil {
 				usage.InputTokens += ev.Message.Usage.InputTokens
+				usage.CacheWriteTokens += ev.Message.Usage.CacheCreationInputTokens
+				usage.CacheExcluded = true
 				if n := ev.Message.Usage.CacheReadInputTokens; n != nil {
 					usage.CachedInputTokens += *n
 					usage.CacheReported = true

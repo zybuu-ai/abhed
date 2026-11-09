@@ -143,6 +143,8 @@ var orgRules = map[string]orgRule{
 	"limits.max_turns":                {orgTighten, ""},
 	"limits.max_tokens":               {orgTighten, ""},
 	"limits.max_budget_tokens":        {orgTighten, ""},
+	"limits.max_budget_usd":           {orgTighten, ""},
+	"pricing":                         {orgPinned, "sets what a model's calls cost"},
 	"limits.max_subagents":            {orgTighten, ""},
 	"limits.max_parallel_subagents":   {orgTighten, ""},
 	"limits.nested_subagents":         {orgTighten, ""},

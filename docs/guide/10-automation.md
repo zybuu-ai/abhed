@@ -53,8 +53,12 @@ The last line of `json` and `stream-json` is the result:
 ```json
 {"type":"result","subtype":"completed","is_error":false,"result":"…final reply…",
  "session_id":"s-…","num_turns":3,"duration_ms":8123,"exit_code":0,
- "usage":{"input_tokens":5120,"output_tokens":210,"cached_tokens":4096}}
+ "usage":{"input_tokens":5120,"output_tokens":210,"cached_tokens":4096,"cost_usd":0.0149}}
 ```
+
+`cost_usd` is what the run's priced calls cost; `unpriced` is true when a
+call went to a model with no price, whose cost is left out and never
+guessed. Each call's cost is in its `model.call` event.
 
 `subtype` is the terminal reason (`completed`, `max_turns`, `max_budget`,
 `retry_exhausted`, …); `error` is present when the run failed.
@@ -127,8 +131,11 @@ the hash ([Runbooks](28-runbooks.md)).
 
 - `-max-turns N` ends the run after N turns (exit `2`).
 - `-max-budget-tokens N` ends it once the run and its subagents have used N
-  tokens (exit `3`). Under a managed budget it may only lower it. There is no
-  budget in money: Abhed has no prices to count against.
+  tokens (exit `3`). Under a managed budget it may only lower it.
+- `-max-budget-usd D` ends it once the run and its subagents have cost D US
+  dollars (exit `3`), and refuses to start a model that has no price
+  ([Prices](02-configuration.md#prices)). The result's `error` says why.
+  Under a managed dollar cap it may only lower it.
 - `-append-system-prompt "…"` and `-append-system-prompt-file PATH` add
   instructions to the system prompt.
 - `-system-prompt` and `-system-prompt-file` replace it. Both are refused
@@ -222,7 +229,7 @@ send(method="prompt", prompt="fix the failing tests")
 | `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
 | `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` when answers are checked |
 | `steer` | redirect a run in progress — the text in `prompt` |
-| `usage` | tokens, turns, compactions |
+| `usage` | tokens, turns, compactions, and cost (`CostUSD`; `Unpriced` when a call had no price) |
 | `export` | the HTML transcript |
 | `providers` | what this build supports |
 | `tasks` | the session's background tasks |

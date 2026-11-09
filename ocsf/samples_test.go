@@ -137,6 +137,7 @@ var samples = []sample{
 	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"refused","provider":"local","model":"qwen3:8b","problem":"assist_off","error":"Abhed is set not to install or download anything here","by":"user","surface":"server"}`},
 	{agent.EvDebugSetup, agent.ActorUser, `{"action":"process_tier_consent","workspace":"/w","call_id":"u-2"}`},
 	{agent.EvSandboxPortContested, agent.ActorSystem, `{"port":5173,"listeners":2}`},
+	{agent.EvBudgetStopped, agent.ActorSystem, `{"reason":"usd","model":"gpt-4o","spent_usd":1.02,"max_usd":1,"message":"stopped: the budget of $1.00 is spent ($1.0200)"}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

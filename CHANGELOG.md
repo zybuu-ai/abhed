@@ -21,6 +21,21 @@ All notable changes to Abhed are recorded here. The format follows
   `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
   a device, or over 4 MiB, is refused instead of followed or waited on.
 
+### Added
+
+- Cost in US dollars. Each model call is priced from its model's name, at
+  the published list price Abhed carries for some hosted models or at a
+  price set under `pricing` in the configuration, and the cost is recorded
+  on the call's `model.call` (`cost_usd`) and the session's end. `/usage`
+  shows the session's cost and each turn's, `-p -output-format json` its
+  `usage.cost_usd`, and HawkEYE the cost per turn and in all. A model with
+  no price is shown as unpriced, and its cost is never guessed. A workspace
+  cannot set prices.
+- `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
+  subagents included. The run ends `max_budget` (exit `3`) with a message
+  and a `budget.stopped` event; with a cap set, a model with no price is
+  refused before any call. A managed or org cap may only be lowered.
+
 ### Upgrading from 1.2.9
 
 - A workspace other than your home folder whose config is your own

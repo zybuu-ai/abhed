@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -841,6 +842,8 @@ var workspaceRules = map[string]fieldRule{
 	"limits.max_turns":                {lower(func(c *Config) *int { return &c.Limits.MaxTurns }, zeroIsZero), "only lower"},
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
 	"limits.max_budget_tokens":        {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }, zeroUnlimited), "only lower"},
+	"limits.max_budget_usd":           {lowerFloat(func(c *Config) *float64 { return &c.Limits.MaxBudgetUSD }), "only lower"},
+	"pricing":                         {nil, "sets what a model's calls cost, which a dollar budget is spent by (an operator's setting: not from a workspace, trusted or not)"},
 	"limits.max_subagents":            {lower(func(c *Config) *int { return &c.Limits.MaxSubagents }, zeroUnlimited), "only lower"},
 	"limits.max_parallel_subagents":   {lower(func(c *Config) *int { return &c.Limits.MaxParallelSubagents }, zeroIs(8)), "only lower"},
 	"limits.nested_subagents":         {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
@@ -974,6 +977,19 @@ func lower(field func(*Config) *int, zero zeroMeans) func(dst, ws *Config) bool 
 				return false
 			}
 		} else if v > cur {
+			return false
+		}
+		*d = v
+		return true
+	}
+}
+
+// lowerFloat takes a positive value lower than the current one, or any
+// positive value where none is set (zero is unlimited).
+func lowerFloat(field func(*Config) *float64) func(dst, ws *Config) bool {
+	return func(dst, ws *Config) bool {
+		d, v := field(dst), *field(ws)
+		if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) || *d > 0 && v > *d {
 			return false
 		}
 		*d = v

@@ -663,6 +663,10 @@ type Usage struct {
 	// ColdPrefillTokens counts input tokens that missed the cache. This is the
 	// quantity the 17x prefix-cache claim is about, measured rather than assumed.
 	ColdPrefillTokens int
+	// CostUSD is what the priced calls cost; Unpriced marks a call to a
+	// model with no price, whose cost is in no total.
+	CostUSD  float64
+	Unpriced bool
 }
 
 // CacheHitRate reports the fraction of input tokens served from the prefix
@@ -1044,7 +1048,8 @@ turns:
 		}
 		// At the turn boundary, not mid-turn: cutting a turn short would leave
 		// a tool result the model never sees.
-		if l.Budget.Exhausted() {
+		if l.Budget.Exhausted() || l.unpricedUnderCap() {
+			l.recordBudgetStop()
 			return l.finish(TermMaxBudget), nil
 		}
 		// Background results first, then steering, each in arrival order,
@@ -1432,7 +1437,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	mc := ModelCall{
 		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
-		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported,
+		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported, TokensCacheWrite: callUsage.CacheWriteTokens,
 		ContextWindow: l.Adapter.Profile().ContextWindow,
 		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
 		ToolCalls: len(calls),
@@ -1454,8 +1459,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			l.usage.InputTokens += mc.TokensIn
 			l.usage.OutputTokens += mc.TokensOut
 			l.usage.ColdPrefillTokens += mc.TokensIn
+			callUsage.InputTokens, callUsage.OutputTokens = mc.TokensIn, mc.TokensOut
 		}
 	}
+	mc.CostUSD = l.chargeCall(mc.Model, callUsage)
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
 	if streamErr != nil && ctx.Err() == nil {
@@ -2239,6 +2246,8 @@ func (l *Loop) endPayload(reason TerminalReason) SessionEnded {
 		TokensOut:     l.usage.OutputTokens,
 		TokensCached:  l.usage.CachedTokens,
 		Compactions:   l.usage.Compactions,
+		CostUSD:       l.usage.CostUSD,
+		Unpriced:      l.usage.Unpriced,
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
 		Background:    l.Background.Owed(),
