@@ -9,11 +9,12 @@ import (
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
-// PurposeCompaction and PurposePipeline mark the model.call of a compaction
-// summary and of a pipeline's model step.
+// PurposeCompaction, PurposePipeline and PurposeCommitMessage mark the
+// model.call of a compaction summary, a pipeline's model step and a commit message.
 const (
-	PurposeCompaction = "compaction"
-	PurposePipeline   = "pipeline"
+	PurposeCompaction    = "compaction"
+	PurposePipeline      = "pipeline"
+	PurposeCommitMessage = "commit_message" // Studio's commit message
 )
 
 // Refuse is the gate every model call passes before its request: it says why
@@ -91,7 +92,7 @@ func (l *Loop) sideCall(ctx context.Context, purpose string, a model.Adapter, re
 	}
 	turn := l.turns // read within the run: the critic, a compaction, a tool's pipeline step
 	start := time.Now()
-	text, usage, estimated, err := suggestCall(ctx, a, req)
+	text, usage, estimated, err := suggestCall(ctx, a, req, l.Budget.CutAtBound(a))
 	mc := l.chargeSide(purpose, name, turn, usage, estimated, time.Since(start))
 	if err != nil {
 		mc.Error = err.Error()
@@ -143,7 +144,7 @@ func meteredCall(ctx context.Context, purpose string, a model.Adapter, req model
 	if ctx.Value(unmeteredKey{}) == nil {
 		return "", errUnmetered
 	}
-	text, _, _, err := suggestCall(ctx, a, req)
+	text, _, _, err := suggestCall(ctx, a, req, false)
 	return text, err
 }
 
@@ -172,4 +173,36 @@ func (l *Loop) recordBudgetStop() {
 func (l *Loop) ChargeEditorCall(name string, u model.Usage) (cost *float64, unpriced bool) {
 	l.Budget.Spend(u.InputTokens + u.OutputTokens)
 	return l.chargeCall(name, u)
+}
+
+// EstimateUnreported fills in a call's usage when the provider reported
+// none: a real request always has prompt tokens, so zero input means not
+// reported, and a gateway that drops usage would otherwise make calls free.
+// Input is counted from the request; output is what came back, about four
+// characters a token, except that a cut call is charged at the request's
+// output bound when bounded (a dollar cap is set, or the model reasons out of
+// sight), since cutting a call does not stop its bill. estimated is true
+// when anything was filled in.
+func EstimateUnreported(a model.Adapter, req model.Request, u model.Usage, produced int, cut, bounded bool) (model.Usage, bool) {
+	if u.InputTokens > 0 {
+		return u, false
+	}
+	u.InputTokens, _ = a.CountTokens(req)
+	out := max(u.OutputTokens, (produced+3)/4)
+	if cut && bounded {
+		limit := req.MaxTokens
+		if limit <= 0 {
+			limit = a.Profile().MaxOutputTokens
+		}
+		out = max(out, limit)
+	}
+	u.OutputTokens = out
+	return u, u.InputTokens > 0 || u.OutputTokens > 0
+}
+
+// CutAtBound reports whether a cut call to a is charged at its output bound:
+// under a dollar limit, or for a model whose reasoning is billed unseen.
+func (b *Budget) CutAtBound(a model.Adapter) bool {
+	p := a.Profile()
+	return b.USDLimited() || p.ReasoningTokens || p.Sampling.Think
 }

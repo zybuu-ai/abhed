@@ -499,8 +499,8 @@ func (c *acpConn) complete(msg rpcMessage) {
 		text = ""
 	}
 	cancelled := err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
-	usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
-		len(sentPrefix)+len(sentSuffix), len(res.Text))
+	_, _, usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
+		len(sentPrefix)+len(sentSuffix), len(res.Text), completeMaxTokens)
 	k.mu.Lock()
 	addCost(&k.sum, usd, unpriced)
 	k.sum.Requests++

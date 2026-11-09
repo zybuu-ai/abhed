@@ -468,3 +468,48 @@ func TestCancelledSuggestionIsCharged(t *testing.T) {
 		t.Fatalf("budget $%v", l.Budget.SpentUSD())
 	}
 }
+
+// counted is a named adapter whose requests count tokens, as a real one's do.
+type counted struct {
+	namedAdapter
+	n int
+}
+
+func (c counted) CountTokens(model.Request) (int, error) { return c.n, nil }
+
+// A provider that reports no usage does not make calls free: a call with no
+// prompt tokens reported is estimated and charged, so a cap still stops the run.
+func TestUnreportedUsageIsEstimatedUnderACap(t *testing.T) {
+	none := &model.Usage{}
+	turns := []scriptedTurn{}
+	for range 4 {
+		turns = append(turns, scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": "true"})}, usage: none})
+	}
+	l, store := costHarness(t, "gpt-4o", turns)
+	l.Adapter = counted{namedAdapter: l.Adapter.(namedAdapter), n: 2000}
+	l.Budget.MaxUSD = 0.000001
+	reason, err := l.Run(context.Background(), "go")
+	if err != nil || reason != TermMaxBudget {
+		t.Fatalf("run %s %v", reason, err)
+	}
+	calls := modelCalls(t, store)
+	if len(calls) != 1 || !calls[0].Estimated || calls[0].TokensIn != 2000 || calls[0].CostUSD == nil || *calls[0].CostUSD <= 0 {
+		t.Fatalf("calls %+v", calls)
+	}
+}
+
+// Under a dollar cap, a call cut before usage came back is charged its whole
+// output bound: cutting a call does not stop its bill.
+func TestCutCallUnderACapIsChargedAtItsBound(t *testing.T) {
+	l, store := costHarness(t, "gpt-4o", nil)
+	l.Budget.MaxUSD = 10
+	s := &Steps{loop: l}
+	cut := &cutAdapter{name: "gpt-4o-mini", started: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-cut.started; cancel() }()
+	_, _ = s.Complete(ctx, cut, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}, MaxTokens: 2048})
+	calls := modelCalls(t, store)
+	if len(calls) != 1 || !calls[0].Estimated || calls[0].TokensOut != 2048 {
+		t.Fatalf("cut call %+v", calls)
+	}
+}

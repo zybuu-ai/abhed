@@ -74,6 +74,13 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				r.Prompt = clip(m.Text, 400)
 			}
 
+		case agent.EvCompletionSummary, agent.EvNextEditSummary:
+			var s agent.CompletionSummary
+			if json.Unmarshal(e.Payload, &s) == nil {
+				r.editorUSD += s.CostUSD
+				r.editorUnpriced = r.editorUnpriced || s.Unpriced
+			}
+
 		case agent.EvModelCall:
 			var m agent.ModelCall
 			_ = json.Unmarshal(e.Payload, &m)
@@ -354,6 +361,7 @@ func (r *Report) totals(ended agent.SessionEnded) {
 			r.Policy.ByLayer[c.Layer]++
 		}
 	}
+	t.CostUSD, t.Unpriced = r.editorUSD, r.editorUnpriced
 	for _, turn := range append(append([]Turn(nil), r.Turns...), r.offTurn...) {
 		switch {
 		case turn.CostUSD != nil:

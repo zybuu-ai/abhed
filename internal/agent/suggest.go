@@ -212,7 +212,7 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	}()
 	cctx, cancel := context.WithTimeout(l.withCaller(ctx), j.timeout)
 	start := time.Now()
-	text, usage, estimated, err := suggestCall(cctx, j.adapter, j.req)
+	text, usage, estimated, err := suggestCall(cctx, j.adapter, j.req, l.Budget.CutAtBound(j.adapter))
 	// A model that refuses the reasoning settings, or spends the whole
 	// allowance thinking and writes nothing, is asked once more without them.
 	cutOff := err == nil && strings.TrimSpace(text) == "" && usage.OutputTokens >= j.req.MaxTokens
@@ -222,7 +222,7 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 		plain.Effort, plain.Params.Think = model.EffortNone, nil
 		var more model.Usage
 		var guessed bool
-		text, more, guessed, err = suggestCall(cctx, j.adapter, plain)
+		text, more, guessed, err = suggestCall(cctx, j.adapter, plain, l.Budget.CutAtBound(j.adapter))
 		estimated = estimated || guessed
 		usage.InputTokens += more.InputTokens
 		usage.OutputTokens += more.OutputTokens
@@ -280,17 +280,16 @@ func (l *Loop) suggestionText(sg *Suggester, text string) string {
 }
 
 // suggestCall runs one request and returns its text and usage. A request
-// that went out but ended with no usage reported, as one cancelled or timed
-// out, still cost tokens: they are estimated as a turn's are, and estimated
-// is true.
-func suggestCall(ctx context.Context, a model.Adapter, req model.Request) (text string, usage model.Usage, estimated bool, err error) {
+// whose usage was not reported (cut, or a server that sends none) still cost
+// tokens: they are estimated by EstimateUnreported, and estimated is true.
+func suggestCall(ctx context.Context, a model.Adapter, req model.Request, bounded bool) (text string, usage model.Usage, estimated bool, err error) {
 	stream, err := a.Complete(ctx, req)
 	if err != nil {
 		return "", model.Usage{}, false, err
 	}
 	var out strings.Builder
 	var streamErr error
-	reported, produced := false, 0
+	produced := 0
 	for chunk := range stream {
 		switch chunk.Type {
 		case model.ChunkText:
@@ -307,18 +306,14 @@ func suggestCall(ctx context.Context, a model.Adapter, req model.Request) (text 
 			streamErr = chunk.Err
 		case model.ChunkDone:
 			if chunk.Usage != nil {
-				usage, reported = *chunk.Usage, true
+				usage = *chunk.Usage
 			}
 		}
 	}
 	if streamErr == nil && ctx.Err() != nil {
 		streamErr = ctx.Err()
 	}
-	if !reported {
-		usage.InputTokens, _ = a.CountTokens(req)
-		usage.OutputTokens = (produced + 3) / 4
-		estimated = usage.InputTokens > 0 || usage.OutputTokens > 0
-	}
+	usage, estimated = EstimateUnreported(a, req, usage, produced, streamErr != nil, bounded)
 	return out.String(), usage, estimated, streamErr
 }
 

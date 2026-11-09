@@ -162,9 +162,14 @@ charged after it: the turns, the critic, suggestions, the compaction summary,
 pipeline model steps, Studio's completions, next edits and commit messages,
 and a fallback model, which is not moved to while a dollar cap is set and it
 has no price. A completion model on this machine is no exception: a local
-address may front a paid model, so price it, at 0 if it is free. A call cut
-before the provider reported its usage (cancelled, timed out) is estimated
-at about four characters a token, marked `estimated`, and charged. A cap set by the managed or org
+address may front a paid model, so price it, at 0 if it is free. A call
+whose provider reported no usage (cut by a cancel or a timeout, or a server
+that sends none) is estimated, marked `estimated`, and charged: input from
+the request, about four characters a token, and output from what came back.
+Under a dollar cap, or for a model that reasons out of sight, a cut call's
+output is charged at the most the request allowed, since the provider bills
+what it produced whether or not it arrived. Interrupting a run does not
+save money under a cap. A cap set by the managed or org
 configuration also fixes the prices it is spent by (see below).
 
 ### Prices

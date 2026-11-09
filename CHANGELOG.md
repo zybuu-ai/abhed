@@ -42,9 +42,11 @@ All notable changes to Abhed are recorded here. The format follows
   `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
   turns, the critic, suggestions, compaction summaries and pipeline model
   steps alike, and on `completion.summary`, `next_edit.summary` and
-  `commit_message.generated` for Studio's editor calls. A call cut before
-  the provider reported its usage is estimated, marked `estimated`, and
-  charged. `/usage` shows the session's cost and each turn's,
+  `commit_message.generated` for Studio's editor calls (a commit message is
+  also a `model.call`, with tokens and cost only). A call whose provider
+  reported no usage, cut or not, is estimated, marked `estimated`, and
+  charged; under a dollar cap a cut call's output is charged at the most
+  the request allowed, so interrupting does not save money under a cap. `/usage` shows the session's cost and each turn's,
   `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
   turn and in all; a record written before this release shows its cost as
   not recorded. A model with no price is shown as unpriced, and its cost is
