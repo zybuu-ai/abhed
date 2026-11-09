@@ -140,6 +140,7 @@ var samples = []sample{
 	{agent.EvLSPDiagnostics, agent.ActorSystem, `{"call_id":"c-7","path":"/w/a.go","language":"go","lsp_id":"lsp-diag-go-1","total":3,"shown":3,"errors":1,"warnings":2,"duration_ms":410}`},
 	{agent.EvHookContinued, agent.ActorSystem, `{"hook":"tests-first","text":"The tests-first hook asks you to continue before finishing: run the tests"}`},
 	{agent.EvHookFired, agent.ActorSystem, `{"extension":"freeze","event":"tool_call","verdict":"halt","kind":"command","reason":"change freeze","exit_code":0}`},
+	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.
