@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -431,5 +432,34 @@ func TestKeptGrantsFollowTheFolder(t *testing.T) {
 	}
 	if folderID(ws) != "" && len(workspaceGrants(ws)) != 0 {
 		t.Fatal("a folder made again at the path inherits its grants")
+	}
+}
+
+// A folder identity kept before birth times were (device and inode) still
+// matches its folder; a full one matches only exactly.
+func TestSameFolder(t *testing.T) {
+	for _, c := range []struct {
+		kept, now string
+		same      bool
+	}{
+		{"1:2:3.000000004", "1:2:3.000000004", true},
+		{"1:2", "1:2:3.000000004", true},
+		{"1:2:3.000000004", "1:2:5.000000006", false},
+		{"1:2", "1:20:3.000000004", false},
+		{"1:2", "1:2", true},
+	} {
+		if got := sameFolder(c.kept, c.now); got != c.same {
+			t.Errorf("sameFolder(%q, %q) = %v", c.kept, c.now, got)
+		}
+	}
+	// A folder made again is another, by birth time where the system keeps one.
+	dir := filepath.Join(t.TempDir(), "w")
+	_ = os.Mkdir(dir, 0o755)
+	first := folderID(dir)
+	_ = os.Remove(dir)
+	time.Sleep(10 * time.Millisecond)
+	_ = os.Mkdir(dir, 0o755)
+	if again := folderID(dir); first != "" && strings.Count(first, ":") == 2 && again == first {
+		t.Errorf("a folder made again has the old one's identity %q", first)
 	}
 }
