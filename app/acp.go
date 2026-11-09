@@ -232,6 +232,9 @@ type acpSession struct {
 	// thoughts is set once reasoning streamed as deltas, so its whole text
 	// that follows is not sent again.
 	thoughts bool
+	// engineCalls are the engine's diagnostics starts, by call id, with
+	// their command line, so a refusal is told as information.
+	engineCalls map[string]string
 	// totalIn and totalOut are the session's tokens, for usage_update.
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.

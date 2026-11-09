@@ -113,6 +113,29 @@ All notable changes to Abhed are recorded here. The format follows
   claim named `tenant`, else `default`, so unless the identity provider
   sends a matching `tenant` claim everyone it signs in is refused.
 
+### Added
+
+- The agent is given a language server's diagnostics after each write or
+  edit, in the CLI and the editor protocol. The server is the one Studio
+  runs, started in the session's sandbox with the engine's safe settings,
+  once per language, and only where policy and the supervisor allow its
+  command (`tools.diagnostics`: `auto`, the default; `on` also answers the
+  plain ask a mode gives it, after the PermissionRequest hooks; `off`). The
+  start is recorded as the engine's call, with what allowed it, and shown
+  as an engine note in the CLI and a `Language server` card in Studio. At most `tools.diagnostics_max` (20)
+  are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
+  (3000). Off where there is no sandbox or no server installed. Each is
+  recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`
+  and `lsp.stopped` with `purpose: diagnostics`, and counted in
+  `abhed_lsp_diagnostics_total`. A workspace file, trusted or not, may only
+  lower the bounds and turn them off. Paths a read rule denies are not
+  hidden from the server. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+- `_abhed/codeActions` (feature `codeActions`) gives Studio Explain, Fix and
+  Add tests for a range of a file, each as the prompt Studio sends with
+  `session/prompt`, so it runs under the session's policy as any prompt does.
+  The editor's diagnostics on the range go with Fix and Explain as an
+  attachment. A file the agent may not read gets none.
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of
@@ -206,6 +229,13 @@ All notable changes to Abhed are recorded here. The format follows
   last lines) before it exits: a stop signal that comes while stdin is
   open waits up to 250 ms for it to end, so a lone SIGTERM now exits
   after about a quarter of a second.
+
+### Go API
+
+- `monitor.Case` gains `Engine`, set for a command the engine runs outside
+  the agent's calls (a diagnostics server's start): the supervisor reviews
+  it but does not count it against `Guard.MaxPerTurn`. Additive; existing
+  callers are unchanged.
 
 ## [1.2.9] - 2026-11-02
 

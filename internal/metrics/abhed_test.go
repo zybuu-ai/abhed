@@ -115,6 +115,15 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	if m.lspStarts.Value("go") != 1 || m.lspStarts.Value(Other) != 1 || m.lspRequests.Value("rust", "passed") != 7 || m.lspRequests.Value("rust", "refused") != 2 {
 		t.Error("language-server starts or messages not counted")
 	}
+	m.Observe(ev(agent.EvLSPStarted, agent.LSPStarted{Language: "go", Purpose: "diagnostics"}))
+	m.Observe(ev(agent.EvLSPDiagnostics, agent.LSPDiagnostics{Language: "go", Total: 2}))
+	m.Observe(ev(agent.EvLSPDiagnostics, agent.LSPDiagnostics{Language: "go"}))
+	m.Observe(ev(agent.EvLSPDiagnostics, agent.LSPDiagnostics{Language: "python", TimedOut: true}))
+	m.Observe(ev(agent.EvLSPDiagnostics, agent.LSPDiagnostics{Language: "rust", Skipped: "not started"}))
+	if m.lspStarts.Value("go") != 1 || m.lspDiagnostics.Value("go", "found") != 1 || m.lspDiagnostics.Value("go", "clean") != 1 ||
+		m.lspDiagnostics.Value("python", "timed_out") != 1 || m.lspDiagnostics.Value("rust", "skipped") != 1 {
+		t.Error("diagnostics after edits not counted, or their servers counted as editors'")
+	}
 	m.Observe(ev(agent.EvOllamaStart, agent.OllamaAction{Op: "start", Outcome: agent.OllamaOK, Command: "/secret/path/ollama serve"}))
 	m.Observe(ev(agent.EvOllamaPull, agent.OllamaAction{Op: "pull", Outcome: agent.OllamaRefused, Model: "qwen3:8b"}))
 	m.Observe(ev(agent.EvOllamaInstall, agent.OllamaAction{Op: "install", Outcome: "made up"}))

@@ -1662,6 +1662,32 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   or changed, `disabled` and `limited` as above. Each request is logged on
   the engine's stderr with how it ended.
 
+### 7.13 Code actions
+
+```ts
+_abhed/codeActions { sessionId, uri, range: Range,
+                     diagnostics?: { range: Range, severity?: 1|2|3|4, message: string, source?: string }[] }
+  → { actions: { id: "explain" | "fix" | "tests", kind: string, title: string,
+                 isPreferred?: boolean, prompt: ContentBlock[] }[] }
+```
+
+- Listed under the `codeActions` feature. `range` is LSP's (0-based). The
+  engine runs nothing and reads nothing of the file: each action's `prompt`
+  is what Studio sends with `session/prompt` when the person picks it, so it
+  runs as any prompt does, under the session's mode, policy and supervisor.
+  The prompt names the file and lines; the agent reads the file with its
+  own tools.
+- `explain` (`abhed.explain`), `fix` (`quickfix.abhed`) and `tests`
+  (`source.abhed.addTests`; not offered for a test file). The editor's
+  diagnostics that touch the range (up to 20, each cut to 240 characters)
+  go with `explain` and `fix` as a `resource` block, which the model reads
+  fenced as data, never as the person's words; with any, `fix` is
+  `isPreferred` and its title names the first.
+- A URI that is not a file, a file outside the session's roots, one that
+  looks like keys, Abhed's state, or one a read rule denies is refused
+  (`-32000`), as is a read-only session (`-32003`); a range that is not one
+  is `-32602`.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1785,6 +1811,7 @@ table.
 | Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
 | Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
 | Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
+| Code actions | `_abhed/codeActions` | ext | done in the engine (1.3.0; `codeActions` in `features`); Studio's lightbulb not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |

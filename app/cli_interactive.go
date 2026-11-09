@@ -177,6 +177,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			v.Install(loop)
 		}
 		loop.Monitor = toolset.Supervisor(sessionState.appCfg, registry, false)
+		loop.Diagnostics = toolset.Diagnostics(sessionState.appCfg, registry)
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.
