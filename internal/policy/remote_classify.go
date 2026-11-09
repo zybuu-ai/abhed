@@ -122,6 +122,9 @@ func judgeCall(words []string, piped, contents, findOK bool) string {
 	if !contents {
 		return name + " prints the contents of files, which runs unasked only where the operator sets ssh.read_contents"
 	}
+	if name == "rg" && !slices.Contains(args, "--one-file-system") {
+		return "rg walks into any mount, a /proc among them; add --one-file-system"
+	}
 	if recursive(name, args) {
 		for _, w := range fileOperands(name, args, operands) {
 			if isRoot(w) {
@@ -313,8 +316,9 @@ func unsafeWords(args []string) string {
 // isRoot reports a path that is / once cleaned (/., //, /./).
 func isRoot(w string) bool { return strings.HasPrefix(w, "/") && path.Clean(w) == "/" }
 
-// recursive reports a search that walks the folders it is given: grep -r
-// or -R, and rg, which always does.
+// recursive reports a search that walks the folders it is given: grep -r,
+// -R or -d recurse (-drecurse, --directories=recurse), and rg, which always
+// does. Clusters are split before, so -drecurse is -d recurse here.
 func recursive(name string, args []string) bool {
 	if name == "rg" {
 		return true
@@ -322,8 +326,11 @@ func recursive(name string, args []string) bool {
 	if name != "grep" && name != "egrep" && name != "fgrep" {
 		return false
 	}
-	for _, a := range args {
-		if a == "-r" || a == "-R" || a == "--recursive" || a == "--dereference-recursive" {
+	for i, a := range args {
+		switch {
+		case a == "-r" || a == "-R" || a == "--recursive" || a == "--dereference-recursive",
+			a == "--directories=recurse",
+			(a == "-d" || a == "--directories") && i+1 < len(args) && args[i+1] == "recurse":
 			return true
 		}
 	}
@@ -504,11 +511,8 @@ func findReadOnly(args []string, contents bool) string {
 		follows = follows || args[i] != "-P"
 		i++
 	}
-	// The paths: up to the first word that starts an expression. One that
-	// is / walks /proc and /sys, unless -xdev keeps it on the root's device.
-	fromRoot := false
+	// The paths: up to the first word that starts an expression.
 	for i < len(args) && !strings.HasPrefix(args[i], "-") && args[i] != "(" && args[i] != "!" {
-		fromRoot = fromRoot || isRoot(args[i])
 		i++
 	}
 	var execs [][]string
@@ -555,8 +559,10 @@ func findReadOnly(args []string, contents bool) string {
 		if follows {
 			return "find -L, -H or -follow with -exec of " + cmd[0] + " could follow a link into /dev or /proc"
 		}
-		if fromRoot && !xdev {
-			return "find from / with -exec of " + cmd[0] + " walks /proc and /sys; add -xdev to stay on the root's file system"
+		// Any root may hold a proc mount: / itself, a login folder that is /,
+		// or a chroot's /srv/x/proc. -xdev keeps the walk on one file system.
+		if !xdev {
+			return "find -exec of " + cmd[0] + ", which opens what it is given, needs -xdev (or -mount), so the walk never enters a /proc or /sys mount"
 		}
 		if printsContents(cmd[0], cmd[1:]) {
 			if regex {

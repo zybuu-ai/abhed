@@ -166,7 +166,7 @@ var knownReads = func() map[string]readSpec {
 		"-w --word-regexp -x --line-regexp -v --invert-match -l --files-with-matches --files-without-match -c --count "+
 		"--count-matches -F --fixed-strings -H --with-filename --no-filename --no-heading --heading --hidden --no-ignore "+
 		"-u -uu -L --follow --files -o --only-matching --json --column --vimgrep -U --multiline -P --pcre2 -q --quiet "+
-		"--sort-files --stats --trim -a --text",
+		"--sort-files --stats --trim -a --text --one-file-system",
 		"-e --regexp -g --glob --iglob -t --type -T --type-not -A --after-context -B --before-context -C --context "+
 			"-m --max-count -d --max-depth --max-filesize -E --encoding --sort --sortr")}
 	m["sort"] = readSpec{opts: o("-n --numeric-sort -r --reverse -u --unique -h --human-numeric-sort -V --version-sort "+

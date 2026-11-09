@@ -210,7 +210,7 @@ func readOnly(on, contents bool) string {
 		return ""
 	}
 	what := "programs that show metadata (ls, stat, du, df, ps, free, uptime, wc, systemctl status -n 0, find " +
-		"without -exec of a reader, and find from / only with -xdev, …), and head, tail, sort, cut, grep or wc reading what such a program pipes " +
+		"without -exec of a reader, and find -exec of a program that opens files only with -type f -xdev, …), and head, tail, sort, cut, grep or wc reading what such a program pipes " +
 		"to them; never a path under /dev, /proc or /sys"
 	if contents {
 		what = "common read programs (ls, cat, head, tail, grep, du, df, ps, journalctl, find -type f -exec of a read, …)"

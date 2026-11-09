@@ -639,9 +639,12 @@ A command is a read only when all of these hold:
   `stat`, `du`, `basename`, `dirname`, `realpath`, `readlink`; `file`
   opens it too) runs under `-exec` only with `-type f` and no `-o`, `-not`
   or `( )`, so it never meets a device; never with `-L`, `-H` or `-follow`,
-  so no link leads it into `/dev` or `/proc`; and, from `/`, only with
-  `-xdev` (or `-mount`), so it stays off `/proc` and `/sys`, whose regular
-  files (`/proc/kmsg`, `pagemap`) block or are consumed as they are read.
+  so no link leads it into `/dev` or `/proc`; and only with `-xdev` (or
+  `-mount`), whatever the root, so the walk never enters a `/proc` or
+  `/sys` mount, whose regular files (`/proc/kmsg`, `pagemap`) block or are
+  consumed as they are read. A root other than `/` needs it too: the login
+  folder is `/` for an account whose home is `/` or missing, and a build
+  chroot mounts proc at `/srv/chroot/proc`.
   With a content reader there, `-regex` is refused.
 - The words are plain or in single quotes, with no backslash or control
   character. A double quote is refused: `rc` has none, so `"a -o b"` is
@@ -656,9 +659,13 @@ A command is a read only when all of these hold:
   empty; `/proc/self/root/dev` is `/dev` again) or `/sys`, `/net` or `/misc`
   (autofs mounts a host by the name given and looks it up). Each path is
   cleaned first, so `/./dev` and `//dev` count as `/dev`; a find root
-  under them counts too. A walk that starts at `/` would reach them, so a
-  find from `/` runs an opening `-exec` only with `-xdev` (above), and
-  `grep -r` and `rg` (under `read_contents`) do not search from `/` at all.
+  under them counts too. A walk would reach them through a mount, so find
+  runs an opening `-exec` only with `-xdev` (above), and under
+  `read_contents` `rg` runs only with `--one-file-system`. `grep -r` (and
+  `-d recurse`) has no such option: it does not search from `/`, but a
+  tree with a proc mount inside it (a chroot) cannot be told from the
+  command's text, so `grep -r` over such a tree can block on a `/proc`
+  file until the timeout. Name the folders to search.
   No word climbs with `..`, and `-` (the command's input) is not read. `grep -D read`, `file -s` and `lsusb -v`, which open devices,
   are refused, and `apt`, which may rewrite its cache as root, is not
   judged a read.
