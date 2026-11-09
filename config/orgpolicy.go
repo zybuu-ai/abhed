@@ -74,7 +74,8 @@ func orgSource(url string) string {
 	if url == "" {
 		return "the org policy"
 	}
-	return "the org policy from " + url
+	// The reason it goes into reaches the model, the record and stderr.
+	return "the org policy from " + PrintableURL(url)
 }
 
 // orgKind is what an org policy may do with a setting.
@@ -625,7 +626,7 @@ func (c Config) managedSourceOf(key string) string {
 func (s OrgPolicyStatus) OrgPolicyLine() string {
 	switch s.Status {
 	case orgpolicy.StatusApplied:
-		return fmt.Sprintf("%s %q version %d from %s, signed %s by %s", s.Status, s.Name, s.Version, s.URL,
+		return fmt.Sprintf("%s %q version %d from %s, signed %s by %s", s.Status, s.Name, s.Version, PrintableURL(s.URL),
 			s.Issued.Local().Format("2 Jan 15:04"), s.KeyID)
 	case orgpolicy.StatusFallback:
 		return "fallback (plan mode, no allow rules, no web tools): " + s.Reason

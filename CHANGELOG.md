@@ -49,6 +49,11 @@ All notable changes to Abhed are recorded here. The format follows
   built without such files, so they reach neither the model nor the
   embedding endpoint. A rule added after the index was built still holds
   for the hits.
+- An org policy URL holding a password, a token or a signature
+  (`https://u:pw@…`, `?token=…`, a signed URL) was printed whole where a
+  refusal or a warning named the org policy, and in the status line of
+  `abhed doctor`. Such values are now redacted wherever the URL is shown,
+  including the new denial reasons, which reach the model and the record.
 
 ### Upgrading from 1.2.9
 

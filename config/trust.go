@@ -593,12 +593,12 @@ func secretKey(k string) bool {
 	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") {
 		return false
 	}
-	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization"} {
+	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization", "signature"} {
 		if strings.Contains(k, s) {
 			return true
 		}
 	}
-	return k == "env" || k == "key"
+	return k == "env" || k == "key" || k == "sig"
 }
 
 // redact replaces credentials in a value about to be shown: the values of
