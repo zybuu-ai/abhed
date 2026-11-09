@@ -136,8 +136,33 @@ All notable changes to Abhed are recorded here. The format follows
   The editor's diagnostics on the range go with Fix and Explain as an
   attachment. A file the agent may not read gets none.
 
+### Added
+
+- Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
+  in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
+  A `runner` picks Node itself (TypeScript by Node's own type stripping),
+  `tsx`, `ts-node`, `node --test`, Vitest or Jest. Breakpoints in
+  TypeScript hold through source maps, whether the code is compiled in
+  memory or by `tsc`, and worker threads are threads of their own. Nothing
+  listens on a port for it: a worker thread in the program drives the
+  program's own inspector over a pipe. So Node debugs on every sandbox tier
+  as it is, the macOS process tier included, without opening loopback or
+  asking the process-tier agreement. The launch is judged and recorded as
+  the person's own call, as for Go and Python, and `debug.launched` records
+  it with `loopback` off, and the runner package that ran. A
+  `--inspect` in the sandbox's `NODE_OPTIONS` is not passed on, so nothing
+  inherited opens a port. Node missing offers its install. See
+  [Debugging](docs/guide/31-debugging.md#node).
+
 ### Fixed
 
+- A debug session in Abhed Studio, in any language, no longer shows the
+  editor a source path outside the workspace. Such a frame, output line or
+  breakpoint now carries only its name. Studio opens a frame's file on your
+  machine, outside the sandbox, and the debugged program chooses those
+  paths, so a repository could make Studio open a file the sandbox would
+  not let it read. A frame in a language's own library now shows its name
+  without its file.
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was
   read without end, and a sparse file of any size was hashed in full. A

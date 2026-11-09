@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -440,5 +442,87 @@ func TestLaunchResponseIsOneShot(t *testing.T) {
 	case s := <-f.statusGot:
 		t.Fatalf("a second launch verdict: %q", s)
 	default:
+	}
+}
+
+// A source outside the workspace reaches the editor with no path, for any
+// adapter: in frames, output and breakpoints, a link out of it included.
+func TestRelayConfinesSourcePaths(t *testing.T) {
+	f := newFake(t)
+	ws := t.TempDir()
+	out := t.TempDir()
+	if err := os.Symlink(out, filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	f.relay.Confine(ws)
+	in := filepath.Join(ws, "app.go")
+	f.send(t, map[string]any{"seq": 1, "type": "response", "request_seq": 3, "command": "stackTrace", "success": true, "body": map[string]any{
+		"stackFrames": []any{
+			map[string]any{"id": 1, "name": "main", "source": map[string]any{"name": "app.go", "path": in}, "line": 3},
+			map[string]any{"id": 2, "name": "x", "source": map[string]any{"path": "/etc/passwd"}, "line": 1},
+			map[string]any{"id": 3, "name": "y", "source": map[string]any{"name": "s", "path": filepath.Join(ws, "link", "s.go")}, "line": 1},
+			map[string]any{"id": 4, "name": "z", "source": map[string]any{"path": filepath.Join(ws, "..", "up.go")}, "line": 1},
+		}}})
+	f.send(t, map[string]any{"seq": 2, "type": "event", "event": "output", "body": map[string]any{"output": "x", "source": map[string]any{"path": "/root/.ssh/id_rsa"}}})
+	m := f.editor(t)
+	frames := m["body"].(map[string]any)["stackFrames"].([]any)
+	paths := []any{}
+	for _, fr := range frames {
+		paths = append(paths, fr.(map[string]any)["source"].(map[string]any)["path"])
+	}
+	if paths[0] != in || paths[1] != nil || paths[2] != nil || paths[3] != nil {
+		t.Fatalf("paths %v", paths)
+	}
+	if src := frames[1].(map[string]any)["source"].(map[string]any); src["name"] != "passwd" || src["presentationHint"] != "deemphasize" {
+		t.Fatalf("source %v", src)
+	}
+	if ev := f.editor(t); ev["body"].(map[string]any)["source"].(map[string]any)["path"] != nil {
+		t.Fatalf("output %v", ev)
+	}
+}
+
+// A key written with escapes is the same key to the editor: the relay reads
+// it as the editor will, and what it cannot read is dropped and counted.
+func TestRelayConfinesEscapedKeys(t *testing.T) {
+	f := newFake(t)
+	ws := t.TempDir()
+	f.relay.Confine(ws)
+	for _, raw := range []string{
+		`{"seq":1,"type":"event","event":"output","body":{"output":"x","source":{"\u0070ath":"/etc/hosts"}}}`,
+		`{"seq":2,"type":"event","event":"output","body":{"output":"x","\u0073ource":{"path":"/etc/hosts"}}}`,
+		`{"seq":3,"type":"event","event":"output","body":{"output":"x","source":{"path":"` + ws + `/a.go","path":"/etc/hosts"}}}`,
+	} {
+		if err := Write(f.adapterOut, []byte(raw)); err != nil {
+			t.Fatal(err)
+		}
+		m := f.editor(t)
+		src, _ := m["body"].(map[string]any)["source"].(map[string]any)
+		if src == nil || src["path"] != nil || src["presentationHint"] != "deemphasize" {
+			t.Fatalf("%s reached the editor as %v", raw, m)
+		}
+	}
+	if f.relay.confine([]byte(`{"seq":1} {}`)) != nil || f.relay.confine([]byte(`[1]`)) != nil {
+		t.Fatal("a message the relay cannot read was passed on")
+	}
+}
+
+// A path through a link into the workspace is the workspace's, the root
+// given as its real path or not.
+func TestRelayConfineKeepsPathsThroughLinks(t *testing.T) {
+	real := t.TempDir()
+	if r, err := filepath.EvalSymlinks(real); err == nil {
+		real = r
+	}
+	link := filepath.Join(t.TempDir(), "ws")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ root, path string }{{real, link + "/a.go"}, {link, real + "/a.go"}, {real, real + "/a.go"}} {
+		if !underRoot(c.root, c.path) {
+			t.Fatalf("%s is not under %s", c.path, c.root)
+		}
+	}
+	if underRoot(real, link+"/../x.go") || underRoot(link, "/etc/hosts") {
+		t.Fatal("a path out of the workspace is under it")
 	}
 }
