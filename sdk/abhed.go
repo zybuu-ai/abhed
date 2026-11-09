@@ -557,6 +557,14 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			opts.Warn("%s", s)
 		}
 	})
+	if set.Extensions != nil && rec != nil {
+		// Each hook that fires is recorded, as the CLI and the server record it.
+		set.Extensions.SetOnFired(func(f extension.Fired) {
+			if err := toolset.RecordFired(rec, f); err != nil && opts.Warn != nil {
+				opts.Warn("could not record a hook: %v", err)
+			}
+		})
+	}
 	loop.Budget = budget
 	// With no approver nobody answers an ask, so the supervisor's are denials.
 	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)

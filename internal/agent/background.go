@@ -1397,7 +1397,7 @@ func (b *Background) onRunEnd(reason TerminalReason) {
 	switch reason {
 	case TermCompleted, TermWakeLimit:
 		return
-	case TermError, TermMaxTurns, TermMaxBudget, TermShutdown, TermOwnerInactive, TermOwnerRevoked:
+	case TermError, TermMaxTurns, TermMaxBudget, TermShutdown, TermOwnerInactive, TermOwnerRevoked, TermPolicyDenied:
 		b.CancelAll(reason)
 		return
 	}
