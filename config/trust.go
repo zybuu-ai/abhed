@@ -349,6 +349,7 @@ func mergeTrustedWorkspace(cfg *Config, files []workspaceFile) error {
 	ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
 	servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 	listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
+	diagnostics, diagMax, diagWait := cfg.Tools.Diagnostics, cfg.Tools.DiagnosticsMax, cfg.Tools.DiagnosticsWaitMS
 	network := cfg.Network.clone()
 	for _, f := range files {
 		path, data := f.path, f.data
@@ -364,6 +365,18 @@ func mergeTrustedWorkspace(cfg *Config, files []workspaceFile) error {
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
+		if orDefaultInt(cfg.Tools.DiagnosticsMax, 20) > orDefaultInt(diagMax, 20) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_max", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsMax = diagMax })
+		}
+		if orDefaultInt(cfg.Tools.DiagnosticsWaitMS, 3000) > orDefaultInt(diagWait, 3000) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_wait_ms", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsWaitMS = diagWait })
+		}
+		if diagnosticsRank[cfg.Tools.Diagnostics] < diagnosticsRank[diagnostics] {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics", "a workspace may only turn diagnostics off",
+				func() { cfg.Tools.Diagnostics = diagnostics })
+		}
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -936,6 +949,9 @@ var workspaceRules = map[string]fieldRule{
 	"tools.bash_checkpoints":      {onlyRequired, "only required"},
 	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {onlyDiagnosticsOff, "only off"},
+	"tools.diagnostics_max":       {lower(func(c *Config) *int { return &c.Tools.DiagnosticsMax }, zeroIs(20)), "only lower"},
+	"tools.diagnostics_wait_ms":   {lower(func(c *Config) *int { return &c.Tools.DiagnosticsWaitMS }, zeroIs(3000)), "only lower"},
 
 	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
@@ -967,6 +983,7 @@ var workspaceRules = map[string]fieldRule{
 	"cli":                 {nil, "only the managed configuration sets it"},
 	"record":              {nil, "only the managed configuration sets it"},
 	"org_policy":          {nil, "only the managed configuration says where the org policy comes from"},
+	"hooks.run":           {nil, "a hook is a command or an endpoint that sees each event it takes"},
 	"hooks":               {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
@@ -1131,6 +1148,27 @@ func onlyRegistriesOff(dst, ws *Config) bool {
 	dst.Sandbox.ToolchainsRegistries = "off"
 	return true
 }
+
+// onlyDiagnosticsOff applies a workspace's tools.diagnostics only when it
+// turns diagnostics off: a server is a process started after an edit.
+func onlyDiagnosticsOff(dst, ws *Config) bool {
+	if ws.Tools.Diagnostics != "off" {
+		return false
+	}
+	dst.Tools.Diagnostics = "off"
+	return true
+}
+
+// orDefaultInt is n, or def when n is zero.
+func orDefaultInt(n, def int) int {
+	if n == 0 {
+		return def
+	}
+	return n
+}
+
+// diagnosticsRank orders tools.diagnostics from loosest to strictest.
+var diagnosticsRank = map[string]int{"on": 0, "": 1, "auto": 1, "off": 2}
 
 // listenRank orders sandbox.listen from loosest to strictest.
 var listenRank = map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}

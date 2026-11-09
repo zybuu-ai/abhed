@@ -524,6 +524,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// run, and the exit code, wait for them.
 	agent.NewBackground(loop, toolset.BackgroundPolicy(appCfg, agent.WakeOff))
 	defer loop.Background.Close(agent.TermSessionClosed)
+	if loop.Diagnostics = toolset.Diagnostics(appCfg, registry); loop.Diagnostics != nil {
+		defer loop.Diagnostics.Close()
+	}
 	if appCfg.Sets("subagents.wake") && appCfg.Subagents.Wake != "off" {
 		fmt.Fprintf(os.Stderr, "abhed: note: subagents.wake is %s, but -p runs background tasks joined: it waits for them\n", config.Printable(appCfg.Subagents.Wake))
 	}

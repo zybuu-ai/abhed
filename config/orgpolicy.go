@@ -158,6 +158,9 @@ var orgRules = map[string]orgRule{
 	"tools.bash_checkpoints":      {orgTighten, ""},
 	"tools.bash_checkpoint_mb":    {orgPinned, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {orgPinned, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {orgTighten, ""},
+	"tools.diagnostics_max":       {orgTighten, ""},
+	"tools.diagnostics_wait_ms":   {orgTighten, ""},
 
 	"web_search.enabled":     {orgTighten, ""},
 	"web_search.max_results": {orgTighten, ""},
@@ -193,6 +196,7 @@ var orgRules = map[string]orgRule{
 	"org_policy":                   {orgRefuse, "only the machine's managed file says where the org policy comes from"},
 	"hooks.managed_only":           {orgExtra, ""},
 	"hooks.disabled":               {orgPinned, "switching hooks off removes their vetoes"},
+	"hooks.run":                    {orgRefuse, "names commands to run on this machine and endpoints sent its events"},
 	"studio.disable_host_terminal": {orgExtra, ""},
 	"studio":                       {orgRefuse, "the machine's managed file sets it"},
 	"suggest.enabled":              {orgTighten, ""},

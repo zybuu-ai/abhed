@@ -1270,10 +1270,11 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 ### 7.8 Debugging (Run and Debug)
 
 ```ts
-_abhed/debug/launch { sessionId, language: "go" | "python",
+_abhed/debug/launch { sessionId, language: "go" | "python" | "node",
                       program?: string, test?: string,   // exactly one; inside the workspace
                       args?: string[], cwd?: string,      // cwd inside the workspace
-                      env?: { [name]: string } } → { debugId }
+                      env?: { [name]: string },
+                      runner?: "node" | "tsx" | "ts-node" | "vitest" | "jest" } → { debugId }  // node only
 _abhed/debug/send   { debugId, message: DapRequest } → {}   // passed on in the order sent
 _abhed/debug/stop   { debugId } → {}
 // notifications
@@ -1287,9 +1288,42 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   the network open its loopback would be the host's); elsewhere `launch`
   fails with `-32000` and `data.problem` `{kind: "container-setup", message,
   steps, retry}` and `data.setup` (below), unless the person chose the
-  process tier (`processTier: true`, below).
+  process tier (`processTier: true`, below). Node is the exception: its
+  adapter opens no port (a worker thread in the program drives the
+  program's own inspector over a pipe), so a Node launch starts on any
+  sandbox tier as the session's commands run, never opens loopback, never
+  asks the process-tier consent, and is refused only with no sandbox (the
+  `none` tier, or a tier not known; `nodeReady` is the same rule), as
+  `-32000` with `problem.kind: "sandbox-required"` and no `setup`;
+  `debug.launched` has `loopback: false`. `runner` picks the command line:
+  `node FILE` (default; TypeScript by Node's own type stripping), `node
+  --import tsx FILE`, `node --require DIR/register FILE`, for a test
+  `node --test --test-isolation=none FILE`, `node DIR/vitest.mjs run
+  --pool=threads --no-file-parallelism TEST` or `node DIR/bin/jest.js
+  --runInBand TEST`, DIR being the runner's package the engine finds in
+  the nearest `node_modules` from cwd up to the workspace; a runner that
+  runs tests with a program, or the reverse, is `-32602`, and one not
+  installed is `-32000` with `problem.kind: "runner-missing"` before
+  anything is judged. `debug.launched` adds `runner` (that package). The
+  engine's launch carries `argv` (after `node`) and `runner`. The adapter
+  runs without `NODE_OPTIONS`; the program gets the inherited one without
+  any option whose name, `_` read as `-`, starts `--inspect` or `--debug`,
+  unless the launch's `env` sets it. Node missing ends `adapter-missing` with
+  `install: {language: "node"}`. Breakpoints in TypeScript or other
+  source-mapped code are set as each of the program's own scripts loads,
+  answered `verified: false` until then and announced by a `breakpoint`
+  event; `evaluate` may have side effects only with `context: "repl"`;
+  worker threads are DAP threads; child processes are not debugged.
+- For every language, a `source` the adapter sends (a frame's, an output
+  event's, a breakpoint's, `loadedSources`) whose `path` is outside the
+  workspace, or leads out of it by a link, reaches Studio without `path`,
+  with its `name` and `presentationHint: "deemphasize"`. Every adapter
+  message is decoded and encoded again before it is passed on, so a key
+  written with escapes or given twice reaches Studio as the one key the
+  engine judged; one the engine cannot decode is dropped and counted
+  (`dropped`).
 - `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
-  `{os, tier, ready, engine?, brew?, machine?: "none" | "stopped" |
+  `{os, tier, ready, nodeReady, engine?, brew?, machine?: "none" | "stopped" |
   "running", steps: [{id: "install-podman" | "machine-init" |
   "machine-start" | "use-container-tier", title, command?}],
   processTier: {available, consented, consent?}}`. `steps` are those left,
@@ -1662,6 +1696,32 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   or changed, `disabled` and `limited` as above. Each request is logged on
   the engine's stderr with how it ended.
 
+### 7.13 Code actions
+
+```ts
+_abhed/codeActions { sessionId, uri, range: Range,
+                     diagnostics?: { range: Range, severity?: 1|2|3|4, message: string, source?: string }[] }
+  → { actions: { id: "explain" | "fix" | "tests", kind: string, title: string,
+                 isPreferred?: boolean, prompt: ContentBlock[] }[] }
+```
+
+- Listed under the `codeActions` feature. `range` is LSP's (0-based). The
+  engine runs nothing and reads nothing of the file: each action's `prompt`
+  is what Studio sends with `session/prompt` when the person picks it, so it
+  runs as any prompt does, under the session's mode, policy and supervisor.
+  The prompt names the file and lines; the agent reads the file with its
+  own tools.
+- `explain` (`abhed.explain`), `fix` (`quickfix.abhed`) and `tests`
+  (`source.abhed.addTests`; not offered for a test file). The editor's
+  diagnostics that touch the range (up to 20, each cut to 240 characters)
+  go with `explain` and `fix` as a `resource` block, which the model reads
+  fenced as data, never as the person's words; with any, `fix` is
+  `isPreferred` and its title names the first.
+- A URI that is not a file, a file outside the session's roots, one that
+  looks like keys, Abhed's state, or one a read rule denies is refused
+  (`-32000`), as is a read-only session (`-32003`); a range that is not one
+  is `-32602`.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1785,6 +1845,7 @@ table.
 | Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
 | Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
 | Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
+| Code actions | `_abhed/codeActions` | ext | done in the engine (1.3.0; `codeActions` in `features`); Studio's lightbulb not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |

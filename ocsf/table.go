@@ -49,6 +49,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSubagentBackgrounded: {fn: apiOther("Background"), classes: []int{6003}},
 	agent.EvSubagentNotice:       {fn: apiOther("Notice"), classes: []int{6003}},
 	agent.EvHookFired:            {fn: mapHook, classes: []int{6003}},
+	agent.EvHookContinued:        {fn: mapHookContinued, classes: []int{6003}},
 	agent.EvMCPStatus:            {fn: mapMCPStatus, classes: []int{6003}},
 	agent.EvOllamaPull:           {fn: mapOllama, classes: []int{6003}},
 	agent.EvToolchainInstall:     {fn: mapToolchain, classes: []int{6003}},
@@ -69,6 +70,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSandboxPortContested: {fn: apiOther("Port contested"), classes: []int{6003}},
 	agent.EvLSPStarted:           {fn: apiOther("Language server start"), classes: []int{6003}},
 	agent.EvLSPStopped:           {fn: apiOther("Language server stop"), classes: []int{6003}},
+	agent.EvLSPDiagnostics:       {fn: apiOther("Language server diagnostics"), classes: []int{6003}},
 	agent.EvCompletionEnabled:    {fn: apiOther("Completion enabled"), classes: []int{6003}},
 	agent.EvCompletionSummary:    {fn: apiOther("Completion summary"), classes: []int{6003}},
 	agent.EvNextEditEnabled:      {fn: apiOther("Next edit enabled"), classes: []int{6003}},
@@ -377,15 +379,28 @@ func mapHook(b *builder) {
 	b.actor(b.str("extension"))
 	b.api(b.str("event"), "")
 	switch b.str("verdict") {
-	case "block":
+	case "block", "halt":
 		b.decision(false, 2)
 		b.severity(3)
-	case "annotate", "ask":
+	case "annotate", "ask", "continue", "none":
 		b.profile("security_control")
 		b.set("action_id", 3)
 		b.set("action", "Observed")
+	case "error":
+		b.status(2, "", b.str("reason"))
 	}
 	b.set("message", "hook "+b.str("extension")+": "+b.str("verdict"))
+}
+
+// mapHookContinued is a stop hook sending the agent back to work.
+func mapHookContinued(b *builder) {
+	b.classify(6003, 99, "Hook")
+	b.actor(b.str("hook"))
+	b.api("stop", "")
+	b.profile("security_control")
+	b.set("action_id", 3)
+	b.set("action", "Observed")
+	b.set("message", "hook "+b.str("hook")+": continue")
 }
 
 func mapMCPStatus(b *builder) {

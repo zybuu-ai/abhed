@@ -147,6 +147,9 @@ type Config struct {
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
+	// mergingManaged is set while the managed document merges: only it
+	// replaces a simple hook of a name an earlier layer gave.
+	mergingManaged bool
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -338,6 +341,33 @@ type HooksConfig struct {
 	// ManagedOnly sends hook events only to the managed file's extensions;
 	// every other keeps only the tools it provides. Managed only.
 	ManagedOnly bool `json:"managed_only,omitempty"`
+	// Run are the simple hooks: a command or an HTTP endpoint per event. Each
+	// layer adds to them; only the managed file replaces a hook an earlier
+	// layer named, and a later file's hook of that name is set aside.
+	Run []HookConfig `json:"run,omitempty"`
+}
+
+// HookConfig is one simple hook. A command gets the event as JSON on stdin
+// and runs in the session's sandbox: exit 0 goes on, exit 2 blocks with
+// stderr as the reason. A url is POSTed the event instead, under the egress
+// allowlist. Either can only make a decision stricter.
+type HookConfig struct {
+	Name    string   `json:"name"`
+	Events  []string `json:"events"`
+	Command string   `json:"command,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	// Headers are sent with an HTTP hook's request; HeadersEnv sends each
+	// header with the value of the variable it names, read from Abhed's
+	// environment, so a token need not be written here.
+	Headers    map[string]string `json:"headers,omitempty"`
+	HeadersEnv map[string]string `json:"headers_env,omitempty"`
+	// Match narrows tool events to the calls a rule matches, e.g. bash(git *).
+	Match     []string `json:"match,omitempty"`
+	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	// Async runs the events that only observe without waiting for the hook.
+	Async bool `json:"async,omitempty"`
+	// Layer is the layer the hook came from, as loading credits it.
+	Layer string `json:"-"`
 }
 
 // SetAsideKey is a setting a file made that was left out, and why.
@@ -1895,8 +1925,18 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
+	// Simple hooks are the exception: each file adds to them.
+	below := cfg.Hooks.Run
+	cfg.Hooks.Run = nil
 	if err := json.Unmarshal(data, cfg); err != nil {
+		cfg.Hooks.Run = below
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var kept []HookConfig
+	cfg.Hooks.Run, kept = joinHooks(below, cfg.Hooks.Run, cfg.mergingManaged)
+	for _, h := range kept {
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Key: "hooks.run", Value: h.Name,
+			Reason: "a hook of that name comes from the " + orLayer(h.Layer) + " configuration; only the managed configuration replaces one"})
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
@@ -2047,6 +2087,17 @@ type ToolsConfig struct {
 	// BashCheckpointFiles the files looked at (20000 when zero).
 	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
 	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
+	// Diagnostics is whether the agent is given a language server's
+	// diagnostics after each write or edit: "auto" (the default) runs a
+	// server only where policy and the supervisor allow its command, "on"
+	// also where the mode would ask about it, "off" never. Off wherever no
+	// sandbox or no server is installed. A workspace file may only set off.
+	Diagnostics string `json:"diagnostics,omitempty"`
+	// DiagnosticsMax bounds the diagnostics given per file (20 when zero,
+	// at most 200); DiagnosticsWaitMS how long an edit waits for them
+	// (3000 when zero, at most 30000).
+	DiagnosticsMax    int `json:"diagnostics_max,omitempty"`
+	DiagnosticsWaitMS int `json:"diagnostics_wait_ms,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -2105,6 +2156,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.validateHooks(); err != nil {
+		return err
 	}
 	if err := c.Monitor.validate(); err != nil {
 		return err
@@ -2260,6 +2314,14 @@ func (c Config) Validate() error {
 	case "", "on", "off", "required":
 	default:
 		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	switch c.Tools.Diagnostics {
+	case "", "auto", "on", "off":
+	default:
+		return fmt.Errorf("unknown tools.diagnostics %q (want auto, on or off)", c.Tools.Diagnostics)
+	}
+	if c.Tools.DiagnosticsMax < 0 || c.Tools.DiagnosticsMax > 200 || c.Tools.DiagnosticsWaitMS < 0 || c.Tools.DiagnosticsWaitMS > 30000 {
+		return fmt.Errorf("tools.diagnostics_max must be 0 to 200 and tools.diagnostics_wait_ms 0 to 30000")
 	}
 	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
 		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")

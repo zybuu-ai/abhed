@@ -95,6 +95,35 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Simple hooks: `hooks.run` runs one command, or POSTs to one HTTP endpoint,
+  per event, with no extension process to write. A command gets the event
+  as JSON on stdin and runs as the agent's own commands do: in the terminal,
+  `-p`, `abhed rpc`, `abhed acp` and the SDK, in the session's sandbox at
+  its tier and in the session's folder. `abhed serve` runs them under the
+  server's own sandbox and workspace, not a session's own sandbox where the
+  edition gives sessions one, and says so at start-up. Exit 0 goes on, exit
+  2 blocks with stderr as the reason, and any other exit or a timeout
+  refuses a `tool_call` or `permission_request`. A JSON reply's
+  `decision: "block"` blocks, and `continue: false` ends the run, and the
+  rest of its turn, as `policy_denied` (a subagent's ends the whole session
+  tree). An HTTP hook's request is judged by the egress allowlist, and
+  `headers_env` sends a token from the environment; headers go only over
+  https or to this machine. A hook can block, ask or end the run, never
+  approve. Each layer adds hooks, a
+  workspace's only once it is trusted; only the managed configuration
+  replaces a hook by name, and a lower file's hook of a name already taken
+  is set aside. Every run is recorded as `hook.fired` with its kind, layer,
+  exit status and duration. See
+  [Extensions](docs/guide/07-extensions.md#simple-hooks).
+- Hook events `subagent_start`, `tool_failure`, `post_compact` and `stop`,
+  for extensions and simple hooks alike, and `tool_result` is now sent:
+  hooks see each result after secrets are redacted, and an extension may
+  rewrite it. A `stop` hook can send the agent back to work with an
+  instruction, at most 3 times a run; the instruction is recorded as
+  `hook.continued`, with secrets withheld, and a resumed or forked session
+  reads it. `hook.fired` is now also recorded by `abhed serve` and the SDK,
+  in the session the hook fired for, and a `tool_call` hook is given the
+  real session id.
 - A laptop whose organisation removed the person's access is told so. A
   refused sign-in whose answer carries `"access_removed": true` (which the
   Enterprise server sends for a revoked or SCIM-deprovisioned person; the
@@ -113,8 +142,56 @@ All notable changes to Abhed are recorded here. The format follows
   claim named `tenant`, else `default`, so unless the identity provider
   sends a matching `tenant` claim everyone it signs in is refused.
 
+### Added
+
+- The agent is given a language server's diagnostics after each write or
+  edit, in the CLI and the editor protocol. The server is the one Studio
+  runs, started in the session's sandbox with the engine's safe settings,
+  once per language, and only where policy and the supervisor allow its
+  command (`tools.diagnostics`: `auto`, the default; `on` also answers the
+  plain ask a mode gives it, after the PermissionRequest hooks; `off`). The
+  start is recorded as the engine's call, with what allowed it, and shown
+  as an engine note in the CLI and a `Language server` card in Studio. At most `tools.diagnostics_max` (20)
+  are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
+  (3000). Off where there is no sandbox or no server installed. Each is
+  recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`
+  and `lsp.stopped` with `purpose: diagnostics`, and counted in
+  `abhed_lsp_diagnostics_total`. A workspace file, trusted or not, may only
+  lower the bounds and turn them off. Paths a read rule denies are not
+  hidden from the server. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+- `_abhed/codeActions` (feature `codeActions`) gives Studio Explain, Fix and
+  Add tests for a range of a file, each as the prompt Studio sends with
+  `session/prompt`, so it runs under the session's policy as any prompt does.
+  The editor's diagnostics on the range go with Fix and Explain as an
+  attachment. A file the agent may not read gets none.
+
+### Added
+
+- Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
+  in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
+  A `runner` picks Node itself (TypeScript by Node's own type stripping),
+  `tsx`, `ts-node`, `node --test`, Vitest or Jest. Breakpoints in
+  TypeScript hold through source maps, whether the code is compiled in
+  memory or by `tsc`, and worker threads are threads of their own. Nothing
+  listens on a port for it: a worker thread in the program drives the
+  program's own inspector over a pipe. So Node debugs on every sandbox tier
+  as it is, the macOS process tier included, without opening loopback or
+  asking the process-tier agreement. The launch is judged and recorded as
+  the person's own call, as for Go and Python, and `debug.launched` records
+  it with `loopback` off, and the runner package that ran. A
+  `--inspect` in the sandbox's `NODE_OPTIONS` is not passed on, so nothing
+  inherited opens a port. Node missing offers its install. See
+  [Debugging](docs/guide/31-debugging.md#node).
+
 ### Fixed
 
+- A debug session in Abhed Studio, in any language, no longer shows the
+  editor a source path outside the workspace. Such a frame, output line or
+  breakpoint now carries only its name. Studio opens a frame's file on your
+  machine, outside the sandbox, and the debugged program chooses those
+  paths, so a repository could make Studio open a file the sandbox would
+  not let it read. A frame in a language's own library now shows its name
+  without its file.
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was
   read without end, and a sparse file of any size was hashed in full. A
@@ -206,6 +283,13 @@ All notable changes to Abhed are recorded here. The format follows
   last lines) before it exits: a stop signal that comes while stdin is
   open waits up to 250 ms for it to end, so a lone SIGTERM now exits
   after about a quarter of a second.
+
+### Go API
+
+- `monitor.Case` gains `Engine`, set for a command the engine runs outside
+  the agent's calls (a diagnostics server's start): the supervisor reviews
+  it but does not count it against `Guard.MaxPerTurn`. Additive; existing
+  callers are unchanged.
 
 ## [1.2.9] - 2026-11-02
 
