@@ -145,6 +145,13 @@ func TestHeadlessHintNeverOffersARefusedFlag(t *testing.T) {
 		t.Fatalf("org ask rule: %+v", got)
 	}
 
+	// A built-in ask rule is not called the person's.
+	got = run(pol, config.Default(), "bash", `{"command":"make deploy"}`,
+		map[string]string{"step": "ask", "rule": "bash(make deploy*)", "source": "default", "by": "headless", "reason": "matched ask rule"})
+	if got.Flag != "" || strings.Contains(got.Hint, "your") || !strings.Contains(got.Hint, "Abhed's built-in ask rule bash(make deploy*)") {
+		t.Fatalf("built-in ask rule: %+v", got)
+	}
+
 	// Under a managed file that sets the permissions, -allow is refused.
 	home := t.TempDir()
 	t.Setenv("HOME", home)

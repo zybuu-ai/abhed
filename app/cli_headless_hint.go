@@ -85,7 +85,18 @@ func (h *denialHints) hint(a agent.ActionRequested, d map[string]string) (flag, 
 		if source == config.LayerOrg || source == config.LayerManaged {
 			return "", "asked by " + orgWords(source) + " rule " + rule + " on every call, and no one can answer in -p; ask your admin, or run it interactively"
 		}
-		return "", "your ask rule " + rule + " (" + h.where("ask", rule) + ") asks on every call, and no flag lifts it; run it interactively"
+		owner := "the ask rule "
+		switch source {
+		case config.LayerUser, config.LayerWorkspace, config.LayerSettings, config.LayerFlag, "session":
+			owner = "your ask rule "
+		case config.LayerDefault:
+			owner = "Abhed's built-in ask rule "
+		}
+		s := owner + rule
+		if where := h.where("ask", rule); where != "" && source != config.LayerDefault {
+			s += " (" + where + ")"
+		}
+		return "", s + " asks on every call, and no flag lifts it; run it interactively"
 	case d["by"] != agent.ByHeadless && step != "mode":
 		return "", ""
 	}
