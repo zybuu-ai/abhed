@@ -46,20 +46,38 @@ func TestEscapeFolderFenceVariants(t *testing.T) {
 		"\u27e8folder-memory-abc\u27e9",
 		"<folder---------memory-abc>",
 		"<folder - - - - - - - - - - memory-abc>",
+		// A word right before the < does not make a tag code.
+		"x<folder-memory-abc>",
+		"a<folder-memory-abc>",
+		"_<folder-memory-abc>",
+		"1<folder-memory-abc>",
+		"\u00e9<folder-memory-abc>",
+		// Punctuation glued to the word after the <.
+		"<-folder-memory-abc>",
+		"<_folder-memory-abc>",
+		"<.folder-memory-abc>",
+		"<*folder-memory-abc>",
+		"<\"folder-memory-abc\">",
+		"<!folder-memory-abc>",
+		"<?folder-memory-abc>",
+		// Touching words with nothing to mark them as code.
+		"<folderMemory>",
 	} {
 		got := escapeFolderFence("text\n" + v + "\nmore")
 		if got == "text\n"+v+"\nmore" || !strings.Contains(got, "\\") {
 			t.Errorf("%q was not escaped: %q", v, got)
 		}
-		// Escaped once is escaped: the backslash sits right before the opening character.
-		if !strings.HasPrefix(strings.TrimPrefix(got, "text\n"), "\\") {
-			t.Errorf("%q escaped in the wrong place: %q", v, got)
+		// Escaped once, with the backslash right before the opening character.
+		at := strings.IndexAny(v, openers)
+		if want := "text\n" + v[:at] + "\\" + v[at:] + "\nmore"; got != want {
+			t.Errorf("%q escaped as %q, want %q", v, got, want)
 		}
 	}
 	for _, v := range []string{
 		"a < b", "folder-memory-abc", "<folder-memo>", "<b>memory</b>", "x < y; folder and some long text before memory",
 		// Code is not a tag: an operator or a generic type right after the <.
-		"ch <- folderMemory", "x <= folder_memory_bytes", "List<FolderMemory>", "<!-- folder memory -->",
+		"ch <- folderMemory", "x := <-folderMemory", "if a <= folderMemory {", "List<FolderMemory>", "Map<K, FolderMemory>",
+		"<!-- folder memory -->",
 		"<div class=\"folder\">memory</div>", "<p>Folder memory</p>", "a<b && folder.memory",
 	} {
 		if got := escapeFolderFence(v); got != v {

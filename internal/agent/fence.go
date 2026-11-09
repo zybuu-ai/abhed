@@ -23,11 +23,13 @@ func newFence() string {
 	return hex.EncodeToString(b[:])
 }
 
-// A folder memory tag, as read once folded, is a < followed only by spaces
-// and slashes (format characters are folded away), then "folder", then up
-// to maxTagGap characters that are not letters or digits, then "memory". So
-// `<=`, `<-` and `<!--` are not tags, nor is a generic type's
-// `List<FolderMemory>`, a < between a word and a letter.
+// A folder memory tag, as read once folded, is a < followed by a short run of
+// anything that is not a letter or a digit, then "folder", then up to
+// maxTagGap such characters, then "memory". Code is told apart only where
+// the words touch, as in an identifier: a generic type `List<FolderMemory>`
+// (a word right before the <) and Go's `<-folderMemory` (punctuation right
+// after it) are left alone, while a tag with anything between the words is
+// escaped whatever comes before the <. An HTML comment's `<!--` is not a tag.
 const maxTagGap = 64
 
 // openers are the characters that fold to the tag's opening <.
@@ -184,7 +186,7 @@ func escapedAt(s string, i int) bool {
 }
 
 // lookalikes are where each lookalike tag starts in folded text, in order:
-// from each "folder", back over spaces and slashes to a <, and on over
+// from each "folder", back over other characters to a <, and on over
 // separators to "memory". Linear, with no expression, so a large output with
 // many tags or near-tags costs little more than one without.
 func lookalikes(text []byte) []int {
@@ -198,11 +200,15 @@ func lookalikes(text []byte) []int {
 		f := pos + i
 		pos = f + len(word)
 		start := openerBefore(text, f)
-		if start < 0 || !memoryAfter(text, pos) {
+		if start < 0 || bytes.HasPrefix(text[start+1:], []byte("!--")) {
 			continue
 		}
-		if wordByte(text, start-1) && wordByte(text, start+1) {
-			continue // a generic type
+		gap, ok := memoryAfter(text, pos)
+		if !ok {
+			continue
+		}
+		if gap == 0 && (wordByte(text, start-1) || punctAfter(text, start)) {
+			continue // an identifier in code: List<FolderMemory>, <-folderMemory
 		}
 		if len(out) == 0 || out[len(out)-1] < start {
 			out = append(out, start)
@@ -210,7 +216,8 @@ func lookalikes(text []byte) []int {
 	}
 }
 
-// openerBefore is where the < before text[f] is, past spaces and slashes, or -1.
+// openerBefore is where the < before text[f] is, past characters that are
+// not letters or digits, or -1.
 func openerBefore(text []byte, f int) int {
 	j := f
 	for n := 0; j > 0 && n <= maxTagGap; n++ {
@@ -218,7 +225,7 @@ func openerBefore(text []byte, f int) int {
 		if r == '<' {
 			return j - size
 		}
-		if r != '/' && !unicode.IsSpace(r) && !unicode.Is(unicode.Z, r) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			return -1
 		}
 		j -= size
@@ -227,16 +234,26 @@ func openerBefore(text []byte, f int) int {
 }
 
 // memoryAfter reports whether "memory" follows text[k], past at most
-// maxTagGap characters that are not letters or digits.
-func memoryAfter(text []byte, k int) bool {
+// maxTagGap characters that are not letters or digits, and how many.
+func memoryAfter(text []byte, k int) (gap int, ok bool) {
 	for n := 0; k < len(text) && n <= maxTagGap; n++ {
 		r, size := utf8.DecodeRune(text[k:])
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			return bytes.HasPrefix(text[k:], []byte("memory"))
+			return n, bytes.HasPrefix(text[k:], []byte("memory"))
 		}
 		k += size
 	}
-	return false
+	return 0, false
+}
+
+// punctAfter reports whether the < at text[i] is followed by punctuation,
+// not a space, a slash or a letter: an operator such as <- or <=.
+func punctAfter(text []byte, i int) bool {
+	if i+1 >= len(text) {
+		return false
+	}
+	r, _ := utf8.DecodeRune(text[i+1:])
+	return r != '/' && !unicode.IsSpace(r) && !unicode.Is(unicode.Z, r) && !unicode.IsLetter(r) && !unicode.IsDigit(r)
 }
 
 // wordByte reports whether text[i] is a letter, a digit or _ (false before the start).
