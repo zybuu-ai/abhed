@@ -1080,6 +1080,12 @@ func withNote(content, note string) string {
 	return strings.TrimRight(content, "\n") + "\n\n" + note
 }
 
+// CommandFor is the process command runs as, in cwd, as a call's would:
+// under the sandbox, with the git-safe settings, and with no secret.
+func (b Bash) CommandFor(ctx context.Context, cwd, command string) (*exec.Cmd, error) {
+	return b.command(ctx, cwd, bashArgs{Command: command})
+}
+
 // command makes the process for a call: under the sandbox when there is
 // one, with the secrets it asked for, ending its whole group when ctx ends.
 func (b Bash) command(ctx context.Context, cwd string, a bashArgs) (*exec.Cmd, error) {

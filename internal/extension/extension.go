@@ -93,7 +93,7 @@ const (
 // observeOnly are the events whose reply can change nothing; an extension
 // may take them asynchronously.
 var observeOnly = map[Event]bool{EvTurnEnd: true, EvSubagentEnd: true, EvNotification: true,
-	EvSessionStart: true, EvSessionEnd: true}
+	EvSessionStart: true, EvSessionEnd: true, EvSubagentStart: true, EvPostCompact: true, EvToolFailure: true}
 
 // ObserveOnly reports whether an event's reply can change nothing.
 func ObserveOnly(ev Event) bool { return observeOnly[ev] }
@@ -156,6 +156,36 @@ type Reply struct {
 	Summary string `json:"summary,omitempty"`
 	// Cancel answers before_compact: leave the history alone this time.
 	Cancel bool `json:"cancel,omitempty"`
+	// Decision "block" is block, as hooks written for other harnesses print it.
+	Decision string `json:"decision,omitempty"`
+	// Continue false ends the run, with StopReason as the reason it ended;
+	// true, or none, is no opinion. Only a stop hook's block sends the agent on.
+	Continue   *bool  `json:"continue,omitempty"`
+	StopReason string `json:"stopReason,omitempty"`
+
+	// again is a stop hook sending the agent back to work, and halt a hook
+	// ending the run; normalize sets both.
+	again, halt bool
+}
+
+// normalize reads r as an answer to ev: decision block is block, continue
+// false halts the run, and a block on stop asks the agent to go on.
+func (r Reply) normalize(ev Event) Reply {
+	if strings.EqualFold(r.Decision, "block") {
+		r.Block = true
+	}
+	if r.Continue != nil && !*r.Continue {
+		r.halt = true
+	}
+	if ev == EvStop && r.Block {
+		r.Block, r.again = false, true
+	}
+	return r
+}
+
+// haltReason is why a reply that halts the run ended it.
+func (r Reply) haltReason(name string) string {
+	return firstNonEmpty(r.StopReason, r.Reason, name+" ended the run")
 }
 
 // ToolDef is a tool an extension provides.
@@ -211,6 +241,12 @@ type Extension struct {
 	match []policy.Rule
 	// lastErr is why the extension stopped being asked, once it has.
 	lastErr atomic.Value
+	// hook, for a simple hook, runs it once per event in place of a process.
+	hook *hookRunner
+	// host is told of a reply that ends the run.
+	host *Host
+	// inflight bounds the async runs of an observe-only event at once.
+	inflight chan struct{}
 }
 
 const defaultTimeout = 5 * time.Second
@@ -340,6 +376,36 @@ var errNotRunning = errors.New("not running")
 // dead, or one that crashed, hung or answered with nonsense now. A cancelled
 // context is not the extension's failure and reports none.
 func (e *Extension) call(ctx context.Context, req Request) (_ Reply, err error) {
+	var r Reply
+	if e.hook != nil {
+		r, err = e.hook.run(ctx, req)
+	} else {
+		r, err = e.callProcess(ctx, req)
+		r = r.normalize(req.Event)
+	}
+	if r.halt && err == nil {
+		why := r.haltReason(e.label())
+		if e.host != nil {
+			// Kept for the root session, so a subagent's halt ends the whole tree.
+			key := SessionOf(ctx).Root
+			if key == "" {
+				key = req.SessionID
+			}
+			e.host.halt(e, req, key, why)
+		}
+		// What the run ends on does not go ahead either.
+		switch req.Event {
+		case EvToolCall, EvPermissionRequest, EvUserPromptSubmit:
+			r.Block, r.Reason = true, firstNonEmpty(r.Reason, why)
+		case EvStop:
+			r.again = false
+		}
+	}
+	return r, err
+}
+
+// callProcess is call for an extension process.
+func (e *Extension) callProcess(ctx context.Context, req Request) (_ Reply, err error) {
 	e.mu.Lock()
 	unlock := true
 	defer func() {
@@ -433,6 +499,9 @@ func (e *Extension) die(format string, args ...any) {
 
 // Close shuts the extension down.
 func (e *Extension) Close() error {
+	if e.hook != nil {
+		return nil
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.dead {

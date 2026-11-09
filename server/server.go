@@ -821,6 +821,7 @@ func New(opts Options) *Server {
 		opts.SessionSandboxes.SetScope(s.sessionSandboxScope)
 	}
 	srv = s
+	s.recordHooks()
 	s.reportConfigAttempts()
 	s.warnShellScreening()
 	if local := s.LocalAuth(); local != nil {
@@ -5691,4 +5692,28 @@ func (t tapStore) Append(ev agent.Event) error {
 		}
 	}
 	return err
+}
+
+// recordHooks records each hook that fires in the session it fired for, as
+// the CLI does; one for no running session here is not recorded.
+func (s *Server) recordHooks() {
+	if s.opts.Extensions == nil {
+		return
+	}
+	if names := s.opts.Extensions.CommandHooks(); len(names) > 0 && s.opts.SessionSandboxes != nil {
+		// Each session's commands run in its own sandbox; the hooks do not.
+		s.log.Warn("command hooks run under this server's own sandbox and workspace, not in each session's own sandbox",
+			"hooks", strings.Join(names, ", "))
+	}
+	s.opts.Extensions.SetOnFired(func(f extension.Fired) {
+		s.mu.RLock()
+		live := s.running[f.SessionID]
+		s.mu.RUnlock()
+		if live == nil || live.Loop == nil || live.Loop.Recorder == nil {
+			return
+		}
+		if err := toolset.RecordFired(live.Loop.Recorder, f); err != nil {
+			s.log.Warn("could not record a hook", "session", f.SessionID, "hook", f.Extension, "err", err)
+		}
+	})
 }

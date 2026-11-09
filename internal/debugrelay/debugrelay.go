@@ -26,6 +26,7 @@ import (
 const (
 	Go     = "go"
 	Python = "python"
+	Node   = "node"
 )
 
 // Problem kinds, each with steps a person can take.
@@ -78,6 +79,12 @@ func MissingAdapter(code int, image string) *Problem {
 			Steps: []string{"Install Go with its debugger: choose Install, or run `abhed toolchain install -debugger go` in a terminal (add `-platform linux` for the container tier)",
 				"Or use a sandbox image with Go and Delve: build one FROM " + orElse(image, "golang:1.26-bookworm") + " with `RUN go install github.com/go-delve/delve/cmd/dlv@latest`",
 				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
+	case exitNoNode:
+		return &Problem{Kind: KindAdapter, Retry: true, Message: "Node.js is not installed where this session's commands run",
+			Install: &Install{Language: "node"},
+			Steps: []string{"Install Node.js: choose Install, or run `abhed toolchain install node` in a terminal (add `-platform linux` for the container tier)",
+				"Or use a sandbox image with Node.js 20.6 or newer, such as " + orElse(image, "node:22-bookworm-slim"),
+				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
 	case exitNoDebugpy:
 		return &Problem{Kind: KindAdapter, Retry: true, Message: "Python's debugger (debugpy) is not installed for the Python this session's commands run",
 			Install: &Install{Language: "python", Debugger: true},
@@ -96,8 +103,8 @@ func orElse(s, d string) string {
 }
 
 // Request is what a person asked to debug: a program, or a test (a Go
-// package, or what pytest is given), with its arguments, working folder and
-// environment.
+// package, what pytest is given, or a Node test file or filter), with its
+// arguments, working folder and environment, and for Node what runs it.
 type Request struct {
 	Language string            `json:"language"`
 	Program  string            `json:"program,omitempty"`
@@ -105,6 +112,7 @@ type Request struct {
 	Args     []string          `json:"args,omitempty"`
 	Cwd      string            `json:"cwd,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
+	Runner   string            `json:"runner,omitempty"`
 }
 
 // Spec is a planned session: the adapter command run in the sandbox, the
@@ -115,6 +123,8 @@ type Spec struct {
 	Display string
 	Cwd     string
 	Launch  map[string]any
+	// Runner is the Node runner package the session runs, as found.
+	Runner string
 }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -214,8 +224,10 @@ func Plan(r Request, workspace, bridge, sockDir string) (Spec, error) {
 		return Spec{Cwd: cwd, Launch: launch, Display: strings.TrimSpace(strings.Join(prefix, " ") + " " + quoteAll(display)),
 			Command: "python3 -c 'import debugpy' >/dev/null 2>&1 || { echo 'abhed-debug: debugpy is not installed' >&2; exit " + strconv.Itoa(exitNoDebugpy) + "; }; " +
 				"exec python3 -m debugpy.adapter"}, nil
+	case Node:
+		return planNode(r, workspace, cwd, launch, prefix)
 	}
-	return Spec{}, bad("language %q is not one Abhed debugs (go or python)", r.Language)
+	return Spec{}, bad("language %q is not one Abhed debugs (go, python or node)", r.Language)
 }
 
 // resolve is p taken from cwd when it is relative.
@@ -287,6 +299,87 @@ type Relay struct {
 	terminating bool
 	onEnd       func()
 	endOnce     sync.Once
+	// root is the workspace: a source path outside it is not shown.
+	root string
+}
+
+// Confine keeps the editor from being shown a source path outside root
+// (the workspace): the editor opens a frame's file on the host, where the
+// sandbox's rules do not hold, and the adapter's paths are the program's
+// to choose. Such a source keeps its name, greyed out, and no path.
+func (r *Relay) Confine(root string) {
+	r.mu.Lock()
+	r.root = root
+	r.mu.Unlock()
+}
+
+// confine is raw with every source outside the root stripped of its path,
+// or nil for a message it cannot read. With a root it is always decoded
+// and encoded again: a key written with escapes, or given twice, then
+// reaches the editor as the one key it was judged as.
+func (r *Relay) confine(raw json.RawMessage) json.RawMessage {
+	r.mu.Lock()
+	root := r.root
+	r.mu.Unlock()
+	if root == "" {
+		return raw
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) != nil || dec.More() {
+		return nil
+	}
+	var walk func(v any, source bool)
+	walk = func(v any, source bool) {
+		switch x := v.(type) {
+		case map[string]any:
+			if p, ok := x["path"].(string); ok && source && !underRoot(root, p) {
+				delete(x, "path")
+				if n, _ := x["name"].(string); n == "" {
+					x["name"] = filepath.Base(p)
+				}
+				x["presentationHint"] = "deemphasize"
+			}
+			for k, c := range x {
+				walk(c, k == "source" || k == "sources")
+			}
+		case []any:
+			for _, c := range x {
+				walk(c, source)
+			}
+		}
+	}
+	walk(m["body"], false)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// underRoot reports whether p, with the links of its existing part
+// resolved, is inside root with its own resolved: a path through a link to
+// the workspace counts, one through a link out of it does not.
+func underRoot(root, p string) bool {
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	_, err := inside(resolved(root), resolved(p))
+	return err == nil
+}
+
+// resolved is p with the links of its longest part that exists resolved.
+func resolved(p string) string {
+	for q := p; ; q = filepath.Dir(q) {
+		if r, err := filepath.EvalSymlinks(q); err == nil {
+			rest, _ := filepath.Rel(q, p)
+			return filepath.Join(r, rest)
+		}
+		if q == filepath.Dir(q) {
+			return p
+		}
+	}
 }
 
 // OnEnd sets what runs once the session is over by the protocol: the adapter
@@ -513,7 +606,14 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			}
 			continue
 		}
-		r.editor(raw)
+		shown := r.confine(raw)
+		if shown == nil {
+			r.mu.Lock()
+			r.dropped++
+			r.mu.Unlock()
+			continue
+		}
+		r.editor(shown)
 		r.mu.Lock()
 		terminating := r.terminating
 		r.mu.Unlock()
