@@ -39,15 +39,21 @@ type AgentFile struct {
 }
 
 // Reviewed is the content a trust decision covers: the configuration file's
-// hash and the agent definitions' combined hash. Either may be empty.
+// hash, the agent definitions' and the skills' combined hashes. Any may be empty.
 type Reviewed struct {
 	SHA256       string
 	AgentsSHA256 string
+	SkillsSHA256 string
 }
 
-// Reviewed is what this load classified, for a decision about it.
+// Reviewed is what this load classified, for a decision about it. Skills
+// the configuration turns off are not decided on.
 func (w WorkspaceTrust) Reviewed() Reviewed {
-	return Reviewed{SHA256: w.SHA256, AgentsSHA256: w.AgentsSHA256}
+	r := Reviewed{SHA256: w.SHA256, AgentsSHA256: w.AgentsSHA256}
+	if w.SkillsReason != "off" {
+		r.SkillsSHA256 = w.SkillsSHA256
+	}
+	return r
 }
 
 // AgentFiles are the workspace's definition files as read and hashed. The
@@ -133,7 +139,10 @@ func readWorkspaceAgents(workspace string, st *WorkspaceTrust) {
 
 // ReadAgentFile reads a definition that is a regular file with one name, and
 // is still the file that was checked once it is open.
-func ReadAgentFile(path string) ([]byte, error) {
+func ReadAgentFile(path string) ([]byte, error) { return readFileWithin(path, maxAgentFileBytes) }
+
+// readFileWithin is ReadAgentFile with a bound of its own.
+func readFileWithin(path string, limit int) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -141,12 +150,12 @@ func ReadAgentFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file; a link is not followed")
 	}
-	return ReadAgentOpened(path, openAgent, func(opened os.FileInfo) error {
+	return readOpenedWithin(path, openAgent, func(opened os.FileInfo) error {
 		if !os.SameFile(info, opened) {
 			return fmt.Errorf("changed while it was read")
 		}
 		return nil
-	})
+	}, limit)
 }
 
 // openAgent opens a definition; a variable so a test can swap the file
@@ -157,6 +166,11 @@ var openAgent = os.Open
 // regular file, one name, check) and reads from it, so what is checked is what
 // is read, whatever happens to the path meanwhile.
 func ReadAgentOpened(path string, open func(string) (*os.File, error), check func(os.FileInfo) error) ([]byte, error) {
+	return readOpenedWithin(path, open, check, maxAgentFileBytes)
+}
+
+// readOpenedWithin is ReadAgentOpened with a bound of its own.
+func readOpenedWithin(path string, open func(string) (*os.File, error), check func(os.FileInfo) error, limit int) ([]byte, error) {
 	f, err := open(path)
 	if err != nil {
 		return nil, err
@@ -175,12 +189,12 @@ func ReadAgentOpened(path string, open func(string) (*os.File, error), check fun
 	if n := nlink.Of(opened); n > 1 {
 		return nil, fmt.Errorf("has %d names; a definition with a second name is not read", n)
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxAgentFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxAgentFileBytes {
-		return nil, fmt.Errorf("larger than %d KiB", maxAgentFileBytes>>10)
+	if len(data) > limit {
+		return nil, fmt.Errorf("larger than %d KiB", limit>>10)
 	}
 	return data, nil
 }

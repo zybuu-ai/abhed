@@ -15,10 +15,9 @@
 // body is paid only when used.
 //
 // Skills are also the most direct route for untrusted instructions to reach
-// the model, since a skill body IS instructions by construction. So they come
-// only from directories the operator configured — never from the workspace the
-// agent is editing, which would let a repository carry its own instructions to
-// the agent reading it.
+// the model, since a skill body IS instructions by construction. So Load
+// reads only directories the operator configured. A workspace's own skills
+// come in through FromContent, from the content a trust decision covered.
 package skills
 
 import (
@@ -278,4 +277,42 @@ func expandHome(path string) string {
 		}
 	}
 	return path
+}
+
+// FromContent makes a skill from content already read, such as a
+// workspace's skill read once for its trust decision: SKILL.md, and
+// pipeline.json when there is one (nil when not). dir is the skill's folder,
+// whose base name it takes when the frontmatter names none.
+func FromContent(dir string, skillMD, pipeline []byte) (*Skill, error) {
+	s, err := Parse(string(skillMD))
+	if err != nil {
+		return nil, err
+	}
+	if s.Name == "" {
+		s.Name = filepath.Base(dir)
+	}
+	if strings.IndexFunc(s.Name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+		return nil, fmt.Errorf("the name %q holds a character that does not print as itself", s.Name)
+	}
+	s.Dir = dir
+	if pipeline != nil {
+		if !json.Valid(pipeline) {
+			return nil, fmt.Errorf("%s is not valid JSON", pipelineFile)
+		}
+		s.Pipeline = pipeline
+	}
+	return s, nil
+}
+
+// AddNew adds s unless a skill of its name is already held, and reports
+// whether it did: a later source never replaces an earlier one's skill.
+func (r *Registry) AddNew(s *Skill) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.byName[s.Name]; exists {
+		return false
+	}
+	r.order = append(r.order, s.Name)
+	r.byName[s.Name] = s
+	return true
 }

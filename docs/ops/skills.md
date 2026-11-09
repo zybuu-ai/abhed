@@ -108,19 +108,25 @@ of sync with its source.
 A malformed `SKILL.md` is reported by name and skipped; the others still load.
 A stub alongside seven working skills used to cost all eight.
 
-## Why not the workspace
+## Skills from the workspace
 
-Skills are deliberately **not** read from the repository the agent is editing.
+A repository's own skills in `.abhed/skills/<name>/` load only after the
+person trusts their exact content, as with its agent definitions.
 
 A skill body is instructions by construction — that is what makes it useful,
 and what makes it the most direct route for untrusted text to reach the model.
-Loading them from the workspace would mean any cloned repository could carry its
-own orders to the agent reading it, which is prompt injection with a config file
-instead of a clever paragraph. Skills come from where the operator put them.
+Loading them from any cloned repository unasked would let it carry its own
+orders to the agent reading it. So the trust prompt and `abhed trust` show
+each skill's name, description and a hash over every file in its folder; a
+change to any of them, a script included, asks again; an untrusted workspace
+loads none; and a skill named like one the organisation or the person
+installed is never loaded in its place. To keep skills to the installed ones,
+set `{"skills": {"disable_workspace": true}}` in the managed configuration.
+See [Workspace trust](../architecture/workspace-trust.md#workspace-skills).
 
-For instructions that *should* travel with a repository, use `ABHED.md`: it is
-project memory, is treated as such, and does not get a tool that loads it as
-authoritative procedure.
+For instructions that should travel with a repository but need no trust,
+use `ABHED.md`: it is project memory, read as untrusted text, and does not
+get a tool that loads it as authoritative procedure.
 
 ## Referencing files
 

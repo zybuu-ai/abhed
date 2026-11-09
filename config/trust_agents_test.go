@@ -114,7 +114,7 @@ func TestOldTrustRecordsDoNotRePrompt(t *testing.T) {
 		t.Fatalf("definitions added under an old record: %+v", w)
 	}
 	// Declining the definitions keeps the file the person trusted.
-	if err := RecordDecision(ws, w.Reviewed(), true, false); err != nil {
+	if err := RecordDecision(ws, w.Reviewed(), Decisions{Config: true}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ = LoadWith(ws, LoadOptions{Quiet: true})
@@ -271,7 +271,7 @@ func TestConfigDecisionKeepsAgentsDecision(t *testing.T) {
 		t.Fatalf("abhed init forgot the definitions' trust: %+v", st)
 	}
 	// And a decision declining the file keeps trusted definitions trusted.
-	if err := RecordDecision(ws, Reviewed{SHA256: st.SHA256, AgentsSHA256: st.AgentsSHA256}, false, true); err != nil {
+	if err := RecordDecision(ws, Reviewed{SHA256: st.SHA256, AgentsSHA256: st.AgentsSHA256}, Decisions{Agents: true}); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ = InspectWorkspace(ws); st.Trusted || !st.AgentsTrusted {

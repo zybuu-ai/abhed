@@ -120,8 +120,10 @@ func SkillRoots(cfg config.Config) []string {
 	return []string{"~/.abhed/skills"}
 }
 
-// LoadSkills loads the configured skill directories and returns the registry
-// plus its prompt listing. One malformed SKILL.md is reported, not fatal.
+// LoadSkills loads the configured skill directories, then the workspace's
+// own skills when the person trusted their exact content and nothing turned
+// them off, and returns the registry plus its prompt listing. One malformed
+// SKILL.md is reported, not fatal.
 func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry, string) {
 	if cfg.Skills.Disabled {
 		return skills.NewRegistry(), ""
@@ -129,6 +131,29 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	reg, errs := skills.Load(SkillRoots(cfg))
 	for _, err := range errs {
 		warn("%v", err)
+	}
+	if ws := cfg.Workspace; ws.SkillsTrusted && !cfg.Skills.DisableWorkspace {
+		for _, w := range ws.SkillFiles() {
+			var md, pipeline []byte
+			for _, f := range w.Files {
+				switch f.Rel {
+				case "SKILL.md":
+					md = f.Data
+				case "pipeline.json":
+					pipeline = f.Data
+				}
+			}
+			s, err := skills.FromContent(w.Path, md, pipeline)
+			if err != nil {
+				warn("skills: %s: %v", config.Printable(w.Dir), err)
+				continue
+			}
+			s.Source = filepath.Join(ws.Workspace, filepath.FromSlash(config.WorkspaceSkillsDir))
+			// An installed skill keeps its name: a repository's cannot stand in for it.
+			if !reg.AddNew(s) {
+				warn("skills: the workspace skill %s is not loaded: a skill the organisation or you installed has that name", config.Printable(s.Name))
+			}
+		}
 	}
 	return reg, reg.Listing()
 }

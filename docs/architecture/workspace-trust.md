@@ -105,6 +105,48 @@ The report (`WorkspaceTrust`, on ACP, rpc and the SDK) gains `agents`,
 `agents_reason` takes the values in the table below, and `none` when there are
 no definitions.
 
+## Workspace skills
+
+A workspace can carry skills in `.abhed/skills/<name>/`, each a `SKILL.md`
+and the files beside it ([Skills](../guide/06-skills.md)). A skill's body is
+instructions to the agent and a `pipeline.json` beside it runs tool steps, so
+the skills load under the same kind of decision as the definitions, bound to
+the exact content of every file in them.
+
+- **One hash per skill, one over them all.** Each skill's `sha256` covers
+  every file in its folder by path and content, scripts and references too,
+  so a changed script asks again. `skills_sha256` is the SHA-256 over each
+  skill's folder and hash. Editing, adding or removing any file changes it,
+  and the skills are asked about again with the reason `changed`.
+- **They are decided apart** from the file and the definitions, with
+  `skills_sha256` and, when the answer differs, `skills_decision` in the
+  stored record, kept the way the definitions' are. A record from before
+  skills were covered asks about them alone (`new`).
+- **What loads is what was hashed.** A skill folder is read once: regular
+  files with one name each, at most 256 KiB each, 1 MiB and 64 files in all,
+  four folders deep; at most 64 skills. A link anywhere in it, a second hard
+  link, a `SKILL.md` without a description, or more than the bounds refuses
+  that skill whole, named in `skills_problems`. The loader takes the
+  `SKILL.md` and `pipeline.json` bytes that were hashed.
+- **An installed skill keeps its name.** A workspace skill named like one
+  from the managed, operator or `~/.abhed/skills` directories is not loaded,
+  and a warning says so; a repository cannot stand in for a skill the person
+  or the organisation installed.
+- **The prompt and `abhed trust` show each skill's name, description and
+  hash.** Untrusted skills are listed as ignored (`skills/<name>`) in the
+  warning and by `abhed doctor`.
+- **The configuration can turn them off.** `skills.disable_workspace: true`,
+  from the managed file or any layer (a workspace file may only set it to
+  true), or `skills.disabled`, keeps them off whatever the trust: they are
+  neither loaded nor asked about, and `skills_reason` is `off`.
+- `-trust-workspace` and `ABHED_TRUST_WORKSPACE` trust them for one run; a
+  caller's refusal refuses them. The home directory's `.abhed/skills` is the
+  user's own.
+
+The report gains `skills` (each with `name`, `description`, `dir` and
+`sha256`), `skills_sha256`, `skills_trusted`, `skills_reason` and
+`skills_problems`.
+
 ## Untrusted: what applies
 
 Each setting in the file resolves to a rule, found by its dotted path or the
@@ -162,6 +204,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `mcp.allowed`, `mcp.denied` | **applied** as a narrowing: an allow list must also admit a server, and a deny entry only stops one; a list with a malformed entry is ignored |
 | `mcp` (other keys) | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |
+| `skills.disable_workspace` | **applied** only when true |
 | `agents.disabled` | **applied** only when true |
 | `agents.dirs` | ignored: a definition is instructions and a model choice |
 | `additional_dirs` | ignored: it widens the directories the agent may reach |
@@ -334,7 +377,7 @@ line per ignored setting.
 | Command | What it does |
 |---|---|
 | `abhed trust [show] [dir]` | shows the file, its hash, the decision, and what it sets beyond tightening |
-| `abhed trust grant [-sha256 H] [-agents-sha256 H] [dir]` | trusts the current content, the file and the agent definitions, and the workspace's `.abhed/users.json` when there is one; with `-sha256` or `-agents-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
+| `abhed trust grant [-sha256 H] [-agents-sha256 H] [-skills-sha256 H] [dir]` | trusts the current content, the file, the agent definitions and the skills, and the workspace's `.abhed/users.json` when there is one; with `-sha256`, `-agents-sha256` or `-skills-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
 | `abhed trust revoke [dir]` | forgets the decision |
 | `abhed trust list` | lists every stored decision |
 

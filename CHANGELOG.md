@@ -51,6 +51,18 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- Workspace skills. A repository's `.abhed/skills/<name>/` folders load as
+  skills once the person trusts their exact content, under the same
+  hash-pinned trust as its agent definitions. `abhed trust` and the trust
+  prompt show each skill's name, description and hash; the hash covers every
+  file in the skill's folder, so a changed script asks again; an untrusted
+  workspace loads none; and a workspace skill never replaces an installed one
+  of the same name. `abhed trust grant -skills-sha256 H` pins a grant.
+  `skills.disable_workspace: true`, from the managed configuration or any
+  layer, keeps them off whatever the trust.
+
 ### Changed
 
 - `grep` is about ten times faster on a large repository. It now skips the
