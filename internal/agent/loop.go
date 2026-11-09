@@ -249,8 +249,14 @@ type Config struct {
 	// MaxTurns is moved to the turns used plus it. Zero keeps MaxTurns for
 	// the whole conversation, as a managed limit must be.
 	TurnsPerMessage int
-	MaxTokens       int
-	CompactAt       float64 // fraction of the context window
+	// MaxContinues bounds how many times a run stopped at MaxTurns may be
+	// continued (ContinueAfterLimit) in one conversation; zero refuses it.
+	MaxContinues int
+	// ContinueTurns is the turns each continuation allows; zero uses
+	// TurnsPerMessage, else 25.
+	ContinueTurns int
+	MaxTokens     int
+	CompactAt     float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -267,6 +273,10 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
+	// lastReason is how the last run ended; continues counts the
+	// continuations past MaxTurns this conversation has had.
+	lastReason TerminalReason
+	continues  int
 	// refused is why a hook refused the last RunMessage's own message, or "".
 	refusedMu sync.Mutex
 	refused   string
@@ -292,6 +302,9 @@ type Loop struct {
 	// see: a message submitted, a call about to be asked, the end of a run.
 	// They may refuse or observe; nothing they say approves anything.
 	Hooks Hooks
+	// SubdirMemory, when set, adds a folder's own ABHED.md to the result of
+	// the first call that works in that folder. Nil loads none.
+	SubdirMemory *SubdirMemory
 	// Monitor, when set, judges each call policy would allow or ask about
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
@@ -1184,6 +1197,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.usage.Compactions++
 	l.justCompacted = true
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
@@ -1220,6 +1234,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	l.messages = compacted
 	l.usage.Compactions++
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
 	return info, nil
 }
@@ -1311,6 +1326,7 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
+	l.promptFolderMemory()
 	req := model.Request{
 		System:      l.Config.SystemPrompt,
 		Messages:    l.messages,
@@ -2098,6 +2114,13 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
+	// A folder's own memory comes with the first result that used the
+	// folder, before the observation is recorded, so a resume replays it.
+	// No tool output may pass for that fence, in any session, subagents' too.
+	result.Content = escapeFolderFence(result.Content)
+	if l.SubdirMemory != nil && !result.IsError {
+		result.Content += l.folderMemory(call)
+	}
 	elapsed := time.Since(start)
 	// Without this the model reads "path is required" and never learns its file_path was not taken.
 	if keys, ok := l.ignored.LoadAndDelete(call.ID); ok {
@@ -2222,6 +2245,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	l.stuckDetail = ""
 	end := l.endPayload(reason)
 	l.lastDetail = end.Detail
+	l.lastReason = reason
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
 	l.observe(context.Background(), HookTurnEnd, "", string(reason))
