@@ -19,13 +19,13 @@ import (
 
 // hookSet builds a tool set whose configuration holds hooks, and puts its
 // veto on a fresh engine.
-func hookSet(t *testing.T, cfg config.Config, bash tools.Bash) (*Set, *policy.Engine) {
+func hookSet(t *testing.T, cfg config.Config, bash tools.Bash) *policy.Engine {
 	t.Helper()
 	s := Build(context.Background(), cfg, Options{Workspace: t.TempDir(), Parts: Vetoes, Bash: bash})
 	t.Cleanup(s.Close)
 	pol := policy.New(policy.ModeAuto)
 	Police(s.Extensions, pol, "s")
-	return s, pol
+	return pol
 }
 
 // A command hook from the configuration runs in the sandbox bash's commands
@@ -41,7 +41,7 @@ func TestConfiguredCommandHookRunsInTheSandbox(t *testing.T) {
 	cfg := config.Default()
 	cfg.Hooks.Run = []config.HookConfig{{Name: "no-push", Events: []string{"tool_call"}, Match: []string{"bash(git push*)"},
 		Command: `ev=$(cat); case "$ev" in *'"tool":"bash"'*'git push'*) echo "pushes go through review" >&2; exit 2;; esac`}}
-	_, pol := hookSet(t, cfg, bash)
+	pol := hookSet(t, cfg, bash)
 	got := pol.EvaluateContext(context.Background(), "bash", true, json.RawMessage(`{"command":"git push origin main"}`))
 	if got.Decision != policy.Deny || !strings.Contains(got.Reason, "pushes go through review") {
 		t.Fatalf("the hook did not block: %+v", got)
@@ -80,7 +80,7 @@ func TestHTTPHookIsUnderTheAllowlist(t *testing.T) {
 			cfg.Egress.Rules = []egress.Rule{{Host: "127.0.0.1", Ports: []int{int(port)}, Decision: "allow", AllowIPs: []string{"127.0.0.1"}}}
 		}
 		cfg.Hooks.Run = []config.HookConfig{{Name: "audit", Events: []string{"tool_call"}, URL: srv.URL + "/hook"}}
-		_, pol := hookSet(t, cfg, tools.Bash{})
+		pol := hookSet(t, cfg, tools.Bash{})
 		before := hits.Load()
 		got := pol.EvaluateContext(context.Background(), "read", false, json.RawMessage(`{"path":"a"}`))
 		if allowed && (got.Decision != policy.Allow || hits.Load() != before+1) {
