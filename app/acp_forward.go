@@ -287,14 +287,31 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		s.mu.Lock()
 		s.totalIn += p.TokensIn
 		s.totalOut += p.TokensOut
-		totalIn, totalOut := s.totalIn, s.totalOut
+		if p.CostUSD != nil {
+			s.totalUSD += *p.CostUSD
+		} else if p.TokensIn+p.TokensOut > 0 {
+			s.unpriced = true
+		}
+		totalIn, totalOut, totalUSD, unpriced := s.totalIn, s.totalOut, s.totalUSD, s.unpriced
 		s.mu.Unlock()
 		// A suggestion's call is counted, but says nothing of the context.
 		if p.ContextWindow > 0 && p.Purpose == "" {
-			// No cost: the engine has no price table, and invents none.
-			update(map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow,
-				"_meta": map[string]any{acpMetaKey: map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
-					"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}}})
+			meta := map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
+				"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}
+			u := map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow}
+			// The session's cost only when every call was priced: a model
+			// with no price makes the total unknown, and none is invented.
+			if p.CostUSD != nil {
+				meta["costUsd"] = *p.CostUSD
+			}
+			if unpriced {
+				meta["unpriced"] = true
+			} else if p.CostUSD != nil {
+				meta["sessionCostUsd"] = totalUSD
+				u["cost"] = map[string]any{"amount": totalUSD, "currency": "USD"}
+			}
+			u["_meta"] = map[string]any{acpMetaKey: meta}
+			update(u)
 		}
 	case agent.EvModelFallback:
 		// The engine changed an option itself: every option goes out again.

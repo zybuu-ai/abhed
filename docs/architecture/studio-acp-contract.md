@@ -359,10 +359,13 @@ trusted, since a command is instructions.
 
 ### 3.4 Usage and cost
 
-`usage_update` (spec) `{used, size}` per model call. **Not implemented in 1.2.2:**
-`cost: {amount, currency}` only when a price table is configured, and
+`usage_update` (spec) `{used, size}` per model call, with
 `meta = {tokensIn, tokensOut, tokensCached, sessionTotalIn, sessionTotalOut}`.
-No invented prices.
+When the call's model has a price, `meta.costUsd` is the call's cost; while
+every call so far was priced, `cost: {amount, currency: "USD"}` and
+`meta.sessionCostUsd` are the session's. Once a call goes to a model with no
+price, `meta.unpriced` is true and the session's cost is left out. No price
+is invented.
 
 ### 3.4a Next-prompt suggestion
 

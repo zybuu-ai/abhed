@@ -232,6 +232,10 @@ type acpSession struct {
 	// thoughts is set once reasoning streamed as deltas, so its whole text
 	// that follows is not sent again.
 	thoughts bool
+	// totalUSD is what the session's priced calls cost, and unpriced marks
+	// a call to a model with no price, for usage_update's cost.
+	totalUSD float64
+	unpriced bool
 	// totalIn and totalOut are the session's tokens, for usage_update.
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.
