@@ -104,6 +104,20 @@ order:
 | Auto | the agent's own notes, when auto memory is on (below) |
 | Managed | `/etc/abhed/ABHED.md`, last, so nothing after it overrides it |
 
+### A folder's own ABHED.md
+
+An `ABHED.md` in a folder below the workspace root is not in the system
+prompt. It is loaded the first time the agent works in that folder: the
+first read, edit, write or search of a path there brings in that folder's
+`ABHED.md` and those of the folders between it and the root, added to that
+tool result under "Memory for <folder>". Each folder is loaded once per
+session, at most 32 of them, and the conversation records `memory.loaded`
+with scope `subdirectory`, the path and its SHA-256. The same read rules hold
+as for the root's files, and `.abhed` and `.git` are never searched. The
+default configuration asks before the agent writes or edits any of them
+(`write(**/ABHED.md)`, `edit(**/ABHED.md)`). The interactive CLI and `-p`
+load them; `-bare` does not.
+
 `AGENTS.md` is read only in a directory that has no `ABHED.md`, and
 `/memory` labels it so. No other tool's files are read. To bring one in, use
 `/import <path>`: it shows the file and appends it to `ABHED.md` only if you
@@ -167,7 +181,13 @@ scoped rule when it works on matching files.
 ### /memory
 
 `/memory` lists every file, its scope, size and hash, and why any file was
-not loaded. `/memory show <n>` prints one. Each conversation records
+not loaded. `/memory show <n>` prints one. `/memory edit <project|local|user>` opens that
+file in `$VISUAL` or `$EDITOR` (vi if neither is set) and saves what you
+write: a workspace file as your write, under the same rules and `/undo` as a
+note, `~/.abhed/ABHED.md` under your home. The text is redacted, and a saved
+edit is recorded as `memory.written` with kind `edit`. It needs the terminal;
+on one whose input cannot be polled (Windows) use `# <note>` or edit the file
+yourself. Each conversation records
 `memory.loaded` with the path, scope and SHA-256 of every file its prompt
 carries.
 

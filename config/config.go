@@ -1745,6 +1745,8 @@ func Default() Config {
 			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
 				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
 				"write(AGENTS.md)", "edit(AGENTS.md)",
+				// A folder's own ABHED.md is loaded when the agent works there.
+				"write(**/ABHED.md)", "edit(**/ABHED.md)",
 				// Files that commonly hold credentials are read only with a
 				// yes. A speed bump for the read tool, not credential protection:
 				// a command can still print them.

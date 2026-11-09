@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -835,5 +836,40 @@ func TestDialogFilterWidensAndNeverFiltersAnApproval(t *testing.T) {
 	spec.Filter = true
 	if _, err := spec.Normalized(); err == nil {
 		t.Fatal("an approval that filters was accepted")
+	}
+}
+
+// The session can open text in the editor while the key reader waits: the
+// reader hands over the terminal, and keys typed after come back to the input.
+func TestEditTextHandsTheEditorTheTerminal(t *testing.T) {
+	g := newRig(t, 80, 30)
+	g.lr.d.mu.Lock()
+	g.lr.d.extEdit = func(text string) (string, error) { return text + "edited\n", nil }
+	g.lr.d.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := g.lr.EditText(ctx, "before\n")
+	if err != nil || got != "before\nedited\n" {
+		t.Fatalf("EditText = %q, %v", got, err)
+	}
+	g.keys("hi")
+	g.settle()
+	g.lr.d.mu.Lock()
+	typed := g.lr.d.buf.expanded()
+	g.lr.d.mu.Unlock()
+	if typed != "hi" {
+		t.Fatalf("keys after the editor went to %q, not the input", typed)
+	}
+}
+
+// A reader with no way to poll its input cannot hand the terminal over.
+func TestEditTextWithoutPollingIsRefused(t *testing.T) {
+	lr := NewLineReaderOn(strings.NewReader(""), io.Discard, 80, 24)
+	defer lr.Close()
+	lr.d.mu.Lock()
+	lr.d.extEdit = func(text string) (string, error) { return text, nil }
+	lr.d.mu.Unlock()
+	if _, err := lr.EditText(context.Background(), "x"); !errors.Is(err, ErrNoEditor) {
+		t.Fatalf("err = %v, want ErrNoEditor", err)
 	}
 }

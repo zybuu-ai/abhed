@@ -49,6 +49,14 @@ All notable changes to Abhed are recorded here. The format follows
   (3 by default, 0 for none) for the whole conversation, counted from its
   record. A managed `limits.max_turns` without a managed `max_continues`
   allows none ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
+- A folder's own `ABHED.md`, below the workspace root, is loaded the first
+  time the agent works in that folder, added to that tool result and
+  recorded as `memory.loaded` with scope `subdirectory`. Read rules hold,
+  `.abhed` and `.git` are skipped, and the default configuration asks before
+  the agent writes or edits one (`write(**/ABHED.md)`). `/memory edit
+  <project|local|user>` opens a memory file in your editor and saves it as
+  your write, recorded as `memory.written`
+  ([Memory](docs/guide/19-input-and-memory.md#a-folders-own-abhedmd)).
 
 ### Fixed
 

@@ -163,6 +163,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+		loop.SubdirMemory = subdirMemory(pol, sess.Root)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.EnablePlanExit()
 		if !sessionState.appCfg.Plan.Runbooks {

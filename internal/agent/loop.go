@@ -302,6 +302,9 @@ type Loop struct {
 	// see: a message submitted, a call about to be asked, the end of a run.
 	// They may refuse or observe; nothing they say approves anything.
 	Hooks Hooks
+	// SubdirMemory, when set, adds a folder's own ABHED.md to the result of
+	// the first call that works in that folder. Nil loads none.
+	SubdirMemory *SubdirMemory
 	// Monitor, when set, judges each call policy would allow or ask about
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
@@ -2490,6 +2493,7 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	}
 
 	l.replan(results)
+	l.attachSubdirMemory(calls, results)
 	l.appendResults(calls, results, len(calls))
 	for _, o := range results {
 		if o.terminal != "" {

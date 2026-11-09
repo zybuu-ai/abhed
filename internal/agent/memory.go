@@ -37,6 +37,9 @@ const (
 	MemoryImport  = "import"
 	MemoryRule    = "rule"
 	MemoryAuto    = "auto"
+	// MemorySubdir is a folder's own ABHED.md, loaded when the agent first
+	// works in that folder.
+	MemorySubdir = "subdirectory"
 )
 
 // Memory file names.

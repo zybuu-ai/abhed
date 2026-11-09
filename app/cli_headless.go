@@ -478,6 +478,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		cfg.ContinueTurns = cfg.MaxTurns // a continuation gets the run's own allowance again
 	}
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	loop.SubdirMemory = subdirMemory(pol, sess.Root)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
 	// contract gates an answer, which a structured run does not give.

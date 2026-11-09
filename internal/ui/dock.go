@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -117,6 +118,13 @@ type dock struct {
 	detected func(theme string, sync int)
 	hotkeys  map[string]func()
 	extEdit  func(string) (string, error)
+	// edits carries a request from the session to open text in the editor;
+	// the key reader takes it between keys, so the editor has the terminal.
+	edits    chan editRequest
+	keysDone chan struct{} // closed when the key reader stops
+	// preread holds keys typed before the reader started, which polling
+	// the terminal does not see.
+	preread *bytes.Reader
 
 	// work lists the conversation's subagents and jobs under the input;
 	// workSel is the selected one's ID, "" for the conversation itself.
@@ -187,6 +195,8 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 		stops:     make(chan struct{}, 1),
 		askSlot:   make(chan struct{}, 1),
 		hotkeys:   map[string]func(){},
+		edits:     make(chan editRequest),
+		keysDone:  make(chan struct{}),
 		lastBlank: true,
 	}
 	d.commands = commandList
@@ -202,8 +212,10 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 // lock; handlers that call back into the session run after it is released.
 func (d *dock) run() {
 	defer RestoreOnPanic()
+	defer close(d.keysDone)
 	<-d.keysOn
 	for {
+		d.waitForKey()
 		k, err := d.kr.read()
 		if err != nil {
 			d.mu.Lock()
@@ -227,6 +239,52 @@ func (d *dock) run() {
 			post()
 		}
 	}
+}
+
+// editPoll is how often a reader waiting for a key looks for an edit request.
+const editPoll = 50 * time.Millisecond
+
+// editRequest is text the session wants the person to edit, and where the
+// result goes.
+type editRequest struct {
+	text  string
+	reply chan editResult
+}
+
+type editResult struct {
+	text string
+	err  error
+}
+
+// waitForKey returns when a key is ready, opening the editor for any request
+// that comes first. Without a way to poll the input it returns at once.
+func (d *dock) waitForKey() {
+	if d.kr.ready == nil {
+		return
+	}
+	for d.kr.br.Buffered() == 0 && (d.preread == nil || d.preread.Len() == 0) && !d.kr.ready(editPoll) {
+		select {
+		case req := <-d.edits:
+			d.runEdit(req)
+		default:
+		}
+	}
+}
+
+// runEdit gives the terminal to the editor for one request, as Ctrl-G does.
+func (d *dock) runEdit(req editRequest) {
+	d.mu.Lock()
+	d.scr.clear()
+	d.stopped = true
+	d.mu.Unlock()
+	got, err := d.extEdit(req.text)
+	d.mu.Lock()
+	d.stopped = false
+	d.scr.forget()
+	d.dialogVisible()
+	d.draw()
+	d.mu.Unlock()
+	req.reply <- editResult{got, err}
 }
 
 // openKeys lets the key reader act on keys, once.
