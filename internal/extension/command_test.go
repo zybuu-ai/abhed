@@ -344,21 +344,25 @@ func TestHTTPHookHeadersEnv(t *testing.T) {
 // recorded, and those still going end with their session.
 func TestAsyncHookRunsAreBoundedAndEndWithTheSession(t *testing.T) {
 	r := &scriptRunner{}
-	h, fired := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "bg", Command: "hang", Events: []Event{EvTurnEnd},
+	h, _ := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "bg", Command: "hang", Events: []Event{EvTurnEnd},
 		Async: true, Timeout: time.Minute})
+	var mu sync.Mutex
+	var fired []Fired
+	h.SetOnFired(func(f Fired) { mu.Lock(); fired = append(fired, f); mu.Unlock() })
+	got := func() []Fired { mu.Lock(); defer mu.Unlock(); return append([]Fired(nil), fired...) }
 	for range maxAsyncRuns + 1 {
 		h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "s1"})
 	}
-	if len(*fired) != 1 || (*fired)[0].Verdict != VerdictError || !strings.Contains((*fired)[0].Reason, "skipped") {
-		t.Fatalf("recorded %+v", *fired)
+	if f := got(); len(f) != 1 || f[0].Verdict != VerdictError || !strings.Contains(f[0].Reason, "skipped") {
+		t.Fatalf("recorded %+v", f)
 	}
 	h.EndSession("s1")
 	deadline := time.Now().Add(5 * time.Second)
-	for len(*fired) < 1+maxAsyncRuns && time.Now().Before(deadline) {
+	for len(got()) < 1+maxAsyncRuns && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(*fired) != 1+maxAsyncRuns {
-		t.Fatalf("the session's async runs did not end with it: %d recorded", len(*fired))
+	if n := len(got()); n != 1+maxAsyncRuns {
+		t.Fatalf("the session's async runs did not end with it: %d recorded", n)
 	}
 }
 
