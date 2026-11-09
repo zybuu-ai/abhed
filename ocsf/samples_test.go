@@ -2,6 +2,7 @@ package ocsf
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -143,6 +144,7 @@ var samples = []sample{
 	{agent.EvLSPDiagnostics, agent.ActorSystem, `{"call_id":"c-7","path":"/w/a.go","language":"go","lsp_id":"lsp-diag-go-1","total":3,"shown":3,"errors":1,"warnings":2,"duration_ms":410}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:35:00Z","by":"mcp add -confirm-fd","key":"mcp.servers","name":"issues","kind":"stdio","sha256":"549dbf97"}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:36:00Z","by":"mcp add","key":"mcp.servers","name":"pastebin","kind":"http","sha256":"0f1e2d3c","refused":"mcp.denied in /etc/abhed/config.json matches it"}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"by":"abhed","key":"config-changes.jsonl","pending":51}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.
@@ -157,7 +159,8 @@ func sampleLines() []Line {
 		}
 		compact, _ = json.Marshal(v)
 		trust := agent.Trusted
-		if untrustedTypes[s.typ] {
+		// Abhed's own entries (a pending count) are trusted; the log's lines are not.
+		if untrustedTypes[s.typ] && !strings.Contains(s.payload, `"by":"abhed"`) {
 			trust = agent.Untrusted
 		}
 		out[i] = Line{Event: agent.Event{

@@ -53,8 +53,9 @@ All notable changes to Abhed are recorded here. The format follows
   written since a session last did, as `config.changed` (untrusted, since
   the log is a file in your home), so an MCP server added at a terminal or
   from Studio reaches a hash-chained record. A session takes at most 200;
-  the rest carry over to the next sessions, and an entry says how many
-  wait. A log replaced by hand is read from its start. In OCSF a refused
+  the rest carry over to the next sessions, and an entry says at least how
+  many wait. A line over 1 MiB is skipped, with an entry saying so. The
+  events show the log as read, not proof that it was complete. A log replaced by hand is read from its start. In OCSF a refused
   entry is a failure. Past 4 MiB the log no longer takes refused attempts;
   changes are still logged.
 

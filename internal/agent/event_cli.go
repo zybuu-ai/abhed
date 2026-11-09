@@ -60,8 +60,9 @@ type ConfigChanged struct {
 	Kind    string `json:"kind,omitempty"`
 	SHA256  string `json:"sha256,omitempty"`
 	Refused string `json:"refused,omitempty"`
-	// Pending, on an entry of its own, is how many more lines wait in the
-	// log for the next session, when this one recorded as many as it takes.
+	// Pending, on an entry of its own, is at least how many more lines wait
+	// in the log for the next session, when this one recorded as many as it
+	// takes (it counts only within the part of the log it read).
 	Pending int `json:"pending,omitempty"`
 }
 

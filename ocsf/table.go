@@ -674,6 +674,9 @@ func mapConfigChanged(b *builder) {
 	if by := b.str("by"); by != "" {
 		msg += " (" + by + ")"
 	}
+	if n, ok := b.num("pending"); ok && n > 0 {
+		msg += ": at least " + strconv.FormatInt(n, 10) + " pending"
+	}
 	b.set("message", msg)
 	if r := b.str("refused"); r != "" {
 		b.status(2, "", r)

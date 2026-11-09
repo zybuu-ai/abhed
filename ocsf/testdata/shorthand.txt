@@ -118,3 +118,4 @@
 2026-10-19T12:00:01.123Z s-1#120 API:Language server diagnostics INFO lsp.diagnostics
 2026-10-19T12:00:02.123Z s-1#121 CONF:Log INFO config.changed mcp.servers issues (mcp add -confirm-fd)
 2026-10-19T12:00:03.123Z s-1#122 CONF:Log LOW config.changed mcp.servers pastebin (mcp add)
+2026-10-19T12:00:04.123Z s-1#123 CONF:Log INFO config.changed config-changes.jsonl (abhed): at least 51 pending

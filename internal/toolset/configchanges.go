@@ -57,7 +57,8 @@ func firstLineHash(f *os.File) string {
 // made outside a session (abhed mcp add, at a terminal or from Studio) reaches
 // a hash-chained record. The lines are the person's file, so each is recorded
 // untrusted and escaped. A session takes at most 200; the rest wait for the
-// next, and one entry says how many. The mark is read and written under a
+// next, and one entry says at least how many (it counts within the window it
+// read). A line over the window is skipped to its end, and an entry says so. The mark is read and written under a
 // lock, so sessions starting together record each line once.
 func RecordConfigChanges(rec *agent.Recorder) error {
 	logPath, markPath, err := configChangesFiles()
@@ -101,6 +102,20 @@ func RecordConfigChanges(rec *agent.Recorder) error {
 	buf = buf[:n]
 	// Only whole lines: one still being written is read next time.
 	whole := buf[:bytes.LastIndexByte(buf, '\n')+1]
+	if len(whole) == 0 && int64(len(buf)) == configChangesReadMax {
+		// A line longer than the window would hold the log back for good: skip
+		// it to its end and say so.
+		next, ok := nextLineStart(f, from+int64(len(buf)), st.Size())
+		if !ok {
+			return nil
+		}
+		if _, err := rec.Record(agent.EvConfigChanged, agent.ActorSystem, agent.Trusted,
+			agent.ConfigChanged{By: "abhed", Key: "config-changes.jsonl", Refused: "a line over 1 MiB was skipped"}); err != nil {
+			return err
+		}
+		writeConfigChangesMark(markPath, configChangesMark{Offset: next, First: first})
+		return nil
+	}
 	pos, recorded := 0, 0
 	for pos < len(whole) && recorded < configChangesMax {
 		end := pos + bytes.IndexByte(whole[pos:], '\n') + 1
@@ -122,17 +137,41 @@ func RecordConfigChanges(rec *agent.Recorder) error {
 			return err
 		}
 	}
-	b, _ := json.Marshal(configChangesMark{Offset: from + int64(pos), First: first})
+	writeConfigChangesMark(markPath, configChangesMark{Offset: from + int64(pos), First: first})
+	return nil
+}
+
+// writeConfigChangesMark saves the mark through a fresh file renamed into
+// place; a failure only means the lines are read again.
+func writeConfigChangesMark(markPath string, m configChangesMark) {
+	b, _ := json.Marshal(m)
 	tmp, err := os.CreateTemp(filepath.Dir(markPath), "config-changes.recorded.*")
 	if err != nil {
-		return nil
+		return
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
 	_, _ = tmp.Write(b)
 	if tmp.Close() == nil {
 		_ = os.Rename(tmp.Name(), markPath)
 	}
-	return nil
+}
+
+// nextLineStart is the offset just past the first newline at or after at,
+// read in pieces; false when the log has none yet (the line is still being
+// written).
+func nextLineStart(f *os.File, at, size int64) (int64, bool) {
+	piece := make([]byte, 64<<10)
+	for at < size {
+		n, err := f.ReadAt(piece, at)
+		if i := bytes.IndexByte(piece[:n], '\n'); i >= 0 {
+			return at + int64(i) + 1, true
+		}
+		at += int64(n)
+		if err != nil || n == 0 {
+			break
+		}
+	}
+	return 0, false
 }
 
 // clip is a field of the change log as the record keeps it: escaped, and cut

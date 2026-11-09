@@ -159,3 +159,31 @@ func TestClipKeepsCharactersWhole(t *testing.T) {
 		t.Fatalf("%q", c[250:])
 	}
 }
+
+// A line longer than the window is skipped to its end with an entry saying
+// so, and the log goes on: a real add after it is recorded.
+func TestRecordConfigChangesSkipsAnOversizeLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	logPath := filepath.Join(home, ".abhed", "config-changes.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	huge := `{"by":"mcp add","key":"mcp.servers","name":"` + strings.Repeat("x", configChangesReadMax+10) + `"}` + "\n"
+	real := `{"by":"mcp add -confirm-fd","key":"mcp.servers","name":"real"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(huge+real), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := agent.NewMemStore()
+	var all []agent.ConfigChanged
+	for _, id := range []string{"s1", "s2", "s3"} {
+		if err := RecordConfigChanges(agent.NewRecorder(store, id, "")); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := changes(t, store, id)
+		all = append(all, got...)
+	}
+	if len(all) != 2 || all[0].Refused != "a line over 1 MiB was skipped" || all[0].By != "abhed" || all[1].Name != "real" {
+		t.Fatalf("%+v", all)
+	}
+}
