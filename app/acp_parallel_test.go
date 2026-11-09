@@ -184,3 +184,24 @@ func TestStudioNoteOnlyOnTheTypedPrompt(t *testing.T) {
 		t.Fatalf("user.message notes: %v", msgs)
 	}
 }
+
+// A wait for the model shows in Studio: on the subagent's card, or as a
+// thought for the session's own request.
+func TestStudioShowsModelWaiting(t *testing.T) {
+	c, s := &acpConn{}, &acpSession{}
+	ev := func(w agent.ModelWaiting) agent.Event {
+		b, _ := json.Marshal(w)
+		return agent.Event{Type: agent.EvModelWaiting, Payload: b}
+	}
+	own := c.updates(s, ev(agent.ModelWaiting{Ahead: 2}), false)
+	if len(own) != 1 || own[0]["sessionUpdate"] != "agent_thought_chunk" || !strings.Contains(fmt.Sprint(own[0]["content"]), "waiting for the model (2 ahead)") {
+		t.Fatalf("the session's own wait: %v", own)
+	}
+	child := c.updates(s, ev(agent.ModelWaiting{Session: "c1", Ahead: 1}), false)
+	if len(child) != 1 || child[0]["sessionUpdate"] != "tool_call_update" || child[0]["toolCallId"] != "sub-c1" {
+		t.Fatalf("a subagent's wait: %v", child)
+	}
+	if len(c.updates(s, ev(agent.ModelWaiting{Ahead: 2}), true)) != 0 {
+		t.Fatal("a replay shows a wait that is over")
+	}
+}

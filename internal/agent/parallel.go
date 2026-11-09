@@ -277,26 +277,29 @@ func labelFrom(prompt string) string {
 	return strings.Join(words, " ")
 }
 
-// A message asks for work in parallel when the person names more than one
-// agent to do it, or asks for the work at once in so many words; the second
-// does not count when the message names the program's own concurrency.
+// A message asks for work in parallel when the person names subagents, or
+// asks for the work at once in so many words, and says nothing of changing
+// code. Precision is worth more than recall here: a note on a request to
+// build, fix or make code concurrent sends the model the wrong way, while a
+// miss costs only the note, and /parallel always asks outright.
 var (
-	parallelAgents = regexp.MustCompile(`(?i)\b(use|using|spin up|start|launch|run|with|deploy|get)\s+` +
-		`(\d+|two|three|four|five|six|several|multiple|many|a few|parallel)\s+(sub-?)?agents\b`)
-	parallelWork = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|concurrently|` +
-		`simultaneously|side[ -]by[ -]side|paralleli[sz]e|fan(ning)?[ -]out|en paralelo)\b|समानांतर`)
-	codeConcurrency = regexp.MustCompile(`(?i)\b(races?|racy|goroutines?|threads?|thread-?safe|threadpool|` +
-		`async|asyncio|await|gather|worker[ -]?pool|pool|mutex(es)?|locks?|scheduler|pipeline|for[ -]loop|loop|` +
-		`gpus?|training|safe|requests|connections?|connecting)\b|(^|\s)(-p\s*\d|-{1,2}parallel\b)`)
+	parallelSubagents = regexp.MustCompile(`(?i)\bsub-?agents?\b`)
+	parallelWork      = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|` +
+		`side[ -]by[ -]side|paralleli[sz]e|fan(ning)?[ -]out|en paralelo)\b|समानांतर`)
+	// codeWork names a change to code, the program's own concurrency, or a
+	// library or file that does it.
+	codeWork = regexp.MustCompile(`(?i)\b(build|builds|building|deploy|deploys|deploying|implement|implements|` +
+		`add|adds|make|makes|refactor|write|code|app|apps|cluster|compose|docker|should|must|` +
+		`race|races|racy|goroutines?|threads?|thread-?safe|threadpool|threadpoolexecutor|asyncio|async|await|` +
+		`errgroup|rayon|mutex(es)?|locks?|scheduler|worker[ -]?pools?|for[ -]loop|gpus?|connections?|connecting|` +
+		`test suite|tests in parallel|safe to (call|run|use))\b|promise\.all|` +
+		`\b[\w-]+\.(py|go|js|ts|tsx|jsx|rs|java|rb|c|cc|cpp|h|cs|kt|swift)\b|(^|\s)(-p\s*\d|-{1,2}parallel\b)`)
 )
 
 // asksForParallelWork reports whether the person's own words ask for work to
-// be done in parallel, rather than about the program's concurrency.
+// be done in parallel, rather than for a change to the program.
 func asksForParallelWork(typed string) bool {
-	if parallelAgents.MatchString(typed) {
-		return true
-	}
-	return parallelWork.MatchString(typed) && !codeConcurrency.MatchString(typed)
+	return (parallelSubagents.MatchString(typed) || parallelWork.MatchString(typed)) && !codeWork.MatchString(typed)
 }
 
 // ParallelNote is what Abhed adds after a message that asks for work in

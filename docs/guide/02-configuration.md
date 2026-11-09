@@ -138,18 +138,21 @@ Requests past it wait in Abhed, their timeouts start only when they are sent,
 and the wait is shown and recorded as `model.waiting`. Parallel subagents each
 call the model; a server that serves one request at a time queues the rest and
 sends them nothing until their turn, which the stall timeout used to end as a
-hung endpoint. The bound belongs to the provider, not to one session's
-connection: every adapter built from the same provider in one Abhed process
-(the session's, a subagent's on a named model, Studio's completions) shares
-it. 0 (the default) is 1 for type `ollama` and no bound for every other type.
+hung endpoint. The bound belongs to the server and model, not to one provider
+entry: every adapter in one Abhed process that reaches the same model at the
+same base URL (the session's, a subagent's on a named model, Studio's
+completions, and providers of different types naming that endpoint) shares it,
+and the smallest bound any of them sets applies to all. Base URLs that differ
+only by case, a default port or a trailing slash are one server. 0 (the
+default) is 1 for type `ollama` and no bound of its own for every other type.
 Ollama's FAQ gives `OLLAMA_NUM_PARALLEL`, the requests each model serves at
 once, as "default 1" (docs.ollama.com/faq, read 9 November 2026); some earlier
 Ollama releases chose 1 or 4 from the memory free. Set the key to the server's
 parallel slots (`OLLAMA_NUM_PARALLEL`, llama.cpp's `--parallel`, vLLM's batch)
 to let that many through. It applies to the OpenAI-compatible types (`ollama`,
 `vllm`, `llamacpp`, `tgi`, `sglang`, `openai-compatible` and the hosted
-gateways); on any other type a value above 0 is refused at startup, as is a
-negative one.
+gateways); a value above 0 on any other type, or a negative one, is refused at
+startup on every provider, not only the default.
 
 ## Limits
 

@@ -104,9 +104,9 @@ func New(s Spec) (Adapter, error) {
 			// read as a dead server. Parallel subagents failed that way.
 			n = 1
 		}
-		if n > 0 {
-			c.slots = poolFor(s.Type, c.BaseURL, c.Model, n)
-		}
+		// Every adapter joins its server's pool, so one with no bound of its
+		// own still waits behind another provider's bound on that model.
+		c.slots = poolFor(c.BaseURL, c.Model, n)
 	}
 	return a, nil
 }

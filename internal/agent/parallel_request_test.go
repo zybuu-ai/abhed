@@ -206,32 +206,47 @@ func TestParallelPrompt(t *testing.T) {
 
 var _ tools.Tool = Tasks{}
 
-// The trigger: work asked for in parallel, or by several agents, and not a
-// message about the program's own concurrency.
+// parallelCase is one phrasing and whether it should raise the note.
+type parallelCase struct {
+	text string
+	want bool
+}
+
+func checkParallelCases(t *testing.T, cases []parallelCase) {
+	t.Helper()
+	for _, tc := range cases {
+		if got := asksForParallelWork(tc.text); got != tc.want {
+			t.Errorf("%q: %v, want %v", tc.text, got, tc.want)
+		}
+	}
+}
+
+// The trigger: work asked for in parallel, or by subagents, and not a
+// message about changing code. These are the phrasings the veto was written
+// against.
 func TestAsksForParallelWork(t *testing.T) {
-	for _, tc := range []struct {
-		text string
-		want bool
-	}{
+	checkParallelCases(t, []parallelCase{
 		// Work the person wants done at once.
 		{"Speed up the project by running things in parallel.", true},
 		{"review src, test pkg/store and document the server package in parallel", true},
 		{"do these three at the same time", true},
-		{"use several agents to audit the packages", true},
 		{"spin up multiple subagents for this", true},
 		{"run parallel subagents over each service", true},
-		{"handle these concurrently", true},
 		{"split this up and work on the parts simultaneously", true},
 		{"parallelize the review of these four modules", true},
 		{"fan out across the services and check each", true},
 		{"do these in parallel please", true},
-		{"use 3 agents to look at auth, store and server", true},
 		{"run them side by side", true},
 		{"work on all of them at once", true},
 		{"यह काम समानांतर में करो", true},
 		{"en paralelo, revisa los tres módulos", true},
 		{"in-parallel review of pkg/a and pkg/b", true},
-		{"The three parts all need work. Make it faster, do it in parallel.", true},
+		// Missed on purpose: a count of agents, "concurrently", or a
+		// code-change verb leaves the note out; /parallel asks outright.
+		{"use several agents to audit the packages", false},
+		{"use 3 agents to look at auth, store and server", false},
+		{"handle these concurrently", false},
+		{"The three parts all need work. Make it faster, do it in parallel.", false},
 		// The program's own concurrency, or no request for parallel work.
 		{"make the ingestion pipeline process files concurrently", false},
 		{"parallelize the for loop in walk.go", false},
@@ -250,11 +265,42 @@ func TestAsksForParallelWork(t *testing.T) {
 		{"go test -parallel 4 keeps timing out", false},
 		{"add a mutex so both writers can run at once", false},
 		{"summarise the notes", false},
-	} {
-		if got := asksForParallelWork(tc.text); got != tc.want {
-			t.Errorf("%q: %v, want %v", tc.text, got, tc.want)
-		}
-	}
+	})
+}
+
+// Held out: phrasings the veto was not written against, kept apart so a
+// change to the trigger is judged on words it was not fitted to.
+func TestAsksForParallelWorkHeldOut(t *testing.T) {
+	checkParallelCases(t, []parallelCase{
+		// From the second review.
+		{"run the test suite in parallel", false},
+		{"make the downloads happen at once instead of one by one", false},
+		{"build a LangGraph app with multiple agents that talk to each other", false},
+		{"deploy two agents to the staging cluster", false},
+		{"start 4 agents in docker compose for the load test", false},
+		{"make the indexer process documents concurrently", false},
+		{"the crawler should fetch pages simultaneously", false},
+		{"parallelise the image resize in resize.py", false},
+		{"add Promise.all so the fetches run at the same time", false},
+		{"use errgroup so the uploads run concurrently", false},
+		{"make each shard parallel", false},
+		{"review the ingestion pipeline and the retriever in parallel", true},
+		{"check every request handler in parallel", true},
+		// "code" vetoes: precision over recall, so this one is missed.
+		{"audit the locking code and the auth code at the same time", false},
+		{"look at the training and eval scripts in parallel", true},
+		// Written for this table.
+		{"review pkg/auth, pkg/store and pkg/server in parallel", true},
+		{"audit these three repos at the same time", true},
+		{"summarise the five design docs side by side", true},
+		{"fan out over the services and report what each one does", true},
+		{"spin up subagents to read each module", true},
+		{"investigate the three failing CI jobs simultaneously", true},
+		{"implement a worker that processes jobs in parallel", false},
+		{"refactor the scheduler so jobs run at once", false},
+		{"write a script that downloads the files at once", false},
+		{"use rayon to sort the chunks in parallel", false},
+	})
 }
 
 // noteLoop is a top-level loop on a scripted model, with tasks when withTasks.

@@ -140,15 +140,56 @@ func TestWaitingForASlotEndsWithTheCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := a.(*OpenAICompatible)
-	c.slots.slots <- struct{}{} // the one slot is held
-	defer func() { <-c.slots.slots }()
+	held, err := c.slots.acquire(context.Background()) // the one slot is held
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if _, err := c.Complete(ctx, Request{Messages: []Message{{Role: RoleUser, Content: "hi"}}}); err != context.DeadlineExceeded {
 		t.Fatalf("got %v, want the context's deadline", err)
 	}
-	if len(c.slots.slots) != 1 || c.slots.waiting.Load() != 0 {
-		t.Fatalf("%d slots taken and %d waiting, want only the one held", len(c.slots.slots), c.slots.waiting.Load())
+	if c.slots.waiting() != 0 {
+		t.Fatalf("%d still waiting", c.slots.waiting())
+	}
+	held()
+	if next, err := c.slots.acquire(context.Background()); err != nil {
+		t.Fatalf("the slot was not freed: %v", err)
+	} else {
+		next()
+	}
+}
+
+// Providers of different types on one server and model share its pool, with
+// the smallest bound any of them gives; spellings of the URL that differ
+// only by case, a default port or a trailing slash are one server.
+func TestProvidersOnOneServerShareTheSmallestBound(t *testing.T) {
+	hold := make(chan struct{})
+	base := oneAtATime(t, hold).URL
+	var as []Adapter
+	for _, sp := range []Spec{
+		{Type: "ollama", BaseURL: base + "/v1", Model: "m"},
+		{Type: "openai-compatible", BaseURL: base + "/v1/", Model: "m", MaxConcurrent: 1},
+		{Type: "openai-compatible", BaseURL: strings.ToUpper(base[:4]) + base[4:] + "/v1", Model: "m"},
+	} {
+		sp.Timeouts = Timeouts{Stall: 500 * time.Millisecond}
+		a, err := New(sp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		as = append(as, a)
+	}
+	for i, err := range concurrently(context.Background(), as, hold, 1500*time.Millisecond) {
+		if err != nil {
+			t.Errorf("call %d: %v", i, err)
+		}
+	}
+	if endpointKey("http://Host:80/v1/", "m") != endpointKey("http://host/v1", "m") {
+		t.Error("a default port or a trailing slash makes another server")
+	}
+	if p := poolFor("http://smallest.test/v1", "m", 4); poolFor("http://smallest.test/v1", "m", 2).limit != 2 || p.limit != 2 ||
+		poolFor("http://smallest.test/v1", "m", 0).limit != 2 {
+		t.Error("the smallest bound did not win")
 	}
 }
 

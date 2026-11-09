@@ -53,11 +53,12 @@ All notable changes to Abhed are recorded here. The format follows
   to the model with the instruction to start its independent parts at once
   in one `tasks` call. It is recorded as `command.invoked`.
 - `max_concurrent_requests` on a provider of an OpenAI-compatible type: the
-  requests sent to it at once, shared by every adapter built from that
-  provider in the process. Requests past it wait in Abhed before their
-  timeouts start, the wait is shown in the terminal and on the subagent's
-  Studio card and recorded as `model.waiting`, and `model.call` keeps it apart
-  as `queue_ms`. A value above 0 on another type is refused at startup.
+  requests sent at once to its model on its server, shared by every adapter
+  in the process that reaches them, the smallest bound winning. Requests past
+  it wait in Abhed before their timeouts start; the wait is shown in the
+  terminal and in Studio and recorded as `model.waiting`, and `model.call`
+  keeps it apart as `queue_ms`. A value above 0 on another type is refused at startup, on
+  every provider.
 
 ### Changed
 
@@ -77,9 +78,11 @@ All notable changes to Abhed are recorded here. The format follows
   note after the message, recorded on its `user.message` as
   `harness_note`; on a small local model the descriptions alone did not turn
   it. The note is judged only on what the person typed, not on attached files,
-  Studio resources or piped stdin; it is left out when the message names the
-  program's own concurrency, in a subagent's task and when no subagent could
-  start. A `tasks` start now shows as one line naming each part (`3 in
+  Studio resources or piped stdin; it needs "subagents" or a phrase such as
+  "in parallel" or "at the same time", and is left out when the message also
+  names a change to code or the program's own concurrency (the whole list is
+  in the parallel-subagents guide), in a subagent's task and when no subagent
+  could start. A `tasks` start now shows as one line naming each part (`3 in
   parallel: …`) in the terminal and on Studio's card, and `task` cards name
   their description; a task given no description is labelled from its
   prompt. Outside a git repository `tasks` no longer offers worktree

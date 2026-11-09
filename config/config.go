@@ -2119,6 +2119,22 @@ func (c Config) Validate() error {
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
 	}
+	// max_concurrent_requests is checked on every provider, not only the
+	// default: another is built when first used, which is too late to say so.
+	names := make([]string, 0, len(c.Model.Providers))
+	for name := range c.Model.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		pc := c.Model.Providers[name]
+		switch {
+		case pc.MaxConcurrentRequests < 0:
+			return fmt.Errorf("provider %q: max_concurrent_requests may not be negative", name)
+		case pc.MaxConcurrentRequests > 0 && model.Known(pc.Type) && !model.HonoursMaxConcurrent(pc.Type):
+			return fmt.Errorf("provider %q: max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", name, pc.Type)
+		}
+	}
 	p, err := c.providerNamed(c.Model.Default)
 	if err != nil {
 		return err

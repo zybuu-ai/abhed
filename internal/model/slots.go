@@ -2,21 +2,25 @@ package model
 
 import (
 	"context"
-	"fmt"
+	"net/url"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-// A provider's request bound is shared by every adapter built from the same
-// spec in this process: a session's, its subagents' on a named model, the
-// editor's completions. One bound per adapter let each of them send its own
-// request to a server that serves one at a time, and the queued ones stalled.
+// A server's request bound is shared by every adapter that reaches the same
+// model there in this process: a session's, its subagents' on a named model,
+// the editor's completions, and providers of different types that name the
+// same endpoint. One bound per adapter let each of them send its own request
+// to a server that serves one at a time, and the queued ones stalled.
 
-// slotPool bounds the requests in flight to one provider.
+// slotPool bounds the requests in flight to one model on one server. A limit
+// of 0 sets no bound; the smallest bound any provider gives it wins.
 type slotPool struct {
-	slots   chan struct{}
-	waiting atomic.Int32
+	mu      sync.Mutex
+	limit   int
+	inUse   int
+	waiters []chan struct{} // oldest first; each is closed when it is given a slot
 }
 
 var (
@@ -24,20 +28,44 @@ var (
 	pools   = map[string]*slotPool{}
 )
 
-// poolFor is the shared pool for a provider identity and bound.
-func poolFor(typ, baseURL, model string, n int) *slotPool {
-	key := fmt.Sprintf("%s\x00%s\x00%s\x00%d", typ, baseURL, model, n)
+// endpointKey is a base URL and model with case, default ports and trailing
+// slashes taken out, so two spellings of one server share a pool.
+func endpointKey(baseURL, model string) string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(strings.ToLower(baseURL), "/") + "\x00" + model
+	}
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return strings.ToLower(u.Scheme) + "://" + host + strings.TrimRight(u.Path, "/") + "\x00" + model
+}
+
+// poolFor is the shared pool for a model on a server; n above 0 bounds it,
+// lowering any larger bound it had.
+func poolFor(baseURL, model string, n int) *slotPool {
+	key := endpointKey(baseURL, model)
 	poolsMu.Lock()
 	defer poolsMu.Unlock()
 	p := pools[key]
 	if p == nil {
-		p = &slotPool{slots: make(chan struct{}, n)}
+		p = &slotPool{}
 		pools[key] = p
 	}
+	p.mu.Lock()
+	if n > 0 && (p.limit == 0 || n < p.limit) {
+		p.limit = n
+	}
+	p.mu.Unlock()
 	return p
 }
 
-// SlotWait is a request held back because its provider's slots are taken.
+// SlotWait is a request held back because its server's slots are taken.
 type SlotWait struct {
 	// Ahead is how many requests were waiting before this one.
 	Ahead int
@@ -62,31 +90,97 @@ func SlotWaitOf(ctx context.Context) func(w SlotWait, done bool) {
 }
 
 // acquire waits for a slot and returns what frees it; it gives up when ctx
-// ends. A nil pool sets no bound.
+// ends. A nil pool, or one with no bound, lets every request through.
 func (p *slotPool) acquire(ctx context.Context) (func(), error) {
 	if p == nil {
 		return func() {}, nil
 	}
-	select {
-	case p.slots <- struct{}{}:
-	default:
-		tell := SlotWaitOf(ctx)
-		ahead := int(p.waiting.Add(1)) - 1
-		start := time.Now()
-		if tell != nil {
-			tell(SlotWait{Ahead: ahead}, false)
-		}
-		select {
-		case p.slots <- struct{}{}:
-			p.waiting.Add(-1)
-		case <-ctx.Done():
-			p.waiting.Add(-1)
-			return nil, ctx.Err()
-		}
-		if tell != nil {
-			tell(SlotWait{Ahead: ahead, Waited: time.Since(start)}, true)
-		}
+	p.mu.Lock()
+	if p.limit == 0 || (p.inUse < p.limit && len(p.waiters) == 0) {
+		p.inUse++
+		p.mu.Unlock()
+		return p.releaser(), nil
 	}
+	turn := make(chan struct{})
+	ahead := len(p.waiters)
+	p.waiters = append(p.waiters, turn)
+	p.mu.Unlock()
+
+	tell := SlotWaitOf(ctx)
+	start := time.Now()
+	if tell != nil {
+		tell(SlotWait{Ahead: ahead}, false)
+	}
+	select {
+	case <-turn:
+	case <-ctx.Done():
+		p.mu.Lock()
+		given := true
+		for i, w := range p.waiters {
+			if w == turn {
+				p.waiters = append(p.waiters[:i:i], p.waiters[i+1:]...)
+				given = false
+				break
+			}
+		}
+		p.mu.Unlock()
+		if given { // the slot came as it gave up: hand it on
+			p.release()
+		}
+		return nil, ctx.Err()
+	}
+	if tell != nil {
+		tell(SlotWait{Ahead: ahead, Waited: time.Since(start)}, true)
+	}
+	return p.releaser(), nil
+}
+
+// releaser frees one slot, once however often it is called.
+func (p *slotPool) releaser() func() {
 	var once sync.Once
-	return func() { once.Do(func() { <-p.slots }) }, nil
+	return func() { once.Do(p.release) }
+}
+
+// release frees a slot, giving it to the oldest waiter if there is one.
+func (p *slotPool) release() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.waiters) > 0 && (p.limit == 0 || p.inUse <= p.limit) {
+		next := p.waiters[0]
+		p.waiters = p.waiters[1:]
+		close(next) // the slot passes to it; inUse is unchanged
+		return
+	}
+	p.inUse--
+}
+
+// waiting is how many requests wait for a slot, for tests.
+func (p *slotPool) waiting() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.waiters)
+}
+
+var (
+	boundableMu sync.Mutex
+	boundable   = map[string]bool{}
+)
+
+// HonoursMaxConcurrent reports whether a provider type takes
+// max_concurrent_requests: one whose adapter speaks the OpenAI-compatible
+// protocol. A type it cannot tell is reported as not.
+func HonoursMaxConcurrent(typ string) bool {
+	boundableMu.Lock()
+	defer boundableMu.Unlock()
+	if ok, seen := boundable[typ]; seen {
+		return ok
+	}
+	ok := false
+	if p, found := providers[typ]; found {
+		a, err := p.build(Spec{Type: typ, BaseURL: "http://boundable.invalid/v1", Model: "m", APIKey: "k", NoAmbientKey: true})
+		_, ok = a.(*OpenAICompatible)
+		ok = ok && err == nil
+	}
+	boundable[typ] = ok
+	return ok
 }

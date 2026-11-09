@@ -297,14 +297,19 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 					"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}}})
 		}
 	case agent.EvModelWaiting:
-		// A subagent waiting for the model says so on its card.
+		// A subagent waiting for the model says so on its card; the session's
+		// own wait is said as a thought, where the editor shows progress.
 		var w agent.ModelWaiting
-		if replay || json.Unmarshal(ev.Payload, &w) != nil || w.Session == "" {
+		if replay || json.Unmarshal(ev.Payload, &w) != nil {
 			break
 		}
 		text := "waiting for the model"
 		if w.Ahead > 0 {
 			text += fmt.Sprintf(" (%d ahead)", w.Ahead)
+		}
+		if w.Session == "" {
+			update(map[string]any{"sessionUpdate": "agent_thought_chunk", "content": textBlock(text + "\n")})
+			break
 		}
 		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "sub-" + w.Session, "status": "in_progress",
 			"content": []any{map[string]any{"type": "content", "content": textBlock(text)}}})

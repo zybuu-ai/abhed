@@ -24,9 +24,9 @@ runs out, as its parent does.
 
 ## Asking for parallel work
 
-Ask in plain words: "run these in parallel", "at the same time", "use three
-agents". The `tasks` tool tells the model that work asked for in parallel or by
-several agents means starting subagents, not making the code concurrent, and
+Ask in plain words: "review these in parallel", "at the same time", "use
+subagents". The `tasks` tool tells the model that work asked for in parallel or
+by several agents means starting subagents, not making the code concurrent, and
 `task` says that several `task` calls in one response also run at once. Models
 used to read "run this in parallel" as a request to make the project concurrent,
 or did the parts one after another.
@@ -36,16 +36,33 @@ project by running things in parallel", it still added a thread pool to the
 code. So when your own words ask for work in parallel, Abhed puts a short note
 after your message for the model: unless you asked in so many words to change the
 program to run concurrently, the message means how it does the work, so it splits
-it into independent parts and starts them all at once with one `tasks` call. The
-note is judged only on
-what you typed, never on files you attach with `@`, resources attached in Studio
-or input piped into `-p`. It is left out when the message names the program's
-concurrency (a race, threads, async code, a worker pool, a lock, a scheduler,
-`-p 8`), and it is added only in the session itself, never to a subagent's task,
-and only while a subagent could still start. The record keeps it on the
-`user.message`, as `harness_note`, beside your own text, so a fork or a resume
-sends what the model was sent. A message queued or steered while a turn runs is
-treated the same way.
+it into independent parts and starts them all at once with one `tasks` call.
+
+The note favours being right over being frequent: a note on a request to build
+or change code would send the model the wrong way, while a missed note costs
+nothing that `/parallel` cannot ask for outright. It is added when your message
+says "subagent" or "subagents", or one of "in parallel", "at the same time", "at
+once", "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan
+out", "en paralelo" or "समानांतर", and none of these:
+
+- a word for changing or shipping code: build, deploy, implement, add, make,
+  refactor, write, code, app, cluster, compose, docker, and "should" or "must"
+  (which describe how a program behaves);
+- the program's own concurrency: race, racy, goroutine, thread, thread-safe,
+  threadpool, ThreadPoolExecutor, async, asyncio, await, errgroup, rayon,
+  `Promise.all`, mutex, lock, scheduler, worker pool, for loop, GPU,
+  connection or connecting, "test suite", "tests in parallel", "safe to call"
+  (or run, or use), `-p` with a number, `-parallel` or `--parallel`;
+- a source file name such as `resize.py` or `walk.go`.
+
+So "use three agents", "handle these concurrently" and "make it faster, do it in
+parallel" get no note; use `/parallel` for those. The note is judged only on what
+you typed, never on files you attach with `@`, resources attached in Studio or
+input piped into `-p`. It is added only in the session itself, never to a
+subagent's task, and only while a subagent could still start. The record keeps it
+on the `user.message`, as `harness_note`, beside your own text, so a fork or a
+resume sends what the model was sent. A message queued or steered while a turn
+runs is treated the same way.
 
 `/parallel <work>` says it outright, in the terminal, in Studio and after
 `abhed -p` (as the task, or as a line of `-input-format stream-json`): the work
@@ -73,8 +90,9 @@ isolation from then on.
 On a local model server that answers one request at a time, the subagents'
 requests take turns: see `max_concurrent_requests` in
 [Configuration](02-configuration.md). Requests past the bound wait in Abhed, and
-the wait is shown, `waiting for the model · 2 ahead` in the terminal and on the
-subagent's card in Studio, and recorded as `model.waiting`; the call's
+the wait is shown, `waiting for the model · 2 ahead` in the terminal, on the
+subagent's card in Studio or as a thought for the session's own request, and
+recorded as `model.waiting`; the call's
 `model.call` keeps it apart as `queue_ms`.
 
 ## Agent types
