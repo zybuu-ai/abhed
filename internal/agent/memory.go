@@ -73,6 +73,8 @@ type MemoryOptions struct {
 	Allow func(path string) error
 	// Auto, when set, is the auto memory index to load; see AutoMemoryDir.
 	Auto string
+	// ManagedOnly loads the organisation's memory file alone, for a bare run.
+	ManagedOnly bool
 }
 
 // MemoryEntry is one memory file.
@@ -177,6 +179,12 @@ func LoadMemory(o MemoryOptions) *Memory {
 	}
 	m := &Memory{Workspace: o.Workspace}
 	l := memoryLoader{o: o, m: m, seen: map[string]bool{}}
+	if o.ManagedOnly {
+		if org := filepath.Join(managed.MemoryDir, MemoryFileName); exists(org) {
+			l.file(org, MemoryManaged, org+", set by the organisation", "", 0)
+		}
+		return m
+	}
 	if user := filepath.Join(o.Home, ".abhed", MemoryFileName); o.Home != "" && exists(user) {
 		l.file(user, MemoryUser, "~/.abhed/"+MemoryFileName, "", 0)
 	}

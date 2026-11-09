@@ -37,6 +37,11 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `-tools NAMES`, the only tools a run and its subagents may use, and
+  `-bare`, a run without your own or the workspace's memory files,
+  extensions and skills. Both only take away: policy and every deny rule
+  still apply, and the organisation's memory and extensions stay. The record
+  notes both ([The command line](docs/guide/18-cli.md#a-narrower-run--tools-and--bare)).
 - Continuing a run that stopped at its turn limit: `/continue` at the
   terminal, and `abhed -p --continue` (or `-p -r <session>`) with no task.
   Each continuation gives the run its allowance of turns again, is recorded

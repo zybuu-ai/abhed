@@ -75,8 +75,8 @@ var sessionMemory atomic.Pointer[agent.Memory]
 // depth and rule directories, and the session's read rules for workspace
 // files, which a deny keeps out of the prompt as it keeps them from a read.
 func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agent.MemoryOptions {
-	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs}
-	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto {
+	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs, ManagedOnly: bareRun}
+	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto && (!bareRun || cfg.ManagedSets("memory.auto")) {
 		o.Auto = tools.AutoMemoryPath(home, workspace)
 	}
 	o.Allow = agent.ReadAllowed(pol)

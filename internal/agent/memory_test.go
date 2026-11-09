@@ -356,3 +356,16 @@ func TestMemoryFileNeedsItsExactName(t *testing.T) {
 		t.Fatalf("ABHED.md not loaded: %+v", m.Entries)
 	}
 }
+
+// A bare run loads the organisation's memory alone.
+func TestMemoryManagedOnly(t *testing.T) {
+	ws, home := memoryWorld(t)
+	put(t, filepath.Join(home, ".abhed", "ABHED.md"), "USER")
+	put(t, filepath.Join(ws, "ABHED.md"), "PROJECT")
+	put(t, filepath.Join(ws, "ABHED.local.md"), "LOCAL")
+	put(t, filepath.Join(managed.MemoryDir, "ABHED.md"), "MANAGED")
+	m := LoadMemory(MemoryOptions{Workspace: ws, Home: home, ManagedOnly: true})
+	if got := scopes(m); got != "managed:ABHED.md" {
+		t.Fatalf("bare: %s", got)
+	}
+}

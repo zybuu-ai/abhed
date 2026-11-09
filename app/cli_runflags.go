@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
@@ -285,4 +286,41 @@ func recordRunFlags(start map[string]any, cfg config.Config, mcp []flagSource, s
 	if role != nil {
 		start["agent"] = map[string]any{"name": role.Name, "source": role.Source, "sha256": role.SHA256}
 	}
+}
+
+// bareRun is set for -bare: the session's memory is the organisation's alone.
+var bareRun bool
+
+// bareConfig is cfg for -bare: only the extensions the managed configuration
+// names stay, and auto memory is off unless the managed file turns it on.
+// It only takes away; the organisation's extensions and memory are kept.
+func bareConfig(cfg config.Config) config.Config {
+	var kept []config.ExtensionConfig
+	for _, e := range cfg.Extensions {
+		if cfg.ExtensionLayer(e.Name) == config.LayerManaged {
+			kept = append(kept, e)
+		}
+	}
+	cfg.Extensions = kept
+	if !cfg.ManagedSets("memory.auto") {
+		cfg.Memory.Auto = false
+	}
+	return cfg
+}
+
+// runParts is the tool set a run takes: all of it, or under -bare no skills.
+func runParts(bare bool) toolset.Part {
+	if bare {
+		return toolset.All &^ toolset.Skills
+	}
+	return toolset.All
+}
+
+// toolsOnly keeps the named tools and no others; a name the session lacks refuses.
+func toolsOnly(reg *tools.Registry, names []string) (*tools.Registry, error) {
+	sub, missing := reg.SubsetStrict(names)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("this session has no tool %s; it has %s", strings.Join(missing, ", "), strings.Join(reg.Names(), ", "))
+	}
+	return sub, nil
 }

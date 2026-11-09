@@ -113,6 +113,10 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
 	}
+	bareRun = f.bare
+	if f.bare {
+		cfg = bareConfig(cfg)
+	}
 	cfg, mcpSrc, err := mcpFlags(cfg, ff, f.mcpConfig, f.strictMCP)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -233,7 +237,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
-		Parts:   toolset.All,
+		Parts:   runParts(f.bare),
 		Vault:   vault,
 		Warn:    warnf,
 		Agents:  sessionDefs,
@@ -284,12 +288,26 @@ func run(a *App, workspace string, f *cliFlags) int {
 		}
 		factory.Config.Effort, factory.Config.MaxTurns = loopCfg.Effort, loopCfg.MaxTurns
 	}
+	if only := splitLists(f.toolsOnly); len(only) > 0 {
+		// -tools keeps these tools and no others, for the session and its subagents.
+		if registry, err = toolsOnly(registry, only); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: -tools: %v\n", err)
+			return 2
+		}
+		factory.Tools = agent.RoleToolsFor(factory.Tools, &agent.Definition{Name: "-tools", Tools: only})
+	}
 	// The memory in it follows the configuration and the read rules (input track).
 	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.Names()))
 	loopCfg.SystemPrompt += roleSection(role)
 	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)
 	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
+	if only := splitLists(f.toolsOnly); len(only) > 0 {
+		start["tools_only"] = registry.Names()
+	}
+	if f.bare {
+		start["bare"] = true
+	}
 	start["web"] = toolset.WebState(cfg)
 	if org := toolset.OrgPolicyState(cfg); org != nil {
 		start["org_policy"] = org
