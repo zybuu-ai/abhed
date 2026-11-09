@@ -35,6 +35,22 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
+  in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
+  A `runner` picks Node itself (TypeScript by Node's own type stripping),
+  `tsx`, `ts-node`, `node --test`, Vitest or Jest. Breakpoints in
+  TypeScript hold through source maps, whether the code is compiled in
+  memory or by `tsc`, and worker threads are threads of their own. Nothing
+  listens on a port for it: a worker thread in the program drives the
+  program's own inspector over a pipe. So Node debugs on every sandbox tier
+  as it is, the macOS process tier included, without opening loopback or
+  asking the process-tier agreement. The launch is judged and recorded as
+  the person's own call, as for Go and Python, and `debug.launched` records
+  it with `loopback` off. Node missing offers its install. See
+  [Debugging](docs/guide/31-debugging.md#node).
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of

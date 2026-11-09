@@ -26,6 +26,7 @@ import (
 const (
 	Go     = "go"
 	Python = "python"
+	Node   = "node"
 )
 
 // Problem kinds, each with steps a person can take.
@@ -78,6 +79,12 @@ func MissingAdapter(code int, image string) *Problem {
 			Steps: []string{"Install Go with its debugger: choose Install, or run `abhed toolchain install -debugger go` in a terminal (add `-platform linux` for the container tier)",
 				"Or use a sandbox image with Go and Delve: build one FROM " + orElse(image, "golang:1.26-bookworm") + " with `RUN go install github.com/go-delve/delve/cmd/dlv@latest`",
 				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
+	case exitNoNode:
+		return &Problem{Kind: KindAdapter, Retry: true, Message: "Node.js is not installed where this session's commands run",
+			Install: &Install{Language: "node"},
+			Steps: []string{"Install Node.js: choose Install, or run `abhed toolchain install node` in a terminal (add `-platform linux` for the container tier)",
+				"Or use a sandbox image with Node.js 20.6 or newer, such as " + orElse(image, "node:22-bookworm-slim"),
+				"Name it in sandbox.image (docs/guide/02-configuration.md#the-container-tiers-image)", "Start the debug session again"}}
 	case exitNoDebugpy:
 		return &Problem{Kind: KindAdapter, Retry: true, Message: "Python's debugger (debugpy) is not installed for the Python this session's commands run",
 			Install: &Install{Language: "python", Debugger: true},
@@ -96,8 +103,8 @@ func orElse(s, d string) string {
 }
 
 // Request is what a person asked to debug: a program, or a test (a Go
-// package, or what pytest is given), with its arguments, working folder and
-// environment.
+// package, what pytest is given, or a Node test file or filter), with its
+// arguments, working folder and environment, and for Node what runs it.
 type Request struct {
 	Language string            `json:"language"`
 	Program  string            `json:"program,omitempty"`
@@ -105,6 +112,7 @@ type Request struct {
 	Args     []string          `json:"args,omitempty"`
 	Cwd      string            `json:"cwd,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
+	Runner   string            `json:"runner,omitempty"`
 }
 
 // Spec is a planned session: the adapter command run in the sandbox, the
@@ -214,8 +222,10 @@ func Plan(r Request, workspace, bridge, sockDir string) (Spec, error) {
 		return Spec{Cwd: cwd, Launch: launch, Display: strings.TrimSpace(strings.Join(prefix, " ") + " " + quoteAll(display)),
 			Command: "python3 -c 'import debugpy' >/dev/null 2>&1 || { echo 'abhed-debug: debugpy is not installed' >&2; exit " + strconv.Itoa(exitNoDebugpy) + "; }; " +
 				"exec python3 -m debugpy.adapter"}, nil
+	case Node:
+		return planNode(r, workspace, cwd, launch, prefix)
 	}
-	return Spec{}, bad("language %q is not one Abhed debugs (go or python)", r.Language)
+	return Spec{}, bad("language %q is not one Abhed debugs (go, python or node)", r.Language)
 }
 
 // resolve is p taken from cwd when it is relative.

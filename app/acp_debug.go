@@ -222,8 +222,10 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	// A tier that cannot debug says what the container tier needs here; on
 	// the person's choice (processTier) and agreement for the workspace, the
 	// process tier debugs with loopback open to the debug command alone.
+	// Node needs no loopback (its inspector is driven in process), so it
+	// debugs on any tier under the session's own rules.
 	var loopback bool
-	if p := debugTierProblem(tier, b.Isolation); p != nil {
+	if p := debugTierProblem(tier, b.Isolation); p != nil && req.Language != debugrelay.Node {
 		var opt struct {
 			ProcessTier bool `json:"processTier"`
 		}
@@ -234,11 +236,15 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		}
 		loopback = true
 	}
-	// Delve not where commands run: the install is offered before anything
-	// is judged, as for a language server.
-	if req.Language == debugrelay.Go {
-		if find := lspProgramFinder(parts.Loop.Tools); find != nil && !find("dlv") {
+	// Delve, or node, not where commands run: the install is offered before
+	// anything is judged, as for a language server.
+	if find := lspProgramFinder(parts.Loop.Tools); find != nil {
+		switch {
+		case req.Language == debugrelay.Go && !find("dlv"):
 			c.reply(msg.ID, nil, debugRefusal(debugrelay.NoDelve("")))
+			return
+		case req.Language == debugrelay.Node && !find("node"):
+			c.reply(msg.ID, nil, debugRefusal(debugrelay.NoNode("")))
 			return
 		}
 	}

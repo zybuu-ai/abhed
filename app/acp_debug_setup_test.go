@@ -71,7 +71,7 @@ func TestDebugContainerSetupProblem(t *testing.T) {
 	debugEngineProbe = func(context.Context) (string, string, string) { return "/opt/homebrew/bin/podman", "", "stopped" }
 	var st debugSetup
 	r.cl.ok("_abhed/debug/status-tier", map[string]any{"sessionId": id}, &st)
-	if st.Ready || len(st.Steps) != 2 || st.Steps[0].Command != "/opt/homebrew/bin/podman machine start" || st.Steps[1].ID != "use-container-tier" {
+	if st.Ready || !st.NodeReady || len(st.Steps) != 2 || st.Steps[0].Command != "/opt/homebrew/bin/podman machine start" || st.Steps[1].ID != "use-container-tier" {
 		t.Fatalf("status %+v", st)
 	}
 }
@@ -322,6 +322,28 @@ func TestDebugOffersDelveBeforeJudging(t *testing.T) {
 	data, _ := json.Marshal(m.Error.Data)
 	if !strings.Contains(string(data), `"install":{"debugger":true,"language":"go"}`) || !strings.Contains(string(data), "adapter-missing") ||
 		strings.Contains(string(data), "_abhed/") {
+		t.Fatalf("problem %s", data)
+	}
+	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
+		t.Fatalf("judged: %v", reqs)
+	}
+}
+
+// Node missing where commands run: its install is offered the same way, on
+// the process tier too, as Node needs no other tier.
+func TestDebugOffersNodeBeforeJudging(t *testing.T) {
+	r, id, asked := setupRig(t, "")
+	debugTier = func(tools.Bash) string { return "process" }
+	old := lspProgramFinder
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(p string) bool { return p != "node" } }
+	t.Cleanup(func() { lspProgramFinder = old })
+	r.write("app.js", "console.log(1)\n")
+	m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "node", "program": "app.js"})
+	if m.Error == nil || len(*asked) != 0 {
+		t.Fatalf("launch %+v ran %v", m.Error, *asked)
+	}
+	data, _ := json.Marshal(m.Error.Data)
+	if !strings.Contains(string(data), `"install":{"language":"node"}`) || !strings.Contains(string(data), "adapter-missing") {
 		t.Fatalf("problem %s", data)
 	}
 	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {

@@ -1270,10 +1270,11 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 ### 7.8 Debugging (Run and Debug)
 
 ```ts
-_abhed/debug/launch { sessionId, language: "go" | "python",
+_abhed/debug/launch { sessionId, language: "go" | "python" | "node",
                       program?: string, test?: string,   // exactly one; inside the workspace
                       args?: string[], cwd?: string,      // cwd inside the workspace
-                      env?: { [name]: string } } → { debugId }
+                      env?: { [name]: string },
+                      runner?: "node" | "tsx" | "ts-node" | "vitest" | "jest" } → { debugId }  // node only
 _abhed/debug/send   { debugId, message: DapRequest } → {}   // passed on in the order sent
 _abhed/debug/stop   { debugId } → {}
 // notifications
@@ -1287,9 +1288,27 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   the network open its loopback would be the host's); elsewhere `launch`
   fails with `-32000` and `data.problem` `{kind: "container-setup", message,
   steps, retry}` and `data.setup` (below), unless the person chose the
-  process tier (`processTier: true`, below).
+  process tier (`processTier: true`, below). Node is the exception: its
+  adapter opens no port (a worker thread in the program drives the
+  program's own inspector over a pipe), so a Node launch starts on any
+  sandbox tier as the session's commands run, never opens loopback, never
+  asks the process-tier consent, and is refused only with no sandbox;
+  `debug.launched` has `loopback: false`. `runner` picks the command line:
+  `node FILE` (default; TypeScript by Node's own type stripping), `node
+  --import tsx FILE`, `node --require ts-node/register FILE`, for a test
+  `node --test --test-isolation=none FILE`, `node
+  node_modules/vitest/vitest.mjs run --pool=threads --no-file-parallelism
+  TEST` or `node node_modules/jest/bin/jest.js --runInBand TEST`; a runner
+  that runs tests with a program, or the reverse, is `-32602`. The engine's
+  launch carries `argv` (after `node`), `runner`, `root` and `resolve` (the
+  runner packages the adapter finds in the nearest `node_modules`); a
+  runner not installed fails the launch (`status: failed`, "… is not
+  installed in this workspace"). Node missing ends `adapter-missing` with
+  `install: {language: "node"}`. Breakpoints in TypeScript or other
+  source-mapped code are set as each of the program's own scripts loads;
+  worker threads are DAP threads; child processes are not debugged.
 - `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
-  `{os, tier, ready, engine?, brew?, machine?: "none" | "stopped" |
+  `{os, tier, ready, nodeReady, engine?, brew?, machine?: "none" | "stopped" |
   "running", steps: [{id: "install-podman" | "machine-init" |
   "machine-start" | "use-container-tier", title, command?}],
   processTier: {available, consented, consent?}}`. `steps` are those left,
