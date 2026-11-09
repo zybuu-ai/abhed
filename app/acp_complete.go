@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +28,11 @@ import (
 // with text to insert. No tools, no side effects; not recorded one by one.
 
 func init() {
-	liveFeatures = append(liveFeatures, "complete")
+	liveFeatures = append(liveFeatures, "complete", "completeWarm")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/complete":        (*acpConn).complete,
 		"_abhed/complete/cancel": (*acpConn).completeCancel,
+		"_abhed/complete/warm":   (*acpConn).completeWarm,
 	})
 }
 
@@ -44,6 +46,12 @@ const (
 	completeAllFiles  = 12 << 10
 	completeMaxTokens = 128
 	completeTimeout   = 10 * time.Second
+	// A warm-up loads a local model before the first completion needs it:
+	// at most one a session in warmEvery, each given warmTimeout.
+	warmEvery   = 2 * time.Minute
+	warmTimeout = 60 * time.Second
+	// latencySamples bounds the answer times a session keeps for its summary.
+	latencySamples = 512
 )
 
 // completeHold waits for a newer request to replace this one (ctx ends) or
@@ -112,6 +120,20 @@ type acpCompleter struct {
 	closed   bool               // the session has closed; nothing more is sent
 	events   [2]agent.EventType // the feature's enabled and summary events
 	sum      agent.CompletionSummary
+	// lat are the answer times of requests sent, in milliseconds, for the summary.
+	lat    []int64
+	warmed time.Time // when the last warm-up was sent
+}
+
+// took keeps one sent request's answer time.
+func (k *acpCompleter) took(d time.Duration) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if len(k.lat) == latencySamples {
+		copy(k.lat, k.lat[1:])
+		k.lat = k.lat[:latencySamples-1]
+	}
+	k.lat = append(k.lat, d.Milliseconds())
 }
 
 type completeRequest struct {
@@ -359,6 +381,7 @@ func (c *acpConn) completerFor(s *acpSession, feature string) *acpCompleter {
 }
 
 func (c *acpConn) complete(msg rpcMessage) {
+	arrived := time.Now()
 	var req completeRequest
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
 		c.reply(msg.ID, nil, badParams("", err))
@@ -420,6 +443,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 		empty("cancelled", "a newer completion replaced it")
 		return
 	}
+	if !c.spend(k) {
+		empty("limited", "too many requests; slow down")
+		return
+	}
 
 	// Stored secrets, and anything shaped like a key, never leave: withheld
 	// from the whole text before it is cut, so a cut cannot split one, and
@@ -468,10 +495,14 @@ func (c *acpConn) complete(msg rpcMessage) {
 		refuse(why)
 		return
 	}
-	in := model.InfillRequest{Prefix: sentPrefix, Suffix: sentSuffix, Language: req.Language, MaxTokens: completeMaxTokens, Stop: []string{"\n\n\n"}}
+	// One logical block: the stream is ended as soon as the block is whole,
+	// so the model stops writing, and the answer is cut to it after.
+	in := model.InfillRequest{Prefix: sentPrefix, Suffix: sentSuffix, Language: req.Language, MaxTokens: completeMaxTokens, Stop: []string{"\n\n\n"},
+		Enough: func(text string) bool { _, done := model.OneBlock(prefix, text); return done }}
 	var res model.InfillResult
 	var err error
 	if fim {
+		in.Stop = model.FIMStops
 		res, err = a.(model.Infiller).Infill(ctx, in)
 		if fimRefused(err) && ctx.Err() == nil {
 			// No fill in the middle here: chat from now on, recorded as such first.
@@ -483,17 +514,22 @@ func (c *acpConn) complete(msg rpcMessage) {
 				empty("refused", why)
 				return
 			}
+			in.Stop = []string{"\n\n\n"}
 			res, err = model.InfillByChat(ctx, a, in)
 		}
 	} else {
 		res, err = model.InfillByChat(ctx, a, in)
 	}
+	elapsed := time.Since(arrived)
 	// A reply that carries a secret is dropped, not edited into the code.
-	text := res.Text
+	text, _ := model.OneBlock(prefix, res.Text)
 	if clean(text) != text {
 		text = ""
 	}
 	cancelled := err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if err == nil {
+		k.took(elapsed)
+	}
 	k.mu.Lock()
 	k.sum.Requests++
 	k.sum.TokensIn += res.InputTokens
@@ -542,9 +578,10 @@ func (c *acpConn) completeEnabled(s *acpSession, k *acpCompleter, p config.Provi
 	return ""
 }
 
-// admit readies one request of an editor feature: the session's and the
-// connection's rate limits, its place by seq (an older one is dropped, a
-// newer one replaces what is in flight), and the provider's adapter. why and
+// admit readies one request of an editor feature: its place by seq (an
+// older one is dropped, a newer one replaces what is in flight), and the
+// provider's adapter. The rate limits are spent after the debounce, by
+// spend, so a burst of keystrokes spends one request's worth. why and
 // field say how a refusal is answered: field "" a closed session, "error" an
 // adapter that cannot be used, else the empty answer's field.
 func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config.ProviderConfig, localOnly bool) (context.Context, context.CancelFunc, model.Adapter, string, string) {
@@ -552,12 +589,6 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	defer k.mu.Unlock()
 	if k.closed {
 		return nil, nil, nil, "the session has closed", ""
-	}
-	now := completeNow()
-	// The session's limit first, so a session over it spends none of the connection's.
-	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
-		k.sum.Refused++
-		return nil, nil, nil, "too many requests; slow down", "limited"
 	}
 	if seq == 0 {
 		seq = k.latest + 1
@@ -581,6 +612,20 @@ func (c *acpConn) admit(k *acpCompleter, seq int64, name string, provider config
 	ctx, cancel := context.WithTimeout(context.Background(), completeTimeout)
 	k.cancel = cancel
 	return ctx, cancel, k.adapter, "", ""
+}
+
+// spend takes one request from the session's and the connection's rate
+// limits, for a request about to be sent; false counts it refused.
+func (c *acpConn) spend(k *acpCompleter) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	now := completeNow()
+	// The session's limit first, so a session over it spends none of the connection's.
+	if !k.rate.take(sessionRate, now) || !c.compRateTake(now, &k.rate) {
+		k.sum.Refused++
+		return false
+	}
+	return true
 }
 
 // admitRefused answers a request admit refused.
@@ -619,14 +664,100 @@ func (c *acpConn) completeCancel(msg rpcMessage) {
 		c.reply(msg.ID, nil, e)
 		return
 	}
+	// With seq, only that request is cancelled: a newer one already sent goes on.
+	var p struct {
+		Seq int64 `json:"seq"`
+	}
+	_ = json.Unmarshal(msg.Params, &p)
 	if k := c.completer(s); k != nil {
 		k.mu.Lock()
-		if k.cancel != nil {
+		if k.cancel != nil && (p.Seq == 0 || p.Seq == k.latest) {
 			k.cancel()
 		}
 		k.mu.Unlock()
 	}
 	c.reply(msg.ID, map[string]any{}, nil)
+}
+
+// completeWarm loads a local completion model before the first completion
+// needs it (studio-acp-contract.md §7.10): an empty fill-in-the-middle
+// request of one token, with no code in it, at most once a session in
+// warmEvery. A model not on this machine is never warmed; nothing is sent.
+func (c *acpConn) completeWarm(msg rpcMessage) {
+	s, e := c.sessionFor(msg.Params)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	parts, e := innerOf(s)
+	if e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	skip := func(why string) { c.reply(msg.ID, map[string]any{"warmed": false, "skipped": why}, nil) }
+	cfg := parts.Config
+	off, provider := completeOff(cfg)
+	switch {
+	case off != "":
+		skip(off)
+		return
+	case !provider.OnThisMachine():
+		skip("the completion model is not on this machine")
+		return
+	case !fimTypes[provider.Type]:
+		skip("the completion model is asked through chat, which is not warmed")
+		return
+	}
+	k := c.completer(s)
+	if k == nil {
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
+	k.mu.Lock()
+	if k.closed {
+		k.mu.Unlock()
+		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
+		return
+	}
+	if !k.warmed.IsZero() && completeNow().Sub(k.warmed) < warmEvery {
+		k.mu.Unlock()
+		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
+		return
+	}
+	if k.adapter == nil || k.provider != cfg.Model.Completion {
+		a, err := completionAdapter(provider, cfg.Completion.LocalOnly)
+		if err != nil {
+			k.mu.Unlock()
+			c.reply(msg.ID, nil, refusal(errRefused, "the model cannot be used: %v", err))
+			return
+		}
+		k.adapter, k.provider, k.chatOnly = a, cfg.Model.Completion, false
+		k.sum.Provider, k.sum.Model = k.provider, provider.Model
+	}
+	a, chatOnly := k.adapter, k.chatOnly
+	k.warmed = completeNow()
+	k.mu.Unlock()
+	inf, ok := a.(model.Infiller)
+	if !ok || chatOnly {
+		skip("the completion model is asked through chat, which is not warmed")
+		return
+	}
+	// Its own deadline, and not replaced by completions: a model that is
+	// loading is loading for them too.
+	ctx, cancel := context.WithTimeout(context.Background(), warmTimeout)
+	defer cancel()
+	started := time.Now()
+	_, err := inf.Infill(ctx, model.InfillRequest{MaxTokens: 1})
+	took := time.Since(started)
+	k.mu.Lock()
+	k.sum.Warmups++
+	k.sum.WarmupMs = max(k.sum.WarmupMs, int(took.Milliseconds()))
+	k.mu.Unlock()
+	if err != nil {
+		c.reply(msg.ID, map[string]any{"warmed": false, "ms": took.Milliseconds(), "failed": redacted(err.Error())}, nil)
+		return
+	}
+	c.reply(msg.ID, map[string]any{"warmed": true, "ms": took.Milliseconds()}, nil)
 }
 
 // completionSummary records the session's completions, once, as it closes.
@@ -651,8 +782,9 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 		k.cancel()
 	}
 	sum := k.sum
+	sum.LatencyP50Ms, sum.LatencyP90Ms, sum.LatencyMaxMs = latencies(k.lat)
 	k.mu.Unlock()
-	if sum.Requests+sum.Refused+sum.Cancelled+sum.Superseded == 0 {
+	if sum.Requests+sum.Refused+sum.Cancelled+sum.Superseded+sum.Warmups+sum.Local == 0 {
 		return
 	}
 	if s.inner {
@@ -660,4 +792,15 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 			warnf("the record did not take %s: %v", k.events[1], err)
 		}
 	}
+}
+
+// latencies are the median, 90th percentile and longest of ms.
+func latencies(ms []int64) (int, int, int) {
+	if len(ms) == 0 {
+		return 0, 0, 0
+	}
+	sorted := slices.Clone(ms)
+	slices.Sort(sorted)
+	at := func(q float64) int { return int(sorted[int(q*float64(len(sorted)-1)+0.5)]) }
+	return at(0.5), at(0.9), int(sorted[len(sorted)-1])
 }

@@ -50,6 +50,28 @@ var defaultLanguageServers = map[string][]string{
 	"rust":       {"rust-analyzer"},
 }
 
+// otherLanguageServers are taken, in order, where a language's default is
+// not on the PATH commands get and one of these is: a Python server the
+// person already has.
+var otherLanguageServers = map[string][][]string{
+	"python": {{"pyright-langserver", "--stdio"}, {"pylsp"}},
+}
+
+// pickLanguageServer is language's default server, or the first of its
+// others that find says is installed when the default is not.
+func pickLanguageServer(language string, find func(string) bool) []string {
+	argv := defaultLanguageServers[language]
+	if find == nil || len(argv) == 0 || find(argv[0]) {
+		return argv
+	}
+	for _, other := range otherLanguageServers[language] {
+		if find(other[0]) {
+			return other
+		}
+	}
+	return argv
+}
+
 // defaultClientCapabilities are what the server is told an editor can do
 // when Studio names none.
 const defaultClientCapabilities = `{"workspace":{"applyEdit":true,"workspaceEdit":{"documentChanges":true},"configuration":true,"workspaceFolders":true,"executeCommand":{}},` +
@@ -149,7 +171,7 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 	}
 	argv := parts.Config.Sandbox.LanguageServers[p.Language]
 	if len(argv) == 0 {
-		argv = defaultLanguageServers[p.Language]
+		argv = pickLanguageServer(p.Language, lspProgramFinder(parts.Loop.Tools))
 	}
 	if len(argv) == 0 {
 		c.reply(msg.ID, nil, refusal(errParams, "no language server for %q: name one in sandbox.language_servers", p.Language))

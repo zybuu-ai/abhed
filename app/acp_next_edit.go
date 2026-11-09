@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -60,6 +61,10 @@ type nextEditRequest struct {
 	} `json:"window"`
 	Language string `json:"language"`
 	Seq      int64  `json:"seq"`
+	// Rename is Studio's reading of the last edit as a rename, and Sites
+	// where its language server says the old name is used in this document.
+	Rename *renameHint `json:"rename"`
+	Sites  []editRange `json:"sites"`
 }
 
 // suggestedEdit is one edit as the answer carries it.
@@ -70,6 +75,7 @@ type suggestedEdit struct {
 }
 
 func (c *acpConn) nextEdit(msg rpcMessage) {
+	arrived := time.Now()
 	var req nextEditRequest
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
 		c.reply(msg.ID, nil, badParams("", err))
@@ -129,6 +135,10 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		empty("cancelled", "a newer request replaced it")
 		return
 	}
+	if !c.spend(k) {
+		empty("limited", "too many requests; slow down")
+		return
+	}
 
 	clean := func(text string) string {
 		text = parts.Loop.Withheld(text)
@@ -142,6 +152,18 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	raw := linediff.SplitLines(req.Window.Text)
 	if len(raw) > nextEditLines {
 		raw = raw[:nextEditLines]
+	}
+	// A rename is finished from the document itself: no model, nothing sent.
+	if h, line, ok := renameOf(req, raw); ok {
+		edits, why := renameEdit(req, raw, h, line)
+		k.took(time.Since(arrived))
+		if len(edits) == 0 {
+			empty("dropped", why)
+			return
+		}
+		k.count(func(s *agent.CompletionSummary) { s.Local++ })
+		c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
+		return
 	}
 	cleaned := linediff.SplitLines(clean(strings.Join(raw, "")))
 	if len(cleaned) != len(raw) {
@@ -187,6 +209,9 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
 	cancelled := err != nil && ctx.Err() != nil
+	if err == nil {
+		k.took(time.Since(arrived))
+	}
 	edits, dropped := []suggestedEdit{}, res.Dropped
 	if err == nil && dropped == "" {
 		edits, dropped = windowEdits(req.URI, req.Window.StartLine, raw[:len(shown)], shown, res.Window, clean)

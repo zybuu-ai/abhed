@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -912,4 +913,29 @@ func stubOnPath(t *testing.T, names ...string) {
 		}
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// Python's default server is basedpyright; where only pyright or pylsp is
+// installed, that one runs instead.
+func TestPickLanguageServer(t *testing.T) {
+	has := func(names ...string) func(string) bool {
+		return func(p string) bool { return slices.Contains(names, p) }
+	}
+	for _, tc := range []struct {
+		find func(string) bool
+		want string
+	}{
+		{has("basedpyright-langserver", "pylsp"), "basedpyright-langserver"},
+		{has("pyright-langserver", "pylsp"), "pyright-langserver"},
+		{has("pylsp"), "pylsp"},
+		{has(), "basedpyright-langserver"},
+		{nil, "basedpyright-langserver"},
+	} {
+		if got := pickLanguageServer("python", tc.find); got[0] != tc.want {
+			t.Errorf("got %v; want %s", got, tc.want)
+		}
+	}
+	if got := pickLanguageServer("go", has()); got[0] != "gopls" {
+		t.Errorf("go: %v", got)
+	}
 }

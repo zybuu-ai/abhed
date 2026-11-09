@@ -116,6 +116,16 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				r.Toolchains = append(r.Toolchains, ToolchainStep{Seq: e.Seq, ToolchainAction: a})
 			}
 
+		case agent.EvCompletionSummary, agent.EvNextEditSummary:
+			var a agent.CompletionSummary
+			if json.Unmarshal(e.Payload, &a) == nil {
+				feature := "completion"
+				if e.Type == agent.EvNextEditSummary {
+					feature = "next_edit"
+				}
+				r.Editor = append(r.Editor, EditorStats{Seq: e.Seq, Feature: feature, CompletionSummary: a})
+			}
+
 		case agent.EvOllamaStart, agent.EvOllamaInstall, agent.EvOllamaPull:
 			var a agent.OllamaAction
 			if json.Unmarshal(e.Payload, &a) == nil {

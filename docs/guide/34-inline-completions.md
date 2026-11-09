@@ -92,11 +92,39 @@ the rules apply.
 The engine keeps the requests reasonable: one in flight per session (a newer
 one replaces it, and Studio's `seq` decides which is newer when requests
 cross), a short wait before asking so that a burst of keystrokes sends one
-request, at most five a second per session and ten a second over all of an
-editor's sessions. A provider whose completions endpoint answers 404, 405 or
+request, at most five requests sent a second per session and ten a second
+over all of an editor's sessions. A request replaced during the wait is not
+sent and does not count, so the last keystroke of a burst is the one asked
+about. A provider whose completions endpoint answers 404, 405 or
 501, or a 400 that says the endpoint or its `suffix` is not supported, is
 asked through chat from then on in that session; any other 400 is a failure.
 A closed session's requests are refused.
+
+## How fast it is
+
+Ghost text is only useful while you are still looking at the line, so
+Studio and the engine keep each suggestion short and the model busy only
+with the latest one:
+
+- **Warm-up.** When you open a file Studio may complete, and the completion
+  model is on this machine, Studio asks the engine to load it: one
+  fill-in-the-middle request with an empty prompt and one token, so no code
+  is sent, at most once every two minutes a session. A cold local model
+  takes seconds to load; this way it is loaded before you type. A model on
+  another machine is never warmed.
+- **Debounce and cancel.** Studio waits briefly after a keystroke before
+  asking and sends its `seq`; a newer keystroke supersedes the older
+  request, and Studio cancels a request whose place in the file has gone,
+  so the model stops working on it.
+- **One logical block.** A suggestion is the statement at the cursor and,
+  when it opens a block (a line ending in `:` or `{`, say), that block's
+  body and closing line: it ends at a blank line or at a line back at the
+  statement's own indentation, and is at most 12 lines. The model's answer
+  is streamed and ended as soon as the block is whole, with a blank line
+  and the model's end-of-text markers as stop sequences, so it does not
+  write a whole function you will not take.
+- **Again after Tab or Enter.** Accepting a suggestion, or starting a new
+  line, asks for the next one at once.
 
 ## What is recorded
 
@@ -109,8 +137,14 @@ recorded, nothing is sent.
 `completion.summary`, when the session closes, counts the requests sent and
 how many were answered, failed or cancelled after sending, and those refused
 or superseded (replaced by a newer one) before anything went, with the tokens
-used. The token totals are a lower bound: a request cancelled after it went
-may have cost tokens the provider never reported. The metrics count the same
+used, and how long answers took: the median, 90th percentile and longest
+time from a request reaching the engine to its answer (`latency_p50_ms`,
+`latency_p90_ms`, `latency_max_ms`), and the warm-ups with the longest
+(`warmups`, `warmup_ms`). Only counts and times are recorded, never code.
+`abhed hawkeye` shows them for the session. The token totals are a lower
+bound: a request cancelled after it went may have cost tokens the provider
+never reported, and a streamed answer cut at its block is counted a token
+a chunk when the provider reports no usage. The metrics count the same
 (`abhed_completions_total`, `abhed_completion_tokens_total`).
 
 ## Next-edit suggestions
@@ -132,6 +166,23 @@ prose is dropped and Studio is told why. The record holds
 `next_edit.enabled` and `next_edit.summary` as it does for completions, and
 the metrics count them as `abhed_next_edits_total` and
 `abhed_next_edit_tokens_total`.
+
+A rename needs no model. When your last edit turned one identifier into
+another (`step` into `stride`, say), the other uses of the old name are the
+next edit, and the engine finds them in the lines Studio sent: the ones the
+language server lists as references, when one is running for the file, or
+else a scan of the definition the rename is in that skips strings and
+comments. They are offered as one edit, taken with Tab, and nothing is sent
+to any model for it. A new name that is a reserved word is not taken for a
+rename. The summary counts these as `local`, and
+`abhed_next_edits_total{outcome="local"}` counts them too.
+
+Before Studio shows any next-edit suggestion, from a rename or a model, it
+parses the file with the suggestion applied (tree-sitter, for Python, Go,
+JavaScript, TypeScript, Rust, Java, C, C++, C#, Ruby, PHP and shell) and
+drops one that leaves more syntax errors than the file had. For other
+languages, a suggestion that leaves brackets unbalanced where they were
+balanced is dropped.
 
 ## Commit messages
 

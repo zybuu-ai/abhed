@@ -21,6 +21,12 @@ language's toolchain:
 | `typescript`, `javascript` | `typescript-language-server --stdio` |
 | `rust` | `rust-analyzer` |
 
+For Python, where `basedpyright-langserver` is not on the `PATH` commands
+get but `pyright-langserver` or `pylsp` is, that one runs instead
+(`pyright-langserver --stdio` first, then `pylsp`), so a Python server you
+already have gives Studio its diagnostics, references and renames without
+an install. Under the `container` tier the image's `PATH` decides.
+
 The server must be on the sandbox's `PATH`. Abhed installs each of these with
 its language ([Toolchains: Language servers](32-toolchains.md#language-servers)):
 accept Studio's offer, or run `abhed toolchain install -lsp go` (`python`,

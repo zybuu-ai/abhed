@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,6 +23,10 @@ type InfillRequest struct {
 	Language  string
 	MaxTokens int
 	Stop      []string
+	// Enough, when set, is asked as the answer streams in whether what has
+	// come is the whole suggestion; once it says so the rest is not read and
+	// the request is ended, so the model stops writing.
+	Enough func(text string) bool
 }
 
 // InfillResult is the text to insert and what it cost. Dropped says why an
@@ -42,10 +47,11 @@ type Infiller interface {
 const maxInfillAnswer = 1 << 20
 
 // Infill asks the OpenAI-compatible completions endpoint, with a suffix:
-// what Ollama, vLLM, llama.cpp and others serve for code models.
+// what Ollama, vLLM, llama.cpp and others serve for code models. With
+// req.Enough the answer is streamed and cut short once it is enough.
 func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (InfillResult, error) {
 	body := map[string]any{"model": c.Model, "prompt": req.Prefix, "suffix": req.Suffix,
-		"max_tokens": orInt(req.MaxTokens, 128), "temperature": 0.2, "stream": false}
+		"max_tokens": orInt(req.MaxTokens, 128), "temperature": 0.2, "stream": req.Enough != nil}
 	if len(req.Stop) > 0 {
 		body["stop"] = req.Stop
 	}
@@ -53,6 +59,8 @@ func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (Infil
 	if err != nil {
 		return InfillResult{}, err
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/completions", bytes.NewReader(raw))
 	if err != nil {
 		return InfillResult{}, err
@@ -66,6 +74,9 @@ func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (Infil
 		return InfillResult{}, fmt.Errorf("call %s: %w", c.BaseURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK && req.Enough != nil && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		return infillStream(resp.Body, req)
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxInfillAnswer))
 	if err != nil {
 		return InfillResult{}, err
@@ -90,6 +101,64 @@ func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (Infil
 	}
 	res := InfillResult{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens}
 	res.Text, res.Dropped = CleanInfill(out.Choices[0].Text, req.Prefix, req.Suffix, true)
+	return res, nil
+}
+
+// infillStream reads a streamed completion until it ends or req.Enough says
+// what has come is the suggestion. An endpoint that reports no usage while
+// streaming has its output counted one token a chunk.
+func infillStream(body io.Reader, req InfillRequest) (InfillResult, error) {
+	var text strings.Builder
+	var res InfillResult
+	chunks, usage := 0, false
+	sc := bufio.NewScanner(io.LimitReader(body, maxInfillAnswer))
+	sc.Buffer(make([]byte, 64<<10), maxInfillAnswer)
+	for sc.Scan() {
+		line, ok := strings.CutPrefix(sc.Text(), "data:")
+		if !ok {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if line == "[DONE]" {
+			break
+		}
+		var ev struct {
+			Choices []struct {
+				Text string `json:"text"`
+			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return InfillResult{}, fmt.Errorf("the endpoint's answer is not a completion: %w", err)
+		}
+		if ev.Error != nil {
+			return InfillResult{}, fmt.Errorf("the endpoint failed while answering: %s", ev.Error.Message)
+		}
+		if ev.Usage != nil {
+			usage = true
+			res.InputTokens, res.OutputTokens = ev.Usage.PromptTokens, ev.Usage.CompletionTokens
+		}
+		if len(ev.Choices) > 0 && ev.Choices[0].Text != "" {
+			chunks++
+			text.WriteString(ev.Choices[0].Text)
+			if req.Enough(text.String()) {
+				break
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return InfillResult{}, err
+	}
+	if !usage {
+		res.OutputTokens = chunks
+	}
+	res.Text, res.Dropped = CleanInfill(text.String(), req.Prefix, req.Suffix, true)
 	return res, nil
 }
 
@@ -176,6 +245,7 @@ const maxInfillLines = 40
 // from either side of the cursor removed. fim is an answer from a
 // fill-in-the-middle endpoint, which is taken as code unless it reads as prose.
 func CleanInfill(text, prefix, suffix string, fim bool) (string, string) {
+	text = cutAtFIMEnd(text)
 	if m := harmonyFinal.FindStringIndex(text); m != nil {
 		text = text[m[1]:]
 	}

@@ -46,7 +46,39 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- Faster editor completions in Abhed Studio. A local completion model is
+  loaded when a file opens (`_abhed/complete/warm`: an empty request of one
+  token, no code, at most once every two minutes a session, never for a
+  model on another machine). A suggestion is one logical block, the
+  statement at the cursor and the body of a block it opens, and the model's
+  streamed answer is ended as soon as that block is whole, with a blank
+  line and end-of-text markers as stop sequences. Studio waits briefly
+  after a keystroke, cancels a request whose place has gone (a cancel now
+  names its `seq`), and asks again after an accepted suggestion or a new
+  line. `completion.summary` and `next_edit.summary` record answer times
+  (median, 90th percentile, longest) and warm-ups, never code, and
+  `abhed hawkeye` shows them. The data-sent rules and
+  `completion.local_only` are unchanged.
+- A rename's next edit comes from the file, not a model: after an edit that
+  turns one identifier into another, the other uses of the old name, from
+  the language server's references when one is running or else a scan of
+  the enclosing definition that skips strings and comments, are offered as
+  one edit. Nothing is sent for it; the summary counts it as `local`.
+  Studio parses the file with any next-edit suggestion applied (tree-sitter)
+  and drops one that adds syntax errors.
+- Python language servers you already have: where `basedpyright-langserver`
+  is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
+  server is that one.
+
 ### Fixed
+
+- Studio's ghost text could stop for good after a burst of typing. Every
+  keystroke spent the completion rate limit as it arrived, even those a
+  newer keystroke replaced before anything was sent, so the last keystroke
+  of a burst was often answered `limited` and nothing was asked again. The
+  limit is now spent only by a request about to be sent.
 
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was

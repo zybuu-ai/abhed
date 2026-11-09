@@ -160,6 +160,16 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--rule);padding-
 </section>
 {{end}}
 
+{{if .Editor}}
+<section>
+  <h2>Editor completions and next edits</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>feature</th><th>model</th><th>sent · served · from the file</th><th>answer time (median · p90 · longest)</th><th>warm-ups</th></tr>
+    {{range .Editor}}<tr><td class="seq">#{{.Seq}}</td><td>{{.Feature}}</td><td>{{.Model}}</td><td>{{.Requests}} · {{.Served}} · {{.Local}}</td><td>{{if .LatencyMaxMs}}{{.LatencyP50Ms}} ms · {{.LatencyP90Ms}} ms · {{.LatencyMaxMs}} ms{{end}}</td><td>{{if .Warmups}}{{.Warmups}} (longest {{.WarmupMs}} ms){{end}}</td></tr>{{end}}
+  </table></div>
+</section>
+{{end}}
+
 {{if .LocalModel}}
 <section>
   <h2>Local model (Ollama)</h2>

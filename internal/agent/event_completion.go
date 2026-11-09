@@ -69,4 +69,17 @@ type CompletionSummary struct {
 	// cancelled after it went may cost tokens it never reported.
 	TokensIn  int `json:"tokens_in"`
 	TokensOut int `json:"tokens_out"`
+	// Answer times of the requests sent, from Studio's request reaching the
+	// engine to its answer, in milliseconds: median, 90th percentile and
+	// longest. No code, only times.
+	LatencyP50Ms int `json:"latency_p50_ms,omitempty"`
+	LatencyP90Ms int `json:"latency_p90_ms,omitempty"`
+	LatencyMaxMs int `json:"latency_max_ms,omitempty"`
+	// Warmups are the empty requests that loaded a local model ahead of the
+	// first completion; WarmupMs the longest of them.
+	Warmups  int `json:"warmups,omitempty"`
+	WarmupMs int `json:"warmup_ms,omitempty"`
+	// Local are next-edit suggestions made from the file alone (a rename's
+	// other uses), with no request to a model.
+	Local int `json:"local,omitempty"`
 }

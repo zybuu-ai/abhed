@@ -183,3 +183,139 @@ func TestStudioNextEditBlanksAndBlocks(t *testing.T) {
 		t.Fatal("the block scalar's value reached the model")
 	}
 }
+
+// chunkText is the file the parity review renamed step to stride in, at
+// line 8 (index 7); the uses of step on later lines are what is left.
+const chunkText = `def chunk_text(text, size, overlap=0):
+    """Split text into chunks of at most size characters, each starting
+    a step after the previous one."""
+    if size <= 0:
+        raise ValueError("size must be positive")
+    if overlap >= size:
+        raise ValueError("overlap must be smaller than size")
+    stride = size - overlap
+    chunks = []
+    for start in range(0, len(text) - size, step):  # each step
+        chunks.append(text[start:start + size])
+    print("step", step)
+    return chunks
+
+
+def other(step):
+    return step * 2
+`
+
+// A rename is finished from the file: the other uses of the old name in its
+// definition become one edit, with no model asked; uses in strings,
+// comments, docstrings and another definition are left as they are.
+func TestStudioNextEditRename(t *testing.T) {
+	model := newFIMServer(t, "never asked")
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	uri := "file://" + r.ws + "/text.py"
+	ask := func(extra map[string]any) nextEdits {
+		p := map[string]any{"sessionId": id, "uri": uri, "language": "python",
+			"recentEdits": []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 17, "character": 4}, "end": map[string]int{"line": 17, "character": 8}}, "oldText": "step", "newText": "stride"}},
+			"cursor":      map[string]int{"line": 17, "character": 10}, "window": map[string]any{"startLine": 10, "text": chunkText}}
+		for k, v := range extra {
+			p[k] = v
+		}
+		var res nextEdits
+		r.cl.ok("_abhed/nextEdit", p, &res)
+		return res
+	}
+	res := ask(nil)
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 19 || res.Edits[0].Range.End.Line != 22 ||
+		res.Edits[0].Text != "    for start in range(0, len(text) - size, stride):  # each step\n        chunks.append(text[start:start + size])\n    print(\"step\", stride)\n" {
+		t.Fatalf("%+v", res)
+	}
+	// The language server's sites, when Studio sends them, are taken instead of a scan.
+	res = ask(map[string]any{"sites": []map[string]any{{"start": map[string]int{"line": 21, "character": 18}, "end": map[string]int{"line": 21, "character": 22}},
+		{"start": map[string]int{"line": 26, "character": 0}, "end": map[string]int{"line": 26, "character": 4}}}})
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 21 || res.Edits[0].Text != "    print(\"step\", stride)\n" {
+		t.Fatalf("with sites: %+v", res)
+	}
+	// Studio's own reading of the rename, for edits that were not one replacement.
+	res = ask(map[string]any{"recentEdits": []any{}, "rename": map[string]any{"from": "step", "to": "stride", "at": map[string]int{"line": 17, "character": 4}}})
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 19 {
+		t.Fatalf("with a hint: %+v", res)
+	}
+	// Nothing left to rename: nothing offered, and still no model.
+	res = ask(map[string]any{"window": map[string]any{"startLine": 10, "text": "    stride = size - overlap\n    return stride\n"},
+		"recentEdits": []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 10, "character": 4}, "end": map[string]int{"line": 10, "character": 8}}, "oldText": "step", "newText": "stride"}}})
+	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "no other use of step") {
+		t.Fatalf("nothing to rename: %+v", res)
+	}
+	model.mu.Lock()
+	paths := len(model.paths)
+	model.mu.Unlock()
+	if paths != 0 {
+		t.Fatalf("a rename asked the model %d time(s)", paths)
+	}
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	sum, _ := r.recorded(id, agent.EvNextEditSummary)
+	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["requests"] != float64(0) {
+		t.Fatalf("next_edit.summary %v", sum)
+	}
+	if enabled, _ := r.recorded(id, agent.EvNextEditEnabled); len(enabled) != 0 {
+		t.Fatalf("nothing was sent, yet next_edit.enabled was recorded: %v", enabled)
+	}
+}
+
+// What is not a rename goes to the model as before: a new name that is a
+// keyword, an edit that is not a whole identifier, or one in another file.
+func TestStudioNextEditNotARename(t *testing.T) {
+	for _, tc := range []struct {
+		name, old, new, written string
+		uri                     string
+	}{
+		{"a keyword", "step", "class", "class", ""},
+		{"part of a word", "ste", "stride", "stridep", ""},
+		{"another file", "step", "stride", "stride", "/other.py"},
+	} {
+		model := newFIMServer(t, chunkText)
+		r := completionRig(t, model.URL, "")
+		noHold(t)
+		id := r.open()
+		uri := "file://" + r.ws + "/text.py"
+		window := strings.Replace(chunkText, "stride =", tc.written+" =", 1)
+		editURI := uri
+		if tc.uri != "" {
+			editURI = "file://" + r.ws + tc.uri
+		}
+		var res nextEdits
+		r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": uri, "language": "python",
+			"recentEdits": []map[string]any{{"uri": editURI, "range": map[string]any{"start": map[string]int{"line": 7, "character": 4}, "end": map[string]int{"line": 7, "character": 8}}, "oldText": tc.old, "newText": tc.new}},
+			"cursor":      map[string]int{"line": 7}, "window": map[string]any{"startLine": 0, "text": window}}, &res)
+		model.mu.Lock()
+		paths := len(model.paths)
+		model.mu.Unlock()
+		if paths != 1 {
+			t.Fatalf("%s: the model was asked %d time(s); want 1", tc.name, paths)
+		}
+	}
+}
+
+func TestRenameScopeAndCode(t *testing.T) {
+	lines := linediffSplit(chunkText)
+	if from, to := scopeOf(lines, 7); from != 0 || to != 15 {
+		t.Fatalf("scope of line 8: [%d, %d)", from, to)
+	}
+	if from, to := scopeOf(lines, 15); from != 15 || to != len(lines) {
+		t.Fatalf("scope of a header: [%d, %d)", from, to)
+	}
+	code := codeOnly([]string{"x = 'a # b' # c\n", "s = \"\"\"one\n", "two\"\"\" + y\n"}, "python")
+	if code[0] != "x ="+strings.Repeat(" ", 12)+"\n" || code[1] != "s =       \n" || code[2] != "       + y\n" {
+		t.Fatalf("%q", code)
+	}
+	code = codeOnly([]string{"a := `x` // y\n", "/* z\n", "*/ b\n"}, "go")
+	if code[0] != "a :=         \n" || code[2] != "   b\n" {
+		t.Fatalf("%q", code)
+	}
+	if isIdent("class", "python") || !isIdent("stride", "python") || isIdent("1x", "go") || !isIdent("größe", "go") {
+		t.Fatal("isIdent")
+	}
+}
+
+func linediffSplit(s string) []string { return strings.SplitAfter(strings.TrimSuffix(s, "\n"), "\n") }
