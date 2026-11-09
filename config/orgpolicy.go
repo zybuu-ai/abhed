@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"reflect"
 	"slices"
 	"sort"
@@ -71,11 +72,40 @@ const LayerOrg = "org"
 
 // orgSource names the org policy in messages.
 func orgSource(url string) string {
-	if url == "" {
+	// The reason it goes into reaches the model, the record and stderr.
+	shown := orgServer(url)
+	if shown == "" {
 		return "the org policy"
 	}
-	// The reason it goes into reaches the model, the record and stderr.
-	return "the org policy from " + PrintableURL(url)
+	return "the org policy from " + shown
+}
+
+// orgStatusURL is the org policy URL for the status line: whole, with its
+// user part, every query value and its fragment redacted.
+func orgStatusURL(raw string) string {
+	u, err := url.Parse(redactURL(raw))
+	if err != nil || u.Scheme == "" {
+		return orgServer(raw)
+	}
+	if u.RawQuery != "" {
+		q := u.Query()
+		for name := range q {
+			q.Set(name, "redacted")
+		}
+		u.RawQuery = q.Encode()
+	}
+	return Printable(u.String())
+}
+
+// orgServer is the org policy URL as a reason may show it: its scheme, host
+// and path only, never what a user part, query or fragment may carry. ""
+// when it does not read as a URL.
+func orgServer(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return Printable((&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String())
 }
 
 // orgKind is what an org policy may do with a setting.
@@ -626,7 +656,7 @@ func (c Config) managedSourceOf(key string) string {
 func (s OrgPolicyStatus) OrgPolicyLine() string {
 	switch s.Status {
 	case orgpolicy.StatusApplied:
-		return fmt.Sprintf("%s %q version %d from %s, signed %s by %s", s.Status, s.Name, s.Version, PrintableURL(s.URL),
+		return fmt.Sprintf("%s %q version %d from %s, signed %s by %s", s.Status, s.Name, s.Version, orgStatusURL(s.URL),
 			s.Issued.Local().Format("2 Jan 15:04"), s.KeyID)
 	case orgpolicy.StatusFallback:
 		return "fallback (plan mode, no allow rules, no web tools): " + s.Reason

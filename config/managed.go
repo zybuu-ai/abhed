@@ -739,10 +739,12 @@ func (c Config) RuleSource(list, rule string) (layer, where string) {
 		switch {
 		case c.OrgPolicy.Status == orgpolicy.StatusFallback:
 			where = "the org policy fallback"
-		case c.OrgPolicy.URL != "" && c.OrgPolicy.Version > 0:
-			where = fmt.Sprintf("the org policy (%s, version %d)", PrintableURL(c.OrgPolicy.URL), c.OrgPolicy.Version)
-		case c.OrgPolicy.URL != "":
-			where = fmt.Sprintf("the org policy (%s)", PrintableURL(c.OrgPolicy.URL))
+		case orgServer(c.OrgPolicy.URL) != "" && c.OrgPolicy.Version > 0:
+			where = fmt.Sprintf("the org policy (%s, version %d)", orgServer(c.OrgPolicy.URL), c.OrgPolicy.Version)
+		case orgServer(c.OrgPolicy.URL) != "":
+			where = fmt.Sprintf("the org policy (%s)", orgServer(c.OrgPolicy.URL))
+		case c.OrgPolicy.Version > 0:
+			where = fmt.Sprintf("the org policy (version %d)", c.OrgPolicy.Version)
 		}
 	case LayerManaged:
 		where = "the managed configuration " + managed.ConfigFile

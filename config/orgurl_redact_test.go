@@ -45,3 +45,33 @@ func TestOrgPolicyURLSecretsAreRedacted(t *testing.T) {
 		t.Fatalf("source %q", res.Source)
 	}
 }
+
+// A reason shows the org server as scheme, host and path only; the status
+// line keeps the URL with every secret-bearing part redacted, a token held
+// as the user name and a fragment included.
+func TestOrgPolicyURLShapes(t *testing.T) {
+	for _, raw := range []string{
+		"https://ghp_SECRET1@org.example/p",
+		"https://org.example/p?auth=SECRET1&k=SECRET2&code=SECRET3",
+		"https://org.example/p#token=SECRET1",
+		"https://u:SECRET1@org.example/p?token=SECRET2#SECRET3",
+	} {
+		cfg := Default()
+		cfg.ruleLayers = map[string]string{"deny\x00bash(curl*)": LayerManaged}
+		cfg.orgRules = map[string]bool{"deny\x00bash(curl*)": true}
+		cfg.OrgPolicy = OrgPolicyStatus{Status: orgpolicy.StatusApplied, URL: raw, Version: 2}
+		_, where := cfg.RuleSource("deny", "bash(curl*)")
+		if where != "the org policy (https://org.example/p, version 2)" {
+			t.Errorf("%s: reason shows %q", raw, where)
+		}
+		if got := orgSource(raw); got != "the org policy from https://org.example/p" {
+			t.Errorf("%s: orgSource %q", raw, got)
+		}
+		line := cfg.OrgPolicy.OrgPolicyLine()
+		for _, secret := range []string{"SECRET1", "SECRET2", "SECRET3"} {
+			if strings.Contains(line, secret) {
+				t.Errorf("%s: the status line leaks %s: %s", raw, secret, line)
+			}
+		}
+	}
+}

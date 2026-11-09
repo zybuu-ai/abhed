@@ -696,8 +696,15 @@ func redactURL(s string) string {
 	if u.User != nil {
 		if _, has := u.User.Password(); has {
 			u.User = url.UserPassword(u.User.Username(), "redacted")
-			changed = true
+		} else {
+			// A user part alone is often a token (https://ghp_…@host).
+			u.User = url.User("redacted")
 		}
+		changed = true
+	}
+	if u.Fragment != "" || u.RawFragment != "" {
+		u.Fragment, u.RawFragment = "redacted", ""
+		changed = true
 	}
 	if u.RawQuery != "" {
 		q := u.Query()
