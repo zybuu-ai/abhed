@@ -22,7 +22,7 @@ func (b *Budget) Refuse(name string) error {
 	if b == nil {
 		return nil
 	}
-	if b.MaxUSD > 0 {
+	if b.USDLimited() {
 		if _, ok := b.Price(name); !ok {
 			return fmt.Errorf("a budget of $%.2f is set and %s has no price; set one under pricing in the configuration", b.MaxUSD, name)
 		}
@@ -74,7 +74,7 @@ func (l *Loop) chargeCall(name string, u model.Usage) (cost *float64, unpriced b
 // unpricedUnderCap reports a dollar cap set for a model with no price: the
 // run cannot know what a call costs, so it does not make one.
 func (l *Loop) unpricedUnderCap() bool {
-	if l.Budget == nil || l.Budget.MaxUSD <= 0 {
+	if !l.Budget.USDLimited() {
 		return false
 	}
 	_, ok := l.Budget.Price(l.Adapter.Profile().Name)

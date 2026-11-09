@@ -58,6 +58,12 @@ func (b *Budget) Exhausted() bool {
 	return b.MaxTokens > 0 && b.tokens.Load() >= b.MaxTokens || b.USDExhausted()
 }
 
+// USDLimited reports a dollar limit in force. It is the one check of it:
+// under one, a model with no price is refused wherever a call is made.
+func (b *Budget) USDLimited() bool {
+	return b != nil && b.MaxUSD > 0
+}
+
 // USDExhausted reports the dollar cap reached.
 func (b *Budget) USDExhausted() bool {
 	return b != nil && b.MaxUSD > 0 && b.SpentUSD() >= b.MaxUSD
