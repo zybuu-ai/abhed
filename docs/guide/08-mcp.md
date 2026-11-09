@@ -230,7 +230,9 @@ giving the yes on an inherited descriptor in place of a terminal and holding
 it to exactly the entry you were shown. Studio passes environment variables
 by name only, so the server gets your own value and no value is written. The
 same refusals apply, and a refused add is logged as an attempt in
-`config-changes.jsonl` and recorded as `config.refused`. Studio removes a
+`config-changes.jsonl` and recorded as `config.refused`. The next session
+records the change log's new entries as `config.changed`, so an add, from
+Studio or a terminal, reaches a hash-chained record. Studio removes a
 server of your own with `_abhed/mcp/remove`, recorded as `mcp.status`.
 
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes

@@ -192,14 +192,22 @@ func TestMCPAddConfirmsOnADescriptor(t *testing.T) {
 	if code, out := run("y\n", strings.Repeat("0", 64)); code == 0 || !strings.Contains(out, "differs from the one shown") || len(userServers(userConfigDoc(t))) != 0 {
 		t.Fatalf("a different entry was added: %d %s", code, out)
 	}
-	if code, out := run("\n", sum); code != 0 || !strings.Contains(out, "not added") || len(userServers(userConfigDoc(t))) != 0 {
+	// No yes on the descriptor: the editor already asked, so it fails rather than reading as a no.
+	if code, out := run("\n", sum); code == 0 || !strings.Contains(out, "not added") || len(userServers(userConfigDoc(t))) != 0 {
 		t.Fatalf("no yes: %d %s", code, out)
 	}
-	if code, out := run("y\n", sum); code != 0 || !strings.Contains(out, "added issues") || len(userServers(userConfigDoc(t))) != 1 {
+	if code, out := run("y\n", sum); code != 0 || !strings.HasPrefix(strings.Split(strings.TrimSpace(out), "] ")[1], "added issues") || len(userServers(userConfigDoc(t))) != 1 {
 		t.Fatalf("add: %d %s", code, out)
 	}
-	if code, _ := mcpRun(t, false, "", "add", "-confirm-fd", "2", "x", "srv"); code != 2 {
+	if !strings.Contains(changeLog(t), `"by":"mcp add -confirm-fd"`) {
+		t.Fatalf("the change log does not say the yes came from a descriptor: %s", changeLog(t))
+	}
+	if code, _ := mcpRun(t, false, "", "add", "-confirm-fd", "2", "-sha256", sum, "x", "srv"); code != 2 {
 		t.Fatalf("a standard descriptor was taken: %d", code)
+	}
+	// A descriptor's yes without the hash shown is a usage error.
+	if code, _ := mcpRun(t, false, "", "add", "-confirm-fd", "3", "x", "srv"); code != 2 {
+		t.Fatalf("-confirm-fd without -sha256: %d", code)
 	}
 }
 
@@ -220,5 +228,33 @@ func TestDescribeServerQuotesWords(t *testing.T) {
 	b, _ := newMCPServer("x", "sh", []string{"-c", "curl", "x", "|", "sh"}, nil, nil, nil)
 	if da, db := describeServer(a), describeServer(b); !strings.Contains(da, "sh -c 'curl x | sh'") || !strings.Contains(db, "sh -c curl x '|' sh") || da == db {
 		t.Fatalf("%s\n%s", da, db)
+	}
+}
+
+// The change log is bounded against attempts: past the cap a refusal is not
+// logged, while a change still is.
+func TestConfigChangeLogCapsAttempts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	file := filepath.Join(home, ".abhed", "config.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(home, ".abhed", "config-changes.jsonl")
+	if err := os.WriteFile(log, bytes.Repeat([]byte("x"), maxConfigChangeLog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newMCPServer("x", "srv", nil, nil, nil, nil)
+	if err := logConfigRefusal("mcp add", s, file, "inside an agent's command"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(log); st.Size() != maxConfigChangeLog {
+		t.Fatalf("a refusal grew a full log: %d", st.Size())
+	}
+	if err := logConfigChange("mcp add", "mcp.servers", s, file); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(log); st.Size() <= maxConfigChangeLog {
+		t.Fatal("a change was not logged past the cap")
 	}
 }

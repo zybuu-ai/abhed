@@ -589,6 +589,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
 			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
 		}
+		if err := toolset.RecordConfigChanges(rec); err != nil {
+			return fail(fmt.Errorf("abhed: recording the configuration changes: %w", err))
+		}
 		for _, g := range toolset.StartupRegistries(cfg, x.Surface) {
 			if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
 				return fail(fmt.Errorf("abhed: recording the registries open from the start: %w", err))

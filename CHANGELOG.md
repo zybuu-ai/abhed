@@ -45,9 +45,15 @@ All notable changes to Abhed are recorded here. The format follows
   and hash. A refused add is recorded as `config.refused` with who asked,
   and logged as an attempt in `~/.abhed/config-changes.jsonl`.
 - `abhed mcp add` takes `-confirm-fd N` (read the yes from an inherited
-  descriptor, 3 or above, for an editor that asked the person) and
-  `-sha256 HEX` (add only that entry), and quotes a command's words that hold
-  spaces or shell syntax when it shows the server.
+  descriptor, 3 or above, for an editor that asked the person; it requires
+  `-sha256`, fails when no yes is read, and is logged as `by: "mcp add
+  -confirm-fd"`) and `-sha256 HEX` (add only that entry), and quotes a
+  command's words that hold spaces or shell syntax when it shows the server.
+- Each session records the entries of `~/.abhed/config-changes.jsonl`
+  written since a session last did, as `config.changed` (untrusted, since
+  the log is a file in your home), so an MCP server added at a terminal or
+  from Studio reaches a hash-chained record. Past 4 MiB the log no longer
+  takes refused attempts; changes are still logged.
 
 ### Upgrading from 1.2.9
 

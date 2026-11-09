@@ -125,3 +125,22 @@ func TestStudioMCPCheckUnderPolicy(t *testing.T) {
 		t.Fatalf("config.refused: %v", mcp)
 	}
 }
+
+// An add made by the engine's command line (as Studio runs it) reaches the
+// next session's hash-chained record as config.changed, once.
+func TestStudioMCPAddReachesTheNextSessionsRecord(t *testing.T) {
+	r := newStudioRig(t, "")
+	s, _ := newMCPServer("issues", "python3", []string{"server.py"}, nil, nil, nil)
+	if _, err := writeMCPServer(s, "mcp add -confirm-fd"); err != nil {
+		t.Fatal(err)
+	}
+	id := r.open()
+	evs, _ := r.recorded(id, agent.EvConfigChanged)
+	_, sum := mcpEntrySum(s)
+	if len(evs) != 1 || evs[0]["by"] != "mcp add -confirm-fd" || evs[0]["name"] != "issues" || evs[0]["sha256"] != sum {
+		t.Fatalf("config.changed: %v", evs)
+	}
+	if evs, _ := r.recorded(r.open(), agent.EvConfigChanged); len(evs) != 0 {
+		t.Fatalf("recorded again: %v", evs)
+	}
+}

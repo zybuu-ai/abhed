@@ -12,8 +12,8 @@ import (
 
 // MCP servers from Studio (studio-acp-contract.md §6.4). Adding one widens the
 // harness, so it is never done over ACP (§2.1, §2.3): Studio checks it here,
-// asks in a modal whose default is No, and its main process runs the engine's
-// own `abhed mcp add -confirm-fd 3 -sha256 …`. Removing one narrows.
+// asks in a modal whose default is No, and its engine host process runs the
+// engine's own `abhed mcp add -confirm-fd 3 -sha256 …`. Removing one narrows.
 
 func init() {
 	liveFeatures = append(liveFeatures, "mcp.check")

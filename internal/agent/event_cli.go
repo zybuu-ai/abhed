@@ -43,7 +43,24 @@ const (
 	// EvConfigNarrowed is a web setting a layer below the managed
 	// configuration narrowed, as it may; see ConfigAttempt.
 	EvConfigNarrowed EventType = "config.narrowed"
+	// EvConfigChanged is an entry of ~/.abhed/config-changes.jsonl made since
+	// the last session recorded them, such as an MCP server added from Studio
+	// or a terminal; see ConfigChanged.
+	EvConfigChanged EventType = "config.changed"
 )
+
+// ConfigChanged is the payload of config.changed, as the change log has it.
+// The log is a file in the person's home, so its lines are recorded as
+// untrusted.
+type ConfigChanged struct {
+	Time    string `json:"time,omitempty"`
+	By      string `json:"by"`
+	Key     string `json:"key"`
+	Name    string `json:"name,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+	Refused string `json:"refused,omitempty"`
+}
 
 // ConfigAttempt is the payload of config.refused and config.narrowed: who
 // tried to change which setting, from where, to what, and what was decided.

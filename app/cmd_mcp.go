@@ -32,6 +32,8 @@ type mcpIO struct {
 	// inSandbox is whether this runs in an agent's command, which sets
 	// ABHED_SANDBOX; such a command never adds a server.
 	inSandbox bool
+	// byEditor is a yes read from -confirm-fd, which the change log says apart.
+	byEditor bool
 }
 
 func stdMCPIO() mcpIO {
@@ -82,7 +84,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 				return fail(fmt.Errorf("-confirm-fd %d is not open", o.confirmFD))
 			}
 			defer func() { _ = f.Close() }()
-			cio.in, cio.terminal = f, true
+			cio.in, cio.terminal, cio.byEditor = f, true, true
 		}
 		return fail0(mcpAdd(s, o.sha256, cio), fail)
 	}
@@ -126,7 +128,8 @@ func parseMCPAddOpts(args []string, errw io.Writer) (config.MCPServerConfig, mcp
 		return s, o, errUsage
 	}
 	words := fs.Args()
-	if len(words) < 2 || (o.confirmFD != 0 && o.confirmFD < 3) {
+	// A yes from a descriptor is always held to the entry the person was shown.
+	if len(words) < 2 || (o.confirmFD != 0 && (o.confirmFD < 3 || o.sha256 == "")) {
 		return s, o, errUsage
 	}
 	s, err := newMCPServer(words[0], words[1], words[2:], envs, headers, splitLists(allowTools))
@@ -322,9 +325,17 @@ func mcpAdd(s config.MCPServerConfig, want string, cio mcpIO) error {
 	line, _ := bufio.NewReader(cio.in).ReadString('\n')
 	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 		fmt.Fprintln(cio.out, "not added")
+		if cio.byEditor {
+			// The editor asked already: no yes on the descriptor is a failure, not a no.
+			return errors.New("no yes was read from -confirm-fd; nothing was added")
+		}
 		return nil
 	}
-	if _, err := writeMCPServer(s, "mcp add"); err != nil {
+	by := "mcp add"
+	if cio.byEditor {
+		by = "mcp add -confirm-fd"
+	}
+	if _, err := writeMCPServer(s, by); err != nil {
 		return err
 	}
 	fmt.Fprintf(cio.out, "added %s to %s; it starts with the next session\n", s.Name, config.Printable(file))
@@ -507,6 +518,10 @@ func logConfigChange(by, key string, s config.MCPServerConfig, file string) erro
 	return appendConfigChange(configChange{By: by, Key: key, Name: s.Name, File: file}, s)
 }
 
+// maxConfigChangeLog bounds the change log against attempts: past it a refused
+// attempt is no longer logged, while a change still is.
+const maxConfigChangeLog = 4 << 20
+
 func appendConfigChange(c configChange, s config.MCPServerConfig) error {
 	c.Time = time.Now().UTC()
 	c.Kind, c.SHA256 = mcpEntrySum(s)
@@ -515,6 +530,9 @@ func appendConfigChange(c configChange, s config.MCPServerConfig) error {
 		return err
 	}
 	path := filepath.Join(filepath.Dir(c.File), "config-changes.jsonl")
+	if st, err := os.Lstat(path); err == nil && c.Refused != "" && st.Size() >= maxConfigChangeLog {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

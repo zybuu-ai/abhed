@@ -112,6 +112,7 @@ var table = map[agent.EventType]rule{
 	agent.EvStartupTrusted:       {fn: configChange, classes: []int{5019}},
 	agent.EvConfigRefused:        {fn: mapConfigAttempt, classes: []int{5019}},
 	agent.EvConfigNarrowed:       {fn: mapConfigAttempt, classes: []int{5019}},
+	agent.EvConfigChanged:        {fn: configChange, classes: []int{5019}},
 	agent.EvApprovalScopeGranted: {fn: configChange, classes: []int{5019}},
 	agent.EvWorkspaceDirAdded:    {fn: configChange, classes: []int{5019}},
 	agent.EvSandboxBound:         {fn: configChange, classes: []int{5019}},

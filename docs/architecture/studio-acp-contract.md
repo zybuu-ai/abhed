@@ -126,9 +126,11 @@ relax them.
    option or `cancelled`. The engine refuses an option id it did not offer.
 3. **Destructive and widening steps need a modal whose default is No.**
    Destructive calls get a second confirm in Studio. Trust grants and settings
-   that widen the harness are never done over ACP: Studio's main process shows
-   a native dialog and then runs the engine's own command line
-   (`abhed trust grant -sha256 …`, `abhed config set …`).
+   that widen the harness are never done over ACP: Studio shows a modal whose
+   default is No, and then Studio's main process or its engine host process
+   (a Studio utility process that the engine's stdio and ACP cannot call)
+   runs the engine's own command line with an argv array, never a shell
+   (`abhed trust grant -sha256 …`, `abhed config set …`, `abhed mcp add …`).
 4. **No secret value passes through Studio.** Secrets are typed into the
    engine's own hidden prompt in an Abhed terminal. Studio sees names only.
    Responses carry names, hashes and redacted text.
@@ -1018,14 +1020,18 @@ interface Capabilities {
     no value is written. `headersEnv` maps a header to the variable it is
     read from (URL servers). `sha256` is the hash of the entry that would be
     written.
-  - Studio then shows `description` in a modal whose default is No, and on a
-    yes its main process runs the engine's own command line with an argv
-    array: `abhed mcp add -confirm-fd 3 -sha256 <sha256> [-env NAME]…
+  - Studio then shows `description` in a modal whose default is No
+    (`IDialogService`, native by default), and on a yes its engine host
+    process (a Studio utility process, which the engine's stdio and ACP
+    cannot call) runs the engine's own command line with an argv array,
+    never a shell: `abhed mcp add -confirm-fd 3 -sha256 <sha256> [-env NAME]…
     [-header-env H=VAR]… [-allow-tools a,b] NAME COMMAND [ARGS…]` (or `NAME
     URL`), writing `y` on the inherited descriptor 3 in place of a terminal.
-    The command line refuses an entry whose hash differs from `-sha256`, and
+    The command line requires `-sha256` with `-confirm-fd`, refuses an entry
+    whose hash differs, fails when no yes is read from the descriptor, and
     re-checks the managed configuration's servers and MCP lists under the
-    file's lock.
+    file's lock. It logs the change as `by: "mcp add -confirm-fd"`, and the
+    next session records it as `config.changed`.
   - `_abhed/mcp/remove {sessionId, name}` → `{removed: true, file}`, recorded
     `mcp.status {server, op: "remove", status: "removed", kind, sha256, by:
     "user"}`; it narrows, so it needs no agreement.
@@ -1774,6 +1780,7 @@ them.
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
 | `mcp.status` | user | server, op (`restart`, `remove`), status, error, kind and sha256 (remove) |
+| `config.changed` | system (untrusted) | by, key, name, kind, sha256, refused: an entry of `~/.abhed/config-changes.jsonl` written since a session last recorded them (an MCP server added at a terminal or from Studio) |
 | `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
