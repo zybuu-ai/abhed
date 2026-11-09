@@ -168,7 +168,7 @@ func (s *Server) serveAS(w http.ResponseWriter, r *http.Request) {
 			bq.Set("iss", s.asBase())
 		}
 		back.RawQuery = bq.Encode()
-		http.Redirect(w, r, back.String(), http.StatusFound)
+		http.Redirect(w, r, back.String(), http.StatusFound) // #nosec G710 -- a test authorization server, redirecting to the redirect_uri as one does
 	case "/token":
 		_ = r.ParseForm()
 		f := r.PostForm
@@ -229,7 +229,8 @@ func browserWith(t *testing.T, tr http.RoundTripper) func(string) error {
 			}
 			_ = resp.Body.Close()
 			if loc := resp.Header.Get("Location"); loc != "" {
-				r2, err := http.Get(loc) //nolint:noctx // the test's browser, back to the loopback callback
+				req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, loc, nil)
+				r2, err := http.DefaultClient.Do(req) // #nosec G107 G704 -- the test's browser, back to the loopback callback
 				if err == nil {
 					_, _ = io.Copy(io.Discard, r2.Body)
 					_ = r2.Body.Close()

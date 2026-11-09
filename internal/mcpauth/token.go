@@ -52,7 +52,7 @@ func names(server string) (record, access, refresh, secret string) {
 
 // save writes rec in one step.
 func save(store *secrets.Store, rec Record) error {
-	data, err := json.Marshal(rec)
+	data, err := json.Marshal(rec) // #nosec G117 -- the login is written to the secret store, which is where it belongs
 	if err != nil {
 		return err
 	}
