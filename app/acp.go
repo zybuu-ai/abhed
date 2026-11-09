@@ -1324,6 +1324,21 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}
 	mentions = append(mentions, links.mentions...)
 	attached += links.text
+	used = 0
+	for _, m := range mentions {
+		used += int(m.Bytes)
+	}
+	resLinks, err := c.resourceMentions(ctx, s, text, mentionMaxBytes-used)
+	if err == nil && resLinks.why != "" {
+		err = errors.New(resLinks.why)
+	}
+	if err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	mentions = append(mentions, resLinks.mentions...)
+	attached += resLinks.text
 	// What the person attached is recorded where it reaches the model.
 	withAttached := func(prompt string) string {
 		for _, m := range mentions {

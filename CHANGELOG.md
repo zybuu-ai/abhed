@@ -23,6 +23,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
+  logins: `abhed secret set` refuses them, and a command or tool is never
+  given one by name. Store such a secret under another name.
 - A workspace other than your home folder whose config is your own
   `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
   longer trusted as your own file without asking; trust it once with
@@ -34,6 +37,32 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. A link inside the workspace, and any link at your home
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
+
+### Added
+
+- Sign-in to remote MCP servers with OAuth 2.1, as the MCP authorization
+  specification describes: `abhed mcp login NAME` finds the server's
+  protected-resource and authorization-server metadata, registers a client
+  where the server offers that (or uses `oauth.client_id`), and signs in
+  through your browser with PKCE (S256 only) and a loopback redirect;
+  `abhed mcp logout NAME` revokes and forgets the login. The tokens are kept
+  in the secret store under names Abhed holds for itself: never listed to
+  the model, never given to a command, redacted from the record. A login is
+  bound to the server's name and URL, refreshed when it ends, sent only to
+  the server's own origin (never on a redirect or to another host), and
+  every request of it, the browser's apart, goes under the egress allowlist
+  and the corporate upstream proxy. Only an `https` server and authorization
+  server are signed in to (loopback apart); a resource or issuer that does
+  not match is refused
+  ([MCP](docs/guide/08-mcp.md#signing-in-with-oauth)).
+- MCP resources: a server that offers them adds
+  `mcp__<server>__list_resources` and `mcp__<server>__read_resource`,
+  judged by policy as its tools are (a rule may name the URI:
+  `mcp__docs__read_resource(docs://private/*)`), capped at 30,000
+  characters, binary content described rather than sent, and recorded.
+  `@server:uri` in the terminal or an editor's prompt attaches one, read as
+  your own call through the same tool and policy; `/mcp resources SERVER`
+  lists them ([MCP](docs/guide/08-mcp.md#resources)).
 
 ### Fixed
 

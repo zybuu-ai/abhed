@@ -206,6 +206,8 @@ abhed mcp add -env TOKEN=abc -env HTTPS_PROXY -allow-tools search,read docs node
 abhed mcp add -header-env Authorization=CORPUS_TOKEN corpus https://retrieval.internal/mcp
 abhed mcp list
 abhed mcp remove docs
+abhed mcp login corpus
+abhed mcp logout corpus
 ```
 
 `add` shows the server, every value escaped and `-env` values hidden, and
@@ -229,6 +231,84 @@ them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-
 When the managed configuration sets `mcp.servers`, `add` and `remove`
 are refused: its list replaces yours, and only it changes it. A workspace's
 servers still need workspace trust, as before.
+
+## Signing in with OAuth
+
+A URL server that wants a sign-in answers `401` until you sign in to it:
+
+```sh
+abhed mcp login corpus     # opens your browser; prints the address too
+abhed mcp logout corpus    # revokes the login where the server offers that, and forgets it
+```
+
+`login` follows the MCP authorization specification. It asks the server for
+its protected-resource metadata (from its `401` challenge, or the well-known
+address), then its authorization server's metadata, registers Abhed as a
+client where that server offers dynamic registration, and opens the sign-in
+page in your browser. The page comes back to a listener on `127.0.0.1` that
+Abhed opens for this sign-in alone; the code is exchanged with PKCE (S256)
+and the server's URL as the `resource`. It refuses:
+
+- a server or authorization server that is not `https` (one on this machine
+  apart), so a token is never sent in the clear;
+- metadata that names another resource than the server, or an issuer other
+  than the authorization server it was fetched from;
+- an authorization server without PKCE S256;
+- a redirect that does not carry this sign-in's state, or comes back from
+  another issuer where the server says it adds one.
+
+For an authorization server that registers no clients, name a client
+registered ahead of time:
+
+```json
+{ "name": "corpus", "enabled": true, "url": "https://retrieval.internal/mcp",
+  "oauth": { "client_id": "abhed-cli", "client_secret_env": "CORPUS_CLIENT_SECRET", "scopes": ["read"] } }
+```
+
+`client_secret_env` is read at `login` only. `scopes` defaults to what the
+server says it supports.
+
+The tokens are kept in the secret store (`~/.abhed/secrets.json`) under
+names beginning `MCP_OAUTH_`, which Abhed holds for itself: they are not
+offered to the model, a command or tool is never given one, `abhed secret
+set` refuses the prefix, and their values are redacted from the record like
+any stored secret. A login is bound to the server's name and URL: a server
+whose URL changes is not sent it, and asks for `login` again. Its access
+token goes on requests to the server's own origin only, never on a redirect
+or to an endpoint on another host, and a server that also has an
+`Authorization` header configured is refused. It is refreshed before it
+ends, and once more when the server refuses it; a refresh another Abhed
+process made is taken up. Every request a sign-in or refresh makes, the
+browser's apart, goes under the egress allowlist (`sandbox.network:
+"allowlist"`, where the authorization server needs a rule too) and the
+corporate upstream proxy. `login` and `logout` are refused inside an
+agent's command, and `login` needs a person at a terminal; each is written
+to `~/.abhed/config-changes.jsonl`, never a token. `abhed mcp list` says
+which servers are signed in.
+
+The login is read from the operator's store: the terminal, an editor's
+sessions, the SDK and a single-user `abhed serve`. On a server where each
+account has its own store, a session reads that account's store, which a
+login does not write.
+
+## Resources
+
+A server that offers resources adds two tools under its name:
+`mcp__<server>__list_resources` lists them (each URI, name and type; what
+the server says of them is treated as a tool description is) and
+`mcp__<server>__read_resource` reads one by URI. A read returns at most
+30,000 characters; binary content is described, not sent. Both go through
+policy as the server's tools do: `mcp__<server>__*` covers them, a rule can
+name a URI (`"deny": ["mcp__docs__read_resource(docs://private/*)"]`), and
+when `allow_tools` is set it must name them. A server's own tool of either
+name keeps it, and its resources are then not offered under that name.
+
+In the terminal or an editor's prompt, `@server:uri` attaches a resource:
+`@docs:file:///guide.md`, `@tickets:ticket://42` (quote one with spaces,
+`@"docs:file:///my notes.md"`). It is read as your own call through the
+server's `read_resource` tool, so a deny rule refuses it and the message is
+not sent; the read and the attachment are recorded as an `@` file's are.
+`/mcp resources <server>` lists a server's resources.
 
 ## Allowed and denied servers
 
@@ -315,7 +395,8 @@ unreachable server costs nothing until something needs it.
 
 In a session, `/mcp` lists each enabled server, connected or with the reason
 it is not, and its tools; `/mcp restart <server>` reconnects one, and the
-tools already offered reach the new connection.
+tools already offered reach the new connection. A server that refuses the
+connection for want of a sign-in says to run `abhed mcp login <server>`.
 
 ## Many tools
 

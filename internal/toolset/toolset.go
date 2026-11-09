@@ -193,6 +193,9 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
 		s.Gateway.Admit, s.Gateway.PinProgram = MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		if o.Vault != nil {
+			s.Gateway.Authorize = MCPAuthorize(o.Vault)
+		}
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {

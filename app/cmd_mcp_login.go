@@ -1,0 +1,147 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"syscall"
+	"time"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
+	"github.com/zybuu-ai/abhed/internal/toolset"
+)
+
+// mcpOAuthHTTP is the client a sign-in reaches the server and its
+// authorization server with: under the configuration's egress allowlist and
+// the upstream proxy, following no redirect; a variable so tests can bound it.
+var mcpOAuthHTTP = func(guard *egress.Guard) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: guard},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// scopeRe is one OAuth scope (RFC 6749 §3.3), as a configuration may name it.
+var scopeRe = regexp.MustCompile(`^[\x21\x23-\x5b\x5d-\x7e]{1,128}$`)
+
+// mcpURLServer is the URL server name in effect in this workspace, after
+// the MCP lists: one they refuse is not signed in to.
+func mcpURLServer(cfg config.Config, name string) (config.MCPServerConfig, error) {
+	for _, s := range cfg.MCP.Servers {
+		if s.Name != name {
+			continue
+		}
+		if s.URL == "" {
+			return s, fmt.Errorf("MCP server %s runs a program; only a URL server signs in", name)
+		}
+		if err := cfg.MCPAdmitted(config.MCPServerOf(s)); err != nil {
+			return s, err
+		}
+		return s, nil
+	}
+	return config.MCPServerConfig{}, fmt.Errorf("no MCP server named %s is configured here (or the MCP server lists refuse it); abhed mcp list shows them", config.Printable(name))
+}
+
+// mcpLogin is `abhed mcp login NAME`: sign in to a URL server with OAuth in
+// the person's browser, keeping the tokens in the secret store.
+func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO) error {
+	if cio.inSandbox {
+		return errors.New("abhed mcp login is refused inside an agent's command; run it yourself at a terminal")
+	}
+	if !cio.terminal {
+		return errors.New("abhed mcp login signs in through your browser and needs a person at a terminal")
+	}
+	cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true})
+	if err != nil {
+		return err
+	}
+	s, err := mcpURLServer(cfg, name)
+	if err != nil {
+		return err
+	}
+	o := mcpauth.LoginOptions{Server: s.Name, URL: s.URL, Out: cio.out}
+	if s.OAuth != nil {
+		o.ClientID, o.Scopes = s.OAuth.ClientID, s.OAuth.Scopes
+		if s.OAuth.ClientSecretEnv != "" {
+			if o.ClientSecret = os.Getenv(s.OAuth.ClientSecretEnv); o.ClientSecret == "" {
+				return fmt.Errorf("oauth.client_secret_env names %s, which is not set", config.Printable(s.OAuth.ClientSecretEnv))
+			}
+		}
+		for _, sc := range o.Scopes {
+			if !scopeRe.MatchString(sc) {
+				return fmt.Errorf("oauth.scopes holds %q, which is not a scope", config.Printable(sc))
+			}
+		}
+	}
+	guard := toolset.OwnEgress(cfg)
+	if guard != nil {
+		defer guard.Close()
+		defer egress.Install(guard)()
+	}
+	o.HTTP = mcpOAuthHTTP(guard)
+	if canOpenBrowser() {
+		o.Open = openBrowser
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := mcpauth.Login(ctx, openVault(), o); err != nil {
+		return fmt.Errorf("sign in to MCP server %s: %w", s.Name, err)
+	}
+	logMCPAuth("login", s, cio)
+	return nil
+}
+
+// mcpLogout is `abhed mcp logout NAME`: revoke and forget a server's login.
+func mcpLogout(workspace string, trust config.TrustChoice, name string, cio mcpIO) error {
+	if cio.inSandbox {
+		return errors.New("abhed mcp logout is refused inside an agent's command; run it yourself at a terminal")
+	}
+	if !mcpServerName.MatchString(name) {
+		return fmt.Errorf("%q is not an MCP server name", config.Printable(name))
+	}
+	// Forgetting needs no configuration; revoking reaches the network as a login does.
+	var guard *egress.Guard
+	s := config.MCPServerConfig{Name: name}
+	if cfg, err := loadNetworked(workspace, config.LoadOptions{Trust: trust, Quiet: true}); err == nil {
+		if guard = toolset.OwnEgress(cfg); guard != nil {
+			defer guard.Close()
+			defer egress.Install(guard)()
+		}
+		for _, c := range cfg.MCP.Servers {
+			if c.Name == name {
+				s = c
+			}
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	found, err := mcpauth.Logout(ctx, openVault(), name, mcpOAuthHTTP(guard))
+	if err != nil {
+		return err
+	}
+	if !found {
+		fmt.Fprintf(cio.out, "MCP server %s has no login.\n", name)
+		return nil
+	}
+	fmt.Fprintf(cio.out, "Signed out of MCP server %s.\n", name)
+	logMCPAuth("logout", s, cio)
+	return nil
+}
+
+// logMCPAuth appends a login or logout to the person's config change log,
+// with the server's name and transport, never a token; a log that cannot be
+// written is said, and the sign-in stands.
+func logMCPAuth(by string, s config.MCPServerConfig, cio mcpIO) {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		err = logConfigChange(by, "mcp.oauth", s, filepath.Join(home, ".abhed", "config.json"))
+	}
+	if err != nil {
+		fmt.Fprintf(cio.err, "abhed: warning: the %s was not written to the config change log: %v\n", by, err)
+	}
+}

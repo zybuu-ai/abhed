@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
@@ -41,6 +43,18 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 		})
 	}
 	return out
+}
+
+// MCPAuthorize gives each URL server the login abhed mcp login kept in
+// store, bound to the server's name and URL; nil for a server with none.
+func MCPAuthorize(store *secrets.Store) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, hc *http.Client) (mcp.Authorizer, error) {
+		a, err := mcpauth.Load(store, cfg.Name, cfg.URL, hc)
+		if a == nil || err != nil {
+			return nil, err
+		}
+		return a, nil
+	}
 }
 
 // MCPAdmit is the gateway's check of every server against the

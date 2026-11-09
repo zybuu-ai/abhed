@@ -1507,7 +1507,10 @@ abhed secret rm GITHUB_TOKEN
 
 Values live in `~/.abhed/secrets.json` (`ABHED_SECRETS_FILE` overrides), mode
 600, outside every workspace and under the directory the agent's tools and
-sandbox cannot reach. They are never in a config file.
+sandbox cannot reach. They are never in a config file. Names beginning
+`MCP_OAUTH_` are Abhed's own, for an MCP server's login (see
+[MCP](08-mcp.md#signing-in-with-oauth)): they are not listed to the model,
+no command or tool is given one, and `abhed secret set` refuses them.
 
 The model sees the **names**, and asks for one on a single command:
 
