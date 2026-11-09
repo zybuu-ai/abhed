@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `mcp.add`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -1008,6 +1008,25 @@ interface Capabilities {
   restarted server lives as long as the session, not the request. `error` here and in `mcp[]` is
   redacted text; `refusedTools` names are untrusted text with hidden
   characters marked.
+- **Adding and removing MCP servers** (1.3.0; `mcp.add` in `features`).
+  They write the person's own `~/.abhed/config.json` with the same checks
+  and change log as `abhed mcp add|remove`; Studio's modal is the person's
+  agreement in place of the terminal's confirmation.
+  - `_abhed/mcp/check {sessionId, name, command?, args?, url?, env?,
+    headersEnv?, allowTools?}` → `{file, description}`, before Studio asks.
+    Exactly one of `command` and `url`. `env` holds variable names only: the
+    server gets the person's own value of each, so no value is written.
+    `headersEnv` maps a header to the variable it is read from (URL servers).
+  - `_abhed/mcp/add` with the same params → `{added: true, file}`, recorded
+    `mcp.status {server, op: "add", status: "added", by: "user"}`. The server
+    is enabled for sessions started afterwards.
+  - `_abhed/mcp/remove {sessionId, name}` → `{removed: true, file}`, recorded
+    `op: "remove"`; it narrows, so it needs no agreement.
+  - Refusals: -32602 for a bad name, command or URL, an env value, or an
+    unknown field; -32001 when the managed configuration sets
+    `mcp.servers`, or its `mcp.allowed`/`mcp.denied` refuse the server (it
+    would never start), and inside an agent's command; -32000 when the file
+    already has a server of that name or cannot be written.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -1746,7 +1765,7 @@ them.
 | *new* `model.fallback` | system | from, to, reason |
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
-| `mcp.status` | user | server, op (`restart`), status, error |
+| `mcp.status` | user | server, op (`restart`, `add`, `remove`), status, error |
 | `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
@@ -1787,6 +1806,7 @@ table.
 | Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
+| MCP add and remove | `_abhed/mcp/check`, `_abhed/mcp/add`, `_abhed/mcp/remove` | ext | done (1.3.0; `mcp.add` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |

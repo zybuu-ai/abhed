@@ -93,7 +93,7 @@ const (
 // server's connection, and how it ended.
 type MCPStatus struct {
 	Server string `json:"server"`
-	Op     string `json:"op"`     // restart
+	Op     string `json:"op"`     // restart, add or remove
 	Status string `json:"status"` // connected or error
 	Error  string `json:"error,omitempty"`
 	By     string `json:"by"`

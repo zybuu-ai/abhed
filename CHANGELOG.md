@@ -21,6 +21,18 @@ All notable changes to Abhed are recorded here. The format follows
   `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
   a device, or over 4 MiB, is refused instead of followed or waited on.
 
+### Added
+
+- Studio can add and remove MCP servers through the engine
+  (`_abhed/mcp/check`, `_abhed/mcp/add`, `_abhed/mcp/remove`; `mcp.add` in
+  `features`). They write your own `~/.abhed/config.json` with the same
+  checks and change log as `abhed mcp add|remove`: refused when the managed
+  configuration sets the servers or its MCP lists refuse the server, and
+  inside an agent's command. Studio's modal is the agreement in place of the
+  terminal's. Environment variables are passed by name only, so no secret
+  value is written to the file. Each change is recorded as `mcp.status`
+  with `op` `add` or `remove`.
+
 ### Upgrading from 1.2.9
 
 - A workspace other than your home folder whose config is your own

@@ -105,17 +105,27 @@ func parseMCPAdd(args []string, errw io.Writer) (config.MCPServerConfig, error) 
 	if len(words) < 2 {
 		return s, errUsage
 	}
-	s.Name, s.Enabled = words[0], true
+	return newMCPServer(words[0], words[1], words[2:], envs, headers, splitLists(allowTools))
+}
+
+// newMCPServer is one server entry, enabled, as `abhed mcp add` and Studio
+// describe it: a command with its arguments, or an http(s) URL.
+func newMCPServer(name, target string, args, envs, headers, allowTools []string) (config.MCPServerConfig, error) {
+	var s config.MCPServerConfig
+	s.Name, s.Enabled = name, true
 	if !mcpServerName.MatchString(s.Name) {
 		return s, fmt.Errorf("server name %s: letters, digits, _ and - only, up to 64", config.Printable(s.Name))
 	}
-	if u, err := url.Parse(words[1]); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
-		if len(words) > 2 || len(envs) > 0 {
+	if target == "" {
+		return s, errors.New("a server needs a command or an http(s) URL")
+	}
+	if u, err := url.Parse(target); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		if len(args) > 0 || len(envs) > 0 {
 			return s, errors.New("a URL server takes no arguments and no -env")
 		}
-		s.URL = words[1]
+		s.URL = target
 	} else {
-		s.Command, s.Args = words[1], words[2:]
+		s.Command, s.Args = target, args
 	}
 	for _, e := range envs {
 		// A bare KEY passes your own value of it.
@@ -137,7 +147,7 @@ func parseMCPAdd(args []string, errw io.Writer) (config.MCPServerConfig, error) 
 	if len(s.HeadersEnv) > 0 && s.URL == "" {
 		return s, errors.New("-header-env is for a URL server")
 	}
-	s.AllowTools = splitLists(allowTools)
+	s.AllowTools = allowTools
 	return s, nil
 }
 
@@ -192,29 +202,62 @@ func describeServer(s config.MCPServerConfig) string {
 	return b.String()
 }
 
-// mcpAdd confirms and writes a server into the person's own file.
-func mcpAdd(s config.MCPServerConfig, cio mcpIO) error {
+// mcpAddable is why s cannot be added, if it cannot: the managed
+// configuration sets the servers, its MCP lists refuse s (it would never
+// start), or the person's file already has a server of that name.
+func mcpAddable(s config.MCPServerConfig) (string, error) {
 	if err := mcpManaged(); err != nil {
-		return err
+		return "", err
 	}
-	// A server the managed MCP lists refuse would never start; it is not written.
 	if cfg, err := config.LoadManaged(); err != nil {
-		return err
+		return "", err
 	} else if err := cfg.MCPAdmitted(config.MCPServerOf(s)); err != nil {
-		return err
+		return "", err
 	}
-	unlock, err := lockUserConfig()
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	doc, file, err := readUserDoc()
 	if err != nil {
-		return err
+		return file, err
 	}
-	servers := userServers(doc)
-	if slices.ContainsFunc(servers, func(v any) bool { return serverName(v) == s.Name }) {
-		return fmt.Errorf("%s already has an MCP server named %s; abhed mcp remove %s first", config.Printable(file), s.Name, s.Name)
+	if slices.ContainsFunc(userServers(doc), func(v any) bool { return serverName(v) == s.Name }) {
+		return file, fmt.Errorf("%s already has an MCP server named %s; remove it first", config.Printable(file), s.Name)
+	}
+	return file, nil
+}
+
+// writeMCPServer adds s, enabled, to the person's own file once they have
+// agreed, checking again under the file's lock, and logs the change as by.
+func writeMCPServer(s config.MCPServerConfig, by string) (string, error) {
+	unlock, err := lockUserConfig()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	file, err := mcpAddable(s)
+	if err != nil {
+		return file, err
+	}
+	doc, _, err := readUserDoc()
+	if err != nil {
+		return file, err
+	}
+	entry, err := toDoc(s)
+	if err != nil {
+		return file, err
+	}
+	if _, err := writeUserSetting("mcp.servers", append(userServers(doc), entry)); err != nil {
+		return file, err
+	}
+	if err := logConfigChange(by, "mcp.servers", s, file); err != nil {
+		return file, fmt.Errorf("added, but the change log was not written: %w", err)
+	}
+	return file, nil
+}
+
+// mcpAdd confirms and writes a server into the person's own file.
+func mcpAdd(s config.MCPServerConfig, cio mcpIO) error {
+	file, err := mcpAddable(s)
+	if err != nil {
+		return err
 	}
 	// A terminal can be faked from inside a command; the sandbox's deny on
 	// ~/.abhed is what keeps the agent out, and this refuses earlier.
@@ -234,15 +277,8 @@ func mcpAdd(s config.MCPServerConfig, cio mcpIO) error {
 		fmt.Fprintln(cio.out, "not added")
 		return nil
 	}
-	entry, err := toDoc(s)
-	if err != nil {
+	if _, err := writeMCPServer(s, "mcp add"); err != nil {
 		return err
-	}
-	if _, err := writeUserSetting("mcp.servers", append(servers, entry)); err != nil {
-		return err
-	}
-	if err := logConfigChange("mcp add", "mcp.servers", s, file); err != nil {
-		return fmt.Errorf("added, but the change log was not written: %w", err)
 	}
 	fmt.Fprintf(cio.out, "added %s to %s; it starts with the next session\n", s.Name, config.Printable(file))
 	return nil
@@ -251,35 +287,45 @@ func mcpAdd(s config.MCPServerConfig, cio mcpIO) error {
 // mcpRemove takes a server out of the person's own file. It narrows, so it
 // does not ask.
 func mcpRemove(name string, out io.Writer) error {
-	if err := mcpManaged(); err != nil {
+	file, err := removeMCPServer(name, "mcp remove")
+	if err != nil {
 		return err
+	}
+	fmt.Fprintf(out, "removed %s from %s\n", name, config.Printable(file))
+	return nil
+}
+
+// removeMCPServer takes the server named name out of the person's own file
+// and logs the change as by.
+func removeMCPServer(name, by string) (string, error) {
+	if err := mcpManaged(); err != nil {
+		return "", err
 	}
 	unlock, err := lockUserConfig()
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
 	doc, file, err := readUserDoc()
 	if err != nil {
-		return err
+		return file, err
 	}
 	servers := userServers(doc)
 	i := slices.IndexFunc(servers, func(v any) bool { return serverName(v) == name })
 	if i < 0 {
-		return fmt.Errorf("%s has no MCP server named %s", config.Printable(file), config.Printable(name))
+		return file, fmt.Errorf("%s has no MCP server named %s", config.Printable(file), config.Printable(name))
 	}
 	var removed config.MCPServerConfig
 	if b, err := json.Marshal(servers[i]); err == nil {
 		_ = json.Unmarshal(b, &removed)
 	}
 	if _, err := writeUserSetting("mcp.servers", slices.Delete(servers, i, i+1)); err != nil {
-		return err
+		return file, err
 	}
-	if err := logConfigChange("mcp remove", "mcp.servers", removed, file); err != nil {
-		return fmt.Errorf("removed, but the change log was not written: %w", err)
+	if err := logConfigChange(by, "mcp.servers", removed, file); err != nil {
+		return file, fmt.Errorf("removed, but the change log was not written: %w", err)
 	}
-	fmt.Fprintf(out, "removed %s from %s\n", name, config.Printable(file))
-	return nil
+	return file, nil
 }
 
 // mcpList shows the servers in effect in this workspace and where each came from.
