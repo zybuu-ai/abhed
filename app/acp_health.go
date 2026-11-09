@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/recordship"
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
@@ -130,6 +132,9 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	} else {
 		add("index", "Code index", "ok", "off")
 	}
+	if status, detail, ok := shipCheck(cfg); ok {
+		add("record_ship", "Record shipping", status, detail)
+	}
 	if cfg.Managed {
 		add("managed", "Managed policy", "ok", fmt.Sprintf("in force from %s; it sets %d setting(s)", managed.ConfigFile, len(cfg.ManagedKeys)))
 	} else {
@@ -235,4 +240,37 @@ func (a *App) doctorJSON(w io.Writer, workspace string, set flagSettings) int {
 		}
 	}
 	return 0
+}
+
+// shipCheck is the record shipping's state as a check, when record.ship is on: failing
+// when the org server said the person's access was removed, warning when more waits than
+// the limit or the last pass failed. It reads only the shipper's state file.
+func shipCheck(cfg config.Config) (status, detail string, ok bool) {
+	t, err := shipTargetFor(cfg)
+	switch {
+	case errors.Is(err, errShipOff):
+		return "", "", false
+	case err != nil:
+		return "warn", err.Error(), true
+	}
+	path, err := shipStatePath()
+	if err != nil {
+		return "warn", err.Error(), true
+	}
+	st, err := recordship.LoadState(path)
+	switch {
+	case err != nil:
+		return "warn", err.Error(), true
+	case st == nil || st.URL != t.url:
+		return "ok", "on, to " + t.url + "; nothing shipped yet", true
+	case st.AccessRemoved != nil:
+		return "fail", strings.Join(st.Notices(0), "\n"), true
+	}
+	if n := st.Notices(cfg.Record.Ship.MaxBacklog()); len(n) > 0 {
+		return "warn", strings.Join(n, "\n"), true
+	}
+	if st.LastError != "" {
+		return "warn", "the last pass failed: " + st.LastError, true
+	}
+	return "ok", "on, to " + t.url, true
 }

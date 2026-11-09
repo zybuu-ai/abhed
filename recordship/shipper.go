@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/filelock"
@@ -67,7 +68,46 @@ type State struct {
 	LastOK    time.Time `json:"last_ok,omitzero"`
 	LastError string    `json:"last_error,omitempty"`
 	Backlog   int64     `json:"backlog"`
+	// AccessRemoved is set while the server refuses this machine's sign-in because the
+	// organisation removed the person's access; it clears once a pass reaches the server.
+	AccessRemoved *Removal `json:"access_removed,omitempty"`
 }
+
+// Removal is when the server first said the person's access was removed, and its reason.
+type Removal struct {
+	At     time.Time `json:"at"`
+	Reason string    `json:"reason,omitempty"`
+}
+
+// AccessRemovedError is a pass the server refused because the person's access was removed.
+type AccessRemovedError struct{ Reason string }
+
+func (e *AccessRemovedError) Error() string {
+	if e.Reason == "" {
+		return "the org server says this person's access was removed"
+	}
+	return "the org server says this person's access was removed: " + e.Reason
+}
+
+// Notices are what to tell the person before a session: that the organisation removed
+// their access, so nothing ships, or that more of the record waits than maxBacklog.
+func (st State) Notices(maxBacklog int64) []string {
+	var out []string
+	if r := st.AccessRemoved; r != nil {
+		n := "Your organisation access was removed: " + st.URL + " refused this machine's sign-in"
+		if r.Reason != "" {
+			n += " (" + r.Reason + ")"
+		}
+		out = append(out, n+". The record stays on this machine and is not shipped, and the org policy it holds still applies; ask your administrator.")
+	}
+	if maxBacklog > 0 && st.Backlog > maxBacklog {
+		out = append(out, fmt.Sprintf("%s of the record wait to be shipped to %s, over the limit of %s; see abhed record ship status.",
+			mib(st.Backlog), st.URL, mib(maxBacklog)))
+	}
+	return out
+}
+
+func mib(n int64) string { return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20)) }
 
 // Logged is an event as the state keeps it; Sent marks one the server was given.
 type Logged struct {
@@ -270,13 +310,20 @@ func (s *Shipper) Pass(ctx context.Context) error {
 	}
 	s.overflow = over
 	now := s.o.Clock().UTC()
+	var removed *AccessRemovedError
 	if passErr == nil {
-		if s.failing {
+		if s.failing || s.st.AccessRemoved != nil {
 			s.eventLocked(Event{Kind: KindResumed, Detail: "the record reaches the server again"})
 		}
-		s.failing, s.st.LastOK, s.st.LastError = false, now, ""
+		s.failing, s.st.LastOK, s.st.LastError, s.st.AccessRemoved = false, now, "", nil
 	} else {
 		s.failing, s.st.LastError = true, passErr.Error()
+		if errors.As(passErr, &removed) && s.st.AccessRemoved == nil {
+			s.st.AccessRemoved = &Removal{At: now, Reason: removed.Reason}
+			// Told here, never sent: the server refuses this machine, and knows why.
+			s.eventLocked(Event{Kind: KindAccessRemoved, Detail: removed.Reason})
+			s.st.Events[len(s.st.Events)-1].Sent = true
+		}
 	}
 	err = SaveState(s.o.StatePath, s.st)
 	events := s.unsent()
@@ -484,6 +531,13 @@ func (s *Shipper) send(ctx context.Context, id string, c *Cursor, batch []local.
 		}
 		return s.from(id, c, ack.Lines, ack.Hash)
 	case http.StatusUnauthorized, http.StatusForbidden:
+		var why struct {
+			Removed bool   `json:"access_removed"`
+			Reason  string `json:"reason"`
+		}
+		if json.Unmarshal(resp, &why) == nil && why.Removed {
+			return nil, &AccessRemovedError{Reason: clip(why.Reason, 300)}
+		}
 		return nil, fmt.Errorf("the org server refused the sign-in (%d); run abhed login again", status)
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		s.block(id, *c, KindRefused, "the org server refused the record: "+ack.Error)
@@ -491,4 +545,15 @@ func (s *Shipper) send(ctx context.Context, id string, c *Cursor, batch []local.
 		return nil, nil
 	}
 	return nil, fmt.Errorf("the org server answered %d", status)
+}
+
+// clip bounds a reason the server gave to n bytes, on a rune boundary.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }

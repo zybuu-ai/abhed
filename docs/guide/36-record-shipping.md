@@ -63,9 +63,31 @@ The shipper raises, prints, keeps in its state, and reports to the server:
 | `gap` | a session was pruned before all of it was shipped |
 | `backlog` | more is waiting than `max_backlog_mb` |
 | `resumed` | shipping reached the server again after failing |
+| `access_removed` | the server refused the sign-in because the organisation removed the person's access; kept and printed here, never sent |
 
 Each session's `session.started` event records `org_policy.record_ship: true`
 when shipping is on.
+
+## When access is removed
+
+When the organisation removes the person's access (an Enterprise server
+revokes them, or deprovisions them through SCIM), the server answers this
+machine's sign-in with `401` and `"access_removed": true`. Shipping then
+stops with a warning, printed when it happens and again as each later
+session starts:
+
+```text
+abhed: ⚠ Your organisation access was removed: https://abhed.example.com refused this machine's sign-in (…). The record stays on this machine and is not shipped, and the org policy it holds still applies; ask your administrator.
+```
+
+`abhed record ship`, `abhed doctor` and Studio's Health view (the
+`record_ship` check, failing) say the same. The record keeps being written
+here; once a pass reaches the server again (access restored and `abhed
+login` run), the warning clears and what waited is shipped. A sign-in that
+only lapsed is not taken for a removal: it says to run `abhed login` again.
+
+The same warning names a backlog over `max_backlog_mb` at a session's start,
+beside the `backlog` event raised when it first goes over.
 
 ## Commands
 

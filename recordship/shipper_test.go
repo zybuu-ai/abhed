@@ -24,6 +24,10 @@ type fakeOrg struct {
 	lines   map[string][][]byte
 	events  []Event
 	offline bool
+	// refuse answers every request with this status and body, as a server whose
+	// gate turns the sign-in away.
+	refuse     int
+	refuseBody []byte
 	// loseAck keeps a batch but answers as if the network failed.
 	loseAck bool
 	calls   int
@@ -52,6 +56,9 @@ func (f *fakeOrg) do(_ context.Context, method, path, ctype string, body []byte)
 	f.calls++
 	if f.offline {
 		return 0, nil, errors.New("connection refused")
+	}
+	if f.refuse != 0 {
+		return f.refuse, f.refuseBody, nil
 	}
 	if path == EventsPath {
 		var in struct{ Events []Event }
@@ -445,4 +452,79 @@ func TestOversizeLineStopsTheSessionAndConflictsAreBounded(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the shipper spun on 409s")
 	}
+}
+
+// A server that says the person's access was removed stops shipping with that said: the
+// state keeps when and why, the event is told here and never sent, and the notice names
+// it; a sign-in refused for any other reason is not taken for a removal. Once a pass
+// reaches the server again the removal clears and the resumption is reported.
+func TestAccessRemovedIsKeptAndToldNotSent(t *testing.T) {
+	s := openStore(t)
+	org := newFakeOrg()
+	var events []Event
+	sh := newShipper(t, s, org, filepath.Join(t.TempDir(), "ship.json"), func(o *Options) {
+		o.OnEvent = func(e Event) { events = append(events, e) }
+	})
+	session(t, s, "s-1", "one", "two")
+	org.refuse, org.refuseBody = http.StatusUnauthorized, []byte(`{"error":"unauthorized","reason":"the token was signed out; run abhed login again"}`)
+	if err := sh.Pass(context.Background()); err == nil || errors.As(err, new(*AccessRemovedError)) {
+		t.Fatalf("an ordinary refusal: %v", err)
+	}
+	if sh.Status().AccessRemoved != nil {
+		t.Fatal("an ordinary refusal was taken for a removal")
+	}
+	org.refuseBody = []byte(`{"error":"unauthorized","reason":"your access to this deployment was revoked","access_removed":true}`)
+	for range 2 {
+		if err := sh.Pass(context.Background()); !errors.As(err, new(*AccessRemovedError)) {
+			t.Fatalf("a removal: %v", err)
+		}
+	}
+	st := sh.Status()
+	if st.AccessRemoved == nil || st.AccessRemoved.Reason != "your access to this deployment was revoked" || st.AccessRemoved.At.IsZero() {
+		t.Fatalf("state: %+v", st.AccessRemoved)
+	}
+	if n := countKind(events, KindAccessRemoved); n != 1 {
+		t.Errorf("told %d times, want once: %+v", n, events)
+	}
+	notices := st.Notices(0)
+	if len(notices) != 1 || !strings.Contains(notices[0], "Your organisation access was removed") || !strings.Contains(notices[0], "https://org.example") {
+		t.Errorf("notices: %q", notices)
+	}
+	// Reloaded from the file, as the next session starts.
+	again := newShipper(t, s, org, sh.o.StatePath)
+	if again.Status().AccessRemoved == nil {
+		t.Error("the removal was not kept in the state file")
+	}
+	org.refuse = 0
+	if err := sh.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := sh.Status(); st.AccessRemoved != nil || len(st.Notices(0)) != 0 {
+		t.Errorf("the removal did not clear: %+v", st.AccessRemoved)
+	}
+	if hasKind(org.events, KindAccessRemoved) || !hasKind(org.events, KindResumed) {
+		t.Errorf("the server was sent: %+v", org.events)
+	}
+	shippedEqualsLocal(t, s, org, "s-1")
+}
+
+// More waiting than the limit is a notice too.
+func TestBacklogNotice(t *testing.T) {
+	st := State{URL: "https://org.example", Backlog: 3 << 20}
+	if n := st.Notices(1 << 20); len(n) != 1 || !strings.Contains(n[0], "3.0 MiB") || !strings.Contains(n[0], "1.0 MiB") {
+		t.Errorf("over the limit: %q", n)
+	}
+	if n := st.Notices(8 << 20); len(n) != 0 {
+		t.Errorf("under the limit: %q", n)
+	}
+}
+
+func countKind(es []Event, kind string) int {
+	n := 0
+	for _, e := range es {
+		if e.Kind == kind {
+			n++
+		}
+	}
+	return n
 }

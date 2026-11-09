@@ -65,7 +65,7 @@ type Ack struct {
 
 // Event is shipping state the client reports and the server records.
 type Event struct {
-	// Kind is blocked, diverged, gap, backlog or resumed.
+	// Kind is blocked, diverged, gap, backlog, resumed, refused, oversize or access_removed.
 	Kind    string    `json:"kind"`
 	Session string    `json:"session,omitempty"`
 	Lines   int64     `json:"lines,omitempty"`
@@ -83,6 +83,9 @@ const (
 	KindResumed  = "resumed"  // shipping reached the server again after failing
 	KindRefused  = "refused"  // the server refused a batch
 	KindOversize = "oversize" // a line is longer than MaxLineBytes; the session stops
+	// KindAccessRemoved is the server refusing the sign-in because the organisation removed
+	// the person's access. It is kept on this machine and not reported.
+	KindAccessRemoved = "access_removed"
 )
 
 // EncodeBatch writes h and raws as a batch body.

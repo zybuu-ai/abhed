@@ -106,6 +106,19 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	if cfg.Org.Required && len(cfg.Org.Keys) == 0 && cfg.ManagedSets("org_policy") {
 		fmt.Printf("            ⚠ %s\n", config.OrgUnpinnedWarning)
 	}
+	if status, detail, ok := shipCheck(cfg); ok {
+		mark := ""
+		if status != "ok" {
+			mark = "⚠ "
+		}
+		for i, line := range strings.Split(detail, "\n") {
+			label := "record ship "
+			if i > 0 {
+				label = "            "
+			}
+			fmt.Printf("%s%s%s\n", label, mark, config.Printable(line))
+		}
+	}
 	for _, line := range allowListLines(cfg) {
 		fmt.Println(line)
 	}
