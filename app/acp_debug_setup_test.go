@@ -362,6 +362,10 @@ func TestDebugNodeRefusedWithoutASandbox(t *testing.T) {
 		if m.Error == nil || len(*asked) != 0 || !strings.Contains(m.Error.Message, "needs a sandbox") {
 			t.Fatalf("tier %q: launch %+v ran %v", tier, m.Error, *asked)
 		}
+		// Its own kind, not the container wizard's.
+		if data, _ := json.Marshal(m.Error.Data); !strings.Contains(string(data), `"kind":"sandbox-required"`) || strings.Contains(string(data), `"setup"`) {
+			t.Fatalf("tier %q: problem %s", tier, data)
+		}
 		var st debugSetup
 		r.cl.ok("_abhed/debug/status-tier", map[string]any{"sessionId": id}, &st)
 		if st.NodeReady {

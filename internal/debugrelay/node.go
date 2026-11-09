@@ -29,8 +29,12 @@ const (
 	RunJest   = "jest"
 )
 
-// KindRunner is a Node runner's package not installed in the workspace.
-const KindRunner = "runner-missing"
+// Node's own problem kinds: a runner's package not installed in the
+// workspace, and a session with no sandbox to run in.
+const (
+	KindRunner  = "runner-missing"
+	KindSandbox = "sandbox-required"
+)
 
 // exitNoNode is the adapter command's exit code when node is missing.
 const exitNoNode = 96
@@ -59,12 +63,16 @@ func planNode(r Request, workspace, cwd string, launch map[string]any, prefix []
 	// pkg is the runner's package, found here as node finds it: in the
 	// nearest node_modules from cwd, which must be inside the workspace.
 	pkg := func(name string) (string, error) {
-		for d := cwd; ; d = filepath.Dir(d) {
-			if _, err := os.Stat(filepath.Join(d, "node_modules", name, "package.json")); err == nil {
-				used = filepath.Join(d, "node_modules", name)
-				return used, nil
+		ws := filepath.Clean(workspace)
+		for d := filepath.Clean(cwd); ; d = filepath.Dir(d) {
+			_, out := inside(ws, d)
+			if out == nil {
+				if _, err := os.Stat(filepath.Join(d, "node_modules", name, "package.json")); err == nil {
+					used = filepath.Join(d, "node_modules", name)
+					return used, nil
+				}
 			}
-			if d == workspace || d == filepath.Dir(d) {
+			if out != nil || d == ws || d == filepath.Dir(d) {
 				return "", &Problem{Kind: KindRunner, Retry: true, Message: name + " is not installed in this workspace",
 					Steps: []string{"Install the workspace's packages (npm install), or add it: npm install -D " + name, "Start the debug session again"}}
 			}

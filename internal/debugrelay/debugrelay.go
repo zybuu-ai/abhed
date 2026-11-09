@@ -313,21 +313,23 @@ func (r *Relay) Confine(root string) {
 	r.mu.Unlock()
 }
 
-// confine is raw with every source outside the root stripped of its path.
+// confine is raw with every source outside the root stripped of its path,
+// or nil for a message it cannot read. With a root it is always decoded
+// and encoded again: a key written with escapes, or given twice, then
+// reaches the editor as the one key it was judged as.
 func (r *Relay) confine(raw json.RawMessage) json.RawMessage {
 	r.mu.Lock()
 	root := r.root
 	r.mu.Unlock()
-	if root == "" || !strings.Contains(string(raw), `"path"`) {
+	if root == "" {
 		return raw
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.UseNumber()
 	var m map[string]any
-	if dec.Decode(&m) != nil {
-		return raw
+	if dec.Decode(&m) != nil || dec.More() {
+		return nil
 	}
-	changed := false
 	var walk func(v any, source bool)
 	walk = func(v any, source bool) {
 		switch x := v.(type) {
@@ -338,7 +340,6 @@ func (r *Relay) confine(raw json.RawMessage) json.RawMessage {
 					x["name"] = filepath.Base(p)
 				}
 				x["presentationHint"] = "deemphasize"
-				changed = true
 			}
 			for k, c := range x {
 				walk(c, k == "source" || k == "sources")
@@ -350,35 +351,22 @@ func (r *Relay) confine(raw json.RawMessage) json.RawMessage {
 		}
 	}
 	walk(m["body"], false)
-	if !changed {
-		return raw
-	}
 	out, err := json.Marshal(m)
 	if err != nil {
-		return raw
+		return nil
 	}
 	return out
 }
 
-// underRoot reports whether p, and where its links lead on this machine,
-// are inside root (as given, or with its links resolved).
+// underRoot reports whether p, with the links of its existing part
+// resolved, is inside root with its own resolved: a path through a link to
+// the workspace counts, one through a link out of it does not.
 func underRoot(root, p string) bool {
 	if !filepath.IsAbs(p) {
 		return false
 	}
-	roots := []string{root}
-	if r, err := filepath.EvalSymlinks(root); err == nil && r != root {
-		roots = append(roots, r)
-	}
-	in := func(q string) bool {
-		for _, r := range roots {
-			if _, err := inside(r, q); err == nil {
-				return true
-			}
-		}
-		return false
-	}
-	return in(p) && in(resolved(p))
+	_, err := inside(resolved(root), resolved(p))
+	return err == nil
 }
 
 // resolved is p with the links of its longest part that exists resolved.
@@ -618,7 +606,14 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			}
 			continue
 		}
-		r.editor(r.confine(raw))
+		shown := r.confine(raw)
+		if shown == nil {
+			r.mu.Lock()
+			r.dropped++
+			r.mu.Unlock()
+			continue
+		}
+		r.editor(shown)
 		r.mu.Lock()
 		terminating := r.terminating
 		r.mu.Unlock()

@@ -177,8 +177,8 @@ messages to the adapter over a pipe the adapter handed it, so there is no
 `--inspect`, no loopback port and no socket file. The program waits before
 its first line until your breakpoints are set. The adapter itself runs with
 no `NODE_OPTIONS`, and the program gets the sandbox's `NODE_OPTIONS`
-without any `--inspect…` or `--debug…` option, so an inherited one opens no
-port either. Only the launch's own `env`, which is judged and shown, can
+without any option whose name starts `--inspect` or `--debug` (with `_`
+read as `-`, as Node reads it), so an inherited one opens no port either. Only the launch's own `env`, which is judged and shown, can
 give the program one.
 
 So a Node session starts on every sandbox tier just as the session's other
@@ -188,7 +188,8 @@ loopback and without the process-tier agreement above. Its
 `debug.launched` has `loopback` off. The program's own network and
 listening are the session's, as for any command (`sandbox.listen` and the
 rest). A session whose commands run under the `none` tier, or a tier
-Abhed cannot tell, has no sandbox and is refused before anything is judged.
+Abhed cannot tell, has no sandbox and is refused before anything is judged
+(a `sandbox-required` problem, with the steps to use a sandbox).
 `_abhed/debug/status-tier` reports this as `nodeReady`.
 
 What runs it is the launch's `runner`:
@@ -295,7 +296,10 @@ output line or a breakpoint, reaches Studio with no `path`, only its name,
 greyed out: Studio opens a frame's file on your machine, outside the
 sandbox, and the adapter's paths are the program's to choose. This holds
 for every language, a link from the workspace to elsewhere included, so a
-frame in the language's own library shows its name without its file.
+frame in the language's own library shows its name without its file. Each
+adapter message is read and written out again on its way, so a key
+spelled with escapes cannot slip a path past this; a message that cannot
+be read is dropped and counted.
 
 The adapter's requests to run something in Studio's terminal
 (`runInTerminal`, `startDebugging`) never reach Studio: they would start a

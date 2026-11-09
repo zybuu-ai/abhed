@@ -67,6 +67,14 @@ func TestPlanNode(t *testing.T) {
 	if !errors.As(err, &p) || p.Kind != KindRunner || !strings.Contains(p.Message, "vitest is not installed") {
 		t.Fatalf("a runner above the workspace: %v", err)
 	}
+	// Nor when the workspace is given uncleaned.
+	write(t, filepath.Join(other, "sub", "x"), "")
+	for _, root := range []string{other + "/", other + "/."} {
+		_, err := Plan(Request{Language: Node, Test: "sum", Runner: RunVitest, Cwd: "sub"}, root, "", "")
+		if !errors.As(err, &p) || p.Kind != KindRunner {
+			t.Fatalf("a runner above the workspace %q: %v", root, err)
+		}
+	}
 	if p := NoNode(""); p.Install == nil || p.Install.Language != "node" || MissingAdapter(exitNoNode, "") == nil {
 		t.Fatalf("%+v", p)
 	}
@@ -502,6 +510,35 @@ func TestNodeProgramThatThrowsEnds(t *testing.T) {
 		t.Fatalf("exit %v", ex)
 	}
 	s.event("terminated")
+	// Asked of a program that has ended, answered at once, as failed.
+	for _, c := range []struct {
+		command string
+		args    map[string]any
+	}{{"pause", map[string]any{"threadId": thread}}, {"evaluate", map[string]any{"expression": "1", "context": "repl"}}} {
+		seq := s.send(c.command, c.args)
+		if m := s.wait(c.command, func(m map[string]any) bool { return m["type"] == "response" && m["request_seq"] == float64(seq) }); m["success"] != false {
+			t.Fatalf("%s after the end: %v", c.command, m)
+		}
+	}
+}
+
+// A step asked of a running thread fails with the inspector's reason; it
+// is not answered as if it had begun.
+func TestNodeStepWhileRunningFails(t *testing.T) {
+	nodeOrSkip(t)
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	write(t, filepath.Join(ws, "app.js"), "setTimeout(() => console.log('done'), 3000);\n")
+	spec, err := Plan(Request{Language: Node, Program: "app.js"}, ws, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := startNode(t, spec)
+	s.start(nil)
+	s.event("thread")
+	seq := s.send("next", map[string]any{"threadId": 1})
+	if m := s.wait("next", func(m map[string]any) bool { return m["type"] == "response" && m["request_seq"] == float64(seq) }); m["success"] != false {
+		t.Fatalf("a step on a running thread: %v", m)
+	}
 }
 
 // A debugger's options in the NODE_OPTIONS the sandbox passes down open no
@@ -513,7 +550,10 @@ func TestNodeInheritedInspectOpensNoPort(t *testing.T) {
 	for _, c := range []struct{ opts, kept string }{
 		{"--inspect=127.0.0.1:0", "undefined"},
 		{"--inspect-brk=127.0.0.1:0", "undefined"},
+		{"--inspect_brk=127.0.0.1:0", "undefined"},
+		{"--inspect_wait=127.0.0.1:0", "undefined"},
 		{"--max-old-space-size=100 --inspect-port 0 --inspect --debug-port=9", `"--max-old-space-size=100"`},
+		{"--inspect_port 0 --inspect --max_old_space_size=100", `"--max_old_space_size=100"`},
 	} {
 		t.Run(c.opts, func(t *testing.T) {
 			spec, err := Plan(Request{Language: Node, Program: "app.js"}, ws, "", "")

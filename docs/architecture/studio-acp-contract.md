@@ -1293,7 +1293,8 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   program's own inspector over a pipe), so a Node launch starts on any
   sandbox tier as the session's commands run, never opens loopback, never
   asks the process-tier consent, and is refused only with no sandbox (the
-  `none` tier, or a tier not known; `nodeReady` is the same rule);
+  `none` tier, or a tier not known; `nodeReady` is the same rule), as
+  `-32000` with `problem.kind: "sandbox-required"` and no `setup`;
   `debug.launched` has `loopback: false`. `runner` picks the command line:
   `node FILE` (default; TypeScript by Node's own type stripping), `node
   --import tsx FILE`, `node --require DIR/register FILE`, for a test
@@ -1306,7 +1307,8 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   anything is judged. `debug.launched` adds `runner` (that package). The
   engine's launch carries `argv` (after `node`) and `runner`. The adapter
   runs without `NODE_OPTIONS`; the program gets the inherited one without
-  `--inspect…`/`--debug…`, unless the launch's `env` sets it. Node missing ends `adapter-missing` with
+  any option whose name, `_` read as `-`, starts `--inspect` or `--debug`,
+  unless the launch's `env` sets it. Node missing ends `adapter-missing` with
   `install: {language: "node"}`. Breakpoints in TypeScript or other
   source-mapped code are set as each of the program's own scripts loads,
   answered `verified: false` until then and announced by a `breakpoint`
@@ -1315,7 +1317,11 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
 - For every language, a `source` the adapter sends (a frame's, an output
   event's, a breakpoint's, `loadedSources`) whose `path` is outside the
   workspace, or leads out of it by a link, reaches Studio without `path`,
-  with its `name` and `presentationHint: "deemphasize"`.
+  with its `name` and `presentationHint: "deemphasize"`. Every adapter
+  message is decoded and encoded again before it is passed on, so a key
+  written with escapes or given twice reaches Studio as the one key the
+  engine judged; one the engine cannot decode is dropped and counted
+  (`dropped`).
 - `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
   `{os, tier, ready, nodeReady, engine?, brew?, machine?: "none" | "stopped" |
   "running", steps: [{id: "install-podman" | "machine-init" |

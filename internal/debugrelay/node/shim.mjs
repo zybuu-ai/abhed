@@ -8,7 +8,7 @@ const fd = process.env.ABHED_NODE_DEBUG;
 delete process.env.ABHED_NODE_DEBUG;
 
 const helper = `
-const { parentPort } = require('node:worker_threads');
+const { parentPort, threadId } = require('node:worker_threads');
 const inspector = require('node:inspector');
 const net = require('node:net');
 const ch = new net.Socket({ fd: 3, readable: true, writable: true });
@@ -39,7 +39,7 @@ ch.on('data', (d) => {
     }
   }
 });
-out({ hello: { pid: process.pid } });
+out({ hello: { pid: process.pid, thread: threadId } });
 `;
 
 // Only the process the adapter started, on its main thread: its worker

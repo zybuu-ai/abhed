@@ -184,6 +184,7 @@ let channel = null;
 let configured = false;
 let went = false;
 let ended = false;
+let closed = false; // the program's end of the pipe
 let pauseOnExceptions = 'none';
 const breakpoints = new Map(); // path -> [{line, condition}]
 const targets = new Map(); // thread id -> Target
@@ -215,6 +216,7 @@ class Target {
     return next;
   }
   call(method, params) {
+    if (ended || closed) return Promise.reject(new Error('the program has ended'));
     const id = this.nextCall++;
     return new Promise((resolve, reject) => {
       this.calls.set(id, { resolve, reject });
@@ -362,14 +364,20 @@ class Target {
   }
 }
 
-let helperSeen = false;
+let helperThread;
+
+// settleAll fails every call still waiting on the program's inspector.
+function settleAll() {
+  for (const t of targets.values()) {
+    for (const c of t.calls.values()) c.reject(new Error('the program has ended'));
+    t.calls.clear();
+  }
+}
 
 async function attachWorker(parent, params) {
   const { sessionId, workerInfo } = params;
-  // The shim's own worker, started before the program: the first one the
-  // main thread reports, by its exact name.
-  if (!helperSeen && parent.id === 1 && /^\[worker \d+\] abhed-debug$/.test(String(workerInfo.title || ''))) {
-    helperSeen = true;
+  // The shim's own worker, by the thread id it reported.
+  if (parent.id === 1 && helperThread !== undefined && String(workerInfo.workerId) === String(helperThread)) {
     await parent.call('NodeWorker.detach', { sessionId }).catch(() => {});
     return;
   }
@@ -549,7 +557,11 @@ async function onRequest(req) {
       case 'next': case 'stepIn': case 'stepOut': {
         const t = threadOf(a);
         t.why = 'step';
-        t.call({ next: 'Debugger.stepOver', stepIn: 'Debugger.stepInto', stepOut: 'Debugger.stepOut' }[req.command]).catch(() => {});
+        try {
+          await t.call({ next: 'Debugger.stepOver', stepIn: 'Debugger.stepInto', stepOut: 'Debugger.stepOut' }[req.command]);
+        } catch (e) {
+          if (!ended && !closed) throw e; // a step that ran the program to its end is done
+        }
         return respond(req);
       }
       case 'pause': {
@@ -609,10 +621,7 @@ function launch(req, a) {
   child.on('exit', (code, signal) => {
     if (ended) return;
     ended = true;
-    for (const t of targets.values()) {
-      for (const c of t.calls.values()) c.reject(new Error('the program has ended'));
-      t.calls.clear();
-    }
+    settleAll();
     event('exited', { exitCode: code === null ? 128 + (signal === 'SIGKILL' ? 9 : 15) : code });
     event('terminated');
   });
@@ -628,6 +637,7 @@ function launch(req, a) {
       let m;
       try { m = JSON.parse(line); } catch { continue; }
       if (m.hello && !main) {
+        helperThread = m.hello.thread;
         main = new Target('main', (msg) => channel.write(JSON.stringify({ c: msg }) + '\n'));
         event('thread', { reason: 'started', threadId: main.id });
         main.setup()
@@ -644,12 +654,17 @@ function launch(req, a) {
     }
   });
   channel.on('error', () => {});
+  channel.on('close', () => {
+    closed = true;
+    settleAll();
+  });
   respond(req);
   event('initialized');
 }
 
-// withoutInspect is NODE_OPTIONS less every --inspect* and --debug* option
-// (and the value of one given apart), split as node splits it.
+// withoutInspect is NODE_OPTIONS less every option whose name starts
+// --inspect or --debug, _ read as -, and the value of a port given apart,
+// split as node splits it.
 function withoutInspect(s) {
   const words = [];
   let w = null, quoted = false;
@@ -663,9 +678,11 @@ function withoutInspect(s) {
   if (w !== null) words.push(w);
   const out = [];
   for (let i = 0; i < words.length; i++) {
+    // node reads _ as - in an option's name: --inspect_brk is --inspect-brk.
     const bare = words[i].replace(/"/g, '');
-    if (/^--(inspect|debug)(-[a-z-]+)?(=|$)/.test(bare)) {
-      if (/^--(inspect|debug)-port$/.test(bare)) i++;
+    const name = bare.split('=')[0].replace(/_/g, '-');
+    if (name.startsWith('--inspect') || name.startsWith('--debug')) {
+      if (!bare.includes('=') && /^--(inspect|debug)-port$/.test(name)) i++;
       continue;
     }
     out.push(words[i]);

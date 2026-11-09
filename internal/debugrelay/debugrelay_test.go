@@ -480,3 +480,49 @@ func TestRelayConfinesSourcePaths(t *testing.T) {
 		t.Fatalf("output %v", ev)
 	}
 }
+
+// A key written with escapes is the same key to the editor: the relay reads
+// it as the editor will, and what it cannot read is dropped and counted.
+func TestRelayConfinesEscapedKeys(t *testing.T) {
+	f := newFake(t)
+	ws := t.TempDir()
+	f.relay.Confine(ws)
+	for _, raw := range []string{
+		`{"seq":1,"type":"event","event":"output","body":{"output":"x","source":{"\u0070ath":"/etc/hosts"}}}`,
+		`{"seq":2,"type":"event","event":"output","body":{"output":"x","\u0073ource":{"path":"/etc/hosts"}}}`,
+		`{"seq":3,"type":"event","event":"output","body":{"output":"x","source":{"path":"` + ws + `/a.go","path":"/etc/hosts"}}}`,
+	} {
+		if err := Write(f.adapterOut, []byte(raw)); err != nil {
+			t.Fatal(err)
+		}
+		m := f.editor(t)
+		src, _ := m["body"].(map[string]any)["source"].(map[string]any)
+		if src == nil || src["path"] != nil || src["presentationHint"] != "deemphasize" {
+			t.Fatalf("%s reached the editor as %v", raw, m)
+		}
+	}
+	if f.relay.confine([]byte(`{"seq":1} {}`)) != nil || f.relay.confine([]byte(`[1]`)) != nil {
+		t.Fatal("a message the relay cannot read was passed on")
+	}
+}
+
+// A path through a link into the workspace is the workspace's, the root
+// given as its real path or not.
+func TestRelayConfineKeepsPathsThroughLinks(t *testing.T) {
+	real := t.TempDir()
+	if r, err := filepath.EvalSymlinks(real); err == nil {
+		real = r
+	}
+	link := filepath.Join(t.TempDir(), "ws")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ root, path string }{{real, link + "/a.go"}, {link, real + "/a.go"}, {real, real + "/a.go"}} {
+		if !underRoot(c.root, c.path) {
+			t.Fatalf("%s is not under %s", c.path, c.root)
+		}
+	}
+	if underRoot(real, link+"/../x.go") || underRoot(link, "/etc/hosts") {
+		t.Fatal("a path out of the workspace is under it")
+	}
+}

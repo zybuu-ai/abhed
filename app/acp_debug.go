@@ -118,7 +118,7 @@ func nodeTierProblem(tier string) *debugrelay.Problem {
 	if tier != "" && tier != string(sandbox.TierNone) {
 		return nil
 	}
-	return &debugrelay.Problem{Kind: debugrelay.KindTier, Retry: true,
+	return &debugrelay.Problem{Kind: debugrelay.KindSandbox, Retry: true,
 		Message: fmt.Sprintf("a Node debug session needs a sandbox; this session's commands run under the %s tier", orDefault(tier, "unknown")),
 		Steps:   []string{"Run this workspace's commands in a sandbox (sandbox.min_tier: process or container in ~/.abhed/config.json)", "Open a new session and start the debug session again"}}
 }
@@ -238,7 +238,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	var loopback bool
 	if req.Language == debugrelay.Node {
 		if p := nodeTierProblem(tier); p != nil {
-			c.reply(msg.ID, nil, debugSetupProblem(p, debugSetupFor(c.root(), tier, b.Isolation, parts.Session.Root)))
+			c.reply(msg.ID, nil, debugRefusal(p))
 			return
 		}
 	} else if p := debugTierProblem(tier, b.Isolation); p != nil {
