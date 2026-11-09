@@ -49,6 +49,11 @@ All notable changes to Abhed are recorded here. The format follows
   and `lsp.stopped` with `purpose: diagnostics`, and counted in
   `abhed_lsp_diagnostics_total`. A workspace file may only turn them off or
   lower the bounds. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+- `_abhed/codeActions` (feature `codeActions`) gives Studio Explain, Fix and
+  Add tests for a range of a file, each as the prompt Studio sends with
+  `session/prompt`, so it runs under the session's policy as any prompt does.
+  The editor's diagnostics on the range go with Fix and Explain as an
+  attachment. A file the agent may not read gets none.
 
 ### Fixed
 
