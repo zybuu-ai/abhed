@@ -1502,9 +1502,10 @@ Later sources win, except that an org-managed file cannot be overridden:
 2. `~/.abhed/config.json`
 3. a `-settings` file or inline JSON, for one run
 4. `.abhed/config.json` in the workspace (whole only when trusted)
-5. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
-6. command-line flags and the SDK's `Options`
-7. **managed settings**, which nothing below can loosen
+5. `.abhed/config.local.json` in the workspace, your own settings for it, under the same trust ([below](#the-local-file))
+6. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
+7. command-line flags and the SDK's `Options`
+8. **managed settings**, which nothing below can loosen
 
 ### The workspace file
 
@@ -1539,6 +1540,23 @@ Studio's debug setup, which raises `sandbox.min_tier` in this file, does not
 write through a link: when the file is a link it asks you to set the tier in
 the file the link points to. `abhed init` writes a fresh file and renames it
 into place, so a link at that name is replaced, not written through.
+
+### The local file
+
+`.abhed/config.local.json` is for settings that are yours in one workspace
+and not the team's: a model, a limit, a rule while you work there. It is
+merged over `.abhed/config.json` and read the same way (inside the
+workspace, a plain file of at most 4 MiB). `abhed init` writes
+`.abhed/.gitignore` naming it; in a workspace set up otherwise, add it to
+the repository's ignore file yourself.
+
+A repository could still ship one, so it gets no more trust than the
+workspace file: the trust decision covers both files, one hash over the
+two, and the review shows both. Adding or changing the local file asks
+again. Untrusted, it applies only what tightens; trusted, it is merged like
+the workspace file, so a managed-only setting is set aside, the managed file
+still binds, and every managed deny rule still applies. `abhed trust`
+names it as `local`. Agent tools cannot write it: it is Abhed's state.
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,

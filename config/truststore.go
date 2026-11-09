@@ -274,5 +274,17 @@ func InitWorkspace(workspace string) (string, error) {
 		_ = os.Remove(f.Name())
 		return path, werr
 	}
+	ignoreLocalConfig(filepath.Dir(path))
 	return path, GrantTrust(workspace, hashOf(data))
+}
+
+// ignoreLocalConfig starts .abhed/.gitignore with the local layer, which is
+// the person's own and not for the repository. One that exists is left as is.
+func ignoreLocalConfig(dir string) {
+	f, err := os.OpenFile(filepath.Join(dir, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the workspace's own .abhed, which init just made
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(LocalConfigName + "\n")
+	_ = f.Close()
 }

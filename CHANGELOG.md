@@ -57,6 +57,13 @@ All notable changes to Abhed are recorded here. The format follows
   <project|local|user>` opens a memory file in your editor and saves it as
   your write, recorded as `memory.written`
   ([Memory](docs/guide/19-input-and-memory.md#a-folders-own-abhedmd)).
+- `.abhed/config.local.json`, your own settings for one workspace, merged
+  over `.abhed/config.json`. It is read as safely as that file and under the
+  same trust: one decision covers both, so adding or changing it asks again;
+  untrusted it only tightens, and trusted it still cannot make a
+  managed-only setting or loosen the managed file. `abhed init` writes
+  `.abhed/.gitignore` naming it
+  ([The local file](docs/guide/02-configuration.md#the-local-file)).
 
 ### Fixed
 
