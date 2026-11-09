@@ -275,7 +275,13 @@ func InitWorkspace(workspace string) (string, error) {
 		return path, werr
 	}
 	ignoreLocalConfig(filepath.Dir(path))
-	return path, GrantTrust(workspace, hashOf(data))
+	// Trust covers what loading will hash: a local layer already there too.
+	files := []workspaceFile{{path, data}}
+	local := filepath.Join(filepath.Dir(path), LocalConfigName)
+	if b, _, err := readWorkspaceConfig(workspace, local); err == nil {
+		files = append(files, workspaceFile{local, b})
+	}
+	return path, GrantTrust(workspace, workspaceHash(files))
 }
 
 // ignoreLocalConfig starts .abhed/.gitignore with the local layer, which is

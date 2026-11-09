@@ -120,7 +120,12 @@ type dock struct {
 	extEdit  func(string) (string, error)
 	// edits carries a request from the session to open text in the editor;
 	// the key reader takes it between keys, so the editor has the terminal.
-	edits    chan editRequest
+	edits chan editRequest
+	// wait sleeps until a key or a wake; wake rouses it for an edit. Both
+	// are nil where the input cannot be waited on with another.
+	wait     func() bool
+	wake     func()
+	stopWait func()
 	keysDone chan struct{} // closed when the key reader stops
 	// preread holds keys typed before the reader started, which polling
 	// the terminal does not see.
@@ -195,7 +200,7 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 		stops:     make(chan struct{}, 1),
 		askSlot:   make(chan struct{}, 1),
 		hotkeys:   map[string]func(){},
-		edits:     make(chan editRequest),
+		edits:     make(chan editRequest, 1),
 		keysDone:  make(chan struct{}),
 		lastBlank: true,
 	}
@@ -241,9 +246,6 @@ func (d *dock) run() {
 	}
 }
 
-// editPoll is how often a reader waiting for a key looks for an edit request.
-const editPoll = 50 * time.Millisecond
-
 // editRequest is text the session wants the person to edit, and where the
 // result goes.
 type editRequest struct {
@@ -257,12 +259,12 @@ type editResult struct {
 }
 
 // waitForKey returns when a key is ready, opening the editor for any request
-// that comes first. Without a way to poll the input it returns at once.
+// that comes first. Where the input cannot be waited on it returns at once.
 func (d *dock) waitForKey() {
-	if d.kr.ready == nil {
-		return
-	}
-	for d.kr.br.Buffered() == 0 && (d.preread == nil || d.preread.Len() == 0) && !d.kr.ready(editPoll) {
+	for d.wait != nil && d.kr.br.Buffered() == 0 && (d.preread == nil || d.preread.Len() == 0) {
+		if d.wait() {
+			return
+		}
 		select {
 		case req := <-d.edits:
 			d.runEdit(req)

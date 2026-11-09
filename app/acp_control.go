@@ -997,7 +997,15 @@ func (c *acpConn) trustInspect(msg rpcMessage) {
 	}
 	out["commands"] = cmds
 	skills, servers := []any{}, []any{}
-	_, contents, _, _ := st.WorkspaceFiles()
+	// Listed only from the content trust was decided on; a file changed since
+	// is flagged and its skills and servers are not shown.
+	_, contents, unchanged, _ := st.WorkspaceFiles()
+	if !unchanged {
+		contents = nil
+		if st.File != "" {
+			out["content_changed"] = true
+		}
+	}
 	for _, data := range contents {
 		var f struct {
 			Skills struct {

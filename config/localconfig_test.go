@@ -117,3 +117,25 @@ func TestInitIgnoresTheLocalLayer(t *testing.T) {
 		t.Fatalf(".gitignore %q %v", data, err)
 	}
 }
+
+// init trusts what loading will hash: with a local layer already there, the
+// workspace comes up trusted, not changed.
+func TestInitTrustsAnExistingLocalLayer(t *testing.T) {
+	_, ws := trustHome(t, "", "")
+	writeLocal(t, ws, `{"limits":{"max_turns":7}}`)
+	if _, err := InitWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Workspace.Trusted || cfg.Limits.MaxTurns != 7 {
+		t.Fatalf("after init: %+v turns %d", cfg.Workspace, cfg.Limits.MaxTurns)
+	}
+	// A change after loading is seen when the files are read again for review.
+	writeLocal(t, ws, `{"limits":{"max_turns":8}}`)
+	if _, _, unchanged, err := cfg.Workspace.WorkspaceFiles(); err != nil || unchanged {
+		t.Fatalf("a changed local layer read as unchanged: %v", err)
+	}
+}

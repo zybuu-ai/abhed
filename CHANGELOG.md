@@ -45,36 +45,52 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. A link inside the workspace, and any link at your home
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
+- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
+  stop with exit code 2 ("no task"). They now continue the run that stopped
+  at its turn limit, and stop with exit code 2, before anything is
+  recorded, only when there is nothing to continue or the bound is spent.
+- A workspace memory file that a read rule asks about is no longer loaded:
+  memory loads with nobody there to say yes, so an ask keeps it out as a
+  deny does, and `/memory` says why.
 
 ### Added
 
-- `-tools NAMES`, the only tools a run and its subagents may use, and
+- `-tools NAMES`, the only tools a run and its subagents may use (the
+  harness's own `recall`, `exit_plan` and structured answer stay), and
   `-bare`, a run without your own or the workspace's memory files,
   extensions and skills. Both only take away: policy and every deny rule
-  still apply, and the organisation's memory and extensions stay. The record
-  notes both ([The command line](docs/guide/18-cli.md#a-narrower-run--tools-and--bare)).
+  still apply, and what the organisation sets stays: its `ABHED.md`, its
+  `rules.dirs` and `skills.dirs`, its extensions and its auto memory. MCP
+  servers stay unless `-strict-mcp-config` drops them. The record notes
+  both ([The command line](docs/guide/18-cli.md#a-narrower-run--tools-and--bare)).
 - Continuing a run that stopped at its turn limit: `/continue` at the
   terminal, and `abhed -p --continue` (or `-p -r <session>`) with no task.
   Each continuation gives the run its allowance of turns again, is recorded
   first as `turns.extended`, and is bounded by `limits.max_continues`
   (3 by default, 0 for none) for the whole conversation, counted from its
-  record. A managed `limits.max_turns` without a managed `max_continues`
-  allows none ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
+  record; a branch or fork keeps the count. A managed `limits.max_turns`
+  without a managed `max_continues` allows none
+  ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
 - A folder's own `ABHED.md`, below the workspace root, is loaded the first
-  time the agent works in that folder, added to that tool result and
-  recorded as `memory.loaded` with scope `subdirectory`. Read rules hold,
-  `.abhed` and `.git` are skipped, and the default configuration asks before
-  the agent writes or edits one (`write(**/ABHED.md)`). `/memory edit
-  <project|local|user>` opens a memory file in your editor and saves it as
-  your write, recorded as `memory.written`
-  ([Memory](docs/guide/19-input-and-memory.md#a-folders-own-abhedmd)).
+  time the agent works in that folder, added to that tool result inside a
+  tag keyed by its hash that no tool output can forge, redacted, and
+  recorded as `memory.loaded` with scope `subdirectory`; the system prompt
+  says what such a block may and may not do. Read rules hold (an ask keeps
+  it out), `.abhed` and `.git` are skipped, at most 32 files load in a
+  conversation, and the default configuration asks before the agent writes
+  or edits one (`write(**/ABHED.md)`). `/memory edit <project|local|user>`
+  opens a memory file in your editor and saves it as your write, recorded as
+  `memory.written` ([Memory](docs/guide/19-input-and-memory.md#a-folders-own-abhedmd)).
 - `.abhed/config.local.json`, your own settings for one workspace, merged
   over `.abhed/config.json`. It is read as safely as that file and under the
   same trust: one decision covers both, so adding or changing it asks again;
   untrusted it only tightens, and trusted it still cannot make a
   managed-only setting or loosen the managed file. `abhed init` writes
-  `.abhed/.gitignore` naming it
-  ([The local file](docs/guide/02-configuration.md#the-local-file)).
+  `.abhed/.gitignore` naming it, and trusts a local file already there with
+  the one it writes ([The local file](docs/guide/02-configuration.md#the-local-file)).
+- Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
+  `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
+  `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.
 
 ### Fixed
 

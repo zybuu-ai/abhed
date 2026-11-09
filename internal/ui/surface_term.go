@@ -163,13 +163,14 @@ func (l *LineReader) EditText(ctx context.Context, text string) (string, error) 
 	d.mu.Lock()
 	canEdit := d.extEdit != nil
 	d.mu.Unlock()
-	if !l.raw || !canEdit || d.kr.ready == nil {
+	if !l.raw || !canEdit || d.wake == nil {
 		return "", ErrNoEditor
 	}
 	d.openKeys()
 	req := editRequest{text: text, reply: make(chan editResult, 1)}
 	select {
 	case d.edits <- req:
+		d.wake()
 	case <-d.keysDone:
 		return "", ErrNoEditor
 	case <-ctx.Done():
