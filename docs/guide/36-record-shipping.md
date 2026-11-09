@@ -86,7 +86,9 @@ here; once a pass reaches the server again (access restored and `abhed
 login` run), the warning clears and what waited is shipped. A sign-in that
 only lapsed is not taken for a removal: it says to run `abhed login` again.
 The warning clears only when the server answers a batch with success, not on
-a pass that sent nothing.
+a pass that sent nothing. The same holds for a failed pass: until a batch is
+answered, `abhed record ship` and doctor keep saying the last pass failed,
+even when the network is back but nothing is waiting.
 
 The marker is the word of whatever answers at the enrolled org URL, taken
 without a signature. That URL is `https`, unless this machine enrolled to a

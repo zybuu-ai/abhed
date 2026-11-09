@@ -279,16 +279,21 @@ func shipCheck(cfg config.Config) (status, detail string, ok bool) {
 }
 
 // tenantClaimWarning is set when sign-in is through an identity provider (auth.mode oidc,
-// no named provider whose preset picks the claim), storage.tenant is not default and
+// no provider whose preset picks the claim), storage.tenant is not default and
 // auth.tenant_claim is unset: a sign-in's tenant is then the claim named "tenant", else
 // "default", so unless the provider sends a matching "tenant" claim the server refuses
 // everyone it signs in at its tenant-scoped routes.
 func tenantClaimWarning(cfg config.Config) string {
 	t := cfg.Storage.Tenant
-	if cfg.Auth.Mode != "oidc" || cfg.Auth.Provider != "" || cfg.Auth.TenantClaim != "" || t == "" || t == "default" {
+	if cfg.Auth.Mode != "oidc" || tenantPreset[strings.ToLower(cfg.Auth.Provider)] || cfg.Auth.TenantClaim != "" || t == "" || t == "default" {
 		return ""
 	}
 	return fmt.Sprintf("storage.tenant is %q but auth.tenant_claim is not set: a sign-in's tenant is read from the claim "+
 		"named \"tenant\", else \"default\", so unless the identity provider sends \"tenant\": %q everyone it signs in "+
 		"is refused; set auth.tenant_claim (\"tenant\" to keep this), or leave storage.tenant unset", t, t)
 }
+
+// tenantPreset are the auth.provider values whose sign-in sets the tenant itself, as the
+// Enterprise server's start-up warning reads them: google and microsoft name a tenant claim
+// (hd, tid), and github takes auth.default_tenant. Any other name warns as no name does.
+var tenantPreset = map[string]bool{"google": true, "microsoft": true, "github": true}
