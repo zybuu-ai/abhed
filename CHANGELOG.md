@@ -77,7 +77,8 @@ All notable changes to Abhed are recorded here. The format follows
   judged by policy as its tools are (a rule may name the URI:
   `mcp__docs__read_resource(docs://private/*)`; a URI is read only in its
   canonical form, a host not in ASCII is refused, and deny and ask rules
-  also match without regard to case and in NFC), capped at 30,000
+  also match without regard to case, in NFC and NFKC, and with escapes
+  decoded once and twice), capped at 30,000
   characters, binary content described rather than sent, and recorded.
   `@server:uri` in the terminal or an editor's prompt attaches one, read as
   your own call through the same tool and policy; `/mcp resources SERVER`

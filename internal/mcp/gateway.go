@@ -124,6 +124,8 @@ type Gateway struct {
 	reads map[string]*resourceTool
 }
 
+// NewGateway makes a gateway; Close must be called when it is done with, or
+// the read_resource names it offered stay judged for the process's life.
 func NewGateway() *Gateway {
 	return &Gateway{reads: map[string]*resourceTool{}, clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
 }

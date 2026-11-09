@@ -64,11 +64,11 @@ func TestResourceURIsAreJudgedInOneForm(t *testing.T) {
 		"docs://private/caf%c3%a9/x":        "docs://private/café/x",
 		"docs://private/cafe\u0301/x":       "docs://private/café/x",
 		"docs://private/café/x":             "docs://private/café/x",
-		"docs://h/pub%252F..%252Fprivate/a": "",
+		"docs://h/pub%252F..%252Fprivate/a": "docs://h/pub%252F..%252Fprivate/a",
 		"docs://h/100%25":                   "docs://h/100%25",
-		"docs://h/pub／..／private/a":         "",
-		"docs://h/ﬁle":                      "",
-		"docs://h/x?q=ｆ":                    "",
+		"docs://h/pub／..／private/a":         "docs://h/pub／..／private/a",
+		"docs://h/ﬁle":                      "docs://h/ﬁle",
+		"docs://h/x?q=ｆ":                    "docs://h/x?q=ｆ",
 		"docs://private/%C3/x":              "docs://private/%C3/x",
 		"docs://private/%C2%A0/x":           "docs://private/%C2%A0/x",
 		"docs://private/%E2%80%8B/x":        "docs://private/%E2%80%8B/x",
@@ -157,6 +157,41 @@ func TestResourceURIsAreJudgedInOneForm(t *testing.T) {
 	for _, r := range s.reads {
 		if low := strings.ToLower(r); strings.Contains(low, "private") || strings.Contains(low, "caf") || strings.Contains(low, "reports/a") {
 			t.Fatalf("the server was asked for %s", r)
+		}
+	}
+}
+
+// Names a person writes with compatibility characters or a literal % are
+// read as written; spellings a server folding NFKC or decoding twice would
+// read as a denied resource are denied by the rule itself.
+func TestCompatibilityAndDoubleEscapes(t *testing.T) {
+	for _, uri := range []string{"docs://h/Notes…%20draft.md", "docs://h/TM™.md", "docs://h/10µs.md", "docs://h/ｶﾀｶﾅ.md",
+		"docs://h/x².md", "docs://h/①.md", "docs://h/100%25AB.md", "docs://h/ﬁnance.md"} {
+		if c, err := CanonicalResourceURI(uri); err != nil || c != uri {
+			t.Errorf("%s is not readable as written: %q %v", uri, c, err)
+		}
+	}
+	tools.RegisterSubjector("mcp__compat__read_resource", readSubject{})
+	t.Cleanup(func() { tools.UnregisterSubjector("mcp__compat__read_resource") })
+	pol := policy.New(policy.ModeBypass)
+	if err := pol.AddDeny("mcp__compat__read_resource(docs://h/private/*)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pol.AddDeny("mcp__compat__read_resource(docs://h/files/*)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, uri := range []string{"docs://h/pub／..／private/a", "docs://h/ｐrivate/a", "docs://h/ＰＲＩＶＡＴＥ/a",
+		"docs://h/pub%252F..%252Fprivate/a", "docs://h/%252E%252E/private/a", "docs://h/ﬁles/a"} {
+		args, _ := json.Marshal(map[string]string{"uri": uri})
+		if d := pol.Evaluate("mcp__compat__read_resource", true, args); d.Decision != policy.Deny {
+			t.Errorf("%s passed the deny: %v", uri, d.Decision)
+		}
+	}
+	// And the readable ones are not denied by an unrelated rule.
+	for _, uri := range []string{"docs://h/TM™.md", "docs://h/100%25AB.md", "docs://h/ｶﾀｶﾅ.md"} {
+		args, _ := json.Marshal(map[string]string{"uri": uri})
+		if d := pol.Evaluate("mcp__compat__read_resource", true, args); d.Decision == policy.Deny {
+			t.Errorf("%s denied: %s", uri, d.Reason)
 		}
 	}
 }

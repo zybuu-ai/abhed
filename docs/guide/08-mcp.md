@@ -327,17 +327,20 @@ NFC rather than escaped, and other escapes in upper case. A URI written
 otherwise (`DOCS://private/a`, `docs://private./a`, `https://h:443/a`,
 `docs://private/%61`, `docs://private/caf%C3%A9`, `docs://127.1/a`) is
 refused, naming the form to write. One with a host not in ASCII (write it in its punycode, `xn--`,
-form), an escape in its host, an encoded `/` or `\`, an escaped escape
-(`%25` before two hex digits, which a server decoding twice reads as
-another), a compatibility character in its path (a fullwidth `／`, a
-ligature: another character to a server that normalises it), a backslash, a
+form), an escape in its host, an encoded `/` or `\`, a backslash, a
 fragment, user information or a rooted path without an authority
 (`docs:/private/a`) is refused outright, and a listing leaves those out and
 says how many. Since a server may still read paths without regard to case,
 or normalise Unicode, deny and ask rules on a read also match the URI
 without regard to case, in NFC and with its escapes decoded, as rules on
 file paths do: a deny on `docs://private/*` holds for `docs://PRIVATE/a`,
-and one on `docs://private/café/*` for `docs://private/caf%C3%A9/x`. Allow rules match only as
+and one on `docs://private/café/*` for `docs://private/caf%C3%A9/x`. They
+also match the URI decoded twice and in NFKC, with its dot-segments then
+resolved, as a server that decodes twice or folds compatibility characters
+reads it: a deny on `docs://h/private/*` holds for
+`docs://h/pub%252F..%252Fprivate/a`, `docs://h/pub／..／private/a` and
+`docs://h/ｐrivate/a`, while a name such as `TM™.md`, `x².md` or
+`100%25AB.md` is read as written. Allow rules match only as
 written. What one URI names on the server beyond that is the server's.
 Sessions in one process (an editor's, an SDK embedder's) each read a
 server's resources through their own connection. A server whose tools

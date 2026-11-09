@@ -67,11 +67,6 @@ func CanonicalResourceURI(uri string) (string, error) {
 	} else if strings.HasPrefix(rest, "/") {
 		return "", fmt.Errorf("write %s:///%s or %s:%s; a rooted path needs an authority", strings.ToLower(scheme), strings.TrimLeft(rest, "/"), strings.ToLower(scheme), strings.TrimLeft(rest, "/"))
 	}
-	// A compatibility character (a fullwidth ／, a ligature) is another
-	// character to a server that normalises with NFKC: refused, not guessed at.
-	if norm.NFKC.String(tail) != tail {
-		return "", errors.New("a resource URI's path holds a compatibility character (fullwidth, ligature or the like); write the plain character")
-	}
 	path, query, hasQuery := strings.Cut(tail, "?")
 	if strings.Contains(path, "/") {
 		path = cleanPath(path)
@@ -183,9 +178,6 @@ func normalEscapes(s string) (string, error) {
 		}
 		flush()
 		switch {
-		case v == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
-			// An escaped escape is read as another by a server that decodes twice.
-			return "", errors.New("a resource URI holds no escaped escape (%25 before two hex digits)")
 		case v == '/' || v == '\\' || v == 0:
 			return "", errors.New("a resource URI holds no encoded /, \\ or NUL")
 		case v >= 'a' && v <= 'z' || v >= 'A' && v <= 'Z' || v >= '0' && v <= '9' || v == '-' || v == '.' || v == '_' || v == '~':
