@@ -85,6 +85,7 @@ type nodeSession struct {
 	state chan string
 	seq   int
 	seen  []map[string]any
+	held  []map[string]any
 }
 
 func startNode(t *testing.T, spec Spec) *nodeSession {
@@ -146,6 +147,14 @@ func (s *nodeSession) send(command string, args map[string]any) int {
 // wait is the first message from the adapter that ok takes.
 func (s *nodeSession) wait(what string, ok func(map[string]any) bool) map[string]any {
 	s.t.Helper()
+	// A message not yet taken may be the one: messages arrive in any order
+	// relative to the response a caller waits for first.
+	for i, m := range s.held {
+		if ok(m) {
+			s.held = append(s.held[:i], s.held[i+1:]...)
+			return m
+		}
+	}
 	deadline := time.After(30 * time.Second)
 	for {
 		select {
@@ -157,6 +166,7 @@ func (s *nodeSession) wait(what string, ok func(map[string]any) bool) map[string
 			if ok(m) {
 				return m
 			}
+			s.held = append(s.held, m)
 		case <-deadline:
 			s.t.Fatalf("no %s", what)
 		}
