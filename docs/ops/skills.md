@@ -118,9 +118,11 @@ and what makes it the most direct route for untrusted text to reach the model.
 Loading them from any cloned repository unasked would let it carry its own
 orders to the agent reading it. So the trust prompt and `abhed trust` show
 each skill's name, description and a hash over every file in its folder; a
-change to any of them, a script included, asks again; an untrusted workspace
-loads none; and a skill named like one the organisation or the person
-installed is never loaded in its place. To keep skills to the installed ones,
+change to any of them asks again; an untrusted workspace loads none; and a
+skill named like one the organisation or the person installed (without
+case, in NFKC) is never loaded. Only its `SKILL.md` and `pipeline.json` are
+used: the agent cannot read `.abhed`, so "Referencing files" below applies
+to installed skills only. To keep skills to the installed ones,
 set `{"skills": {"disable_workspace": true}}` in the managed configuration.
 See [Workspace trust](../architecture/workspace-trust.md#workspace-skills).
 

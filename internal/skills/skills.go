@@ -32,6 +32,7 @@ import (
 	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Skill is one loaded instruction set.
@@ -53,6 +54,10 @@ type Skill struct {
 	// asking the model to follow it. Loaded from pipeline.json beside the
 	// SKILL.md.
 	Pipeline json.RawMessage
+	// Workspace marks a skill that came with the workspace, under its trust
+	// decision. The listing says so, and it has no Dir: its folder is in
+	// .abhed, which the agent cannot read.
+	Workspace bool
 }
 
 // Registry holds the discovered skills.
@@ -140,7 +145,11 @@ func (r *Registry) Listing() string {
 		"call the `skill` tool with its name to read the full instructions, then follow them. " +
 		"Do not guess at a skill's contents from its description.\n\n")
 	for _, s := range all {
-		fmt.Fprintf(&b, "- `%s` — %s\n", s.Name, s.Description)
+		from := ""
+		if s.Workspace {
+			from = " (from this workspace)"
+		}
+		fmt.Fprintf(&b, "- `%s`%s — %s\n", s.Name, from, s.Description)
 	}
 	return b.String()
 }
@@ -270,6 +279,11 @@ func Parse(content string) (*Skill, error) {
 	return s, nil
 }
 
+// FoldName is a skill name as compared for a collision: in NFKC, without case.
+func FoldName(name string) string {
+	return strings.ToLower(norm.NFKC.String(strings.ToLower(name)))
+}
+
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -305,12 +319,17 @@ func FromContent(dir string, skillMD, pipeline []byte) (*Skill, error) {
 }
 
 // AddNew adds s unless a skill of its name is already held, and reports
-// whether it did: a later source never replaces an earlier one's skill.
+// whether it did: a later source never replaces an earlier one's skill, nor
+// sits beside it under a name that differs only in case or in a compatibility
+// form (a fullwidth letter, a ligature).
 func (r *Registry) AddNew(s *Skill) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.byName[s.Name]; exists {
-		return false
+	key := FoldName(s.Name)
+	for name := range r.byName {
+		if FoldName(name) == key {
+			return false
+		}
 	}
 	r.order = append(r.order, s.Name)
 	r.byName[s.Name] = s

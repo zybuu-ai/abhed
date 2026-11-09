@@ -128,10 +128,17 @@ the exact content of every file in them.
   link, a `SKILL.md` without a description, or more than the bounds refuses
   that skill whole, named in `skills_problems`. The loader takes the
   `SKILL.md` and `pipeline.json` bytes that were hashed.
-- **An installed skill keeps its name.** A workspace skill named like one
-  from the managed, operator or `~/.abhed/skills` directories is not loaded,
-  and a warning says so; a repository cannot stand in for a skill the person
-  or the organisation installed.
+- **Only `SKILL.md` and `pipeline.json` are used.** The skill's folder is
+  under `.abhed`, which the agent can neither read nor run anything from, so
+  the skill tool gives no directory for a workspace skill and its other
+  files (scripts, references) are hashed but never reached. A skill that
+  needs them belongs in an installed skills directory.
+- **An installed skill keeps its name.** A workspace skill whose name, in
+  NFKC and without case, is an installed skill's (from the managed, operator
+  or `~/.abhed/skills` directories) is not loaded, and a warning says so. A
+  workspace skill's name must be ASCII letters, digits, `-`, `_` and `.`, so
+  no look-alike letter passes for an installed name. The prompt's listing
+  marks workspace skills `(from this workspace)`.
 - **The prompt and `abhed trust` show each skill's name, description and
   hash.** Untrusted skills are listed as ignored (`skills/<name>`) in the
   warning and by `abhed doctor`.
@@ -141,7 +148,7 @@ the exact content of every file in them.
   neither loaded nor asked about, and `skills_reason` is `off`.
 - `-trust-workspace` and `ABHED_TRUST_WORKSPACE` trust them for one run; a
   caller's refusal refuses them. The home directory's `.abhed/skills` is the
-  user's own.
+  user's own, `~/.abhed/skills`, and loads once, as an installed directory.
 
 The report gains `skills` (each with `name`, `description`, `dir` and
 `sha256`), `skills_sha256`, `skills_trusted`, `skills_reason` and

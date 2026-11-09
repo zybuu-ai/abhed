@@ -133,7 +133,8 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	for _, err := range errs {
 		warn("%v", err)
 	}
-	if ws := cfg.Workspace; ws.SkillsTrusted && !cfg.Skills.DisableWorkspace {
+	// At home, .abhed/skills is ~/.abhed/skills, loaded above already.
+	if ws := cfg.Workspace; ws.SkillsTrusted && ws.SkillsReason != "home" && !cfg.Skills.DisableWorkspace {
 		for _, w := range ws.SkillFiles() {
 			var md, pipeline []byte
 			for _, f := range w.Files {
@@ -150,6 +151,15 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 				continue
 			}
 			s.Source = filepath.Join(ws.Workspace, filepath.FromSlash(config.WorkspaceSkillsDir))
+			// Only SKILL.md and pipeline.json are used: the folder is in .abhed,
+			// which the agent can neither read nor run anything from.
+			s.Dir, s.Workspace = "", true
+			// A name is plain ASCII, so no look-alike letter can pass for an
+			// installed skill's.
+			if !asciiName(s.Name) {
+				warn("skills: the workspace skill %s is not loaded: a workspace skill's name is ASCII letters, digits, '-', '_' and '.'", config.Printable(s.Name))
+				continue
+			}
 			// An installed skill keeps its name: a repository's cannot stand in for it.
 			if !reg.AddNew(s) {
 				warn("skills: the workspace skill %s is not loaded: a skill the organisation or you installed has that name", config.Printable(s.Name))
@@ -157,6 +167,19 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 		}
 	}
 	return reg, reg.Listing()
+}
+
+// asciiName reports a skill name of ASCII letters, digits, '-', '_' and '.'.
+func asciiName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // AgentRoots are the operator's definition directories: agents.dirs, or

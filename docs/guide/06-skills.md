@@ -52,9 +52,14 @@ definitions:
 - `abhed trust` and the trust prompt show each workspace skill's name,
   description and hash. `abhed trust grant` trusts exactly that content
   (`-skills-sha256 H` pins it).
-- The hash covers every file in the skill's folder, so a changed script or
-  `SKILL.md` asks again. An untrusted workspace loads none.
-- A workspace skill never replaces an installed one of the same name.
+- The hash covers every file in the skill's folder, so a change to any of
+  them asks again. An untrusted workspace loads none.
+- Only `SKILL.md` and `pipeline.json` are used: the folder sits in `.abhed`,
+  which the agent cannot read, so a workspace skill cannot point it at
+  scripts beside it. Put such a skill in an installed directory.
+- A workspace skill never replaces or sits beside an installed one of the
+  same name, compared without case and in NFKC, and its name must be ASCII.
+  The prompt lists it as `(from this workspace)`.
 - `"skills": {"disable_workspace": true}`, in the managed configuration or
   your own, keeps workspace skills off whatever the trust.
 

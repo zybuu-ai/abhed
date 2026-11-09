@@ -75,9 +75,12 @@ All notable changes to Abhed are recorded here. The format follows
   skills once the person trusts their exact content, under the same
   hash-pinned trust as its agent definitions. `abhed trust` and the trust
   prompt show each skill's name, description and hash; the hash covers every
-  file in the skill's folder, so a changed script asks again; an untrusted
-  workspace loads none; and a workspace skill never replaces an installed one
-  of the same name. `abhed trust grant -skills-sha256 H` pins a grant.
+  file in the skill's folder, so any change asks again; an untrusted
+  workspace loads none; and a workspace skill never replaces or sits beside
+  an installed one whose name matches without case or in NFKC (its name must
+  be ASCII). Only its `SKILL.md` and `pipeline.json` are used, since the
+  agent cannot read `.abhed`. `abhed trust grant -skills-sha256 H` pins a
+  grant.
   `skills.disable_workspace: true`, from the managed configuration or any
   layer, keeps them off whatever the trust.
 - A denial names where its rule came from. The reason the model and the
