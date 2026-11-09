@@ -69,9 +69,12 @@ through a link or into Abhed's state, a file a read deny rule covers is
 left out with its matches (`deny: ["read(secrets/**)"]` keeps `secrets/`
 out of `grep` too), and secret values are redacted. A file an ask rule
 covers, such as the built-in ones for `.env` and keys, is left out too: no
-one can be asked through a search. The answer says how many files with
-matches were withheld, and a `path` that names a withheld file is answered
-`withheld by a read rule`. A pattern with no such literal, or one matched
+one can be asked through a search. Each file is judged by its path before
+it is read, so a withheld file is never opened or matched; the answer says
+how many files were not searched for that reason, a count that is the same
+whatever the pattern, and a `path` that names a withheld file is answered
+`withheld by a read rule`. `search` leaves such files out before ranking,
+as if they were not indexed, and says nothing of them. A pattern with no such literal, or one matched
 without case beyond ASCII, is searched without ripgrep. The two searches
 read `.gitignore` files with separate parsers, so on an unusual pattern they
 can differ in which ignored files they skip; the read rules hold the same

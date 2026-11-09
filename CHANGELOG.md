@@ -40,15 +40,17 @@ All notable changes to Abhed are recorded here. The format follows
   sandbox tier, since `grep` runs in Abhed itself. Every `grep` result is now
   held to the read rules: a file a deny rule covers, or an ask rule (no one
   can be asked through a search; the built-in ones for `.env`, `*.pem`,
-  `*.key` and SSH keys included), is left out with its matches and count.
+  `*.key` and SSH keys included), is judged by its path before it is read
+  and never opened; the answer says only how many files were not searched.
 - The `search` tool (the retrieval index, `retrieval.enabled`) returned
   excerpts from files a read deny rule covers, and the index build sent
   those files' chunks to the embedding endpoint when `retrieval.embed` is
-  on. Affected: every release through 1.2.9 with retrieval enabled. A hit in
-  a file a read deny or ask rule covers is now left out, and the index is
-  built without such files, so they reach neither the model nor the
-  embedding endpoint. A rule added after the index was built still holds
-  for the hits.
+  on. Affected: every release through 1.2.9 with retrieval enabled. A file
+  a read deny or ask rule covers is now left out before ranking, as if it
+  were not indexed, and the index is built without such files (to the
+  session's own rules in the CLI and the SDK), so they reach neither the
+  model nor the embedding endpoint. A rule added after the index was built
+  still holds for the hits.
 - An org policy URL holding a password, a token or a signature
   (`https://u:pw@…`, `?token=…`, a signed URL) was printed whole where a
   refusal or a warning named the org policy, and in the status line of

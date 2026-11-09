@@ -403,17 +403,26 @@ func ReadWithheld(cfg config.Config, workspace string) func(string) bool {
 	pol.Roots = func() []string { return []string{workspace} }
 	_ = pol.AddDeny(cfg.Permissions.Deny...)
 	_ = pol.AddAsk(cfg.Permissions.Ask...)
-	return pol.ReadWithheld
+	return pol.ReadWithheldFunc()
 }
 
 // OpenIndex builds the retrieval index for a workspace.
 func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index.Index, error) {
+	return OpenIndexWithheld(ctx, cfg, workspace, nil)
+}
+
+// OpenIndexWithheld is OpenIndex built to the read rules withheld gives, nil
+// for the configured ones.
+func OpenIndexWithheld(ctx context.Context, cfg config.Config, workspace string, withheld func(string) bool) (*index.Index, error) {
 	if workspace == "" {
 		return nil, fmt.Errorf("no workspace to index")
 	}
 	ix := index.New(workspace)
 	opts := index.DefaultBuildOptions()
-	opts.Withheld = ReadWithheld(cfg, workspace)
+	opts.Withheld = withheld
+	if withheld == nil {
+		opts.Withheld = ReadWithheld(cfg, workspace)
+	}
 
 	var cache *index.FileVectorCache
 	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {

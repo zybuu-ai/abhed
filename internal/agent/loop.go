@@ -1963,7 +1963,7 @@ func (l *Loop) readWithheld() func(string) bool {
 	if l.Policy == nil {
 		return nil
 	}
-	return l.Policy.ReadWithheld
+	return l.Policy.ReadWithheldFunc()
 }
 
 // withRule adds the rule that decided, when one did, and the policy layer

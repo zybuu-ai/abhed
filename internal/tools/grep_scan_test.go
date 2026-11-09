@@ -102,8 +102,8 @@ func TestGrepLeavesOutReadDeniedFiles(t *testing.T) {
 				t.Fatalf("the denied file was counted:\n%s", res.Content)
 			}
 		}
-		// The model is told some were withheld.
-		if res := grepCtx(t, ctx, s, grepArgs{Pattern: "TOKEN_NAME"}); !strings.Contains(res.Content, "1 file(s) with matches withheld by a read rule") {
+		// The model is told a file was not searched, whatever it holds.
+		if res := grepCtx(t, ctx, s, grepArgs{Pattern: "TOKEN_NAME"}); !strings.Contains(res.Content, "1 file(s) were not searched because a read rule withholds them") {
 			t.Fatalf("the withheld file is not mentioned:\n%s", res.Content)
 		}
 		// Named as the path, it is still left out, and said to be withheld.
@@ -363,4 +363,41 @@ func TestRipgrepThisUserCanWriteIsNotRun(t *testing.T) {
 	if os.Getuid() != 0 && ripgrepWritable("/bin/sh") {
 		t.Fatal("a root-owned program is reported as writable")
 	}
+}
+
+// Whether a withheld file holds the pattern changes nothing in the answer:
+// it is judged by its path before it is read, so a matching and a
+// non-matching pattern answer alike, over the workspace and over its folder.
+func TestGrepAnswerIsTheSameWhateverAWithheldFileHolds(t *testing.T) {
+	searchPaths(t, func(t *testing.T) {
+		s, dir := setup(t)
+		for rel, content := range map[string]string{"app/a.go": "package app\n", "secrets/keys.yaml": "api_key: sk-live-Q7X\n"} {
+			p := filepath.Join(dir, rel)
+			_ = os.MkdirAll(filepath.Dir(p), 0o755)
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		secrets := filepath.Join(dir, "secrets")
+		read := 0
+		ctx := WithReadCheck(context.Background(), func(p string) bool {
+			if strings.HasPrefix(p, secrets+string(filepath.Separator)) {
+				read++
+				return true
+			}
+			return false
+		})
+		for _, path := range []string{"", "secrets"} {
+			for _, mode := range []string{"files_with_matches", "content", "count"} {
+				hit := grepCtx(t, ctx, s, grepArgs{Pattern: "sk-live-Q7X", Path: path, OutputMode: mode}).Content
+				miss := grepCtx(t, ctx, s, grepArgs{Pattern: "sk-live-Q7Y", Path: path, OutputMode: mode}).Content
+				if strings.ReplaceAll(hit, "sk-live-Q7X", "P") != strings.ReplaceAll(miss, "sk-live-Q7Y", "P") {
+					t.Fatalf("path %q, %s: the answer depends on the withheld file:\n%s\n---\n%s", path, mode, hit, miss)
+				}
+			}
+		}
+		if read == 0 {
+			t.Fatal("the read rules were never asked")
+		}
+	})
 }

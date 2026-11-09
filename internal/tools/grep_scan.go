@@ -151,12 +151,13 @@ func shortest(set []needLit) int {
 
 // grepWalk lists the files under root a search reads. Folders are read in
 // parallel; each folder's files stay together.
-func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, state *StateSet, globMatch func(string) bool) ([]grepFile, error) {
+// withheld counts the files a read rule kept out, judged by path before
+// anything is read, so the count never depends on a file's content.
+func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, state *StateSet, globMatch func(string) bool) (files []grepFile, withheld int, err error) {
 	var (
-		mu    sync.Mutex
-		files []grepFile
-		wg    sync.WaitGroup
-		sem   = make(chan struct{}, min(runtime.GOMAXPROCS(0), 8))
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, min(runtime.GOMAXPROCS(0), 8))
 	)
 	var visit func(dir string, ignores ignoreStack)
 	visit = func(dir string, ignores ignoreStack) {
@@ -179,6 +180,7 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 			}
 		}
 		var mine []grepFile
+		kept := 0
 		for _, e := range entries {
 			path := filepath.Join(dir, e.Name())
 			slash := filepath.ToSlash(path)
@@ -213,10 +215,16 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 			if ignores.ignored(slash, false) {
 				continue
 			}
+			// A file a read rule withholds is never opened, nor matched.
+			if ReadRefused(ctx, path) {
+				kept++
+				continue
+			}
 			mine = append(mine, grepFile{path: path, rel: fileRel})
 		}
 		mu.Lock()
 		files = append(files, mine...)
+		withheld += kept
 		mu.Unlock()
 	}
 	// A folder named as the path is searched even when the repository's own
@@ -231,7 +239,7 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 	visit(root, parents)
 	wg.Done()
 	wg.Wait()
-	return files, ctx.Err()
+	return files, withheld, ctx.Err()
 }
 
 // parentIgnores are the .gitignore files from the session root holding root

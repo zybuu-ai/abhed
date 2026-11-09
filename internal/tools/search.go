@@ -353,6 +353,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		return errf("Cannot access %s: %v", a.Path, statErr)
 	}
 	var hits []grepHit
+	withheld := 0
 	if info.IsDir() {
 		state := s.stateSet()
 		// Files are read under the searched folder held open as a root, so a
@@ -363,7 +364,8 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		}
 		defer within.Close()
 		rg := startRipgrep(ctx, s.ripgrepFor(), root, sp)
-		files, _ := s.grepWalk(ctx, root, within, state, globMatch)
+		var files []grepFile
+		files, withheld, _ = s.grepWalk(ctx, root, within, state, globMatch)
 		hits = grepFiles(ctx, within, rg.narrow(files), sp)
 	} else if ReadRefused(ctx, root) {
 		// Named outright, a withheld file is answered as read answers it.
@@ -377,23 +379,19 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	var results []grepHit
-	total, withheld := 0, 0
+	total := 0
 	for _, h := range hits {
 		if h.count == 0 {
-			continue
-		}
-		// A file the read rules withhold is left out whole, its matches too;
-		// only that some were is said, so the model does not take it for none.
-		if ReadRefused(ctx, h.path) {
-			withheld++
 			continue
 		}
 		results = append(results, h)
 		total += h.count
 	}
+	// Counted from paths in the walk, before any read: the same whatever the
+	// pattern, so it says nothing of what those files hold.
 	note := ""
 	if withheld > 0 {
-		note = fmt.Sprintf("\n[%d file(s) with matches withheld by a read rule]", withheld)
+		note = fmt.Sprintf("\n[%d file(s) were not searched because a read rule withholds them]", withheld)
 	}
 
 	if ctx.Err() != nil {
@@ -404,10 +402,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		if a.Path != "" {
 			where = " in " + a.Path
 		}
-		if withheld > 0 {
-			return ok("No matches shown for %s%s.%s", a.Pattern, where, note)
-		}
-		return ok("No matches for %s%s. Try a broader pattern, or check the path.", a.Pattern, where)
+		return ok("No matches for %s%s. Try a broader pattern, or check the path.%s", a.Pattern, where, note)
 	}
 
 	// Most matches first; the path breaks ties, so a parallel search reads the same each time.

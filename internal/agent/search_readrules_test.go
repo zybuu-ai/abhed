@@ -53,7 +53,7 @@ func TestSearchResultsKeepReadRules(t *testing.T) {
 			t.Fatalf("a withheld file's hit reached the model (%s):\n%s", leak, got)
 		}
 	}
-	if !strings.Contains(got, "config.go") || !strings.Contains(got, "withholds") {
-		t.Fatalf("the allowed hit or the note is missing:\n%s", got)
+	if !strings.Contains(got, "config.go") {
+		t.Fatalf("the allowed hit is missing:\n%s", got)
 	}
 }

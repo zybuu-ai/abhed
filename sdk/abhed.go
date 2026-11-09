@@ -451,7 +451,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		parts = toolset.All
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
-		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
+		Workspace: opts.Workspace, ReadWithheld: pol.ReadWithheldFunc(), Bash: bash, Parts: parts, Extensions: opts.Extensions,
 		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
 	})
 	// What New made is released on every error from here: the tools, and

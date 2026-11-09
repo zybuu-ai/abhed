@@ -1184,12 +1184,18 @@ func (e *Engine) defaultAsk(tool, subject, why string) Result {
 // what a search shows the agent: a deny rule, or an ask rule (the built-in
 // ones for .env and keys included), which a search cannot put to anyone.
 // Hooks are not asked: they judge calls, and this is no call.
-func (e *Engine) ReadWithheld(path string) bool {
+func (e *Engine) ReadWithheld(path string) bool { return e.WithoutHooks().readWithheld(path) }
+
+// ReadWithheldFunc is ReadWithheld over one hook-free copy of e, for a
+// caller judging many files, such as a search walking a workspace.
+func (e *Engine) ReadWithheldFunc() func(string) bool { return e.WithoutHooks().readWithheld }
+
+func (e *Engine) readWithheld(path string) bool {
 	args, err := json.Marshal(map[string]string{"path": path})
 	if err != nil {
 		return true
 	}
-	r := e.WithoutHooks().Evaluate("read", false, args)
+	r := e.Evaluate("read", false, args)
 	return r.Decision == Deny || r.Decision == Ask && r.Step == "ask"
 }
 

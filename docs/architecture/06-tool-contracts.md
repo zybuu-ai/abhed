@@ -247,8 +247,9 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
   to those holding a literal every match contains, passed as a fixed string with
   `--no-config` and an empty environment. Matching is always Go's RE2 over the confined
   read, so both paths return the same lines, and every result is held to the read deny
-  rules before redaction. A file under a read ask rule is withheld too, and the answer says
-  how many files with matches were withheld.
+  rules before redaction. A file under a read ask rule is withheld too. Each walked file is
+  judged by path before it is read, and the answer says how many were not searched, a count
+  independent of the pattern.
 
 **Errors**
 | Condition | Message |
