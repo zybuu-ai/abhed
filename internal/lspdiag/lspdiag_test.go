@@ -16,6 +16,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/lsprelay"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
+	"github.com/zybuu-ai/abhed/monitor"
 )
 
 // TestStubServer is the stub language server the tests start in place of
@@ -333,3 +334,95 @@ func TestDiagnosticsServerThatFails(t *testing.T) {
 		t.Fatal("tried again after the server failed")
 	}
 }
+
+// Under on, only the plain ask a mode or the default gives is answered;
+// every other ask, and any deny, stands. Under auto only an allow runs.
+func TestAllowedOnlyAnswersThePlainAsk(t *testing.T) {
+	for _, c := range []struct {
+		decision policy.Decision
+		step     string
+		on, auto bool
+	}{
+		{policy.Allow, "allow", true, true},
+		{policy.Allow, "mode", true, true},
+		{policy.Ask, "default", true, false},
+		{policy.Ask, "mode", true, false},
+		{policy.Ask, "ask", false, false},         // a rule's ask
+		{policy.Ask, "destructive", false, false}, // always confirmed
+		{policy.Ask, "screen", false, false},
+		{policy.Ask, "monitor", false, false}, // the supervisor tightened it
+		{policy.Ask, "workspace", false, false},
+		{policy.Deny, "deny", false, false},
+		{policy.Deny, "hook", false, false},
+		{policy.Deny, "mode", false, false},
+	} {
+		d := policy.Result{Decision: c.decision, Step: c.step}
+		if got := New(opts(ModeOn)).allowed(d); got != c.on {
+			t.Errorf("on, %s at %s: %v", c.decision, c.step, got)
+		}
+		if got := New(opts(ModeAuto)).allowed(d); got != c.auto {
+			t.Errorf("auto, %s at %s: %v", c.decision, c.step, got)
+		}
+	}
+}
+
+// End to end under on: a rule's ask, the supervisor turning an allow into
+// an ask, and a PermissionRequest hook refusing the mode's ask each keep the
+// server from starting, with why recorded; the mode's ask with no hook
+// starts it, recorded as the setting's answer.
+func TestOnDoesNotAnswerOtherAsks(t *testing.T) {
+	p := func(r *rig) string { return r.write(t, "a.go", "// BAD\n") }
+
+	ruled := newRig(t, policy.ModeDefault)
+	if err := ruled.loop.Policy.AddAsk("bash(gopls*)"); err != nil {
+		t.Fatal(err)
+	}
+	d := New(opts(ModeOn))
+	defer d.Close()
+	if got, _ := d.Diagnose(context.Background(), ruled.loop, "c1", p(ruled)); !strings.HasPrefix(got.Skipped, "not started: ask at ask") || len(*ruled.started) != 0 {
+		t.Fatalf("a rule's ask: %+v %v", got, *ruled.started)
+	}
+
+	tightened := newRig(t, policy.ModeBypass)
+	tightened.loop.Monitor = &monitor.Guard{Monitor: monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		return monitor.Verdict{Decision: policy.Ask, Code: "tool-misuse", Rationale: "not now"}, nil
+	})}
+	d = New(opts(ModeOn))
+	defer d.Close()
+	if got, _ := d.Diagnose(context.Background(), tightened.loop, "c1", p(tightened)); !strings.HasPrefix(got.Skipped, "not started: ask at monitor") || len(*tightened.started) != 0 {
+		t.Fatalf("the supervisor's ask: %+v %v", got, *tightened.started)
+	}
+	if v := tightened.events(t, agent.EvMonitorVerdict); len(v) != 1 || len(tightened.events(t, agent.EvActionRequested)) != 1 || v[0]["call_id"] != tightened.events(t, agent.EvActionRequested)[0]["call_id"] {
+		t.Fatalf("the verdict is not on the request: %v", v)
+	}
+
+	hooked := newRig(t, policy.ModeDefault)
+	hooked.loop.Hooks = refuse{}
+	d = New(opts(ModeOn))
+	defer d.Close()
+	if got, _ := d.Diagnose(context.Background(), hooked.loop, "c1", p(hooked)); !strings.HasPrefix(got.Skipped, "not started: deny at hook") || len(*hooked.started) != 0 {
+		t.Fatalf("the hook's refusal: %+v %v", got, *hooked.started)
+	}
+
+	plain := newRig(t, policy.ModeDefault)
+	d = New(opts(ModeOn))
+	if got, _ := d.Diagnose(context.Background(), plain.loop, "c1", p(plain)); got.Errors != 1 {
+		t.Fatalf("the mode's ask under on: %+v", got)
+	}
+	d.Close()
+	started := plain.events(t, agent.EvLSPStarted)
+	approved := plain.events(t, agent.EvActionApproved)
+	obs := plain.events(t, agent.EvObservation)
+	if len(started) != 1 || started[0]["allowed_by"] != agent.BySetting || started[0]["step"] != "default" ||
+		len(approved) != 1 || approved[0]["by"] != agent.BySetting || len(obs) != 1 || obs[0]["call_id"] != started[0]["call_id"] {
+		t.Fatalf("started %v approved %v observed %v", started, approved, obs)
+	}
+}
+
+type refuse struct{}
+
+func (refuse) PromptSubmitted(context.Context, string, string) string { return "" }
+func (refuse) PermissionRequested(context.Context, *policy.Engine, string, string, json.RawMessage, string) string {
+	return "the managed hook refuses language servers"
+}
+func (refuse) Observe(context.Context, string, string, string, string) {}

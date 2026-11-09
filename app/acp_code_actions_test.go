@@ -96,11 +96,21 @@ func TestCodeActionsAreOrdinaryPrompts(t *testing.T) {
 		{lsprelay.URI(filepath.Join(r.ws, "hidden", "k.go")), rangeOf(0, 0, 0, 1), errRefused, "a rule keeps this file from being read"},
 		{"file:///etc/hosts", rangeOf(0, 0, 0, 1), errRefused, "not in the session's workspace"},
 		{"https://example.com/a.go", rangeOf(0, 0, 0, 1), errRefused, "not a file"},
+		{lsprelay.URI(filepath.Join(r.ws, "deploy.pem")), rangeOf(0, 0, 0, 1), errRefused, "keys or credentials"},
+		{lsprelay.URI(filepath.Join(r.ws, ".abhed", "policy.json")), rangeOf(0, 0, 0, 1), errRefused, "Abhed's own state"},
 		{uri, rangeOf(4, 0, 2, 0), errParams, "not a range"},
 		{uri, rangeOf(-1, 0, 2, 0), errParams, "not a range"},
 	} {
 		if msg := r.cl.refused(c.code, "_abhed/codeActions", map[string]any{"sessionId": id, "uri": c.uri, "range": c.rng}); !strings.Contains(msg, c.want) {
 			t.Fatalf("%s: %s", c.uri, msg)
 		}
+	}
+
+	// A read-only session offers nothing, as its prompts would be refused.
+	r.cl.conn.sessMu.Lock()
+	r.cl.conn.sessions[id].readOnly = "the record failed verification at seq 3"
+	r.cl.conn.sessMu.Unlock()
+	if msg := r.cl.refused(errRecord, "_abhed/codeActions", map[string]any{"sessionId": id, "uri": uri, "range": rangeOf(0, 0, 0, 1)}); !strings.Contains(msg, "fork it to go on") {
+		t.Fatalf("read-only: %s", msg)
 	}
 }

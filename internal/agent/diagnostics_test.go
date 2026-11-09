@@ -72,19 +72,66 @@ func TestDiagnosticsFollowAnEdit(t *testing.T) {
 	}
 }
 
-// The engine's own command is judged as a call: a deny rule refuses it, and
-// a plain ask stays an ask.
-func TestEngineDecisionIsJudged(t *testing.T) {
-	l, _, _ := harness(t, nil, policy.ModeDefault, true)
+type refusingHooks struct{ asked []string }
+
+func (h *refusingHooks) PromptSubmitted(context.Context, string, string) string { return "" }
+func (h *refusingHooks) PermissionRequested(_ context.Context, _ *policy.Engine, _, tool string, _ json.RawMessage, reason string) string {
+	h.asked = append(h.asked, tool+": "+reason)
+	return "the organisation's hook refuses it"
+}
+func (h *refusingHooks) Observe(context.Context, string, string, string, string) {}
+
+// The engine's own command is judged and recorded as a call: a deny rule
+// refuses it; an ask runs only when allowed takes it as answered, and then
+// the PermissionRequest hooks hear it first and may refuse it; what decided
+// is on record as action.requested and action.approved or action.denied.
+func TestEngineAuthorizeIsJudged(t *testing.T) {
+	plain := func(d policy.Result) bool {
+		return d.Decision == policy.Allow || d.Decision == policy.Ask && d.Step == "default"
+	}
+	l, store, _ := harness(t, nil, policy.ModeDefault, true)
 	if err := l.Policy.AddDeny("bash(gopls*)"); err != nil {
 		t.Fatal(err)
 	}
 	args := json.RawMessage(`{"command":"gopls","description":"x"}`)
-	if d := l.EngineDecision(context.Background(), "bash", "d1", args); d.Decision != policy.Deny {
-		t.Fatalf("deny rule: %+v", d)
+	if d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d1", "diagnostics", args, plain); ok || d.Decision != policy.Deny {
+		t.Fatalf("deny rule: %+v %v", d, ok)
 	}
 	other := json.RawMessage(`{"command":"basedpyright-langserver --stdio","description":"x"}`)
-	if d := l.EngineDecision(context.Background(), "bash", "d2", other); d.Decision != policy.Ask {
-		t.Fatalf("default mode: %+v", d)
+	if d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d2", "diagnostics", other, func(d policy.Result) bool { return d.Decision == policy.Allow }); ok || d.Decision != policy.Ask {
+		t.Fatalf("an ask nobody answers: %+v %v", d, ok)
+	}
+	if d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d3", "diagnostics", other, plain); !ok || d.Step != "default" {
+		t.Fatalf("an ask the setting answers: %+v %v", d, ok)
+	}
+	h := &refusingHooks{}
+	l.Hooks = h
+	d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d4", "diagnostics", other, plain)
+	if ok || d.Decision != policy.Deny || d.Step != "hook" || len(h.asked) != 1 {
+		t.Fatalf("a hook's refusal: %+v %v %v", d, ok, h.asked)
+	}
+	evs, _ := store.Events("sess1")
+	got := map[string]string{}
+	for _, e := range evs {
+		var m map[string]any
+		_ = json.Unmarshal(e.Payload, &m)
+		id, _ := m["call_id"].(string)
+		switch e.Type {
+		case EvActionRequested:
+			if m["via"] != "diagnostics" || e.Actor != ActorSystem {
+				t.Fatalf("request %v by %s", m, e.Actor)
+			}
+			got[id] += "requested "
+		case EvActionApproved:
+			got[id] += "approved:" + m["by"].(string) + " "
+		case EvActionDenied:
+			got[id] += "denied:" + m["step"].(string) + " "
+		}
+	}
+	want := map[string]string{"d1": "requested denied:deny ", "d2": "requested denied:default ", "d3": "requested approved:setting ", "d4": "requested denied:hook "}
+	for id, w := range want {
+		if got[id] != w {
+			t.Fatalf("%s recorded %q, want %q (all %v)", id, got[id], w, got)
+		}
 	}
 }

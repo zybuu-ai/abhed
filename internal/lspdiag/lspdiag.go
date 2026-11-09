@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -111,8 +112,10 @@ type Diagnoser struct {
 	// off are languages diagnostics will not run for in this session.
 	off     map[string]bool
 	crashes map[string]int
-	closed  bool
-	n       int
+	// starting are languages whose server's start is being judged.
+	starting map[string]bool
+	closed   bool
+	n        int
 }
 
 // New returns a Diagnoser, or nil when opt.Mode is off.
@@ -128,7 +131,7 @@ func New(opt Options) *Diagnoser {
 		opt.Wait = DefaultWait
 	}
 	opt.Wait = min(opt.Wait, MaxWait)
-	return &Diagnoser{opt: opt, servers: map[string]*server{}, off: map[string]bool{}, crashes: map[string]int{}}
+	return &Diagnoser{opt: opt, servers: map[string]*server{}, off: map[string]bool{}, crashes: map[string]int{}, starting: map[string]bool{}}
 }
 
 // Language is the server language and the document's language id for path,
@@ -167,7 +170,7 @@ func (d *Diagnoser) Diagnose(ctx context.Context, l *agent.Loop, callID, path st
 	if lang == "" {
 		return agent.Diagnosed{}, false
 	}
-	s, skipped, ok := d.server(ctx, l, lang)
+	s, skipped, ok := d.server(ctx, l, lang, deadline)
 	if !ok {
 		return agent.Diagnosed{}, false
 	}
@@ -227,10 +230,10 @@ func (d *Diagnoser) drop(lang string) {
 
 // server is the running server for lang, started if need be. skipped is
 // why none runs, when that is to be recorded; ok false records nothing.
-func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *server, skipped string, ok bool) {
+func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string, deadline time.Time) (s *server, skipped string, ok bool) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.closed || d.off[lang] {
+	if d.closed || d.off[lang] || d.starting[lang] {
+		d.mu.Unlock()
 		return nil, "", false
 	}
 	if s := d.servers[lang]; s != nil {
@@ -241,15 +244,18 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *
 				d.crashes[lang]++
 			}
 		default:
+			d.mu.Unlock()
 			return s, "", true
 		}
 	}
 	argv := d.opt.Servers[lang]
 	if len(argv) == 0 {
+		d.mu.Unlock()
 		return nil, "", false
 	}
 	if d.crashes[lang] >= maxCrashes {
 		d.off[lang] = true
+		d.mu.Unlock()
 		return nil, fmt.Sprintf("%s ended on its own %d times", argv[0], maxCrashes), true
 	}
 	tool, _ := l.Tools.Get("bash")
@@ -259,39 +265,65 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *
 		tier = Tier(b)
 	}
 	// Off with no record where no server can run: no sandbox, or none installed.
-	if !isBash || b.Sandbox == nil || tier == "" || tier == string(sandbox.TierNone) {
+	if !isBash || b.Sandbox == nil || tier == "" || tier == string(sandbox.TierNone) ||
+		d.opt.Find != nil && !strings.ContainsAny(argv[0], "/\\") && !d.opt.Find(argv[0]) {
 		d.off[lang] = true
+		d.mu.Unlock()
 		return nil, "", false
 	}
-	if d.opt.Find != nil && !strings.ContainsAny(argv[0], "/\\") && !d.opt.Find(argv[0]) {
+	// The start is judged without the lock, which a model judge could hold
+	// past every other language's edits and Close; the language waits.
+	d.starting[lang] = true
+	d.n++
+	callID := fmt.Sprintf("diag-%s-%d", lang, d.n)
+	d.mu.Unlock()
+	off := func(why string) (*server, string, bool) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.starting, lang)
 		d.off[lang] = true
-		return nil, "", false
+		return nil, why, why != ""
 	}
+
 	roots := l.Session.PolicyRoots()
 	var watch *lsprelay.RustAnalyzerWatch
 	if lang == "rust" {
 		watch = lsprelay.NewRustAnalyzerWatch(roots, nil)
 		files, incomplete := lsprelay.RustAnalyzerConfigs(roots)
 		if why := lsprelay.RustAnalyzerConfigWhy(files, incomplete); why != "" {
-			d.off[lang] = true
-			return nil, "not started, as no one is asked here: " + why, true
+			return off("not started, as no one is asked here: " + why)
 		}
 		watch.Add(files)
 	}
-	d.n++
-	callID := fmt.Sprintf("diag-%s-%d", lang, d.n)
 	command := lsprelay.CommandLine(argv)
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + lang +
 		" diagnostics after the agent's edits, in the session sandbox, run with " + strings.TrimSpace(lsprelay.Env)})
-	decision := l.EngineDecision(ctx, "bash", callID, args)
-	if !d.allowed(decision) {
-		d.off[lang] = true
-		return nil, "not started: " + string(decision.Decision) + " (" + decision.Reason + ")", true
+	judged, cancel := context.WithDeadline(ctx, deadline)
+	decision, allowed, err := l.EngineAuthorize(judged, "bash", callID, "diagnostics", args, d.allowed)
+	cancel()
+	if err != nil {
+		return off("not started: " + err.Error())
+	}
+	if !allowed {
+		return off("not started: " + string(decision.Decision) + " at " + decision.Step + " (" + decision.Reason + ")")
+	}
+	by := agent.ByPolicy
+	if decision.Decision == policy.Ask {
+		by = agent.BySetting
 	}
 	s = &server{id: "lsp-" + callID, lang: lang, argv: argv, callID: callID, loop: l, roots: roots, tier: tier,
-		ready: make(chan struct{}), done: make(chan struct{}), docs: map[string]int{}, pub: map[string]published{},
+		allowedBy: by, decision: decision,
+		ready: make(chan struct{}), done: make(chan struct{}), docs: map[string]int{}, opened: map[string]bool{}, pub: map[string]published{},
 		notify: make(chan struct{}), answers: map[string]chan json.RawMessage{}}
+	d.mu.Lock()
+	delete(d.starting, lang)
+	if d.closed {
+		d.mu.Unlock()
+		_ = l.ManualObserve(callID, "bash", tools.Result{Content: "the language server was not started: the session closed", IsError: true}, 0)
+		return nil, "", false
+	}
 	d.servers[lang] = s
+	d.mu.Unlock()
 	root := ""
 	if d.opt.ToolchainRoot != nil {
 		root = d.opt.ToolchainRoot()
@@ -335,6 +367,9 @@ type server struct {
 	id, lang, callID, tier string
 	argv, roots            []string
 	loop                   *agent.Loop
+	// allowedBy and decision are what let it start, for lsp.started.
+	allowedBy string
+	decision  policy.Result
 
 	ready     chan struct{} // closed once initialized, or failed (initErr)
 	readyOnce sync.Once
@@ -346,7 +381,8 @@ type server struct {
 	cancel context.CancelFunc
 
 	mu       sync.Mutex
-	docs     map[string]int // open documents' versions, by URI
+	docs     map[string]int // documents' versions, by URI
+	opened   map[string]bool
 	pub      map[string]published
 	seq      int
 	notify   chan struct{} // closed and replaced on every publish
@@ -389,6 +425,7 @@ func (s *server) run(b tools.Bash, toolchainRoot string, watch *lsprelay.RustAna
 	}
 	if err != nil {
 		fail("the language server could not start: " + err.Error())
+		_ = s.loop.ManualObserve(s.callID, "bash", tools.Result{Content: "the language server could not start: " + err.Error(), IsError: true}, 0)
 		return
 	}
 	started := time.Now()
@@ -396,7 +433,8 @@ func (s *server) run(b tools.Bash, toolchainRoot string, watch *lsprelay.RustAna
 	s.in, s.cancel = stdin, cancel
 	s.wmu.Unlock()
 	s.record(agent.EvLSPStarted, agent.LSPStarted{LSPID: s.id, CallID: s.callID, Language: s.lang,
-		Command: lsprelay.CommandLine(s.argv), Tier: s.tier, Purpose: "diagnostics"})
+		Command: lsprelay.CommandLine(s.argv), Tier: s.tier, Purpose: "diagnostics",
+		AllowedBy: s.allowedBy, Step: s.decision.Step, Rule: s.decision.Rule, Layer: s.decision.Layer})
 	var stderr bytes.Buffer
 	tsLine := make(chan string, 1)
 	stderrDone := make(chan struct{})
@@ -430,6 +468,8 @@ func (s *server) run(b tools.Bash, toolchainRoot string, watch *lsprelay.RustAna
 	}
 	s.record(agent.EvLSPStopped, agent.LSPStopped{LSPID: s.id, CallID: s.callID, Language: s.lang, Reason: reason,
 		ExitCode: &code, DurationMS: time.Since(started).Milliseconds(), Purpose: "diagnostics"})
+	_ = s.loop.ManualObserve(s.callID, "bash", tools.Result{Content: fmt.Sprintf("language server %s: exit %d", reason, code),
+		ExitCode: &code, IsError: reason == "crashed"}, time.Since(started))
 }
 
 // initialize names the TypeScript for typescript-language-server, then
@@ -687,9 +727,11 @@ func (s *server) diagnose(ctx context.Context, uri, langID string, content []byt
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	s.mu.Lock()
-	version, open := s.docs[uri]
-	version++
+	// docs keeps the version, so its reports are taken; opened says whether
+	// the server has it, set only once didOpen was written.
+	version := s.docs[uri] + 1
 	s.docs[uri] = version
+	open := s.opened[uri]
 	after := s.seq
 	s.mu.Unlock()
 	var msgs []map[string]any
@@ -702,10 +744,15 @@ func (s *server) diagnose(ctx context.Context, uri, langID string, content []byt
 			"params": map[string]any{"textDocument": doc, "contentChanges": []any{map[string]any{"text": string(content)}}}})
 	}
 	msgs = append(msgs, map[string]any{"jsonrpc": "2.0", "method": "textDocument/didSave", "params": map[string]any{"textDocument": map[string]any{"uri": uri}}})
-	for _, m := range msgs {
+	for i, m := range msgs {
 		body, _ := json.Marshal(m)
 		if s.write(body, deadline) != nil {
 			return nil, true, ""
+		}
+		if i == 0 && !open {
+			s.mu.Lock()
+			s.opened[uri] = true
+			s.mu.Unlock()
 		}
 	}
 	// The first report for this version, then any that follows it within
@@ -748,7 +795,8 @@ func (s *server) diagnose(ctx context.Context, uri, langID string, content []byt
 
 // format is the text the agent is given: the most severe first, at most
 // max of them, each on one line.
-func format(diags []diagnostic, maxShown int, rel, server string) (text string, total, shown, errs, warns int) {
+func format(stored []diagnostic, maxShown int, rel, server string) (text string, total, shown, errs, warns int) {
+	diags := slices.Clone(stored) // the stored report is shared with other edits of the file
 	sev := func(d diagnostic) int {
 		if d.Severity < 1 || d.Severity > 4 {
 			return 1 // unset is taken as an error

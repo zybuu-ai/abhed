@@ -135,7 +135,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
 | `tools.diagnostics` | **applied** only when `off`; a trusted workspace may also choose `auto` over `on`, never `on` |
-| `tools.diagnostics_max`, `tools.diagnostics_wait_ms` | **applied** only when lower |
+| `tools.diagnostics_max`, `tools.diagnostics_wait_ms` | **applied** only when lower, trusted or not |
 | `verify.mode` | **applied** only when stricter (off < label < strict), and unset counts as `label`, so a workspace never turns labels off |
 | `verify.answer_tool` | **applied** only when true |
 | `verify.contract.protect` | **applied**, added to the protected files already there |

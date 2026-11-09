@@ -53,13 +53,15 @@ All notable changes to Abhed are recorded here. The format follows
   runs, started in the session's sandbox with the engine's safe settings,
   once per language, and only where policy and the supervisor allow its
   command (`tools.diagnostics`: `auto`, the default; `on` also answers the
-  plain ask a mode gives it; `off`). At most `tools.diagnostics_max` (20)
+  plain ask a mode gives it, after the PermissionRequest hooks; `off`). The
+  start is recorded as the engine's call, with what allowed it. At most `tools.diagnostics_max` (20)
   are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
   (3000). Off where there is no sandbox or no server installed. Each is
   recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`
   and `lsp.stopped` with `purpose: diagnostics`, and counted in
-  `abhed_lsp_diagnostics_total`. A workspace file may only turn them off or
-  lower the bounds. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+  `abhed_lsp_diagnostics_total`. A workspace file, trusted or not, may only
+  lower the bounds and turn them off. Paths a read rule denies are not
+  hidden from the server. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
 - `_abhed/codeActions` (feature `codeActions`) gives Studio Explain, Fix and
   Add tests for a range of a file, each as the prompt Studio sends with
   `session/prompt`, so it runs under the session's policy as any prompt does.

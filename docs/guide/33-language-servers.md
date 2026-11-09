@@ -217,16 +217,34 @@ disk after the change and takes the server's next report for it.
 | `tools.diagnostics_wait_ms` | 3000 | how long an edit waits for them (at most 30000); a server not ready by then gives none for that edit |
 
 Nobody is asked: under `auto` in the default mode the start is an ask, so
-no server runs until an allow rule names it. A deny rule, a rule's ask and
-the supervisor's word hold under `on` too. Diagnostics are off, with nothing
+no server runs until an allow rule names it. Under `on`, only the plain ask
+a mode or the default gives an unlisted command is answered, and the
+PermissionRequest hooks (the managed file's too) hear it first and may
+refuse it; a deny rule, a rule's ask, a destructive or screening ask and the
+supervisor's word all hold. The start is recorded as the engine's call
+(`action.requested` with `via: diagnostics`, then `action.approved` with
+`by: policy` or `by: setting`, or `action.denied`), its end as the call's
+observation. Diagnostics are off, with nothing
 recorded, where commands have no sandbox, the server is not installed, or
 the file is not Go, Python, TypeScript, JavaScript or Rust. A
 `rust-analyzer.toml` in the workspace keeps rust-analyzer from starting
 (nobody is there to be asked), and one written while it runs stops it. A
 server that fails to start, or ends on its own three times, is off for the
-session. A workspace file may only set `off` and lower the bounds.
+session. A workspace file, trusted or not, may only lower the bounds and
+turn diagnostics off (a trusted one may also choose `auto` over `on`).
 
-Recorded: `lsp.started` and `lsp.stopped` with `purpose: diagnostics` (not
+What the server reads is what the sandbox lets commands read: paths a `read`
+deny rule names are not hidden from it, and a compiler message can quote a
+value from such a file (a constant's text, a literal type), which then
+reaches the agent. That is no wider than an allowed `bash(go build *)`, but
+keep diagnostics `off`, or the server's command unallowed, where read rules
+guard values the sandbox does not hide. Likewise, what the server writes in
+the workspace (rust-analyzer's `cargo metadata` can update `Cargo.lock`) is
+not kept by bash checkpoints, so `/undo` does not take it back. Sessions of
+the server's web console get no diagnostics.
+
+Recorded: `lsp.started` (with `allowed_by`, `step`, and the `rule` and
+`layer` that allowed it) and `lsp.stopped`, both with `purpose: diagnostics` (not
 counted in `abhed_lsp_starts_total`), and `lsp.diagnostics` per change with
 the counts, `timed_out`, or `skipped` and why, counted in
 `abhed_lsp_diagnostics_total` by language and outcome. Subagents do not get

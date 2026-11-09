@@ -286,7 +286,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
 		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
-		diagnostics := cfg.Tools.Diagnostics
+		diagnostics, diagMax, diagWait := cfg.Tools.Diagnostics, cfg.Tools.DiagnosticsMax, cfg.Tools.DiagnosticsWaitMS
 		network := cfg.Network.clone()
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
@@ -302,6 +302,14 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
+		if orDefaultInt(cfg.Tools.DiagnosticsMax, 20) > orDefaultInt(diagMax, 20) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_max", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsMax = diagMax })
+		}
+		if orDefaultInt(cfg.Tools.DiagnosticsWaitMS, 3000) > orDefaultInt(diagWait, 3000) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_wait_ms", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsWaitMS = diagWait })
+		}
 		if diagnosticsRank[cfg.Tools.Diagnostics] < diagnosticsRank[diagnostics] {
 			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics", "a workspace may only turn diagnostics off",
 				func() { cfg.Tools.Diagnostics = diagnostics })
@@ -1067,6 +1075,14 @@ func onlyDiagnosticsOff(dst, ws *Config) bool {
 	}
 	dst.Tools.Diagnostics = "off"
 	return true
+}
+
+// orDefaultInt is n, or def when n is zero.
+func orDefaultInt(n, def int) int {
+	if n == 0 {
+		return def
+	}
+	return n
 }
 
 // diagnosticsRank orders tools.diagnostics from loosest to strictest.

@@ -80,11 +80,60 @@ func (l *Loop) diagnose(ctx context.Context, call model.ToolCall, result *tools.
 	}
 }
 
-// EngineDecision judges a command the engine runs for the agent outside
-// any call it made, such as the language server whose diagnostics follow an
-// edit: policy, the secret checks and the supervisor, which may only make
-// it stricter. Nobody is asked; the caller runs it only on an allow.
-func (l *Loop) EngineDecision(ctx context.Context, call, id string, args json.RawMessage) policy.Result {
+// BySetting is an operator's setting that answered a mode's plain ask for
+// a command the engine runs, such as tools.diagnostics on.
+const BySetting = "setting"
+
+// EngineAuthorize judges and records a command the engine runs for the
+// agent outside any call it made, such as the language server whose
+// diagnostics follow an edit. It is recorded as a request, via names what
+// issued it, then judged by policy, the secret checks and the supervisor,
+// which may only make it stricter. Nobody is asked: it may run on an allow,
+// or on an ask that allowed takes as answered, which the PermissionRequest
+// hooks hear first and may refuse. The approval or denial is recorded too.
+func (l *Loop) EngineAuthorize(ctx context.Context, call, id, via string, args json.RawMessage, allowed func(policy.Result) bool) (policy.Result, bool, error) {
+	if _, err := l.Recorder.Record(EvActionRequested, ActorSystem, Trusted, ActionRequested{CallID: id, Tool: call, Args: args, Via: via}); err != nil {
+		return policy.Result{Decision: policy.Deny, Reason: "the request could not be recorded", Step: "record"}, false, err
+	}
+	decision := l.engineDecision(ctx, call, id, args)
+	if decision.Decision == policy.Ask && allowed(decision) {
+		if why := l.hookRefused(ctx, model.ToolCall{ID: id, Name: call, Args: args}, decision); why != "" {
+			decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "hook"}
+		}
+	}
+	ok := decision.Decision != policy.Deny && allowed(decision)
+	if !ok {
+		reason := decision.Reason
+		if decision.Decision == policy.Ask {
+			reason = "nobody is asked for it: " + reason
+		}
+		l.record(EvActionDenied, ActorSystem, withRule(map[string]string{
+			"call_id": id, "reason": reason, "step": decision.Step, "by": ByPolicy}, decision))
+		return decision, false, nil
+	}
+	by := ByPolicy
+	if decision.Decision == policy.Ask {
+		by = BySetting
+	}
+	approved := withRule(map[string]string{"call_id": id, "reason": decision.Reason, "step": decision.Step, "by": by}, decision)
+	if _, err := l.Recorder.Record(EvActionApproved, ActorSystem, Trusted, approved); err != nil {
+		l.noteRecordErr(err)
+		return decision, false, err
+	}
+	return decision, true, nil
+}
+
+// hookRefused is the PermissionRequest hooks' refusal of an ask, or "".
+func (l *Loop) hookRefused(ctx context.Context, call model.ToolCall, decision policy.Result) string {
+	if l.Hooks == nil {
+		return ""
+	}
+	return l.Hooks.PermissionRequested(ctx, l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason)
+}
+
+// engineDecision is policy, the secret checks and the supervisor on a call
+// the engine makes.
+func (l *Loop) engineDecision(ctx context.Context, call, id string, args json.RawMessage) policy.Result {
 	tool, found := l.Tools.Get(call)
 	if !found {
 		return policy.Result{Decision: policy.Deny, Reason: "no " + call + " tool in this session", Step: "deny"}

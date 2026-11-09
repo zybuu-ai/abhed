@@ -14,9 +14,13 @@ func TestDiagnosticsAreTheOperators(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A trusted workspace may raise the bound; it never turns diagnostics on.
-		if cfg.Tools.Diagnostics == "on" || trust == TrustRefused && cfg.Tools.DiagnosticsMax != 10 {
+		if cfg.Tools.Diagnostics == "on" || cfg.Tools.DiagnosticsMax != 10 {
 			t.Fatalf("trust %v: diagnostics %q max %d", trust, cfg.Tools.Diagnostics, cfg.Tools.DiagnosticsMax)
+		}
+		// Unset, the bounds are their defaults, which a workspace may not raise either.
+		_, ws = trustHome(t, `{}`, `{"tools":{"diagnostics_wait_ms":30000,"diagnostics_max":200}}`)
+		if cfg, _ := LoadWith(ws, LoadOptions{Trust: trust, Quiet: true}); cfg.Tools.DiagnosticsWaitMS != 0 || cfg.Tools.DiagnosticsMax != 0 {
+			t.Fatalf("trust %v: raised past the defaults: %d %d", trust, cfg.Tools.DiagnosticsWaitMS, cfg.Tools.DiagnosticsMax)
 		}
 		_, ws = trustHome(t, `{"tools":{"diagnostics":"on"}}`, `{"tools":{"diagnostics":"off","diagnostics_wait_ms":500}}`)
 		if cfg, _ := LoadWith(ws, LoadOptions{Trust: trust, Quiet: true}); cfg.Tools.Diagnostics != "off" || cfg.Tools.DiagnosticsWaitMS != 500 {

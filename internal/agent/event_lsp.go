@@ -23,6 +23,13 @@ type LSPStarted struct {
 	// Purpose is "diagnostics" for a server the engine runs to give the
 	// agent diagnostics after its edits; empty for a person's editor.
 	Purpose string `json:"purpose,omitempty"`
+	// AllowedBy, Step, Rule and Layer say what let a diagnostics server
+	// start: policy (a rule or the mode) or the operator's setting
+	// (tools.diagnostics on) answering a mode's ask.
+	AllowedBy string `json:"allowed_by,omitempty"`
+	Step      string `json:"step,omitempty"`
+	Rule      string `json:"rule,omitempty"`
+	Layer     string `json:"layer,omitempty"`
 }
 
 // LSPStopped is the payload of lsp.stopped.
