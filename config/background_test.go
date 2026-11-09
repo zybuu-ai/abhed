@@ -8,7 +8,7 @@ import (
 
 func TestServerBackgroundConfig(t *testing.T) {
 	var b ServerBackgroundConfig
-	if b.ApprovalTimeout() != 30*time.Minute || b.Running() != 2 {
+	if b.ApprovalTimeout() != 1740*time.Second || b.Running() != 2 {
 		t.Fatalf("defaults: %v %d", b.ApprovalTimeout(), b.Running())
 	}
 	for _, tc := range []struct {
@@ -22,7 +22,7 @@ func TestServerBackgroundConfig(t *testing.T) {
 		{ServerBackgroundConfig{NotifyURL: "/relative"}, "notify_url"},
 		{ServerBackgroundConfig{NotifyURL: "http://hooks.example/x"}, "http to this machine only"},
 		{ServerBackgroundConfig{NotifyURL: "http://169.254.169.254/latest"}, "http to this machine only"},
-		{ServerBackgroundConfig{ApprovalTimeoutSeconds: 3600}, "from 0 to 1800"},
+		{ServerBackgroundConfig{ApprovalTimeoutSeconds: 1800}, "from 0 to 1740"},
 	} {
 		c := Default()
 		c.Server.Background = tc.b

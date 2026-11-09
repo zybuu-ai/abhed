@@ -455,14 +455,16 @@ type Server struct {
 }
 
 type liveSession struct {
-	ID      string
-	User    string
-	Tenant  string
-	Loop    *agent.Loop
-	Cancel  context.CancelFunc
-	Created time.Time // when the session began, on whichever node
-	Prompt  string
-	State   string // running | waiting_approval | background | idle | done
+	// onAskTimeout is StartSpec.OnAskTimeout.
+	onAskTimeout func(requestID, tool string)
+	ID           string
+	User         string
+	Tenant       string
+	Loop         *agent.Loop
+	Cancel       context.CancelFunc
+	Created      time.Time // when the session began, on whichever node
+	Prompt       string
+	State        string // running | waiting_approval | background | idle | done
 	// title is the name a person last gave the session; guarded by mu.
 	title string
 	// Reason is how the last run ended, which the session list shows for done.
@@ -1524,6 +1526,10 @@ type StartSpec struct {
 	// OnEnd is called when the run finishes, however it finishes, with the
 	// terminal reason as the event stream records it.
 	OnEnd func(reason string, err error)
+	// OnAskTimeout, when set, is called as the system denies an ask nobody
+	// answered within ApprovalDeadline, with its request id and tool. It
+	// runs on the turn's goroutine and must not block.
+	OnAskTimeout func(requestID, tool string)
 	// admin is whether the person starting it is a server administrator,
 	// which an edition's SandboxCaller is told for the session's sandbox.
 	admin bool
@@ -2044,8 +2050,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		snap:    takeSnapshot(sess.Root),
 		layer:   layer,
 		// A spec with no provider runs on the configured default.
-		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
-		model:    adapter.Profile().Name,
+		provider:     orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
+		model:        adapter.Profile().Name,
+		onAskTimeout: spec.OnAskTimeout,
 	}
 	// Once another process has taken the session over, nothing more is
 	// written to its record from here.

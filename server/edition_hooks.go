@@ -13,9 +13,9 @@ import (
 // whether the denial decided the request: false when another answer got
 // there first, the request is not the one waiting, or the session is not
 // here. The store's row, when there is one, is the arbiter, as it is for
-// every answer; the denial is recorded as the system's.
-func (s *Server) DenyPending(ctx context.Context, tenant, owner, id, requestID string) bool {
-	if owner == "" || requestID == "" {
+// every answer. The denial is recorded as the system's, with reason.
+func (s *Server) DenyPending(ctx context.Context, tenant, owner, id, requestID, reason string) bool {
+	if owner == "" || requestID == "" || reason == "" {
 		return false
 	}
 	s.mu.RLock()
@@ -46,13 +46,16 @@ func (s *Server) DenyPending(ctx context.Context, tenant, owner, id, requestID s
 	durableID := p.DurableID
 	live.mu.Unlock()
 	if d := s.approvalStore(); d != nil && durableID != "" {
-		answered, err := d.AnswerApproval(ctx, durableID, false, "", "")
+		answered, err := d.AnswerApproval(ctx, durableID, false, "", "system")
 		if err != nil || !answered {
 			return false
 		}
 	}
 	live.mu.Lock()
 	held := live.move(p, askAnswered, false, "")
+	if held {
+		p.system = reason
+	}
 	live.mu.Unlock()
 	return held || durableID != ""
 }

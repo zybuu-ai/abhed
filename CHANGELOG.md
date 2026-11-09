@@ -58,9 +58,11 @@ All notable changes to Abhed are recorded here. The format follows
   to this machine only. The wire types, paths and a Go client are package
   `bgjob`. The server side is a Team feature: a Community `abhed serve`
   refuses `server.background.enabled`.
-- `server.StopSession`, `server.DenyPending`, `server.StartRefusal` and
-  `server.UpstreamTransport`, for an edition that starts, answers and stops
-  sessions for people on routes of its own.
+- `server.StopSession`, `server.DenyPending`, `server.StartRefusal`,
+  `server.UpstreamTransport` and `StartSpec.OnAskTimeout`, for an edition
+  that starts, answers and stops sessions for people on routes of its own.
+  A denial through `DenyPending` is recorded as the system's, with its
+  reason, never as a person's rejection.
 
 ### Fixed
 

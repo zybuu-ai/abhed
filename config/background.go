@@ -12,8 +12,9 @@ import (
 type ServerBackgroundConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// ApprovalTimeoutSeconds is how long a job waits for its owner's answer
-	// before it is stopped with nothing approved. Zero is 1800, which is
-	// also the most: every ask is denied after 30 minutes anyway.
+	// before it is denied and the job stopped. Zero is 1740, which is also
+	// the most: a minute short of the 30 minutes after which the server
+	// denies any ask, so the job's own timeout is the one that fires.
 	ApprovalTimeoutSeconds int `json:"approval_timeout_seconds,omitempty"`
 	// MaxRunning bounds the jobs one person has running at once. Zero is 2.
 	MaxRunning int `json:"max_running,omitempty"`
@@ -24,9 +25,9 @@ type ServerBackgroundConfig struct {
 	NotifyURL string `json:"notify_url,omitempty"`
 }
 
-// MaxApprovalTimeout is the longest a job's ask may wait: a session's ask
-// is denied after 30 minutes whoever waits on it.
-const MaxApprovalTimeout = 30 * time.Minute
+// MaxApprovalTimeout is the longest a job's ask may wait: a minute short of
+// the 30 minutes after which a session's ask is denied whoever waits on it.
+const MaxApprovalTimeout = 29 * time.Minute
 
 // ApprovalTimeout is approval_timeout_seconds with its default.
 func (b ServerBackgroundConfig) ApprovalTimeout() time.Duration {
