@@ -1180,6 +1180,23 @@ func (e *Engine) defaultAsk(tool, subject, why string) Result {
 	return e.guarded(res)
 }
 
+// AllowRuleFor is the allow rule the approval prompt would offer for a
+// call, as a person could write it: the narrow scope, or the rule for
+// exactly this call; "" when the default step would not ask about it, such
+// as a call an ask rule or a destructive command holds. Hooks are not asked.
+func (e *Engine) AllowRuleFor(tool string, mutates bool, args json.RawMessage) string {
+	dry := e.WithoutHooks()
+	dry.Mode = ModeDefault
+	res := dry.Evaluate(tool, mutates, args)
+	if res.Decision != Ask || res.Step != "default" {
+		return ""
+	}
+	if res.Scope != "" {
+		return res.Scope
+	}
+	return res.Suggest
+}
+
 // trustWords are spellings that trust a workspace for a nested run.
 var trustWords = []string{"abhed_trust_workspace", "trust-workspace", "trust_workspace"}
 

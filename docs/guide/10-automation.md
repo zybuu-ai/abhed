@@ -200,6 +200,30 @@ There is no one to approve, so anything needing approval is refused, and
 the model is told why. Name what may run with `-allow`, and keep the list
 narrow.
 
+Each refused call says what would allow it, on stderr whatever the output
+format, and in the result line of `json` and `stream-json` as
+`permission_denials`:
+
+```text
+abhed: denied write: no approver: changing a file needs approval in default mode (rerun with -mode accept-edits to allow it)
+```
+
+```json
+"permission_denials":[{"tool":"bash","call_id":"c1","step":"default","source":"mode",
+  "reason":"no approver: running a command needs approval in default mode …",
+  "flag":"-allow 'bash(make deploy)'","hint":"rerun with -allow 'bash(make deploy)' to allow it"}]
+```
+
+`flag` is the exact flag, `-mode accept-edits` for a file change or
+`-allow` with the rule the approval prompt would offer (an MCP tool's name
+for an MCP tool), and is offered only when the configuration would accept
+it and the policy, given it, would allow the call. Otherwise `flag` is
+empty and `hint` says why: a deny rule from the org policy or the managed
+configuration (`denied by org policy; ask your admin`), your own deny rule
+and where it is set (no flag lifts a deny rule), an ask rule, a command that
+always asks, a hook or the supervisor, or a managed configuration that sets
+the permissions. It only explains; nothing is granted.
+
 ## RPC
 
 For a caller that is not Go, `abhed rpc` speaks line-delimited JSON on stdin and

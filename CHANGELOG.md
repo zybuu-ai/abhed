@@ -71,6 +71,12 @@ All notable changes to Abhed are recorded here. The format follows
   `action.denied` record it as `source` (`org`, `managed`, `workspace`,
   `user`, `settings`, `flag`, `default`, `session`, an edition's layer,
   `mode` or `hook`), and HawkEYE shows it per call.
+- A `-p` run's refused call says what would allow it: the exact flag, such
+  as `-mode accept-edits` or `-allow 'bash(make deploy)'` (an MCP tool's
+  name for an MCP tool), on stderr and in the result line as
+  `permission_denials`. A flag is offered only when the configuration would
+  accept it and the policy would then allow the call; otherwise the hint
+  says why none would, such as `denied by org policy; ask your admin`.
 
 ### Changed
 
