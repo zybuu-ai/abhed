@@ -163,7 +163,7 @@ func Login(ctx context.Context, store *secrets.Store, o LoginOptions) error {
 		return err
 	}
 	rec.apply(tr, o.now())
-	if err := save(store, rec); err != nil {
+	if err := save(ctx, store, rec); err != nil {
 		return fmt.Errorf("keep the login: %w", err)
 	}
 	fmt.Fprintf(o.Out, "Signed in to MCP server %s (%s).\n", o.Server, md.Issuer)
@@ -280,7 +280,7 @@ func Logout(ctx context.Context, store *secrets.Store, server string, hc *http.C
 		}
 		cancel()
 	}
-	return Remove(store, server)
+	return Remove(ctx, store, server)
 }
 
 // revoke asks the revocation endpoint to end token (RFC 7009); its answer is not needed.

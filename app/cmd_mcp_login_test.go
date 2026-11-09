@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +101,16 @@ func TestMCPLoginCommand(t *testing.T) {
 	}
 	if held := mcpLoginsHeld(config.Config{MCP: config.MCPConfig{Servers: []config.MCPServerConfig{{Name: "corp", URL: s.URL(), Enabled: true}}}}, store); len(held) != 1 {
 		t.Fatalf("held %v", held)
+	}
+	// abhed serve's wiring: accounts signing in withhold the logins, with a warning.
+	var warned bytes.Buffer
+	srvCfg := config.Config{Auth: config.AuthConfig{Mode: "oidc"}, MCP: config.MCPConfig{Servers: []config.MCPServerConfig{{Name: "corp", URL: s.URL(), Enabled: true}}}}
+	if why := serveMCPLogins(srvCfg, store, &warned); !errors.Is(why, toolset.ErrMCPLoginsPerAccount) || !strings.Contains(warned.String(), "MCP server corp has an OAuth login") {
+		t.Fatalf("serve with accounts: %v %q", why, warned.String())
+	}
+	srvCfg.Auth.Mode = "none"
+	if why := serveMCPLogins(srvCfg, store, &warned); why != nil {
+		t.Fatalf("serve without accounts withheld the logins: %v", why)
 	}
 	shared := mcp.NewGateway()
 	defer shared.Close()

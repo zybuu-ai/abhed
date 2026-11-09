@@ -281,10 +281,15 @@ token goes on requests to the server's own origin only, never on a redirect
 or to an endpoint on another host, and a server that also has an
 `Authorization` header configured is refused. It is refreshed before it
 ends, and once more when the server refuses it. A refresh holds a lock
-beside the store, so two Abhed processes never spend one refresh token: the
-second takes up the first's tokens. A login removed or made again while a
-session runs is never written back by that session's refresh; the session
-says it was signed out, or that `/mcp restart` takes up the new login. Every request a sign-in or refresh makes, the
+beside the store, given up after the refresh's own time limit, so two Abhed
+processes never spend one refresh token: the second takes up the first's
+tokens. The lock spans processes where the store is a file on macOS or
+Linux; on Windows, and for a store a secrets driver keeps, it spans one
+process only. A running session reads the store again at most every five
+seconds as it sends: a login removed while it runs stops being used within
+that time (a request already sent completes), is never written back by its
+refresh, and the session says it was signed out; a login made again says
+that `/mcp restart` takes it up. Every request a sign-in or refresh makes, the
 browser's apart, goes under the egress allowlist (`sandbox.network:
 "allowlist"`, where the authorization server needs a rule too) and the
 corporate upstream proxy. `login` and `logout` are refused inside an
@@ -312,16 +317,22 @@ name a URI (`"deny": ["mcp__docs__read_resource(docs://private/*)"]`), and
 when `allow_tools` is set it must name them. A server's own tool of either
 name keeps it, and its resources are then not offered under that name.
 
-A URI is read only in its one canonical form, the form policy judges and
-the server is sent: scheme and authority in lower case, no `.` or `..`
-segments and no empty ones, unreserved characters not percent-encoded and
-other escapes in upper case. A URI written otherwise (`DOCS://private/a`,
-`docs://public/../private/a`, `docs://private/%61`) is refused, naming the
-form to write; one with an encoded `/` or `\`, a backslash, a fragment,
-user information or a rooted path without an authority (`docs:/private/a`)
-is refused outright, and a listing leaves out a resource the server names
-so. A rule on `docs://private/*` therefore cannot be passed by another
-spelling.
+A URI is read only in its canonical form, the form policy judges and the
+server is sent: scheme and host in lower case, the host without a trailing
+dot, no default port for `http` and `https`, `file:///` rather than
+`file://localhost/`, no `.` or `..` segments and no empty ones, unreserved
+characters not percent-encoded and other escapes in upper case. A URI
+written otherwise (`DOCS://private/a`, `docs://private./a`,
+`https://h:443/a`, `docs://private/%61`) is refused, naming the form to
+write. One with a host not in ASCII (write it in its punycode, `xn--`,
+form), an escape in its host, an encoded `/` or `\`, a backslash, a
+fragment, user information or a rooted path without an authority
+(`docs:/private/a`) is refused outright, and a listing leaves those out and
+says how many. Since a server may still read paths without regard to case,
+or normalise Unicode, deny and ask rules on a read also match the URI
+without regard to case and in NFC, as rules on file paths do: a deny on
+`docs://private/*` holds for `docs://PRIVATE/a`. Allow rules match only as
+written. What one URI names on the server beyond that is the server's.
 
 In the terminal or an editor's prompt, `@server:uri` attaches a resource:
 `@docs:file:///guide.md`, `@tickets:ticket://42` (write a space as `%20`:

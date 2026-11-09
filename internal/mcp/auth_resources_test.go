@@ -69,7 +69,10 @@ func (s *stubServer) serve(w http.ResponseWriter, r *http.Request) {
 			result = `"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{},"resources":{}}}`
 		}
 	case "tools/list":
-		if s.ownReadTool {
+		s.mu.Lock()
+		own := s.ownReadTool
+		s.mu.Unlock()
+		if own {
 			result = `"result":{"tools":[{"name":"read_resource","description":"the server's own"}]}`
 		}
 	case "resources/list":
@@ -234,6 +237,7 @@ func TestResourcesListAndRead(t *testing.T) {
 	ctx := context.Background()
 	res := list.Run(ctx, nil, json.RawMessage(`{}`))
 	if res.IsError || !strings.Contains(res.Content, "docs://guide") || strings.Contains(res.Content, "bad uri") ||
+		!strings.Contains(res.Content, "1 resource(s) left out") ||
 		strings.Contains(strings.ToLower(res.Content), "ignore previous instructions") {
 		t.Fatalf("list: %+v", res)
 	}
@@ -278,17 +282,6 @@ func TestResourceToolsFollowAllowToolsAndYieldToTheServers(t *testing.T) {
 	if !names["mcp__docs__list_resources"] || names["mcp__docs__read_resource"] {
 		t.Fatalf("names %v", names)
 	}
-	// A connection that offered the read leaves its subjector, which the
-	// next connection, whose server has its own read_resource, takes away.
-	s0 := newStubServer(t, "", true)
-	g0 := NewGateway()
-	if errs := connect(t, g0, ServerConfig{Name: "docs", URL: s0.srv.URL, Enabled: true}); len(errs) > 0 {
-		t.Fatal(errs)
-	}
-	_ = g0.Tools()
-	if _, ok := tools.SubjectorFor("mcp__docs__read_resource").(*resourceTool); !ok {
-		t.Fatal("the read's subjector was not registered")
-	}
 	s2 := newStubServer(t, "", true)
 	s2.ownReadTool = true
 	g2 := NewGateway()
@@ -302,9 +295,6 @@ func TestResourceToolsFollowAllowToolsAndYieldToTheServers(t *testing.T) {
 			}
 		}
 	}
-	if _, ok := tools.SubjectorFor("mcp__docs__read_resource").(*resourceTool); ok {
-		t.Fatal("a stale subjector judges the server's own tool")
-	}
 	// A server with no resources offers no resource tools.
 	s3 := newStubServer(t, "", false)
 	g3 := NewGateway()
@@ -315,5 +305,30 @@ func TestResourceToolsFollowAllowToolsAndYieldToTheServers(t *testing.T) {
 		if strings.HasSuffix(tl.Name(), "_resources") || strings.HasSuffix(tl.Name(), "read_resource") {
 			t.Fatalf("offered %s", tl.Name())
 		}
+	}
+}
+
+// A restart after which the server offers its own read_resource takes away
+// the subjector the earlier connection's read left.
+func TestRestartDropsTheReadsSubjector(t *testing.T) {
+	s := newStubServer(t, "", true)
+	g := NewGateway()
+	if errs := connect(t, g, ServerConfig{Name: "restarting", URL: s.srv.URL, Enabled: true}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	_ = g.Tools()
+	if _, ok := tools.SubjectorFor("mcp__restarting__read_resource").(*resourceTool); !ok {
+		t.Fatal("not registered")
+	}
+	s.mu.Lock()
+	s.ownReadTool = true
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := g.Restart(ctx, "restarting"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tools.SubjectorFor("mcp__restarting__read_resource").(*resourceTool); ok {
+		t.Fatal("a stale subjector judges the server's own tool after the restart")
 	}
 }

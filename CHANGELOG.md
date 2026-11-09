@@ -66,15 +66,18 @@ All notable changes to Abhed are recorded here. The format follows
   and the corporate upstream proxy. Only an `https` server and authorization
   server are signed in to (`http` only for a server on this machine); a
   resource or issuer that does not match is refused. A refresh holds a lock
-  across processes, and a login removed while a session runs stays removed.
+  across processes (one process only on Windows and with a secrets driver),
+  and a login removed while a session runs stops being used within five
+  seconds and stays removed.
   OAuth logins aren't available per account yet: an `abhed serve` that
   accounts sign in to uses none, and warns
   ([MCP](docs/guide/08-mcp.md#signing-in-with-oauth)).
 - MCP resources: a server that offers them adds
   `mcp__<server>__list_resources` and `mcp__<server>__read_resource`,
   judged by policy as its tools are (a rule may name the URI:
-  `mcp__docs__read_resource(docs://private/*)`, and a URI is read only in
-  its one canonical form, so no other spelling passes it), capped at 30,000
+  `mcp__docs__read_resource(docs://private/*)`; a URI is read only in its
+  canonical form, a host not in ASCII is refused, and deny and ask rules
+  also match without regard to case and in NFC), capped at 30,000
   characters, binary content described rather than sent, and recorded.
   `@server:uri` in the terminal or an editor's prompt attaches one, read as
   your own call through the same tool and policy; `/mcp resources SERVER`

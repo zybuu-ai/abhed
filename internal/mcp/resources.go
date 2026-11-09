@@ -49,10 +49,10 @@ func validResourceURI(uri string) bool {
 func ValidResourceURI(uri string) bool { return validResourceURI(uri) }
 
 // ListResources lists the server's resources, up to maxResources, leaving
-// out any whose URI is not plain.
-func (c *Client) ListResources(ctx context.Context) ([]ResourceDef, error) {
+// out any whose URI is not in canonical form, and says how many it left out.
+func (c *Client) ListResources(ctx context.Context) (defs []ResourceDef, dropped int, err error) {
 	if !c.resources {
-		return nil, ErrNoResources
+		return nil, 0, ErrNoResources
 	}
 	var all []ResourceDef
 	cursor := ""
@@ -63,18 +63,20 @@ func (c *Client) ListResources(ctx context.Context) ([]ResourceDef, error) {
 		}
 		raw, err := c.call(ctx, "resources/list", params)
 		if err != nil {
-			return nil, fmt.Errorf("resources/list: %w", err)
+			return nil, 0, fmt.Errorf("resources/list: %w", err)
 		}
 		var res struct {
 			Resources  []ResourceDef `json:"resources"`
 			NextCursor string        `json:"nextCursor"`
 		}
 		if err := json.Unmarshal(raw, &res); err != nil {
-			return nil, fmt.Errorf("parse resources/list: %w", err)
+			return nil, 0, fmt.Errorf("parse resources/list: %w", err)
 		}
 		for _, r := range res.Resources {
 			if validResourceURI(r.URI) {
 				all = append(all, r)
+			} else {
+				dropped++
 			}
 		}
 		if cursor = res.NextCursor; cursor == "" {
@@ -84,7 +86,7 @@ func (c *Client) ListResources(ctx context.Context) ([]ResourceDef, error) {
 	if len(all) > maxResources {
 		all = all[:maxResources]
 	}
-	return all, nil
+	return all, dropped, nil
 }
 
 // ReadResource reads one resource and returns its text, capped at
@@ -205,11 +207,11 @@ func (t *resourceTool) Run(ctx context.Context, _ *tools.Session, args json.RawM
 	}
 	defer t.gw.calls.begin(t.server, egress.CallerOf(ctx))()
 	if !t.read {
-		defs, err := client.ListResources(ctx)
+		defs, dropped, err := client.ListResources(ctx)
 		if err != nil {
 			return tools.Result{Content: fmt.Sprintf("MCP server %s: %v", t.server, err), IsError: true}
 		}
-		return tools.Result{Content: formatResources(defs)}
+		return tools.Result{Content: formatResources(defs, dropped)}
 	}
 	uri, ok := readURI(args)
 	if !ok {
@@ -264,9 +266,13 @@ func escapedURI(uri string) string { return strings.Trim(fmt.Sprintf("%+q", uri)
 
 // formatResources lists resources for the model, every field escaped and
 // the descriptions treated as the tool descriptions are.
-func formatResources(defs []ResourceDef) string {
+func formatResources(defs []ResourceDef, dropped int) string {
+	note := ""
+	if dropped > 0 {
+		note = fmt.Sprintf("\n[%d resource(s) left out: their URIs are not in canonical form, so they are not read]", dropped)
+	}
 	if len(defs) == 0 {
-		return "[the server lists no resources]"
+		return "[the server lists no resources]" + note
 	}
 	var b strings.Builder
 	for _, d := range defs {
@@ -290,7 +296,7 @@ func formatResources(defs []ResourceDef) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n") + note
 }
 
 // clip cuts s to at most n bytes at a character boundary.
@@ -304,6 +310,15 @@ func clip(s string, n int) string {
 // resourceTools are the server's resource tools the gateway may offer: its
 // own tool of either name keeps that name, and allow_tools must name them.
 func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client) []tools.Tool {
+	read := &resourceTool{gw: g, server: server, read: true}
+	offered := false
+	defer func() {
+		// Not offered, whatever the reason: a subjector an earlier connection
+		// left must not judge another tool of that name.
+		if cur, ours := tools.SubjectorFor(read.Name()).(*resourceTool); ours && cur.gw == g && !offered {
+			tools.UnregisterSubjector(read.Name())
+		}
+	}()
 	if !client.Resources() {
 		return nil
 	}
@@ -312,21 +327,17 @@ func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client)
 		own[d.Name] = true
 	}
 	var out []tools.Tool
-	for _, read := range []bool{false, true} {
-		t := &resourceTool{gw: g, server: server, read: read}
+	for _, t := range []*resourceTool{{gw: g, server: server}, read} {
 		if own[t.remote()] || !allowed(cfg, t.remote()) {
-			// Not offered: a subjector an earlier connection left must not judge another tool.
-			if _, ours := tools.SubjectorFor(t.Name()).(*resourceTool); ours {
-				tools.UnregisterSubjector(t.Name())
-			}
 			continue
 		}
 		if other := g.claimedBy(t.Name(), server); other != "" {
 			g.overlaps[t.Name()] = fmt.Sprintf("mcp tool %s of server %q is not offered: its name is also how a tool of server %q is named, so a rule for one would reach the other", t.Name(), server, other)
 			continue
 		}
-		if read {
+		if t.read {
 			tools.RegisterSubjector(t.Name(), t)
+			offered = true
 		}
 		out = append(out, t)
 	}
@@ -334,10 +345,10 @@ func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client)
 }
 
 // ServerResources lists a connected server's resources.
-func (g *Gateway) ServerResources(ctx context.Context, server string) ([]ResourceDef, error) {
+func (g *Gateway) ServerResources(ctx context.Context, server string) ([]ResourceDef, int, error) {
 	c := g.client(server)
 	if c == nil {
-		return nil, fmt.Errorf("MCP server %s is not connected", server)
+		return nil, 0, fmt.Errorf("MCP server %s is not connected", server)
 	}
 	return c.ListResources(ctx)
 }

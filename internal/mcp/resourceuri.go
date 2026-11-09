@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -16,7 +17,7 @@ import (
 // the URI policy judged.
 
 // CanonicalResourceURI is uri's canonical form: scheme and authority in
-// lower case, percent-encoded unreserved characters decoded and other
+// lower case (see canonicalAuthority), escaped unreserved characters decoded and other
 // escapes in upper case, no dot-segments and no empty path segments. It
 // refuses what has none: control or space characters, an encoded / or \,
 // a backslash, a fragment, user information, and a rooted path without an
@@ -54,11 +55,11 @@ func CanonicalResourceURI(uri string) (string, error) {
 		if end < 0 {
 			end = len(after)
 		}
-		authority := after[:end]
-		if strings.Contains(authority, "@") {
-			return "", errors.New("a resource URI carries no user information (@)")
+		authority, err := canonicalAuthority(strings.ToLower(scheme), after[:end])
+		if err != nil {
+			return "", err
 		}
-		out += "//" + strings.ToLower(authority)
+		out += "//" + authority
 		tail = after[end:]
 	} else if strings.HasPrefix(rest, "/") {
 		return "", fmt.Errorf("write %s:///%s or %s:%s; a rooted path needs an authority", strings.ToLower(scheme), strings.TrimLeft(rest, "/"), strings.ToLower(scheme), strings.TrimLeft(rest, "/"))
@@ -72,6 +73,54 @@ func CanonicalResourceURI(uri string) (string, error) {
 		out += "?" + query
 	}
 	return out, nil
+}
+
+// canonicalAuthority is an authority in its one spelling: lower case, the
+// host with no trailing dot, no default port for http and https, and no
+// localhost for file. A host not in ASCII is refused: written in its
+// punycode form, it has one spelling, where Unicode has many.
+func canonicalAuthority(scheme, a string) (string, error) {
+	if strings.Contains(a, "@") {
+		return "", errors.New("a resource URI carries no user information (@)")
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] >= 0x80 || a[i] == '%' {
+			return "", errors.New("a resource URI's host is ASCII: write an international name in its punycode (xn--) form")
+		}
+	}
+	a = strings.ToLower(a)
+	host, port := a, ""
+	if strings.HasPrefix(a, "[") {
+		end := strings.IndexByte(a, ']')
+		if end < 0 {
+			return "", errors.New("a resource URI's [ host has no ]")
+		}
+		host, port = a[:end+1], a[end+1:]
+		if port != "" && !strings.HasPrefix(port, ":") {
+			return "", errors.New("a resource URI's ] host is followed by a port or nothing")
+		}
+		port = strings.TrimPrefix(port, ":")
+	} else if i := strings.LastIndexByte(a, ':'); i >= 0 {
+		host, port = a[:i], a[i+1:]
+	}
+	host = strings.TrimRight(host, ".")
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 || strings.Trim(port, "0123456789") != "" {
+			return "", errors.New("a resource URI's port is a number from 1 to 65535")
+		}
+		port = strconv.Itoa(n)
+		if scheme == "https" && n == 443 || scheme == "http" && n == 80 {
+			port = ""
+		}
+	}
+	if scheme == "file" && host == "localhost" && port == "" {
+		host = ""
+	}
+	if port != "" {
+		return host + ":" + port, nil
+	}
+	return host, nil
 }
 
 // normalEscapes decodes escapes of unreserved characters and writes the

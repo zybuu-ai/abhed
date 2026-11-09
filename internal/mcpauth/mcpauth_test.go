@@ -261,7 +261,7 @@ func TestLogoutSticksAgainstARunningSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found, err := Remove(store, "corp"); !found || err != nil {
+	if found, err := Remove(context.Background(), store, "corp"); !found || err != nil {
 		t.Fatal(found, err)
 	}
 	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "signed out") {
@@ -289,7 +289,7 @@ func TestRefreshDoesNotOverwriteANewLogin(t *testing.T) {
 	a, _ := Load(store, "corp", s.URL(), noRedirect())
 	rec, _ := load(store, "corp")
 	rec.ClientID, rec.AccessToken = "another-client", "new-login-token"
-	if err := save(store, rec); err != nil {
+	if err := save(context.Background(), store, rec); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "changed") {
@@ -325,5 +325,30 @@ func TestCallbackComparesAnISSPresent(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/callback?code=x&state=s&iss=https://as.example", nil))
 	if r := <-results; r.err != nil || r.code != "x" {
 		t.Fatalf("%+v", r)
+	}
+}
+
+// A logout reaches a running session within storeCheck, refresh or not.
+func TestLogoutReachesARunningSessionsToken(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Load(store, "corp", s.URL(), noRedirect())
+	start := time.Now()
+	a.now = func() time.Time { return start }
+	if tok, err := a.Token(context.Background()); err != nil || tok != "access-1" {
+		t.Fatal(tok, err)
+	}
+	if _, err := Remove(context.Background(), store, "corp"); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := a.Token(context.Background()); err != nil || tok != "access-1" {
+		t.Fatalf("within the check's interval the token stands: %q %v", tok, err)
+	}
+	a.now = func() time.Time { return start.Add(storeCheck) }
+	if _, err := a.Token(context.Background()); err == nil || !strings.Contains(err.Error(), "signed out") {
+		t.Fatalf("after logout: %v", err)
 	}
 }

@@ -337,6 +337,12 @@ func pathFoldsCase(subjects []string) bool {
 	return false
 }
 
+// resourceRead reports an MCP server's read_resource tool, whose subject is
+// the URI it reads.
+func resourceRead(tool string) bool {
+	return strings.HasPrefix(tool, "mcp__") && strings.HasSuffix(tool, "__read_resource")
+}
+
 func hasNonASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {
@@ -976,6 +982,14 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			matches = func(r Rule, tool string, subjects []string) bool {
 				return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
 			}
+		}
+	}
+	// A resource's URI is read in one spelling, but a server may fold its case
+	// or normalise it: deny and ask rules on a read also match without regard
+	// to case and in NFC. It only adds matches.
+	if resourceRead(tool) {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
 		}
 	}
 	// A bash rule naming flags also holds with them moved or split.

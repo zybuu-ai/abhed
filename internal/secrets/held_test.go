@@ -1,8 +1,11 @@
 package secrets
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Abhed's own values are set and read only through their own calls: a person
@@ -31,12 +34,24 @@ func TestHeldNames(t *testing.T) {
 	if got := s.Offered(); len(got) != 1 || got[0] != "OTHER_TOKEN" {
 		t.Fatalf("offered %v", got)
 	}
-	unlock, err := s.HeldLock("MCP_OAUTH_X")
+	unlock, err := s.HeldLock(context.Background(), "MCP_OAUTH_X")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A second taker waits only as long as its context: a holder that never
+	// lets go does not hold it forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	if _, err := s.HeldLock(ctx, "MCP_OAUTH_X"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a held lock was taken twice, or waited past its context: %v", err)
+	}
+	cancel()
 	unlock()
-	if _, err := s.HeldLock("OTHER_TOKEN"); err == nil {
+	again, err := s.HeldLock(context.Background(), "MCP_OAUTH_X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again()
+	if _, err := s.HeldLock(context.Background(), "OTHER_TOKEN"); err == nil {
 		t.Fatal("a lock on an ordinary name")
 	}
 }

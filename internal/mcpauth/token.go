@@ -51,9 +51,9 @@ func names(server string) (record, access, refresh, secret string) {
 }
 
 // save writes rec in one step, under the login's lock.
-func save(store *secrets.Store, rec Record) error {
+func save(ctx context.Context, store *secrets.Store, rec Record) error {
 	r, _, _, _ := names(rec.Server)
-	unlock, err := store.HeldLock(r)
+	unlock, err := store.HeldLock(ctx, r)
 	if err != nil {
 		return err
 	}
@@ -103,9 +103,9 @@ func load(store *secrets.Store, server string) (Record, error) {
 }
 
 // Remove forgets a server's login; false when there was none.
-func Remove(store *secrets.Store, server string) (bool, error) {
+func Remove(ctx context.Context, store *secrets.Store, server string) (bool, error) {
 	r, a, rt, cs := names(server)
-	unlock, err := store.HeldLock(r)
+	unlock, err := store.HeldLock(ctx, r)
 	if err != nil {
 		return false, err
 	}
@@ -242,6 +242,34 @@ type Authorizer struct {
 	// out is set once the login was found removed or replaced: it is then
 	// never used or written again.
 	out error
+	// checked is when the store was last read for a logout or another
+	// process's refresh.
+	checked time.Time
+}
+
+// storeCheck is how often Token reads the store, so a logout reaches a
+// running session within it.
+const storeCheck = 5 * time.Second
+
+// checkStore reads the login again: removed or replaced, it is never used
+// again; refreshed by another process, its tokens are taken up. Under a.mu.
+func (a *Authorizer) checkStore() error {
+	a.checked = a.now()
+	stored, err := load(a.store, a.server)
+	switch {
+	case errors.Is(err, ErrNoLogin):
+		a.out = fmt.Errorf("MCP server %s was signed out; run abhed mcp login %s", a.server, a.server)
+	case err != nil:
+		return err
+	case stored.URL != a.rec.URL || stored.ClientID != a.rec.ClientID || stored.TokenEndpoint != a.rec.TokenEndpoint:
+		a.out = fmt.Errorf("the login for MCP server %s changed while this ran; /mcp restart %s takes up the new one", a.server, a.server)
+	case stored.AccessToken != a.rec.AccessToken && a.live(stored):
+		a.rec = stored
+	}
+	if a.out != nil {
+		a.rec = Record{Server: a.rec.Server, URL: a.rec.URL}
+	}
+	return a.out
 }
 
 // Load is the login for server, configured at serverURL, as an Authorizer;
@@ -271,6 +299,11 @@ func (a *Authorizer) Token(ctx context.Context) (string, error) {
 	defer a.mu.Unlock()
 	if a.out != nil {
 		return "", a.out
+	}
+	if a.now().Sub(a.checked) >= storeCheck {
+		if err := a.checkStore(); err != nil {
+			return "", err
+		}
 	}
 	if a.rec.Expiry == 0 || a.now().Add(expiryMargin).Before(time.Unix(a.rec.Expiry, 0)) || a.rec.RefreshToken == "" {
 		return a.rec.AccessToken, nil
@@ -311,7 +344,7 @@ func (a *Authorizer) refresh(ctx context.Context) error {
 		return a.out
 	}
 	r, _, _, _ := names(a.server)
-	unlock, err := a.store.HeldLock(r)
+	unlock, err := a.store.HeldLock(ctx, r)
 	if err != nil {
 		return fmt.Errorf("lock the login for MCP server %s: %w", a.server, err)
 	}

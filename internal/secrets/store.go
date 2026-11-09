@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 	"weak"
 )
@@ -329,21 +330,31 @@ func (s *Store) UpdateHeld(fn func(get func(string) (string, bool)) (set map[str
 	return s.save(m)
 }
 
-// HeldLock takes a lock, across processes, that one of Abhed's own values
-// is changed under, such as an MCP login being refreshed; nothing else takes
-// it. It is held until the returned function is called.
-func (s *Store) HeldLock(name string) (func(), error) {
+// HeldLock takes a lock that one of Abhed's own values is changed under,
+// such as an MCP login being refreshed; nothing else takes it. It is held
+// until the returned function is called, and given up on when ctx ends. It
+// spans processes where the store is a file on a system with flock; on
+// Windows, and for a store a secrets driver keeps, it spans this process only.
+func (s *Store) HeldLock(ctx context.Context, name string) (func(), error) {
 	if !Held(name) {
 		return nil, fmt.Errorf("%q is not a name Abhed keeps for itself", name)
 	}
+	key := s.path + "." + name
 	if s.src != nil {
-		mu := lockFor(s.name + "\x00" + name)
-		mu.Lock()
+		key = s.name + "\x00" + name
+	}
+	mu := lockFor(key)
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if s.src != nil {
 		return mu.Unlock, nil
 	}
-	mu := lockFor(s.path + "." + name)
-	mu.Lock()
-	unlock, err := fileLock(s.path + "." + strings.ToLower(name))
+	unlock, err := fileLockContext(ctx, s.path+"."+strings.ToLower(name))
 	if err != nil {
 		mu.Unlock()
 		return nil, err

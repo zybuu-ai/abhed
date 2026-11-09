@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -156,4 +157,17 @@ func mcpLoginsHeld(cfg config.Config, store *secrets.Store) []string {
 		}
 	}
 	return out
+}
+
+// serveMCPLogins is why abhed serve's shared tool set uses no MCP login, or
+// nil: with accounts signing in, an operator's login would let each act as
+// the operator. Each server that has one is warned of on errOut.
+func serveMCPLogins(cfg config.Config, store *secrets.Store, errOut io.Writer) error {
+	if !accountsSignIn(cfg) {
+		return nil
+	}
+	for _, name := range mcpLoginsHeld(cfg, store) {
+		fmt.Fprintf(errOut, "abhed: warning: MCP server %s has an OAuth login, which this server does not use: %v\n", name, toolset.ErrMCPLoginsPerAccount)
+	}
+	return toolset.ErrMCPLoginsPerAccount
 }
