@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -350,5 +351,30 @@ func TestLogoutReachesARunningSessionsToken(t *testing.T) {
 	a.now = func() time.Time { return start.Add(storeCheck) }
 	if _, err := a.Token(context.Background()); err == nil || !strings.Contains(err.Error(), "signed out") {
 		t.Fatalf("after logout: %v", err)
+	}
+}
+
+// A store that cannot be read fails every call until it reads again, not one
+// call in each interval.
+func TestUnreadableStoreFailsEveryCall(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Load(store, "corp", s.URL(), noRedirect())
+	if err := os.Chmod(store.Path(), 0o644); err != nil { // readable by others: refused
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if _, err := a.Token(context.Background()); err == nil {
+			t.Fatalf("call %d used the token while the store could not be read", i)
+		}
+	}
+	if err := os.Chmod(store.Path(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := a.Token(context.Background()); err != nil || tok != "access-1" {
+		t.Fatalf("once it reads: %q %v", tok, err)
 	}
 }

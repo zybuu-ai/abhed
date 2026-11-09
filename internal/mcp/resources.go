@@ -213,6 +213,11 @@ func (t *resourceTool) Run(ctx context.Context, _ *tools.Session, args json.RawM
 		}
 		return tools.Result{Content: formatResources(defs, dropped)}
 	}
+	// Judged by its own subjector or not run: one a later listing took away
+	// would leave a URI rule without its subject.
+	if cur, _ := tools.SubjectorFor(t.Name()).(*resourceTool); cur != t {
+		return tools.Result{Content: fmt.Sprintf("MCP server %s's tools changed since this session started; start a new session to read its resources", t.server), IsError: true}
+	}
 	uri, ok := readURI(args)
 	if !ok {
 		if raw, decoded := uriArg(args); decoded {
@@ -258,7 +263,8 @@ func (t *resourceTool) PolicySubject(args json.RawMessage) (string, bool) {
 	if !t.read {
 		return "", false
 	}
-	return readURI(args)
+	// As written, canonical or not: a deny then holds before the read refuses it.
+	return uriArg(args)
 }
 
 // escapedURI is a URI as text shows it, escaped.
@@ -327,6 +333,10 @@ func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client)
 		own[d.Name] = true
 	}
 	var out []tools.Tool
+	// The read already offered keeps being the one, so its subjector stays its own.
+	if cur, ok := tools.SubjectorFor(read.Name()).(*resourceTool); ok && cur.gw == g && cur.server == server {
+		read = cur
+	}
 	for _, t := range []*resourceTool{{gw: g, server: server}, read} {
 		if own[t.remote()] || !allowed(cfg, t.remote()) {
 			continue

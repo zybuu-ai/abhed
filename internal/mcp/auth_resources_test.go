@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -308,17 +309,29 @@ func TestResourceToolsFollowAllowToolsAndYieldToTheServers(t *testing.T) {
 	}
 }
 
-// A restart after which the server offers its own read_resource takes away
-// the subjector the earlier connection's read left.
-func TestRestartDropsTheReadsSubjector(t *testing.T) {
+// A restart after which the server offers its own read_resource leaves the
+// session's read judged as before: a URI deny still holds. A later listing,
+// which offers the server's own tool, takes the subjector away, and the
+// session's read then refuses to run rather than go unjudged.
+func TestRestartKeepsTheReadJudged(t *testing.T) {
 	s := newStubServer(t, "", true)
 	g := NewGateway()
 	if errs := connect(t, g, ServerConfig{Name: "restarting", URL: s.srv.URL, Enabled: true}); len(errs) > 0 {
 		t.Fatal(errs)
 	}
-	_ = g.Tools()
-	if _, ok := tools.SubjectorFor("mcp__restarting__read_resource").(*resourceTool); !ok {
-		t.Fatal("not registered")
+	var read tools.Tool
+	for _, tl := range g.Tools() {
+		if tl.Name() == "mcp__restarting__read_resource" {
+			read = tl
+		}
+	}
+	pol := policy.New(policy.ModeBypass)
+	if err := pol.AddDeny("mcp__restarting__read_resource(docs://private/*)"); err != nil {
+		t.Fatal(err)
+	}
+	args := json.RawMessage(`{"uri":"docs://private/a"}`)
+	if d := pol.Evaluate(read.Name(), true, args); d.Decision != policy.Deny {
+		t.Fatalf("before the restart: %v", d.Decision)
 	}
 	s.mu.Lock()
 	s.ownReadTool = true
@@ -328,7 +341,17 @@ func TestRestartDropsTheReadsSubjector(t *testing.T) {
 	if err := g.Restart(ctx, "restarting"); err != nil {
 		t.Fatal(err)
 	}
+	if d := pol.Evaluate(read.Name(), true, args); d.Decision != policy.Deny {
+		t.Fatalf("after the restart the deny gave %v", d.Decision)
+	}
+	if res := read.Run(ctx, nil, json.RawMessage(`{"uri":"docs://guide"}`)); res.IsError {
+		t.Fatalf("the session's read after the restart: %+v", res)
+	}
+	_ = g.Tools() // a new session's listing: the server's own tool takes the name
 	if _, ok := tools.SubjectorFor("mcp__restarting__read_resource").(*resourceTool); ok {
-		t.Fatal("a stale subjector judges the server's own tool after the restart")
+		t.Fatal("the read's subjector judges the server's own tool")
+	}
+	if res := read.Run(ctx, nil, json.RawMessage(`{"uri":"docs://guide"}`)); !res.IsError || !strings.Contains(res.Content, "tools changed") {
+		t.Fatalf("the old read ran unjudged: %+v", res)
 	}
 }

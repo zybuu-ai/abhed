@@ -320,19 +320,25 @@ name keeps it, and its resources are then not offered under that name.
 A URI is read only in its canonical form, the form policy judges and the
 server is sent: scheme and host in lower case, the host without a trailing
 dot, no default port for `http` and `https`, `file:///` rather than
-`file://localhost/`, no `.` or `..` segments and no empty ones, unreserved
-characters not percent-encoded and other escapes in upper case. A URI
-written otherwise (`DOCS://private/a`, `docs://private./a`,
-`https://h:443/a`, `docs://private/%61`) is refused, naming the form to
-write. One with a host not in ASCII (write it in its punycode, `xn--`,
+`file://localhost/`, an IPv6 or IPv4 address in its one spelling, no `.`
+or `..` segments and no empty ones, unreserved characters not
+percent-encoded, printable non-ASCII characters written as themselves in
+NFC rather than escaped, and other escapes in upper case. A URI written
+otherwise (`DOCS://private/a`, `docs://private./a`, `https://h:443/a`,
+`docs://private/%61`, `docs://private/caf%C3%A9`, `docs://127.1/a`) is
+refused, naming the form to write. One with a host not in ASCII (write it in its punycode, `xn--`,
 form), an escape in its host, an encoded `/` or `\`, a backslash, a
 fragment, user information or a rooted path without an authority
 (`docs:/private/a`) is refused outright, and a listing leaves those out and
 says how many. Since a server may still read paths without regard to case,
 or normalise Unicode, deny and ask rules on a read also match the URI
-without regard to case and in NFC, as rules on file paths do: a deny on
-`docs://private/*` holds for `docs://PRIVATE/a`. Allow rules match only as
+without regard to case, in NFC and with its escapes decoded, as rules on
+file paths do: a deny on `docs://private/*` holds for `docs://PRIVATE/a`,
+and one on `docs://private/café/*` for `docs://private/caf%C3%A9/x`. Allow rules match only as
 written. What one URI names on the server beyond that is the server's.
+A server whose tools change across `/mcp restart` keeps its resources read
+as the session started; once a later session offers the server's own tool
+under the read's name, the earlier session's read refuses to run.
 
 In the terminal or an editor's prompt, `@server:uri` attaches a resource:
 `@docs:file:///guide.md`, `@tickets:ticket://42` (write a space as `%20`:

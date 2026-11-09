@@ -989,7 +989,14 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// to case and in NFC. It only adds matches.
 	if resourceRead(tool) {
 		matches = func(r Rule, tool string, subjects []string) bool {
-			return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
+			// And with its escapes decoded, as a server that decodes it reads it.
+			all := subjects
+			for _, s := range subjects {
+				if d, err := url.PathUnescape(s); err == nil && d != s {
+					all = append(all[:len(all):len(all)], norm.NFC.String(d))
+				}
+			}
+			return r.matchesPathAny(tool, all) || r.matchesCaselessAny(tool, all)
 		}
 	}
 	// A bash rule naming flags also holds with them moved or split.

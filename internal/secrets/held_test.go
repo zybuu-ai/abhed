@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,5 +54,21 @@ func TestHeldNames(t *testing.T) {
 	again()
 	if _, err := s.HeldLock(context.Background(), "OTHER_TOKEN"); err == nil {
 		t.Fatal("a lock on an ordinary name")
+	}
+}
+
+// A store a secrets driver keeps has no file: its lock leaves none behind,
+// in the working directory or anywhere.
+func TestHeldLockOfADriverStoreWritesNoFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	s := OpenSource("vault team-a", &memSource{m: map[string]string{}})
+	unlock, err := s.HeldLock(context.Background(), "MCP_OAUTH_X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("left %v", entries)
 	}
 }

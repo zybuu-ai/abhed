@@ -3,10 +3,13 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // A resource URI is judged by policy as text, so only its one canonical
@@ -100,10 +103,26 @@ func canonicalAuthority(scheme, a string) (string, error) {
 			return "", errors.New("a resource URI's ] host is followed by a port or nothing")
 		}
 		port = strings.TrimPrefix(port, ":")
+		// An IPv6 literal in its one spelling; an IPv4 one is written without brackets.
+		ip := net.ParseIP(host[1:end])
+		if ip == nil || ip.To4() != nil {
+			return "", errors.New("a resource URI's [ ] host is an IPv6 address")
+		}
+		host = "[" + ip.String() + "]"
 	} else if i := strings.LastIndexByte(a, ':'); i >= 0 {
 		host, port = a[:i], a[i+1:]
 	}
 	host = strings.TrimRight(host, ".")
+	// A host that ends in a number is an IPv4 address in its dotted-quad form:
+	// 127.1 and 0x7f.0.0.1 are other spellings of one.
+	if labels := strings.Split(host, "."); !strings.HasPrefix(host, "[") {
+		last := labels[len(labels)-1]
+		if last != "" && (strings.Trim(last, "0123456789") == "" || strings.HasPrefix(last, "0x")) {
+			if ip := net.ParseIP(host); ip == nil || ip.To4() == nil || ip.String() != host {
+				return "", errors.New("a resource URI's numeric host is an IPv4 address written as four decimal numbers")
+			}
+		}
+	}
 	if port != "" {
 		n, err := strconv.Atoi(port)
 		if err != nil || n < 1 || n > 65535 || strings.Trim(port, "0123456789") != "" {
@@ -123,12 +142,28 @@ func canonicalAuthority(scheme, a string) (string, error) {
 	return host, nil
 }
 
-// normalEscapes decodes escapes of unreserved characters and writes the
-// rest in upper case; an encoded / or \ or NUL, or a bad escape, is refused.
+// normalEscapes decodes escapes of unreserved characters, and escapes that
+// spell printable UTF-8, which then has one form, NFC; the rest are written
+// in upper case. An encoded / or \ or NUL, or a bad escape, is refused.
 func normalEscapes(s string) (string, error) {
 	var b strings.Builder
+	var high []byte // escaped bytes of 0x80 and above, decoded together
+	flush := func() {
+		for len(high) > 0 {
+			r, n := utf8.DecodeRune(high)
+			if r != utf8.RuneError && printableRune(r) {
+				b.WriteString(string(r))
+			} else {
+				for _, c := range high[:max(n, 1)] {
+					fmt.Fprintf(&b, "%%%02X", c)
+				}
+			}
+			high = high[max(n, 1):]
+		}
+	}
 	for i := 0; i < len(s); i++ {
 		if s[i] != '%' {
+			flush()
 			b.WriteByte(s[i])
 			continue
 		}
@@ -136,6 +171,12 @@ func normalEscapes(s string) (string, error) {
 			return "", errors.New("a resource URI's % starts a two-digit hex escape")
 		}
 		v := unhex(s[i+1])<<4 | unhex(s[i+2])
+		i += 2
+		if v >= 0x80 {
+			high = append(high, v)
+			continue
+		}
+		flush()
 		switch {
 		case v == '/' || v == '\\' || v == 0:
 			return "", errors.New("a resource URI holds no encoded /, \\ or NUL")
@@ -144,9 +185,15 @@ func normalEscapes(s string) (string, error) {
 		default:
 			fmt.Fprintf(&b, "%%%02X", v)
 		}
-		i += 2
 	}
-	return b.String(), nil
+	flush()
+	return norm.NFC.String(b.String()), nil
+}
+
+// printableRune is a character a URI may hold as written: not a control,
+// space or format character.
+func printableRune(r rune) bool {
+	return !unicode.IsControl(r) && !unicode.IsSpace(r) && !unicode.Is(unicode.Cf, r) && r != unicode.ReplacementChar
 }
 
 func isHex(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }

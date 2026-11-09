@@ -254,8 +254,11 @@ const storeCheck = 5 * time.Second
 // checkStore reads the login again: removed or replaced, it is never used
 // again; refreshed by another process, its tokens are taken up. Under a.mu.
 func (a *Authorizer) checkStore() error {
-	a.checked = a.now()
 	stored, err := load(a.store, a.server)
+	if err == nil || errors.Is(err, ErrNoLogin) {
+		// Only a read that worked counts: an unreadable store fails every call until it reads.
+		a.checked = a.now()
+	}
 	switch {
 	case errors.Is(err, ErrNoLogin):
 		a.out = fmt.Errorf("MCP server %s was signed out; run abhed mcp login %s", a.server, a.server)

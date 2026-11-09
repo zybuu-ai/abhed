@@ -328,12 +328,6 @@ func (g *Gateway) Restart(ctx context.Context, name string) error {
 		g.mu.Unlock()
 		return err
 	}
-	// The new connection may offer resources differently: the read's subjector follows it.
-	g.mu.Lock()
-	if c := g.clients[name]; c != nil {
-		_ = g.resourceTools(name, cfg, c)
-	}
-	g.mu.Unlock()
 	return nil
 }
 

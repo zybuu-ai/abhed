@@ -32,7 +32,7 @@ func TestResourceURIsAreJudgedInOneForm(t *testing.T) {
 		"docs://private/a b":           "",
 		"docs://private/%zz":           "",
 		"file:///my%20notes.md":        "file:///my%20notes.md",
-		"file:///my%20notes%c3%a9":     "file:///my%20notes%C3%A9",
+		"file:///my%20notes%c3%a9":     "file:///my%20notesé",
 		"ticket:42":                    "ticket:42",
 		"urn:isbn:0451450523":          "urn:isbn:0451450523",
 		"docs://private/a?q=%2Fx":      "",
@@ -53,6 +53,20 @@ func TestResourceURIsAreJudgedInOneForm(t *testing.T) {
 		"docs://h:99999/a":             "",
 		"docs://h:x/a":                 "",
 		"docs://[::1]:80/a":            "docs://[::1]:80/a",
+		"docs://[0:0::1]/a":            "docs://[::1]/a",
+		"docs://[::ffff:127.0.0.1]/a":  "",
+		"docs://[nope]/a":              "",
+		"docs://127.1/a":               "",
+		"docs://0x7f.0.0.1/a":          "",
+		"docs://127.000.0.1/a":         "",
+		"docs://127.0.0.1/a":           "docs://127.0.0.1/a",
+		"docs://private/caf%C3%A9/x":   "docs://private/café/x",
+		"docs://private/caf%c3%a9/x":   "docs://private/café/x",
+		"docs://private/cafe\u0301/x":  "docs://private/café/x",
+		"docs://private/café/x":        "docs://private/café/x",
+		"docs://private/%C3/x":         "docs://private/%C3/x",
+		"docs://private/%C2%A0/x":      "docs://private/%C2%A0/x",
+		"docs://private/%E2%80%8B/x":   "docs://private/%E2%80%8B/x",
 		"http://[::1]:80/a":            "http://[::1]/a",
 	} {
 		got, err := CanonicalResourceURI(in)
@@ -101,7 +115,8 @@ func TestResourceURIsAreJudgedInOneForm(t *testing.T) {
 	// the path as the same resource: deny and ask rules match those too.
 	for rule, spellings := range map[string][]string{
 		"mcp__probe__read_resource(file:///reports/private/*)": {"file:///reports/PRIVATE/a", "file:///reports/Private/a"},
-		"mcp__probe__read_resource(file:///reports/café/*)":    {"file:///reports/cafe\u0301/a", "file:///reports/CAFÉ/a"},
+		"mcp__probe__read_resource(file:///reports/café/*)":    {"file:///reports/cafe\u0301/a", "file:///reports/CAFÉ/a", "file:///reports/caf%C3%A9/a", "file:///reports/caf%c3%a9/a"},
+		"mcp__probe__read_resource(docs://private/café/*)":     {"docs://private/caf%C3%A9/x", "docs://private/café/x"},
 		"mcp__probe__read_resource(docs://private/*)":          {"docs://private./a"},
 		"mcp__probe__read_resource(https://h/private/*)":       {"https://h:443/private/a"},
 		"mcp__probe__read_resource(file:///reports/*)":         {"file://localhost/reports/a"},
@@ -114,6 +129,9 @@ func TestResourceURIsAreJudgedInOneForm(t *testing.T) {
 			args, _ := json.Marshal(map[string]string{"uri": spelling})
 			if p.Evaluate(read.Name(), true, args).Decision == policy.Deny {
 				continue
+			}
+			if strings.Contains(rule, "café") {
+				t.Errorf("%s: %s not denied by the rule itself", rule, spelling)
 			}
 			if res := read.Run(context.Background(), nil, args); !res.IsError {
 				t.Errorf("%s: %s read past it", rule, spelling)
