@@ -365,6 +365,9 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		rg := startRipgrep(ctx, s.ripgrepFor(), root, sp)
 		files, _ := s.grepWalk(ctx, root, within, state, globMatch)
 		hits = grepFiles(ctx, within, rg.narrow(files), sp)
+	} else if ReadRefused(ctx, root) {
+		// Named outright, a withheld file is answered as read answers it.
+		return errf("%s is withheld by a read rule, so grep does not search it.", a.Path)
 	} else if globMatch == nil || globMatch(filepath.Base(root)) {
 		// A file named as the path is searched as named; a link there was
 		// already resolved.
@@ -374,14 +377,23 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	}
 
 	var results []grepHit
-	total := 0
+	total, withheld := 0, 0
 	for _, h := range hits {
-		// A file the read rules refuse is left out whole, its matches too.
-		if h.count == 0 || ReadRefused(ctx, h.path) {
+		if h.count == 0 {
+			continue
+		}
+		// A file the read rules withhold is left out whole, its matches too;
+		// only that some were is said, so the model does not take it for none.
+		if ReadRefused(ctx, h.path) {
+			withheld++
 			continue
 		}
 		results = append(results, h)
 		total += h.count
+	}
+	note := ""
+	if withheld > 0 {
+		note = fmt.Sprintf("\n[%d file(s) with matches withheld by a read rule]", withheld)
 	}
 
 	if ctx.Err() != nil {
@@ -391,6 +403,9 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		where := ""
 		if a.Path != "" {
 			where = " in " + a.Path
+		}
+		if withheld > 0 {
+			return ok("No matches shown for %s%s.%s", a.Pattern, where, note)
 		}
 		return ok("No matches for %s%s. Try a broader pattern, or check the path.", a.Pattern, where)
 	}
@@ -438,7 +453,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		fmt.Fprintf(&b, "\n%d files, %d matches. Use output_mode:\"content\" to see them.", len(results), total)
 	}
 
-	return Result{Content: strings.TrimSpace(b.String()), Truncated: truncated}
+	return Result{Content: strings.TrimSpace(b.String()) + note, Truncated: truncated}
 }
 
 func formatMatch(lines []string, lineNo, ctxLines int) string {

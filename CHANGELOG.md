@@ -98,13 +98,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
-- `grep` is about ten times faster on a large repository. It now skips the
-  files a `.gitignore` excludes (unless `path` names them), reads the rest
-  in parallel, and, when ripgrep is on `PATH` at start-up, lets one `rg`
-  run narrow the files by a literal every match contains. On an 11.2k-file
-  checkout a search went from 9–17 s to about 0.4–1 s, with or without
-  ripgrep. Results, path rules and redaction are the same on both paths;
-  only gitignored files no longer show up unless asked for by `path`.
+- `grep` is faster on a large repository. It now skips the files a
+  `.gitignore` excludes (unless `path` names them), reads the rest in
+  parallel, and, when a ripgrep owned by root is on `PATH` at start-up, lets
+  one `rg` run narrow the files by a literal every match contains. Measured
+  with `BenchmarkGrep` (`internal/tools/grep_bench_test.go`) on one
+  11.2k-file checkout on a 12-core arm64 Mac, 9 Nov 2026: 9–17 s before,
+  0.4–1 s after, with or without ripgrep; most of the gain there is the
+  gitignored build output no longer read. Path rules and redaction are the
+  same on both paths; gitignored files no longer show up unless asked for
+  by `path`.
 
 ### Fixed
 

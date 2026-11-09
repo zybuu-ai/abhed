@@ -219,8 +219,16 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 		files = append(files, mine...)
 		mu.Unlock()
 	}
+	// A folder named as the path is searched even when the repository's own
+	// ignore files exclude it; the ignore files below it still hold.
+	parents := s.parentIgnores(root)
+	for d := root; len(parents) > 0 && strings.HasPrefix(filepath.ToSlash(d)+"/", parents[0].dir+"/") && d != parents[0].dir; d = filepath.Dir(d) {
+		if parents.ignored(filepath.ToSlash(d), true) {
+			parents = nil
+		}
+	}
 	wg.Add(1)
-	visit(root, s.parentIgnores(root))
+	visit(root, parents)
 	wg.Done()
 	wg.Wait()
 	return files, ctx.Err()
@@ -382,7 +390,9 @@ func (sp grepSpec) match(path string, data []byte) grepHit {
 // ripgrep is the ripgrep program found on PATH when the process started, as
 // an absolute path with its links resolved; "" when there is none. A PATH
 // entry that is relative is never searched, so a workspace that is the
-// current folder cannot supply it.
+// current folder cannot supply it, and a program this user can change, or
+// whose folder this user can write (as Homebrew's), is not run: grep then
+// searches without it.
 var ripgrep = findRipgrep()
 
 func findRipgrep() string {
@@ -390,10 +400,11 @@ func findRipgrep() string {
 	if err != nil || !filepath.IsAbs(p) {
 		return ""
 	}
-	if real, err := filepath.EvalSymlinks(p); err == nil {
-		return real
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil || ripgrepWritable(real) {
+		return ""
 	}
-	return ""
+	return real
 }
 
 // ripgrepFor is the ripgrep this session may run: none when it lies inside

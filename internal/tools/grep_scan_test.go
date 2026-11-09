@@ -102,10 +102,14 @@ func TestGrepLeavesOutReadDeniedFiles(t *testing.T) {
 				t.Fatalf("the denied file was counted:\n%s", res.Content)
 			}
 		}
-		// Named as the path, it is still left out.
+		// The model is told some were withheld.
+		if res := grepCtx(t, ctx, s, grepArgs{Pattern: "TOKEN_NAME"}); !strings.Contains(res.Content, "1 file(s) with matches withheld by a read rule") {
+			t.Fatalf("the withheld file is not mentioned:\n%s", res.Content)
+		}
+		// Named as the path, it is still left out, and said to be withheld.
 		res := grepCtx(t, ctx, s, grepArgs{Pattern: "TOKEN_NAME", Path: denied, OutputMode: "content"})
-		if strings.Contains(res.Content, "hunter2") {
-			t.Fatalf("a read-denied file named as the path came back:\n%s", res.Content)
+		if strings.Contains(res.Content, "hunter2") || !strings.Contains(res.Content, "withheld by a read rule") {
+			t.Fatalf("a read-denied file named as the path:\n%s", res.Content)
 		}
 		// Without the rule both match, so the test fails if the filter goes.
 		res = grepCtx(t, context.Background(), s, grepArgs{Pattern: "TOKEN_NAME"})
@@ -198,6 +202,19 @@ func TestGrepPrunesGitignored(t *testing.T) {
 		res = grepCtx(t, context.Background(), s, grepArgs{Pattern: "needle", Path: "out", OutputMode: "content"})
 		if !strings.Contains(res.Content, "needle out") {
 			t.Fatalf("an ignored folder named as the path was not searched:\n%s", res.Content)
+		}
+		// So is a folder inside one, under an anchored rule.
+		for rel, content := range map[string]string{".gitignore": "/build-out/**\n", "build-out/x/y.txt": "needle deep\n"} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		res = grepCtx(t, context.Background(), s, grepArgs{Pattern: "needle", Path: "build-out/x", OutputMode: "content"})
+		if !strings.Contains(res.Content, "needle deep") {
+			t.Fatalf("a folder inside an ignored one, named as the path, was not searched:\n%s", res.Content)
 		}
 	})
 }
@@ -325,5 +342,25 @@ func TestRipgrepNarrows(t *testing.T) {
 		if got := run.narrow(files); !run.ok || len(got) != c.want {
 			t.Fatalf("%s: ok %v, %d files, want %d", c.expr, run.ok, len(got), c.want)
 		}
+	}
+}
+
+// A ripgrep this user can change, or whose folder this user can write, is
+// not taken from PATH.
+func TestRipgrepThisUserCanWriteIsNotRun(t *testing.T) {
+	bin := t.TempDir()
+	p := filepath.Join(bin, "rg")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if got := findRipgrep(); got != "" {
+		t.Fatalf("a ripgrep in a folder this user writes was taken: %s", got)
+	}
+	if !ripgrepWritable(p) {
+		t.Fatal("a file this user writes is not reported")
+	}
+	if os.Getuid() != 0 && ripgrepWritable("/bin/sh") {
+		t.Fatal("a root-owned program is reported as writable")
 	}
 }

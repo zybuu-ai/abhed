@@ -179,6 +179,14 @@ the workspace, give a secret only to the command that needs it
 print them in your own or the managed rules. Your own `permissions.ask` list
 replaces the built-in one, so copy these rules into it if you set one.
 
+Read rules hold for `read`, `grep` and `search` alike: a file a deny rule
+covers, or an ask rule, is left out of what a search shows. They are path
+rules, so a second name for the same file, a hard link such as `hard.txt`
+made to `secrets/prod.env`, is judged by its own path and is read and
+searched; `bash` (`cat secrets/prod.env`, under the built-in
+`bash(cat *)`) is judged by the command's rules, not the read rules. Keep
+secrets out of the workspace, or deny the commands that print them.
+
 The tool name of a built-in tool, or of an action such as `secret`, `delete`
 or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
 `bash(curl *)` are the same rule, as are `Read(**/.env)` and `read(**/.env)`,
