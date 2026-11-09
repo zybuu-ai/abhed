@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -88,9 +89,10 @@ func (l *Loop) sideCall(ctx context.Context, purpose string, a model.Adapter, re
 	if err := l.Budget.Refuse(name); err != nil {
 		return "", model.Usage{}, fmt.Errorf("not asked: %w", err)
 	}
+	turn := l.turns // read within the run: the critic, a compaction, a tool's pipeline step
 	start := time.Now()
-	text, usage, err := suggestCall(ctx, a, req)
-	mc := l.chargeSide(purpose, name, usage, time.Since(start))
+	text, usage, estimated, err := suggestCall(ctx, a, req)
+	mc := l.chargeSide(purpose, name, turn, usage, estimated, time.Since(start))
 	if err != nil {
 		mc.Error = err.Error()
 	}
@@ -99,8 +101,9 @@ func (l *Loop) sideCall(ctx context.Context, purpose string, a model.Adapter, re
 }
 
 // chargeSide counts a call outside the turns in the totals and the budget,
-// and returns its model.call to record.
-func (l *Loop) chargeSide(purpose, name string, u model.Usage, took time.Duration) ModelCall {
+// and returns its model.call to record. turn is taken by the caller, on the
+// goroutine that owns it.
+func (l *Loop) chargeSide(purpose, name string, turn int, u model.Usage, estimated bool, took time.Duration) ModelCall {
 	l.usageMu.Lock()
 	l.usage.InputTokens += u.InputTokens
 	l.usage.OutputTokens += u.OutputTokens
@@ -108,9 +111,9 @@ func (l *Loop) chargeSide(purpose, name string, u model.Usage, took time.Duratio
 	l.usage.ColdPrefillTokens += u.InputTokens - u.CachedInputTokens
 	l.usageMu.Unlock()
 	l.Budget.Spend(u.InputTokens + u.OutputTokens)
-	mc := ModelCall{Turn: l.turns, Model: name, Purpose: purpose, TokensIn: u.InputTokens,
+	mc := ModelCall{Turn: turn, Model: name, Purpose: purpose, TokensIn: u.InputTokens,
 		TokensOut: u.OutputTokens, TokensCached: u.CachedInputTokens, CacheReported: u.CacheReported,
-		TokensCacheWrite: u.CacheWriteTokens, LatencyMS: took.Milliseconds()}
+		TokensCacheWrite: u.CacheWriteTokens, LatencyMS: took.Milliseconds(), Estimated: estimated}
 	mc.CostUSD, mc.Unpriced = l.chargeCall(name, u)
 	return mc
 }
@@ -123,14 +126,24 @@ func (l *Loop) metered(ctx context.Context) context.Context {
 	return context.WithValue(ctx, meterKey{}, l)
 }
 
-// meteredCall is a compaction summary's call: through the gate of the loop
-// ctx carries, or straight to the adapter outside one.
+// unmeteredKey marks a context whose model calls no budget covers, which only
+// this package's tests set.
+type unmeteredKey struct{}
+
+// errUnmetered refuses a compaction summary with no loop's budget to charge.
+var errUnmetered = errors.New("no session budget covers this call, so it was not made")
+
+// meteredCall is a compaction summary's call, through the gate of the loop
+// ctx carries. With no loop it is refused, so no caller skips the budget.
 func meteredCall(ctx context.Context, purpose string, a model.Adapter, req model.Request) (string, error) {
 	if l, _ := ctx.Value(meterKey{}).(*Loop); l != nil {
 		text, _, err := l.sideCall(ctx, purpose, a, req)
 		return text, err
 	}
-	text, _, err := suggestCall(ctx, a, req)
+	if ctx.Value(unmeteredKey{}) == nil {
+		return "", errUnmetered
+	}
+	text, _, _, err := suggestCall(ctx, a, req)
 	return text, err
 }
 
@@ -151,4 +164,12 @@ func (l *Loop) recordBudgetStop() {
 		stop.Message = fmt.Sprintf("stopped: the budget of %d tokens is spent (%d)", b.MaxTokens, b.Spent())
 	}
 	l.record(EvBudgetStopped, ActorSystem, stop)
+}
+
+// ChargeEditorCall charges a call an editor feature made (a completion, a
+// next edit, a commit message) to the session's budget and cost. Those are
+// not model.call events: completion.summary and commit.message carry the cost.
+func (l *Loop) ChargeEditorCall(name string, u model.Usage) (cost *float64, unpriced bool) {
+	l.Budget.Spend(u.InputTokens + u.OutputTokens)
+	return l.chargeCall(name, u)
 }

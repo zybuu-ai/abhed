@@ -177,6 +177,10 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		empty("cancelled", "a newer request replaced it")
 		return
 	}
+	if why := editorRefused(parts.Loop, a, "next-edit suggestions", "next-edit"); why != "" {
+		c.reply(msg.ID, k.priceNotice(map[string]any{"edits": []any{}}, why), nil)
+		return
+	}
 	if why := c.completeEnabled(s, k, provider, "chat"); why != "" {
 		refuse(why)
 		return
@@ -187,11 +191,14 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
 	cancelled := err != nil && ctx.Err() != nil
+	usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, cancelled,
+		recent.Len()+len(strings.Join(shown, "")), len(res.Window))
 	edits, dropped := []suggestedEdit{}, res.Dropped
 	if err == nil && dropped == "" {
 		edits, dropped = windowEdits(req.URI, req.Window.StartLine, raw[:len(shown)], shown, res.Window, clean)
 	}
 	k.count(func(sum *agent.CompletionSummary) {
+		addCost(sum, usd, unpriced)
 		sum.Requests++
 		sum.TokensIn += res.InputTokens
 		sum.TokensOut += res.OutputTokens

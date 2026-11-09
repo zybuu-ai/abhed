@@ -40,3 +40,22 @@ func TestUsageSinceUnpricedIsTheRuns(t *testing.T) {
 		t.Fatalf("a run with an unpriced call: %+v", u)
 	}
 }
+
+// §3.4: after a replay of calls recorded before costing, the session's cost
+// is sent as partial and never as the spec's session cost.
+func TestACPSessionCostPartialAfterOldReplay(t *testing.T) {
+	c := &acpConn{}
+	s := &acpSession{id: "s1", always: map[string]string{}}
+	old, _ := json.Marshal(agent.ModelCall{Model: "gpt-4o", TokensIn: 10, ContextWindow: 1000})
+	c.updates(s, agent.Event{Seq: 1, Type: agent.EvModelCall, Payload: old}, true)
+	usd := 0.25
+	now, _ := json.Marshal(agent.ModelCall{Model: "gpt-4o", TokensIn: 10, ContextWindow: 1000, CostUSD: &usd})
+	ups := c.updates(s, agent.Event{Seq: 2, Type: agent.EvModelCall, Payload: now}, false)
+	if len(ups) != 1 {
+		t.Fatalf("updates %v", ups)
+	}
+	m := metaOf(ups[0])
+	if ups[0]["cost"] != nil || m["costPartial"] != true || m["sessionCostUsd"] != 0.25 {
+		t.Fatalf("usage_update %v", ups[0])
+	}
+}

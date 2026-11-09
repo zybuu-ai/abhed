@@ -39,6 +39,11 @@ type CommitMessage struct {
 	Outcome   string `json:"outcome"`
 	TokensIn  int    `json:"tokens_in"`
 	TokensOut int    `json:"tokens_out"`
+	// CostUSD is the call's cost, nil when unpriced; Estimated marks tokens
+	// estimated for a call cut before the provider reported them.
+	CostUSD   *float64 `json:"cost_usd,omitempty"`
+	Unpriced  bool     `json:"unpriced,omitempty"`
+	Estimated bool     `json:"estimated,omitempty"`
 }
 
 // CompletionEnabled is the payload of completion.enabled.
@@ -69,4 +74,8 @@ type CompletionSummary struct {
 	// cancelled after it went may cost tokens it never reported.
 	TokensIn  int `json:"tokens_in"`
 	TokensOut int `json:"tokens_out"`
+	// CostUSD is what the priced requests cost, charged to the session's
+	// budget; Unpriced marks one to a model with no price.
+	CostUSD  float64 `json:"cost_usd,omitempty"`
+	Unpriced bool    `json:"unpriced,omitempty"`
 }

@@ -212,7 +212,7 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 	}()
 	cctx, cancel := context.WithTimeout(l.withCaller(ctx), j.timeout)
 	start := time.Now()
-	text, usage, err := suggestCall(cctx, j.adapter, j.req)
+	text, usage, estimated, err := suggestCall(cctx, j.adapter, j.req)
 	// A model that refuses the reasoning settings, or spends the whole
 	// allowance thinking and writes nothing, is asked once more without them.
 	cutOff := err == nil && strings.TrimSpace(text) == "" && usage.OutputTokens >= j.req.MaxTokens
@@ -221,7 +221,9 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 		plain := j.req
 		plain.Effort, plain.Params.Think = model.EffortNone, nil
 		var more model.Usage
-		text, more, err = suggestCall(cctx, j.adapter, plain)
+		var guessed bool
+		text, more, guessed, err = suggestCall(cctx, j.adapter, plain)
+		estimated = estimated || guessed
 		usage.InputTokens += more.InputTokens
 		usage.OutputTokens += more.OutputTokens
 		usage.CachedInputTokens += more.CachedInputTokens
@@ -238,8 +240,7 @@ func (l *Loop) makeSuggestion(ctx context.Context, p *pendingSuggestion, j *sugg
 		l.sug = nil
 	}
 	l.sugMu.Unlock()
-	mc := l.chargeSide(PurposeSuggestion, j.adapter.Profile().Name, usage, took)
-	mc.Turn = j.turn
+	mc := l.chargeSide(PurposeSuggestion, j.adapter.Profile().Name, j.turn, usage, estimated, took)
 	if err != nil && ctx.Err() == nil {
 		mc.Error = err.Error()
 	}
@@ -278,33 +279,47 @@ func (l *Loop) suggestionText(sg *Suggester, text string) string {
 	return text
 }
 
-// suggestCall runs one request and returns its text and usage.
-func suggestCall(ctx context.Context, a model.Adapter, req model.Request) (string, model.Usage, error) {
+// suggestCall runs one request and returns its text and usage. A request
+// that went out but ended with no usage reported, as one cancelled or timed
+// out, still cost tokens: they are estimated as a turn's are, and estimated
+// is true.
+func suggestCall(ctx context.Context, a model.Adapter, req model.Request) (text string, usage model.Usage, estimated bool, err error) {
 	stream, err := a.Complete(ctx, req)
 	if err != nil {
-		return "", model.Usage{}, err
+		return "", model.Usage{}, false, err
 	}
 	var out strings.Builder
-	var usage model.Usage
 	var streamErr error
+	reported, produced := false, 0
 	for chunk := range stream {
 		switch chunk.Type {
 		case model.ChunkText:
 			out.WriteString(chunk.Text)
+			produced += len(chunk.Text)
+		case model.ChunkReasoning:
+			produced += len(chunk.Text)
 		case model.ChunkToolCall:
 			streamErr = errors.New("the model asked for a tool where none was offered")
+			if c := chunk.ToolCall; c != nil {
+				produced += len(c.Name) + len(c.Args)
+			}
 		case model.ChunkError:
 			streamErr = chunk.Err
 		case model.ChunkDone:
 			if chunk.Usage != nil {
-				usage = *chunk.Usage
+				usage, reported = *chunk.Usage, true
 			}
 		}
 	}
 	if streamErr == nil && ctx.Err() != nil {
 		streamErr = ctx.Err()
 	}
-	return out.String(), usage, streamErr
+	if !reported {
+		usage.InputTokens, _ = a.CountTokens(req)
+		usage.OutputTokens = (produced + 3) / 4
+		estimated = usage.InputTokens > 0 || usage.OutputTokens > 0
+	}
+	return out.String(), usage, estimated, streamErr
 }
 
 // suggestInput is what the suggestion call reads: the person's last message,

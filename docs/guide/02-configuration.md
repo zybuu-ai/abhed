@@ -159,8 +159,12 @@ records `budget.stopped` with what was spent. With a dollar cap set, a model
 that has no price is refused before any call is made, rather than run at a
 guessed cost. Every model call passes that gate before its request and is
 charged after it: the turns, the critic, suggestions, the compaction summary,
-pipeline model steps, and a fallback model, which is not moved to while a
-dollar cap is set and it has no price. A cap set by the managed or org
+pipeline model steps, Studio's completions, next edits and commit messages,
+and a fallback model, which is not moved to while a dollar cap is set and it
+has no price. A completion model on this machine is no exception: a local
+address may front a paid model, so price it, at 0 if it is free. A call cut
+before the provider reported its usage (cancelled, timed out) is estimated
+at about four characters a token, marked `estimated`, and charged. A cap set by the managed or org
 configuration also fixes the prices it is spent by (see below).
 
 ### Prices

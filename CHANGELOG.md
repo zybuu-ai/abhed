@@ -41,7 +41,10 @@ All notable changes to Abhed are recorded here. The format follows
   `pricing` in the configuration. The cost is recorded on each call's
   `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
   turns, the critic, suggestions, compaction summaries and pipeline model
-  steps alike. `/usage` shows the session's cost and each turn's,
+  steps alike, and on `completion.summary`, `next_edit.summary` and
+  `commit_message.generated` for Studio's editor calls. A call cut before
+  the provider reported its usage is estimated, marked `estimated`, and
+  charged. `/usage` shows the session's cost and each turn's,
   `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
   turn and in all; a record written before this release shows its cost as
   not recorded. A model with no price is shown as unpriced, and its cost is
@@ -58,8 +61,10 @@ All notable changes to Abhed are recorded here. The format follows
   subagents included. The run ends `max_budget` (exit `3`) with a message
   and a `budget.stopped` event; with a cap set, a model with no price is
   refused before any call, whatever makes it: a turn, the critic, a
-  suggestion, a compaction summary, a pipeline model step, or a fallback,
-  which is not moved to. A managed or org cap may only be lowered, and
+  suggestion, a compaction summary, a pipeline model step, a Studio
+  completion, next edit or commit message (Studio is told once that the
+  feature is off and how to price its model; a local address is not taken
+  as free), or a fallback, which is not moved to. A managed or org cap may only be lowered, and
   under one, prices come only from that layer and the built-in list. A
   resumed session carries what it had spent.
 

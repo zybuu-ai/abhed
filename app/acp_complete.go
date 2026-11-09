@@ -112,6 +112,7 @@ type acpCompleter struct {
 	closed   bool               // the session has closed; nothing more is sent
 	events   [2]agent.EventType // the feature's enabled and summary events
 	sum      agent.CompletionSummary
+	noticed  bool // the budget's refusal was sent once as a notice
 }
 
 type completeRequest struct {
@@ -464,6 +465,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 	if fim {
 		mode = "fim"
 	}
+	if why := editorRefused(parts.Loop, a, "completions", "completion"); why != "" {
+		c.reply(msg.ID, k.priceNotice(map[string]any{"items": []any{}}, why), nil)
+		return
+	}
 	if why := c.completeEnabled(s, k, provider, mode); why != "" {
 		refuse(why)
 		return
@@ -494,7 +499,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 		text = ""
 	}
 	cancelled := err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+	usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
+		len(sentPrefix)+len(sentSuffix), len(res.Text))
 	k.mu.Lock()
+	addCost(&k.sum, usd, unpriced)
 	k.sum.Requests++
 	k.sum.TokensIn += res.InputTokens
 	k.sum.TokensOut += res.OutputTokens

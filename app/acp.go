@@ -236,6 +236,9 @@ type acpSession struct {
 	// a call to a model with no price, for usage_update's cost.
 	totalUSD float64
 	unpriced bool
+	// costPartial marks a replayed call from a record written before costing:
+	// the session's cost then leaves those calls out.
+	costPartial bool
 	// totalIn and totalOut are the session's tokens, for usage_update.
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.

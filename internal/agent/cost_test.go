@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -376,5 +378,93 @@ func TestPipelineStepIsChargedAndGated(t *testing.T) {
 	none := scripted("no-price-model", scriptedTurn{text: "x"})
 	if _, err := s.Complete(context.Background(), none, req); err == nil || len(none.gotRequests) != 0 {
 		t.Fatalf("an unpriced step model was asked: %v, %d", err, len(none.gotRequests))
+	}
+}
+
+// unmetered is a context for compacting with no loop, which only tests do.
+func unmetered() context.Context {
+	return context.WithValue(context.Background(), unmeteredKey{}, true)
+}
+
+// A compaction outside a loop has no budget to charge, so its summary call is refused.
+func TestCompactionWithNoLoopIsRefused(t *testing.T) {
+	sum := scripted("gpt-4o", scriptedTurn{text: "summary"})
+	c := NewCompactor(sum, 0.01)
+	if _, _, err := c.Compact(context.Background(), "manual", "", longMessages(20, 10), 0); !errors.Is(err, errUnmetered) {
+		t.Fatalf("err %v", err)
+	}
+	if len(sum.gotRequests) != 0 {
+		t.Fatalf("asked %d times", len(sum.gotRequests))
+	}
+}
+
+// cutAdapter streams some text, then holds until the call is cancelled, and
+// never reports usage, as a stream cut mid-way does.
+type cutAdapter struct {
+	name    string
+	started chan struct{}
+}
+
+func (c *cutAdapter) Name() string { return c.name }
+func (c *cutAdapter) Profile() model.Profile {
+	return model.Profile{Name: c.name, ContextWindow: 100000}
+}
+func (c *cutAdapter) CountTokens(model.Request) (int, error) { return 500, nil }
+func (c *cutAdapter) Complete(ctx context.Context, _ model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 2)
+	go func() {
+		defer close(ch)
+		ch <- model.Chunk{Type: model.ChunkText, Text: strings.Repeat("x", 400)}
+		close(c.started)
+		<-ctx.Done()
+		ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+	}()
+	return ch, nil
+}
+
+// A side call cancelled mid-stream reports no usage, yet cost tokens: they
+// are estimated as a turn's are, marked so, and charged.
+func TestCancelledSideCallIsEstimatedAndCharged(t *testing.T) {
+	l, store := costHarness(t, "gpt-4o", nil)
+	s := &Steps{loop: l}
+	cut := &cutAdapter{name: "gpt-4o-mini", started: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-cut.started; cancel() }()
+	if _, err := s.Complete(ctx, cut, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}}); err == nil {
+		t.Fatal("a cancelled call returned no error")
+	}
+	calls := modelCalls(t, store)
+	if len(calls) != 1 || !calls[0].Estimated || calls[0].TokensIn != 500 || calls[0].TokensOut != 100 || calls[0].CostUSD == nil {
+		t.Fatalf("cancelled call %+v", calls)
+	}
+	want := (500*0.15 + 100*0.60) / 1e6
+	if !near(*calls[0].CostUSD, want) || !near(l.Budget.SpentUSD(), want) || l.Budget.Spent() != 600 {
+		t.Fatalf("charged $%v of $%v, %d tokens", l.Budget.SpentUSD(), want, l.Budget.Spent())
+	}
+}
+
+// A suggestion cancelled by the next message is estimated and charged too.
+func TestCancelledSuggestionIsCharged(t *testing.T) {
+	stub := &suggestStub{replies: []stubReply{{text: "done"}, {text: "again"}}}
+	l, store := suggestLoop(t, stub)
+	l.Budget = NewBudget(0, 0, false)
+	l.Budget.Prices = map[string]model.Price{"stub-model": {Input: 0, Output: 0}}
+	cut := &cutAdapter{name: "gpt-4o-mini", started: make(chan struct{})}
+	l.Suggest.Adapter = cut
+	l.Suggest.Timeout = time.Minute
+	if _, err := l.Run(context.Background(), "one"); err != nil {
+		t.Fatal(err)
+	}
+	<-cut.started
+	l.Suggest = nil
+	if _, err := l.Run(context.Background(), "two"); err != nil {
+		t.Fatal(err)
+	}
+	_, calls := suggestions(t, store)
+	if len(calls) != 1 || !calls[0].Estimated || calls[0].CostUSD == nil || *calls[0].CostUSD <= 0 {
+		t.Fatalf("cancelled suggestion %+v", calls)
+	}
+	if !near(l.Budget.SpentUSD(), *calls[0].CostUSD) {
+		t.Fatalf("budget $%v", l.Budget.SpentUSD())
 	}
 }
