@@ -113,19 +113,27 @@ first read, edit, write or search of a path there brings in that folder's
 from the tool's `path`, `file_path`, `dir`, `directory` and `cwd` arguments;
 a `cd` inside a shell command does not count.
 
-The file is added to the end of that tool result between
-`<folder-memory-…>` tags whose name ends in a random fence drawn for the
-conversation, which no file or command can know, and its text is redacted
-as any tool result is. Once a folder's file has loaded, the system prompt
-gains a short paragraph naming that fence and saying what such a block is:
-project memory for that folder, with the standing of the workspace's
-`ABHED.md`, below you, the managed memory and every rule, and never a
-permission. Anything in tool output that imitates the tag, in any case, with
-spaces, zero-width or full-width characters or another dash, is escaped
-with a backslash, in every session and subagent and in background results
-too. So a file that really contains `<folder-memory-` is shown with a `\`
-before the `<`: an edit copied from that view must leave the backslash out
-of its old text.
+The file is added to the end of that tool result between `<folder-memory-…>`
+tags whose name ends in a random fence drawn for the conversation, which no
+file or command can know, and its text is redacted as any tool result is.
+Once a folder's file has loaded, the system prompt gains a short paragraph
+naming that fence and saying what such a block is: project memory for that
+folder, with the standing of the workspace's `ABHED.md`, below you, the
+managed memory and every rule, and never a permission. Anything in tool
+output that imitates the tag, in any case, with up to 64 separators between
+the words, zero-width, full-width or combining characters, look-alike
+Cyrillic or Greek letters, digits for letters, or another angle bracket
+(`‹`, `〈`, `⟨`, `＜`), is escaped with a backslash, in every session and
+subagent and in background results too, whatever comes before the `<` and
+with any punctuation after it. Code is told apart only where the two words
+touch, as in an identifier: a generic type such as `List<FolderMemory>` or
+Go's `<-folderMemory` is left as it is, and so is an HTML comment's `<!--`.
+A tag after an odd number of backslashes is escaped already, so a subagent's
+result passed on is not escaped twice; after an even number it is escaped. A
+file that really contains `<folder-memory-` is shown with a `\` before the
+`<`: an edit copied from that view must leave the backslash out of its old
+text. Adding the paragraph changes the system prompt once, so the model
+provider's prompt cache starts again from that turn.
 
 Each folder's file is loaded once per conversation, and at most 32 files in
 all; when that bound stops one, the result and the record say so. The

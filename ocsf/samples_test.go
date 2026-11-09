@@ -147,6 +147,7 @@ var samples = []sample{
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:35:00Z","by":"mcp add -confirm-fd","key":"mcp.servers","name":"issues","kind":"stdio","sha256":"549dbf97"}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:36:00Z","by":"mcp add","key":"mcp.servers","name":"pastebin","kind":"http","sha256":"0f1e2d3c","refused":"mcp.denied in /etc/abhed/config.json matches it"}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"by":"abhed","key":"config-changes.jsonl","pending":51}`},
+	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

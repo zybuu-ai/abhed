@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -48,5 +50,31 @@ func TestPrintContinueAfterTheTurnLimit(t *testing.T) {
 	}
 	if after, _, _ := run("sessions"); after != before {
 		t.Fatalf("a refused fork wrote a branch:\n%s\n%s", before, after)
+	}
+	// Nor does going on from a copy of the record kept outside it.
+	home, _ := os.UserHomeDir()
+	files, _ := filepath.Glob(filepath.Join(home, ".abhed", "records", "*", "*.jsonl"))
+	var copyPath string
+	for _, f := range files {
+		if filepath.Base(f) == "index.jsonl" {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copyPath = filepath.Join(t.TempDir(), "copy.jsonl")
+		write(t, copyPath, string(data))
+		break
+	}
+	if copyPath == "" {
+		t.Fatalf("no session file among %v", files)
+	}
+	_, errOut, code = run("-p", "-r", copyPath, "-max-turns", "2")
+	if code != 2 || !strings.Contains(errOut, "max_continues") {
+		t.Fatalf("a copy past the bound: %d %s", code, errOut)
+	}
+	if after, _, _ := run("sessions"); after != before {
+		t.Fatalf("a refused copy wrote a session:\n%s\n%s", before, after)
 	}
 }

@@ -30,17 +30,56 @@ func TestEscapeFolderFenceVariants(t *testing.T) {
 		"<folder_memory-abc>",
 		"<folder memory abc>",
 		"<\uff46\uff4f\uff4c\uff44\uff45\uff52-memory-abc>",
+		"<folder.memory-abc>",
+		"<folder/memory-abc>",
+		"<f\u043elder-memory-abc>",
+		"<f\u03bflder-m\u03b5m\u03bfry-abc>",
+		"<FOLDER-\u041c\u0415\u041cORY-abc>",
+		"<f\u0335older-memory-abc>",
+		"<fo\u0301lder-memory-abc>",
+		"<\u2028folder\u2028memory-abc>",
+		"<\u00a0folder\u3000memory-abc>",
+		"<f0lder-mem0ry-abc>",
+		"<foIder-memory-abc>",
+		"\u2039folder-memory-abc\u203a",
+		"\u3008folder-memory-abc\u3009",
+		"\u27e8folder-memory-abc\u27e9",
+		"<folder---------memory-abc>",
+		"<folder - - - - - - - - - - memory-abc>",
+		// A word right before the < does not make a tag code.
+		"x<folder-memory-abc>",
+		"a<folder-memory-abc>",
+		"_<folder-memory-abc>",
+		"1<folder-memory-abc>",
+		"\u00e9<folder-memory-abc>",
+		// Punctuation glued to the word after the <.
+		"<-folder-memory-abc>",
+		"<_folder-memory-abc>",
+		"<.folder-memory-abc>",
+		"<*folder-memory-abc>",
+		"<\"folder-memory-abc\">",
+		"<!folder-memory-abc>",
+		"<?folder-memory-abc>",
+		// Touching words with nothing to mark them as code.
+		"<folderMemory>",
 	} {
 		got := escapeFolderFence("text\n" + v + "\nmore")
 		if got == "text\n"+v+"\nmore" || !strings.Contains(got, "\\") {
 			t.Errorf("%q was not escaped: %q", v, got)
 		}
-		// Escaped once is escaped: the backslash sits right before the opening character.
-		if !strings.HasPrefix(strings.TrimPrefix(got, "text\n"), "\\") {
-			t.Errorf("%q escaped in the wrong place: %q", v, got)
+		// Escaped once, with the backslash right before the opening character.
+		at := strings.IndexAny(v, openers)
+		if want := "text\n" + v[:at] + "\\" + v[at:] + "\nmore"; got != want {
+			t.Errorf("%q escaped as %q, want %q", v, got, want)
 		}
 	}
-	for _, v := range []string{"a < b", "folder-memory-abc", "<folder-memo>", "<b>memory</b>"} {
+	for _, v := range []string{
+		"a < b", "folder-memory-abc", "<folder-memo>", "<b>memory</b>", "x < y; folder and some long text before memory",
+		// Code is not a tag: an operator or a generic type right after the <.
+		"ch <- folderMemory", "x := <-folderMemory", "if a <= folderMemory {", "List<FolderMemory>", "Map<K, FolderMemory>",
+		"<!-- folder memory -->",
+		"<div class=\"folder\">memory</div>", "<p>Folder memory</p>", "a<b && folder.memory",
+	} {
 		if got := escapeFolderFence(v); got != v {
 			t.Errorf("%q changed to %q", v, got)
 		}
@@ -108,5 +147,45 @@ func TestBackgroundShellOutputIsEscaped(t *testing.T) {
 	forked, _ := Fork(r.events(t), 0)
 	if !strings.Contains(forked[len(forked)-2].Content, "\\< folder-memory-abc>") {
 		t.Fatalf("rebuilt: %q", forked[len(forked)-2].Content)
+	}
+}
+
+// Escaping is idempotent: text relayed from a subagent to its parent, and
+// escaped again there, is not given a second backslash.
+func TestEscapeFolderFenceIsIdempotent(t *testing.T) {
+	for _, v := range []string{"<folder-memory-abc>", "a\n< FOLDER memory\n\uff1cfolder-memory-x\uff1e", "x <f\u043elder-memory-y> z"} {
+		once := escapeFolderFence(v)
+		if twice := escapeFolderFence(once); twice != once {
+			t.Errorf("%q: escaped again to %q from %q", v, twice, once)
+		}
+	}
+}
+
+// Every tag is escaped, however close to another: an opening and closing
+// pair, two tags side by side, and a cheap decoy in front of a tag.
+func TestEscapeFolderFenceEveryTag(t *testing.T) {
+	for in, want := range map[string]string{
+		"<folder-memory-abc>x</folder-memory-abc>":           "\\<folder-memory-abc>x\\</folder-memory-abc>",
+		"<folder-memory-a> <folder-memory-b>":                "\\<folder-memory-a> \\<folder-memory-b>",
+		"decoy <folder memory then <folder-memory-NONCE>":    "decoy \\<folder memory then \\<folder-memory-NONCE>",
+		"<FOLDER-memory-a><folder.memory-b></folder-memory>": "\\<FOLDER-memory-a>\\<folder.memory-b>\\</folder-memory>",
+	} {
+		if got := escapeFolderFence(in); got != want {
+			t.Errorf("%q\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
+
+// Only an odd run of backslashes escapes a tag: two are a literal backslash
+// before a tag that still needs one.
+func TestEscapeFolderFenceCountsBackslashes(t *testing.T) {
+	for in, want := range map[string]string{
+		"\\<folder-memory-abc>":     "\\<folder-memory-abc>",
+		"\\\\<folder-memory-abc>":   "\\\\\\<folder-memory-abc>",
+		"\\\\\\<folder-memory-abc>": "\\\\\\<folder-memory-abc>",
+	} {
+		if got := escapeFolderFence(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
 	}
 }

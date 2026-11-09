@@ -120,6 +120,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSandboxBound:         {fn: configChange, classes: []int{5019}},
 	agent.EvFenceQualified:       {fn: configChange, classes: []int{5019}},
 	agent.EvWakeSet:              {fn: configChange, classes: []int{5019}},
+	agent.EvTurnsExtended:        {fn: mapTurnsExtended, classes: []int{5019}},
 
 	// Judgements and integrity: Detection Finding.
 	agent.EvMonitorVerdict:       {fn: mapMonitor, classes: []int{2004}},
@@ -665,6 +666,24 @@ func configChange(b *builder) {
 	b.classify(5019, 1, "Log")
 	b.device()
 	b.set("message", strings.TrimSpace(string(b.l.Type)+" "+b.str("to")))
+}
+
+// mapTurnsExtended is a person raising a run's turn limit: who, the old and
+// new limit, which continuation of how many it was, and where it was asked.
+func mapTurnsExtended(b *builder) {
+	b.classify(5019, 1, "Log")
+	b.device()
+	b.actor(b.str("by"))
+	from, _ := b.num("from")
+	to, _ := b.num("to")
+	n, _ := b.num("count")
+	most, _ := b.num("max")
+	msg := "turns.extended " + strconv.FormatInt(from, 10) + " to " + strconv.FormatInt(to, 10) +
+		" (" + strconv.FormatInt(n, 10) + " of " + strconv.FormatInt(most, 10) + ")"
+	if surface := b.str("surface"); surface != "" {
+		msg += " via " + surface
+	}
+	b.set("message", msg)
 }
 
 func mapConfigAttempt(b *builder) {

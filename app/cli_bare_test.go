@@ -98,3 +98,17 @@ func TestBareKeepsManagedRulesAndSkills(t *testing.T) {
 		t.Fatalf("memory under -bare:\n%s", text)
 	}
 }
+
+// init says it trusted only what it wrote when a local layer was there.
+func TestInitTrustNote(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".abhed")
+	path := filepath.Join(dir, "config.json")
+	if note := initTrustNote(path); !strings.Contains(note, "trusts it as written") {
+		t.Fatalf("without a local layer: %q", note)
+	}
+	write(t, filepath.Join(dir, config.LocalConfigName), "{}")
+	note := initTrustNote(path)
+	if strings.Contains(note, "trusts it as written") || !strings.Contains(note, config.LocalConfigName) || !strings.Contains(note, "asks") {
+		t.Fatalf("with a local layer: %q", note)
+	}
+}
