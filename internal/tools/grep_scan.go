@@ -515,22 +515,24 @@ func isASCII(s string) bool {
 	return true
 }
 
-// readCheckKey carries the read deny rules a tool's results are held to.
+// readCheckKey carries the read rules a tool's results are held to.
 type readCheckKey struct{}
 
-// WithReadCheck gives a tool run the session's read deny rules: denied
-// reports whether a read rule refuses the file at an absolute path. A
-// search leaves out every file it refuses, so a match in a file the agent
-// may not read never reaches the model.
-func WithReadCheck(ctx context.Context, denied func(path string) bool) context.Context {
-	if denied == nil {
+// WithReadCheck gives a tool run the session's read rules: withheld reports
+// whether a read rule (a deny rule, or an ask rule a search cannot put to
+// anyone) keeps the file at an absolute path from the agent. A search leaves
+// out every file it withholds, so a match in a file the agent may not read
+// never reaches the model.
+func WithReadCheck(ctx context.Context, withheld func(path string) bool) context.Context {
+	if withheld == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, readCheckKey{}, denied)
+	return context.WithValue(ctx, readCheckKey{}, withheld)
 }
 
-// readRefused reports whether ctx's read rules refuse the file at path.
-func readRefused(ctx context.Context, path string) bool {
-	denied, ok := ctx.Value(readCheckKey{}).(func(string) bool)
-	return ok && denied(path)
+// ReadRefused reports whether ctx's read rules withhold the file at path
+// from a tool's results.
+func ReadRefused(ctx context.Context, path string) bool {
+	withheld, ok := ctx.Value(readCheckKey{}).(func(string) bool)
+	return ok && withheld(path)
 }

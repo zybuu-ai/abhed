@@ -80,6 +80,7 @@ type Index struct {
 
 	embedder Embedder
 	vcache   VectorCache
+	withheld func(string) bool // the read rules the last build kept to
 	root     string
 	built    time.Time
 }
@@ -117,6 +118,10 @@ type BuildOptions struct {
 	// Embed populates vectors. Off by default: for most repos the symbol and
 	// BM25 tiers answer the question, and embedding a monorepo is expensive.
 	Embed bool
+	// Withheld, when set, reports a file the read rules keep from the agent,
+	// by absolute path. Such a file is never indexed, so its chunks reach
+	// neither the search tool nor the embedding endpoint.
+	Withheld func(path string) bool
 }
 
 func DefaultBuildOptions() BuildOptions {
@@ -175,6 +180,9 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 		if !exts[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
+		if opts.Withheld != nil && opts.Withheld(path) {
+			return nil
+		}
 		info, err := d.Info()
 		if err != nil || info.Size() > opts.MaxFileSize {
 			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the index
@@ -196,6 +204,7 @@ func (ix *Index) Build(ctx context.Context, opts BuildOptions) error {
 
 	ix.mu.Lock()
 	ix.docs = docs
+	ix.withheld = opts.Withheld
 	ix.rebuildLocked()
 	ix.built = time.Now()
 	ix.mu.Unlock()
@@ -228,6 +237,12 @@ func (ix *Index) Update(ctx context.Context, path string) error {
 		if tools.IsState(abs, ix.root) {
 			return fmt.Errorf("index: %s is Abhed's own state", path)
 		}
+	}
+	ix.mu.RLock()
+	withheld := ix.withheld
+	ix.mu.RUnlock()
+	if withheld != nil && withheld(path) {
+		return fmt.Errorf("index: a read rule withholds %s", path)
 	}
 	content, err := ix.readConfined(path)
 	if err != nil {

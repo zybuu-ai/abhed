@@ -63,7 +63,9 @@ added directory is never run. Either way, what reaches the model is Abhed's
 own read and match: each file is read inside the workspace, never through a
 link or into Abhed's state, a file a read deny rule covers is left out with
 its matches (`deny: ["read(secrets/**)"]` keeps `secrets/` out of `grep`
-too), and secret values are redacted. A pattern with no such literal, or
+too), and secret values are redacted. A file an ask rule covers, such as
+the built-in ones for `.env` and keys, is left out too: no one can be asked
+through a search. A pattern with no such literal, or
 one matched without case beyond ASCII, is searched without ripgrep.
 
 `glob` and `grep` pass over vendored and build folders (`node_modules`,

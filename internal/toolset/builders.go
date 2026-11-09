@@ -21,6 +21,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -363,11 +364,23 @@ func RAGTools(cfg config.Config, warn func(string, ...any)) []tools.Tool {
 
 // IndexOptions mirrors what OpenIndex uses, so a reindex triggered from the
 // settings surface rebuilds on the same terms as the startup build rather than
-// quietly dropping the vector tier.
-func IndexOptions(cfg config.Config) index.BuildOptions {
+// quietly dropping the vector tier, or the read rules.
+func IndexOptions(cfg config.Config, workspace string) index.BuildOptions {
 	opts := index.DefaultBuildOptions()
 	opts.Embed = cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != ""
+	opts.Withheld = ReadWithheld(cfg, workspace)
 	return opts
+}
+
+// ReadWithheld is the configured read rules over a workspace: whether a deny
+// rule, or an ask rule such as the built-in ones for .env and keys, keeps a
+// file from the agent. The index is built with it, before any session.
+func ReadWithheld(cfg config.Config, workspace string) func(string) bool {
+	pol := policy.New(policy.ModeDefault)
+	pol.Roots = func() []string { return []string{workspace} }
+	_ = pol.AddDeny(cfg.Permissions.Deny...)
+	_ = pol.AddAsk(cfg.Permissions.Ask...)
+	return pol.ReadWithheld
 }
 
 // OpenIndex builds the retrieval index for a workspace.
@@ -377,6 +390,7 @@ func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index
 	}
 	ix := index.New(workspace)
 	opts := index.DefaultBuildOptions()
+	opts.Withheld = ReadWithheld(cfg, workspace)
 
 	var cache *index.FileVectorCache
 	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {

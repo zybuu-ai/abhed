@@ -86,6 +86,20 @@ func (t *SearchTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 		return tools.Result{Content: fmt.Sprintf("Search failed: %v", err), IsError: true}
 	}
 
+	// A hit in a file a read rule withholds is left out, its excerpt too:
+	// search shows contents, as read would. An index built before the rule
+	// may still hold the file.
+	withheld := 0
+	kept := hits[:0]
+	for _, h := range hits {
+		if tools.ReadRefused(ctx, h.Doc.Path) {
+			withheld++
+			continue
+		}
+		kept = append(kept, h)
+	}
+	hits = kept
+
 	if a.PathPrefix != "" {
 		filtered := hits[:0]
 		for _, h := range hits {
@@ -99,9 +113,13 @@ func (t *SearchTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 		hits = hits[:limit]
 	}
 
+	note := ""
+	if withheld > 0 {
+		note = "\n[results in files a read rule withholds are not shown]"
+	}
 	if len(hits) == 0 {
 		return tools.Result{Content: fmt.Sprintf(
-			"No results for %q. Try grep with a specific identifier, or broaden the query.", a.Query)}
+			"No results for %q. Try grep with a specific identifier, or broaden the query.%s", a.Query, note)}
 	}
 
 	var b strings.Builder
@@ -120,7 +138,7 @@ func (t *SearchTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "Use read() on the paths above for full context.")
-	return tools.Result{Content: strings.TrimSpace(b.String())}
+	return tools.Result{Content: strings.TrimSpace(b.String()) + note}
 }
 
 func rel(sess *tools.Session, path string) string {

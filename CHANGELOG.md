@@ -33,9 +33,22 @@ All notable changes to Abhed are recorded here. The format follows
   1.2.9 in a project with a Python venv, whose start-up notice prints first.
 - `grep` returned matches from files a read deny rule covers.
   `deny: ["read(secrets/**)"]` refused the `read` tool, but a `grep` over the
-  workspace still printed the matching lines of `secrets/` to the model.
-  Every `grep` result is now held to the read deny rules, and a file they
-  cover is left out with its matches and count.
+  workspace, or one whose `path` named the denied file, still printed its
+  matching lines to the model. A managed or org deny rule was bypassed the
+  same way. Affected: every release through 1.2.9, on every surface (the
+  CLI, `-p`, `abhed serve`, Studio, the SDK, skill pipelines) and every
+  sandbox tier, since `grep` runs in Abhed itself. Every `grep` result is now
+  held to the read rules: a file a deny rule covers, or an ask rule (no one
+  can be asked through a search; the built-in ones for `.env`, `*.pem`,
+  `*.key` and SSH keys included), is left out with its matches and count.
+- The `search` tool (the retrieval index, `retrieval.enabled`) returned
+  excerpts from files a read deny rule covers, and the index build sent
+  those files' chunks to the embedding endpoint when `retrieval.embed` is
+  on. Affected: every release through 1.2.9 with retrieval enabled. A hit in
+  a file a read deny or ask rule covers is now left out, and the index is
+  built without such files, so they reach neither the model nor the
+  embedding endpoint. A rule added after the index was built still holds
+  for the hits.
 
 ### Upgrading from 1.2.9
 

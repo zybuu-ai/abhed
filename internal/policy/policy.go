@@ -1180,6 +1180,19 @@ func (e *Engine) defaultAsk(tool, subject, why string) Result {
 	return e.guarded(res)
 }
 
+// ReadWithheld reports whether a read rule keeps the file at path out of
+// what a search shows the agent: a deny rule, or an ask rule (the built-in
+// ones for .env and keys included), which a search cannot put to anyone.
+// Hooks are not asked: they judge calls, and this is no call.
+func (e *Engine) ReadWithheld(path string) bool {
+	args, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		return true
+	}
+	r := e.WithoutHooks().Evaluate("read", false, args)
+	return r.Decision == Deny || r.Decision == Ask && r.Step == "ask"
+}
+
 // AllowRuleFor is the allow rule the approval prompt would offer for a
 // call, as a person could write it: the narrow scope, or the rule for
 // exactly this call; "" when the default step would not ask about it, such

@@ -1956,21 +1956,17 @@ func (l *Loop) deniedOwnerGone(callID string) (bool, tools.Result, TerminalReaso
 	return false, tools.Result{Content: "Denied: " + ownerGoneReason + ".", IsError: true}, TermOwnerInactive
 }
 
-// withRule adds the rule that decided, when one did, and the policy layer
-// readDenied reports whether the read deny rules refuse a file, for a tool
-// whose results name files' contents, such as grep. Hooks are not asked:
-// they judge calls, and this is no call. Nil without a policy.
-func (l *Loop) readDenied() func(string) bool {
+// readWithheld reports whether a read rule keeps a file out of the results
+// of a tool that shows files' contents, such as grep or search: a deny rule,
+// or an ask rule no one can be asked through a search. Nil without a policy.
+func (l *Loop) readWithheld() func(string) bool {
 	if l.Policy == nil {
 		return nil
 	}
-	dry := l.Policy.WithoutHooks()
-	return func(path string) bool {
-		args, err := json.Marshal(map[string]string{"path": path})
-		return err != nil || dry.Evaluate("read", false, args).Decision == policy.Deny
-	}
+	return l.Policy.ReadWithheld
 }
 
+// withRule adds the rule that decided, when one did, and the policy layer
 // it came from, so an approval or denial names what made it.
 func withRule(p map[string]string, d policy.Result) map[string]string {
 	if d.Rule != "" {
@@ -2113,7 +2109,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		cwd = l.Session.WorkDir()
 	}
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
-	runCtx = tools.WithReadCheck(runCtx, l.readDenied())
+	runCtx = tools.WithReadCheck(runCtx, l.readWithheld())
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
 	if _, isTask := tool.(Task); isTask {

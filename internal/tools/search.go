@@ -377,7 +377,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 	total := 0
 	for _, h := range hits {
 		// A file the read rules refuse is left out whole, its matches too.
-		if h.count == 0 || readRefused(ctx, h.path) {
+		if h.count == 0 || ReadRefused(ctx, h.path) {
 			continue
 		}
 		results = append(results, h)
