@@ -351,6 +351,7 @@ func mergeTrustedWorkspace(cfg *Config, files []workspaceFile) error {
 	listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
 	diagnostics, diagMax, diagWait := cfg.Tools.Diagnostics, cfg.Tools.DiagnosticsMax, cfg.Tools.DiagnosticsWaitMS
 	network := cfg.Network.clone()
+	background := cfg.Server.Background
 	for _, f := range files {
 		path, data := f.path, f.data
 		if _, err := mergeData(cfg, path, data); err != nil {
@@ -364,6 +365,8 @@ func mergeTrustedWorkspace(cfg *Config, files []workspaceFile) error {
 			func() { cfg.Network = network })
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
+		keepOperatorOnly(cfg, path, data, before, prior, "server.background", "a workspace never turns on background jobs or names where their notices go",
+			func() { cfg.Server.Background = background })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
 		if orDefaultInt(cfg.Tools.DiagnosticsMax, 20) > orDefaultInt(diagMax, 20) {
 			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_max", "a workspace may only lower the diagnostics bounds",

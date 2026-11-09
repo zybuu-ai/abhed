@@ -1323,6 +1323,8 @@ type ServerConfig struct {
 	SharedSessions bool `json:"shared_sessions,omitempty"`
 	// Metrics serves Prometheus metrics; off unless enabled. See metrics.go.
 	Metrics ServerMetricsConfig `json:"metrics,omitempty"`
+	// Background is jobs people start on the server; see background.go.
+	Background ServerBackgroundConfig `json:"background,omitzero"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -2245,6 +2247,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Server.Metrics.validate(); err != nil {
+		return err
+	}
+	if err := c.Server.Background.validate(); err != nil {
 		return err
 	}
 	if err := c.validateCLILogin(); err != nil {

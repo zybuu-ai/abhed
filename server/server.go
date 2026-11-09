@@ -455,14 +455,16 @@ type Server struct {
 }
 
 type liveSession struct {
-	ID      string
-	User    string
-	Tenant  string
-	Loop    *agent.Loop
-	Cancel  context.CancelFunc
-	Created time.Time // when the session began, on whichever node
-	Prompt  string
-	State   string // running | waiting_approval | background | idle | done
+	// onAskTimeout is StartSpec.OnAskTimeout.
+	onAskTimeout func(requestID, tool string)
+	ID           string
+	User         string
+	Tenant       string
+	Loop         *agent.Loop
+	Cancel       context.CancelFunc
+	Created      time.Time // when the session began, on whichever node
+	Prompt       string
+	State        string // running | waiting_approval | background | idle | done
 	// title is the name a person last gave the session; guarded by mu.
 	title string
 	// Reason is how the last run ended, which the session list shows for done.
@@ -1525,6 +1527,10 @@ type StartSpec struct {
 	// OnEnd is called when the run finishes, however it finishes, with the
 	// terminal reason as the event stream records it.
 	OnEnd func(reason string, err error)
+	// OnAskTimeout, when set, is called as the system denies an ask nobody
+	// answered within ApprovalDeadline, with its request id and tool. It
+	// runs on the turn's goroutine and must not block.
+	OnAskTimeout func(requestID, tool string)
 	// admin is whether the person starting it is a server administrator,
 	// which an edition's SandboxCaller is told for the session's sandbox.
 	admin bool
@@ -1607,43 +1613,55 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID, err := start(r.Context(), spec)
 	if err != nil {
+		status, msg, retry := StartRefusal(err)
 		switch {
-		case errors.Is(err, errDraining):
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, "server is shutting down; retry")
-		case errors.Is(err, errHoldFailed):
-			writeHoldFailed(w)
-		case errors.Is(err, errBadMode):
-			WriteError(w, http.StatusForbidden, err.Error())
-		case errors.Is(err, errBadClientID):
-			WriteError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, errVerify):
 			s.log.Error("session refused: verify", "user", spec.User, "error", err)
-			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
-		case errors.Is(err, errNotSoleOwner):
-			WriteError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPolicyLayer):
 			s.log.Error("session refused: its policy layer", "user", spec.User, "error", err)
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
-		case strings.HasPrefix(err.Error(), "provider:"):
-			WriteError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "))
-		case errors.Is(err, controlplane.ErrForbidden):
-			WriteError(w, http.StatusForbidden, err.Error())
-		case errors.Is(err, controlplane.ErrUnavailable):
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, err.Error())
-		case errors.Is(err, errSecretsUnreadable):
-			w.Header().Set("Retry-After", "5")
-			WriteError(w, http.StatusServiceUnavailable, "the session was not started: "+err.Error())
-		default:
+		case status == http.StatusInternalServerError:
 			// The cause can name store internals, so it goes to the log only.
 			s.log.Error("session not started", "user", spec.User, "error", err)
-			WriteError(w, http.StatusInternalServerError, "the session could not be started; the server log has the cause")
 		}
+		if retry {
+			w.Header().Set("Retry-After", "5")
+		}
+		WriteError(w, status, msg)
 		return
 	}
 	WriteJSON(w, http.StatusAccepted, createResponse{SessionID: sessionID})
+}
+
+// StartRefusal is how POST /v1/sessions answers a StartSession error: the
+// status, the message a caller may see, and whether to ask for a retry. An
+// edition that starts sessions on its own routes answers the same way. An
+// error it does not know is a 500 whose cause stays in the server's log.
+func StartRefusal(err error) (status int, msg string, retry bool) {
+	switch {
+	case errors.Is(err, errDraining):
+		return http.StatusServiceUnavailable, "server is shutting down; retry", true
+	case errors.Is(err, errHoldFailed):
+		return http.StatusServiceUnavailable, "could not hold the session; retry", true
+	case errors.Is(err, errBadMode):
+		return http.StatusForbidden, err.Error(), false
+	case errors.Is(err, errBadClientID):
+		return http.StatusBadRequest, err.Error(), false
+	case errors.Is(err, errVerify):
+		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), false
+	case errors.Is(err, errNotSoleOwner):
+		return http.StatusForbidden, err.Error(), false
+	case errors.Is(err, ErrPolicyLayer):
+		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), true
+	case strings.HasPrefix(err.Error(), "provider:"):
+		return http.StatusBadRequest, strings.TrimPrefix(err.Error(), "provider: "), false
+	case errors.Is(err, controlplane.ErrForbidden):
+		return http.StatusForbidden, err.Error(), false
+	case errors.Is(err, controlplane.ErrUnavailable):
+		return http.StatusServiceUnavailable, err.Error(), true
+	case errors.Is(err, errSecretsUnreadable):
+		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), true
+	}
+	return http.StatusInternalServerError, "the session could not be started; the server log has the cause", false
 }
 
 // StartSession persists, builds and starts a session, returning once the
@@ -2033,8 +2051,9 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 		snap:    takeSnapshot(sess.Root),
 		layer:   layer,
 		// A spec with no provider runs on the configured default.
-		provider: orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
-		model:    adapter.Profile().Name,
+		provider:     orDefaultStr(spec.Provider, s.opts.Config.Model.Default),
+		model:        adapter.Profile().Name,
+		onAskTimeout: spec.OnAskTimeout,
 	}
 	// Once another process has taken the session over, nothing more is
 	// written to its record from here.
@@ -4269,6 +4288,32 @@ func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 	// Stop means stop: every background child too, running or idle.
 	live.Loop.Background.CancelAll(agent.TermUserInterrupt)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// StopSession stops session id's run and all its background work, as the
+// owner's Stop in the console does, when this process runs it for owner in
+// tenant. It reports whether it found the session to stop. An edition stops
+// a job it started for someone through this, never another person's session.
+func (s *Server) StopSession(tenant, owner, id string) bool {
+	if owner == "" {
+		return false
+	}
+	s.mu.RLock()
+	live, ok := s.running[id]
+	mine := ok && live.Tenant == tenant && live.User == owner
+	s.mu.RUnlock()
+	if !mine {
+		return false
+	}
+	live.mu.Lock()
+	c := live.cancel
+	live.mu.Unlock()
+	if c != nil {
+		c()
+	}
+	live.Cancel()
+	live.Loop.Background.CancelAll(agent.TermUserInterrupt)
+	return true
 }
 
 type approveRequest struct {

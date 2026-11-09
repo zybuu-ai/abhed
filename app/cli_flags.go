@@ -446,6 +446,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return policyCmd(rest[1:], os.Stdout, os.Stderr)
 	case "sandbox":
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "bg":
+		return bgCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "pki":
 		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
 	case "egress-proxy":
@@ -517,7 +519,7 @@ var permissionModes = map[string]string{
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"sandbox": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
 }
 
