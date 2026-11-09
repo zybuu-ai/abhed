@@ -20,6 +20,17 @@ All notable changes to Abhed are recorded here. The format follows
   The config is now written to a fresh, randomly named file made with
   `O_EXCL` and renamed into place. A `config.json` that is a link, a pipe or
   a device, or over 4 MiB, is refused instead of followed or waited on.
+- Studio's interactive terminal could take every line typed in it for a
+  program's input, so the deny rules never judged it. The shell's process
+  group was taken from the terminal's first output; wherever something
+  printed before the shell took the terminal, that group was not the
+  shell's, and each line after went through unjudged. The shell's group is
+  now learned only from the kernel: the group in front whose leader is the
+  shell, reading keys at its prompt, started by Abhed directly or through
+  bubblewrap and the egress relay alone. Until then every line is judged as
+  the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
+  wherever anything printed before bash took the terminal; known to occur in
+  1.2.9 in a project with a Python venv, whose start-up notice prints first.
 
 ### Upgrading from 1.2.9
 
@@ -103,6 +114,22 @@ All notable changes to Abhed are recorded here. The format follows
   `amount*percent`) or named by the function it was changed in did not
   match. Each is now read as it is, and none can verify a statement the
   calls do not show.
+- A warning logged while the interactive command line held the screen (such
+  as the egress relay's, from a binary built with cgo) was written under it
+  and left a stale "Running…" line behind; the log package's output now goes
+  through the screen as the rest of stderr does.
+- A folder made again at the same path could inherit the commands kept as
+  "always allow" for the old one when the file system reused its inode; a
+  folder's identity now includes its birth time on Linux and macOS. Grants
+  kept before 1.3.0 still match by device and inode until they are kept
+  again, so until then they can still follow a re-created folder. One kept
+  with a birth time, read where the file system gives none, no longer
+  matches, so its commands are asked about again.
+- A bash command's checkpoint missed a same-size rewrite on a file system
+  whose timestamps are coarse (seconds, or a clock tick), so its /undo had
+  nothing to take back: a file whose mtime is within two seconds of the
+  snapshot is now compared by its content, or a key file by its hash, read
+  for that alone and never kept.
 - With a corporate upstream proxy in force, a local model server left at
   its default endpoint (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang` with
   no `base_url`) is no longer reported as reached through the proxy, by
