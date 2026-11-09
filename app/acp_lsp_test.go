@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -89,8 +90,10 @@ func fakeLSP(t *testing.T, root string, env ...string) *[]string {
 	var asked []string
 	oldCmd, oldTier, oldBackoff, oldFinder := lspCommand, lspTier, lspBackoff, lspProgramFinder
 	lspTier = func(tools.Bash) string { return "process" }
-	// The fake stands in for every server, so each is "on the PATH".
+	// The fake stands in for every server, so each is "on the PATH", for the
+	// engine's own check and for the supervisor's, which reads the real PATH.
 	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(string) bool { return true } }
+	stubOnPath(t, "gopls")
 	lspBackoff = func(int) time.Duration { return 10 * time.Millisecond }
 	lspCommand = func(_ tools.Bash, ctx context.Context, cwd, command string) *exec.Cmd {
 		asked = append(asked, command)
@@ -895,4 +898,18 @@ func TestStudioMissingServerInstallAndChanged(t *testing.T) {
 	r.cl.waitFor(from, "toolchain changed", func(m rpcMessage) bool {
 		return m.Method == "_abhed/toolchain/changed" && strings.Contains(string(m.Params), `"extra":"gopls"`) && strings.Contains(string(m.Params), id)
 	})
+}
+
+// stubOnPath puts programs by these names first on the PATH, each one that
+// only exits, so a check that a program is installed finds it without the
+// host having it; the test's fake runs in its place.
+func stubOnPath(t *testing.T, names ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil { // #nosec G306 -- a test stub that must run
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
