@@ -278,6 +278,17 @@ func TestResourceToolsFollowAllowToolsAndYieldToTheServers(t *testing.T) {
 	if !names["mcp__docs__list_resources"] || names["mcp__docs__read_resource"] {
 		t.Fatalf("names %v", names)
 	}
+	// A connection that offered the read leaves its subjector, which the
+	// next connection, whose server has its own read_resource, takes away.
+	s0 := newStubServer(t, "", true)
+	g0 := NewGateway()
+	if errs := connect(t, g0, ServerConfig{Name: "docs", URL: s0.srv.URL, Enabled: true}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	_ = g0.Tools()
+	if _, ok := tools.SubjectorFor("mcp__docs__read_resource").(*resourceTool); !ok {
+		t.Fatal("the read's subjector was not registered")
+	}
 	s2 := newStubServer(t, "", true)
 	s2.ownReadTool = true
 	g2 := NewGateway()
@@ -290,6 +301,9 @@ func TestResourceToolsFollowAllowToolsAndYieldToTheServers(t *testing.T) {
 				t.Fatal("the server's own read_resource was replaced")
 			}
 		}
+	}
+	if _, ok := tools.SubjectorFor("mcp__docs__read_resource").(*resourceTool); ok {
+		t.Fatal("a stale subjector judges the server's own tool")
 	}
 	// A server with no resources offers no resource tools.
 	s3 := newStubServer(t, "", false)

@@ -21,7 +21,8 @@ var resourceMentionRe = regexp.MustCompile(`^([A-Za-z0-9_-]{1,64}):(.+)$`)
 // tool that reads it; ok is false for text that is not one, left as typed.
 func resourceMention(loop *agent.Loop, raw string) (server, uri, tool string, ok bool) {
 	m := resourceMentionRe.FindStringSubmatch(raw)
-	if m == nil || !mcp.ValidResourceURI(m[2]) || !strings.Contains(m[2], ":") {
+	// One not in canonical form is still taken, for the read to refuse with the form to write.
+	if m == nil || !strings.Contains(m[2], ":") {
 		return "", "", "", false
 	}
 	tool = "mcp__" + m[1] + "__" + mcp.ReadResourceTool

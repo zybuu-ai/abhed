@@ -2052,6 +2052,9 @@ func (c Config) Validate() error {
 	if err := c.validateNetwork(); err != nil {
 		return err
 	}
+	if err := c.validateMCPOAuth(); err != nil {
+		return err
+	}
 	switch c.Subagents.Wake {
 	case "", "off", "notify", "auto":
 	default:

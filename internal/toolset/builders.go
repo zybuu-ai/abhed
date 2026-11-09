@@ -57,6 +57,23 @@ func MCPAuthorize(store *secrets.Store) func(mcp.ServerConfig, *http.Client) (mc
 	}
 }
 
+// ErrMCPLoginsPerAccount is a server whose accounts each have their own
+// secrets: an MCP server's OAuth login is the operator's, and a gateway its
+// sessions share would have every account act as the operator.
+var ErrMCPLoginsPerAccount = errors.New("OAuth logins aren't available per account yet: on a server where accounts sign in, " +
+	"a login would let every account act as the operator, so it is not used")
+
+// MCPLoginsWithheld uses no login: a URL server that has one in store is
+// refused, with why, rather than reached without it or with the operator's.
+func MCPLoginsWithheld(store *secrets.Store, why error) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, _ *http.Client) (mcp.Authorizer, error) {
+		if in, _, _, err := mcpauth.Status(store, cfg.Name, cfg.URL); in || err != nil {
+			return nil, fmt.Errorf("it has an OAuth login (abhed mcp login): %w", why)
+		}
+		return nil, nil
+	}
+}
+
 // MCPAdmit is the gateway's check of every server against the
 // configuration's mcp.allowed and mcp.denied lists, nil when none is set.
 // programs are what a stdio server's command resolves to, as the gateway

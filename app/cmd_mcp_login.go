@@ -8,13 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"syscall"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/mcpauth"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
@@ -25,9 +25,6 @@ var mcpOAuthHTTP = func(guard *egress.Guard) *http.Client {
 	return &http.Client{Timeout: 30 * time.Second, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: guard},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
-
-// scopeRe is one OAuth scope (RFC 6749 §3.3), as a configuration may name it.
-var scopeRe = regexp.MustCompile(`^[\x21\x23-\x5b\x5d-\x7e]{1,128}$`)
 
 // mcpURLServer is the URL server name in effect in this workspace, after
 // the MCP lists: one they refuse is not signed in to.
@@ -70,11 +67,6 @@ func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO
 		if s.OAuth.ClientSecretEnv != "" {
 			if o.ClientSecret = os.Getenv(s.OAuth.ClientSecretEnv); o.ClientSecret == "" {
 				return fmt.Errorf("oauth.client_secret_env names %s, which is not set", config.Printable(s.OAuth.ClientSecretEnv))
-			}
-		}
-		for _, sc := range o.Scopes {
-			if !scopeRe.MatchString(sc) {
-				return fmt.Errorf("oauth.scopes holds %q, which is not a scope", config.Printable(sc))
 			}
 		}
 	}
@@ -144,4 +136,24 @@ func logMCPAuth(by string, s config.MCPServerConfig, cio mcpIO) {
 	if err != nil {
 		fmt.Fprintf(cio.err, "abhed: warning: the %s was not written to the config change log: %v\n", by, err)
 	}
+}
+
+// accountsSignIn reports a server whose accounts sign in, each with their
+// own secrets, as abhed serve keeps them.
+func accountsSignIn(cfg config.Config) bool {
+	return cfg.Auth.Mode != "" && cfg.Auth.Mode != "none"
+}
+
+// mcpLoginsHeld are the configured URL servers that have an OAuth login.
+func mcpLoginsHeld(cfg config.Config, store *secrets.Store) []string {
+	var out []string
+	for _, s := range cfg.MCP.Servers {
+		if s.URL == "" || !s.Enabled {
+			continue
+		}
+		if in, _, _, err := mcpauth.Status(store, s.Name, s.URL); in || err != nil {
+			out = append(out, s.Name)
+		}
+	}
+	return out
 }

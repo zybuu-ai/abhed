@@ -93,6 +93,25 @@ func TestMCPLoginCommand(t *testing.T) {
 	if len(g.Tools()) != 1 {
 		t.Fatalf("tools %v", g.Tools())
 	}
+	// A server where accounts sign in shares one gateway: the operator's
+	// login is withheld, and the server refused with why, not reached as the operator.
+	if !accountsSignIn(config.Config{Auth: config.AuthConfig{Mode: "local"}}) || accountsSignIn(config.Config{}) {
+		t.Fatal("accountsSignIn")
+	}
+	if held := mcpLoginsHeld(config.Config{MCP: config.MCPConfig{Servers: []config.MCPServerConfig{{Name: "corp", URL: s.URL(), Enabled: true}}}}, store); len(held) != 1 {
+		t.Fatalf("held %v", held)
+	}
+	shared := mcp.NewGateway()
+	defer shared.Close()
+	shared.Authorize = toolset.MCPLoginsWithheld(store, toolset.ErrMCPLoginsPerAccount)
+	_, issuedBefore, _ := s.Get()
+	errs := shared.Connect(ctx, []mcp.ServerConfig{{Name: "corp", URL: s.URL(), Enabled: true}})
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "aren't available per account") || len(shared.Tools()) != 0 {
+		t.Fatalf("the shared gateway used the operator's login: %v", errs)
+	}
+	if _, issuedAfter, _ := s.Get(); issuedAfter != issuedBefore {
+		t.Fatal("the withheld login was refreshed")
+	}
 
 	out.Reset()
 	if code := mcpCmd(ws, []string{"logout", "corp"}, config.TrustRefused, loginIO(&out, &errw)); code != 0 || !strings.Contains(out.String(), "Signed out") {

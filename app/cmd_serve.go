@@ -94,9 +94,16 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	// The CLI's tool set. The server shares its registry across sessions and
 	// binds each session's own subagents, todo list and skill tool to it.
-	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb,
-	})
+	tsOpts := toolset.Options{Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb}
+	// Sessions share the gateway: with accounts signing in, an operator's
+	// MCP login would let each act as the operator, so none is used.
+	if accountsSignIn(cfg) {
+		tsOpts.NoMCPLogins = toolset.ErrMCPLoginsPerAccount
+		for _, name := range mcpLoginsHeld(cfg, vault) {
+			fmt.Fprintf(os.Stderr, "abhed: warning: MCP server %s has an OAuth login, which this server does not use: %v\n", name, toolset.ErrMCPLoginsPerAccount)
+		}
+	}
+	set := toolset.Build(context.Background(), cfg, tsOpts)
 	defer set.Close()
 
 	// Identity first: a provider that cannot reach its issuer is a startup

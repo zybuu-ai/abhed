@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -40,29 +38,11 @@ var ErrNoResources = errors.New("the server offers no resources")
 // Resources reports whether the server offers resources.
 func (c *Client) Resources() bool { return c.resources }
 
-// validResourceURI is a URI a resource may be read by: printable, no
-// whitespace or control characters, within MaxResourceURI, with a scheme.
+// validResourceURI is a URI a resource may be read by: one already in the
+// canonical form CanonicalResourceURI gives, which is what policy judges.
 func validResourceURI(uri string) bool {
-	if uri == "" || len(uri) > MaxResourceURI || !utf8.ValidString(uri) {
-		return false
-	}
-	for _, r := range uri {
-		if unicode.IsControl(r) || unicode.IsSpace(r) || r == unicode.ReplacementChar ||
-			unicode.Is(unicode.Cf, r) {
-			return false
-		}
-	}
-	scheme, _, ok := strings.Cut(uri, ":")
-	if !ok || scheme == "" {
-		return false
-	}
-	for i, r := range scheme {
-		letter := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
-		if !letter && (i == 0 || (r < '0' || r > '9') && r != '+' && r != '-' && r != '.') {
-			return false
-		}
-	}
-	return true
+	c, err := CanonicalResourceURI(uri)
+	return err == nil && c == uri
 }
 
 // ValidResourceURI reports whether uri is one a resource may be read by.
@@ -114,8 +94,8 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (text string, tru
 	if !c.resources {
 		return "", false, ErrNoResources
 	}
-	if !validResourceURI(uri) {
-		return "", false, fmt.Errorf("%+q is not a resource URI (printable, no spaces, up to %d characters)", uri, MaxResourceURI)
+	if err := resourceURIRefusal(uri); err != nil {
+		return "", false, err
 	}
 	params, err := json.Marshal(map[string]string{"uri": uri})
 	if err != nil {
@@ -233,6 +213,9 @@ func (t *resourceTool) Run(ctx context.Context, _ *tools.Session, args json.RawM
 	}
 	uri, ok := readURI(args)
 	if !ok {
+		if raw, decoded := uriArg(args); decoded {
+			return tools.Result{Content: resourceURIRefusal(raw).Error(), IsError: true}
+		}
 		return tools.Result{Content: `the arguments must be {"uri": "<a resource URI>"}`, IsError: true}
 	}
 	text, truncated, err := client.ReadResource(ctx, uri)
@@ -247,12 +230,21 @@ func (t *resourceTool) Run(ctx context.Context, _ *tools.Session, args json.RawM
 
 // readURI is a read's one argument, strictly.
 func readURI(args json.RawMessage) (string, bool) {
+	uri, ok := uriArg(args)
+	if !ok || !validResourceURI(uri) {
+		return "", false
+	}
+	return uri, true
+}
+
+// uriArg is the uri argument, decoded strictly, whatever its form.
+func uriArg(args json.RawMessage) (string, bool) {
 	var a struct {
 		URI string `json:"uri"`
 	}
 	dec := json.NewDecoder(strings.NewReader(string(args)))
 	dec.DisallowUnknownFields()
-	if dec.Decode(&a) != nil || !validResourceURI(a.URI) {
+	if dec.Decode(&a) != nil || a.URI == "" {
 		return "", false
 	}
 	return a.URI, true
@@ -323,6 +315,10 @@ func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client)
 	for _, read := range []bool{false, true} {
 		t := &resourceTool{gw: g, server: server, read: read}
 		if own[t.remote()] || !allowed(cfg, t.remote()) {
+			// Not offered: a subjector an earlier connection left must not judge another tool.
+			if _, ours := tools.SubjectorFor(t.Name()).(*resourceTool); ours {
+				tools.UnregisterSubjector(t.Name())
+			}
 			continue
 		}
 		if other := g.claimedBy(t.Name(), server); other != "" {
@@ -344,4 +340,17 @@ func (g *Gateway) ServerResources(ctx context.Context, server string) ([]Resourc
 		return nil, fmt.Errorf("MCP server %s is not connected", server)
 	}
 	return c.ListResources(ctx)
+}
+
+// resourceURIRefusal is why uri is not read: not a URI, or not written in
+// its canonical form, which it names.
+func resourceURIRefusal(uri string) error {
+	c, err := CanonicalResourceURI(uri)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%s is not read: %w", escapedURI(uri), err)
+	case c != uri:
+		return fmt.Errorf("%s is not read: write it as %s, the one spelling policy judges", escapedURI(uri), escapedURI(c))
+	}
+	return nil
 }

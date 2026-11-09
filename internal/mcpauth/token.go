@@ -50,8 +50,19 @@ func names(server string) (record, access, refresh, secret string) {
 	return base, base + "_AT", base + "_RT", base + "_CS"
 }
 
-// save writes rec in one step.
+// save writes rec in one step, under the login's lock.
 func save(store *secrets.Store, rec Record) error {
+	r, _, _, _ := names(rec.Server)
+	unlock, err := store.HeldLock(r)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return saveLocked(store, rec)
+}
+
+// saveLocked is save for a caller holding the login's lock.
+func saveLocked(store *secrets.Store, rec Record) error {
 	data, err := json.Marshal(rec) // #nosec G117 -- the login is written to the secret store, which is where it belongs
 	if err != nil {
 		return err
@@ -94,8 +105,13 @@ func load(store *secrets.Store, server string) (Record, error) {
 // Remove forgets a server's login; false when there was none.
 func Remove(store *secrets.Store, server string) (bool, error) {
 	r, a, rt, cs := names(server)
+	unlock, err := store.HeldLock(r)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	found := false
-	err := store.UpdateHeld(func(get func(string) (string, bool)) (map[string]string, []string, error) {
+	err = store.UpdateHeld(func(get func(string) (string, bool)) (map[string]string, []string, error) {
 		_, found = get(r)
 		return nil, []string{r, a, rt, cs}, nil
 	})
@@ -223,6 +239,9 @@ type Authorizer struct {
 
 	mu  sync.Mutex
 	rec Record
+	// out is set once the login was found removed or replaced: it is then
+	// never used or written again.
+	out error
 }
 
 // Load is the login for server, configured at serverURL, as an Authorizer;
@@ -250,6 +269,9 @@ const expiryMargin = time.Minute
 func (a *Authorizer) Token(ctx context.Context) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.out != nil {
+		return "", a.out
+	}
 	if a.rec.Expiry == 0 || a.now().Add(expiryMargin).Before(time.Unix(a.rec.Expiry, 0)) || a.rec.RefreshToken == "" {
 		return a.rec.AccessToken, nil
 	}
@@ -264,6 +286,9 @@ func (a *Authorizer) Token(ctx context.Context) (string, error) {
 func (a *Authorizer) Refresh(ctx context.Context, failed string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.out != nil {
+		return "", a.out
+	}
 	if a.rec.AccessToken != failed {
 		return a.rec.AccessToken, nil
 	}
@@ -273,12 +298,41 @@ func (a *Authorizer) Refresh(ctx context.Context, failed string) (string, error)
 	return a.rec.AccessToken, nil
 }
 
-// refresh replaces the tokens; under a.mu.
+// live reports a record whose access token does not end within the margin.
+func (a *Authorizer) live(r Record) bool {
+	return r.Expiry == 0 || a.now().Add(expiryMargin).Before(time.Unix(r.Expiry, 0))
+}
+
+// refresh replaces the tokens; under a.mu, and under the login's lock across
+// processes, so two never spend one refresh token and a removed login is
+// never written back.
 func (a *Authorizer) refresh(ctx context.Context) error {
-	// Another process may have refreshed already: its tokens are the live ones.
-	if stored, err := load(a.store, a.server); err == nil && stored.URL == a.rec.URL && stored.AccessToken != a.rec.AccessToken {
+	if a.out != nil {
+		return a.out
+	}
+	r, _, _, _ := names(a.server)
+	unlock, err := a.store.HeldLock(r)
+	if err != nil {
+		return fmt.Errorf("lock the login for MCP server %s: %w", a.server, err)
+	}
+	defer unlock()
+	stored, err := load(a.store, a.server)
+	switch {
+	case errors.Is(err, ErrNoLogin):
+		a.out = fmt.Errorf("MCP server %s was signed out; run abhed mcp login %s", a.server, a.server)
+	case err != nil:
+		return err
+	case stored.URL != a.rec.URL || stored.ClientID != a.rec.ClientID || stored.TokenEndpoint != a.rec.TokenEndpoint:
+		a.out = fmt.Errorf("the login for MCP server %s changed while this ran; /mcp restart %s takes up the new one", a.server, a.server)
+	}
+	if a.out != nil {
+		a.rec = Record{Server: a.rec.Server, URL: a.rec.URL}
+		return a.out
+	}
+	// Another process refreshed: its tokens are the live ones.
+	if stored.AccessToken != a.rec.AccessToken {
 		a.rec = stored
-		if stored.Expiry == 0 || a.now().Add(expiryMargin).Before(time.Unix(stored.Expiry, 0)) {
+		if a.live(stored) {
 			return nil
 		}
 	}
@@ -288,10 +342,6 @@ func (a *Authorizer) refresh(ctx context.Context) error {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {a.rec.RefreshToken}, "resource": {a.rec.URL}}
 	tr, err := tokenRequest(ctx, a.hc, a.rec, form)
 	if errors.Is(err, errInvalidGrant) {
-		if stored, lerr := load(a.store, a.server); lerr == nil && stored.URL == a.rec.URL && stored.RefreshToken != a.rec.RefreshToken {
-			a.rec = stored
-			return nil
-		}
 		return fmt.Errorf("the login for MCP server %s was refused at refresh; run abhed mcp login %s", a.server, a.server)
 	}
 	if err != nil {
@@ -299,7 +349,7 @@ func (a *Authorizer) refresh(ctx context.Context) error {
 	}
 	next := a.rec
 	next.apply(tr, a.now())
-	if err := save(a.store, next); err != nil {
+	if err := saveLocked(a.store, next); err != nil {
 		return fmt.Errorf("keep the refreshed login: %w", err)
 	}
 	a.rec = next

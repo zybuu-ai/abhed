@@ -47,6 +47,8 @@ type Metadata struct {
 	ISSResponse bool
 	// AuthMethods are the token endpoint's client authentication methods.
 	AuthMethods []string
+	// local is set for a server on this machine, whose endpoints may be http there too.
+	local bool
 }
 
 // Canonical is a server URL as a login is bound to it and sent as the
@@ -106,15 +108,16 @@ func loopback(host string) bool {
 }
 
 // endpointURL checks an endpoint the authorization server names: absolute,
-// https (http only on this machine), no user information or fragment.
-func endpointURL(what, raw string) (string, error) {
+// https, no user information or fragment; http only on this machine, and
+// only when local, for a server that is itself on this machine.
+func endpointURL(what, raw string, local bool) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return "", fmt.Errorf("the %s %q is not an absolute URL", what, printable(raw))
 	}
 	switch {
 	case u.Scheme == "https":
-	case u.Scheme == "http" && loopback(u.Hostname()):
+	case u.Scheme == "http" && local && loopback(u.Hostname()):
 	default:
 		return "", fmt.Errorf("the %s %q is not https", what, printable(raw))
 	}
@@ -238,13 +241,15 @@ func Discover(ctx context.Context, hc *http.Client, serverURL string) (Metadata,
 	}
 	md := Metadata{Resource: server}
 	// A bearer token is never sent in the clear.
-	if _, err := endpointURL("MCP server URL", server); err != nil {
+	su, _ := url.Parse(server)
+	md.local = loopback(su.Hostname())
+	if _, err := endpointURL("MCP server URL", server, true); err != nil {
 		return md, err
 	}
 	metaURL, scope := challenge(ctx, hc, server)
 	var candidates []string
 	if metaURL != "" {
-		u, err := endpointURL("protected-resource metadata URL", metaURL)
+		u, err := endpointURL("protected-resource metadata URL", metaURL, md.local)
 		if err != nil {
 			return md, err
 		}
@@ -284,7 +289,7 @@ func Discover(ctx context.Context, hc *http.Client, serverURL string) (Metadata,
 		if len(prm.AuthorizationServers) == 0 {
 			return md, errors.New("the protected-resource metadata names no authorization server")
 		}
-		if issuer, err = endpointURL("authorization server", prm.AuthorizationServers[0]); err != nil {
+		if issuer, err = endpointURL("authorization server", prm.AuthorizationServers[0], md.local); err != nil {
 			return md, err
 		}
 		md.Scopes = prm.ScopesSupported
@@ -333,7 +338,7 @@ func authServer(ctx context.Context, hc *http.Client, issuer string, md *Metadat
 		return fmt.Errorf("the authorization server %s publishes no metadata", printable(issuer))
 	}
 	// RFC 8414 §3.3: the document must be the issuer's own.
-	if strings.TrimRight(meta.Issuer, "/") != strings.TrimRight(issuer, "/") {
+	if meta.Issuer != issuer {
 		return fmt.Errorf("the authorization server metadata names the issuer %q, not %s", printable(meta.Issuer), printable(issuer))
 	}
 	if !slices.Contains(meta.CodeChallengeMethods, "S256") {
@@ -344,20 +349,20 @@ func authServer(ctx context.Context, hc *http.Client, issuer string, md *Metadat
 	}
 	var err error
 	md.Issuer = meta.Issuer
-	if md.AuthorizationEndpoint, err = endpointURL("authorization endpoint", meta.AuthorizationEndpoint); err != nil {
+	if md.AuthorizationEndpoint, err = endpointURL("authorization endpoint", meta.AuthorizationEndpoint, md.local); err != nil {
 		return err
 	}
-	if md.TokenEndpoint, err = endpointURL("token endpoint", meta.TokenEndpoint); err != nil {
+	if md.TokenEndpoint, err = endpointURL("token endpoint", meta.TokenEndpoint, md.local); err != nil {
 		return err
 	}
 	if meta.RegistrationEndpoint != "" {
-		if md.RegistrationEndpoint, err = endpointURL("registration endpoint", meta.RegistrationEndpoint); err != nil {
+		if md.RegistrationEndpoint, err = endpointURL("registration endpoint", meta.RegistrationEndpoint, md.local); err != nil {
 			return err
 		}
 	}
 	if meta.RevocationEndpoint != "" {
 		// Revocation is best effort: one that is not https is left unused.
-		md.RevocationEndpoint, _ = endpointURL("revocation endpoint", meta.RevocationEndpoint)
+		md.RevocationEndpoint, _ = endpointURL("revocation endpoint", meta.RevocationEndpoint, md.local)
 	}
 	md.ISSResponse = meta.ISSParameterSupported
 	md.AuthMethods = meta.AuthMethods

@@ -192,7 +192,8 @@ func callbackHandler(state string, md Metadata, results chan<- callbackResult) h
 		}
 		var res callbackResult
 		switch {
-		case md.ISSResponse && q.Get("iss") != md.Issuer:
+		// RFC 9207: an iss present is compared whether or not the server said it sends one.
+		case (md.ISSResponse || q.Has("iss")) && q.Get("iss") != md.Issuer:
 			res.err = fmt.Errorf("the sign-in came back from %q, not %s", printable(q.Get("iss")), printable(md.Issuer))
 		case q.Get("error") != "":
 			res.err = fmt.Errorf("the authorization server refused the sign-in: %s %s", printable(q.Get("error")), printable(q.Get("error_description")))

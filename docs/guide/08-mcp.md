@@ -249,13 +249,15 @@ page in your browser. The page comes back to a listener on `127.0.0.1` that
 Abhed opens for this sign-in alone; the code is exchanged with PKCE (S256)
 and the server's URL as the `resource`. It refuses:
 
-- a server or authorization server that is not `https` (one on this machine
-  apart), so a token is never sent in the clear;
-- metadata that names another resource than the server, or an issuer other
-  than the authorization server it was fetched from;
+- a server or authorization server that is not `https`, so a token is never
+  sent in the clear; `http` is taken only on this machine, and only when the
+  MCP server itself is there, so a remote server cannot point a sign-in at a
+  local service;
+- metadata that names another resource than the server, or an issuer not
+  exactly the authorization server it was fetched from;
 - an authorization server without PKCE S256;
-- a redirect that does not carry this sign-in's state, or comes back from
-  another issuer where the server says it adds one.
+- a redirect that does not carry this sign-in's state, or whose `iss`, when
+  it has one, is another issuer.
 
 For an authorization server that registers no clients, name a client
 registered ahead of time:
@@ -271,14 +273,18 @@ server says it supports.
 The tokens are kept in the secret store (`~/.abhed/secrets.json`) under
 names beginning `MCP_OAUTH_`, which Abhed holds for itself: they are not
 offered to the model, a command or tool is never given one, `abhed secret
-set` refuses the prefix, and their values are redacted from the record like
-any stored secret. A login is bound to the server's name and URL: a server
+set` and `abhed secret rm` refuse the prefix (as does the server's
+`/v1/secrets` API, and Studio does not list them), and their values are
+redacted from the record like any stored secret. A login is bound to the server's name and URL: a server
 whose URL changes is not sent it, and asks for `login` again. Its access
 token goes on requests to the server's own origin only, never on a redirect
 or to an endpoint on another host, and a server that also has an
 `Authorization` header configured is refused. It is refreshed before it
-ends, and once more when the server refuses it; a refresh another Abhed
-process made is taken up. Every request a sign-in or refresh makes, the
+ends, and once more when the server refuses it. A refresh holds a lock
+beside the store, so two Abhed processes never spend one refresh token: the
+second takes up the first's tokens. A login removed or made again while a
+session runs is never written back by that session's refresh; the session
+says it was signed out, or that `/mcp restart` takes up the new login. Every request a sign-in or refresh makes, the
 browser's apart, goes under the egress allowlist (`sandbox.network:
 "allowlist"`, where the authorization server needs a rule too) and the
 corporate upstream proxy. `login` and `logout` are refused inside an
@@ -286,10 +292,13 @@ agent's command, and `login` needs a person at a terminal; each is written
 to `~/.abhed/config-changes.jsonl`, never a token. `abhed mcp list` says
 which servers are signed in.
 
-The login is read from the operator's store: the terminal, an editor's
-sessions, the SDK and a single-user `abhed serve`. On a server where each
-account has its own store, a session reads that account's store, which a
-login does not write.
+The login is read from the operator's store, by the terminal, an editor's
+sessions, the SDK and an `abhed serve` that no accounts sign in to. OAuth
+logins aren't available per account yet: where accounts sign in
+(`auth.mode` other than `none`), the server's sessions share one gateway,
+and the operator's login would let every account act as the operator, so
+it is not used. A server with a login is not connected there, and says why;
+`abhed serve` warns at start-up and `abhed doctor` names each one.
 
 ## Resources
 
@@ -303,9 +312,20 @@ name a URI (`"deny": ["mcp__docs__read_resource(docs://private/*)"]`), and
 when `allow_tools` is set it must name them. A server's own tool of either
 name keeps it, and its resources are then not offered under that name.
 
+A URI is read only in its one canonical form, the form policy judges and
+the server is sent: scheme and authority in lower case, no `.` or `..`
+segments and no empty ones, unreserved characters not percent-encoded and
+other escapes in upper case. A URI written otherwise (`DOCS://private/a`,
+`docs://public/../private/a`, `docs://private/%61`) is refused, naming the
+form to write; one with an encoded `/` or `\`, a backslash, a fragment,
+user information or a rooted path without an authority (`docs:/private/a`)
+is refused outright, and a listing leaves out a resource the server names
+so. A rule on `docs://private/*` therefore cannot be passed by another
+spelling.
+
 In the terminal or an editor's prompt, `@server:uri` attaches a resource:
-`@docs:file:///guide.md`, `@tickets:ticket://42` (quote one with spaces,
-`@"docs:file:///my notes.md"`). It is read as your own call through the
+`@docs:file:///guide.md`, `@tickets:ticket://42` (write a space as `%20`:
+`@docs:file:///my%20notes.md`). It is read as your own call through the
 server's `read_resource` tool, so a deny rule refuses it and the message is
 not sent; the read and the attachment are recorded as an `@` file's are.
 `/mcp resources <server>` lists a server's resources.

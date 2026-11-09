@@ -248,3 +248,82 @@ func TestCanonical(t *testing.T) {
 		t.Error("bearer params")
 	}
 }
+
+// A login removed while a session holds it stays removed: the next refresh
+// says it was signed out, writes nothing back, and the token is not used again.
+func TestLogoutSticksAgainstARunningSession(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Load(store, "corp", s.URL(), noRedirect())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, err := Remove(store, "corp"); !found || err != nil {
+		t.Fatal(found, err)
+	}
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "signed out") {
+		t.Fatalf("refresh after logout: %v", err)
+	}
+	if in, _, _, _ := Status(store, "corp", s.URL()); in {
+		t.Fatal("the removed login was written back")
+	}
+	if _, err := a.Token(context.Background()); err == nil {
+		t.Fatal("the removed login's token was used again")
+	}
+	if _, issued, _ := s.Get(); issued != 1 {
+		t.Fatalf("the token endpoint was asked again: %d", issued)
+	}
+}
+
+// A login made again with another client while a session held the old one
+// is not overwritten by the old one's refresh.
+func TestRefreshDoesNotOverwriteANewLogin(t *testing.T) {
+	s := mcpauthtest.New(t)
+	store := testStore(t)
+	if err := login(t, s, store, nil); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Load(store, "corp", s.URL(), noRedirect())
+	rec, _ := load(store, "corp")
+	rec.ClientID, rec.AccessToken = "another-client", "new-login-token"
+	if err := save(store, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Refresh(context.Background(), "access-1"); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("refresh over a new login: %v", err)
+	}
+	if got, _ := load(store, "corp"); got.AccessToken != "new-login-token" || got.ClientID != "another-client" {
+		t.Fatalf("the new login was overwritten: %+v", got)
+	}
+}
+
+// http on loopback is taken only for a server that is itself on loopback:
+// a remote server cannot point the sign-in at a local service.
+func TestLoopbackHTTPOnlyForALocalServer(t *testing.T) {
+	if _, err := endpointURL("token endpoint", "http://127.0.0.1:9/token", false); err == nil {
+		t.Fatal("a remote server's loopback http endpoint was taken")
+	}
+	if _, err := endpointURL("token endpoint", "http://127.0.0.1:9/token", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := endpointURL("token endpoint", "http://10.0.0.1/token", true); err == nil {
+		t.Fatal("http off this machine was taken")
+	}
+}
+
+// An iss on the redirect is compared even when the server did not say it sends one.
+func TestCallbackComparesAnISSPresent(t *testing.T) {
+	results := make(chan callbackResult, 1)
+	h := callbackHandler("s", Metadata{Issuer: "https://as.example"}, results)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/callback?code=x&state=s&iss=https://evil.example", nil))
+	if r := <-results; r.err == nil {
+		t.Fatal("a sign-in from another issuer was taken")
+	}
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/callback?code=x&state=s&iss=https://as.example", nil))
+	if r := <-results; r.err != nil || r.code != "x" {
+		t.Fatalf("%+v", r)
+	}
+}

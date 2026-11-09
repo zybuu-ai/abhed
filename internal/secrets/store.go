@@ -329,6 +329,28 @@ func (s *Store) UpdateHeld(fn func(get func(string) (string, bool)) (set map[str
 	return s.save(m)
 }
 
+// HeldLock takes a lock, across processes, that one of Abhed's own values
+// is changed under, such as an MCP login being refreshed; nothing else takes
+// it. It is held until the returned function is called.
+func (s *Store) HeldLock(name string) (func(), error) {
+	if !Held(name) {
+		return nil, fmt.Errorf("%q is not a name Abhed keeps for itself", name)
+	}
+	if s.src != nil {
+		mu := lockFor(s.name + "\x00" + name)
+		mu.Lock()
+		return mu.Unlock, nil
+	}
+	mu := lockFor(s.path + "." + name)
+	mu.Lock()
+	unlock, err := fileLock(s.path + "." + strings.ToLower(name))
+	if err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	return func() { unlock(); mu.Unlock() }, nil
+}
+
 func (s *Store) set(name, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return errors.New("the value is empty")
@@ -352,7 +374,11 @@ func (s *Store) set(name, value string) error {
 }
 
 // Remove forgets a secret. Removing a name that is not there is not an error.
+// A name Abhed keeps for itself goes only with the rest of its login.
 func (s *Store) Remove(name string) error {
+	if Held(name) {
+		return fmt.Errorf("%s is kept by Abhed itself; abhed mcp logout removes the login it belongs to", name)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.src != nil {

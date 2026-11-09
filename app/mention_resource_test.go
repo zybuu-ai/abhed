@@ -110,6 +110,10 @@ func TestResourceMentionAttachesThroughTheTool(t *testing.T) {
 	if len(storeEventsOf(t, store, agent.EvObservation)) != 1 {
 		t.Fatal("the read's result is not in the record")
 	}
+	// A spelling not in canonical form refuses the message, naming the form.
+	if _, _, err := (mentionExpander{}).Expand(context.Background(), loop, "see @docs:DOCS://guide"); err == nil || !strings.Contains(err.Error(), "write it as docs://guide") {
+		t.Fatalf("a non-canonical URI: %v", err)
+	}
 	// A mention of a server with no such tool, or no URI scheme, stays as text.
 	for _, typed := range []string{"ask @nobody:docs://x", "see @docs:guide"} {
 		msg, atts, err := mentionExpander{}.Expand(context.Background(), loop, typed)
