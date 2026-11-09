@@ -271,11 +271,19 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 				warn("ssh host %q skips host key verification — it cannot detect a machine-in-the-middle", h.Name)
 			}
 		}
+		// Every name in ssh.hosts stays the operator's, loaded or not:
+		// ssh_connect may not put a machine of its own behind one.
+		declared := make([]string, 0, len(cfg.SSH.Hosts))
+		for _, h := range cfg.SSH.Hosts {
+			declared = append(declared, h.Name)
+		}
 		reg, errs := remote.NewRegistry(hosts)
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil,
+			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(), Secret: secret},
+			remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts, Declared: declared})
 		if cfg.SSH.Transfers {
 			// Held in memory whole, so bounded at 1 GiB whatever is configured.
 			limit := int64(min(max(cfg.SSH.TransferMaxMB, 0), 1024)) << 20

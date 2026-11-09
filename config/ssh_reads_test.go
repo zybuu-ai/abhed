@@ -72,12 +72,12 @@ func TestSSHReadCommandsWildcardsOnlyForKnownReads(t *testing.T) {
 	}
 }
 
-// The read-only classifier judges commands on the hosts in ssh.hosts and on
-// no other. ssh.listed_reads_only turns it off; a workspace may only turn it
-// off; and a managed file that sets the permissions turns it off unless it
-// sets ssh.listed_reads_only itself.
+// The read-only classifier judges commands on the hosts in ssh.hosts that
+// load, and on no other. ssh.listed_reads_only turns it off; a workspace may
+// only turn it off; and a managed file that sets the permissions or any ssh
+// key turns it off unless it sets ssh.listed_reads_only itself.
 func TestSSHReadOnlyHosts(t *testing.T) {
-	hosts := `"hosts":[{"name":"app1","addr":"127.0.0.1:22","user":"ops"}]`
+	hosts := `"hosts":[{"name":"app1","addr":"127.0.0.1:22","user":"ops"},{"name":"half","addr":"10.0.0.9"}]`
 	load := func(settings string) Config {
 		t.Helper()
 		cfg, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(settings), SettingsName: "ci.json"})
@@ -90,6 +90,10 @@ func TestSSHReadOnlyHosts(t *testing.T) {
 	on := load(`{"ssh":{"enabled":true,` + hosts + `}}`).SSHReadOnlyHosts()
 	if on == nil || !on("app1") || on("vm-added") {
 		t.Fatalf("declared hosts: on=%t", on != nil)
+	}
+	// A host with no user fails to load, so ssh_connect could otherwise claim its name.
+	if on("half") {
+		t.Error("a host that does not load is trusted")
 	}
 	if f := load(`{"ssh":{"enabled":true,"listed_reads_only":true,` + hosts + `}}`).SSHReadOnlyHosts(); f != nil {
 		t.Error("listed_reads_only left the classifier on")
@@ -109,12 +113,63 @@ func TestSSHReadOnlyHosts(t *testing.T) {
 		t.Fatalf("an untrusted workspace turned it back on: %v %v", cfg.SSH.ListedReadsOnly, err)
 	}
 
-	withManaged(t, `{"permissions":{"deny":["bash(rm *)"]}}`)
-	if f := load(`{"ssh":{"enabled":true,` + hosts + `}}`).SSHReadOnlyHosts(); f != nil {
-		t.Error("managed permissions left the classifier on")
+	for _, body := range []string{
+		`{"permissions":{"deny":["bash(rm *)"]}}`,
+		`{"ssh":{"read_commands":["uptime"]}}`,
+		`{"ssh":{"hosts":[{"name":"app1","addr":"127.0.0.1:22","user":"ops"}]}}`,
+		`{"ssh":{"transfers":false}}`,
+	} {
+		withManaged(t, body)
+		if f := load(`{"ssh":{"enabled":true,` + hosts + `}}`).SSHReadOnlyHosts(); f != nil {
+			t.Errorf("managed %s left the classifier on", body)
+		}
 	}
 	withManaged(t, `{"permissions":{"deny":["bash(rm *)"]},"ssh":{"listed_reads_only":false}}`)
 	if f := load(`{"ssh":{"enabled":true,` + hosts + `}}`).SSHReadOnlyHosts(); f == nil || !f("app1") {
 		t.Error("the managed file's own listed_reads_only:false did not keep it on")
 	}
+	withManaged(t, `{"permissions":{"deny":["bash(rm *)"]},"ssh":{"listed_reads_only":true}}`)
+	if f := load(`{"ssh":{"enabled":true,"listed_reads_only":false,` + hosts + `}}`).SSHReadOnlyHosts(); f != nil {
+		t.Error("a user file overrode the managed listed_reads_only:true")
+	}
+}
+
+// ssh.read_contents is off by default, set by the person's own file, never
+// by a workspace or an org policy, and under a managed file that sets the
+// permissions or an ssh key only by the managed file itself.
+func TestSSHReadContents(t *testing.T) {
+	hosts := `"hosts":[{"name":"app1","addr":"127.0.0.1:22","user":"ops"}]`
+	_, ws := trustHome(t, `{"ssh":{"enabled":true,`+hosts+`}}`, `{"ssh":{"read_contents":true}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Quiet: true})
+	if err != nil || cfg.SSHReadContents() {
+		t.Fatalf("a workspace turned read_contents on: %v", err)
+	}
+	if !orgRefused("ssh.read_contents") {
+		t.Error("an org policy may set read_contents")
+	}
+	_, ws = trustHome(t, `{"ssh":{"enabled":true,"read_contents":true,`+hosts+`}}`, "")
+	if cfg, err = LoadWith(ws, LoadOptions{Quiet: true}); err != nil || !cfg.SSHReadContents() {
+		t.Fatalf("the person's own read_contents: %v", err)
+	}
+	withManaged(t, `{"ssh":{"read_commands":["uptime"]}}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"ssh":{"enabled":true,"read_contents":true,` + hosts + `}}`), SettingsName: "ci.json"})
+	if err != nil || cfg.SSHReadContents() {
+		t.Fatalf("under a managed ssh key, the person's read_contents held: %v", err)
+	}
+	withManaged(t, `{"ssh":{"read_contents":true,"listed_reads_only":false}}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"ssh":{"enabled":true,` + hosts + `}}`), SettingsName: "ci.json"})
+	if err != nil || !cfg.SSHReadContents() || cfg.SSHReadOnlyHosts() == nil {
+		t.Fatalf("the managed file's own read_contents: %v", err)
+	}
+	withManaged(t, `{"ssh":{"read_contents":false}}`)
+	cfg, err = LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"ssh":{"enabled":true,"read_contents":true,` + hosts + `}}`), SettingsName: "ci.json"})
+	if err != nil || cfg.SSHReadContents() {
+		t.Fatalf("a user file overrode the managed read_contents:false: %v", err)
+	}
+}
+
+// orgRefused reports a key the org policy may never set.
+func orgRefused(key string) bool {
+	r, ok := orgRuleFor(key)
+	return ok && r.kind == orgRefuse
 }

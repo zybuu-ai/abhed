@@ -1468,6 +1468,12 @@ type SSHConfig struct {
 	// read-only list, in read forms, piped) no longer runs unasked, and only
 	// ReadCommands do.
 	ListedReadsOnly bool `json:"listed_reads_only,omitempty"`
+	// ReadContents lets the read-only classifier also run, unasked, programs
+	// that print the contents of files (cat, head, tail, grep, journalctl,
+	// docker logs, systemctl cat, …). Off by default: only metadata (ls, du,
+	// df, ps, stat, …) and lines piped from it run unasked. Only the person's
+	// own file or the managed file sets it; a workspace cannot.
+	ReadContents bool `json:"read_contents,omitempty"`
 	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
 	Transfers bool `json:"transfers,omitempty"`
 	// TransferMaxMB bounds one transfer; 0 is 16.

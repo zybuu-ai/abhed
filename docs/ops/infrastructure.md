@@ -405,12 +405,13 @@ own to stop verifying the identity of a machine it is about to run commands on.
 A local `bash` call runs inside a sandbox with a workspace boundary and a
 checkpoint behind it. None of that holds over SSH: the command runs with the
 remote account's full authority, outside any scoping, with no undo. So a
-remote command runs unasked only when its text proves it changes nothing:
-on a host the operator declared, a command the
+remote command runs unasked only when its text shows it changes nothing: on
+a host the operator declared, a command the
 [read-only classifier](#read-only-commands-on-declared-hosts) reads as a
-pipeline of read programs; on any host, a command the operator declared a
-read. Anything else asks, and on a host `ssh_connect` added every command
-asks unless `ssh.read_commands` names it.
+pipeline of metadata programs (and, where the operator sets
+`ssh.read_contents`, of programs that print files); on any host, a command
+the operator declared a read. Anything else asks, and on a host
+`ssh_connect` added every command asks unless `ssh.read_commands` names it.
 
 The operator declares the extra reads, the commands they know are reads on
 their machines, with `ssh.read_commands`: a list of exact commands, or
@@ -579,52 +580,90 @@ in the same session with approval. It cannot introduce one on its own.
 
 ### Read-only commands on declared hosts
 
-On a host in `ssh.hosts`, Abhed reads each `ssh` command with the same bash
-parser and the same read-only list it uses for `ssh.read_commands`
-wildcards (the table above), and a command it proves is a read runs unasked
-and in plan mode. Incident triage works without an approver for every
+On a host in `ssh.hosts` that loads (it has a name, an `addr` and a
+`user`), Abhed reads each `ssh` command with the same bash parser and the
+same read-only list it uses for `ssh.read_commands` wildcards (the table
+above). A command it shows is a read runs unasked, and in plan mode, which
+follows the same rules. Incident triage works without an approver for every
 listing:
 
 ```
 ls -lah /var/log/app
 du -ah /var/log/app | sort -rh | head -n 20
-grep -i error /var/log/app/app.log | tail -n 50
 find /var/log/app -name 'core*' -exec ls -lh {} +
 ps -eo pid,rss,comm --sort=-rss | head
+systemctl status nginx --no-pager
 ```
+
+**Metadata by default; contents by opt-in.** By default the classifier
+runs only programs that show metadata: names, sizes, times, processes,
+mounts, units' state (`ls`, `stat`, `du`, `df`, `free`, `uptime`, `ps`,
+`wc`, the checksums, `systemctl status` and `is-*`, `docker ps`, `find`
+with no `-exec` of a reader, and the like). `head`, `tail`, `sort`, `cut`,
+`grep` and `wc` count as metadata after a `|` when they name no file of
+their own, since they then read only what a metadata program printed.
+Programs that print the contents of files or of an environment (`cat`,
+`head`, `tail`, `grep`, `rg`, `sort`, `cut`, `diff`, `cmp`, `zcat`,
+`journalctl`, `dmesg`, `openssl x509`, `docker logs` and `inspect`,
+`systemctl cat` and `show`) run unasked only where the operator sets:
+
+```json
+"ssh": { "enabled": true, "read_contents": true }
+```
+
+A text classifier cannot keep secrets out of what such a program prints:
+`grep -r` or `find -type f -exec cat {} +` over a tree reads every file in
+it, keys included, into the session and so to the model's provider. Set
+`read_contents` only for hosts and accounts whose files may be read that
+way. Only the person's own file or the managed file sets it; a workspace and
+an org policy cannot.
 
 A command is a read only when all of these hold:
 
-- It is one command or a pipeline joined by `|`: no `;`, `&&`, `||`, `&`,
+- It is one command, or a pipeline joined by `|`: no `;`, `&&`, `||`, `&`,
   line break, subshell or `!`.
-- Every program in it is on the read-only list, named on its own (`ls`,
-  not `/tmp/x/ls`, `LS` or `FOO=1 ls`), and called in its read form: its
-  options are ones the form lists, read as getopt reads them, so a cluster
-  such as `-rh` is `-r -h` and `-rk2` is `-r -k 2`. A pipe into anything
-  else (`tee`, `xargs`, `awk`, `sed`, `sh`, `less`) is not a read.
+- Every program in it is on the read-only list, named on its own (`ls`, not
+  `/tmp/x/ls`, `LS` or `FOO=1 ls`), and called in its read form. Its options
+  are ones the form lists, read as getopt reads them, so `-rh` is `-r -h`
+  and `-rk2` is `-r -k 2`. A pipe into anything else (`tee`, `xargs`,
+  `awk`, `sed`, `sh`, `less`) is not a read.
 - `find` is read only with tests (`-name`, `-type`, `-size`, `-mtime`, …),
-  `-print`, `-printf`, `-ls`, and `-exec` or `-execdir` of a read-only call
-  ended by `+` or `\;`. `-delete`, `-fprint`, `-fprintf`, `-fls`, `-ok`, and
-  `-exec` of anything else are not.
-- No redirection (`<`, `>`, `2>`), no `$`, no backquote and no process
-  substitution, so nothing in it is decided when it runs.
-- The text means the same in every common login shell: words, single quotes
-  without a backslash in them, and double quotes holding only plain
-  characters. A brace (other than find's `{}`), a word starting with `=`
-  (zsh), an unquoted `^` (old fish's stderr redirect), `#` and `!` are not
-  read; nor is a glob that could expand into an option (`*`, `*.log`, `-*`):
-  write it after a path (`./*.log`, `/var/log/app/*`).
-- The parser finds no write, no hidden program and nothing destructive in
-  it, it carries no `stdin_secret`, and no deny or ask rule matches it.
+  `-print`, `-printf`, `-ls`, and `-exec` or `-execdir` of a read-only call,
+  which ends at `;` or at a `+` right after `{}`, as GNU find reads it.
+  `-delete`, `-fprint`, `-fprintf`, `-fls`, `-ok` and `-exec` of anything
+  else are not reads. A program that opens what it is given (all but `ls`,
+  `stat`, `du`, `file`, `basename`, `dirname`, `realpath`, `readlink`) runs
+  under `-exec` only with `-type f` and no `-o`, `-not` or `( )`, so it never
+  meets a device; with a content reader there, `-regex` is refused.
+- The words are plain or in single quotes, with no backslash or control
+  character. A double quote is refused: `rc` has none, so `"a -o b"` is
+  three words there, which could be options. So are `$`, a backquote, a
+  redirection (`<`, `>`, `2>`), a brace (other than find's `{}`), a word
+  starting with `=` (zsh), `^` (old fish), `#` and `!`, and a glob that could
+  expand into an option (`*`, `*.log`, `-*`): write it after a path
+  (`./*.log`, `/var/log/app/*`).
+- No word is, or as a glob could be, under `/dev` (opening `/dev/watchdog`
+  arms it and can reboot the machine; a tape rewinds; a serial line
+  toggles), `/net` or `/misc` (autofs mounts a host by the name given and
+  looks it up), or climbs with `..`; and `-` (the command's input) is not
+  read. `grep -D read` and `file -s`, which open devices, are refused.
+- It ends: `tail -f`, `--follow` and `--retry`, `journalctl -f`,
+  `dmesg -w`, `docker logs -f`, `free -s`, `vmstat` with a delay, and a
+  reader with no file (`cat`, `grep x`), which reads its input, ask.
+- A content reader names no file that holds credentials: the names in
+  Abhed's shared list (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_*`, `.netrc`,
+  `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, `credentials`, `*.tfvars`,
+  `*.tfstate`, and anything in `.ssh`, `.aws`, `.azure`, `gcloud`, `.gnupg`,
+  `.kube` or `.docker`), and `shadow`, `ssh_host_*_key`,
+  `/proc/*/environ`, `kcore`, `.my.cnf`, the shell histories,
+  `admin.conf` and `kubeconfig`. A glob is matched against each of them, so
+  `/etc/shado?` and `.ss?/id_*` ask too, and so does `/var/log/app/*`,
+  which could match one. This stops naming such a file; it does not stop a
+  tree read (`grep -r`, `find -exec cat`) from reaching one.
+- The parser finds no write, hidden program or destructive command in it,
+  it carries no `stdin_secret`, and no hook, deny or ask rule stops it.
   `getent` and `openssl s_client`, which reach beyond the host, are never
   judged reads here.
-- It names no file that commonly holds credentials, as the read tool's
-  default ask rules name them: `.env` and `.env.*`, `*.pem`, `*.key`,
-  `id_rsa*` and the other key names, `shadow`, `.netrc`, `.pgpass`,
-  `credentials`, and anything in `.ssh`, `.gnupg`, `.aws`, `.kube` or
-  `.docker`. This is a speed bump, not protection: `grep -r` over a home
-  folder still reads them, so add deny rules (`ssh(*/.ssh/*)`) for what must
-  never be read.
 
 So `rm`, `find … -delete`, `sort -o`, `ls | tee f`, `ls | xargs rm`,
 `awk 'BEGIN{system("…")}'`, `sed -i`, `less`, `dmesg -c`, `date -s` and
@@ -633,14 +672,26 @@ rule that allowed a call: `ssh.read_only` for the classifier, or
 `ssh.read_commands: <entry>` for a declared read, in the reason and in the
 record's `rule` field.
 
-**What the classifier cannot see.** It reads the text, not the host. The
-command runs through the remote account's login shell, which reads its own
-start-up files first (for bash over ssh, `~/.bashrc`; for zsh,
-`~/.zshenv`). A function or alias defined there, or a `PATH` that puts
-another `ls` first, runs instead of the program the text names, and Abhed
-cannot detect it. The classifier also assumes the programs are the common
-GNU or busybox ones: it allows only options that are reads in both, and an
-option a smaller busybox applet lacks fails with an error, not a write.
+**What the classifier cannot see.** It reads the text, not the host.
+
+- The command runs through the remote account's login shell, which reads
+  its own start-up files first (for bash over ssh, `~/.bashrc`; for zsh,
+  `~/.zshenv`). sshd may also run `~/.ssh/rc` or `/etc/ssh/sshrc` before
+  it, or replace it entirely with a `ForceCommand`. A function, alias or
+  `PATH` set there, or a forced command, runs instead of what the text
+  names, and Abhed cannot detect it.
+- The programs are taken to be the common GNU or busybox ones: only options
+  that are reads in both are allowed, and an option a smaller busybox
+  applet lacks fails with an error, not a write.
+- A symbolic link is not followed: a link in a home folder that points at a
+  device is opened by a reader as the device.
+- A name the command gives may go to the host's name services: `id`, `ps -u`
+  and `pgrep -u` with a user name, and `ls` of an automounted path outside
+  `/net` and `/misc`, can ask LDAP, SSSD, NIS or DNS.
+- A command the classifier allows skips the monitor's program, evidence and
+  host-choice rules, as a declared read does, so the always-on monitor
+  reviews it less than other remote calls.
+
 Declare only hosts whose accounts and start-up files you trust, use an
 account without write access where reads are all the agent needs, and set
 `ssh.listed_reads_only` to keep the old behaviour:
@@ -651,10 +702,12 @@ account without write access where reads are all the agent needs, and set
 
 With it, only `ssh.read_commands` run unasked. A workspace file may turn the
 classifier off but not on, and an org policy may only turn it off. A managed
-file that sets any `permissions` key turns it off unless the managed file
-itself sets `ssh.listed_reads_only` (to `false` to keep it on), as only the
-managed file then decides what runs unasked. Hosts added with `ssh_connect`
-are never judged by the classifier.
+file that sets any `permissions` or `ssh` key turns it off unless the
+managed file itself sets `ssh.listed_reads_only` (to `false` to keep it on),
+and there only the managed file's own `ssh.read_contents` counts, as only
+the managed file then decides what runs on a host unasked. Hosts added with
+`ssh_connect` are never judged by the classifier, and `ssh_connect` may not
+take a name in `ssh.hosts`, even one whose entry did not load.
 
 ### Rules on a host
 

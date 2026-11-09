@@ -10,8 +10,8 @@ import (
 // PipelineWords splits a command meant for another machine's login shell
 // into the words of each command in a plain pipeline (a | b | c), quotes
 // undone. It reads only text every common login shell (sh, bash, dash, zsh,
-// ksh, fish, csh, busybox ash) reads the same way: plain words, single
-// quotes, and double quotes with nothing the shell would expand. Anything
+// ksh, fish, csh, tcsh, rc, busybox ash) reads the same way: plain words and
+// single quotes with no backslash or control character in them. Anything
 // else, a redirection, an expansion, a list or a background job, is refused
 // with why; why is "" for a pipeline it read.
 func PipelineWords(command string) (stages [][]string, why string) {
@@ -87,27 +87,24 @@ func portableText(s string) string {
 		case c == ' ' || c == '\t':
 			word = true
 			continue
+		case c < 0x20 || c == 0x7f:
+			return "a control character, which the approval, the record and the host could each show differently"
 		case c == '\'':
 			// fish reads \' and \\ inside single quotes; the others keep them.
 			j := strings.IndexByte(s[i+1:], '\'')
 			if j < 0 {
 				return "a single quote is not closed"
 			}
-			if q := s[i+1 : i+1+j]; strings.ContainsAny(q, "\\\n\r") {
-				return "a single-quoted word holds a backslash or a line break, which login shells read differently"
+			if q := s[i+1 : i+1+j]; strings.Contains(q, "\\") {
+				return "a single-quoted word holds a backslash, which fish reads as an escape"
+			} else if strings.ContainsFunc(q, isControl) {
+				return "a single-quoted word holds a control character"
 			}
 			i += j + 1
 		case c == '"':
-			j := strings.IndexByte(s[i+1:], '"')
-			if j < 0 {
-				return "a double quote is not closed"
-			}
-			for _, r := range s[i+1 : i+1+j] {
-				if !portableQuoted(r) {
-					return fmt.Sprintf("a double-quoted word holds %q, which some login shell would expand or read differently; use single quotes", r)
-				}
-			}
-			i += j + 1
+			// rc has no double quotes: there "a -o b" is three words, which
+			// could be options. Only single quotes mean one thing everywhere.
+			return "a double quote, which rc reads as an ordinary character, so the words differ by shell; use single quotes"
 		case c == '|':
 			if i+1 < len(s) && (s[i+1] == '|' || s[i+1] == '&') {
 				return "the command uses || or |&, not only |"
@@ -166,12 +163,5 @@ func plainChar(c byte) bool {
 	return strings.IndexByte("-_./:=,+@%~*?[]", c) >= 0
 }
 
-// portableQuoted is a rune double quotes keep as itself in every login shell:
-// no $, `, \ or ! (expanded or escaped by one or another), and none of
-// the characters rc, which has no double quotes, would read as syntax.
-func portableQuoted(r rune) bool {
-	if r > '~' {
-		return false
-	}
-	return r == ' ' || r == '\t' || r < 128 && plainChar(byte(r))
-}
+// isControl reports a C0 control character or DEL, a tab included.
+func isControl(r rune) bool { return r < 0x20 || r == 0x7f }

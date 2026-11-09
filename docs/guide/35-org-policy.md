@@ -92,7 +92,7 @@ server. That covers model providers and `custom_providers`, `web_search`'s
 provider, endpoint and key, the supervisor's judge (`monitor.endpoint`,
 `api_key_env`, model), `rag`, `retrieval`, `telemetry`, `network` (the proxy
 names a local CA file and secret, and the policy is fetched through it), ssh
-hosts and `ssh.read_commands`, `k8s` clusters, `sandbox.read_only_paths`,
+hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
 `verify.critic`, extensions, `mcp.servers`, statusline, the `dirs` settings,
 `context`, `additional_dirs`, record paths and retention, storage, server,

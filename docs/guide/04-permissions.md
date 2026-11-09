@@ -258,11 +258,13 @@ pattern. A command the operator declared a read in `ssh.read_commands` runs
 unasked and in plan mode, when it is one simple command matching an entry
 that runs no other command, writes no file and carries no `stdin_secret`
 ([Clusters and machines](../ops/infrastructure.md#ssh)). So does, on a host
-in `ssh.hosts`, a command the read-only classifier proves is a read: programs
-on the read-only list in read forms, joined only by `|`, with no
-redirection, expansion or substitution (`ls -lah /var/log`,
-`du -ah /var/log | sort -rh | head`); the record names it as rule
-`ssh.read_only` ([Read-only commands](../ops/infrastructure.md#read-only-commands-on-declared-hosts)). In `bypass` mode the
+in `ssh.hosts`, a command the read-only classifier shows is a read: metadata
+programs on the read-only list in read forms, joined only by `|`, with no
+redirection, expansion, substitution or double quote (`ls -lah /var/log`,
+`du -ah /var/log | sort -rh | head`). Programs that print files (`cat`,
+`grep`, `journalctl`, …) join them only where the operator sets
+`ssh.read_contents`. The record names the rule `ssh.read_only`
+([Read-only commands](../ops/infrastructure.md#read-only-commands-on-declared-hosts)). In `bypass` mode the
 read step is not used: bypass allows it as it allows anything, and where the
 managed configuration refuses bypass the call asks, as in default mode. A remote command the destructive step names, such as `rm -rf`,
 always confirms twice and offers no "always". Neither reads a script the

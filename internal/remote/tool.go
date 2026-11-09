@@ -130,6 +130,8 @@ type Tool struct {
 	// ReadOnly says the policy's read-only classifier is on for the declared
 	// hosts, so the description can tell the model which commands run unasked.
 	ReadOnly bool
+	// ReadContents says the classifier also runs programs that print files.
+	ReadContents bool
 	// Secret returns a stored secret's value, for stdin_secret; nil means no store.
 	Secret func(name string) (string, error)
 }
@@ -184,7 +186,7 @@ func (t Tool) Description() string {
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
-		"the sandbox with no undo" + reads(t.Reads) + readOnly(t.ReadOnly) + ". Prefer one command that answers the question " +
+		"the sandbox with no undo" + reads(t.Reads) + readOnly(t.ReadOnly, t.ReadContents) + ". Prefer one command that answers the question " +
 		"over several exploratory ones. To give a command a password or key, have the " +
 		"user store it with `abhed secret set NAME` and pass the NAME as stdin_secret; " +
 		"never put a secret in the command."
@@ -200,13 +202,18 @@ func reads(cmds []string) string {
 }
 
 // readOnly tells the model what the read-only classifier lets run unasked.
-func readOnly(on bool) string {
+func readOnly(on, contents bool) string {
 	if !on {
 		return ""
 	}
-	return ". On a declared host, a read-only command also runs unasked and in plan mode: common read programs " +
-		"(ls, cat, head, tail, grep, du, df, ps, find with -exec of a read, systemctl status, journalctl, …) " +
-		"with read options, joined only by |, with no redirection, $, backquote, ; or &&; anything else asks"
+	what := "programs that show metadata (ls, stat, du, df, ps, free, uptime, systemctl status, find without " +
+		"-exec of a reader, …), and head, tail, sort, cut, grep or wc reading what such a program pipes to them"
+	if contents {
+		what = "common read programs (ls, cat, head, tail, grep, du, df, ps, journalctl, find -type f -exec of a read, …)"
+	}
+	return ". On a declared host, a read-only command also runs unasked and in plan mode: " + what +
+		", with read options, joined only by |, words plain or in single quotes, with no redirection, $, " +
+		"backquote, double quote, ; or &&, and no follow (-f) form; anything else asks"
 }
 
 func (Tool) Schema() json.RawMessage {
@@ -499,6 +506,9 @@ type ConnectTool struct {
 	Secret func(name string) (string, error)
 	// Allowed, when set, are the only addresses it may reach (ssh.connect_hosts).
 	Allowed []string
+	// Declared are the names in ssh.hosts, whether or not each loaded: a
+	// session host may never take one.
+	Declared []string
 }
 
 // addrAllowed reports whether addr matches one of patterns: the address as
@@ -605,11 +615,18 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	}
 	// An operator's host keeps its name: a session cannot put another machine
 	// behind it.
+	taken := ""
 	if t.R != nil {
-		if taken := t.R.resembles(a.Name); taken != "" {
-			return errf("%q is, or reads like, %q, a host the operator declared; use that "+
-				"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
+		taken = t.R.resembles(a.Name)
+	}
+	for _, d := range t.Declared {
+		if taken == "" && foldName(d) == foldName(a.Name) {
+			taken = d
 		}
+	}
+	if taken != "" {
+		return errf("%q is, or reads like, %q, a host the operator declared; use that "+
+			"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
 	}
 
 	var password string

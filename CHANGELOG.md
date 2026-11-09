@@ -45,28 +45,35 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. A link inside the workspace, and any link at your home
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
-- On a host in `ssh.hosts`, an `ssh` command that is provably a read now
-  runs without asking and in plan mode (below). To keep every command but
+- On a host in `ssh.hosts`, an `ssh` command that only shows metadata
+  (`ls`, `du`, `df`, `ps`, `stat`, `systemctl status`, …) now runs without
+  asking and in plan mode (below). Programs that print files still ask
+  unless you set `ssh.read_contents: true`. To keep every command but
   `ssh.read_commands` behind approval, set `ssh.listed_reads_only: true`. A
-  managed file that sets `permissions` keeps the old behaviour unless it
-  sets `ssh.listed_reads_only` itself.
+  managed file that sets any `permissions` or `ssh` key keeps the old
+  behaviour unless it sets `ssh.listed_reads_only` itself.
 
 ### Changed
 
 - Remote reads no longer need an entry for every variant. On a host the
   operator declared, Abhed reads an `ssh` command with the bash parser and
   the read-only program list behind `ssh.read_commands` wildcards, and runs
-  it unasked when every program in it is on that list in a read form,
-  joined only by `|`, with no redirection, expansion, substitution or text
-  a login shell other than bash reads differently. `ls -lah`,
-  `du -ah … | sort -rh | head` and `find … -exec ls -lh {} +` now run;
-  `rm`, `find -delete`, `sort -o`, `tee`, `xargs`, `awk`, `sed -i`, `less`,
-  redirections and `$(…)` still ask, and hosts added with `ssh_connect` and
+  it unasked when it only shows metadata: every program on that list in a
+  read form, joined only by `|`, with plain or single-quoted words and no
+  redirection, expansion, substitution, double quote, device, automounted
+  path or form that never ends. `ls -lah`, `du -ah … | sort -rh | head` and
+  `find … -exec ls -lh {} +` now run. Programs that print files (`cat`,
+  `grep`, `tail`, `journalctl`, `docker logs` and `inspect`, `systemctl
+  cat` and `show`, …) run unasked only under the operator's new
+  `ssh.read_contents`, and even then not on a name that may hold
+  credentials. `rm`, `find -delete`, `sort -o`, `tee`, `xargs`, `awk`,
+  `sed -i`, `less`, redirections and `$(…)` still ask; hosts added with
+  `ssh_connect`, which may no longer take a name in `ssh.hosts`, and
   undeclared hosts are unchanged. `ssh.read_commands` stays an extra allow
   list. The approval and the record name the rule that allowed each call:
   `ssh.read_only`, or `ssh.read_commands: <entry>`. The classifier reads
-  text, so a function, alias or `PATH` set in the remote account's shell
-  start-up files is outside what it can see; the SSH guide says so.
+  text, so start-up files, `~/.ssh/rc`, `ForceCommand` and symbolic links on
+  the host are outside what it can see; the SSH guide says so.
 - An `ssh.read_commands` entry refused at load, such as `"df -h*"`, now says
   which forms are accepted (an exact command, or `*` for a whole operand or
   a value after `=`) and lists the program's read options.

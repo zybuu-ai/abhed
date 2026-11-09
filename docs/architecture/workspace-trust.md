@@ -145,6 +145,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
 | `ssh.listed_reads_only` | **applied** only when true: it turns the remote read-only classifier off, so only `ssh.read_commands` run unasked |
+| `ssh.read_contents` | ignored: it lets programs that print a host's files run unasked |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `plan.runbooks` | **applied** only when false |

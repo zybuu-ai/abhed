@@ -316,23 +316,37 @@ func (c Config) ManagedWebFetchOff() bool { return c.managedFetchOff }
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
 // SSHReadOnlyHosts reports the hosts on which the read-only classifier may
-// approve an ssh command by its text: those in ssh.hosts. It is nil, the
-// classifier off, when ssh is off, when ssh.listed_reads_only is set, or
-// when the managed file sets the permissions without setting
-// ssh.listed_reads_only itself, since only it then widens what runs unasked.
+// approve an ssh command by its text: those in ssh.hosts that load, with a
+// name, an address and a user. It is nil, the classifier off, when ssh is
+// off, when ssh.listed_reads_only is set, or when the managed file sets the
+// permissions or any ssh key without setting ssh.listed_reads_only itself,
+// since only it then decides what runs on a host unasked.
 func (c Config) SSHReadOnlyHosts() func(host string) bool {
-	if !c.SSH.Enabled || c.SSH.ListedReadsOnly || len(c.SSH.Hosts) == 0 {
+	if !c.SSH.Enabled || c.SSH.ListedReadsOnly || c.sshLocked() && !c.ManagedSets("ssh.listed_reads_only") {
 		return nil
 	}
-	if c.AllowLocked() && !c.ManagedSets("ssh.listed_reads_only") {
-		return nil
-	}
-	hosts := make(map[string]bool, len(c.SSH.Hosts))
+	hosts := map[string]bool{}
 	for _, h := range c.SSH.Hosts {
-		hosts[h.Name] = true
+		if h.Name != "" && h.Addr != "" && h.User != "" {
+			hosts[h.Name] = true
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
 	}
 	return func(host string) bool { return hosts[host] }
 }
+
+// SSHReadContents reports whether the read-only classifier also approves
+// programs that print files (ssh.read_contents). Where the managed file
+// sets the permissions or any ssh key, only its own ssh.read_contents counts.
+func (c Config) SSHReadContents() bool {
+	return c.SSH.ReadContents && (!c.sshLocked() || c.ManagedSets("ssh.read_contents"))
+}
+
+// sshLocked reports a managed file that decides what runs on a host
+// unasked: it sets the permissions or an ssh key.
+func (c Config) sshLocked() bool { return c.AllowLocked() || c.ManagedSets("ssh") }
 
 // ManagedScreens reports whether the managed file itself sets the deny rules
 // or the extensions, so a refusal they make is the organisation's to hold.

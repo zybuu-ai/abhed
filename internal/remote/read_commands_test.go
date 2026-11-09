@@ -182,7 +182,11 @@ func TestSSHDescriptionNamesReadOnlyClassifier(t *testing.T) {
 	if d := (Tool{}).Description(); strings.Contains(d, "read-only command") {
 		t.Errorf("classifier off, yet described: %s", d)
 	}
-	if d := (Tool{ReadOnly: true}).Description(); !strings.Contains(d, "read-only command also runs unasked") {
+	d := (Tool{ReadOnly: true}).Description()
+	if !strings.Contains(d, "read-only command also runs unasked") || !strings.Contains(d, "metadata") || strings.Contains(d, "cat,") {
 		t.Errorf("classifier on, not described: %s", d)
+	}
+	if d := (Tool{ReadOnly: true, ReadContents: true}).Description(); !strings.Contains(d, "cat, head") {
+		t.Errorf("read_contents on, not described: %s", d)
 	}
 }

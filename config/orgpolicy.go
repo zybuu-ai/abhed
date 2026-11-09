@@ -174,6 +174,7 @@ var orgRules = map[string]orgRule{
 	"ssh.connect_hosts":      {orgRefuse, "names machines the agent may reach"},
 	"ssh.read_commands":      {orgRefuse, "lets commands run on a host without asking"},
 	"ssh.listed_reads_only":  {orgTighten, ""},
+	"ssh.read_contents":      {orgRefuse, "lets a host's files be read into the session without asking"},
 	"skills.disabled":        {orgTighten, ""},
 	"skills.dirs":            {orgRefuse, "names folders on this machine"},
 	"agents.disabled":        {orgTighten, ""},

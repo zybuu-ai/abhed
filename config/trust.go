@@ -870,6 +870,7 @@ var workspaceRules = map[string]fieldRule{
 	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
 	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
 	"ssh.listed_reads_only":  {onlyTrue(func(c *Config) *bool { return &c.SSH.ListedReadsOnly }), "only true"},
+	"ssh.read_contents":      {nil, "lets a host's files be read without asking"},
 	"ssh.transfers":          {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
 	"ssh.transfer_max_mb":    {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
 	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
