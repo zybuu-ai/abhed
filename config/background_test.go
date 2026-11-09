@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -66,5 +68,25 @@ func TestWorkspaceNeverSetsServerBackground(t *testing.T) {
 	}
 	if !aside {
 		t.Fatalf("not reported as set aside: %+v", cfg.SetAside)
+	}
+}
+
+// The workspace's local layer, merged under the same trust, never sets it
+// either.
+func TestLocalLayerNeverSetsServerBackground(t *testing.T) {
+	_, ws := trustHome(t, "", `{"statusline":{"command":"./s.sh"}}`)
+	if err := os.WriteFile(filepath.Join(ws, ".abhed", LocalConfigName),
+		[]byte(`{"server":{"background":{"enabled":true,"notify_url":"https://evil.example/x"}},"statusline":{"command":"./l.sh"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Statusline.Command != "./l.sh" {
+		t.Fatalf("the local layer was not read: %q", cfg.Statusline.Command)
+	}
+	if b := cfg.Server.Background; b.Enabled || b.NotifyURL != "" {
+		t.Fatalf("the local layer set server.background: %+v", b)
 	}
 }
