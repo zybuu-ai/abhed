@@ -41,6 +41,9 @@ var remoteMetadataReads = []string{
 	"find /var/log -maxdepth 1 -newermt 2026-11-01 -ls",
 	"find /var/log -type f -name '*.log' -exec wc -l {} +",
 	"find /var/log/app -exec stat -c '%s %n' {} +",
+	"find / -xdev -type f -exec wc -c {} +",
+	"find / -mount -type f -name '*.log' -exec file {} +",
+	"find / -name core -exec ls -l {} +",
 	"df -h",
 	"df -hT /var",
 	"free -m",
@@ -96,6 +99,8 @@ var remoteContentReads = []string{
 	// findmnt's fstab holds mount options, a CIFS password among them.
 	"findmnt -s",
 	"findmnt --fstab -o SOURCE,OPTIONS",
+	"find / -xdev -type f -name '*.log' -exec tail -n 1 {} +",
+	"grep -r error /var/log/app",
 }
 
 // Every evasion of the read-only form is not a read, whatever the opt-in:
@@ -248,6 +253,20 @@ var remoteReadsRefused = []string{
 	"find / -not -type f -exec wc {} +",
 	"file -s /dev/sda",
 	"ls /dev",
+	// A find from / walks /proc and /sys unless -xdev keeps it on one device,
+	// and a link followed can lead there.
+	"find / -type f -exec wc -c {} +",
+	"find / -exec file {} +",
+	"find /. -type f -exec wc -c {} +",
+	"find // -type f -exec file {} +",
+	"find /var /./ -type f -exec md5sum {} +",
+	"find -L /var/log -type f -exec wc -c {} +",
+	"find -H /var/log -xdev -type f -exec wc -c {} +",
+	"find /var/log -follow -type f -exec file {} +",
+	"find /var/log -exec file {} +",
+	"grep -r x /",
+	"grep -R x /.",
+	"rg x /",
 	// Cleaned paths and /proc, /sys: /./dev is /dev, /proc/self/root/dev is too.
 	"wc -c /./dev/watchdog",
 	"wc -c //dev/watchdog",
@@ -444,19 +463,21 @@ func TestRemoteReadCommandsStillExtra(t *testing.T) {
 // A refusal says why, so the model and the person can see what would pass.
 func TestRemoteReadOnlyExplains(t *testing.T) {
 	for cmd, want := range map[string]string{
-		"sort -o x y":                  "sort's read form takes",
-		"ls > x":                       "redirection",
-		"sort *.log":                   "./*.log",
-		"find . -delete":               "-delete is not a read",
-		"ls | tee x":                   "tee is not on the read-only list",
-		"systemctl stop x":             "its read verbs are",
-		"getent hosts a.b.c":           "DNS",
-		`grep "x" /etc/hosts`:          "rc",
-		"cat /dev/watchdog":            "/dev",
-		"tail -f /var/log/x":           "until it is stopped",
-		"cat /etc/shado?":              "credentials",
-		"find / -exec md5sum {} +":     "-type f",
-		"find / -type f -exec ls + {}": "{} +",
+		"sort -o x y":                     "sort's read form takes",
+		"ls > x":                          "redirection",
+		"sort *.log":                      "./*.log",
+		"find . -delete":                  "-delete is not a read",
+		"ls | tee x":                      "tee is not on the read-only list",
+		"systemctl stop x":                "its read verbs are",
+		"getent hosts a.b.c":              "DNS",
+		`grep "x" /etc/hosts`:             "rc",
+		"cat /dev/watchdog":               "/dev",
+		"tail -f /var/log/x":              "until it is stopped",
+		"cat /etc/shado?":                 "credentials",
+		"find / -exec md5sum {} +":        "-type f",
+		"find / -type f -exec wc -c {} +": "-xdev",
+		"grep -r x /":                     "from /",
+		"find / -type f -exec ls + {}":    "{} +",
 		// One grep with + -o -exec ls {} as its arguments, as GNU find reads it.
 		"find /tmp -exec grep + -o -exec ls {} +": "-exec of grep",
 	} {

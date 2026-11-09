@@ -1479,9 +1479,13 @@ type SSHConfig struct {
 	// TransferMaxMB bounds one transfer; 0 is 16.
 	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
 	// MaxTimeoutSeconds bounds the timeout_seconds an ssh call may ask for;
-	// 0 is 120, the default a call gets when it asks for none.
+	// 0 is 120, the default a call gets when it asks for none. At most
+	// MaxSSHTimeoutSeconds.
 	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty"`
 }
+
+// MaxSSHTimeoutSeconds is the largest ssh.max_timeout_seconds, a day.
+const MaxSSHTimeoutSeconds = 86400
 
 type SSHHostConfig struct {
 	Name         string `json:"name"`
@@ -2167,6 +2171,9 @@ func (c Config) Validate() error {
 	}
 	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
 		return err
+	}
+	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
+		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

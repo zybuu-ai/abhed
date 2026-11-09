@@ -122,6 +122,13 @@ func judgeCall(words []string, piped, contents, findOK bool) string {
 	if !contents {
 		return name + " prints the contents of files, which runs unasked only where the operator sets ssh.read_contents"
 	}
+	if recursive(name, args) {
+		for _, w := range fileOperands(name, args, operands) {
+			if isRoot(w) {
+				return name + " searching from / reads /proc and /sys; name the folders to search"
+			}
+		}
+	}
 	for _, w := range words[1:] {
 		if m := secretWord(w); m != "" {
 			return fmt.Sprintf("%q may name a file that holds credentials (%s), so reading it asks", w, m)
@@ -303,6 +310,26 @@ func unsafeWords(args []string) string {
 	return ""
 }
 
+// isRoot reports a path that is / once cleaned (/., //, /./).
+func isRoot(w string) bool { return strings.HasPrefix(w, "/") && path.Clean(w) == "/" }
+
+// recursive reports a search that walks the folders it is given: grep -r
+// or -R, and rg, which always does.
+func recursive(name string, args []string) bool {
+	if name == "rg" {
+		return true
+	}
+	if name != "grep" && name != "egrep" && name != "fgrep" {
+		return false
+	}
+	for _, a := range args {
+		if a == "-r" || a == "-R" || a == "--recursive" || a == "--dereference-recursive" {
+			return true
+		}
+	}
+	return false
+}
+
 // segmentMatches reports a path segment, perhaps a glob, that is or could
 // expand to name.
 func segmentMatches(segment, name string) bool {
@@ -459,10 +486,10 @@ func cluster(op opts, w string) (letters []string, ok bool) {
 func never(string) bool { return false }
 
 // metadataExec are the programs find may -exec on any file it meets: they
-// read a file's name and inode, except file, which reads a regular file's
-// first bytes to name its type (and never opens a device unless -s, which
-// is refused). /proc and /sys are refused as roots, so none meets them.
-var metadataExec = set("ls", "stat", "du", "basename", "dirname", "realpath", "readlink", "file")
+// read a file's name and inode, never open it. Every other program opens
+// what it is given (file reads a regular file's first bytes), so find runs
+// it only where it cannot meet a device or /proc and /sys.
+var metadataExec = set("ls", "stat", "du", "basename", "dirname", "realpath", "readlink")
 
 // findReadOnly reports why find's arguments are not a read, or "": tests and
 // actions that only print, and -exec or -execdir of a read-only call.
@@ -471,21 +498,28 @@ var metadataExec = set("ls", "stat", "du", "basename", "dirname", "realpath", "r
 // so it never meets a device.
 func findReadOnly(args []string, contents bool) string {
 	i := 0
+	follows := false
 	// Options before the paths.
 	for i < len(args) && (args[i] == "-H" || args[i] == "-L" || args[i] == "-P") {
+		follows = follows || args[i] != "-P"
 		i++
 	}
-	// The paths: up to the first word that starts an expression.
+	// The paths: up to the first word that starts an expression. One that
+	// is / walks /proc and /sys, unless -xdev keeps it on the root's device.
+	fromRoot := false
 	for i < len(args) && !strings.HasPrefix(args[i], "-") && args[i] != "(" && args[i] != "!" {
+		fromRoot = fromRoot || isRoot(args[i])
 		i++
 	}
 	var execs [][]string
-	branches, regular, regex := false, false, false
+	branches, regular, regex, xdev := false, false, false, false
 	for ; i < len(args); i++ {
 		w := args[i]
 		switch {
 		case findAlone[w]:
 			branches = branches || findBranch[w]
+			follows = follows || w == "-follow"
+			xdev = xdev || w == "-xdev" || w == "-mount"
 		case findValued[w] || strings.HasPrefix(w, "-newer") && len(w) == len("-newerXY"):
 			if i+1 >= len(args) {
 				return "find " + w + " needs a value"
@@ -517,6 +551,12 @@ func findReadOnly(args []string, contents bool) string {
 		}
 		if !regular || branches {
 			return "find -exec of " + cmd[0] + ", which opens what it is given, needs -type f with no -o, -not or ( ), so it never opens a device"
+		}
+		if follows {
+			return "find -L, -H or -follow with -exec of " + cmd[0] + " could follow a link into /dev or /proc"
+		}
+		if fromRoot && !xdev {
+			return "find from / with -exec of " + cmd[0] + " walks /proc and /sys; add -xdev to stay on the root's file system"
 		}
 		if printsContents(cmd[0], cmd[1:]) {
 			if regex {

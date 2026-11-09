@@ -173,3 +173,20 @@ func orgRefused(key string) bool {
 	r, ok := orgRuleFor(key)
 	return ok && r.kind == orgRefuse
 }
+
+// ssh.max_timeout_seconds loads from 0 to a day; anything else stops the
+// load, so no value can wrap or quietly mean the default.
+func TestSSHMaxTimeoutBounds(t *testing.T) {
+	trustHome(t, `{}`, "")
+	for _, v := range []string{"-1", "86401", "9223372037", "20000000000"} {
+		_, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"ssh":{"max_timeout_seconds":` + v + `}}`), SettingsName: "ci.json"})
+		if err == nil || !strings.Contains(err.Error(), "ssh.max_timeout_seconds") {
+			t.Errorf("%s loaded: %v", v, err)
+		}
+	}
+	for _, v := range []string{"0", "30", "86400"} {
+		if _, err := LoadWith(t.TempDir(), LoadOptions{Quiet: true, Settings: []byte(`{"ssh":{"max_timeout_seconds":` + v + `}}`), SettingsName: "ci.json"}); err != nil {
+			t.Errorf("%s: %v", v, err)
+		}
+	}
+}

@@ -636,9 +636,13 @@ A command is a read only when all of these hold:
   which ends at `;` or at a `+` right after `{}`, as GNU find reads it.
   `-delete`, `-fprint`, `-fprintf`, `-fls`, `-ok` and `-exec` of anything
   else are not reads. A program that opens what it is given (all but `ls`,
-  `stat`, `du`, `file`, `basename`, `dirname`, `realpath`, `readlink`) runs
-  under `-exec` only with `-type f` and no `-o`, `-not` or `( )`, so it never
-  meets a device; with a content reader there, `-regex` is refused.
+  `stat`, `du`, `basename`, `dirname`, `realpath`, `readlink`; `file`
+  opens it too) runs under `-exec` only with `-type f` and no `-o`, `-not`
+  or `( )`, so it never meets a device; never with `-L`, `-H` or `-follow`,
+  so no link leads it into `/dev` or `/proc`; and, from `/`, only with
+  `-xdev` (or `-mount`), so it stays off `/proc` and `/sys`, whose regular
+  files (`/proc/kmsg`, `pagemap`) block or are consumed as they are read.
+  With a content reader there, `-regex` is refused.
 - The words are plain or in single quotes, with no backslash or control
   character. A double quote is refused: `rc` has none, so `"a -o b"` is
   three words there, which could be options. So are `$`, a backquote, a
@@ -652,15 +656,18 @@ A command is a read only when all of these hold:
   empty; `/proc/self/root/dev` is `/dev` again) or `/sys`, `/net` or `/misc`
   (autofs mounts a host by the name given and looks it up). Each path is
   cleaned first, so `/./dev` and `//dev` count as `/dev`; a find root
-  counts too. No word climbs with `..`, and `-` (the command's input) is
-  not read. `grep -D read`, `file -s` and `lsusb -v`, which open devices,
+  under them counts too. A walk that starts at `/` would reach them, so a
+  find from `/` runs an opening `-exec` only with `-xdev` (above), and
+  `grep -r` and `rg` (under `read_contents`) do not search from `/` at all.
+  No word climbs with `..`, and `-` (the command's input) is not read. `grep -D read`, `file -s` and `lsusb -v`, which open devices,
   are refused, and `apt`, which may rewrite its cache as root, is not
   judged a read.
 - It ends: `tail -f`, `--follow` and `--retry`, `journalctl -f`,
   `dmesg -w`, `docker logs -f`, `free -s` and `free -c`, `vmstat` with a
   delay, and a reader with no file (`cat`, `grep x`), which reads its
   input, ask. Every call is also bounded by `ssh.max_timeout_seconds`
-  (default 120): `timeout_seconds` is the model's choice only below it.
+  (default 120, at most 86400): `timeout_seconds` is the model's choice
+  only below it.
 - A content reader names no file that holds credentials: the names in
   Abhed's shared list (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_*`, `.netrc`,
   `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, `credentials`, `*.tfvars`,

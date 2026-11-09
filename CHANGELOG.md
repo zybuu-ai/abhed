@@ -70,15 +70,17 @@ All notable changes to Abhed are recorded here. The format follows
   `sed -i`, `less`, redirections and `$(…)` still ask; hosts added with
   `ssh_connect`, which may no longer take a name in `ssh.hosts`, and
   undeclared hosts are unchanged. Checksums, `findmnt -s` and
-  `systemctl status` with its journal lines count as contents; `/dev`,
-  `/proc` and `/sys` are never read, however the path is written. `ssh.read_commands` stays an extra allow
+  `systemctl status` with its journal lines count as contents; no path
+  under `/dev`, `/proc` or `/sys` is read, however it is written, and a
+  walk from `/` that opens files must stay on one file system (`find
+  -xdev`; `grep -r` and `rg` do not search from `/`). `ssh.read_commands` stays an extra allow
   list. The approval and the record name the rule that allowed each call:
   `ssh.read_only`, or `ssh.read_commands: <entry>`. The classifier reads
   text, so start-up files, `~/.ssh/rc`, `ForceCommand` and symbolic links on
   the host are outside what it can see; the SSH guide says so.
 - An `ssh` call's `timeout_seconds` is now capped at
   `ssh.max_timeout_seconds` (default 120, the timeout a call gets when it
-  names none); a workspace or org policy may only lower it.
+  names none; at most 86400); a workspace or org policy may only lower it.
 - An `ssh.read_commands` entry refused at load, such as `"df -h*"`, now says
   which forms are accepted (an exact command, or `*` for a whole operand or
   a value after `=`) and lists the program's read options.
