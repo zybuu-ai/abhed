@@ -47,7 +47,7 @@ type plainInput struct{}
 var _ InputExpander = plainInput{}
 
 func (plainInput) Expand(_ context.Context, _ *agent.Loop, raw string) (agent.Message, []Attachment, error) {
-	return agent.Message{Text: raw}, nil, nil
+	return agent.Message{Text: raw, Typed: raw}, nil, nil
 }
 
 // inputState is what the input layer keeps across lines of one session.

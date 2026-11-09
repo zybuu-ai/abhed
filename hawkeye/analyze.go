@@ -427,6 +427,7 @@ var beforeModel = map[agent.EventType]bool{
 	agent.EvUserMessage: true, agent.EvObservation: true, agent.EvActionDenied: true,
 	agent.EvSubagentNotice: true, agent.EvSessionWoken: true, agent.EvModelCall: true,
 	agent.EvCompactDone: true, agent.EvContextOffloaded: true, agent.EvModelSwitched: true, agent.EvModelFallback: true,
+	agent.EvModelWaiting: true,
 }
 
 // deltaShaped reports whether a gap between prev and next could hold only deltas.

@@ -169,6 +169,18 @@ func (d *Definitions) Loaded() []*Definition {
 }
 
 // listing is the lines naming each type and when to use it.
+// worktreeNote says that a type working in its own worktree runs alone as a
+// task call, for a set that has one: the loop runs a call that makes a
+// checkout after the turn's other calls, one at a time.
+func (d *Definitions) worktreeNote() string {
+	for _, name := range d.Names() {
+		if def, _ := d.Get(name); def != nil && def.Isolation == "worktree" {
+			return " A type with its own worktree runs alone as a task call; use tasks to run several."
+		}
+	}
+	return ""
+}
+
 func (d *Definitions) listing() string {
 	var b strings.Builder
 	for _, name := range d.Names() {

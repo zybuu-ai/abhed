@@ -158,6 +158,8 @@ func toolTitle(tool string) string {
 		return "Grep"
 	case "task":
 		return "Task"
+	case "tasks":
+		return "Tasks"
 	case "todo":
 		return "Todos"
 	case "web_fetch":
@@ -173,6 +175,38 @@ func toolTitle(tool string) string {
 		return "Tool"
 	}
 	return strings.ToUpper(tool[:1]) + tool[1:]
+}
+
+// TasksSummary is a tasks call's line: how many subagents start at once and
+// what each is for, so a parallel start reads as one at a glance.
+func TasksSummary(raw json.RawMessage) string {
+	var a struct {
+		Tasks []struct {
+			Description string `json:"description"`
+			Prompt      string `json:"prompt"`
+		} `json:"tasks"`
+		Isolation  string `json:"isolation"`
+		Background bool   `json:"background"`
+	}
+	if json.Unmarshal(raw, &a) != nil || len(a.Tasks) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(a.Tasks))
+	for _, t := range a.Tasks {
+		l := strings.TrimSpace(t.Description)
+		if l == "" {
+			l = strings.Join(strings.Fields(t.Prompt), " ")
+		}
+		labels = append(labels, truncate(l, 40))
+	}
+	how := "in parallel"
+	if a.Background {
+		how = "in parallel, in the background"
+	}
+	if a.Isolation == "worktree" {
+		how += ", each in its own worktree"
+	}
+	return truncate(fmt.Sprintf("%d %s: %s", len(a.Tasks), how, strings.Join(labels, " · ")), 160)
 }
 
 // summarizeArgs renders the one useful detail per tool, so the line stays
@@ -213,6 +247,8 @@ func summarizeArgsRel(tool string, raw json.RawMessage, rel func(string) string)
 		return truncate(str("command"), 120)
 	case "task":
 		return str("description")
+	case "tasks":
+		return TasksSummary(raw)
 	case "web_fetch":
 		return str("url")
 	case "web_search":

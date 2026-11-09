@@ -46,8 +46,48 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- `/parallel <work>` in the terminal, in Studio and as an `abhed -p` task or
+  `-input-format stream-json` line: the work, its `@` mentions attached, goes
+  to the model with the instruction to start its independent parts at once
+  in one `tasks` call. It is recorded as `command.invoked`.
+- `max_concurrent_requests` on a provider of an OpenAI-compatible type: the
+  requests sent to it at once, shared by every adapter built from that
+  provider in the process. Requests past it wait in Abhed before their
+  timeouts start, the wait is shown in the terminal and on the subagent's
+  Studio card and recorded as `model.waiting`, and `model.call` keeps it apart
+  as `queue_ms`. A value above 0 on another type is refused at startup.
+
+### Changed
+
+- Providers of type `ollama` now send one request at a time unless
+  `max_concurrent_requests` says more, matching Ollama's documented
+  `OLLAMA_NUM_PARALLEL` default of 1; the rest wait in Abhed. Set the key to
+  the server's `OLLAMA_NUM_PARALLEL` where that is higher.
+
 ### Fixed
 
+- Asking for work "in parallel" started no parallel subagents. The model read
+  it as a request to make the project's code concurrent, or did the parts one
+  after another: neither subagent tool said what such a request means. `tasks`
+  now says that work asked for in parallel or by several agents means starting
+  subagents, and `task` that several calls in one response run at once. When
+  the person's own words ask for parallel work, the model also gets a short
+  conditional note after the message, recorded on its `user.message` as
+  `harness_note`; on a small local model the descriptions alone did not turn
+  it. The note is judged only on what the person typed, not on attached files,
+  Studio resources or piped stdin; it is left out when the message names the
+  program's own concurrency, in a subagent's task and when no subagent could
+  start. A `tasks` start now shows as one line naming each part (`3 in
+  parallel: …`) in the terminal and on Studio's card, and `task` cards name
+  their description; a task given no description is labelled from its
+  prompt. Outside a git repository `tasks` no longer offers worktree
+  isolation, which was only refused there.
+- Parallel subagents on Ollama all failed with "the model sent nothing for
+  5m0s". Ollama serves one request at a time and queues the rest without a
+  byte, so the stall timeout ended every queued request. Requests now wait in
+  Abhed for the provider's slot (see `max_concurrent_requests` under Added).
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was
   read without end, and a sparse file of any size was hashed in full. A

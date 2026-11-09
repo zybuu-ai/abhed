@@ -3319,7 +3319,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
 		return
 	}
-	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
+	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID, Typed: req.Prompt}
 
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	resumedHere := false

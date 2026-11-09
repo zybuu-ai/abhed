@@ -57,7 +57,7 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 			if json.Unmarshal(ev.Payload, &m) != nil {
 				continue
 			}
-			msgs = append(msgs, model.Message{Role: model.RoleUser, Content: m.Text})
+			msgs = append(msgs, model.Message{Role: model.RoleUser, Content: m.ModelText()})
 			lastAssistant = nil
 
 		case EvAgentMessage:

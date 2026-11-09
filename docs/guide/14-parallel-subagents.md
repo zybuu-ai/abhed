@@ -22,6 +22,60 @@ The budget (`limits.max_budget_tokens`) is one allowance for the session and
 all its subagents: a subagent spends from it turn by turn and stops when it
 runs out, as its parent does.
 
+## Asking for parallel work
+
+Ask in plain words: "run these in parallel", "at the same time", "use three
+agents". The `tasks` tool tells the model that work asked for in parallel or by
+several agents means starting subagents, not making the code concurrent, and
+`task` says that several `task` calls in one response also run at once. Models
+used to read "run this in parallel" as a request to make the project concurrent,
+or did the parts one after another.
+
+The descriptions alone did not turn a small local model: asked to "speed up the
+project by running things in parallel", it still added a thread pool to the
+code. So when your own words ask for work in parallel, Abhed puts a short note
+after your message for the model: if the message asks for independent pieces of
+work to run at once, start them as subagents with one `tasks` call; if it is
+about the program's own concurrency, ignore the note. The note is judged only on
+what you typed, never on files you attach with `@`, resources attached in Studio
+or input piped into `-p`. It is left out when the message names the program's
+concurrency (a race, threads, async code, a worker pool, a lock, a scheduler,
+`-p 8`), and it is added only in the session itself, never to a subagent's task,
+and only while a subagent could still start. The record keeps it on the
+`user.message`, as `harness_note`, beside your own text, so a fork or a resume
+sends what the model was sent. A message queued or steered while a turn runs is
+treated the same way.
+
+`/parallel <work>` says it outright, in the terminal, in Studio and after
+`abhed -p` (as the task, or as a line of `-input-format stream-json`): the work
+goes to the model with the instruction to split it into parts and start them
+all in one `tasks` call. `@` mentions in the work are attached as in any
+message, and the command is recorded as `command.invoked`.
+
+```
+/parallel review pkg/auth, write tests for pkg/store, document pkg/server
+```
+
+The start shows as one line: `Tasks 3 in parallel: review pkg/auth · tests ·
+docs` in the terminal, and `tasks: 3 in parallel: …` on Studio's card, then one
+card or line per subagent as it starts and returns. A task given no description
+is labelled from its prompt.
+
+Outside a git repository the `tasks` tool does not offer worktree isolation,
+which would only be refused there; it asks the model to give subagents that
+edit files separate files instead. That is a request, not a guard: without
+isolation the subagents share one folder, and while `edit` refuses a file that
+changed since it was read, `write` replaces a file whole, so one subagent can
+overwrite what another wrote. A `git init` during the session offers worktree
+isolation from then on.
+
+On a local model server that answers one request at a time, the subagents'
+requests take turns: see `max_concurrent_requests` in
+[Configuration](02-configuration.md). Requests past the bound wait in Abhed, and
+the wait is shown, `waiting for the model · 2 ahead` in the terminal and on the
+subagent's card in Studio, and recorded as `model.waiting`; the call's
+`model.call` keeps it apart as `queue_ms`.
+
 ## Agent types
 
 `agent_type` names the role each subagent runs in: `general` (the session's

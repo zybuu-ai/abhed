@@ -296,6 +296,18 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 				"_meta": map[string]any{acpMetaKey: map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
 					"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}}})
 		}
+	case agent.EvModelWaiting:
+		// A subagent waiting for the model says so on its card.
+		var w agent.ModelWaiting
+		if replay || json.Unmarshal(ev.Payload, &w) != nil || w.Session == "" {
+			break
+		}
+		text := "waiting for the model"
+		if w.Ahead > 0 {
+			text += fmt.Sprintf(" (%d ahead)", w.Ahead)
+		}
+		update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "sub-" + w.Session, "status": "in_progress",
+			"content": []any{map[string]any{"type": "content", "content": textBlock(text)}}})
 	case agent.EvModelFallback:
 		// The engine changed an option itself: every option goes out again.
 		if replay {

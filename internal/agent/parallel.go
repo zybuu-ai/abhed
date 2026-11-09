@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -41,6 +43,11 @@ type Tasks struct {
 	MaxParallel int
 }
 
+// inGit reports whether worktree isolation can be offered: the workspace is
+// in a git repository now, or is not known. It is asked each time the tool
+// is described, so a git init during the session offers it from then on.
+func (t Tasks) inGit() bool { return t.Workspace == "" || InGitRepo(t.Workspace) }
+
 func (Tasks) Name() string  { return "tasks" }
 func (Tasks) Mutates() bool { return false } // each child's tools are policed on their own
 
@@ -64,12 +71,15 @@ func (t Tasks) MutatesCall(raw json.RawMessage) bool {
 }
 
 func (t Tasks) Description() string {
-	return "Run several subagents AT THE SAME TIME, each with a fresh context and a " +
-		"complete self-contained prompt. Use for independent subtasks — investigating " +
-		"separate areas, or trying alternative approaches. Set isolation to \"worktree\" " +
-		"when subagents will edit files: each then works on its own git branch in its " +
-		"own checkout, and you receive each branch's changes and how to merge them. " +
-		"Returns every subagent's summary, in order."
+	iso := "Set isolation to \"worktree\" when subagents will edit files: each then works on " +
+		"its own git branch in its own checkout, and you receive each branch's changes and how " +
+		"to merge them."
+	if !t.inGit() {
+		iso = "Not a git repository, so no isolation \"worktree\": give subagents that edit separate files."
+	}
+	return "Run several subagents AT THE SAME TIME, each with a fresh context and a complete " +
+		"self-contained prompt. " + parallelUse + " Also for independent subtasks: separate " +
+		"areas, or alternative approaches. " + iso + " Returns every subagent's summary, in order."
 }
 
 func (t Tasks) Schema() json.RawMessage {
@@ -89,11 +99,20 @@ func (t Tasks) Schema() json.RawMessage {
 					"required": []string{"prompt", "description"},
 				},
 			},
-			"isolation": map[string]any{"type": "string", "enum": []string{"none", "worktree"},
-				"description": "worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."},
+			"isolation": isolationSchema(t.inGit()),
 		}, nil, t.Background != nil),
 		"required": []string{"tasks"},
 	})
+}
+
+// isolationSchema is the isolation property: worktree only where git is.
+func isolationSchema(git bool) map[string]any {
+	if !git {
+		return map[string]any{"type": "string", "enum": []string{"none"},
+			"description": "Outside a git repository subagents share the workspace. Default none."}
+	}
+	return map[string]any{"type": "string", "enum": []string{"none", "worktree"},
+		"description": "worktree: each subagent edits its own git branch in its own checkout. Required when subagents will change files. Default none."}
 }
 
 type tasksArgs struct {
@@ -134,6 +153,10 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	for i, tk := range a.Tasks {
 		if strings.TrimSpace(tk.Prompt) == "" {
 			return tools.Result{Content: fmt.Sprintf("tasks[%d].prompt is required and must be self-contained.", i), IsError: true}
+		}
+		// The label is what the person sees on each subagent's card.
+		if strings.TrimSpace(tk.Description) == "" {
+			a.Tasks[i].Description = labelFrom(tk.Prompt)
 		}
 		if a.Tasks[i].AgentType == "" {
 			a.Tasks[i].AgentType = "general"
@@ -245,6 +268,88 @@ func (t Tasks) Run(ctx context.Context, _ *tools.Session, raw json.RawMessage) t
 	return tools.Result{Content: b.String(), IsError: failed == len(outcomes)}
 }
 
+// labelFrom is a short label from a prompt, for a task given none.
+func labelFrom(prompt string) string {
+	words := strings.Fields(prompt)
+	if len(words) > 5 {
+		return strings.Join(words[:5], " ") + "…"
+	}
+	return strings.Join(words, " ")
+}
+
+// A message asks for work in parallel when the person names more than one
+// agent to do it, or asks for the work at once in so many words; the second
+// does not count when the message names the program's own concurrency.
+var (
+	parallelAgents = regexp.MustCompile(`(?i)\b(use|using|spin up|start|launch|run|with|deploy|get)\s+` +
+		`(\d+|two|three|four|five|six|several|multiple|many|a few|parallel)\s+(sub-?)?agents\b`)
+	parallelWork = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|concurrently|` +
+		`simultaneously|side[ -]by[ -]side|paralleli[sz]e|fan(ning)?[ -]out|en paralelo)\b|समानांतर`)
+	codeConcurrency = regexp.MustCompile(`(?i)\b(races?|racy|goroutines?|threads?|thread-?safe|threadpool|` +
+		`async|asyncio|await|gather|worker[ -]?pool|pool|mutex(es)?|locks?|scheduler|pipeline|for[ -]loop|loop|` +
+		`gpus?|training|safe|requests|connections?|connecting)\b|(^|\s)(-p\s*\d|-{1,2}parallel\b)`)
+)
+
+// asksForParallelWork reports whether the person's own words ask for work to
+// be done in parallel, rather than about the program's concurrency.
+func asksForParallelWork(typed string) bool {
+	if parallelAgents.MatchString(typed) {
+		return true
+	}
+	return parallelWork.MatchString(typed) && !codeConcurrency.MatchString(typed)
+}
+
+// ParallelNote is what Abhed adds after a message that asks for work in
+// parallel. The tool descriptions say what such a request means, and a small
+// local model still made the project's code concurrent; the same words beside
+// the message turned it to subagents. It says what to do if, never what the
+// message asks: the trigger is a guess.
+const ParallelNote = "[Abhed: if this message asks for independent pieces of work to run at once, " +
+	"start them as subagents with one tasks call rather than one after another. If it is about " +
+	"the program's own concurrency, ignore this note and work on the code.]"
+
+// parallelNote is the note for the person's own words, typed, or "". Only a
+// top-level loop that can still start a subagent with tasks adds it: a
+// subagent's prompt is the model's writing, and a nested spawn is refused by
+// default.
+func (l *Loop) parallelNote(typed string) string {
+	if typed == "" || l.depth != 0 || l.Tools == nil || strings.HasPrefix(typed, parallelLead) ||
+		!asksForParallelWork(typed) || !l.Budget.CanSpawn() {
+		return ""
+	}
+	if _, ok := l.Tools.Get("tasks"); !ok {
+		return ""
+	}
+	return ParallelNote
+}
+
+type typedKey struct{}
+
+// WithTyped marks ctx's run as one the person asked for in typed, their own
+// words without what they attached, for a caller that passes the message as
+// one string with its attachments.
+func WithTyped(ctx context.Context, typed string) context.Context {
+	return context.WithValue(ctx, typedKey{}, typed)
+}
+
+func typedFrom(ctx context.Context) string {
+	s, _ := ctx.Value(typedKey{}).(string)
+	return s
+}
+
+// parallelLead opens /parallel's turn.
+const parallelLead = "Run this work as parallel subagents, now."
+
+// ParallelPrompt is the turn /parallel sends: the person's work, with the
+// instruction to split it into subagents that run at the same time.
+func ParallelPrompt(work string) string {
+	return parallelLead + " Split it into its independent parts and " +
+		"start them all in ONE tasks call: one entry per part, each with a complete, " +
+		"self-contained prompt and a 3-5 word description. Do not do the parts yourself one " +
+		"after another, and do not change the project's code to add parallelism. When they " +
+		"return, report each part's result.\n\nThe work:\n" + strings.TrimSpace(work)
+}
+
 // startAll starts every task in the background, each settling its own
 // worktree when it ends.
 func (t Tasks) startAll(ctx context.Context, a tasksArgs, trees []*worktree, epoch int, held *slots) tools.Result {
@@ -319,6 +424,25 @@ func git(ctx context.Context, r *hostgit.Repo, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+// InGitRepo reports whether ws or a folder above it holds .git, for what the
+// tasks tool offers. It runs nothing: it is asked as every session starts,
+// and running git there cost a second. The tool itself asks git.
+func InGitRepo(ws string) bool {
+	if ws == "" {
+		return false
+	}
+	for d := filepath.Clean(ws); ; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return true
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			return false
+		}
+		d = up
+	}
 }
 
 func requireGitRepo(ctx context.Context, ws string) error {

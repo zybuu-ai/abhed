@@ -317,7 +317,7 @@ func (l *Loop) suggestInput() string {
 	seen := map[string]bool{}
 	for i := len(l.messages) - 1; i >= 0; i-- {
 		m := l.messages[i]
-		if m.Role == model.RoleUser && (m.Content == prompt || prompt == "") {
+		if m.Role == model.RoleUser && (m.Content == prompt || m.Content == l.promptSentAs() || prompt == "") {
 			break
 		}
 		if m.Role != model.RoleAssistant {

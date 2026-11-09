@@ -51,6 +51,15 @@ func (b *Budget) Exhausted() bool {
 	return b.tokens.Load() >= b.MaxTokens
 }
 
+// CanSpawn reports whether one more subagent could start now; a nil budget
+// sets no limit.
+func (b *Budget) CanSpawn() bool {
+	if b == nil {
+		return true
+	}
+	return !b.Exhausted() && (b.MaxSubagents <= 0 || int(b.spawned.Load()) < b.MaxSubagents)
+}
+
 func (b *Budget) Spent() int64 {
 	if b == nil {
 		return 0
@@ -166,10 +175,15 @@ func (t Task) Description() string {
 		note = backgroundNote
 	}
 	return "Spawn a subagent with a fresh context to handle a self-contained subtask. " +
-		"Use when a task needs extensive exploration whose intermediate detail you do not need — " +
-		"the subagent returns only a summary. The prompt must be COMPLETE and self-contained: " +
-		"the subagent cannot see this conversation." + note + " Agent types:" + t.Agents.listing()
+		"Use for exploration whose detail you do not need; it returns only a summary. " +
+		"The prompt must be COMPLETE and self-contained: the subagent cannot see this " +
+		"conversation. Calls in ONE response run concurrently." + t.Agents.worktreeNote() + note + " Agent types:" + t.Agents.listing()
 }
+
+// parallelUse is what a request for parallel work means. Models read "run
+// this in parallel" as a request to make the project's code concurrent, and
+// started no subagent.
+const parallelUse = "Work asked for in parallel or by several agents means this, not concurrent code."
 
 func (t Task) Schema() json.RawMessage {
 	return mustSchema(map[string]any{
@@ -1255,6 +1269,15 @@ func mirrorInto(parent *parentLink, child string) func(Event) {
 				return
 			}
 			parent.record(ev.Type, ev.Actor, ev.Payload)
+		case EvModelWaiting:
+			// A child waiting for the model is said where the person watches.
+			var w ModelWaiting
+			if json.Unmarshal(ev.Payload, &w) == nil {
+				if w.Session == "" {
+					w.Session = child
+				}
+				parent.record(EvModelWaiting, ev.Actor, w)
+			}
 		case EvUserMessage:
 			// A message the person sent it while it ran (queued, so it has a
 			// QueueID; its prompt has none) is the person's, in the record audit reads.

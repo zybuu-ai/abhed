@@ -357,6 +357,12 @@ expands; running one is recorded `command.invoked` with its source and hash.
 skills. **Security:** workspace commands are listed only when the workspace is
 trusted, since a command is instructions.
 
+**Implemented in 1.3.0:** the built-in `/parallel <work>`, which runs a prompt
+as a custom command does: the work, its attachments added, with the
+instruction to start its parts as subagents in one `tasks` call. A subagent
+waiting for its provider's request slot updates its `sub-<session>` card with
+`tool_call_update` content "waiting for the model (n ahead)".
+
 ### 3.4 Usage and cost
 
 `usage_update` (spec) `{used, size}` per model call. **Not implemented in 1.2.2:**
@@ -1713,7 +1719,7 @@ them.
 |---|---|---|
 | `session.started`, `session.ended` | system | reason on end |
 | `session.resumed` | system | `via`, `through_seq`, `workspace_trust` |
-| `user.message` | user | text; `steered?` |
+| `user.message` | user | text; `steered?`; `harness_note?`, a note Abhed sent after the text |
 | `agent.message`, `agent.delta` | agent | text |
 | `agent.reasoning`, `agent.reasoning.delta` | agent | text |
 | `action.requested` | agent | call_id, tool, args, subject, `rule?` |
@@ -1726,7 +1732,8 @@ them.
 | `compaction.started`, `compaction.completed` | system | before, after |
 | `context.offloaded` | system | results, before, after |
 | `plan.updated`, `todo.updated` | agent | items |
-| `model.call`, `model.switched` | system | tokens, latency, model; `purpose` (`suggestion`) on a call outside the conversation |
+| `model.call`, `model.switched` | system | tokens, latency, model; `queue_ms?`, time spent waiting for a request slot, left out of latency; `purpose` (`suggestion`) on a call outside the conversation |
+| `model.waiting` | system | model, ahead; `session` for a subagent's |
 | `suggestion.offered` | system | text, turn |
 | `change.accepted` | user | path, hunk |
 | `conversation.forked` | user | from, through_seq |

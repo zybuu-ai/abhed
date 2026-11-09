@@ -14,6 +14,7 @@ import (
 
 func init() {
 	registerSlash(slashCmd{Name: "/tasks", Aliases: []string{"/bashes"}, Args: "[view|kill <n> | cancel <id|all>]", Help: "list subagents and background tasks, view or stop one", Group: "background", Order: 70, Run: legacy("/tasks", slashTasks)})
+	registerSlash(slashCmd{Name: "/parallel", Args: "<work>", Help: "split the work into subagents that run at the same time", Group: "background", Order: 60, Run: slashParallel})
 	registerSlash(slashCmd{Name: "/wake", Args: "[off|notify|auto]", Help: "show or set what a background result does while idle", Group: "background", Order: 80, Run: legacy("/wake", slashWake)})
 }
 
@@ -180,4 +181,30 @@ func truncateRunes(s string, n int) string {
 		return string(r[:n-1]) + "…"
 	}
 	return s
+}
+
+// slashParallel sends the work as a turn that starts its independent parts as
+// subagents at once, for a person who wants that and not a refactor.
+func slashParallel(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
+	st := e.st
+	work := strings.TrimSpace(strings.Join(args, " "))
+	if work == "" {
+		return false, fmt.Errorf("/parallel needs the work to split, such as /parallel review pkg/auth, test pkg/store, document pkg/server")
+	}
+	if err := st.turnFree(); err != nil {
+		return false, err
+	}
+	if err := ensureConversation(ctx, st); err != nil {
+		return false, err
+	}
+	// Its @ mentions are attached as a plain message's are.
+	msg, ok := expandForTurn(ctx, st, e.r, work)
+	if !ok {
+		return false, nil
+	}
+	if _, err := st.loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+		agent.CommandInvoked{Name: "/parallel", Source: sourceBuiltin, Args: work}); err != nil {
+		return false, err
+	}
+	return false, st.sendTurn(agent.Message{Text: agent.ParallelPrompt(msg.Text)}, nil)
 }

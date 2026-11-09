@@ -1355,7 +1355,8 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	if cmdErr, handled := c.slashCommand(ctx, s, text, withAttached); handled {
 		err = cmdErr
 	} else {
-		_, err = s.agent.Run(ctx, withAttached(text))
+		// The person's own words, not what they attached, are what a note is judged on.
+		_, err = s.agent.Run(agent.WithTyped(ctx, text), withAttached(text))
 		// A plan the run proposed is put to the editor; accepted, the turn goes on with it.
 		if next := c.decidePlan(ctx, s, err); next != "" {
 			_, err = s.agent.Run(ctx, next)
@@ -1760,6 +1761,16 @@ func toolTitle(tool string, args json.RawMessage) string {
 func rawToolTitle(tool string, args json.RawMessage) string {
 	var m map[string]any
 	_ = json.Unmarshal(args, &m)
+	switch tool {
+	case "tasks":
+		if sum := ui.TasksSummary(args); sum != "" {
+			return "tasks: " + sum
+		}
+	case "task":
+		if d, _ := m["description"].(string); d != "" {
+			return "task: " + d
+		}
+	}
 	if bg, _ := m["run_in_background"].(bool); bg && tool == "bash" {
 		tool = "bash (background)"
 	}

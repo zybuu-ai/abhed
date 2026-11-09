@@ -1075,7 +1075,7 @@ func (c *acpConn) steer(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errRefused, "no prompt is running; send it as a prompt"))
 		return
 	}
-	if parts.Loop.QueueMessage(agent.Message{Text: p.Text, Steered: true}) == "" {
+	if parts.Loop.QueueMessage(agent.Message{Text: p.Text, Typed: p.Text, Steered: true}) == "" {
 		c.reply(msg.ID, nil, refusal(errParams, "the message is empty"))
 		return
 	}

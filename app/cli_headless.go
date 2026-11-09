@@ -38,7 +38,9 @@ type headlessOpts struct {
 	// inputs are the user messages after the first, from -input-format
 	// stream-json; nil for a single task.
 	inputs <-chan string
-	start  map[string]any
+	// typed is the person's own words in the first task, without piped stdin.
+	typed string
+	start map[string]any
 	// fence is the fence, when commands run under it.
 	fence *sandbox.Fence
 	// attempts are the configuration changes that did not take effect,
@@ -532,19 +534,38 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		fmt.Fprintf(os.Stderr, "abhed: runbook bound: %d steps, plan %s\n", len(rb.Steps), rb.Hash)
 		o.runbook.prompt = agent.RunbookPrompt(rb)
 	}
-	runOne := func(task string) {
+	runOne := func(task, typed string) {
+		// /parallel sends its turn, recorded as the command it is, here as
+		// in the terminal and in Studio.
+		if work, isCmd := parallelCommand(typed); isCmd {
+			if work == "" {
+				ran, err = true, errors.New("/parallel needs the work to split, such as /parallel review pkg/auth, test pkg/store")
+				return
+			}
+			if _, err = loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+				agent.CommandInvoked{Name: "/parallel", Source: sourceBuiltin, Args: work}); err != nil {
+				ran = true
+				return
+			}
+			rest := ""
+			if strings.HasPrefix(task, typed) {
+				rest = task[len(typed):] // piped stdin, kept as the input it was
+			}
+			task, typed = agent.ParallelPrompt(work)+rest, ""
+		}
 		if o.runbook != nil && !ran {
 			task = withRunbook(task, o.runbook.prompt)
 		}
 		ran = true
+		runCtx := agent.WithTyped(ctx, typed)
 		if o.schema != nil {
-			structured, reason, err = agent.RunStructured(ctx, loop, loop.Tools, task, o.schema)
+			structured, reason, err = agent.RunStructured(runCtx, loop, loop.Tools, task, o.schema)
 			return
 		}
-		reason, err = loop.Run(ctx, task)
+		reason, err = loop.Run(runCtx, task)
 	}
 	if prompt != "" {
-		runOne(prompt)
+		runOne(prompt, o.typed)
 	}
 	// The next message is awaited alongside a stop signal: stdin may stay
 	// open for as long as the caller likes. Reading stops after a failure.
@@ -557,7 +578,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		if !open {
 			break
 		}
-		runOne(task)
+		runOne(task, task)
 	}
 	if !ran && err == nil {
 		err = errors.New("no task: stdin held no user message")
@@ -661,4 +682,13 @@ func withheldNoteOf(ev agent.Event) string {
 		return ""
 	}
 	return ui.WithheldNote(m.SecretsWithheld)
+}
+
+// parallelCommand reports whether typed is /parallel, and the work it names.
+func parallelCommand(typed string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(typed), "/parallel")
+	if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\n' && rest[0] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
 }
