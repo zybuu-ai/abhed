@@ -321,6 +321,9 @@ type ModelCall struct {
 	// CostUSD is the call's cost in US dollars at the model's price; nil
 	// when the model has no price.
 	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// Unpriced marks a call to a model with no price. A record from before
+	// costing has neither this nor cost_usd: its cost is not recorded.
+	Unpriced bool `json:"unpriced,omitempty"`
 	// CacheReported is false when the provider sent no cached-token figure,
 	// so a zero above means unknown rather than a cold cache.
 	CacheReported bool `json:"cache_reported,omitempty"`

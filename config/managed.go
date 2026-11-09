@@ -131,6 +131,7 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
 	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
+	belowPricing := maps.Clone(cfg.Pricing)
 	belowLists := map[string][]string{}
 	for _, k := range orgBelowLists {
 		belowLists[k] = slices.Clone(*unionFields[k](cfg))
@@ -156,6 +157,7 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 		delete(cfg.origins, "permissions.ask")
 	}
 	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
+	managedPricing(cfg, data, belowPricing)
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == label
@@ -719,4 +721,31 @@ func (c Config) RuleLayer(list, rule string) string {
 // approved runbook too (the engine's KeepAsk is set from it).
 func (c Config) ManagedAskRule(rule string) bool {
 	return rule != "" && c.RuleLayer("ask", rule) == LayerManaged
+}
+
+// managedPricing keeps a managed or org dollar cap the managed layer's: under
+// one, calls are priced only by the managed configuration and the built-in
+// list, so a lower layer's price cannot stretch it. Lower prices are set aside.
+func managedPricing(cfg *Config, data []byte, below map[string]PriceConfig) {
+	if !cfg.ManagedSets("limits.max_budget_usd") || cfg.Limits.MaxBudgetUSD <= 0 {
+		return
+	}
+	var doc struct {
+		Pricing map[string]PriceConfig `json:"pricing"`
+	}
+	_ = json.Unmarshal(data, &doc)
+	for name := range below {
+		if _, ok := doc.Pricing[name]; ok {
+			continue
+		}
+		o := cfg.origins["pricing."+name]
+		cfg.SetAside = append(cfg.SetAside, pricingSetAside(o, name))
+	}
+	cfg.Pricing = doc.Pricing
+}
+
+// pricingSetAside is the set-aside record of a lower layer's price for name.
+func pricingSetAside(o origin, name string) SetAsideKey {
+	return SetAsideKey{File: o.file, Layer: o.layer, Key: "pricing." + name,
+		Reason: "a managed dollar budget prices calls only by the managed configuration and the built-in list"}
 }

@@ -257,6 +257,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// invisibly. No Approver: a subagent answers to the approver of the loop
 	// that spawned it, the person at the prompt or the headless refuser.
 	budget := toolset.Budget(cfg)
+	if fallback != nil {
+		fallback.SetGate(budget.Refuse)
+	}
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,

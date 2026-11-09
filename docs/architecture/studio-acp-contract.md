@@ -363,8 +363,9 @@ trusted, since a command is instructions.
 `meta = {tokensIn, tokensOut, tokensCached, sessionTotalIn, sessionTotalOut}`.
 When the call's model has a price, `meta.costUsd` is the call's cost; while
 every call so far was priced, `cost: {amount, currency: "USD"}` and
-`meta.sessionCostUsd` are the session's. Once a call goes to a model with no
-price, `meta.unpriced` is true and the session's cost is left out. No price
+`meta.sessionCostUsd` are the session's. Every call counts, the critic's,
+a suggestion's and a compaction summary's included. Once a call goes to a
+model with no price (its `model.call` says `unpriced`), `meta.unpriced` is true and the session's cost is left out. No price
 is invented.
 
 ### 3.4a Next-prompt suggestion

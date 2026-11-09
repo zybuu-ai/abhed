@@ -289,7 +289,7 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		s.totalOut += p.TokensOut
 		if p.CostUSD != nil {
 			s.totalUSD += *p.CostUSD
-		} else if p.TokensIn+p.TokensOut > 0 {
+		} else if p.Unpriced {
 			s.unpriced = true
 		}
 		totalIn, totalOut, totalUSD, unpriced := s.totalIn, s.totalOut, s.totalUSD, s.unpriced

@@ -35,23 +35,33 @@ All notable changes to Abhed are recorded here. The format follows
 ### Added
 
 - Cost in US dollars. Each model call is priced from its model's name, at
-  the published list price Abhed carries for some hosted models or at a
-  price set under `pricing` in the configuration, and the cost is recorded
-  on the call's `model.call` (`cost_usd`) and the session's end. `/usage`
-  shows the session's cost and each turn's, `-p -output-format json` its
-  `usage.cost_usd`, and HawkEYE the cost per turn and in all. A model with
-  no price is shown as unpriced, and its cost is never guessed. A workspace
-  cannot set prices.
+  the Standard-tier list price Abhed carries for some hosted models
+  (checked against OpenAI's and Anthropic's pricing pages on 9 November
+  2026; models priced by prompt length are left out) or at a price set under
+  `pricing` in the configuration. The cost is recorded on each call's
+  `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
+  turns, the critic, suggestions, compaction summaries and pipeline model
+  steps alike. `/usage` shows the session's cost and each turn's,
+  `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
+  turn and in all; a record written before this release shows its cost as
+  not recorded. A model with no price is shown as unpriced, and its cost is
+  never guessed. No workspace sets prices, trusted or not. For
+  `azure-openai`, prices are keyed by deployment name.
 - Prompt caching on OpenAI-shaped providers. OpenAI's own API is sent
   `prompt_cache_key`, and OpenRouter's Anthropic and Gemini models
   `cache_control` on the system prompt and the last message; no other
   server gets either field unless `extra.prompt_cache` names one. Cached
   tokens are read from DeepSeek's and Anthropic-shaped proxies' usage as
-  well as OpenAI's, and recorded with cache writes on each `model.call`.
+  well as OpenAI's, and recorded with cache writes (OpenRouter's
+  `cache_write_tokens` included) on each `model.call`.
 - `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
   subagents included. The run ends `max_budget` (exit `3`) with a message
   and a `budget.stopped` event; with a cap set, a model with no price is
-  refused before any call. A managed or org cap may only be lowered.
+  refused before any call, whatever makes it: a turn, the critic, a
+  suggestion, a compaction summary, a pipeline model step, or a fallback,
+  which is not moved to. A managed or org cap may only be lowered, and
+  under one, prices come only from that layer and the built-in list. A
+  resumed session carries what it had spent.
 
 ### Upgrading from 1.2.9
 

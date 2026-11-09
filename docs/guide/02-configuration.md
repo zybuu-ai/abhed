@@ -157,13 +157,23 @@ finishes. Zero means no cap.
 subagents included. A run that reaches it ends `max_budget` (exit `3`) and
 records `budget.stopped` with what was spent. With a dollar cap set, a model
 that has no price is refused before any call is made, rather than run at a
-guessed cost.
+guessed cost. Every model call passes that gate before its request and is
+charged after it: the turns, the critic, suggestions, the compaction summary,
+pipeline model steps, and a fallback model, which is not moved to while a
+dollar cap is set and it has no price. A cap set by the managed or org
+configuration also fixes the prices it is spent by (see below).
 
 ### Prices
 
 Each model call is priced from its model's name as sent to the provider,
-in US dollars per million tokens. Abhed carries the published list prices of
-some hosted models; `pricing` sets others, or overrides the list:
+in US dollars per million tokens. For `azure-openai` that name is the
+deployment, so `pricing` is keyed by deployment name. Abhed carries the
+Standard-tier list prices of some hosted models, checked on 9 November 2026
+against developers.openai.com/api/docs/pricing and
+platform.claude.com/docs/en/about-claude/pricing. Models priced by prompt
+length, such as Claude Haiku 5.5 and the gpt-6 family, and retired models
+are not in the list, so they are unpriced until `pricing` names them.
+`pricing` sets other models, or overrides the list:
 
 ```json
 "pricing": {
@@ -176,7 +186,10 @@ some hosted models; `pricing` sets others, or overrides the list:
 price is shown as unpriced: its cost is in no total and is never guessed. A
 price with a negative figure is no price. `pricing` is an operator's
 setting: a workspace's configuration cannot set it, trusted or not, since a
-lower price would stretch a dollar budget. The cost of each call is in its
+lower price would stretch a dollar budget. When the managed or org
+configuration sets `limits.max_budget_usd`, prices come only from that
+layer and the built-in list; `pricing` from the person's own file is set
+aside with a warning. The cost of each call is in its
 `model.call` event (`cost_usd`), and the session's in `session.ended`;
 `/usage`, `-p -output-format json`, HawkEYE and Studio show them.
 

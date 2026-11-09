@@ -308,7 +308,9 @@ func (c *Compactor) summarize(ctx context.Context, older []model.Message, focus 
 		}
 	}
 
-	stream, err := c.Adapter.Complete(ctx, model.Request{
+	// Through the budget's gate when a loop compacts: refused before the
+	// request, and charged after it.
+	text, err := meteredCall(ctx, PurposeCompaction, c.Adapter, model.Request{
 		System: "You summarize engineering work accurately and concisely.",
 		Messages: []model.Message{{
 			Role:    model.RoleUser,
@@ -319,20 +321,10 @@ func (c *Compactor) summarize(ctx context.Context, older []model.Message, focus 
 	if err != nil {
 		return "", fmt.Errorf("summarization failed: %w", err)
 	}
-
-	var out strings.Builder
-	for chunk := range stream {
-		switch chunk.Type {
-		case model.ChunkText:
-			out.WriteString(chunk.Text)
-		case model.ChunkError:
-			return "", fmt.Errorf("summarization failed: %w", chunk.Err)
-		}
-	}
-	if strings.TrimSpace(out.String()) == "" {
+	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("summarization produced no output")
 	}
-	return strings.TrimSpace(out.String()), nil
+	return strings.TrimSpace(text), nil
 }
 
 // boundaryBefore finds a split index that keeps the last `keep` exchanges and

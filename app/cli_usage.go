@@ -54,13 +54,14 @@ func slashUsage(_ context.Context, e *cmdEnv, _ []string) (bool, error) {
 }
 
 // turnCosts is the last n turns' model calls with their cost, from the
-// record; a call to a model with no price shows "unpriced".
+// record; a call to a model with no price shows "unpriced", and one from a
+// record written before costing "not recorded".
 func turnCosts(events []agent.Event, n int) [][]string {
 	type turn struct {
 		model           string
 		in, out, cached int
 		usd             float64
-		unpriced        bool
+		unpriced, old   bool
 	}
 	var order []int
 	turns := map[int]*turn{}
@@ -80,17 +81,23 @@ func turnCosts(events []agent.Event, n int) [][]string {
 		}
 		t.model = c.Model
 		t.in, t.out, t.cached = t.in+c.TokensIn, t.out+c.TokensOut, t.cached+c.TokensCached
-		if c.CostUSD != nil {
+		switch {
+		case c.CostUSD != nil:
 			t.usd += *c.CostUSD
-		} else if c.TokensIn+c.TokensOut > 0 {
+		case c.Unpriced:
 			t.unpriced = true
+		case c.TokensIn+c.TokensOut > 0:
+			t.old = true
 		}
 	}
 	rows := [][]string{{"turn", "model", "tokens in", "tokens out", "cached", "cost"}}
 	for _, k := range order[max(0, len(order)-n):] {
 		t := turns[k]
-		rows = append(rows, []string{strconv.Itoa(k), t.model, strconv.Itoa(t.in), strconv.Itoa(t.out), strconv.Itoa(t.cached),
-			orDefault(costText(t.usd, t.unpriced), "$0")})
+		cost := orDefault(costText(t.usd, t.unpriced), "$0")
+		if t.old && !t.unpriced && t.usd == 0 {
+			cost = "not recorded"
+		}
+		rows = append(rows, []string{strconv.Itoa(k), t.model, strconv.Itoa(t.in), strconv.Itoa(t.out), strconv.Itoa(t.cached), cost})
 	}
 	return rows
 }

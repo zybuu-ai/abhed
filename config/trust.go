@@ -288,6 +288,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
 		network := cfg.Network.clone()
+		pricing := maps.Clone(cfg.Pricing)
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -302,6 +303,8 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
+		keepOperatorOnly(cfg, path, data, before, prior, "pricing", "a workspace never sets what a model's calls cost, which a dollar budget is spent by",
+			func() { cfg.Pricing = pricing })
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })

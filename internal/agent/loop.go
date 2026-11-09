@@ -667,6 +667,9 @@ type Usage struct {
 	// model with no price, whose cost is in no total.
 	CostUSD  float64
 	Unpriced bool
+	// UnpricedCalls counts the calls to a model with no price, so a reader
+	// of two readings can tell whether the calls between them had one.
+	UnpricedCalls int
 }
 
 // CacheHitRate reports the fraction of input tokens served from the prefix
@@ -1086,6 +1089,11 @@ turns:
 				"error": err.Error(),
 			})
 		}
+		// The summary is charged too, so the gate is asked again before the call.
+		if l.Budget.Exhausted() {
+			l.recordBudgetStop()
+			return l.finish(TermMaxBudget), nil
+		}
 
 		reason, done, err := l.turn(ctx)
 		if err != nil {
@@ -1171,7 +1179,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(l.withCaller(ctx), "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.Config.SystemPrompt, l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -1214,7 +1222,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	used, _ := l.Adapter.CountTokens(model.Request{
 		System: l.Config.SystemPrompt, Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(l.withCaller(ctx), "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -1294,13 +1302,19 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.usage.Turns = l.turns
 }
 
-// CarryUsage starts the token and compaction totals from a recorded end, so a
-// continued session's totals go on from it as its turn count does.
+// CarryUsage starts the token, compaction and cost totals from a recorded
+// end, so a continued session's totals go on from it as its turn count does.
 func (l *Loop) CarryUsage(end SessionEnded) {
 	l.usage.InputTokens = max(l.usage.InputTokens, end.TokensIn)
 	l.usage.OutputTokens = max(l.usage.OutputTokens, end.TokensOut)
 	l.usage.CachedTokens = max(l.usage.CachedTokens, end.TokensCached)
 	l.usage.Compactions = max(l.usage.Compactions, end.Compactions)
+	// The dollars go on too, or a resume would grant the cap again.
+	l.usage.CostUSD = max(l.usage.CostUSD, end.CostUSD)
+	if end.Unpriced && !l.usage.Unpriced {
+		l.usage.Unpriced = true
+		l.usage.UnpricedCalls = max(l.usage.UnpricedCalls, 1)
+	}
 }
 
 // LastEnd is the last session.ended in events, and whether there is one.
@@ -1462,7 +1476,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			callUsage.InputTokens, callUsage.OutputTokens = mc.TokensIn, mc.TokensOut
 		}
 	}
-	mc.CostUSD = l.chargeCall(mc.Model, callUsage)
+	mc.CostUSD, mc.Unpriced = l.chargeCall(mc.Model, callUsage)
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
 	if streamErr != nil && ctx.Err() == nil {

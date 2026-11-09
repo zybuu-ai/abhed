@@ -216,7 +216,8 @@ func usageSince(before, after agent.Usage) agent.Usage {
 		Turns:             after.Turns - before.Turns,
 		Compactions:       after.Compactions - before.Compactions,
 		CostUSD:           after.CostUSD - before.CostUSD,
-		Unpriced:          after.Unpriced,
+		Unpriced:          after.UnpricedCalls > before.UnpricedCalls,
+		UnpricedCalls:     after.UnpricedCalls - before.UnpricedCalls,
 	}
 }
 
