@@ -54,10 +54,11 @@ All notable changes to Abhed are recorded here. The format follows
 - An org policy URL holding a password, a token or a signature
   (`https://u:pw@…`, `https://TOKEN@…`, `?token=…`, `#…`, a signed URL)
   was printed whole where a refusal or a warning named the org policy, and
-  in the status line of `abhed doctor`. A refusal, a warning and a denial
-  reason (which reach the model and the record) now show only the URL's
-  scheme, host and path; the status line shows it whole with the user part,
-  every query value and the fragment redacted.
+  in the status line of `abhed doctor`. Affected: 1.2.9 with an org policy.
+  A refusal, a warning and a denial reason (which reach the model and the
+  record) now show only the URL's scheme, host and path; the status line
+  shows it whole with the user part, every query value and the fragment
+  redacted.
 
 ### Upgrading from 1.2.9
 
