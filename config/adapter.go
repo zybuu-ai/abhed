@@ -48,7 +48,8 @@ func (p ProviderConfig) Spec() model.Spec {
 			Call:  time.Duration(p.CallTimeoutSeconds) * time.Second,
 			Stall: time.Duration(p.StallTimeoutSeconds) * time.Second,
 		},
-		Extra: extra,
+		MaxConcurrent: p.MaxConcurrentRequests,
+		Extra:         extra,
 	}
 }
 

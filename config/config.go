@@ -814,6 +814,13 @@ type ProviderConfig struct {
 	CallTimeoutSeconds  int `json:"call_timeout_seconds,omitempty"`
 	StallTimeoutSeconds int `json:"stall_timeout_seconds,omitempty"`
 
+	// MaxConcurrentRequests bounds the requests sent to this provider at
+	// once, shared by every adapter built from it in the process; requests
+	// past it wait in Abhed, before their timeouts start. 0 is 1 for type
+	// ollama (its FAQ gives OLLAMA_NUM_PARALLEL "default 1", read 2026-11-09)
+	// and no bound for other types. OpenAI-compatible types only.
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
+
 	// Extra passes provider-specific settings through without this struct
 	// growing a field per vendor.
 	Extra map[string]string `json:"extra,omitempty"`

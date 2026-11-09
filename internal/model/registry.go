@@ -22,6 +22,10 @@ type Spec struct {
 	Params          Params
 	// Timeouts bound each request; a zero field keeps its default.
 	Timeouts Timeouts
+	// MaxConcurrent bounds the requests this provider has in flight; the
+	// rest wait here, before their timeouts start. Zero is one for Ollama,
+	// which queues the rest, and no bound for every other type.
+	MaxConcurrent int
 
 	// Region and Project scope a cloud-hosted deployment: an AWS region, a
 	// Google project, an Azure resource. Which of them a provider needs is the
@@ -69,6 +73,9 @@ func New(s Spec) (Adapter, error) {
 	if s.Timeouts.Call < 0 || s.Timeouts.Stall < 0 {
 		return nil, fmt.Errorf("call_timeout_seconds and stall_timeout_seconds may not be negative")
 	}
+	if s.MaxConcurrent < 0 {
+		return nil, fmt.Errorf("max_concurrent_requests may not be negative")
+	}
 	p, ok := providers[s.Type]
 	if !ok {
 		return nil, fmt.Errorf("unknown provider type %q; known types are %s",
@@ -83,6 +90,23 @@ func New(s Spec) (Adapter, error) {
 	}
 	if err := s.Params.Validate(s.Type, a.Profile().Sampling); err != nil {
 		return nil, err
+	}
+	c, ok := a.(*OpenAICompatible)
+	if !ok && s.MaxConcurrent > 0 {
+		return nil, fmt.Errorf("max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", s.Type)
+	}
+	if ok {
+		n := s.MaxConcurrent
+		if n == 0 && s.Type == "ollama" {
+			// Ollama serves one request a model at a time unless told
+			// otherwise, and queues the rest: a queued request sends nothing
+			// for as long as the ones before it take, which the stall timeout
+			// read as a dead server. Parallel subagents failed that way.
+			n = 1
+		}
+		if n > 0 {
+			c.slots = poolFor(s.Type, c.BaseURL, c.Model, n)
+		}
 	}
 	return a, nil
 }
