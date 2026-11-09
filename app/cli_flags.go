@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -367,6 +368,17 @@ func Main(args []string, opts ...Option) int {
 	return run(a, workspace, &f)
 }
 
+// initTrustNote says what abhed init trusted: the file it wrote, and, when a
+// local layer was already there, that it is not trusted and why.
+func initTrustNote(path string) string {
+	local := filepath.Join(filepath.Dir(path), config.LocalConfigName)
+	if _, err := os.Lstat(local); err != nil {
+		return "Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n"
+	}
+	return fmt.Sprintf("Abhed trusts that file as written, but not %s, which was already there and was not written by init: "+
+		"the next run shows both and asks, or run `abhed trust` to review them now.\n", config.Printable(local))
+}
+
 // subcommand runs a built-in subcommand; rest[0] is its name.
 func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 	// `abhed index -h` used to build the index and `abhed init -h` to write
@@ -383,8 +395,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		if err != nil {
 			fail(err)
 		}
-		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n"+
-			"Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n", path)
+		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n", path)
+		fmt.Print(initTrustNote(path))
 		return 0
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)

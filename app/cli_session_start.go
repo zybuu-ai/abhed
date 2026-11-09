@@ -221,6 +221,9 @@ func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(str
 		return "", nil, fmt.Errorf("session %s has no events", id)
 	}
 	if unverified != "" {
+		if err := st.mayBranch(events); err != nil {
+			return "", nil, err
+		}
 		// Nothing more is written into a record that fails: going on from it
 		// is a fork into a new session, which names it and why.
 		newID, err := copyBranch(ctx, st.store, st.appCfg, id, events, 0, unverified, true)
@@ -300,6 +303,9 @@ func fromFile(ctx context.Context, st *cliState, path string, say func(string, .
 	}
 	if len(events) == 0 {
 		return "", nil, fmt.Errorf("%s holds no events", path)
+	}
+	if err := st.mayBranch(events); err != nil {
+		return "", nil, err
 	}
 	newID, err := copyBranch(ctx, st.store, st.appCfg, events[0].SessionID, events, 0, unverified, true)
 	if err != nil {
@@ -610,6 +616,7 @@ func (c *cliState) ui() ui.Surface {
 func headlessSession(ctx context.Context, st *cliState, continueOnly bool) (string, func(*agent.Loop), error) {
 	f := startFlags
 	sessionWorkspace = st.workspace
+	st.continueOnly = continueOnly
 	none := func(*agent.Loop) {}
 	if !f.resuming() {
 		id := newConversationID()
@@ -629,10 +636,8 @@ func headlessSession(ctx context.Context, st *cliState, continueOnly bool) (stri
 	case copied:
 		return seeded(st.store, from)
 	case f.Fork:
-		if continueOnly {
-			if err := agent.ContinueRefusal(events, st.appCfg.ContinuesAllowed()); err != nil {
-				return "", nil, err
-			}
+		if err := st.mayBranch(events); err != nil {
+			return "", nil, err
 		}
 		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0, "", false)
 		if err != nil {
@@ -653,6 +658,15 @@ func headlessSession(ctx context.Context, st *cliState, continueOnly bool) (stri
 		}
 	}
 	return seeded(st.store, from)
+}
+
+// mayBranch is nil unless this run only continues and events cannot be
+// continued: then nothing is branched, and the refusal says why.
+func (st *cliState) mayBranch(events []agent.Event) error {
+	if !st.continueOnly {
+		return nil
+	}
+	return agent.ContinueRefusal(events, st.appCfg.ContinuesAllowed())
 }
 
 // seeded reads session id and rebuilds it on the run's loop, as a resume does.

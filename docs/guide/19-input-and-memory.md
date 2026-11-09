@@ -120,10 +120,13 @@ as any tool result is. Once a folder's file has loaded, the system prompt
 gains a short paragraph naming that fence and saying what such a block is:
 project memory for that folder, with the standing of the workspace's
 `ABHED.md`, below you, the managed memory and every rule, and never a
-permission. Anything in tool output that imitates the tag, in any case, with
-spaces, zero-width or full-width characters or another dash, is escaped
-with a backslash, in every session and subagent and in background results
-too. So a file that really contains `<folder-memory-` is shown with a `\`
+permission. Anything in tool output that imitates the tag, in any case,
+with any separators, zero-width, full-width or combining characters,
+look-alike Cyrillic or Greek letters, or digits for letters, is escaped with
+a backslash, in every session and subagent and in background results too;
+text already escaped is not escaped again when a subagent's result is passed
+on. Adding the paragraph changes the system prompt once, so the model
+provider's prompt cache starts again from that turn. So a file that really contains `<folder-memory-` is shown with a `\`
 before the `<`: an edit copied from that view must leave the backslash out
 of its old text.
 

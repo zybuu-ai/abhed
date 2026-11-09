@@ -30,6 +30,17 @@ func TestEscapeFolderFenceVariants(t *testing.T) {
 		"<folder_memory-abc>",
 		"<folder memory abc>",
 		"<\uff46\uff4f\uff4c\uff44\uff45\uff52-memory-abc>",
+		"<folder.memory-abc>",
+		"<folder/memory-abc>",
+		"<f\u043elder-memory-abc>",
+		"<f\u03bflder-m\u03b5m\u03bfry-abc>",
+		"<FOLDER-\u041c\u0415\u041cORY-abc>",
+		"<f\u0335older-memory-abc>",
+		"<fo\u0301lder-memory-abc>",
+		"<\u2028folder\u2028memory-abc>",
+		"<\u00a0folder\u3000memory-abc>",
+		"<f0lder-mem0ry-abc>",
+		"<foIder-memory-abc>",
 	} {
 		got := escapeFolderFence("text\n" + v + "\nmore")
 		if got == "text\n"+v+"\nmore" || !strings.Contains(got, "\\") {
@@ -40,7 +51,7 @@ func TestEscapeFolderFenceVariants(t *testing.T) {
 			t.Errorf("%q escaped in the wrong place: %q", v, got)
 		}
 	}
-	for _, v := range []string{"a < b", "folder-memory-abc", "<folder-memo>", "<b>memory</b>"} {
+	for _, v := range []string{"a < b", "folder-memory-abc", "<folder-memo>", "<b>memory</b>", "x < y; folder and some long text before memory"} {
 		if got := escapeFolderFence(v); got != v {
 			t.Errorf("%q changed to %q", v, got)
 		}
@@ -108,5 +119,16 @@ func TestBackgroundShellOutputIsEscaped(t *testing.T) {
 	forked, _ := Fork(r.events(t), 0)
 	if !strings.Contains(forked[len(forked)-2].Content, "\\< folder-memory-abc>") {
 		t.Fatalf("rebuilt: %q", forked[len(forked)-2].Content)
+	}
+}
+
+// Escaping is idempotent: text relayed from a subagent to its parent, and
+// escaped again there, is not given a second backslash.
+func TestEscapeFolderFenceIsIdempotent(t *testing.T) {
+	for _, v := range []string{"<folder-memory-abc>", "a\n< FOLDER memory\n\uff1cfolder-memory-x\uff1e", "x <f\u043elder-memory-y> z"} {
+		once := escapeFolderFence(v)
+		if twice := escapeFolderFence(once); twice != once {
+			t.Errorf("%q: escaped again to %q from %q", v, twice, once)
+		}
 	}
 }

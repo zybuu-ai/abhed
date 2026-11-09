@@ -88,7 +88,7 @@ All notable changes to Abhed are recorded here. The format follows
   untrusted it only tightens, and trusted it still cannot make a
   managed-only setting or loosen the managed file. `abhed init` writes
   `.abhed/.gitignore` naming it, and trusts only the file it writes: a local
-  file already there is shown and asked about on the next run ([The local file](docs/guide/02-configuration.md#the-local-file)).
+  file already there is shown and asked about on the next run, as init says ([The local file](docs/guide/02-configuration.md#the-local-file)).
 - Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
   `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
   `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.
