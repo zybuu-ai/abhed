@@ -46,7 +46,28 @@ const (
 	// EvConfigNarrowed is a web setting a layer below the managed
 	// configuration narrowed, as it may; see ConfigAttempt.
 	EvConfigNarrowed EventType = "config.narrowed"
+	// EvConfigChanged is an entry of ~/.abhed/config-changes.jsonl made since
+	// the last session recorded them, such as an MCP server added from Studio
+	// or a terminal; see ConfigChanged.
+	EvConfigChanged EventType = "config.changed"
 )
+
+// ConfigChanged is the payload of config.changed, as the change log has it.
+// The log is a file in the person's home, so its lines are recorded as
+// untrusted.
+type ConfigChanged struct {
+	Time    string `json:"time,omitempty"`
+	By      string `json:"by"`
+	Key     string `json:"key"`
+	Name    string `json:"name,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+	Refused string `json:"refused,omitempty"`
+	// Pending, on an entry of its own, is at least how many more lines wait
+	// in the log for the next session, when this one recorded as many as it
+	// takes (it counts only within the part of the log it read).
+	Pending int `json:"pending,omitempty"`
+}
 
 // ConfigAttempt is the payload of config.refused and config.narrowed: who
 // tried to change which setting, from where, to what, and what was decided.
@@ -96,8 +117,12 @@ const (
 // server's connection, and how it ended.
 type MCPStatus struct {
 	Server string `json:"server"`
-	Op     string `json:"op"`     // restart
-	Status string `json:"status"` // connected or error
+	Op     string `json:"op"`     // restart or remove
+	Status string `json:"status"` // connected or error; removed
+	// Kind and SHA256 are a removed server's transport and the hash of its
+	// entry, as the config change log has them.
+	Kind   string `json:"kind,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 	Error  string `json:"error,omitempty"`
 	By     string `json:"by"`
 }

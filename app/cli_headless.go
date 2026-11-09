@@ -382,6 +382,8 @@ func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.Con
 	if err == nil {
 		if e := toolset.RecordConfigAttempts(rec, attempts); e != nil {
 			err = fmt.Errorf("recording the configuration attempts: %w", e)
+		} else if e := toolset.RecordConfigChanges(rec); e != nil {
+			err = fmt.Errorf("recording the configuration changes: %w", e)
 		}
 	}
 	// What qualified the fence for this run's commands, after the start.
