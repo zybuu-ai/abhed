@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -213,9 +214,9 @@ func (t *resourceTool) Run(ctx context.Context, _ *tools.Session, args json.RawM
 		}
 		return tools.Result{Content: formatResources(defs, dropped)}
 	}
-	// Judged by its own subjector or not run: one a later listing took away
-	// would leave a URI rule without its subject.
-	if cur, _ := tools.SubjectorFor(t.Name()).(*resourceTool); cur != t {
+	// Run only while this gateway offers it and a read's subjector judges
+	// the name: otherwise a URI rule would have no subject.
+	if !t.gw.offersRead(t) {
 		return tools.Result{Content: fmt.Sprintf("MCP server %s's tools changed since this session started; start a new session to read its resources", t.server), IsError: true}
 	}
 	uri, ok := readURI(args)
@@ -257,14 +258,56 @@ func uriArg(args json.RawMessage) (string, bool) {
 	return a.URI, true
 }
 
-// PolicySubject is the URI a read names, so a rule can name it:
-// mcp__docs__read_resource(file:///reports/*).
-func (t *resourceTool) PolicySubject(args json.RawMessage) (string, bool) {
-	if !t.read {
-		return "", false
+// readSubject is the one subjector of every gateway's read_resource of a
+// name: the URI a read names, so a rule can name it,
+// mcp__docs__read_resource(file:///reports/*). It holds no gateway, so
+// sessions that share a process share it.
+type readSubject struct{}
+
+// PolicySubject is the URI as written, canonical or not: a deny then holds
+// before the read refuses a form that is not.
+func (readSubject) PolicySubject(args json.RawMessage) (string, bool) { return uriArg(args) }
+
+// The reads offered under each name, by gateway: the name's subjector stays
+// while any gateway offers it, and goes with the last.
+var (
+	readsMu   sync.Mutex
+	readsFrom = map[string]map[*Gateway]bool{}
+)
+
+// offerRead notes that g offers name's read, registering its subjector.
+func offerRead(name string, g *Gateway) {
+	readsMu.Lock()
+	defer readsMu.Unlock()
+	if readsFrom[name] == nil {
+		readsFrom[name] = map[*Gateway]bool{}
 	}
-	// As written, canonical or not: a deny then holds before the read refuses it.
-	return uriArg(args)
+	readsFrom[name][g] = true
+	tools.RegisterSubjector(name, readSubject{})
+}
+
+// withdrawRead notes that g no longer offers name's read; with no gateway
+// left offering it, its subjector goes, so it judges no other tool.
+func withdrawRead(name string, g *Gateway) {
+	readsMu.Lock()
+	defer readsMu.Unlock()
+	delete(readsFrom[name], g)
+	if len(readsFrom[name]) == 0 {
+		delete(readsFrom, name)
+		if _, ours := tools.SubjectorFor(name).(readSubject); ours {
+			tools.UnregisterSubjector(name)
+		}
+	}
+}
+
+// offersRead reports whether t is the read g offers for its server now, and
+// a read's subjector judges its name.
+func (g *Gateway) offersRead(t *resourceTool) bool {
+	g.mu.RLock()
+	cur := g.reads[t.server]
+	g.mu.RUnlock()
+	_, judged := tools.SubjectorFor(t.Name()).(readSubject)
+	return cur == t && judged
 }
 
 // escapedURI is a URI as text shows it, escaped.
@@ -316,14 +359,24 @@ func clip(s string, n int) string {
 // resourceTools are the server's resource tools the gateway may offer: its
 // own tool of either name keeps that name, and allow_tools must name them.
 func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client) []tools.Tool {
-	read := &resourceTool{gw: g, server: server, read: true}
+	// The read this gateway already offers keeps being the one.
+	if g.reads == nil {
+		g.reads = map[string]*resourceTool{}
+	}
+	read := g.reads[server]
+	if read == nil {
+		read = &resourceTool{gw: g, server: server, read: true}
+	}
 	offered := false
 	defer func() {
-		// Not offered, whatever the reason: a subjector an earlier connection
-		// left must not judge another tool of that name.
-		if cur, ours := tools.SubjectorFor(read.Name()).(*resourceTool); ours && cur.gw == g && !offered {
-			tools.UnregisterSubjector(read.Name())
+		if offered {
+			g.reads[server] = read
+			offerRead(read.Name(), g)
+			return
 		}
+		// Not offered, whatever the reason: its subjector judges no other tool.
+		delete(g.reads, server)
+		withdrawRead(read.Name(), g)
 	}()
 	if !client.Resources() {
 		return nil
@@ -333,10 +386,6 @@ func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client)
 		own[d.Name] = true
 	}
 	var out []tools.Tool
-	// The read already offered keeps being the one, so its subjector stays its own.
-	if cur, ok := tools.SubjectorFor(read.Name()).(*resourceTool); ok && cur.gw == g && cur.server == server {
-		read = cur
-	}
 	for _, t := range []*resourceTool{{gw: g, server: server}, read} {
 		if own[t.remote()] || !allowed(cfg, t.remote()) {
 			continue
@@ -345,10 +394,7 @@ func (g *Gateway) resourceTools(server string, cfg ServerConfig, client *Client)
 			g.overlaps[t.Name()] = fmt.Sprintf("mcp tool %s of server %q is not offered: its name is also how a tool of server %q is named, so a rule for one would reach the other", t.Name(), server, other)
 			continue
 		}
-		if t.read {
-			tools.RegisterSubjector(t.Name(), t)
-			offered = true
-		}
+		offered = offered || t.read
 		out = append(out, t)
 	}
 	return out

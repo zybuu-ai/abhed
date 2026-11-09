@@ -348,10 +348,57 @@ func TestRestartKeepsTheReadJudged(t *testing.T) {
 		t.Fatalf("the session's read after the restart: %+v", res)
 	}
 	_ = g.Tools() // a new session's listing: the server's own tool takes the name
-	if _, ok := tools.SubjectorFor("mcp__restarting__read_resource").(*resourceTool); ok {
+	if _, ok := tools.SubjectorFor("mcp__restarting__read_resource").(readSubject); ok {
 		t.Fatal("the read's subjector judges the server's own tool")
 	}
 	if res := read.Run(ctx, nil, json.RawMessage(`{"uri":"docs://guide"}`)); !res.IsError || !strings.Contains(res.Content, "tools changed") {
 		t.Fatalf("the old read ran unjudged: %+v", res)
+	}
+}
+
+// Two sessions in one process, as Studio and an SDK embedder run them, each
+// with its own gateway to a server of the same name: both read, before and
+// after the other lists, and one closing leaves the other reading.
+func TestTwoSessionsBothRead(t *testing.T) {
+	s := newStubServer(t, "", true)
+	readOf := func(g *Gateway) tools.Tool {
+		t.Helper()
+		for _, tl := range g.Tools() {
+			if tl.Name() == "mcp__shared__read_resource" {
+				return tl
+			}
+		}
+		t.Fatal("no read offered")
+		return nil
+	}
+	a, b := NewGateway(), NewGateway()
+	for _, g := range []*Gateway{a, b} {
+		if errs := connect(t, g, ServerConfig{Name: "shared", URL: s.srv.URL, Enabled: true}); len(errs) > 0 {
+			t.Fatal(errs)
+		}
+	}
+	ra := readOf(a)
+	rb := readOf(b)
+	ctx := context.Background()
+	args := json.RawMessage(`{"uri":"docs://guide"}`)
+	for name, r := range map[string]tools.Tool{"first": ra, "second": rb} {
+		if res := r.Run(ctx, nil, args); res.IsError {
+			t.Fatalf("the %s session's read: %+v", name, res)
+		}
+	}
+	_ = readOf(a) // the first lists again
+	if res := rb.Run(ctx, nil, args); res.IsError {
+		t.Fatalf("the second session's read after the first listed: %+v", res)
+	}
+	a.Close()
+	if res := rb.Run(ctx, nil, args); res.IsError {
+		t.Fatalf("the second session's read after the first closed: %+v", res)
+	}
+	if _, ok := tools.SubjectorFor("mcp__shared__read_resource").(readSubject); !ok {
+		t.Fatal("the subjector went while a session still offers the read")
+	}
+	b.Close()
+	if _, ok := tools.SubjectorFor("mcp__shared__read_resource").(readSubject); ok {
+		t.Fatal("the subjector stayed after the last session closed")
 	}
 }

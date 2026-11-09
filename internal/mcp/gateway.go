@@ -120,10 +120,12 @@ type Gateway struct {
 	// has none; hc reaches its token endpoint under this gateway's egress.
 	Authorize func(cfg ServerConfig, hc *http.Client) (Authorizer, error)
 	calls     serverCallers
+	// reads are the read_resource tools offered, by server; under mu.
+	reads map[string]*resourceTool
 }
 
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
+	return &Gateway{reads: map[string]*resourceTool{}, clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
 }
 
 // ErrNotAdmitted wraps Admit's refusal of a server.
@@ -517,6 +519,10 @@ func (g *Gateway) Close() {
 		_ = c.Close()
 	}
 	g.clients = map[string]*Client{}
+	for server, t := range g.reads {
+		delete(g.reads, server)
+		withdrawRead(t.Name(), g)
+	}
 }
 
 // Status reports connected servers and their tool counts, for `abhed doctor`.

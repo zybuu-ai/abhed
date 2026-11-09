@@ -327,7 +327,10 @@ NFC rather than escaped, and other escapes in upper case. A URI written
 otherwise (`DOCS://private/a`, `docs://private./a`, `https://h:443/a`,
 `docs://private/%61`, `docs://private/caf%C3%A9`, `docs://127.1/a`) is
 refused, naming the form to write. One with a host not in ASCII (write it in its punycode, `xn--`,
-form), an escape in its host, an encoded `/` or `\`, a backslash, a
+form), an escape in its host, an encoded `/` or `\`, an escaped escape
+(`%25` before two hex digits, which a server decoding twice reads as
+another), a compatibility character in its path (a fullwidth `／`, a
+ligature: another character to a server that normalises it), a backslash, a
 fragment, user information or a rooted path without an authority
 (`docs:/private/a`) is refused outright, and a listing leaves those out and
 says how many. Since a server may still read paths without regard to case,
@@ -336,9 +339,11 @@ without regard to case, in NFC and with its escapes decoded, as rules on
 file paths do: a deny on `docs://private/*` holds for `docs://PRIVATE/a`,
 and one on `docs://private/café/*` for `docs://private/caf%C3%A9/x`. Allow rules match only as
 written. What one URI names on the server beyond that is the server's.
-A server whose tools change across `/mcp restart` keeps its resources read
-as the session started; once a later session offers the server's own tool
-under the read's name, the earlier session's read refuses to run.
+Sessions in one process (an editor's, an SDK embedder's) each read a
+server's resources through their own connection. A server whose tools
+change across `/mcp restart` keeps its resources read as the session
+started; once a later listing in that session's gateway offers the
+server's own tool under the read's name, the session's read refuses to run.
 
 In the terminal or an editor's prompt, `@server:uri` attaches a resource:
 `@docs:file:///guide.md`, `@tickets:ticket://42` (write a space as `%20`:
