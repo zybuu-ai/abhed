@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -43,7 +44,7 @@ type Env struct {
 	Interactive bool
 	// InAgent says why this process runs inside an agent's command, or "".
 	InAgent func() string
-	// Poll is how often attach looks again; zero is a second.
+	// Poll is how often attach looks again; zero is two seconds.
 	Poll time.Duration
 }
 
@@ -97,7 +98,7 @@ func Main(env Env, args []string) int {
 		env.Ctx = context.Background()
 	}
 	if env.Poll <= 0 {
-		env.Poll = time.Second
+		env.Poll = 2 * time.Second
 	}
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		Usage(env.Err)
@@ -387,7 +388,7 @@ func (r *runner) printEvent(e bgjob.Event) {
 	var p map[string]any
 	_ = json.Unmarshal(e.Payload, &p)
 	say := ""
-	for _, k := range []string{"text", "tool", "reason", "command", "error"} {
+	for _, k := range []string{"text", "command", "tool", "reason", "error"} {
 		if s, ok := p[k].(string); ok && s != "" {
 			say = s
 			break
@@ -483,6 +484,9 @@ func (r *runner) follow(id string) error {
 		if w := j.Waiting; w != nil && w.RequestID+w.SessionID != asked {
 			asked = w.RequestID + w.SessionID
 			if err := r.ask(in, *w); err != nil {
+				if errors.Is(err, errDetached) {
+					return detached()
+				}
 				return err
 			}
 		}
@@ -494,8 +498,12 @@ func (r *runner) follow(id string) error {
 	}
 }
 
-// ask puts one ask to the person. Without a terminal it only says what
-// waits and until when; anything but y is a no.
+// errDetached is the person leaving while an ask waits on them.
+var errDetached = errors.New("detached")
+
+// ask puts one ask to the person: the tool, the reason and the call's
+// arguments, each escaped. Without a terminal it only says what waits and
+// until when. Only y allows; anything else, and an empty line, is a no.
 func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
 	what := short(w.Tool, 60)
 	if w.Reason != "" {
@@ -506,13 +514,37 @@ func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
 			what, w.Deadline.Local().Format("15:04"))
 		return nil
 	}
-	fmt.Fprintf(r.Err, "The job asks: %s\nAllow it? [y/N] ", what)
-	ans, err := in.ReadString('\n')
-	if err != nil && ans == "" {
-		return fmt.Errorf("no answer read: %w", err)
+	if w.RequestID == "" {
+		// An answer naming no request lands on whichever is waiting, which
+		// may not be the one shown.
+		fmt.Fprintf(r.Err, "abhed: the job waits on you (%s), but the server did not say which request; answer it in the console\n", what)
+		return nil
 	}
-	ok := strings.EqualFold(strings.TrimSpace(ans), "y") || strings.EqualFold(strings.TrimSpace(ans), "yes")
+	fmt.Fprintf(r.Err, "The job asks: %s\n", what)
+	for _, l := range argLines(w.Args) {
+		fmt.Fprintf(r.Err, "  %s\n", l)
+	}
+	fmt.Fprint(r.Err, "Allow it? [y/N] ")
+	got := make(chan string, 1)
+	go func() {
+		ans, err := in.ReadString('\n')
+		if err != nil && ans == "" {
+			ans = "" // no answer is a no
+		}
+		got <- ans
+	}()
+	var ans string
+	select {
+	case <-r.Ctx.Done():
+		fmt.Fprintln(r.Err)
+		return errDetached
+	case ans = <-got:
+	}
+	ok := strings.TrimSpace(ans) == "y" || strings.TrimSpace(ans) == "Y"
 	if err := r.cl.Answer(r.Ctx, w, ok); err != nil {
+		if r.Ctx.Err() != nil {
+			return errDetached
+		}
 		return err
 	}
 	if ok {
@@ -521,4 +553,34 @@ func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
 		fmt.Fprintln(r.Err, "denied")
 	}
 	return nil
+}
+
+// maxArg bounds what one argument shows; the record has it whole.
+const maxArg = 2000
+
+// argLines are a call's arguments, one per line, every hidden character and
+// newline escaped and each value cut to maxArg runes.
+func argLines(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return []string{short(string(raw), maxArg)}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v, isText := m[k].(string)
+		if !isText {
+			b, _ := json.Marshal(m[k])
+			v = string(b)
+		}
+		out = append(out, short(k, 40)+": "+short(v, maxArg))
+	}
+	return out
 }

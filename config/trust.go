@@ -287,6 +287,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
 		network := cfg.Network.clone()
+		background := cfg.Server.Background
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
 		}
@@ -300,6 +301,8 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 			func() { cfg.Network = network })
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
+		keepOperatorOnly(cfg, path, data, before, prior, "server.background", "a workspace never turns on background jobs or names where their notices go",
+			func() { cfg.Server.Background = background })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false

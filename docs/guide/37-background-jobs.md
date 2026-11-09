@@ -1,13 +1,15 @@
 # Background jobs
 
-`abhed bg` starts an agent on an Abhed server that runs as you, in a sandbox
-of its own, under the server's policy, and keeps going after this command
-exits. You follow it, answer what it asks and stop it from the same command.
+`abhed bg` starts an agent on an Abhed server that runs as you, under the
+server's policy, and keeps going after this command exits. On a server
+people sign in to, it works in a sandbox of its own, as each session there
+does. You follow it, answer what it asks and stop it from the same command.
 
 The server side is a Team feature (`server.background`), documented with the
 Team and Enterprise edition. A Community server answers that it runs no
 background jobs, and a Community `abhed serve` refuses
-`server.background.enabled`. This page is the command line and the protocol,
+`server.background.enabled`. Only the operator's configuration sets
+`server.background`: a workspace's file never does, trusted or not. This page is the command line and the protocol,
 which the Community Edition carries so any client can speak to such a server.
 
 ## Signing in
@@ -36,10 +38,12 @@ abhed bg cancel ID
   as one unified diff, while the server that ran it still holds the
   originals.
 - `attach` prints the record as it grows. When the job waits on you it
-  shows what it asks and, in a terminal, asks `Allow it? [y/N]`; anything
-  but `y` is a no. Without a terminal it only says what waits and until
-  when. Ctrl-C leaves; the job runs on. It exits 0 only for a job that
-  ended done.
+  shows the tool, the reason and the call's arguments (a command in full,
+  each value cut at 2,000 characters, secrets withheld as the record keeps
+  them) and, in a terminal, asks `Allow it? [y/N]`; only `y` allows, and
+  the answer names the request shown. Without a terminal it only says what
+  waits and until when. Ctrl-C leaves, at the question too; the job runs
+  on. It exits 0 only for a job that ended done.
 - `cancel` stops the job and every background task it started.
 
 Everything the server sends is shown with hidden characters escaped, so a
@@ -60,7 +64,7 @@ session's own routes.
 |---|---|
 | `POST /v1/bg/jobs` | start: `{"prompt", "name", "mode", "provider", "workspace": {"kind": "session"}}`; 202 with the job |
 | `GET /v1/bg/jobs` | your jobs: `{"jobs": [...]}` |
-| `GET /v1/bg/jobs/{id}` | one job; `waiting` holds the ask it waits on, with its `deadline` |
+| `GET /v1/bg/jobs/{id}` | one job; `waiting` holds the ask it waits on: tool, reason, the redacted `args`, `request_id` and `deadline` |
 | `POST /v1/bg/jobs/{id}/cancel` | stop it |
 | `GET /v1/bg/approvals` | every ask your jobs wait on |
 | `POST /v1/sessions/{session_id}/approve` | answer one: `{"approved", "request_id"}` |

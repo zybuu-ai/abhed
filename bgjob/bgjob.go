@@ -9,7 +9,10 @@
 // Studio can speak to any server that serves them.
 package bgjob
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Paths the server serves.
 const (
@@ -84,13 +87,17 @@ type StartRequest struct {
 // Approval is one ask a job waits on. It is answered on the job's session:
 // POST /v1/sessions/{session_id}/approve with request_id.
 type Approval struct {
-	JobID     string    `json:"job_id"`
-	SessionID string    `json:"session_id"`
-	RequestID string    `json:"request_id,omitempty"`
-	Tool      string    `json:"tool"`
-	Reason    string    `json:"reason,omitempty"`
-	Subagent  string    `json:"subagent,omitempty"`
-	Since     time.Time `json:"since"`
+	JobID     string `json:"job_id"`
+	SessionID string `json:"session_id"`
+	RequestID string `json:"request_id,omitempty"`
+	Tool      string `json:"tool"`
+	// Args are the call's arguments as the session's record keeps them,
+	// secrets withheld: what the owner is asked to allow. Sent to the owner
+	// only, never to an administrator or a notice.
+	Args     json.RawMessage `json:"args,omitempty"`
+	Reason   string          `json:"reason,omitempty"`
+	Subagent string          `json:"subagent,omitempty"`
+	Since    time.Time       `json:"since"`
 	// Deadline is when the job is stopped if the ask is still unanswered.
 	Deadline time.Time `json:"deadline"`
 }

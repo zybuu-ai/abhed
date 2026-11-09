@@ -12,19 +12,26 @@ import (
 type ServerBackgroundConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// ApprovalTimeoutSeconds is how long a job waits for its owner's answer
-	// before it is stopped with nothing approved. Zero is an hour.
+	// before it is stopped with nothing approved. Zero is 1800, which is
+	// also the most: every ask is denied after 30 minutes anyway.
 	ApprovalTimeoutSeconds int `json:"approval_timeout_seconds,omitempty"`
 	// MaxRunning bounds the jobs one person has running at once. Zero is 2.
 	MaxRunning int `json:"max_running,omitempty"`
 	// NotifyURL is sent a POST when a job waits on its owner and when it
-	// ends: the job, the tool and the reason, never the call's arguments.
+	// ends: the job, its owner and the tool, never a prompt or arguments.
+	// https, or http to this machine only. Set only by the operator: a
+	// workspace's file never sets server.background, trusted or not.
 	NotifyURL string `json:"notify_url,omitempty"`
 }
+
+// MaxApprovalTimeout is the longest a job's ask may wait: a session's ask
+// is denied after 30 minutes whoever waits on it.
+const MaxApprovalTimeout = 30 * time.Minute
 
 // ApprovalTimeout is approval_timeout_seconds with its default.
 func (b ServerBackgroundConfig) ApprovalTimeout() time.Duration {
 	if b.ApprovalTimeoutSeconds <= 0 {
-		return time.Hour
+		return MaxApprovalTimeout
 	}
 	return time.Duration(b.ApprovalTimeoutSeconds) * time.Second
 }
@@ -38,16 +45,17 @@ func (b ServerBackgroundConfig) Running() int {
 }
 
 func (b ServerBackgroundConfig) validate() error {
-	if b.ApprovalTimeoutSeconds < 0 {
-		return fmt.Errorf("server.background.approval_timeout_seconds %d is negative", b.ApprovalTimeoutSeconds)
+	if b.ApprovalTimeoutSeconds < 0 || time.Duration(b.ApprovalTimeoutSeconds)*time.Second > MaxApprovalTimeout {
+		return fmt.Errorf("server.background.approval_timeout_seconds %d: from 0 to %d", b.ApprovalTimeoutSeconds, int(MaxApprovalTimeout.Seconds()))
 	}
 	if b.MaxRunning < 0 {
 		return fmt.Errorf("server.background.max_running %d is negative", b.MaxRunning)
 	}
 	if b.NotifyURL != "" {
 		u, err := url.Parse(b.NotifyURL)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
-			return fmt.Errorf("server.background.notify_url %q: use an http or https URL with no credentials in it", b.NotifyURL)
+		if err != nil || u.Host == "" || u.User != nil ||
+			(u.Scheme != "https" && (u.Scheme != "http" || !loopbackHost(u.Hostname()))) {
+			return fmt.Errorf("server.background.notify_url %q: use https, or http to this machine only, with no credentials in the URL", b.NotifyURL)
 		}
 	}
 	return nil
