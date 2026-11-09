@@ -81,8 +81,8 @@ subagents it starts. A name the session does not have stops the run before
 it starts, naming the tools it has. MCP tools are named in full
 (`mcp__github__search`). The harness's own tools stay whatever you name:
 `recall`, which reads this session's own record, and, where the session has
-them, `exit_plan` in plan mode and the tool a structured (`-json-schema`)
-run answers with; naming one is allowed. It only takes tools away: policy
+them, `exit_plan` in plan mode and `result`, which a structured
+(`-json-schema`) run answers with; naming one is allowed. It only takes tools away: policy
 still judges each call, and every deny and ask rule, the managed ones
 included, still applies. The start of the record lists the tools kept as
 `tools_only` and the harness's as `tools_harness`.

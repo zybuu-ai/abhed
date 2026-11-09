@@ -4,6 +4,7 @@ package ui
 
 import (
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -28,16 +29,23 @@ func readyFunc(f *os.File) func(time.Duration) bool {
 }
 
 // waitFunc waits, with no timeout, for input on f or for wake. wait reports
-// true for input (or once the wake pipe is gone), false for a wake; stop
-// ends the pipe. An idle session sleeps in poll rather than waking to look.
-func waitFunc(f *os.File) (wait func() bool, wake, stop func()) {
+// true for input (or once the wake pipe is gone), false for a wake. stop
+// closes the write end, which ends a wait in progress; release closes the
+// read end, and is called by the reader when it stops, so no pipe is left
+// behind whichever comes first. An idle session sleeps in poll.
+//
+// Fd puts both ends in blocking mode; that is safe, as the read end is read
+// only after poll reports it readable.
+func waitFunc(f *os.File) (wait func() bool, wake, stop, release func()) {
 	r, w, err := os.Pipe()
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	in, wfd := int32(f.Fd()), int32(r.Fd()) // #nosec G115 -- file descriptors fit in 32 bits
+	var closeR, closeW sync.Once
 	dead := false
 	buf := make([]byte, 64)
+	release = func() { closeR.Do(func() { _ = r.Close() }) }
 	wait = func() bool {
 		if dead {
 			return true
@@ -59,10 +67,10 @@ func waitFunc(f *os.File) (wait func() bool, wake, stop func()) {
 		}
 		if n, err := r.Read(buf); err != nil || n == 0 {
 			dead = true
-			_ = r.Close()
+			release()
 			return true
 		}
 		return false
 	}
-	return wait, func() { _, _ = w.Write([]byte{0}) }, func() { _ = w.Close() }
+	return wait, func() { _, _ = w.Write([]byte{0}) }, func() { closeW.Do(func() { _ = w.Close() }) }, release
 }

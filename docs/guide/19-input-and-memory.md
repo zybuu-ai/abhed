@@ -113,14 +113,19 @@ first read, edit, write or search of a path there brings in that folder's
 from the tool's `path`, `file_path`, `dir`, `directory` and `cwd` arguments;
 a `cd` inside a shell command does not count.
 
-The file is added to the end of that tool result inside a
-`<folder-memory-…>` tag whose name ends in a hash of the block, and its text
-is redacted as any tool result is. Only Abhed writes these tags: the same
-tag anywhere in a tool's own output is escaped, so a file or a command that
-prints a lookalike is still read as data. The system prompt tells the agent
-that a fenced block is project memory for that folder, with the standing of
-the workspace's `ABHED.md`: below you, the managed memory and every rule,
-and never a permission.
+The file is added to the end of that tool result between
+`<folder-memory-…>` tags whose name ends in a random fence drawn for the
+conversation, which no file or command can know, and its text is redacted
+as any tool result is. Once a folder's file has loaded, the system prompt
+gains a short paragraph naming that fence and saying what such a block is:
+project memory for that folder, with the standing of the workspace's
+`ABHED.md`, below you, the managed memory and every rule, and never a
+permission. Anything in tool output that imitates the tag, in any case, with
+spaces, zero-width or full-width characters or another dash, is escaped
+with a backslash, in every session and subagent and in background results
+too. So a file that really contains `<folder-memory-` is shown with a `\`
+before the `<`: an edit copied from that view must leave the backslash out
+of its old text.
 
 Each folder's file is loaded once per conversation, and at most 32 files in
 all; when that bound stops one, the result and the record say so. The
@@ -156,7 +161,9 @@ case, `agents.md` is not `AGENTS.md`.
 
 A workspace memory file came with the repository, so it is read as the file
 tools read: never through a link out of the workspace or into Abhed's state,
-and not where a read deny rule forbids it. A file over 4 MiB is skipped.
+and not where a read deny rule forbids it, or a read rule asks about it
+(nobody is there to say yes while memory loads; start-up warns about each
+such file). A file over 4 MiB is skipped.
 
 ### Imports
 

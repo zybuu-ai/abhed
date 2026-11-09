@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,6 +89,7 @@ func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agen
 func cliSystemPrompt(cfg config.Config, pol *policy.Engine, workspace string, adapter model.Adapter, skills string, toolNames []string) string {
 	mem := agent.LoadMemory(memoryOptions(cfg, pol, workspace))
 	sessionMemory.Store(mem)
+	warnAskedMemory(os.Stderr, mem)
 	return agent.BuildSystemPrompt(agent.BuildOptions{
 		Profile:       "main",
 		Workspace:     workspace,
@@ -96,8 +98,17 @@ func cliSystemPrompt(cfg config.Config, pol *policy.Engine, workspace string, ad
 		Memory:        mem,
 		Skills:        skills,
 		Tools:         toolNames,
-		FolderMemory:  !cfg.Bare,
 	})
+}
+
+// warnAskedMemory says, at start, which memory files a read ask rule kept
+// out: otherwise the project's memory goes missing with only /memory to say so.
+func warnAskedMemory(w io.Writer, mem *agent.Memory) {
+	for _, e := range mem.Entries {
+		if strings.HasPrefix(e.Skipped, agent.MemoryAskedNote) {
+			fmt.Fprintf(w, "abhed: warning: %s is not loaded as memory: %s\n", config.Printable(e.Label), config.Printable(e.Skipped))
+		}
+	}
 }
 
 // recordMemoryLoaded records, once in each conversation, which memory files

@@ -202,6 +202,9 @@ type MemoryLoaded struct {
 	Files []MemoryFile `json:"files"`
 	// Note says when folder memory stopped loading at its bound.
 	Note string `json:"note,omitempty"`
+	// Fence is the session's folder memory tag, so a resumed conversation
+	// keeps reading the blocks it holds as fenced.
+	Fence string `json:"fence,omitempty"`
 }
 
 // MemoryWritten is the payload of memory.written.

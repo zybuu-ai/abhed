@@ -13,4 +13,4 @@ func readyFunc(*os.File) func(time.Duration) bool { return nil }
 
 // waitFunc has no way to wait on a console handle and a pipe at once, so the
 // session cannot hand the terminal to an editor on its own.
-func waitFunc(*os.File) (wait func() bool, wake, stop func()) { return nil, nil, nil }
+func waitFunc(*os.File) (wait func() bool, wake, stop, release func()) { return nil, nil, nil, nil }

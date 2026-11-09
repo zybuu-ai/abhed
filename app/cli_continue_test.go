@@ -40,4 +40,13 @@ func TestPrintContinueAfterTheTurnLimit(t *testing.T) {
 	if code != 2 || !strings.Contains(errOut, "max_continues") {
 		t.Fatalf("past the bound: %d %s", code, errOut)
 	}
+	// Forking a conversation that cannot be continued writes no branch.
+	before, _, _ := run("sessions")
+	_, errOut, code = run("-p", "--continue", "--fork-session", "-max-turns", "2")
+	if code != 2 || !strings.Contains(errOut, "max_continues") {
+		t.Fatalf("a fork past the bound: %d %s", code, errOut)
+	}
+	if after, _, _ := run("sessions"); after != before {
+		t.Fatalf("a refused fork wrote a branch:\n%s\n%s", before, after)
+	}
 }

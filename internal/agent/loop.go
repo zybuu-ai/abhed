@@ -1326,6 +1326,7 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
+	l.promptFolderMemory()
 	req := model.Request{
 		System:      l.Config.SystemPrompt,
 		Messages:    l.messages,
@@ -2115,11 +2116,10 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	}
 	// A folder's own memory comes with the first result that used the
 	// folder, before the observation is recorded, so a resume replays it.
-	if l.SubdirMemory != nil {
-		result.Content = escapeFolderFence(result.Content)
-		if !result.IsError {
-			result.Content += l.folderMemory(call)
-		}
+	// No tool output may pass for that fence, in any session, subagents' too.
+	result.Content = escapeFolderFence(result.Content)
+	if l.SubdirMemory != nil && !result.IsError {
+		result.Content += l.folderMemory(call)
 	}
 	elapsed := time.Since(start)
 	// Without this the model reads "path is required" and never learns its file_path was not taken.

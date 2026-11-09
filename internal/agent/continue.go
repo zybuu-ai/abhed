@@ -105,6 +105,15 @@ func (l *Loop) ContinueAfterLimit(ctx context.Context, surface string) (_ Termin
 	return l.run(ctx)
 }
 
+// ContinueRefusal is why a conversation with these events could not be
+// continued under maxContinues, or nil: checked before anything is written
+// for it, such as a branch.
+func ContinueRefusal(events []Event, maxContinues int) error {
+	l := &Loop{Config: Config{MaxContinues: maxContinues}}
+	l.NoteContinues(events)
+	return l.canContinue()
+}
+
 // CanContinue reports why ContinueAfterLimit would refuse now, or nil.
 func (l *Loop) CanContinue() error {
 	l.runMu.Lock()

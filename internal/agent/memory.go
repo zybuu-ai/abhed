@@ -590,6 +590,9 @@ func globMatch(glob, p string) bool {
 	}
 }
 
+// MemoryAskedNote begins why a memory file a read rule asks about was not loaded.
+const MemoryAskedNote = "a read rule asks before it is read"
+
 // ReadAllowed is a MemoryOptions.Allow that puts each workspace memory file
 // to a policy's read rules, as the read tool would be: a deny or an ask
 // keeps it out.
@@ -607,7 +610,7 @@ func ReadAllowed(pol *policy.Engine) func(path string) error {
 			return errors.New(d.Reason)
 		case policy.Ask:
 			// Nobody is there to say yes while memory loads, so it is not read.
-			return fmt.Errorf("a read rule asks before it is read (%s), and memory is never loaded on an ask", d.Reason)
+			return fmt.Errorf("%s (%s), and memory is never loaded on an ask", MemoryAskedNote, d.Reason)
 		}
 		return nil
 	}

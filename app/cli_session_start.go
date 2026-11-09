@@ -605,8 +605,9 @@ func (c *cliState) ui() ui.Surface {
 // headlessSession is the session a -p run writes: a new one, or with -c or
 // -r the one it names, claimed and rebuilt; with --fork-session, or from a
 // file outside the record, a branch of it. seed puts the rebuilt
-// conversation on the run's loop.
-func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loop), error) {
+// conversation on the run's loop. continueOnly is a run with no task: a
+// conversation that cannot be continued is refused before a branch is made.
+func headlessSession(ctx context.Context, st *cliState, continueOnly bool) (string, func(*agent.Loop), error) {
 	f := startFlags
 	sessionWorkspace = st.workspace
 	none := func(*agent.Loop) {}
@@ -628,6 +629,11 @@ func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loo
 	case copied:
 		return seeded(st.store, from)
 	case f.Fork:
+		if continueOnly {
+			if err := agent.ContinueRefusal(events, st.appCfg.ContinuesAllowed()); err != nil {
+				return "", nil, err
+			}
+		}
 		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0, "", false)
 		if err != nil {
 			return "", nil, err

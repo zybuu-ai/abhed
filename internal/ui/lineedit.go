@@ -152,7 +152,7 @@ func NewLineReader(prompt string) *LineReader {
 	}
 	d := newDock(in, os.Stdout, NewStyle(LazyStdout{}))
 	d.preread = pre
-	d.wait, d.wake, d.stopWait = waitFunc(os.Stdin)
+	d.wait, d.wake, d.stopWait, d.releaseWait = waitFunc(os.Stdin)
 	d.prompt = prompt
 	d.autoTheme = auto
 	d.scr.sync = syncMode == 1
@@ -195,7 +195,7 @@ func NewLineReaderOn(in io.Reader, out io.Writer, cols, rows int) *LineReader {
 	if f, ok := in.(*os.File); ok {
 		// Set before the reader starts, which reads them.
 		d.kr.ready = readyFunc(f)
-		d.wait, d.wake, d.stopWait = waitFunc(f)
+		d.wait, d.wake, d.stopWait, d.releaseWait = waitFunc(f)
 	}
 	l := &LineReader{d: d, raw: true, done: make(chan struct{})}
 	d.openKeys() // a test's keys are taken as they come

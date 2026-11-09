@@ -167,6 +167,11 @@ func (l *LineReader) EditText(ctx context.Context, text string) (string, error) 
 		return "", ErrNoEditor
 	}
 	d.openKeys()
+	select {
+	case <-d.keysDone: // the reader has stopped: nothing would take the request
+		return "", ErrNoEditor
+	default:
+	}
 	req := editRequest{text: text, reply: make(chan editResult, 1)}
 	select {
 	case d.edits <- req:
@@ -176,7 +181,17 @@ func (l *LineReader) EditText(ctx context.Context, text string) (string, error) 
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
-	// Once the editor is open it is the person's to close.
-	r := <-req.reply
-	return r.text, r.err
+	// Once the editor is open it is the person's to close; a reader that
+	// stops before taking the request answers nothing, so that ends the wait.
+	select {
+	case r := <-req.reply:
+		return r.text, r.err
+	case <-d.keysDone:
+		select {
+		case r := <-req.reply:
+			return r.text, r.err
+		default:
+			return "", ErrNoEditor
+		}
+	}
 }

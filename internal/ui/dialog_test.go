@@ -873,3 +873,30 @@ func TestEditTextWithoutPollingIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNoEditor", err)
 	}
 }
+
+// Once the key reader has stopped, an edit is refused rather than waited on.
+func TestEditTextAfterTheReaderStopped(t *testing.T) {
+	g := newRig(t, 80, 30)
+	g.lr.d.mu.Lock()
+	g.lr.d.extEdit = func(text string) (string, error) { return text, nil }
+	g.lr.d.mu.Unlock()
+	_ = g.in.Close() // input ends: the reader stops
+	select {
+	case <-g.lr.d.keysDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader did not stop when input ended")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := g.lr.EditText(context.Background(), "x")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrNoEditor) {
+			t.Fatalf("err = %v, want ErrNoEditor", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("EditText waited on a reader that had stopped")
+	}
+}

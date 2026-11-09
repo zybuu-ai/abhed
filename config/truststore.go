@@ -275,13 +275,9 @@ func InitWorkspace(workspace string) (string, error) {
 		return path, werr
 	}
 	ignoreLocalConfig(filepath.Dir(path))
-	// Trust covers what loading will hash: a local layer already there too.
-	files := []workspaceFile{{path, data}}
-	local := filepath.Join(filepath.Dir(path), LocalConfigName)
-	if b, _, err := readWorkspaceConfig(workspace, local); err == nil {
-		files = append(files, workspaceFile{local, b})
-	}
-	return path, GrantTrust(workspace, workspaceHash(files))
+	// Only what init wrote is trusted: a local layer already there, which a
+	// repository could have shipped, is shown and asked about on the next run.
+	return path, GrantTrust(workspace, hashOf(data))
 }
 
 // ignoreLocalConfig starts .abhed/.gitignore with the local layer, which is

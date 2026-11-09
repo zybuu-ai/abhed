@@ -51,7 +51,7 @@ All notable changes to Abhed are recorded here. The format follows
   recorded, only when there is nothing to continue or the bound is spent.
 - A workspace memory file that a read rule asks about is no longer loaded:
   memory loads with nobody there to say yes, so an ask keeps it out as a
-  deny does, and `/memory` says why.
+  deny does; start-up warns about each such file, and `/memory` says why.
 
 ### Added
 
@@ -73,9 +73,10 @@ All notable changes to Abhed are recorded here. The format follows
   ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
 - A folder's own `ABHED.md`, below the workspace root, is loaded the first
   time the agent works in that folder, added to that tool result inside a
-  tag keyed by its hash that no tool output can forge, redacted, and
-  recorded as `memory.loaded` with scope `subdirectory`; the system prompt
-  says what such a block may and may not do. Read rules hold (an ask keeps
+  tag with a random fence for the conversation, redacted, and recorded as
+  `memory.loaded` with scope `subdirectory`. Once one loads, the system
+  prompt names the fence and says what such a block may and may not do, and
+  any lookalike of the tag in tool output is escaped with a backslash. Read rules hold (an ask keeps
   it out), `.abhed` and `.git` are skipped, at most 32 files load in a
   conversation, and the default configuration asks before the agent writes
   or edits one (`write(**/ABHED.md)`). `/memory edit <project|local|user>`
@@ -86,8 +87,8 @@ All notable changes to Abhed are recorded here. The format follows
   same trust: one decision covers both, so adding or changing it asks again;
   untrusted it only tightens, and trusted it still cannot make a
   managed-only setting or loosen the managed file. `abhed init` writes
-  `.abhed/.gitignore` naming it, and trusts a local file already there with
-  the one it writes ([The local file](docs/guide/02-configuration.md#the-local-file)).
+  `.abhed/.gitignore` naming it, and trusts only the file it writes: a local
+  file already there is shown and asked about on the next run ([The local file](docs/guide/02-configuration.md#the-local-file)).
 - Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
   `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
   `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.

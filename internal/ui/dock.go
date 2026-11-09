@@ -123,10 +123,11 @@ type dock struct {
 	edits chan editRequest
 	// wait sleeps until a key or a wake; wake rouses it for an edit. Both
 	// are nil where the input cannot be waited on with another.
-	wait     func() bool
-	wake     func()
-	stopWait func()
-	keysDone chan struct{} // closed when the key reader stops
+	wait        func() bool
+	wake        func()
+	stopWait    func()
+	releaseWait func()
+	keysDone    chan struct{} // closed when the key reader stops
 	// preread holds keys typed before the reader started, which polling
 	// the terminal does not see.
 	preread *bytes.Reader
@@ -218,6 +219,11 @@ func newDock(in io.Reader, out io.Writer, st Style) *dock {
 func (d *dock) run() {
 	defer RestoreOnPanic()
 	defer close(d.keysDone)
+	defer func() {
+		if d.releaseWait != nil {
+			d.releaseWait()
+		}
+	}()
 	<-d.keysOn
 	for {
 		d.waitForKey()

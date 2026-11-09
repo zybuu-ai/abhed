@@ -314,8 +314,9 @@ func bareConfig(cfg config.Config) config.Config {
 }
 
 // harnessTools are the loop's own tools, which every session keeps whatever
-// -tools names: recall reads the session's own record, exit_plan ends plan mode.
-var harnessTools = []string{"recall", "exit_plan"}
+// -tools names: recall reads the session's own record, exit_plan ends plan
+// mode, and result is how a -json-schema run answers.
+var harnessTools = []string{"recall", "exit_plan", agent.ResultToolName}
 
 // toolsOnly keeps the named tools and no others; a name the session lacks
 // refuses. The harness's own tools may be named and are kept anyway.

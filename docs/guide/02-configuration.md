@@ -1557,6 +1557,9 @@ again. Untrusted, it applies only what tightens; trusted, it is merged like
 the workspace file, so a managed-only setting is set aside, the managed file
 still binds, and every managed deny rule still applies. `abhed trust`
 names it as `local`. Agent tools cannot write it: it is Abhed's state.
+`abhed init` trusts only the `config.json` it writes: a local file already
+in the workspace, which a cloned repository could have shipped, is shown
+with it and asked about on the next run.
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
@@ -1980,7 +1983,7 @@ A workspace's `.abhed/users.json` is read only when the workspace is trusted;
 sign in (see [Accounts](#accounts)).
 
 Trust is for the file's exact contents: after an edit it is asked about again.
-`abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and
+`abhed init` trusts the file it writes, and nothing else already there. Your own `~/.abhed/config.json` and
 the managed `/etc/abhed/config.json` are not affected, and the managed file
 still wins. The full classification of every setting is in [Workspace
 trust](../architecture/workspace-trust.md).

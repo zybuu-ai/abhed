@@ -434,7 +434,11 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	began := time.Now()
 	// A new session, or with -c or -r the recorded one it goes on with.
-	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter})
+	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter}, o.continueLimit)
+	if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+		fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+		return 2
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1 // a run with no session row would write into another's record
