@@ -33,6 +33,10 @@ Some tests need more:
 - A package whose tests link `internal/managed` (most do) needs
   `func TestMain(m *testing.M) { testenv.Main(m) }`, so its tests never read
   this machine's managed files; `internal/testenv` fails the build without it.
+- Those tests stop with `testenv: the temporary folder is not private` when
+  `TMPDIR`, or a folder above it, can be written by your group or others (a
+  `~/tmp` made under umask 002, say): run `chmod g-w,o-w` on it, or unset
+  `TMPDIR`.
 - The `fence-s390x` CI job runs the fence's kernel tests on a self-hosted
   Linux on Z runner, and only on a push to `zybuu-ai/abhed`, never on a pull
   request. A self-hosted runner on a public repository runs whatever a

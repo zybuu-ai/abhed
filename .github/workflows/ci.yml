@@ -101,7 +101,7 @@ jobs:
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
-        run: go test ./... -skip '^(TestStudioDebugProblems|TestStudioRunsALanguageServer|TestStudioLanguageServerRestartsAndIsJudged|TestStudioLanguageServerKeepsOrder|TestStudioLanguageServerRestartWindowAndClose|TestServeCheckReportsSSHHostKey|TestTerminalVenvInUseAfterAbhedVenv|TestTUICtrlBMovesACommandToTheBackground|TestSplitIsBoundedAndFailsClosed)$' -count=1 -timeout 30m -coverprofile=coverage.out
+        run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
 
       # abhed_app owns the tables; abhed_runtime is what a server should run
       # as. These tests are the evidence that the audit record cannot be
@@ -164,12 +164,10 @@ jobs:
       # a race there loses a turn rather than crashing. The whole tree is
       # race-clean, so this gates the lot rather than a chosen few.
       - name: Race detector
-        # 1.2.9 only: non-blocking after three CI rounds; 1.3.0 restores the gate.
-        continue-on-error: true
         env:
           ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
           ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
-        run: go test ./... -skip '^(TestStudioDebugProblems|TestStudioRunsALanguageServer|TestStudioLanguageServerRestartsAndIsJudged|TestStudioLanguageServerKeepsOrder|TestStudioLanguageServerRestartWindowAndClose|TestServeCheckReportsSSHHostKey|TestTerminalVenvInUseAfterAbhedVenv|TestTUICtrlBMovesACommandToTheBackground|TestSplitIsBoundedAndFailsClosed)$' -race -count=1 -timeout 30m
+        run: go test ./... -race -count=1 -timeout 30m
 
       # The end-to-end CLI tests are evidence only if they ran. A test may
       # skip only as pending on an item listed here, each still being built:
@@ -201,15 +199,13 @@ jobs:
       # The real-engine relay tests run in the container-tier job, the fence's
       # spec as root in the sandbox job, and the TMPDIR test on macOS.
       - name: Sandbox boundary tests actually ran
-        # 1.2.9 only: five new skips need their reasons listed; 1.3.0 restores the gate.
-        continue-on-error: true
         env:
           CGO_ENABLED: "0" # the test binary is the egress relay; see the sandbox job
         run: |
           set -euo pipefail
           go test ./internal/sandbox/ -count=1 -v > sandbox.log 2>&1 || { cat sandbox.log; exit 1; }
           skipped=$(grep -c -- "--- SKIP" sandbox.log || true)
-          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup|set ABHED_TEST_RELAY_BINARY to a Linux build|fence_etc_test.go:[0-9]+: needs root|tmpdir_test.go:[0-9]+: TMPDIR handling is macOS-specific|bwrap cannot grant the relay the resolver.s port here" sandbox.log || true)
+          expected=$(grep -cE "cannot unshare the network namespace|cannot create a sandbox.s namespaces here|set ABHED_REQUIRE_CONTAINER=1|set ABHED_REQUIRE_FENCE=1 in a delegated cgroup|set ABHED_TEST_RELAY_BINARY to a Linux build|fence_etc_test.go:[0-9]+: needs root|tmpdir_test.go:[0-9]+: TMPDIR handling is macOS-specific|bwrap cannot grant the relay the resolver.s port here|shell_choice_test.go:[0-9]+: zsh terminals are the macOS process tier.s|temp_reap_test.go:[0-9]+: own caches are the macOS process tier.s|process_mcpfiles_test.go:[0-9]+: a case-insensitive disk|fence_dns_linux_test.go:[0-9]+: set ABHED_TEST_MUSL_RESOLVE to a static musl resolver helper" sandbox.log || true)
           if [ "$skipped" -ne "$expected" ]; then
             echo "A sandbox test skipped for an unexpected reason ($skipped skipped, $expected accounted for):"
             grep -B3 -- "--- SKIP" sandbox.log
@@ -236,15 +232,11 @@ jobs:
           if go list -deps ./cmd/abhed | grep -q '/ee/'; then
             echo "cmd/abhed depends on an ee/ package"; exit 1
           fi
-          # The changelog and the scan record are history and may name the
-          # old tree; this workflow names the pattern it looks for. The open
-          # Helm chart, deploy/helm/, is not that tree.
-          if git grep -n -E '(^|[^a-z])deploy/' -- '*.go' '*.yml' '*.md' \
-               ':!CHANGELOG.md' ':!docs/trust/security-scans.md' ':!.github/workflows/ci.yml' \
-               ':!*_test.go' ':!internal/agent/verify_corpus.go' ':!internal/agent/verify_facts.go' ':!monitor/drift.go' \
-               | grep -E '(^|[^a-z])deploy/($|[^h]|h($|[^e])|he($|[^l])|hel($|[^m])|helm($|[^/]))'; then
-            echo "references to the private deployment tree"; exit 1
-          fi
+          # Any path into the private deployment tree fails unless it is a
+          # named open form (the Helm chart, a test's fixture); the script
+          # lists them and checks itself against its probes first.
+          python3 scripts/ci/edition-boundary.py --self-test
+          python3 scripts/ci/edition-boundary.py
 
   # The process tier on Linux is bubblewrap, and denying network needs a
   # namespace the hosted runner will not grant. A privileged container can, so
@@ -507,13 +499,17 @@ jobs:
       # or this runner, not in s390x, and each run natively in the test job:
       # qemu-user 8.2 drops stat's nanoseconds (the change-time tests, and the
       # microVM guest's sync, which finds changes by change time) and has
-      # no openat2 (TestBarred); timing budgets do not hold emulated; and
-      # bubblewrap is not installed here (the sandboxed-session tests).
+      # no openat2 (TestBarred); it writes its own /proc/self/stat, with a
+      # start time the host's /proc does not share (owner liveness by start
+      # time); timing budgets do not hold emulated; and bubblewrap is not
+      # installed here (the sandboxed-session tests, and the hello golden,
+      # whose prompt names the sandbox).
       - name: Unit tests under emulation
         run: |
           skip='^(TestReadableFileSameCatchesAChangeTimeAlone|TestFreshSeesEveryRewriteAndForgetsNothing|TestBrokenOperatorStoreRecovers'
           skip+='|TestSyncSendsOnlyChanges|TestExecCopiesChangesBack'
           skip+='|TestBarred|TestSplitIsBoundedAndFailsClosed|TestBudgets|TestBudgetDeltaLatency|TestBudgetStartupWithSlowPodman|TestBudgetStartupWithBrokenBwrap|TestIndexScales'
+          skip+='|TestServerOwnerGone|TestSweepRemovesEgressContainersAKilledAbhedLeft|TestGoldenHello'
           skip+='|TestSandboxedSessionRefusesALinkedStateFile|TestFirstRunEndpointNeverStoresAKey|TestFirstRunWithOllama)$'
           mapfile -t pkgs < <(go list ./... | grep -v '^github.com/zybuu-ai/abhed/app$')
           # Emulated, the server package alone is slower than go test's 10m default.

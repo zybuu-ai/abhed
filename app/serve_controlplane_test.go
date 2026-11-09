@@ -28,6 +28,9 @@ func checkEnv(t *testing.T, userCfg, managedCfg string) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// Serve's own state, the relay's host key among it, is per test: another
+	// test's key left in a shared state folder read as this one's.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("ABHED_SECRETS_FILE", "")
 	t.Setenv(config.TrustEnv, "")
 	old := managed.ConfigFile

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -647,6 +648,10 @@ func (l *LineReader) Capture() func() {
 
 	origOut, origErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = outW, errW
+	// The log package, and slog's default through it, kept the stderr it had
+	// at start: a warning it wrote would land under the screen and tear it.
+	origLog := log.Writer()
+	log.SetOutput(errW)
 
 	var wg sync.WaitGroup
 	pump := func(r *os.File) {
@@ -669,6 +674,7 @@ func (l *LineReader) Capture() func() {
 
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
+		log.SetOutput(origLog)
 		_ = outW.Close()
 		_ = errW.Close()
 		wg.Wait()
@@ -750,6 +756,8 @@ func (l *LineReader) captureLines() func() {
 		return func() {}
 	}
 	os.Stdout, os.Stderr = outW, errW
+	origLog := log.Writer()
+	log.SetOutput(errW)
 	keepSGR := NewStyle(LazyStdout{}).enabled
 	var wg sync.WaitGroup
 	pump := func(r *os.File, to *os.File) {
@@ -773,6 +781,7 @@ func (l *LineReader) captureLines() func() {
 	go pump(errR, origErr)
 	return func() {
 		os.Stdout, os.Stderr = origOut, origErr
+		log.SetOutput(origLog)
 		_ = outW.Close()
 		_ = errW.Close()
 		wg.Wait()

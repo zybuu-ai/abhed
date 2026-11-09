@@ -41,6 +41,23 @@ const privateEnv = "ABHED_TESTENV_PRIVATE"
 // helper running in a sandbox with no network.
 const fallbackAddr = "127.0.0.1:9"
 
+// privatePrefix and homeName name the private folder Isolate makes and the
+// home inside it.
+const (
+	privatePrefix = "abhed-no-managed-"
+	homeName      = "home"
+)
+
+// parentOfHome reports the private folder a home Isolate made lies in, when
+// home is one, resolved and checked.
+func parentOfHome(home string) (string, bool) {
+	if home == "" || filepath.Base(home) != homeName || !strings.HasPrefix(filepath.Base(filepath.Dir(home)), privatePrefix) {
+		return "", false
+	}
+	p, err := checkPrivate(filepath.Dir(home))
+	return p, err == nil
+}
+
 // scrubbed are variables that choose a model, a key, or a file Abhed reads
 // in place of the home folder's. A test that needs one sets its own.
 var scrubbed = []string{
@@ -65,9 +82,9 @@ type Guard struct {
 	hits   []string
 	srv    *httptest.Server
 	home   string
-	// private holds the managed paths' missing folder; only this process
-	// can make anything in it.
-	private string
+	// private holds the managed paths' missing folder and the home; only
+	// this process can make anything in it. resolved is its resolved path.
+	private, resolved string
 	// fallback is set when no stub could listen and the defaults lead to
 	// fallbackAddr; a dial there is then a hit. Tests use that closed port
 	// for an endpoint that refuses, so it is a hit only then.
@@ -123,11 +140,19 @@ func Isolate() *Guard {
 	// nothing to leave behind when it exits from inside a test; anything else
 	// makes one, which Close removes. A folder of its own that fails the
 	// check stops the run.
+	helper := os.Getenv(Marker) != ""
 	parent, perr := checkPrivate(os.Getenv(privateEnv))
-	if os.Getenv(Marker) != "" && perr == nil {
+	if !helper || perr != nil {
+		// A helper a sandbox runs keeps HOME but not this package's variables;
+		// its HOME is then the home inside its parent's private folder.
+		if p, ok := parentOfHome(os.Getenv("HOME")); ok {
+			parent, perr, helper = p, nil, true
+		}
+	}
+	if helper && perr == nil {
 		managed.MoveTo(filepath.Join(parent, "none"))
 	} else {
-		private, err := os.MkdirTemp("", "abhed-no-managed-")
+		private, err := os.MkdirTemp("", privatePrefix)
 		if err != nil {
 			panic("testenv: " + err.Error())
 		}
@@ -140,6 +165,7 @@ func Isolate() *Guard {
 		}
 		managed.MoveTo(filepath.Join(private, "none"))
 		_ = os.Setenv(privateEnv, private)
+		g.resolved = private
 	}
 
 	// A helper a test runs in a sandbox with no network cannot listen; its
@@ -176,14 +202,16 @@ func Isolate() *Guard {
 		}
 	}
 
-	if os.Getenv(Marker) != "" {
+	if helper {
 		g.Helper = true
 		return g // a helper keeps what its parent test set
 	}
 	keepGoCaches()
-	home, err := os.MkdirTemp("", "abhed-home-*")
-	if err != nil {
-		panic(err)
+	// The home is inside the private folder, so Close removes both, and a
+	// helper that exits from inside a test makes no home of its own.
+	home := filepath.Join(g.resolved, homeName)
+	if err := os.Mkdir(home, 0o700); err != nil {
+		panic("testenv: " + err.Error())
 	}
 	g.home = home
 	for k, v := range map[string]string{"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config"),
