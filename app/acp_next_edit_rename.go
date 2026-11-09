@@ -43,7 +43,9 @@ var keywords = map[string]string{
 
 // scanned are the languages the file is scanned in when no language server
 // names the sites; any other language with keywords takes only those sites.
-var scanned = map[string]bool{"python": true, "go": true, "javascript": true, "javascriptreact": true, "typescript": true, "typescriptreact": true, "java": true}
+// JSX (javascriptreact, typescriptreact) is not: an attribute name and the
+// text between tags read as names a scan would rename.
+var scanned = map[string]bool{"python": true, "go": true, "javascript": true, "typescript": true, "java": true}
 
 func init() {
 	keywords["javascriptreact"] = keywords["javascript"]
@@ -381,26 +383,57 @@ func bindingOf(lines, code []string, from, to, line int, name, language string) 
 // blockWords open a statement whose brace is a block, not an object literal.
 var blockWords = regexp.MustCompile(`^\s*(?:\}\s*)?(?:if|else|for|while|do|switch|select|case|default|try|catch|finally|func|function|class|interface|struct|enum|namespace|go|defer|with)\b`)
 
-// exprBrace reports a { at the end of code that opens an expression (an
-// object or composite literal) rather than a block: after an operator or
-// opening punctuation, after return, or (in Go) after a type name on a line
-// that is not a statement keyword's; not after ), => or a name elsewhere.
-func exprBrace(code, language string) bool {
+// goMapType ends a Go map literal's type, whose keys are expressions, not field names.
+var goMapType = regexp.MustCompile(`\bmap\[[^\]]*\][\w.*\[\]]*$`)
+
+// braceKind is what a { at the end of code opens: 'o' an object or
+// composite literal, whose keys are names (after an operator or opening
+// punctuation, after return, or in Go after a type name on a line that is
+// not a statement keyword's); 'm' a Go map literal, whose keys are
+// expressions; '{' a block (after ), => or a name elsewhere).
+func braceKind(code, language string) byte {
 	t := strings.TrimRight(code, " \t")
-	if t == "" {
-		return false
+	if t == "" || strings.HasSuffix(t, "=>") {
+		return '{' // a block, or an arrow function's body
 	}
-	if strings.HasSuffix(t, "=>") {
-		return false // an arrow function's body
+	if language == "go" && goMapType.MatchString(t) {
+		return 'm'
 	}
 	if strings.ContainsRune("=(,:[?+-*/%&|^!<>~", rune(t[len(t)-1])) || strings.HasSuffix(t, "return") {
-		return true // an operand: an object or composite literal
+		return 'o' // an operand: an object or composite literal
 	}
 	if language == "go" && !blockWords.MatchString(code) {
-		r, _ := utf8.DecodeLastRuneInString(t)
-		return identPart(r) || r == ']'
+		if r, _ := utf8.DecodeLastRuneInString(t); identPart(r) || r == ']' {
+			return 'o'
+		}
 	}
-	return false
+	return '{'
+}
+
+// nextCode is the first character of code after byte at on line l, looking
+// on over later lines before end when the line has none after it.
+func nextCode(code []string, l, at, end int) byte {
+	t := strings.TrimLeft(code[l][at:], " \t\r\n")
+	for t == "" && l+1 < end {
+		l++
+		t = strings.TrimLeft(code[l], " \t\r\n")
+	}
+	if t == "" {
+		return 0
+	}
+	return t[0]
+}
+
+// shorthand reports a JavaScript or TypeScript shorthand property, { name }
+// or { a, name }: a name right after { or , and before , or } in an object
+// literal. It is both the key and the variable, so a rename writes it out
+// as name: newName, keeping the key.
+func shorthand(code []string, l, at, first, end int, name string, open byte, language string) bool {
+	if open != 'o' || (language != "javascript" && language != "typescript") {
+		return false
+	}
+	p, n := prevCode(code, l, at, first), nextCode(code, l, at+len(name), end)
+	return (p == '{' || p == ',') && (n == ',' || n == '}')
 }
 
 // prevCode is the last character of code before byte at on line l, looking
@@ -447,7 +480,10 @@ func notAVariable(code []string, l, at, first int, name string, open byte, langu
 // none; notRename that the edit is not taken for a rename after all, and
 // the model is asked as for any other edit.
 func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (edits []suggestedEdit, why string, notRename bool) {
-	type site struct{ line, at int } // window line, byte offset
+	type site struct {
+		line, at int  // window line, byte offset
+		short    bool // a shorthand property: written out as name: newName
+	}
 	var sites []site
 	code := codeOnly(lines, req.Language)
 	from, to, inFunc := scopeOf(lines, code, line, req.Language)
@@ -474,7 +510,10 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 			}
 			at := byteAt(lines[l], r.Start.Character)
 			if at >= 0 && byteAt(lines[l], r.End.Character) == at+len(h.From) && wordAt(lines[l], at, h.From) {
-				sites = append(sites, site{l, at})
+				// A shorthand property the server names is written out too, so its key stays.
+				js := strings.HasPrefix(req.Language, "javascript") || strings.HasPrefix(req.Language, "typescript")
+				p, n := prevCode(code, l, at, 0), nextCode(code, l, at+len(h.From), len(lines))
+				sites = append(sites, site{l, at, js && (p == '{' || p == ',') && (n == ',' || n == '}')})
 			}
 		}
 	} else {
@@ -496,17 +535,13 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 						open = stack[len(stack)-1]
 					}
 					if !notAVariable(code, l, i, from, h.From, open, req.Language) {
-						sites = append(sites, site{l, i})
+						sites = append(sites, site{l, i, shorthand(code, l, i, from, to, h.From, open, req.Language)})
 					}
 					k++
 				}
 				switch c[i] {
 				case '{':
-					if exprBrace(c[:i], req.Language) {
-						stack = append(stack, 'o')
-					} else {
-						stack = append(stack, '{')
-					}
+					stack = append(stack, braceKind(c[:i], req.Language))
 				case '(', '[':
 					stack = append(stack, c[i])
 				case ')', ']', '}':
@@ -532,7 +567,11 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 	for i := len(sites) - 1; i >= 0; i-- {
 		s := sites[i]
 		l := changed[s.line-first]
-		changed[s.line-first] = l[:s.at] + h.To + l[s.at+len(h.From):]
+		to := h.To
+		if s.short {
+			to = h.From + ": " + h.To
+		}
+		changed[s.line-first] = l[:s.at] + to + l[s.at+len(h.From):]
 	}
 	end := editPos{Line: req.Window.StartLine + last + 1}
 	if !strings.HasSuffix(lines[last], "\n") {

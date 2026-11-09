@@ -721,21 +721,7 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		return
 	}
 	now := completeNow()
-	recent := !k.warmed.IsZero() && now.Sub(k.warmed) < warmEvery
-	if !recent {
-		// Checked and taken at once, so sessions warming together load the model once.
-		c.compMu.Lock()
-		if t := c.warmed[cfg.Model.Completion]; !t.IsZero() && now.Sub(t) < warmEvery {
-			recent = true
-		} else {
-			if c.warmed == nil {
-				c.warmed = map[string]time.Time{}
-			}
-			c.warmed[cfg.Model.Completion] = now
-		}
-		c.compMu.Unlock()
-	}
-	if recent {
+	if !k.warmed.IsZero() && now.Sub(k.warmed) < warmEvery {
 		k.mu.Unlock()
 		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
 		return
@@ -750,7 +736,26 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		k.adapter, k.provider, k.chatOnly = a, cfg.Model.Completion, false
 		k.sum.Provider, k.sum.Model = k.provider, provider.Model
 	}
-	a, chatOnly := k.adapter, k.chatOnly
+	inf, ok := k.adapter.(model.Infiller)
+	if !ok || k.chatOnly {
+		k.mu.Unlock()
+		skip("the completion model is asked through chat, which is not warmed")
+		return
+	}
+	// Only a warm-up about to be sent is recorded, for the connection too;
+	// checked and taken at once, so sessions warming together load the model once.
+	c.compMu.Lock()
+	if t := c.warmed[cfg.Model.Completion]; !t.IsZero() && now.Sub(t) < warmEvery {
+		c.compMu.Unlock()
+		k.mu.Unlock()
+		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
+		return
+	}
+	if c.warmed == nil {
+		c.warmed = map[string]time.Time{}
+	}
+	c.warmed[cfg.Model.Completion] = now
+	c.compMu.Unlock()
 	k.warmed = now
 	// Its own deadline, and not replaced by completions (a model that is
 	// loading is loading for them too), but ended with the session or the connection.
@@ -766,11 +771,6 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		case <-ctx.Done():
 		}
 	}()
-	inf, ok := a.(model.Infiller)
-	if !ok || chatOnly {
-		skip("the completion model is asked through chat, which is not warmed")
-		return
-	}
 	started := time.Now()
 	err := warmCall(ctx, inf)
 	took := time.Since(started)

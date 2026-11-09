@@ -66,9 +66,11 @@ All notable changes to Abhed are recorded here. The format follows
 - A rename's next edit comes from the file, not a model: after edits that
   turn one identifier into another, the other uses of the old name are
   offered as one edit. They come from the language server's references when
-  one is running, or else, in Python, Go, JavaScript, TypeScript and Java, a
+  one is running, or else, in Python, Go, JavaScript, TypeScript and Java
+  (not JSX), a
   scan of the innermost function that skips strings, comments, members,
-  keyword arguments in calls and literal keys, and leaves the rename to you
+  keyword arguments in calls and literal keys (a shorthand property is
+  written out as `old: new`), and leaves the rename to you
   where the name is bound again in a nested scope. A one-word edit with
   nothing to finish (a reserved or already used new name, no other use, a
   use of a name declared elsewhere) is no rename, and the model is asked as

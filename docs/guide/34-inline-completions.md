@@ -191,12 +191,15 @@ for it:
   `p->name`, `A::name`), keyword arguments in a call (`f(name=1)`; a
   parameter's default on the function's own line is renamed) and, in
   JavaScript, TypeScript and Go, the keys of an object or composite literal
-  (`{name: 1}`, `T{name: 1}`). A ternary's `? name :`, a `case name:` and a
-  typed declaration are uses. Where the old name is bound again in a nested
+  (`{name: 1}`, `T{name: 1}`). A ternary's `? name :`, a `case name:`, a
+  typed declaration and a Go map literal's key (`map[string]int{name: 1}`)
+  are uses. A shorthand property (`{ name, age }`) is both, so it is written
+  out (`{ name: title, age }`) and the object keeps its key. Where the old name is bound again in a nested
   function, lambda, comprehension or inner block, nothing is offered: a
   textual rename would change another variable, so it is left to you.
-  Rust, C and C++ take only a language server's uses; other languages get
-  no rename from the file.
+  Rust, C, C++ and JSX files (`.jsx`, `.tsx`, where attribute names and
+  the text between tags read like names) take only a language server's
+  uses; other languages get no rename from the file.
 - Not every one-word edit is a rename. A new name that is a reserved word
   of the language (`class`, `null`, `int`) or already used in that
   function, an old name with no other use (a typo fixed on its only use),

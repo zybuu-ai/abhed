@@ -1663,8 +1663,11 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   (the window at a file's top level), skipping strings, comments, members
   after `.`, `->` or `::`, keyword arguments in a call (not a parameter's
   default on the function's own header), and in JavaScript, TypeScript and
-  Go a key right after `{` or `,` in a brace that opens an expression.
-  Rust, C and C++ need sites. The uses come back as one edit over the lines
+  Go a key right after `{` or `,` in a brace that opens an expression (not
+  a Go map literal, whose keys are uses). A JavaScript or TypeScript
+  shorthand property, at a scanned use or a site, is written out as
+  `old: new`. Rust, C, C++, `javascriptreact` and `typescriptreact` need
+  sites. The uses come back as one edit over the lines
   from the first to the last, with `rename: true`. Only a name bound again
   in a nested function, lambda, comprehension or inner block is `dropped`
   (left to the person). Otherwise, an edit is no rename, and the model is

@@ -448,6 +448,12 @@ func TestStudioNextEditRenameNotAVariableTable(t *testing.T) {
 		{"python default", "python", "def f(x=1):\n    return y + x\n", 1, 11, "def f(y=1):\n    return y + y\n"},
 		{"js default", "javascript", "function f(x = 1) {\n  return y + x;\n}\n", 1, 9, "function f(y = 1) {\n  return y + y;\n"},
 		{"ts typed declaration elsewhere", "typescript", "function f() {\n  let x: number = 1;\n  return y;\n}\n", 2, 9, ""},
+		{"js shorthand", "javascript", "function f() {\n  const y = 1;\n  return { x, age: 1 };\n}\n", 1, 8, "  return { x: y, age: 1 };\n"},
+		{"ts shorthand over lines", "typescript", "function f() {\n  const y = 1;\n  return {\n    age: 1,\n    x\n  };\n}\n", 1, 8, "    x: y\n"},
+		{"jsx attribute", "javascriptreact", "function C() {\n  const y = 1;\n  return <Item x={x} />;\n}\n", 1, 8, ""},
+		{"jsx text", "javascriptreact", "function C() {\n  const y = 1;\n  return <p>x: {x}</p>;\n}\n", 1, 8, ""},
+		{"tsx", "typescriptreact", "function C() {\n  const y = 1;\n  return <p>{x}</p>;\n}\n", 1, 8, ""},
+		{"go map key is a use", "go", "func f() map[string]int {\n\ty := \"k\"\n\treturn map[string]int{x: 1}\n}\n", 1, 1, "\treturn map[string]int{y: 1}\n"},
 	} {
 		res, asked := renameCase(t, tc.language, tc.text, tc.line, tc.char, "x", "y")
 		if tc.want == "" {
@@ -459,5 +465,16 @@ func TestStudioNextEditRenameNotAVariableTable(t *testing.T) {
 		if asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want {
 			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
 		}
+	}
+}
+
+// A language server's site at a shorthand property, in JSX too, keeps the
+// key: the rename writes it out as name: newName.
+func TestStudioNextEditRenameShorthandSite(t *testing.T) {
+	jsx := "function C() {\n  const y = 1;\n  const p = { x };\n  return <p>x: {p.x}</p>;\n}\n"
+	site := map[string]any{"start": map[string]int{"line": 2, "character": 14}, "end": map[string]int{"line": 2, "character": 15}}
+	res, asked := renameCase(t, "javascriptreact", jsx, 1, 8, "x", "y", site)
+	if asked || len(res.Edits) != 1 || res.Edits[0].Text != "  const p = { x: y };\n" {
+		t.Fatalf("%+v (asked %v)", res, asked)
 	}
 }
