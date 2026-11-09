@@ -21,12 +21,16 @@ func init() {
 // attachHooks gives a conversation's loop the session's hooks, and has each
 // hook that fires recorded in that conversation as hook.fired.
 func (c *cliState) attachHooks(loop *agent.Loop) {
-	c.hookRecorder.Store(loop.Recorder)
+	prev := c.hookRecorder.Swap(loop.Recorder)
 	if c.hooks == nil || c.hooks.Len() == 0 {
 		return
 	}
+	if prev != nil && loop.Recorder != nil && prev.Root() != loop.Recorder.Root() {
+		// The conversation left behind is over: its halt and its async hook runs end with it.
+		c.hooks.EndSession(prev.Root())
+	}
 	// A refusal is said as an error, a message gone unscreened as a notice.
-	loop.Hooks = toolset.HostHooks{Host: c.hooks, Note: func(text string, refused bool) {
+	loop.Hooks = toolset.HostHooks{Host: c.hooks, Redact: toolset.NoteRedactor(loop), Note: func(text string, refused bool) {
 		kind := ui.BlockNotice
 		if refused {
 			kind = ui.BlockError

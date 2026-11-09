@@ -150,3 +150,14 @@ func TestToolResultHookIsSent(t *testing.T) {
 		t.Fatalf("the hook was sent %s (%v)", data, err)
 	}
 }
+
+// What the person is told of a hook is redacted as the record is.
+func TestHookNoteIsRedacted(t *testing.T) {
+	var told string
+	hh := HostHooks{Note: func(s string, _ bool) { told = s },
+		Redact: func(s string) string { return strings.ReplaceAll(s, "hunter2", "[secret:PW]") }}
+	hh.note("your message was not sent: login hunter2 is wrong", true)
+	if strings.Contains(told, "hunter2") || !strings.Contains(told, "[secret:PW]") {
+		t.Fatalf("told %q", told)
+	}
+}

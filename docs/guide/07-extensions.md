@@ -77,7 +77,12 @@ does any other call left in that turn, and the run ends before the model is
 called again, as `policy_denied`, with the reason as the end's detail (exit
 code 4 for `-p`). A `stop` hook's `continue: false` ends it the same way. A
 halt raised on a subagent's call ends the whole session tree: the subagent,
-and the run that started it. `"continue": true`, or no
+the run that started it, and its background subagents. A halt applies only
+while a run is going: one from an async hook that answers after the run has
+ended (on its `turn_end`, say) is recorded as `hook.fired` `halt` and then
+dropped, and does not end the next run. What you are told of a hook, such as
+the reason a message was not sent, has stored secrets redacted as the record
+has. `"continue": true`, or no
 `continue`, is no opinion, and only a `stop` hook can send the agent on.
 
 Replies written for other agent harnesses mean the same here:
@@ -171,8 +176,8 @@ in the folder the session works in (its worktree, when it has one), with the
 same environment. What the sandbox hides from a command it hides from a hook,
 and no stored secret is passed to one. The timeout is `timeout_ms`; unset, it
 is 10 seconds, or 2 seconds on an event that only observes. `async` runs the
-events that only observe without waiting for the hook: at most 4 runs of one
-hook at once, a run beyond that skipped and recorded as `error`, and those
+events that only observe without waiting for the hook (as `async` does for
+an extension): at most 4 runs of one hook at once, a run beyond that skipped and recorded as `error`, and those
 still going cancelled when the session ends. What a hook prints to stderr or
 as `log` is written to Abhed's log with stored secrets redacted.
 

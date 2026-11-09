@@ -536,6 +536,8 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 type HostHooks struct {
 	Host *extension.Host
 	Note func(text string, refused bool)
+	// Redact takes stored secrets out of what Note is told; nil leaves it.
+	Redact func(string) string
 }
 
 var (
@@ -545,10 +547,31 @@ var (
 )
 
 func (h HostHooks) note(s string, refused bool) {
-	if h.Note != nil {
-		h.Note(s, refused)
+	if h.Note == nil {
+		return
+	}
+	if h.Redact != nil {
+		s = h.Redact(s) // a hook's reason may hold a secret
+	}
+	h.Note(s, refused)
+}
+
+// NoteRedactor redacts what the person is told of hooks as loop's record
+// redacts what it keeps.
+func NoteRedactor(loop *agent.Loop) func(string) string {
+	return func(s string) string {
+		if loop == nil || loop.Recorder == nil {
+			return s
+		}
+		return agent.WithheldText(loop.Recorder.Redact, s)
 	}
 }
+
+// RunStarted and RunEnded mark the session tree rooted at rootID as having
+// a run going, whose halt is kept until it is taken.
+func (h HostHooks) RunStarted(rootID string) { h.Host.Own(rootID, true) }
+
+func (h HostHooks) RunEnded(rootID string) { h.Host.Own(rootID, false) }
 
 func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
 	why, failed := h.Host.VetoReport(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
@@ -602,7 +625,7 @@ func Hook(loop *agent.Loop, h *extension.Host, note func(text string, refused bo
 	if loop == nil || h == nil || h.Len() == 0 {
 		return
 	}
-	loop.Hooks = HostHooks{Host: h, Note: note}
+	loop.Hooks = HostHooks{Host: h, Note: note, Redact: NoteRedactor(loop)}
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the

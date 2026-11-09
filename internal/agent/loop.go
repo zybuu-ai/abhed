@@ -475,6 +475,10 @@ type StopHooks interface {
 type HaltHooks interface {
 	Halted(rootID string) string
 	HaltPending(rootID string) string
+	// RunStarted and RunEnded bracket a root run, whose halt is kept
+	// until it is taken.
+	RunStarted(rootID string)
+	RunEnded(rootID string)
 }
 
 // ResultHooks are Hooks that see a tool's result, already redacted, before
@@ -507,6 +511,10 @@ func (c childHooks) HaltPending(rootID string) string {
 	}
 	return ""
 }
+
+// A subagent's run is within its root's, which the root brackets.
+func (childHooks) RunStarted(string) {}
+func (childHooks) RunEnded(string)   {}
 
 func (c childHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
 	if h, ok := c.Hooks.(ResultHooks); ok {
@@ -1080,6 +1088,10 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	l.beginAnswer()
 	l.stopContinues = 0
 	l.hookHalted() // an end a hook asked of an earlier run is not this one's
+	if hh, ok := l.Hooks.(HaltHooks); ok && l.depth == 0 {
+		hh.RunStarted(l.rootID())
+		defer hh.RunEnded(l.rootID())
+	}
 turns:
 	for {
 		if ctx.Err() != nil {

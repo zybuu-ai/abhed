@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/extension"
@@ -283,6 +284,8 @@ func (h *haltHooks) Halted(string) string {
 }
 
 func (h *haltHooks) HaltPending(string) string { return h.why }
+func (*haltHooks) RunStarted(string)           {}
+func (*haltHooks) RunEnded(string)             {}
 
 // A hook that ends the run ends it at the next boundary as policy_denied,
 // with its reason, before the model is called again.
@@ -328,6 +331,8 @@ func (x *hostHooks) Stop(ctx context.Context, sessionID, answer string) (string,
 
 func (x *hostHooks) Halted(root string) string      { return x.h.Halted(root) }
 func (x *hostHooks) HaltPending(root string) string { return x.h.HaltPending(root) }
+func (x *hostHooks) RunStarted(root string)         { x.h.Own(root, true) }
+func (x *hostHooks) RunEnded(root string)           { x.h.Own(root, false) }
 
 // replyHost is a host whose one simple hook prints reply on events, for the calls match takes.
 func replyHost(t *testing.T, reply string, events []extension.Event, match ...string) *extension.Host {
@@ -422,4 +427,50 @@ func TestSubagentHaltEndsTheTree(t *testing.T) {
 	if why := h.HaltPending("parent"); why != "" {
 		t.Fatalf("the halt was left behind: %q", why)
 	}
+}
+
+// bgHalt ends the run once a background task has started.
+type bgHalt struct {
+	fakeHooks
+	mu  sync.Mutex
+	why string
+}
+
+func (b *bgHalt) ToolResult(_ context.Context, _, tool, content string, isErr bool) (string, bool) {
+	if tool == "bg" {
+		b.mu.Lock()
+		b.why = "kill switch"
+		b.mu.Unlock()
+	}
+	return content, isErr
+}
+
+func (b *bgHalt) HaltPending(string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.why
+}
+
+func (*bgHalt) RunStarted(string) {}
+func (*bgHalt) RunEnded(string)   {}
+
+func (b *bgHalt) Halted(string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	why := b.why
+	b.why = ""
+	return why
+}
+
+// A halt ends the background children too, detached ones included: none
+// outlives the run a hook ended.
+func TestHaltEndsBackgroundChildren(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "one")
+	r.l.Hooks = &bgHalt{}
+	reason, err := r.l.Run(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the child to end", func() bool { return r.l.Background.Live() == 0 })
+	checkCancelled(t, r, reason, TermPolicyDenied, "one")
 }

@@ -35,9 +35,33 @@ type Host struct {
 	firedMu sync.RWMutex
 	onFired func(Fired)
 
-	// halts are the runs a hook ended, by session, until the loop takes them.
+	// halts are the runs a hook ended, by root session, until the loop
+	// takes them; owned are the roots with a run going.
 	haltMu sync.Mutex
-	halts  map[string]string
+	halts  map[string]haltNote
+	owned  map[string]bool
+	seq    uint64
+}
+
+// haltNote is one halt, in the order it was raised.
+type haltNote struct {
+	why string
+	seq uint64
+}
+
+// Own marks the root session's run as going, or no longer; a going run's
+// halt is never evicted.
+func (h *Host) Own(rootID string, live bool) {
+	h.haltMu.Lock()
+	defer h.haltMu.Unlock()
+	if h.owned == nil {
+		h.owned = map[string]bool{}
+	}
+	if live {
+		h.owned[rootID] = true
+	} else {
+		delete(h.owned, rootID)
+	}
 }
 
 // maxHalts bounds the halts no loop has taken, such as one for a workbench
@@ -50,25 +74,37 @@ func (h *Host) halt(e *Extension, req Request, key, why string) {
 	h.haltMu.Lock()
 	defer h.haltMu.Unlock()
 	if h.halts == nil {
-		h.halts = map[string]string{}
+		h.halts = map[string]haltNote{}
 	}
 	if _, ok := h.halts[key]; ok {
 		return
 	}
-	for k := range h.halts {
-		if len(h.halts) < maxHalts {
+	// Full: the oldest halt no run owns goes. With none to spare, an
+	// unowned halt is not kept, and an owned one is kept over the bound.
+	for len(h.halts) >= maxHalts {
+		oldest, found := "", false
+		for k, n := range h.halts {
+			if !h.owned[k] && (!found || n.seq < h.halts[oldest].seq) {
+				oldest, found = k, true
+			}
+		}
+		if !found {
+			if !h.owned[key] {
+				return
+			}
 			break
 		}
-		delete(h.halts, k)
+		delete(h.halts, oldest)
 	}
-	h.halts[key] = why
+	h.seq++
+	h.halts[key] = haltNote{why: why, seq: h.seq}
 }
 
 // Halted returns why a hook ended the session's run, once, or "".
 func (h *Host) Halted(sessionID string) string {
 	h.haltMu.Lock()
 	defer h.haltMu.Unlock()
-	why := h.halts[sessionID]
+	why := h.halts[sessionID].why
 	delete(h.halts, sessionID)
 	return why
 }
@@ -77,13 +113,14 @@ func (h *Host) Halted(sessionID string) string {
 func (h *Host) HaltPending(sessionID string) string {
 	h.haltMu.Lock()
 	defer h.haltMu.Unlock()
-	return h.halts[sessionID]
+	return h.halts[sessionID].why
 }
 
 // EndSession forgets a session's halt and cancels its async hook runs.
 func (h *Host) EndSession(sessionID string) {
 	h.haltMu.Lock()
 	delete(h.halts, sessionID)
+	delete(h.owned, sessionID)
 	h.haltMu.Unlock()
 	h.asyncMu.Lock()
 	runs := h.async[sessionID]
@@ -105,10 +142,12 @@ func (h *Host) goAsync(ctx context.Context, e *Extension, req Request) {
 		case e.inflight <- struct{}{}:
 		default:
 			h.logf("%s skipped %s: %d runs are still going", e.label(), req.Event, cap(e.inflight))
+			f := Fired{Extension: e.Name(), Event: req.Event, SessionID: req.SessionID, Kind: e.Kind(),
+				Verdict: VerdictError, Reason: "skipped: earlier runs are still going"}
 			if e.hook != nil {
-				h.fired(Fired{Extension: e.Name(), Event: req.Event, SessionID: req.SessionID, Kind: e.Kind(),
-					Layer: e.hook.cfg.Layer, Verdict: VerdictError, Reason: "skipped: earlier runs are still going"})
+				f.Layer = e.hook.cfg.Layer
 			}
+			h.fired(f)
 			return
 		}
 	}
@@ -237,6 +276,10 @@ func (h *Host) Load(ctx context.Context, cfgs []Config) []error {
 			continue
 		}
 		e.host = h
+		if cfg.Async {
+			// Its calls take turns; a slow one does not pile up waiting runs.
+			e.inflight = make(chan struct{}, maxAsyncRuns)
+		}
 		h.exts = append(h.exts, e)
 	}
 	return errs

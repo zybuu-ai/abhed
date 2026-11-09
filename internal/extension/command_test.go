@@ -384,6 +384,20 @@ func TestHaltsAreBounded(t *testing.T) {
 	if h.HaltPending("last") == "" {
 		t.Fatal("the latest halt was dropped")
 	}
+	// A run's halt is never evicted, and the oldest unowned halts go first.
+	h.EndSession("last")
+	h.Own("live", true)
+	h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "live"})
+	h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "next-oldest"})
+	for i := range maxHalts * 2 {
+		h.Observe(context.Background(), EvTurnEnd, Request{SessionID: fmt.Sprint("more", i)})
+	}
+	if h.HaltPending("live") == "" {
+		t.Fatal("a running loop's halt was evicted")
+	}
+	if h.HaltPending("next-oldest") != "" || h.HaltPending(fmt.Sprint("more", maxHalts*2-1)) == "" {
+		t.Fatal("eviction did not take the oldest first")
+	}
 	h.EndSession("last")
 	if h.HaltPending("last") != "" {
 		t.Fatal("a halt outlived its session")
@@ -436,5 +450,22 @@ func TestRewrittenResultRecordsTheOriginalsDigest(t *testing.T) {
 	want := fmt.Sprintf("%x", sha256.Sum256([]byte("the original")))
 	if len(*fired) != 1 || !strings.Contains((*fired)[0].Reason, want) || !strings.Contains((*fired)[0].Reason, "12 bytes") {
 		t.Fatalf("recorded %+v", *fired)
+	}
+}
+
+// An async extension process is bounded as a simple hook is: a run beyond
+// the bound is skipped and recorded, not queued without end.
+func TestAsyncExtensionIsBounded(t *testing.T) {
+	h, _ := hostOf(t, Config{Name: "slowgate.sh", Events: []Event{EvTurnEnd}, Async: true})
+	var mu sync.Mutex
+	var fired []Fired
+	h.SetOnFired(func(f Fired) { mu.Lock(); fired = append(fired, f); mu.Unlock() })
+	for range maxAsyncRuns + 2 {
+		h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "s"})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fired) != 2 || fired[0].Verdict != VerdictError || !strings.Contains(fired[0].Reason, "skipped") {
+		t.Fatalf("recorded %+v", fired)
 	}
 }
