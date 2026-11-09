@@ -189,6 +189,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Cwd = sess.WorkDir
 	pol.StartupBaseline = config.StartupBaseline()
 	pol.Session = &policy.Overlay{}
+	pol.RuleSource = cfg.RuleSource
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	pol.KeepAsk = toolset.KeepManagedAsks(cfg)

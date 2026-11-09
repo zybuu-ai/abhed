@@ -137,7 +137,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
-			c.Rule, c.Layer = d["rule"], d["layer"]
+			c.Rule, c.Layer, c.Source = d["rule"], d["layer"], d["source"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.PlanHash = d["plan_hash"]
 			c.PlanStep, _ = strconv.Atoi(d["plan_step"])

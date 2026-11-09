@@ -133,7 +133,10 @@ type Call struct {
 	// when an edition added it.
 	Rule  string `json:"rule,omitempty"`
 	Layer string `json:"layer,omitempty"`
-	By    string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
+	// Source is where the decision came from: the rule's layer (org,
+	// managed, workspace, user, settings, flag, default, session), mode, or hook.
+	Source string `json:"source,omitempty"`
+	By     string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
 	// Scope is the remembered "always allow" rule that let it through, when By is session-scope.
 	Scope string `json:"scope,omitempty"`
 	// Approver is the signed-in person who answered, when the record names one.

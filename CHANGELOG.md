@@ -62,6 +62,15 @@ All notable changes to Abhed are recorded here. The format follows
   of the same name. `abhed trust grant -skills-sha256 H` pins a grant.
   `skills.disable_workspace: true`, from the managed configuration or any
   layer, keeps them off whatever the trust.
+- A denial names where its rule came from. The reason the model and the
+  person read says `denied by rule bash(curl*) from the org policy
+  (https://org.example, version 3)`, or the managed file, the workspace's
+  or your user configuration, a `-settings` file, the `-allow`/`-deny`
+  flag or the built-in rules, and the model is told a rule refused the
+  call, not that a capability is missing. `action.approved` and
+  `action.denied` record it as `source` (`org`, `managed`, `workspace`,
+  `user`, `settings`, `flag`, `default`, `session`, an edition's layer,
+  `mode` or `hook`), and HawkEYE shows it per call.
 
 ### Changed
 

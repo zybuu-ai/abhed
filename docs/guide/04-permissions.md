@@ -776,6 +776,26 @@ A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you
 that you are protected when you are not.
 
+### Where a refusal came from
+
+A decision made by a configured rule names the layer the rule came from,
+in the reason the model and the person read and in the record:
+`denied by rule bash(curl*) from the org policy (https://org.example,
+version 3)`. The layers are the org policy, the machine's managed file
+(`the managed configuration /etc/abhed/config.json`), the workspace's
+configuration, your user configuration, a `-settings` file, the `-allow` or
+`-deny` flag, and Abhed's built-in rules; a session rule says `session
+rule`, and an edition's layer its name. The model is also told that a rule
+refused the call, not that something is unavailable, so it does not tell
+you "no network" when the organisation denied `curl`.
+
+`action.approved` and `action.denied` carry the layer as `source`: `org`,
+`managed`, `workspace`, `user`, `settings`, `flag`, `default`, `session` or
+an edition's layer for a rule; `mode` when the permission mode or its
+default decided; `hook` for a policy hook. Abhed's own checks (a
+destructive command, a command no rule can read) carry none. HawkEYE shows
+it per call.
+
 ### Policy layers from an edition
 
 On a server people sign in to, an edition can add rules of its own to every

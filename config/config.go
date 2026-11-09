@@ -156,6 +156,9 @@ type Config struct {
 	// managedRules are the rules the managed file itself lists, by list and
 	// rule as ruleLayers keys them.
 	managedRules map[string]bool
+	// orgRules are the managed rules the org policy made and the machine's
+	// file does not list, keyed as ruleLayers is.
+	orgRules map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.

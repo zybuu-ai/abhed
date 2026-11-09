@@ -1728,7 +1728,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if decision.Decision == policy.Ask && decision.Reason != "" {
 			why += "; " + decision.Reason
 		}
-		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer, Source: decision.Source}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
@@ -1806,10 +1806,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 				return false, tools.Result{Content: "Denied. " + fix, IsError: true}, ""
 			}
 		}
-		return false, tools.Result{
-			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
-			IsError: true,
-		}, ""
+		return false, tools.Result{Content: deniedBy(decision), IsError: true}, ""
 
 	case policy.Ask:
 		if requestedFrom(asked).Withheld {
@@ -1982,7 +1979,21 @@ func withRule(p map[string]string, d policy.Result) map[string]string {
 	if d.Layer != "" {
 		p["layer"] = d.Layer
 	}
+	if d.Source != "" {
+		p["source"] = d.Source
+	}
 	return p
+}
+
+// deniedBy is what the model is told of a refusal: the reason, which for a
+// rule names the layer it came from, and that a rule refused it, so the
+// model does not tell the person a capability is missing.
+func deniedBy(d policy.Result) string {
+	msg := "Denied: " + d.Reason + "."
+	if d.Rule != "" {
+		msg += " This is a permission rule, not a missing capability: tell the person which rule refused it and where it is set."
+	}
+	return msg + " Choose a different approach."
 }
 
 // WithheldLookalikeArgs stands in for the arguments of an unknown call

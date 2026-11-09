@@ -67,6 +67,11 @@ type Result struct {
 	// Layer is the policy layer the deciding rule came from when an edition
 	// added it with AddLayer; "" for configured and session rules.
 	Layer string
+	// Source is where the decision came from, so a refusal can say whose it
+	// is: for a rule, its layer (org, managed, workspace, user, settings,
+	// flag, default, session, or an edition's layer); mode for the mode and
+	// the default step; hook for a policy hook; "" for Abhed's own checks.
+	Source string
 	// Guard, for a scope on a git command, sums what git reads in the
 	// workspace's repositories as the call is decided. A remembered scope
 	// covers a later call only with the same Guard: a hook or fsmonitor
@@ -445,6 +450,11 @@ type Engine struct {
 	// of the managed configuration's ask rules: it asks for each call, inside
 	// a runbook too.
 	KeepAsk func(Result) bool
+
+	// RuleSource names where a configured rule in list (deny, ask or allow)
+	// came from: its layer, and where that is in words, such as "the org
+	// policy (https://org.example, version 3)". Nil, or a layer "", names none.
+	RuleSource func(list, rule string) (layer, where string)
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
@@ -958,6 +968,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		if res.Step == "" {
 			res.Step = "hook"
 		}
+		if res.Source == "" {
+			res.Source = "hook"
+		}
 		if res.Decision != Ask {
 			return *res
 		}
@@ -1004,7 +1017,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	denyRules, askRules, allowRules := e.rules()
 	for _, r := range denyRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw, Layer: r.layer}
+			return e.ruled(Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw, Layer: r.layer}, "deny", r)
 		}
 	}
 	// A program named by an expansion with an operator, ${x%/} or ${x//_/ },
@@ -1034,7 +1047,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
 	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
-		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
+		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode", Source: "mode"}
 	}
 
 	// 2c. Destructive commands always confirm, in every mode. There is no
@@ -1067,7 +1080,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// offer no scope: a remembered one would stop them asking.
 	for _, r := range askRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw, Layer: r.layer}
+			return e.ruled(Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw, Layer: r.layer}, "ask", r)
 		}
 	}
 
@@ -1098,31 +1111,31 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	switch e.Mode {
 	case ModePlan:
 		if mutates {
-			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
+			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode", Source: "mode"}
 		}
 		// A read that can carry data out is not made safe by plan mode, which
 		// any client may narrow a session to: it goes on to the allow rules and asks.
 		if e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in plan mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in plan mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 	case ModeBypass:
 		if e.Managed {
-			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy (" + managed.ConfigFile + "), so this asks as in default mode", Scope: "", Step: "mode"}
+			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy (" + managed.ConfigFile + "), so this asks as in default mode", Scope: "", Step: "mode", Source: "mode"}
 		}
-		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode"}
+		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode", Source: "mode"}
 	case ModeAcceptEdits:
 		if tool == "edit" || tool == "write" {
-			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 	case ModeAuto:
 		if !mutates && e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in auto mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in auto mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
 		// and deny checks above still stand, so the dangerous cases never reach
 		// here. bash keeps asking because its blast radius is unbounded.
 		if tool == "edit" || tool == "write" {
-			return Result{Decision: Allow, Reason: "file edit auto-approved in auto mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: "file edit auto-approved in auto mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 	}
 
@@ -1137,7 +1150,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			continue
 		}
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
-			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}
+			return e.ruled(Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}, "allow", r)
 		}
 	}
 
@@ -1146,7 +1159,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		return e.defaultAsk(tool, subject, why)
 	}
 	if !mutates {
-		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
+		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default", Source: "mode"}
 	}
 	why := askReason(tool, e.Mode)
 	if gitRuns != "" {
@@ -1158,7 +1171,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 // defaultAsk is the default step's question, with the scope it offers, or,
 // when it offers none, the rule a person could add to allow the command.
 func (e *Engine) defaultAsk(tool, subject, why string) Result {
-	res := Result{Decision: Ask, Reason: why, Scope: e.suggestScope(tool, subject), Step: "default"}
+	res := Result{Decision: Ask, Reason: why, Scope: e.suggestScope(tool, subject), Step: "default", Source: "mode"}
 	if res.Scope == "" {
 		if res.Suggest = suggestRule(tool, subject); res.Suggest != "" {
 			res.Reason += " (to always allow exactly this, add " + res.Suggest + " to permissions.allow)"
@@ -1190,7 +1203,26 @@ func hookLate(ctx context.Context) Result {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		why = "the decision was cancelled before the policy hooks decided"
 	}
-	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook"}
+	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook", Source: "hook"}
+}
+
+// ruled is a rule's decision, with where the rule came from: in Source, and
+// in the reason, so neither the model nor the person takes an organisation's
+// refusal for a missing capability.
+func (e *Engine) ruled(res Result, list string, r Rule) Result {
+	switch {
+	case r.session:
+		res.Source = "session"
+	case r.layer != "":
+		res.Source = r.layer
+	case e.RuleSource != nil:
+		layer, where := e.RuleSource(list, r.raw)
+		res.Source = layer
+		if where != "" {
+			res.Reason += " from " + where
+		}
+	}
+	return res
 }
 
 func firstNonEmpty(vals ...string) string {
