@@ -363,8 +363,13 @@ trusted, since a command is instructions.
 `meta = {tokensIn, tokensOut, tokensCached, sessionTotalIn, sessionTotalOut}`.
 When the call's model has a price, `meta.costUsd` is the call's cost; while
 every call so far was priced, `cost: {amount, currency: "USD"}` and
-`meta.sessionCostUsd` are the session's. Once a call goes to a model with no
-price, `meta.unpriced` is true and the session's cost is left out. No price
+`meta.sessionCostUsd` are the session's. After a replay of calls recorded
+before costing, `meta.costPartial` is true and `meta.sessionCostUsd` is what
+is known; `cost` is not sent. Every `model.call` counts, replayed ones,
+the critic's, a suggestion's and a compaction summary's included; the
+editor's completions, next edits and commit messages are charged to the
+budget but counted in their own summaries (§7.10–7.12), not here. Once a call goes to a
+model with no price (its `model.call` says `unpriced`), `meta.unpriced` is true and the session's cost is left out. No price
 is invented.
 
 ### 3.4a Next-prompt suggestion
@@ -1570,8 +1575,13 @@ _abhed/complete/cancel { sessionId } → {}
   answer: `disabled` names why not (no `model.completion`,
   `completion.enabled: false`, a provider the configuration does not offer,
   a managed `model.default` pin the managed file does not extend to
-  `model.completion`, or `completion.local_only` with a remote model).
-  Nothing is sent then. Only the provider's own key is sent.
+  `model.completion`, `completion.local_only` with a remote model, or a
+  session dollar cap with no price for the completion model: "completions
+  are off: the completion model has no price under this dollar cap; set
+  pricing for it (0 for a local model)"). Nothing is sent then. The first
+  answer refused by the dollar cap carries the same text as `notice`, for
+  Studio to show once; next edits and commit messages do the same. Only the
+  provider's own key is sent.
 - The engine sends at most the last 6,000 characters of `prefix`, the first
   2,000 of `suffix`, and the first 60 lines of up to three `context` files,
   4 KiB of each and 12 KiB in all, cut between characters. A document or
@@ -1603,6 +1613,9 @@ _abhed/complete/cancel { sessionId } → {}
   it cannot be recorded, nothing is sent) and `completion.summary` when
   the session closes, which counts `superseded` (replaced before sending)
   apart from `cancelled` (after); single completions are not recorded.
+  Each request's cost is charged to the session's budget and summed in the
+  summary's `cost_usd` (`unpriced` when the model has none); a request cut
+  before usage came back is estimated.
 
 ### 7.11 Next-edit suggestions
 

@@ -37,8 +37,10 @@ type Budget struct {
 	// edition's periodic budget, asked at each turn boundary of the session
 	// and its subagents.
 	Allowance func(context.Context) Allowance
-	// allowanceUSD is set once an Allowance says a dollar limit applies.
-	allowanceUSD atomic.Bool
+	// allowanceUSD is set once an Allowance says a dollar limit applies;
+	// allowanceStop holds its last stop message, "" while it allows.
+	allowanceUSD  atomic.Bool
+	allowanceStop atomic.Pointer[string]
 
 	tokens  atomic.Int64
 	spawned atomic.Int32
@@ -65,8 +67,8 @@ func (b *Budget) Exhausted() bool {
 }
 
 // USDLimited reports a dollar limit in force: the session's own cap, or
-// one an Allowance has said applies. Under it, a model with no price is
-// refused wherever a call is made.
+// one an Allowance has said applies. It is the one check of it: under one,
+// a model with no price is refused wherever a call is made.
 func (b *Budget) USDLimited() bool {
 	return b != nil && (b.MaxUSD > 0 || b.allowanceUSD.Load())
 }

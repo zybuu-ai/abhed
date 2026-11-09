@@ -81,19 +81,19 @@ func (l *Loop) critique(ctx context.Context, c *Critic, verdicts []ClaimVerdict,
 	if len(asked) == 0 {
 		return ""
 	}
-	// No budget left for the call: the critic is unavailable, which fails
-	// closed like any other time it cannot answer.
-	if l.Budget.Exhausted() {
-		for _, i := range asked {
-			verdicts[i].Verdict = ClaimUnverified
-			verdicts[i].Critic = "the token budget is spent, so the critic was not asked"
-			verdicts[i].Reason = "the critic could not confirm it: the token budget is spent"
-		}
-		return CriticUnavailable
-	}
 	a := c.Adapter
 	if a == nil {
 		a = l.Adapter
+	}
+	// The budget refuses the call: the critic is unavailable, which fails
+	// closed like any other time it cannot answer.
+	if why := l.Budget.Refuse(a.Profile().Name); why != nil {
+		for _, i := range asked {
+			verdicts[i].Verdict = ClaimUnverified
+			verdicts[i].Critic = "the critic was not asked: " + why.Error()
+			verdicts[i].Reason = "the critic could not confirm it: " + why.Error()
+		}
+		return CriticUnavailable
 	}
 	timeout := c.Timeout
 	if timeout <= 0 {
@@ -105,22 +105,8 @@ func (l *Loop) critique(ctx context.Context, c *Critic, verdicts []ClaimVerdict,
 		req.Params.Think = &off
 	}
 	cctx, cancel := context.WithTimeout(l.withCaller(ctx), timeout)
-	start := time.Now()
-	text, usage, err := suggestCall(cctx, a, req)
+	text, _, err := l.sideCall(cctx, PurposeCritic, a, req)
 	cancel()
-	mc := ModelCall{Turn: l.turns, Model: a.Profile().Name, Purpose: PurposeCritic, TokensIn: usage.InputTokens,
-		TokensOut: usage.OutputTokens, TokensCached: usage.CachedInputTokens, CacheReported: usage.CacheReported,
-		LatencyMS: time.Since(start).Milliseconds()}
-	if err != nil {
-		mc.Error = err.Error()
-	}
-	l.usageMu.Lock()
-	l.usage.InputTokens += usage.InputTokens
-	l.usage.OutputTokens += usage.OutputTokens
-	l.usage.CachedTokens += usage.CachedInputTokens
-	l.usageMu.Unlock()
-	l.Budget.Spend(usage.InputTokens + usage.OutputTokens)
-	l.record(EvModelCall, ActorSystem, mc)
 
 	said := map[int]criticVerdict{}
 	if err == nil {

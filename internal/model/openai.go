@@ -185,7 +185,8 @@ type wireChunk struct {
 		PromptTokens        int `json:"prompt_tokens"`
 		CompletionTokens    int `json:"completion_tokens"`
 		PromptTokensDetails *struct {
-			CachedTokens *int `json:"cached_tokens"`
+			CachedTokens     *int `json:"cached_tokens"`
+			CacheWriteTokens int  `json:"cache_write_tokens"` // OpenRouter's cache writes
 		} `json:"prompt_tokens_details"`
 		// DeepSeek's cache hits, and an Anthropic-shaped proxy's (LiteLLM).
 		PromptCacheHitTokens     *int `json:"prompt_cache_hit_tokens"`
@@ -445,7 +446,13 @@ func (c *OpenAICompatible) stream(ctx context.Context, body io.ReadCloser,
 			case u.CacheReadInputTokens != nil:
 				usage.CachedInputTokens, usage.CacheReported = *u.CacheReadInputTokens, true
 			}
+			// Writes are taken to be inside prompt_tokens, as reads are: LiteLLM's
+			// prompt-caching doc says prompt_tokens counts every prompt token, and
+			// OpenRouter's example counts reads inside it. Neither says so of writes.
 			usage.CacheWriteTokens = ch.Usage.CacheCreationInputTokens
+			if d := ch.Usage.PromptTokensDetails; d != nil && d.CacheWriteTokens > 0 {
+				usage.CacheWriteTokens = d.CacheWriteTokens
+			}
 			if d := ch.Usage.CompletionTokensDetails; d != nil {
 				usage.ReasoningTokens = d.ReasoningTokens
 			}

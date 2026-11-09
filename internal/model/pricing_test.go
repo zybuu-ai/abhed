@@ -36,10 +36,19 @@ func TestPriceFor(t *testing.T) {
 	if _, ok := PriceFor("GPT-4o", nil); !ok {
 		t.Fatal("the list is matched without case")
 	}
-	for _, name := range []string{"gemma4:26b", "gpt-4o-2024-05-13", "my-finetune", ""} {
+	// Unconfirmed, retired, or priced by prompt length: unpriced.
+	for _, name := range []string{"gemma4:26b", "gpt-4o-2024-05-13", "my-finetune", "",
+		"gpt-4o-2024-08-06", "gpt-4o-2024-11-20", "gpt-4.1-nano", "o4-mini", "claude-3-5-haiku-20241022",
+		"claude-opus-4-1", "claude-sonnet-4-20250514", "claude-haiku-5-5", "gpt-6-astra", "gpt-6-luna", "gpt-5.5"} {
 		if _, ok := PriceFor(name, nil); ok {
 			t.Errorf("%q has no price and must not be guessed", name)
 		}
+	}
+	if p, ok := PriceFor("claude-opus-5-5", nil); !ok || p != (Price{Input: 4, Output: 20, CachedInput: 0.20, CacheWrite: 5}) {
+		t.Fatalf("claude-opus-5-5 %+v %v", p, ok)
+	}
+	if p, ok := PriceFor("gpt-5.4-mini", nil); !ok || p != (Price{Input: 0.75, Output: 4.50, CachedInput: 0.075}) {
+		t.Fatalf("gpt-5.4-mini %+v %v", p, ok)
 	}
 	conf := map[string]Price{"gemma4:26b": {Input: 0, Output: 0}, "gpt-4o": {Input: 9, Output: 9}, "bad": {Input: -1, Output: 1}}
 	if p, ok := PriceFor("gemma4:26b", conf); !ok || p.Input != 0 {

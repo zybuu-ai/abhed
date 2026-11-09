@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -131,7 +132,7 @@ func promptCacheMode(s Spec, base, defaultURL string) (string, error) {
 	default:
 		return "", fmt.Errorf("provider %q: extra.prompt_cache must be prompt_cache_key, cache_control, auto or off, not %q", s.Type, v)
 	}
-	official := strings.TrimSuffix(base, "/") == strings.TrimSuffix(defaultURL, "/")
+	official := sameEndpoint(base, defaultURL)
 	switch {
 	case s.Type == "openai" && official:
 		return CacheKey, nil
@@ -139,6 +140,23 @@ func promptCacheMode(s Spec, base, defaultURL string) (string, error) {
 		return CacheControl, nil
 	}
 	return "", nil
+}
+
+// sameEndpoint compares two https URLs as a server would: host without case,
+// :443 as no port, a trailing slash as none.
+func sameEndpoint(a, b string) bool {
+	norm := func(raw string) string {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Scheme != "https" {
+			return raw
+		}
+		host := strings.ToLower(u.Hostname())
+		if p := u.Port(); p != "" && p != "443" {
+			host += ":" + p
+		}
+		return "https://" + host + strings.TrimSuffix(u.EscapedPath(), "/")
+	}
+	return norm(a) == norm(b)
 }
 
 func orElse(v, fallback string) string {

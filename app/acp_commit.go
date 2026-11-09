@@ -185,6 +185,11 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		empty("empty", why)
 		return
 	}
+	if why := editorRefused(parts.Loop, a, "commit messages", "commit"); why != "" {
+		outcome = "disabled: " + why
+		c.reply(msg.ID, k.priceNotice(map[string]any{"message": ""}, why), nil)
+		return
+	}
 	name, _ := cfg.EditorModel("commit")
 	// The record says where the diff goes before it goes; if it cannot, nothing is sent.
 	if _, err := parts.Loop.Recorder.Record(agent.EvCommitRequested, agent.ActorUser, agent.Trusted, agent.CommitRequested{
@@ -195,6 +200,8 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		return
 	}
 	res, err := model.CommitMessageByChat(ctx, a, diff.text, commitMaxTokens)
+	usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
+		len(diff.text), len(res.Text))
 	text := res.Text
 	if clean(text) != text {
 		text, res.Dropped = "", "the message carried a secret"
@@ -207,7 +214,8 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		recorded = "empty"
 	}
 	if _, rerr := parts.Loop.Recorder.Record(agent.EvCommitMessage, agent.ActorSystem, agent.Trusted,
-		agent.CommitMessage{Outcome: recorded, TokensIn: res.InputTokens, TokensOut: res.OutputTokens}); rerr != nil {
+		agent.CommitMessage{Outcome: recorded, TokensIn: res.InputTokens, TokensOut: res.OutputTokens,
+			CostUSD: usd, Unpriced: unpriced, Estimated: estimated}); rerr != nil {
 		warnf("the record did not take %s: %v", agent.EvCommitMessage, rerr)
 	}
 	switch {

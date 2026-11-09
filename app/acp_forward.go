@@ -279,20 +279,26 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(body),
 			"_meta": map[string]any{acpMetaKey: map[string]any{"verdict": p}}})
 	case agent.EvModelCall:
-		if replay {
-			break
-		}
 		var p agent.ModelCall
 		_ = json.Unmarshal(ev.Payload, &p)
 		s.mu.Lock()
+		// A replayed call's cost is the session's too; one recorded before
+		// costing leaves the total partial.
+		switch {
+		case p.CostUSD != nil:
+			s.totalUSD += *p.CostUSD
+		case p.Unpriced:
+			s.unpriced = true
+		case p.TokensIn+p.TokensOut > 0:
+			s.costPartial = true
+		}
+		if replay {
+			s.mu.Unlock()
+			break
+		}
 		s.totalIn += p.TokensIn
 		s.totalOut += p.TokensOut
-		if p.CostUSD != nil {
-			s.totalUSD += *p.CostUSD
-		} else if p.TokensIn+p.TokensOut > 0 {
-			s.unpriced = true
-		}
-		totalIn, totalOut, totalUSD, unpriced := s.totalIn, s.totalOut, s.totalUSD, s.unpriced
+		totalIn, totalOut, totalUSD, unpriced, partial := s.totalIn, s.totalOut, s.totalUSD, s.unpriced, s.costPartial
 		s.mu.Unlock()
 		// A suggestion's call is counted, but says nothing of the context.
 		if p.ContextWindow > 0 && p.Purpose == "" {
@@ -304,9 +310,13 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			if p.CostUSD != nil {
 				meta["costUsd"] = *p.CostUSD
 			}
-			if unpriced {
+			switch {
+			case unpriced:
 				meta["unpriced"] = true
-			} else if p.CostUSD != nil {
+			case partial && p.CostUSD != nil:
+				// What is known, said to be partial, never sent as the session's cost.
+				meta["sessionCostUsd"], meta["costPartial"] = totalUSD, true
+			case p.CostUSD != nil:
 				meta["sessionCostUsd"] = totalUSD
 				u["cost"] = map[string]any{"amount": totalUSD, "currency": "USD"}
 			}

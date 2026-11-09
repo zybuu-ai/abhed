@@ -88,6 +88,10 @@ func Text(r Report) string {
 		fmt.Fprintf(&b, "  cost      $%.4f (some calls to a model with no price)\n", t.CostUSD)
 	case t.Unpriced:
 		fmt.Fprintf(&b, "  cost      unpriced (no price for the model)\n")
+	case t.CostNotRecorded && t.CostUSD > 0:
+		fmt.Fprintf(&b, "  cost      $%.4f (earlier calls not costed in the record)\n", t.CostUSD)
+	case t.CostNotRecorded:
+		fmt.Fprintf(&b, "  cost      not recorded (the record predates costing)\n")
 	case t.CostUSD > 0:
 		fmt.Fprintf(&b, "  cost      $%.4f\n", t.CostUSD)
 	}

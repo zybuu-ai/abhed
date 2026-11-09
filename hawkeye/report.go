@@ -88,6 +88,8 @@ type Totals struct {
 	// with no price, left out of it.
 	CostUSD  float64 `json:"cost_usd"`
 	Unpriced bool    `json:"unpriced,omitempty"`
+	// CostNotRecorded marks calls from a record written before costing.
+	CostNotRecorded bool `json:"cost_not_recorded,omitempty"`
 	// ModelMS and ToolMS split the wall clock between waiting on the model
 	// and waiting on tools, which is the first question about a slow session.
 	ModelMS    int64 `json:"model_ms"`
@@ -115,8 +117,11 @@ type Turn struct {
 	CacheReported bool `json:"cache_reported,omitempty"`
 	// CostUSD is the call's cost; nil when its model has no price.
 	CostUSD *float64 `json:"cost_usd,omitempty"`
-	Window  int      `json:"context_window"`
-	CutOff  bool     `json:"cut_off,omitempty"`
+	// Unpriced marks a call to a model with no price; with neither, the
+	// record predates costing.
+	Unpriced bool `json:"unpriced,omitempty"`
+	Window   int  `json:"context_window"`
+	CutOff   bool `json:"cut_off,omitempty"`
 	// Estimated marks tokens the harness estimated for a reply stopped early.
 	Estimated    bool   `json:"estimated,omitempty"`
 	FirstTokenMS int64  `json:"first_token_ms"`

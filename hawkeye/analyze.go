@@ -81,7 +81,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				// A call outside the conversation, as a suggestion, is no turn,
 				// but its tokens are spent: the session's own totals count them.
 				r.offTurn = append(r.offTurn, Turn{TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS, CostUSD: m.CostUSD})
+					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS, CostUSD: m.CostUSD, Unpriced: m.Unpriced})
 				break
 			}
 			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
@@ -89,7 +89,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			}
 			r.Turns = append(r.Turns, Turn{
 				N: len(r.Turns) + 1, Seq: e.Seq, Model: m.Model, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-				TokensCached: m.TokensCached, CacheReported: m.CacheReported, CostUSD: m.CostUSD,
+				TokensCached: m.TokensCached, CacheReported: m.CacheReported, CostUSD: m.CostUSD, Unpriced: m.Unpriced,
 				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
 				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff, Estimated: m.Estimated,
 			})
@@ -358,8 +358,10 @@ func (r *Report) totals(ended agent.SessionEnded) {
 		switch {
 		case turn.CostUSD != nil:
 			t.CostUSD += *turn.CostUSD
-		case turn.TokensIn+turn.TokensOut > 0:
+		case turn.Unpriced:
 			t.Unpriced = true
+		case turn.TokensIn+turn.TokensOut > 0:
+			t.CostNotRecorded = true
 		}
 	}
 	for _, turn := range r.Turns {

@@ -862,10 +862,12 @@ behaves as the sections above describe.
   `budget.stopped` event of reason `allowance`, carrying `Allowance.Scope`
   and `Allowance.Reason` as its `scope` and `message`. `Allowance.USD`
   marks a dollar limit in force: a model with no price then ends the run
-  with reason `unpriced`, as a dollar cap of the session's own does. The
-  check is made at the turn boundary only: a call made between boundaries
-  (a suggestion, the critic, a compaction, a fallback model) is not yet
-  held to it. An error, a panic in the hook, or no answer within 10
+  with reason `unpriced`, as a dollar cap of the session's own does. It is
+  asked at turn boundaries; every other model call (a suggestion, the
+  critic, a compaction summary, a pipeline model step, a fallback) passes
+  the budget's gate, `Budget.Refuse`, which reads its last answer: under a
+  dollar limit an unpriced model is refused, and after a stop no call goes
+  out until an answer allows again. An error, a panic in the hook, or no answer within 10
   seconds stops the run with scope `unavailable`: a limit that cannot be
   read is not taken as none. A run interrupted while the hook is asked
   ends as interrupted, not over budget.

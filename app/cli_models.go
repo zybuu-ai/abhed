@@ -323,6 +323,7 @@ type fallbackAdapter struct {
 	built  []model.Adapter
 	build  func(name string) (model.Adapter, error)
 	record func(from, to, reason string)
+	gate   func(name string) error // the budget's: a model it refuses is not moved to
 }
 
 func newFallbackAdapter(primaryName string, primary model.Adapter, chain []string, build func(string) (model.Adapter, error)) *fallbackAdapter {
@@ -336,6 +337,14 @@ func newFallbackAdapter(primaryName string, primary model.Adapter, chain []strin
 func (f *fallbackAdapter) SetRecord(r func(from, to, reason string)) {
 	f.mu.Lock()
 	f.record = r
+	f.mu.Unlock()
+}
+
+// SetGate binds the budget's gate: under a dollar cap, a fallback with no
+// price is never moved to, as no call to it may go out.
+func (f *fallbackAdapter) SetGate(g func(name string) error) {
+	f.mu.Lock()
+	f.gate = g
 	f.mu.Unlock()
 }
 
@@ -374,6 +383,14 @@ func (f *fallbackAdapter) Complete(ctx context.Context, req model.Request) (<-ch
 		next, berr := f.build(f.names[i+1])
 		if berr != nil {
 			return nil, fmt.Errorf("%w (and fallback %s could not be built: %w)", err, f.names[i+1], berr)
+		}
+		f.mu.Lock()
+		gate := f.gate
+		f.mu.Unlock()
+		if gate != nil {
+			if gerr := gate(next.Profile().Name); gerr != nil {
+				return nil, fmt.Errorf("%w (fallback %s not used: %w)", err, f.names[i+1], gerr)
+			}
 		}
 		f.mu.Lock()
 		if f.cur == i {

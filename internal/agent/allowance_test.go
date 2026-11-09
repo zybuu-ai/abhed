@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -102,5 +103,35 @@ func TestAllowanceInterruptedEndsAsStopped(t *testing.T) {
 	}
 	if len(budgetStops(t, store)) != 0 || len(modelCalls(t, store)) != 0 {
 		t.Fatal("an interrupt was recorded as a budget stop, or a call was made")
+	}
+}
+
+// The gate every call between turns passes (a suggestion, the critic, a
+// compaction, a pipeline step, a fallback) reads the allowance's last
+// answer: after a stop no call goes out, and under its dollar limit an
+// unpriced model is refused; an answer that allows again lifts the stop.
+func TestAllowanceHoldsCallsBetweenTurns(t *testing.T) {
+	l, _ := costHarness(t, "gpt-4o", []scriptedTurn{{text: "done", usage: turnUsage}})
+	stop := true
+	l.Budget.Allowance = func(context.Context) Allowance {
+		return Allowance{Stop: stop, USD: true, Scope: "user bob, daily", Message: "stopped: the daily budget of user bob is spent"}
+	}
+	if reason, _ := l.Run(context.Background(), "go"); reason != TermMaxBudget {
+		t.Fatalf("reason %s", reason)
+	}
+	if err := l.Budget.Refuse("gpt-4o"); err == nil || err.Error() != "the daily budget of user bob is spent" {
+		t.Fatalf("a call after the stop: %v", err)
+	}
+	stop = false
+	l2, _ := costHarness(t, "gpt-4o", []scriptedTurn{{text: "done", usage: turnUsage}})
+	l2.Budget = l.Budget
+	if _, err := l2.Run(context.Background(), "again"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Budget.Refuse("gpt-4o"); err != nil {
+		t.Fatalf("an allowing answer did not lift the stop: %v", err)
+	}
+	if err := l.Budget.Refuse("gemma4:26b"); err == nil || !strings.Contains(err.Error(), "a dollar budget applies and gemma4:26b has no price") {
+		t.Fatalf("an unpriced side model under the dollar limit: %v", err)
 	}
 }
