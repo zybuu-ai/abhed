@@ -313,6 +313,9 @@ type Loop struct {
 	// Verify, when set, checks each completed run's answer against the
 	// record before the run ends; see Verifier. Nil checks nothing.
 	Verify *Verifier
+	// Diagnostics, when set, gives the agent a language server's diagnostics
+	// for each file its write or edit changed. Nil gives none.
+	Diagnostics Diagnoser
 	// OwnerActive, when set, is asked before a woken run calls the model
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
@@ -488,8 +491,9 @@ type StopHooks interface {
 type HaltHooks interface {
 	Halted(rootID string) string
 	HaltPending(rootID string) string
-	// RunStarted and RunEnded bracket a root run, whose halt is kept
-	// until it is taken.
+	// RunStarted and RunEnded bracket each run in the tree rooted at
+	// rootID, a background subagent's included; while any goes, the
+	// tree's halt is kept until it is taken.
 	RunStarted(rootID string)
 	RunEnded(rootID string)
 }
@@ -525,9 +529,19 @@ func (c childHooks) HaltPending(rootID string) string {
 	return ""
 }
 
-// A subagent's run is within its root's, which the root brackets.
-func (childHooks) RunStarted(string) {}
-func (childHooks) RunEnded(string)   {}
+// A subagent's run counts for its root, so a background one keeps the
+// root's halt from eviction after the root's own run has ended.
+func (c childHooks) RunStarted(rootID string) {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		h.RunStarted(rootID)
+	}
+}
+
+func (c childHooks) RunEnded(rootID string) {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		h.RunEnded(rootID)
+	}
+}
 
 func (c childHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
 	if h, ok := c.Hooks.(ResultHooks); ok {
@@ -1101,7 +1115,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	l.beginAnswer()
 	l.stopContinues = 0
 	l.hookHalted() // an end a hook asked of an earlier run is not this one's
-	if hh, ok := l.Hooks.(HaltHooks); ok && l.depth == 0 {
+	if hh, ok := l.Hooks.(HaltHooks); ok {
 		hh.RunStarted(l.rootID())
 		defer hh.RunEnded(l.rootID())
 	}
@@ -2211,6 +2225,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
+	l.diagnose(ctx, call, &result)
 	// A secret's value is stripped from the result before the model, the
 	// record or a hook sees it, so none holds a value it could echo elsewhere.
 	red := l.Recorder.redactor()
@@ -2989,17 +3004,24 @@ func (l *Loop) noteReasoning(text string) {
 // reviewed puts a call to the monitor and returns the decision after it,
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
-	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	d, _ := l.reviewCase(ctx, call, l.supervisorCase(call, mutates, before), before)
+	return d
+}
+
+// reviewCase is reviewed for a case already made; unavailable reports a
+// judge that could not answer.
+func (l *Loop) reviewCase(ctx context.Context, call model.ToolCall, c monitor.Case, before policy.Result) (_ policy.Result, unavailable bool) {
+	out := l.Monitor.Review(ctx, c)
 	if out.Skipped == monitor.SkippedBudget {
 		// Unreviewed, and said so: in the record and in the reason every
 		// approver, and a runbook step's label, shows.
 		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
 			After: string(before.Decision), Skipped: out.Skipped})
 		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
-		return before
+		return before, out.Unavailable
 	}
 	if out.Skipped != "" {
-		return before
+		return before, out.Unavailable
 	}
 	l.noteVerdict(call.ID, out.Verdict)
 	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
@@ -3011,13 +3033,13 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	// session-wide "always allow" answers it without the person.
 	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
 	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
-		return before
+		return before, out.Unavailable
 	}
 	why := out.Verdict.Code
 	if out.Verdict.Rationale != "" {
 		why += " — " + out.Verdict.Rationale
 	}
-	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}
+	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}, out.Unavailable
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.

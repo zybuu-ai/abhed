@@ -469,3 +469,18 @@ func TestAsyncExtensionIsBounded(t *testing.T) {
 		t.Fatalf("recorded %+v", fired)
 	}
 }
+
+// Ownership is counted: the tree is owned until its last run has ended.
+func TestOwnershipIsCounted(t *testing.T) {
+	h := NewHost(nil)
+	h.Own("r", true)
+	h.Own("r", true)
+	h.Own("r", false)
+	if !h.Owns("r") {
+		t.Fatal("one run ending let the tree go while another went on")
+	}
+	h.Own("r", false)
+	if h.Owns("r") {
+		t.Fatal("the tree is still owned after its last run")
+	}
+}

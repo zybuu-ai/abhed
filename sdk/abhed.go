@@ -568,6 +568,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	loop.Budget = budget
 	// With no approver nobody answers an ask, so the supervisor's are denials.
 	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
+	loop.Diagnostics = toolset.Diagnostics(cfg, registry)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}
@@ -967,6 +968,9 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	if a.loop.Diagnostics != nil {
+		a.loop.Diagnostics.Close()
+	}
 	if a.unconfine != nil {
 		a.unconfine()
 	}

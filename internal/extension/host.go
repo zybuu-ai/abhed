@@ -39,7 +39,7 @@ type Host struct {
 	// takes them; owned are the roots with a run going.
 	haltMu sync.Mutex
 	halts  map[string]haltNote
-	owned  map[string]bool
+	owned  map[string]int
 	seq    uint64
 }
 
@@ -49,17 +49,24 @@ type haltNote struct {
 	seq uint64
 }
 
-// Own marks the root session's run as going, or no longer; a going run's
-// halt is never evicted.
+// Owns reports whether a run is going in the root session's tree.
+func (h *Host) Owns(rootID string) bool {
+	h.haltMu.Lock()
+	defer h.haltMu.Unlock()
+	return h.owned[rootID] > 0
+}
+
+// Own counts a run going in the root session's tree, or one ended; while
+// any is, the tree's halt is never evicted.
 func (h *Host) Own(rootID string, live bool) {
 	h.haltMu.Lock()
 	defer h.haltMu.Unlock()
 	if h.owned == nil {
-		h.owned = map[string]bool{}
+		h.owned = map[string]int{}
 	}
 	if live {
-		h.owned[rootID] = true
-	} else {
+		h.owned[rootID]++
+	} else if h.owned[rootID]--; h.owned[rootID] <= 0 {
 		delete(h.owned, rootID)
 	}
 }
@@ -84,12 +91,12 @@ func (h *Host) halt(e *Extension, req Request, key, why string) {
 	for len(h.halts) >= maxHalts {
 		oldest, found := "", false
 		for k, n := range h.halts {
-			if !h.owned[k] && (!found || n.seq < h.halts[oldest].seq) {
+			if h.owned[k] == 0 && (!found || n.seq < h.halts[oldest].seq) {
 				oldest, found = k, true
 			}
 		}
 		if !found {
-			if !h.owned[key] {
+			if h.owned[key] == 0 {
 				return
 			}
 			break

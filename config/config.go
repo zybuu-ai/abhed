@@ -2087,6 +2087,17 @@ type ToolsConfig struct {
 	// BashCheckpointFiles the files looked at (20000 when zero).
 	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
 	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
+	// Diagnostics is whether the agent is given a language server's
+	// diagnostics after each write or edit: "auto" (the default) runs a
+	// server only where policy and the supervisor allow its command, "on"
+	// also where the mode would ask about it, "off" never. Off wherever no
+	// sandbox or no server is installed. A workspace file may only set off.
+	Diagnostics string `json:"diagnostics,omitempty"`
+	// DiagnosticsMax bounds the diagnostics given per file (20 when zero,
+	// at most 200); DiagnosticsWaitMS how long an edit waits for them
+	// (3000 when zero, at most 30000).
+	DiagnosticsMax    int `json:"diagnostics_max,omitempty"`
+	DiagnosticsWaitMS int `json:"diagnostics_wait_ms,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -2303,6 +2314,14 @@ func (c Config) Validate() error {
 	case "", "on", "off", "required":
 	default:
 		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	switch c.Tools.Diagnostics {
+	case "", "auto", "on", "off":
+	default:
+		return fmt.Errorf("unknown tools.diagnostics %q (want auto, on or off)", c.Tools.Diagnostics)
+	}
+	if c.Tools.DiagnosticsMax < 0 || c.Tools.DiagnosticsMax > 200 || c.Tools.DiagnosticsWaitMS < 0 || c.Tools.DiagnosticsWaitMS > 30000 {
+		return fmt.Errorf("tools.diagnostics_max must be 0 to 200 and tools.diagnostics_wait_ms 0 to 30000")
 	}
 	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
 		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")

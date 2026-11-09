@@ -137,6 +137,7 @@ var samples = []sample{
 	{agent.EvOllamaPull, agent.ActorUser, `{"op":"pull","outcome":"refused","provider":"local","model":"qwen3:8b","problem":"assist_off","error":"Abhed is set not to install or download anything here","by":"user","surface":"server"}`},
 	{agent.EvDebugSetup, agent.ActorUser, `{"action":"process_tier_consent","workspace":"/w","call_id":"u-2"}`},
 	{agent.EvSandboxPortContested, agent.ActorSystem, `{"port":5173,"listeners":2}`},
+	{agent.EvLSPDiagnostics, agent.ActorSystem, `{"call_id":"c-7","path":"/w/a.go","language":"go","lsp_id":"lsp-diag-go-1","total":3,"shown":3,"errors":1,"warnings":2,"duration_ms":410}`},
 	{agent.EvHookContinued, agent.ActorSystem, `{"hook":"tests-first","text":"The tests-first hook asks you to continue before finishing: run the tests"}`},
 	{agent.EvHookFired, agent.ActorSystem, `{"extension":"freeze","event":"tool_call","verdict":"halt","kind":"command","reason":"change freeze","exit_code":0}`},
 }

@@ -474,3 +474,21 @@ func TestHaltEndsBackgroundChildren(t *testing.T) {
 	waitFor(t, "the child to end", func() bool { return r.l.Background.Live() == 0 })
 	checkCancelled(t, r, reason, TermPolicyDenied, "one")
 }
+
+// A root whose run has ended still owns its halt while a background child
+// of its runs, and no longer once the child has ended.
+func TestBackgroundChildKeepsTheRootLive(t *testing.T) {
+	r := newBGRig(t, WakeNotify, "one")
+	h := extension.NewHost(nil)
+	r.l.Hooks = &hostHooks{h: h}
+	if _, err := r.l.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the child to work", func() bool { return r.m.childrenInCall() == 1 })
+	if r.l.Background.Live() != 1 || !h.Owns("parent") {
+		t.Fatalf("live %d, owned %v", r.l.Background.Live(), h.Owns("parent"))
+	}
+	r.m.release("one")
+	waitFor(t, "the child to end", func() bool { return r.l.Background.Live() == 0 })
+	waitFor(t, "the root to be let go", func() bool { return !h.Owns("parent") })
+}

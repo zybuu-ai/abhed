@@ -134,7 +134,9 @@ new one; a hook that keeps a count or a log should expect that.
   own value of it. Before 1.2.8 an extension inherited everything.
 - `async` sends the events that only observe (`turn_end`, `subagent_start`,
   `subagent_end`, `notification`, `tool_failure`, `post_compact`) without
-  waiting for a reply.
+  waiting for a reply. At most 4 such events wait on one extension at once;
+  one beyond that is skipped and recorded as `hook.fired` `error`, and those
+  still waiting are cancelled when their session ends.
 - A workspace's extensions start only once the workspace is trusted.
 - `hooks.disabled`, which only the managed configuration sets, turns hooks
   off: each extension keeps only the tools it provides, is sent no hook
