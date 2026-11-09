@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -41,8 +40,8 @@ func (s *Server) allowance(spec StartSpec, sessionID string) func(context.Contex
 	req := AllowanceRequest{Tenant: spec.Tenant, User: spec.User, Session: sessionID}
 	unavailable := agent.Allowance{Stop: true, Scope: "unavailable",
 		Message: "stopped: the budgets that apply to this session could not be checked; try again shortly"}
-	return func(ctx context.Context) agent.Allowance {
-		ctx, cancel := context.WithTimeout(ctx, allowanceWait)
+	return func(parent context.Context) agent.Allowance {
+		ctx, cancel := context.WithTimeout(parent, allowanceWait)
 		defer cancel()
 		type answer struct {
 			a   Allowance
@@ -64,10 +63,10 @@ func (s *Server) allowance(spec StartSpec, sessionID string) func(context.Contex
 		case <-ctx.Done():
 			got.err = ctx.Err()
 		}
+		if parent.Err() != nil {
+			return agent.Allowance{} // interrupted: the loop ends the run as stopped
+		}
 		if got.err != nil {
-			if errors.Is(got.err, context.Canceled) {
-				return agent.Allowance{} // interrupted: the loop ends the run as stopped
-			}
 			s.log.Error("session allowance unavailable", "session", sessionID, "err", got.err)
 			return unavailable
 		}

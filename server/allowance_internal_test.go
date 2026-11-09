@@ -32,6 +32,11 @@ func TestAllowanceWaitPanicAndInterrupt(t *testing.T) {
 	if stop, scope, _ := panics(context.Background()); !stop || scope != "unavailable" {
 		t.Fatalf("a panic: stop %v scope %q", stop, scope)
 	}
+	// A hook's own Canceled is no interrupt while the run's context lives.
+	cancelled := ask(func(context.Context, AllowanceRequest) (Allowance, error) { return Allowance{}, context.Canceled })
+	if stop, scope, _ := cancelled(context.Background()); !stop || scope != "unavailable" {
+		t.Fatalf("a hook returning Canceled: stop %v scope %q", stop, scope)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
 	slow := ask(func(ctx context.Context, _ AllowanceRequest) (Allowance, error) {

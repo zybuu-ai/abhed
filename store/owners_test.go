@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // The version 4 move, run inside a transaction that is rolled back, so the
@@ -194,7 +194,7 @@ func TestOwnerMigrationLowercasesEmailOwners(t *testing.T) {
 // migration has not run on.
 func TestOpenRefusesAnUnmigratedOwnerSchema(t *testing.T) {
 	runtimeStore(t, "default") // provisioned, so only the check below can refuse
-	runtime := os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	runtime := testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	saved := checkOwnersMigrated
 	checkOwnersMigrated = func(context.Context, *pgxpool.Pool) (bool, error) { return false, nil }
 	defer func() { checkOwnersMigrated = saved }()

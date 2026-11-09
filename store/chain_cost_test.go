@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // The cost of one append, measured where noise from other load cannot reach
@@ -30,8 +31,8 @@ func TestChainAppendCost(t *testing.T) {
 		}
 	}
 	p := owner
-	if os.Getenv("ABHED_TEST_RUNTIME_DSN") != "" {
-		cfg := DefaultConfig(os.Getenv("ABHED_TEST_RUNTIME_DSN"))
+	if testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN") != "" {
+		cfg := DefaultConfig(testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN"))
 		var err error
 		if p, err = Open(ctx, cfg); err != nil {
 			t.Fatal(err)

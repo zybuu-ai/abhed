@@ -147,3 +147,35 @@ func TestStudioCommitMessageIsAModelCall(t *testing.T) {
 		}
 	}
 }
+
+// One commit-message request is one spend in the record: one model.call of
+// its purpose, and no other model.call or editor summary, so a reader that
+// sums model.call and the editor summaries counts it exactly once.
+func TestStudioCommitMessageIsOneSpendEvent(t *testing.T) {
+	fim := newFIMServer(t, "Add a")
+	r := completionRig(t, fim.URL, pricedCoder)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "a.go"}} {
+		if args[0] == "add" {
+			r.write("a.go", "package a\n")
+		}
+		if out, err := exec.Command("git", append([]string{"-C", r.ws}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	id := r.open()
+	before, _ := r.recorded(id, agent.EvModelCall)
+	var res map[string]any
+	r.cl.ok("_abhed/commitMessage", map[string]any{"sessionId": id}, &res)
+	after, _ := r.recorded(id, agent.EvModelCall)
+	if n := len(after) - len(before); n != 1 || after[len(after)-1]["purpose"] != agent.PurposeCommitMessage {
+		t.Fatalf("%d model.call for one commit message: %v", n, after[len(before):])
+	}
+	for _, typ := range []agent.EventType{agent.EvCompletionSummary, agent.EvNextEditSummary} {
+		if got, _ := r.recorded(id, typ); len(got) != 0 {
+			t.Fatalf("a commit message recorded %s: %v", typ, got)
+		}
+	}
+	if got, _ := r.recorded(id, agent.EvCommitMessage); len(got) != 1 {
+		t.Fatalf("commit_message.generated %v", got)
+	}
+}

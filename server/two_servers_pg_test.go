@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"net/http"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 	"github.com/zybuu-ai/abhed/store"
 )
 
@@ -19,7 +19,7 @@ import (
 func pgExec(t *testing.T, sql string, args ...any) {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv("ABHED_TEST_DSN"))
+	conn, err := pgx.Connect(ctx, testdb.DSN(t, "ABHED_TEST_DSN"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func pgExec(t *testing.T, sql string, args ...any) {
 func pgHolder(t *testing.T, id string) string {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, os.Getenv("ABHED_TEST_DSN"))
+	conn, err := pgx.Connect(ctx, testdb.DSN(t, "ABHED_TEST_DSN"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func pgHolder(t *testing.T, id string) string {
 // process of a deployment does; it skips without ABHED_TEST_DSN.
 func openSharedPG(t *testing.T) *store.Postgres {
 	t.Helper()
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run two servers on one Postgres")
 	}

@@ -3,13 +3,13 @@ package store
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // Postgres before 15 lets every role create in schema public. A migrate
@@ -18,7 +18,7 @@ import (
 // PUBLIC is made here as Postgres 13 and 14 make it, which needs the owner
 // role to own schema public; elsewhere the test skips.
 func TestMigrateClosesCreateOnPublic(t *testing.T) {
-	owner, runtime := testDSN(t), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtime := testDSN(t), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if runtime == "" {
 		t.Skip("set ABHED_TEST_RUNTIME_DSN to run the privilege-separation tests")
 	}
@@ -114,11 +114,11 @@ func dsnFor(t *testing.T, dsn, db string) string {
 // INHERIT; owning the database) are named, and a group's table privilege is
 // found by the record check too. Needs ABHED_TEST_SUPERUSER_DSN.
 func TestMigrateOnPostgres14DefaultRights(t *testing.T) {
-	super := os.Getenv("ABHED_TEST_SUPERUSER_DSN")
+	super := testdb.DSN(t, "ABHED_TEST_SUPERUSER_DSN")
 	if super == "" {
 		t.Skip("set ABHED_TEST_SUPERUSER_DSN to a superuser to recreate Postgres 13 and 14's default rights")
 	}
-	ownerDSN, runtimeDSN := testDSN(t), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	ownerDSN, runtimeDSN := testDSN(t), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if runtimeDSN == "" {
 		t.Skip("set ABHED_TEST_RUNTIME_DSN")
 	}
