@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // snapSession is a session whose bash checkpoints are collected by path.
@@ -154,5 +156,44 @@ func TestBashCheckpointsRequiredRefusesBackground(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bg.txt")); err == nil {
 		t.Fatal("the command ran")
+	}
+}
+
+// coarseInfo is a file's stat as a file system keeping whole seconds gives it,
+// with the time fixed, so a rewrite in that second leaves the stat the same.
+type coarseInfo struct {
+	fs.FileInfo
+	at time.Time
+}
+
+func (c coarseInfo) ModTime() time.Time { return c.at }
+func (c coarseInfo) Sys() any           { return nil }
+
+// A same-size rewrite the stat cannot show is still seen, by the held content
+// or a key file's hash, when the file changed just before the command.
+func TestBashCheckpointSeesARewriteItsStatHides(t *testing.T) {
+	at := time.Now().Truncate(time.Second)
+	old := snapInfo
+	snapInfo = func(d fs.DirEntry) (fs.FileInfo, error) {
+		info, err := d.Info()
+		if err != nil {
+			return nil, err
+		}
+		return coarseInfo{info, at}, nil
+	}
+	t.Cleanup(func() { snapInfo = old })
+	s, dir, got := snapSession(t, BashCheckpoints{})
+	writeFile(t, filepath.Join(dir, "a.txt"), "a before\n")
+	writeFile(t, filepath.Join(dir, ".env"), "TOKEN=x\n")
+	writeFile(t, filepath.Join(dir, "same.txt"), "same\n")
+	run(t, Bash{}, s, bashArgs{Command: "printf 'a after!\\n' > a.txt; echo TOKEN=y > .env", Description: "rewrite"})
+	if f := got["a.txt"]; string(f.Before) != "a before\n" {
+		t.Errorf("a.txt %+v", f)
+	}
+	if f := got[".env"]; f.Skipped == "" || f.Before != nil {
+		t.Errorf(".env %+v", f)
+	}
+	if _, ok := got["same.txt"]; ok {
+		t.Error("same.txt checkpointed")
 	}
 }
