@@ -93,7 +93,7 @@ const BySetting = "setting"
 // hooks hear first and may refuse. The approval or denial is recorded too.
 func (l *Loop) EngineAuthorize(ctx context.Context, call, id, via string, args json.RawMessage, allowed func(policy.Result) bool) (policy.Result, bool, error) {
 	if _, err := l.Recorder.Record(EvActionRequested, ActorSystem, Trusted, ActionRequested{CallID: id, Tool: call, Args: args, Via: via}); err != nil {
-		return policy.Result{Decision: policy.Deny, Reason: "the request could not be recorded", Step: "record"}, false, err
+		return policy.Result{Decision: policy.Deny, Reason: "the request could not be recorded"}, false, err
 	}
 	decision := l.engineDecision(ctx, call, id, args)
 	if decision.Decision == policy.Ask && allowed(decision) {
