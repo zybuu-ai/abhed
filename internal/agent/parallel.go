@@ -301,13 +301,13 @@ func asksForParallelWork(typed string) bool {
 
 // ParallelNote is what Abhed adds after a message that asks for work in
 // parallel. The tool descriptions say what such a request means, and a small
-// local model still made the project's code concurrent; the same words beside
-// the message turned it to subagents. A conditional note did not: the model
-// read an ambiguous request as about the program. The trigger's veto keeps
-// messages that name the program's concurrency out, so the note is plain.
-const ParallelNote = "[Abhed: This message asks for work in parallel: start independent pieces as " +
-	"subagents with one tasks call, unless the person explicitly asks to change how the program " +
-	"itself runs concurrently (for example a thread pool or async code).]"
+// local model still made the project's code concurrent; these words beside
+// the message turned it to subagents, where conditional or softer wordings
+// did not. The trigger's veto keeps out messages that name the program's own
+// concurrency, so the note can say plainly what the request means.
+const ParallelNote = "[Abhed: this message asks for work in parallel. Unless it asks in so many words " +
+	"to change the program to run concurrently, it means how you do the work: split it into " +
+	"independent parts and start them all at once as subagents with one tasks call.]"
 
 // parallelNote is the note for the person's own words, typed, or "". Only a
 // top-level loop that can still start a subagent with tasks adds it: a

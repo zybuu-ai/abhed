@@ -34,9 +34,10 @@ or did the parts one after another.
 The descriptions alone did not turn a small local model: asked to "speed up the
 project by running things in parallel", it still added a thread pool to the
 code. So when your own words ask for work in parallel, Abhed puts a short note
-after your message for the model: the message asks for work in parallel, so start
-independent pieces as subagents with one `tasks` call, unless you explicitly asked
-to change how the program itself runs concurrently. The note is judged only on
+after your message for the model: unless you asked in so many words to change the
+program to run concurrently, the message means how it does the work, so it splits
+it into independent parts and starts them all at once with one `tasks` call. The
+note is judged only on
 what you typed, never on files you attach with `@`, resources attached in Studio
 or input piped into `-p`. It is left out when the message names the program's
 concurrency (a race, threads, async code, a worker pool, a lock, a scheduler,
