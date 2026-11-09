@@ -1052,6 +1052,9 @@ turns:
 			l.recordBudgetStop()
 			return l.finish(TermMaxBudget), nil
 		}
+		if l.allowanceStop(ctx) {
+			return l.finish(TermMaxBudget), nil
+		}
 		// Background results first, then steering, each in arrival order,
 		// and never between a turn's calls and their results.
 		delivery, wake := "boundary", ""

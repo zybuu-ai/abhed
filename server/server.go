@@ -376,6 +376,12 @@ type Options struct {
 	// a workspace's; nil for none. An error, or a layer that does not
 	// validate, refuses the session. See PolicyLayer.
 	SessionPolicy func(ctx context.Context, req SessionPolicyRequest) (*PolicyLayer, error)
+	// SessionAllowance, when set, says what a session's owner may still
+	// spend under limits the edition keeps, such as periodic budgets. It is
+	// asked before each turn of the session and its subagents, the first
+	// included; an error stops the run, since a limit that cannot be read is
+	// not taken as none. See Allowance.
+	SessionAllowance func(ctx context.Context, req AllowanceRequest) (Allowance, error)
 	// SandboxRouter, when set, relays each call that acts on a sandbox to the
 	// replica that owns it. Nil handles every call here.
 	SandboxRouter SandboxRouter
@@ -2115,6 +2121,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
 	loop.Monitor = toolset.Supervisor(s.opts.Config, own, spec.Unattended)
+	budget.Allowance = s.allowance(spec, sessionID)
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.

@@ -52,6 +52,12 @@ All notable changes to Abhed are recorded here. The format follows
   subagents included. The run ends `max_budget` (exit `3`) with a message
   and a `budget.stopped` event; with a cap set, a model with no price is
   refused before any call. A managed or org cap may only be lowered.
+- `server.Options.SessionAllowance`: an edition's limits on what a
+  session's owner may spend, asked before every turn of the session and its
+  subagents. A spent allowance ends the run `max_budget` with a
+  `budget.stopped` of reason `allowance` naming the limit (`scope`); under a
+  dollar limit a model with no price is refused; a limit that cannot be
+  read stops the run.
 
 ### Upgrading from 1.2.9
 

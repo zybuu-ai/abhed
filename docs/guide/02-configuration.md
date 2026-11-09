@@ -159,6 +159,11 @@ records `budget.stopped` with what was spent. With a dollar cap set, a model
 that has no price is refused before any call is made, rather than run at a
 guessed cost.
 
+A server can also hold a session to limits kept outside it, such as an
+organisation's periodic budgets. Those are asked before every turn, and a
+spent one ends the run `max_budget` with a `budget.stopped` of reason
+`allowance`, whose `scope` and `message` name the limit.
+
 ### Prices
 
 Each model call is priced from its model's name as sent to the provider,
