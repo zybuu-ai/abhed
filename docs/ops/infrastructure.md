@@ -401,16 +401,20 @@ retry with `accept_host_key: true` **only if the user has said the host is new
 or ephemeral**. That is a deliberate line: the agent should not decide on its
 own to stop verifying the identity of a machine it is about to run commands on.
 
-**Every remote command requires approval unless the operator declared it a read.**
-A local `bash` call can be judged by its text because it runs inside a sandbox
-with a workspace boundary and a checkpoint behind it. None of that holds over
-SSH: the command runs with the remote account's full authority, outside any
-scoping, with no undo. Calling `cat` safe there would be judging the string
-rather than the consequence, so Abhed does not do it on its own.
+**Every remote command requires approval unless it is provably a read.**
+A local `bash` call runs inside a sandbox with a workspace boundary and a
+checkpoint behind it. None of that holds over SSH: the command runs with the
+remote account's full authority, outside any scoping, with no undo. So a
+remote command runs unasked only when its text proves it changes nothing:
+on a host the operator declared, a command the
+[read-only classifier](#read-only-commands-on-declared-hosts) reads as a
+pipeline of read programs; on any host, a command the operator declared a
+read. Anything else asks, and on a host `ssh_connect` added every command
+asks unless `ssh.read_commands` names it.
 
-The operator can, for the commands they know are reads on their machines,
-with `ssh.read_commands`: a list of exact commands, or patterns for one
-simple command, matched on every host.
+The operator declares the extra reads, the commands they know are reads on
+their machines, with `ssh.read_commands`: a list of exact commands, or
+patterns for one simple command, matched on every host.
 
 ```json
 "ssh": { "enabled": true, "read_commands": [
@@ -451,7 +455,10 @@ on the list below, the entry must also be a read form of it.
 
 **Wildcard entries.** An entry with `*` or `?` is accepted only for a program
 on this list, named as written (its path dropped), and only in a read form of
-it; any other is refused at load with "declare the exact command instead".
+it; any other is refused at load. The error names the accepted forms: an
+exact command (`df -h`), or a pattern whose `*` or `?` stands for a whole
+operand (`df -h *`) or for a value after `=` (`df --output=*`), never for
+part of an option (`df -h*`), and it lists the read options of that program.
 Every call the pattern matches is checked against the same form, so an
 option or verb that is not a read is never approved through a wildcard,
 whatever the pattern says.
@@ -546,7 +553,9 @@ A reader on the list reads any file the remote account can, and `getent`
 asks the host's resolver, which may query DNS: narrow the path or name in the
 pattern (`cat /var/log/*`, `getent hosts web*`) to what you mean.
 
-Not on the list, so declared exactly or not at all: `find`, `mount`, `ss`
+Not on the list, so declared exactly or not at all: `find` (the
+[read-only classifier](#read-only-commands-on-declared-hosts) reads its read
+forms on declared hosts), `mount`, `ss`
 (the parser reads its operand as a command), `lsof`, `curl`, `wget`,
 `nginx`, `kubectl`, `git`, and every program that runs another. `*` matches
 any text, spaces included, so `ip addr *` does not match `ip addr` alone;
@@ -567,6 +576,85 @@ rules still refuse it.
 
 The agent can name a host from this list, or one the user gave `ssh_connect`
 in the same session with approval. It cannot introduce one on its own.
+
+### Read-only commands on declared hosts
+
+On a host in `ssh.hosts`, Abhed reads each `ssh` command with the same bash
+parser and the same read-only list it uses for `ssh.read_commands`
+wildcards (the table above), and a command it proves is a read runs unasked
+and in plan mode. Incident triage works without an approver for every
+listing:
+
+```
+ls -lah /var/log/app
+du -ah /var/log/app | sort -rh | head -n 20
+grep -i error /var/log/app/app.log | tail -n 50
+find /var/log/app -name 'core*' -exec ls -lh {} +
+ps -eo pid,rss,comm --sort=-rss | head
+```
+
+A command is a read only when all of these hold:
+
+- It is one command or a pipeline joined by `|`: no `;`, `&&`, `||`, `&`,
+  line break, subshell or `!`.
+- Every program in it is on the read-only list, named on its own (`ls`,
+  not `/tmp/x/ls`, `LS` or `FOO=1 ls`), and called in its read form: its
+  options are ones the form lists, read as getopt reads them, so a cluster
+  such as `-rh` is `-r -h` and `-rk2` is `-r -k 2`. A pipe into anything
+  else (`tee`, `xargs`, `awk`, `sed`, `sh`, `less`) is not a read.
+- `find` is read only with tests (`-name`, `-type`, `-size`, `-mtime`, …),
+  `-print`, `-printf`, `-ls`, and `-exec` or `-execdir` of a read-only call
+  ended by `+` or `\;`. `-delete`, `-fprint`, `-fprintf`, `-fls`, `-ok`, and
+  `-exec` of anything else are not.
+- No redirection (`<`, `>`, `2>`), no `$`, no backquote and no process
+  substitution, so nothing in it is decided when it runs.
+- The text means the same in every common login shell: words, single quotes
+  without a backslash in them, and double quotes holding only plain
+  characters. A brace (other than find's `{}`), a word starting with `=`
+  (zsh), an unquoted `^` (old fish's stderr redirect), `#` and `!` are not
+  read; nor is a glob that could expand into an option (`*`, `*.log`, `-*`):
+  write it after a path (`./*.log`, `/var/log/app/*`).
+- The parser finds no write, no hidden program and nothing destructive in
+  it, it carries no `stdin_secret`, and no deny or ask rule matches it.
+  `getent` and `openssl s_client`, which reach beyond the host, are never
+  judged reads here.
+- It names no file that commonly holds credentials, as the read tool's
+  default ask rules name them: `.env` and `.env.*`, `*.pem`, `*.key`,
+  `id_rsa*` and the other key names, `shadow`, `.netrc`, `.pgpass`,
+  `credentials`, and anything in `.ssh`, `.gnupg`, `.aws`, `.kube` or
+  `.docker`. This is a speed bump, not protection: `grep -r` over a home
+  folder still reads them, so add deny rules (`ssh(*/.ssh/*)`) for what must
+  never be read.
+
+So `rm`, `find … -delete`, `sort -o`, `ls | tee f`, `ls | xargs rm`,
+`awk 'BEGIN{system("…")}'`, `sed -i`, `less`, `dmesg -c`, `date -s` and
+`hostname -F f` all ask, and plan mode refuses them. The approval names the
+rule that allowed a call: `ssh.read_only` for the classifier, or
+`ssh.read_commands: <entry>` for a declared read, in the reason and in the
+record's `rule` field.
+
+**What the classifier cannot see.** It reads the text, not the host. The
+command runs through the remote account's login shell, which reads its own
+start-up files first (for bash over ssh, `~/.bashrc`; for zsh,
+`~/.zshenv`). A function or alias defined there, or a `PATH` that puts
+another `ls` first, runs instead of the program the text names, and Abhed
+cannot detect it. The classifier also assumes the programs are the common
+GNU or busybox ones: it allows only options that are reads in both, and an
+option a smaller busybox applet lacks fails with an error, not a write.
+Declare only hosts whose accounts and start-up files you trust, use an
+account without write access where reads are all the agent needs, and set
+`ssh.listed_reads_only` to keep the old behaviour:
+
+```json
+"ssh": { "enabled": true, "listed_reads_only": true }
+```
+
+With it, only `ssh.read_commands` run unasked. A workspace file may turn the
+classifier off but not on, and an org policy may only turn it off. A managed
+file that sets any `permissions` key turns it off unless the managed file
+itself sets `ssh.listed_reads_only` (to `false` to keep it on), as only the
+managed file then decides what runs unasked. Hosts added with `ssh_connect`
+are never judged by the classifier.
 
 ### Rules on a host
 

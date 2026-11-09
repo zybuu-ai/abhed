@@ -315,6 +315,25 @@ func (c Config) ManagedWebFetchOff() bool { return c.managedFetchOff }
 // configuration sets a permissions key, whichever one. Every surface asks this.
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
+// SSHReadOnlyHosts reports the hosts on which the read-only classifier may
+// approve an ssh command by its text: those in ssh.hosts. It is nil, the
+// classifier off, when ssh is off, when ssh.listed_reads_only is set, or
+// when the managed file sets the permissions without setting
+// ssh.listed_reads_only itself, since only it then widens what runs unasked.
+func (c Config) SSHReadOnlyHosts() func(host string) bool {
+	if !c.SSH.Enabled || c.SSH.ListedReadsOnly || len(c.SSH.Hosts) == 0 {
+		return nil
+	}
+	if c.AllowLocked() && !c.ManagedSets("ssh.listed_reads_only") {
+		return nil
+	}
+	hosts := make(map[string]bool, len(c.SSH.Hosts))
+	for _, h := range c.SSH.Hosts {
+		hosts[h.Name] = true
+	}
+	return func(host string) bool { return hosts[host] }
+}
+
 // ManagedScreens reports whether the managed file itself sets the deny rules
 // or the extensions, so a refusal they make is the organisation's to hold.
 // A managed Config with no ManagedKeys at all, such as one built by hand,

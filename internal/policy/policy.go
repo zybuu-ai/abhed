@@ -435,6 +435,12 @@ type Engine struct {
 	// ssh.read_commands; see AllowRemoteReads.
 	RemoteReads []Rule
 
+	// RemoteHosts reports a host the operator declared (ssh.hosts), on which
+	// the read-only classifier may approve an ssh call whose text is
+	// provably a read; nil turns the classifier off. Hosts added with
+	// ssh_connect are never among them.
+	RemoteHosts func(host string) bool
+
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
 	// does not take them as an alias or extension it cannot read. Deny and
@@ -1033,7 +1039,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
-	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
+	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "" && !e.remoteIsReadOnly(*remote)) {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 	}
 
@@ -1090,7 +1096,16 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			if e.Mode == ModePlan || e.Mode == ModeAuto {
 				step = "mode"
 			}
-			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step}
+			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step,
+				Rule: "ssh.read_commands: " + rule}
+		}
+		if programs, why := e.remoteReadOnly(*remote); why == "" {
+			step := "default"
+			if e.Mode == ModePlan || e.Mode == ModeAuto {
+				step = "mode"
+			}
+			return Result{Decision: Allow, Reason: "read-only command (" + strings.Join(programs, " | ") + ", each in a read form; " +
+				ReadOnlyRule + ") on " + remote.host + ", a host the operator declared", Scope: "", Step: step, Rule: ReadOnlyRule}
 		}
 	}
 

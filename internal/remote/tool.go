@@ -127,6 +127,9 @@ type Tool struct {
 	// Reads are the operator's ssh.read_commands, named to the model so it
 	// can inspect a host in plan mode; the policy decides what they allow.
 	Reads []string
+	// ReadOnly says the policy's read-only classifier is on for the declared
+	// hosts, so the description can tell the model which commands run unasked.
+	ReadOnly bool
 	// Secret returns a stored secret's value, for stdin_secret; nil means no store.
 	Secret func(name string) (string, error)
 }
@@ -168,8 +171,9 @@ func (Tool) Name() string { return "ssh" }
 // over SSH: the command runs with the remote account's full authority, and
 // there is no undo. Classifying `cat` as safe would be judging the string, not
 // the consequence — on a remote host Abhed cannot see, the two are not the
-// same thing. So every remote command asks, unless the operator declared it
-// a read in ssh.read_commands, which the policy judges.
+// same thing. So every remote command asks, unless the policy finds it a
+// read: an entry of ssh.read_commands, or, on a host the operator declared,
+// a command its read-only classifier proves changes nothing.
 func (Tool) Mutates() bool { return true }
 
 func (t Tool) Description() string {
@@ -180,7 +184,7 @@ func (t Tool) Description() string {
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
-		"the sandbox with no undo" + reads(t.Reads) + ". Prefer one command that answers the question " +
+		"the sandbox with no undo" + reads(t.Reads) + readOnly(t.ReadOnly) + ". Prefer one command that answers the question " +
 		"over several exploratory ones. To give a command a password or key, have the " +
 		"user store it with `abhed secret set NAME` and pass the NAME as stdin_secret; " +
 		"never put a secret in the command."
@@ -193,6 +197,16 @@ func reads(cmds []string) string {
 	}
 	return ", except a command the operator declared a read, which runs unasked and in plan mode, " +
 		"alone and exactly as declared (* matches any text): " + strings.Join(cmds, "; ")
+}
+
+// readOnly tells the model what the read-only classifier lets run unasked.
+func readOnly(on bool) string {
+	if !on {
+		return ""
+	}
+	return ". On a declared host, a read-only command also runs unasked and in plan mode: common read programs " +
+		"(ls, cat, head, tail, grep, du, df, ps, find with -exec of a read, systemctl status, journalctl, …) " +
+		"with read options, joined only by |, with no redirection, $, backquote, ; or &&; anything else asks"
 }
 
 func (Tool) Schema() json.RawMessage {

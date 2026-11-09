@@ -106,7 +106,8 @@ narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
 lower limits, a stronger `sandbox.min_tier`, `allow_network` and
 `readable_home` off, stricter toolchains and listen, `monitor.enabled` on and
 `on_unavailable: deny`, more supervisor reviews and honeytokens, stricter
-syntax checks and checkpoints, and the like. A value that would loosen is set
+syntax checks and checkpoints, `ssh.listed_reads_only` on (no remote
+read-only classifier), and the like. A value that would loosen is set
 aside.
 
 **Only when the machine pins the keys**: `permissions.allow`,

@@ -175,3 +175,14 @@ func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
 		t.Errorf("an exact entry was not a read: %+v", res)
 	}
 }
+
+// The tool tells the model which commands run unasked on a declared host
+// only when the read-only classifier is on.
+func TestSSHDescriptionNamesReadOnlyClassifier(t *testing.T) {
+	if d := (Tool{}).Description(); strings.Contains(d, "read-only command") {
+		t.Errorf("classifier off, yet described: %s", d)
+	}
+	if d := (Tool{ReadOnly: true}).Description(); !strings.Contains(d, "read-only command also runs unasked") {
+		t.Errorf("classifier on, not described: %s", d)
+	}
+}

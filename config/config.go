@@ -1463,6 +1463,11 @@ type SSHConfig struct {
 	// "uptime" or "systemctl status *", each one simple command. A matching
 	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
 	ReadCommands []string `json:"read_commands,omitempty"`
+	// ListedReadsOnly turns the read-only classifier off: on a declared
+	// host, a command whose text is provably a read (programs on the
+	// read-only list, in read forms, piped) no longer runs unasked, and only
+	// ReadCommands do.
+	ListedReadsOnly bool `json:"listed_reads_only,omitempty"`
 	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
 	Transfers bool `json:"transfers,omitempty"`
 	// TransferMaxMB bounds one transfer; 0 is 16.

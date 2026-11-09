@@ -275,7 +275,7 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
 		if cfg.SSH.Transfers {
 			// Held in memory whole, so bounded at 1 GiB whatever is configured.
 			limit := int64(min(max(cfg.SSH.TransferMaxMB, 0), 1024)) << 20

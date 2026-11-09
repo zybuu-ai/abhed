@@ -196,6 +196,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
 	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))
+	pol.RemoteHosts = cfg.SSHReadOnlyHosts()
 
 	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {

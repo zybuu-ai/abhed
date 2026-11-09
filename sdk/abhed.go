@@ -407,6 +407,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AllowRemoteReads(cfg.SSH.ReadCommands...); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
+	pol.RemoteHosts = cfg.SSHReadOnlyHosts()
 
 	// A managed sandbox setting binds here too; otherwise bash is unsandboxed
 	// unless the caller asked for the configured sandbox.
