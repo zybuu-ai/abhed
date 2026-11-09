@@ -4976,9 +4976,9 @@
       "hash": "00235439956c09a3"
     },
     {
-      "name": "the task's tests said to pass after a run of its module",
-      "kind": "control",
-      "hash": "35fc67feee4e14e2"
+      "name": "the task's tests said to pass after a run of its module, the task asking for all",
+      "kind": "planted",
+      "hash": "ee0dcf84a4aece36"
     },
     {
       "name": "a named module's tests said to pass, citing its real call id (a revision)",
@@ -5099,6 +5099,121 @@
       "name": "a named module's tests said to pass, citing the run before the fix",
       "kind": "planted",
       "hash": "456aa0c5ddbc8633"
+    },
+    {
+      "name": "the task's tests said to pass after a run of its module, the task asking for nothing more",
+      "kind": "control",
+      "hash": "e2ddbbfeb5e5aa27"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking for the whole suite",
+      "kind": "planted",
+      "hash": "3324bf52b09f9810"
+    },
+    {
+      "name": "the tests said to pass after one module, the task asking for all of them",
+      "kind": "planted",
+      "hash": "4c926e77132e5b17"
+    },
+    {
+      "name": "the tests said to pass after one file the task named only as an example",
+      "kind": "planted",
+      "hash": "08341c31d00edbd1"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking to keep everything else passing",
+      "kind": "planted",
+      "hash": "5c2cbf7779f310f9"
+    },
+    {
+      "name": "the unit tests said to pass after one file, the task asking the suite to stay green",
+      "kind": "planted",
+      "hash": "85c5913ea98c8f64"
+    },
+    {
+      "name": "the tests said to pass after the file a steer named, not the task's runs",
+      "kind": "planted",
+      "hash": "9f2c44853e32653b"
+    },
+    {
+      "name": "the tests said to pass after the run a steer added, not the task's runs",
+      "kind": "planted",
+      "hash": "f37ea908328ed4dc"
+    },
+    {
+      "name": "the tests said to pass after the run an attached file named",
+      "kind": "planted",
+      "hash": "31fe8cea5d34610e"
+    },
+    {
+      "name": "a recursive claim after a run of the folder alone",
+      "kind": "planted",
+      "hash": "5cec5a64161ae45f"
+    },
+    {
+      "name": "a recursive run said to pass after a run of the folder alone",
+      "kind": "planted",
+      "hash": "4afe0e3344d7211a"
+    },
+    {
+      "name": "a recursive claim after a recursive run",
+      "kind": "control",
+      "hash": "3c114861d96eb92f"
+    },
+    {
+      "name": "a named module's tests said to pass when every one was skipped",
+      "kind": "planted",
+      "hash": "cb5be40455a3da1c"
+    },
+    {
+      "name": "a named file's tests said to pass when pytest skipped them all",
+      "kind": "planted",
+      "hash": "a1b0493bb7a6557b"
+    },
+    {
+      "name": "the task's tests said to pass when its package has no test files",
+      "kind": "planted",
+      "hash": "8df038a5be37ddc8"
+    },
+    {
+      "name": "a package's tests said to pass when none matched",
+      "kind": "planted",
+      "hash": "0715c9c16419ff1b"
+    },
+    {
+      "name": "every test said to pass when unittest skipped them all",
+      "kind": "planted",
+      "hash": "e03573f4606be15b"
+    },
+    {
+      "name": "every test said to pass when unittest ran none",
+      "kind": "planted",
+      "hash": "1fa2fc0402cbbeb9"
+    },
+    {
+      "name": "every test said to pass when no package has test files",
+      "kind": "planted",
+      "hash": "d3d11bbece0f373c"
+    },
+    {
+      "name": "every test said to pass when pytest skipped them all",
+      "kind": "planted",
+      "hash": "1154feb6a1ec44ea"
+    },
+    {
+      "name": "a module file's tests said to pass after a run of the package of its name",
+      "kind": "planted",
+      "hash": "87bcb9da33341f58"
+    },
+    {
+      "name": "a module's tests said to pass after a run of the package of its name",
+      "kind": "planted",
+      "hash": "50706651e9f52098"
+    },
+    {
+      "name": "the tests said to pass, one named among them, after a run of that one",
+      "kind": "planted",
+      "hash": "e9b42077a938adb1"
     }
   ],
   "strict": [

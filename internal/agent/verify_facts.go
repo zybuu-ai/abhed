@@ -79,6 +79,8 @@ type facts struct {
 	// the task named.
 	modules  []string
 	theTests bool
+	// inclusive: it names a test as one among more ("including tests.test_new").
+	inclusive bool
 }
 
 type countFact struct {
@@ -294,10 +296,17 @@ func extractFacts(claim string) facts {
 		if m := testModule(w); m != "" {
 			f.modules = append(f.modules, m)
 		}
-		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
+		// "pkg/x/..." keeps its dots: it names everything beneath.
+		if t := strings.TrimRight(strings.Trim(w, "`"), ",;:!?)]}'\""); strings.HasSuffix(t, "/...") {
+			w = strings.TrimLeft(t, "(['\"")
+		} else {
+			w = rawPath(strings.Trim(w, "`"))
+		}
+		if strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
 			f.scope = append(f.scope, w)
 		}
 	}
+	f.inclusive = inclusiveRe.MatchString(nlow)
 	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)
 
@@ -549,6 +558,8 @@ var (
 	// wholeSuiteRe says every test, or the suite as a whole.
 	wholeSuiteRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|both|other|remaining|rest)\b`)
 	identRe      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// inclusiveRe names a part as one among more.
+	inclusiveRe = regexp.MustCompile(`\b(?:including|incl|such as|as well as|along with|plus|besides|in addition to|among them|among others|e\.g)\b`)
 )
 
 // testModule is a test module or file a word names without a folder, as

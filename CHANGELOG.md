@@ -62,16 +62,21 @@ All notable changes to Abhed are recorded here. The format follows
   folder must be copied in, or the folder above opened instead.
 - `abhed -p`, `abhed rpc` and unattended server runs now check their
   answers by default (`verify: label`), as the terminal does; 1.2.9 checked
-  nothing there unless asked. The answer, its text output and the exit code
-  are unchanged, except that a contradicted statement gets the one revision
-  turn, which is one more model call. The result line's `verdict` (and
-  `rpc`'s answer `verdict`) is now present: `verdict.outcome` is `verified`
-  or `unverified`, and `verdict.claims` lists each statement, the
-  unverified ones included. `-verify off`, `"verify":"off"` on `rpc` or
-  `POST /v1/sessions`, or `verify.mode: off` in your own configuration
-  keeps the 1.2.9 behaviour where a managed `verify.mode` allows it. For
+  nothing there unless asked. The exit code is unchanged. When a statement
+  is contradicted, the agent gets the one revision turn: one more model
+  call, and the answer returned (the result line's `result`, rpc's
+  `answer`) is the revised one. The result line's `verdict`, and rpc's
+  answer `verdict`, now appear by default: a parser that does not expect
+  the field should ignore it. `verdict.outcome` is `verified` or
+  `unverified`, and `verdict.claims` lists each statement, the unverified
+  ones included. `-verify off`, `"verify":"off"` on `rpc` or `POST
+  /v1/sessions`, or `verify.mode: off` in your own configuration keeps the
+  1.2.9 behaviour where a managed `verify.mode` allows it; a flag or a
+  session's `verify` also lowers a trusted workspace's `verify.mode`. For
   CI that fails closed on an unverified answer, pass `-verify strict` (exit
-  8). The SDK still checks nothing unless asked.
+  8). The SDK still checks nothing unless asked, through 1.x: set
+  `Options.Verify`, or `Options.VerifyByDefault` to label as the terminal
+  does.
 
 ### Fixed
 
@@ -81,16 +86,24 @@ All notable changes to Abhed are recorded here. The format follows
   whole suite was read as covering a test claim. A run of a named test
   module, file or package (`python3 -m unittest tests.test_text`, `pytest
   tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names
-  it, and "the tests pass" when the task named those tests. "All tests"
-  and "the whole suite" still need a whole run; a run of another module,
-  of one class, a failed run or an edit since the run still leave the
-  claim unverified. The false-claim corpus gains 17 planted cases and 9
-  controls for it; none of the 785 planted claims verifies, all 234
-  controls do, and none of the 334 true or neutral claims is contradicted.
+  it, and "the tests pass" when every message the person typed names those
+  test runs and asks for nothing more ("all the tests", "the whole suite",
+  "keep everything else passing" leave the whole workspace, and a file
+  attached with `@` or piped stdin never names them). "All tests", "the
+  whole suite" and "the tests, including X" still need a whole run, and
+  `pkg/x/...` a recursive one; a run of another module, of one class, a
+  failed run, an edit since the run, or a run that ran no test (all
+  skipped, `[no test files]`) still leave the claim unverified. A run that
+  ran no test no longer verifies "all tests pass" either. The false-claim
+  corpus gains 39 planted cases and 10 controls for it; none of the 807
+  planted claims verifies, all 235 controls do, and none of the 335 true or
+  neutral claims is contradicted.
 - The revision note after an unverified answer now lists the session's
   tool results the agent may cite, by their real `call_id` (or `#seq` for
   a text answer), so a model no longer cites an id it made up. A cited id
-  that is not in the record still counts as no evidence.
+  that is not in the record still counts as no evidence. Commands, paths
+  and statements in the note are quoted, so text the model chose cannot
+  start a line of its own in it.
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was
   read without end, and a sparse file of any size was hashed in full. A

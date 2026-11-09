@@ -294,27 +294,49 @@ func unittestPath(n string) string {
 }
 
 // claimScope is where a claim's named packages or folders are, in the
-// workspace; none names the whole of it.
+// workspace; none names the whole of it. One named with "/..." (pkg/x/...)
+// keeps it: it is that folder and everything beneath.
 func claimScope(scope []string, workDir string) []string {
 	var out []string
 	for _, s := range scope {
-		s = strings.TrimSuffix(strings.TrimSuffix(slashes(s), "..."), "/")
+		s = slashes(s)
+		rec := strings.HasSuffix(s, "...")
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "..."), "/")
 		if s == "" || s == "." {
 			continue
 		}
 		if !filepath.IsAbs(s) {
 			s = filepath.Join(workDir, strings.TrimPrefix(s, "./"))
 		}
-		out = append(out, filepath.Clean(s))
+		s = filepath.Clean(s)
+		if rec {
+			s += "/..."
+		}
+		out = append(out, s)
 	}
 	return out
+}
+
+// recursiveScope splits a claim's scope entry into its folder and whether
+// it names everything beneath.
+func recursiveScope(c string) (string, bool) {
+	if d, ok := strings.CutSuffix(c, "/..."); ok {
+		return d, true
+	}
+	return c, false
 }
 
 // coversScope reports a run that covers every folder a claim names, by path,
 // or the whole workspace when it names none.
 func coversScope(pats []scopePat, scope []string, workDir string) bool {
+	// A claim of everything beneath a folder needs a run of everything
+	// beneath it, or beneath a folder above it.
 	covered := func(c string) bool {
+		c, rec := recursiveScope(c)
 		for _, p := range pats {
+			if rec && !p.rec {
+				continue
+			}
 			if c == p.dir || p.rec && strings.HasPrefix(c, p.dir+"/") {
 				return true
 			}
@@ -347,7 +369,8 @@ func sameScope(pats []scopePat, scope []string, workDir string) bool {
 		return false
 	}
 	for i, p := range pats {
-		if p.dir != scope[i] {
+		c, rec := recursiveScope(scope[i])
+		if p.dir != c || rec && !p.rec {
 			return false
 		}
 	}
@@ -355,48 +378,186 @@ func sameScope(pats []scopePat, scope []string, workDir string) bool {
 }
 
 // testScope is what a test claim is judged against: the folders, packages,
-// modules and files it names; or, for "the tests" with none named, those the
-// task named; or the whole workspace.
+// modules and files it names; or, for "the tests" with none named, the test
+// runs the person asked for; or the whole workspace. A claim that names a
+// test as one among more ("including tests.test_new") names the whole.
 func (ix *recordIndex) testScope(f facts) []string {
+	if f.inclusive {
+		return nil
+	}
 	scope := append(slices.Clone(f.scope), f.modules...)
 	if len(scope) == 0 && f.theTests && f.testish == "test" {
-		return promptTests(ix.prompt)
+		return promptTests(ix.prompts)
 	}
 	return scope
 }
 
-// goTestArgsRe is a go test command's arguments in a task's text.
-var goTestArgsRe = regexp.MustCompile("\\bgo\\s+test((?:\\s+[^\\s;&|`'\"]+)+)")
+var (
+	// The test runs a person's message asks for, by command: go test's,
+	// unittest's and pytest's arguments, and "run tests/test_x.py".
+	goTestArgsRe   = regexp.MustCompile("\\bgo\\s+test((?:\\s+[^\\s;&|`'\"]+)*)")
+	unittestArgsRe = regexp.MustCompile("\\bpython3?\\s+-m\\s+unittest((?:\\s+[^\\s;&|`'\"]+)*)")
+	pytestArgsRe   = regexp.MustCompile("\\bpytest((?:\\s+[^\\s;&|`'\"]+)*)")
+	runTargetRe    = regexp.MustCompile("(?i)\\brun\\s+([^\\s;&|`'\"]+)")
+	// promptWholeRe asks for more than the runs named: every test, the
+	// suite, the rest, or that nothing else break.
+	promptWholeRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|anything|nothing|both|other|others|remaining|rest|keep|keeps|stay|stays|green)\b|\bbreak\w*|\bregress\w*`)
+)
 
-// promptTests are the tests a task names: test modules and files
-// (tests.test_text, tests/test_x.py) and go test's folders (./pkg/x). None
-// when it names a whole-suite run (./...), so "the tests" means them all.
-func promptTests(prompt string) []string {
+// promptTests are the test runs the person asked for, across every message
+// they typed: test modules and files given to unittest, pytest or "run",
+// and go test's folders. None, so "the tests" means them all, when any
+// message names no test run, asks for more than it names (every test, the
+// suite, everything else), or names a filter or a whole-suite run. A later
+// message never narrows what an earlier one asked: the runs are unioned,
+// and one that names none widens to the whole.
+func promptTests(prompts []string) []string {
 	var out []string
-	add := func(p string) {
-		if !slices.Contains(out, p) {
-			out = append(out, p)
+	for _, p := range prompts {
+		names, ok := messageTests(p)
+		if !ok {
+			return nil
 		}
-	}
-	for _, m := range goTestArgsRe.FindAllStringSubmatch(prompt, -1) {
-		for _, a := range strings.Fields(m[1]) {
-			switch {
-			case a == "./..." || a == "...":
-				return nil
-			case strings.HasPrefix(a, "./") && insidePath(a):
-				add(strings.TrimSuffix(a, "/"))
+		for _, n := range names {
+			if !slices.Contains(out, n) {
+				out = append(out, n)
 			}
 		}
 	}
-	for _, w := range strings.Fields(prompt) {
-		if m := testModule(w); m != "" {
-			add(m)
-			continue
+	return out
+}
+
+// messageTests reads one message's test runs; ok false when it asks for the
+// whole, or names none.
+func messageTests(p string) (names []string, ok bool) {
+	if promptWholeRe.MatchString(strings.ToLower(p)) {
+		return nil, false
+	}
+	arg := func(a string) string {
+		a = strings.TrimRight(a, ",:;)!?")
+		if !strings.HasSuffix(a, "...") {
+			a = strings.TrimRight(a, ".")
 		}
-		w = strings.TrimRight(rawPath(strings.Trim(w, "`")), "/")
-		if strings.Contains(w, "/") && insidePath(w) && testName(w) {
-			add(w)
+		return a
+	}
+	whole := false
+	for _, m := range goTestArgsRe.FindAllStringSubmatch(p, -1) {
+		n := 0
+		for _, a := range strings.Fields(m[1]) {
+			a = arg(a)
+			if strings.HasPrefix(a, "-") || a == "./..." || a == "..." || a == "." || a == "./" {
+				whole = true
+				break
+			}
+			if !strings.HasPrefix(a, "./") || !insidePath(a) {
+				break
+			}
+			names = append(names, strings.TrimSuffix(a, "/"))
+			n++
+		}
+		whole = whole || n == 0
+	}
+	for _, re := range []*regexp.Regexp{unittestArgsRe, pytestArgsRe} {
+		for _, m := range re.FindAllStringSubmatch(p, -1) {
+			n := 0
+			for _, a := range strings.Fields(m[1]) {
+				a = arg(a)
+				if strings.HasPrefix(a, "-") || a == "discover" {
+					whole = true
+					break
+				}
+				t := promptTestName(a)
+				if t == "" {
+					break
+				}
+				names = append(names, t)
+				n++
+			}
+			whole = whole || n == 0
 		}
 	}
-	return out
+	for _, m := range runTargetRe.FindAllStringSubmatch(p, -1) {
+		if t := promptTestName(arg(m[1])); t != "" {
+			names = append(names, t)
+		}
+	}
+	if whole || len(names) == 0 {
+		return nil, false
+	}
+	return names, true
+}
+
+// promptTestName is a test module or file a message gives a runner, as a
+// workspace path; "" for any other word.
+func promptTestName(a string) string {
+	if m := testModule(a); m != "" {
+		return m
+	}
+	a = strings.TrimSuffix(strings.TrimPrefix(a, "./"), "/")
+	if insidePath(a) && testName(a) && (strings.Contains(a, "/") || strings.HasSuffix(a, ".py")) {
+		return a
+	}
+	return ""
+}
+
+var (
+	goNoTestsRe  = regexp.MustCompile(`\[no test files\]|\[no tests to run\]|testing: warning: no tests to run`)
+	goRanTestsRe = regexp.MustCompile(`(?m)^(?:ok\s+\S+\s+(?:[\d.]+s|\(cached\))(?:\s+coverage:[^\n]*)?\s*$|--- PASS|PASS$)`)
+	utNoTestsRe  = regexp.MustCompile(`\bRan 0 tests?\b|\bNO TESTS RAN\b`)
+	utAllSkipRe  = regexp.MustCompile(`\bRan (\d+) tests? in [^\n]*\n+\s*OK \(skipped=(\d+)\)`)
+	pyPassedRe   = regexp.MustCompile(`\b\d+ passed\b`)
+	pyNoneRe     = regexp.MustCompile(`\bno tests ran\b|\b\d+ (?:skipped|deselected)\b`)
+	cargoOKRe    = regexp.MustCompile(`test result: ok\. [1-9]\d* passed`)
+)
+
+// ranNothing reports a test run that passed without running a test: go
+// test with no test files or none matched, unittest's "Ran 0 tests" or every
+// test skipped, pytest with only skipped or deselected tests, cargo with
+// none passed. It shows no test passing.
+func ranNothing(o *obsRec) bool {
+	if len(o.line.final) == 0 {
+		return false
+	}
+	out := o.content
+	switch prog := filepath.Base(o.line.final[0]); {
+	case prog == "go":
+		return goNoTestsRe.MatchString(out) && !goRanTestsRe.MatchString(out)
+	case prog == "cargo":
+		return strings.Contains(out, "test result:") && !cargoOKRe.MatchString(out)
+	case prog == "pytest" || len(o.line.final) > 2 && o.line.final[2] == "pytest":
+		return !pyPassedRe.MatchString(out) && pyNoneRe.MatchString(out)
+	case len(o.line.final) > 2 && o.line.final[2] == "unittest":
+		if utNoTestsRe.MatchString(out) {
+			return true
+		}
+		m := utAllSkipRe.FindStringSubmatch(out)
+		return m != nil && m[1] == m[2]
+	}
+	return false
+}
+
+// packageShadows reports a unittest run given a dotted name part of which
+// is a package (tests.test_api, with tests/test_api/__init__.py): Python
+// imports the package, not tests/test_api.py, so the run is not read as
+// covering the file.
+func (ix *recordIndex) packageShadows(words []string, dir string) bool {
+	u, ok := parseUnittest(words)
+	if !ok || ix.readFile == nil {
+		return false
+	}
+	for _, n := range u.names {
+		if strings.Contains(n, "/") || strings.HasSuffix(n, ".py") {
+			continue
+		}
+		// Any part past the first that is a package (tests.test_api, with
+		// tests/test_api/__init__.py), or a lone name that is one, is what
+		// Python imports.
+		parts := strings.Split(n, ".")
+		for i := min(2, len(parts)); i <= len(parts); i++ {
+			if _, err := ix.readFile(filepath.Join(dir, filepath.Join(parts[:i]...), "__init__.py")); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }

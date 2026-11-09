@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -496,12 +498,12 @@ func revisionNote(av AnswerVerdict, tool bool, ix *recordIndex) string {
 			b.WriteString("…and more.\n")
 			break
 		}
-		fmt.Fprintf(&b, "- %s: %q — %s\n", c.Verdict, clipRunes(c.Text, 200), c.Reason)
+		fmt.Fprintf(&b, "- %s: %s — %s\n", c.Verdict, noteData(c.Text, 200), noteData(c.Reason, 400))
 	}
 	if c := av.Contract; c != nil && !c.OK {
 		for _, r := range c.Require {
 			if !r.OK {
-				fmt.Fprintf(&b, "- the completion check `%s` did not pass: %s\n", clipRunes(r.Command, 120), r.Reason)
+				fmt.Fprintf(&b, "- the completion check %s did not pass: %s\n", noteData(r.Command, 120), noteData(r.Reason, 400))
 			}
 		}
 		if len(c.Protected) > 0 {
@@ -520,6 +522,15 @@ func revisionNote(av AnswerVerdict, tool bool, ix *recordIndex) string {
 		"This is your one revision.")
 	return b.String()
 }
+
+// noteData is text for the revision note, quoted: clipped, every control
+// character escaped, and backticks written as \x60.
+func noteData(s string, n int) string {
+	return strings.ReplaceAll(strconv.Quote(clipRunes(s, n)), "`", `\x60`)
+}
+
+// toolNameRe is a tool name shown as it is.
+var toolNameRe = regexp.MustCompile(`^[A-Za-z0-9_.:\-]{1,64}$`)
 
 // maxCitable bounds the results a revision note lists.
 const maxCitable = 20
@@ -550,12 +561,18 @@ func citable(ix *recordIndex, tool bool) string {
 		own = own[len(own)-maxCitable:]
 	}
 	for _, o := range own {
+		// The command and path are the model's own text, shown as quoted
+		// data: no newline or backtick of theirs starts a line or a code
+		// span in a message sent with the person's role.
 		what := o.tool
+		if !toolNameRe.MatchString(what) {
+			what = noteData(what, 40)
+		}
 		switch {
 		case o.command != "":
-			what += " `" + clipRunes(oneLine(o.command), 80) + "`"
+			what += " " + noteData(o.command, 80)
 		case o.path != "":
-			what += " " + clipRunes(o.path, 80)
+			what += " " + noteData(o.path, 80)
 		}
 		if o.exit != nil {
 			what += fmt.Sprintf(", exit %d", *o.exit)

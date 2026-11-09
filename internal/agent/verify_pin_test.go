@@ -32,8 +32,9 @@ func caseHash(c CorpusCase) string {
 		Kind, Want, Text string
 		Claim            *Claim
 		Steps            []CorpusStep
-		Prompt           string `json:",omitempty"`
-	}{c.Kind, c.Want, c.Text, c.Claim, c.Steps, c.Prompt})
+		Prompt           string   `json:",omitempty"`
+		Later            []string `json:",omitempty"`
+	}{c.Kind, c.Want, c.Text, c.Claim, c.Steps, c.Prompt, c.Later})
 	return fmt.Sprintf("%x", sha256.Sum256(b))[:16]
 }
 

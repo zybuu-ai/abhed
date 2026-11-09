@@ -118,9 +118,14 @@ abhed -p "fix the failing tests; run go test ./..." -mode auto \
 With `json` or `stream-json`, the check is the `answer.verdict` event and
 the result line's `verdict`: `verdict.outcome` is `verified` or `unverified`,
 and `verdict.claims` lists each statement with its own `verdict` and
-`reason`, the unverified ones included. `-verify off`, or `verify.mode: off`
-in your own configuration, turns checking off. A managed `verify.mode` may
-only be made stricter. See [Verified answers](29-verified-answers.md).
+`reason`, the unverified ones included. Under `label` the answer itself can
+change: a contradicted statement gets the agent's one revision, and the
+revised answer is the `result`. `-verify off`, or `verify.mode: off` in
+your own configuration, turns checking off; the flag also lowers a trusted
+workspace's `verify.mode`. A managed `verify.mode` may only be made
+stricter. The Go SDK checks nothing unless asked, through 1.x: set
+`Options.Verify`, or `Options.VerifyByDefault: true` to label as `-p` does.
+See [Verified answers](29-verified-answers.md).
 
 ### Runbooks
 

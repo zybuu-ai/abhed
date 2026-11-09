@@ -198,7 +198,11 @@ type Options struct {
 	// Reason is unverified. Verdict reports the last check.
 	Verify string
 	// VerifyByDefault labels answers when neither Verify nor verify.mode
-	// says otherwise, as the terminal does where a person reads the answer.
+	// says otherwise, as the terminal, abhed -p, abhed rpc and the server do.
+	// Unset, the SDK checks nothing unless asked: through 1.x an embedder's
+	// Run is not given a revision turn, or a changed answer, it did not ask
+	// for. Under label, a contradicted statement gets one revision turn (one
+	// more model call), and Run returns the revised answer.
 	VerifyByDefault bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
