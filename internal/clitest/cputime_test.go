@@ -2,6 +2,7 @@ package clitest
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -22,18 +23,38 @@ func TestParsePSTime(t *testing.T) {
 	}
 }
 
-// This process's own CPU time reads, and grows with work.
+// A process the harness started has its CPU time read, and it grows with
+// work. A child, as the harness measures: an emulator such as qemu-user
+// writes its own /proc/self/stat, with no CPU time, but not its children's.
 func TestProcessCPU(t *testing.T) {
-	before, err := processCPU(os.Getpid())
+	if os.Getenv("ABHED_CPU_BUSY") != "" {
+		x := 0
+		for end := time.Now().Add(400 * time.Millisecond); time.Now().Before(end); {
+			x++
+		}
+		time.Sleep(5 * time.Second)
+		if x < 0 {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessCPU$") // #nosec G204 -- the test binary
+	cmd.Env = append(os.Environ(), "ABHED_CPU_BUSY=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	before, err := processCPU(cmd.Process.Pid)
 	if err != nil {
 		t.Skipf("no CPU time here: %v", err)
 	}
-	x := 0
-	for end := time.Now().Add(150 * time.Millisecond); time.Now().Before(end); {
-		x++
+	var after time.Duration
+	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if after, err = processCPU(cmd.Process.Pid); err != nil || after > before {
+			break
+		}
 	}
-	after, err := processCPU(os.Getpid())
-	if err != nil || after <= before || x == 0 {
+	if err != nil || after <= before {
 		t.Fatalf("before %v after %v: %v", before, after, err)
 	}
 }
