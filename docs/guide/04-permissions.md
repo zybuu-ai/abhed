@@ -149,11 +149,25 @@ directory is recorded as `workspace.dir_added` with its access.
 
 `limits.max_turns` bounds how many turns the agent takes. In the interactive
 CLI it applies to each message you send, so a long conversation does not run
-out for good: a message that reaches it stops with "send "continue" to let it
-go on". Where the managed configuration sets `limits.max_turns`, it bounds
-the whole conversation instead, as the organisation wrote it, and `/clear`
-starts a new one. `/mode` says which applies. Headless runs and the server
-count the whole conversation.
+out for good. Where the managed configuration sets `limits.max_turns`, it
+bounds the whole conversation instead, as the organisation wrote it, and
+`/clear` starts a new one. `/mode` says which applies. Headless runs and the
+server count the whole conversation.
+
+A run that stops at the limit can be continued where it stopped:
+
+- `/continue` at the terminal's prompt
+- `abhed -p --continue` (or `-p -r <session>`) with no task
+
+Each continuation gives the run its allowance of turns again: a message's
+allowance at the terminal, or the run's `max_turns` for `-p`. It is recorded
+first as `turns.extended`, with the old and new limit and its number in the
+conversation. `limits.max_continues` (3 by default; 0 turns it off) bounds
+how many times one conversation may be continued, counted from its record,
+so separate `-p --continue` runs share the bound. A layer below the managed
+file may only lower it. Where the managed configuration sets
+`limits.max_turns` and not `limits.max_continues`, no continuation is
+allowed, so the organisation's limit holds for the whole conversation.
 
 ## Rules
 

@@ -249,8 +249,14 @@ type Config struct {
 	// MaxTurns is moved to the turns used plus it. Zero keeps MaxTurns for
 	// the whole conversation, as a managed limit must be.
 	TurnsPerMessage int
-	MaxTokens       int
-	CompactAt       float64 // fraction of the context window
+	// MaxContinues bounds how many times a run stopped at MaxTurns may be
+	// continued (ContinueAfterLimit) in one conversation; zero refuses it.
+	MaxContinues int
+	// ContinueTurns is the turns each continuation allows; zero uses
+	// TurnsPerMessage, else 25.
+	ContinueTurns int
+	MaxTokens     int
+	CompactAt     float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -267,6 +273,10 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
+	// lastReason is how the last run ended; continues counts the
+	// continuations past MaxTurns this conversation has had.
+	lastReason TerminalReason
+	continues  int
 	// refused is why a hook refused the last RunMessage's own message, or "".
 	refusedMu sync.Mutex
 	refused   string
@@ -2222,6 +2232,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	l.stuckDetail = ""
 	end := l.endPayload(reason)
 	l.lastDetail = end.Detail
+	l.lastReason = reason
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
 	l.observe(context.Background(), HookTurnEnd, "", string(reason))

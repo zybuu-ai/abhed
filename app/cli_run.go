@@ -358,8 +358,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 			return 2
 		}
 		if prompt == "" && o.inputs == nil {
-			fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
-			return 2
+			if !startFlags.resuming() {
+				fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
+				return 2
+			}
+			// -p --continue with no task goes on with a run that stopped at its turn limit.
+			o.continueLimit = true
 		}
 		return headlessExit(runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions), closeAll)
 	}

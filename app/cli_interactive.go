@@ -552,6 +552,29 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			ft.cycleMode(sessionState, pol)
 			continue
 		}
+		if strings.TrimSpace(line) == "/continue" {
+			// A run that stopped at its turn limit goes on, recorded and bounded.
+			if sessionState.loop == nil {
+				fmt.Printf("  %s\n", s.Dim("nothing to continue yet"))
+				continue
+			}
+			var refused error
+			cont := func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				reason, err := loop.ContinueAfterLimit(ctx, "tui")
+				if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+					refused = err
+					return agent.TermCompleted, nil
+				}
+				return reason, err
+			}
+			if code, quit := runTurn(cont); quit {
+				return code
+			}
+			if refused != nil {
+				fmt.Printf("  %s %v\n", s.Red("✕"), refused)
+			}
+			continue
+		}
 		if isCommandLine(line) {
 			if quit := dispatchLine(ctx, line, r, pol, sess, sessionState); quit {
 				return 0

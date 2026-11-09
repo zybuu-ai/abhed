@@ -35,6 +35,16 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- Continuing a run that stopped at its turn limit: `/continue` at the
+  terminal, and `abhed -p --continue` (or `-p -r <session>`) with no task.
+  Each continuation gives the run its allowance of turns again, is recorded
+  first as `turns.extended`, and is bounded by `limits.max_continues`
+  (3 by default, 0 for none) for the whole conversation, counted from its
+  record. A managed `limits.max_turns` without a managed `max_continues`
+  allows none ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of

@@ -147,6 +147,11 @@ refused.
 `nested_subagents` is a boolean, off by default: while it is off, a subagent
 cannot start one of its own, and its `task` or `tasks` call is refused.
 
+`max_continues` (3 by default) is how many times a person may continue a run
+that stopped at `max_turns` in one conversation, with `/continue` or
+`abhed -p --continue`; 0 turns continuing off. See [Turn
+limit](04-permissions.md#turn-limit).
+
 `max_budget_tokens` caps the whole session: the primary agent and every
 subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason

@@ -148,6 +148,7 @@ var orgRules = map[string]orgRule{
 	"limits.nested_subagents":         {orgTighten, ""},
 	"limits.max_background_subagents": {orgTighten, ""},
 	"limits.background_shells":        {orgTighten, ""},
+	"limits.max_continues":            {orgTighten, ""},
 	"limits.background_max_minutes":   {orgTighten, ""},
 	"subagents.wake":                  {orgTighten, ""},
 	"subagents.max_wakes_per_hour":    {orgTighten, ""},

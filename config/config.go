@@ -1667,6 +1667,20 @@ type LimitsConfig struct {
 	// BackgroundShells bounds a session's commands run with run_in_background
 	// at once. Zero allows none. Default 4.
 	BackgroundShells int `json:"background_shells"`
+	// MaxContinues bounds how many times a person may continue a run that
+	// stopped at max_turns in one conversation (/continue, -p --continue).
+	// Zero allows none. Default 3.
+	MaxContinues int `json:"max_continues"`
+}
+
+// ContinuesAllowed is the bound on continuing a run past its turn limit. A
+// managed limits.max_turns binds the whole conversation, so unless the
+// managed file also sets limits.max_continues, none is allowed.
+func (c Config) ContinuesAllowed() int {
+	if c.ManagedSets("limits.max_turns") && !c.ManagedSets("limits.max_continues") {
+		return 0
+	}
+	return max(c.Limits.MaxContinues, 0)
 }
 
 // SubagentsConfig is what a background subagent's result does when it
@@ -1746,7 +1760,7 @@ func Default() Config {
 		Limits: LimitsConfig{
 			MaxTurns: 100, MaxTokens: 8192, MaxBudgetTokens: 0,
 			MaxSubagents: 20, NestedSubagents: false,
-			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
+			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60, MaxContinues: 3,
 			BackgroundShells: 4,
 		},
 		Subagents: SubagentsConfig{Wake: "auto", MaxWakesPerHour: 4, WakeMaxTurns: 8},
