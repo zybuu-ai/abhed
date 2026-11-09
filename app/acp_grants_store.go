@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,7 +137,7 @@ func changeKeptGrants(change func(*keptGrants) bool) error {
 func keptFor(workspace string) *keptWorkspace {
 	k, _ := readKeptGrants()
 	w := k.Workspaces[grantsKey(workspace)]
-	if w == nil || w.Folder != "" && w.Folder != folderID(workspace) {
+	if w == nil || w.Folder != "" && !sameFolder(w.Folder, folderID(workspace)) {
 		return nil
 	}
 	return w
@@ -164,13 +165,14 @@ func setListenAgreed(workspace string, on bool) error {
 	key, folder := grantsKey(workspace), folderID(workspace)
 	return changeKeptGrants(func(k *keptGrants) bool {
 		w := k.Workspaces[key]
-		if w == nil || w.Folder != folder {
+		if w == nil || !sameFolder(w.Folder, folder) {
 			if !on {
 				return false
 			}
 			w = &keptWorkspace{Folder: folder}
 			k.Workspaces[key] = w
 		}
+		w.Folder = folder
 		if on {
 			now := time.Now().UTC()
 			w.ListenAgreedAt = &now
@@ -198,11 +200,12 @@ func keepGrant(workspace string, g bashGrant) error {
 	key, folder := grantsKey(workspace), folderID(workspace)
 	return changeKeptGrants(func(k *keptGrants) bool {
 		w := k.Workspaces[key]
-		if w == nil || w.Folder != folder {
+		if w == nil || !sameFolder(w.Folder, folder) {
 			// A folder made again at the path keeps nothing of the old one's.
 			w = &keptWorkspace{Folder: folder}
 			k.Workspaces[key] = w
 		}
+		w.Folder = folder
 		if slices.ContainsFunc(w.Grants, func(have keptGrant) bool { return have.bashGrant == g }) {
 			return false
 		}
@@ -382,4 +385,14 @@ func (c *acpConn) grantsRevoke(msg rpcMessage) {
 	}
 	s.record(agent.EvPermissionChanged, agent.PermissionChanged{Op: "remove", List: "allow", Rule: g.scopeOf(), Scope: "workspace", By: agent.ByUser})
 	c.reply(msg.ID, map[string]any{"revoked": p.ID, "scope": g.scopeOf()}, nil)
+}
+
+// sameFolder reports whether a folder identity kept with grants is the
+// folder's now. One kept before birth times were (device and inode alone)
+// matches on those, so grants kept then are not lost.
+func sameFolder(kept, now string) bool {
+	if kept == now {
+		return true
+	}
+	return strings.Count(kept, ":") == 1 && strings.HasPrefix(now, kept+":")
 }
