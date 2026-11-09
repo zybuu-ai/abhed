@@ -103,8 +103,12 @@ func TestTurnLimitFollowsTheManagedConfiguration(t *testing.T) {
 		!strings.Contains(turnLimitSummary(own, 30), "30 for each message") {
 		t.Fatal("the summary does not say which limit applies")
 	}
-	if !strings.Contains(turnLimitNote(managed, 30), "/clear starts a new one") || !strings.Contains(turnLimitNote(own, 30), "continue") {
+	if !strings.Contains(turnLimitNote(managed, 30, 0), "/clear starts a new one") || !strings.Contains(turnLimitNote(own, 30, 2), "/continue") ||
+		!strings.Contains(turnLimitNote(managed, 30, 1), "/continue") {
 		t.Fatal("the end note does not say how to go on")
+	}
+	if strings.Contains(turnLimitNote(own, 30, 0), "/continue") {
+		t.Fatal("/continue offered once the bound is spent")
 	}
 }
 

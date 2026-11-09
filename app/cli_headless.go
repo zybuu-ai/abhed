@@ -478,7 +478,7 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		cfg.ContinueTurns = cfg.MaxTurns // a continuation gets the run's own allowance again
 	}
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
-	loop.SubdirMemory = subdirMemory(pol, sess.Root)
+	loop.SubdirMemory = subdirMemory(appCfg, pol, sess.Root)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
 	// contract gates an answer, which a structured run does not give.
@@ -495,6 +495,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	var before []agent.Event
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
+	}
+	if o.continueLimit {
+		// Checked before the start is recorded: nothing to continue leaves no trace.
+		loop.NoteContinues(before)
+		if err := loop.CanContinue(); err != nil {
+			store.Unsubscribe(sessionID, events)
+			<-done
+			fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+			return 2
+		}
 	}
 	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.grants, o.fence); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -554,15 +564,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		runOne(prompt)
 	}
 	if o.continueLimit {
-		loop.NoteContinues(before)
 		ran = true
 		reason, err = loop.ContinueAfterLimit(ctx, "print")
-		if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
-			store.Unsubscribe(sessionID, events)
-			<-done
-			fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
-			return 2
-		}
 	}
 	// The next message is awaited alongside a stop signal: stdin may stay
 	// open for as long as the caller likes. Reading stops after a failure.

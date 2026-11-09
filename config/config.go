@@ -128,6 +128,9 @@ type Config struct {
 	modeChosen bool
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
+	// Bare is a run that keeps, of memory, rules, skills and extensions,
+	// only what the organisation sets (-bare).
+	Bare bool `json:"-"`
 	// SetAside are settings a file made that its layer may not make, such
 	// as a managed-only key in the user's file; each was left out.
 	SetAside []SetAsideKey `json:"-"`

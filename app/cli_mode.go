@@ -289,13 +289,21 @@ func slashContinue(_ context.Context, e *cmdEnv, _ []string) (bool, error) {
 	return false, nil
 }
 
-// turnLimitNote is said when a run stops at the turn limit.
-func turnLimitNote(cfg config.Config, maxTurns int) string {
+// turnLimitNote is said when a run stops at the turn limit; left is how many
+// more times the conversation may be continued.
+func turnLimitNote(cfg config.Config, maxTurns, left int) string {
+	more := ""
+	if left > 0 {
+		more = fmt.Sprintf("; /continue lets it go on (%d more time%s in this conversation)", left, plural(left))
+	}
 	if turnsPerMessage(cfg, maxTurns) > 0 {
-		if n := cfg.ContinuesAllowed(); n > 0 {
-			return fmt.Sprintf("stopped after %d turns for this message; /continue lets it go on (at most %d times in a conversation)", maxTurns, n)
+		if more != "" {
+			return fmt.Sprintf("stopped after %d turns for this message%s", maxTurns, more)
 		}
 		return fmt.Sprintf("stopped after %d turns for this message; send another message to go on", maxTurns)
+	}
+	if more != "" {
+		return fmt.Sprintf("the managed configuration allows %d turns for the whole conversation%s", maxTurns, more)
 	}
 	return fmt.Sprintf("the managed configuration allows %d turns for the whole conversation; /clear starts a new one", maxTurns)
 }

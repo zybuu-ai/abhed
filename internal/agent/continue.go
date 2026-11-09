@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/model"
 )
@@ -64,40 +65,74 @@ func (l *Loop) NoteContinues(events []Event) {
 // ContinueAfterLimit goes on with a run that stopped at its turn limit: the
 // limit moves up by ContinueTurns, the continuation is recorded first, and
 // the run resumes where it stopped. It is bounded by MaxContinues for the
-// conversation, and refused where that is zero.
-func (l *Loop) ContinueAfterLimit(ctx context.Context, surface string) (TerminalReason, error) {
+// conversation, and refused where that is zero. The message that resumes it
+// is the person's, so it goes through what RunMessage does: queued messages
+// first, the prompt hooks, and a fresh start for the repeat guards.
+func (l *Loop) ContinueAfterLimit(ctx context.Context, surface string) (_ TerminalReason, err error) {
+	defer func() { err = l.redactErr(err) }()
 	l.StopSuggestion()
 	l.runMu.Lock()
 	defer l.unlockRun()
-	if l.lastReason != TermMaxTurns {
-		return TermError, ErrNothingToContinue
+	if err := l.canContinue(); err != nil {
+		return TermError, err
 	}
-	if l.Config.MaxContinues <= 0 {
-		return TermError, fmt.Errorf("%w: the turn limit binds the whole conversation", ErrContinueRefused)
+	// The model is told plainly to go on, as the person asked.
+	const text = "Continue where you stopped."
+	if _, err := l.deliverQueuedCount(); err != nil {
+		return TermError, err
 	}
-	if l.continues >= l.Config.MaxContinues {
-		return TermError, fmt.Errorf("%w: this conversation has been continued %d times, the most limits.max_continues allows", ErrContinueRefused, l.continues)
+	l.setRefused("")
+	if why := l.promptRefused(ctx, text); why != "" {
+		l.record(EvMessageDropped, ActorSystem, DroppedMessage{Text: text, QueuedAt: time.Now(), Reason: why})
+		l.setRefused(why)
+		return TermPromptRefused, nil
 	}
-	n := l.Config.ContinueTurns
-	if n <= 0 {
-		n = l.Config.TurnsPerMessage
-	}
-	if n <= 0 {
-		n = 25
-	}
-	ext := TurnsExtended{From: l.Config.MaxTurns, To: l.turns + n, Count: l.continues + 1, Max: l.Config.MaxContinues,
+	ext := TurnsExtended{From: l.Config.MaxTurns, To: l.turns + l.continueTurns(), Count: l.continues + 1, Max: l.Config.MaxContinues,
 		By: "user", Surface: surface}
 	if _, err := l.Recorder.Record(EvTurnsExtended, ActorUser, Trusted, ext); err != nil {
 		return TermError, fmt.Errorf("not continued: the continuation could not be recorded: %w", err)
 	}
 	l.continues++
-	l.Config.MaxTurns = ext.To
 	l.lastReason = ""
-	// The model is told plainly to go on, as the person asked.
-	const text = "Continue where you stopped."
 	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text}); err != nil {
 		return TermError, err
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+	l.noteSaid(text, false)
+	l.setPrompt(text)
+	l.startMessage()
+	l.Config.MaxTurns = ext.To
 	return l.run(ctx)
+}
+
+// CanContinue reports why ContinueAfterLimit would refuse now, or nil.
+func (l *Loop) CanContinue() error {
+	l.runMu.Lock()
+	defer l.runMu.Unlock()
+	return l.canContinue()
+}
+
+func (l *Loop) canContinue() error {
+	if l.lastReason != TermMaxTurns {
+		return ErrNothingToContinue
+	}
+	if l.Config.MaxContinues <= 0 {
+		return fmt.Errorf("%w: the turn limit binds the whole conversation", ErrContinueRefused)
+	}
+	if l.continues >= l.Config.MaxContinues {
+		return fmt.Errorf("%w: this conversation has been continued %d times, the most limits.max_continues allows", ErrContinueRefused, l.continues)
+	}
+	return nil
+}
+
+// continueTurns is how many turns a continuation gives: ContinueTurns,
+// else TurnsPerMessage, else 25.
+func (l *Loop) continueTurns() int {
+	if n := l.Config.ContinueTurns; n > 0 {
+		return n
+	}
+	if n := l.Config.TurnsPerMessage; n > 0 {
+		return n
+	}
+	return 25
 }

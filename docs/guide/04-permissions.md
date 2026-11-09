@@ -157,10 +157,15 @@ server count the whole conversation.
 A run that stops at the limit can be continued where it stopped:
 
 - `/continue` at the terminal's prompt
-- `abhed -p --continue` (or `-p -r <session>`) with no task
+- `abhed -p --continue` (or `-p -r <session>`) with no task; with nothing to continue it exits 2 before
+  anything is recorded
 
 Each continuation gives the run its allowance of turns again: a message's
-allowance at the terminal, or the run's `max_turns` for `-p`. It is recorded
+allowance at the terminal, or the run's `max_turns` for `-p`. Where the
+managed limit binds the whole conversation and a managed
+`limits.max_continues` allows continuing, `/continue` gives 25 more turns.
+The note when a run stops offers `/continue` only while the conversation has
+continuations left, and says how many. It is recorded
 first as `turns.extended`, with the old and new limit and its number in the
 conversation. `limits.max_continues` (3 by default; 0 turns it off) bounds
 how many times one conversation may be continued, counted from its record,

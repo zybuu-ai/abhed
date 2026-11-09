@@ -288,13 +288,11 @@ func recordRunFlags(start map[string]any, cfg config.Config, mcp []flagSource, s
 	}
 }
 
-// bareRun is set for -bare: the session's memory is the organisation's alone.
-var bareRun bool
-
-// bareConfig is cfg for -bare: only the extensions the managed configuration
-// names stay, and auto memory is off unless the managed file turns it on.
-// It only takes away; the organisation's extensions and memory are kept.
+// bareConfig is cfg for -bare: of extensions, rule and skill directories
+// and auto memory, only what the managed configuration sets stays. It only
+// takes away; the organisation's are kept.
 func bareConfig(cfg config.Config) config.Config {
+	cfg.Bare = true
 	var kept []config.ExtensionConfig
 	for _, e := range cfg.Extensions {
 		if cfg.ExtensionLayer(e.Name) == config.LayerManaged {
@@ -305,19 +303,24 @@ func bareConfig(cfg config.Config) config.Config {
 	if !cfg.ManagedSets("memory.auto") {
 		cfg.Memory.Auto = false
 	}
+	// The organisation's rule and skill directories stay; nothing else does.
+	if !cfg.ManagedSets("rules.dirs") {
+		cfg.Rules.Dirs = nil
+	}
+	if !cfg.ManagedSets("skills.dirs") {
+		cfg.Skills.Dirs, cfg.Skills.Disabled = nil, true
+	}
 	return cfg
 }
 
-// runParts is the tool set a run takes: all of it, or under -bare no skills.
-func runParts(bare bool) toolset.Part {
-	if bare {
-		return toolset.All &^ toolset.Skills
-	}
-	return toolset.All
-}
+// harnessTools are the loop's own tools, which every session keeps whatever
+// -tools names: recall reads the session's own record, exit_plan ends plan mode.
+var harnessTools = []string{"recall", "exit_plan"}
 
-// toolsOnly keeps the named tools and no others; a name the session lacks refuses.
+// toolsOnly keeps the named tools and no others; a name the session lacks
+// refuses. The harness's own tools may be named and are kept anyway.
 func toolsOnly(reg *tools.Registry, names []string) (*tools.Registry, error) {
+	names = slices.DeleteFunc(slices.Clone(names), func(n string) bool { return slices.Contains(harnessTools, n) })
 	sub, missing := reg.SubsetStrict(names)
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("this session has no tool %s; it has %s", strings.Join(missing, ", "), strings.Join(reg.Names(), ", "))

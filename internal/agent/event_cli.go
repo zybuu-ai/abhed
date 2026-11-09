@@ -193,11 +193,15 @@ type MemoryFile struct {
 	Path   string `json:"path"`
 	Scope  string `json:"scope"` // managed, user, project, local, subdirectory or rule
 	SHA256 string `json:"sha256"`
+	// Skipped is why a folder's file was not loaded: a read rule, say.
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // MemoryLoaded is the payload of memory.loaded.
 type MemoryLoaded struct {
 	Files []MemoryFile `json:"files"`
+	// Note says when folder memory stopped loading at its bound.
+	Note string `json:"note,omitempty"`
 }
 
 // MemoryWritten is the payload of memory.written.

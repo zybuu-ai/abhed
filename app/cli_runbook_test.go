@@ -24,7 +24,8 @@ import (
 func TestCLIRunbookPlan(t *testing.T) {
 	var ws atomic.Value
 	path := func(name string) string { return strconv.Quote(filepath.Join(ws.Load().(string), name)) }
-	c := startCLIWith(t, func(w io.Writer, n int, _ string) {
+	// A window with room for the prompt and the plan, so no compaction takes a scripted reply.
+	c := startCLIConfig(t, func(w io.Writer, n int, _ string) {
 		switch n {
 		case 1:
 			rb, _ := json.Marshal([]map[string]any{
@@ -39,6 +40,8 @@ func TestCLIRunbookPlan(t *testing.T) {
 		default:
 			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 		}
+	}, func(url string) string {
+		return `{"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` + url + `","model":"m","context_window":16384}}}}`
 	})
 	ws.Store(c.ws)
 	c.command("/mode plan", "mode: plan")

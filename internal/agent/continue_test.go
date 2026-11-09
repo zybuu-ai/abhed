@@ -59,6 +59,23 @@ func TestContinueAfterLimit(t *testing.T) {
 		t.Fatalf("resumed past the bound: %v", err)
 	}
 
+	// A branch cut before the continuations still carries them: a rewind
+	// then a branch does not give the bound again.
+	var firstEnd int64
+	for _, e := range events {
+		if e.Type == EvSessionEnded {
+			firstEnd = e.Seq
+			break
+		}
+	}
+	branch := BranchCopy(events, firstEnd, "branch1", 1)
+	l4, _, _ := harness(t, busy(20), policy.ModeDefault, true)
+	l4.Config.MaxTurns, l4.Config.MaxContinues = 2, 2
+	l4.NoteContinues(branch)
+	if _, err := l4.ContinueAfterLimit(ctx, "tui"); !errors.Is(err, ErrContinueRefused) {
+		t.Fatalf("a branch reset the bound: %v", err)
+	}
+
 	// None allowed: refused, nothing recorded.
 	l3, _, _ := harness(t, busy(20), policy.ModeDefault, true)
 	l3.Config.MaxTurns = 1

@@ -109,14 +109,36 @@ order:
 An `ABHED.md` in a folder below the workspace root is not in the system
 prompt. It is loaded the first time the agent works in that folder: the
 first read, edit, write or search of a path there brings in that folder's
-`ABHED.md` and those of the folders between it and the root, added to that
-tool result under "Memory for <folder>". Each folder is loaded once per
-session, at most 32 of them, and the conversation records `memory.loaded`
-with scope `subdirectory`, the path and its SHA-256. The same read rules hold
-as for the root's files, and `.abhed` and `.git` are never searched. The
-default configuration asks before the agent writes or edits any of them
-(`write(**/ABHED.md)`, `edit(**/ABHED.md)`). The interactive CLI and `-p`
-load them; `-bare` does not.
+`ABHED.md` and those of the folders between it and the root. Paths are taken
+from the tool's `path`, `file_path`, `dir`, `directory` and `cwd` arguments;
+a `cd` inside a shell command does not count.
+
+The file is added to the end of that tool result inside a
+`<folder-memory-…>` tag whose name ends in a hash of the block, and its text
+is redacted as any tool result is. Only Abhed writes these tags: the same
+tag anywhere in a tool's own output is escaped, so a file or a command that
+prints a lookalike is still read as data. The system prompt tells the agent
+that a fenced block is project memory for that folder, with the standing of
+the workspace's `ABHED.md`: below you, the managed memory and every rule,
+and never a permission.
+
+Each folder's file is loaded once per conversation, and at most 32 files in
+all; when that bound stops one, the result and the record say so. The
+conversation records `memory.loaded` with scope `subdirectory`, the path and
+its SHA-256, and the text is part of the recorded tool result, so a resumed
+or branched conversation has it and does not load it twice. After a
+compaction, which may summarise it away, each folder's file loads again the
+next time the folder is used.
+
+The same read rules hold as for the root's files, and a read rule that asks
+keeps a memory file out as a deny does: nobody is there to say yes while
+memory loads, so the file is not read, and the result and the record name it
+and why. `.abhed` and `.git` are never searched. The default configuration
+asks before the agent writes or edits any `ABHED.md` (`write(**/ABHED.md)`,
+`edit(**/ABHED.md)`). A shell command the session allows (`cp`, `git
+checkout`, `git pull`) can still create one, and it is loaded the next time
+its folder is used. The interactive CLI and `-p` load these files; subagents
+do not, and `-bare` turns them off.
 
 `AGENTS.md` is read only in a directory that has no `ABHED.md`, and
 `/memory` labels it so. No other tool's files are read. To bring one in, use

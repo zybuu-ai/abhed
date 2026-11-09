@@ -662,6 +662,7 @@ func seeded(es server.EventStore, id string) (string, func(*agent.Loop), error) 
 		loop.SetHistory(msgs, end.Turns)
 		loop.CarryUsage(end)
 		loop.NoteContinues(events) // the bound on continuing holds across processes
+		loop.NoteFolderMemory(events)
 		loop.Budget.Carry(agent.CarriedSpend(events))
 	}, nil
 }

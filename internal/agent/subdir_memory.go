@@ -25,18 +25,30 @@ type SubdirMemory struct {
 	// ask of the workspace's other memory files.
 	Allow func(path string) error
 
-	mu   sync.Mutex
-	seen map[string]bool
+	mu     sync.Mutex
+	seen   map[string]bool
+	loaded int
+	capped bool
 }
 
-// maxSubdirMemory bounds how many folders' files one session loads.
-const maxSubdirMemory = 32
+// maxSubdirMemory bounds how many folders' files one session loads, and
+// maxSubdirSeen how many folders it remembers having looked in.
+const (
+	maxSubdirMemory = 32
+	maxSubdirSeen   = 4096
+)
+
+// FolderMemoryTag is how a folder's memory is fenced in a tool result: the
+// tag ends in a hash of the block, and the same tag in any tool's own output
+// is escaped, so only Abhed can open one.
+const FolderMemoryTag = "folder-memory-"
 
 // discover returns the memory files of the folders paths lie in that were not
-// loaded before, nearest last, so the most specific is read last.
-func (m *SubdirMemory) discover(paths []string) []MemoryEntry {
+// looked in before, nearest last, so the most specific is read last; capped
+// is set the first time the bound stops one loading.
+func (m *SubdirMemory) discover(paths []string) (out []MemoryEntry, capped bool) {
 	if m == nil || m.Workspace == "" {
-		return nil
+		return nil, false
 	}
 	root := filepath.Clean(m.Workspace)
 	m.mu.Lock()
@@ -44,7 +56,6 @@ func (m *SubdirMemory) discover(paths []string) []MemoryEntry {
 	if m.seen == nil {
 		m.seen = map[string]bool{}
 	}
-	var out []MemoryEntry
 	for _, p := range paths {
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(root, p)
@@ -64,14 +75,21 @@ func (m *SubdirMemory) discover(paths []string) []MemoryEntry {
 		}
 		for i := len(chain) - 1; i >= 0; i-- {
 			d := chain[i]
-			if m.seen[d] || len(m.seen) >= maxSubdirMemory || inStateFolder(root, d) {
+			if m.seen[d] || len(m.seen) >= maxSubdirSeen || inStateFolder(root, d) {
 				continue
 			}
-			m.seen[d] = true
 			f := filepath.Join(d, MemoryFileName)
 			if !existsAsNamed(f) {
+				m.seen[d] = true
 				continue
 			}
+			if m.loaded >= maxSubdirMemory {
+				if !m.capped {
+					m.capped, capped = true, true
+				}
+				continue // left unseen: a later session may load it
+			}
+			m.seen[d] = true
 			label, _ := filepath.Rel(root, f)
 			e := MemoryEntry{Path: f, Scope: MemorySubdir, Label: filepath.ToSlash(label)}
 			if m.Allow != nil {
@@ -87,12 +105,37 @@ func (m *SubdirMemory) discover(paths []string) []MemoryEntry {
 				out = append(out, e)
 				continue
 			}
+			m.loaded++
 			sum := sha256.Sum256(data)
 			e.SHA256, e.Content = hex.EncodeToString(sum[:]), strings.TrimSpace(string(data))
 			out = append(out, e)
 		}
 	}
-	return out
+	return out, capped
+}
+
+// note marks folders whose memory the conversation already holds.
+func (m *SubdirMemory) note(labels []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seen == nil {
+		m.seen = map[string]bool{}
+	}
+	for _, l := range labels {
+		m.seen[filepath.Dir(filepath.Join(filepath.Clean(m.Workspace), filepath.FromSlash(l)))] = true
+		m.loaded++
+	}
+}
+
+// forget is compaction: what was loaded may be gone from the conversation,
+// so each folder's memory loads again the next time it is used.
+func (m *SubdirMemory) forget() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.seen, m.loaded, m.capped = nil, 0, false
+	m.mu.Unlock()
 }
 
 // callPaths are the paths a tool call names, as its arguments give them.
@@ -110,40 +153,88 @@ func callPaths(call model.ToolCall) []string {
 	return out
 }
 
-// attachSubdirMemory adds, to the result of the first call that touched a
-// folder, that folder's ABHED.md, and records which files were loaded.
-func (l *Loop) attachSubdirMemory(calls []model.ToolCall, results []callOutcome) {
+// escapeFolderFence escapes every folder memory tag in tool output,
+// wherever on its line, so none can pass for the fence.
+func escapeFolderFence(s string) string {
+	if !strings.Contains(s, FolderMemoryTag) {
+		return s
+	}
+	s = strings.ReplaceAll(s, "</"+FolderMemoryTag, "\\</"+FolderMemoryTag)
+	return strings.ReplaceAll(s, "<"+FolderMemoryTag, "\\<"+FolderMemoryTag)
+}
+
+// folderMemory is what a tool result gains for the folders call used: each
+// folder's ABHED.md fenced and redacted, and a note of any not loaded. The
+// loads are recorded as memory.loaded.
+func (l *Loop) folderMemory(call model.ToolCall) string {
+	var paths []string
+	for _, p := range callPaths(call) {
+		if !filepath.IsAbs(p) && l.Session != nil {
+			p = filepath.Join(l.Session.WorkDir(), p)
+		}
+		paths = append(paths, p)
+	}
+	entries, capped := l.SubdirMemory.discover(paths)
+	var b strings.Builder
+	var files []MemoryFile
+	for _, e := range entries {
+		if e.Skipped != "" {
+			fmt.Fprintf(&b, "\n\n[%s was not loaded as memory: %s]", e.Label, e.Skipped)
+			files = append(files, MemoryFile{Path: e.Label, Scope: MemorySubdir, Skipped: e.Skipped})
+			continue
+		}
+		body := escapeFolderFence(e.Content)
+		sum := sha256.Sum256([]byte(body))
+		tag := FolderMemoryTag + hex.EncodeToString(sum[:6])
+		fmt.Fprintf(&b, "\n\n<%s path=%q>\n%s\n</%s>", tag, e.Label, body, tag)
+		files = append(files, MemoryFile{Path: e.Label, Scope: MemorySubdir, SHA256: e.SHA256})
+	}
+	var note string
+	if capped {
+		note = fmt.Sprintf("this session has loaded %d folders' memory, the most it loads; later folders' ABHED.md are not loaded", maxSubdirMemory)
+		fmt.Fprintf(&b, "\n\n[%s]", note)
+	}
+	if len(files) > 0 || note != "" {
+		l.record(EvMemoryLoaded, ActorSystem, MemoryLoaded{Files: files, Note: note})
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	// A secret in the file is stripped as in any tool result; a redactor
+	// that fails withholds the block.
+	if red := l.Recorder.redactor(); red != nil {
+		return redactedText(red.Redact, b.String())
+	}
+	return b.String()
+}
+
+// NoteFolderMemory marks the folders whose memory a resumed or branched
+// conversation holds since its last compaction, so it is not loaded twice.
+func (l *Loop) NoteFolderMemory(events []Event) {
 	if l.SubdirMemory == nil {
 		return
 	}
-	var files []MemoryFile
-	for i, call := range calls {
-		if i >= len(results) || !results[i].set || results[i].result.IsError {
-			continue
-		}
-		var paths []string
-		for _, p := range callPaths(call) {
-			if !filepath.IsAbs(p) && l.Session != nil {
-				p = filepath.Join(l.Session.WorkDir(), p)
+	var labels []string
+	for _, e := range Live(events) {
+		switch e.Type {
+		case EvCompactDone:
+			var c map[string]any
+			if json.Unmarshal(e.Payload, &c) == nil && c["skipped"] == nil && c["error"] == nil {
+				labels = nil
 			}
-			paths = append(paths, p)
-		}
-		entries := l.SubdirMemory.discover(paths)
-		var b strings.Builder
-		for _, e := range entries {
-			if e.Skipped != "" {
+		case EvMemoryLoaded:
+			var m MemoryLoaded
+			if json.Unmarshal(e.Payload, &m) != nil {
 				continue
 			}
-			fmt.Fprintf(&b, "\n\n## Memory for %s (loaded because this folder was used)\n%s", filepath.ToSlash(filepath.Dir(e.Label)), e.Content)
-			files = append(files, MemoryFile{Path: e.Label, Scope: MemorySubdir, SHA256: e.SHA256})
-		}
-		if b.Len() > 0 {
-			results[i].result.Content += b.String()
+			for _, f := range m.Files {
+				if f.Scope == MemorySubdir && f.Skipped == "" {
+					labels = append(labels, f.Path)
+				}
+			}
 		}
 	}
-	if len(files) > 0 {
-		l.record(EvMemoryLoaded, ActorSystem, MemoryLoaded{Files: files})
-	}
+	l.SubdirMemory.note(labels)
 }
 
 // inStateFolder reports a folder in Abhed's state or git's, whose files are

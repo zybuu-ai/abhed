@@ -75,8 +75,8 @@ var sessionMemory atomic.Pointer[agent.Memory]
 // depth and rule directories, and the session's read rules for workspace
 // files, which a deny keeps out of the prompt as it keeps them from a read.
 func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agent.MemoryOptions {
-	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs, ManagedOnly: bareRun}
-	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto && (!bareRun || cfg.ManagedSets("memory.auto")) {
+	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs, ManagedOnly: cfg.Bare}
+	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto {
 		o.Auto = tools.AutoMemoryPath(home, workspace)
 	}
 	o.Allow = agent.ReadAllowed(pol)
@@ -96,6 +96,7 @@ func cliSystemPrompt(cfg config.Config, pol *policy.Engine, workspace string, ad
 		Memory:        mem,
 		Skills:        skills,
 		Tools:         toolNames,
+		FolderMemory:  !cfg.Bare,
 	})
 }
 
@@ -898,8 +899,8 @@ func slashImport(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 
 // subdirMemory loads a folder's own ABHED.md when the agent first works in
 // it, through the read rules; none under -bare.
-func subdirMemory(pol *policy.Engine, workspace string) *agent.SubdirMemory {
-	if bareRun {
+func subdirMemory(cfg config.Config, pol *policy.Engine, workspace string) *agent.SubdirMemory {
+	if cfg.Bare {
 		return nil
 	}
 	return &agent.SubdirMemory{Workspace: workspace, Allow: agent.ReadAllowed(pol)}

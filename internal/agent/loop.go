@@ -1197,6 +1197,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.usage.Compactions++
 	l.justCompacted = true
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
@@ -1233,6 +1234,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	l.messages = compacted
 	l.usage.Compactions++
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
 	return info, nil
 }
@@ -2111,6 +2113,14 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
 	}
+	// A folder's own memory comes with the first result that used the
+	// folder, before the observation is recorded, so a resume replays it.
+	if l.SubdirMemory != nil {
+		result.Content = escapeFolderFence(result.Content)
+		if !result.IsError {
+			result.Content += l.folderMemory(call)
+		}
+	}
 	elapsed := time.Since(start)
 	// Without this the model reads "path is required" and never learns its file_path was not taken.
 	if keys, ok := l.ignored.LoadAndDelete(call.ID); ok {
@@ -2493,7 +2503,6 @@ func (l *Loop) runCalls(ctx context.Context, calls []model.ToolCall) TerminalRea
 	}
 
 	l.replan(results)
-	l.attachSubdirMemory(calls, results)
 	l.appendResults(calls, results, len(calls))
 	for _, o := range results {
 		if o.terminal != "" {

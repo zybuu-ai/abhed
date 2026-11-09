@@ -113,7 +113,6 @@ func run(a *App, workspace string, f *cliFlags) int {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
 	}
-	bareRun = f.bare
 	if f.bare {
 		cfg = bareConfig(cfg)
 	}
@@ -237,7 +236,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
 			RanUnder:  func() string { return string(sb.Tier()) }},
-		Parts:   runParts(f.bare),
+		Parts:   toolset.All,
 		Vault:   vault,
 		Warn:    warnf,
 		Agents:  sessionDefs,
@@ -304,6 +303,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
 	if only := splitLists(f.toolsOnly); len(only) > 0 {
 		start["tools_only"] = registry.Names()
+		start["tools_harness"] = harnessTools // the loop's own, kept whatever -tools names
 	}
 	if f.bare {
 		start["bare"] = true

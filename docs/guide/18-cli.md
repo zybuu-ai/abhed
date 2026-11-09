@@ -77,19 +77,26 @@ table of what each maps to is in [Automation](10-automation.md#familiar-flag-spe
 ### A narrower run: -tools and -bare
 
 `-tools read,glob,grep` keeps those tools for the session and the
-subagents it starts, and offers no other. A name the session does not have
-stops the run before it starts, naming the tools it has. MCP tools are named
-in full (`mcp__github__search`). It only takes tools away: policy still
-judges each call, and every deny and ask rule, the managed ones included,
-still applies. The start of the record lists the tools kept as
-`tools_only`.
+subagents it starts. A name the session does not have stops the run before
+it starts, naming the tools it has. MCP tools are named in full
+(`mcp__github__search`). The harness's own tools stay whatever you name:
+`recall`, which reads this session's own record, and, where the session has
+them, `exit_plan` in plan mode and the tool a structured (`-json-schema`)
+run answers with; naming one is allowed. It only takes tools away: policy
+still judges each call, and every deny and ask rule, the managed ones
+included, still applies. The start of the record lists the tools kept as
+`tools_only` and the harness's as `tools_harness`.
 
 `-bare` runs without the memory files of your own and the workspace's
-(`ABHED.md`, `ABHED.local.md`, rules and auto memory), without your own or
-the workspace's extensions, and without skills. What the organisation sets
-stays: the managed `ABHED.md`, the extensions the managed configuration
-names, and auto memory where the managed file turns it on. The start of the
-record says `bare`. Both flags work with and without `-p`.
+(`ABHED.md`, `ABHED.local.md`, a folder's own `ABHED.md`, rules and auto
+memory), without your own or the workspace's extensions, and without your
+own skills. What the organisation sets stays: the managed `ABHED.md`, the
+rule and skill directories the managed configuration names
+(`rules.dirs`, `skills.dirs`), the extensions it names, and auto memory
+where the managed file turns it on. MCP servers are not extensions: your
+own and the workspace's stay under `-bare`, and `-strict-mcp-config` drops
+them. The start of the record says `bare`. Both flags work with and
+without `-p`.
 
 ### Settings, servers and roles for one run
 

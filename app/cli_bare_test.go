@@ -1,12 +1,13 @@
 package app
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/tools"
-	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
 // -tools keeps the named tools and no others, and refuses a name the
@@ -24,6 +25,9 @@ func TestToolsOnlyAndBare(t *testing.T) {
 	if _, err := toolsOnly(reg, []string{"read", "nosuch"}); err == nil || !strings.Contains(err.Error(), "nosuch") {
 		t.Fatalf("unknown: %v", err)
 	}
+	if _, err := toolsOnly(reg, []string{"read", "recall"}); err != nil {
+		t.Fatalf("the harness's own tool refused: %v", err)
+	}
 
 	cfg := config.Default()
 	cfg.Extensions = []config.ExtensionConfig{{Name: "mine", Command: "/bin/true"}}
@@ -32,8 +36,8 @@ func TestToolsOnlyAndBare(t *testing.T) {
 	if len(bare.Extensions) != 0 || bare.Memory.Auto {
 		t.Fatalf("bare: %+v %v", bare.Extensions, bare.Memory.Auto)
 	}
-	if runParts(true)&toolset.Skills != 0 || runParts(false)&toolset.Skills == 0 {
-		t.Fatal("skills kept under -bare, or dropped without it")
+	if !bare.Skills.Disabled || !bare.Bare {
+		t.Fatal("your own skills kept under -bare")
 	}
 
 	// The organisation's extensions and auto memory stay.
@@ -70,5 +74,27 @@ func TestToolsAndBareFlags(t *testing.T) {
 	}
 	if _, errOut, code := run("-p", "hi", "-tools", "read,nosuch"); code != 2 || !strings.Contains(errOut, "-tools: this session has no tool nosuch") {
 		t.Fatalf("unknown tool: %d %s", code, errOut)
+	}
+}
+
+// Under -bare the organisation's rule and skill directories stay, and its
+// rules still reach the prompt; the workspace's memory does not.
+func TestBareKeepsManagedRulesAndSkills(t *testing.T) {
+	rules, skills := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(rules, "org.md"), "ORG-RULE-CANARY")
+	managedConfig(t, `{"rules":{"dirs":["`+rules+`"]},"skills":{"dirs":["`+skills+`"]}}`)
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "ABHED.md"), "WORKSPACE-CANARY")
+	loaded, err := config.Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := bareConfig(loaded)
+	if bare.Skills.Disabled || len(bare.Skills.Dirs) != 1 || len(bare.Rules.Dirs) != 1 {
+		t.Fatalf("managed dirs under -bare: skills %+v rules %v", bare.Skills, bare.Rules.Dirs)
+	}
+	text := agent.LoadMemory(memoryOptions(bare, nil, ws)).Render()
+	if !strings.Contains(text, "ORG-RULE-CANARY") || strings.Contains(text, "WORKSPACE-CANARY") {
+		t.Fatalf("memory under -bare:\n%s", text)
 	}
 }
