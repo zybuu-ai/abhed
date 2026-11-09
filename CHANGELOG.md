@@ -74,7 +74,7 @@ All notable changes to Abhed are recorded here. The format follows
   now says that work asked for in parallel or by several agents means starting
   subagents, and `task` that several calls in one response run at once. When
   the person's own words ask for parallel work, the model also gets a short
-  conditional note after the message, recorded on its `user.message` as
+  note after the message, recorded on its `user.message` as
   `harness_note`; on a small local model the descriptions alone did not turn
   it. The note is judged only on what the person typed, not on attached files,
   Studio resources or piped stdin; it is left out when the message names the
