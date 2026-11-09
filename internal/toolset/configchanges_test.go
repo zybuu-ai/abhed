@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 )
@@ -78,5 +79,83 @@ func TestRecordConfigChanges(t *testing.T) {
 	}
 	if got, _ := session("s4"); len(got) != 1 || !strings.Contains(got[0].By, "remove") {
 		t.Fatalf("after a shrink: %+v", got)
+	}
+}
+
+// More than a session takes: it stops at 200, says how many wait, and the
+// rest, a real change last, land in the next sessions.
+func TestRecordConfigChangesCarriesOverPastTheCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	logPath := filepath.Join(home, ".abhed", "config-changes.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for i := 0; i < 250; i++ {
+		b.WriteString(`{"by":"mcp add","key":"mcp.servers","name":"spam","refused":"mcp.denied"}` + "\n")
+	}
+	b.WriteString(`{"by":"mcp add -confirm-fd","key":"mcp.servers","name":"real","kind":"stdio","sha256":"ab"}` + "\n")
+	if err := os.WriteFile(logPath, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := agent.NewMemStore()
+	got := map[string][]agent.ConfigChanged{}
+	for _, id := range []string{"s1", "s2"} {
+		if err := RecordConfigChanges(agent.NewRecorder(store, id, "")); err != nil {
+			t.Fatal(err)
+		}
+		got[id], _ = changes(t, store, id)
+	}
+	first := got["s1"]
+	if len(first) != 201 || first[200].Pending != 51 || first[199].Name != "spam" {
+		t.Fatalf("first session: %d entries, last %+v", len(first), first[len(first)-1])
+	}
+	second := got["s2"]
+	if len(second) != 51 || second[50].Name != "real" || second[50].Refused != "" {
+		t.Fatalf("second session: %d entries, last %+v", len(second), second[len(second)-1])
+	}
+	if err := RecordConfigChanges(agent.NewRecorder(store, "s3", "")); err != nil {
+		t.Fatal(err)
+	}
+	if third, _ := changes(t, store, "s3"); len(third) != 0 {
+		t.Fatalf("recorded again: %d", len(third))
+	}
+}
+
+// A log replaced by hand with one longer than the old mark is read from its
+// start, not mid-line.
+func TestRecordConfigChangesSeesARotatedLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	logPath := filepath.Join(home, ".abhed", "config-changes.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte(`{"by":"mcp add","key":"mcp.servers","name":"a"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := agent.NewMemStore()
+	if err := RecordConfigChanges(agent.NewRecorder(store, "s1", "")); err != nil {
+		t.Fatal(err)
+	}
+	rotated := `{"by":"mcp add","key":"mcp.servers","name":"rotated-first-entry-longer"}` + "\n" + `{"by":"mcp remove","key":"mcp.servers","name":"b"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(rotated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordConfigChanges(agent.NewRecorder(store, "s2", "")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := changes(t, store, "s2"); len(got) != 2 || got[0].Name != "rotated-first-entry-longer" {
+		t.Fatalf("rotated: %+v", got)
+	}
+}
+
+// A long field is cut on a character boundary.
+func TestClipKeepsCharactersWhole(t *testing.T) {
+	s := strings.Repeat("a", 255) + "é" + "tail"
+	c := clip(s)
+	if !utf8.ValidString(c) || !strings.HasSuffix(c, "a…") {
+		t.Fatalf("%q", c[250:])
 	}
 }

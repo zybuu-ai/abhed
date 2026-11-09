@@ -115,4 +115,5 @@
 2026-10-19T11:59:58.123Z s-1#117 API:Create INFO ollama pull qwen3:8b: refused
 2026-10-19T11:59:59.123Z s-1#118 API:Debug setup INFO debug.setup
 2026-10-19T12:00:00.123Z s-1#119 API:Port contested INFO sandbox.port_contested
-2026-10-19T12:00:01.123Z s-1#120 CONF:Log INFO config.changed
+2026-10-19T12:00:01.123Z s-1#120 CONF:Log INFO config.changed mcp.servers issues (mcp add -confirm-fd)
+2026-10-19T12:00:02.123Z s-1#121 CONF:Log LOW config.changed mcp.servers pastebin (mcp add)

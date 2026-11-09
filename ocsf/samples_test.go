@@ -14,6 +14,9 @@ type sample struct {
 	payload string
 }
 
+// untrustedTypes are recorded untrusted, so their samples are too.
+var untrustedTypes = map[agent.EventType]bool{agent.EvConfigChanged: true}
+
 // samples holds a line of every type the table maps, with the payload fields
 // docs/architecture/10-data-model.md names for it. Some types have more than
 // one, where the payload decides the class or the activity.
@@ -138,6 +141,7 @@ var samples = []sample{
 	{agent.EvDebugSetup, agent.ActorUser, `{"action":"process_tier_consent","workspace":"/w","call_id":"u-2"}`},
 	{agent.EvSandboxPortContested, agent.ActorSystem, `{"port":5173,"listeners":2}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:35:00Z","by":"mcp add -confirm-fd","key":"mcp.servers","name":"issues","kind":"stdio","sha256":"549dbf97"}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:36:00Z","by":"mcp add","key":"mcp.servers","name":"pastebin","kind":"http","sha256":"0f1e2d3c","refused":"mcp.denied in /etc/abhed/config.json matches it"}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.
@@ -151,9 +155,13 @@ func sampleLines() []Line {
 			panic(string(s.typ) + ": " + err.Error())
 		}
 		compact, _ = json.Marshal(v)
+		trust := agent.Trusted
+		if untrustedTypes[s.typ] {
+			trust = agent.Untrusted
+		}
 		out[i] = Line{Event: agent.Event{
 			ID: "ev-" + itoa(i+1), SessionID: "s-1", Seq: int64(i + 1), Type: s.typ, Actor: s.actor,
-			Trust: agent.Trusted, CreatedAt: at.Add(time.Duration(i) * time.Second), Payload: compact,
+			Trust: trust, CreatedAt: at.Add(time.Duration(i) * time.Second), Payload: compact,
 		}}
 	}
 	return out
