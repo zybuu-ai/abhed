@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -428,7 +430,12 @@ func promptTests(prompts []string) []string {
 }
 
 // messageTests reads one message's test runs; ok false when it asks for the
-// whole, or names none.
+// whole, or names none. It narrows only when every mention of tests in the
+// message is a runner command read here: whatever is left once those
+// commands are taken out may say "the tests" or "run the tests" and nothing
+// else about tests. Another runner or target (npm test, make test, tox),
+// CI, a test file outside a command, "the api tests", "integration" or
+// "e2e", or "also" and "too" leave the whole suite.
 func messageTests(p string) (names []string, ok bool) {
 	if promptWholeRe.MatchString(strings.ToLower(p)) {
 		return nil, false
@@ -440,51 +447,108 @@ func messageTests(p string) (names []string, ok bool) {
 		}
 		return a
 	}
-	whole := false
-	for _, m := range goTestArgsRe.FindAllStringSubmatch(p, -1) {
-		n := 0
-		for _, a := range strings.Fields(m[1]) {
-			a = arg(a)
-			if strings.HasPrefix(a, "-") || a == "./..." || a == "..." || a == "." || a == "./" {
-				whole = true
+	rest := []byte(p)
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			rest[k] = ' '
+		}
+	}
+	// args walks a command's arguments from the end of its program words,
+	// keeping each one take accepts and blanking what was read.
+	args := func(start, from, to int, take func(a string) (stop, whole bool)) (whole bool) {
+		end, n := from, 0
+		for _, f := range fieldsAt(p[from:to]) {
+			stop, w := take(arg(f.s))
+			if w {
+				return true
+			}
+			if stop {
 				break
+			}
+			end, n = from+f.end, n+1
+		}
+		if n == 0 {
+			return true
+		}
+		blank(start, end)
+		return false
+	}
+	whole := false
+	for _, m := range goTestArgsRe.FindAllStringSubmatchIndex(p, -1) {
+		whole = whole || args(m[0], m[2], m[3], func(a string) (bool, bool) {
+			if strings.HasPrefix(a, "-") || a == "./..." || a == "..." || a == "." || a == "./" {
+				return false, true
 			}
 			if !strings.HasPrefix(a, "./") || !insidePath(a) {
-				break
+				return true, false
 			}
 			names = append(names, strings.TrimSuffix(a, "/"))
-			n++
-		}
-		whole = whole || n == 0
+			return false, false
+		})
 	}
 	for _, re := range []*regexp.Regexp{unittestArgsRe, pytestArgsRe} {
-		for _, m := range re.FindAllStringSubmatch(p, -1) {
-			n := 0
-			for _, a := range strings.Fields(m[1]) {
-				a = arg(a)
+		for _, m := range re.FindAllStringSubmatchIndex(p, -1) {
+			whole = whole || args(m[0], m[2], m[3], func(a string) (bool, bool) {
 				if strings.HasPrefix(a, "-") || a == "discover" {
-					whole = true
-					break
+					return false, true
 				}
 				t := promptTestName(a)
 				if t == "" {
-					break
+					return true, false
 				}
 				names = append(names, t)
-				n++
-			}
-			whole = whole || n == 0
+				return false, false
+			})
 		}
 	}
-	for _, m := range runTargetRe.FindAllStringSubmatch(p, -1) {
-		if t := promptTestName(arg(m[1])); t != "" {
+	for _, m := range runTargetRe.FindAllStringSubmatchIndex(p, -1) {
+		if t := promptTestName(arg(p[m[2]:m[3]])); t != "" {
 			names = append(names, t)
+			blank(m[0], m[3])
 		}
 	}
 	if whole || len(names) == 0 {
 		return nil, false
 	}
+	// What is left may say "the tests" or "run the tests", nothing more.
+	left := plainTestsRe.ReplaceAllString(strings.ToLower(string(rest)), " ")
+	if otherTestsRe.MatchString(left) {
+		return nil, false
+	}
 	return names, true
+}
+
+var (
+	// plainTestsRe is "the tests" with nothing qualifying it.
+	plainTestsRe = regexp.MustCompile(`(?:\b(?:run|rerun|re-run)\s+)?\bthe\s+tests?\b`)
+	// otherTestsRe is any other mention of tests, a runner or CI, or "also"
+	// and "too", left in a message once its runner commands are taken out.
+	otherTestsRe = regexp.MustCompile(`test|spec|suite|\bci\b|e2e|end-to-end|integration|\b(?:npm|pnpm|yarn|bun|make|gmake|cargo|tox|nox|jest|vitest|mocha|rspec|phpunit|ctest|mvn|gradle|gradlew|dotnet|bazel|unittest|pytest)\b|\balso\b|\btoo\b|as well`)
+)
+
+// wordAt is a whitespace-separated word and where it ends in its text.
+type wordAt struct {
+	s   string
+	end int
+}
+
+func fieldsAt(s string) []wordAt {
+	var out []wordAt
+	start := -1
+	for k, r := range s {
+		space := r == ' ' || r == '\t' || r == '\n' || r == '\r'
+		switch {
+		case !space && start < 0:
+			start = k
+		case space && start >= 0:
+			out = append(out, wordAt{s[start:k], k})
+			start = -1
+		}
+	}
+	if start >= 0 {
+		out = append(out, wordAt{s[start:], len(s)})
+	}
+	return out
 }
 
 // promptTestName is a test module or file a message gives a runner, as a
@@ -502,11 +566,12 @@ func promptTestName(a string) string {
 
 var (
 	goNoTestsRe  = regexp.MustCompile(`\[no test files\]|\[no tests to run\]|testing: warning: no tests to run`)
-	goRanTestsRe = regexp.MustCompile(`(?m)^(?:ok\s+\S+\s+(?:[\d.]+s|\(cached\))(?:\s+coverage:[^\n]*)?\s*$|--- PASS|PASS$)`)
+	goRanTestsRe = regexp.MustCompile(`(?m)^(?:ok\s+\S+\s+(?:[\d.]+s|\(cached\))(?:\s+coverage:[^\n]*)?\s*$|--- PASS|PASS$)|"Action":"pass","Package":"[^"]*","Test":"`)
 	utNoTestsRe  = regexp.MustCompile(`\bRan 0 tests?\b|\bNO TESTS RAN\b`)
-	utAllSkipRe  = regexp.MustCompile(`\bRan (\d+) tests? in [^\n]*\n+\s*OK \(skipped=(\d+)\)`)
+	utSummaryRe  = regexp.MustCompile(`\bRan (\d+) tests? in [^\n]*\n+\s*OK \(([^)\n]*)\)`)
+	utNotRunRe   = regexp.MustCompile(`\b(?:skipped|expected failures)=(\d+)`)
 	pyPassedRe   = regexp.MustCompile(`\b\d+ passed\b`)
-	pyNoneRe     = regexp.MustCompile(`\bno tests ran\b|\b\d+ (?:skipped|deselected)\b`)
+	pyNoneRe     = regexp.MustCompile(`\bno tests ran\b|\b\d+ (?:skipped|deselected|xfailed|xpassed)\b`)
 	cargoOKRe    = regexp.MustCompile(`test result: ok\. [1-9]\d* passed`)
 )
 
@@ -530,8 +595,18 @@ func ranNothing(o *obsRec) bool {
 		if utNoTestsRe.MatchString(out) {
 			return true
 		}
-		m := utAllSkipRe.FindStringSubmatch(out)
-		return m != nil && m[1] == m[2]
+		// Every test skipped or an expected failure: none passed.
+		m := utSummaryRe.FindStringSubmatch(out)
+		if m == nil {
+			return false
+		}
+		notRun := 0
+		for _, n := range utNotRunRe.FindAllStringSubmatch(m[2], -1) {
+			k, _ := strconv.Atoi(n[1])
+			notRun += k
+		}
+		ran, _ := strconv.Atoi(m[1])
+		return notRun > 0 && notRun >= ran
 	}
 	return false
 }
@@ -560,4 +635,58 @@ func (ix *recordIndex) packageShadows(words []string, dir string) bool {
 		}
 	}
 	return false
+}
+
+// goPackageUntested is the first folder a scoped claim names whose own
+// package a go test run does not show passing a test: its result line is
+// "?" ([no test files]), says [no tests to run], or is missing; "" when
+// each has an ok line of its own (in -json output, a passing test). A
+// claim of everything beneath a folder needs one such package under it.
+// Only go test runs are read; any other is "".
+func goPackageUntested(o *obsRec, scope []string) string {
+	if len(o.line.final) < 2 || filepath.Base(o.line.final[0]) != "go" || len(scope) == 0 {
+		return ""
+	}
+	dir := filepath.Clean(o.line.finalCwd)
+	passed := goPassedPackages(o.content)
+	for _, c := range scope {
+		c, rec := recursiveScope(c)
+		rel, err := filepath.Rel(dir, c)
+		if err != nil || rel == "." && !rec || strings.HasPrefix(rel, "..") {
+			continue // the run's own folder: judged as the whole run
+		}
+		rel = filepath.ToSlash(rel)
+		found := false
+		for _, pkg := range passed {
+			if strings.HasSuffix(pkg, "/"+rel) || pkg == rel || rec && (rel == "." || strings.Contains(pkg+"/", "/"+rel+"/")) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return filepath.ToSlash(c)
+		}
+	}
+	return ""
+}
+
+// goPassedPackages are the packages a go test run's output shows passing
+// at least one test: an "ok" line without [no tests to run], or in -json
+// output a test's pass.
+func goPassedPackages(out string) []string {
+	var pkgs []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "{") {
+			var ev struct{ Action, Package, Test string }
+			if json.Unmarshal([]byte(line), &ev) == nil && ev.Action == "pass" && ev.Test != "" && ev.Package != "" {
+				pkgs = append(pkgs, ev.Package)
+			}
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "ok" && !strings.Contains(line, "[no tests to run]") {
+			pkgs = append(pkgs, f[1])
+		}
+	}
+	return pkgs
 }

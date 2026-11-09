@@ -1474,6 +1474,11 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 		if testish == "test" && ranNothing(o) {
 			return finding{out: missing, why: fmt.Sprintf("the last such run, #%d, ran no test", o.seq)}
 		}
+		if testish == "test" {
+			if d := goPackageUntested(o, scopeDirs); d != "" {
+				return finding{out: missing, why: fmt.Sprintf("the last such run, #%d, shows no test of %s passing", o.seq, d)}
+			}
+		}
 		if cited && !inPool(pool, o) {
 			return finding{out: missing, why: fmt.Sprintf("#%d is the run that shows it, and is not cited", o.seq)}
 		}

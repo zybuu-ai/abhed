@@ -5214,6 +5214,91 @@
       "name": "the tests said to pass, one named among them, after a run of that one",
       "kind": "planted",
       "hash": "e9b42077a938adb1"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming the integration tests",
+      "kind": "planted",
+      "hash": "5aa8b594bcfaee63"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming npm test",
+      "kind": "planted",
+      "hash": "bafeeb1ca5539fd2"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming make test",
+      "kind": "planted",
+      "hash": "c56b71420b3bf06c"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking for CI to pass",
+      "kind": "planted",
+      "hash": "830dde08cb8c2df6"
+    },
+    {
+      "name": "the tests said to pass after one file, the task naming another outside a command",
+      "kind": "planted",
+      "hash": "a9f31d06d0365822"
+    },
+    {
+      "name": "the tests said to pass after one file, the task naming the api tests too",
+      "kind": "planted",
+      "hash": "a87567397d822d4c"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming the unit tests",
+      "kind": "planted",
+      "hash": "f2ca083c87ec0763"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming e2e",
+      "kind": "planted",
+      "hash": "c888de6df3a4e380"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming tox",
+      "kind": "planted",
+      "hash": "f32c3cd2073bffa7"
+    },
+    {
+      "name": "the tests said to pass after one file, the task naming the tests in another",
+      "kind": "planted",
+      "hash": "f13a181af3359aca"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking to run them too",
+      "kind": "planted",
+      "hash": "2b3a2700a9124906"
+    },
+    {
+      "name": "a package's tests said to pass when the run shows it has no test files",
+      "kind": "planted",
+      "hash": "0985ae9afdc82274"
+    },
+    {
+      "name": "the task's tests said to pass when one of its packages has no test files",
+      "kind": "planted",
+      "hash": "1dbd4b9c61e7a5c9"
+    },
+    {
+      "name": "a package's tests said to pass when the run shows its own ok line",
+      "kind": "control",
+      "hash": "48ff8f081825b9b9"
+    },
+    {
+      "name": "every test said to pass after go test -json with a package without tests",
+      "kind": "control",
+      "hash": "bc4b91106f5b517b"
+    },
+    {
+      "name": "every test said to pass when pytest only had expected failures",
+      "kind": "planted",
+      "hash": "df6b5ba27cf513a0"
+    },
+    {
+      "name": "every test said to pass when unittest skipped one and expected the other to fail",
+      "kind": "planted",
+      "hash": "e23af37c4c34f3b4"
     }
   ],
   "strict": [

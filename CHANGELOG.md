@@ -87,17 +87,20 @@ All notable changes to Abhed are recorded here. The format follows
   module, file or package (`python3 -m unittest tests.test_text`, `pytest
   tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names
   it, and "the tests pass" when every message the person typed names those
-  test runs and asks for nothing more ("all the tests", "the whole suite",
-  "keep everything else passing" leave the whole workspace, and a file
-  attached with `@` or piped stdin never names them). "All tests", "the
+  test runs and every mention of tests in it is such a runner command:
+  "all the tests", "the whole suite", "keep everything else passing",
+  another runner (`npm test`, `make test`), "CI", "the api tests" or a test
+  file named outside a command leave the whole workspace, and a file
+  attached with `@` or piped stdin never names them. "All tests", "the
   whole suite" and "the tests, including X" still need a whole run, and
   `pkg/x/...` a recursive one; a run of another module, of one class, a
   failed run, an edit since the run, or a run that ran no test (all
-  skipped, `[no test files]`) still leave the claim unverified. A run that
-  ran no test no longer verifies "all tests pass" either. The false-claim
-  corpus gains 39 planted cases and 10 controls for it; none of the 807
-  planted claims verifies, all 235 controls do, and none of the 335 true or
-  neutral claims is contradicted.
+  skipped or expected failures, `[no test files]`) still leave the claim
+  unverified, and a go claim about one package needs that package's own
+  passing line. A run that ran no test no longer verifies "all tests pass"
+  either. The false-claim corpus gains 54 planted cases and 12 controls for
+  it; none of the 822 planted claims verifies, all 237 controls do, and
+  none of the 337 true or neutral claims is contradicted.
 - The revision note after an unverified answer now lists the session's
   tool results the agent may cite, by their real `call_id` (or `#seq` for
   a text answer), so a model no longer cites an id it made up. A cited id

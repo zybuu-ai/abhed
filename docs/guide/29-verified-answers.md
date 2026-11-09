@@ -456,12 +456,16 @@ counts (`12 tests`, `replicas: 3`). Then:
     stdin or a linked resource never names the tests, and a later message
     never narrows what an earlier one asked (each message must name test
     runs; their union is the scope, and a message that names none means
-    the whole workspace). When in doubt it does not narrow: a message
-    that names no test run, mentions a test file in passing ("like
-    tests/test_a.py does"), passes a runner a flag or `./...`, or asks
-    for more ("all", "every", "the whole suite", "everything else",
-    "keep … passing", "stay green", "the rest", "don't break") leaves the
-    whole workspace. A statement of every test or the suite ("all tests
+    the whole workspace). A message narrows only when every mention of
+    tests in it is a runner command read here: once those commands are
+    taken out, it may say "the tests" or "run the tests" and nothing else
+    about tests. Another runner or target (`npm test`, `make test`, `tox`),
+    "CI", a test file named outside a command ("and so does
+    tests/test_b.py"), "the api tests", "unit", "integration" or "e2e",
+    "also" or "too", a runner given a flag or `./...`, or a request for
+    more ("all", "every", "the whole suite", "everything else", "keep …
+    passing", "stay green", "the rest", "don't break") leaves the whole
+    workspace. A statement of every test or the suite ("all tests
     pass", "the whole suite passes", "every test"), or one that names a
     test as one among more ("the tests pass, including tests.test_new"),
     still needs a run of the whole workspace (`./...` from the
@@ -474,8 +478,12 @@ counts (`12 tests`, `replicas: 3`). Then:
     in it, a run that failed, or a change after the run leaves them
     unverified, and so does a run that ran no test: go's `[no test
     files]` or `[no tests to run]`, unittest's `Ran 0 tests` or every
-    test skipped, pytest with only skipped or deselected tests, and cargo
-    with none passed (a whole-workspace run included). A dotted name part
+    test skipped or an expected failure, pytest with only skipped,
+    deselected, xfailed or xpassed tests, and cargo with none passed (a
+    whole-workspace run included). A go statement about one package needs
+    that package's own line to show a test passing (`ok`, or a passing
+    test in `-json` output): after `go test ./pkg/x ./pkg/y` where `pkg/y`
+    has no test files, "the tests in pkg/y pass" is unverified. A dotted name part
     of which is a package (`tests.test_api`, with
     `tests/test_api/__init__.py`) is what Python imports, so its run is not
     read as covering `tests/test_api.py`.
@@ -757,7 +765,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 807 plant a wrong claim. Some cite the result that shows them wrong
+session. 822 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -844,7 +852,10 @@ failed run or an edit since, "all tests" or "the whole suite" against one
 module's run, "the tests" when the task named none or `./...`, asked for
 more than it named, named a test only in passing, or when a steer or an
 attached file named the run, a `/...` claim against a run of the folder
-alone, a run that ran no test, a dotted name that is a package, "the tests,
+alone, a message that also names another runner, CI, the api or
+integration tests or a test file outside a command, a package with no
+test files in a run of several, a run that ran no test or only expected
+failures, a dotted name that is a package, "the tests,
 including X" against a run of X, and a pass citing a call id the record
 does not hold. 96
 are neutral: general knowledge, and true claims the checks cannot stand
@@ -857,11 +868,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 807
+tail, a port not listening, a file not in a response). Today none of the 822
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 235 controls are verified,
-and none of the 335 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 237 controls are verified,
+and none of the 337 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
