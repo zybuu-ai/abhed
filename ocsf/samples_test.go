@@ -2,6 +2,7 @@ package ocsf
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -13,6 +14,9 @@ type sample struct {
 	actor   agent.Actor
 	payload string
 }
+
+// untrustedTypes are recorded untrusted, so their samples are too.
+var untrustedTypes = map[agent.EventType]bool{agent.EvConfigChanged: true}
 
 // samples holds a line of every type the table maps, with the payload fields
 // docs/architecture/10-data-model.md names for it. Some types have more than
@@ -140,6 +144,9 @@ var samples = []sample{
 	{agent.EvLSPDiagnostics, agent.ActorSystem, `{"call_id":"c-7","path":"/w/a.go","language":"go","lsp_id":"lsp-diag-go-1","total":3,"shown":3,"errors":1,"warnings":2,"duration_ms":410}`},
 	{agent.EvHookContinued, agent.ActorSystem, `{"hook":"tests-first","text":"The tests-first hook asks you to continue before finishing: run the tests"}`},
 	{agent.EvHookFired, agent.ActorSystem, `{"extension":"freeze","event":"tool_call","verdict":"halt","kind":"command","reason":"change freeze","exit_code":0}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:35:00Z","by":"mcp add -confirm-fd","key":"mcp.servers","name":"issues","kind":"stdio","sha256":"549dbf97"}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:36:00Z","by":"mcp add","key":"mcp.servers","name":"pastebin","kind":"http","sha256":"0f1e2d3c","refused":"mcp.denied in /etc/abhed/config.json matches it"}`},
+	{agent.EvConfigChanged, agent.ActorSystem, `{"by":"abhed","key":"config-changes.jsonl","pending":51}`},
 	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
 }
 
@@ -154,9 +161,14 @@ func sampleLines() []Line {
 			panic(string(s.typ) + ": " + err.Error())
 		}
 		compact, _ = json.Marshal(v)
+		trust := agent.Trusted
+		// Abhed's own entries (a pending count) are trusted; the log's lines are not.
+		if untrustedTypes[s.typ] && !strings.Contains(s.payload, `"by":"abhed"`) {
+			trust = agent.Untrusted
+		}
 		out[i] = Line{Event: agent.Event{
 			ID: "ev-" + itoa(i+1), SessionID: "s-1", Seq: int64(i + 1), Type: s.typ, Actor: s.actor,
-			Trust: agent.Trusted, CreatedAt: at.Add(time.Duration(i) * time.Second), Payload: compact,
+			Trust: trust, CreatedAt: at.Add(time.Duration(i) * time.Second), Payload: compact,
 		}}
 	}
 	return out

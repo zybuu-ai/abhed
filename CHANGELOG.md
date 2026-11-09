@@ -32,6 +32,33 @@ All notable changes to Abhed are recorded here. The format follows
   wherever anything printed before bash took the terminal; known to occur in
   1.2.9 in a project with a Python venv, whose start-up notice prints first.
 
+### Added
+
+- Studio can add and remove MCP servers. Adding is never an ACP method:
+  Studio has the engine check the server (`_abhed/mcp/check`, read only,
+  `mcp.check` in `features`), shows it in a modal whose default is No, and
+  then runs `abhed mcp add` itself, giving the yes on an inherited descriptor
+  (`-confirm-fd`) and holding it to the entry shown (`-sha256`). The same
+  checks, file and change log apply as at a terminal. Environment variables
+  are passed by name only, so no secret value is written. Removing is
+  `_abhed/mcp/remove`, recorded as `mcp.status` with the entry's transport
+  and hash. A refused add is recorded as `config.refused` with who asked,
+  and logged as an attempt in `~/.abhed/config-changes.jsonl`.
+- `abhed mcp add` takes `-confirm-fd N` (read the yes from an inherited
+  descriptor, 3 or above, for an editor that asked the person; it requires
+  `-sha256`, fails when no yes is read, and is logged as `by: "mcp add
+  -confirm-fd"`) and `-sha256 HEX` (add only that entry), and quotes a
+  command's words that hold spaces or shell syntax when it shows the server.
+- Each session records the entries of `~/.abhed/config-changes.jsonl`
+  written since a session last did, as `config.changed` (untrusted, since
+  the log is a file in your home), so an MCP server added at a terminal or
+  from Studio reaches a hash-chained record. A session takes at most 200;
+  the rest carry over to the next sessions, and an entry says at least how
+  many wait. A line over 1 MiB is skipped, with an entry saying so. The
+  events show the log as read, not proof that it was complete. A log replaced by hand is read from its start. In OCSF a refused
+  entry is a failure. Past 4 MiB the log no longer takes refused attempts;
+  changes are still logged.
+
 ### Upgrading from 1.2.9
 
 - A workspace other than your home folder whose config is your own

@@ -114,6 +114,7 @@ var table = map[agent.EventType]rule{
 	agent.EvStartupTrusted:       {fn: configChange, classes: []int{5019}},
 	agent.EvConfigRefused:        {fn: mapConfigAttempt, classes: []int{5019}},
 	agent.EvConfigNarrowed:       {fn: mapConfigAttempt, classes: []int{5019}},
+	agent.EvConfigChanged:        {fn: mapConfigChanged, classes: []int{5019}},
 	agent.EvApprovalScopeGranted: {fn: configChange, classes: []int{5019}},
 	agent.EvWorkspaceDirAdded:    {fn: configChange, classes: []int{5019}},
 	agent.EvSandboxBound:         {fn: configChange, classes: []int{5019}},
@@ -667,17 +668,22 @@ func configChange(b *builder) {
 	b.set("message", strings.TrimSpace(string(b.l.Type)+" "+b.str("to")))
 }
 
-// mapTurnsExtended is a person raising a run's turn limit: the old and new
-// limit, and which continuation of how many it was.
+// mapTurnsExtended is a person raising a run's turn limit: who, the old and
+// new limit, which continuation of how many it was, and where it was asked.
 func mapTurnsExtended(b *builder) {
 	b.classify(5019, 1, "Log")
 	b.device()
+	b.actor(b.str("by"))
 	from, _ := b.num("from")
 	to, _ := b.num("to")
 	n, _ := b.num("count")
 	most, _ := b.num("max")
-	b.set("message", "turns.extended "+strconv.FormatInt(from, 10)+" to "+strconv.FormatInt(to, 10)+
-		" ("+strconv.FormatInt(n, 10)+" of "+strconv.FormatInt(most, 10)+")")
+	msg := "turns.extended " + strconv.FormatInt(from, 10) + " to " + strconv.FormatInt(to, 10) +
+		" (" + strconv.FormatInt(n, 10) + " of " + strconv.FormatInt(most, 10) + ")"
+	if surface := b.str("surface"); surface != "" {
+		msg += " via " + surface
+	}
+	b.set("message", msg)
 }
 
 func mapConfigAttempt(b *builder) {
@@ -689,6 +695,28 @@ func mapConfigAttempt(b *builder) {
 		b.status(1, "", b.str("reason"))
 	}
 	b.set("message", string(b.l.Type)+" "+b.str("key")+": "+b.str("decision"))
+}
+
+// mapConfigChanged is an entry of the person's change log: the key, server
+// and who changed it in the message, and a refused attempt as a failure. The
+// entry's hash stays in the payload: Device Config State Change has no
+// resources.
+func mapConfigChanged(b *builder) {
+	configChange(b)
+	msg := strings.TrimSpace(string(b.l.Type) + " " + b.str("key") + " " + b.str("name"))
+	if by := b.str("by"); by != "" {
+		msg += " (" + by + ")"
+	}
+	if n, ok := b.num("pending"); ok && n > 0 {
+		msg += ": at least " + strconv.FormatInt(n, 10) + " pending"
+	}
+	b.set("message", msg)
+	if r := b.str("refused"); r != "" {
+		b.status(2, "", r)
+		b.severity(2)
+	} else {
+		b.status(1, "", "")
+	}
 }
 
 // finding is a Detection Finding at severity sev, titled title.
