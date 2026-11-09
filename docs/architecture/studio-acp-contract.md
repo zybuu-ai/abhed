@@ -1292,21 +1292,30 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   adapter opens no port (a worker thread in the program drives the
   program's own inspector over a pipe), so a Node launch starts on any
   sandbox tier as the session's commands run, never opens loopback, never
-  asks the process-tier consent, and is refused only with no sandbox;
+  asks the process-tier consent, and is refused only with no sandbox (the
+  `none` tier, or a tier not known; `nodeReady` is the same rule);
   `debug.launched` has `loopback: false`. `runner` picks the command line:
   `node FILE` (default; TypeScript by Node's own type stripping), `node
-  --import tsx FILE`, `node --require ts-node/register FILE`, for a test
-  `node --test --test-isolation=none FILE`, `node
-  node_modules/vitest/vitest.mjs run --pool=threads --no-file-parallelism
-  TEST` or `node node_modules/jest/bin/jest.js --runInBand TEST`; a runner
-  that runs tests with a program, or the reverse, is `-32602`. The engine's
-  launch carries `argv` (after `node`), `runner`, `root` and `resolve` (the
-  runner packages the adapter finds in the nearest `node_modules`); a
-  runner not installed fails the launch (`status: failed`, "… is not
-  installed in this workspace"). Node missing ends `adapter-missing` with
+  --import tsx FILE`, `node --require DIR/register FILE`, for a test
+  `node --test --test-isolation=none FILE`, `node DIR/vitest.mjs run
+  --pool=threads --no-file-parallelism TEST` or `node DIR/bin/jest.js
+  --runInBand TEST`, DIR being the runner's package the engine finds in
+  the nearest `node_modules` from cwd up to the workspace; a runner that
+  runs tests with a program, or the reverse, is `-32602`, and one not
+  installed is `-32000` with `problem.kind: "runner-missing"` before
+  anything is judged. `debug.launched` adds `runner` (that package). The
+  engine's launch carries `argv` (after `node`) and `runner`. The adapter
+  runs without `NODE_OPTIONS`; the program gets the inherited one without
+  `--inspect…`/`--debug…`, unless the launch's `env` sets it. Node missing ends `adapter-missing` with
   `install: {language: "node"}`. Breakpoints in TypeScript or other
-  source-mapped code are set as each of the program's own scripts loads;
+  source-mapped code are set as each of the program's own scripts loads,
+  answered `verified: false` until then and announced by a `breakpoint`
+  event; `evaluate` may have side effects only with `context: "repl"`;
   worker threads are DAP threads; child processes are not debugged.
+- For every language, a `source` the adapter sends (a frame's, an output
+  event's, a breakpoint's, `loadedSources`) whose `path` is outside the
+  workspace, or leads out of it by a link, reaches Studio without `path`,
+  with its `name` and `presentationHint: "deemphasize"`.
 - `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
   `{os, tier, ready, nodeReady, engine?, brew?, machine?: "none" | "stopped" |
   "running", steps: [{id: "install-podman" | "machine-init" |

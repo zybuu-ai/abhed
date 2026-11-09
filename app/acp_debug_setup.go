@@ -162,7 +162,7 @@ func debugProcessTierPossibleOn(goos, tier string, iso tools.Isolation) bool {
 
 // debugSetupFor is what the session at workspace needs to debug.
 func debugSetupFor(ctx context.Context, tier string, iso tools.Isolation, workspace string) debugSetup {
-	st := debugSetup{OS: runtime.GOOS, Tier: tier, Ready: debugTierProblem(tier, iso) == nil, NodeReady: tier != "" && tier != "none"}
+	st := debugSetup{OS: runtime.GOOS, Tier: tier, Ready: debugTierProblem(tier, iso) == nil, NodeReady: nodeTierProblem(tier) == nil}
 	st.ProcessTier = debugProcessTier{Available: debugProcessTierPossible(tier, iso)}
 	if st.ProcessTier.Available {
 		st.ProcessTier.Consented = debugConsented(workspace)

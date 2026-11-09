@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -440,5 +442,41 @@ func TestLaunchResponseIsOneShot(t *testing.T) {
 	case s := <-f.statusGot:
 		t.Fatalf("a second launch verdict: %q", s)
 	default:
+	}
+}
+
+// A source outside the workspace reaches the editor with no path, for any
+// adapter: in frames, output and breakpoints, a link out of it included.
+func TestRelayConfinesSourcePaths(t *testing.T) {
+	f := newFake(t)
+	ws := t.TempDir()
+	out := t.TempDir()
+	if err := os.Symlink(out, filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	f.relay.Confine(ws)
+	in := filepath.Join(ws, "app.go")
+	f.send(t, map[string]any{"seq": 1, "type": "response", "request_seq": 3, "command": "stackTrace", "success": true, "body": map[string]any{
+		"stackFrames": []any{
+			map[string]any{"id": 1, "name": "main", "source": map[string]any{"name": "app.go", "path": in}, "line": 3},
+			map[string]any{"id": 2, "name": "x", "source": map[string]any{"path": "/etc/passwd"}, "line": 1},
+			map[string]any{"id": 3, "name": "y", "source": map[string]any{"name": "s", "path": filepath.Join(ws, "link", "s.go")}, "line": 1},
+			map[string]any{"id": 4, "name": "z", "source": map[string]any{"path": filepath.Join(ws, "..", "up.go")}, "line": 1},
+		}}})
+	f.send(t, map[string]any{"seq": 2, "type": "event", "event": "output", "body": map[string]any{"output": "x", "source": map[string]any{"path": "/root/.ssh/id_rsa"}}})
+	m := f.editor(t)
+	frames := m["body"].(map[string]any)["stackFrames"].([]any)
+	paths := []any{}
+	for _, fr := range frames {
+		paths = append(paths, fr.(map[string]any)["source"].(map[string]any)["path"])
+	}
+	if paths[0] != in || paths[1] != nil || paths[2] != nil || paths[3] != nil {
+		t.Fatalf("paths %v", paths)
+	}
+	if src := frames[1].(map[string]any)["source"].(map[string]any); src["name"] != "passwd" || src["presentationHint"] != "deemphasize" {
+		t.Fatalf("source %v", src)
+	}
+	if ev := f.editor(t); ev["body"].(map[string]any)["source"].(map[string]any)["path"] != nil {
+		t.Fatalf("output %v", ev)
 	}
 }

@@ -350,3 +350,25 @@ func TestDebugOffersNodeBeforeJudging(t *testing.T) {
 		t.Fatalf("judged: %v", reqs)
 	}
 }
+
+// A Node session needs a sandbox: under the none tier, or one not known,
+// the launch is refused before anything is judged or run, as nodeReady says.
+func TestDebugNodeRefusedWithoutASandbox(t *testing.T) {
+	r, id, asked := setupRig(t, "")
+	r.write("app.js", "console.log(1)\n")
+	for _, tier := range []string{"none", ""} {
+		debugTier = func(tools.Bash) string { return tier }
+		m := r.cl.call("_abhed/debug/launch", map[string]any{"sessionId": id, "language": "node", "program": "app.js"})
+		if m.Error == nil || len(*asked) != 0 || !strings.Contains(m.Error.Message, "needs a sandbox") {
+			t.Fatalf("tier %q: launch %+v ran %v", tier, m.Error, *asked)
+		}
+		var st debugSetup
+		r.cl.ok("_abhed/debug/status-tier", map[string]any{"sessionId": id}, &st)
+		if st.NodeReady {
+			t.Fatalf("tier %q: nodeReady", tier)
+		}
+	}
+	if reqs, _ := r.recorded(id, agent.EvActionRequested); len(reqs) != 0 {
+		t.Fatalf("judged: %v", reqs)
+	}
+}

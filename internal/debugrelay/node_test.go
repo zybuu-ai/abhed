@@ -15,24 +15,33 @@ import (
 )
 
 func TestPlanNode(t *testing.T) {
-	ws := t.TempDir()
+	top := t.TempDir()
+	ws := filepath.Join(top, "ws")
+	sub := filepath.Join(ws, "pkg")
+	// Runners in the workspace's node_modules; vitest also in a nested one,
+	// nearer to the cwd, which is the one node takes.
+	for _, d := range []string{"tsx", "ts-node", "jest"} {
+		write(t, filepath.Join(ws, "node_modules", d, "package.json"), "{}")
+	}
+	write(t, filepath.Join(sub, "node_modules", "vitest", "package.json"), "{}")
 	for _, c := range []struct {
 		r       Request
 		display string
+		runner  string
 	}{
-		{Request{Language: Node, Program: "app.js", Args: []string{"-v"}}, "node " + ws + "/app.js -v"},
-		{Request{Language: Node, Program: "app.ts", Runner: RunTsx}, "node --import tsx " + ws + "/app.ts"},
-		{Request{Language: Node, Program: "app.ts", Runner: RunTSNode}, "node --require ts-node/register " + ws + "/app.ts"},
-		{Request{Language: Node, Test: "t/a.test.js"}, "node --test --test-isolation=none " + ws + "/t/a.test.js"},
-		{Request{Language: Node, Test: "sum", Runner: RunVitest}, "node node_modules/vitest/vitest.mjs run --pool=threads --no-file-parallelism sum"},
-		{Request{Language: Node, Test: "sum", Runner: RunJest, Env: map[string]string{"CI": "1"}}, "CI=1 node node_modules/jest/bin/jest.js --runInBand sum"},
+		{Request{Language: Node, Program: "app.js", Args: []string{"-v"}}, "node " + ws + "/app.js -v", ""},
+		{Request{Language: Node, Program: "app.ts", Runner: RunTsx}, "node --import tsx " + ws + "/app.ts", ws + "/node_modules/tsx"},
+		{Request{Language: Node, Program: "app.ts", Runner: RunTSNode}, "node --require " + ws + "/node_modules/ts-node/register " + ws + "/app.ts", ws + "/node_modules/ts-node"},
+		{Request{Language: Node, Test: "t/a.test.js"}, "node --test --test-isolation=none " + ws + "/t/a.test.js", ""},
+		{Request{Language: Node, Test: "sum", Runner: RunVitest, Cwd: "pkg"}, "node " + sub + "/node_modules/vitest/vitest.mjs run --pool=threads --no-file-parallelism sum", sub + "/node_modules/vitest"},
+		{Request{Language: Node, Test: "sum", Runner: RunJest, Cwd: "pkg", Env: map[string]string{"CI": "1"}}, "CI=1 node " + ws + "/node_modules/jest/bin/jest.js --runInBand sum", ws + "/node_modules/jest"},
 	} {
 		spec, err := Plan(c.r, ws, "", "")
 		if err != nil {
 			t.Fatal(c.r, err)
 		}
-		if spec.Display != c.display || !strings.Contains(spec.Command, "exec node -e ") {
-			t.Fatalf("%+v: %q %v", c.r, spec.Display, spec.Launch)
+		if spec.Display != c.display || spec.Runner != c.runner || !strings.Contains(spec.Command, "exec node -e ") {
+			t.Fatalf("%+v: %q %q", c.r, spec.Display, spec.Runner)
 		}
 		if _, ok := spec.Launch["args"]; ok {
 			t.Fatal("a Node launch carries argv, not args")
@@ -49,6 +58,14 @@ func TestPlanNode(t *testing.T) {
 		if _, err := Plan(r, ws, "", ""); err == nil {
 			t.Fatalf("%+v planned", r)
 		}
+	}
+	// A runner only above the workspace is not the workspace's.
+	other := filepath.Join(top, "other")
+	write(t, filepath.Join(top, "node_modules", "vitest", "package.json"), "{}")
+	_, err := Plan(Request{Language: Node, Test: "sum", Runner: RunVitest}, other, "", "")
+	var p *Problem
+	if !errors.As(err, &p) || p.Kind != KindRunner || !strings.Contains(p.Message, "vitest is not installed") {
+		t.Fatalf("a runner above the workspace: %v", err)
 	}
 	if p := NoNode(""); p.Install == nil || p.Install.Language != "node" || MissingAdapter(exitNoNode, "") == nil {
 		t.Fatalf("%+v", p)
@@ -88,7 +105,7 @@ type nodeSession struct {
 	held  []map[string]any
 }
 
-func startNode(t *testing.T, spec Spec) *nodeSession {
+func startNode(t *testing.T, spec Spec, env ...string) *nodeSession {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", spec.Command) // #nosec G204 -- the planned adapter command
@@ -98,7 +115,7 @@ func startNode(t *testing.T, spec Spec) *nodeSession {
 		cmd = exec.CommandContext(ctx, "podman", "run", "--rm", "-i", "--network=none", "-v", root+":"+root, "-w", spec.Cwd, img, "/bin/sh", "-c", spec.Command) // #nosec G204 -- a test's own image
 	}
 	cmd.Dir = spec.Cwd
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), env...)
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	var stderr strings.Builder
@@ -112,6 +129,7 @@ func startNode(t *testing.T, spec Spec) *nodeSession {
 		_ = json.Unmarshal(m, &v)
 		s.msgs <- v
 	}, func(state, message string) { s.state <- state + ":" + message })
+	s.relay.Confine(spec.Cwd) // the workspace, in these tests
 	go func() {
 		_ = s.relay.Pump(stdout)
 		close(s.msgs)
@@ -236,7 +254,7 @@ func (s *nodeSession) stopAt(file string, line int) (thread float64, frame float
 
 func (s *nodeSession) eval(frame float64, expr string) string {
 	s.t.Helper()
-	r := s.call("evaluate", map[string]any{"expression": expr, "frameId": frame, "context": "watch"})
+	r := s.call("evaluate", map[string]any{"expression": expr, "frameId": frame, "context": "repl"})
 	v, _ := r["result"].(string)
 	return v
 }
@@ -344,11 +362,12 @@ func TestNodeDebugsThroughSourceMaps(t *testing.T) {
 	s.finish(thread, "sum 3")
 }
 
-// A worker thread is a thread of its own, stopped at its breakpoint.
+// A worker thread is a thread of its own, stopped at its breakpoint, even
+// one named as the shim's own helper is.
 func TestNodeDebugsAWorkerThread(t *testing.T) {
 	nodeOrSkip(t)
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
-	write(t, filepath.Join(ws, "main.js"), "const { Worker } = require('node:worker_threads');\nnew Worker(__dirname + '/wk.js').on('exit', () => console.log('worker done'));\n")
+	write(t, filepath.Join(ws, "main.js"), "const { Worker } = require('node:worker_threads');\nnew Worker(__dirname + '/wk.js', { name: 'abhed-debug' }).on('exit', () => console.log('worker done'));\n")
 	wk := write(t, filepath.Join(ws, "wk.js"), "const x = 41;\nconsole.log('in worker', x + 1);\n")
 	spec, err := Plan(Request{Language: Node, Program: "main.js"}, ws, "", "")
 	if err != nil {
@@ -405,24 +424,12 @@ func TestNodeDebugsTypeScript(t *testing.T) {
 	s.finish(thread, "sum 3")
 }
 
-// A runner not installed fails the launch with what to do; node missing is
-// the adapter-missing exit.
-func TestNodeRunnerAndNodeMissing(t *testing.T) {
-	nodeOrSkip(t)
+// node missing is the adapter-missing exit.
+func TestNodeMissing(t *testing.T) {
 	ws, _ := filepath.EvalSymlinks(t.TempDir())
-	spec, err := Plan(Request{Language: Node, Test: "sum", Runner: RunVitest}, ws, "", "")
+	spec, err := Plan(Request{Language: Node, Program: "app.js"}, ws, "", "")
 	if err != nil {
 		t.Fatal(err)
-	}
-	s := startNode(t, spec)
-	s.call("initialize", map[string]any{"adapterID": "node"})
-	select {
-	case st := <-s.state:
-		if !strings.HasPrefix(st, "failed:") || !strings.Contains(st, "vitest is not installed") {
-			t.Fatalf("launch: %s", st)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("no launch verdict")
 	}
 	cmd := exec.Command("/bin/sh", "-c", spec.Command) // #nosec G204 -- the planned adapter command
 	cmd.Env = []string{"PATH=" + t.TempDir()}
@@ -495,4 +502,102 @@ func TestNodeProgramThatThrowsEnds(t *testing.T) {
 		t.Fatalf("exit %v", ex)
 	}
 	s.event("terminated")
+}
+
+// A debugger's options in the NODE_OPTIONS the sandbox passes down open no
+// port, in the adapter or the program; other options reach the program.
+func TestNodeInheritedInspectOpensNoPort(t *testing.T) {
+	nodeOrSkip(t)
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	app := write(t, filepath.Join(ws, "app.js"), "let a = 1;\nconsole.log('a', a);\n")
+	for _, c := range []struct{ opts, kept string }{
+		{"--inspect=127.0.0.1:0", "undefined"},
+		{"--inspect-brk=127.0.0.1:0", "undefined"},
+		{"--max-old-space-size=100 --inspect-port 0 --inspect --debug-port=9", `"--max-old-space-size=100"`},
+	} {
+		t.Run(c.opts, func(t *testing.T) {
+			spec, err := Plan(Request{Language: Node, Program: "app.js"}, ws, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := startNode(t, spec, "NODE_OPTIONS="+c.opts, "NODE_INSPECT_RESUME_ON_START=1")
+			s.start(map[string][]int{app: {2}})
+			thread, frame := s.stopAt(app, 2)
+			noListener(t, s.eval(frame, "process.pid"))
+			noListener(t, strconv.Itoa(s.cmd.Process.Pid))
+			if got := s.eval(frame, "require('node:inspector').url()"); got != "undefined" {
+				t.Fatalf("the program's inspector listens at %s", got)
+			}
+			if got := s.eval(frame, "process.env.NODE_OPTIONS"); got != c.kept {
+				t.Fatalf("NODE_OPTIONS %s, want %s", got, c.kept)
+			}
+			s.finish(thread, "a 1")
+		})
+	}
+}
+
+// A breakpoint is verified once set in a loaded script: not before the
+// program runs, announced when it is; at once in a script already loaded.
+func TestNodeBreakpointVerifiedOnceBound(t *testing.T) {
+	nodeOrSkip(t)
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	app := write(t, filepath.Join(ws, "app.js"), "let a = 1;\nlet b = 2;\nconsole.log('sum', a + b);\n")
+	spec, err := Plan(Request{Language: Node, Program: "app.js"}, ws, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := startNode(t, spec)
+	s.call("initialize", map[string]any{"adapterID": "node"})
+	s.event("initialized")
+	bp := func(lines ...int) []any {
+		var want []any
+		for _, l := range lines {
+			want = append(want, map[string]any{"line": l})
+		}
+		return s.call("setBreakpoints", map[string]any{"source": map[string]any{"path": app}, "breakpoints": want})["breakpoints"].([]any)
+	}
+	if got := bp(2); got[0].(map[string]any)["verified"] != false {
+		t.Fatalf("verified before any script loaded: %v", got)
+	}
+	s.call("configurationDone", nil)
+	changed := s.event("breakpoint")
+	if b := changed["breakpoint"].(map[string]any); b["verified"] != true || b["line"] != float64(2) {
+		t.Fatalf("breakpoint event %v", changed)
+	}
+	thread, frame := s.stopAt(app, 2)
+	if got := bp(2, 3); got[1].(map[string]any)["verified"] != true {
+		t.Fatalf("not verified in a loaded script: %v", got)
+	}
+	// Only the console may change the program; a watch may not.
+	seq := s.send("evaluate", map[string]any{"expression": "globalThis.k = 1", "frameId": frame, "context": "watch"})
+	if m := s.wait("watch", func(m map[string]any) bool { return m["type"] == "response" && m["request_seq"] == float64(seq) }); m["success"] != false {
+		t.Fatalf("a watch with a side effect ran: %v", m)
+	}
+	if r := s.call("evaluate", map[string]any{"expression": "globalThis.k = 7", "frameId": frame, "context": "repl"}); r["result"] != "7" {
+		t.Fatalf("repl: %v", r)
+	}
+	s.call("continue", map[string]any{"threadId": thread})
+	s.stopAt(app, 3)
+}
+
+// A source map that is no regular file (a FIFO) is not waited on: the
+// session goes on unmapped.
+func TestNodeMapThatIsAFIFO(t *testing.T) {
+	nodeOrSkip(t)
+	if _, err := exec.LookPath("mkfifo"); err != nil {
+		t.Skip("no mkfifo")
+	}
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	if out, err := exec.Command("mkfifo", filepath.Join(ws, "app.js.map")).CombinedOutput(); err != nil { // #nosec G204 -- a test's own path
+		t.Fatalf("mkfifo: %v %s", err, out)
+	}
+	app := write(t, filepath.Join(ws, "app.js"), "let a = 1;\nconsole.log('a', a);\n//# sourceMappingURL=app.js.map\n")
+	spec, err := Plan(Request{Language: Node, Program: "app.js"}, ws, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := startNode(t, spec)
+	s.start(map[string][]int{app: {2}})
+	thread, _ := s.stopAt(app, 2)
+	s.finish(thread, "a 1")
 }

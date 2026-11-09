@@ -8,7 +8,8 @@ const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 
 const SHIM = __ABHED_SHIM__;
-const HELPER = 'abhed-debug';
+const INHERITED = process.env.ABHED_NODE_OPTIONS;
+delete process.env.ABHED_NODE_OPTIONS;
 // ENTRY matches the URL of every script but those in node_modules.
 const ENTRY = '^(?:file://)?/(?!.*/node_modules/)';
 
@@ -92,6 +93,23 @@ function scriptPath(url) {
   return path.isAbsolute(url) ? url : '';
 }
 
+const MAX_MAP = 16 << 20;
+
+// readMap is a map file's text: a regular file of at most MAX_MAP bytes,
+// opened without waiting (a FIFO named as a map does not block), or null.
+function readMap(p) {
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > MAX_MAP) return null;
+    const buf = Buffer.alloc(st.size);
+    const n = fs.readSync(fd, buf, 0, st.size, 0);
+    return buf.subarray(0, n).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // loadMap reads a script's source map, inline or beside it, or null.
 function loadMap(script) {
   const ref = script.sourceMapURL;
@@ -99,6 +117,7 @@ function loadMap(script) {
   let text;
   try {
     if (ref.startsWith('data:')) {
+      if (ref.length > 2 * MAX_MAP) return null;
       const comma = ref.indexOf(',');
       const meta = ref.slice(5, comma);
       const data = ref.slice(comma + 1);
@@ -106,7 +125,8 @@ function loadMap(script) {
     } else {
       const own = scriptPath(script.url);
       const p = ref.startsWith('file://') ? fileURLToPath(ref) : path.resolve(path.dirname(own || '/'), ref);
-      text = fs.readFileSync(p, 'utf8');
+      text = readMap(p);
+      if (text === null) return null;
     }
     const raw = JSON.parse(text);
     if (raw.version !== 3 || !Array.isArray(raw.sources) || typeof raw.mappings !== 'string') return null;
@@ -268,6 +288,7 @@ class Target {
         if (r) {
           if (!this.set.has(p)) this.set.set(p, []);
           this.set.get(p).push(r.breakpointId);
+          bound(b);
           const at = r.actualLocation || { scriptId, ...loc };
           this.at.add(at.scriptId + ':' + at.lineNumber + ':' + (at.columnNumber || 0));
         }
@@ -341,9 +362,14 @@ class Target {
   }
 }
 
+let helperSeen = false;
+
 async function attachWorker(parent, params) {
   const { sessionId, workerInfo } = params;
-  if (String(workerInfo.title || '').includes(HELPER)) {
+  // The shim's own worker, started before the program: the first one the
+  // main thread reports, by its exact name.
+  if (!helperSeen && parent.id === 1 && /^\[worker \d+\] abhed-debug$/.test(String(workerInfo.title || ''))) {
+    helperSeen = true;
     await parent.call('NodeWorker.detach', { sessionId }).catch(() => {});
     return;
   }
@@ -356,6 +382,16 @@ async function attachWorker(parent, params) {
     await t.setup();
   } catch { /* a worker that ended while it was set up */ }
   await t.call('Runtime.runIfWaitingForDebugger').catch(() => {});
+}
+
+let nextBreakpoint = 1;
+
+// bound marks a breakpoint set somewhere, telling the editor if it was
+// already answered as not yet set.
+function bound(b) {
+  if (b.bound) return;
+  b.bound = true;
+  if (b.told) event('breakpoint', { reason: 'changed', breakpoint: { id: b.id, verified: true, line: b.line } });
 }
 
 // ---- handles for a stop: frames, scopes and objects
@@ -436,10 +472,14 @@ async function onRequest(req) {
         return launch(req, a);
       case 'setBreakpoints': {
         const p = a.source && a.source.path ? path.resolve(a.source.path) : '';
-        const want = (a.breakpoints || []).map((b) => ({ line: b.line, condition: b.condition }));
+        const want = (a.breakpoints || []).map((b) => ({ id: nextBreakpoint++, line: b.line, condition: b.condition }));
         if (p) breakpoints.set(p, want);
         for (const t of targets.values()) if (t.ready) await t.serial(() => t.apply(p));
-        return respond(req, { breakpoints: want.map((b) => ({ verified: !!p, line: b.line })) });
+        // Verified once set in a script that has loaded; one set later is
+        // announced then.
+        const body = { breakpoints: want.map((b) => ({ id: b.id, verified: !!b.bound, line: b.line })) };
+        for (const b of want) b.told = true;
+        return respond(req, body);
       }
       case 'setExceptionBreakpoints': {
         const f = a.filters || [];
@@ -488,11 +528,11 @@ async function onRequest(req) {
         let r;
         if (h && h.frame) {
           r = await h.target.call('Debugger.evaluateOnCallFrame', { callFrameId: h.frame.callFrameId, expression: a.expression,
-            throwOnSideEffect: a.context === 'hover' });
+            throwOnSideEffect: a.context !== 'repl' });
         } else {
           const t = targets.get(1);
           if (!t) throw new Error('the program is not running');
-          r = await t.call('Runtime.evaluate', { expression: a.expression, throwOnSideEffect: a.context === 'hover' });
+          r = await t.call('Runtime.evaluate', { expression: a.expression, throwOnSideEffect: a.context !== 'repl' });
         }
         if (r.exceptionDetails) {
           throw new Error(r.result && r.result.description ? r.result.description.split('\n')[0] : r.exceptionDetails.text);
@@ -501,14 +541,15 @@ async function onRequest(req) {
         return respond(req, { result: v.value, type: v.type, variablesReference: v.variablesReference });
       }
       case 'continue': {
-        const t = threadOf(a);
-        await t.call('Debugger.resume');
+        // Answered at once: a program that runs to its end may be gone
+        // before its inspector replies.
+        threadOf(a).call('Debugger.resume').catch(() => {});
         return respond(req, { allThreadsContinued: false });
       }
       case 'next': case 'stepIn': case 'stepOut': {
         const t = threadOf(a);
         t.why = 'step';
-        await t.call({ next: 'Debugger.stepOver', stepIn: 'Debugger.stepInto', stepOut: 'Debugger.stepOut' }[req.command]);
+        t.call({ next: 'Debugger.stepOver', stepIn: 'Debugger.stepInto', stepOut: 'Debugger.stepOut' }[req.command]).catch(() => {});
         return respond(req);
       }
       case 'pause': {
@@ -539,19 +580,19 @@ function launch(req, a) {
   }
   if (!Array.isArray(a.argv) || !a.argv.length) return fail(req, 'nothing to run');
   const argv = a.argv.slice();
-  for (const r of a.resolve || []) {
-    const found = inModules(a.cwd, a.root, r.rel);
-    if (!found) {
-      return fail(req, r.name + ' is not installed in this workspace: run npm install, or add it with npm install -D ' + r.name);
-    }
-    if (r.index >= 0) argv[r.index] = found;
-  }
   // Node 22 has the test runner's isolation flag under its older name.
   const iso = argv.indexOf('--test-isolation=none');
   if (iso >= 0 && cp.spawnSync(process.execPath, ['--test-isolation=none', '-e', '0']).status !== 0) {
     argv[iso] = '--experimental-test-isolation=none';
   }
-  const env = { ...process.env, ...(a.env || {}), ABHED_NODE_DEBUG: '3' };
+  // NODE_OPTIONS from the sandbox's environment, without a debugger's port;
+  // one the person set in the launch's own env is theirs, judged and shown.
+  const env = { ...process.env };
+  if (INHERITED !== undefined) {
+    const kept = withoutInspect(INHERITED);
+    if (kept) env.NODE_OPTIONS = kept;
+  }
+  Object.assign(env, a.env || {}, { ABHED_NODE_DEBUG: '3' });
   try {
     child = cp.spawn(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(SHIM), ...argv],
       { cwd: a.cwd, env, stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
@@ -568,6 +609,10 @@ function launch(req, a) {
   child.on('exit', (code, signal) => {
     if (ended) return;
     ended = true;
+    for (const t of targets.values()) {
+      for (const c of t.calls.values()) c.reject(new Error('the program has ended'));
+      t.calls.clear();
+    }
     event('exited', { exitCode: code === null ? 128 + (signal === 'SIGKILL' ? 9 : 15) : code });
     event('terminated');
   });
@@ -603,14 +648,29 @@ function launch(req, a) {
   event('initialized');
 }
 
-// inModules is rel in the nearest node_modules from dir up to root, as
-// node looks, or ''.
-function inModules(dir, root, rel) {
-  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
-    const p = path.join(d, 'node_modules', rel);
-    if (fs.existsSync(p)) return p;
-    if (d === path.resolve(root) || d === path.dirname(d)) return '';
+// withoutInspect is NODE_OPTIONS less every --inspect* and --debug* option
+// (and the value of one given apart), split as node splits it.
+function withoutInspect(s) {
+  const words = [];
+  let w = null, quoted = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '"') { quoted = !quoted; w = (w || '') + c; continue; }
+    if (c === '\\' && quoted && i + 1 < s.length) { w = (w || '') + c + s[++i]; continue; }
+    if (!quoted && /\s/.test(c)) { if (w !== null) words.push(w); w = null; continue; }
+    w = (w || '') + c;
   }
+  if (w !== null) words.push(w);
+  const out = [];
+  for (let i = 0; i < words.length; i++) {
+    const bare = words[i].replace(/"/g, '');
+    if (/^--(inspect|debug)(-[a-z-]+)?(=|$)/.test(bare)) {
+      if (/^--(inspect|debug)-port$/.test(bare)) i++;
+      continue;
+    }
+    out.push(words[i]);
+  }
+  return out.join(' ');
 }
 
 async function maybeGo() {

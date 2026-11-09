@@ -123,6 +123,8 @@ type Spec struct {
 	Display string
 	Cwd     string
 	Launch  map[string]any
+	// Runner is the Node runner package the session runs, as found.
+	Runner string
 }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -297,6 +299,99 @@ type Relay struct {
 	terminating bool
 	onEnd       func()
 	endOnce     sync.Once
+	// root is the workspace: a source path outside it is not shown.
+	root string
+}
+
+// Confine keeps the editor from being shown a source path outside root
+// (the workspace): the editor opens a frame's file on the host, where the
+// sandbox's rules do not hold, and the adapter's paths are the program's
+// to choose. Such a source keeps its name, greyed out, and no path.
+func (r *Relay) Confine(root string) {
+	r.mu.Lock()
+	r.root = root
+	r.mu.Unlock()
+}
+
+// confine is raw with every source outside the root stripped of its path.
+func (r *Relay) confine(raw json.RawMessage) json.RawMessage {
+	r.mu.Lock()
+	root := r.root
+	r.mu.Unlock()
+	if root == "" || !strings.Contains(string(raw), `"path"`) {
+		return raw
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	var m map[string]any
+	if dec.Decode(&m) != nil {
+		return raw
+	}
+	changed := false
+	var walk func(v any, source bool)
+	walk = func(v any, source bool) {
+		switch x := v.(type) {
+		case map[string]any:
+			if p, ok := x["path"].(string); ok && source && !underRoot(root, p) {
+				delete(x, "path")
+				if n, _ := x["name"].(string); n == "" {
+					x["name"] = filepath.Base(p)
+				}
+				x["presentationHint"] = "deemphasize"
+				changed = true
+			}
+			for k, c := range x {
+				walk(c, k == "source" || k == "sources")
+			}
+		case []any:
+			for _, c := range x {
+				walk(c, source)
+			}
+		}
+	}
+	walk(m["body"], false)
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// underRoot reports whether p, and where its links lead on this machine,
+// are inside root (as given, or with its links resolved).
+func underRoot(root, p string) bool {
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	roots := []string{root}
+	if r, err := filepath.EvalSymlinks(root); err == nil && r != root {
+		roots = append(roots, r)
+	}
+	in := func(q string) bool {
+		for _, r := range roots {
+			if _, err := inside(r, q); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+	return in(p) && in(resolved(p))
+}
+
+// resolved is p with the links of its longest part that exists resolved.
+func resolved(p string) string {
+	for q := p; ; q = filepath.Dir(q) {
+		if r, err := filepath.EvalSymlinks(q); err == nil {
+			rest, _ := filepath.Rel(q, p)
+			return filepath.Join(r, rest)
+		}
+		if q == filepath.Dir(q) {
+			return p
+		}
+	}
 }
 
 // OnEnd sets what runs once the session is over by the protocol: the adapter
@@ -523,7 +618,7 @@ func (r *Relay) Pump(adapter io.Reader) error {
 			}
 			continue
 		}
-		r.editor(raw)
+		r.editor(r.confine(raw))
 		r.mu.Lock()
 		terminating := r.terminating
 		r.mu.Unlock()
