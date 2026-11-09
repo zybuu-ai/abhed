@@ -183,9 +183,12 @@ func TestRuleUnknownMetaFieldsAreRefused(t *testing.T) {
 		r.cl.refused(errParams, "session/new", map[string]any{"cwd": r.ws, "mcpServers": []any{},
 			"_meta": map[string]any{key: map[string]any{"trust": "untrusted", "allow": []string{"bash(*)"}}}})
 	}
-	for _, method := range []string{"_abhed/trust/grant", "_abhed/policy/set", "_abhed/tool/run", "_abhed/mcp/add"} {
+	for _, method := range []string{"_abhed/trust/grant", "_abhed/policy/set", "_abhed/tool/run", "_abhed/mcp/start"} {
 		r.cl.refused(errNoMethod, method, map[string]any{"cwd": r.ws})
 	}
+	// Adding a server writes the person's own file for later sessions, under the
+	// managed lists; it needs a session of this connection and starts nothing now.
+	r.cl.refused(errParams, "_abhed/mcp/add", map[string]any{"cwd": r.ws, "name": "evil", "command": "/bin/sh"})
 	// MCP servers a client names are not started; the reply says which.
 	var res map[string]any
 	r.cl.ok("session/new", map[string]any{"cwd": r.ws, "mcpServers": []any{map[string]any{"name": "evil", "command": "/bin/sh"}}}, &res)
