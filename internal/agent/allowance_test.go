@@ -78,4 +78,9 @@ func TestAllowanceInDollarsRefusesAnUnpricedModel(t *testing.T) {
 	if c := modelCalls(t, store); len(c) != 1 {
 		t.Fatalf("%d calls", len(c))
 	}
+	// The dollar limit stays known to the budget, for every path that calls
+	// a model, not only the turn boundary.
+	if !l.Budget.USDLimited() {
+		t.Fatal("the budget does not know a dollar limit applies")
+	}
 }

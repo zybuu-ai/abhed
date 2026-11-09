@@ -862,7 +862,9 @@ behaves as the sections above describe.
   `budget.stopped` event of reason `allowance`, carrying `Allowance.Scope`
   and `Allowance.Reason` as its `scope` and `message`. `Allowance.USD`
   marks a dollar limit in force: a model with no price then ends the run
-  with reason `unpriced`, as a dollar cap of the session's own does. An
+  with reason `unpriced`, as a dollar cap of the session's own does, and
+  the session's budget then reports a dollar limit (`Budget.USDLimited`)
+  to every path that calls a model. An
   error, or no answer within 10 seconds, stops the run with scope
   `unavailable`: a limit that cannot be read is not taken as none.
 - **Credential sources.** `secretstore.OpenSource(name, src)` is a secrets

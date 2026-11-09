@@ -43,10 +43,11 @@ func (l *Loop) chargeCall(name string, u model.Usage) *float64 {
 	return &c
 }
 
-// unpricedUnderCap reports a dollar cap set for a model with no price: the
-// run cannot know what a call costs, so it does not make one.
+// unpricedUnderCap reports a dollar limit (the session's cap, or an
+// allowance's) set for a model with no price: the run cannot know what a
+// call costs, so it does not make one.
 func (l *Loop) unpricedUnderCap() bool {
-	if l.Budget == nil || l.Budget.MaxUSD <= 0 {
+	if !l.Budget.USDLimited() {
 		return false
 	}
 	_, ok := l.Budget.Price(l.Adapter.Profile().Name)
@@ -62,6 +63,9 @@ func (l *Loop) recordBudgetStop() {
 	case l.unpricedUnderCap():
 		stop.Reason = "unpriced"
 		stop.Message = fmt.Sprintf("stopped: a budget of $%.2f is set and %s has no price; set one under pricing in the configuration", b.MaxUSD, stop.Model)
+		if b.MaxUSD <= 0 {
+			stop.Message = fmt.Sprintf("stopped: a dollar budget applies and %s has no price; set one under pricing in the configuration", stop.Model)
+		}
 	case b.USDExhausted():
 		stop.Reason = "usd"
 		stop.Message = fmt.Sprintf("stopped: the budget of $%.2f is spent ($%.4f)", b.MaxUSD, b.SpentUSD())
@@ -91,6 +95,9 @@ func (l *Loop) allowanceStop(ctx context.Context) bool {
 		return false
 	}
 	a := l.Budget.Allowance(ctx)
+	if a.USD {
+		l.Budget.allowanceUSD.Store(true)
+	}
 	name := l.Adapter.Profile().Name
 	stop := BudgetStopped{Reason: "allowance", Scope: a.Scope, Model: name, Message: a.Message}
 	switch {
