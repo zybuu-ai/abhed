@@ -86,6 +86,7 @@ type Abhed struct {
 	fenceDenied      *Counter
 	ollama           *Counter
 	lspStarts        *Counter
+	lspDiagnostics   *Counter
 	completions      *Counter
 	completionTokens *Counter
 	nextEdits        *Counter
@@ -192,6 +193,8 @@ func New() *Abhed {
 			"Commit messages editors asked for, by outcome (served, empty, failed).", "outcome"),
 		lspStarts: r.Counter("abhed_lsp_starts_total",
 			"Language servers started for editors, by language; a restart after a crash counts again.", "language"),
+		lspDiagnostics: r.Counter("abhed_lsp_diagnostics_total",
+			"Language server diagnostics after the agent's edits, by language and outcome (found, clean, timed_out, skipped).", "language", "outcome"),
 		lspRequests: r.Counter("abhed_lsp_messages_total",
 			"Editor messages to language servers, by language and outcome (passed, refused), counted when each server ends.", "language", "outcome"),
 		ollama: r.Counter("abhed_ollama_actions_total",
@@ -303,8 +306,22 @@ func (m *Abhed) Observe(ev agent.Event) {
 		}
 	case string(agent.EvLSPStarted):
 		var p agent.LSPStarted
-		if json.Unmarshal(ev.Payload, &p) == nil {
+		if json.Unmarshal(ev.Payload, &p) == nil && p.Purpose == "" {
 			m.lspStarts.Add(1, oneOf(p.Language, lspLangs))
+		}
+	case string(agent.EvLSPDiagnostics):
+		var p agent.LSPDiagnostics
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			outcome := "found"
+			switch {
+			case p.Skipped != "":
+				outcome = "skipped"
+			case p.TimedOut:
+				outcome = "timed_out"
+			case p.Total == 0:
+				outcome = "clean"
+			}
+			m.lspDiagnostics.Add(1, oneOf(p.Language, lspLangs), outcome)
 		}
 	case string(agent.EvLSPStopped):
 		var p agent.LSPStopped

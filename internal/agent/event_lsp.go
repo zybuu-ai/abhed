@@ -20,6 +20,9 @@ type LSPStarted struct {
 	Tier    string `json:"tier"`
 	// Restart counts the restarts after a crash that came before this start.
 	Restart int `json:"restart,omitempty"`
+	// Purpose is "diagnostics" for a server the engine runs to give the
+	// agent diagnostics after its edits; empty for a person's editor.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // LSPStopped is the payload of lsp.stopped.
@@ -31,7 +34,8 @@ type LSPStopped struct {
 	Reason   string `json:"reason"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 	// Requests and Refused count the editor's messages passed and refused.
-	Requests   int   `json:"requests"`
-	Refused    int   `json:"refused"`
-	DurationMS int64 `json:"duration_ms"`
+	Requests   int    `json:"requests"`
+	Refused    int    `json:"refused"`
+	DurationMS int64  `json:"duration_ms"`
+	Purpose    string `json:"purpose,omitempty"`
 }

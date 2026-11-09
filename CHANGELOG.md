@@ -35,6 +35,21 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- The agent is given a language server's diagnostics after each write or
+  edit, in the CLI and the editor protocol. The server is the one Studio
+  runs, started in the session's sandbox with the engine's safe settings,
+  once per language, and only where policy and the supervisor allow its
+  command (`tools.diagnostics`: `auto`, the default; `on` also answers the
+  plain ask a mode gives it; `off`). At most `tools.diagnostics_max` (20)
+  are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
+  (3000). Off where there is no sandbox or no server installed. Each is
+  recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`
+  and `lsp.stopped` with `purpose: diagnostics`, and counted in
+  `abhed_lsp_diagnostics_total`. A workspace file may only turn them off or
+  lower the bounds. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of

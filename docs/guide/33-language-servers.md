@@ -189,6 +189,49 @@ messages are refused as "restarting" rather than lost. After the fifth, or
 when a restart is refused, Studio gets `status: ended`. Closing the session
 records `closed`.
 
+## Diagnostics after the agent's edits
+
+The agent gets a language server's diagnostics for each file its `write` or
+`edit` changed, in the CLI and in Studio alike, appended to the tool's
+result:
+
+```
+Created a.go (23 bytes, 3 lines).
+
+[gopls diagnostics for a.go: 1 errors, 0 warnings, 1 in all]
+a.go:3:9: error: undefined: y (compiler)
+```
+
+This is the server above, run by the engine rather than an editor: one per
+language per session, started on the first change to a file of that
+language, in the session's sandbox, with the engine's settings and
+`sandbox.language_servers` over the defaults. Its own requests are answered
+by the engine: settings are the engine's, an edit it asks for is not
+applied, nothing is opened. The engine sends the file's content as it is on
+disk after the change and takes the server's next report for it.
+
+| Setting | Default | |
+|---|---|---|
+| `tools.diagnostics` | `auto` | `auto` starts a server only where policy and the supervisor allow its command line outright, as a `bash` call (an allow rule such as `bash(gopls)`, or bypass mode); `on` also takes the setting as the answer to the plain ask a mode gives an unlisted command; `off` never |
+| `tools.diagnostics_max` | 20 | diagnostics given per file, most severe first (at most 200); the rest are counted |
+| `tools.diagnostics_wait_ms` | 3000 | how long an edit waits for them (at most 30000); a server not ready by then gives none for that edit |
+
+Nobody is asked: under `auto` in the default mode the start is an ask, so
+no server runs until an allow rule names it. A deny rule, a rule's ask and
+the supervisor's word hold under `on` too. Diagnostics are off, with nothing
+recorded, where commands have no sandbox, the server is not installed, or
+the file is not Go, Python, TypeScript, JavaScript or Rust. A
+`rust-analyzer.toml` in the workspace keeps rust-analyzer from starting
+(nobody is there to be asked), and one written while it runs stops it. A
+server that fails to start, or ends on its own three times, is off for the
+session. A workspace file may only set `off` and lower the bounds.
+
+Recorded: `lsp.started` and `lsp.stopped` with `purpose: diagnostics` (not
+counted in `abhed_lsp_starts_total`), and `lsp.diagnostics` per change with
+the counts, `timed_out`, or `skipped` and why, counted in
+`abhed_lsp_diagnostics_total` by language and outcome. Subagents do not get
+diagnostics.
+
 ## Network
 
 A server works with what the sandbox can reach. With the network off,

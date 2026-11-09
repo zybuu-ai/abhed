@@ -157,6 +157,9 @@ var orgRules = map[string]orgRule{
 	"tools.bash_checkpoints":      {orgTighten, ""},
 	"tools.bash_checkpoint_mb":    {orgPinned, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {orgPinned, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {orgTighten, ""},
+	"tools.diagnostics_max":       {orgTighten, ""},
+	"tools.diagnostics_wait_ms":   {orgTighten, ""},
 
 	"web_search.enabled":     {orgTighten, ""},
 	"web_search.max_results": {orgTighten, ""},

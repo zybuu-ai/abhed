@@ -286,6 +286,7 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
 		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
 		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
+		diagnostics := cfg.Tools.Diagnostics
 		network := cfg.Network.clone()
 		if _, err := mergeData(cfg, path, data); err != nil {
 			return st, err
@@ -301,6 +302,10 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
+		if diagnosticsRank[cfg.Tools.Diagnostics] < diagnosticsRank[diagnostics] {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics", "a workspace may only turn diagnostics off",
+				func() { cfg.Tools.Diagnostics = diagnostics })
+		}
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -855,6 +860,9 @@ var workspaceRules = map[string]fieldRule{
 	"tools.bash_checkpoints":      {onlyRequired, "only required"},
 	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {onlyDiagnosticsOff, "only off"},
+	"tools.diagnostics_max":       {lower(func(c *Config) *int { return &c.Tools.DiagnosticsMax }, zeroIs(20)), "only lower"},
+	"tools.diagnostics_wait_ms":   {lower(func(c *Config) *int { return &c.Tools.DiagnosticsWaitMS }, zeroIs(3000)), "only lower"},
 
 	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
@@ -1050,6 +1058,19 @@ func onlyRegistriesOff(dst, ws *Config) bool {
 	dst.Sandbox.ToolchainsRegistries = "off"
 	return true
 }
+
+// onlyDiagnosticsOff applies a workspace's tools.diagnostics only when it
+// turns diagnostics off: a server is a process started after an edit.
+func onlyDiagnosticsOff(dst, ws *Config) bool {
+	if ws.Tools.Diagnostics != "off" {
+		return false
+	}
+	dst.Tools.Diagnostics = "off"
+	return true
+}
+
+// diagnosticsRank orders tools.diagnostics from loosest to strictest.
+var diagnosticsRank = map[string]int{"on": 0, "": 1, "auto": 1, "off": 2}
 
 // listenRank orders sandbox.listen from loosest to strictest.
 var listenRank = map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}

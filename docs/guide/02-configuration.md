@@ -59,7 +59,7 @@ configuration](#trusting-the-workspace-configuration).
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
-| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash) |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash); `diagnostics` (`auto`, `on` or `off`), `diagnostics_max` (20) and `diagnostics_wait_ms` (3000): a language server's diagnostics after the agent's edits — [Language servers](33-language-servers.md#diagnostics-after-the-agents-edits) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 | `verify` | whether each answer is checked against the session's record (`off`, `label`, `strict`), the critic, and the completion contract — [below](#verified-answers), [Verified answers](29-verified-answers.md) |
 | `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
@@ -1353,6 +1353,7 @@ wrote:
 | `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
 | `abhed_fence_denied_total` | `source` (the fence tier's system-call profile, as its `fence.denied` names it), `call` (a system call that profile refuses) |
 | `abhed_lsp_starts_total` | `language` (`go`, `python`, `typescript`, `javascript`, `rust`, or `other`): language servers started for editors; a restart after a crash counts again — [Language servers](33-language-servers.md) |
+| `abhed_lsp_diagnostics_total` | `language`, `outcome` (`found`, `clean`, `timed_out`, `skipped`): language server diagnostics after the agent's edits — [Language servers](33-language-servers.md#diagnostics-after-the-agents-edits) |
 | `abhed_lsp_messages_total` | `language`, `outcome` (`passed`, `refused`): editors' messages to language servers, counted when each server ends |
 | `abhed_ollama_actions_total` | `op` (`start`, `install`, `pull`), `outcome` (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`): a person's attempts to get a local Ollama model working — [A local Ollama model](03-providers.md#a-local-ollama-model) |
 | `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |

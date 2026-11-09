@@ -299,6 +299,9 @@ type Loop struct {
 	// Verify, when set, checks each completed run's answer against the
 	// record before the run ends; see Verifier. Nil checks nothing.
 	Verify *Verifier
+	// Diagnostics, when set, gives the agent a language server's diagnostics
+	// for each file its write or edit changed. Nil gives none.
+	Diagnostics Diagnoser
 	// OwnerActive, when set, is asked before a woken run calls the model
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
@@ -2090,6 +2093,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
+	l.diagnose(ctx, call, &result)
 	if _, isTask := tool.(Task); isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}
