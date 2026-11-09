@@ -1475,7 +1475,7 @@ func (ix *recordIndex) success(pool []*obsRec, testish string, scope []string, c
 			return finding{out: missing, why: fmt.Sprintf("the last such run, #%d, ran no test", o.seq)}
 		}
 		if testish == "test" {
-			if d := goPackageUntested(o, scopeDirs); d != "" {
+			if d := ix.goPackageUntested(o, scopeDirs); d != "" {
 				return finding{out: missing, why: fmt.Sprintf("the last such run, #%d, shows no test of %s passing", o.seq, d)}
 			}
 		}

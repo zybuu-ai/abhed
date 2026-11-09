@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Test and build runs, as the checks read them: what kind of run a command
@@ -510,10 +511,24 @@ func messageTests(p string) (names []string, ok bool) {
 	if whole || len(names) == 0 {
 		return nil, false
 	}
-	// What is left may say "the tests" or "run the tests", nothing more.
+	// What is left may say "the tests" or "run the tests", name a file
+	// that is not a test, and otherwise hold only connective words.
 	left := plainTestsRe.ReplaceAllString(strings.ToLower(string(rest)), " ")
-	if otherTestsRe.MatchString(left) {
-		return nil, false
+	left = codePathRe.ReplaceAllStringFunc(left, func(w string) string {
+		if strings.Contains(w, "test") || strings.Contains(w, "spec") {
+			return w
+		}
+		return " "
+	})
+	for _, r := range left {
+		if r > unicode.MaxASCII && unicode.IsLetter(r) {
+			return nil, false // another language: not read, so not narrowed
+		}
+	}
+	for _, w := range leftWordRe.FindAllString(left, -1) {
+		if !connectives[w] {
+			return nil, false
+		}
 	}
 	return names, true
 }
@@ -521,10 +536,22 @@ func messageTests(p string) (names []string, ok bool) {
 var (
 	// plainTestsRe is "the tests" with nothing qualifying it.
 	plainTestsRe = regexp.MustCompile(`(?:\b(?:run|rerun|re-run)\s+)?\bthe\s+tests?\b`)
-	// otherTestsRe is any other mention of tests, a runner or CI, or "also"
-	// and "too", left in a message once its runner commands are taken out.
-	otherTestsRe = regexp.MustCompile(`test|spec|suite|\bci\b|e2e|end-to-end|integration|\b(?:npm|pnpm|yarn|bun|make|gmake|cargo|tox|nox|jest|vitest|mocha|rspec|phpunit|ctest|mvn|gradle|gradlew|dotnet|bazel|unittest|pytest)\b|\balso\b|\btoo\b|as well`)
+	// codePathRe is a file path or file name in a message (src/utils/text.py).
+	codePathRe = regexp.MustCompile(`[a-z0-9_.\-]*(?:/[a-z0-9_.\-]+)+|\b[a-z0-9_\-]+\.[a-z][a-z0-9]{0,5}\b`)
+	// leftWordRe is a word of what is left; an apostrophe stays in it.
+	leftWordRe = regexp.MustCompile(`[a-z]+(?:'[a-z]+)?`)
 )
+
+// connectives are the only words a message may hold beside the runner
+// commands it names and "the tests" for those to be what "the tests"
+// means. Any other word (a negation, a contrast, another check, the build,
+// lint, CI) leaves the whole suite.
+var connectives = map[string]bool{
+	"fix": true, "it": true, "fails": true, "failing": true, "failed": true, "and": true, "then": true,
+	"please": true, "run": true, "tell": true, "me": true, "the": true, "a": true, "result": true,
+	"so": true, "that": true, "pass": true, "passes": true, "make": true, "sure": true, "now": true,
+	"these": true, "this": true, "test's": true, "its": true, "error": true, "broken": true,
+}
 
 // wordAt is a whitespace-separated word and where it ends in its text.
 type wordAt struct {
@@ -638,27 +665,39 @@ func (ix *recordIndex) packageShadows(words []string, dir string) bool {
 }
 
 // goPackageUntested is the first folder a scoped claim names whose own
-// package a go test run does not show passing a test: its result line is
-// "?" ([no test files]), says [no tests to run], or is missing; "" when
-// each has an ok line of its own (in -json output, a passing test). A
-// claim of everything beneath a folder needs one such package under it.
-// Only go test runs are read; any other is "".
-func goPackageUntested(o *obsRec, scope []string) string {
+// package a go test run does not show passing a test, or "". The package
+// is the folder's exact import path, from the module path in the nearest
+// go.mod at or above the run's folder, inside the workspace: no line for
+// it, a "?" ([no test files]) or [no tests to run] line, or no passing test
+// in -json output, and it shows nothing. A claim of everything beneath a
+// folder needs one such package at or under its path. With no go.mod to
+// read, the package cannot be told, and the claim is left unverified.
+func (ix *recordIndex) goPackageUntested(o *obsRec, scope []string) string {
 	if len(o.line.final) < 2 || filepath.Base(o.line.final[0]) != "go" || len(scope) == 0 {
 		return ""
 	}
 	dir := filepath.Clean(o.line.finalCwd)
+	root, module := ix.goModule(dir)
 	passed := goPassedPackages(o.content)
 	for _, c := range scope {
 		c, rec := recursiveScope(c)
-		rel, err := filepath.Rel(dir, c)
-		if err != nil || rel == "." && !rec || strings.HasPrefix(rel, "..") {
+		if rel, err := filepath.Rel(dir, c); err != nil || rel == "." && !rec || strings.HasPrefix(rel, "..") {
 			continue // the run's own folder: judged as the whole run
 		}
-		rel = filepath.ToSlash(rel)
+		if module == "" {
+			return filepath.ToSlash(c)
+		}
+		rel, err := filepath.Rel(root, c)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(c)
+		}
+		want := module
+		if rel != "." {
+			want += "/" + filepath.ToSlash(rel)
+		}
 		found := false
 		for _, pkg := range passed {
-			if strings.HasSuffix(pkg, "/"+rel) || pkg == rel || rec && (rel == "." || strings.Contains(pkg+"/", "/"+rel+"/")) {
+			if pkg == want || rec && strings.HasPrefix(pkg, want+"/") {
 				found = true
 				break
 			}
@@ -668,6 +707,32 @@ func goPackageUntested(o *obsRec, scope []string) string {
 		}
 	}
 	return ""
+}
+
+// goModuleRe is a go.mod's module line.
+var goModuleRe = regexp.MustCompile(`(?m)^module\s+"?([^\s"/][^\s"]*)"?\s*$`)
+
+// goModule is the folder and module path of the nearest go.mod at or above
+// dir and inside the workspace; "" when none can be read.
+func (ix *recordIndex) goModule(dir string) (string, string) {
+	if ix.readFile == nil || ix.workDir == "" {
+		return "", ""
+	}
+	top := filepath.Clean(ix.workDir)
+	for d := dir; ; d = filepath.Dir(d) {
+		if d != top && !strings.HasPrefix(d, top+"/") {
+			return "", ""
+		}
+		if b, err := ix.readFile(filepath.Join(d, "go.mod")); err == nil {
+			if m := goModuleRe.FindSubmatch(b); m != nil {
+				return d, string(m[1])
+			}
+			return "", ""
+		}
+		if d == top {
+			return "", ""
+		}
+	}
 }
 
 // goPassedPackages are the packages a go test run's output shows passing

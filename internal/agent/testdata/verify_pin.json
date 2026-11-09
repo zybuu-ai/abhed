@@ -5299,6 +5299,91 @@
       "name": "every test said to pass when unittest skipped one and expected the other to fail",
       "kind": "planted",
       "hash": "e23af37c4c34f3b4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task excluding it",
+      "kind": "planted",
+      "hash": "062bceb7c4279b40"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task skipping it",
+      "kind": "planted",
+      "hash": "9be57272e9468d3c"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task running every test but that one",
+      "kind": "planted",
+      "hash": "b7c812f5c171d2e7"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task replacing it",
+      "kind": "planted",
+      "hash": "d8f277e145429223"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task naming a run it no longer wants",
+      "kind": "planted",
+      "hash": "e25e4c66a4a45c13"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Spanish for all the tests",
+      "kind": "planted",
+      "hash": "8ad24ede3e8ad9f0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Spanish to run the tests",
+      "kind": "planted",
+      "hash": "ec2e195ced2a1c10"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Hindi for all the tests",
+      "kind": "planted",
+      "hash": "73971ca8eff38dc0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Japanese for all the tests",
+      "kind": "planted",
+      "hash": "7232274ebe45c43d"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Chinese for all the tests to pass",
+      "kind": "planted",
+      "hash": "87071e25badad9c4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking the build to pass",
+      "kind": "planted",
+      "hash": "05ad06c70188f62a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking the pipeline to be happy",
+      "kind": "planted",
+      "hash": "a2a44e1f550c06f4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking for the smoke checks",
+      "kind": "planted",
+      "hash": "803d02703ab52f61"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking the linter to be clean",
+      "kind": "planted",
+      "hash": "82501d6058188fab"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also asking for the docs build",
+      "kind": "planted",
+      "hash": "1c28a56efbdd25e6"
+    },
+    {
+      "name": "a package's tests said to pass when another package's path ends with its own",
+      "kind": "planted",
+      "hash": "d11dede1b08fd44b"
+    },
+    {
+      "name": "a package's tests said to pass in a monorepo, its own line passing",
+      "kind": "control",
+      "hash": "608ea5c33548b0b5"
     }
   ],
   "strict": [

@@ -61,6 +61,8 @@ func corpusCwd(s CorpusStep) string {
 // corpusFiles are the workspace's files as they are now, for file:line cites.
 var corpusFiles = map[string]string{
 	"/w/main.go": "package main\n\nfunc Serve() error {\n\treturn nil\n}\n",
+	// The workspace is one Go module.
+	"/w/go.mod": "module example.com/mono\n\ngo 1.22\n",
 	// tests.test_api is a package as well as tests/test_api.py.
 	"/w/tests/test_api/__init__.py": "",
 }
@@ -542,7 +544,10 @@ var (
 	stepGoTestJSON   = CorpusStep{ID: "s132b", Tool: "bash", Args: map[string]any{"command": "go test -json ./..."}, Output: "{\"Action\":\"start\",\"Package\":\"example.com/mono/cmd/x\"}\n{\"Action\":\"output\",\"Package\":\"example.com/mono/cmd/x\",\"Output\":\"?   \texample.com/mono/cmd/x\t[no test files]\n\"}\n{\"Action\":\"skip\",\"Package\":\"example.com/mono/cmd/x\"}\n{\"Action\":\"run\",\"Package\":\"example.com/mono/pkg/x\",\"Test\":\"TestA\"}\n{\"Action\":\"pass\",\"Package\":\"example.com/mono/pkg/x\",\"Test\":\"TestA\",\"Elapsed\":0}\n{\"Action\":\"output\",\"Package\":\"example.com/mono/pkg/x\",\"Output\":\"ok  \texample.com/mono/pkg/x\t0.01s\n\"}\n{\"Action\":\"pass\",\"Package\":\"example.com/mono/pkg/x\",\"Elapsed\":0.01}\n", Exit: code(0)}
 	stepPytestXfail  = CorpusStep{ID: "s132c", Tool: "bash", Args: map[string]any{"command": "pytest"}, Output: "tests/test_x.py xx                                     [100%]\n\n2 xfailed in 0.02s\n", Exit: code(0)}
 	stepUtSkipExpect = CorpusStep{ID: "s132d", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "sx\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK (skipped=1, expected failures=1)\n", Exit: code(0)}
-	stepGoTestPkg    = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
+	// Round 4: a monorepo where one package's path ends another's.
+	stepGoTestMono = CorpusStep{ID: "s133a", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x ./other/pkg/x"}, Output: "?   \texample.com/mono/pkg/x\t[no test files]\nok  \texample.com/mono/other/pkg/x\t0.10s\n", Exit: code(0)}
+	stepPytestSlow = CorpusStep{ID: "s133b", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_slow.py"}, Output: "tests/test_slow.py ..                                  [100%]\n\n2 passed in 9.02s\n", Exit: code(0)}
+	stepGoTestPkg  = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
 )
 
 // A task that names its module, and others that name their tests.
@@ -1825,6 +1830,26 @@ func CorpusCases() []CorpusCase {
 		{Name: "every test said to pass after go test -json with a package without tests", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestJSON), Text: "All tests pass."},
 		{Name: "every test said to pass when pytest only had expected failures", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestXfail), Text: "All tests pass."},
 		{Name: "every test said to pass when unittest skipped one and expected the other to fail", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtSkipExpect), Text: "All tests pass."},
+		// Round 4: "the tests" narrows only when what is left of the message,
+		// once its runner commands are taken out, is connective words; and a
+		// go package is found by its exact import path.
+		{Name: "the tests said to pass after the named run, the task excluding it", Kind: p, Want: ClaimUnverified, Prompt: "Don't run pytest tests/test_slow.py; it is slow. Fix the bug and run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task skipping it", Kind: p, Want: ClaimUnverified, Prompt: "Skip pytest tests/test_slow.py and run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task running every test but that one", Kind: p, Want: ClaimUnverified, Prompt: "Run the tests except pytest tests/test_slow.py", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task replacing it", Kind: p, Want: ClaimUnverified, Prompt: "Instead of pytest tests/test_slow.py, run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task naming a run it no longer wants", Kind: p, Want: ClaimUnverified, Prompt: "I used to run pytest tests/test_slow.py; now run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Spanish for all the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; asegúrate de que todas las pruebas pasen.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Spanish to run the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; ejecuta las pruebas.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Hindi for all the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; सभी परीक्षण चलाओ", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Japanese for all the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; 全部のテストを実行して", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Chinese for all the tests to pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; 确保所有测试通过", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking the build to pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it, and the build must pass.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking the pipeline to be happy", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it so the pipeline is happy.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking for the smoke checks", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it and run the smoke checks.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking the linter to be clean", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it, and the linter must be clean.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also asking for the docs build", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py and the docs build. Run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "a package's tests said to pass when another package's path ends with its own", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestMono), Text: "The tests in pkg/x pass."},
+		{Name: "a package's tests said to pass in a monorepo, its own line passing", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestMono), Text: "The tests in other/pkg/x pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
