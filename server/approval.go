@@ -488,6 +488,12 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			if approver == "anonymous" {
 				approver = ""
 			}
+			// DenyPending wrote the row, and the turn read it before the
+			// request was marked as the system's: it is the system's all the same.
+			if approver == systemApprover {
+				agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: "no answer within the job's approval timeout"})
+				return false, nil
+			}
 			agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Approver: approver, Granted: scope})
 			return approved, nil
 

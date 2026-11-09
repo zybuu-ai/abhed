@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/egress"
 )
 
@@ -46,7 +47,7 @@ func (s *Server) DenyPending(ctx context.Context, tenant, owner, id, requestID, 
 	durableID := p.DurableID
 	live.mu.Unlock()
 	if d := s.approvalStore(); d != nil && durableID != "" {
-		answered, err := d.AnswerApproval(ctx, durableID, false, "", "system")
+		answered, err := d.AnswerApproval(ctx, durableID, false, "", systemApprover)
 		if err != nil || !answered {
 			return false
 		}
@@ -59,6 +60,10 @@ func (s *Server) DenyPending(ctx context.Context, tenant, owner, id, requestID, 
 	live.mu.Unlock()
 	return held || durableID != ""
 }
+
+// systemApprover is who a row DenyPending answered names. No account can
+// hold it: an owner under the nobody prefix owns nothing and answers nothing.
+const systemApprover = auth.NobodyPrefix + "system-timeout"
 
 // UpstreamTransport sends an edition's own outbound requests, such as a
 // notice to an operator's webhook, through the upstream proxy the operator
