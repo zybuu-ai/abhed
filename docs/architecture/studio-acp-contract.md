@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `mcp.add`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `mcp.check`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -1008,25 +1008,33 @@ interface Capabilities {
   restarted server lives as long as the session, not the request. `error` here and in `mcp[]` is
   redacted text; `refusedTools` names are untrusted text with hidden
   characters marked.
-- **Adding and removing MCP servers** (1.3.0; `mcp.add` in `features`).
-  They write the person's own `~/.abhed/config.json` with the same checks
-  and change log as `abhed mcp add|remove`; Studio's modal is the person's
-  agreement in place of the terminal's confirmation.
+- **Adding and removing MCP servers** (1.3.0; `mcp.check` in `features`).
+  Adding a server widens the harness, so it is not an ACP method (§2.1,
+  §2.3); `_abhed/mcp/add` does not exist.
   - `_abhed/mcp/check {sessionId, name, command?, args?, url?, env?,
-    headersEnv?, allowTools?}` → `{file, description}`, before Studio asks.
-    Exactly one of `command` and `url`. `env` holds variable names only: the
-    server gets the person's own value of each, so no value is written.
-    `headersEnv` maps a header to the variable it is read from (URL servers).
-  - `_abhed/mcp/add` with the same params → `{added: true, file}`, recorded
-    `mcp.status {server, op: "add", status: "added", by: "user"}`. The server
-    is enabled for sessions started afterwards.
+    headersEnv?, allowTools?}` → `{file, description, kind, sha256}`. Read
+    only: it writes nothing. Exactly one of `command` and `url`. `env` holds
+    variable names only: the server gets the person's own value of each, so
+    no value is written. `headersEnv` maps a header to the variable it is
+    read from (URL servers). `sha256` is the hash of the entry that would be
+    written.
+  - Studio then shows `description` in a modal whose default is No, and on a
+    yes its main process runs the engine's own command line with an argv
+    array: `abhed mcp add -confirm-fd 3 -sha256 <sha256> [-env NAME]…
+    [-header-env H=VAR]… [-allow-tools a,b] NAME COMMAND [ARGS…]` (or `NAME
+    URL`), writing `y` on the inherited descriptor 3 in place of a terminal.
+    The command line refuses an entry whose hash differs from `-sha256`, and
+    re-checks the managed configuration's servers and MCP lists under the
+    file's lock.
   - `_abhed/mcp/remove {sessionId, name}` → `{removed: true, file}`, recorded
-    `op: "remove"`; it narrows, so it needs no agreement.
-  - Refusals: -32602 for a bad name, command or URL, an env value, or an
-    unknown field; -32001 when the managed configuration sets
+    `mcp.status {server, op: "remove", status: "removed", kind, sha256, by:
+    "user"}`; it narrows, so it needs no agreement.
+  - Refusals: -32602 for a bad name, command or URL, an env value, an unknown
+    field or session; -32001 when the managed configuration sets
     `mcp.servers`, or its `mcp.allowed`/`mcp.denied` refuse the server (it
-    would never start), and inside an agent's command; -32000 when the file
-    already has a server of that name or cannot be written.
+    would never start), and inside an agent's command, recorded as
+    `config.refused {key: "mcp.servers", value: "<name> sha256:<hash>",
+    principal}`; -32000 when the file already has a server of that name.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -1765,7 +1773,7 @@ them.
 | *new* `model.fallback` | system | from, to, reason |
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
-| `mcp.status` | user | server, op (`restart`, `add`, `remove`), status, error |
+| `mcp.status` | user | server, op (`restart`, `remove`), status, error, kind and sha256 (remove) |
 | `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
@@ -1806,7 +1814,7 @@ table.
 | Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
-| MCP add and remove | `_abhed/mcp/check`, `_abhed/mcp/add`, `_abhed/mcp/remove` | ext | done (1.3.0; `mcp.add` in `features`) |
+| MCP check and remove (add is the command line) | `_abhed/mcp/check`, `_abhed/mcp/remove` | ext | done (1.3.0; `mcp.check` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |

@@ -48,6 +48,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		fmt.Fprintln(cio.err, "usage: abhed mcp list\n"+
 			"       abhed mcp add [-env KEY[=VALUE]]... [-header-env HEADER=VAR]... [-allow-tools a,b] NAME COMMAND [ARGS...]\n"+
 			"       abhed mcp add [-header-env HEADER=VAR]... [-allow-tools a,b] NAME https://URL\n"+
+			"         either add also takes -sha256 HEX (only that entry) and -confirm-fd N (the yes from an inherited descriptor, for an editor)\n"+
 			"       abhed mcp remove NAME\n"+
 			"  Servers are added to ~/.abhed/config.json, enabled, after a confirmation at a terminal.")
 		return 2
@@ -68,14 +69,22 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 		}
 		return fail0(mcpRemove(args[1], cio.out), fail)
 	case "add":
-		s, err := parseMCPAdd(args[1:], cio.err)
+		s, o, err := parseMCPAddOpts(args[1:], cio.err)
 		if errors.Is(err, errUsage) {
 			return usage()
 		}
 		if err != nil {
 			return fail(err)
 		}
-		return fail0(mcpAdd(s, cio), fail)
+		if o.confirmFD != 0 {
+			f := os.NewFile(uintptr(o.confirmFD), "confirm") // #nosec G115 -- checked to be 3 or above
+			if f == nil {
+				return fail(fmt.Errorf("-confirm-fd %d is not open", o.confirmFD))
+			}
+			defer func() { _ = f.Close() }()
+			cio.in, cio.terminal = f, true
+		}
+		return fail0(mcpAdd(s, o.sha256, cio), fail)
 	}
 	return usage()
 }
@@ -89,23 +98,39 @@ func fail0(err error, fail func(error) int) int {
 
 var errUsage = errors.New("usage")
 
+// mcpAddOpts are add's flags for an editor's main process: where the yes is
+// read from instead of a terminal, and the entry the person was shown.
+type mcpAddOpts struct {
+	confirmFD int
+	sha256    string
+}
+
 // parseMCPAdd reads add's flags and words into a server entry, enabled.
 func parseMCPAdd(args []string, errw io.Writer) (config.MCPServerConfig, error) {
+	s, _, err := parseMCPAddOpts(args, errw)
+	return s, err
+}
+
+func parseMCPAddOpts(args []string, errw io.Writer) (config.MCPServerConfig, mcpAddOpts, error) {
 	var s config.MCPServerConfig
+	var o mcpAddOpts
 	var envs, headers, allowTools multiFlag
 	fs := flag.NewFlagSet("mcp add", flag.ContinueOnError)
 	fs.SetOutput(errw)
+	fs.IntVar(&o.confirmFD, "confirm-fd", 0, "read the yes from this inherited descriptor (3 or above) instead of a terminal, for an editor that asked the person")
+	fs.StringVar(&o.sha256, "sha256", "", "add only if the entry's SHA-256 is this, the one the person was shown")
 	fs.Var(&envs, "env", "KEY=VALUE for a command server's environment, or KEY to pass your own value (repeatable)")
 	fs.Var(&headers, "header-env", "HEADER=VAR: send header HEADER with the value of environment variable VAR (repeatable)")
 	fs.Var(&allowTools, "allow-tools", "comma-separated tools to offer (repeatable); none offers all")
 	if err := fs.Parse(args); err != nil {
-		return s, errUsage
+		return s, o, errUsage
 	}
 	words := fs.Args()
-	if len(words) < 2 {
-		return s, errUsage
+	if len(words) < 2 || (o.confirmFD != 0 && o.confirmFD < 3) {
+		return s, o, errUsage
 	}
-	return newMCPServer(words[0], words[1], words[2:], envs, headers, splitLists(allowTools))
+	s, err := newMCPServer(words[0], words[1], words[2:], envs, headers, splitLists(allowTools))
+	return s, o, err
 }
 
 // newMCPServer is one server entry, enabled, as `abhed mcp add` and Studio
@@ -171,6 +196,19 @@ func mcpManaged() error {
 	return nil
 }
 
+// plainWord is a word that reads the same quoted or not.
+var plainWord = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// quotedWord is one word of a command as a person reviews it: escaped, and
+// quoted when it holds a space or shell syntax, so word boundaries show.
+func quotedWord(w string) string {
+	p := config.Printable(w)
+	if plainWord.MatchString(p) {
+		return p
+	}
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+}
+
 // describeServer is one server as a person reviews it, every value escaped.
 func describeServer(s config.MCPServerConfig) string {
 	var b strings.Builder
@@ -181,9 +219,9 @@ func describeServer(s config.MCPServerConfig) string {
 			fmt.Fprintf(&b, "  header:  %s from $%s\n", config.Printable(k), config.Printable(v))
 		}
 	} else {
-		words := []string{config.Printable(s.Command)}
+		words := []string{quotedWord(s.Command)}
 		for _, a := range s.Args {
-			words = append(words, config.Printable(a))
+			words = append(words, quotedWord(a))
 		}
 		fmt.Fprintf(&b, "  command: %s\n", strings.Join(words, " "))
 		for _, e := range s.Env {
@@ -253,19 +291,28 @@ func writeMCPServer(s config.MCPServerConfig, by string) (string, error) {
 	return file, nil
 }
 
-// mcpAdd confirms and writes a server into the person's own file.
-func mcpAdd(s config.MCPServerConfig, cio mcpIO) error {
+// mcpAdd confirms and writes a server into the person's own file. A refusal
+// by policy or inside an agent's command is logged as an attempt.
+func mcpAdd(s config.MCPServerConfig, want string, cio mcpIO) error {
 	file, err := mcpAddable(s)
+	var me *config.ManagedError
+	if errors.As(err, &me) {
+		_ = logConfigRefusal("mcp add", s, file, err.Error())
+	}
 	if err != nil {
 		return err
+	}
+	if _, sum := mcpEntrySum(s); want != "" && !strings.EqualFold(want, sum) {
+		return fmt.Errorf("the server differs from the one shown (sha256 %s, not %s); nothing was added", sum, config.Printable(want))
 	}
 	// A terminal can be faked from inside a command; the sandbox's deny on
 	// ~/.abhed is what keeps the agent out, and this refuses earlier.
 	if cio.inSandbox {
+		_ = logConfigRefusal("mcp add", s, file, "inside an agent's command")
 		return errors.New("adding an MCP server is refused inside an agent's command (ABHED_SANDBOX is set); run it in your own terminal")
 	}
 	// Adding a server lets the agent start a process or reach an endpoint, so
-	// only a person at a terminal can agree to it.
+	// only a person can agree to it: at a terminal, or in an editor that asked.
 	if !cio.terminal {
 		return errors.New("adding an MCP server needs a confirmation at a terminal; run it in one, or edit ~/.abhed/config.json")
 	}
@@ -298,34 +345,40 @@ func mcpRemove(name string, out io.Writer) error {
 // removeMCPServer takes the server named name out of the person's own file
 // and logs the change as by.
 func removeMCPServer(name, by string) (string, error) {
+	file, _, err := removeMCPServerEntry(name, by)
+	return file, err
+}
+
+// removeMCPServerEntry is removeMCPServer, also returning the entry removed.
+func removeMCPServerEntry(name, by string) (string, config.MCPServerConfig, error) {
+	var removed config.MCPServerConfig
 	if err := mcpManaged(); err != nil {
-		return "", err
+		return "", removed, err
 	}
 	unlock, err := lockUserConfig()
 	if err != nil {
-		return "", err
+		return "", removed, err
 	}
 	defer unlock()
 	doc, file, err := readUserDoc()
 	if err != nil {
-		return file, err
+		return file, removed, err
 	}
 	servers := userServers(doc)
 	i := slices.IndexFunc(servers, func(v any) bool { return serverName(v) == name })
 	if i < 0 {
-		return file, fmt.Errorf("%s has no MCP server named %s", config.Printable(file), config.Printable(name))
+		return file, removed, fmt.Errorf("%s has no MCP server named %s", config.Printable(file), config.Printable(name))
 	}
-	var removed config.MCPServerConfig
 	if b, err := json.Marshal(servers[i]); err == nil {
 		_ = json.Unmarshal(b, &removed)
 	}
 	if _, err := writeUserSetting("mcp.servers", slices.Delete(servers, i, i+1)); err != nil {
-		return file, err
+		return file, removed, err
 	}
 	if err := logConfigChange(by, "mcp.servers", removed, file); err != nil {
-		return file, fmt.Errorf("removed, but the change log was not written: %w", err)
+		return file, removed, fmt.Errorf("removed, but the change log was not written: %w", err)
 	}
-	return file, nil
+	return file, removed, nil
 }
 
 // mcpList shows the servers in effect in this workspace and where each came from.
@@ -420,25 +473,51 @@ type configChange struct {
 	Kind   string    `json:"kind"`
 	SHA256 string    `json:"sha256"`
 	File   string    `json:"file"`
+	// Refused says why an attempt was not written.
+	Refused string `json:"refused,omitempty"`
+}
+
+// mcpEntrySum is a server's transport and the SHA-256 of its entry, as the
+// change log and the record name it.
+func mcpEntrySum(s config.MCPServerConfig) (kind, sum string) {
+	b, _ := json.Marshal(s)
+	h := sha256.Sum256(b)
+	kind = "stdio"
+	if s.URL != "" {
+		kind = "http"
+	}
+	return kind, hex.EncodeToString(h[:])
+}
+
+// logConfigRefusal logs an add that was refused, so an attempt to widen is
+// on file with the changes.
+func logConfigRefusal(by string, s config.MCPServerConfig, file, why string) error {
+	if file == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		file = filepath.Join(home, ".abhed", "config.json")
+	}
+	return appendConfigChange(configChange{By: by, Key: "mcp.servers", Name: s.Name, File: file, Refused: why}, s)
 }
 
 // logConfigChange appends a change to the person's config change log.
 func logConfigChange(by, key string, s config.MCPServerConfig, file string) error {
-	b, err := json.Marshal(s)
+	return appendConfigChange(configChange{By: by, Key: key, Name: s.Name, File: file}, s)
+}
+
+func appendConfigChange(c configChange, s config.MCPServerConfig) error {
+	c.Time = time.Now().UTC()
+	c.Kind, c.SHA256 = mcpEntrySum(s)
+	line, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256(b)
-	kind := "stdio"
-	if s.URL != "" {
-		kind = "http"
-	}
-	line, err := json.Marshal(configChange{Time: time.Now().UTC(), By: by, Key: key, Name: s.Name,
-		Kind: kind, SHA256: hex.EncodeToString(sum[:]), File: file})
-	if err != nil {
+	path := filepath.Join(filepath.Dir(c.File), "config-changes.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	path := filepath.Join(filepath.Dir(file), "config-changes.jsonl")
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|oNoFollow, 0o600) // #nosec G304 -- beside the person's own config
 	if err != nil {
 		return err

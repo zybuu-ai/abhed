@@ -34,15 +34,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
-- Studio can add and remove MCP servers through the engine
-  (`_abhed/mcp/check`, `_abhed/mcp/add`, `_abhed/mcp/remove`; `mcp.add` in
-  `features`). They write your own `~/.abhed/config.json` with the same
-  checks and change log as `abhed mcp add|remove`: refused when the managed
-  configuration sets the servers or its MCP lists refuse the server, and
-  inside an agent's command. Studio's modal is the agreement in place of the
-  terminal's. Environment variables are passed by name only, so no secret
-  value is written to the file. Each change is recorded as `mcp.status`
-  with `op` `add` or `remove`.
+- Studio can add and remove MCP servers. Adding is never an ACP method:
+  Studio has the engine check the server (`_abhed/mcp/check`, read only,
+  `mcp.check` in `features`), shows it in a modal whose default is No, and
+  then runs `abhed mcp add` itself, giving the yes on an inherited descriptor
+  (`-confirm-fd`) and holding it to the entry shown (`-sha256`). The same
+  checks, file and change log apply as at a terminal. Environment variables
+  are passed by name only, so no secret value is written. Removing is
+  `_abhed/mcp/remove`, recorded as `mcp.status` with the entry's transport
+  and hash. A refused add is recorded as `config.refused` with who asked,
+  and logged as an attempt in `~/.abhed/config-changes.jsonl`.
+- `abhed mcp add` takes `-confirm-fd N` (read the yes from an inherited
+  descriptor, 3 or above, for an editor that asked the person) and
+  `-sha256 HEX` (add only that entry), and quotes a command's words that hold
+  spaces or shell syntax when it shows the server.
 
 ### Upgrading from 1.2.9
 

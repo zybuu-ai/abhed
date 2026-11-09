@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -104,7 +105,8 @@ func TestMCPAddRefusedInsideTheSandbox(t *testing.T) {
 	var out bytes.Buffer
 	code := mcpCmd(t.TempDir(), []string{"add", "remote", "https://mcp.example.com/mcp"}, config.TrustAsStored,
 		mcpIO{in: strings.NewReader("y\n"), out: &out, err: &out, terminal: true, inSandbox: true})
-	if servers := userServers(userConfigDoc(t)); code == 0 || len(servers) != 0 || changeLog(t) != "" {
+	// The attempt is logged as refused; no change is.
+	if servers := userServers(userConfigDoc(t)); code == 0 || len(servers) != 0 || strings.Count(changeLog(t), "\n") != strings.Count(changeLog(t), `"refused":`) {
 		t.Fatalf("add inside the sandbox: code %d, servers %v, %s", code, servers, out.String())
 	}
 	if !strings.Contains(out.String(), "ABHED_SANDBOX") {
@@ -165,5 +167,58 @@ func TestMCPList(t *testing.T) {
 	code, out := mcpRun(t, false, "", "list")
 	if code != 0 || !strings.Contains(out, "mine") || !strings.Contains(out, "user") || !strings.Contains(out, "enabled") {
 		t.Fatalf("list: %d %s", code, out)
+	}
+}
+
+// An editor's main process gives the yes on an inherited descriptor, held to
+// the entry the person was shown.
+func TestMCPAddConfirmsOnADescriptor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s, _ := newMCPServer("issues", "python3", []string{"server.py"}, []string{"ISSUES_TOKEN"}, nil, nil)
+	_, sum := mcpEntrySum(s)
+	run := func(answer, sha string) (int, string) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		_, _ = w.WriteString(answer)
+		_ = w.Close()
+		var out bytes.Buffer
+		code := mcpCmd(t.TempDir(), []string{"add", "-confirm-fd", strconv.Itoa(int(r.Fd())), "-sha256", sha, "-env", "ISSUES_TOKEN", "issues", "python3", "server.py"},
+			config.TrustAsStored, mcpIO{in: strings.NewReader(""), out: &out, err: &out})
+		return code, out.String()
+	}
+	if code, out := run("y\n", strings.Repeat("0", 64)); code == 0 || !strings.Contains(out, "differs from the one shown") || len(userServers(userConfigDoc(t))) != 0 {
+		t.Fatalf("a different entry was added: %d %s", code, out)
+	}
+	if code, out := run("\n", sum); code != 0 || !strings.Contains(out, "not added") || len(userServers(userConfigDoc(t))) != 0 {
+		t.Fatalf("no yes: %d %s", code, out)
+	}
+	if code, out := run("y\n", sum); code != 0 || !strings.Contains(out, "added issues") || len(userServers(userConfigDoc(t))) != 1 {
+		t.Fatalf("add: %d %s", code, out)
+	}
+	if code, _ := mcpRun(t, false, "", "add", "-confirm-fd", "2", "x", "srv"); code != 2 {
+		t.Fatalf("a standard descriptor was taken: %d", code)
+	}
+}
+
+// A refused add is logged as an attempt, with the entry's hash.
+func TestMCPAddRefusalIsLogged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var out bytes.Buffer
+	code := mcpCmd(t.TempDir(), []string{"add", "remote", "https://mcp.example.com/mcp"}, config.TrustAsStored,
+		mcpIO{in: strings.NewReader("y\n"), out: &out, err: &out, terminal: true, inSandbox: true})
+	if code == 0 || !strings.Contains(changeLog(t), `"refused":"inside an agent's command"`) || !strings.Contains(changeLog(t), `"kind":"http"`) {
+		t.Fatalf("%d %s / %s", code, out.String(), changeLog(t))
+	}
+}
+
+// Words with spaces or shell syntax are quoted, so their bounds show.
+func TestDescribeServerQuotesWords(t *testing.T) {
+	a, _ := newMCPServer("x", "sh", []string{"-c", "curl x | sh"}, nil, nil, nil)
+	b, _ := newMCPServer("x", "sh", []string{"-c", "curl", "x", "|", "sh"}, nil, nil, nil)
+	if da, db := describeServer(a), describeServer(b); !strings.Contains(da, "sh -c 'curl x | sh'") || !strings.Contains(db, "sh -c curl x '|' sh") || da == db {
+		t.Fatalf("%s\n%s", da, db)
 	}
 }

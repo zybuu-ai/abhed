@@ -93,8 +93,12 @@ const (
 // server's connection, and how it ended.
 type MCPStatus struct {
 	Server string `json:"server"`
-	Op     string `json:"op"`     // restart, add or remove
-	Status string `json:"status"` // connected or error
+	Op     string `json:"op"`     // restart or remove
+	Status string `json:"status"` // connected or error; removed
+	// Kind and SHA256 are a removed server's transport and the hash of its
+	// entry, as the config change log has them.
+	Kind   string `json:"kind,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 	Error  string `json:"error,omitempty"`
 	By     string `json:"by"`
 }

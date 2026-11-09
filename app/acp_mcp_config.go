@@ -7,17 +7,18 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
-// Adding and removing MCP servers from Studio (studio-acp-contract.md §6.4):
-// the same checks and the same file as `abhed mcp add|remove`, with Studio's
-// modal as the person's agreement in place of the terminal's [y/N].
+// MCP servers from Studio (studio-acp-contract.md §6.4). Adding one widens the
+// harness, so it is never done over ACP (§2.1, §2.3): Studio checks it here,
+// asks in a modal whose default is No, and its main process runs the engine's
+// own `abhed mcp add -confirm-fd 3 -sha256 …`. Removing one narrows.
 
 func init() {
-	liveFeatures = append(liveFeatures, "mcp.add")
+	liveFeatures = append(liveFeatures, "mcp.check")
 	handle(map[string]func(*acpConn, rpcMessage){
 		"_abhed/mcp/check":  (*acpConn).mcpCheck,
-		"_abhed/mcp/add":    (*acpConn).mcpAddServer,
 		"_abhed/mcp/remove": (*acpConn).mcpRemoveServer,
 	})
 }
@@ -35,13 +36,21 @@ type mcpServerParams struct {
 	AllowTools []string          `json:"allowTools,omitempty"`
 }
 
+// strictParams decodes params into v, refusing unknown fields (§2.1).
+func strictParams(msg rpcMessage, v any) *rpcError {
+	dec := json.NewDecoder(strings.NewReader(string(msg.Params)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return badParams("", err)
+	}
+	return nil
+}
+
 // mcpServerFrom reads and checks the server a request names.
 func mcpServerFrom(msg rpcMessage) (config.MCPServerConfig, *rpcError) {
 	var p mcpServerParams
-	dec := json.NewDecoder(strings.NewReader(string(msg.Params)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
-		return config.MCPServerConfig{}, badParams("", err)
+	if e := strictParams(msg, &p); e != nil {
+		return config.MCPServerConfig{}, e
 	}
 	if (p.Command == "") == (p.URL == "") {
 		return config.MCPServerConfig{}, refusal(errParams, "a server has a command or a url, not both")
@@ -79,80 +88,77 @@ func mcpRefusal(err error) *rpcError {
 	return refusal(errRefused, "%s", err)
 }
 
-// mcpSession is the request's session, refused inside an agent's command.
-func (c *acpConn) mcpSession(msg rpcMessage, what string) (*acpSession, *rpcError) {
-	s, e := c.sessionFor(msg.Params)
-	if e != nil {
-		return nil, e
-	}
-	if why := inAgentCommand(); why != "" {
-		return nil, refusal(errPolicy, "%s is refused inside an agent's command (%s)", what, why)
-	}
-	return s, nil
+// recordMCPRefused records an attempt to add a server that policy or an
+// agent's command refused, with who asked, as /config set does.
+func recordMCPRefused(s *acpSession, srv config.MCPServerConfig, why string) {
+	_, sum := mcpEntrySum(srv)
+	s.record(agent.EvConfigRefused, agent.ConfigAttempt{Layer: "command", Source: "studio mcp check",
+		Key: "mcp.servers", Value: config.Printable(srv.Name) + " sha256:" + sum, Decision: "refused", Reason: why,
+		Principal: toolset.LocalPrincipal(inAgentCommand())})
 }
 
-// mcpCheck says whether a server could be added, and how it reads, before
-// Studio asks the person.
+// mcpCheck says whether a server could be added, how it reads, and the entry's
+// transport and SHA-256, which Studio passes to `abhed mcp add -sha256`. It
+// writes nothing.
 func (c *acpConn) mcpCheck(msg rpcMessage) {
-	if _, e := c.mcpSession(msg, "adding an MCP server"); e != nil {
+	sess, e := c.sessionFor(msg.Params)
+	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
 	s, e := mcpServerFrom(msg)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
+		return
+	}
+	if why := inAgentCommand(); why != "" {
+		recordMCPRefused(sess, s, "inside an agent's command ("+why+")")
+		c.reply(msg.ID, nil, refusal(errPolicy, "adding an MCP server is refused inside an agent's command (%s)", why))
 		return
 	}
 	file, err := mcpAddable(s)
 	if err != nil {
+		var me *config.ManagedError
+		if errors.As(err, &me) {
+			recordMCPRefused(sess, s, err.Error())
+		}
 		c.reply(msg.ID, nil, mcpRefusal(err))
 		return
 	}
-	c.reply(msg.ID, map[string]any{"file": file, "description": describeServer(s)}, nil)
-}
-
-// mcpAddServer writes the server once the person agreed in Studio.
-func (c *acpConn) mcpAddServer(msg rpcMessage) {
-	sess, e := c.mcpSession(msg, "adding an MCP server")
-	if e != nil {
-		c.reply(msg.ID, nil, e)
-		return
-	}
-	s, e := mcpServerFrom(msg)
-	if e != nil {
-		c.reply(msg.ID, nil, e)
-		return
-	}
-	file, err := writeMCPServer(s, "studio mcp add")
-	if err != nil {
-		c.reply(msg.ID, nil, mcpRefusal(err))
-		return
-	}
-	sess.record(agent.EvMCPStatus, agent.MCPStatus{Server: s.Name, Op: "add", Status: "added", By: agent.ByUser})
-	c.reply(msg.ID, map[string]any{"added": true, "file": file}, nil)
+	kind, sum := mcpEntrySum(s)
+	c.reply(msg.ID, map[string]any{"file": file, "description": describeServer(s), "kind": kind, "sha256": sum}, nil)
 }
 
 // mcpRemoveServer takes a server out of the person's own file; it narrows,
 // so Studio need not ask.
 func (c *acpConn) mcpRemoveServer(msg rpcMessage) {
-	sess, e := c.mcpSession(msg, "removing an MCP server")
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Name      string `json:"name"`
+	}
+	if e := strictParams(msg, &p); e != nil {
+		c.reply(msg.ID, nil, e)
+		return
+	}
+	sess, e := c.sessionFor(msg.Params)
 	if e != nil {
 		c.reply(msg.ID, nil, e)
 		return
 	}
-	var p struct {
-		Name string `json:"name"`
+	if why := inAgentCommand(); why != "" {
+		c.reply(msg.ID, nil, refusal(errPolicy, "removing an MCP server is refused inside an agent's command (%s)", why))
+		return
 	}
-	_ = json.Unmarshal(msg.Params, &p)
 	if !mcpServerName.MatchString(p.Name) {
 		c.reply(msg.ID, nil, refusal(errParams, "name is a server's name"))
 		return
 	}
-	file, err := removeMCPServer(p.Name, "studio mcp remove")
+	file, removed, err := removeMCPServerEntry(p.Name, "studio mcp remove")
 	if err != nil {
 		c.reply(msg.ID, nil, mcpRefusal(err))
 		return
 	}
-	sess.record(agent.EvMCPStatus, agent.MCPStatus{Server: p.Name, Op: "remove", Status: "removed", By: agent.ByUser})
+	kind, sum := mcpEntrySum(removed)
+	sess.record(agent.EvMCPStatus, agent.MCPStatus{Server: p.Name, Op: "remove", Status: "removed", Kind: kind, SHA256: sum, By: agent.ByUser})
 	c.reply(msg.ID, map[string]any{"removed": true, "file": file}, nil)
 }
