@@ -504,7 +504,7 @@ func (c *acpConn) complete(msg rpcMessage) {
 	var err error
 	if fim {
 		in.Stop = model.FIMStops
-		res, err = a.(model.Infiller).Infill(ctx, in)
+		res, err = completionCall(ctx, a, true, in)
 		if fimRefused(err) && ctx.Err() == nil {
 			// No fill in the middle here: chat from now on, recorded as such first.
 			k.mu.Lock()
@@ -516,10 +516,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 				return
 			}
 			in.Stop = []string{"\n\n\n"}
-			res, err = model.InfillByChat(ctx, a, in)
+			res, err = completionCall(ctx, a, false, in)
 		}
 	} else {
-		res, err = model.InfillByChat(ctx, a, in)
+		res, err = completionCall(ctx, a, false, in)
 	}
 	elapsed := time.Since(arrived)
 	// A reply that carries a secret is dropped, not edited into the code.
@@ -759,7 +759,7 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		return
 	}
 	started := time.Now()
-	_, err := inf.Infill(ctx, model.InfillRequest{MaxTokens: 1})
+	err := warmCall(ctx, inf)
 	took := time.Since(started)
 	k.mu.Lock()
 	k.sum.Warmups++
@@ -818,4 +818,23 @@ func latencies(ms []int64) (int, int, int) {
 	slices.Sort(sorted)
 	at := func(q float64) int { return int(sorted[int(q*float64(len(sorted)-1)+0.5)]) }
 	return at(0.5), at(0.9), int(sorted[len(sorted)-1])
+}
+
+// The model calls of inline completions, one function each, so what every
+// call to a completion model passes through (a gate, a charge) sits in one
+// place.
+
+// completionCall asks the completion model for one suggestion: by its
+// fill-in-the-middle endpoint when fim, else by a chat turn.
+func completionCall(ctx context.Context, a model.Adapter, fim bool, in model.InfillRequest) (model.InfillResult, error) {
+	if fim {
+		return a.(model.Infiller).Infill(ctx, in)
+	}
+	return model.InfillByChat(ctx, a, in)
+}
+
+// warmCall is a warm-up's one request: an empty prompt and one token.
+func warmCall(ctx context.Context, inf model.Infiller) error {
+	_, err := inf.Infill(ctx, model.InfillRequest{MaxTokens: 1})
+	return err
 }

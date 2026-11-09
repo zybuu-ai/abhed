@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -205,7 +206,7 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		return
 	}
 	rel := rootRel(path, roots)
-	res, err := model.NextEditByChat(ctx, a, model.NextEditRequest{
+	res, err := nextEditCall(ctx, a, model.NextEditRequest{
 		File: rel, Language: req.Language, Recent: recent.String(),
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
@@ -366,4 +367,11 @@ func sameBarTrailingSpace(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// nextEditCall is next-edit's one model call (a rename finished from the
+// file makes none), kept apart so what every model call passes through sits
+// in one place.
+func nextEditCall(ctx context.Context, a model.Adapter, req model.NextEditRequest) (model.NextEditResult, error) {
+	return model.NextEditByChat(ctx, a, req)
 }

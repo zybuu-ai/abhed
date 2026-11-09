@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -146,6 +147,18 @@ func TestStudioCompletionsCapAtOneBlock(t *testing.T) {
 func TestStudioCompletionsBurstSendsTheLast(t *testing.T) {
 	fim := newLatencyFIM(t, 0, 10*time.Millisecond, "return", " a", " +", " b\n", "x = 1\n")
 	r := completionRig(t, fim.URL, "")
+	// The engine's debounce, made long enough that keystrokes 15 ms apart stay
+	// inside it on a loaded machine or under the race detector.
+	old := completeHold
+	completeHold = func(ctx context.Context) error {
+		select {
+		case <-time.After(300 * time.Millisecond):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	t.Cleanup(func() { completeHold = old })
 	id := r.open()
 	from := r.cl.mark()
 	const burst = 12
@@ -173,7 +186,7 @@ func TestStudioCompletionsBurstSendsTheLast(t *testing.T) {
 	if n := len(fim.requests()); n != 1 {
 		t.Fatalf("%d requests reached the model; want 1", n)
 	}
-	t.Logf("burst of %d keystrokes 15 ms apart: 1 request sent, the last answered %v after it was typed", burst, took.Round(time.Millisecond))
+	t.Logf("burst of %d keystrokes 15 ms apart, 300 ms hold: 1 request sent, the last answered %v after it was typed", burst, took.Round(time.Millisecond))
 }
 
 // A warm-up loads a local model before the first completion needs it: an
