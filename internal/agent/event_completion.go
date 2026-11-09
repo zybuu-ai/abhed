@@ -80,6 +80,9 @@ type CompletionSummary struct {
 	Warmups  int `json:"warmups,omitempty"`
 	WarmupMs int `json:"warmup_ms,omitempty"`
 	// Local are next-edit suggestions made from the file alone (a rename's
-	// other uses), with no request to a model.
-	Local int `json:"local,omitempty"`
+	// other uses), with no request to a model, and LocalDropped renames for
+	// which none was offered (no other use, a name bound again, a new name
+	// already there). Neither is in the answer times, which are of requests sent.
+	Local        int `json:"local,omitempty"`
+	LocalDropped int `json:"local_dropped,omitempty"`
 }

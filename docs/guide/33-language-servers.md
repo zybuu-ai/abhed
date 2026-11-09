@@ -25,7 +25,12 @@ For Python, where `basedpyright-langserver` is not on the `PATH` commands
 get but `pyright-langserver` or `pylsp` is, that one runs instead
 (`pyright-langserver --stdio` first, then `pylsp`), so a Python server you
 already have gives Studio its diagnostics, references and renames without
-an install. Under the `container` tier the image's `PATH` decides.
+an install. The start you are asked about names the server chosen and what
+it does: `pylsp` runs in the Python it was installed with, loads every
+plugin installed beside it and its Jedi or Rope back end, and reads the
+workspace's `setup.cfg`, `tox.ini`, `.flake8` and `pyproject.toml`. Under
+the `container` tier this fallback never applies: the engine cannot look
+inside the image, so `basedpyright-langserver` is always the one run there.
 
 The server must be on the sandbox's `PATH`. Abhed installs each of these with
 its language ([Toolchains: Language servers](32-toolchains.md#language-servers)):

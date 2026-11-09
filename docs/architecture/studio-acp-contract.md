@@ -1590,18 +1590,22 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   request is refused with `-32602`.
 - One logical block: the statement at the cursor and the body of a block it
   opens (deeper lines, then one closing line), ending at a blank line or a
-  line back at its indentation, at most 12 lines. Fill-in-the-middle asks
-  with `stream: true` and the stops `"\n\n"`, `<|endoftext|>`,
-  `<|file_sep|>` and `<|fim_pad|>`; the stream is ended as soon as the block
-  is whole, so the model stops writing, and anything after an end-of-text or
-  next-file marker is cut. A server that answers the streamed request with
+  line back at its indentation (a blank line inside a string, such as a
+  docstring, does not end it), at most 12 lines. Fill-in-the-middle asks
+  with `stream: true` and the stops `<|endoftext|>`, `<|file_sep|>`,
+  `<|fim_pad|>` and `<|fim_prefix|>`; the stream is ended as soon as the
+  block is whole, so the model stops writing, and anything after an
+  end-of-text or next-file marker is cut. A server that answers the streamed request with
   one JSON body is read as before.
 - `_abhed/complete/warm` (feature `completeWarm`) loads a local completion
   model before the first completion needs it: one fill-in-the-middle request
   with an empty prompt and suffix and `max_tokens: 1`, so no code is sent,
-  with its own 60-second deadline, at most once a session in two minutes
-  (`recent`). A model not on this machine, a chat-only provider, or
-  completions that are off are `skipped`, and nothing is sent.
+  with its own 60-second deadline, ended when the session closes or the
+  connection goes, at most once in two minutes per session and per
+  connection for a provider (`recent`). A model whose URL is not on this
+  machine (as `local_only` decides it: a loopback proxy to a remote model
+  counts as local), a chat-only provider, or completions that are off are
+  `skipped`, and nothing is sent.
 - Fill-in-the-middle on the completions endpoint for local server types and
   `openai-compatible`, else a chat turn; a 404, 405 or 501 from the
   completions endpoint, or a 400 saying it or `suffix` is not supported,
@@ -1618,7 +1622,8 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   the session closes, which counts `superseded` (replaced before sending)
   apart from `cancelled` (after), the answer times of requests answered
   (`latency_p50_ms`, `latency_p90_ms`, `latency_max_ms`, from the request
-  reaching the engine), and `warmups` with the longest (`warmup_ms`); single
+  reaching the engine, of requests sent to the model only), and `warmups`
+  with the longest (`warmup_ms`); single
   completions are not recorded, and no code is. HawkEYE shows the counts and
   times.
 
@@ -1649,19 +1654,27 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   window is `dropped` with the reason.
 - A rename is finished from the window, with no model asked and nothing
   sent: `rename`, or else the last recent edit in `uri` on one line, turns
-  an identifier into another (not a reserved word of `language`) that reads
-  whole at its place in `window`. The other uses of the old name are the
-  `sites` inside the window that read it whole, when Studio sends any (a
-  language server's references), else a scan of the rename's definition
-  (from its top-level header to the next line at that indentation, or the
-  block a header line opens, or the window) that skips strings and
-  comments. They come back as one edit over the lines from the first use to
-  the last, with `rename: true`; none found is `dropped`. Studio re-parses
-  the document with the suggestion applied before showing any next edit.
+  an identifier into another that reads whole at its place in `window`,
+  in a language with reserved words here (Python, Go, JavaScript,
+  TypeScript, Java, Rust, C, C++). The new name may not be a reserved word,
+  nor already used in the rename's scope; either way it is no rename and
+  the model is asked as for any edit. The other uses of the old name are
+  the `sites` inside the window that read it whole, when Studio sends any
+  (a language server's references). Without sites, Python, Go, JavaScript,
+  TypeScript and Java are scanned: the innermost function the rename is in
+  (the window at a file's top level; none, `dropped`, in another block),
+  skipping strings, comments, members after `.`, `->` or `::`, keyword
+  arguments, and object keys outside Python; a name bound again in a nested
+  function, lambda, comprehension or inner block drops the rename. Rust, C
+  and C++ need sites. The uses come back as one edit over the lines from
+  the first to the last, with `rename: true`; none found is `dropped`.
+  Studio re-parses the document with any suggestion applied before showing
+  it, and drops it when the parse fails or is cut short.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
   the session closes, which counts renames finished from the file as
-  `local` and the answer times as §7.10.
+  `local` and those that offered nothing as `local_dropped` (neither in the
+  answer times), and the answer times as §7.10.
 
 ### 7.12 Commit messages
 

@@ -106,25 +106,34 @@ Ghost text is only useful while you are still looking at the line, so
 Studio and the engine keep each suggestion short and the model busy only
 with the latest one:
 
-- **Warm-up.** When you open a file Studio may complete, and the completion
-  model is on this machine, Studio asks the engine to load it: one
-  fill-in-the-middle request with an empty prompt and one token, so no code
-  is sent, at most once every two minutes a session. A cold local model
-  takes seconds to load; this way it is loaded before you type. A model on
-  another machine is never warmed.
+- **Warm-up.** When you open a file Studio may complete in a window whose
+  editor session is already open, or when that session opens with your
+  first keystroke, Studio asks the engine to load the completion model:
+  one fill-in-the-middle request with an empty prompt and one token, so no
+  code is sent. It goes at most once every two minutes per session and per
+  editor connection, and ends when the session closes. A cold local model
+  takes seconds to load; this way it is loaded before you need it. Only a
+  model whose address is on this machine is warmed, decided by its URL as
+  `local_only` is: a loopback address, `localhost`, or a local server type
+  at its default endpoint. A proxy on this machine that forwards to a model
+  elsewhere counts as local, so its model is warmed through it (still with
+  no code). Opening a file never starts the engine or opens a session for
+  a warm-up alone.
 - **Debounce and cancel.** Studio waits briefly after a keystroke before
   asking and sends its `seq`; a newer keystroke supersedes the older
   request, and Studio cancels a request whose place in the file has gone,
-  so the model stops working on it.
+  so the model stops working on it. A request over the rate limit is asked
+  once more if its place still stands.
 - **One logical block.** A suggestion is the statement at the cursor and,
   when it opens a block (a line ending in `:` or `{`, say), that block's
-  body and closing line: it ends at a blank line or at a line back at the
-  statement's own indentation, and is at most 12 lines. The model's answer
-  is streamed and ended as soon as the block is whole, with a blank line
-  and the model's end-of-text markers as stop sequences, so it does not
-  write a whole function you will not take.
-- **Again after Tab or Enter.** Accepting a suggestion, or starting a new
-  line, asks for the next one at once.
+  body and closing line: it ends at a blank line (outside a string such as
+  a docstring) or at a line back at the statement's own indentation, and is
+  at most 12 lines. The model's answer is streamed and ended as soon as the
+  block is whole, so it does not write a whole function you will not take;
+  the model's end-of-text and file markers are its stop sequences.
+- **Again after Tab or Enter.** Accepting a suggestion, or pressing Enter
+  (a new line, with its indentation), asks for the next one shortly after;
+  a paste or another program's change does not.
 
 ## What is recorded
 
@@ -139,8 +148,8 @@ how many were answered, failed or cancelled after sending, and those refused
 or superseded (replaced by a newer one) before anything went, with the tokens
 used, and how long answers took: the median, 90th percentile and longest
 time from a request reaching the engine to its answer (`latency_p50_ms`,
-`latency_p90_ms`, `latency_max_ms`), and the warm-ups with the longest
-(`warmups`, `warmup_ms`). Only counts and times are recorded, never code.
+`latency_p90_ms`, `latency_max_ms`, of requests sent to the model only),
+and the warm-ups with the longest (`warmups`, `warmup_ms`). Only counts and times are recorded, never code.
 `abhed hawkeye` shows them for the session. The token totals are a lower
 bound: a request cancelled after it went may have cost tokens the provider
 never reported, and a streamed answer cut at its block is counted a token
@@ -167,22 +176,38 @@ prose is dropped and Studio is told why. The record holds
 the metrics count them as `abhed_next_edits_total` and
 `abhed_next_edit_tokens_total`.
 
-A rename needs no model. When your last edit turned one identifier into
-another (`step` into `stride`, say), the other uses of the old name are the
-next edit, and the engine finds them in the lines Studio sent: the ones the
-language server lists as references, when one is running for the file, or
-else a scan of the definition the rename is in that skips strings and
-comments. They are offered as one edit, taken with Tab, and nothing is sent
-to any model for it. A new name that is a reserved word is not taken for a
-rename. The summary counts these as `local`, and
-`abhed_next_edits_total{outcome="local"}` counts them too.
+A rename needs no model. When your edits on a line turned one identifier
+into another (`step` into `stride`, say), the other uses of the old name
+are the next edit, and the engine finds them in the lines Studio sent. They
+are offered as one edit, taken with Tab, and nothing is sent to any model
+for it:
+
+- When a language server is running for the file, its references of the
+  old name, asked at the use nearest the rename, are the uses.
+- Otherwise, in Python, Go, JavaScript, TypeScript and Java, the engine
+  scans the innermost function the rename is in (the window, at the top
+  level of a file), skipping strings and comments, members (`user.name`,
+  `p->name`, `A::name`), keyword arguments (`f(name=1)`) and, outside
+  Python, object keys (`{name: 1}`). Where the old name is bound again in
+  a nested function, lambda, comprehension or inner block, nothing is
+  offered: a textual rename would change another variable. Rust, C and
+  C++ take only a language server's uses; other languages get no rename
+  from the file.
+- A new name that is a reserved word of the language (`class`, `null`,
+  `int`), or one already used in that function, is not taken for a rename;
+  the next-edit model is asked as for any other edit.
+
+The summary counts these as `local`, and renames for which nothing was
+offered as `local_dropped`; neither is in the answer times.
+`abhed_next_edits_total{outcome="local"}` counts the first.
 
 Before Studio shows any next-edit suggestion, from a rename or a model, it
 parses the file with the suggestion applied (tree-sitter, for Python, Go,
 JavaScript, TypeScript, Rust, Java, C, C++, C#, Ruby, PHP and shell) and
-drops one that leaves more syntax errors than the file had. For other
-languages, a suggestion that leaves brackets unbalanced where they were
-balanced is dropped.
+drops one that leaves more syntax errors than the file had. A parse that
+fails, or a file too large to check in full, drops the suggestion too. For
+languages with no grammar, a suggestion that adds unbalanced brackets is
+dropped.
 
 ## Commit messages
 

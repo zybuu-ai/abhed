@@ -119,7 +119,7 @@ func TestStudioCompletionsCapAtOneBlock(t *testing.T) {
 	}
 	body := fim.requests()[0]
 	stops, _ := body["stop"].([]any)
-	if body["stream"] != true || len(stops) == 0 || stops[0] != "\n\n" {
+	if body["stream"] != true || len(stops) == 0 || stops[0] != "<|endoftext|>" {
 		t.Fatalf("request %v", body)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -265,4 +265,40 @@ func TestStudioCompletionsCancelBySeq(t *testing.T) {
 		t.Fatalf("seq 5 after its cancel: %s", m.Result)
 	}
 	close(fim.gate)
+}
+
+// A warm-up belongs to its session: closing the session ends it, and the
+// model is not left loading for nobody. A second session on the same
+// connection does not load the model again.
+func TestStudioCompletionsWarmUpEndsWithTheSession(t *testing.T) {
+	fim := newLatencyFIM(t, 3*time.Second, 0, "x\n")
+	r := completionRig(t, fim.URL, "")
+	id := r.open()
+	from := r.cl.mark()
+	p, _ := json.Marshal(map[string]any{"sessionId": id})
+	r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"w1"`), Method: "_abhed/complete/warm", Params: p})
+	deadline := time.Now().Add(2 * time.Second)
+	for len(fim.requests()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	second := r.open()
+	var warm struct {
+		Recent bool `json:"recent"`
+	}
+	r.cl.ok("_abhed/complete/warm", map[string]any{"sessionId": second}, &warm)
+	if !warm.Recent || len(fim.requests()) != 1 {
+		t.Fatalf("a second session loaded the model again: %+v, %d requests", warm, len(fim.requests()))
+	}
+	closed := time.Now()
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	m := r.cl.waitFor(from, "the warm-up's answer", func(m rpcMessage) bool { return string(m.ID) == `"w1"` })
+	if took := time.Since(closed); took > time.Second || strings.Contains(string(m.Result), `"warmed":true`) {
+		t.Fatalf("the warm-up outlived its session by %v: %s", took, m.Result)
+	}
+	for fim.ended.Load() == 0 && time.Now().Before(deadline.Add(time.Second)) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if fim.ended.Load() == 0 {
+		t.Fatal("the model was never told")
+	}
 }

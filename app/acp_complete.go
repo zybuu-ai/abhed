@@ -121,8 +121,9 @@ type acpCompleter struct {
 	events   [2]agent.EventType // the feature's enabled and summary events
 	sum      agent.CompletionSummary
 	// lat are the answer times of requests sent, in milliseconds, for the summary.
-	lat    []int64
-	warmed time.Time // when the last warm-up was sent
+	lat        []int64
+	warmed     time.Time          // when the last warm-up was sent
+	warmCancel context.CancelFunc // ends a warm-up in flight when the session closes
 }
 
 // took keeps one sent request's answer time.
@@ -719,7 +720,11 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		c.reply(msg.ID, nil, refusal(errParams, "the session has closed"))
 		return
 	}
-	if !k.warmed.IsZero() && completeNow().Sub(k.warmed) < warmEvery {
+	now := completeNow()
+	c.compMu.Lock()
+	connWarmed := c.warmed[cfg.Model.Completion]
+	c.compMu.Unlock()
+	if (!k.warmed.IsZero() && now.Sub(k.warmed) < warmEvery) || (!connWarmed.IsZero() && now.Sub(connWarmed) < warmEvery) {
 		k.mu.Unlock()
 		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
 		return
@@ -735,17 +740,24 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		k.sum.Provider, k.sum.Model = k.provider, provider.Model
 	}
 	a, chatOnly := k.adapter, k.chatOnly
-	k.warmed = completeNow()
+	k.warmed = now
+	// Its own deadline, and not replaced by completions (a model that is
+	// loading is loading for them too), but ended with the session or the connection.
+	ctx, cancel := context.WithTimeout(c.root(), warmTimeout)
+	defer cancel()
+	k.warmCancel = cancel
 	k.mu.Unlock()
+	c.compMu.Lock()
+	if c.warmed == nil {
+		c.warmed = map[string]time.Time{}
+	}
+	c.warmed[cfg.Model.Completion] = now
+	c.compMu.Unlock()
 	inf, ok := a.(model.Infiller)
 	if !ok || chatOnly {
 		skip("the completion model is asked through chat, which is not warmed")
 		return
 	}
-	// Its own deadline, and not replaced by completions: a model that is
-	// loading is loading for them too.
-	ctx, cancel := context.WithTimeout(context.Background(), warmTimeout)
-	defer cancel()
 	started := time.Now()
 	_, err := inf.Infill(ctx, model.InfillRequest{MaxTokens: 1})
 	took := time.Since(started)
@@ -781,10 +793,13 @@ func (c *acpConn) featureSummary(s *acpSession, feature string) {
 	if k.cancel != nil {
 		k.cancel()
 	}
+	if k.warmCancel != nil {
+		k.warmCancel()
+	}
 	sum := k.sum
 	sum.LatencyP50Ms, sum.LatencyP90Ms, sum.LatencyMaxMs = latencies(k.lat)
 	k.mu.Unlock()
-	if sum.Requests+sum.Refused+sum.Cancelled+sum.Superseded+sum.Warmups+sum.Local == 0 {
+	if sum.Requests+sum.Refused+sum.Cancelled+sum.Superseded+sum.Warmups+sum.Local+sum.LocalDropped == 0 {
 		return
 	}
 	if s.inner {

@@ -381,6 +381,9 @@ type acpConn struct {
 	compMu   sync.Mutex
 	comps    map[string]*acpCompleter
 	compRate bucket
+	// warmed is when each completion provider was last warmed on this
+	// connection, so many sessions load a model once.
+	warmed map[string]time.Time
 
 	// inflight are the requests being answered; gone closes when stdin
 	// does, so nothing waits for an answer the client can no longer send.

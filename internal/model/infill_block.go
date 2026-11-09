@@ -17,10 +17,12 @@ const maxBlockLines = 12
 // done (or starts another file); nothing after one is the suggestion.
 var fimEnd = regexp.MustCompile(`<\|(?:endoftext|file_sep|fim_prefix|fim_suffix|fim_middle|fim_pad|repo_name|im_end)\|>|<(?:fim_prefix|fim_suffix|fim_middle|file_sep)>|<EOT>|<｜fim▁(?:begin|hole|end)｜>`)
 
-// FIMStops are the stop sequences sent with a fill-in-the-middle request: a
-// blank line ends a block, and the end-of-text and next-file markers end the
-// answer. Four, the most an OpenAI-shaped endpoint takes.
-var FIMStops = []string{"\n\n", "<|endoftext|>", "<|file_sep|>", "<|fim_pad|>"}
+// FIMStops are the stop sequences sent with a fill-in-the-middle request:
+// the end-of-text and file markers that end an answer. Four, the most an
+// OpenAI-shaped endpoint takes. A blank line is not one: it ends a block,
+// but not a docstring with paragraphs, so OneBlock decides where the block
+// ends and the stream is stopped there.
+var FIMStops = []string{"<|endoftext|>", "<|file_sep|>", "<|fim_pad|>", "<|fim_prefix|>"}
 
 // cutAtFIMEnd is text up to the first end marker.
 func cutAtFIMEnd(text string) string {

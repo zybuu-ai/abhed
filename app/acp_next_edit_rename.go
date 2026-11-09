@@ -2,6 +2,7 @@ package app
 
 import (
 	"cmp"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -13,7 +14,10 @@ import (
 // edit turned one identifier into another, the other uses of the old name
 // are the next edit. They are found in the document itself, from the sites
 // the editor's language server named or else by a scan of the enclosing
-// definition, and offered as one edit; no model is asked and nothing is sent.
+// function, and offered as one edit; no model is asked and nothing is sent.
+// The scan runs only for languages whose strings, comments and reserved
+// words it knows, and refuses what it cannot be sure of: a name bound again
+// in a nested scope, or a new name already used there.
 
 // renameHint is Studio's reading of the last edit as a rename: From became
 // To, which now starts at At.
@@ -23,15 +27,23 @@ type renameHint struct {
 	At   editPos `json:"at"`
 }
 
-// keywords are each language's reserved words, which a rename may not produce.
+// keywords are each language's reserved words (and, for Go, its predeclared
+// constants), which a rename may not produce. A language not here gets no
+// rename from the file.
 var keywords = map[string]string{
 	"python":     "False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield",
-	"go":         "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var",
-	"javascript": "await break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof let new null return super switch this throw true try typeof var void while with yield",
+	"go":         "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var nil true false iota",
+	"javascript": "await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield",
 	"typescript": "await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield",
+	"java":       "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while true false null var",
 	"rust":       "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while",
-	"java":       "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while",
+	"c":          "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Bool _Complex _Imaginary",
+	"cpp":        "alignas alignof and asm auto bool break case catch char class const constexpr const_cast continue decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not nullptr operator or private protected public register reinterpret_cast return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile while xor",
 }
+
+// scanned are the languages the file is scanned in when no language server
+// names the sites; any other language with keywords takes only those sites.
+var scanned = map[string]bool{"python": true, "go": true, "javascript": true, "javascriptreact": true, "typescript": true, "typescriptreact": true, "java": true}
 
 func init() {
 	keywords["javascriptreact"] = keywords["javascript"]
@@ -98,11 +110,32 @@ func wordAt(line string, i int, word string) bool {
 	return true
 }
 
+// wordsIn are the byte offsets of word, whole, in s.
+func wordsIn(s, word string) []int {
+	var out []int
+	for i := 0; i <= len(s)-len(word); {
+		j := strings.Index(s[i:], word)
+		if j < 0 {
+			break
+		}
+		if wordAt(s, i+j, word) {
+			out = append(out, i+j)
+		}
+		i += j + len(word)
+	}
+	return out
+}
+
 // renameOf is the rename the request describes, Studio's hint first, else
 // its last recent edit in this document read as one: an identifier replaced
 // by another, the new one in the window where the edit says. line is the
-// rename's line within the window.
+// rename's line within the window. A language with no reserved words here
+// has none; one the scan does not know has one only with the language
+// server's sites.
 func renameOf(req nextEditRequest, lines []string) (h renameHint, line int, ok bool) {
+	if _, known := keywords[req.Language]; !known || (!scanned[req.Language] && len(req.Sites) == 0) {
+		return h, 0, false
+	}
 	if req.Rename != nil {
 		h = *req.Rename
 	} else if n := len(req.RecentEdits); n > 0 {
@@ -129,7 +162,8 @@ func sameFileURI(a, b string) bool { return a == b }
 
 // codeOnly is the lines with their strings and comments blanked, byte for
 // byte, so a scan finds only code: Python's # and quotes (triple ones over
-// lines), and the C family's //, /* */ and quotes.
+// lines), and the C family's //, /* */, quotes, backticks (Go, JavaScript)
+// and Java's text blocks.
 func codeOnly(lines []string, language string) []string {
 	py := language == "python"
 	out := make([]string, len(lines))
@@ -154,7 +188,7 @@ func codeOnly(lines []string, language string) []string {
 			}
 			rest := line[i:]
 			switch {
-			case py && (strings.HasPrefix(rest, `"""`) || strings.HasPrefix(rest, `'''`)):
+			case (py && (strings.HasPrefix(rest, `"""`) || strings.HasPrefix(rest, `'''`))) || (language == "java" && strings.HasPrefix(rest, `"""`)):
 				open = rest[:3]
 				b[i], b[i+1], b[i+2] = ' ', ' ', ' '
 				i += 3
@@ -196,52 +230,185 @@ func codeOnly(lines []string, language string) []string {
 	return out
 }
 
-// scopeOf is the window's lines a rename at line can reach, [from, to): the
-// definition it is in, from its top-level header to the next line back at
-// that indentation; a rename on a header line that opens a block reaches
-// that block. Where the window shows no header above, it is the window.
-func scopeOf(lines []string, line int) (int, int) {
-	indent := func(s string) int { return len(s) - len(strings.TrimLeft(s, " \t")) }
-	blank := func(s string) bool { return strings.TrimSpace(s) == "" }
-	header := -1
-	t := strings.TrimRight(lines[line], " \t\r\n")
-	if indent(lines[line]) == 0 && (strings.HasSuffix(t, ":") || strings.HasSuffix(t, "{")) {
-		header = line
-	} else if indent(lines[line]) > 0 {
-		for i := line - 1; i >= 0; i-- {
-			if !blank(lines[i]) && indent(lines[i]) == 0 {
-				header = i
-				break
+// Function headers, by language, as their code reads with strings and comments blanked.
+var (
+	pyDef       = regexp.MustCompile(`^\s*(?:async\s+)?def\s`)
+	goFunc      = regexp.MustCompile(`\bfunc\b`)
+	jsFunc      = regexp.MustCompile(`\bfunction\b|=>\s*\{\s*$`)
+	methodShape = regexp.MustCompile(`^\s*(?:[\w$<>\[\],.?@]+\s+)*[\w$#]+\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?::\s*[^{=;]+)?(?:throws\s+[\w., ]+)?\{\s*$`)
+	javaLambda  = regexp.MustCompile(`->\s*\{\s*$`)
+	notMethod   = regexp.MustCompile(`^\s*(?:\}\s*)?(?:if|for|while|switch|catch|else|do|try|synchronized|return|new|class|interface|enum|record)\b`)
+)
+
+// funcHeader reports a line (code only) that opens a function, method or lambda body.
+func funcHeader(code, language string) bool {
+	switch language {
+	case "python":
+		return pyDef.MatchString(code)
+	case "go":
+		return goFunc.MatchString(code)
+	case "javascript", "javascriptreact", "typescript", "typescriptreact":
+		return jsFunc.MatchString(code) || (methodShape.MatchString(code) && !notMethod.MatchString(code))
+	case "java":
+		return javaLambda.MatchString(code) || (methodShape.MatchString(code) && !notMethod.MatchString(code))
+	}
+	return false
+}
+
+func indentOf(s string) int   { return len(s) - len(strings.TrimLeft(s, " \t")) }
+func blankLine(s string) bool { return strings.TrimSpace(s) == "" }
+
+// blockEnd is where the block a header at line h opens ends: the next line
+// back at its indentation, a closing line at it included.
+func blockEnd(lines []string, h int) int {
+	for i := h + 1; i < len(lines); i++ {
+		if !blankLine(lines[i]) && indentOf(lines[i]) <= indentOf(lines[h]) {
+			if t := strings.TrimSpace(lines[i]); strings.HasPrefix(t, "}") || strings.HasPrefix(t, ")") {
+				return i + 1
 			}
+			return i
 		}
 	}
-	if header < 0 {
-		return 0, len(lines)
+	return len(lines)
+}
+
+// scopeOf is the window's lines a rename at line can reach, [from, to): the
+// innermost function it is in (the function itself when line is its
+// header). A rename at the top level of the file reaches the window; one
+// in another block with no function the window shows (a class body, say)
+// reaches nothing, ok false.
+func scopeOf(lines, code []string, line int, language string) (int, int, bool) {
+	if funcHeader(code[line], language) {
+		return line, blockEnd(lines, line), true
 	}
-	end := len(lines)
-	for i := header + 1; i < len(lines); i++ {
-		if !blank(lines[i]) && indent(lines[i]) == 0 {
-			// A closing brace at the header's indentation still belongs to it.
-			if strings.HasPrefix(strings.TrimSpace(lines[i]), "}") {
-				end = i + 1
-			} else {
-				end = i
-			}
+	ind := indentOf(lines[line])
+	if ind == 0 {
+		return 0, len(lines), true
+	}
+	for i := line - 1; i >= 0; i-- {
+		if blankLine(lines[i]) || indentOf(lines[i]) >= ind {
+			continue
+		}
+		if funcHeader(code[i], language) {
+			return i, blockEnd(lines, i), true
+		}
+		ind = indentOf(lines[i])
+		if ind == 0 {
 			break
 		}
 	}
-	return header, end
+	return 0, 0, false
+}
+
+// boundAgain reports a line of code that binds name anew in its own scope:
+// a parameter, a declaration, a loop or comprehension variable, a lambda's.
+func boundAgain(code, name, language string) bool {
+	q := regexp.QuoteMeta(name)
+	var pats []string
+	switch language {
+	case "python":
+		pats = []string{`\blambda\b[^:]*\b` + q + `\b`, `\S.*\bfor\s+(?:[\w\s,()]*,\s*)?\(?` + q + `\b.*\bin\b`}
+	case "go":
+		pats = []string{`\b` + q + `\b[\w\s,]*:=`, `\bvar\s+` + q + `\b`}
+	case "javascript", "javascriptreact", "typescript", "typescriptreact":
+		pats = []string{`\b(?:let|const|var)\s+(?:[\w$\s,{\[]*[,{\[]\s*)?` + q + `\b`, `\b` + q + `\s*=>`, `\(\s*(?:[\w$\s,]*,\s*)?` + q + `\s*[,)][^)]*\)\s*=>`}
+	case "java":
+		// A type before the name declares it; a keyword before it (return, throw, case) does not.
+		for _, m := range regexp.MustCompile(`\b([A-Za-z_][\w<>\[\].?]*)\s+`+q+`\s*[=;:,)]`).FindAllStringSubmatch(code, -1) {
+			switch m[1] {
+			case "return", "throw", "case", "new", "else", "yield", "assert", "instanceof":
+			default:
+				return true
+			}
+		}
+		pats = []string{`\b` + q + `\s*->`}
+	}
+	for _, p := range pats {
+		if regexp.MustCompile(p).MatchString(code) {
+			return true
+		}
+	}
+	return false
+}
+
+// shadowed reports a scope in which name is bound again in a nested
+// function, lambda, comprehension or (outside Python) inner block, where a
+// textual rename would change another variable.
+func shadowed(lines, code []string, from, to, line int, name, language string) bool {
+	for i := from; i < to; i++ {
+		if i == line {
+			continue
+		}
+		nested := i > from && funcHeader(code[i], language)
+		if nested && len(wordsIn(code[i], name)) > 0 {
+			return true // a parameter, or a use it may shadow, on a nested header
+		}
+		if language == "python" {
+			// Python has no block scope: only lambdas, comprehensions and nested defs bind apart.
+			if boundAgain(code[i], name, language) {
+				return true
+			}
+			if nested {
+				for j := i + 1; j < blockEnd(lines, i); j++ {
+					if regexp.MustCompile(`^\s*` + regexp.QuoteMeta(name) + `\s*(?:[+\-*/%&|^]|//|\*\*)?=[^=]|\b(?:for|as|global|nonlocal)\s+` + regexp.QuoteMeta(name) + `\b`).MatchString(code[j]) {
+						return true
+					}
+				}
+			}
+			continue
+		}
+		if boundAgain(code[i], name, language) {
+			return true
+		}
+	}
+	return false
+}
+
+// notAVariable reports a use at byte at of code line l that names something
+// else: a member (after `.`, `->` or `::`), a keyword argument (followed by
+// `=` inside call parentheses), or outside Python a key (followed by `:`
+// inside braces). depth is the innermost bracket open before it.
+func notAVariable(code string, at int, name string, open byte, language string) bool {
+	before := strings.TrimRight(code[:at], " \t")
+	if strings.HasSuffix(before, ".") || strings.HasSuffix(before, "->") || strings.HasSuffix(before, "::") {
+		return true
+	}
+	after := strings.TrimLeft(code[at+len(name):], " \t")
+	if open == '(' && strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") && !strings.HasPrefix(after, "=>") {
+		return true
+	}
+	if language != "python" && open == '{' && strings.HasPrefix(after, ":") && !strings.HasPrefix(after, "::") {
+		return true
+	}
+	return false
 }
 
 // renameEdit is the one edit that finishes a rename in the window: every
 // other use of h.From, at the sites the language server named when it named
 // any here, else as found by a scan of the rename's scope. Lines are the
 // window as Studio sent it (none of it goes anywhere). why says why there is
-// none.
-func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) ([]suggestedEdit, string) {
+// none; notRename that the edit is not taken for a rename after all, and
+// the model is asked as for any other edit.
+func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (edits []suggestedEdit, why string, notRename bool) {
 	type site struct{ line, at int } // window line, byte offset
 	var sites []site
 	code := codeOnly(lines, req.Language)
+	from, to, inFunc := scopeOf(lines, code, line, req.Language)
+	if !inFunc && len(req.Sites) == 0 {
+		return nil, "the rename is not in a function this window shows", false
+	}
+	if !inFunc {
+		from, to = 0, len(lines)
+	}
+	// A real rename brings in a name that was not there: one already used
+	// beside it may be another variable, and is left to the person.
+	for l := from; l < to; l++ {
+		for _, at := range wordsIn(code[l], h.To) {
+			if l != line || at != byteAt(lines[line], h.At.Character) {
+				return nil, h.To + " is already used here, so this is not taken for a rename", true
+			}
+		}
+	}
 	if len(req.Sites) > 0 {
 		for _, r := range req.Sites {
 			l := r.Start.Line - req.Window.StartLine
@@ -254,24 +421,40 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) ([]
 			}
 		}
 	} else {
-		from, to := scopeOf(lines, line)
+		if shadowed(lines, code, from, to, line, h.From, req.Language) {
+			return nil, h.From + " is bound again in a nested scope here, so the rename is left to the person", false
+		}
+		var stack []byte
 		for l := from; l < to; l++ {
-			for i := 0; i <= len(code[l])-len(h.From); {
-				j := strings.Index(code[l][i:], h.From)
-				if j < 0 {
-					break
+			c := code[l]
+			uses := wordsIn(c, h.From)
+			k := 0
+			for i := 0; i < len(c); i++ {
+				if k < len(uses) && uses[k] == i {
+					open := byte(0)
+					if len(stack) > 0 {
+						open = stack[len(stack)-1]
+					}
+					if !notAVariable(c, i, h.From, open, req.Language) {
+						sites = append(sites, site{l, i})
+					}
+					k++
 				}
-				if wordAt(code[l], i+j, h.From) {
-					sites = append(sites, site{l, i + j})
+				switch c[i] {
+				case '(', '[', '{':
+					stack = append(stack, c[i])
+				case ')', ']', '}':
+					if len(stack) > 0 {
+						stack = stack[:len(stack)-1]
+					}
 				}
-				i += j + len(h.From)
 			}
 		}
 	}
 	slices.SortFunc(sites, func(a, b site) int { return cmp.Or(a.line-b.line, a.at-b.at) })
 	sites = slices.Compact(sites)
 	if len(sites) == 0 {
-		return nil, "no other use of " + h.From + " was found near the rename"
+		return nil, "no other use of " + h.From + " was found near the rename", false
 	}
 	first, last := sites[0].line, sites[0].line
 	for _, s := range sites {
@@ -292,5 +475,5 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) ([]
 		URI:     req.URI,
 		Range:   editRange{Start: editPos{Line: req.Window.StartLine + first}, End: end},
 		NewText: strings.Join(changed, ""),
-	}}, ""
+	}}, "", false
 }

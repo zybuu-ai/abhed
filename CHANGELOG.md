@@ -49,28 +49,34 @@ All notable changes to Abhed are recorded here. The format follows
 ### Added
 
 - Faster editor completions in Abhed Studio. A local completion model is
-  loaded when a file opens (`_abhed/complete/warm`: an empty request of one
-  token, no code, at most once every two minutes a session, never for a
-  model on another machine). A suggestion is one logical block, the
-  statement at the cursor and the body of a block it opens, and the model's
-  streamed answer is ended as soon as that block is whole, with a blank
-  line and end-of-text markers as stop sequences. Studio waits briefly
-  after a keystroke, cancels a request whose place has gone (a cancel now
-  names its `seq`), and asks again after an accepted suggestion or a new
-  line. `completion.summary` and `next_edit.summary` record answer times
-  (median, 90th percentile, longest) and warm-ups, never code, and
-  `abhed hawkeye` shows them. The data-sent rules and
+  loaded ahead of the first completion (`_abhed/complete/warm`: an empty
+  request of one token, no code, once the editor session is open, at most
+  every two minutes per session and per connection, ended with the session,
+  and only for a model whose address is on this machine). A suggestion is
+  one logical block, the statement at the cursor and the body of a block it
+  opens, and the model's streamed answer is ended as soon as that block is
+  whole. Studio waits briefly after a keystroke, cancels a request whose
+  place has gone (a cancel now names its `seq`), asks once more when over
+  the rate limit, and asks again after an accepted suggestion or Enter.
+  `completion.summary` and `next_edit.summary` record answer times
+  (median, 90th percentile, longest) of requests sent, and warm-ups, never
+  code, and `abhed hawkeye` shows them. The data-sent rules and
   `completion.local_only` are unchanged.
-- A rename's next edit comes from the file, not a model: after an edit that
-  turns one identifier into another, the other uses of the old name, from
-  the language server's references when one is running or else a scan of
-  the enclosing definition that skips strings and comments, are offered as
-  one edit. Nothing is sent for it; the summary counts it as `local`.
-  Studio parses the file with any next-edit suggestion applied (tree-sitter)
-  and drops one that adds syntax errors.
+- A rename's next edit comes from the file, not a model: after edits that
+  turn one identifier into another, the other uses of the old name are
+  offered as one edit. They come from the language server's references when
+  one is running, or else, in Python, Go, JavaScript, TypeScript and Java, a
+  scan of the innermost function that skips strings, comments, members,
+  keyword arguments and object keys, and offers nothing where the name is
+  bound again in a nested scope. A new name that is a reserved word or
+  already used there is no rename. Nothing is sent for it; the summary
+  counts it as `local`, or `local_dropped` when nothing was offered. Studio
+  parses the file with any next-edit suggestion applied (tree-sitter) and
+  drops one that adds syntax errors or cannot be checked.
 - Python language servers you already have: where `basedpyright-langserver`
   is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
-  server is that one.
+  server is that one, and the start you are asked about names it and what
+  it loads. Not under the container tier, which always runs basedpyright.
 
 ### Fixed
 

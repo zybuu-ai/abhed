@@ -939,3 +939,29 @@ func TestPickLanguageServer(t *testing.T) {
 		t.Errorf("go: %v", got)
 	}
 }
+
+// Where only pylsp is installed it runs, and what the person and the
+// supervisor are told names pylsp and what it loads, not basedpyright.
+func TestStudioPythonServerFallbackIsDescribed(t *testing.T) {
+	r := newStudioRig(t, "")
+	asked := fakeLSP(t, r.ws)
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(p string) bool { return p == "pylsp" } }
+	stubOnPath(t, "pylsp")
+	id := r.open()
+	var res struct {
+		LSPID string `json:"lspId"`
+	}
+	r.cl.ok("_abhed/lsp/start", map[string]any{"sessionId": id, "language": "python"}, &res)
+	if len(*asked) != 1 || !strings.Contains((*asked)[0], "pylsp") || strings.Contains((*asked)[0], "pyright") {
+		t.Fatalf("command %v", *asked)
+	}
+	requested, _ := r.recorded(id, agent.EvActionRequested)
+	raw, _ := json.Marshal(requested)
+	if !strings.Contains(string(raw), "pylsp runs in the Python it was installed with") || strings.Contains(string(raw), "basedpyright") {
+		t.Fatalf("the judged call says %s", raw)
+	}
+	r.cl.ok("_abhed/lsp/stop", map[string]any{"lspId": res.LSPID}, nil)
+	if got := lspRuns("python", []string{"pyright-langserver", "--stdio"}); !strings.HasPrefix(got, "pyright runs") {
+		t.Fatalf("pyright: %s", got)
+	}
+}

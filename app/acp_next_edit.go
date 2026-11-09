@@ -155,15 +155,16 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	}
 	// A rename is finished from the document itself: no model, nothing sent.
 	if h, line, ok := renameOf(req, raw); ok {
-		edits, why := renameEdit(req, raw, h, line)
-		k.took(time.Since(arrived))
-		if len(edits) == 0 {
-			empty("dropped", why)
+		if edits, why, notRename := renameEdit(req, raw, h, line); !notRename {
+			if len(edits) == 0 {
+				k.count(func(s *agent.CompletionSummary) { s.LocalDropped++ })
+				empty("dropped", why)
+				return
+			}
+			k.count(func(s *agent.CompletionSummary) { s.Local++ })
+			c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
 			return
 		}
-		k.count(func(s *agent.CompletionSummary) { s.Local++ })
-		c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
-		return
 	}
 	cleaned := linediff.SplitLines(clean(strings.Join(raw, "")))
 	if len(cleaned) != len(raw) {

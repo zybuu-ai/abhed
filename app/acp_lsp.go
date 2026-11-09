@@ -251,7 +251,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	command := lsprelay.CommandLine(l.argv)
 	callID := "u" + acpID()
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " +
-		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language)})
+		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language, l.argv)})
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
 	// A server that is not on the PATH commands get (the toolchains' folders
 	// first) cannot start: the person is offered the install, and nothing is
@@ -797,7 +797,19 @@ func lspWriter(stdin io.WriteCloser, out <-chan []byte, queued *atomic.Int64, ca
 
 // lspRuns says, for the judged call and the record, what a server may still
 // run inside the sandbox with the engine's settings.
-func lspRuns(language string) string {
+func lspRuns(language string, argv []string) string {
+	if language == "python" && len(argv) > 0 {
+		// The server actually chosen: the default, or the person's own pyright or pylsp.
+		switch filepath.Base(argv[0]) {
+		case "pyright-langserver":
+			return "pyright runs the Python interpreter it finds, the sandbox's or one a pyrightconfig.json names, to read its import paths"
+		case "pylsp":
+			return "pylsp runs in the Python it was installed with, loads every plugin installed beside it and its Jedi or Rope back end, and reads the workspace's setup.cfg, tox.ini, .flake8 and pyproject.toml; with linting plugins it runs those linters on the files"
+		case "basedpyright-langserver":
+		default:
+			return "the server may run programs of its own"
+		}
+	}
 	switch language {
 	case "go":
 		return "gopls runs go list (and, for packages that use cgo, the cgo tool and the C compiler) to load packages, but no project code"

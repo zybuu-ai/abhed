@@ -242,7 +242,7 @@ func TestStudioNextEditRename(t *testing.T) {
 		t.Fatalf("with a hint: %+v", res)
 	}
 	// Nothing left to rename: nothing offered, and still no model.
-	res = ask(map[string]any{"window": map[string]any{"startLine": 10, "text": "    stride = size - overlap\n    return stride\n"},
+	res = ask(map[string]any{"window": map[string]any{"startLine": 9, "text": "def f(size, overlap):\n    stride = size - overlap\n    return 1\n"},
 		"recentEdits": []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 10, "character": 4}, "end": map[string]int{"line": 10, "character": 8}}, "oldText": "step", "newText": "stride"}}})
 	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "no other use of step") {
 		t.Fatalf("nothing to rename: %+v", res)
@@ -255,7 +255,7 @@ func TestStudioNextEditRename(t *testing.T) {
 	}
 	r.cl.call("session/close", map[string]any{"sessionId": id})
 	sum, _ := r.recorded(id, agent.EvNextEditSummary)
-	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["requests"] != float64(0) {
+	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["local_dropped"] != float64(1) || sum[0]["requests"] != float64(0) || sum[0]["latency_max_ms"] != nil {
 		t.Fatalf("next_edit.summary %v", sum)
 	}
 	if enabled, _ := r.recorded(id, agent.EvNextEditEnabled); len(enabled) != 0 {
@@ -299,23 +299,131 @@ func TestStudioNextEditNotARename(t *testing.T) {
 
 func TestRenameScopeAndCode(t *testing.T) {
 	lines := linediffSplit(chunkText)
-	if from, to := scopeOf(lines, 7); from != 0 || to != 15 {
-		t.Fatalf("scope of line 8: [%d, %d)", from, to)
+	code := codeOnly(lines, "python")
+	if from, to, ok := scopeOf(lines, code, 7, "python"); !ok || from != 0 || to != 15 {
+		t.Fatalf("scope of line 8: [%d, %d) %v", from, to, ok)
 	}
-	if from, to := scopeOf(lines, 15); from != 15 || to != len(lines) {
-		t.Fatalf("scope of a header: [%d, %d)", from, to)
+	if from, to, ok := scopeOf(lines, code, 15, "python"); !ok || from != 15 || to != len(lines) {
+		t.Fatalf("scope of a header: [%d, %d) %v", from, to, ok)
 	}
-	code := codeOnly([]string{"x = 'a # b' # c\n", "s = \"\"\"one\n", "two\"\"\" + y\n"}, "python")
-	if code[0] != "x ="+strings.Repeat(" ", 12)+"\n" || code[1] != "s =       \n" || code[2] != "       + y\n" {
-		t.Fatalf("%q", code)
+	got := codeOnly([]string{"x = 'a # b' # c\n", "s = \"\"\"one\n", "two\"\"\" + y\n"}, "python")
+	if got[0] != "x ="+strings.Repeat(" ", 12)+"\n" || got[1] != "s =       \n" || got[2] != "       + y\n" {
+		t.Fatalf("%q", got)
 	}
-	code = codeOnly([]string{"a := `x` // y\n", "/* z\n", "*/ b\n"}, "go")
-	if code[0] != "a :=         \n" || code[2] != "   b\n" {
-		t.Fatalf("%q", code)
+	got = codeOnly([]string{"a := `x` // y\n", "/* z\n", "*/ b\n"}, "go")
+	if got[0] != "a :=         \n" || got[2] != "   b\n" {
+		t.Fatalf("%q", got)
 	}
-	if isIdent("class", "python") || !isIdent("stride", "python") || isIdent("1x", "go") || !isIdent("größe", "go") {
-		t.Fatal("isIdent")
+	for _, tc := range []struct {
+		name, language string
+		ok             bool
+	}{
+		{"class", "python", false}, {"stride", "python", true}, {"1x", "go", false}, {"größe", "go", true},
+		{"nil", "go", false}, {"null", "java", false}, {"true", "java", false}, {"int", "c", false}, {"nullptr", "cpp", false},
+	} {
+		if isIdent(tc.name, tc.language) != tc.ok {
+			t.Errorf("isIdent(%q, %s) = %v", tc.name, tc.language, !tc.ok)
+		}
 	}
 }
 
 func linediffSplit(s string) []string { return strings.SplitAfter(strings.TrimSuffix(s, "\n"), "\n") }
+
+// renameCase asks for the next edit after the person renamed from to to at
+// line (0-based) of text, in language; the answer, and whether a model was asked.
+func renameCase(t *testing.T, language, text string, line, char int, from, to string, sites ...map[string]any) (nextEdits, bool) {
+	t.Helper()
+	model := newFIMServer(t, text)
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	uri := "file://" + r.ws + "/f"
+	p := map[string]any{"sessionId": id, "uri": uri, "language": language,
+		"rename": map[string]any{"from": from, "to": to, "at": map[string]int{"line": line, "character": char}},
+		"cursor": map[string]int{"line": line}, "window": map[string]any{"startLine": 0, "text": text}}
+	if len(sites) > 0 {
+		p["sites"] = sites
+	}
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", p, &res)
+	model.mu.Lock()
+	asked := len(model.paths) > 0
+	model.mu.Unlock()
+	return res, asked
+}
+
+// The scan leaves members, keyword arguments and object keys alone: they are
+// other names that happen to be spelt the same.
+func TestStudioNextEditRenameSkipsMembersAndKeywordArguments(t *testing.T) {
+	py := "def f(user):\n    title = user.name\n    print(name, key=name)\n    g(name=1)\n    return name\n"
+	res, asked := renameCase(t, "python", py, 1, 4, "name", "title")
+	if asked || len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 2 || res.Edits[0].Range.End.Line != 5 ||
+		res.Edits[0].Text != "    print(title, key=title)\n    g(name=1)\n    return title\n" {
+		t.Fatalf("python: %+v", res)
+	}
+	js := "function f(o) {\n  const key = 1;\n  return o.id + id + {id: 2}.id;\n}\n"
+	res, asked = renameCase(t, "javascript", js, 1, 8, "id", "key")
+	if asked || len(res.Edits) != 1 || res.Edits[0].Text != "  return o.id + key + {id: 2}.id;\n" {
+		t.Fatalf("javascript: %+v", res)
+	}
+}
+
+// The scope is the innermost function: a sibling method's variable of the
+// same name is not touched, and a name bound again in a nested function,
+// lambda or comprehension leaves the rename to the person.
+func TestStudioNextEditRenameScopes(t *testing.T) {
+	sib := "class C:\n    def a(self):\n        y = 1\n        return x\n\n    def b(self):\n        x = 2\n        return x\n"
+	res, _ := renameCase(t, "python", sib, 2, 8, "x", "y")
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 3 || res.Edits[0].Text != "        return y\n" {
+		t.Fatalf("sibling method: %+v", res)
+	}
+	for name, text := range map[string]string{
+		"nested def":    "def f():\n    y = 1\n    def g(x):\n        return x\n    return g(x)\n",
+		"comprehension": "def f(xs):\n    y = 1\n    return [x for x in xs] + [x]\n",
+		"lambda":        "def f():\n    y = 1\n    h = lambda x: x\n    return h(x)\n",
+	} {
+		res, asked := renameCase(t, "python", text, 1, 4, "x", "y")
+		if asked || len(res.Edits) != 0 || !strings.Contains(res.Dropped, "bound again") {
+			t.Fatalf("%s: %+v asked=%v", name, res, asked)
+		}
+	}
+	goShadow := "func f() int {\n\ty := 1\n\tif true {\n\t\tx := 2\n\t\t_ = x\n\t}\n\treturn x\n}\n"
+	if res, _ := renameCase(t, "go", goShadow, 1, 1, "x", "y"); len(res.Edits) != 0 || !strings.Contains(res.Dropped, "bound again") {
+		t.Fatalf("go inner block: %+v", res)
+	}
+	java := "class A {\n    int f() {\n        int total = 1;\n        return sum * 2 + this.sum;\n    }\n\n    int g() {\n        return sum;\n    }\n}\n"
+	if res, _ := renameCase(t, "java", java, 2, 12, "sum", "total"); len(res.Edits) != 1 || res.Edits[0].Text != "        return total * 2 + this.sum;\n" {
+		t.Fatalf("java: %+v", res)
+	}
+}
+
+// Only languages whose reserved words and comments the scan knows are
+// scanned; C takes a language server's sites, Ruby nothing; a reserved word
+// is never a new name; a new name already in use is no rename, and the
+// model is asked as before.
+func TestStudioNextEditRenameLanguages(t *testing.T) {
+	c := "int f(void) {\n    int y = 1;\n    return x; // x\n}\n"
+	if _, asked := renameCase(t, "c", c, 1, 8, "x", "y"); !asked {
+		t.Fatal("c without sites was scanned")
+	}
+	site := map[string]any{"start": map[string]int{"line": 2, "character": 11}, "end": map[string]int{"line": 2, "character": 12}}
+	if res, asked := renameCase(t, "c", c, 1, 8, "x", "y", site); asked || len(res.Edits) != 1 || res.Edits[0].Text != "    return y; // x\n" {
+		t.Fatalf("c with sites: %+v", res)
+	}
+	cInt := strings.Replace(c, "int y", "int int", 1)
+	if _, asked := renameCase(t, "c", cInt, 1, 8, "x", "int", site); !asked {
+		t.Fatal("c: x renamed to int")
+	}
+	javaNull := "class A {\n    void f() {\n        Object null = 1;\n        g(x);\n    }\n}\n"
+	if _, asked := renameCase(t, "java", javaNull, 2, 15, "x", "null"); !asked {
+		t.Fatal("java: x renamed to null")
+	}
+	ruby := "def f\n  y = 1\n  # x is here\n  x\nend\n"
+	if _, asked := renameCase(t, "ruby", ruby, 1, 2, "x", "y"); !asked {
+		t.Fatal("ruby was scanned")
+	}
+	used := "def f(x, y):\n    z = y\n    return x\n"
+	if _, asked := renameCase(t, "python", used, 1, 8, "x", "y"); !asked {
+		t.Fatal("a swap to a name already used was taken for a rename")
+	}
+}
