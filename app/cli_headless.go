@@ -474,8 +474,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
-	// contract gates an answer, which a structured run does not give.
-	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
+	// contract gates an answer, which a structured run does not give. Unset,
+	// -p labels its answer as the terminal does; -verify off still turns it off.
+	if v, err := toolset.Verifier(appCfg, true); err == nil && o.schema == nil {
 		v.Install(loop)
 	} else if o.schema != nil && appCfg.Verify.Contract.On() {
 		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")
