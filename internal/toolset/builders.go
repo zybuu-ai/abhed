@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -282,7 +283,8 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 			warn("ssh: %v", err)
 		}
 		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil,
-			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(), Secret: secret},
+			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(),
+			MaxTimeout:   time.Duration(cfg.SSH.MaxTimeoutSeconds) * time.Second, Secret: secret},
 			remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts, Declared: declared})
 		if cfg.SSH.Transfers {
 			// Held in memory whole, so bounded at 1 GiB whatever is configured.

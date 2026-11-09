@@ -135,7 +135,7 @@ var knownReads = func() map[string]readSpec {
 	// getent without -s, which loads an NSS module named by the call.
 	m["getent"] = readSpec{opts: o("-i --no-idn", "")}
 	m["vmstat"] = readSpec{opts: o("-a --active -f --forks -m --slabs -n --one-header -s --stats -d --disk -D --disk-sum "+
-		"-t --timestamp -w --wide", "-S --unit -p --partition -c --count")}
+		"-t --timestamp -w --wide", "-S --unit -p --partition")}
 	m["basename"] = readSpec{opts: o("-a --multiple -z --zero", "-s --suffix")}
 	m["dirname"] = readSpec{opts: o("-z --zero", "")}
 	m["realpath"] = readSpec{opts: o("-e --canonicalize-existing -m --canonicalize-missing -L --logical -P --physical "+

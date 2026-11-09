@@ -93,6 +93,9 @@ func judgeCall(words []string, piped, contents, findOK bool) string {
 	if why := reachesOut(name, words[1:]); why != "" {
 		return why
 	}
+	if name == "apt" || name == "apt-cache" {
+		return name + " may rewrite its package cache when run as root, so it is not a read here"
+	}
 	args := splitClusters(spec, words[1:])
 	if !readCallOK(spec, args, never) {
 		return fmt.Sprintf("%s is called with an option, verb or operand that is not a read (%s)", name, readFormSummary(name, spec))
@@ -139,9 +142,41 @@ func printsContents(name string, args []string) bool {
 	case "docker", "podman":
 		return len(args) > 0 && (args[0] == "logs" || args[0] == "inspect")
 	case "systemctl":
+		if len(args) > 0 && args[0] == "status" {
+			return !statusWithoutLog(args[1:])
+		}
 		return len(args) > 0 && (args[0] == "cat" || args[0] == "show")
+	case "md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "b2sum", "cksum":
+		// A hash of a short secret gives the secret back to a guess.
+		return true
+	case "findmnt":
+		// The fstab holds mount options, a CIFS password among them.
+		return slices.Contains(args, "-s") || slices.Contains(args, "--fstab")
 	}
 	return false
+}
+
+// statusWithoutLog reports a systemctl status call that prints no journal
+// lines: -n 0 or --lines=0, and no -o. Any other prints the unit's log.
+func statusWithoutLog(args []string) bool {
+	zero := false
+	for i, a := range args {
+		switch {
+		case a == "-o" || a == "--output" || strings.HasPrefix(a, "--output="):
+			return false
+		case a == "-n" || a == "--lines":
+			if i+1 >= len(args) || args[i+1] != "0" {
+				return false
+			}
+			zero = true
+		case strings.HasPrefix(a, "--lines="):
+			if a != "--lines=0" {
+				return false
+			}
+			zero = true
+		}
+	}
+	return zero
 }
 
 // readsStdin are the programs that read their input when given no file.
@@ -205,7 +240,7 @@ func endless(name string, args []string) string {
 	case "dmesg":
 		return follow("-w", "-W", "--follow", "--follow-new")
 	case "free":
-		return follow("-s", "--seconds")
+		return follow("-s", "--seconds", "-c", "--count")
 	case "docker", "podman":
 		if len(args) > 0 && args[0] == "logs" {
 			return follow("-f", "--follow")
@@ -227,15 +262,19 @@ func opensDevices(name string, args []string) string {
 			return name + " " + a + " may read a device, and opening one can change the machine"
 		case name == "file" && (a == "-s" || a == "--special-files"):
 			return "file -s opens the devices it is named, and opening one can change the machine"
+		case name == "lsusb" && (a == "-v" || a == "--verbose"):
+			return "lsusb -v opens the devices under /dev/bus/usb"
 		}
 	}
 	return ""
 }
 
 // unsafeWords says why a word of a call reaches what a read must not: a
-// device (opening /dev/watchdog arms it; a tape rewinds), an automounted
-// network path (/net/<host> mounts and looks up a name), or the command's
-// input (-). A glob that could match such a path counts too.
+// device (opening /dev/watchdog arms it; a tape rewinds), /proc and /sys
+// (/proc/kmsg is consumed as it is read, /proc/self/root/dev is /dev again),
+// an automounted network path (/net/<host> mounts and looks up a name), or
+// the command's input (-). Each path is cleaned first, so /./dev and //dev
+// are /dev, and a glob that could match such a folder counts too.
 func unsafeWords(args []string) string {
 	for _, a := range args {
 		w := a
@@ -248,20 +287,17 @@ func unsafeWords(args []string) string {
 				continue
 			}
 		}
+		if w == ".." || strings.HasPrefix(w, "../") || strings.Contains(w, "/../") || strings.HasSuffix(w, "/..") {
+			return fmt.Sprintf("%q climbs with .., so where it leads is not read; write the path from /", w)
+		}
 		if !strings.HasPrefix(w, "/") {
-			if w == ".." || strings.HasPrefix(w, "../") || strings.Contains(w, "/../") || strings.HasSuffix(w, "/..") {
-				return fmt.Sprintf("%q climbs out of the folder the command starts in; write the path from /", w)
-			}
 			continue
 		}
-		first, _, _ := strings.Cut(strings.TrimLeft(w, "/"), "/")
-		for _, top := range []string{"dev", "net", "misc"} {
+		first, _, _ := strings.Cut(strings.TrimPrefix(path.Clean(w), "/"), "/")
+		for _, top := range []string{"dev", "proc", "sys", "net", "misc"} {
 			if segmentMatches(first, top) {
-				return fmt.Sprintf("%q is or may be under /%s, where opening a file can change the machine or reach another", w, top)
+				return fmt.Sprintf("%q is or may be under /%s, where opening a file can change the machine, never end or reach another", w, top)
 			}
-		}
-		if strings.Contains(w, "/../") || strings.HasSuffix(w, "/..") {
-			return fmt.Sprintf("%q climbs with .., so where it leads is not read; write the path plainly", w)
 		}
 	}
 	return ""
@@ -423,7 +459,9 @@ func cluster(op opts, w string) (letters []string, ok bool) {
 func never(string) bool { return false }
 
 // metadataExec are the programs find may -exec on any file it meets: they
-// read a file's name and inode, never open it.
+// read a file's name and inode, except file, which reads a regular file's
+// first bytes to name its type (and never opens a device unless -s, which
+// is refused). /proc and /sys are refused as roots, so none meets them.
 var metadataExec = set("ls", "stat", "du", "basename", "dirname", "realpath", "readlink", "file")
 
 // findReadOnly reports why find's arguments are not a read, or "": tests and

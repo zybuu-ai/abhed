@@ -520,7 +520,7 @@ wildcard entry for it reads any file the remote account can.
 | `w` | options `--from`, `--ip-addr`, `--no-header`, `--old-style`, `--short`, `-f`, `-h`, `-i`, `-o`, `-s`, `-u` |
 | `who` | options `--all`, `--boot`, `--count`, `--dead`, `--heading`, `--login`, `--lookup`, `--mesg`, `--message`, `--runlevel`, `--short`, `--time`, `--users`, `--writable`, `-H`, `-T`, `-a`, `-b`, `-d`, `-l`, `-m`, `-q`, `-r`, `-s`, `-t`, `-u`, `-w` |
 | `getent` | options `--no-idn`, `-i` |
-| `vmstat` | options `--active`, `--disk-sum`, `--disk`, `--forks`, `--one-header`, `--slabs`, `--stats`, `--timestamp`, `--wide`, `-D`, `-a`, `-d`, `-f`, `-m`, `-n`, `-s`, `-t`, `-w`; values `--count`, `--partition`, `--unit`, `-S`, `-c`, `-p` |
+| `vmstat` | options `--active`, `--disk-sum`, `--disk`, `--forks`, `--one-header`, `--slabs`, `--stats`, `--timestamp`, `--wide`, `-D`, `-a`, `-d`, `-f`, `-m`, `-n`, `-s`, `-t`, `-w`; values `--partition`, `--unit`, `-S`, `-p` |
 | `basename` | options `--multiple`, `--zero`, `-a`, `-z`; values `--suffix`, `-s` |
 | `dirname` | options `--zero`, `-z` |
 | `realpath` | options `--canonicalize-existing`, `--canonicalize-missing`, `--logical`, `--no-symlinks`, `--physical`, `--quiet`, `--strip`, `--zero`, `-L`, `-P`, `-e`, `-m`, `-q`, `-s`, `-z`; values `--relative-base`, `--relative-to` |
@@ -531,7 +531,7 @@ wildcard entry for it reads any file the remote account can.
 | `md5sum`, `sha1sum`, `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum` | options `-b`, `-t`, `--tag`, `-z` and their long forms (not `-c`, which reads a list from another file) |
 | `cksum` | options `--base64`, `--raw`, `--tag`, `--untagged`, `-z`; values `-a`, `-l` (not `--check`) |
 | `findmnt` | options `-l`, `-n`, `-J`, `-r`, `-a`, `-D`, `-b`, `-u`, `-s`, `-m`, `-k`, `-A`, `-f`, `-v` and long forms; values `-o`, `-t`, `-T`, `-S`, `-O`, `-M` (not `-F`, which parses another file as a table) |
-| `lsusb` | options `-v`, `-t`; values `-s`, `-d` (not `-D`, which dumps a file) |
+| `lsusb` | options `-v`, `-t`; values `-s`, `-d` (not `-D`, which dumps a file; the read-only classifier also refuses `-v`, which opens the devices) |
 | `rg` | options `-n`, `-N`, `-i`, `-S`, `-s`, `-w`, `-x`, `-v`, `-l`, `-c`, `-F`, `-H`, `-u`, `-uu`, `-L`, `-o`, `-U`, `-P`, `-q`, `-a` and long forms such as `--no-heading`, `--hidden`, `--files`, `--json`; values `-e`, `-g`, `--iglob`, `-t`, `-T`, `-A`, `-B`, `-C`, `-m`, `-d`, `--max-filesize`, `-E`, `--sort` (not `--pre` or `-z`, which run programs) |
 | `sort` | options `-n`, `-r`, `-u`, `-h`, `-V`, `-f`, `-b`, `-M`, `-g`, `-s`, `-z`, `-c`, `-C`, `-d`, `-i`, `-R` and their long forms; values `-k`, `-t`, `-S`, `--parallel` (not `-o`, `-T` or `--compress-program`) |
 | `date` | options `-u`, `-R`, `-I` and its `-Idate`…`-Ins` forms, `--iso-8601` and `--rfc-3339` with a value; values `-d`, `-r`; each operand starts with `+` |
@@ -592,20 +592,24 @@ ls -lah /var/log/app
 du -ah /var/log/app | sort -rh | head -n 20
 find /var/log/app -name 'core*' -exec ls -lh {} +
 ps -eo pid,rss,comm --sort=-rss | head
-systemctl status nginx --no-pager
+systemctl status nginx -n 0 --no-pager
 ```
 
 **Metadata by default; contents by opt-in.** By default the classifier
 runs only programs that show metadata: names, sizes, times, processes,
 mounts, units' state (`ls`, `stat`, `du`, `df`, `free`, `uptime`, `ps`,
-`wc`, the checksums, `systemctl status` and `is-*`, `docker ps`, `find`
+`wc`, `findmnt`, `systemctl status -n 0` and `is-*`, `docker ps`, `find`
 with no `-exec` of a reader, and the like). `head`, `tail`, `sort`, `cut`,
 `grep` and `wc` count as metadata after a `|` when they name no file of
 their own, since they then read only what a metadata program printed.
 Programs that print the contents of files or of an environment (`cat`,
 `head`, `tail`, `grep`, `rg`, `sort`, `cut`, `diff`, `cmp`, `zcat`,
 `journalctl`, `dmesg`, `openssl x509`, `docker logs` and `inspect`,
-`systemctl cat` and `show`) run unasked only where the operator sets:
+`systemctl cat` and `show`, `findmnt -s`), and the checksums (`md5sum`,
+`sha*sum`, `b2sum`, `cksum`: a hash of a short secret gives it back to a
+guess), run unasked only where the operator sets the option below.
+`systemctl status` prints the unit's recent journal, so without it only
+`systemctl status -n 0` (or `--lines=0`) with no `-o` is metadata:
 
 ```json
 "ssh": { "enabled": true, "read_contents": true }
@@ -644,12 +648,19 @@ A command is a read only when all of these hold:
   (`./*.log`, `/var/log/app/*`).
 - No word is, or as a glob could be, under `/dev` (opening `/dev/watchdog`
   arms it and can reboot the machine; a tape rewinds; a serial line
-  toggles), `/net` or `/misc` (autofs mounts a host by the name given and
-  looks it up), or climbs with `..`; and `-` (the command's input) is not
-  read. `grep -D read` and `file -s`, which open devices, are refused.
+  toggles), `/proc` (`/proc/kmsg` is consumed as it is read and blocks when
+  empty; `/proc/self/root/dev` is `/dev` again) or `/sys`, `/net` or `/misc`
+  (autofs mounts a host by the name given and looks it up). Each path is
+  cleaned first, so `/./dev` and `//dev` count as `/dev`; a find root
+  counts too. No word climbs with `..`, and `-` (the command's input) is
+  not read. `grep -D read`, `file -s` and `lsusb -v`, which open devices,
+  are refused, and `apt`, which may rewrite its cache as root, is not
+  judged a read.
 - It ends: `tail -f`, `--follow` and `--retry`, `journalctl -f`,
-  `dmesg -w`, `docker logs -f`, `free -s`, `vmstat` with a delay, and a
-  reader with no file (`cat`, `grep x`), which reads its input, ask.
+  `dmesg -w`, `docker logs -f`, `free -s` and `free -c`, `vmstat` with a
+  delay, and a reader with no file (`cat`, `grep x`), which reads its
+  input, ask. Every call is also bounded by `ssh.max_timeout_seconds`
+  (default 120): `timeout_seconds` is the model's choice only below it.
 - A content reader names no file that holds credentials: the names in
   Abhed's shared list (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_*`, `.netrc`,
   `.npmrc`, `.pypirc`, `.pgpass`, `.vault-token`, `credentials`, `*.tfvars`,
@@ -688,6 +699,14 @@ record's `rule` field.
 - A name the command gives may go to the host's name services: `id`, `ps -u`
   and `pgrep -u` with a user name, and `ls` of an automounted path outside
   `/net` and `/misc`, can ask LDAP, SSSD, NIS or DNS.
+- Metadata is not nothing. `ps -eo pid,args`, `ps auxww` and
+  `docker ps --no-trunc` show every process's arguments and containers'
+  labels, so a secret passed on a command line shows there, as it does to
+  any user on the host. `wc` and `stat` of a secret file show its size and
+  line count, not its contents; that choice is deliberate.
+- Some metadata programs ask DNS for the addresses they show: `netstat`
+  without `-n`, `who --lookup`, `hostname -A` and `ip -r`. The names are the
+  host's, not the model's.
 - A command the classifier allows skips the monitor's program, evidence and
   host-choice rules, as a declared read does, so the always-on monitor
   reviews it less than other remote calls.

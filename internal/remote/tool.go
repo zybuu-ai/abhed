@@ -132,6 +132,9 @@ type Tool struct {
 	ReadOnly bool
 	// ReadContents says the classifier also runs programs that print files.
 	ReadContents bool
+	// MaxTimeout bounds the timeout a call may ask for (ssh.max_timeout_seconds);
+	// 0 is DefaultTimeout.
+	MaxTimeout time.Duration
 	// Secret returns a stored secret's value, for stdin_secret; nil means no store.
 	Secret func(name string) (string, error)
 }
@@ -206,8 +209,9 @@ func readOnly(on, contents bool) string {
 	if !on {
 		return ""
 	}
-	what := "programs that show metadata (ls, stat, du, df, ps, free, uptime, systemctl status, find without " +
-		"-exec of a reader, …), and head, tail, sort, cut, grep or wc reading what such a program pipes to them"
+	what := "programs that show metadata (ls, stat, du, df, ps, free, uptime, wc, systemctl status -n 0, find " +
+		"without -exec of a reader, …), and head, tail, sort, cut, grep or wc reading what such a program pipes " +
+		"to them; never a path under /dev, /proc or /sys"
 	if contents {
 		what = "common read programs (ls, cat, head, tail, grep, du, df, ps, journalctl, find -type f -exec of a read, …)"
 	}
@@ -222,7 +226,7 @@ func (Tool) Schema() json.RawMessage {
   "properties":{
     "host":{"type":"string","description":"Name of a configured host."},
     "command":{"type":"string","description":"The shell command to run."},
-    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120."},
+    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120, and never more than the operator's maximum (120 unless set)."},
     "stdin_secret":{"type":"string","description":"NAME of a stored secret to write to the command's stdin, such as a password for sudo -S or a key for a file. Never the value, and never put a secret in command."}
   },
   "required":["host","command"]
@@ -270,7 +274,7 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	if err != nil {
 		return errf("%v", err)
 	}
-	timeout := time.Duration(a.Timeout) * time.Second
+	timeout := t.timeout(a.Timeout)
 	out, err := h.RunInput(ctx, a.Command, timeout, stdin)
 	if out != nil && stdin != nil {
 		// The command may echo what it read; the model never sees it.
@@ -294,6 +298,26 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 		IsError:  code != 0,
 		ExitCode: &code,
 	}
+}
+
+// DefaultTimeout is how long a command runs when the call names no timeout,
+// and the most a call may ask for unless the operator sets another bound.
+const DefaultTimeout = 2 * time.Minute
+
+// timeout is the call's timeout in seconds, bounded by the operator's
+// maximum: the model chooses how long it waits, never past that.
+func (t Tool) timeout(seconds int) time.Duration {
+	limit := t.MaxTimeout
+	if limit <= 0 {
+		limit = DefaultTimeout
+	}
+	if seconds <= 0 {
+		return min(DefaultTimeout, limit)
+	}
+	if seconds >= int(limit/time.Second) {
+		return limit // and no overflow from a huge number
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // Target shows the account and address a command runs on: an approval that

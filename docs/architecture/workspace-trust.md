@@ -144,6 +144,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
+| `ssh.max_timeout_seconds` | **applied** only when lower; zero means the default (120) |
 | `ssh.listed_reads_only` | **applied** only when true: it turns the remote read-only classifier off, so only `ssh.read_commands` run unasked |
 | `ssh.read_contents` | ignored: it lets programs that print a host's files run unasked |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |

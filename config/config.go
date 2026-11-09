@@ -1478,6 +1478,9 @@ type SSHConfig struct {
 	Transfers bool `json:"transfers,omitempty"`
 	// TransferMaxMB bounds one transfer; 0 is 16.
 	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
+	// MaxTimeoutSeconds bounds the timeout_seconds an ssh call may ask for;
+	// 0 is 120, the default a call gets when it asks for none.
+	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty"`
 }
 
 type SSHHostConfig struct {

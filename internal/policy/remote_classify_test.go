@@ -47,9 +47,14 @@ var remoteMetadataReads = []string{
 	"uptime",
 	"ps aux | grep -i java | head",
 	"ps -eo pid,rss,comm --sort=-rss | head -n 5",
-	"systemctl status nginx --no-pager",
+	"systemctl status nginx -n 0 --no-pager",
+	"systemctl status --lines=0 nginx",
+	"systemctl status -n0 nginx",
 	"systemctl is-active nginx",
+	"findmnt",
+	"lsusb",
 	"wc -l /var/log/app/app.log",
+	"wc -l /etc/shadow",
 	"ls|sort",
 	"ls /var/log | grep -c log",
 	"ls /var/log | grep -e app -e sys",
@@ -76,6 +81,21 @@ var remoteContentReads = []string{
 	"dmesg -T | tail",
 	"ls | grep -f /var/log/app/patterns",
 	"ls | head /var/log/app/app.log",
+	// systemctl status prints the unit's journal unless -n 0 and no -o.
+	"systemctl status nginx --no-pager",
+	"systemctl status app -n 100000",
+	"systemctl status app --lines=100000",
+	"systemctl status app -n 0 -o verbose",
+	"systemctl status app -o json",
+	"systemctl status -n 1000",
+	// A checksum of a short secret gives it back to a guess.
+	"md5sum /var/log/app/app.log",
+	"sha256sum /etc/app/pin",
+	"cksum /srv/app/build.tar",
+	"find /root -type f -exec md5sum {} +",
+	// findmnt's fstab holds mount options, a CIFS password among them.
+	"findmnt -s",
+	"findmnt --fstab -o SOURCE,OPTIONS",
 }
 
 // Every evasion of the read-only form is not a read, whatever the opt-in:
@@ -228,6 +248,28 @@ var remoteReadsRefused = []string{
 	"find / -not -type f -exec wc {} +",
 	"file -s /dev/sda",
 	"ls /dev",
+	// Cleaned paths and /proc, /sys: /./dev is /dev, /proc/self/root/dev is too.
+	"wc -c /./dev/watchdog",
+	"wc -c //dev/watchdog",
+	"md5sum /proc/self/root/dev/watchdog",
+	"stat /proc/self/root/dev/watchdog",
+	"wc -c /proc/kmsg",
+	"file /proc/kmsg",
+	"md5sum /proc/kcore",
+	"find /proc -type f -exec md5sum {} +",
+	"find /proc -type f -exec ls {} +",
+	"ls /sys/class",
+	"ls /p?oc",
+	// Checksums of credential files ask even under read_contents.
+	"md5sum /etc/shadow",
+	"cksum /root/.ssh/id_rsa",
+	// Repeats or rewrites a cache.
+	"free -c 100000",
+	"free --count=3",
+	"vmstat -c 3",
+	"apt list --installed",
+	"apt-cache policy nginx",
+	"lsusb -v",
 	// Automounted network paths, and climbing out.
 	"ls /net/secret.example.com",
 	"ls /misc/x",
