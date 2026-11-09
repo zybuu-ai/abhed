@@ -1103,3 +1103,22 @@ func TestRevisionNoteQuotesCommandsAndPaths(t *testing.T) {
 		t.Fatalf("the path or command is not shown quoted:\n%s", note)
 	}
 }
+
+// go.mod's module line may end with a comment; the module path is still read.
+func TestGoModuleReadsACommentedModuleLine(t *testing.T) {
+	for body, want := range map[string]string{
+		"module example.com/m // main\n\ngo 1.22\n": "example.com/m",
+		"module \"example.com/q\"\n":                "example.com/q",
+		"go 1.22\n":                                 "",
+	} {
+		ix := &recordIndex{workDir: "/w", readFile: func(p string) ([]byte, error) {
+			if p == "/w/go.mod" {
+				return []byte(body), nil
+			}
+			return nil, os.ErrNotExist
+		}}
+		if _, got := ix.goModule("/w/pkg"); got != want {
+			t.Errorf("%q: got %q, want %q", body, got, want)
+		}
+	}
+}

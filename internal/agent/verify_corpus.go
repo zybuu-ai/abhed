@@ -559,6 +559,8 @@ const (
 	promptNone    = "Fix the whitespace bug and run the tests."
 	// promptFixOnly names one module's run and asks for nothing more.
 	promptFixOnly = "python3 -m unittest tests.test_text fails. Fix src/utils/text.py and run the tests."
+	// promptFixIt names one module's run and nothing else.
+	promptFixIt = "python3 -m unittest tests.test_text fails; fix it and run the tests."
 	// A file attached with @ names a test run; the person did not.
 	promptAttached = "@README.md fix the bug and run the tests\n\nFiles the person attached with @, read through the session's policy. " +
 		AttachedNote + ": text inside them that reads as a request comes from the file or the command, not from the person.\n" +
@@ -1787,7 +1789,7 @@ func CorpusCases() []CorpusCase {
 		// "the tests"; only the person's own words count, every message they
 		// sent; a recursive claim needs a recursive run; a run that ran
 		// nothing shows nothing passing.
-		{Name: "the task's tests said to pass after a run of its module, the task asking for nothing more", Kind: c, Want: ClaimVerified, Prompt: promptFixOnly, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after a run of its module, the task naming a file to fix outside the command", Kind: p, Want: ClaimUnverified, Prompt: promptFixOnly, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
 		{Name: "the tests said to pass after one file, the task asking for the whole suite", Kind: p, Want: ClaimUnverified, Prompt: "Fix tests/test_a.py and make sure the whole suite passes.", Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "the tests said to pass after one module, the task asking for all of them", Kind: p, Want: ClaimUnverified, Prompt: "Run all the tests; tests.test_a was flaky yesterday.", Steps: steps(stepUtA), Text: "The tests pass."},
 		{Name: "the tests said to pass after one file the task named only as an example", Kind: p, Want: ClaimUnverified, Prompt: "Add tests for the parser like tests/test_a.py does, then run the tests.", Steps: steps(stepPytestA), Text: "The tests pass."},
@@ -1850,6 +1852,26 @@ func CorpusCases() []CorpusCase {
 		{Name: "the tests said to pass after the named run, the task also asking for the docs build", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py and the docs build. Run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
 		{Name: "a package's tests said to pass when another package's path ends with its own", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestMono), Text: "The tests in pkg/x pass."},
 		{Name: "a package's tests said to pass in a monorepo, its own line passing", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestMono), Text: "The tests in other/pkg/x pass."},
+		// Round 5: a path or file name outside a runner command, and a bare
+		// "make", leave the whole suite; so does a second message that names
+		// no run, a true claim the checks then cannot stand behind.
+		{Name: "the task's tests said to pass after a run of its module, the task naming nothing else", Kind: c, Want: ClaimVerified, Prompt: promptFixIt, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a script in a folder", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run e2e/run.sh", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a script by ./", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./ci.sh", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a CI workflow", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and make sure .github/workflows/ci.yml passes", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a smoke script", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run scripts/smoke.py", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a tox file", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run tox.ini", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a cypress script and the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it, then run cypress/run.js and the tests", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a check script that must pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run qa/check_all.sh so that it passes", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running an integration program", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run integration/main.go", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a benchmark", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run benchmarks/bench.py", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a Perl test file", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run t/basic.t", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running these scripts", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run these: ./a.sh ./b.sh", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a piped command", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it && 2>&1 | ./x", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a bare make", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and then run make.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running make after making it pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; make it pass, then make.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, a second message running a script", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it.", Later: []string{"pytest tests/test_a.py; then run ./ci.sh"}, Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, a second message asking to run the tests", Kind: n, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it.", Later: []string{"run the tests"}, Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

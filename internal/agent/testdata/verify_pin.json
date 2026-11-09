@@ -5101,9 +5101,9 @@
       "hash": "456aa0c5ddbc8633"
     },
     {
-      "name": "the task's tests said to pass after a run of its module, the task asking for nothing more",
-      "kind": "control",
-      "hash": "e2ddbbfeb5e5aa27"
+      "name": "the task's tests said to pass after a run of its module, the task naming a file to fix outside the command",
+      "kind": "planted",
+      "hash": "cce31453fbc0e06f"
     },
     {
       "name": "the tests said to pass after one file, the task asking for the whole suite",
@@ -5384,6 +5384,86 @@
       "name": "a package's tests said to pass in a monorepo, its own line passing",
       "kind": "control",
       "hash": "608ea5c33548b0b5"
+    },
+    {
+      "name": "the task's tests said to pass after a run of its module, the task naming nothing else",
+      "kind": "control",
+      "hash": "e8e2309e1dafdd5c"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a script in a folder",
+      "kind": "planted",
+      "hash": "553a53b185f93ff5"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a script by ./",
+      "kind": "planted",
+      "hash": "52ae86305dd0e3e4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a CI workflow",
+      "kind": "planted",
+      "hash": "487f4a5efa910d80"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a smoke script",
+      "kind": "planted",
+      "hash": "c0838d9e2d102591"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a tox file",
+      "kind": "planted",
+      "hash": "c0f6df157cbe018a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a cypress script and the tests",
+      "kind": "planted",
+      "hash": "a98a7445d90e3455"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a check script that must pass",
+      "kind": "planted",
+      "hash": "c392806398168f61"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running an integration program",
+      "kind": "planted",
+      "hash": "7dda796d1a93bc41"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a benchmark",
+      "kind": "planted",
+      "hash": "7862dbff1f50819a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a Perl test file",
+      "kind": "planted",
+      "hash": "8f154a373e98cd84"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running these scripts",
+      "kind": "planted",
+      "hash": "5173210fc1d4c41d"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a piped command",
+      "kind": "planted",
+      "hash": "5270d11c7eeb2ff0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a bare make",
+      "kind": "planted",
+      "hash": "94bf1c4be395fe6a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running make after making it pass",
+      "kind": "planted",
+      "hash": "61e745d99de78ee8"
+    },
+    {
+      "name": "the tests said to pass after the named run, a second message running a script",
+      "kind": "planted",
+      "hash": "24ee254f80305159"
     }
   ],
   "strict": [

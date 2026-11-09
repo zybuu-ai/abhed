@@ -511,15 +511,12 @@ func messageTests(p string) (names []string, ok bool) {
 	if whole || len(names) == 0 {
 		return nil, false
 	}
-	// What is left may say "the tests" or "run the tests", name a file
-	// that is not a test, and otherwise hold only connective words.
+	// What is left may say "the tests", "run the tests", "make sure" or
+	// "make it", and otherwise hold only connective words. A path or file
+	// name outside a runner command, even one to edit, is not one: it may
+	// be something else to run, so it leaves the whole suite.
 	left := plainTestsRe.ReplaceAllString(strings.ToLower(string(rest)), " ")
-	left = codePathRe.ReplaceAllStringFunc(left, func(w string) string {
-		if strings.Contains(w, "test") || strings.Contains(w, "spec") {
-			return w
-		}
-		return " "
-	})
+	left = makePhraseRe.ReplaceAllString(left, " ")
 	for _, r := range left {
 		if r > unicode.MaxASCII && unicode.IsLetter(r) {
 			return nil, false // another language: not read, so not narrowed
@@ -536,21 +533,22 @@ func messageTests(p string) (names []string, ok bool) {
 var (
 	// plainTestsRe is "the tests" with nothing qualifying it.
 	plainTestsRe = regexp.MustCompile(`(?:\b(?:run|rerun|re-run)\s+)?\bthe\s+tests?\b`)
-	// codePathRe is a file path or file name in a message (src/utils/text.py).
-	codePathRe = regexp.MustCompile(`[a-z0-9_.\-]*(?:/[a-z0-9_.\-]+)+|\b[a-z0-9_\-]+\.[a-z][a-z0-9]{0,5}\b`)
+	// makePhraseRe is "make sure" and "make it"; a bare "make" runs a target.
+	makePhraseRe = regexp.MustCompile(`\bmake\s+(?:sure|it)\b`)
 	// leftWordRe is a word of what is left; an apostrophe stays in it.
 	leftWordRe = regexp.MustCompile(`[a-z]+(?:'[a-z]+)?`)
 )
 
 // connectives are the only words a message may hold beside the runner
-// commands it names and "the tests" for those to be what "the tests"
-// means. Any other word (a negation, a contrast, another check, the build,
-// lint, CI) leaves the whole suite.
+// commands it names, "the tests", "make sure" and "make it" for those
+// commands to be what "the tests" means. Any other word (a negation, a
+// contrast, another check, the build, lint, CI, a bare "make", a file name)
+// leaves the whole suite.
 var connectives = map[string]bool{
 	"fix": true, "it": true, "fails": true, "failing": true, "failed": true, "and": true, "then": true,
 	"please": true, "run": true, "tell": true, "me": true, "the": true, "a": true, "result": true,
-	"so": true, "that": true, "pass": true, "passes": true, "make": true, "sure": true, "now": true,
-	"these": true, "this": true, "test's": true, "its": true, "error": true, "broken": true,
+	"so": true, "that": true, "pass": true, "passes": true, "sure": true, "now": true,
+	"test's": true, "its": true, "error": true, "broken": true,
 }
 
 // wordAt is a whitespace-separated word and where it ends in its text.
@@ -710,7 +708,7 @@ func (ix *recordIndex) goPackageUntested(o *obsRec, scope []string) string {
 }
 
 // goModuleRe is a go.mod's module line.
-var goModuleRe = regexp.MustCompile(`(?m)^module\s+"?([^\s"/][^\s"]*)"?\s*$`)
+var goModuleRe = regexp.MustCompile(`(?m)^module\s+"?([^\s"/][^\s"]*)"?\s*(?://.*)?$`)
 
 // goModule is the folder and module path of the nearest go.mod at or above
 // dir and inside the workspace; "" when none can be read.

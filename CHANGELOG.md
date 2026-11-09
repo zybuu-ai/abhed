@@ -88,21 +88,25 @@ All notable changes to Abhed are recorded here. The format follows
   tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names
   it, and "the tests pass" when every message the person typed names those
   test runs and, once those runner commands are taken out, holds only
-  connective words ("fix it and run the tests") and file names that are
-  not tests. Anything else leaves the whole workspace: "all the tests",
-  "the whole suite", another runner (`npm test`, `make test`), "CI", the
-  build or lint, "the api tests", a test file named outside a command, a
-  negation such as "don't run" or "skip", and a message in another
-  language. A file attached with `@` or piped stdin never names them. "All tests", "the
+  connective words ("fix it and run the tests"). Anything else leaves the
+  whole workspace: "all the tests", "the whole suite", another runner
+  (`npm test`, `make test`, a bare `make`), "CI", the build or lint, "the
+  api tests", a negation such as "don't run" or "skip", a message in
+  another language, and any path or file name outside a runner command,
+  the file to fix included: after "`python3 -m unittest tests.test_text`
+  fails. Fix src/utils/text.py and run the tests", "the tests pass" needs a
+  whole run. A task split over two messages, the second only "run the
+  tests", needs one too. A file attached with `@` or piped stdin never
+  names them. "All tests", "the
   whole suite" and "the tests, including X" still need a whole run, and
   `pkg/x/...` a recursive one; a run of another module, of one class, a
   failed run, an edit since the run, or a run that ran no test (all
   skipped or expected failures, `[no test files]`) still leave the claim
   unverified, and a go claim about one package needs that package's own
   passing line, found by its exact import path from `go.mod`. A run that ran no test no longer verifies "all tests pass"
-  either. The false-claim corpus gains 70 planted cases and 13 controls for
-  it; none of the 838 planted claims verifies, all 238 controls do, and
-  none of the 338 true or neutral claims is contradicted.
+  either. The false-claim corpus gains 86 planted cases and 13 controls for
+  it; none of the 854 planted claims verifies, all 238 controls do, and
+  none of the 339 true or neutral claims is contradicted.
 - The revision note after an unverified answer now lists the session's
   tool results the agent may cite, by their real `call_id` (or `#seq` for
   a text answer), so a model no longer cites an id it made up. A cited id
