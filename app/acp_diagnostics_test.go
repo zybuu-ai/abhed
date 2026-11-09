@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,9 +90,32 @@ func TestEditsAreFollowedByDiagnostics(t *testing.T) {
 	r := newStudioRig(t, `,"permissions":{"allow":["write(**)","bash(/opt/stub/gopls)"]},"sandbox":{"language_servers":{"go":["/opt/stub/gopls"]}}`,
 		callTool("w1", "write", map[string]any{"path": "a.go", "content": "package a\n\nvar x = BAD\n"}), say("written"))
 	id := r.open()
-	if stop, _ := r.prompt(id, "write a.go"); stop != "end_turn" {
+	from := r.cl.mark()
+	stop, ups := r.prompt(id, "write a.go")
+	if stop != "end_turn" {
 		t.Fatalf("stop %q", stop)
 	}
+	// Studio's card for the start names the language server, not a bash
+	// command, and completes once the server is up, not at its end.
+	var cardID string
+	for _, u := range ups {
+		if u["sessionUpdate"] == "tool_call" && strings.HasPrefix(fmt.Sprint(u["toolCallId"]), "diag-") {
+			cardID = fmt.Sprint(u["toolCallId"])
+			if u["title"] != "Language server: gopls" || u["kind"] != "other" {
+				t.Fatalf("the start's card: %v", u)
+			}
+		}
+	}
+	if cardID == "" {
+		t.Fatalf("no card for the start: %v", ups)
+	}
+	r.cl.waitFor(from, "the start's card completing", func(m rpcMessage) bool {
+		var p struct {
+			Update map[string]any `json:"update"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		return m.Method == "session/update" && p.Update["toolCallId"] == cardID && p.Update["status"] == "completed"
+	})
 	r.model.mu.Lock()
 	sent := strings.Join(r.model.bodies, "\n")
 	r.model.mu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -426,3 +427,82 @@ func (refuse) PermissionRequested(context.Context, *policy.Engine, string, strin
 	return "the managed hook refuses language servers"
 }
 func (refuse) Observe(context.Context, string, string, string, string) {}
+
+// flakyIn fails the first write and keeps what the later ones send.
+type flakyIn struct {
+	mu   sync.Mutex
+	n    int
+	sent []string
+}
+
+func (f *flakyIn) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n++
+	if f.n == 1 {
+		return 0, fmt.Errorf("broken pipe")
+	}
+	f.sent = append(f.sent, string(p))
+	return len(p), nil
+}
+
+func (f *flakyIn) Close() error { return nil }
+
+// A didOpen the server never took leaves the document unopened: the next
+// change opens it again rather than sending didChange for a document the
+// server does not have.
+func TestDidOpenIsSentAgainAfterAFailedWrite(t *testing.T) {
+	in := &flakyIn{}
+	s := &server{in: in, ready: make(chan struct{}), done: make(chan struct{}), docs: map[string]int{}, opened: map[string]bool{},
+		pub: map[string]published{}, notify: make(chan struct{}), answers: map[string]chan json.RawMessage{}}
+	close(s.ready)
+	if _, timedOut, _ := s.diagnose(context.Background(), "file:///w/a.go", "go", []byte("package a\n"), time.Now().Add(200*time.Millisecond)); !timedOut {
+		t.Fatal("a failed write did not end the wait")
+	}
+	s.diagnose(context.Background(), "file:///w/a.go", "go", []byte("package a\n"), time.Now().Add(200*time.Millisecond))
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if len(in.sent) == 0 || !strings.Contains(in.sent[0], `"textDocument/didOpen"`) {
+		t.Fatalf("after a failed didOpen, sent %v", in.sent)
+	}
+	if !s.opened["file:///w/a.go"] {
+		t.Fatal("a didOpen written was not noted")
+	}
+}
+
+// format sorts its own copy: the stored report another edit of the file
+// may be reading keeps its order.
+func TestFormatLeavesTheStoredReport(t *testing.T) {
+	stored := make([]diagnostic, 3)
+	for i, sev := range []int{3, 2, 1} {
+		stored[i].Severity, stored[i].Message = sev, fmt.Sprint("m", i)
+	}
+	text, _, _, _, _ := format(stored, 5, "a.go", "gopls")
+	if !strings.Contains(text, "error: m2") || stored[0].Message != "m0" || stored[2].Message != "m2" {
+		t.Fatalf("format reordered the stored report: %+v\n%s", stored, text)
+	}
+}
+
+// A supervisor that cannot answer leaves the start refused for this edit
+// only: the next edit asks again, and starts the server once it answers.
+func TestUnavailableSupervisorDoesNotTurnDiagnosticsOff(t *testing.T) {
+	r := newRig(t, policy.ModeBypass)
+	down := true
+	r.loop.Monitor = &monitor.Guard{Monitor: monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		if down {
+			return monitor.Verdict{}, fmt.Errorf("judge timed out")
+		}
+		return monitor.Verdict{Decision: policy.Allow, Code: monitor.CodeOK}, nil
+	})}
+	d := New(opts(ModeAuto))
+	defer d.Close()
+	p := r.write(t, "a.go", "// BAD\n")
+	got, _ := d.Diagnose(context.Background(), r.loop, "c1", p)
+	if !strings.HasPrefix(got.Skipped, "not started this time") || len(*r.started) != 0 {
+		t.Fatalf("unavailable: %+v", got)
+	}
+	down = false
+	if got, _ := d.Diagnose(context.Background(), r.loop, "c2", p); got.Errors != 1 || len(*r.started) != 1 {
+		t.Fatalf("after the supervisor answered: %+v", got)
+	}
+}

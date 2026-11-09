@@ -278,7 +278,8 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			// The contract's own commands check the work; counted as changes,
 			// they would put everything before them out of date, their own
 			// earlier pass included.
-			if r.a.Via == ContractVia {
+			// A diagnostics server's start follows an edit, and changes nothing the agent did.
+			if r.a.Via == ContractVia || r.a.Via == DiagnosticsVia {
 				mut = false
 			}
 			// A refused edit changed nothing; a failed command may have.

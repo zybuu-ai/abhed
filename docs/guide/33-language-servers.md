@@ -221,10 +221,18 @@ no server runs until an allow rule names it. Under `on`, only the plain ask
 a mode or the default gives an unlisted command is answered, and the
 PermissionRequest hooks (the managed file's too) hear it first and may
 refuse it; a deny rule, a rule's ask, a destructive or screening ask and the
-supervisor's word all hold. The start is recorded as the engine's call
-(`action.requested` with `via: diagnostics`, then `action.approved` with
-`by: policy` or `by: setting`, or `action.denied`), its end as the call's
-observation. Diagnostics are off, with nothing
+supervisor's word all hold. The supervisor reviews the start without
+counting it against `monitor.max_per_turn`; when it cannot answer in time,
+the start is refused for that edit only and the next edit asks again. The
+start is recorded as the engine's call (`action.requested` with
+`via: diagnostics`, then `action.approved` with `by: policy` or
+`by: setting`, or `action.denied`), with its outcome as soon as the server
+is up; the server's end is `lsp.stopped`. A start a hard kill left open is
+closed when the session is next opened. The CLI shows it as a dim
+`· diagnostics: language server gopls started …` note, not as a call of the
+agent's; Studio shows a card titled `Language server: gopls` that completes
+when the server is up. It never enters the agent's conversation, and the
+answer checker does not count it as a change. Diagnostics are off, with nothing
 recorded, where commands have no sandbox, the server is not installed, or
 the file is not Go, Python, TypeScript, JavaScript or Rust. A
 `rust-analyzer.toml` in the workspace keeps rust-analyzer from starting

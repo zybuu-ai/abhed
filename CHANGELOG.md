@@ -54,7 +54,8 @@ All notable changes to Abhed are recorded here. The format follows
   once per language, and only where policy and the supervisor allow its
   command (`tools.diagnostics`: `auto`, the default; `on` also answers the
   plain ask a mode gives it, after the PermissionRequest hooks; `off`). The
-  start is recorded as the engine's call, with what allowed it. At most `tools.diagnostics_max` (20)
+  start is recorded as the engine's call, with what allowed it, and shown
+  as an engine note in the CLI and a `Language server` card in Studio. At most `tools.diagnostics_max` (20)
   are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
   (3000). Off where there is no sandbox or no server installed. Each is
   recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`

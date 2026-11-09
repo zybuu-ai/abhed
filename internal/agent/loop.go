@@ -2778,17 +2778,24 @@ func (l *Loop) noteReasoning(text string) {
 // reviewed puts a call to the monitor and returns the decision after it,
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
-	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	d, _ := l.reviewCase(ctx, call, l.supervisorCase(call, mutates, before), before)
+	return d
+}
+
+// reviewCase is reviewed for a case already made; unavailable reports a
+// judge that could not answer.
+func (l *Loop) reviewCase(ctx context.Context, call model.ToolCall, c monitor.Case, before policy.Result) (_ policy.Result, unavailable bool) {
+	out := l.Monitor.Review(ctx, c)
 	if out.Skipped == monitor.SkippedBudget {
 		// Unreviewed, and said so: in the record and in the reason every
 		// approver, and a runbook step's label, shows.
 		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
 			After: string(before.Decision), Skipped: out.Skipped})
 		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
-		return before
+		return before, out.Unavailable
 	}
 	if out.Skipped != "" {
-		return before
+		return before, out.Unavailable
 	}
 	l.noteVerdict(call.ID, out.Verdict)
 	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
@@ -2800,13 +2807,13 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	// session-wide "always allow" answers it without the person.
 	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
 	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
-		return before
+		return before, out.Unavailable
 	}
 	why := out.Verdict.Code
 	if out.Verdict.Rationale != "" {
 		why += " — " + out.Verdict.Rationale
 	}
-	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}
+	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}, out.Unavailable
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.

@@ -80,36 +80,53 @@ func (l *Loop) diagnose(ctx context.Context, call model.ToolCall, result *tools.
 	}
 }
 
+// DiagnosticsVia marks the engine's start of a language server for the
+// agent's diagnostics: never the agent's call, kept out of its history, drawn
+// as an engine note, and no change to the workspace's evidence.
+const DiagnosticsVia = "diagnostics"
+
 // BySetting is an operator's setting that answered a mode's plain ask for
 // a command the engine runs, such as tools.diagnostics on.
 const BySetting = "setting"
+
+// EngineVerdict is what EngineAuthorize decided.
+type EngineVerdict struct {
+	policy.Result
+	// Allowed reports whether the command may run.
+	Allowed bool
+	// Retry is set when the supervisor could not answer (cut short, say):
+	// the refusal holds for this attempt only.
+	Retry bool
+}
 
 // EngineAuthorize judges and records a command the engine runs for the
 // agent outside any call it made, such as the language server whose
 // diagnostics follow an edit. It is recorded as a request, via names what
 // issued it, then judged by policy, the secret checks and the supervisor,
-// which may only make it stricter. Nobody is asked: it may run on an allow,
-// or on an ask that allowed takes as answered, which the PermissionRequest
-// hooks hear first and may refuse. The approval or denial is recorded too.
-func (l *Loop) EngineAuthorize(ctx context.Context, call, id, via string, args json.RawMessage, allowed func(policy.Result) bool) (policy.Result, bool, error) {
+// which may only make it stricter and does not count it against the turn's
+// reviews. Nobody is asked: it may run on an allow, or on an ask that
+// allowed takes as answered, which the PermissionRequest hooks hear first
+// and may refuse. The approval or denial is recorded too.
+func (l *Loop) EngineAuthorize(ctx context.Context, call, id, via string, args json.RawMessage, allowed func(policy.Result) bool) (EngineVerdict, error) {
 	if _, err := l.Recorder.Record(EvActionRequested, ActorSystem, Trusted, ActionRequested{CallID: id, Tool: call, Args: args, Via: via}); err != nil {
-		return policy.Result{Decision: policy.Deny, Reason: "the request could not be recorded"}, false, err
+		return EngineVerdict{Result: policy.Result{Decision: policy.Deny, Reason: "the request could not be recorded"}}, err
 	}
-	decision := l.engineDecision(ctx, call, id, args)
+	decision, unavailable := l.engineDecision(ctx, call, id, args)
 	if decision.Decision == policy.Ask && allowed(decision) {
 		if why := l.hookRefused(ctx, model.ToolCall{ID: id, Name: call, Args: args}, decision); why != "" {
 			decision = policy.Result{Decision: policy.Deny, Reason: why, Step: "hook"}
 		}
 	}
-	ok := decision.Decision != policy.Deny && allowed(decision)
-	if !ok {
+	v := EngineVerdict{Result: decision, Allowed: decision.Decision != policy.Deny && allowed(decision)}
+	if !v.Allowed {
+		v.Retry = unavailable && decision.Step == "monitor"
 		reason := decision.Reason
 		if decision.Decision == policy.Ask {
 			reason = "nobody is asked for it: " + reason
 		}
 		l.record(EvActionDenied, ActorSystem, withRule(map[string]string{
 			"call_id": id, "reason": reason, "step": decision.Step, "by": ByPolicy}, decision))
-		return decision, false, nil
+		return v, nil
 	}
 	by := ByPolicy
 	if decision.Decision == policy.Ask {
@@ -118,9 +135,10 @@ func (l *Loop) EngineAuthorize(ctx context.Context, call, id, via string, args j
 	approved := withRule(map[string]string{"call_id": id, "reason": decision.Reason, "step": decision.Step, "by": by}, decision)
 	if _, err := l.Recorder.Record(EvActionApproved, ActorSystem, Trusted, approved); err != nil {
 		l.noteRecordErr(err)
-		return decision, false, err
+		v.Allowed = false
+		return v, err
 	}
-	return decision, true, nil
+	return v, nil
 }
 
 // hookRefused is the PermissionRequest hooks' refusal of an ask, or "".
@@ -132,19 +150,22 @@ func (l *Loop) hookRefused(ctx context.Context, call model.ToolCall, decision po
 }
 
 // engineDecision is policy, the secret checks and the supervisor on a call
-// the engine makes.
-func (l *Loop) engineDecision(ctx context.Context, call, id string, args json.RawMessage) policy.Result {
+// the engine makes; unavailable reports a supervisor that could not answer.
+func (l *Loop) engineDecision(ctx context.Context, call, id string, args json.RawMessage) (policy.Result, bool) {
 	tool, found := l.Tools.Get(call)
 	if !found {
-		return policy.Result{Decision: policy.Deny, Reason: "no " + call + " tool in this session", Step: "deny"}
+		return policy.Result{Decision: policy.Deny, Reason: "no " + call + " tool in this session", Step: "deny"}, false
 	}
 	mutates := tools.MutatesCall(tool, args)
 	decision := l.Policy.Evaluate(call, mutates, args)
 	if why := l.pathSecretRefused(model.ToolCall{Name: call, Args: args}); why != "" {
-		return policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}
+		return policy.Result{Decision: policy.Deny, Reason: why, Step: "deny"}, false
 	}
-	if l.Monitor != nil && decision.Decision != policy.Deny {
-		decision = l.reviewed(ctx, model.ToolCall{ID: id, Name: call, Args: args}, mutates, decision)
+	if l.Monitor == nil || decision.Decision == policy.Deny {
+		return decision, false
 	}
-	return decision
+	tc := model.ToolCall{ID: id, Name: call, Args: args}
+	c := l.supervisorCase(tc, mutates, decision)
+	c.Engine = true
+	return l.reviewCase(ctx, tc, c, decision)
 }

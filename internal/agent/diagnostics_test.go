@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/monitor"
 )
 
 type fakeDiagnoser struct {
@@ -94,21 +97,21 @@ func TestEngineAuthorizeIsJudged(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := json.RawMessage(`{"command":"gopls","description":"x"}`)
-	if d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d1", "diagnostics", args, plain); ok || d.Decision != policy.Deny {
-		t.Fatalf("deny rule: %+v %v", d, ok)
+	if v, _ := l.EngineAuthorize(context.Background(), "bash", "d1", DiagnosticsVia, args, plain); v.Allowed || v.Decision != policy.Deny {
+		t.Fatalf("deny rule: %+v", v)
 	}
 	other := json.RawMessage(`{"command":"basedpyright-langserver --stdio","description":"x"}`)
-	if d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d2", "diagnostics", other, func(d policy.Result) bool { return d.Decision == policy.Allow }); ok || d.Decision != policy.Ask {
-		t.Fatalf("an ask nobody answers: %+v %v", d, ok)
+	if v, _ := l.EngineAuthorize(context.Background(), "bash", "d2", DiagnosticsVia, other, func(d policy.Result) bool { return d.Decision == policy.Allow }); v.Allowed || v.Decision != policy.Ask {
+		t.Fatalf("an ask nobody answers: %+v", v)
 	}
-	if d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d3", "diagnostics", other, plain); !ok || d.Step != "default" {
-		t.Fatalf("an ask the setting answers: %+v %v", d, ok)
+	if v, _ := l.EngineAuthorize(context.Background(), "bash", "d3", DiagnosticsVia, other, plain); !v.Allowed || v.Step != "default" {
+		t.Fatalf("an ask the setting answers: %+v", v)
 	}
 	h := &refusingHooks{}
 	l.Hooks = h
-	d, ok, _ := l.EngineAuthorize(context.Background(), "bash", "d4", "diagnostics", other, plain)
-	if ok || d.Decision != policy.Deny || d.Step != "hook" || len(h.asked) != 1 {
-		t.Fatalf("a hook's refusal: %+v %v %v", d, ok, h.asked)
+	v, _ := l.EngineAuthorize(context.Background(), "bash", "d4", DiagnosticsVia, other, plain)
+	if v.Allowed || v.Decision != policy.Deny || v.Step != "hook" || len(h.asked) != 1 {
+		t.Fatalf("a hook's refusal: %+v %v", v, h.asked)
 	}
 	evs, _ := store.Events("sess1")
 	got := map[string]string{}
@@ -133,5 +136,82 @@ func TestEngineAuthorizeIsJudged(t *testing.T) {
 		if got[id] != w {
 			t.Fatalf("%s recorded %q, want %q (all %v)", id, got[id], w, got)
 		}
+	}
+}
+
+// A diagnostics server's start that a hard kill left with no outcome, in a
+// turn before the last, is closed when the record is reconciled, once.
+func TestReconcileClosesADiagnosticsStart(t *testing.T) {
+	st := NewMemStore()
+	p := NewRecorder(st, "p", "")
+	_, _ = p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "go"})
+	_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 1})
+	_, _ = p.Record(EvActionRequested, ActorSystem, Trusted, ActionRequested{CallID: "diag-go-1", Tool: "bash", Via: DiagnosticsVia, Args: mustJSON(map[string]string{"command": "gopls"})})
+	_, _ = p.Record(EvActionApproved, ActorSystem, Trusted, map[string]string{"call_id": "diag-go-1", "by": ByPolicy})
+	_, _ = p.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted})
+	_, _ = p.Record(EvUserMessage, ActorUser, Trusted, Message{Text: "more"})
+	_, _ = p.Record(EvModelCall, ActorSystem, Trusted, ModelCall{Turn: 2})
+	evs, _ := st.Events("p")
+	if err := Reconcile(st, "p", evs); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ = st.Events("p")
+	n := 0
+	for _, e := range evs {
+		var o Observation
+		if e.Type == EvObservation && json.Unmarshal(e.Payload, &o) == nil && o.CallID == "diag-go-1" {
+			n++
+			if !o.IsError || !strings.Contains(o.Content, "not started") {
+				t.Fatalf("outcome %+v", o)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the start was closed %d times", n)
+	}
+	before := len(evs)
+	if err := Reconcile(st, "p", evs); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := st.Events("p"); len(again) != before {
+		t.Fatal("reconciled twice")
+	}
+}
+
+// A diagnostics server's start after a passing test run does not put the
+// run out of date: it changes nothing the agent did.
+func TestDiagnosticsStartIsNoChangeToEvidence(t *testing.T) {
+	b := newRec(t)
+	b.call("c1", "bash", map[string]string{"command": "go test ./..."}, "ok", exit(0))
+	raw, _ := json.Marshal(map[string]string{"command": "gopls"})
+	_, _ = b.r.Record(EvActionRequested, ActorSystem, Trusted, ActionRequested{CallID: "diag-go-1", Tool: "bash", Args: raw, Via: DiagnosticsVia})
+	_, _ = b.r.Record(EvObservation, ActorSystem, Trusted, Observation{CallID: "diag-go-1", Tool: "bash", Content: "language server gopls started for diagnostics (allowed by policy: bash(gopls))"})
+	wantVerdict(t, checkText(t, b, "", "The tests pass now.")[0], ClaimVerified)
+}
+
+// The engine's start is reviewed but spends none of the turn's reviews, and
+// a supervisor that cannot answer refuses it for this attempt only.
+func TestEngineReviewIsUnbudgetedAndRetriable(t *testing.T) {
+	l, _, _ := harness(t, nil, policy.ModeBypass, true)
+	judged := 0
+	l.Monitor = &monitor.Guard{MaxPerTurn: 1, Monitor: monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		judged++
+		return monitor.Verdict{Decision: policy.Allow, Code: monitor.CodeOK}, nil
+	})}
+	args := json.RawMessage(`{"command":"gopls","description":"x"}`)
+	all := func(d policy.Result) bool { return d.Decision == policy.Allow }
+	for i := range 3 {
+		if v, _ := l.EngineAuthorize(context.Background(), "bash", fmt.Sprint("d", i), DiagnosticsVia, args, all); !v.Allowed {
+			t.Fatalf("start %d: %+v", i, v)
+		}
+	}
+	if judged != 3 {
+		t.Fatalf("judged %d of 3 starts: the turn's budget was spent", judged)
+	}
+	l.Monitor = &monitor.Guard{Monitor: monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		return monitor.Verdict{}, errors.New("judge timed out")
+	})}
+	if v, _ := l.EngineAuthorize(context.Background(), "bash", "d9", DiagnosticsVia, args, all); v.Allowed || !v.Retry {
+		t.Fatalf("an unavailable supervisor: %+v", v)
 	}
 }

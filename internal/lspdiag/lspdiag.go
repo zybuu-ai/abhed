@@ -170,7 +170,7 @@ func (d *Diagnoser) Diagnose(ctx context.Context, l *agent.Loop, callID, path st
 	if lang == "" {
 		return agent.Diagnosed{}, false
 	}
-	s, skipped, ok := d.server(ctx, l, lang, deadline)
+	s, skipped, ok := d.server(ctx, l, lang)
 	if !ok {
 		return agent.Diagnosed{}, false
 	}
@@ -230,7 +230,7 @@ func (d *Diagnoser) drop(lang string) {
 
 // server is the running server for lang, started if need be. skipped is
 // why none runs, when that is to be recorded; ok false records nothing.
-func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string, deadline time.Time) (s *server, skipped string, ok bool) {
+func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *server, skipped string, ok bool) {
 	d.mu.Lock()
 	if d.closed || d.off[lang] || d.starting[lang] {
 		d.mu.Unlock()
@@ -298,13 +298,20 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string, dead
 	command := lsprelay.CommandLine(argv)
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + lang +
 		" diagnostics after the agent's edits, in the session sandbox, run with " + strings.TrimSpace(lsprelay.Env)})
-	judged, cancel := context.WithDeadline(ctx, deadline)
-	decision, allowed, err := l.EngineAuthorize(judged, "bash", callID, "diagnostics", args, d.allowed)
-	cancel()
+	v, err := l.EngineAuthorize(ctx, "bash", callID, agent.DiagnosticsVia, args, d.allowed)
 	if err != nil {
 		return off("not started: " + err.Error())
 	}
-	if !allowed {
+	decision := v.Result
+	if !v.Allowed && v.Retry {
+		// The supervisor could not answer in time: the ask stands for this
+		// edit only, and the next one asks again.
+		d.mu.Lock()
+		delete(d.starting, lang)
+		d.mu.Unlock()
+		return nil, "not started this time: " + decision.Reason, true
+	}
+	if !v.Allowed {
 		return off("not started: " + string(decision.Decision) + " at " + decision.Step + " (" + decision.Reason + ")")
 	}
 	by := agent.ByPolicy
@@ -330,6 +337,18 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string, dead
 	}
 	go s.run(b, root, watch)
 	return s, "", true
+}
+
+// startedNote is the start's outcome as the record and the surfaces show it.
+func startedNote(program, by string, d policy.Result) string {
+	why := "allowed by " + by
+	switch {
+	case d.Rule != "":
+		why += ": " + d.Rule
+	case by == agent.BySetting:
+		why += ": tools.diagnostics on"
+	}
+	return "language server " + filepath.Base(program) + " started for diagnostics (" + why + ")"
 }
 
 // allowed reports whether a server may start under decision: an allow, or
@@ -435,6 +454,9 @@ func (s *server) run(b tools.Bash, toolchainRoot string, watch *lsprelay.RustAna
 	s.record(agent.EvLSPStarted, agent.LSPStarted{LSPID: s.id, CallID: s.callID, Language: s.lang,
 		Command: lsprelay.CommandLine(s.argv), Tier: s.tier, Purpose: "diagnostics",
 		AllowedBy: s.allowedBy, Step: s.decision.Step, Rule: s.decision.Rule, Layer: s.decision.Layer})
+	// The start is the call's outcome, so its card completes now; the
+	// server's end is lsp.stopped.
+	_ = s.loop.ManualObserve(s.callID, "bash", tools.Result{Content: startedNote(s.argv[0], s.allowedBy, s.decision)}, 0)
 	var stderr bytes.Buffer
 	tsLine := make(chan string, 1)
 	stderrDone := make(chan struct{})
@@ -468,8 +490,7 @@ func (s *server) run(b tools.Bash, toolchainRoot string, watch *lsprelay.RustAna
 	}
 	s.record(agent.EvLSPStopped, agent.LSPStopped{LSPID: s.id, CallID: s.callID, Language: s.lang, Reason: reason,
 		ExitCode: &code, DurationMS: time.Since(started).Milliseconds(), Purpose: "diagnostics"})
-	_ = s.loop.ManualObserve(s.callID, "bash", tools.Result{Content: fmt.Sprintf("language server %s: exit %d", reason, code),
-		ExitCode: &code, IsError: reason == "crashed"}, time.Since(started))
+
 }
 
 // initialize names the TypeScript for typescript-language-server, then

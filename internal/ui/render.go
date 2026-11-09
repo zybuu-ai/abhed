@@ -57,6 +57,11 @@ type Renderer struct {
 	// tools tracks the calls in flight, so a result is drawn under its
 	// request and a diff is shown once.
 	tools toolState
+	// engine are the engine's own calls (a diagnostics server's start),
+	// drawn as notes, never as the agent's tool calls; engineNotes wait for
+	// the agent's call in flight to be drawn whole.
+	engine      map[string]bool
+	engineNotes []string
 
 	// todos is the task list as last recorded, for the dock and /todos;
 	// agentTypes names each subagent by session, for its return line;
@@ -258,6 +263,16 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := r.s
+	if note, ok := r.engineEvent(ev); ok {
+		if note != "" {
+			r.engineNotes = append(r.engineNotes, note)
+			if len(r.tools.calls) == 0 {
+				r.endReply(d, "")
+				r.flushEngineNotes(d)
+			}
+		}
+		return
+	}
 	switch ev.Type {
 	case agent.EvAgentDelta:
 		var dl agent.Delta
@@ -325,6 +340,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			return
 		}
 		r.toolObserved(d, o)
+		r.flushEngineNotes(d)
 
 	case agent.EvAnswerVerdict:
 		if v, ok := verdictOf(ev); ok {
@@ -538,6 +554,12 @@ func (b *streamBlock) lines(width int, _ Style, _ bool) []string {
 // dock.
 func (r *Renderer) lineEvent(ev agent.Event) {
 	s := r.s
+	if note, ok := r.engineEvent(ev); ok {
+		if note != "" && !r.quiet {
+			fmt.Fprintln(r.w, note)
+		}
+		return
+	}
 	switch ev.Type {
 	case agent.EvUserMessage:
 		var m agent.Message
@@ -772,4 +794,62 @@ func WithheldNote(names string) string {
 		what = "the stored secrets " + strings.Join(list, ", ")
 	}
 	return "your message held the value of " + what + "; it was not sent to the model, which got [secret:NAME] in its place"
+}
+
+// engineEvent takes the events of the engine's own calls: a request issued
+// for diagnostics opens one, and its approval, denial and outcome are drawn
+// as one dim note, never as a tool call of the agent's. ok is false for any
+// other event.
+func (r *Renderer) engineEvent(ev agent.Event) (note string, ok bool) {
+	var p struct {
+		CallID string `json:"call_id"`
+		Via    string `json:"via"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(ev.Payload, &p) != nil || p.CallID == "" {
+		return "", false
+	}
+	switch ev.Type {
+	case agent.EvActionRequested:
+		if p.Via != agent.DiagnosticsVia || ev.Actor != agent.ActorSystem {
+			return "", false
+		}
+		if r.engine == nil {
+			r.engine = map[string]bool{}
+		}
+		r.engine[p.CallID] = true
+		return "", true
+	case agent.EvActionApproved:
+		return "", r.engine[p.CallID]
+	case agent.EvActionDenied:
+		if !r.engine[p.CallID] {
+			return "", false
+		}
+		delete(r.engine, p.CallID)
+		return "  " + r.s.Dim("· diagnostics: language server not started: "+VisibleLine(sanitize(p.Reason, false))), true
+	case agent.EvObservation:
+		if !r.engine[p.CallID] {
+			return "", false
+		}
+		delete(r.engine, p.CallID)
+		var o agent.Observation
+		_ = json.Unmarshal(ev.Payload, &o)
+		mark := r.s.Dim("·")
+		if o.IsError {
+			mark = r.s.Yellow("·")
+		}
+		return "  " + mark + " " + r.s.Dim("diagnostics: "+VisibleLine(sanitize(o.Content, false))), true
+	}
+	return "", false
+}
+
+// flushEngineNotes draws the engine's notes held while a call was in flight.
+func (r *Renderer) flushEngineNotes(d *dock) {
+	if len(r.tools.calls) > 0 {
+		return
+	}
+	for _, n := range r.engineNotes {
+		d.commit(&rawBlock{text: n})
+	}
+	r.engineNotes = nil
 }
