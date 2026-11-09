@@ -51,7 +51,8 @@ All notable changes to Abhed are recorded here. The format follows
 - Faster editor completions in Abhed Studio. A local completion model is
   loaded ahead of the first completion (`_abhed/complete/warm`: an empty
   request of one token, no code, once the editor session is open, at most
-  every two minutes per session and per connection, ended with the session,
+  every two minutes per session and per connection, ended with the session
+  or the connection's input,
   and only for a model whose address is on this machine). A suggestion is
   one logical block, the statement at the cursor and the body of a block it
   opens, and the model's streamed answer is ended as soon as that block is
@@ -67,10 +68,12 @@ All notable changes to Abhed are recorded here. The format follows
   offered as one edit. They come from the language server's references when
   one is running, or else, in Python, Go, JavaScript, TypeScript and Java, a
   scan of the innermost function that skips strings, comments, members,
-  keyword arguments and object keys, and offers nothing where the name is
-  bound again in a nested scope. A new name that is a reserved word or
-  already used there is no rename. Nothing is sent for it; the summary
-  counts it as `local`, or `local_dropped` when nothing was offered. Studio
+  keyword arguments in calls and literal keys, and leaves the rename to you
+  where the name is bound again in a nested scope. A one-word edit with
+  nothing to finish (a reserved or already used new name, no other use, a
+  use of a name declared elsewhere) is no rename, and the model is asked as
+  before. Nothing is sent for a rename; the summary and the metrics count
+  it as `local`, or `local_dropped` when left to you. Studio
   parses the file with any next-edit suggestion applied (tree-sitter) and
   drops one that adds syntax errors or cannot be checked.
 - Python language servers you already have: where `basedpyright-langserver`

@@ -108,6 +108,9 @@ func Text(r Report) string {
 		if e.Local > 0 {
 			fmt.Fprintf(&b, ", %d from the file", e.Local)
 		}
+		if e.LocalDropped > 0 {
+			fmt.Fprintf(&b, ", %d rename(s) left to the person", e.LocalDropped)
+		}
 		if e.LatencyMaxMs > 0 {
 			fmt.Fprintf(&b, "; answered in %d ms median, %d ms p90, %d ms longest", e.LatencyP50Ms, e.LatencyP90Ms, e.LatencyMaxMs)
 		}

@@ -241,25 +241,26 @@ func TestStudioNextEditRename(t *testing.T) {
 	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 19 {
 		t.Fatalf("with a hint: %+v", res)
 	}
-	// Nothing left to rename: nothing offered, and still no model.
-	res = ask(map[string]any{"window": map[string]any{"startLine": 9, "text": "def f(size, overlap):\n    stride = size - overlap\n    return 1\n"},
-		"recentEdits": []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 10, "character": 4}, "end": map[string]int{"line": 10, "character": 8}}, "oldText": "step", "newText": "stride"}}})
-	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "no other use of step") {
-		t.Fatalf("nothing to rename: %+v", res)
+	// A rename the file cannot finish safely (the name bound again in a nested
+	// function) offers nothing, and asks no model.
+	at10 := []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 10, "character": 4}, "end": map[string]int{"line": 10, "character": 8}}, "oldText": "step", "newText": "stride"}}
+	res = ask(map[string]any{"window": map[string]any{"startLine": 9, "text": "def f(size):\n    stride = size\n    def g(step):\n        return step\n    return step\n"}, "recentEdits": at10})
+	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "bound again") {
+		t.Fatalf("shadowed: %+v", res)
 	}
-	model.mu.Lock()
-	paths := len(model.paths)
-	model.mu.Unlock()
-	if paths != 0 {
-		t.Fatalf("a rename asked the model %d time(s)", paths)
+	paths := func() int { model.mu.Lock(); defer model.mu.Unlock(); return len(model.paths) }
+	if n := paths(); n != 0 {
+		t.Fatalf("a rename asked the model %d time(s)", n)
+	}
+	// No other use: a one-word edit is no rename, and the model is asked as for any edit.
+	ask(map[string]any{"window": map[string]any{"startLine": 9, "text": "def f(size, overlap):\n    stride = size - overlap\n    return 1\n"}, "recentEdits": at10})
+	if n := paths(); n != 1 {
+		t.Fatalf("no other use: the model was asked %d time(s); want 1", n)
 	}
 	r.cl.call("session/close", map[string]any{"sessionId": id})
 	sum, _ := r.recorded(id, agent.EvNextEditSummary)
-	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["local_dropped"] != float64(1) || sum[0]["requests"] != float64(0) || sum[0]["latency_max_ms"] != nil {
+	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["local_dropped"] != float64(1) || sum[0]["requests"] != float64(1) {
 		t.Fatalf("next_edit.summary %v", sum)
-	}
-	if enabled, _ := r.recorded(id, agent.EvNextEditEnabled); len(enabled) != 0 {
-		t.Fatalf("nothing was sent, yet next_edit.enabled was recorded: %v", enabled)
 	}
 }
 
@@ -425,5 +426,38 @@ func TestStudioNextEditRenameLanguages(t *testing.T) {
 	used := "def f(x, y):\n    z = y\n    return x\n"
 	if _, asked := renameCase(t, "python", used, 1, 8, "x", "y"); !asked {
 		t.Fatal("a swap to a name already used was taken for a rename")
+	}
+}
+
+// What follows a name decides whether it is the variable: a ternary's and a
+// case's colon, a typed declaration and a parameter's default all are; an
+// object key is not.
+func TestStudioNextEditRenameNotAVariableTable(t *testing.T) {
+	for _, tc := range []struct {
+		name, language, text string
+		line, char           int
+		want                 string // the edit's text; "" for the model asked
+	}{
+		{"js ternary", "javascript", "function f(c, other) {\n  const y = 1;\n  return c ? x : other;\n}\n", 1, 8, "  return c ? y : other;\n"},
+		{"java ternary", "java", "class A {\n    int f(boolean c) {\n        int y = 1;\n        return c ? x : 0;\n    }\n}\n", 2, 12, "        return c ? y : 0;\n"},
+		{"js case", "javascript", "function f(v) {\n  const y = 1;\n  switch (v) {\n    case x: return 1;\n  }\n}\n", 1, 8, "    case y: return 1;\n"},
+		{"go case", "go", "func f(v int) int {\n\ty := 1\n\tswitch v {\n\tcase x:\n\t\treturn 1\n\t}\n\treturn 0\n}\n", 1, 1, "\tcase y:\n"},
+		{"ts typed use", "typescript", "function f(): number {\n  const y: number = 1;\n  const z: number = x;\n  return z;\n}\n", 1, 8, "  const z: number = y;\n"},
+		{"object key kept", "javascript", "function f() {\n  const y = 1;\n  return {x: x, k: 2};\n}\n", 1, 8, "  return {x: y, k: 2};\n"},
+		{"go literal key kept", "go", "func f() T {\n\ty := 1\n\treturn T{x: x}\n}\n", 1, 1, "\treturn T{x: y}\n"},
+		{"python default", "python", "def f(x=1):\n    return y + x\n", 1, 11, "def f(y=1):\n    return y + y\n"},
+		{"js default", "javascript", "function f(x = 1) {\n  return y + x;\n}\n", 1, 9, "function f(y = 1) {\n  return y + y;\n"},
+		{"ts typed declaration elsewhere", "typescript", "function f() {\n  let x: number = 1;\n  return y;\n}\n", 2, 9, ""},
+	} {
+		res, asked := renameCase(t, tc.language, tc.text, tc.line, tc.char, "x", "y")
+		if tc.want == "" {
+			if !asked {
+				t.Errorf("%s: the model was not asked: %+v", tc.name, res)
+			}
+			continue
+		}
+		if asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want {
+			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
+		}
 	}
 }

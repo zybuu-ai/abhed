@@ -1601,7 +1601,7 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   model before the first completion needs it: one fill-in-the-middle request
   with an empty prompt and suffix and `max_tokens: 1`, so no code is sent,
   with its own 60-second deadline, ended when the session closes or the
-  connection goes, at most once in two minutes per session and per
+  connection's input ends, at most once in two minutes per session and per
   connection for a provider (`recent`). A model whose URL is not on this
   machine (as `local_only` decides it: a loopback proxy to a remote model
   counts as local), a chat-only provider, or completions that are off are
@@ -1656,18 +1656,22 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   sent: `rename`, or else the last recent edit in `uri` on one line, turns
   an identifier into another that reads whole at its place in `window`,
   in a language with reserved words here (Python, Go, JavaScript,
-  TypeScript, Java, Rust, C, C++). The new name may not be a reserved word,
-  nor already used in the rename's scope; either way it is no rename and
-  the model is asked as for any edit. The other uses of the old name are
-  the `sites` inside the window that read it whole, when Studio sends any
-  (a language server's references). Without sites, Python, Go, JavaScript,
+  TypeScript, Java, Rust, C, C++). The other uses of the old name are the
+  `sites` inside the window that read it whole, when Studio sends any (a
+  language server's references). Without sites, Python, Go, JavaScript,
   TypeScript and Java are scanned: the innermost function the rename is in
-  (the window at a file's top level; none, `dropped`, in another block),
-  skipping strings, comments, members after `.`, `->` or `::`, keyword
-  arguments, and object keys outside Python; a name bound again in a nested
-  function, lambda, comprehension or inner block drops the rename. Rust, C
-  and C++ need sites. The uses come back as one edit over the lines from
-  the first to the last, with `rename: true`; none found is `dropped`.
+  (the window at a file's top level), skipping strings, comments, members
+  after `.`, `->` or `::`, keyword arguments in a call (not a parameter's
+  default on the function's own header), and in JavaScript, TypeScript and
+  Go a key right after `{` or `,` in a brace that opens an expression.
+  Rust, C and C++ need sites. The uses come back as one edit over the lines
+  from the first to the last, with `rename: true`. Only a name bound again
+  in a nested function, lambda, comprehension or inner block is `dropped`
+  (left to the person). Otherwise, an edit is no rename, and the model is
+  asked as for any edit, when the new name is a reserved word or already
+  used in the scope, when the old name has no other use, when the edit was
+  at a use of a name declared elsewhere in the scope, or when it is outside
+  any function the window shows and no sites were sent.
   Studio re-parses the document with any suggestion applied before showing
   it, and drops it when the parse fails or is cut short.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as

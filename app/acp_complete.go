@@ -721,10 +721,21 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 		return
 	}
 	now := completeNow()
-	c.compMu.Lock()
-	connWarmed := c.warmed[cfg.Model.Completion]
-	c.compMu.Unlock()
-	if (!k.warmed.IsZero() && now.Sub(k.warmed) < warmEvery) || (!connWarmed.IsZero() && now.Sub(connWarmed) < warmEvery) {
+	recent := !k.warmed.IsZero() && now.Sub(k.warmed) < warmEvery
+	if !recent {
+		// Checked and taken at once, so sessions warming together load the model once.
+		c.compMu.Lock()
+		if t := c.warmed[cfg.Model.Completion]; !t.IsZero() && now.Sub(t) < warmEvery {
+			recent = true
+		} else {
+			if c.warmed == nil {
+				c.warmed = map[string]time.Time{}
+			}
+			c.warmed[cfg.Model.Completion] = now
+		}
+		c.compMu.Unlock()
+	}
+	if recent {
 		k.mu.Unlock()
 		c.reply(msg.ID, map[string]any{"warmed": true, "recent": true}, nil)
 		return
@@ -747,12 +758,14 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 	defer cancel()
 	k.warmCancel = cancel
 	k.mu.Unlock()
-	c.compMu.Lock()
-	if c.warmed == nil {
-		c.warmed = map[string]time.Time{}
-	}
-	c.warmed[cfg.Model.Completion] = now
-	c.compMu.Unlock()
+	// Ended too when the editor's input ends, so it never holds the drain at exit.
+	go func() {
+		select {
+		case <-c.goneCh():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	inf, ok := a.(model.Infiller)
 	if !ok || chatOnly {
 		skip("the completion model is asked through chat, which is not warmed")

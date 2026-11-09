@@ -111,7 +111,8 @@ with the latest one:
   first keystroke, Studio asks the engine to load the completion model:
   one fill-in-the-middle request with an empty prompt and one token, so no
   code is sent. It goes at most once every two minutes per session and per
-  editor connection, and ends when the session closes. A cold local model
+  editor connection, and ends when the session closes or the editor's
+  connection does. A cold local model
   takes seconds to load; this way it is loaded before you need it. Only a
   model whose address is on this machine is warmed, decided by its URL as
   `local_only` is: a loopback address, `localhost`, or a local server type
@@ -187,19 +188,26 @@ for it:
 - Otherwise, in Python, Go, JavaScript, TypeScript and Java, the engine
   scans the innermost function the rename is in (the window, at the top
   level of a file), skipping strings and comments, members (`user.name`,
-  `p->name`, `A::name`), keyword arguments (`f(name=1)`) and, outside
-  Python, object keys (`{name: 1}`). Where the old name is bound again in
-  a nested function, lambda, comprehension or inner block, nothing is
-  offered: a textual rename would change another variable. Rust, C and
-  C++ take only a language server's uses; other languages get no rename
-  from the file.
-- A new name that is a reserved word of the language (`class`, `null`,
-  `int`), or one already used in that function, is not taken for a rename;
-  the next-edit model is asked as for any other edit.
+  `p->name`, `A::name`), keyword arguments in a call (`f(name=1)`; a
+  parameter's default on the function's own line is renamed) and, in
+  JavaScript, TypeScript and Go, the keys of an object or composite literal
+  (`{name: 1}`, `T{name: 1}`). A ternary's `? name :`, a `case name:` and a
+  typed declaration are uses. Where the old name is bound again in a nested
+  function, lambda, comprehension or inner block, nothing is offered: a
+  textual rename would change another variable, so it is left to you.
+  Rust, C and C++ take only a language server's uses; other languages get
+  no rename from the file.
+- Not every one-word edit is a rename. A new name that is a reserved word
+  of the language (`class`, `null`, `int`) or already used in that
+  function, an old name with no other use (a typo fixed on its only use),
+  an edit at a use of a name declared elsewhere in the function, or one
+  outside any function the window shows, is not taken for a rename: the
+  next-edit model is asked as for any other edit.
 
-The summary counts these as `local`, and renames for which nothing was
-offered as `local_dropped`; neither is in the answer times.
-`abhed_next_edits_total{outcome="local"}` counts the first.
+The summary counts these as `local`, and renames left to you as
+`local_dropped`; neither is in the answer times.
+`abhed_next_edits_total` counts them as the outcomes `local` and
+`local_dropped`, and `abhed hawkeye` shows them.
 
 Before Studio shows any next-edit suggestion, from a rename or a model, it
 parses the file with the suggestion applied (tree-sitter, for Python, Go,

@@ -185,7 +185,7 @@ func New() *Abhed {
 		completionTokens: r.Counter("abhed_completion_tokens_total",
 			"Tokens editor inline completions used, by kind (in, out).", "kind"),
 		nextEdits: r.Counter("abhed_next_edits_total",
-			"Editor next-edit suggestions by outcome (served, empty, failed, cancelled after sending; refused, superseded before; local, a rename finished from the file with no model request), counted when each session closes.", "outcome"),
+			"Editor next-edit suggestions by outcome (served, empty, failed, cancelled after sending; refused, superseded before; local, a rename finished from the file with no model request; local_dropped, a rename left to the person), counted when each session closes.", "outcome"),
 		nextEditTokens: r.Counter("abhed_next_edit_tokens_total",
 			"Tokens editor next-edit suggestions used, by kind (in, out).", "kind"),
 		commitMessages: r.Counter("abhed_commit_messages_total",
@@ -294,6 +294,9 @@ func (m *Abhed) Observe(ev agent.Event) {
 			count.Add(float64(p.Superseded), "superseded")
 			if p.Local > 0 {
 				count.Add(float64(p.Local), "local")
+			}
+			if p.LocalDropped > 0 {
+				count.Add(float64(p.LocalDropped), "local_dropped")
 			}
 			count.Add(float64(max(0, p.Requests-p.Served-p.Failed-p.Cancelled)), "empty")
 			tokens.Add(float64(p.TokensIn), "in")

@@ -315,3 +315,24 @@ func TestStudioCompletionsWarmUpEndsWithTheSession(t *testing.T) {
 		t.Fatal("the model was never told")
 	}
 }
+
+// A warm-up ends when the editor's input does, so it never holds the
+// engine's exit for its whole deadline.
+func TestStudioCompletionsWarmUpEndsWithTheInput(t *testing.T) {
+	fim := newLatencyFIM(t, 5*time.Second, 0, "x\n")
+	r := completionRig(t, fim.URL, "")
+	id := r.open()
+	from := r.cl.mark()
+	p, _ := json.Marshal(map[string]any{"sessionId": id})
+	r.cl.write(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(`"w1"`), Method: "_abhed/complete/warm", Params: p})
+	deadline := time.Now().Add(2 * time.Second)
+	for len(fim.requests()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	closed := time.Now()
+	_ = r.cl.in.(io.Closer).Close()
+	r.cl.waitFor(from, "the warm-up's answer", func(m rpcMessage) bool { return string(m.ID) == `"w1"` })
+	if took := time.Since(closed); took > time.Second {
+		t.Fatalf("the warm-up held on %v after the input closed", took)
+	}
+}

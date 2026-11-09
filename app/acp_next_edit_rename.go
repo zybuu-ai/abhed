@@ -331,54 +331,111 @@ func boundAgain(code, name, language string) bool {
 	return false
 }
 
-// shadowed reports a scope in which name is bound again in a nested
-// function, lambda, comprehension or (outside Python) inner block, where a
-// textual rename would change another variable.
-func shadowed(lines, code []string, from, to, line int, name, language string) bool {
+// Where the old name is bound in a rename's scope, apart from the rename itself.
+const (
+	notBound = iota
+	// boundNested: bound again in a nested function, lambda, comprehension
+	// or (outside Python) inner block, where a textual rename would change
+	// another variable. The rename is left to the person.
+	boundNested
+	// boundHere: declared in the scope itself, outside Python (where a
+	// variable is declared once): the edit was at a use, not the
+	// declaration, so it is not a rename to finish.
+	boundHere
+)
+
+// bindingOf says where name is bound in [from, to) other than at line.
+func bindingOf(lines, code []string, from, to, line int, name, language string) int {
 	for i := from; i < to; i++ {
 		if i == line {
 			continue
 		}
 		nested := i > from && funcHeader(code[i], language)
 		if nested && len(wordsIn(code[i], name)) > 0 {
-			return true // a parameter, or a use it may shadow, on a nested header
+			return boundNested // a parameter, or a use it may shadow, on a nested header
 		}
 		if language == "python" {
 			// Python has no block scope: only lambdas, comprehensions and nested defs bind apart.
 			if boundAgain(code[i], name, language) {
-				return true
+				return boundNested
 			}
 			if nested {
 				for j := i + 1; j < blockEnd(lines, i); j++ {
 					if regexp.MustCompile(`^\s*` + regexp.QuoteMeta(name) + `\s*(?:[+\-*/%&|^]|//|\*\*)?=[^=]|\b(?:for|as|global|nonlocal)\s+` + regexp.QuoteMeta(name) + `\b`).MatchString(code[j]) {
-						return true
+						return boundNested
 					}
 				}
 			}
 			continue
 		}
 		if boundAgain(code[i], name, language) {
-			return true
+			if indentOf(lines[i]) > indentOf(lines[line]) {
+				return boundNested
+			}
+			return boundHere
 		}
+	}
+	return notBound
+}
+
+// blockWords open a statement whose brace is a block, not an object literal.
+var blockWords = regexp.MustCompile(`^\s*(?:\}\s*)?(?:if|else|for|while|do|switch|select|case|default|try|catch|finally|func|function|class|interface|struct|enum|namespace|go|defer|with)\b`)
+
+// exprBrace reports a { at the end of code that opens an expression (an
+// object or composite literal) rather than a block: after an operator or
+// opening punctuation, after return, or (in Go) after a type name on a line
+// that is not a statement keyword's; not after ), => or a name elsewhere.
+func exprBrace(code, language string) bool {
+	t := strings.TrimRight(code, " \t")
+	if t == "" {
+		return false
+	}
+	if strings.HasSuffix(t, "=>") {
+		return false // an arrow function's body
+	}
+	if strings.ContainsRune("=(,:[?+-*/%&|^!<>~", rune(t[len(t)-1])) || strings.HasSuffix(t, "return") {
+		return true // an operand: an object or composite literal
+	}
+	if language == "go" && !blockWords.MatchString(code) {
+		r, _ := utf8.DecodeLastRuneInString(t)
+		return identPart(r) || r == ']'
 	}
 	return false
 }
 
-// notAVariable reports a use at byte at of code line l that names something
-// else: a member (after `.`, `->` or `::`), a keyword argument (followed by
-// `=` inside call parentheses), or outside Python a key (followed by `:`
-// inside braces). depth is the innermost bracket open before it.
-func notAVariable(code string, at int, name string, open byte, language string) bool {
-	before := strings.TrimRight(code[:at], " \t")
+// prevCode is the last character of code before byte at on line l, looking
+// back over earlier lines from first when the line has none before it.
+func prevCode(code []string, l, at, first int) byte {
+	t := strings.TrimRight(code[l][:at], " \t")
+	for t == "" && l > first {
+		l--
+		t = strings.TrimRight(code[l], " \t\r\n")
+	}
+	if t == "" {
+		return 0
+	}
+	return t[len(t)-1]
+}
+
+// notAVariable reports a use at byte at of code[l] that names something
+// else: a member (after `.`, `->` or `::`); a keyword argument (followed by
+// `=` inside call parentheses), except on the scope's own header (first),
+// where it is a parameter's default; or, in JavaScript, TypeScript and Go,
+// a key (right after `{` or `,` and followed by `:`) inside a brace that
+// opened an expression ('o' as open), never a ternary's `:` or a case's.
+func notAVariable(code []string, l, at, first int, name string, open byte, language string) bool {
+	before := strings.TrimRight(code[l][:at], " \t")
 	if strings.HasSuffix(before, ".") || strings.HasSuffix(before, "->") || strings.HasSuffix(before, "::") {
 		return true
 	}
-	after := strings.TrimLeft(code[at+len(name):], " \t")
-	if open == '(' && strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") && !strings.HasPrefix(after, "=>") {
+	after := strings.TrimLeft(code[l][at+len(name):], " \t")
+	if open == '(' && l != first && strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") && !strings.HasPrefix(after, "=>") {
 		return true
 	}
-	if language != "python" && open == '{' && strings.HasPrefix(after, ":") && !strings.HasPrefix(after, "::") {
-		return true
+	if language != "python" && language != "java" && open == 'o' && strings.HasPrefix(after, ":") && !strings.HasPrefix(after, "::") {
+		if p := prevCode(code, l, at, first); p == '{' || p == ',' {
+			return true
+		}
 	}
 	return false
 }
@@ -395,7 +452,7 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 	code := codeOnly(lines, req.Language)
 	from, to, inFunc := scopeOf(lines, code, line, req.Language)
 	if !inFunc && len(req.Sites) == 0 {
-		return nil, "the rename is not in a function this window shows", false
+		return nil, "the rename is not in a function this window shows", true
 	}
 	if !inFunc {
 		from, to = 0, len(lines)
@@ -421,8 +478,11 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 			}
 		}
 	} else {
-		if shadowed(lines, code, from, to, line, h.From, req.Language) {
+		switch bindingOf(lines, code, from, to, line, h.From, req.Language) {
+		case boundNested:
 			return nil, h.From + " is bound again in a nested scope here, so the rename is left to the person", false
+		case boundHere:
+			return nil, h.From + " is declared elsewhere in this function: the edit was at a use, not a rename", true
 		}
 		var stack []byte
 		for l := from; l < to; l++ {
@@ -435,13 +495,19 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 					if len(stack) > 0 {
 						open = stack[len(stack)-1]
 					}
-					if !notAVariable(c, i, h.From, open, req.Language) {
+					if !notAVariable(code, l, i, from, h.From, open, req.Language) {
 						sites = append(sites, site{l, i})
 					}
 					k++
 				}
 				switch c[i] {
-				case '(', '[', '{':
+				case '{':
+					if exprBrace(c[:i], req.Language) {
+						stack = append(stack, 'o')
+					} else {
+						stack = append(stack, '{')
+					}
+				case '(', '[':
 					stack = append(stack, c[i])
 				case ')', ']', '}':
 					if len(stack) > 0 {
@@ -454,7 +520,8 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 	slices.SortFunc(sites, func(a, b site) int { return cmp.Or(a.line-b.line, a.at-b.at) })
 	sites = slices.Compact(sites)
 	if len(sites) == 0 {
-		return nil, "no other use of " + h.From + " was found near the rename", false
+		// Nothing to finish: a one-word edit (a typo fixed, another name used) is no rename.
+		return nil, "no other use of " + h.From + " was found near the rename", true
 	}
 	first, last := sites[0].line, sites[0].line
 	for _, s := range sites {
