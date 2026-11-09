@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
+	"github.com/zybuu-ai/abhed/internal/bgcli"
 	"github.com/zybuu-ai/abhed/internal/docsite"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -214,6 +215,7 @@ var subcommands = []subcommand{
 	{name: "policy", about: "the signed org policy this machine takes: status, show, refresh, leave"},
 	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
+	{name: "bg", about: "background jobs on a server, as your own account: " + strings.Join(bgcli.Commands(), ", ")},
 	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},
@@ -243,6 +245,7 @@ var builtinCommands = func() map[string]bool {
 var paidFeatures = map[string]string{
 	"oidc":         "Team",
 	"schedules":    "Team",
+	"background":   "Team",
 	"telemetry":    "Enterprise",
 	"ha":           "Enterprise",
 	"interceptors": "Enterprise",
@@ -300,6 +303,9 @@ func (a *App) checkEdition(cfg config.Config) error {
 	}
 	if len(cfg.Schedules) > 0 && !a.features["schedules"] {
 		return &EditionError{Key: "schedules", Feature: "schedules", Edition: a.edition}
+	}
+	if cfg.Server.Background.Enabled && !a.features["background"] {
+		return &EditionError{Key: "server.background.enabled", Feature: "background", Edition: a.edition}
 	}
 	if cfg.ControlPlane.HA.Enabled && !a.features["ha"] {
 		return &EditionError{Key: "control_plane.ha.enabled", Feature: "ha", Edition: a.edition}

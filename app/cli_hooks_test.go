@@ -150,3 +150,28 @@ func TestDeadPromptHookIsSaid(t *testing.T) {
 		t.Fatalf("shown:\n%s", surface.text())
 	}
 }
+
+// A conversation the terminal moves on from ends at the hooks: a halt left
+// for it is dropped.
+func TestNewConversationEndsTheOldOneAtTheHooks(t *testing.T) {
+	env, _, _ := recordedEnv(t, config.Default(), "default")
+	host := extension.NewHost(nil)
+	if errs := host.LoadHooks([]extension.HookConfig{{Name: "stop", Command: "x", Events: []extension.Event{extension.EvTurnEnd}}},
+		extension.HookEnv{Run: func(context.Context, string, string, []byte) (extension.CommandResult, error) {
+			return extension.CommandResult{Stdout: []byte(`{"continue":false}`)}, nil
+		}}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	env.st.hooks = host
+	old := env.st.loop
+	env.st.attachHooks(old)
+	root := old.Recorder.Root()
+	host.Observe(extension.WithSession(context.Background(), root, "", root), extension.EvTurnEnd, extension.Request{SessionID: root})
+	if host.HaltPending(root) == "" {
+		t.Fatal("no halt to drop")
+	}
+	env.st.attachHooks(&agent.Loop{Recorder: agent.NewRecorder(agent.NewMemStore(), "another", "")})
+	if host.HaltPending(root) != "" {
+		t.Fatal("the old conversation's halt outlived it")
+	}
+}

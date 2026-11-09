@@ -163,6 +163,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		// Built on the startup adapter, whose name the prompt carries, then moved
 		// to the one selected now, so a /model switch holds and the prompt follows it.
 		loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+		loop.SubdirMemory = subdirMemory(sessionState.appCfg, pol, sess.Root)
 		loop.Compactor = agent.NewCompactor(adapter, cfg.CompactAt)
 		loop.EnablePlanExit()
 		if !sessionState.appCfg.Plan.Runbooks {
@@ -176,6 +177,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			v.Install(loop)
 		}
 		loop.Monitor = toolset.Supervisor(sessionState.appCfg, registry, false)
+		loop.Diagnostics = toolset.Diagnostics(sessionState.appCfg, registry)
 		toolset.Summarize(loop.Compactor, extHost, id)
 		// Background tasks belong to the conversation and outlive a task;
 		// their results are shown as they arrive, at the prompt too.
@@ -417,7 +419,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 			}
 		}
 		if runReason == agent.TermMaxTurns {
-			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns)))
+			fmt.Println(s.Dim("  " + turnLimitNote(appCfg, cfg.MaxTurns, sessionState.loop.ContinuesLeft())))
 		}
 		fmt.Println()
 
@@ -550,6 +552,29 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 		}
 		if line == modeCycleLine {
 			ft.cycleMode(sessionState, pol)
+			continue
+		}
+		if strings.TrimSpace(line) == "/continue" {
+			// A run that stopped at its turn limit goes on, recorded and bounded.
+			if sessionState.loop == nil {
+				fmt.Printf("  %s\n", s.Dim("nothing to continue yet"))
+				continue
+			}
+			var refused error
+			cont := func(ctx context.Context, loop *agent.Loop) (agent.TerminalReason, error) {
+				reason, err := loop.ContinueAfterLimit(ctx, "tui")
+				if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+					refused = err
+					return agent.TermCompleted, nil
+				}
+				return reason, err
+			}
+			if code, quit := runTurn(cont); quit {
+				return code
+			}
+			if refused != nil {
+				fmt.Printf("  %s %v\n", s.Red("✕"), refused)
+			}
 			continue
 		}
 		if isCommandLine(line) {

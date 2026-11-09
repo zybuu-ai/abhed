@@ -223,6 +223,18 @@ server's name, its transport and the SHA-256 of its entry, never its values.
 `list` shows the servers in effect in this workspace and whether each came
 from the managed file, your own or the workspace's.
 
+Studio adds servers through this command (**Abhed: Add MCP Server…**): the
+engine checks the server and describes it, Studio asks in a modal whose
+default is No, and on a yes runs `abhed mcp add -confirm-fd 3 -sha256 …`,
+giving the yes on an inherited descriptor in place of a terminal and holding
+it to exactly the entry you were shown. Studio passes environment variables
+by name only, so the server gets your own value and no value is written. The
+same refusals apply, and a refused add is logged as an attempt in
+`config-changes.jsonl` and recorded as `config.refused`. The next session
+records the change log's new entries as `config.changed`, so an add, from
+Studio or a terminal, reaches a hash-chained record. Studio removes a
+server of your own with `_abhed/mcp/remove`, recorded as `mcp.status`.
+
 For one run, `-mcp-config FILE` adds servers and `-strict-mcp-config` makes
 them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-for-one-run).
 

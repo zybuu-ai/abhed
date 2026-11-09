@@ -51,6 +51,26 @@ func TestCLIMemoryHonoursDenyRules(t *testing.T) {
 	}
 }
 
+// A read ask rule keeps the project's memory out, and start-up says so.
+func TestCLIMemoryAskIsWarned(t *testing.T) {
+	ws := t.TempDir()
+	write(t, filepath.Join(ws, "ABHED.md"), "PROJECT-CANARY")
+	pol := policy.New(policy.ModeDefault)
+	if err := pol.AddAsk("read(**)"); err != nil {
+		t.Fatal(err)
+	}
+	pol.Roots = func() []string { return []string{ws} }
+	mem := agent.LoadMemory(memoryOptions(config.Default(), pol, ws))
+	if strings.Contains(mem.Render(), "PROJECT-CANARY") {
+		t.Fatal("memory a read rule asks about was loaded")
+	}
+	var out strings.Builder
+	warnAskedMemory(&out, mem)
+	if !strings.Contains(out.String(), "warning: ABHED.md is not loaded as memory: a read rule asks") {
+		t.Fatalf("warned %q", out.String())
+	}
+}
+
 // stubReply answers every request with a short text.
 func stubReply(w io.Writer, n int, _ string) {
 	fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok %d\"}}]}\n\n", n)

@@ -31,10 +31,13 @@ import (
 
 // headlessOpts are how a -p run reads and writes.
 type headlessOpts struct {
-	format  string // text, json or stream-json
-	partial bool   // stream-json: include agent.delta and reasoning deltas
-	verbose bool
-	schema  json.RawMessage
+	// continueLimit continues the resumed session's run that stopped at its
+	// turn limit, for -p --continue (or -r) with no task.
+	continueLimit bool
+	format        string // text, json or stream-json
+	partial       bool   // stream-json: include agent.delta and reasoning deltas
+	verbose       bool
+	schema        json.RawMessage
 	// inputs are the user messages after the first, from -input-format
 	// stream-json; nil for a single task.
 	inputs <-chan string
@@ -379,6 +382,8 @@ func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.Con
 	if err == nil {
 		if e := toolset.RecordConfigAttempts(rec, attempts); e != nil {
 			err = fmt.Errorf("recording the configuration attempts: %w", e)
+		} else if e := toolset.RecordConfigChanges(rec); e != nil {
+			err = fmt.Errorf("recording the configuration changes: %w", e)
 		}
 	}
 	// What qualified the fence for this run's commands, after the start.
@@ -431,7 +436,11 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	began := time.Now()
 	// A new session, or with -c or -r the recorded one it goes on with.
-	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter})
+	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter}, o.continueLimit)
+	if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+		fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+		return 2
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1 // a run with no session row would write into another's record
@@ -471,7 +480,11 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		o.fallback.SetRecord(recordFallback(rec))
 	}
 
+	if cfg.ContinueTurns == 0 {
+		cfg.ContinueTurns = cfg.MaxTurns // a continuation gets the run's own allowance again
+	}
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	loop.SubdirMemory = subdirMemory(appCfg, pol, sess.Root)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
 	// contract gates an answer, which a structured run does not give.
@@ -489,6 +502,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
 	}
+	if o.continueLimit {
+		// Checked before the start is recorded: nothing to continue leaves no trace.
+		loop.NoteContinues(before)
+		if err := loop.CanContinue(); err != nil {
+			store.Unsubscribe(sessionID, events)
+			<-done
+			fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+			return 2
+		}
+	}
 	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.grants, o.fence); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1
@@ -503,6 +526,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// run, and the exit code, wait for them.
 	agent.NewBackground(loop, toolset.BackgroundPolicy(appCfg, agent.WakeOff))
 	defer loop.Background.Close(agent.TermSessionClosed)
+	if loop.Diagnostics = toolset.Diagnostics(appCfg, registry); loop.Diagnostics != nil {
+		defer loop.Diagnostics.Close()
+	}
 	if appCfg.Sets("subagents.wake") && appCfg.Subagents.Wake != "off" {
 		fmt.Fprintf(os.Stderr, "abhed: note: subagents.wake is %s, but -p runs background tasks joined: it waits for them\n", config.Printable(appCfg.Subagents.Wake))
 	}
@@ -545,6 +571,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 	if prompt != "" {
 		runOne(prompt)
+	}
+	if o.continueLimit {
+		ran = true
+		reason, err = loop.ContinueAfterLimit(ctx, "print")
 	}
 	// The next message is awaited alongside a stop signal: stdin may stay
 	// open for as long as the caller likes. Reading stops after a failure.

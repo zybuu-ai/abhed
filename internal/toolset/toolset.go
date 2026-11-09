@@ -186,6 +186,16 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, err := range s.Extensions.Load(ctx, specs) {
 			warn("%v", err)
 		}
+		if o.Vault != nil {
+			red := o.Vault.Redactor()
+			s.Extensions.SetRedact(func(t string) string { return agent.WithheldText(red, t) })
+		}
+		// Simple hooks run per event: commands in bash's sandbox, requests under the egress guard.
+		if o.Parts&Vetoes != 0 {
+			for _, err := range s.Extensions.LoadHooks(cfg.HookSpecs(), HookEnv(o.Bash, o.Workspace, s.Guard())) {
+				warn("%v", err)
+			}
+		}
 	}
 	// MCP servers extend the tool surface. Every remote tool is namespaced and
 	// routes through the policy engine, since Abhed cannot know what it does.
@@ -350,6 +360,9 @@ func (s *Set) Guard() *egress.Guard {
 
 // EndSession records what the egress guard still counts for session id.
 func (s *Set) EndSession(id string) {
+	if s != nil && s.Extensions != nil {
+		s.Extensions.EndSession(id) // its halt, and its async hook runs
+	}
 	if s != nil && s.Egress != nil {
 		s.Egress.EndSession(id)
 	}
@@ -523,23 +536,53 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 type HostHooks struct {
 	Host *extension.Host
 	Note func(text string, refused bool)
+	// Redact takes stored secrets out of what Note is told; nil leaves it.
+	Redact func(string) string
 }
 
-var _ agent.Hooks = HostHooks{}
+var (
+	_ agent.Hooks       = HostHooks{}
+	_ agent.StopHooks   = HostHooks{}
+	_ agent.ResultHooks = HostHooks{}
+)
 
 func (h HostHooks) note(s string, refused bool) {
-	if h.Note != nil {
-		h.Note(s, refused)
+	if h.Note == nil {
+		return
+	}
+	if h.Redact != nil {
+		s = h.Redact(s) // a hook's reason may hold a secret
+	}
+	h.Note(s, refused)
+}
+
+// NoteRedactor redacts what the person is told of hooks as loop's record
+// redacts what it keeps.
+func NoteRedactor(loop *agent.Loop) func(string) string {
+	return func(s string) string {
+		if loop == nil || loop.Recorder == nil {
+			return s
+		}
+		return agent.WithheldText(loop.Recorder.Redact, s)
 	}
 }
 
+// RunStarted and RunEnded mark the session tree rooted at rootID as having
+// a run going, whose halt is kept until it is taken.
+func (h HostHooks) RunStarted(rootID string) { h.Host.Own(rootID, true) }
+
+func (h HostHooks) RunEnded(rootID string) { h.Host.Own(rootID, false) }
+
 func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
-	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
-	if why != "" {
+	why, failed := h.Host.VetoReport(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
+	switch down := h.Host.NotRunning(extension.EvUserPromptSubmit); {
+	case why != "":
 		h.note("your message was not sent: "+why, true)
-	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+	case len(down) > 0:
 		// A prompt hook fails open; the person is told it did not look.
 		h.note("not screened: the user_prompt_submit hook "+strings.Join(down, ", ")+" is not running", false)
+	case len(failed) > 0:
+		h.note("not screened: the user_prompt_submit hook "+strings.Join(failed, ", ")+" failed", false)
 	}
 	return why
 }
@@ -554,12 +597,35 @@ func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail s
 	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
 }
 
+// Stop asks the stop hooks whether the run may end, and names the hook that
+// sent the agent back, with what it is told.
+func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) (hook, instruction string) {
+	name, why := h.Host.OnStop(ctx, sessionID, answer)
+	if why == "" {
+		return "", ""
+	}
+	h.note("the "+name+" hook asked the agent to continue", false)
+	return name, "The " + name + " hook asks you to continue before finishing: " + why
+}
+
+// Halted is why a hook ended the session tree's run, once, or "";
+// HaltPending says so without taking it.
+func (h HostHooks) Halted(rootID string) string { return h.Host.Halted(rootID) }
+
+func (h HostHooks) HaltPending(rootID string) string { return h.Host.HaltPending(rootID) }
+
+// ToolResult lets the hooks that take tool_result see, and extensions
+// rewrite, a result before the model reads it.
+func (h HostHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
+	return h.Host.OnToolResult(ctx, sessionID, tool, content, isErr)
+}
+
 // Hook gives loop the extensions' hooks at its own points, when any are loaded.
 func Hook(loop *agent.Loop, h *extension.Host, note func(text string, refused bool)) {
 	if loop == nil || h == nil || h.Len() == 0 {
 		return
 	}
-	loop.Hooks = HostHooks{Host: h, Note: note}
+	loop.Hooks = HostHooks{Host: h, Note: note, Redact: NoteRedactor(loop)}
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the
@@ -608,6 +674,7 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 		c.CompactAt = at
 	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
+	c.MaxContinues = cfg.ContinuesAllowed()
 	return c
 }
 

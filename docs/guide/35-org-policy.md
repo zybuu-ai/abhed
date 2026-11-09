@@ -94,9 +94,10 @@ provider, endpoint and key, the supervisor's judge (`monitor.endpoint`,
 names a local CA file and secret, and the policy is fetched through it), ssh
 hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
-`verify.critic`, extensions, `mcp.servers`, statusline, the `dirs` settings,
-`context`, `additional_dirs`, record paths and retention, storage, server,
-auth, schedules, the control plane and `org_policy` itself.
+`verify.critic`, extensions, simple hooks (`hooks.run`), `mcp.servers`,
+statusline, the `dirs` settings, `context`, `additional_dirs`, record paths
+and retention, storage, server, auth, schedules, the control plane and
+`org_policy` itself.
 
 **Only where it tightens** what the layers below already say, by the same rule
 an untrusted workspace's file follows: deny and ask rules, honeytokens and `verify.contract.protect` (added to the
@@ -112,7 +113,7 @@ aside.
 
 **Only when the machine pins the keys**: `permissions.allow`,
 `git_extensions`, `sandbox.tier`, `sandbox.network`, `protect_git`,
-`listen_ports`, preapproved toolchains, `fence`, `egress` and `hooks`, and the
+`listen_ports`, preapproved toolchains, `fence`, `egress` and `hooks.disabled`, and the
 loosening values of the tighten-only settings above. These change what runs
 or reaches out unasked, so they need keys `/etc/abhed/config.json` pins out
 of band (`org_policy.keys`); a key pinned on first use is not enough.

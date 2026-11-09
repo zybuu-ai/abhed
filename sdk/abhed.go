@@ -557,9 +557,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			opts.Warn("%s", s)
 		}
 	})
+	if set.Extensions != nil && rec != nil {
+		// Each hook that fires is recorded, as the CLI and the server record it.
+		set.Extensions.SetOnFired(func(f extension.Fired) {
+			if err := toolset.RecordFired(rec, f); err != nil && opts.Warn != nil {
+				opts.Warn("could not record a hook: %v", err)
+			}
+		})
+	}
 	loop.Budget = budget
 	// With no approver nobody answers an ask, so the supervisor's are denials.
 	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
+	loop.Diagnostics = toolset.Diagnostics(cfg, registry)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}
@@ -588,6 +597,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(sandbox.InAgentCommand()))
 		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
 			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
+		}
+		if err := toolset.RecordConfigChanges(rec); err != nil {
+			return fail(fmt.Errorf("abhed: recording the configuration changes: %w", err))
 		}
 		for _, g := range toolset.StartupRegistries(cfg, x.Surface) {
 			if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
@@ -959,6 +971,9 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	if a.loop.Diagnostics != nil {
+		a.loop.Diagnostics.Close()
+	}
 	if a.unconfine != nil {
 		a.unconfine()
 	}

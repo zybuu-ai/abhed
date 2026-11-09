@@ -128,6 +128,9 @@ type Config struct {
 	modeChosen bool
 	// Workspace is what loading decided about the workspace's own file.
 	Workspace WorkspaceTrust `json:"-"`
+	// Bare is a run that keeps, of memory, rules, skills and extensions,
+	// only what the organisation sets (-bare).
+	Bare bool `json:"-"`
 	// SetAside are settings a file made that its layer may not make, such
 	// as a managed-only key in the user's file; each was left out.
 	SetAside []SetAsideKey `json:"-"`
@@ -144,6 +147,9 @@ type Config struct {
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
+	// mergingManaged is set while the managed document merges: only it
+	// replaces a simple hook of a name an earlier layer gave.
+	mergingManaged bool
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -335,6 +341,33 @@ type HooksConfig struct {
 	// ManagedOnly sends hook events only to the managed file's extensions;
 	// every other keeps only the tools it provides. Managed only.
 	ManagedOnly bool `json:"managed_only,omitempty"`
+	// Run are the simple hooks: a command or an HTTP endpoint per event. Each
+	// layer adds to them; only the managed file replaces a hook an earlier
+	// layer named, and a later file's hook of that name is set aside.
+	Run []HookConfig `json:"run,omitempty"`
+}
+
+// HookConfig is one simple hook. A command gets the event as JSON on stdin
+// and runs in the session's sandbox: exit 0 goes on, exit 2 blocks with
+// stderr as the reason. A url is POSTed the event instead, under the egress
+// allowlist. Either can only make a decision stricter.
+type HookConfig struct {
+	Name    string   `json:"name"`
+	Events  []string `json:"events"`
+	Command string   `json:"command,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	// Headers are sent with an HTTP hook's request; HeadersEnv sends each
+	// header with the value of the variable it names, read from Abhed's
+	// environment, so a token need not be written here.
+	Headers    map[string]string `json:"headers,omitempty"`
+	HeadersEnv map[string]string `json:"headers_env,omitempty"`
+	// Match narrows tool events to the calls a rule matches, e.g. bash(git *).
+	Match     []string `json:"match,omitempty"`
+	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	// Async runs the events that only observe without waiting for the hook.
+	Async bool `json:"async,omitempty"`
+	// Layer is the layer the hook came from, as loading credits it.
+	Layer string `json:"-"`
 }
 
 // SetAsideKey is a setting a file made that was left out, and why.
@@ -1290,6 +1323,8 @@ type ServerConfig struct {
 	SharedSessions bool `json:"shared_sessions,omitempty"`
 	// Metrics serves Prometheus metrics; off unless enabled. See metrics.go.
 	Metrics ServerMetricsConfig `json:"metrics,omitempty"`
+	// Background is jobs people start on the server; see background.go.
+	Background ServerBackgroundConfig `json:"background,omitzero"`
 }
 
 // ServerTLSConfig is the TLS `abhed serve` terminates. Relative paths are
@@ -1685,6 +1720,20 @@ type LimitsConfig struct {
 	// BackgroundShells bounds a session's commands run with run_in_background
 	// at once. Zero allows none. Default 4.
 	BackgroundShells int `json:"background_shells"`
+	// MaxContinues bounds how many times a person may continue a run that
+	// stopped at max_turns in one conversation (/continue, -p --continue).
+	// Zero allows none. Default 3.
+	MaxContinues int `json:"max_continues"`
+}
+
+// ContinuesAllowed is the bound on continuing a run past its turn limit. A
+// managed limits.max_turns binds the whole conversation, so unless the
+// managed file also sets limits.max_continues, none is allowed.
+func (c Config) ContinuesAllowed() int {
+	if c.ManagedSets("limits.max_turns") && !c.ManagedSets("limits.max_continues") {
+		return 0
+	}
+	return max(c.Limits.MaxContinues, 0)
 }
 
 // SubagentsConfig is what a background subagent's result does when it
@@ -1749,6 +1798,8 @@ func Default() Config {
 			Ask: []string{"bash(*ABHED_TRUST_WORKSPACE*)", "bash(*trust-workspace*)",
 				"write(ABHED.md)", "edit(ABHED.md)", "write(ABHED.local.md)", "edit(ABHED.local.md)",
 				"write(AGENTS.md)", "edit(AGENTS.md)",
+				// A folder's own ABHED.md is loaded when the agent works there.
+				"write(**/ABHED.md)", "edit(**/ABHED.md)",
 				// Files that commonly hold credentials are read only with a
 				// yes. A speed bump for the read tool, not credential protection:
 				// a command can still print them.
@@ -1764,7 +1815,7 @@ func Default() Config {
 		Limits: LimitsConfig{
 			MaxTurns: 100, MaxTokens: 8192, MaxBudgetTokens: 0,
 			MaxSubagents: 20, NestedSubagents: false,
-			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60,
+			MaxBackgroundSubagents: 4, BackgroundMaxMinutes: 60, MaxContinues: 3,
 			BackgroundShells: 4,
 		},
 		Subagents: SubagentsConfig{Wake: "auto", MaxWakesPerHour: 4, WakeMaxTurns: 8},
@@ -1894,8 +1945,18 @@ func readMerge(cfg *Config, path string) ([]byte, error) {
 func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 	// Unmarshalling onto the existing struct merges: fields absent from the
 	// file keep their current value, and lists are replaced wholesale.
+	// Simple hooks are the exception: each file adds to them.
+	below := cfg.Hooks.Run
+	cfg.Hooks.Run = nil
 	if err := json.Unmarshal(data, cfg); err != nil {
+		cfg.Hooks.Run = below
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var kept []HookConfig
+	cfg.Hooks.Run, kept = joinHooks(below, cfg.Hooks.Run, cfg.mergingManaged)
+	for _, h := range kept {
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Key: "hooks.run", Value: h.Name,
+			Reason: "a hook of that name comes from the " + orLayer(h.Layer) + " configuration; only the managed configuration replaces one"})
 	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
@@ -2046,6 +2107,17 @@ type ToolsConfig struct {
 	// BashCheckpointFiles the files looked at (20000 when zero).
 	BashCheckpointMB    int `json:"bash_checkpoint_mb,omitempty"`
 	BashCheckpointFiles int `json:"bash_checkpoint_files,omitempty"`
+	// Diagnostics is whether the agent is given a language server's
+	// diagnostics after each write or edit: "auto" (the default) runs a
+	// server only where policy and the supervisor allow its command, "on"
+	// also where the mode would ask about it, "off" never. Off wherever no
+	// sandbox or no server is installed. A workspace file may only set off.
+	Diagnostics string `json:"diagnostics,omitempty"`
+	// DiagnosticsMax bounds the diagnostics given per file (20 when zero,
+	// at most 200); DiagnosticsWaitMS how long an edit waits for them
+	// (3000 when zero, at most 30000).
+	DiagnosticsMax    int `json:"diagnostics_max,omitempty"`
+	DiagnosticsWaitMS int `json:"diagnostics_wait_ms,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -2104,6 +2176,9 @@ func (c Config) Validate() error {
 	}
 	if k := c.ControlPlane.Kubernetes; len(k) > 0 && !jsonObject(k) {
 		return errors.New("control_plane.kubernetes must be a JSON object of the Kubernetes driver's options")
+	}
+	if err := c.validateHooks(); err != nil {
+		return err
 	}
 	if err := c.Monitor.validate(); err != nil {
 		return err
@@ -2195,6 +2270,9 @@ func (c Config) Validate() error {
 	if err := c.Server.Metrics.validate(); err != nil {
 		return err
 	}
+	if err := c.Server.Background.validate(); err != nil {
+		return err
+	}
 	if err := c.validateCLILogin(); err != nil {
 		return err
 	}
@@ -2262,6 +2340,14 @@ func (c Config) Validate() error {
 	case "", "on", "off", "required":
 	default:
 		return fmt.Errorf("unknown tools.bash_checkpoints %q (want on, off or required)", c.Tools.BashCheckpoints)
+	}
+	switch c.Tools.Diagnostics {
+	case "", "auto", "on", "off":
+	default:
+		return fmt.Errorf("unknown tools.diagnostics %q (want auto, on or off)", c.Tools.Diagnostics)
+	}
+	if c.Tools.DiagnosticsMax < 0 || c.Tools.DiagnosticsMax > 200 || c.Tools.DiagnosticsWaitMS < 0 || c.Tools.DiagnosticsWaitMS > 30000 {
+		return fmt.Errorf("tools.diagnostics_max must be 0 to 200 and tools.diagnostics_wait_ms 0 to 30000")
 	}
 	if c.Tools.BashCheckpointMB < 0 || c.Tools.BashCheckpointMB > 4096 || c.Tools.BashCheckpointFiles < 0 || c.Tools.BashCheckpointFiles > 1000000 {
 		return fmt.Errorf("tools.bash_checkpoint_mb must be 0 to 4096 and tools.bash_checkpoint_files 0 to 1000000")
