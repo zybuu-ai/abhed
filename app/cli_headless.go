@@ -580,10 +580,13 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 
 	u := loop.Usage()
+	// The conversation holds the model's own words; what stdout carries of
+	// them is redacted as the record is, a stored secret withheld.
+	structured = withheldJSON(rec.Redact, structured)
 	switch {
 	case streaming:
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
-			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
+			Result: agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter)), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
 			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict()}
 		if res.Subtype == "" {
@@ -625,6 +628,20 @@ func runAnswer(msgs []model.Message, es server.EventStore, id string, after int6
 		}
 	}
 	return lastAssistantText(msgs)
+}
+
+// withheldJSON is raw with stored secrets redacted, or the withheld marker
+// when redacting leaves no valid JSON.
+func withheldJSON(red agent.Redactor, raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	out := json.RawMessage(agent.WithheldText(red, string(raw)))
+	if !json.Valid(out) {
+		b, _ := json.Marshal(agent.Withheld)
+		return b
+	}
+	return out
 }
 
 func lastAssistantText(msgs []model.Message) string {

@@ -185,7 +185,8 @@ func (v AnswerVerdict) Explained() int {
 	return n
 }
 
-// LastVerdict is the latest answer.verdict this loop recorded, or nil.
+// LastVerdict is the latest answer.verdict this loop recorded, or nil, with
+// stored secrets redacted as the record holds it.
 func (l *Loop) LastVerdict() *AnswerVerdict {
 	v := l.Verify
 	if v == nil {
@@ -426,8 +427,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		v.mu.Unlock()
 	}
 	l.record(EvAnswerVerdict, ActorSystem, av)
+	shown := l.Recorder.redactedVerdict(av)
 	v.mu.Lock()
-	v.last = &av
+	v.last = &shown
 	v.mu.Unlock()
 	if av.Revision != "" {
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: av.Revision})
@@ -514,4 +516,28 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 	b.WriteString(". Correct or remove anything the record contradicts, and say plainly what you could not verify. " +
 		"This is your one revision.")
 	return b.String()
+}
+
+// redactedVerdict is av as the record holds it: a stored secret a statement
+// repeats is redacted, so a surface that prints the verdict (the -p result
+// line, rpc's answer, the SDK's Verdict) writes no more than the record does.
+// When redacting leaves no valid verdict, the statements and the note are
+// left out.
+func (r *Recorder) redactedVerdict(av AnswerVerdict) AnswerVerdict {
+	red := r.redactor()
+	if red == nil {
+		return av
+	}
+	raw, err := json.Marshal(av)
+	if err == nil {
+		var out AnswerVerdict
+		if raw = red.Redact(raw); json.Valid(raw) && json.Unmarshal(raw, &out) == nil {
+			return out
+		}
+	}
+	av.Claims, av.Revision = nil, ""
+	if av.Contract != nil {
+		av.Contract = &ContractResult{OK: av.Contract.OK}
+	}
+	return av
 }

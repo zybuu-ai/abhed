@@ -10,6 +10,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
@@ -991,5 +992,34 @@ func TestBashObservationRecordsItsFolder(t *testing.T) {
 	real, _ := filepath.EvalSymlinks(dir)
 	if len(cwds) != 2 || (cwds[0] != dir && cwds[0] != real) || !strings.HasSuffix(cwds[1], "/sub") {
 		t.Fatalf("folders recorded %q", cwds)
+	}
+}
+
+// The verdict a surface prints (LastVerdict: the -p result line, rpc's
+// answer, the SDK's Verdict) has a stored secret redacted, as the record
+// does: a statement that repeats one never carries it out.
+func TestLastVerdictIsRedacted(t *testing.T) {
+	const value = "sk-live-abcdefghijklmnop"
+	l, store, _, _ := verifyHarness(t, VerifyLabel, false, []scriptedTurn{
+		{text: "The token is " + value + "."},
+	})
+	st := secrets.Open(t.TempDir() + "/s.json")
+	if err := st.Set("KEY", value); err != nil {
+		t.Fatal(err)
+	}
+	red, err := st.LoadRedactor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Recorder.Redact = red
+	if _, err := l.Run(context.Background(), "what is the token?"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(l.LastVerdict())
+	if strings.Contains(string(got), value) || !strings.Contains(string(got), "[secret:KEY]") {
+		t.Fatalf("the verdict carries the stored value: %s", got)
+	}
+	if vs := answerVerdicts(store); len(vs) != 1 || vs[0].Claims[0].Text != l.LastVerdict().Claims[0].Text {
+		t.Fatalf("the verdict shown differs from the one recorded: %+v", vs)
 	}
 }

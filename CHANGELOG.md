@@ -31,6 +31,21 @@ All notable changes to Abhed are recorded here. The format follows
   the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
   wherever anything printed before bash took the terminal; known to occur in
   1.2.9 in a project with a Python venv, whose start-up notice prints first.
+- A stored secret that the model repeated in its answer could reach stdout
+  unredacted. The record, the terminal, `-p` text output and rpc's
+  `answer` were redacted, but two copies were not. `abhed -p -output-format
+  json` and `stream-json` printed the answer raw in the result line's
+  `result` and `structured_output`, in every verify mode, `off` included,
+  and a `-json-schema` run printed its JSON raw in text output too. The answer verdict, with each statement's text, was printed raw
+  on `-p`'s result line, in rpc's `answer` and `error` responses, and by the
+  SDK's `Agent.Verdict()`. Both are now redacted as the record is, and
+  withheld when that fails. The model never sees a stored value, so it has
+  to rebuild or guess one first. Affected: `-p`'s `result` and structured
+  output in every release before this one; the verdict on `-p`, rpc
+  and the SDK in 1.2.9, whenever verification was on: `-verify label` or
+  `strict`, `verify.mode` set in any configuration, a `verify.contract`,
+  rpc `start` with `verify`, or SDK `Options.Verify`. The server and Abhed
+  Studio read the redacted record and were not affected.
 
 ### Upgrading from 1.2.9
 
