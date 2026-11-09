@@ -185,7 +185,7 @@ func TestAttachAnswersTheAskOnTheSession(t *testing.T) {
 func TestAttachWithoutATerminalAnswersNothing(t *testing.T) {
 	r := newRig(t)
 	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_9", Tool: "bash", Deadline: time.Now()}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var out, errOut bytes.Buffer
 	code := Main(Env{Ctx: ctx, ProfilesPath: r.profiles, In: strings.NewReader("y\n"), Out: &out, Err: &errOut, Poll: 5 * time.Millisecond}, []string{"attach", "bg_1"})

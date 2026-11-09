@@ -437,14 +437,25 @@ func (r *runner) follow(id string) error {
 	}
 	seen := int64(-1)
 	asked := ""
+	detached := func() error {
+		// Leaving does not stop the job; it runs on.
+		fmt.Fprintf(r.Err, "abhed: detached; job %s runs on (abhed bg attach %s)\n", line(id), line(id))
+		return nil
+	}
 	for {
 		j, err := r.cl.Get(r.Ctx, id)
 		if err != nil {
+			if r.Ctx.Err() != nil {
+				return detached()
+			}
 			return err
 		}
 		if j.SessionID != "" {
 			evs, err := r.cl.Events(r.Ctx, j.SessionID)
 			if err != nil {
+				if r.Ctx.Err() != nil {
+					return detached()
+				}
 				return err
 			}
 			for _, e := range evs {
@@ -477,9 +488,7 @@ func (r *runner) follow(id string) error {
 		}
 		select {
 		case <-r.Ctx.Done():
-			// Leaving does not stop the job; it runs on.
-			fmt.Fprintf(r.Err, "abhed: detached; job %s runs on (abhed bg attach %s)\n", line(id), line(id))
-			return nil
+			return detached()
 		case <-time.After(r.Poll):
 		}
 	}
