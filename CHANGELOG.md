@@ -60,9 +60,37 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. A link inside the workspace, and any link at your home
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
+- `abhed -p`, `abhed rpc` and unattended server runs now check their
+  answers by default (`verify: label`), as the terminal does; 1.2.9 checked
+  nothing there unless asked. The answer, its text output and the exit code
+  are unchanged, except that a contradicted statement gets the one revision
+  turn, which is one more model call. The result line's `verdict` (and
+  `rpc`'s answer `verdict`) is now present: `verdict.outcome` is `verified`
+  or `unverified`, and `verdict.claims` lists each statement, the
+  unverified ones included. `-verify off`, `"verify":"off"` on `rpc` or
+  `POST /v1/sessions`, or `verify.mode: off` in your own configuration
+  keeps the 1.2.9 behaviour where a managed `verify.mode` allows it. For
+  CI that fails closed on an unverified answer, pass `-verify strict` (exit
+  8). The SDK still checks nothing unless asked.
 
 ### Fixed
 
+- Answer checks failed a correct fix in strict mode, so CI saw exit 8 on
+  success. After `python3 -m unittest tests.test_text` passed, "All tests
+  in tests.test_text passed" was unverified, because only a run of the
+  whole suite was read as covering a test claim. A run of a named test
+  module, file or package (`python3 -m unittest tests.test_text`, `pytest
+  tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names
+  it, and "the tests pass" when the task named those tests. "All tests"
+  and "the whole suite" still need a whole run; a run of another module,
+  of one class, a failed run or an edit since the run still leave the
+  claim unverified. The false-claim corpus gains 17 planted cases and 9
+  controls for it; none of the 785 planted claims verifies, all 234
+  controls do, and none of the 334 true or neutral claims is contradicted.
+- The revision note after an unverified answer now lists the session's
+  tool results the agent may cite, by their real `call_id` (or `#seq` for
+  a text answer), so a model no longer cites an id it made up. A cited id
+  that is not in the record still counts as no evidence.
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was
   read without end, and a sparse file of any size was hashed in full. A

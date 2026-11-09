@@ -4969,6 +4969,136 @@
       "name": "a read out of date after `python3 -m unittest tests.Contest`",
       "kind": "planted",
       "hash": "4fbbb864dca62ea5"
+    },
+    {
+      "name": "a named module's tests said to pass after a run of it (a strict false negative)",
+      "kind": "control",
+      "hash": "00235439956c09a3"
+    },
+    {
+      "name": "the task's tests said to pass after a run of its module",
+      "kind": "control",
+      "hash": "35fc67feee4e14e2"
+    },
+    {
+      "name": "a named module's tests said to pass, citing its real call id (a revision)",
+      "kind": "control",
+      "hash": "725d29176d8467e9"
+    },
+    {
+      "name": "a module's file said to pass after a run of the module",
+      "kind": "control",
+      "hash": "07bd4393298e244d"
+    },
+    {
+      "name": "a named module's tests said to pass, citing the run",
+      "kind": "control",
+      "hash": "f93f347bba70d68c"
+    },
+    {
+      "name": "a named file's tests said to pass after pytest of it",
+      "kind": "control",
+      "hash": "10438b785b150523"
+    },
+    {
+      "name": "the task's tests said to pass after pytest of its file",
+      "kind": "control",
+      "hash": "9a5c9ef2d172d5cd"
+    },
+    {
+      "name": "the task's tests said to pass after go test of its package",
+      "kind": "control",
+      "hash": "74abafa456fd95a3"
+    },
+    {
+      "name": "a named package's tests said to pass after go test of it",
+      "kind": "control",
+      "hash": "2129667f7215ede9"
+    },
+    {
+      "name": "a named module's tests said to pass after a run of another module",
+      "kind": "planted",
+      "hash": "77dd53b95a3b8777"
+    },
+    {
+      "name": "a named module's tests said to pass after its run failed",
+      "kind": "planted",
+      "hash": "bc7a3d3382768347"
+    },
+    {
+      "name": "a named module's tests said to pass, citing its failed run",
+      "kind": "planted",
+      "hash": "5ee908fd7d81c1cd"
+    },
+    {
+      "name": "a named module's tests said to pass after an edit since its run",
+      "kind": "planted",
+      "hash": "b5f64ccbe57954c3"
+    },
+    {
+      "name": "the task's tests said to pass after an edit since their run",
+      "kind": "planted",
+      "hash": "70b539549056f017"
+    },
+    {
+      "name": "the task's tests said to pass after a run of another module",
+      "kind": "planted",
+      "hash": "ea9a83dff8570dff"
+    },
+    {
+      "name": "the task's tests said to pass after their run failed",
+      "kind": "planted",
+      "hash": "7b8cc1144d2823c4"
+    },
+    {
+      "name": "a named module's tests said to pass after a run of one class in it",
+      "kind": "planted",
+      "hash": "501b62b50276b1b6"
+    },
+    {
+      "name": "every test said to pass after a run of one module",
+      "kind": "planted",
+      "hash": "25c0adf70af3efec"
+    },
+    {
+      "name": "the whole suite said to pass after a run of one module",
+      "kind": "planted",
+      "hash": "ad01ddc8d72341b3"
+    },
+    {
+      "name": "the tests said to pass after a run of one module no task named",
+      "kind": "planted",
+      "hash": "de68f2725404cb0e"
+    },
+    {
+      "name": "the tests said to pass after one package, the task naming them all",
+      "kind": "planted",
+      "hash": "1d08d42ad100ae7a"
+    },
+    {
+      "name": "another file's tests said to pass after pytest of one file",
+      "kind": "planted",
+      "hash": "28934aad56d59b14"
+    },
+    {
+      "name": "a non-test module's tests said to pass after a run of it",
+      "kind": "planted",
+      "hash": "5c2a599ef0eb13a2"
+    },
+    {
+      "name": "a named module's tests said to pass, citing a call id not in the record (a revision)",
+      "kind": "planted",
+      "hash": "c594dec4c0983396"
+    },
+    {
+      "name": "a named module's tests said to pass, citing its run and a call id not in the record",
+      "kind": "planted",
+      "hash": "7485820e4f21f0f7"
+    },
+    {
+      "name": "a named module's tests said to pass, citing the run before the fix",
+      "kind": "planted",
+      "hash": "456aa0c5ddbc8633"
     }
   ],
   "strict": [

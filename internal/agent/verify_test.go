@@ -995,6 +995,54 @@ func TestBashObservationRecordsItsFolder(t *testing.T) {
 	}
 }
 
+// The revision note lists the results the agent may cite by their real ids,
+// its own answer calls not among them; an id it invents after the note still
+// shows nothing (a weak model once cited an id never recorded).
+func TestRevisionNoteListsRealCallIDs(t *testing.T) {
+	invented := `{"text":"There are 3 replicas.","claims":[{"text":"There are 3 replicas","kind":"observed","evidence":["7695648d-0349-465e-9bf6-2263d1a22054"]}]}`
+	l, store, ad, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "call_ejcqx0j4", Name: "bash", Args: json.RawMessage(`{"command":"printf 'replicas: 3\\n'"}`)}}},
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(invented)}}},
+		{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(invented)}}},
+	})
+	reason, _ := l.Run(context.Background(), "how many replicas?")
+	if reason != TermUnverified {
+		t.Fatalf("an invented id was taken as evidence: %s", reason)
+	}
+	vs := answerVerdicts(store)
+	if len(vs) != 2 || vs[0].Revision == "" || vs[1].Outcome != ClaimUnverified {
+		t.Fatalf("verdicts: %+v", vs)
+	}
+	note := vs[0].Revision
+	_, list, ok := strings.Cut(note, "The results you may cite, by call_id")
+	if !ok || !strings.Contains(list, `"call_ejcqx0j4" (#`) || !strings.Contains(list, "bash `printf 'replicas: 3\\n'`, exit 0") {
+		t.Fatalf("the note does not list the real call id:\n%s", note)
+	}
+	if strings.Contains(list, `"a1"`) || strings.Contains(list, "7695648d") {
+		t.Fatalf("the note lists an answer call or an invented id:\n%s", note)
+	}
+	last := ad.gotRequests[len(ad.gotRequests)-1].Messages
+	if m := last[len(last)-1]; m.Role != model.RoleUser || !strings.Contains(m.Content, `"call_ejcqx0j4"`) {
+		t.Fatalf("the model was not sent the ids: %+v", m)
+	}
+}
+
+// A text reply's revision note lists the results by #seq, which it cites.
+func TestRevisionNoteListsSeqsForText(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyStrict, false, []scriptedTurn{
+		{calls: []model.ToolCall{call("bash", map[string]string{"command": "printf '12 tests passed\\n'"})}},
+		{text: "All 15 tests pass."},
+		{text: "The output shows 12 tests."},
+	})
+	if reason, _ := l.Run(context.Background(), "run the tests"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	note := answerVerdicts(store)[0].Revision
+	if !strings.Contains(note, "as (#seq)") || !strings.Contains(note, "- #") || strings.Contains(note, "call_id (") {
+		t.Fatalf("the note does not list the seqs:\n%s", note)
+	}
+}
+
 // The verdict a surface prints (LastVerdict: the -p result line, rpc's
 // answer, the SDK's Verdict) has a stored secret redacted, as the record
 // does: a statement that repeats one never carries it out.

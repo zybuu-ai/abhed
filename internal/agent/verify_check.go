@@ -159,6 +159,9 @@ type recordIndex struct {
 	subagents bool
 	// workDir is the workspace, against which a claim's relative path is read.
 	workDir string
+	// prompt is the latest message a person sent the session: the task, whose
+	// named tests are what "the tests" in an answer means.
+	prompt string
 }
 
 // readers are the built-in tools that never change anything.
@@ -206,6 +209,11 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			ix.types[e.Seq] = e.Type
 		}
 		switch e.Type {
+		case EvUserMessage:
+			var m Message
+			if at == nil && e.Actor == ActorUser && json.Unmarshal(e.Payload, &m) == nil {
+				ix.prompt = m.Text
+			}
 		case EvActionRequested:
 			var a ActionRequested
 			if json.Unmarshal(e.Payload, &a) == nil {
@@ -743,6 +751,36 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 			atLine[normText(cmd)] = true
 		}
 	}
+	// A test or build run said to pass is read from the runs. One that
+	// covers what the claim names shows the files, modules and folders it
+	// names as well: "the tests in tests/test_x.py pass" needs no output
+	// naming the file.
+	var runFd *finding
+	if f.success {
+		fd := ix.success(pool, f.testish, ix.testScope(f), cited && f.wholeRun, cited)
+		if fd.out != matched && f.compiles {
+			// A whole test run that passed compiled the code ("it compiles"),
+			// when its runner compiles (go, cargo, maven, gradle, dotnet).
+			if t := ix.success(pool, "test", nil, cited && f.wholeRun, cited); t.out == matched && ix.bySeq[t.seq] != nil && compilingTestRe.MatchString(ix.bySeq[t.seq].command) {
+				fd = t
+			}
+		}
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.testish == "lint" && o != nil && lintProblemsRe.MatchString(strings.ToLower(o.content)) {
+			fd = finding{out: missing, why: "the lint run reports problems"}
+		}
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
+			fd = finding{out: missing, why: "the run reports warnings"}
+		}
+		if o := ix.bySeq[fd.seq]; fd.out == matched && f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command, o.content)) {
+			fd = finding{out: missing, why: "the run does not build for " + f.buildTarget}
+		}
+		runFd = &fd
+		if fd.out == matched {
+			for _, w := range append(slices.Clone(f.scope), f.modules...) {
+				atLine[normText(w)], atLine[normText(rawPath(w))] = true, true
+			}
+		}
+	}
 	// A write or an edit reports the file it changed: whether a path was
 	// changed is the record's to say (changedPath), not that report's.
 	pathLit := map[string]bool{}
@@ -810,23 +848,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		findings = append(findings, ix.number(pool, n, cited))
 	}
 	if f.success {
-		fd := ix.success(pool, f.testish, f.scope, cited && f.wholeRun, cited)
-		if fd.out != matched && f.compiles {
-			// A whole test run that passed compiled the code ("it compiles"),
-			// when its runner compiles (go, cargo, maven, gradle, dotnet).
-			if t := ix.success(pool, "test", nil, cited && f.wholeRun, cited); t.out == matched && ix.bySeq[t.seq] != nil && compilingTestRe.MatchString(ix.bySeq[t.seq].command) {
-				fd = t
-			}
-		}
-		if o := ix.bySeq[fd.seq]; fd.out == matched && f.testish == "lint" && o != nil && lintProblemsRe.MatchString(strings.ToLower(o.content)) {
-			fd = finding{out: missing, why: "the lint run reports problems"}
-		}
-		if o := ix.bySeq[fd.seq]; fd.out == matched && f.noWarnings && o != nil && runWarnRe.MatchString(o.content) {
-			fd = finding{out: missing, why: "the run reports warnings"}
-		}
-		if o := ix.bySeq[fd.seq]; fd.out == matched && f.buildTarget != "" && (o == nil || !targetShown(f.buildTarget, o.command, o.content)) {
-			fd = finding{out: missing, why: "the run does not build for " + f.buildTarget}
-		}
+		fd := *runFd
 		fd.call, fd.kind = fd.out == matched, "run"
 		findings = append(findings, fd)
 		if f.alsoLint {

@@ -421,7 +421,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	// the only case label mode spends a model call on.
 	revise := (gated && av.Outcome != ClaimVerified) || (v.Mode == VerifyLabel && av.Contradicted > 0)
 	if revise && !revised && l.turns < l.Config.MaxTurns && !l.Budget.Exhausted() {
-		av.Revision = revisionNote(av, v.AnswerTool)
+		av.Revision = revisionNote(av, v.AnswerTool, ix)
 		v.mu.Lock()
 		v.revised = true
 		v.mu.Unlock()
@@ -480,8 +480,10 @@ func (l *Loop) workDir() string {
 	return l.Session.WorkDir()
 }
 
-// revisionNote is what the agent is told for its one revision turn.
-func revisionNote(av AnswerVerdict, tool bool) string {
+// revisionNote is what the agent is told for its one revision turn: what
+// was not confirmed, and the results it may cite, by their real ids, so it
+// cites none it made up. A cited id not in the record still shows nothing.
+func revisionNote(av AnswerVerdict, tool bool, ix *recordIndex) string {
 	var b strings.Builder
 	b.WriteString("Abhed checked your answer against this session's record before showing it, and could not confirm all of it.\n")
 	n := 0
@@ -509,12 +511,61 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 			b.WriteString("- the protected files are too many to check; this is the operator's to narrow, not yours to fix\n")
 		}
 	}
+	b.WriteString(citable(ix, tool))
 	b.WriteString("Check what you can with a tool, then give your answer again")
 	if tool {
 		b.WriteString(" through `answer`, citing the call_id of each result")
 	}
 	b.WriteString(". Correct or remove anything the record contradicts, and say plainly what you could not verify. " +
 		"This is your one revision.")
+	return b.String()
+}
+
+// maxCitable bounds the results a revision note lists.
+const maxCitable = 20
+
+// citable lists this session's own tool results, newest last, as the answer
+// cites them: by call_id through the answer tool, by #seq in a text reply.
+func citable(ix *recordIndex, tool bool) string {
+	if ix == nil {
+		return ""
+	}
+	var own []*obsRec
+	for _, o := range ix.obs {
+		if o.child == "" && o.usable() && o.callID != "" {
+			own = append(own, o)
+		}
+	}
+	if len(own) == 0 {
+		return "This session's record holds no tool result to cite.\n"
+	}
+	var b strings.Builder
+	if tool {
+		b.WriteString("The results you may cite, by call_id (only these exist; any other id shows nothing):\n")
+	} else {
+		b.WriteString("The results you may cite, as (#seq) (only these exist; any other shows nothing):\n")
+	}
+	if len(own) > maxCitable {
+		fmt.Fprintf(&b, "…%d earlier results not listed.\n", len(own)-maxCitable)
+		own = own[len(own)-maxCitable:]
+	}
+	for _, o := range own {
+		what := o.tool
+		switch {
+		case o.command != "":
+			what += " `" + clipRunes(oneLine(o.command), 80) + "`"
+		case o.path != "":
+			what += " " + clipRunes(o.path, 80)
+		}
+		if o.exit != nil {
+			what += fmt.Sprintf(", exit %d", *o.exit)
+		}
+		if tool {
+			fmt.Fprintf(&b, "- %q (#%d): %s\n", o.callID, o.seq, what)
+		} else {
+			fmt.Fprintf(&b, "- #%d: %s\n", o.seq, what)
+		}
+	}
 	return b.String()
 }
 

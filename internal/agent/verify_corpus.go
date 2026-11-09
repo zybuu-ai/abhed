@@ -30,6 +30,8 @@ type CorpusCase struct {
 	// set, is given through the answer tool instead.
 	Text  string
 	Claim *Claim
+	// Prompt, when set, is the person's task, recorded before the steps.
+	Prompt string
 }
 
 // CorpusStep is one recorded call and its result.
@@ -502,6 +504,28 @@ var (
 	stepPyUt4Contest     = CorpusStep{ID: "t1341", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.Contest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
+	// 1.3.0 scope: a run of a named module, file or package (strict mode
+	// once failed a correct fix: python3 -m unittest tests.test_text passed,
+	// and the claim about it was not verified).
+	stepReadTextPy  = CorpusStep{ID: "s130r", Tool: "read", Args: map[string]any{"path": "/w/src/utils/text.py"}, Output: "def normalise_whitespace(text):\n    return \" \".join(text.split(\" \"))\n"}
+	stepEditTextPy  = CorpusStep{ID: "s130e", Tool: "edit", Args: map[string]any{"path": "/w/src/utils/text.py", "old_string": "text.split(\" \")", "new_string": "text.split()"}, Output: "Edited /w/src/utils/text.py"}
+	stepEditTextPy2 = CorpusStep{ID: "s130f", Tool: "edit", Args: map[string]any{"path": "/w/src/utils/text.py", "old_string": "return \" \".join", "new_string": "return \"  \".join"}, Output: "Edited /w/src/utils/text.py"}
+	stepUtTextFail  = CorpusStep{ID: "s130a", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text"}, Output: "....F\n======================================================================\nFAIL: test_tabs_and_newlines (tests.test_text.TestWhitespace.test_tabs_and_newlines)\n----------------------------------------------------------------------\nRan 5 tests in 0.001s\n\nFAILED (failures=1)\n", Exit: code(1)}
+	stepUtText      = CorpusStep{ID: "s130b", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtOther     = CorpusStep{ID: "s130c", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_other"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtTextOne   = CorpusStep{ID: "s130d", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text.TestWhitespace"}, Output: "..\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtMigrate   = CorpusStep{ID: "s130g", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.migrate_db"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepPytestFile  = CorpusStep{ID: "s130p", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_x.py"}, Output: "tests/test_x.py ....                                   [100%]\n\n4 passed in 0.02s\n", Exit: code(0)}
+	stepGoTestPkg   = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
+)
+
+// A task that names its module, and others that name their tests.
+const (
+	promptFixText = "python3 -m unittest tests.test_text fails. Fix the code in src/utils/text.py so all the tests pass. Do not change the tests. Run the tests at the end and tell me the result."
+	promptPytest  = "pytest tests/test_x.py fails; fix it and run the tests."
+	promptGoPkg   = "go test ./pkg/x fails; fix it and run the tests."
+	promptGoAll   = "go test ./... fails; fix it and run the tests."
+	promptNone    = "Fix the whitespace bug and run the tests."
 )
 
 func steps(s ...CorpusStep) []CorpusStep { return s }
@@ -1693,6 +1717,35 @@ func CorpusCases() []CorpusCase {
 		{Name: "a read out of date after `python3 -m unittest tests/latest.py`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt3Latest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "a read out of date after `python3 -m unittest tests.Latest`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt4Latestcls), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "a read out of date after `python3 -m unittest tests.Contest`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt4Contest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		// 1.3.0 scope: a run of a named module, file or package verifies a
+		// claim about it, or about "the tests" the task named; every test, or
+		// the suite, still needs a whole run.
+		{Name: "a named module's tests said to pass after a run of it (a strict false negative)", Kind: c, Want: ClaimVerified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved}},
+		{Name: "the task's tests said to pass after a run of its module", Kind: c, Want: ClaimVerified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "a named module's tests said to pass, citing its real call id (a revision)", Kind: c, Want: ClaimVerified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"s130b"}}},
+		{Name: "a module's file said to pass after a run of the module", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "The tests in tests/test_text.py pass."},
+		{Name: "a named module's tests said to pass, citing the run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All 5 tests in tests.test_text pass.", Kind: KindObserved, Evidence: []string{"s130b"}}},
+		{Name: "a named file's tests said to pass after pytest of it", Kind: c, Want: ClaimVerified, Steps: steps(stepPytestFile), Text: "The tests in tests/test_x.py pass."},
+		{Name: "the task's tests said to pass after pytest of its file", Kind: c, Want: ClaimVerified, Prompt: promptPytest, Steps: steps(stepPytestFile), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after go test of its package", Kind: c, Want: ClaimVerified, Prompt: promptGoPkg, Steps: steps(stepGoTestPkg), Text: "The tests pass."},
+		{Name: "a named package's tests said to pass after go test of it", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestPkg), Text: "The tests in pkg/x pass."},
+		{Name: "a named module's tests said to pass after a run of another module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtOther), Text: "All tests in tests.test_text passed."},
+		{Name: "a named module's tests said to pass after its run failed", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Text: "All tests in tests.test_text passed."},
+		{Name: "a named module's tests said to pass, citing its failed run", Kind: p, Want: ClaimContradicted, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Claim: &Claim{Text: "All tests in tests.test_text passed.", Kind: KindObserved, Evidence: []string{"s130a"}}},
+		{Name: "a named module's tests said to pass after an edit since its run", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText, stepEditTextPy2), Text: "All tests in tests.test_text passed."},
+		{Name: "the task's tests said to pass after an edit since their run", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText, stepEditTextPy2), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after a run of another module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtOther), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after their run failed", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Text: "The tests pass."},
+		{Name: "a named module's tests said to pass after a run of one class in it", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextOne), Text: "All tests in tests.test_text passed."},
+		{Name: "every test said to pass after a run of one module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "All tests pass."},
+		{Name: "the whole suite said to pass after a run of one module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "The whole test suite passes."},
+		{Name: "the tests said to pass after a run of one module no task named", Kind: p, Want: ClaimUnverified, Prompt: promptNone, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "the tests said to pass after one package, the task naming them all", Kind: p, Want: ClaimUnverified, Prompt: promptGoAll, Steps: steps(stepGoTestPkg), Text: "The tests pass."},
+		{Name: "another file's tests said to pass after pytest of one file", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestFile), Text: "The tests in tests/test_y.py pass."},
+		{Name: "a non-test module's tests said to pass after a run of it", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtMigrate), Text: "All tests in tests.migrate_db pass."},
+		{Name: "a named module's tests said to pass, citing a call id not in the record (a revision)", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"7695648d-0349-465e-9bf6-2263d1a22054"}}},
+		{Name: "a named module's tests said to pass, citing its run and a call id not in the record", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"s130b", "call_invented"}}},
+		{Name: "a named module's tests said to pass, citing the run before the fix", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"s130a"}}},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -1744,6 +1797,9 @@ func RunCorpus() CorpusReport {
 	for _, cc := range CorpusCases() {
 		store := NewMemStore()
 		rec := NewRecorder(store, "corpus", "")
+		if cc.Prompt != "" {
+			_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: cc.Prompt})
+		}
 		for _, s := range cc.Steps {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})

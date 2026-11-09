@@ -2,6 +2,8 @@ package agent
 
 import (
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -178,11 +180,20 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 		return pats, true
 	case "python", "python3":
 		if len(words) > 2 && words[1] == "-m" && words[2] == "unittest" {
-			// A pattern or test names select; a start folder other than the
-			// workspace narrows it.
+			// A pattern selects; a start folder other than the workspace
+			// narrows it; test names cover only themselves.
 			u, ok := parseUnittest(words)
-			if !ok || u.pattern != "" || len(u.names) > 0 {
+			if !ok || u.pattern != "" {
 				return nil, false
+			}
+			if len(u.names) > 0 {
+				for _, n := range u.names {
+					if !insidePath(n) || !testName(n) {
+						return nil, false
+					}
+					pats = append(pats, scopePat{dir: filepath.Join(dir, unittestPath(n))})
+				}
+				return pats, true
 			}
 			if u.start != "" && filepath.Clean(u.start) != "." {
 				return []scopePat{{dir: filepath.Join(dir, u.start), rec: true}}, true
@@ -270,6 +281,18 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 	return nil, false
 }
 
+// unittestPath is the file a unittest name stands for: a dotted module
+// (tests.test_text) as its file (tests/test_text.py), a path as it is. A
+// name of a class or a test in a module is a path of its own
+// (tests/test_text/TextTest.py), so it covers only a claim that names it.
+func unittestPath(n string) string {
+	n = strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(n), "./"), "/")
+	if strings.Contains(n, "/") || strings.HasSuffix(n, ".py") {
+		return n
+	}
+	return strings.ReplaceAll(n, ".", "/") + ".py"
+}
+
 // claimScope is where a claim's named packages or folders are, in the
 // workspace; none names the whole of it.
 func claimScope(scope []string, workDir string) []string {
@@ -329,4 +352,51 @@ func sameScope(pats []scopePat, scope []string, workDir string) bool {
 		}
 	}
 	return true
+}
+
+// testScope is what a test claim is judged against: the folders, packages,
+// modules and files it names; or, for "the tests" with none named, those the
+// task named; or the whole workspace.
+func (ix *recordIndex) testScope(f facts) []string {
+	scope := append(slices.Clone(f.scope), f.modules...)
+	if len(scope) == 0 && f.theTests && f.testish == "test" {
+		return promptTests(ix.prompt)
+	}
+	return scope
+}
+
+// goTestArgsRe is a go test command's arguments in a task's text.
+var goTestArgsRe = regexp.MustCompile("\\bgo\\s+test((?:\\s+[^\\s;&|`'\"]+)+)")
+
+// promptTests are the tests a task names: test modules and files
+// (tests.test_text, tests/test_x.py) and go test's folders (./pkg/x). None
+// when it names a whole-suite run (./...), so "the tests" means them all.
+func promptTests(prompt string) []string {
+	var out []string
+	add := func(p string) {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, m := range goTestArgsRe.FindAllStringSubmatch(prompt, -1) {
+		for _, a := range strings.Fields(m[1]) {
+			switch {
+			case a == "./..." || a == "...":
+				return nil
+			case strings.HasPrefix(a, "./") && insidePath(a):
+				add(strings.TrimSuffix(a, "/"))
+			}
+		}
+	}
+	for _, w := range strings.Fields(prompt) {
+		if m := testModule(w); m != "" {
+			add(m)
+			continue
+		}
+		w = strings.TrimRight(rawPath(strings.Trim(w, "`")), "/")
+		if strings.Contains(w, "/") && insidePath(w) && testName(w) {
+			add(w)
+		}
+	}
+	return out
 }
