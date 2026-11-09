@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +40,14 @@ type OpenAICompatible struct {
 	// Set per provider type where the server is known to take the field;
 	// extra.parallel_tool_calls ("true" or "false") overrides it.
 	ParallelToolCalls bool
+
+	// PromptCache is how the request asks the provider to cache its prompt
+	// prefix: "" sends nothing (the server caches on its own, or not at all),
+	// CacheKey sends OpenAI's prompt_cache_key, and CacheControl marks the
+	// system prompt and the last message with cache_control, as OpenRouter
+	// documents for its Anthropic and Gemini models. Set per provider where
+	// the field is known to be taken, so no other server is sent it.
+	PromptCache string
 
 	// User is sent as the request's "user" field when set. Some gateways
 	// (a LiteLLM proxy with enforce_user_param) require it; a plain endpoint
@@ -125,6 +135,10 @@ type wireRequest struct {
 	StreamOptions     *streamOpts `json:"stream_options,omitempty"`
 	ReasoningEffort   string      `json:"reasoning_effort,omitempty"`
 
+	// PromptCacheKey groups requests that share a prefix, so OpenAI routes
+	// them to the same cache. Sent only to OpenAI's own API.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+
 	// User identifies the end user to the endpoint. OpenAI treats it as an
 	// optional abuse-tracking hint, but a LiteLLM proxy configured with
 	// enforce_user_param rejects any request without it ("You must pass a
@@ -173,7 +187,11 @@ type wireChunk struct {
 		PromptTokensDetails *struct {
 			CachedTokens *int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails *struct {
+		// DeepSeek's cache hits, and an Anthropic-shaped proxy's (LiteLLM).
+		PromptCacheHitTokens     *int `json:"prompt_cache_hit_tokens"`
+		CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
+		CompletionTokensDetails  *struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
 	} `json:"usage"`
@@ -185,10 +203,23 @@ type wireChunk struct {
 
 // wirePart is one element of OpenAI-style array content.
 type wirePart struct {
-	Type     string        `json:"type"`
-	Text     string        `json:"text,omitempty"`
-	ImageURL *wireImageURL `json:"image_url,omitempty"`
+	Type         string        `json:"type"`
+	Text         string        `json:"text,omitempty"`
+	ImageURL     *wireImageURL `json:"image_url,omitempty"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
+
+// cacheControl marks a cache breakpoint: the prompt up to and including the
+// part is cached.
+type cacheControl struct {
+	Type string `json:"type"`
+}
+
+// The prompt-cache modes a provider may take.
+const (
+	CacheKey     = "prompt_cache_key"
+	CacheControl = "cache_control"
+)
 
 // wireImageURL carries the image inline as a data: URI. Not an http URL — that
 // would have the provider fetch the bytes, taking them out of the network.
@@ -271,8 +302,19 @@ func (c *OpenAICompatible) buildRequest(req Request) wireRequest {
 		parallel = new(bool)
 		*parallel = true
 	}
+	var cacheKey string
+	switch c.PromptCache {
+	case CacheKey:
+		// The system prompt names the session's prefix; the key says nothing
+		// of its text.
+		sum := sha256.Sum256([]byte(c.Model + "\x00" + req.System))
+		cacheKey = "abhed-" + hex.EncodeToString(sum[:8])
+	case CacheControl:
+		markCacheBreakpoints(msgs)
+	}
 	return wireRequest{
 		Model:             c.Model,
+		PromptCacheKey:    cacheKey,
 		User:              c.User,
 		Messages:          msgs,
 		Tools:             tools,
@@ -393,9 +435,17 @@ func (c *OpenAICompatible) stream(ctx context.Context, body io.ReadCloser,
 		if ch.Usage != nil {
 			usage.InputTokens = ch.Usage.PromptTokens
 			usage.OutputTokens = ch.Usage.CompletionTokens
-			if d := ch.Usage.PromptTokensDetails; d != nil && d.CachedTokens != nil {
-				usage.CachedInputTokens, usage.CacheReported = *d.CachedTokens, true
+			// Cached tokens, as each server names them: OpenAI's details,
+			// DeepSeek's hit count, or an Anthropic-shaped proxy's read count.
+			switch u := ch.Usage; {
+			case u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil:
+				usage.CachedInputTokens, usage.CacheReported = *u.PromptTokensDetails.CachedTokens, true
+			case u.PromptCacheHitTokens != nil:
+				usage.CachedInputTokens, usage.CacheReported = *u.PromptCacheHitTokens, true
+			case u.CacheReadInputTokens != nil:
+				usage.CachedInputTokens, usage.CacheReported = *u.CacheReadInputTokens, true
 			}
+			usage.CacheWriteTokens = ch.Usage.CacheCreationInputTokens
 			if d := ch.Usage.CompletionTokensDetails; d != nil {
 				usage.ReasoningTokens = d.ReasoningTokens
 			}
@@ -551,3 +601,33 @@ func (c *OpenAICompatible) fatalStatus(*StatusError) bool { return false }
 
 // Endpoint is the base URL the adapter calls.
 func (c *OpenAICompatible) Endpoint() string { return c.BaseURL }
+
+// markCacheBreakpoints marks the system prompt and the last user or tool
+// message as cache breakpoints, turning their text into one text part.
+// Two of the four breakpoints a request may carry; the rest stay unused.
+func markCacheBreakpoints(msgs []wireMessage) {
+	mark := func(m *wireMessage) {
+		switch c := m.Content.(type) {
+		case string:
+			if c != "" {
+				m.Content = []wirePart{{Type: "text", Text: c, CacheControl: &cacheControl{Type: "ephemeral"}}}
+			}
+		case []wirePart:
+			for i := len(c) - 1; i >= 0; i-- {
+				if c[i].Type == "text" {
+					c[i].CacheControl = &cacheControl{Type: "ephemeral"}
+					return
+				}
+			}
+		}
+	}
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		mark(&msgs[0])
+	}
+	for i := len(msgs) - 1; i > 0; i-- {
+		if msgs[i].Role == string(RoleUser) || msgs[i].Role == string(RoleTool) {
+			mark(&msgs[i])
+			return
+		}
+	}
+}

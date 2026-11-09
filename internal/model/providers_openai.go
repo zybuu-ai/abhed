@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/defaults"
 )
@@ -90,6 +91,11 @@ func openAIStyle(defaultURL string, sampling Sampling) Factory {
 		a.Defaults = s.Params
 		a.Think = s.Params.Think
 		a.User = s.Get("user")
+		cache, err := promptCacheMode(s, base, defaultURL)
+		if err != nil {
+			return nil, err
+		}
+		a.PromptCache = cache
 		a.ParallelToolCalls = s.Get("parallel_tool_calls") == "true"
 		if len(s.ReasoningTags) == 2 {
 			a.ReasoningTags = [2]string{s.ReasoningTags[0], s.ReasoningTags[1]}
@@ -108,6 +114,31 @@ func parallelCalls(f Factory) Factory {
 		}
 		return a, err
 	}
+}
+
+// promptCacheMode is how a provider is asked to cache its prompt: OpenAI's
+// own API takes prompt_cache_key, and OpenRouter takes cache_control for its
+// Anthropic and Gemini models. Any other server gets neither field unless
+// extra.prompt_cache names one ("prompt_cache_key", "cache_control" or
+// "off"), since a server that does not know a field may refuse the request.
+func promptCacheMode(s Spec, base, defaultURL string) (string, error) {
+	switch v := s.Get("prompt_cache"); v {
+	case "off":
+		return "", nil
+	case CacheKey, CacheControl:
+		return v, nil
+	case "", "auto":
+	default:
+		return "", fmt.Errorf("provider %q: extra.prompt_cache must be prompt_cache_key, cache_control, auto or off, not %q", s.Type, v)
+	}
+	official := strings.TrimSuffix(base, "/") == strings.TrimSuffix(defaultURL, "/")
+	switch {
+	case s.Type == "openai" && official:
+		return CacheKey, nil
+	case s.Type == "openrouter" && official && (strings.HasPrefix(s.Model, "anthropic/") || strings.HasPrefix(s.Model, "google/gemini")):
+		return CacheControl, nil
+	}
+	return "", nil
 }
 
 func orElse(v, fallback string) string {

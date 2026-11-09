@@ -31,6 +31,12 @@ All notable changes to Abhed are recorded here. The format follows
   `usage.cost_usd`, and HawkEYE the cost per turn and in all. A model with
   no price is shown as unpriced, and its cost is never guessed. A workspace
   cannot set prices.
+- Prompt caching on OpenAI-shaped providers. OpenAI's own API is sent
+  `prompt_cache_key`, and OpenRouter's Anthropic and Gemini models
+  `cache_control` on the system prompt and the last message; no other
+  server gets either field unless `extra.prompt_cache` names one. Cached
+  tokens are read from DeepSeek's and Anthropic-shaped proxies' usage as
+  well as OpenAI's, and recorded with cache writes on each `model.call`.
 - `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
   subagents included. The run ends `max_budget` (exit `3`) with a message
   and a `budget.stopped` event; with a cap set, a model with no price is
