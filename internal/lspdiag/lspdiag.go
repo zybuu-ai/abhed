@@ -348,7 +348,7 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *
 	if d.opt.ToolchainRoot != nil {
 		root = d.opt.ToolchainRoot()
 	}
-	go s.run(b, root, watch)
+	go s.run(b, root, watch) // #nosec G118 -- the server serves the session's later edits, not this one; Close and its 12-hour life end it
 	return s, "", true
 }
 
