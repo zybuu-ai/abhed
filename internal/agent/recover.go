@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // CarriedSpend is what a session's record says it has spent: the parent's
@@ -136,7 +137,7 @@ func Reconcile(store Store, sessionID string, events []Event) error {
 	// Every request keeps one outcome, so none is left open under the end.
 	settled := map[string]bool{}
 	if open, ok := InFlight(events); ok {
-		calls := append(open.Calls, open.Others...)
+		calls := slices.Concat(open.Calls, open.Others)
 		for _, c := range calls {
 			settled[c.Call.ID] = true
 		}
