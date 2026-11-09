@@ -560,7 +560,12 @@ What a shell changes about the checks, stated plainly:
   after. Another program is told from the shell by the terminal's
   foreground process group: the shell runs with job control on, so each
   program it starts has a group of its own (where bash reports it has no job
-  control, the server logs it and treats every line as the shell's).
+  control, the server logs it and treats every line as the shell's). The
+  shell's own group is the one whose leader is `bash` or `zsh`, reading keys
+  at its prompt, and is the process the server started or reaches it through
+  bubblewrap and the egress relay alone, as the kernel reports it; a shell
+  under `sh -c` or another wrapper is not it. Until the server has seen that,
+  every line is treated as the shell's, whatever printed first.
   Such a line is not recorded while another program has the terminal,
   and is recorded without its text while the shell itself is busy (the
   terminal is then in the mode a password is read in). Nor does it see what

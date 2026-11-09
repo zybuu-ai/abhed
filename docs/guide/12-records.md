@@ -229,7 +229,9 @@ links or anything outside the workspace. Within that, the limits:
 
 A file that looks like keys or credentials (`.env`, `*.pem`, SSH keys) is
 never copied, in memory or in the record; its change is recorded with no copy,
-as for the file tools. When a command's changes were not all kept, its result
+as for the file tools. One changed in the two seconds before a command starts,
+where its time could hide a rewrite, is read only to hash it: the bytes are
+cleared at once, never kept or recorded. When a command's changes were not all kept, its result
 ends with a `[checkpoint: …]` note saying what was not, which the record
 holds with the result; the command is not stopped. `"tools":
 {"bash_checkpoints": "required"}` instead refuses a command, before it runs,
