@@ -141,6 +141,8 @@ type cliFlags struct {
 	strictMCP       bool
 	agentsJSON      string
 	agentName       string
+	toolsOnly       multiFlag
+	bare            bool
 
 	// words are the positional arguments that are not a subcommand; dashed
 	// is set when they came after "--".
@@ -190,6 +192,8 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.BoolVar(&f.strictMCP, "strict-mcp-config", false, "use only the -mcp-config servers, none from the configuration")
 	fs.StringVar(&f.agentsJSON, "agents", "", "subagent definitions for this run, as JSON {name: {description, prompt, tools, ...}} or a file; checked as files are")
 	fs.StringVar(&f.agentName, "agent", "", "run the session as this agent type: its instructions, and its tools, mode, model and effort where they narrow")
+	fs.Var(&f.toolsOnly, "tools", "comma-separated tools this run may use, and no others; repeatable; only narrows")
+	fs.BoolVar(&f.bare, "bare", false, "run without memory files, extensions or skills of your own or the workspace's; the organisation's stay")
 	fs.BoolVar(&f.trustWS, "trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	return fs
 }

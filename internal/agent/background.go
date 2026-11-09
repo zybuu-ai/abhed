@@ -1337,7 +1337,8 @@ func noticeArgs(taskID string) json.RawMessage {
 func noticeMessages(n Notice) []model.Message {
 	return []model.Message{
 		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: n.CallID, Name: "task_status", Args: noticeArgs(n.TaskID)}}},
-		{Role: model.RoleTool, ToolCallID: n.CallID, Content: n.Content},
+		// A subagent's summary or a shell's output is tool output: escaped like any.
+		{Role: model.RoleTool, ToolCallID: n.CallID, Content: escapeFolderFence(n.Content)},
 	}
 }
 
