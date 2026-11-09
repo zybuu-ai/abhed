@@ -163,19 +163,35 @@ func (c Config) RegisterCustomProviders() []error {
 	return model.LoadCustom(defs)
 }
 
-// joinHooks is the simple hooks below with a file's added: one of the same
-// name replaces the earlier, so a later layer, the managed one last, holds it.
-func joinHooks(below, added []HookConfig) []HookConfig {
+// joinHooks is the simple hooks below with a file's added. The managed file's
+// hook replaces one of the same name; any other file's is left out, and the
+// earlier hook it would have replaced is returned as kept.
+func joinHooks(below, added []HookConfig, managed bool) (out, kept []HookConfig) {
 	if added == nil {
-		return below
+		return below, nil
 	}
-	out := make([]HookConfig, 0, len(below)+len(added))
+	out = make([]HookConfig, 0, len(below)+len(added))
 	for _, h := range below {
-		if !slices.ContainsFunc(added, func(a HookConfig) bool { return a.Name == h.Name }) {
+		if !managed || !slices.ContainsFunc(added, func(a HookConfig) bool { return a.Name == h.Name }) {
 			out = append(out, h)
 		}
 	}
-	return append(out, added...)
+	for _, a := range added {
+		if i := slices.IndexFunc(below, func(h HookConfig) bool { return h.Name == a.Name }); !managed && i >= 0 {
+			kept = append(kept, below[i])
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, kept
+}
+
+// orLayer names a layer for a person, "an earlier" when it is not known.
+func orLayer(l string) string {
+	if l == "" {
+		return "an earlier"
+	}
+	return l
 }
 
 // HookSpecs converts the simple hooks to the extension package's form.
@@ -195,7 +211,7 @@ func (c Config) HookSpecs() []extension.HookConfig {
 		}
 		out = append(out, extension.HookConfig{
 			Name: h.Name, Events: events, Command: h.Command, URL: h.URL,
-			Headers: h.Headers, Match: h.Match, Layer: h.Layer,
+			Headers: h.Headers, HeadersEnv: h.HeadersEnv, Match: h.Match, Layer: h.Layer, Async: h.Async,
 			Timeout: time.Duration(h.TimeoutMS) * time.Millisecond,
 		})
 	}
@@ -205,18 +221,18 @@ func (c Config) HookSpecs() []extension.HookConfig {
 // validateHooks refuses a simple hook that could not run as written, so a
 // hook meant to block is never silently missing.
 func (c Config) validateHooks() error {
-	seen := map[string]bool{}
+	seen := map[string]string{}
 	for _, e := range c.Extensions {
-		seen[e.Name] = true
+		seen[e.Name] = "an extension from the " + c.ExtensionLayer(e.Name) + " configuration"
 	}
 	for _, h := range c.Hooks.Run {
 		if h.Name == "" {
 			return errors.New("hooks.run: each hook needs a name")
 		}
-		if seen[h.Name] {
-			return fmt.Errorf("hooks.run: %q names another hook or an extension", h.Name)
+		if l, ok := seen[h.Name]; ok {
+			return fmt.Errorf("hooks.run: %q from the %s configuration is also the name of %s", h.Name, orLayer(h.Layer), l)
 		}
-		seen[h.Name] = true
+		seen[h.Name] = "a hook from the " + orLayer(h.Layer) + " configuration"
 		if (h.Command == "") == (h.URL == "") {
 			return fmt.Errorf("hooks.run %q: set one of command and url", h.Name)
 		}
@@ -241,6 +257,11 @@ func (c Config) validateHooks() error {
 		for _, m := range h.Match {
 			if _, err := policy.ParseRule(m); err != nil {
 				return fmt.Errorf("hooks.run %q: match: %w", h.Name, err)
+			}
+		}
+		for k, name := range h.HeadersEnv {
+			if k == "" || name == "" {
+				return fmt.Errorf("hooks.run %q: headers_env names a header and a variable", h.Name)
 			}
 		}
 		if h.TimeoutMS < 0 {

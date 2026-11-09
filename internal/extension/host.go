@@ -24,6 +24,32 @@ type Host struct {
 
 	firedMu sync.RWMutex
 	onFired func(Fired)
+
+	// halts are the runs a hook ended, by session, until the loop takes them.
+	haltMu sync.Mutex
+	halts  map[string]string
+}
+
+// halt notes that a hook ended the run of req's session.
+func (h *Host) halt(e *Extension, req Request, why string) {
+	h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: req.Event, Verdict: VerdictHalt, Reason: why})
+	h.haltMu.Lock()
+	defer h.haltMu.Unlock()
+	if h.halts == nil {
+		h.halts = map[string]string{}
+	}
+	if _, ok := h.halts[req.SessionID]; !ok {
+		h.halts[req.SessionID] = why
+	}
+}
+
+// Halted returns why a hook ended the session's run, once, or "".
+func (h *Host) Halted(sessionID string) string {
+	h.haltMu.Lock()
+	defer h.haltMu.Unlock()
+	why := h.halts[sessionID]
+	delete(h.halts, sessionID)
+	return why
 }
 
 // Verdicts a hook can reach, as hook.fired records them. There is no allow.
@@ -31,8 +57,10 @@ const (
 	VerdictBlock    = "block"
 	VerdictAsk      = "ask"
 	VerdictAnnotate = "annotate"
-	// VerdictContinue is a stop hook sending the agent back to work.
+	// VerdictContinue is a stop hook sending the agent back to work, and
+	// VerdictHalt a hook ending the run (continue false).
 	VerdictContinue = "continue"
+	VerdictHalt     = "halt"
 	// VerdictNone is a simple hook that ran and had no objection, and
 	// VerdictError one that failed; each run of one is recorded.
 	VerdictNone  = "none"
@@ -103,6 +131,7 @@ func (h *Host) Load(ctx context.Context, cfgs []Config) []error {
 			errs = append(errs, err)
 			continue
 		}
+		e.host = h
 		h.exts = append(h.exts, e)
 	}
 	return errs
@@ -202,12 +231,22 @@ func (h *Host) onToolCall(ctx context.Context, sessionID, tool string, args json
 // when one does. Nothing a reply says approves anything. A permission_request
 // hook that crashes or hangs refuses the call, as a tool_call hook does.
 func (h *Host) Veto(ctx context.Context, ev Event, req Request) string {
+	why, _ := h.VetoReport(ctx, ev, req)
+	return why
+}
+
+// VetoReport is Veto, also naming the simple hooks that failed and so did
+// not screen what it is about.
+func (h *Host) VetoReport(ctx context.Context, ev Event, req Request) (why string, failed []string) {
 	req.Event = ev
 	for _, e := range h.exts {
 		if !e.wants(ev) || req.Tool != "" && !e.Matches(req.Policy, req.Tool, req.Args) {
 			continue
 		}
 		reply, err := e.call(ctx, req)
+		if err != nil && e.hook != nil {
+			failed = append(failed, e.Name())
+		}
 		if err != nil && ev == EvPermissionRequest && !errors.Is(err, errNotRunning) {
 			reply = Reply{Block: true, Reason: e.label() + " did not answer (" + err.Error() + "), so the call is refused"}
 		}
@@ -215,12 +254,12 @@ func (h *Host) Veto(ctx context.Context, ev Event, req Request) string {
 		case reply.Block:
 			why := firstNonEmpty(reply.Reason, "blocked by "+e.label())
 			h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: ev, Verdict: VerdictBlock, Reason: why})
-			return why
+			return why, failed
 		case reply.Ask || reply.Reason != "" || reply.Log != "":
 			h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: ev, Verdict: VerdictAnnotate, Reason: firstNonEmpty(reply.Reason, reply.Log)})
 		}
 	}
-	return ""
+	return "", failed
 }
 
 // NotRunning names the extensions that take ev but have stopped, so a
@@ -269,6 +308,11 @@ func (h *Host) OnToolResult(ctx context.Context, sessionID, tool, content string
 		}
 		if reply.IsError != nil {
 			isErr = *reply.IsError
+		}
+		if reply.Content != nil || reply.IsError != nil {
+			// What the model reads is not what the tool said: on the record.
+			h.fire(e, Fired{Extension: e.Name(), SessionID: sessionID, Event: EvToolResult, Verdict: VerdictAnnotate,
+				Reason: firstNonEmpty(reply.Reason, "rewrote the result")})
 		}
 	}
 	return content, isErr
@@ -364,7 +408,11 @@ func (h *Host) PolicyHookFor(ctx context.Context, sessionID string, p *policy.En
 // decision's own context, so its deadline bounds them.
 func (h *Host) ContextPolicyHookFor(sessionID string, p *policy.Engine) policy.ContextHook {
 	return func(ctx context.Context, tool string, args json.RawMessage) *policy.Result {
-		d := h.onToolCall(ctx, sessionID, tool, args, p)
+		sid := sessionID
+		if s := SessionOf(ctx); s.ID != "" {
+			sid = s.ID // the session the decision is for, where its caller says
+		}
+		d := h.onToolCall(ctx, sid, tool, args, p)
 		switch {
 		case d.Block:
 			return &policy.Result{Decision: policy.Deny, Reason: d.Reason}
@@ -430,7 +478,7 @@ func (h *Host) OnStop(ctx context.Context, sessionID, answer string) (name, inst
 			continue
 		}
 		reply, err := e.call(ctx, Request{Event: EvStop, SessionID: sessionID, Content: answer})
-		if err != nil || !reply.Continue && !reply.Block {
+		if err != nil || !reply.again {
 			continue
 		}
 		why := firstNonEmpty(reply.Reason, "the "+e.Name()+" hook asks you to continue: the task is not finished")

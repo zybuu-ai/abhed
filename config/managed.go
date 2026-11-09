@@ -135,7 +135,10 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	for _, k := range orgBelowLists {
 		belowLists[k] = slices.Clone(*unionFields[k](cfg))
 	}
-	if _, err := mergeData(cfg, label, data); err != nil {
+	cfg.mergingManaged = true
+	_, err := mergeData(cfg, label, data)
+	cfg.mergingManaged = false
+	if err != nil {
 		return err
 	}
 	cfg.Managed = true

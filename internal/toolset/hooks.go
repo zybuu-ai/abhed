@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"os/exec"
 
@@ -21,19 +20,17 @@ func RecordFired(rec *agent.Recorder, f extension.Fired) error {
 	if f.Kind != "" {
 		h.Kind, h.Layer, h.Reason, h.ExitCode = f.Kind, f.Layer, f.Reason, f.ExitCode
 		h.DurationMS = f.Duration.Milliseconds()
-	} else if f.Verdict == extension.VerdictContinue {
+	} else if f.Verdict == extension.VerdictContinue || f.Verdict == extension.VerdictHalt {
 		h.Reason = f.Reason
 	}
 	_, err := rec.Record(agent.EvHookFired, agent.ActorSystem, agent.Trusted, h)
 	return err
 }
 
-// maxHookOutput bounds what a hook's command may print that is kept.
-const maxHookOutput = 64 << 10
-
-// HookEnv is what the simple hooks run with: their commands in the sandbox
-// bash's commands run in, at the same tier and in the workspace, and their
-// requests through this set's egress guard.
+// HookEnv is what the simple hooks run with: their commands as bash's run,
+// in the same sandbox at the same tier, in the session's folder (the
+// workspace when none is given), and their requests through this set's
+// egress guard.
 func HookEnv(bash tools.Bash, workspace string, guard *egress.Guard) extension.HookEnv {
 	client := &http.Client{
 		Transport: &egress.Transport{Kind: egress.KindHook, Guard: guard},
@@ -44,27 +41,18 @@ func HookEnv(bash tools.Bash, workspace string, guard *egress.Guard) extension.H
 }
 
 func hookRunner(bash tools.Bash, workspace string) extension.CommandRunner {
-	return func(ctx context.Context, command string, stdin []byte) (extension.CommandResult, error) {
-		var cmd *exec.Cmd
-		if bash.Sandbox != nil {
-			cmd = bash.Sandbox(ctx, workspace, command)
-		} else {
-			cmd = exec.CommandContext(ctx, "bash", "-c", command)
-			cmd.Dir = workspace
-			cmd.Env = append(sandbox.HostCommandEnv(), "ABHED_SESSION=1")
+	return func(ctx context.Context, dir, command string, stdin []byte) (extension.CommandResult, error) {
+		if dir == "" {
+			dir = workspace
 		}
-		sandbox.EndWithCommand(cmd)
-		var gitNames []string
-		cmd.Env, gitNames = tools.WithGitSafeConfig(cmd.Env)
-		if bash.Forward != nil {
-			bash.Forward(cmd, gitNames)
-		} else {
-			sandbox.ForwardEnv(cmd, gitNames)
+		cmd, err := bash.CommandFor(ctx, dir, command)
+		if err != nil {
+			return extension.CommandResult{Exit: -1}, err
 		}
 		cmd.Stdin = bytes.NewReader(stdin)
 		var out, errOut limited
 		cmd.Stdout, cmd.Stderr = &out, &errOut
-		err := cmd.Run()
+		err = cmd.Run()
 		if cmd.Process == nil {
 			sandbox.Release(cmd)
 		}
@@ -82,14 +70,12 @@ func hookRunner(bash tools.Bash, workspace string) extension.CommandRunner {
 	}
 }
 
-// limited keeps the first maxHookOutput bytes written and drops the rest.
+// limited keeps the first extension.MaxHookOutput bytes written and drops the rest.
 type limited struct{ b bytes.Buffer }
 
 func (l *limited) Write(p []byte) (int, error) {
-	if room := maxHookOutput - l.b.Len(); room > 0 {
+	if room := extension.MaxHookOutput - l.b.Len(); room > 0 {
 		l.b.Write(p[:min(len(p), room)])
 	}
 	return len(p), nil
 }
-
-var _ io.Writer = (*limited)(nil)

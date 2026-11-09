@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -461,11 +462,23 @@ const (
 )
 
 // StopHooks are Hooks that may send a completed run back to work: Stop
-// returns what the agent is to do instead of finishing, or "". The loop asks
-// at most MaxStopContinues times a run; the calls it then makes are judged
-// by policy as any other.
+// names the hook and returns what the agent is to do instead of finishing,
+// or "". The loop asks at most MaxStopContinues times a run; the calls it
+// then makes are judged by policy as any other.
 type StopHooks interface {
-	Stop(ctx context.Context, sessionID, answer string) (instruction string)
+	Stop(ctx context.Context, sessionID, answer string) (hook, instruction string)
+}
+
+// HaltHooks are Hooks that may end a run: Halted returns, once, why a hook
+// ended the session's run, or "". The loop ends it as policy_denied.
+type HaltHooks interface {
+	Halted(sessionID string) string
+}
+
+// ResultHooks are Hooks that see a tool's result, already redacted, before
+// the model reads it, and may rewrite it.
+type ResultHooks interface {
+	ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool)
 }
 
 // MaxStopContinues bounds how often stop hooks may send one run back to work.
@@ -477,6 +490,21 @@ const MaxStopContinues = 3
 type childHooks struct{ Hooks }
 
 func (childHooks) PromptSubmitted(context.Context, string, string) string { return "" }
+
+// Halted and ToolResult pass to the parent's hooks, when they take them.
+func (c childHooks) Halted(sessionID string) string {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		return h.Halted(sessionID)
+	}
+	return ""
+}
+
+func (c childHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
+	if h, ok := c.Hooks.(ResultHooks); ok {
+		return h.ToolResult(ctx, sessionID, tool, content, isErr)
+	}
+	return content, isErr
+}
 
 func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail string) {
 	if event == HookNotification || event == HookToolFailure {
@@ -1042,10 +1070,14 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 	}
 	l.beginAnswer()
 	l.stopContinues = 0
+	l.hookHalted() // an end a hook asked of an earlier run is not this one's
 turns:
 	for {
 		if ctx.Err() != nil {
 			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+		}
+		if why := l.hookHalted(); why != "" {
+			return l.finishHalted(why), nil
 		}
 		if err := l.recordFailure(); err != nil {
 			return TermError, err
@@ -1133,6 +1165,9 @@ turns:
 				if ctx.Err() != nil {
 					continue
 				}
+			}
+			if why := l.hookHalted(); why != "" {
+				return l.finishHalted(why), nil
 			}
 			// The answer is checked before the run ends; a revision turn
 			// it asks for goes round again.
@@ -1730,7 +1765,8 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 	if call.Name == "bash" {
 		_ = l.noteTrustedStartup() // best effort: the decision itself is recorded
 	}
-	decision := l.Policy.Evaluate(call.Name, tools.MutatesCall(tool, call.Args), call.Args)
+	// Hooks are told whose call it is, and where it runs.
+	decision := l.Policy.EvaluateContext(l.hookCtx(context.Background()), call.Name, tools.MutatesCall(tool, call.Args), call.Args)
 	// A command that asks for secrets is judged on each name first: a secret
 	// needs an allow rule of its own, in every mode, or the call is refused.
 	if refused := l.secretsRefused(tool, call); refused != "" {
@@ -2117,16 +2153,24 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
+	// A secret's value is stripped from the result before the model, the
+	// record or a hook sees it, so none holds a value it could echo elsewhere.
+	red := l.Recorder.redactor()
+	if red != nil {
+		result.Content = redactedText(red.Redact, result.Content)
+	}
 	if isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}
 	if result.IsError {
 		l.observe(ctx, HookToolFailure, call.Name, result.Content)
 	}
-	// A secret's value is stripped from the result before the model and the
-	// record see it, so the model never holds a value it could echo elsewhere.
-	if red := l.Recorder.redactor(); red != nil {
-		result.Content = redactedText(red.Redact, result.Content)
+	if rh, ok := l.Hooks.(ResultHooks); ok {
+		result.Content, result.IsError = rh.ToolResult(l.hookCtx(ctx), l.sessionID(), call.Name, result.Content, result.IsError)
+		if red != nil {
+			// What a hook wrote in its place is held to the same rule.
+			result.Content = redactedText(red.Redact, result.Content)
+		}
 	}
 	elapsed := time.Since(start)
 	// Without this the model reads "path is required" and never learns its file_path was not taken.
@@ -2283,7 +2327,7 @@ func (l *Loop) promptRefused(ctx context.Context, text string) string {
 	if l.Hooks == nil {
 		return ""
 	}
-	return l.Hooks.PromptSubmitted(ctx, l.sessionID(), text)
+	return l.Hooks.PromptSubmitted(l.hookCtx(ctx), l.sessionID(), text)
 }
 
 // permissionRefused asks the hooks about a call about to be put to the
@@ -2292,10 +2336,10 @@ func (l *Loop) permissionRefused(ctx context.Context, call model.ToolCall, decis
 	if l.Hooks == nil {
 		return ""
 	}
-	if why := l.Hooks.PermissionRequested(ctx, l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
+	if why := l.Hooks.PermissionRequested(l.hookCtx(ctx), l.Policy, l.sessionID(), call.Name, call.Args, decision.Reason); why != "" {
 		return why
 	}
-	l.Hooks.Observe(ctx, HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
+	l.Hooks.Observe(l.hookCtx(ctx), HookNotification, l.sessionID(), call.Name, "approval needed: "+decision.Reason)
 	return ""
 }
 
@@ -2314,19 +2358,49 @@ func (l *Loop) stopHookContinues(ctx context.Context) bool {
 			break
 		}
 	}
-	instruction := sh.Stop(ctx, l.sessionID(), answer)
+	hook, instruction := sh.Stop(l.hookCtx(ctx), l.sessionID(), answer)
 	if instruction == "" {
 		return false
 	}
+	// As a queued message is: withheld secrets, and recorded as the model
+	// reads it, so a resumed or forked session reads it too.
+	text, withheld := l.withholdSecrets(instruction)
+	if _, err := l.Recorder.Record(EvHookContinued, ActorSystem, Trusted, HookContinued{Hook: hook, Text: text, SecretsWithheld: withheld}); err != nil {
+		return false
+	}
 	l.stopContinues++
-	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: instruction})
+	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
 	return true
+}
+
+// hookHalted is why a hook ended this run, or "", taken once.
+func (l *Loop) hookHalted() string {
+	if hh, ok := l.Hooks.(HaltHooks); ok {
+		return hh.Halted(l.sessionID())
+	}
+	return ""
+}
+
+// finishHalted ends the run a hook ended, saying why.
+func (l *Loop) finishHalted(why string) TerminalReason {
+	l.endDetail = why
+	defer func() { l.endDetail = "" }()
+	return l.finish(TermPolicyDenied)
+}
+
+// hookCtx is ctx saying which session, and which folder, hooks run for.
+func (l *Loop) hookCtx(ctx context.Context) context.Context {
+	dir := ""
+	if l.Session != nil {
+		dir = l.Session.WorkDir()
+	}
+	return extension.WithSession(ctx, l.sessionID(), dir)
 }
 
 // observe tells the hooks of something they may only watch.
 func (l *Loop) observe(ctx context.Context, event, tool, detail string) {
 	if l.Hooks != nil {
-		l.Hooks.Observe(ctx, event, l.sessionID(), tool, detail)
+		l.Hooks.Observe(l.hookCtx(ctx), event, l.sessionID(), tool, detail)
 	}
 }
 

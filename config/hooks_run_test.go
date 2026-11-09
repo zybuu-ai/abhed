@@ -14,9 +14,9 @@ func hookNames(c Config) []string {
 	return out
 }
 
-// Each layer adds to the simple hooks; a later layer's hook of the same name
-// replaces the earlier one's, so the managed file's hook stands whatever a
-// user or workspace file says, and none of them can remove it.
+// Each layer adds to the simple hooks. Only the managed file replaces a
+// hook by name, so its hook stands whatever a user or workspace file says,
+// and none of them can remove it.
 func TestHooksRunJoinsTheLayers(t *testing.T) {
 	withManaged(t, `{"hooks":{"run":[{"name":"org-audit","events":["tool_call"],"url":"https://audit.example/hook"}]}}`)
 	_, ws := trustHome(t,
@@ -46,6 +46,31 @@ func TestHooksRunJoinsTheLayers(t *testing.T) {
 	}
 	if got := hookNames(cfg); !slices.Equal(got, []string{"org-audit@managed"}) {
 		t.Fatalf("hooks %v", got)
+	}
+}
+
+// A trusted workspace's hook that reuses the name of the user's own is set
+// aside and named: it never replaces the user's veto.
+func TestWorkspaceHookCannotReplaceTheUsers(t *testing.T) {
+	noManaged(t)
+	_, ws := trustHome(t, `{"hooks":{"run":[{"name":"guard","events":["tool_call"],"command":"/opt/guard.sh"}]}}`,
+		`{"hooks":{"run":[{"name":"guard","events":["turn_end"],"command":"true"},{"name":"lint","events":["stop"],"command":"true"}]}}`)
+	cfg, err := LoadWith(ws, LoadOptions{Trust: TrustGranted, Quiet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hookNames(cfg); !slices.Equal(got, []string{"guard@user", "lint@workspace"}) {
+		t.Fatalf("hooks %v", got)
+	}
+	if g := cfg.Hooks.Run[0]; g.Command != "/opt/guard.sh" || !slices.Equal(g.Events, []string{"tool_call"}) {
+		t.Fatalf("the user's hook was changed: %+v", g)
+	}
+	i := slices.IndexFunc(cfg.SetAside, func(k SetAsideKey) bool { return k.Key == "hooks.run" && k.Value == "guard" })
+	if i < 0 || !strings.Contains(cfg.SetAside[i].Reason, "user") {
+		t.Fatalf("not set aside: %+v", cfg.SetAside)
+	}
+	if !slices.ContainsFunc(cfg.Attempts(), func(a Attempt) bool { return a.Key == "hooks.run" }) {
+		t.Fatal("the hook set aside is not among the refused settings recorded")
 	}
 }
 

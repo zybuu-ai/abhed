@@ -5655,6 +5655,11 @@ func (s *Server) recordHooks() {
 	if s.opts.Extensions == nil {
 		return
 	}
+	if names := s.opts.Extensions.CommandHooks(); len(names) > 0 && s.opts.SessionSandboxes != nil {
+		// Each session's commands run in its own sandbox; the hooks do not.
+		s.log.Warn("command hooks run under this server's own sandbox and workspace, not in each session's own sandbox",
+			"hooks", strings.Join(names, ", "))
+	}
 	s.opts.Extensions.SetOnFired(func(f extension.Fired) {
 		s.mu.RLock()
 		live := s.running[f.SessionID]

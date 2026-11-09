@@ -35,6 +35,9 @@ const (
 	EvModelFallback EventType = "model.fallback"
 	// EvHookFired is an extension hook's verdict; see HookFired.
 	EvHookFired EventType = "hook.fired"
+	// EvHookContinued is a stop hook's instruction, as the model was given
+	// it when the hook sent it back to work; see HookContinued.
+	EvHookContinued EventType = "hook.continued"
 	// EvRecordRepaired is a record whose torn end was cut off on open; see RecordRepaired.
 	EvRecordRepaired EventType = "record.repaired"
 	// EvConfigRefused is a setting that did not take effect as written, or a
@@ -275,6 +278,14 @@ type HookFired struct {
 	Reason     string `json:"reason,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
+}
+
+// HookContinued is the payload of hook.continued: the hook, and the exact
+// text the model read next, with the secrets withheld from it named.
+type HookContinued struct {
+	Hook            string `json:"hook"`
+	Text            string `json:"text"`
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
 }
 
 // RecordRepaired is the payload of record.repaired.

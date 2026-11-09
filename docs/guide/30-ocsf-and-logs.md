@@ -96,7 +96,8 @@ record withheld.
 | `action.requested` | API Activity (6003); File System Activity (1001) for `read`, `write`, `edit` and `memory_write` with a path; SSH Activity (4007) for `ssh`, `ssh_connect`, `ssh_put` and `ssh_get` | Call; Read or Update; Open or Traffic. `status` is `Requested` |
 | `action.approved`, `action.denied`, `subagent.action` | API Activity (6003) | Other (Decision), with `action_id` and `disposition_id` (Allowed, Approved when a person answered, Blocked; a carried approval, `by: carried`, is Allowed, since no one reviewed the retry itself), and the deciding rule, scope or layer as `policy` |
 | `observation` | API Activity (6003) | Other (Result): success, failure, Not run, or Unknown for an outcome a crash left unknown; `duration` |
-| `hook.fired` | API Activity (6003) | Other (Hook): a `block` is Denied and Blocked, `ask`, `annotate`, `continue` and `none` Observed, an `error` a failure with its reason |
+| `hook.fired` | API Activity (6003) | Other (Hook): a `block` or `halt` is Denied and Blocked, `ask`, `annotate`, `continue` and `none` Observed, an `error` a failure with its reason |
+| `hook.continued` | API Activity (6003) | Other (Hook), operation `stop`, Observed |
 | `mcp.status` | API Activity (6003) | Other (Restart), the server as a resource |
 | `ollama.pull` | API Activity (6003) | Create, the model as a resource; a declined, refused, cancelled or failed pull is a failure with the reason, one left to the person (`manual`) is Other |
 | `plan.proposed`, `session.branched`, `conversation.forked`, `sandbox.snapshot` | API Activity (6003) | Create |

@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -57,7 +59,7 @@ func TestConfiguredCommandHookRunsInTheSandbox(t *testing.T) {
 // Without a sandbox the command runs as bash's would, and still decides.
 func TestCommandHookWithoutASandbox(t *testing.T) {
 	run := hookRunner(tools.Bash{}, t.TempDir())
-	res, err := run(context.Background(), `cat; echo nope >&2; exit 2`, []byte(`{"event":"stop"}`))
+	res, err := run(context.Background(), "", `cat; echo nope >&2; exit 2`, []byte(`{"event":"stop"}`))
 	if err != nil || res.Exit != 2 || string(res.Stdout) != `{"event":"stop"}` || strings.TrimSpace(string(res.Stderr)) != "nope" {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -115,5 +117,36 @@ func TestHookSpecsHonourTheManagedSwitches(t *testing.T) {
 	t.Cleanup(set.Close)
 	if set.Extensions.Len() != 0 {
 		t.Fatal("a disabled hook was loaded")
+	}
+}
+
+// A command hook runs in the folder the session works in, as its commands do.
+func TestCommandHookRunsInTheSessionsFolder(t *testing.T) {
+	ws, tree := t.TempDir(), t.TempDir()
+	run := hookRunner(tools.Bash{}, ws)
+	res, err := run(context.Background(), tree, `pwd -P`, nil)
+	real, _ := filepath.EvalSymlinks(tree)
+	if err != nil || strings.TrimSpace(string(res.Stdout)) != real {
+		t.Fatalf("ran in %q, want %q (%v)", res.Stdout, real, err)
+	}
+}
+
+// A simple hook on tool_result is sent each result through the loop's hooks.
+func TestToolResultHookIsSent(t *testing.T) {
+	cfg := config.Default()
+	cfg.Hooks.Run = []config.HookConfig{{Name: "seen", Events: []string{"tool_result"},
+		Command: `cat > "$HOOK_OUT"`}}
+	out := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv("HOOK_OUT", out)
+	set := Build(context.Background(), cfg, Options{Workspace: t.TempDir(), Parts: Vetoes})
+	t.Cleanup(set.Close)
+	hooks := HostHooks{Host: set.Extensions}
+	content, isErr := hooks.ToolResult(context.Background(), "s1", "read", "file body", false)
+	if content != "file body" || isErr {
+		t.Fatalf("a simple hook changed the result: %q %v", content, isErr)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil || !strings.Contains(string(data), `"event":"tool_result"`) || !strings.Contains(string(data), "file body") {
+		t.Fatalf("the hook was sent %s (%v)", data, err)
 	}
 }

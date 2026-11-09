@@ -532,8 +532,9 @@ type HostHooks struct {
 }
 
 var (
-	_ agent.Hooks     = HostHooks{}
-	_ agent.StopHooks = HostHooks{}
+	_ agent.Hooks       = HostHooks{}
+	_ agent.StopHooks   = HostHooks{}
+	_ agent.ResultHooks = HostHooks{}
 )
 
 func (h HostHooks) note(s string, refused bool) {
@@ -543,12 +544,15 @@ func (h HostHooks) note(s string, refused bool) {
 }
 
 func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
-	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
-	if why != "" {
+	why, failed := h.Host.VetoReport(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
+	switch down := h.Host.NotRunning(extension.EvUserPromptSubmit); {
+	case why != "":
 		h.note("your message was not sent: "+why, true)
-	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+	case len(down) > 0:
 		// A prompt hook fails open; the person is told it did not look.
 		h.note("not screened: the user_prompt_submit hook "+strings.Join(down, ", ")+" is not running", false)
+	case len(failed) > 0:
+		h.note("not screened: the user_prompt_submit hook "+strings.Join(failed, ", ")+" failed", false)
 	}
 	return why
 }
@@ -563,15 +567,24 @@ func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail s
 	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
 }
 
-// Stop asks the stop hooks whether the run may end; the agent is told which
-// hook sent it back, and why.
-func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) string {
+// Stop asks the stop hooks whether the run may end, and names the hook that
+// sent the agent back, with what it is told.
+func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) (hook, instruction string) {
 	name, why := h.Host.OnStop(ctx, sessionID, answer)
 	if why == "" {
-		return ""
+		return "", ""
 	}
-	h.note("the "+name+" hook asked the agent to continue: "+why, false)
-	return "The " + name + " hook asks you to continue before finishing: " + why
+	h.note("the "+name+" hook asked the agent to continue", false)
+	return name, "The " + name + " hook asks you to continue before finishing: " + why
+}
+
+// Halted is why a hook ended the session's run, once, or "".
+func (h HostHooks) Halted(sessionID string) string { return h.Host.Halted(sessionID) }
+
+// ToolResult lets the hooks that take tool_result see, and extensions
+// rewrite, a result before the model reads it.
+func (h HostHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
+	return h.Host.OnToolResult(ctx, sessionID, tool, content, isErr)
 }
 
 // Hook gives loop the extensions' hooks at its own points, when any are loaded.

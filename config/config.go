@@ -144,6 +144,9 @@ type Config struct {
 	// webIntents and origins are what loading holds until the managed file.
 	webIntents []webIntent
 	origins    map[string]origin
+	// mergingManaged is set while the managed document merges: only it
+	// replaces a simple hook of a name an earlier layer gave.
+	mergingManaged bool
 	// ruleLayers names the layer each permission rule came from; see RuleLayer.
 	ruleLayers map[string]string
 	// allowLayers are each file's own model.allowed and mcp lists, applied
@@ -336,8 +339,8 @@ type HooksConfig struct {
 	// every other keeps only the tools it provides. Managed only.
 	ManagedOnly bool `json:"managed_only,omitempty"`
 	// Run are the simple hooks: a command or an HTTP endpoint per event. Each
-	// layer adds to them, and a later layer's hook of the same name replaces
-	// the earlier one's, so no lower layer removes a managed hook.
+	// layer adds to them; only the managed file replaces a hook an earlier
+	// layer named, and a later file's hook of that name is set aside.
 	Run []HookConfig `json:"run,omitempty"`
 }
 
@@ -350,11 +353,16 @@ type HookConfig struct {
 	Events  []string `json:"events"`
 	Command string   `json:"command,omitempty"`
 	URL     string   `json:"url,omitempty"`
-	// Headers are sent with an HTTP hook's request.
-	Headers map[string]string `json:"headers,omitempty"`
+	// Headers are sent with an HTTP hook's request; HeadersEnv sends each
+	// header with the value of the variable it names, read from Abhed's
+	// environment, so a token need not be written here.
+	Headers    map[string]string `json:"headers,omitempty"`
+	HeadersEnv map[string]string `json:"headers_env,omitempty"`
 	// Match narrows tool events to the calls a rule matches, e.g. bash(git *).
 	Match     []string `json:"match,omitempty"`
 	TimeoutMS int      `json:"timeout_ms,omitempty"`
+	// Async runs the events that only observe without waiting for the hook.
+	Async bool `json:"async,omitempty"`
 	// Layer is the layer the hook came from, as loading credits it.
 	Layer string `json:"-"`
 }
@@ -1905,7 +1913,12 @@ func mergeData(cfg *Config, path string, data []byte) ([]byte, error) {
 		cfg.Hooks.Run = below
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	cfg.Hooks.Run = joinHooks(below, cfg.Hooks.Run)
+	var kept []HookConfig
+	cfg.Hooks.Run, kept = joinHooks(below, cfg.Hooks.Run, cfg.mergingManaged)
+	for _, h := range kept {
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Key: "hooks.run", Value: h.Name,
+			Reason: "a hook of that name comes from the " + orLayer(h.Layer) + " configuration; only the managed configuration replaces one"})
+	}
 	cfg.Unknown = append(cfg.Unknown, unknownKeys(path, data, reflect.TypeFor[Config]())...)
 	cfg.Duplicates = append(cfg.Duplicates, duplicateKeys(path, data)...)
 	keys := managedKeys(data)

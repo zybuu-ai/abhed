@@ -149,7 +149,7 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		}
 		verdict := field(h.Verdict, 20)
 		switch h.Verdict {
-		case "block", "error":
+		case "block", "error", "halt":
 			verdict = s.Red(verdict)
 		case "ask":
 			verdict = s.Yellow(verdict)

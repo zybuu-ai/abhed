@@ -50,19 +50,31 @@ All notable changes to Abhed are recorded here. The format follows
 
 - Simple hooks: `hooks.run` runs one command, or POSTs to one HTTP endpoint,
   per event, with no extension process to write. A command gets the event
-  as JSON on stdin and runs in the session's sandbox at its tier; exit 0
-  goes on, exit 2 blocks with stderr as the reason, and any other exit or a
-  timeout refuses a `tool_call` or `permission_request`. An HTTP hook's
-  request is judged by the egress allowlist. A hook can block or ask, never
-  approve. Each layer adds hooks, a workspace's only once it is trusted, and
-  no lower layer removes or changes a managed one. Every run is recorded as
-  `hook.fired` with its kind, layer, exit status and duration. See
+  as JSON on stdin and runs as the agent's own commands do: in the terminal,
+  `-p`, `abhed rpc`, `abhed acp` and the SDK, in the session's sandbox at
+  its tier and in the session's folder. `abhed serve` runs them under the
+  server's own sandbox and workspace, not a session's own sandbox where the
+  edition gives sessions one, and says so at start-up. Exit 0 goes on, exit
+  2 blocks with stderr as the reason, and any other exit or a timeout
+  refuses a `tool_call` or `permission_request`. A JSON reply's
+  `decision: "block"` blocks, and `continue: false` ends the run as
+  `policy_denied`. An HTTP hook's request is judged by the egress
+  allowlist, and `headers_env` sends a token from the environment. A hook
+  can block, ask or end the run, never approve. Each layer adds hooks, a
+  workspace's only once it is trusted; only the managed configuration
+  replaces a hook by name, and a lower file's hook of a name already taken
+  is set aside. Every run is recorded as `hook.fired` with its kind, layer,
+  exit status and duration. See
   [Extensions](docs/guide/07-extensions.md#simple-hooks).
 - Hook events `subagent_start`, `tool_failure`, `post_compact` and `stop`,
-  for extensions and simple hooks alike. A `stop` hook can send the agent
-  back to work with an instruction, at most 3 times a run. `hook.fired` is
-  now also recorded by `abhed serve` and the SDK, in the session the hook
-  fired for.
+  for extensions and simple hooks alike, and `tool_result` is now sent:
+  hooks see each result after secrets are redacted, and an extension may
+  rewrite it. A `stop` hook can send the agent back to work with an
+  instruction, at most 3 times a run; the instruction is recorded as
+  `hook.continued`, with secrets withheld, and a resumed or forked session
+  reads it. `hook.fired` is now also recorded by `abhed serve` and the SDK,
+  in the session the hook fired for, and a `tool_call` hook is given the
+  real session id.
 
 ### Fixed
 

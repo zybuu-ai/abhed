@@ -21,15 +21,16 @@ type scriptRunner struct {
 	mu      sync.Mutex
 	results map[string]CommandResult
 	stdin   map[string][]byte
+	dirs    map[string]string
 }
 
-func (s *scriptRunner) run(ctx context.Context, command string, stdin []byte) (CommandResult, error) {
+func (s *scriptRunner) run(ctx context.Context, dir, command string, stdin []byte) (CommandResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stdin == nil {
-		s.stdin = map[string][]byte{}
+		s.stdin, s.dirs = map[string][]byte{}, map[string]string{}
 	}
-	s.stdin[command] = stdin
+	s.stdin[command], s.dirs[command] = stdin, dir
 	if command == "hang" {
 		<-ctx.Done()
 		return CommandResult{Exit: -1}, ctx.Err()
@@ -238,5 +239,101 @@ func TestLoadHooksRefusesBadConfig(t *testing.T) {
 	}, HookEnv{})
 	if len(errs) != 4 || h.Len() != 1 {
 		t.Fatalf("errors %v, loaded %d", errs, h.Len())
+	}
+}
+
+// The reply shapes hooks written for other harnesses print mean the same
+// here: decision block blocks, and on stop sends the agent on; continue
+// false ends the run; continue true is no opinion, and only stop continues.
+func TestHookReplyShapes(t *testing.T) {
+	r := &scriptRunner{results: map[string]CommandResult{
+		"decide": {Exit: 0, Stdout: []byte(`{"decision":"block","reason":"not on main"}`)},
+		"carry":  {Exit: 0, Stdout: []byte(`{"continue":true}`)},
+		"halt":   {Exit: 0, Stdout: []byte(`{"continue":false,"stopReason":"change freeze"}`)},
+	}}
+	ctx := WithSession(context.Background(), "s7", "/work/tree")
+	h, fired := hooksOf(t, HookEnv{Run: r.run},
+		HookConfig{Name: "carry", Command: "carry", Events: []Event{EvToolCall, EvStop}},
+		HookConfig{Name: "decide", Command: "decide", Events: []Event{EvToolCall, EvStop}, Match: []string{"bash(git push*)"}},
+		HookConfig{Name: "halt", Command: "halt", Events: []Event{EvToolCall}, Match: []string{"bash(deploy*)"}})
+	if d := h.OnToolCall(ctx, "s7", "bash", json.RawMessage(`{"command":"git push"}`)); !d.Block || d.Reason != "not on main" {
+		t.Fatalf("decision block: %+v", d)
+	}
+	if d := h.OnToolCall(ctx, "s7", "bash", json.RawMessage(`{"command":"ls"}`)); d.Block || d.Ask {
+		t.Fatalf("continue true: %+v", d)
+	}
+	if why := h.Halted("s7"); why != "" {
+		t.Fatalf("halted early: %q", why)
+	}
+	if d := h.OnToolCall(ctx, "s7", "bash", json.RawMessage(`{"command":"deploy prod"}`)); !d.Block {
+		t.Fatalf("a call a hook ended the run on went ahead: %+v", d)
+	}
+	if why := h.Halted("s7"); why != "change freeze" {
+		t.Fatalf("halted: %q", why)
+	}
+	if why := h.Halted("s7"); why != "" {
+		t.Fatalf("a halt was taken twice: %q", why)
+	}
+	if name, why := h.OnStop(ctx, "s7", "done"); name != "decide" || why != "not on main" {
+		t.Fatalf("stop: %q %q", name, why)
+	}
+	for _, f := range *fired {
+		if f.Verdict == VerdictContinue && f.Event != EvStop {
+			t.Fatalf("a %s hook was recorded as continuing: %+v", f.Event, f)
+		}
+	}
+	if r.dirs["carry"] != "/work/tree" {
+		t.Fatalf("the hook ran in %q", r.dirs["carry"])
+	}
+}
+
+// The session a decision is for, where its context says, is the one the
+// hook is told, not the one the policy hook was made with.
+func TestPolicyHookTellsTheSession(t *testing.T) {
+	r := &scriptRunner{results: map[string]CommandResult{"ok": {Exit: 0}}}
+	h, _ := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "ok", Command: "ok", Events: []Event{EvToolCall}})
+	h.ContextPolicyHookFor("session", nil)(WithSession(context.Background(), "real-1", ""), "bash", json.RawMessage(`{}`))
+	var req Request
+	if err := json.Unmarshal(r.stdin["ok"], &req); err != nil || req.SessionID != "real-1" {
+		t.Fatalf("sent %s", r.stdin["ok"])
+	}
+}
+
+// A hook on an event that only observes is bounded by a short timeout unless
+// it sets one, and an async one is not waited for.
+func TestObserveHookTimeouts(t *testing.T) {
+	r := &scriptRunner{}
+	h, fired := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "slow", Command: "hang", Events: []Event{EvTurnEnd}})
+	start := time.Now()
+	h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "s"})
+	if took := time.Since(start); took > 3*time.Second || len(*fired) != 1 || (*fired)[0].Verdict != VerdictError {
+		t.Fatalf("took %s, recorded %+v", took, *fired)
+	}
+	h, _ = hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "bg", Command: "hang", Events: []Event{EvTurnEnd}, Async: true})
+	start = time.Now()
+	h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "s"})
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("an async hook was waited for: %s", took)
+	}
+}
+
+// headers_env sends a variable's value; one that is not set fails the hook.
+func TestHTTPHookHeadersEnv(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	t.Setenv("HOOK_TOKEN_TEST", "Bearer t-1")
+	h, _ := hooksOf(t, HookEnv{HTTP: srv.Client()}, HookConfig{Name: "web", URL: srv.URL,
+		HeadersEnv: map[string]string{"Authorization": "HOOK_TOKEN_TEST"}, Events: []Event{EvToolCall}})
+	if d := h.OnToolCall(context.Background(), "s", "bash", json.RawMessage(`{}`)); d.Block || got != "Bearer t-1" {
+		t.Fatalf("%+v, sent %q", d, got)
+	}
+	h, _ = hooksOf(t, HookEnv{HTTP: srv.Client()}, HookConfig{Name: "web", URL: srv.URL,
+		HeadersEnv: map[string]string{"Authorization": "HOOK_TOKEN_UNSET_TEST"}, Events: []Event{EvToolCall}})
+	if d := h.OnToolCall(context.Background(), "s", "bash", json.RawMessage(`{}`)); !d.Block || !strings.Contains(d.Reason, "HOOK_TOKEN_UNSET_TEST is not set") {
+		t.Fatalf("%+v", d)
 	}
 }

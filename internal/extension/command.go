@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 // past its timeout, is a failure, which refuses a tool_call or
 // permission_request as a crashed extension does. An HTTP hook is POSTed the
 // same JSON: a 2xx answer goes on, with an optional JSON reply; anything else
-// is a failure.
+// is a failure. A reply's continue false ends the run.
 
 // Hook kinds, as Fired records them.
 const (
@@ -33,8 +34,8 @@ const (
 )
 
 // EvStop fires when the agent is about to finish answering. A hook that
-// blocks it, or replies continue, sends the agent back to work with the
-// reason as its instruction, a bounded number of times.
+// blocks it sends the agent back to work with the reason as its
+// instruction, a bounded number of times.
 const EvStop Event = "stop"
 
 // EvSubagentStart fires when the agent starts a subagent. It only observes.
@@ -58,11 +59,33 @@ type HookConfig struct {
 	Command string
 	URL     string
 	Headers map[string]string
+	// HeadersEnv sends a header with the value of the named variable from
+	// Abhed's environment, so a token is not written into the file.
+	HeadersEnv map[string]string
 	// Match narrows tool events to the calls a rule matches, as for an extension.
-	Match   []string
+	Match []string
+	// Timeout bounds one run: when zero, 10s, or 2s on an event that only observes.
 	Timeout time.Duration
+	// Async runs the events that only observe without waiting for them.
+	Async bool
 	// Layer is the configuration layer the hook came from, for the record.
 	Layer string
+}
+
+// Session is the session and folder a hook event is for, as ctx carries it.
+type Session struct{ ID, Dir string }
+
+type sessionKey struct{}
+
+// WithSession says which session, working in dir, ctx's hook events are for.
+func WithSession(ctx context.Context, id, dir string) context.Context {
+	return context.WithValue(ctx, sessionKey{}, Session{ID: id, Dir: dir})
+}
+
+// SessionOf is what WithSession put in ctx, or nothing.
+func SessionOf(ctx context.Context) Session {
+	s, _ := ctx.Value(sessionKey{}).(Session)
+	return s
 }
 
 // CommandResult is what one command hook run left.
@@ -71,10 +94,10 @@ type CommandResult struct {
 	Exit           int
 }
 
-// CommandRunner runs a hook's command with stdin, in the session's sandbox.
-// A command that ran and exited is a result, whatever its status; err is a
-// command that could not be run.
-type CommandRunner func(ctx context.Context, command string, stdin []byte) (CommandResult, error)
+// CommandRunner runs a hook's command with stdin in the session's sandbox,
+// in dir, or the workspace when dir is "". A command that ran and exited is a
+// result, whatever its status; err is a command that could not be run.
+type CommandRunner func(ctx context.Context, dir, command string, stdin []byte) (CommandResult, error)
 
 // HookEnv is what simple hooks run with. A command hook without Run, or an
 // HTTP hook without HTTP, fails each time it is asked, so it still refuses.
@@ -85,7 +108,8 @@ type HookEnv struct {
 
 const (
 	defaultHookTimeout = 10 * time.Second
-	maxHookOutput      = 64 << 10
+	observeHookTimeout = 2 * time.Second
+	MaxHookOutput      = 64 << 10
 	maxHookReason      = 2000
 )
 
@@ -121,8 +145,9 @@ func newHook(h *Host, c HookConfig, env HookEnv) (*Extension, error) {
 	if len(c.Events) == 0 {
 		return nil, fmt.Errorf("hook %q: events is required", c.Name)
 	}
-	if c.Timeout <= 0 {
-		c.Timeout = defaultHookTimeout
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = defaultHookTimeout
 	}
 	var match []policy.Rule
 	for _, m := range c.Match {
@@ -140,9 +165,9 @@ func newHook(h *Host, c HookConfig, env HookEnv) (*Extension, error) {
 		subs[ev] = true
 	}
 	return &Extension{
-		cfg:  Config{Name: c.Name, Timeout: c.Timeout, Match: c.Match},
+		cfg:  Config{Name: c.Name, Timeout: timeout, Match: c.Match, Async: c.Async},
 		subs: subs, logf: h.logf, match: match,
-		hook: &hookRunner{cfg: c, env: env, host: h},
+		hook: &hookRunner{cfg: c, env: env, host: h}, host: h,
 	}, nil
 }
 
@@ -169,7 +194,14 @@ func (e *Extension) Kind() string {
 // run runs the hook once for req and records the run, whatever came of it.
 func (r *hookRunner) run(ctx context.Context, req Request) (Reply, error) {
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, r.cfg.Timeout)
+	timeout := r.cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultHookTimeout
+		if ObserveOnly(req.Event) {
+			timeout = observeHookTimeout
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -182,14 +214,11 @@ func (r *hookRunner) run(ctx context.Context, req Request) (Reply, error) {
 		kind = KindHTTP
 		reply, exit, err = r.post(ctx, body)
 	} else {
-		reply, exit, err = r.command(ctx, req.Event, body)
+		reply, exit, err = r.command(ctx, body)
 	}
-	if req.Event == EvStop && reply.Block {
-		// Blocking a stop is asking the agent to go on.
-		reply.Block, reply.Continue = false, true
-	}
+	reply = reply.normalize(req.Event)
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
-		err = fmt.Errorf("did not finish within %s", r.cfg.Timeout)
+		err = fmt.Errorf("did not finish within %s", timeout)
 	}
 	f := Fired{Extension: r.cfg.Name, Event: req.Event, SessionID: req.SessionID, Kind: kind,
 		Layer: r.cfg.Layer, Duration: time.Since(start)}
@@ -200,7 +229,9 @@ func (r *hookRunner) run(ctx context.Context, req Request) (Reply, error) {
 	case err != nil:
 		f.Verdict, f.Reason = VerdictError, err.Error()
 		r.host.logf("hook %s failed on %s: %v", r.cfg.Name, req.Event, err)
-	case reply.Continue:
+	case reply.halt:
+		f.Verdict, f.Reason = VerdictHalt, reply.haltReason("hook "+r.cfg.Name)
+	case reply.again:
 		f.Verdict, f.Reason = VerdictContinue, reply.Reason
 	case reply.Block:
 		f.Verdict, f.Reason = VerdictBlock, reply.Reason
@@ -218,11 +249,11 @@ func (r *hookRunner) run(ctx context.Context, req Request) (Reply, error) {
 	return reply, err
 }
 
-func (r *hookRunner) command(ctx context.Context, ev Event, stdin []byte) (Reply, int, error) {
+func (r *hookRunner) command(ctx context.Context, stdin []byte) (Reply, int, error) {
 	if r.env.Run == nil {
 		return Reply{}, -1, errors.New("no sandbox to run it in")
 	}
-	res, err := r.env.Run(ctx, r.cfg.Command, stdin)
+	res, err := r.env.Run(ctx, SessionOf(ctx).Dir, r.cfg.Command, stdin)
 	if err != nil {
 		return Reply{}, -1, err
 	}
@@ -234,11 +265,7 @@ func (r *hookRunner) command(ctx context.Context, ev Event, stdin []byte) (Reply
 		reply, err := parseHookReply(res.Stdout)
 		return reply, 0, err
 	case 2:
-		why := clip(strings.TrimSpace(string(res.Stderr)))
-		if ev == EvStop {
-			return Reply{Continue: true, Reason: why}, 2, nil
-		}
-		return Reply{Block: true, Reason: why}, 2, nil
+		return Reply{Block: true, Reason: clip(strings.TrimSpace(string(res.Stderr)))}, 2, nil
 	default:
 		msg := fmt.Sprintf("exited with status %d", res.Exit)
 		if s := clip(strings.TrimSpace(string(res.Stderr))); s != "" {
@@ -259,13 +286,20 @@ func (r *hookRunner) post(ctx context.Context, body []byte) (Reply, int, error) 
 	for k, v := range r.cfg.Headers {
 		hreq.Header.Set(k, v)
 	}
+	for k, name := range r.cfg.HeadersEnv {
+		v, ok := os.LookupEnv(name)
+		if !ok {
+			return Reply{}, -1, fmt.Errorf("header %s: %s is not set", k, name)
+		}
+		hreq.Header.Set(k, v)
+	}
 	hreq.Header.Set("Content-Type", "application/json")
 	resp, err := r.env.HTTP.Do(hreq)
 	if err != nil {
 		return Reply{}, -1, err
 	}
 	defer resp.Body.Close()
-	out, err := io.ReadAll(io.LimitReader(resp.Body, maxHookOutput))
+	out, err := io.ReadAll(io.LimitReader(resp.Body, MaxHookOutput))
 	if err != nil {
 		return Reply{}, -1, err
 	}
@@ -287,8 +321,9 @@ func parseHookReply(out []byte) (Reply, error) {
 	if err := json.Unmarshal(out, &r); err != nil {
 		return Reply{}, fmt.Errorf("reply is not JSON: %w", err)
 	}
-	// A simple hook vetoes or asks the agent on; it rewrites nothing.
-	return Reply{Block: r.Block, Ask: r.Ask, Continue: r.Continue, Reason: clip(r.Reason), Log: clip(r.Log)}, nil
+	// A simple hook vetoes, asks, or ends the run; it rewrites nothing.
+	return Reply{Block: r.Block, Ask: r.Ask, Decision: r.Decision, Continue: r.Continue,
+		StopReason: clip(r.StopReason), Reason: clip(r.Reason), Log: clip(r.Log)}, nil
 }
 
 func clip(s string) string {
@@ -304,4 +339,18 @@ func (e *Extension) label() string {
 		return "hook " + e.Name()
 	}
 	return "extension " + e.Name()
+}
+
+// CommandHooks names the simple hooks that run a command.
+func (h *Host) CommandHooks() []string {
+	if h == nil {
+		return nil
+	}
+	var out []string
+	for _, e := range h.exts {
+		if e.Kind() == KindCommand {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
