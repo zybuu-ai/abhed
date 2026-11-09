@@ -280,7 +280,10 @@ func TestFreshSeesEveryRewriteAndForgetsNothing(t *testing.T) {
 	}
 	f := s.Fresh(first)
 	fi, _ := os.Stat(path)
-	// Same size, mtime put back: only the inode's change time moves.
+	// Same size, mtime put back: only the inode's change time moves, so the
+	// rewrite must land in a later tick of the file system's clock than the
+	// first write, which on one that keeps whole seconds is a second away.
+	nextChangeTick(t, path)
 	write(`{"TOKEN":"other-value-bbbb"}`)
 	if err := os.Chtimes(path, fi.ModTime(), fi.ModTime()); err != nil {
 		t.Fatal(err)
@@ -444,4 +447,35 @@ func TestDeleteRemovesTheStoreUnderItsLock(t *testing.T) {
 	if err := s.Delete(); err != nil {
 		t.Fatalf("deleting a missing store: %v", err)
 	}
+}
+
+// nextChangeTick waits until a file written now gets a later change time
+// than path has, so a rewrite of path is told apart by its change time alone
+// on a file system that keeps coarse timestamps. Where change times cannot
+// be read it returns at once; past a few seconds the test is skipped.
+func nextChangeTick(t *testing.T, path string) {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, was := fileIdentity(fi)
+	if was == 0 {
+		return
+	}
+	probe := path + ".tick"
+	defer func() { _ = os.Remove(probe) }()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if err := os.WriteFile(probe, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pfi, err := os.Stat(probe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, now := fileIdentity(pfi); now > was {
+			return
+		}
+	}
+	t.Skip("the file system's change time did not move in five seconds")
 }

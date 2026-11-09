@@ -249,8 +249,14 @@ type Config struct {
 	// MaxTurns is moved to the turns used plus it. Zero keeps MaxTurns for
 	// the whole conversation, as a managed limit must be.
 	TurnsPerMessage int
-	MaxTokens       int
-	CompactAt       float64 // fraction of the context window
+	// MaxContinues bounds how many times a run stopped at MaxTurns may be
+	// continued (ContinueAfterLimit) in one conversation; zero refuses it.
+	MaxContinues int
+	// ContinueTurns is the turns each continuation allows; zero uses
+	// TurnsPerMessage, else 25.
+	ContinueTurns int
+	MaxTokens     int
+	CompactAt     float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -267,6 +273,10 @@ func DefaultConfig() Config {
 // normally on a response with no tool calls, and abnormally through roughly
 // ten other exits — each a distinct, logged terminal event (docs §02).
 type Loop struct {
+	// lastReason is how the last run ended; continues counts the
+	// continuations past MaxTurns this conversation has had.
+	lastReason TerminalReason
+	continues  int
 	// refused is why a hook refused the last RunMessage's own message, or "".
 	refusedMu sync.Mutex
 	refused   string
@@ -292,6 +302,9 @@ type Loop struct {
 	// see: a message submitted, a call about to be asked, the end of a run.
 	// They may refuse or observe; nothing they say approves anything.
 	Hooks Hooks
+	// SubdirMemory, when set, adds a folder's own ABHED.md to the result of
+	// the first call that works in that folder. Nil loads none.
+	SubdirMemory *SubdirMemory
 	// Monitor, when set, judges each call policy would allow or ask about
 	// against the remit and the agent's reasoning, and may only tighten the
 	// decision. Nil consults nobody.
@@ -299,6 +312,9 @@ type Loop struct {
 	// Verify, when set, checks each completed run's answer against the
 	// record before the run ends; see Verifier. Nil checks nothing.
 	Verify *Verifier
+	// Diagnostics, when set, gives the agent a language server's diagnostics
+	// for each file its write or edit changed. Nil gives none.
+	Diagnostics Diagnoser
 	// OwnerActive, when set, is asked before a woken run calls the model
 	// and before a call made in one is approved; false ends the run as
 	// owner_inactive. Nil means the owner is always active.
@@ -1184,6 +1200,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	l.usage.Compactions++
 	l.justCompacted = true
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
 	return nil
 }
@@ -1220,6 +1237,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	l.messages = compacted
 	l.usage.Compactions++
 	l.forgetAnswers()
+	l.SubdirMemory.forget()
 	l.record(EvCompactDone, ActorSystem, info)
 	return info, nil
 }
@@ -1311,6 +1329,7 @@ func LastEnd(events []Event) (SessionEnded, bool) {
 
 // turn runs one round trip: model output plus any tool executions.
 func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
+	l.promptFolderMemory()
 	req := model.Request{
 		System:      l.Config.SystemPrompt,
 		Messages:    l.messages,
@@ -2090,6 +2109,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
+	l.diagnose(ctx, call, &result)
 	if _, isTask := tool.(Task); isTask {
 		l.observe(ctx, HookSubagentEnd, call.Name, result.Content)
 	}
@@ -2097,6 +2117,13 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 	// record see it, so the model never holds a value it could echo elsewhere.
 	if red := l.Recorder.redactor(); red != nil {
 		result.Content = redactedText(red.Redact, result.Content)
+	}
+	// A folder's own memory comes with the first result that used the
+	// folder, before the observation is recorded, so a resume replays it.
+	// No tool output may pass for that fence, in any session, subagents' too.
+	result.Content = escapeFolderFence(result.Content)
+	if l.SubdirMemory != nil && !result.IsError {
+		result.Content += l.folderMemory(call)
 	}
 	elapsed := time.Since(start)
 	// Without this the model reads "path is required" and never learns its file_path was not taken.
@@ -2222,6 +2249,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	l.stuckDetail = ""
 	end := l.endPayload(reason)
 	l.lastDetail = end.Detail
+	l.lastReason = reason
 	l.record(EvSessionEnded, ActorSystem, end)
 	l.Background.noteEnd(end)
 	l.observe(context.Background(), HookTurnEnd, "", string(reason))
@@ -2774,17 +2802,24 @@ func (l *Loop) noteReasoning(text string) {
 // reviewed puts a call to the monitor and returns the decision after it,
 // which is never looser than before. What the judge said is in the record.
 func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, before policy.Result) policy.Result {
-	out := l.Monitor.Review(ctx, l.supervisorCase(call, mutates, before))
+	d, _ := l.reviewCase(ctx, call, l.supervisorCase(call, mutates, before), before)
+	return d
+}
+
+// reviewCase is reviewed for a case already made; unavailable reports a
+// judge that could not answer.
+func (l *Loop) reviewCase(ctx context.Context, call model.ToolCall, c monitor.Case, before policy.Result) (_ policy.Result, unavailable bool) {
+	out := l.Monitor.Review(ctx, c)
 	if out.Skipped == monitor.SkippedBudget {
 		// Unreviewed, and said so: in the record and in the reason every
 		// approver, and a runbook step's label, shows.
 		l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{CallID: call.ID, Before: string(before.Decision),
 			After: string(before.Decision), Skipped: out.Skipped})
 		before.Reason = strings.TrimPrefix(before.Reason+"; supervisor: not reviewed ("+out.Skipped+")", "; ")
-		return before
+		return before, out.Unavailable
 	}
 	if out.Skipped != "" {
-		return before
+		return before, out.Unavailable
 	}
 	l.noteVerdict(call.ID, out.Verdict)
 	l.record(EvMonitorVerdict, ActorSystem, MonitorVerdict{
@@ -2796,13 +2831,13 @@ func (l *Loop) reviewed(ctx context.Context, call model.ToolCall, mutates bool, 
 	// session-wide "always allow" answers it without the person.
 	concern := out.Verdict.Decision != policy.Allow && out.Verdict.Code != monitor.CodeOK
 	if !out.Tightened && (!concern || before.Decision != policy.Ask) {
-		return before
+		return before, out.Unavailable
 	}
 	why := out.Verdict.Code
 	if out.Verdict.Rationale != "" {
 		why += " — " + out.Verdict.Rationale
 	}
-	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}
+	return policy.Result{Decision: out.After, Reason: "supervisor: " + why, Scope: before.Scope, Step: "monitor"}, out.Unavailable
 }
 
 // noteCall keeps the last few calls and outcomes for the monitor.

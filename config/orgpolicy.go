@@ -148,6 +148,7 @@ var orgRules = map[string]orgRule{
 	"limits.nested_subagents":         {orgTighten, ""},
 	"limits.max_background_subagents": {orgTighten, ""},
 	"limits.background_shells":        {orgTighten, ""},
+	"limits.max_continues":            {orgTighten, ""},
 	"limits.background_max_minutes":   {orgTighten, ""},
 	"subagents.wake":                  {orgTighten, ""},
 	"subagents.max_wakes_per_hour":    {orgTighten, ""},
@@ -157,6 +158,9 @@ var orgRules = map[string]orgRule{
 	"tools.bash_checkpoints":      {orgTighten, ""},
 	"tools.bash_checkpoint_mb":    {orgPinned, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {orgPinned, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {orgTighten, ""},
+	"tools.diagnostics_max":       {orgTighten, ""},
+	"tools.diagnostics_wait_ms":   {orgTighten, ""},
 
 	"web_search.enabled":     {orgTighten, ""},
 	"web_search.max_results": {orgTighten, ""},

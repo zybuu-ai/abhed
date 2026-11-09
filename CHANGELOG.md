@@ -71,9 +71,124 @@ All notable changes to Abhed are recorded here. The format follows
   workspace. A link inside the workspace, and any link at your home
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
+- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
+  stop with exit code 2 ("no task"). They now continue the run that stopped
+  at its turn limit, and stop with exit code 2, before anything is
+  recorded, only when there is nothing to continue or the bound is spent.
+- A workspace memory file that a read rule asks about is no longer loaded:
+  memory loads with nobody there to say yes, so an ask keeps it out as a
+  deny does; start-up warns about each such file, and `/memory` says why.
+
+### Added
+
+- `-tools NAMES`, the only tools a run and its subagents may use (the
+  harness's own `recall`, `exit_plan` and structured answer stay), and
+  `-bare`, a run without your own or the workspace's memory files,
+  extensions and skills. Both only take away: policy and every deny rule
+  still apply, and what the organisation sets stays: its `ABHED.md`, its
+  `rules.dirs` and `skills.dirs`, its extensions and its auto memory. MCP
+  servers stay unless `-strict-mcp-config` drops them. The record notes
+  both ([The command line](docs/guide/18-cli.md#a-narrower-run--tools-and--bare)).
+- Continuing a run that stopped at its turn limit: `/continue` at the
+  terminal, and `abhed -p --continue` (or `-p -r <session>`) with no task.
+  Each continuation gives the run its allowance of turns again, is recorded
+  first as `turns.extended`, and is bounded by `limits.max_continues`
+  (3 by default, 0 for none) for the whole conversation, counted from its
+  record; a branch or fork keeps the count. A managed `limits.max_turns`
+  without a managed `max_continues` allows none
+  ([Turn limit](docs/guide/04-permissions.md#turn-limit)).
+- A folder's own `ABHED.md`, below the workspace root, is loaded the first
+  time the agent works in that folder, added to that tool result inside a
+  tag with a random fence for the conversation, redacted, and recorded as
+  `memory.loaded` with scope `subdirectory`. Once one loads, the system
+  prompt names the fence and says what such a block may and may not do, and
+  any lookalike of the tag in tool output is escaped with a backslash. Read rules hold (an ask keeps
+  it out), `.abhed` and `.git` are skipped, at most 32 files load in a
+  conversation, and the default configuration asks before the agent writes
+  or edits one (`write(**/ABHED.md)`). `/memory edit <project|local|user>`
+  opens a memory file in your editor and saves it as your write, recorded as
+  `memory.written` ([Memory](docs/guide/19-input-and-memory.md#a-folders-own-abhedmd)).
+- `.abhed/config.local.json`, your own settings for one workspace, merged
+  over `.abhed/config.json`. It is read as safely as that file and under the
+  same trust: one decision covers both, so adding or changing it asks again;
+  untrusted it only tightens, and trusted it still cannot make a
+  managed-only setting or loosen the managed file. `abhed init` writes
+  `.abhed/.gitignore` naming it, and trusts only the file it writes: a local
+  file already there is shown and asked about on the next run ([The local file](docs/guide/02-configuration.md#the-local-file)).
+- Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
+  `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
+  `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.
+
+### Added
+
+- A laptop whose organisation removed the person's access is told so. A
+  refused sign-in whose answer carries `"access_removed": true` (which the
+  Enterprise server sends for a revoked or SCIM-deprovisioned person; the
+  middleware adds it for any refusal whose error reports `AccessRemoved()`)
+  stops record shipping with a warning, printed when it happens and as each
+  later session starts, in `abhed record ship` and as a failing
+  `record_ship` check in `abhed doctor` and Studio's Health view. The record
+  stays on the machine and ships once a pass reaches the server again. A
+  backlog over `record.ship.max_backlog_mb` is named the same way at a
+  session's start. New in `recordship`: `State.AccessRemoved`,
+  `State.Notices`, `AccessRemovedError` and the local-only `access_removed`
+  event; in `auth`: `AccessRemover` and `IsAccessRemoved`.
+- `abhed doctor` (and Studio's Health view, as the `tenant` check) warns
+  when `auth.mode` is `oidc` with no named provider, `storage.tenant` is not
+  `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
+  claim named `tenant`, else `default`, so unless the identity provider
+  sends a matching `tenant` claim everyone it signs in is refused.
+
+### Added
+
+- The agent is given a language server's diagnostics after each write or
+  edit, in the CLI and the editor protocol. The server is the one Studio
+  runs, started in the session's sandbox with the engine's safe settings,
+  once per language, and only where policy and the supervisor allow its
+  command (`tools.diagnostics`: `auto`, the default; `on` also answers the
+  plain ask a mode gives it, after the PermissionRequest hooks; `off`). The
+  start is recorded as the engine's call, with what allowed it, and shown
+  as an engine note in the CLI and a `Language server` card in Studio. At most `tools.diagnostics_max` (20)
+  are given per file, and an edit waits at most `tools.diagnostics_wait_ms`
+  (3000). Off where there is no sandbox or no server installed. Each is
+  recorded as `lsp.diagnostics`, the server's start and end as `lsp.started`
+  and `lsp.stopped` with `purpose: diagnostics`, and counted in
+  `abhed_lsp_diagnostics_total`. A workspace file, trusted or not, may only
+  lower the bounds and turn them off. Paths a read rule denies are not
+  hidden from the server. See [Language servers](docs/guide/33-language-servers.md#diagnostics-after-the-agents-edits).
+- `_abhed/codeActions` (feature `codeActions`) gives Studio Explain, Fix and
+  Add tests for a range of a file, each as the prompt Studio sends with
+  `session/prompt`, so it runs under the session's policy as any prompt does.
+  The editor's diagnostics on the range go with Fix and Explain as an
+  attachment. A file the agent may not read gets none.
+
+### Added
+
+- Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
+  in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
+  A `runner` picks Node itself (TypeScript by Node's own type stripping),
+  `tsx`, `ts-node`, `node --test`, Vitest or Jest. Breakpoints in
+  TypeScript hold through source maps, whether the code is compiled in
+  memory or by `tsc`, and worker threads are threads of their own. Nothing
+  listens on a port for it: a worker thread in the program drives the
+  program's own inspector over a pipe. So Node debugs on every sandbox tier
+  as it is, the macOS process tier included, without opening loopback or
+  asking the process-tier agreement. The launch is judged and recorded as
+  the person's own call, as for Go and Python, and `debug.launched` records
+  it with `loopback` off, and the runner package that ran. A
+  `--inspect` in the sandbox's `NODE_OPTIONS` is not passed on, so nothing
+  inherited opens a port. Node missing offers its install. See
+  [Debugging](docs/guide/31-debugging.md#node).
 
 ### Fixed
 
+- A debug session in Abhed Studio, in any language, no longer shows the
+  editor a source path outside the workspace. Such a frame, output line or
+  breakpoint now carries only its name. Studio opens a frame's file on your
+  machine, outside the sandbox, and the debugged program chooses those
+  paths, so a repository could make Studio open a file the sandbox would
+  not let it read. A frame in a language's own library now shows its name
+  without its file.
 - The completion contract's check of protected files could hang the end of
   a run. A protected file swapped for a link to `/dev/zero` or a pipe was
   read without end, and a sparse file of any size was hashed in full. A
@@ -165,6 +280,13 @@ All notable changes to Abhed are recorded here. The format follows
   last lines) before it exits: a stop signal that comes while stdin is
   open waits up to 250 ms for it to end, so a lone SIGTERM now exits
   after about a quarter of a second.
+
+### Go API
+
+- `monitor.Case` gains `Engine`, set for a command the engine runs outside
+  the agent's calls (a diagnostics server's start): the supervisor reviews
+  it but does not count it against `Guard.MaxPerTurn`. Additive; existing
+  callers are unchanged.
 
 ## [1.2.9] - 2026-11-02
 

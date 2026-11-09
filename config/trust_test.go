@@ -653,6 +653,7 @@ func TestDefaultAsksBeforeWritingAMemoryFile(t *testing.T) {
 		for path, want := range map[string]policy.Decision{
 			"ABHED.md": policy.Ask, "./AGENTS.md": policy.Ask, filepath.Join(ws, "ABHED.local.md"): policy.Ask,
 			filepath.Join(ws, "sub", "..", "AGENTS.md"): policy.Ask,
+			"svc/ABHED.md": policy.Ask, filepath.Join(ws, "a", "b", "ABHED.md"): policy.Ask,
 			"README.md": policy.Allow, "docs/ABHED.md.bak": policy.Allow,
 		} {
 			for _, tool := range []string{"write", "edit"} {

@@ -608,6 +608,7 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 		c.CompactAt = at
 	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
+	c.MaxContinues = cfg.ContinuesAllowed()
 	return c
 }
 
