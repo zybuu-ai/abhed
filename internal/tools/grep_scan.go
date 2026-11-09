@@ -398,9 +398,8 @@ func (sp grepSpec) match(path string, data []byte) grepHit {
 // ripgrep is the ripgrep program found on PATH when the process started, as
 // an absolute path with its links resolved; "" when there is none. A PATH
 // entry that is relative is never searched, so a workspace that is the
-// current folder cannot supply it, and a program this user can change, or
-// whose folder this user can write (as Homebrew's), is not run: grep then
-// searches without it.
+// current folder cannot supply it, and a program any account but root could
+// replace (as Homebrew's) is not run: grep then searches without it.
 var ripgrep = findRipgrep()
 
 func findRipgrep() string {

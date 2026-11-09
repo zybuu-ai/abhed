@@ -5,20 +5,25 @@ package tools
 import (
 	"os"
 	"path/filepath"
-
-	"golang.org/x/sys/unix"
+	"syscall"
 )
 
-// ripgrepWritable reports why the program at path is not run: it, or the
-// folder holding it, is one this user, or anyone, can change. The agent's
-// commands run as this user, so on a tier that does not keep them out of
-// that folder (Homebrew's, for one) they could replace it.
+// ripgrepWritable reports that the program at path is not run: it, or a
+// folder anywhere above it, is not owned by root, or can be written by its
+// group or by anyone. Only then can no account but root replace it, nor
+// rename a folder on the way and put another program at the same path.
 func ripgrepWritable(path string) bool {
-	for _, p := range []string{path, filepath.Dir(path)} {
+	for p := path; ; p = filepath.Dir(p) {
 		info, err := os.Stat(p)
-		if err != nil || info.Mode().Perm()&0o022 != 0 || unix.Access(p, unix.W_OK) == nil {
+		if err != nil {
 			return true
 		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != 0 || info.Mode().Perm()&0o022 != 0 {
+			return true
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
 	}
-	return false
 }

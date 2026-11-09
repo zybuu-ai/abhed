@@ -107,8 +107,9 @@ All notable changes to Abhed are recorded here. The format follows
 
 - `grep` is faster on a large repository. It now skips the files a
   `.gitignore` excludes (unless `path` names them), reads the rest in
-  parallel, and, when a ripgrep owned by root is on `PATH` at start-up, lets
-  one `rg` run narrow the files by a literal every match contains. Measured
+  parallel, and, when a ripgrep owned by root, in folders only root can
+  write, is on `PATH` at start-up, lets one `rg` run narrow the files by a
+  literal every match contains. Measured
   with `BenchmarkGrep` (`internal/tools/grep_bench_test.go`) on one
   11.2k-file checkout on a 12-core arm64 Mac, 9 Nov 2026: 9–17 s before,
   0.4–1 s after, with or without ripgrep; most of the gain there is the

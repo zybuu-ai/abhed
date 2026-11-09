@@ -242,8 +242,8 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
 - Content mode caps at 100 matches and 50 lines per file, with truncation notes.
 - A parallel Go walk chooses the files: vendored folders, Abhed's state, links and files a
   `.gitignore` excludes are passed over before anything is read. When ripgrep is on `PATH`
-  at start-up (never one inside a session root, nor one the user can write or whose folder
-  the user can write), one run beside the walk narrows the files
+  at start-up (never one inside a session root, and only one owned by root, as is every
+  folder above it, none writable by group or others), one run beside the walk narrows the files
   to those holding a literal every match contains, passed as a fixed string with
   `--no-config` and an empty environment. Matching is always Go's RE2 over the confined
   read, so both paths return the same lines, and every result is held to the read deny

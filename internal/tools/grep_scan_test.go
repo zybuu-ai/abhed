@@ -360,8 +360,19 @@ func TestRipgrepThisUserCanWriteIsNotRun(t *testing.T) {
 	if !ripgrepWritable(p) {
 		t.Fatal("a file this user writes is not reported")
 	}
-	if os.Getuid() != 0 && ripgrepWritable("/bin/sh") {
-		t.Fatal("a root-owned program is reported as writable")
+	// Read-only to its owner is not enough: the owner can make it writable.
+	if err := os.Chmod(p, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bin, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bin, 0o755) })
+	if os.Getuid() != 0 && !ripgrepWritable(p) {
+		t.Fatal("a program this user owns, read-only, is taken")
+	}
+	if ripgrepWritable("/bin/sh") {
+		t.Fatal("a root-owned program in root-owned folders is reported as writable")
 	}
 }
 
