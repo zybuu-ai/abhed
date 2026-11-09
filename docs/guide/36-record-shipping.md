@@ -85,6 +85,15 @@ abhed: ⚠ Your organisation access was removed: https://abhed.example.com refus
 here; once a pass reaches the server again (access restored and `abhed
 login` run), the warning clears and what waited is shipped. A sign-in that
 only lapsed is not taken for a removal: it says to run `abhed login` again.
+The warning clears only when the server answers a batch with success, not on
+a pass that sent nothing.
+
+The marker is the word of whatever answers at the enrolled org URL, taken
+without a signature. That URL is `https`, unless this machine enrolled to a
+plain-`http` server with pinned keys, where anyone on the network path can
+forge it. Either way it changes only what the warning says: an ordinary
+refused sign-in already stops shipping, nothing is deleted because of it,
+the record stays here, and each pass tries again.
 
 The same warning names a backlog over `max_backlog_mb` at a session's start,
 beside the `backlog` event raised when it first goes over.

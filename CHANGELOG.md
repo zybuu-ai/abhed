@@ -60,6 +60,11 @@ All notable changes to Abhed are recorded here. The format follows
   session's start. New in `recordship`: `State.AccessRemoved`,
   `State.Notices`, `AccessRemovedError` and the local-only `access_removed`
   event; in `auth`: `AccessRemover` and `IsAccessRemoved`.
+- `abhed doctor` (and Studio's Health view, as the `tenant` check) warns
+  when `auth.mode` is `oidc` with no named provider, `storage.tenant` is not
+  `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
+  claim named `tenant`, else `default`, so unless the identity provider
+  sends a matching `tenant` claim everyone it signs in is refused.
 
 ### Fixed
 

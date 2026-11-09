@@ -528,3 +528,32 @@ func countKind(es []Event, kind string) int {
 	}
 	return n
 }
+
+// A pass that reaches nothing, such as one whose only waiting session was pruned, does not
+// clear a removal or announce a resumption; the next one that the server answers with 2xx does.
+func TestAccessRemovedClearsOnlyOnARealAnswer(t *testing.T) {
+	s := openStore(t)
+	org := newFakeOrg()
+	sh := newShipper(t, s, org, filepath.Join(t.TempDir(), "ship.json"))
+	session(t, s, "s-1", "one")
+	org.refuse, org.refuseBody = http.StatusUnauthorized, []byte(`{"error":"unauthorized","reason":"revoked","access_removed":true}`)
+	_ = sh.Pass(context.Background())
+	org.refuse = 0
+	_ = s.Release("s-1")
+	if _, err := s.Prune("s-1", "test", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sh.Status().AccessRemoved == nil || hasLogged(sh.Status().Events, KindResumed) {
+		t.Fatal("a pass that reached nothing cleared the removal")
+	}
+	session(t, s, "s-2", "two")
+	if err := sh.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sh.Status().AccessRemoved != nil || !hasLogged(sh.Status().Events, KindResumed) {
+		t.Fatal("a pass the server answered did not clear the removal")
+	}
+}

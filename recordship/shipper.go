@@ -124,6 +124,8 @@ type Shipper struct {
 	// failing is set after a pass that did not reach the server.
 	failing  bool
 	overflow bool
+	// reached is set when a pass got a 2xx from the server, the only proof a refusal ended.
+	reached bool
 }
 
 // New loads or starts the shipper's state.
@@ -266,6 +268,9 @@ func (s *Shipper) Pass(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.reached = false
+	s.mu.Unlock()
 	listed := map[string]bool{}
 	var passErr error
 	var backlog int64
@@ -311,12 +316,16 @@ func (s *Shipper) Pass(ctx context.Context) error {
 	s.overflow = over
 	now := s.o.Clock().UTC()
 	var removed *AccessRemovedError
-	if passErr == nil {
+	switch {
+	case passErr == nil && (s.failing || s.st.AccessRemoved != nil) && !s.reached:
+		// Nothing was sent, so nothing says the server takes this machine again: a
+		// pass with no lines to send must not clear a removal or announce a resumption.
+	case passErr == nil:
 		if s.failing || s.st.AccessRemoved != nil {
 			s.eventLocked(Event{Kind: KindResumed, Detail: "the record reaches the server again"})
 		}
 		s.failing, s.st.LastOK, s.st.LastError, s.st.AccessRemoved = false, now, "", nil
-	} else {
+	default:
 		s.failing, s.st.LastError = true, passErr.Error()
 		if errors.As(passErr, &removed) && s.st.AccessRemoved == nil {
 			s.st.AccessRemoved = &Removal{At: now, Reason: removed.Reason}
@@ -520,6 +529,9 @@ func (s *Shipper) send(ctx context.Context, id string, c *Cursor, batch []local.
 	last := batch[len(batch)-1]
 	switch status {
 	case http.StatusOK:
+		s.mu.Lock()
+		s.reached = true
+		s.mu.Unlock()
 		if ack.Lines != c.Lines+int64(len(batch)) || ack.Hash != last.Hash {
 			return nil, fmt.Errorf("the org server's answer (line %d) does not match what was sent (line %d)", ack.Lines, c.Lines+int64(len(batch)))
 		}

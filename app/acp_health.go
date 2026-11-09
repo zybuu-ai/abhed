@@ -132,6 +132,9 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	} else {
 		add("index", "Code index", "ok", "off")
 	}
+	if w := tenantClaimWarning(cfg); w != "" {
+		add("tenant", "Tenant", "warn", w)
+	}
 	if status, detail, ok := shipCheck(cfg); ok {
 		add("record_ship", "Record shipping", status, detail)
 	}
@@ -273,4 +276,19 @@ func shipCheck(cfg config.Config) (status, detail string, ok bool) {
 		return "warn", "the last pass failed: " + st.LastError, true
 	}
 	return "ok", "on, to " + t.url, true
+}
+
+// tenantClaimWarning is set when sign-in is through an identity provider (auth.mode oidc,
+// no named provider whose preset picks the claim), storage.tenant is not default and
+// auth.tenant_claim is unset: a sign-in's tenant is then the claim named "tenant", else
+// "default", so unless the provider sends a matching "tenant" claim the server refuses
+// everyone it signs in at its tenant-scoped routes.
+func tenantClaimWarning(cfg config.Config) string {
+	t := cfg.Storage.Tenant
+	if cfg.Auth.Mode != "oidc" || cfg.Auth.Provider != "" || cfg.Auth.TenantClaim != "" || t == "" || t == "default" {
+		return ""
+	}
+	return fmt.Sprintf("storage.tenant is %q but auth.tenant_claim is not set: a sign-in's tenant is read from the claim "+
+		"named \"tenant\", else \"default\", so unless the identity provider sends \"tenant\": %q everyone it signs in "+
+		"is refused; set auth.tenant_claim (\"tenant\" to keep this), or leave storage.tenant unset", t, t)
 }

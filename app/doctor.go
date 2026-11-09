@@ -106,6 +106,9 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	if cfg.Org.Required && len(cfg.Org.Keys) == 0 && cfg.ManagedSets("org_policy") {
 		fmt.Printf("            ⚠ %s\n", config.OrgUnpinnedWarning)
 	}
+	if w := tenantClaimWarning(cfg); w != "" {
+		fmt.Printf("tenant      ⚠ %s\n", config.Printable(w))
+	}
 	if status, detail, ok := shipCheck(cfg); ok {
 		mark := ""
 		if status != "ok" {
