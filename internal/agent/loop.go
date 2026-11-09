@@ -1055,6 +1055,9 @@ turns:
 		if l.allowanceStop(ctx) {
 			return l.finish(TermMaxBudget), nil
 		}
+		if ctx.Err() != nil {
+			return l.finishStopped(ctx, terminalForCancel(ctx)), nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
+		}
 		// Background results first, then steering, each in arrival order,
 		// and never between a turn's calls and their results.
 		delivery, wake := "boundary", ""

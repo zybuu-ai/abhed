@@ -95,6 +95,9 @@ func (l *Loop) allowanceStop(ctx context.Context) bool {
 		return false
 	}
 	a := l.Budget.Allowance(ctx)
+	if ctx.Err() != nil {
+		return false // interrupted while asking: the run ends as stopped, not over budget
+	}
 	if a.USD {
 		l.Budget.allowanceUSD.Store(true)
 	}

@@ -84,3 +84,23 @@ func TestAllowanceInDollarsRefusesAnUnpricedModel(t *testing.T) {
 		t.Fatal("the budget does not know a dollar limit applies")
 	}
 }
+
+// A run interrupted while its allowance is asked ends as interrupted, not as
+// over budget, and makes no call.
+func TestAllowanceInterruptedEndsAsStopped(t *testing.T) {
+	l, store := costHarness(t, "gpt-4o", []scriptedTurn{{text: "done", usage: turnUsage}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.Budget.Allowance = func(ctx context.Context) Allowance {
+		cancel()
+		<-ctx.Done()
+		return Allowance{}
+	}
+	reason, _ := l.Run(ctx, "go")
+	if reason == TermMaxBudget || reason != terminalForCancel(ctx) {
+		t.Fatalf("reason %s", reason)
+	}
+	if len(budgetStops(t, store)) != 0 || len(modelCalls(t, store)) != 0 {
+		t.Fatal("an interrupt was recorded as a budget stop, or a call was made")
+	}
+}

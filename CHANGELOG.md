@@ -57,7 +57,14 @@ All notable changes to Abhed are recorded here. The format follows
   subagents. A spent allowance ends the run `max_budget` with a
   `budget.stopped` of reason `allowance` naming the limit (`scope`); under a
   dollar limit a model with no price is refused; a limit that cannot be
-  read stops the run.
+  read, or a hook that panics or does not answer within 10 seconds, stops
+  the run. It is checked at turn boundaries; calls between them (a
+  suggestion, the critic, a compaction, a fallback model) are not yet held
+  to it.
+- Where a machine's managed file and the org policy both set
+  `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
+  (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
+  longer lifts the org's lower cap.
 
 ### Upgrading from 1.2.9
 
