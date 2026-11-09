@@ -46,6 +46,18 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- `abhed bg start|list|logs|attach|cancel`: background jobs on a server
+  that serves them, run as the signed-in person and followed from the
+  command line. `attach` puts each ask to the person and answers it on the
+  job's session; `logs -patch` prints what the job changed. Refused inside
+  an agent's command. The wire types, paths and a Go client are package
+  `bgjob`. The server side is a Team feature: a Community `abhed serve`
+  refuses `server.background.enabled`.
+- `server.StopSession` and `server.StartRefusal`, for an edition that starts
+  and stops sessions for people on routes of its own.
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of

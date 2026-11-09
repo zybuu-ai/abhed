@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/internal/bgcli"
 	"github.com/zybuu-ai/abhed/internal/sandboxcli"
 )
 
@@ -56,6 +57,30 @@ func TestUsageListsTheSubcommands(t *testing.T) {
 		}
 		if !strings.Contains(out, "-addr string\n") || strings.Contains(out, "-addr abhed") {
 			t.Errorf("%v: -addr is not shown as a flag with a value:\n%s", args, out)
+		}
+	}
+}
+
+// abhed -h and abhed bg help name every bg command.
+func TestHelpListsTheBackgroundCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	top, _ := stderrOf(t, []string{"-h"})
+	_, line, ok := strings.Cut(top, "  bg ")
+	line, _, ok2 := strings.Cut(line, "\n  egress-proxy ")
+	if !ok || !ok2 {
+		t.Fatalf("abhed -h has no bg line:\n%s", top)
+	}
+	help, code := stderrOf(t, []string{"bg", "help"})
+	if code != 0 {
+		t.Fatalf("bg help: exit %d", code)
+	}
+	for _, name := range bgcli.Commands() {
+		if !strings.Contains(" "+strings.Join(strings.Fields(line), " ")+",", " "+name+",") &&
+			!strings.HasSuffix(strings.Join(strings.Fields(line), " "), " "+name) {
+			t.Errorf("abhed -h lacks %s:\n%s", name, line)
+		}
+		if !strings.Contains(help, "\n  "+name+" ") {
+			t.Errorf("abhed bg help lacks %s:\n%s", name, help)
 		}
 	}
 }
