@@ -46,6 +46,26 @@ All notable changes to Abhed are recorded here. The format follows
   folder's `~/.abhed/config.json`, still work; a config above the opened
   folder must be copied in, or the folder above opened instead.
 
+### Added
+
+- A laptop whose organisation removed the person's access is told so. A
+  refused sign-in whose answer carries `"access_removed": true` (which the
+  Enterprise server sends for a revoked or SCIM-deprovisioned person; the
+  middleware adds it for any refusal whose error reports `AccessRemoved()`)
+  stops record shipping with a warning, printed when it happens and as each
+  later session starts, in `abhed record ship` and as a failing
+  `record_ship` check in `abhed doctor` and Studio's Health view. The record
+  stays on the machine and ships once a pass reaches the server again. A
+  backlog over `record.ship.max_backlog_mb` is named the same way at a
+  session's start. New in `recordship`: `State.AccessRemoved`,
+  `State.Notices`, `AccessRemovedError` and the local-only `access_removed`
+  event; in `auth`: `AccessRemover` and `IsAccessRemoved`.
+- `abhed doctor` (and Studio's Health view, as the `tenant` check) warns
+  when `auth.mode` is `oidc` with no named provider, `storage.tenant` is not
+  `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
+  claim named `tenant`, else `default`, so unless the identity provider
+  sends a matching `tenant` claim everyone it signs in is refused.
+
 ### Fixed
 
 - The completion contract's check of protected files could hang the end of
