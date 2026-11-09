@@ -98,6 +98,7 @@ func TestHooksRunValidation(t *testing.T) {
 		`{"hooks":{"run":[{"name":"a","command":"true"}]}}`,
 		`{"hooks":{"run":[{"name":"a","events":["list_tools"],"command":"true"}]}}`,
 		`{"hooks":{"run":[{"name":"a","events":["stop"],"url":"file:///etc/passwd"}]}}`,
+		`{"hooks":{"run":[{"name":"a","events":["stop"],"url":"http://audit.example/h","headers_env":{"Authorization":"TOKEN"}}]}}`,
 		`{"hooks":{"run":[{"name":"a","events":["tool_call"],"command":"true","match":["bash(("]}]}}`,
 		`{"hooks":{"run":[{"name":"a","events":["stop"],"command":"true"},{"name":"a","events":["stop"],"command":"false"}]}}`,
 		`{"extensions":[{"name":"a","command":"x"}],"hooks":{"run":[{"name":"a","events":["stop"],"command":"true"}]}}`,

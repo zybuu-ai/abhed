@@ -2,8 +2,10 @@ package extension
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -251,7 +253,7 @@ func TestHookReplyShapes(t *testing.T) {
 		"carry":  {Exit: 0, Stdout: []byte(`{"continue":true}`)},
 		"halt":   {Exit: 0, Stdout: []byte(`{"continue":false,"stopReason":"change freeze"}`)},
 	}}
-	ctx := WithSession(context.Background(), "s7", "/work/tree")
+	ctx := WithSession(context.Background(), "s7", "/work/tree", "")
 	h, fired := hooksOf(t, HookEnv{Run: r.run},
 		HookConfig{Name: "carry", Command: "carry", Events: []Event{EvToolCall, EvStop}},
 		HookConfig{Name: "decide", Command: "decide", Events: []Event{EvToolCall, EvStop}, Match: []string{"bash(git push*)"}},
@@ -292,7 +294,7 @@ func TestHookReplyShapes(t *testing.T) {
 func TestPolicyHookTellsTheSession(t *testing.T) {
 	r := &scriptRunner{results: map[string]CommandResult{"ok": {Exit: 0}}}
 	h, _ := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "ok", Command: "ok", Events: []Event{EvToolCall}})
-	h.ContextPolicyHookFor("session", nil)(WithSession(context.Background(), "real-1", ""), "bash", json.RawMessage(`{}`))
+	h.ContextPolicyHookFor("session", nil)(WithSession(context.Background(), "real-1", "", ""), "bash", json.RawMessage(`{}`))
 	var req Request
 	if err := json.Unmarshal(r.stdin["ok"], &req); err != nil || req.SessionID != "real-1" {
 		t.Fatalf("sent %s", r.stdin["ok"])
@@ -335,5 +337,100 @@ func TestHTTPHookHeadersEnv(t *testing.T) {
 		HeadersEnv: map[string]string{"Authorization": "HOOK_TOKEN_UNSET_TEST"}, Events: []Event{EvToolCall}})
 	if d := h.OnToolCall(context.Background(), "s", "bash", json.RawMessage(`{}`)); !d.Block || !strings.Contains(d.Reason, "HOOK_TOKEN_UNSET_TEST is not set") {
 		t.Fatalf("%+v", d)
+	}
+}
+
+// Async runs of one hook are bounded, a run beyond the bound is skipped and
+// recorded, and those still going end with their session.
+func TestAsyncHookRunsAreBoundedAndEndWithTheSession(t *testing.T) {
+	r := &scriptRunner{}
+	h, fired := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "bg", Command: "hang", Events: []Event{EvTurnEnd},
+		Async: true, Timeout: time.Minute})
+	for range maxAsyncRuns + 1 {
+		h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "s1"})
+	}
+	if len(*fired) != 1 || (*fired)[0].Verdict != VerdictError || !strings.Contains((*fired)[0].Reason, "skipped") {
+		t.Fatalf("recorded %+v", *fired)
+	}
+	h.EndSession("s1")
+	deadline := time.Now().Add(5 * time.Second)
+	for len(*fired) < 1+maxAsyncRuns && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(*fired) != 1+maxAsyncRuns {
+		t.Fatalf("the session's async runs did not end with it: %d recorded", len(*fired))
+	}
+}
+
+// A halt is kept until it is taken or its session ends, and the halts no
+// loop takes stay bounded.
+func TestHaltsAreBounded(t *testing.T) {
+	r := &scriptRunner{results: map[string]CommandResult{"stop": {Exit: 0, Stdout: []byte(`{"continue":false}`)}}}
+	h, _ := hooksOf(t, HookEnv{Run: r.run}, HookConfig{Name: "stop", Command: "stop", Events: []Event{EvTurnEnd}})
+	for i := range maxHalts + 50 {
+		h.Observe(context.Background(), EvTurnEnd, Request{SessionID: fmt.Sprint("s", i)})
+	}
+	h.haltMu.Lock()
+	n := len(h.halts)
+	h.haltMu.Unlock()
+	if n > maxHalts {
+		t.Fatalf("%d halts kept", n)
+	}
+	h.Observe(context.Background(), EvTurnEnd, Request{SessionID: "last"})
+	if h.HaltPending("last") == "" {
+		t.Fatal("the latest halt was dropped")
+	}
+	h.EndSession("last")
+	if h.HaltPending("last") != "" {
+		t.Fatal("a halt outlived its session")
+	}
+}
+
+// What a hook prints is logged with stored secrets redacted.
+func TestHookLogIsRedacted(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	h := NewHost(func(f string, a ...any) { mu.Lock(); lines = append(lines, fmt.Sprintf(f, a...)); mu.Unlock() })
+	h.SetRedact(func(s string) string { return strings.ReplaceAll(s, "hunter2", "[secret:PW]") })
+	r := &scriptRunner{results: map[string]CommandResult{"loud": {Exit: 1, Stderr: []byte("login hunter2 failed")}}}
+	if errs := h.LoadHooks([]HookConfig{{Name: "loud", Command: "loud", Events: []Event{EvTurnEnd}}}, HookEnv{Run: r.run}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	h.Observe(context.Background(), EvTurnEnd, Request{})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) == 0 || strings.Contains(strings.Join(lines, "\n"), "hunter2") || !strings.Contains(strings.Join(lines, "\n"), "[secret:PW]") {
+		t.Fatalf("logged %q", lines)
+	}
+}
+
+// Headers go only over https or to this machine.
+func TestHeadersInClear(t *testing.T) {
+	for raw, ok := range map[string]bool{"https://x.example/h": true, "http://127.0.0.1:9/h": true, "http://localhost/h": true,
+		"http://[::1]/h": true, "http://x.example/h": false, "http://10.0.0.5/h": false} {
+		if err := HeadersInClear(raw, 1); (err == nil) != ok {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+	if err := HeadersInClear("http://x.example/h", 0); err != nil {
+		t.Errorf("no headers: %v", err)
+	}
+	h := NewHost(nil)
+	if errs := h.LoadHooks([]HookConfig{{Name: "w", URL: "http://x.example/h", Headers: map[string]string{"A": "b"}, Events: []Event{EvTurnEnd}}}, HookEnv{}); len(errs) != 1 {
+		t.Fatalf("loaded: %v", errs)
+	}
+}
+
+// A result an extension rewrites is recorded with the size and digest of
+// what the tool returned.
+func TestRewrittenResultRecordsTheOriginalsDigest(t *testing.T) {
+	h, fired := hostOf(t, Config{Name: "redactor.sh", Events: []Event{EvToolResult}})
+	out, _ := h.OnToolResult(context.Background(), "s", "read", "the original", false)
+	if out != "[redacted]" {
+		t.Fatalf("result %q", out)
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte("the original")))
+	if len(*fired) != 1 || !strings.Contains((*fired)[0].Reason, want) || !strings.Contains((*fired)[0].Reason, "12 bytes") {
+		t.Fatalf("recorded %+v", *fired)
 	}
 }

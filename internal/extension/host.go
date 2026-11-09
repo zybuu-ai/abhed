@@ -2,9 +2,12 @@ package extension
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -21,6 +24,13 @@ import (
 type Host struct {
 	exts []*Extension
 	logf func(string, ...any)
+	// redact, when set, takes stored secrets out of what is logged.
+	redact atomic.Pointer[func(string) string]
+
+	// async are the cancels of the async runs in flight, by session.
+	asyncMu sync.Mutex
+	async   map[string]map[*func()]struct{}
+	closed  bool
 
 	firedMu sync.RWMutex
 	onFired func(Fired)
@@ -30,17 +40,28 @@ type Host struct {
 	halts  map[string]string
 }
 
-// halt notes that a hook ended the run of req's session.
-func (h *Host) halt(e *Extension, req Request, why string) {
+// maxHalts bounds the halts no loop has taken, such as one for a workbench
+// action outside any run.
+const maxHalts = 256
+
+// halt notes that a hook ended the run of the session keyed key.
+func (h *Host) halt(e *Extension, req Request, key, why string) {
 	h.fire(e, Fired{Extension: e.Name(), SessionID: req.SessionID, Event: req.Event, Verdict: VerdictHalt, Reason: why})
 	h.haltMu.Lock()
 	defer h.haltMu.Unlock()
 	if h.halts == nil {
 		h.halts = map[string]string{}
 	}
-	if _, ok := h.halts[req.SessionID]; !ok {
-		h.halts[req.SessionID] = why
+	if _, ok := h.halts[key]; ok {
+		return
 	}
+	for k := range h.halts {
+		if len(h.halts) < maxHalts {
+			break
+		}
+		delete(h.halts, k)
+	}
+	h.halts[key] = why
 }
 
 // Halted returns why a hook ended the session's run, once, or "".
@@ -50,6 +71,81 @@ func (h *Host) Halted(sessionID string) string {
 	why := h.halts[sessionID]
 	delete(h.halts, sessionID)
 	return why
+}
+
+// HaltPending is why a hook ended the session's run, left for Halted to take.
+func (h *Host) HaltPending(sessionID string) string {
+	h.haltMu.Lock()
+	defer h.haltMu.Unlock()
+	return h.halts[sessionID]
+}
+
+// EndSession forgets a session's halt and cancels its async hook runs.
+func (h *Host) EndSession(sessionID string) {
+	h.haltMu.Lock()
+	delete(h.halts, sessionID)
+	h.haltMu.Unlock()
+	h.asyncMu.Lock()
+	runs := h.async[sessionID]
+	delete(h.async, sessionID)
+	h.asyncMu.Unlock()
+	for c := range runs {
+		(*c)()
+	}
+}
+
+// SetRedact sets what takes stored secrets out of the lines logged.
+func (h *Host) SetRedact(f func(string) string) { h.redact.Store(&f) }
+
+// goAsync runs one async observe call, bounded per hook and cancelled when
+// its session ends or the host closes; one over the bound is skipped.
+func (h *Host) goAsync(ctx context.Context, e *Extension, req Request) {
+	if e.inflight != nil {
+		select {
+		case e.inflight <- struct{}{}:
+		default:
+			h.logf("%s skipped %s: %d runs are still going", e.label(), req.Event, cap(e.inflight))
+			if e.hook != nil {
+				h.fired(Fired{Extension: e.Name(), Event: req.Event, SessionID: req.SessionID, Kind: e.Kind(),
+					Layer: e.hook.cfg.Layer, Verdict: VerdictError, Reason: "skipped: earlier runs are still going"})
+			}
+			return
+		}
+	}
+	actx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	h.asyncMu.Lock()
+	if h.closed {
+		h.asyncMu.Unlock()
+		cancel()
+		if e.inflight != nil {
+			<-e.inflight
+		}
+		return
+	}
+	if h.async == nil {
+		h.async = map[string]map[*func()]struct{}{}
+	}
+	if h.async[req.SessionID] == nil {
+		h.async[req.SessionID] = map[*func()]struct{}{}
+	}
+	key := (*func())(&cancel)
+	h.async[req.SessionID][key] = struct{}{}
+	h.asyncMu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			h.asyncMu.Lock()
+			delete(h.async[req.SessionID], key)
+			if len(h.async[req.SessionID]) == 0 {
+				delete(h.async, req.SessionID)
+			}
+			h.asyncMu.Unlock()
+			if e.inflight != nil {
+				<-e.inflight
+			}
+		}()
+		e.Call(actx, req)
+	}()
 }
 
 // Verdicts a hook can reach, as hook.fired records them. There is no allow.
@@ -118,7 +214,16 @@ func NewHost(logf func(string, ...any)) *Host {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Host{logf: logf}
+	h := &Host{}
+	// What hooks and extensions print may hold a secret; the log does not.
+	h.logf = func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		if r := h.redact.Load(); r != nil {
+			line = (*r)(line)
+		}
+		logf("%s", line)
+	}
+	return h
 }
 
 // Load starts each configured extension. One that fails to start is reported
@@ -158,6 +263,16 @@ func (h *Host) Running() map[string]bool {
 }
 
 func (h *Host) Close() {
+	h.asyncMu.Lock()
+	h.closed = true
+	all := h.async
+	h.async = nil
+	h.asyncMu.Unlock()
+	for _, runs := range all {
+		for c := range runs {
+			(*c)()
+		}
+	}
 	for _, e := range h.exts {
 		_ = e.Close()
 	}
@@ -284,7 +399,7 @@ func (h *Host) Observe(ctx context.Context, ev Event, req Request) {
 			continue
 		}
 		if e.cfg.Async {
-			go e.Call(context.WithoutCancel(ctx), req)
+			h.goAsync(ctx, e, req)
 			continue
 		}
 		if reply := e.Call(ctx, req); reply.Reason != "" || reply.Log != "" {
@@ -299,6 +414,7 @@ func (h *Host) OnToolResult(ctx context.Context, sessionID, tool, content string
 		if !e.Subscribed(EvToolResult) {
 			continue
 		}
+		before := content
 		reply := e.Call(ctx, Request{
 			Event: EvToolResult, SessionID: sessionID, Tool: tool,
 			Content: content, IsError: isErr,
@@ -310,9 +426,11 @@ func (h *Host) OnToolResult(ctx context.Context, sessionID, tool, content string
 			isErr = *reply.IsError
 		}
 		if reply.Content != nil || reply.IsError != nil {
-			// What the model reads is not what the tool said: on the record.
+			// What the model reads is not what the tool said: on the record,
+			// with a digest of what it did say.
+			sum := sha256.Sum256([]byte(before))
 			h.fire(e, Fired{Extension: e.Name(), SessionID: sessionID, Event: EvToolResult, Verdict: VerdictAnnotate,
-				Reason: firstNonEmpty(reply.Reason, "rewrote the result")})
+				Reason: fmt.Sprintf("%s (the result was %d bytes, sha256 %x)", firstNonEmpty(reply.Reason, "rewrote the result"), len(before), sum)})
 		}
 	}
 	return content, isErr

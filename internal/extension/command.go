@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -72,14 +74,16 @@ type HookConfig struct {
 	Layer string
 }
 
-// Session is the session and folder a hook event is for, as ctx carries it.
-type Session struct{ ID, Dir string }
+// Session is the session and folder a hook event is for, as ctx carries it,
+// and the root session of its tree, which a halt ends.
+type Session struct{ ID, Dir, Root string }
 
 type sessionKey struct{}
 
-// WithSession says which session, working in dir, ctx's hook events are for.
-func WithSession(ctx context.Context, id, dir string) context.Context {
-	return context.WithValue(ctx, sessionKey{}, Session{ID: id, Dir: dir})
+// WithSession says which session, working in dir, ctx's hook events are
+// for, and the root of its session tree ("" when it is the root).
+func WithSession(ctx context.Context, id, dir, root string) context.Context {
+	return context.WithValue(ctx, sessionKey{}, Session{ID: id, Dir: dir, Root: root})
 }
 
 // SessionOf is what WithSession put in ctx, or nothing.
@@ -109,8 +113,10 @@ type HookEnv struct {
 const (
 	defaultHookTimeout = 10 * time.Second
 	observeHookTimeout = 2 * time.Second
-	MaxHookOutput      = 64 << 10
-	maxHookReason      = 2000
+	// maxAsyncRuns bounds one hook's async runs at once; more are skipped.
+	maxAsyncRuns  = 4
+	MaxHookOutput = 64 << 10
+	maxHookReason = 2000
 )
 
 // hookRunner runs one simple hook.
@@ -145,6 +151,9 @@ func newHook(h *Host, c HookConfig, env HookEnv) (*Extension, error) {
 	if len(c.Events) == 0 {
 		return nil, fmt.Errorf("hook %q: events is required", c.Name)
 	}
+	if err := HeadersInClear(c.URL, len(c.Headers)+len(c.HeadersEnv)); err != nil {
+		return nil, fmt.Errorf("hook %q: %w", c.Name, err)
+	}
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = defaultHookTimeout
@@ -165,10 +174,31 @@ func newHook(h *Host, c HookConfig, env HookEnv) (*Extension, error) {
 		subs[ev] = true
 	}
 	return &Extension{
-		cfg:  Config{Name: c.Name, Timeout: timeout, Match: c.Match, Async: c.Async},
-		subs: subs, logf: h.logf, match: match,
+		cfg:      Config{Name: c.Name, Timeout: timeout, Match: c.Match, Async: c.Async},
+		inflight: make(chan struct{}, maxAsyncRuns),
+		subs:     subs, logf: h.logf, match: match,
 		hook: &hookRunner{cfg: c, env: env, host: h}, host: h,
 	}, nil
+}
+
+// HeadersInClear refuses headers, which may carry a token, sent over plain
+// http to anywhere but this machine.
+func HeadersInClear(rawURL string, headers int) error {
+	if rawURL == "" || headers == 0 {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" {
+		return nil
+	}
+	host := u.Hostname()
+	if ip, err := netip.ParseAddr(host); host == "localhost" || err == nil && ip.IsLoopback() {
+		return nil
+	}
+	return errors.New("headers are sent only over https, or plain http to this machine")
 }
 
 func isHookEvent(ev Event) bool {

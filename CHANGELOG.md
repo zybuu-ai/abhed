@@ -57,9 +57,11 @@ All notable changes to Abhed are recorded here. The format follows
   edition gives sessions one, and says so at start-up. Exit 0 goes on, exit
   2 blocks with stderr as the reason, and any other exit or a timeout
   refuses a `tool_call` or `permission_request`. A JSON reply's
-  `decision: "block"` blocks, and `continue: false` ends the run as
-  `policy_denied`. An HTTP hook's request is judged by the egress
-  allowlist, and `headers_env` sends a token from the environment. A hook
+  `decision: "block"` blocks, and `continue: false` ends the run, and the
+  rest of its turn, as `policy_denied` (a subagent's ends the whole session
+  tree). An HTTP hook's request is judged by the egress
+  allowlist, and `headers_env` sends a token from the environment; headers
+  go only over https or to this machine. A hook
   can block, ask or end the run, never approve. Each layer adds hooks, a
   workspace's only once it is trusted; only the managed configuration
   replaces a hook by name, and a lower file's hook of a name already taken

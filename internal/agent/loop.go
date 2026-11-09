@@ -470,9 +470,11 @@ type StopHooks interface {
 }
 
 // HaltHooks are Hooks that may end a run: Halted returns, once, why a hook
-// ended the session's run, or "". The loop ends it as policy_denied.
+// ended the run of the session tree rooted at sessionID, or "", and
+// HaltPending says so without taking it. The loop ends it as policy_denied.
 type HaltHooks interface {
-	Halted(sessionID string) string
+	Halted(rootID string) string
+	HaltPending(rootID string) string
 }
 
 // ResultHooks are Hooks that see a tool's result, already redacted, before
@@ -491,10 +493,17 @@ type childHooks struct{ Hooks }
 
 func (childHooks) PromptSubmitted(context.Context, string, string) string { return "" }
 
-// Halted and ToolResult pass to the parent's hooks, when they take them.
-func (c childHooks) Halted(sessionID string) string {
+// Halted, HaltPending and ToolResult pass to the parent's hooks, when they take them.
+func (c childHooks) Halted(rootID string) string {
 	if h, ok := c.Hooks.(HaltHooks); ok {
-		return h.Halted(sessionID)
+		return h.Halted(rootID)
+	}
+	return ""
+}
+
+func (c childHooks) HaltPending(rootID string) string {
+	if h, ok := c.Hooks.(HaltHooks); ok {
+		return h.HaltPending(rootID)
 	}
 	return ""
 }
@@ -1178,9 +1187,13 @@ turns:
 				}
 				reason = end
 			}
-			// A stop hook may send the run back to work, a bounded number of times.
+			// A stop hook may send the run back to work, a bounded number of
+			// times, or end it.
 			if reason == TermCompleted && l.stopHookContinues(ctx) {
 				continue
+			}
+			if why := l.hookHalted(); why != "" {
+				return l.finishHalted(why), nil
 			}
 			// The turn ends first; a suggestion is made after it, off the run.
 			if reason == TermCompleted {
@@ -1692,6 +1705,10 @@ func (l *Loop) authorize(ctx context.Context, c *model.ToolCall) (bool, tools.Re
 
 func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tools.Result, TerminalReason) {
 	call := *c
+	// A hook ended the run: the rest of the turn's calls do not go ahead.
+	if why := l.haltPending(); why != "" {
+		return l.refuseHalted(ctx, call, why)
+	}
 	tool, found := l.Tools.Get(call.Name)
 	if found && !l.offered(tool) {
 		// A tool of another mode is not there for the model, whatever it recalls.
@@ -2132,6 +2149,19 @@ func (l *Loop) refuseUnresolvable(ctx context.Context, call model.ToolCall, why 
 	return false, tools.Result{Content: fmt.Sprintf("Refused: %s. Nothing was run.", why), IsError: true}, ""
 }
 
+// refuseHalted records a call made after a hook ended the run, and refuses it.
+func (l *Loop) refuseHalted(ctx context.Context, call model.ToolCall, why string) (bool, tools.Result, TerminalReason) {
+	if _, err := l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{
+		CallID: call.ID, Tool: call.Name, Args: objectOr(call.Args), Reason: why, Via: viaOf(ctx),
+	}); err != nil {
+		return false, tools.Result{Content: err.Error(), IsError: true}, TermError
+	}
+	l.record(EvActionDenied, ActorSystem, map[string]string{
+		"call_id": call.ID, "reason": why, "step": "hook", "by": BySystem,
+	})
+	return false, tools.Result{Content: "Refused: a hook ended the run (" + why + "). Nothing was run.", IsError: true}, ""
+}
+
 // invoke runs an already-authorized tool and records its observation.
 func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, TerminalReason) {
 	tool, found := l.Tools.Get(call.Name)
@@ -2373,12 +2403,33 @@ func (l *Loop) stopHookContinues(ctx context.Context) bool {
 	return true
 }
 
-// hookHalted is why a hook ended this run, or "", taken once.
+// hookHalted is why a hook ended this session tree's run, or "". The root
+// takes it; a subagent only reads it, so the parent ends too.
 func (l *Loop) hookHalted() string {
+	hh, ok := l.Hooks.(HaltHooks)
+	if !ok {
+		return ""
+	}
+	if l.depth > 0 {
+		return hh.HaltPending(l.rootID())
+	}
+	return hh.Halted(l.rootID())
+}
+
+// haltPending is why a hook ended this run, left in place, or "".
+func (l *Loop) haltPending() string {
 	if hh, ok := l.Hooks.(HaltHooks); ok {
-		return hh.Halted(l.sessionID())
+		return hh.HaltPending(l.rootID())
 	}
 	return ""
+}
+
+// rootID is the session at the root of this loop's tree.
+func (l *Loop) rootID() string {
+	if l.Recorder == nil {
+		return ""
+	}
+	return l.Recorder.Root()
 }
 
 // finishHalted ends the run a hook ended, saying why.
@@ -2394,7 +2445,7 @@ func (l *Loop) hookCtx(ctx context.Context) context.Context {
 	if l.Session != nil {
 		dir = l.Session.WorkDir()
 	}
-	return extension.WithSession(ctx, l.sessionID(), dir)
+	return extension.WithSession(ctx, l.sessionID(), dir, l.rootID())
 }
 
 // observe tells the hooks of something they may only watch.

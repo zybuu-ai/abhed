@@ -245,6 +245,8 @@ type Extension struct {
 	hook *hookRunner
 	// host is told of a reply that ends the run.
 	host *Host
+	// inflight bounds the async runs of an observe-only event at once.
+	inflight chan struct{}
 }
 
 const defaultTimeout = 5 * time.Second
@@ -384,7 +386,12 @@ func (e *Extension) call(ctx context.Context, req Request) (_ Reply, err error) 
 	if r.halt && err == nil {
 		why := r.haltReason(e.label())
 		if e.host != nil {
-			e.host.halt(e, req, why)
+			// Kept for the root session, so a subagent's halt ends the whole tree.
+			key := SessionOf(ctx).Root
+			if key == "" {
+				key = req.SessionID
+			}
+			e.host.halt(e, req, key, why)
 		}
 		// What the run ends on does not go ahead either.
 		switch req.Event {

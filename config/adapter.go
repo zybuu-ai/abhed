@@ -259,6 +259,9 @@ func (c Config) validateHooks() error {
 				return fmt.Errorf("hooks.run %q: match: %w", h.Name, err)
 			}
 		}
+		if err := extension.HeadersInClear(h.URL, len(h.Headers)+len(h.HeadersEnv)); err != nil {
+			return fmt.Errorf("hooks.run %q: %w", h.Name, err)
+		}
 		for k, name := range h.HeadersEnv {
 			if k == "" || name == "" {
 				return fmt.Errorf("hooks.run %q: headers_env names a header and a variable", h.Name)

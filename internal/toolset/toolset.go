@@ -186,6 +186,10 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, err := range s.Extensions.Load(ctx, specs) {
 			warn("%v", err)
 		}
+		if o.Vault != nil {
+			red := o.Vault.Redactor()
+			s.Extensions.SetRedact(func(t string) string { return agent.WithheldText(red, t) })
+		}
 		// Simple hooks run per event: commands in bash's sandbox, requests under the egress guard.
 		if o.Parts&Vetoes != 0 {
 			for _, err := range s.Extensions.LoadHooks(cfg.HookSpecs(), HookEnv(o.Bash, o.Workspace, s.Guard())) {
@@ -356,6 +360,9 @@ func (s *Set) Guard() *egress.Guard {
 
 // EndSession records what the egress guard still counts for session id.
 func (s *Set) EndSession(id string) {
+	if s != nil && s.Extensions != nil {
+		s.Extensions.EndSession(id) // its halt, and its async hook runs
+	}
 	if s != nil && s.Egress != nil {
 		s.Egress.EndSession(id)
 	}
@@ -578,8 +585,11 @@ func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) (hook, in
 	return name, "The " + name + " hook asks you to continue before finishing: " + why
 }
 
-// Halted is why a hook ended the session's run, once, or "".
-func (h HostHooks) Halted(sessionID string) string { return h.Host.Halted(sessionID) }
+// Halted is why a hook ended the session tree's run, once, or "";
+// HaltPending says so without taking it.
+func (h HostHooks) Halted(rootID string) string { return h.Host.Halted(rootID) }
+
+func (h HostHooks) HaltPending(rootID string) string { return h.Host.HaltPending(rootID) }
 
 // ToolResult lets the hooks that take tool_result see, and extensions
 // rewrite, a result before the model reads it.

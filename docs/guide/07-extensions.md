@@ -40,7 +40,7 @@ exactly one reply.
 | Event | When | The reply may |
 |---|---|---|
 | `tool_call` | before a tool runs | `block`, `ask` (an `args` in the reply is ignored) |
-| `tool_result` | after a tool runs, before the model sees its output, with secrets already redacted | rewrite `content`, set `is_error` (recorded as `annotate`; a stored secret's value written back in is redacted again) |
+| `tool_result` | after a tool runs, before the model sees its output, with secrets already redacted | rewrite `content`, set `is_error` (recorded as `annotate`, with the size and SHA-256 of what the tool returned; a stored secret's value written back in is redacted again) |
 | `context` | before each model call | `keep` a subset of messages, by index |
 | `before_agent_start` | once per run | append to `system` |
 | `before_compact` | before history is summarized | `cancel`, or supply the `summary` |
@@ -72,9 +72,12 @@ The run also ends when it reaches its turn or budget limit, however often a
 hook asks.
 
 Any event's reply may end the run: `"continue": false`, with a `stopReason`.
-The call, permission request or message it was about does not go ahead, and
-the run ends before the model is called again, as `policy_denied`, with the
-reason as the end's detail (exit code 4 for `-p`). `"continue": true`, or no
+The call, permission request or message it was about does not go ahead, nor
+does any other call left in that turn, and the run ends before the model is
+called again, as `policy_denied`, with the reason as the end's detail (exit
+code 4 for `-p`). A `stop` hook's `continue: false` ends it the same way. A
+halt raised on a subagent's call ends the whole session tree: the subagent,
+and the run that started it. `"continue": true`, or no
 `continue`, is no opinion, and only a `stop` hook can send the agent on.
 
 Replies written for other agent harnesses mean the same here:
@@ -168,7 +171,10 @@ in the folder the session works in (its worktree, when it has one), with the
 same environment. What the sandbox hides from a command it hides from a hook,
 and no stored secret is passed to one. The timeout is `timeout_ms`; unset, it
 is 10 seconds, or 2 seconds on an event that only observes. `async` runs the
-events that only observe without waiting for the hook.
+events that only observe without waiting for the hook: at most 4 runs of one
+hook at once, a run beyond that skipped and recorded as `error`, and those
+still going cancelled when the session ends. What a hook prints to stderr or
+as `log` is written to Abhed's log with stored secrets redacted.
 
 **Keep a veto's script out of the workspace.** The agent can change the files
 in the workspace, so a `tool_call` or `permission_request` hook whose script
@@ -179,7 +185,8 @@ absolute path.
 **An HTTP hook** is POSTed the event as JSON, with `headers`, and with each
 header in `headers_env` set to the value of the environment variable it names
 (a variable that is not set fails the hook), so a token need not be written
-into the file. A `2xx` answer goes on, and its body, if any, is read as the
+into the file. Headers are sent only over `https`, or plain `http` to this
+machine; a hook that sets them for plain `http` elsewhere stops Abhed loading. A `2xx` answer goes on, and its body, if any, is read as the
 same JSON reply; any other status, a redirect, or no answer within the timeout
 is a failure. The request is one of Abhed's own, so under
 `sandbox.network: allowlist` it goes only where an egress rule allows, judged
@@ -219,7 +226,11 @@ loading, rather than leaving a veto silently missing.
 `abhed serve` runs each command hook under the server's own sandbox and
 workspace, not in a session's own sandbox where the edition gives sessions
 one, and says so in a warning at start-up when both are on. It records each
-run in the session it ran for.
+run in the session it ran for. Where a session's sandbox is on another
+machine (a remote driver), its folder is not on the server's, so a command
+hook cannot start there: a `tool_call` or `permission_request` command hook
+then fails, and every call it screens is refused. Use an HTTP hook for
+those sessions.
 
 ### Simple hook examples
 

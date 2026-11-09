@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -281,6 +282,8 @@ func (h *haltHooks) Halted(string) string {
 	return why
 }
 
+func (h *haltHooks) HaltPending(string) string { return h.why }
+
 // A hook that ends the run ends it at the next boundary as policy_denied,
 // with its reason, before the model is called again.
 func TestHookHaltsTheRun(t *testing.T) {
@@ -305,5 +308,118 @@ func TestHookHaltsTheRun(t *testing.T) {
 	}
 	if end.Detail != "the freeze hook ended the run" {
 		t.Fatalf("ended %+v", end)
+	}
+}
+
+// hostHooks are the extension host's hooks at the loop's points, as the
+// tool set gives them.
+type hostHooks struct {
+	fakeHooks
+	h *extension.Host
+}
+
+func (x *hostHooks) Stop(ctx context.Context, sessionID, answer string) (string, string) {
+	name, why := x.h.OnStop(ctx, sessionID, answer)
+	if why == "" {
+		return "", ""
+	}
+	return name, why
+}
+
+func (x *hostHooks) Halted(root string) string      { return x.h.Halted(root) }
+func (x *hostHooks) HaltPending(root string) string { return x.h.HaltPending(root) }
+
+// replyHost is a host whose one simple hook prints reply on events, for the calls match takes.
+func replyHost(t *testing.T, reply string, events []extension.Event, match ...string) *extension.Host {
+	t.Helper()
+	h := extension.NewHost(nil)
+	run := func(context.Context, string, string, []byte) (extension.CommandResult, error) {
+		return extension.CommandResult{Exit: 0, Stdout: []byte(reply)}, nil
+	}
+	if errs := h.LoadHooks([]extension.HookConfig{{Name: "gate", Command: "gate", Events: events, Match: match}},
+		extension.HookEnv{Run: run}); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	return h
+}
+
+// A stop hook that ends the run ends it as policy_denied, not completed.
+func TestStopHookHaltEndsAsPolicyDenied(t *testing.T) {
+	l, store, ad := secretLoop(t, tools.NewRegistry(), []scriptedTurn{{text: "finished"}, {text: "never"}})
+	l.Hooks = &hostHooks{h: replyHost(t, `{"continue":false,"stopReason":"the gate failed"}`, []extension.Event{extension.EvStop})}
+	reason, err := l.Run(context.Background(), "go")
+	if err != nil || reason != TermPolicyDenied || reason.ExitCode() != 4 {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if len(ad.gotRequests) != 1 {
+		t.Fatalf("the model was called %d times", len(ad.gotRequests))
+	}
+	evs, _ := store.Events("sess1")
+	var end SessionEnded
+	for _, ev := range evs {
+		if ev.Type == EvSessionEnded {
+			_ = json.Unmarshal(ev.Payload, &end)
+		}
+	}
+	if end.Detail != "the gate failed" {
+		t.Fatalf("ended %+v", end)
+	}
+}
+
+// A halt on one call refuses the rest of that turn's calls.
+func TestHaltRefusesTheRestOfTheTurn(t *testing.T) {
+	l, store, _ := secretLoop(t, tools.NewRegistry(leaky{}, tools.Glob{}), []scriptedTurn{
+		{calls: []model.ToolCall{
+			{ID: "c1", Name: "leaky", Args: json.RawMessage(`{}`)},
+			{ID: "c2", Name: "glob", Args: json.RawMessage(`{"pattern":"*"}`)},
+		}},
+		{text: "never"},
+	})
+	h := replyHost(t, `{"continue":false,"stopReason":"freeze"}`, []extension.Event{extension.EvToolCall}, "leaky")
+	l.Policy.ContextHooks = append(l.Policy.ContextHooks, func(e *policy.Engine) policy.ContextHook { return h.ContextPolicyHookFor("x", e) })
+	l.Hooks = &hostHooks{h: h}
+	reason, err := l.Run(context.Background(), "go")
+	if err != nil || reason != TermPolicyDenied {
+		t.Fatalf("%s %v", reason, err)
+	}
+	evs, _ := store.Events("sess1")
+	var steps []string
+	for _, ev := range evs {
+		if ev.Type == EvActionDenied {
+			var d map[string]string
+			_ = json.Unmarshal(ev.Payload, &d)
+			steps = append(steps, d["call_id"]+":"+d["step"])
+		}
+		if ev.Type == EvObservation {
+			t.Fatalf("a call ran after the halt: %s", ev.Payload)
+		}
+	}
+	if len(steps) != 2 || steps[1] != "c2:hook" {
+		t.Fatalf("denied %v", steps)
+	}
+}
+
+// A halt raised on a subagent's call ends the subagent and the run that
+// started it, before either calls the model again.
+func TestSubagentHaltEndsTheTree(t *testing.T) {
+	adapter := &scriptedAdapter{turns: []scriptedTurn{
+		{calls: []model.ToolCall{call("task", map[string]string{"prompt": "look", "description": "looker"})}},
+		{calls: []model.ToolCall{call("read", map[string]string{"path": "/etc/hosts"})}},
+		{text: "child never"},
+		{text: "parent never"},
+	}}
+	l, _, _ := taskTree(t, adapter, AutoApprove{Yes: true}, NewMemStore(), NewMemStore(), false)
+	h := replyHost(t, `{"continue":false,"stopReason":"kill switch"}`, []extension.Event{extension.EvToolCall}, "read")
+	l.Policy.ContextHooks = append(l.Policy.ContextHooks, func(e *policy.Engine) policy.ContextHook { return h.ContextPolicyHookFor("x", e) })
+	l.Hooks = &hostHooks{h: h}
+	reason, err := l.Run(context.Background(), "go")
+	if err != nil || reason != TermPolicyDenied {
+		t.Fatalf("%s %v", reason, err)
+	}
+	if adapter.seen != 2 {
+		t.Fatalf("the model was called %d times; the tree did not end at the halt", adapter.seen)
+	}
+	if why := h.HaltPending("parent"); why != "" {
+		t.Fatalf("the halt was left behind: %q", why)
 	}
 }
