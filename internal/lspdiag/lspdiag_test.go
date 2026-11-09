@@ -506,3 +506,33 @@ func TestUnavailableSupervisorDoesNotTurnDiagnosticsOff(t *testing.T) {
 		t.Fatalf("after the supervisor answered: %+v", got)
 	}
 }
+
+// A supervisor that keeps failing to answer is asked at most
+// maxJudgeRetries times; then diagnostics for the language are off for the
+// session, with why recorded, and no edit pays a judge's timeout again.
+func TestJudgeRetriesAreCapped(t *testing.T) {
+	r := newRig(t, policy.ModeBypass)
+	r.loop.Monitor = &monitor.Guard{Monitor: monitor.Func(func(context.Context, monitor.Case) (monitor.Verdict, error) {
+		return monitor.Verdict{}, fmt.Errorf("judge timed out")
+	})}
+	d := New(opts(ModeAuto))
+	defer d.Close()
+	p := r.write(t, "a.go", "// BAD\n")
+	var last agent.Diagnosed
+	for i := range maxJudgeRetries {
+		got, ok := d.Diagnose(context.Background(), r.loop, fmt.Sprint("c", i), p)
+		if !ok {
+			t.Fatalf("attempt %d recorded nothing", i)
+		}
+		last = got
+	}
+	if !strings.Contains(last.Skipped, fmt.Sprintf("could not answer %d times", maxJudgeRetries)) {
+		t.Fatalf("the last attempt: %+v", last)
+	}
+	if _, ok := d.Diagnose(context.Background(), r.loop, "c9", p); ok {
+		t.Fatal("asked again after the cap")
+	}
+	if n := len(r.events(t, agent.EvActionRequested)); n != maxJudgeRetries {
+		t.Fatalf("%d starts were put to the supervisor", n)
+	}
+}

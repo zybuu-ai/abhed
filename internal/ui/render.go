@@ -59,9 +59,9 @@ type Renderer struct {
 	tools toolState
 	// engine are the engine's own calls (a diagnostics server's start),
 	// drawn as notes, never as the agent's tool calls; engineNotes wait for
-	// the agent's call in flight to be drawn whole.
+	// the agent's calls in flight when they came to be drawn whole.
 	engine      map[string]bool
-	engineNotes []string
+	engineNotes []heldNote
 
 	// todos is the task list as last recorded, for the dock and /todos;
 	// agentTypes names each subagent by session, for its return line;
@@ -265,11 +265,15 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 	s := r.s
 	if note, ok := r.engineEvent(ev); ok {
 		if note != "" {
-			r.engineNotes = append(r.engineNotes, note)
-			if len(r.tools.calls) == 0 {
-				r.endReply(d, "")
-				r.flushEngineNotes(d)
+			behind := map[string]bool{}
+			for id := range r.tools.calls {
+				behind[id] = true
 			}
+			r.engineNotes = append(r.engineNotes, heldNote{text: note, behind: behind})
+			if len(behind) == 0 {
+				r.endReply(d, "")
+			}
+			r.flushEngineNotes(d, false)
 		}
 		return
 	}
@@ -340,7 +344,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			return
 		}
 		r.toolObserved(d, o)
-		r.flushEngineNotes(d)
+		r.flushEngineNotes(d, false)
 
 	case agent.EvAnswerVerdict:
 		if v, ok := verdictOf(ev); ok {
@@ -354,6 +358,7 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 		var m map[string]string
 		if json.Unmarshal(ev.Payload, &m) == nil {
 			r.toolDenied(d, m)
+			r.flushEngineNotes(d, false)
 		}
 
 	case agent.EvForked:
@@ -393,6 +398,8 @@ func (r *Renderer) dockEvent(ev agent.Event) {
 			return
 		}
 		r.endReply(d, "")
+		// The run is over: nothing a note waits behind will be drawn now.
+		r.flushEngineNotes(d, true)
 		if e.Settled {
 			d.commit(&rawBlock{text: "  " + s.Yellow("◆") + " " + s.Dim("background work finished")})
 			return
@@ -801,6 +808,11 @@ func WithheldNote(names string) string {
 // as one dim note, never as a tool call of the agent's. ok is false for any
 // other event.
 func (r *Renderer) engineEvent(ev agent.Event) (note string, ok bool) {
+	switch ev.Type {
+	case agent.EvActionRequested, agent.EvActionApproved, agent.EvActionDenied, agent.EvObservation:
+	default:
+		return "", false
+	}
 	var p struct {
 		CallID string `json:"call_id"`
 		Via    string `json:"via"`
@@ -843,13 +855,30 @@ func (r *Renderer) engineEvent(ev agent.Event) (note string, ok bool) {
 	return "", false
 }
 
-// flushEngineNotes draws the engine's notes held while a call was in flight.
-func (r *Renderer) flushEngineNotes(d *dock) {
-	if len(r.tools.calls) > 0 {
-		return
-	}
+// heldNote is an engine note and the agent's calls it waits behind.
+type heldNote struct {
+	text   string
+	behind map[string]bool
+}
+
+// flushEngineNotes draws the held notes whose calls have been drawn whole,
+// in order; all of them when the run has ended.
+func (r *Renderer) flushEngineNotes(d *dock, all bool) {
+	kept := r.engineNotes[:0]
+	waiting := false
 	for _, n := range r.engineNotes {
-		d.commit(&rawBlock{text: n})
+		for id := range n.behind {
+			if _, open := r.tools.calls[id]; !open {
+				delete(n.behind, id)
+			}
+		}
+		// A note keeps its place behind any earlier one still held.
+		if !all && (waiting || len(n.behind) > 0) {
+			waiting = true
+			kept = append(kept, n)
+			continue
+		}
+		d.commit(&rawBlock{text: n.text})
 	}
-	r.engineNotes = nil
+	r.engineNotes = kept
 }

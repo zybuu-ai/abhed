@@ -44,7 +44,11 @@ const (
 	// maxCrashes is how many times a language's server may end on its own
 	// before diagnostics for it are off for the session.
 	maxCrashes = 3
-	life       = 12 * time.Hour
+	// maxJudgeRetries is how many starts a supervisor that cannot answer
+	// refuses before diagnostics for the language are off for the session:
+	// each costs the edit a judge's timeout.
+	maxJudgeRetries = 3
+	life            = 12 * time.Hour
 )
 
 // Mode values: auto runs a server only where policy and the supervisor
@@ -112,8 +116,10 @@ type Diagnoser struct {
 	// off are languages diagnostics will not run for in this session.
 	off     map[string]bool
 	crashes map[string]int
-	// starting are languages whose server's start is being judged.
+	// starting are languages whose server's start is being judged;
+	// retries counts the starts a supervisor could not answer.
 	starting map[string]bool
+	retries  map[string]int
 	closed   bool
 	n        int
 }
@@ -131,7 +137,7 @@ func New(opt Options) *Diagnoser {
 		opt.Wait = DefaultWait
 	}
 	opt.Wait = min(opt.Wait, MaxWait)
-	return &Diagnoser{opt: opt, servers: map[string]*server{}, off: map[string]bool{}, crashes: map[string]int{}, starting: map[string]bool{}}
+	return &Diagnoser{opt: opt, servers: map[string]*server{}, off: map[string]bool{}, crashes: map[string]int{}, starting: map[string]bool{}, retries: map[string]int{}}
 }
 
 // Language is the server language and the document's language id for path,
@@ -305,7 +311,14 @@ func (d *Diagnoser) server(ctx context.Context, l *agent.Loop, lang string) (s *
 	decision := v.Result
 	if !v.Allowed && v.Retry {
 		// The supervisor could not answer in time: the ask stands for this
-		// edit only, and the next one asks again.
+		// edit only, and the next one asks again, up to maxJudgeRetries.
+		d.mu.Lock()
+		d.retries[lang]++
+		n := d.retries[lang]
+		d.mu.Unlock()
+		if n >= maxJudgeRetries {
+			return off(fmt.Sprintf("not started: the supervisor could not answer %d times (%s)", n, decision.Reason))
+		}
 		d.mu.Lock()
 		delete(d.starting, lang)
 		d.mu.Unlock()
@@ -490,7 +503,6 @@ func (s *server) run(b tools.Bash, toolchainRoot string, watch *lsprelay.RustAna
 	}
 	s.record(agent.EvLSPStopped, agent.LSPStopped{LSPID: s.id, CallID: s.callID, Language: s.lang, Reason: reason,
 		ExitCode: &code, DurationMS: time.Since(started).Milliseconds(), Purpose: "diagnostics"})
-
 }
 
 // initialize names the TypeScript for typescript-language-server, then

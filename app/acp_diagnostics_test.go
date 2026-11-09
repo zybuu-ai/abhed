@@ -139,3 +139,36 @@ func TestEditsAreFollowedByDiagnostics(t *testing.T) {
 		t.Fatalf("lsp.diagnostics %+v", diag)
 	}
 }
+
+// Under auto with no rule naming the server, the first edit's start is
+// refused: Studio's card says so as information, with the rule that would
+// start it, not as a failure the person caused.
+func TestRefusedDiagnosticsStartIsInformational(t *testing.T) {
+	oldTier := lspdiag.Tier
+	lspdiag.Tier = func(tools.Bash) string { return "process" }
+	t.Cleanup(func() { lspdiag.Tier = oldTier })
+	r := newStudioRig(t, `,"permissions":{"allow":["write(**)"]},"sandbox":{"language_servers":{"go":["/opt/stub/gopls"]}}`,
+		callTool("w1", "write", map[string]any{"path": "a.go", "content": "package a\n"}), say("written"))
+	id := r.open()
+	_, ups := r.prompt(id, "write a.go")
+	var card, outcome map[string]any
+	for _, u := range ups {
+		if !strings.HasPrefix(fmt.Sprint(u["toolCallId"]), "diag-") {
+			continue
+		}
+		switch u["sessionUpdate"] {
+		case "tool_call":
+			card = u
+		case "tool_call_update":
+			if u["status"] != "pending" && u["status"] != "in_progress" {
+				outcome = u
+			}
+		}
+	}
+	if card == nil || card["title"] != "Language server: gopls" || outcome == nil || outcome["status"] != "completed" {
+		t.Fatalf("card %v, outcome %v", card, outcome)
+	}
+	if b, _ := json.Marshal(outcome["content"]); !strings.Contains(string(b), "Not started") || !strings.Contains(string(b), "bash(/opt/stub/gopls)") {
+		t.Fatalf("outcome %s", b)
+	}
+}

@@ -163,6 +163,13 @@ All notable changes to Abhed are recorded here. The format follows
   open waits up to 250 ms for it to end, so a lone SIGTERM now exits
   after about a quarter of a second.
 
+### Go API
+
+- `monitor.Case` gains `Engine`, set for a command the engine runs outside
+  the agent's calls (a diagnostics server's start): the supervisor reviews
+  it but does not count it against `Guard.MaxPerTurn`. Additive; existing
+  callers are unchanged.
+
 ## [1.2.9] - 2026-11-02
 
 ### Upgrading from 1.2.8

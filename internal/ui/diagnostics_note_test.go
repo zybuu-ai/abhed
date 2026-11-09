@@ -73,3 +73,44 @@ func TestDiagnosticsStartIsAnEngineNote(t *testing.T) {
 		t.Fatalf("refused start:\n%s", text)
 	}
 }
+
+// A denied call is over: a diagnostics note after it is drawn, not held
+// behind it forever; and a note held behind a call that never returns is
+// drawn when the run ends.
+func TestDiagnosticsNoteAfterADeniedCall(t *testing.T) {
+	g := newRig(t, 100, 40)
+	r := NewRenderer(io.Discard, false)
+	r.Attach(g.lr)
+	sys := func(ev agent.Event) agent.Event { ev.Actor = agent.ActorSystem; return ev }
+	agentCall := func(id, cmd string) agent.Event {
+		ev := event(t, agent.EvActionRequested, agent.ActionRequested{CallID: id, Tool: "bash", Args: []byte(`{"command":"` + cmd + `"}`)})
+		ev.Actor = agent.ActorAgent
+		return ev
+	}
+	start := func(id, text string) []agent.Event {
+		return []agent.Event{
+			sys(event(t, agent.EvActionRequested, agent.ActionRequested{CallID: id, Tool: "bash", Via: agent.DiagnosticsVia, Args: []byte(`{"command":"gopls"}`)})),
+			sys(event(t, agent.EvActionApproved, map[string]string{"call_id": id, "by": agent.ByPolicy})),
+			sys(event(t, agent.EvObservation, agent.Observation{CallID: id, Tool: "bash", Content: text})),
+		}
+	}
+	evs := []agent.Event{
+		agentCall("b1", "rm -rf x"),
+		sys(event(t, agent.EvActionDenied, map[string]string{"call_id": "b1", "reason": "denied by rule bash(rm *)", "step": "deny", "by": agent.ByPolicy})),
+	}
+	evs = append(evs, start("diag-go-1", "language server gopls started for diagnostics (first)")...)
+	// A call that never returns holds the next note until the run ends.
+	evs = append(evs, agentCall("b2", "sleep 100"))
+	evs = append(evs, start("diag-py-2", "language server basedpyright-langserver started for diagnostics (second)")...)
+	for _, ev := range evs {
+		r.Event(ev)
+	}
+	g.settle()
+	g.waitText("(first)")
+	if strings.Contains(g.term.Text(), "(second)") {
+		t.Fatalf("a note was drawn inside a call in flight:\n%s", g.term.Text())
+	}
+	r.Event(sys(event(t, agent.EvSessionEnded, agent.SessionEnded{Reason: agent.TermUserInterrupt})))
+	g.settle()
+	g.waitText("(second)")
+}
