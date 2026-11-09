@@ -18,6 +18,9 @@ func TestPromptCacheMode(t *testing.T) {
 	}{
 		{"openai", "", "gpt-4o", "", CacheKey},
 		{"openai", "https://api.openai.com/v1/", "gpt-4o", "", CacheKey},
+		{"openai", "https://API.OpenAI.com:443/v1", "gpt-4o", "", CacheKey},
+		{"openai", "https://api.openai.com:8443/v1", "gpt-4o", "", ""},
+		{"openai", "http://api.openai.com/v1", "gpt-4o", "", ""},
 		{"openai", "https://proxy.example/v1", "gpt-4o", "", ""}, // a drop-in replacement
 		{"openai", "", "gpt-4o", "off", ""},
 		{"openrouter", "", "anthropic/claude-sonnet-4.5", "", CacheControl},
@@ -124,6 +127,7 @@ func TestPromptCacheUsage(t *testing.T) {
 		{"openai", `{"prompt_tokens":1000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":768}}`, 768, 0, 1000},
 		{"deepseek", `{"prompt_tokens":1000,"completion_tokens":5,"prompt_cache_hit_tokens":640,"prompt_cache_miss_tokens":360}`, 640, 0, 1000},
 		{"anthropic via proxy", `{"prompt_tokens":1000,"completion_tokens":5,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}`, 500, 200, 1000},
+		{"openrouter", `{"prompt_tokens":1000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":300,"cache_write_tokens":600}}`, 300, 600, 1000},
 	} {
 		srv := sseServer(t, `{"choices":[{"delta":{"content":"hi"}}]}`, `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":`+c.usage+`}`)
 		_, _, _, u, errs := collect(t, NewOpenAICompatible(srv.URL, "", "m", Profile{}))

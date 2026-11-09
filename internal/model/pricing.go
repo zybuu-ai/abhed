@@ -42,36 +42,32 @@ func (p Price) Cost(u Usage) float64 {
 		float64(u.CacheWriteTokens)*write + float64(u.OutputTokens)*p.Output) / 1e6
 }
 
-// PricesAsOf is when the built-in prices were taken from the providers'
-// published price lists. Prices change; a configured price overrides these.
-const PricesAsOf = "2026-11"
+// PricesAsOf is the day the built-in prices were checked, Standard tier, on
+// developers.openai.com/api/docs/pricing and platform.claude.com/docs/en/about-claude/pricing.
+const PricesAsOf = "2026-11-09"
 
 // builtinPrices are list prices for models whose price is published per
-// token and does not depend on the prompt's length. A model not named here
-// is unpriced: its cost is not shown and is never guessed.
+// token and does not depend on the prompt's length; models priced by prompt
+// length (gpt-6-*, gpt-5.4, gpt-5.5, Claude Haiku 5.5) and retired ones are
+// left out. A model not named here is unpriced, never guessed. Claude cache
+// writes are the 5-minute price, the cache Abhed asks for.
 var builtinPrices = map[string]Price{
-	"gpt-4o":            {Input: 2.50, Output: 10.00, CachedInput: 1.25},
-	"gpt-4o-2024-08-06": {Input: 2.50, Output: 10.00, CachedInput: 1.25},
-	"gpt-4o-2024-11-20": {Input: 2.50, Output: 10.00, CachedInput: 1.25},
-	"gpt-4o-mini":       {Input: 0.15, Output: 0.60, CachedInput: 0.075},
-	"gpt-4.1":           {Input: 2.00, Output: 8.00, CachedInput: 0.50},
-	"gpt-4.1-mini":      {Input: 0.40, Output: 1.60, CachedInput: 0.10},
-	"gpt-4.1-nano":      {Input: 0.10, Output: 0.40, CachedInput: 0.025},
-	"gpt-5":             {Input: 1.25, Output: 10.00, CachedInput: 0.125},
-	"gpt-5-mini":        {Input: 0.25, Output: 2.00, CachedInput: 0.025},
-	"gpt-5-nano":        {Input: 0.05, Output: 0.40, CachedInput: 0.005},
-	"o3":                {Input: 2.00, Output: 8.00, CachedInput: 0.50},
-	"o4-mini":           {Input: 1.10, Output: 4.40, CachedInput: 0.275},
+	"gpt-4o":       {Input: 2.50, Output: 10.00, CachedInput: 1.25},
+	"gpt-4o-mini":  {Input: 0.15, Output: 0.60, CachedInput: 0.075},
+	"gpt-4.1":      {Input: 2.00, Output: 8.00, CachedInput: 0.50},
+	"gpt-4.1-mini": {Input: 0.40, Output: 1.60, CachedInput: 0.10},
+	"gpt-5":        {Input: 1.25, Output: 10.00, CachedInput: 0.125},
+	"gpt-5-mini":   {Input: 0.25, Output: 2.00, CachedInput: 0.025},
+	"gpt-5-nano":   {Input: 0.05, Output: 0.40, CachedInput: 0.005},
+	"gpt-5.4-mini": {Input: 0.75, Output: 4.50, CachedInput: 0.075},
+	"o3":           {Input: 2.00, Output: 8.00, CachedInput: 0.50},
 
+	"claude-opus-5-5":            {Input: 4.00, Output: 20.00, CachedInput: 0.20, CacheWrite: 5.00},
+	"claude-sonnet-5-5":          {Input: 2.00, Output: 10.00, CachedInput: 0.10, CacheWrite: 2.50},
 	"claude-sonnet-4-5":          {Input: 3.00, Output: 15.00, CachedInput: 0.30, CacheWrite: 3.75},
 	"claude-sonnet-4-5-20250929": {Input: 3.00, Output: 15.00, CachedInput: 0.30, CacheWrite: 3.75},
-	"claude-sonnet-4-20250514":   {Input: 3.00, Output: 15.00, CachedInput: 0.30, CacheWrite: 3.75},
-	"claude-opus-4-1":            {Input: 15.00, Output: 75.00, CachedInput: 1.50, CacheWrite: 18.75},
-	"claude-opus-4-1-20250805":   {Input: 15.00, Output: 75.00, CachedInput: 1.50, CacheWrite: 18.75},
-	"claude-opus-4-20250514":     {Input: 15.00, Output: 75.00, CachedInput: 1.50, CacheWrite: 18.75},
 	"claude-haiku-4-5":           {Input: 1.00, Output: 5.00, CachedInput: 0.10, CacheWrite: 1.25},
 	"claude-haiku-4-5-20251001":  {Input: 1.00, Output: 5.00, CachedInput: 0.10, CacheWrite: 1.25},
-	"claude-3-5-haiku-20241022":  {Input: 0.80, Output: 4.00, CachedInput: 0.08, CacheWrite: 1.00},
 }
 
 // PriceFor is the price of a model by its name as sent to the provider:

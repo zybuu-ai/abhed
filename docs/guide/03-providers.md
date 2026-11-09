@@ -50,9 +50,14 @@ provider documents a field for it, and sends that field to no other server:
 in front of an Anthropic model), or `auto`, the default. Cached tokens are
 read as each server reports them (`prompt_tokens_details.cached_tokens`,
 DeepSeek's `prompt_cache_hit_tokens`, or an Anthropic-shaped proxy's
-`cache_read_input_tokens` and `cache_creation_input_tokens`) and recorded
+`cache_read_input_tokens` and `cache_creation_input_tokens`, or
+OpenRouter's `prompt_tokens_details.cache_write_tokens`) and recorded
 on each `model.call` as `tokens_cached` and `tokens_cache_write`, which the
-cost uses.
+cost uses. Both are taken to be counted inside `prompt_tokens`, as OpenAI,
+LiteLLM and OpenRouter count reads; a gateway that leaves writes out of
+`prompt_tokens` is under-billed by the input price of its writes. The official
+API is matched by its address with the host's case and a `:443` port
+ignored; any other address is a different server.
 
 ## Sampling
 
