@@ -692,6 +692,7 @@ written from both scans, and the gate blocks again.
 | G122, G302 | internal/toolchain/cache.go:732, 739, 750 | chmod inside a walk over a toolchain | Accepted: a toolchain Abhed unpacked into its own folder, which commands only read; links are skipped, so only Abhed could swap a folder |
 | G301 | internal/toolchain/cache.go (10), extras.go (2), lsp_extras.go (3), ruby.go (2) | toolchain folders made 0755 | Accepted: the cache is readable to every user by design; a container's commands read it, read-only |
 | G202 | store/sqlite/audit_links.go:29 | SQL built by concatenation | False positive: only `?` placeholders are joined; the seqs are bound as arguments |
+| G118 | internal/lspdiag/lspdiag.go (`server`) | the diagnostics server's goroutine uses its own context, not the edit's | False positive, annotated with `#nosec G118`: the server is started by one edit but serves the session's later edits, so it must outlive that edit's context; the diagnoser's `Close` at the session's end, and a 12-hour life, end it |
 
 #### Single-instance rules
 
