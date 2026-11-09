@@ -79,6 +79,8 @@ var remoteContentReads = []string{
 	"find /var/log/app -xdev -type f -name '*.log' -exec tail -n 5 {} +",
 	"rg --one-file-system -n pool /var/log/app",
 	"grep -d recurse error /var/log/app",
+	"grep -r error ~/app/logs",
+	"grep x app.log",
 	"docker logs -n 50 app",
 	"docker inspect app",
 	"systemctl cat nginx",
@@ -274,6 +276,16 @@ var remoteReadsRefused = []string{
 	"grep -drecurse x /.",
 	"grep --directories recurse x //",
 	"rg x /var/log/app",
+	// The login folder may be /, so a recursive grep from it, or from a
+	// path relative to it, may search /.
+	"grep -r x .",
+	"grep -R x ./",
+	"grep -r x logs",
+	"grep -rn x app/logs",
+	"grep -d recurse x .",
+	"grep --directories=recurse x ~",
+	"grep -drecurse x ~/",
+	"grep -r x /var/log/app .",
 	"find -H /var/log -xdev -type f -exec wc -c {} +",
 	"find /var/log -follow -type f -exec file {} +",
 	"find /var/log -exec file {} +",
@@ -492,6 +504,7 @@ func TestRemoteReadOnlyExplains(t *testing.T) {
 		"find . -type f -exec wc -c {} +": "-xdev",
 		"rg x /var/log":                   "--one-file-system",
 		"grep -d recurse x /":             "from /",
+		"grep -r x .":                     "login folder",
 		"grep -r x /":                     "from /",
 		"find / -type f -exec ls + {}":    "{} +",
 		// One grep with + -o -exec ls {} as its arguments, as GNU find reads it.

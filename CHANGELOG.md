@@ -73,7 +73,8 @@ All notable changes to Abhed are recorded here. The format follows
   `systemctl status` with its journal lines count as contents; no path
   under `/dev`, `/proc` or `/sys` is read, however it is written, and a
   walk that opens files must stay on one file system (`find -xdev`,
-  `rg --one-file-system`; `grep -r` does not search from `/`). `ssh.read_commands` stays an extra allow
+  `rg --one-file-system`; `grep -r` does not search from `/`, `~` or a
+  relative path, since the login folder may be `/`). `ssh.read_commands` stays an extra allow
   list. The approval and the record name the rule that allowed each call:
   `ssh.read_only`, or `ssh.read_commands: <entry>`. The classifier reads
   text, so start-up files, `~/.ssh/rc`, `ForceCommand` and symbolic links on

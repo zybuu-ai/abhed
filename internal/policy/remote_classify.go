@@ -130,6 +130,11 @@ func judgeCall(words []string, piped, contents, findOK bool) string {
 			if isRoot(w) {
 				return name + " searching from / reads /proc and /sys; name the folders to search"
 			}
+			// The login folder may be / (a home that is / or missing), so a
+			// relative root or ~ may be / too.
+			if name != "rg" && (w == "~" || strings.TrimRight(w, "/") == "~" || !strings.HasPrefix(w, "/") && !strings.HasPrefix(w, "~/")) {
+				return fmt.Sprintf("%s searching %q starts from the login folder, which may be /; name the folder from /", name, w)
+			}
 		}
 	}
 	for _, w := range words[1:] {

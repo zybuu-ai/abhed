@@ -662,7 +662,9 @@ A command is a read only when all of these hold:
   under them counts too. A walk would reach them through a mount, so find
   runs an opening `-exec` only with `-xdev` (above), and under
   `read_contents` `rg` runs only with `--one-file-system`. `grep -r` (and
-  `-d recurse`) has no such option: it does not search from `/`, but a
+  `-d recurse`) has no such option: it does not search from `/`, nor from
+  `~` or a relative path, since the login folder may be `/` (a home that is
+  `/` or missing); name the folder from `/` or under `~/`. But a
   tree with a proc mount inside it (a chroot) cannot be told from the
   command's text, so `grep -r` over such a tree can block on a `/proc`
   file until the timeout. Name the folders to search.
