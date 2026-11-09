@@ -59,10 +59,10 @@ All notable changes to Abhed are recorded here. The format follows
   refuses a `tool_call` or `permission_request`. A JSON reply's
   `decision: "block"` blocks, and `continue: false` ends the run, and the
   rest of its turn, as `policy_denied` (a subagent's ends the whole session
-  tree). An HTTP hook's request is judged by the egress
-  allowlist, and `headers_env` sends a token from the environment; headers
-  go only over https or to this machine. A hook
-  can block, ask or end the run, never approve. Each layer adds hooks, a
+  tree). An HTTP hook's request is judged by the egress allowlist, and
+  `headers_env` sends a token from the environment; headers go only over
+  https or to this machine. A hook can block, ask or end the run, never
+  approve. Each layer adds hooks, a
   workspace's only once it is trusted; only the managed configuration
   replaces a hook by name, and a lower file's hook of a name already taken
   is set aside. Every run is recorded as `hook.fired` with its kind, layer,
@@ -77,6 +77,23 @@ All notable changes to Abhed are recorded here. The format follows
   reads it. `hook.fired` is now also recorded by `abhed serve` and the SDK,
   in the session the hook fired for, and a `tool_call` hook is given the
   real session id.
+- A laptop whose organisation removed the person's access is told so. A
+  refused sign-in whose answer carries `"access_removed": true` (which the
+  Enterprise server sends for a revoked or SCIM-deprovisioned person; the
+  middleware adds it for any refusal whose error reports `AccessRemoved()`)
+  stops record shipping with a warning, printed when it happens and as each
+  later session starts, in `abhed record ship` and as a failing
+  `record_ship` check in `abhed doctor` and Studio's Health view. The record
+  stays on the machine and ships once a pass reaches the server again. A
+  backlog over `record.ship.max_backlog_mb` is named the same way at a
+  session's start. New in `recordship`: `State.AccessRemoved`,
+  `State.Notices`, `AccessRemovedError` and the local-only `access_removed`
+  event; in `auth`: `AccessRemover` and `IsAccessRemoved`.
+- `abhed doctor` (and Studio's Health view, as the `tenant` check) warns
+  when `auth.mode` is `oidc` with no named provider, `storage.tenant` is not
+  `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
+  claim named `tenant`, else `default`, so unless the identity provider
+  sends a matching `tenant` claim everyone it signs in is refused.
 
 ### Fixed
 
