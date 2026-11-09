@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !linux && !darwin
 
 package app
 

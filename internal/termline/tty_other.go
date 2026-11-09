@@ -9,3 +9,6 @@ func TTYNow(*os.File) (int, bool, bool) { return 0, false, false }
 
 // Hidden cannot ask the terminal on this platform.
 func Hidden(*os.File) bool { return false }
+
+// Process cannot ask the kernel on this platform.
+func Process(int) (string, int, int, bool) { return "", 0, 0, false }

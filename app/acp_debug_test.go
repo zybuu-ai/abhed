@@ -201,6 +201,10 @@ func TestStudioDebugProblems(t *testing.T) {
 		t.Fatalf("status %s", st.Params)
 	}
 	// Go needs the bundled Linux helper as its bridge; this build has none.
+	// Delve counts as installed, so the bridge is what is checked, wherever this runs.
+	old := lspProgramFinder
+	lspProgramFinder = func(*tools.Registry) func(string) bool { return func(string) bool { return true } }
+	t.Cleanup(func() { lspProgramFinder = old })
 	bmsg := r.cl.refused(errRefused, "_abhed/debug/launch", map[string]any{"sessionId": id, "language": "go", "program": "."})
 	if !strings.Contains(bmsg, "Linux build of Abhed") {
 		t.Fatalf("bridge refusal %q", bmsg)
