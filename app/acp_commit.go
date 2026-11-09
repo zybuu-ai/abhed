@@ -200,8 +200,8 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		return
 	}
 	res, err := model.CommitMessageByChat(ctx, a, diff.text, commitMaxTokens)
-	usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
-		len(diff.text), len(res.Text))
+	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
+		len(diff.text), len(res.Text), commitMaxTokens)
 	text := res.Text
 	if clean(text) != text {
 		text, res.Dropped = "", "the message carried a secret"
@@ -217,6 +217,12 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		agent.CommitMessage{Outcome: recorded, TokensIn: res.InputTokens, TokensOut: res.OutputTokens,
 			CostUSD: usd, Unpriced: unpriced, Estimated: estimated}); rerr != nil {
 		warnf("the record did not take %s: %v", agent.EvCommitMessage, rerr)
+	}
+	// The call's tokens and cost, never its content, as every reader of model.call counts it.
+	if _, rerr := parts.Loop.Recorder.Record(agent.EvModelCall, agent.ActorSystem, agent.Trusted, agent.ModelCall{
+		Model: a.Profile().Name, Purpose: agent.PurposeCommitMessage, TokensIn: tokIn, TokensOut: tokOut,
+		CostUSD: usd, Unpriced: unpriced, Estimated: estimated}); rerr != nil {
+		warnf("the record did not take %s: %v", agent.EvModelCall, rerr)
 	}
 	switch {
 	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):

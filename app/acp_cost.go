@@ -23,16 +23,24 @@ func editorRefused(l *agent.Loop, a model.Adapter, off, what string) string {
 	return ""
 }
 
-// editorCharge charges an editor call to the session's budget. A call cut
-// before usage was reported is estimated from the characters sent and
-// received, about four to a token, as a cut turn is.
-func editorCharge(l *agent.Loop, a model.Adapter, in, out int, cut bool, sentChars, gotChars int) (cost *float64, unpriced, estimated bool) {
-	if cut && in == 0 && out == 0 {
-		in, out = (sentChars+3)/4, (gotChars+3)/4
+// editorCharge charges an editor call to the session's budget. A call with
+// no prompt tokens reported, cut or not, is estimated as a turn is: input
+// from the characters sent, about four to a token, output from those received,
+// or at maxTokens for a cut call the budget charges at its bound.
+// It returns the tokens charged with the cost.
+func editorCharge(l *agent.Loop, a model.Adapter, in, out int, cut bool, sentChars, gotChars, maxTokens int) (tokIn, tokOut int, cost *float64, unpriced, estimated bool) {
+	if in == 0 {
+		in, out = (sentChars+3)/4, max(out, (gotChars+3)/4)
+		if cut && l.Budget.CutAtBound(a) {
+			if maxTokens <= 0 {
+				maxTokens = a.Profile().MaxOutputTokens
+			}
+			out = max(out, maxTokens)
+		}
 		estimated = in > 0 || out > 0
 	}
 	cost, unpriced = l.ChargeEditorCall(a.Profile().Name, model.Usage{InputTokens: in, OutputTokens: out})
-	return cost, unpriced, estimated
+	return in, out, cost, unpriced, estimated
 }
 
 // priceNotice is the field a refusal by the budget's gate is sent under: the

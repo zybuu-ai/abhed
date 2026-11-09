@@ -278,6 +278,15 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(body),
 			"_meta": map[string]any{acpMetaKey: map[string]any{"verdict": p}}})
+	case agent.EvCompletionSummary, agent.EvNextEditSummary:
+		// Completions and next edits carry their cost in their summaries.
+		var p agent.CompletionSummary
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.mu.Lock()
+			s.totalUSD += p.CostUSD
+			s.unpriced = s.unpriced || p.Unpriced
+			s.mu.Unlock()
+		}
 	case agent.EvModelCall:
 		var p agent.ModelCall
 		_ = json.Unmarshal(ev.Payload, &p)
@@ -292,12 +301,12 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		case p.TokensIn+p.TokensOut > 0:
 			s.costPartial = true
 		}
+		s.totalIn += p.TokensIn
+		s.totalOut += p.TokensOut
 		if replay {
 			s.mu.Unlock()
 			break
 		}
-		s.totalIn += p.TokensIn
-		s.totalOut += p.TokensOut
 		totalIn, totalOut, totalUSD, unpriced, partial := s.totalIn, s.totalOut, s.totalUSD, s.unpriced, s.costPartial
 		s.mu.Unlock()
 		// A suggestion's call is counted, but says nothing of the context.

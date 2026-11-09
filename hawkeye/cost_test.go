@@ -41,3 +41,15 @@ func TestCostUnpricedVersusNotRecorded(t *testing.T) {
 		}
 	}
 }
+
+// Studio's completions and next edits carry their cost in their summaries,
+// and HawkEYE's total counts it.
+func TestCostCountsEditorSummaries(t *testing.T) {
+	usd := 0.01
+	sum, _ := json.Marshal(agent.CompletionSummary{Requests: 3, CostUSD: 0.02})
+	evs := []agent.Event{callEvent(1, agent.ModelCall{Model: "gpt-4o", TokensIn: 10, CostUSD: &usd}),
+		{Seq: 2, Type: agent.EvCompletionSummary, Payload: sum}, {Seq: 3, Type: agent.EvNextEditSummary, Payload: sum}}
+	if r := Analyze("s", evs); r.Totals.CostUSD < 0.0499 || r.Totals.CostUSD > 0.0501 {
+		t.Fatalf("total %v", r.Totals.CostUSD)
+	}
+}

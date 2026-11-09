@@ -365,10 +365,11 @@ When the call's model has a price, `meta.costUsd` is the call's cost; while
 every call so far was priced, `cost: {amount, currency: "USD"}` and
 `meta.sessionCostUsd` are the session's. After a replay of calls recorded
 before costing, `meta.costPartial` is true and `meta.sessionCostUsd` is what
-is known; `cost` is not sent. Every `model.call` counts, replayed ones,
-the critic's, a suggestion's and a compaction summary's included; the
-editor's completions, next edits and commit messages are charged to the
-budget but counted in their own summaries (§7.10–7.12), not here. Once a call goes to a
+is known; `cost` is not sent. Every `model.call` counts, in tokens and cost,
+replayed ones, the critic's, a suggestion's, a compaction summary's and a
+commit message's included. Completions and next edits are counted from
+their summaries' `cost_usd` (§7.10, §7.11), which are recorded when the
+session closes. Once a call goes to a
 model with no price (its `model.call` says `unpriced`), `meta.unpriced` is true and the session's cost is left out. No price
 is invented.
 

@@ -1463,24 +1463,24 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}
-	// A reply stopped before the provider reported usage still cost tokens:
-	// they are estimated, marked so, and spent from the budget.
-	if ctx.Err() != nil && callUsage.InputTokens == 0 && callUsage.OutputTokens == 0 {
-		mc.TokensIn, _ = l.Adapter.CountTokens(req)
-		produced := text.Len() + reasoning.Len()
-		for _, c := range calls {
-			produced += len(c.Name) + len(c.Args)
-		}
-		mc.TokensOut = (produced + 3) / 4
-		if mc.TokensIn > 0 || mc.TokensOut > 0 {
-			mc.Estimated = true
-			l.Budget.Spend(mc.TokensIn + mc.TokensOut)
-			// The session's totals count them too, as the record's call does.
-			l.usage.InputTokens += mc.TokensIn
-			l.usage.OutputTokens += mc.TokensOut
-			l.usage.ColdPrefillTokens += mc.TokensIn
-			callUsage.InputTokens, callUsage.OutputTokens = mc.TokensIn, mc.TokensOut
-		}
+	// A call whose provider reported no usage, stopped or not, still cost
+	// tokens: they are estimated, marked so, and spent from the budget.
+	produced := text.Len() + reasoning.Len()
+	for _, c := range calls {
+		produced += len(c.Name) + len(c.Args)
+	}
+	cut := ctx.Err() != nil || streamErr != nil
+	if est, ok := EstimateUnreported(l.Adapter, req, callUsage, produced, cut, l.Budget.CutAtBound(l.Adapter)); ok {
+		dIn, dOut := est.InputTokens-callUsage.InputTokens, est.OutputTokens-callUsage.OutputTokens
+		mc.Estimated, mc.TokensIn, mc.TokensOut = true, est.InputTokens, est.OutputTokens
+		l.Budget.Spend(dIn + dOut)
+		// The session's totals count them too, as the record's call does.
+		l.usageMu.Lock()
+		l.usage.InputTokens += dIn
+		l.usage.OutputTokens += dOut
+		l.usage.ColdPrefillTokens += dIn
+		l.usageMu.Unlock()
+		callUsage = est
 	}
 	mc.CostUSD, mc.Unpriced = l.chargeCall(mc.Model, callUsage)
 	// A stream cut by our own cancel is an interrupt, recorded as such at

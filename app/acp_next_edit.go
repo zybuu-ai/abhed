@@ -191,8 +191,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
 	cancelled := err != nil && ctx.Err() != nil
-	usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, cancelled,
-		recent.Len()+len(strings.Join(shown, "")), len(res.Window))
+	_, _, usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, cancelled,
+		recent.Len()+len(strings.Join(shown, "")), len(res.Window), nextEditMaxTokens)
 	edits, dropped := []suggestedEdit{}, res.Dropped
 	if err == nil && dropped == "" {
 		edits, dropped = windowEdits(req.URI, req.Window.StartLine, raw[:len(shown)], shown, res.Window, clean)

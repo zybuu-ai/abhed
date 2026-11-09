@@ -55,6 +55,10 @@ type Report struct {
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.
 	offTurn []Turn
+	// editorUSD and editorUnpriced are Studio's completions and next edits,
+	// whose cost their summaries carry rather than a model.call each.
+	editorUSD      float64
+	editorUnpriced bool
 
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.

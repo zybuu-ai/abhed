@@ -59,3 +59,20 @@ func TestACPSessionCostPartialAfterOldReplay(t *testing.T) {
 		t.Fatalf("usage_update %v", ups[0])
 	}
 }
+
+// §3.4: replayed calls count in the session's tokens as in its cost, and an
+// editor summary's cost is the session's too.
+func TestACPReplayCountsTokensAndEditorCost(t *testing.T) {
+	c := &acpConn{}
+	s := &acpSession{id: "s1", always: map[string]string{}}
+	usd := 0.25
+	old, _ := json.Marshal(agent.ModelCall{Model: "gpt-4o", TokensIn: 100, TokensOut: 5, ContextWindow: 1000, CostUSD: &usd})
+	c.updates(s, agent.Event{Seq: 1, Type: agent.EvModelCall, Payload: old}, true)
+	sum, _ := json.Marshal(agent.CompletionSummary{CostUSD: 0.5})
+	c.updates(s, agent.Event{Seq: 2, Type: agent.EvCompletionSummary, Payload: sum}, true)
+	ups := c.updates(s, agent.Event{Seq: 3, Type: agent.EvModelCall, Payload: old}, false)
+	m := metaOf(ups[0])
+	if m["sessionTotalIn"] != 200 || m["sessionCostUsd"] != 1.0 {
+		t.Fatalf("usage_update %v", ups[0])
+	}
+}
