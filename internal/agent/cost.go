@@ -316,3 +316,22 @@ func (b *Budget) Hold(message string) {
 		b.allowanceStop.Store(&message)
 	}
 }
+
+// ReasoningStallError is a reply cut because it only reasoned, with no text or
+// tool call, past Tokens reasoning tokens, or, when Tokens is 0, for After.
+type ReasoningStallError struct {
+	Tokens int
+	After  time.Duration
+}
+
+// Reason says what the reply did, as "reasoned past N tokens without ...".
+func (e *ReasoningStallError) Reason() string {
+	if e.Tokens > 0 {
+		return fmt.Sprintf("reasoned past %d tokens without answering or calling a tool", e.Tokens)
+	}
+	return fmt.Sprintf("reasoned for %s without answering or calling a tool", e.After)
+}
+
+func (e *ReasoningStallError) Error() string {
+	return "the model " + e.Reason() + ", so the call was stopped"
+}

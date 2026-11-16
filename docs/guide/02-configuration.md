@@ -177,6 +177,32 @@ that stopped at `max_turns` in one conversation, with `/continue` or
 `abhed -p --continue`; 0 turns continuing off. See [Turn
 limit](04-permissions.md#turn-limit).
 
+`reasoning_stall_tokens` (8000 by default) cuts a model reply that has only
+reasoned, with no text or tool call, past that many reasoning tokens
+(counted at about four characters a token), instead of holding it to the
+call's ten-minute cap. `reasoning_stall_seconds` (600 by default) is a time
+backstop for the same. Neither cuts a reply whose reasoning is still within
+the request's own thinking budget (`thinking_budget`), which raises the token
+bound to it. Values under 1000 tokens or 30 seconds are raised to those
+floors, so a repository's configuration cannot cut every thinking reply. A
+slow local model reasoning at a few tokens a second may need a higher
+`reasoning_stall_seconds`. Only reasoning the provider streams is watched:
+a model that reasons out of sight (OpenAI's o-series over chat completions)
+is bounded by the call's own timeouts. Gemini streams summaries of its
+thoughts, far shorter than the thinking it bills, so with a thinking budget
+set a Gemini reply rarely reaches the bound and is held by the call's
+timeouts instead.
+
+A cut reply is charged as any cut call is (see below), and the turn asks once
+more, with thinking off (no effort, and no thinking budget sent) and a nudge
+to answer or make the one tool call it needs. If an answer arrives just as
+the cut comes, it is kept; a text answer cut part way is kept and the model
+asked to finish it (`-p` returns the two parts as one answer), and a second
+cut before a full reply ends the run `stalled`. A second cut reply before the model next answers ends the run
+`stalled`, with the reasoning kept in the record, and each cut reply counts
+toward the three failed replies in a row that end a run. A workspace may only
+lower either bound.
+
 `max_budget_tokens` caps the whole session: the primary agent and every
 subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason

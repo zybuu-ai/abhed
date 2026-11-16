@@ -716,7 +716,13 @@ func withheldJSON(red agent.Redactor, raw json.RawMessage) json.RawMessage {
 func lastAssistantText(msgs []model.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == model.RoleAssistant && strings.TrimSpace(msgs[i].Content) != "" {
-			return msgs[i].Content
+			// A reply cut part way and its continuation are one answer.
+			out := msgs[i].Content
+			for j := i; j >= 2 && msgs[j-1].Role == model.RoleUser && msgs[j-1].Content == agent.ContinueCutReply &&
+				msgs[j-2].Role == model.RoleAssistant; j -= 2 {
+				out = msgs[j-2].Content + out
+			}
+			return out
 		}
 	}
 	return ""

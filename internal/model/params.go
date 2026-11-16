@@ -228,3 +228,31 @@ func (p Params) Merge(other Params) Params {
 	}
 	return out
 }
+
+// ThinkingBudget is the thinking budget a request to a will carry: the
+// request's own, else the operator's configured one. It is 0 when there is
+// none, or when a's provider sends no budget (the Profile says which).
+// Wrappers pass SamplingDefaults through to the adapter they wrap.
+func ThinkingBudget(a Adapter, req Request) int {
+	if !a.Profile().Sampling.ThinkingBudget {
+		return 0
+	}
+	if p := SamplingDefaultsOf(a).Merge(req.Sampling()).ThinkingBudget; p != nil {
+		return *p
+	}
+	return 0
+}
+
+// SamplingDefaults are the operator's configured sampling parameters.
+func (c *Anthropic) SamplingDefaults() Params        { return c.Defaults }
+func (g *Gemini) SamplingDefaults() Params           { return g.Defaults }
+func (c *OpenAICompatible) SamplingDefaults() Params { return c.Defaults }
+func (w *WatsonX) SamplingDefaults() Params          { return w.Defaults }
+
+// SamplingDefaultsOf is a's configured sampling parameters, or none.
+func SamplingDefaultsOf(a Adapter) Params {
+	if s, ok := a.(interface{ SamplingDefaults() Params }); ok {
+		return s.SamplingDefaults()
+	}
+	return Params{}
+}
