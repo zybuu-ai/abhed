@@ -87,8 +87,10 @@ All notable changes to Abhed are recorded here. The format follows
   module, file or package (`python3 -m unittest tests.test_text`, `pytest
   tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names
   it, and "the tests pass" when every message the person typed names those
-  test runs and, once those runner commands are taken out, holds only
-  connective words ("fix it and run the tests"). Anything else leaves the
+  test runs and, once those runner commands are taken out, every word left
+  is exactly a connective word ("fix it and run the tests"); a word with a
+  `/`, a digit or a symbol is not one, and a runner given an argument the
+  checks do not read counts as a whole-suite run. Anything else leaves the
   whole workspace: "all the tests", "the whole suite", another runner
   (`npm test`, `make test`, a bare `make`), "CI", the build or lint, "the
   api tests", a negation such as "don't run" or "skip", a message in
@@ -104,9 +106,9 @@ All notable changes to Abhed are recorded here. The format follows
   skipped or expected failures, `[no test files]`) still leave the claim
   unverified, and a go claim about one package needs that package's own
   passing line, found by its exact import path from `go.mod`. A run that ran no test no longer verifies "all tests pass"
-  either. The false-claim corpus gains 86 planted cases and 13 controls for
-  it; none of the 854 planted claims verifies, all 238 controls do, and
-  none of the 339 true or neutral claims is contradicted.
+  either. The false-claim corpus gains 99 planted cases and 15 controls for
+  it; none of the 867 planted claims verifies, all 240 controls do, and
+  none of the 341 true or neutral claims is contradicted.
 - The revision note after an unverified answer now lists the session's
   tool results the agent may cite, by their real `call_id` (or `#seq` for
   a text answer), so a model no longer cites an id it made up. A cited id

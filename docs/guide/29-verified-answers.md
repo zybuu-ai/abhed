@@ -457,12 +457,18 @@ counts (`12 tests`, `replicas: 3`). Then:
     never narrows what an earlier one asked (each message must name test
     runs; their union is the scope, and a message that names none means
     the whole workspace). A message narrows only when, once its runner
-    commands, "the tests", "make sure" and "make it" are taken out, what
-    is left is a few connective words: fix, it, fails, failing, failed,
-    and, then, please, run, tell, me, the, a, result, so, that, pass,
-    passes, sure, now, its, test's, error, broken. Any other word leaves
-    the whole workspace: a path or file name outside a runner command (even
-    the file to fix, as in "fix src/utils/text.py and run the tests": it
+    commands, "the tests", "make sure" and "make it" are taken out (not
+    "run make it", which runs a target), every word left, split on white
+    space and CJK sentence punctuation and trimmed of sentence
+    punctuation at its ends, is exactly one of a few connective words:
+    fix, it, fails, failing, failed, and, then, please, run, tell, me,
+    the, a, result, so, that, pass, passes, sure, now, its, test's, error,
+    broken. A word with a `/`, an inner `.`, a digit, `$`, a backtick or
+    any symbol or letter outside ASCII is none of them. A runner command
+    given an argument this reading does not know (`pytest tests/test_a.py
+    ./a`) counts as a whole-suite run. Any other word leaves the whole
+    workspace: a path or file name outside a runner command (`./run`,
+    `./a`, even the file to fix, as in "fix src/utils/text.py and run the tests": it
     could as well be a script to run), a bare "make", another runner or
     target (`npm test`, `make test`, `tox`), "CI", the build, lint, the
     pipeline, smoke checks, "the api tests", "also" or "too", a negation
@@ -776,7 +782,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 854 plant a wrong claim. Some cite the result that shows them wrong
+session. 867 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -882,11 +888,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 854
+tail, a port not listening, a file not in a response). Today none of the 867
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 238 controls are verified,
-and none of the 339 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 240 controls are verified,
+and none of the 341 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim

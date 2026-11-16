@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
 // Test and build runs, as the checks read them: what kind of run a command
@@ -455,7 +454,10 @@ func messageTests(p string) (names []string, ok bool) {
 		}
 	}
 	// args walks a command's arguments from the end of its program words,
-	// keeping each one take accepts and blanking what was read.
+	// keeping each one take accepts and blanking what was read. The command
+	// ends at a plain word ("fails"); anything else take does not accept
+	// (./a, a flag, a pattern) is an argument this reading does not know, so
+	// the command is taken as a whole-suite run.
 	args := func(start, from, to int, take func(a string) (stop, whole bool)) (whole bool) {
 		end, n := from, 0
 		for _, f := range fieldsAt(p[from:to]) {
@@ -464,6 +466,9 @@ func messageTests(p string) (names []string, ok bool) {
 				return true
 			}
 			if stop {
+				if !proseWordRe.MatchString(strings.Trim(f.s, sentencePunct)) {
+					return true
+				}
 				break
 			}
 			end, n = from+f.end, n+1
@@ -516,14 +521,12 @@ func messageTests(p string) (names []string, ok bool) {
 	// name outside a runner command, even one to edit, is not one: it may
 	// be something else to run, so it leaves the whole suite.
 	left := plainTestsRe.ReplaceAllString(strings.ToLower(string(rest)), " ")
-	left = makePhraseRe.ReplaceAllString(left, " ")
-	for _, r := range left {
-		if r > unicode.MaxASCII && unicode.IsLetter(r) {
-			return nil, false // another language: not read, so not narrowed
-		}
-	}
-	for _, w := range leftWordRe.FindAllString(left, -1) {
-		if !connectives[w] {
+	left = makePhrases(left)
+	// Each word left, its sentence punctuation trimmed, must be exactly a
+	// connective: a path, a digit, a symbol, a backtick or a letter outside
+	// ASCII is not one.
+	for _, w := range strings.FieldsFunc(left, wordBreak) {
+		if w = strings.Trim(w, sentencePunct); w != "" && !connectives[w] {
 			return nil, false
 		}
 	}
@@ -535,9 +538,39 @@ var (
 	plainTestsRe = regexp.MustCompile(`(?:\b(?:run|rerun|re-run)\s+)?\bthe\s+tests?\b`)
 	// makePhraseRe is "make sure" and "make it"; a bare "make" runs a target.
 	makePhraseRe = regexp.MustCompile(`\bmake\s+(?:sure|it)\b`)
-	// leftWordRe is a word of what is left; an apostrophe stays in it.
-	leftWordRe = regexp.MustCompile(`[a-z]+(?:'[a-z]+)?`)
+	// proseWordRe is a plain word, which ends a runner command's arguments.
+	proseWordRe = regexp.MustCompile(`^[A-Za-z]+$`)
+	// runVerbRe ends with a word that runs what follows it.
+	runVerbRe = regexp.MustCompile(`\b(?:run|rerun|re-run|execute|exec)\s*$`)
 )
+
+// sentencePunct is trimmed from the ends of a word left in a message.
+const sentencePunct = ".,;:!?" + cjkPunct
+
+// cjkPunct is CJK sentence punctuation, written with no space after it, so
+// it also separates words.
+const cjkPunct = "；。，、：！？"
+
+// wordBreak separates the words of a message: white space, or CJK
+// sentence punctuation.
+func wordBreak(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || strings.ContainsRune(cjkPunct, r)
+}
+
+// makePhrases blanks "make sure" and "make it", except where they follow
+// "run" ("run make it" runs a make target).
+func makePhrases(s string) string {
+	b := []byte(s)
+	for _, m := range makePhraseRe.FindAllStringIndex(s, -1) {
+		if runVerbRe.MatchString(s[:m[0]]) {
+			continue
+		}
+		for k := m[0]; k < m[1]; k++ {
+			b[k] = ' '
+		}
+	}
+	return string(b)
+}
 
 // connectives are the only words a message may hold beside the runner
 // commands it names, "the tests", "make sure" and "make it" for those
@@ -561,7 +594,7 @@ func fieldsAt(s string) []wordAt {
 	var out []wordAt
 	start := -1
 	for k, r := range s {
-		space := r == ' ' || r == '\t' || r == '\n' || r == '\r'
+		space := wordBreak(r)
 		switch {
 		case !space && start < 0:
 			start = k

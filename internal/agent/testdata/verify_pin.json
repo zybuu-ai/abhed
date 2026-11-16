@@ -5464,6 +5464,81 @@
       "name": "the tests said to pass after the named run, a second message running a script",
       "kind": "planted",
       "hash": "24ee254f80305159"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a one-letter script",
+      "kind": "planted",
+      "hash": "a5e5499e7f1e0061"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named run",
+      "kind": "planted",
+      "hash": "ceb82a766d175976"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named fix, then the tests",
+      "kind": "planted",
+      "hash": "651d182ebfa7d112"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named by a digit",
+      "kind": "planted",
+      "hash": "43177e6149531e37"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named _",
+      "kind": "planted",
+      "hash": "b7deea5e278da8fd"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a path of connective words",
+      "kind": "planted",
+      "hash": "2bbd8edbe58c57d0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a path with an inner dot",
+      "kind": "planted",
+      "hash": "673d00dc85f997ab"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a number",
+      "kind": "planted",
+      "hash": "ab3b8517c47d0a40"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named -",
+      "kind": "planted",
+      "hash": "8f96577a78d34b57"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script in backticks",
+      "kind": "planted",
+      "hash": "69b15a3aad925374"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a make target named it",
+      "kind": "planted",
+      "hash": "9e00f0dd6cc2f27a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming an argument the runner was given",
+      "kind": "planted",
+      "hash": "cf4529174fb22f13"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming symbols",
+      "kind": "planted",
+      "hash": "600b0ddabbc4298c"
+    },
+    {
+      "name": "the task's tests said to pass, the task asking politely for the result",
+      "kind": "control",
+      "hash": "1b30535f087f665e"
+    },
+    {
+      "name": "the task's tests said to pass, the task written with CJK punctuation",
+      "kind": "control",
+      "hash": "b75a65811a50578a"
     }
   ],
   "strict": [
