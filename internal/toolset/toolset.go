@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os/exec"
 	"slices"
 	"strings"
@@ -696,13 +698,68 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 func Budget(cfg config.Config) *agent.Budget {
 	b := agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
 	b.MaxUSD = cfg.Limits.MaxBudgetUSD
+	b.ManagedPrices = cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
+	if cfg.Limits.BudgetSpent {
+		// Spent before it starts: the first turn's check stops the run, and
+		// every other call (a completion, a suggestion) is refused.
+		const spent = "stopped: your budget is spent; an administrator can change it"
+		b.Hold(spent)
+		b.Allowance = func(context.Context) agent.Allowance {
+			return agent.Allowance{Stop: true, Scope: "spent", Message: spent}
+		}
+	}
 	if len(cfg.Pricing) > 0 {
 		b.Prices = make(map[string]model.Price, len(cfg.Pricing))
 		for name, p := range cfg.Pricing {
+			// An unpinned org's 0 holds only where nothing is spent: a model
+			// every configured provider of which runs on this machine.
+			if cfg.PricingLoopbackOnly[name] && !servedOnThisMachine(cfg, name) {
+				continue
+			}
 			b.Prices[name] = model.Price{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
 		}
 	}
 	return b
+}
+
+// servedOnThisMachine reports a model name that at least one configured
+// provider sends, and every provider sending it is a server on this
+// machine: its base_url, or its custom type's, or its type's own endpoint
+// when it sets none, is loopback.
+func servedOnThisMachine(cfg config.Config, name string) bool {
+	found := false
+	for _, p := range cfg.Model.Providers {
+		if p.Model != name {
+			continue
+		}
+		found = true
+		base := p.BaseURL
+		if base == "" {
+			for _, d := range cfg.CustomProviders {
+				if d.Name == p.Type {
+					base = d.BaseURL
+				}
+			}
+		}
+		if base == "" && !model.LocalByDefault(p.Type) || base != "" && !loopbackEndpoint(base) {
+			return false
+		}
+	}
+	return found
+}
+
+// loopbackEndpoint reports a URL whose host is this machine.
+func loopbackEndpoint(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Subagents returns a copy of reg with task and tasks bound to one session's

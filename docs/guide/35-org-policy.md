@@ -108,7 +108,8 @@ an untrusted workspace's file follows: deny and ask rules, honeytokens and `veri
 person's own, never replacing them),
 `permissions.mode` and `mode.default` (only plan or default, and only
 narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
-lower limits, a stronger `sandbox.min_tier`, `allow_network` and
+lower limits, `limits.budget_spent` on (every run stops before its first
+model call, as a server does once a person's budget is spent), a stronger `sandbox.min_tier`, `allow_network` and
 `readable_home` off, stricter toolchains and listen, `monitor.enabled` on and
 `on_unavailable: deny`, more supervisor reviews and honeytokens, stricter
 syntax checks and checkpoints, `ssh.listed_reads_only` on (no remote
@@ -120,7 +121,16 @@ aside.
 `listen_ports`, preapproved toolchains, `fence`, `egress` and `hooks.disabled`, and the
 loosening values of the tighten-only settings above. These change what runs
 or reaches out unasked, so they need keys `/etc/abhed/config.json` pins out
-of band (`org_policy.keys`); a key pinned on first use is not enough.
+of band (`org_policy.keys`); a key pinned on first use is not enough. So
+does `pricing`, with one exception: an org whose keys are not pinned may
+price a model at exactly 0 (every figure 0), and the laptop holds that 0
+only for a model every provider it configures sends to a server on this
+machine (a loopback `base_url`, or a local server type such as `ollama`
+with none set). This lets an org dollar budget admit local models without
+pinned keys. A price can only lower what a budget counts, so an unpinned org
+never prices a model above 0, and its 0 never reaches a model served from
+anywhere else: that model stays unpriced and a dollar budget refuses it. A
+price the machine's own file sets for the same model is the machine's.
 `auto` and `bypass` modes are never set by an org policy.
 
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records

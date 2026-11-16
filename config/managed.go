@@ -69,6 +69,16 @@ func mergeManaged(cfg *Config) error {
 	if local == nil && org == nil {
 		return nil
 	}
+	// A price the machine's own file sets is the machine's, wherever it sends.
+	if len(cfg.PricingLoopbackOnly) > 0 && local != nil {
+		var mine struct {
+			Pricing map[string]json.RawMessage `json:"pricing"`
+		}
+		_ = json.Unmarshal(local, &mine)
+		for name := range mine.Pricing {
+			delete(cfg.PricingLoopbackOnly, name)
+		}
+	}
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)

@@ -447,6 +447,17 @@ All notable changes to Abhed are recorded here. The format follows
   `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
   (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
   longer lifts the org's lower cap.
+- `limits.budget_spent`: a run stops before its first model call, with a
+  `budget.stopped` of reason `allowance`, and every other call is refused.
+  An org policy turns it on once a person's budget is spent, so a laptop
+  under it no longer runs a turn per session past the budget. Only a lower
+  layer's on is taken.
+- An org policy whose keys the machine does not pin may price a model at
+  exactly 0, held only for a model every configured provider of which runs
+  on this machine (a loopback `base_url`, or a local server type with none),
+  so an org dollar budget admits local models without pinned keys; any other
+  price from it is set aside, as before. Under a managed or org dollar cap,
+  an unpriced model's refusal says an administrator sets the price.
 
 ### Changed
 

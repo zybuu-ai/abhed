@@ -74,3 +74,21 @@ func TestHeadlessDollarBudgetFlagChecked(t *testing.T) {
 		t.Fatalf("output:\n%s", h.Output())
 	}
 }
+
+// A budget held spent stops a headless run before the first request: exit
+// 3, with the reason, and nothing reaches the model.
+func TestHeadlessSpentBudgetMakesNoCall(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "say hi", "-output-format", "json"}, Managed: `{"limits":{"budget_spent":true}}`,
+		Script: `text "hello"`})
+	res := resultOf(t, h.Stdout())
+	if res["subtype"] != "max_budget" || res["exit_code"] != 3.0 {
+		t.Fatalf("result %v", res)
+	}
+	if msg, _ := res["error"].(string); !strings.Contains(msg, "budget is spent") {
+		t.Fatalf("error %q", msg)
+	}
+	if n := len(h.Requests()); n != 0 {
+		t.Fatalf("%d requests reached the model", n)
+	}
+}

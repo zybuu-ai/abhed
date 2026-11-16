@@ -33,6 +33,9 @@ type Budget struct {
 	MaxUSD float64
 	// Prices are the configured model prices, over the built-in list.
 	Prices map[string]model.Price
+	// ManagedPrices marks prices only an administrator may set, as under a
+	// managed or org dollar cap, so a refusal points there.
+	ManagedPrices bool
 	// Allowance, when set, is a limit kept outside the session, such as an
 	// edition's periodic budget, asked at each turn boundary of the session
 	// and its subagents.
