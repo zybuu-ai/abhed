@@ -32,6 +32,7 @@ func TestBackgroundSnapshotRulesAreTheRepositoryRoots(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".abhed", "config.json"), []byte(`{"permissions":{"deny":["read(private/**)"]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	bgGit(t, root, "init", "-q")
 	for _, trust := range []config.TrustChoice{config.TrustGranted, config.TrustRefused, ""} {
 		withheld, err := bgRulesFor(trust, root)(root)
 		if err != nil {
@@ -129,11 +130,27 @@ func TestBackgroundSnapshotRulesAreEveryFoldersInTheRepository(t *testing.T) {
 		".abhed/config.json":       `{"permissions":{"deny":["read(private/**)"]}}`,
 		"sub/.abhed/config.json":   `{"permissions":{"deny":["read(keys/**)"]}}`,
 		"other/.abhed/config.json": `{"permissions":{"deny":["read(*.pem.txt)"]}}`,
+		"sub/a.go":                 "package sub\n",
+		"other/a.go":               "package other\n",
+		// An untracked tree with a .abhed of its own is never looked in.
+		"node_modules/pkg/.abhed/config.json": `{"permissions":{"deny":["read(**)"]}}`,
 	} {
 		p := filepath.Join(root, filepath.FromSlash(name))
 		_ = os.MkdirAll(filepath.Dir(p), 0o700)
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
+		}
+	}
+	bgGit(t, root, "init", "-q")
+	bgGit(t, root, "add", "sub", "other", ".abhed")
+	bgGit(t, root, "commit", "-q", "-m", "x")
+	dirs, err := bgRuleFolders(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if strings.Contains(d, "node_modules") {
+			t.Fatalf("an untracked tree was looked in: %v", dirs)
 		}
 	}
 	for _, ws := range []string{root, filepath.Join(root, "sub"), filepath.Join(root, "unrelated")} {
@@ -152,5 +169,14 @@ func TestBackgroundSnapshotRulesAreEveryFoldersInTheRepository(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func bgGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

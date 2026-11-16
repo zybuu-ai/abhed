@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/bgcli"
+	"github.com/zybuu-ai/abhed/internal/hostgit"
 	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
@@ -83,8 +84,9 @@ func bgRulesFor(trust config.TrustChoice, workspace string) func(root string) (f
 
 // bgRuleFolders are the folders whose configuration a snapshot of the
 // repository at root follows: root, those from it down to workspace, and
-// every folder in the repository with a .abhed of its own. Links are not
-// followed, and .git is not entered.
+// every folder holding a tracked file that has a .abhed of its own. Only
+// folders with tracked files are looked in, so an untracked tree such as
+// node_modules is never walked; a snapshot carries tracked files alone.
 func bgRuleFolders(root, workspace string) ([]string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -108,21 +110,22 @@ func bgRuleFolders(root, workspace string) ([]string, error) {
 			}
 		}
 	}
-	err = filepath.WalkDir(realRoot, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable folder holds no rules we can read
+	out, err := hostgit.Command(context.Background(), realRoot, "ls-files", "-z", "--cached").Output()
+	if err != nil {
+		return nil, fmt.Errorf("list the repository's files: %w", err)
+	}
+	looked := map[string]bool{}
+	for _, name := range strings.Split(string(out), "\x00") {
+		for d := path.Dir(name); name != "" && !looked[d]; d = path.Dir(d) {
+			looked[d] = true
+			dir := filepath.Join(realRoot, filepath.FromSlash(d))
+			if fi, err := os.Lstat(filepath.Join(dir, ".abhed")); err == nil && fi.IsDir() {
+				add(dir)
+			}
+			if d == "." {
+				break
+			}
 		}
-		if !d.IsDir() {
-			return nil
-		}
-		switch d.Name() {
-		case ".git":
-			return filepath.SkipDir
-		case ".abhed":
-			add(filepath.Dir(p))
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return dirs, err
+	}
+	return dirs, nil
 }

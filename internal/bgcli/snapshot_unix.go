@@ -40,7 +40,7 @@ func readNoFollow(root *os.File, rel string) (data []byte, fi os.FileInfo, skip 
 		opened = append(opened, fd)
 		dirfd = fd
 	}
-	fd, err := unix.Openat(dirfd, parts[len(parts)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(dirfd, parts[len(parts)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	switch {
 	case errors.Is(err, unix.ENOENT):
 		return nil, nil, "", os.ErrNotExist
