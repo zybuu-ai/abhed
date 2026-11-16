@@ -44,6 +44,7 @@ model you point it at, and records everything it does.
 | [Debugging](31-debugging.md) | Studio's Run and Debug: Delve and debugpy in the session's sandbox, the debuggee judged and recorded as your call |
 | [Language servers](33-language-servers.md) | Studio's editor intelligence: gopls, basedpyright, typescript-language-server and rust-analyzer in the session's sandbox, filtered both ways |
 | [Inline completions](34-inline-completions.md) | Studio's ghost text from a completion model: fill in the middle on a local coding model, bounded context, `completion.local_only` |
+| [Background jobs](37-background-jobs.md) | `abhed bg`: agents that run on a server as you after you leave; answering what they ask; the protocol (the server side is a Team feature) |
 | [Sandboxes over the API](22-sandboxes.md) | `/v1/sandboxes`: create, run commands in, stop and restart sandboxes; templates; the `abhed sandbox` command; `serve -check`; `/v1/ready` |
 | [Container drivers](23-container-drivers.md) | the `docker` and `podman` sandbox drivers: flags, mounts, GPUs, the allowlist |
 | [Snapshots and forwarding](25-snapshots-and-forwarding.md) | sandbox snapshots and restore, port forwarding, exposed services |

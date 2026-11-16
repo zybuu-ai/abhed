@@ -37,6 +37,9 @@ const (
 	MemoryImport  = "import"
 	MemoryRule    = "rule"
 	MemoryAuto    = "auto"
+	// MemorySubdir is a folder's own ABHED.md, loaded when the agent first
+	// works in that folder.
+	MemorySubdir = "subdirectory"
 )
 
 // Memory file names.
@@ -73,6 +76,9 @@ type MemoryOptions struct {
 	Allow func(path string) error
 	// Auto, when set, is the auto memory index to load; see AutoMemoryDir.
 	Auto string
+	// ManagedOnly leaves out the person's and the workspace's memory files,
+	// for a bare run; RuleDirs and Auto still load as given.
+	ManagedOnly bool
 }
 
 // MemoryEntry is one memory file.
@@ -177,10 +183,12 @@ func LoadMemory(o MemoryOptions) *Memory {
 	}
 	m := &Memory{Workspace: o.Workspace}
 	l := memoryLoader{o: o, m: m, seen: map[string]bool{}}
-	if user := filepath.Join(o.Home, ".abhed", MemoryFileName); o.Home != "" && exists(user) {
+	// ManagedOnly skips the person's and the workspace's files; the rule
+	// directories and auto memory are the caller's to narrow.
+	if user := filepath.Join(o.Home, ".abhed", MemoryFileName); !o.ManagedOnly && o.Home != "" && exists(user) {
 		l.file(user, MemoryUser, "~/.abhed/"+MemoryFileName, "", 0)
 	}
-	if o.Workspace != "" {
+	if o.Workspace != "" && !o.ManagedOnly {
 		project := filepath.Join(o.Workspace, MemoryFileName)
 		if existsAsNamed(project) {
 			l.file(project, MemoryProject, MemoryFileName, "", 0)
@@ -582,8 +590,12 @@ func globMatch(glob, p string) bool {
 	}
 }
 
+// MemoryAskedNote begins why a memory file a read rule asks about was not loaded.
+const MemoryAskedNote = "a read rule asks before it is read"
+
 // ReadAllowed is a MemoryOptions.Allow that puts each workspace memory file
-// to a policy's read rules, as the read tool would be.
+// to a policy's read rules, as the read tool would be: a deny or an ask
+// keeps it out.
 func ReadAllowed(pol *policy.Engine) func(path string) error {
 	if pol == nil {
 		return nil
@@ -593,8 +605,12 @@ func ReadAllowed(pol *policy.Engine) func(path string) error {
 		if err != nil {
 			return err
 		}
-		if d := pol.Evaluate("read", false, args); d.Decision == policy.Deny {
+		switch d := pol.Evaluate("read", false, args); d.Decision {
+		case policy.Deny:
 			return errors.New(d.Reason)
+		case policy.Ask:
+			// Nobody is there to say yes while memory loads, so it is not read.
+			return fmt.Errorf("%s (%s), and memory is never loaded on an ask", MemoryAskedNote, d.Reason)
 		}
 		return nil
 	}

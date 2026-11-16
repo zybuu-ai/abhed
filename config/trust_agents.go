@@ -186,7 +186,7 @@ func readOpenedWithin(path string, open func(string) (*os.File, error), check fu
 	if err := check(opened); err != nil {
 		return nil, err
 	}
-	if n := nlink.Of(opened); n > 1 {
+	if n := nlink.OfFile(f); n > 1 { // counted on the opened file, its handle on Windows
 		return nil, fmt.Errorf("has %d names; a definition with a second name is not read", n)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))

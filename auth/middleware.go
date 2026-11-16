@@ -88,7 +88,7 @@ func (m Middleware) Wrap(next http.Handler) http.Handler {
 			// The reason is safe to return: it helps a legitimate client
 			// fix its configuration and tells an attacker nothing they
 			// could not determine by trying.
-			unauthorized(w, err.Error())
+			writeAuthError(w, http.StatusUnauthorized, "unauthorized", err)
 			return
 		case failRefused:
 			if p != nil {
@@ -348,9 +348,35 @@ func (m Middleware) refuse(w http.ResponseWriter, r *http.Request, err error) {
 		http.Redirect(w, r, "/?refused="+url.QueryEscape(clip(err.Error(), 200)), http.StatusFound)
 		return
 	}
+	writeAuthError(w, http.StatusForbidden, "forbidden", err)
+}
+
+// AccessRemover is a refusal an edition gives when the organisation removed the person's
+// access (revoked, or deprovisioned), not because a credential lapsed or failed.
+type AccessRemover interface{ AccessRemoved() bool }
+
+// IsAccessRemoved reports whether err is such a refusal.
+func IsAccessRemoved(err error) bool {
+	var r AccessRemover
+	return errors.As(err, &r) && r.AccessRemoved()
+}
+
+// writeAuthError answers a refused token (401) or identity (403) with its reason, marking
+// one whose access was removed with "access_removed": true, so a client such as a laptop
+// shipping its record tells its person instead of asking them to sign in again.
+func writeAuthError(w http.ResponseWriter, status int, code string, err error) {
+	body := map[string]any{"error": code, "reason": err.Error()}
+	if status == http.StatusForbidden {
+		body["refused"] = true
+	} else {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="abhed"`)
+	}
+	if IsAccessRemoved(err) {
+		body["access_removed"] = true
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden", "reason": err.Error(), "refused": true})
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // refusedCookie remembers for a while why a session was ended, so the sign-in

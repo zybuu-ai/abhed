@@ -29,6 +29,10 @@ import (
 
 // Case is everything the monitor may know about one proposed call.
 type Case struct {
+	// Engine is set for a command the engine runs outside the agent's
+	// calls, such as a diagnostics server's start: it is reviewed, but not
+	// counted against MaxPerTurn, which bounds the agent's calls.
+	Engine bool
 	// Remit is what the session was asked to do: the first user message,
 	// plus whatever the operator configured.
 	Remit string
@@ -205,7 +209,7 @@ func (g *Guard) Review(ctx context.Context, c Case) Outcome {
 		out.Skipped = why
 		return out
 	}
-	if g.MaxPerTurn > 0 {
+	if g.MaxPerTurn > 0 && !c.Engine {
 		g.mu.Lock()
 		over := g.used >= g.MaxPerTurn
 		if !over {

@@ -13,14 +13,15 @@ Supported today:
 |---|---|---|
 | Go | `dlv dap` (Delve) | a program (`dlv debug`) or a package's tests (`dlv test`) |
 | Python | `python3 -m debugpy.adapter` | a program, or tests run with `pytest` |
+| Node | Abhed's own adapter, run with the sandbox's `node` (20.6 or later) | a JavaScript or TypeScript program (run by Node itself, `tsx` or `ts-node`), or tests run with `node --test`, Vitest or Jest |
 
-Node is not supported yet: its adapter (js-debug) is a separate install, and
-comes with the toolchain manager.
+Node opens no port at all, so it debugs on every sandbox tier as it is; see
+[Node](#node). The rest of this section is about Go and Python.
 
 ## Where it runs
 
-A debug adapter talks to the program it debugs over loopback, so it needs a
-sandbox with a network of its own:
+A Go or Python debug adapter talks to the program it debugs over loopback,
+so it needs a sandbox with a network of its own:
 
 - **The container tier** (Docker or Podman; on a Mac, the engine's VM) and the
   `vm` tier.
@@ -165,6 +166,85 @@ the Go a session builds with can be newer than the Delve beside it. A program
 built with a Go that Delve truly cannot read fails at launch with Delve's own
 message.
 
+## Node
+
+Node needs no port to be debugged. The adapter is a short program built
+into Abhed and run with the sandbox's own `node`; nothing is installed for
+it. It starts your program with one small module loaded first (`--import`),
+which starts a worker thread inside the program. That thread drives the
+program's own inspector in process (`node:inspector`) and carries its
+messages to the adapter over a pipe the adapter handed it, so there is no
+`--inspect`, no loopback port and no socket file. The program waits before
+its first line until your breakpoints are set. The adapter itself runs with
+no `NODE_OPTIONS`, and the program gets the sandbox's `NODE_OPTIONS`
+without any option whose name starts `--inspect` or `--debug` (with `_`
+read as `-`, as Node reads it), so an inherited one opens no port either. Only the launch's own `env`, which is judged and shown, can
+give the program one.
+
+So a Node session starts on every sandbox tier just as the session's other
+commands run: the container and `vm` tiers, the Linux process and fence
+tiers whatever their network, and the macOS process tier without opening
+loopback and without the process-tier agreement above. Its
+`debug.launched` has `loopback` off. The program's own network and
+listening are the session's, as for any command (`sandbox.listen` and the
+rest). A session whose commands run under the `none` tier, or a tier
+Abhed cannot tell, has no sandbox and is refused before anything is judged
+(a `sandbox-required` problem, with the steps to use a sandbox).
+`_abhed/debug/status-tier` reports this as `nodeReady`.
+
+What runs it is the launch's `runner`:
+
+| `runner` | Debugs | Command line judged and run |
+|---|---|---|
+| `node` (the default) | a program: JavaScript, or TypeScript where Node strips types itself (22.18, 23.6 or later), which keeps every line where it is | `node /work/app.js` |
+| `tsx` | a TypeScript program | `node --import tsx /work/src/app.ts` |
+| `ts-node` | a TypeScript program | `node --require /work/node_modules/ts-node/register /work/src/app.ts` |
+| `node` with a test | a test file, run in the debugged process (on Node 22, with its `--experimental-test-isolation`) | `node --test --test-isolation=none /work/sum.test.js` |
+| `vitest` | tests matching a filter, in worker threads, one file at a time | `node /work/node_modules/vitest/vitest.mjs run --pool=threads --no-file-parallelism sum` |
+| `jest` | tests matching a pattern, in the debugged process | `node /work/node_modules/jest/bin/jest.js --runInBand sum` |
+
+The runner's package must be installed in the workspace: the engine finds
+it as node does, in the nearest `node_modules` from the working folder up
+to the workspace (never above it), and the command line names the file
+found, so the judged call and the record say which copy ran;
+`debug.launched` also has the package as `runner`. Abhed installs none: a
+launch without it is refused before anything is judged, with a
+`runner-missing` problem and the steps (`npm install`, or `npm install -D
+vitest`). Your arguments follow the program, or the test filter, as given.
+
+**TypeScript and other compiled code.** Each of the program's own scripts
+(not those in `node_modules`) is stopped for a moment before it runs: its
+source map is read, inline or from the `.map` file it names (a regular file
+of at most 16 MiB; anything else is left unread), and the
+breakpoints that fall in it are set. So a breakpoint in a `.ts` file holds
+whether the code was compiled in memory (`tsx`, `ts-node`, Vitest, Jest's
+transform) or ahead of time (`tsc` with source maps), and the call stack is
+shown at the TypeScript lines. In mapped code, a breakpoint on a line with
+no code moves to the next line that has some, within 20 lines. Code in
+`node_modules` is not mapped and is shown greyed out. A breakpoint is
+reported verified once it is set in a script that has loaded; one in a
+script still to load is answered unverified and announced as verified when
+it is set.
+
+**Threads and processes.** The program's worker threads (those its main
+thread starts) are threads of their own in the debug view, each stopped and
+stepped on its own. Child processes are not debugged: that is why Jest runs
+`--runInBand` and Vitest uses one worker thread at a time.
+
+**What works:** breakpoints, with conditions; continue, step over, into and
+out; pause; the call stack, scopes and variables; `evaluate` in watches,
+the console and hovers, where only what you type in the debug console may
+change the program: a watch, a hover or any other evaluation that would
+have a side effect is refused, and so is one that reads a native getter
+(such as `process.pid`); and
+stopping on uncaught or all exceptions. Logpoints, changing a variable's
+value and restarting a frame are not offered.
+
+Node missing where the session's commands run ends the session with an
+`adapter-missing` problem whose `install` is `{language: "node"}`, the
+one-click install Studio offers (`abhed toolchain install node`). Node
+older than 20.6 fails at launch, saying which Node it found.
+
 ## The bridge for Go
 
 Delve does not speak DAP over standard input and output; it listens on a
@@ -211,6 +291,16 @@ While the session runs, Studio's messages pass to the adapter, except:
 
 Studio's messages reach the adapter in the order Studio sent them.
 
+A source the adapter names outside the workspace, in a stack frame, an
+output line or a breakpoint, reaches Studio with no `path`, only its name,
+greyed out: Studio opens a frame's file on your machine, outside the
+sandbox, and the adapter's paths are the program's to choose. This holds
+for every language, a link from the workspace to elsewhere included, so a
+frame in the language's own library shows its name without its file. Each
+adapter message is read and written out again on its way, so a key
+spelled with escapes cannot slip a path past this; a message that cannot
+be read is dropped and counted.
+
 The adapter's requests to run something in Studio's terminal
 (`runInTerminal`, `startDebugging`) never reach Studio: they would start a
 process on your machine, outside the sandbox. The engine answers them with
@@ -233,6 +323,14 @@ were dropped). Both are in the OCSF export as API activity
 
 - One connection holds at most four debug sessions; each ends after eight
   hours.
+- Node: worker threads started by another worker thread, and child
+  processes, are not debugged; a program that sets its own
+  `--inspect` listens as the session's rules let any command listen.
+- Node: the program can write to the pipe its debugger uses, so code being
+  debugged can show the debug view false frames, threads or stops: the
+  view of untrusted code is as trustworthy as that code. It cannot reach
+  past the sandbox through it, nor make the editor open a file outside the
+  workspace (below).
 - One connection counts a launch still being judged against the four.
 - A Go program built for debugging needs a writable build cache in the
   sandbox; pass `GOCACHE=/tmp/gocache` in the environment if the image's home

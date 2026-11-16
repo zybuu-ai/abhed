@@ -112,6 +112,17 @@ func debugTierProblem(tier string, iso tools.Isolation) *debugrelay.Problem {
 			"Open a new session and start the debug session again"}}
 }
 
+// nodeTierProblem is why a Node session cannot start under tier, or nil:
+// any sandbox tier will do, but none, or one not known, is no sandbox.
+func nodeTierProblem(tier string) *debugrelay.Problem {
+	if tier != "" && tier != string(sandbox.TierNone) {
+		return nil
+	}
+	return &debugrelay.Problem{Kind: debugrelay.KindSandbox, Retry: true,
+		Message: fmt.Sprintf("a Node debug session needs a sandbox; this session's commands run under the %s tier", orDefault(tier, "unknown")),
+		Steps:   []string{"Run this workspace's commands in a sandbox (sandbox.min_tier: process or container in ~/.abhed/config.json)", "Open a new session and start the debug session again"}}
+}
+
 func debugRefusal(p *debugrelay.Problem) *rpcError {
 	code := errRefused
 	if p.Kind == debugrelay.KindArgs {
@@ -222,8 +233,15 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	// A tier that cannot debug says what the container tier needs here; on
 	// the person's choice (processTier) and agreement for the workspace, the
 	// process tier debugs with loopback open to the debug command alone.
+	// Node needs no loopback (its inspector is driven in process), so it
+	// debugs on any sandbox tier under the session's own rules.
 	var loopback bool
-	if p := debugTierProblem(tier, b.Isolation); p != nil {
+	if req.Language == debugrelay.Node {
+		if p := nodeTierProblem(tier); p != nil {
+			c.reply(msg.ID, nil, debugRefusal(p))
+			return
+		}
+	} else if p := debugTierProblem(tier, b.Isolation); p != nil {
 		var opt struct {
 			ProcessTier bool `json:"processTier"`
 		}
@@ -234,11 +252,15 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		}
 		loopback = true
 	}
-	// Delve not where commands run: the install is offered before anything
-	// is judged, as for a language server.
-	if req.Language == debugrelay.Go {
-		if find := lspProgramFinder(parts.Loop.Tools); find != nil && !find("dlv") {
+	// Delve, or node, not where commands run: the install is offered before
+	// anything is judged, as for a language server.
+	if find := lspProgramFinder(parts.Loop.Tools); find != nil {
+		switch {
+		case req.Language == debugrelay.Go && !find("dlv"):
 			c.reply(msg.ID, nil, debugRefusal(debugrelay.NoDelve("")))
+			return
+		case req.Language == debugrelay.Node && !find("node"):
+			c.reply(msg.ID, nil, debugRefusal(debugrelay.NoNode("")))
 			return
 		}
 	}
@@ -388,6 +410,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 		func(state, message string) {
 			c.notification("_abhed/debug/status", map[string]any{"debugId": d.id, "state": state, "message": debugrelay.Bounded(redacted(message), 2000)})
 		})
+	d.relay.Confine(parts.Session.Root)
 	// Over by the protocol: the adapter's input closes, as debugpy's needs to
 	// exit, and it is ended if it has not gone within the grace.
 	d.relay.OnEnd(func() {
@@ -429,6 +452,7 @@ func (c *acpConn) debugLaunch(msg rpcMessage) {
 	if bridgePath != "" {
 		launched.Bridge = bridgePath
 	}
+	launched.Runner = spec.Runner
 	s.record(agent.EvDebugLaunched, launched)
 	madeDir = "" // debugRun removes it now
 	go c.debugRun(s, d, cmd, stdout, &stderr, b.Isolation.Tier)

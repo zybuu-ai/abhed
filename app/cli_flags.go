@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -141,6 +142,8 @@ type cliFlags struct {
 	strictMCP       bool
 	agentsJSON      string
 	agentName       string
+	toolsOnly       multiFlag
+	bare            bool
 
 	// words are the positional arguments that are not a subcommand; dashed
 	// is set when they came after "--".
@@ -190,6 +193,8 @@ func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs.BoolVar(&f.strictMCP, "strict-mcp-config", false, "use only the -mcp-config servers, none from the configuration")
 	fs.StringVar(&f.agentsJSON, "agents", "", "subagent definitions for this run, as JSON {name: {description, prompt, tools, ...}} or a file; checked as files are")
 	fs.StringVar(&f.agentName, "agent", "", "run the session as this agent type: its instructions, and its tools, mode, model and effort where they narrow")
+	fs.Var(&f.toolsOnly, "tools", "comma-separated tools this run may use, and no others; repeatable; only narrows")
+	fs.BoolVar(&f.bare, "bare", false, "run without memory files, extensions or skills of your own or the workspace's; the organisation's stay")
 	fs.BoolVar(&f.trustWS, "trust-workspace", false, "trust the workspace's .abhed/config.json for this run (also "+config.TrustEnv+"=1)")
 	return fs
 }
@@ -363,6 +368,17 @@ func Main(args []string, opts ...Option) int {
 	return run(a, workspace, &f)
 }
 
+// initTrustNote says what abhed init trusted: the file it wrote, and, when a
+// local layer was already there, that it is not trusted and why.
+func initTrustNote(path string) string {
+	local := filepath.Join(filepath.Dir(path), config.LocalConfigName)
+	if _, err := os.Lstat(local); err != nil {
+		return "Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n"
+	}
+	return fmt.Sprintf("Abhed trusts that file as written, but not %s, which was already there and was not written by init: "+
+		"the next run shows both and asks, or run `abhed trust` to review them now.\n", config.Printable(local))
+}
+
 // subcommand runs a built-in subcommand; rest[0] is its name.
 func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 	// `abhed index -h` used to build the index and `abhed init -h` to write
@@ -379,8 +395,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		if err != nil {
 			fail(err)
 		}
-		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n"+
-			"Abhed trusts it as written; after an edit, run `abhed trust` to review and trust it again.\n", path)
+		fmt.Printf("Wrote %s\nEdit it to point at your model endpoint, then run `abhed doctor`.\n", path)
+		fmt.Print(initTrustNote(path))
 		return 0
 	case "trust":
 		return trustCmd(workspace, rest[1:], os.Stdout)
@@ -442,6 +458,8 @@ func (a *App) subcommand(workspace string, rest []string, f *cliFlags) int {
 		return policyCmd(rest[1:], os.Stdout, os.Stderr)
 	case "sandbox":
 		return sandboxCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "bg":
+		return bgCmd(workspace, rest[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "pki":
 		return pkiCmd(rest[1:], os.Stdout, os.Stderr)
 	case "egress-proxy":
@@ -513,7 +531,7 @@ var permissionModes = map[string]string{
 
 // ownsHelp are the subcommands that print their own usage for -h.
 var ownsHelp = map[string]bool{
-	"sandbox": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
+	"sandbox": true, "bg": true, "secret": true, "mcp": true, "record": true, "logs": true, "admin": true, "sessions": true, "hawkeye": true, "migrate": true,
 	"resolve": true, "eval": true, "serve": true, "login": true, "logout": true, "pki": true, "egress-proxy": true, "ollama": true,
 }
 

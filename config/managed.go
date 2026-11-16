@@ -145,7 +145,10 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	for _, k := range orgBelowLists {
 		belowLists[k] = slices.Clone(*unionFields[k](cfg))
 	}
-	if _, err := mergeData(cfg, label, data); err != nil {
+	cfg.mergingManaged = true
+	_, err := mergeData(cfg, label, data)
+	cfg.mergingManaged = false
+	if err != nil {
 		return err
 	}
 	cfg.Managed = true
@@ -334,7 +337,17 @@ func (c Config) ManagedScreens() bool {
 		// Nothing is known of what the file set, so assume it set the rules.
 		return true
 	}
-	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun())
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun() ||
+		c.managedHooksScreen())
+}
+
+// managedHooksScreen reports whether a simple hook of the managed file's
+// own runs on calls: one that takes tool_call or permission_request.
+func (c Config) managedHooksScreen() bool {
+	return slices.ContainsFunc(c.HookSpecs(), func(h extension.HookConfig) bool {
+		return h.Layer == LayerManaged && (slices.Contains(h.Events, extension.EvToolCall) ||
+			slices.Contains(h.Events, extension.EvPermissionRequest))
+	})
 }
 
 // extensionHooksRun reports whether an extension is sent a hook event, not
@@ -670,6 +683,12 @@ func (c *Config) noteRuleLayer(layer string) {
 			if _, have := c.ruleLayers[k]; !have || layer == LayerManaged && c.managedRules[k] {
 				c.ruleLayers[k] = layer
 			}
+		}
+	}
+	// A simple hook not yet credited is one this layer's file added.
+	for i := range c.Hooks.Run {
+		if c.Hooks.Run[i].Layer == "" {
+			c.Hooks.Run[i].Layer = layer
 		}
 	}
 	replaced := layer == LayerManaged && c.ManagedSets("extensions")

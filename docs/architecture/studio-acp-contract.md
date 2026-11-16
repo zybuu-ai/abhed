@@ -90,7 +90,7 @@ interface AbhedAgentMeta {
 `events`, `record.verify`, `hawkeye`, `export`, `tasks`, `tasks.review`,
 `capabilities`, `policy.explain`, `trust.inspect`, `modes`, `review`,
 `checkpoints`, `terminal`, `queue`, `manual`, `doctor`, `resolve`, `index`,
-`infra`, `mcp.restart`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
+`infra`, `mcp.restart`, `mcp.check`, `memory`, `suggestions`, `answer-verdicts`, `worktrees`, `ollama`, `team` (EE). Studio shows a view only when
 its feature is listed, and otherwise says which engine version adds it. It
 never probes by calling a method and reading the error.
 
@@ -126,9 +126,11 @@ relax them.
    option or `cancelled`. The engine refuses an option id it did not offer.
 3. **Destructive and widening steps need a modal whose default is No.**
    Destructive calls get a second confirm in Studio. Trust grants and settings
-   that widen the harness are never done over ACP: Studio's main process shows
-   a native dialog and then runs the engine's own command line
-   (`abhed trust grant -sha256 …`, `abhed config set …`).
+   that widen the harness are never done over ACP: Studio shows a modal whose
+   default is No, and then Studio's main process or its engine host process
+   (a Studio utility process that the engine's stdio and ACP cannot call)
+   runs the engine's own command line with an argv array, never a shell
+   (`abhed trust grant -sha256 …`, `abhed config set …`, `abhed mcp add …`).
 4. **No secret value passes through Studio.** Secrets are typed into the
    engine's own hidden prompt in an Abhed terminal. Studio sees names only.
    Responses carry names, hashes and redacted text.
@@ -836,7 +838,7 @@ attached (§3.1a) and this flag.
 | | |
 |---|---|
 | Wire today | `session/new`, `session/load`, `session/resume` and `_abhed/session/fork` accept `_meta["zybuu.ai/abhed"].trust: "untrusted"` only (tighten-only; an empty value counts as absent, anything else is -32602) and return `_meta["zybuu.ai/abhed"].workspaceTrust = {workspace, file?, sha256?, trusted, reason, applied[], ignored[{key, value?, reason?}]}`. The legacy `_meta.abhed.trust` is still accepted on input; replies use only `zybuu.ai/abhed`, and both keys at once are -32602. |
-| Added in 1.2.3 | `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
+| Added in 1.2.3 | `_abhed/trust/inspect {cwd}` → the same object plus `agents[{name, sha256}]`, `skills[{name, dir}]`, `commands[]` and `mcp[]` the file would bring; `local_file` names `.abhed/config.local.json` when there is one, and `skills` and `mcp` are listed from both files. When the files changed after they were hashed, `content_changed` is true and `skills` and `mcp` are empty. Notification `_abhed/trust/changed {cwd, oldSha256, newSha256}` when the file's bytes change during a session; the next prompt restarts the session under the new decision. |
 | Studio | A banner, then a review editor built from `inspect`, then **Trust this exact file**, which asks in a native dialog raised by Studio's main process (path and SHA-256 shown) and then runs `abhed trust grant -sha256 <H> <dir>` with the bundled, hash-checked engine binary. |
 | Security | There is no grant method, now or later. A grant is pinned to the reviewed hash, so a file changed after review is not trusted. Studio's own Restricted Mode must send `trust: "untrusted"` on every method that opens a session, a continued one included; up to 1.2.6 the engine ignored it on load and resume. |
 
@@ -1008,6 +1010,37 @@ interface Capabilities {
   restarted server lives as long as the session, not the request. `error` here and in `mcp[]` is
   redacted text; `refusedTools` names are untrusted text with hidden
   characters marked.
+- **Adding and removing MCP servers** (1.3.0; `mcp.check` in `features`).
+  Adding a server widens the harness, so it is not an ACP method (§2.1,
+  §2.3); `_abhed/mcp/add` does not exist.
+  - `_abhed/mcp/check {sessionId, name, command?, args?, url?, env?,
+    headersEnv?, allowTools?}` → `{file, description, kind, sha256}`. Read
+    only: it writes nothing. Exactly one of `command` and `url`. `env` holds
+    variable names only: the server gets the person's own value of each, so
+    no value is written. `headersEnv` maps a header to the variable it is
+    read from (URL servers). `sha256` is the hash of the entry that would be
+    written.
+  - Studio then shows `description` in a modal whose default is No
+    (`IDialogService`, native by default), and on a yes its engine host
+    process (a Studio utility process, which the engine's stdio and ACP
+    cannot call) runs the engine's own command line with an argv array,
+    never a shell: `abhed mcp add -confirm-fd 3 -sha256 <sha256> [-env NAME]…
+    [-header-env H=VAR]… [-allow-tools a,b] NAME COMMAND [ARGS…]` (or `NAME
+    URL`), writing `y` on the inherited descriptor 3 in place of a terminal.
+    The command line requires `-sha256` with `-confirm-fd`, refuses an entry
+    whose hash differs, fails when no yes is read from the descriptor, and
+    re-checks the managed configuration's servers and MCP lists under the
+    file's lock. It logs the change as `by: "mcp add -confirm-fd"`, and the
+    next session records it as `config.changed`.
+  - `_abhed/mcp/remove {sessionId, name}` → `{removed: true, file}`, recorded
+    `mcp.status {server, op: "remove", status: "removed", kind, sha256, by:
+    "user"}`; it narrows, so it needs no agreement.
+  - Refusals: -32602 for a bad name, command or URL, an env value, an unknown
+    field or session; -32001 when the managed configuration sets
+    `mcp.servers`, or its `mcp.allowed`/`mcp.denied` refuse the server (it
+    would never start), and inside an agent's command, recorded as
+    `config.refused {key: "mcp.servers", value: "<name> sha256:<hash>",
+    principal}`; -32000 when the file already has a server of that name.
 - `_abhed/index/status {sessionId}` and `_abhed/index/rebuild {sessionId}`
   (recorded `by: user`; progress as events).
 - `_abhed/infra/status {sessionId}` is `infra` alone, for polling.
@@ -1270,10 +1303,11 @@ forge token comes from the secrets vault by name. **Not implemented in 1.2.2.**
 ### 7.8 Debugging (Run and Debug)
 
 ```ts
-_abhed/debug/launch { sessionId, language: "go" | "python",
+_abhed/debug/launch { sessionId, language: "go" | "python" | "node",
                       program?: string, test?: string,   // exactly one; inside the workspace
                       args?: string[], cwd?: string,      // cwd inside the workspace
-                      env?: { [name]: string } } → { debugId }
+                      env?: { [name]: string },
+                      runner?: "node" | "tsx" | "ts-node" | "vitest" | "jest" } → { debugId }  // node only
 _abhed/debug/send   { debugId, message: DapRequest } → {}   // passed on in the order sent
 _abhed/debug/stop   { debugId } → {}
 // notifications
@@ -1287,9 +1321,42 @@ _abhed/debug/status  { debugId, state: "launched" | "failed" | "note" | "ended",
   the network open its loopback would be the host's); elsewhere `launch`
   fails with `-32000` and `data.problem` `{kind: "container-setup", message,
   steps, retry}` and `data.setup` (below), unless the person chose the
-  process tier (`processTier: true`, below).
+  process tier (`processTier: true`, below). Node is the exception: its
+  adapter opens no port (a worker thread in the program drives the
+  program's own inspector over a pipe), so a Node launch starts on any
+  sandbox tier as the session's commands run, never opens loopback, never
+  asks the process-tier consent, and is refused only with no sandbox (the
+  `none` tier, or a tier not known; `nodeReady` is the same rule), as
+  `-32000` with `problem.kind: "sandbox-required"` and no `setup`;
+  `debug.launched` has `loopback: false`. `runner` picks the command line:
+  `node FILE` (default; TypeScript by Node's own type stripping), `node
+  --import tsx FILE`, `node --require DIR/register FILE`, for a test
+  `node --test --test-isolation=none FILE`, `node DIR/vitest.mjs run
+  --pool=threads --no-file-parallelism TEST` or `node DIR/bin/jest.js
+  --runInBand TEST`, DIR being the runner's package the engine finds in
+  the nearest `node_modules` from cwd up to the workspace; a runner that
+  runs tests with a program, or the reverse, is `-32602`, and one not
+  installed is `-32000` with `problem.kind: "runner-missing"` before
+  anything is judged. `debug.launched` adds `runner` (that package). The
+  engine's launch carries `argv` (after `node`) and `runner`. The adapter
+  runs without `NODE_OPTIONS`; the program gets the inherited one without
+  any option whose name, `_` read as `-`, starts `--inspect` or `--debug`,
+  unless the launch's `env` sets it. Node missing ends `adapter-missing` with
+  `install: {language: "node"}`. Breakpoints in TypeScript or other
+  source-mapped code are set as each of the program's own scripts loads,
+  answered `verified: false` until then and announced by a `breakpoint`
+  event; `evaluate` may have side effects only with `context: "repl"`;
+  worker threads are DAP threads; child processes are not debugged.
+- For every language, a `source` the adapter sends (a frame's, an output
+  event's, a breakpoint's, `loadedSources`) whose `path` is outside the
+  workspace, or leads out of it by a link, reaches Studio without `path`,
+  with its `name` and `presentationHint: "deemphasize"`. Every adapter
+  message is decoded and encoded again before it is passed on, so a key
+  written with escapes or given twice reaches Studio as the one key the
+  engine judged; one the engine cannot decode is dropped and counted
+  (`dropped`).
 - `_abhed/debug/status-tier {sessionId}` → `DebugSetup`:
-  `{os, tier, ready, engine?, brew?, machine?: "none" | "stopped" |
+  `{os, tier, ready, nodeReady, engine?, brew?, machine?: "none" | "stopped" |
   "running", steps: [{id: "install-podman" | "machine-init" |
   "machine-start" | "use-container-tier", title, command?}],
   processTier: {available, consented, consent?}}`. `steps` are those left,
@@ -1662,6 +1729,32 @@ _abhed/commitMessage { sessionId } → { message: string, source?: "staged" | "u
   or changed, `disabled` and `limited` as above. Each request is logged on
   the engine's stderr with how it ended.
 
+### 7.13 Code actions
+
+```ts
+_abhed/codeActions { sessionId, uri, range: Range,
+                     diagnostics?: { range: Range, severity?: 1|2|3|4, message: string, source?: string }[] }
+  → { actions: { id: "explain" | "fix" | "tests", kind: string, title: string,
+                 isPreferred?: boolean, prompt: ContentBlock[] }[] }
+```
+
+- Listed under the `codeActions` feature. `range` is LSP's (0-based). The
+  engine runs nothing and reads nothing of the file: each action's `prompt`
+  is what Studio sends with `session/prompt` when the person picks it, so it
+  runs as any prompt does, under the session's mode, policy and supervisor.
+  The prompt names the file and lines; the agent reads the file with its
+  own tools.
+- `explain` (`abhed.explain`), `fix` (`quickfix.abhed`) and `tests`
+  (`source.abhed.addTests`; not offered for a test file). The editor's
+  diagnostics that touch the range (up to 20, each cut to 240 characters)
+  go with `explain` and `fix` as a `resource` block, which the model reads
+  fenced as data, never as the person's words; with any, `fix` is
+  `isPreferred` and its title names the first.
+- A URI that is not a file, a file outside the session's roots, one that
+  looks like keys, Abhed's state, or one a read rule denies is refused
+  (`-32000`), as is a read-only session (`-32003`); a range that is not one
+  is `-32602`.
+
 ## 8. Health, setup and memory
 
 ### 8.1 Doctor
@@ -1746,7 +1839,8 @@ them.
 | *new* `model.fallback` | system | from, to, reason |
 | *new* `hook.fired` | system | extension, event, verdict |
 | *new* `record.repaired` | system | reason, truncated_bytes |
-| `mcp.status` | user | server, op (`restart`), status, error |
+| `mcp.status` | user | server, op (`restart`, `remove`), status, error, kind and sha256 (remove) |
+| `config.changed` | system (untrusted) | by, key, name, kind, sha256, refused: an entry of `~/.abhed/config-changes.jsonl` written since a session last recorded them (an MCP server added at a terminal or from Studio) |
 | `ollama.start`, `ollama.install`, `ollama.pull` | user | op, outcome (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`), provider, model, command, source, bytes, pid, consent, problem, error, surface (§3.2a) |
 | Studio's additions: `approval.scope_granted`, `manual.edit`, `trust.changed`, `extension.status`, `task.cancelled`, `team.connected` | as named | as in the sections above |
 
@@ -1785,8 +1879,10 @@ table.
 | Debugging | `_abhed/debug/launch`, `/send`, `/stop`, `_abhed/debug/message`, `_abhed/debug/status` | ext | done in the engine (1.2.9; `debug` in `features`): Go and Python; Studio's view is the Studio track's |
 | Language servers | `_abhed/lsp/start`, `/send`, `/stop`, `_abhed/lsp/message`, `_abhed/lsp/status` | ext | done in the engine (1.2.9; `lsp` in `features`); the servers come with the toolchains |
 | Inline completions | `_abhed/complete`, `_abhed/complete/cancel` | ext | done in the engine (1.2.9; `complete` in `features`) |
+| Code actions | `_abhed/codeActions` | ext | done in the engine (1.3.0; `codeActions` in `features`); Studio's lightbulb not yet |
 | Agents, skills, MCP, extensions, web, infra, secrets, index, RAG, memory | `_abhed/capabilities` | ext | done (see note 7) |
 | MCP restart | `_abhed/mcp/restart` | ext | done (1.2.4; `mcp.restart` in `features`) |
+| MCP check and remove (add is the command line) | `_abhed/mcp/check`, `_abhed/mcp/remove` | ext | done (1.3.0; `mcp.check` in `features`) |
 | Local Ollama model | `meta.ollama` on a model switch, `_abhed/ollama/*`, `_abhed/ollama/progress` | meta + ext | done in the engine (1.2.9; `ollama` in `features`); Studio's card not yet |
 | Index, infra polling | `_abhed/index/*`, `_abhed/infra/status` | ext | not yet (-32601; `index`, `infra` not in `features`) |
 | Abhed terminal | `_abhed/terminal/*` | ext | done, both modes (see note 4) |

@@ -91,6 +91,9 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 	if st.File != "" {
 		fmt.Fprintf(out, "  %s\n", config.Printable(st.File))
 	}
+	if st.LocalFile != "" && st.LocalFile != st.File {
+		fmt.Fprintf(out, "  %s\n", config.Printable(st.LocalFile))
+	}
 	if len(st.Agents) > 0 {
 		fmt.Fprintf(out, "  %s (%d agent definition(s))\n", config.Printable(filepath.Join(st.Workspace, filepath.FromSlash(config.WorkspaceAgentsDir))), len(st.Agents))
 	}
@@ -260,16 +263,18 @@ func showFile(out io.Writer, st config.WorkspaceTrust) {
 	if st.File == "" {
 		return
 	}
-	data, err := os.ReadFile(st.File)
+	paths, contents, unchanged, err := st.WorkspaceFiles()
 	if err != nil {
 		fmt.Fprintf(out, "cannot read it: %v\n", err)
 		return
 	}
-	if config.HashOf(data) != st.SHA256 {
+	if !unchanged {
 		fmt.Fprintln(out, "The file changed while you were being asked. Answer 1 (No), and run abhed again to review the new version.")
 		return
 	}
-	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.PrintableText(string(bytes.TrimRight(data, "\n"))))
+	for i, p := range paths {
+		fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(p), config.PrintableText(string(bytes.TrimRight(contents[i], "\n"))))
+	}
 }
 
 // askNumbered asks until a line names one of the numbered labels and returns
@@ -519,6 +524,9 @@ func printTrust(out io.Writer, st config.WorkspaceTrust) {
 		return
 	}
 	fmt.Fprintf(out, "config      %s\n", config.Printable(st.File))
+	if st.LocalFile != "" && st.LocalFile != st.File {
+		fmt.Fprintf(out, "local       %s\n", config.Printable(st.LocalFile))
+	}
 	fmt.Fprintf(out, "sha256      %s\n", st.SHA256)
 	fmt.Fprintf(out, "trust       %s\n", trustLabel(st))
 	if st.Reason == "home" {

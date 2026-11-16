@@ -63,9 +63,42 @@ The shipper raises, prints, keeps in its state, and reports to the server:
 | `gap` | a session was pruned before all of it was shipped |
 | `backlog` | more is waiting than `max_backlog_mb` |
 | `resumed` | shipping reached the server again after failing |
+| `access_removed` | the server refused the sign-in because the organisation removed the person's access; kept and printed here, never sent |
 
 Each session's `session.started` event records `org_policy.record_ship: true`
 when shipping is on.
+
+## When access is removed
+
+When the organisation removes the person's access (an Enterprise server
+revokes them, or deprovisions them through SCIM), the server answers this
+machine's sign-in with `401` and `"access_removed": true`. Shipping then
+stops with a warning, printed when it happens and again as each later
+session starts:
+
+```text
+abhed: ⚠ Your organisation access was removed: https://abhed.example.com refused this machine's sign-in (…). The record stays on this machine and is not shipped, and the org policy it holds still applies; ask your administrator.
+```
+
+`abhed record ship`, `abhed doctor` and Studio's Health view (the
+`record_ship` check, failing) say the same. The record keeps being written
+here; once a pass reaches the server again (access restored and `abhed
+login` run), the warning clears and what waited is shipped. A sign-in that
+only lapsed is not taken for a removal: it says to run `abhed login` again.
+The warning clears only when the server answers a batch with success, not on
+a pass that sent nothing. The same holds for a failed pass: until a batch is
+answered, `abhed record ship` and doctor keep saying the last pass failed,
+even when the network is back but nothing is waiting.
+
+The marker is the word of whatever answers at the enrolled org URL, taken
+without a signature. That URL is `https`, unless this machine enrolled to a
+plain-`http` server with pinned keys, where anyone on the network path can
+forge it. Either way it changes only what the warning says: an ordinary
+refused sign-in already stops shipping, nothing is deleted because of it,
+the record stays here, and each pass tries again.
+
+The same warning names a backlog over `max_backlog_mb` at a session's start,
+beside the `backlog` event raised when it first goes over.
 
 ## Commands
 

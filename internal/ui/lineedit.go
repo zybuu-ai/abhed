@@ -146,10 +146,13 @@ func NewLineReader(prompt string) *LineReader {
 		_ = SetTheme("dark")
 	}
 	var in io.Reader = os.Stdin
+	pre := bytes.NewReader(typed)
 	if len(typed) > 0 {
-		in = io.MultiReader(bytes.NewReader(typed), os.Stdin)
+		in = io.MultiReader(pre, os.Stdin)
 	}
 	d := newDock(in, os.Stdout, NewStyle(LazyStdout{}))
+	d.preread = pre
+	d.wait, d.wake, d.stopWait, d.releaseWait = waitFunc(os.Stdin)
 	d.prompt = prompt
 	d.autoTheme = auto
 	d.scr.sync = syncMode == 1
@@ -188,6 +191,11 @@ func NewLineReaderOn(in io.Reader, out io.Writer, cols, rows int) *LineReader {
 		mu.Lock()
 		defer mu.Unlock()
 		return cols, rows
+	}
+	if f, ok := in.(*os.File); ok {
+		// Set before the reader starts, which reads them.
+		d.kr.ready = readyFunc(f)
+		d.wait, d.wake, d.stopWait, d.releaseWait = waitFunc(f)
 	}
 	l := &LineReader{d: d, raw: true, done: make(chan struct{})}
 	d.openKeys() // a test's keys are taken as they come
@@ -491,6 +499,9 @@ func (l *LineReader) Close() {
 	l.close.Do(func() {
 		activeReader.CompareAndSwap(l, nil)
 		close(l.done)
+		if l.d.stopWait != nil {
+			l.d.stopWait()
+		}
 		l.d.mu.Lock()
 		l.d.endDialogs()
 		if l.d.pager != nil {

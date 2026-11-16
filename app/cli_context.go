@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,7 +30,7 @@ func init() {
 	registerSlash(slashCmd{Name: "/output-style", Args: "[name|off]", Help: "list output styles, or choose how the agent writes", Group: "context", Order: 96, Run: slashOutputStyle})
 	registerSlash(slashCmd{Name: "/import", Args: "<path>", Help: "append a file you name to ABHED.md, after showing it", Group: "context", Order: 87, Run: slashImport})
 	registerSlash(slashCmd{Name: "/init", Args: "[notes]", Help: "have the agent write ABHED.md from the repository", Group: "context", Order: 85, Run: slashInit})
-	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <scope> <note>|auto on|off]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
+	registerSlash(slashCmd{Name: "/memory", Args: "[show <n>|add <scope> <note>|edit <scope>|auto on|off]", Help: "show the ABHED.md files in effect", Group: "context", Order: 90, Run: slashMemory})
 }
 
 // slashCompact is /compact.
@@ -75,7 +76,7 @@ var sessionMemory atomic.Pointer[agent.Memory]
 // depth and rule directories, and the session's read rules for workspace
 // files, which a deny keeps out of the prompt as it keeps them from a read.
 func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agent.MemoryOptions {
-	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs}
+	o := agent.MemoryOptions{Workspace: workspace, ImportDepth: cfg.MemoryImportDepth(), RuleDirs: cfg.Rules.Dirs, ManagedOnly: cfg.Bare}
 	if home, err := os.UserHomeDir(); err == nil && cfg.Memory.Auto {
 		o.Auto = tools.AutoMemoryPath(home, workspace)
 	}
@@ -88,6 +89,7 @@ func memoryOptions(cfg config.Config, pol *policy.Engine, workspace string) agen
 func cliSystemPrompt(cfg config.Config, pol *policy.Engine, workspace string, adapter model.Adapter, skills string, toolNames []string) string {
 	mem := agent.LoadMemory(memoryOptions(cfg, pol, workspace))
 	sessionMemory.Store(mem)
+	warnAskedMemory(os.Stderr, mem)
 	return agent.BuildSystemPrompt(agent.BuildOptions{
 		Profile:       "main",
 		Workspace:     workspace,
@@ -97,6 +99,16 @@ func cliSystemPrompt(cfg config.Config, pol *policy.Engine, workspace string, ad
 		Skills:        skills,
 		Tools:         toolNames,
 	})
+}
+
+// warnAskedMemory says, at start, which memory files a read ask rule kept
+// out: otherwise the project's memory goes missing with only /memory to say so.
+func warnAskedMemory(w io.Writer, mem *agent.Memory) {
+	for _, e := range mem.Entries {
+		if strings.HasPrefix(e.Skipped, agent.MemoryAskedNote) {
+			fmt.Fprintf(w, "abhed: warning: %s is not loaded as memory: %s\n", config.Printable(e.Label), config.Printable(e.Skipped))
+		}
+	}
 }
 
 // recordMemoryLoaded records, once in each conversation, which memory files
@@ -133,6 +145,11 @@ func slashMemory(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		}
 		saveNote(ctx, e.st, sf, args[1], strings.Join(args[2:], " "))
 		return false, nil
+	case len(args) >= 1 && args[0] == "edit":
+		if len(args) != 2 {
+			return false, errors.New("usage: /memory edit <project|local|user>")
+		}
+		return false, editMemory(ctx, e, args[1])
 	case len(args) == 2 && args[0] == "show":
 		n, err := strconv.Atoi(args[1])
 		if err != nil || n < 1 || n > len(mem.Entries) {
@@ -144,7 +161,7 @@ func slashMemory(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		}
 		return false, sf.Panel(ctx, ui.PanelSpec{Title: ent.Label, Body: []ui.Block{{Kind: ui.BlockMarkdown, Text: ent.Content}}})
 	case len(args) > 0:
-		return false, errors.New("usage: /memory [show <n>|add <project|local|user> <note>]")
+		return false, errors.New("usage: /memory [show <n>|add <project|local|user> <note>|edit <project|local|user>]")
 	}
 	if len(mem.Entries) == 0 {
 		sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "no memory file yet; # <note> or /memory add project <note> starts ABHED.md.\n" +
@@ -167,7 +184,7 @@ func slashMemory(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		rows = append(rows, []string{strconv.Itoa(i + 1), ent.Scope, label, size, sum})
 	}
 	sf.Append(ui.Block{Kind: ui.BlockTable, Rows: rows})
-	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "/memory show <n> prints one; # <note> adds to one. " +
+	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "/memory show <n> prints one; # <note> adds to one; /memory edit <project|local|user> opens one in your editor. " +
 		"Project memory came with the workspace: it is instructions, read only as its files allow."})
 	return false, nil
 }
@@ -250,6 +267,78 @@ func saveNote(ctx context.Context, st *cliState, sf ui.Surface, target, note str
 	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "saved to " + shown + "; it is read at the start of each session"})
 }
 
+// textEditor is a surface that can open text in the person's editor.
+type textEditor interface {
+	EditText(ctx context.Context, text string) (string, error)
+}
+
+// editMemory opens a memory file in $VISUAL or $EDITOR and saves what the
+// person wrote, the way a note is saved: a workspace file as their write
+// through the write tool, the user file under their home.
+func editMemory(ctx context.Context, e *cmdEnv, target string) error {
+	ed, ok := e.ui.(textEditor)
+	if !ok {
+		return errors.New("/memory edit needs the terminal; # <note> or /memory add adds a note")
+	}
+	if err := ensureConversation(ctx, e.st); err != nil {
+		return err
+	}
+	loop, sess := e.st.loop, e.st.sess
+	var before []byte
+	var abs string
+	switch target {
+	case noteProject, noteLocal:
+		abs = filepath.Join(sess.Root, "ABHED.md")
+		if target == noteLocal {
+			abs = filepath.Join(sess.Root, "ABHED.local.md")
+		}
+		b, err := sess.ReadFile(abs)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		before = b
+	case noteUser:
+		path, err := userMemoryPath()
+		if err != nil {
+			return err
+		}
+		if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file; a link is not written through", path)
+		}
+		b, err := os.ReadFile(path) // #nosec G304 -- the person's own memory file under their home
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		before = b
+	default:
+		return fmt.Errorf("no memory %q; use project, local or user", target)
+	}
+	got, err := ed.EditText(ctx, string(before))
+	if err != nil {
+		return fmt.Errorf("editor: %w", err)
+	}
+	if got == string(before) {
+		e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "memory unchanged"})
+		return nil
+	}
+	after := []byte(redactFor(loop, got))
+	var shown string
+	if abs != "" {
+		shown, err = changeWorkspaceMemory(ctx, loop, sess, abs, func([]byte) []byte { return after })
+	} else {
+		shown, err = writeUserMemory(func([]byte) []byte { return after })
+	}
+	if err != nil {
+		return fmt.Errorf("not saved: %w", err)
+	}
+	if _, err := loop.Recorder.Record(agent.EvMemoryWritten, agent.ActorUser, agent.Trusted,
+		agent.MemoryWritten{Path: shown, Kind: "edit", By: "user"}); err != nil {
+		return fmt.Errorf("saved, but not recorded: %w", err)
+	}
+	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "saved " + shown + "; it is read at the start of each session"})
+	return nil
+}
+
 // appendWorkspaceNote appends a note to a memory file in the workspace as
 // the person's write, and returns its path relative to the workspace.
 func appendWorkspaceNote(ctx context.Context, loop *agent.Loop, sess *tools.Session, abs, note string) (string, error) {
@@ -295,15 +384,27 @@ func changeWorkspaceMemory(ctx context.Context, loop *agent.Loop, sess *tools.Se
 
 // appendUserNote appends a note to ~/.abhed/ABHED.md.
 func appendUserNote(note string) (string, error) {
+	return writeUserMemory(func(before []byte) []byte { return appendItem(before, note) })
+}
+
+// userMemoryPath is ~/.abhed/ABHED.md.
+func userMemoryPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".abhed")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	return filepath.Join(home, ".abhed", "ABHED.md"), nil
+}
+
+// writeUserMemory rewrites ~/.abhed/ABHED.md with change.
+func writeUserMemory(change func([]byte) []byte) (string, error) {
+	path, err := userMemoryPath()
+	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "ABHED.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
 	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%s is not a regular file; a link is not written through", path)
 	}
@@ -311,7 +412,7 @@ func appendUserNote(note string) (string, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	if err := writeFileAtomic(path, appendItem(before, note), 0o600); err != nil {
+	if err := writeFileAtomic(path, change(before), 0o600); err != nil {
 		return "", err
 	}
 	return "~/.abhed/ABHED.md", nil
@@ -805,4 +906,13 @@ func slashImport(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 	}
 	sf.Append(ui.Block{Kind: ui.BlockNotice, Text: "appended " + args[0] + " to " + rel + "; it is read from the next session"})
 	return false, nil
+}
+
+// subdirMemory loads a folder's own ABHED.md when the agent first works in
+// it, through the read rules; none under -bare.
+func subdirMemory(cfg config.Config, pol *policy.Engine, workspace string) *agent.SubdirMemory {
+	if cfg.Bare {
+		return nil
+	}
+	return &agent.SubdirMemory{Workspace: workspace, Allow: agent.ReadAllowed(pol)}
 }
