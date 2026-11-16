@@ -125,6 +125,10 @@ All notable changes to Abhed are recorded here. The format follows
   `ssh.read_commands` behind approval, set `ssh.listed_reads_only: true`. A
   managed file that sets any `permissions` or `ssh` key keeps the old
   behaviour unless it sets `ssh.listed_reads_only` itself.
+- Under `-verify strict`, an answer given through the answer tool is now
+  checked by its `text` as well as its claims, so a run that 1.2.9 ended
+  verified with nothing verified (the text saying "the tests now pass", no
+  test run showing it) now ends `unverified`, exit 8.
 
 ### Added
 
@@ -194,7 +198,6 @@ All notable changes to Abhed are recorded here. The format follows
   is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
   server is that one, and the start you are asked about names it and what
   it loads. Not under the container tier, which always runs basedpyright.
-
 - Studio can add and remove MCP servers. Adding is never an ACP method:
   Studio has the engine check the server (`_abhed/mcp/check`, read only,
   `mcp.check` in `features`), shows it in a modal whose default is No, and
@@ -548,13 +551,11 @@ All notable changes to Abhed are recorded here. The format follows
   part way is kept and finished, and `-p` returns it whole; a second cut
   before a full reply also ends the run `stalled`. A workspace may only
   lower the bounds.
-
 - "Thinking off" is now off on Anthropic and Gemini when a `thinking_budget`
   is configured. Before, the budget won, so the critic, next-prompt
   suggestion and commit-message calls, which ask with thinking off, thought
   anyway (on Anthropic, a budget with thinking off made an invalid request),
   and a provider set to `think: false` with a budget still thought.
-
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`
@@ -586,7 +587,6 @@ All notable changes to Abhed are recorded here. The format follows
   newer keystroke replaced before anything was sent, so the last keystroke
   of a burst was often answered `limited` and nothing was asked again. The
   limit is now spent only by a request about to be sent.
-
 - A debug session in Abhed Studio, in any language, no longer shows the
   editor a source path outside the workspace. Such a frame, output line or
   breakpoint now carries only its name. Studio opens a frame's file on your
@@ -720,6 +720,57 @@ All notable changes to Abhed are recorded here. The format follows
   that is not in the record still counts as no evidence. Commands, paths
   and statements in the note are quoted, so text the model chose cannot
   start a line of its own in it.
+- Strict verification could pass an answer with nothing verified. Through
+  the answer tool, only the listed claims were checked, not the `text`
+  the person reads, and a `knowledge` claim about the session's work was
+  checked only when it said "I changed" or named a pass. A model that
+  wrote "The tests now pass" in `text` and gave one `knowledge` claim
+  ("The tests were updated by fixing the bugs in …") ended strict mode
+  verified with 0 verified claims. Each statement of `text` that no claim
+  repeats is now checked; under `strict` every `knowledge` claim that
+  says a change, an event or a finished state is checked as work, so a
+  fact about other software ("TLS 1.3 removed RSA key exchange") is
+  unverified there and needs the revision. In `label` mode such a claim is
+  shown as "not checked: about other software", never as verified, and
+  the `note` and footer count it, only when its sentence opens with a
+  technology from a fixed list with a version or release word (or a year
+  before it, or an RFC number) and nothing in it ties it to the session:
+  no first person or possessive, code, path, name from the session's
+  reads or changes, passive, upgrade or migration word, or "the" before a
+  noun after the verb ("Go 1.22 fixed our flaky test" and "The Node 20
+  upgrade fixed the build" are work). One that says a pass, a change in
+  the first person, a command or a file:line always is work; and an
+  answer that passes with nothing
+  verified says why in the verdict's `note` (no statement was read as a
+  claim about the session's work). Finished work said in the present ("the
+  issue is resolved", "the service is deployed", "the cache is now
+  populated") is a claim about the work too.
+- Label mode marked correct statements about code the session read as
+  unverified. Code described in the present ("`OmniRAGAgent` is
+  initialized with an instance of `HybridRetriever`", "the results are
+  passed to the `synthesizer` node", "Specialized Worker Role: …") was read
+  as something that happened in the session; "passed to" was read as a
+  test passing; and a refusal the agent quoted back ("Denied: denied by
+  rule bash(curl*) …") was in no tool result, because a refused call has
+  none. A present passive of a verb of data flow or wiring, a participle
+  that names what produced or receives a value, and one that qualifies a
+  noun now describe the code, so the names in the sentence are checked
+  against the read; verbs of change and of finished work (merged,
+  processed, resolved, built), a label with a word of change in it, the
+  past tense, "now" and the first person are still events, and "passed
+  to" said of CI, a build or checks is still a result; wiring or a flag
+  said in the present ("is registered", "is enabled", "is set up") is a
+  claim about the work, since a read cannot show that one thing is wired
+  into another. A statement about a refusal (its quoted
+  text, or that the call was denied by its rule, from its layer) is now
+  checked against the refusal's own fields: the layer it names ("IT"
+  and the security team being the org) must be the refusal's own, and
+  nothing else may be said in it ("succeeded after
+  being blocked" stays unverified). The refusal is evidence for nothing
+  else, since its reason can hold text the model chose. The false-claim
+  corpus gains 112 planted cases and 13 controls; none of the 980 planted
+  claims verifies, all 253 controls do, and none of the 368 true or
+  neutral claims is contradicted.
 
 ### Go API
 

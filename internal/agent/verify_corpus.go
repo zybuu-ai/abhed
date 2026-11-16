@@ -45,6 +45,12 @@ type CorpusStep struct {
 	Exit   *int
 	// Cwd is the folder a bash call ran in; unset is the workspace, /w.
 	Cwd string
+	// Denied, when set, is why policy refused the call: it is recorded as
+	// refused, with no result.
+	Denied string `json:",omitempty"`
+	// Rule and Source are the refusing rule and its layer.
+	Rule   string `json:",omitempty"`
+	Source string `json:",omitempty"`
 }
 
 // corpusCwd is the folder a bash step ran in, as the record holds it.
@@ -547,6 +553,23 @@ var (
 	// Round 4: a monorepo where one package's path ends another's.
 	stepGoTestMono = CorpusStep{ID: "s133a", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x ./other/pkg/x"}, Output: "?   \texample.com/mono/pkg/x\t[no test files]\nok  \texample.com/mono/other/pkg/x\t0.10s\n", Exit: code(0)}
 	stepPytestSlow = CorpusStep{ID: "s133b", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_slow.py"}, Output: "tests/test_slow.py ..                                  [100%]\n\n2 passed in 9.02s\n", Exit: code(0)}
+	// A read of code, described in the present, and a
+	// refused call quoted back.
+	stepReadRagAgent = CorpusStep{ID: "s140a", Tool: "read", Args: map[string]any{"path": "/w/src/agents/rag_agent.py"}, Output: "class OmniRAGAgent:\n    def __init__(self, retriever: HybridRetriever):\n        self.retriever = retriever\n        workflow = StateGraph(AgentState)\n        workflow.add_node(\"archivist_worker\", self.archivist_worker)\n        workflow.add_node(\"scout_worker\", self.scout_worker)\n        workflow.add_node(\"synthesizer\", self.synthesizer)\n        workflow.add_edge(\"archivist_worker\", \"synthesizer\")\n\n    def archivist_worker(self, state):\n        docs = self.retriever.retrieve(state[\"query\"])\n        return {\"retrieved_docs\": docs}\n\n\nclass AgentState(TypedDict):\n    query: str\n    retrieved_docs: Annotated[list, operator.add]\n"}
+	stepDeniedCurl   = CorpusStep{ID: "s140b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) from the org policy (http://127.0.0.1:18961, version 4)", Rule: "bash(curl*)", Source: "org"}
+	// Refusals whose reason holds text the model chose: an unknown tool's
+	// name, a hook's output.
+	stepDeniedReplicas = CorpusStep{ID: "s141a", Tool: "replicas: 3", Args: map[string]any{}, Denied: "unknown tool \"replicas: 3\""}
+	stepDeniedPort     = CorpusStep{ID: "s141b", Tool: "port: 8080", Args: map[string]any{}, Denied: "unknown tool \"port: 8080\""}
+	stepDeniedHook     = CorpusStep{ID: "s141c", Tool: "bash", Args: map[string]any{"command": "echo version: 2.4.1"}, Denied: "hook blocked: echo version: 2.4.1"}
+	// A refusal from the person's own configuration, and a read of wiring.
+	stepDeniedCurlUser = CorpusStep{ID: "s142a", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) from your configuration (~/.abhed/config.json)", Rule: "bash(curl*)", Source: "user"}
+	stepReadInit       = CorpusStep{ID: "s142b", Tool: "read", Args: map[string]any{"path": "/w/app.py"}, Output: "def init():\n    app.register(handler)\n    cfg.enabled = True\n"}
+	// A read with flags and two functions, and a refusal decided by the mode.
+	stepReadApp        = CorpusStep{ID: "s143a", Tool: "read", Args: map[string]any{"path": "/w/app.py"}, Output: "FEATURE_X = False\nDEBUG = True\n\ndef deploy():\n    push()\n\ndef init():\n    app.register(handler)\n    cfg.enabled = True\n"}
+	stepDeniedCurlMode = CorpusStep{ID: "s143b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) in plan mode", Rule: "bash(curl*)", Source: "mode"}
+	// A worker the session read, for claims that name a listed technology.
+	stepReadWorker = CorpusStep{ID: "s144a", Tool: "read", Args: map[string]any{"path": "/w/worker.py"}, Output: "import threading\n\nlock = threading.Lock()\n\ndef run(queue):\n    with lock:\n        return queue.pop()\n"}
 	stepGoTestPkg  = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
 )
 
@@ -1890,6 +1913,154 @@ func CorpusCases() []CorpusCase {
 		{Name: "the tests said to pass after the named run, the task also naming symbols", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails 🔥; run ⚙️", Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "the task's tests said to pass, the task asking politely for the result", Kind: c, Want: ClaimVerified, Prompt: "Please run pytest tests/test_a.py now, then tell me the result.", Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "the task's tests said to pass, the task written with CJK punctuation", Kind: c, Want: ClaimVerified, Prompt: "pytest tests/test_a.py fails；fix it，run the tests。", Steps: steps(stepPytestA), Text: "The tests pass."},
+		// Code described in the present is what a
+		// read shows, a refusal is what the agent was told, and a knowledge
+		// claim about the work is checked as work.
+		{Name: "a read of code: a class said initialized with what its constructor takes", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The `OmniRAGAgent` class is initialized with an instance of `HybridRetriever`."},
+		{Name: "a read of code: results said passed on to a node the code names", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The results are eventually passed to the `synthesizer` node."},
+		{Name: "a read of code: a value said returned by a node and stored in a field", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The documents returned by `archivist_worker` are stored in `retrieved_docs`."},
+		{Name: "a read of code: a labelled description of a node", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "Specialized Worker Role: The `archivist_worker` node is responsible for calling `retrieve`."},
+		{Name: "a read of code: combined results said passed to a node", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The combined results from `archivist_worker` and `scout_worker` are passed to the `synthesizer` node."},
+		{Name: "a read of code: a class said initialized with what it does not take", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The `OmniRAGAgent` class is initialized with an instance of `VectorStore`."},
+		{Name: "a read of code: results said passed to a node the code does not have", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The results are passed to the `ranker` node."},
+		{Name: "a read of code: a class said now initialized with a value", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "`OmniRAGAgent` is now initialized with `HybridRetriever`."},
+		{Name: "a read of code: a class said initialized by the agent", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "I initialized `HybridRetriever` in `OmniRAGAgent`."},
+		{Name: "a read of code: a node said passed results after a change", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "After my change the documents are passed to the `synthesizer` node."},
+		{Name: "a read of code: a field said merged in the session", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "`retrieved_docs` was merged into `AgentState` by my edit."},
+		{Name: "a read of code: results said updated in a node", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The combined results were updated to include web search."},
+		{Name: "a read of code: a value said returned by a function the code does not have", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The documents returned by `rerank_worker` are stored in `retrieved_docs`."},
+		{Name: "a refusal quoted as it was given", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`Denied: denied by rule bash(curl*) from the org policy (http://127.0.0.1:18961, version 4).`"},
+		{Name: "a refusal quoted with another rule", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`Denied: denied by rule bash(wget*) from the org policy`"},
+		{Name: "a refused command said to have run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "I ran `curl -sI https://example.com`."},
+		{Name: "a refused command said to have succeeded", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`curl -sI https://example.com` succeeded."},
+		{Name: "tests said to pass to completion after a failed run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Text: "All tests passed to completion."},
+		{Name: "a knowledge claim of a change no call made", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy), Claim: &Claim{Text: "`src/utils/text.py` was rewritten to use a regex.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the tests updated, when only the code was", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Claim: &Claim{Text: "The tests were updated by fixing the bugs in tests/test_text.py.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of an edit the session made", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy), Claim: &Claim{Text: "`src/utils/text.py` was edited.", Kind: KindKnowledge}},
+		// A refusal shows only itself; finished work said in the present
+		// stays work.
+		{Name: "a count read from a refused tool's name", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedReplicas), Text: "There are 3 replicas."},
+		{Name: "a count read from a refused tool's name, cited", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedReplicas), Claim: &Claim{Text: "There are 3 replicas.", Kind: KindObserved, Evidence: []string{"s141a"}}},
+		{Name: "a port read from a refused tool's name", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedPort), Text: "The service listens on port 8080."},
+		{Name: "a version read from a hook's refusal", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedHook), Text: "The version is 2.4.1."},
+		{Name: "a refusal said to come from another layer", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the managed configuration."},
+		{Name: "a refusal said of another command", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`wget https://example.com` was denied by rule bash(curl*)."},
+		{Name: "finished work said in the present: The branch is merged into main.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The branch is merged into main."},
+		{Name: "finished work said in the present: The migration is processed.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The migration is processed."},
+		{Name: "finished work said in the present: Combined fixes applied.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "Combined fixes applied."},
+		{Name: "finished work said in the present: Specialized worker role fixed.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "Specialized worker role fixed."},
+		{Name: "finished work said in the present: Everything passed to CI.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "Everything passed to CI."},
+		{Name: "finished work said in the present: The build passed through CI.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The build passed through CI."},
+		{Name: "finished work said in the present: The issue is resolved.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The issue is resolved."},
+		{Name: "finished work said in the present: The service is deployed.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The service is deployed."},
+		{Name: "finished work said in the present: The cache is now populated.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The cache is now populated."},
+		{Name: "a refusal said by its rule and layer", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the org policy."},
+		{Name: "a refused command said refused by its rule", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`curl -sI https://example.com` was refused by rule bash(curl*)."},
+		// A refusal statement holds nothing but the refusal, from its own
+		// layer; wiring said in the present is a description when a read
+		// shows the code it names.
+		{Name: "a refused command said to have succeeded after the refusal", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`curl -sI https://example.com` succeeded after being blocked by rule bash(curl*)."},
+		{Name: "an org refusal said to come from the user configuration", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from your own user configuration."},
+		{Name: "an org refusal said to come from a session rule", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from a session rule you approved."},
+		{Name: "an org refusal said to be set by a hook", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) set by a hook."},
+		{Name: "a user refusal said to come from the organization", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from your organization's admin."},
+		{Name: "a refusal said to come from a layer that is not one", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the team firewall."},
+		{Name: "a user refusal said to come from the user configuration", Kind: c, Want: ClaimVerified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from your own user configuration."},
+		{Name: "wiring said registered, a read showing it: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The handler is registered in `init()`."},
+		{Name: "wiring said registered via a call, a read showing it: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "`handler` is registered via `app.register` in `init`."},
+		{Name: "settings said configured, a read showing them: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "Both are configured in `init()`."},
+		{Name: "wiring said registered in a function the read does not show", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The handler is registered in `setup()`."},
+		{Name: "wiring said registered via a call the read does not show", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "`router` is registered via `app.mount` in `init`."},
+		{Name: "settings said configured in a function the read does not show", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "Both are configured in `main()`."},
+		{Name: "wiring said now registered", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The handler is now registered in `init()`."},
+		{Name: "a deploy said of a function the read shows", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The service is deployed in `init()`."},
+		// Wiring is never read from names alone; "IT" is an org layer.
+		{Name: "wiring claimed from names alone: a function said configured in another that does not touch it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`deploy()` is configured in `init()`."},
+		{Name: "wiring claimed from names alone: a function said registered where it is not", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`deploy` is registered in `init`."},
+		{Name: "wiring claimed from names alone: a flag said enabled that the read shows false", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`FEATURE_X` is enabled."},
+		{Name: "wiring claimed from names alone: a flag said disabled that the read shows true", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`DEBUG` is disabled."},
+		{Name: "wiring claimed from names alone: a call said wired into a function that does not make it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`push` is wired into `init()`."},
+		{Name: "wiring claimed from names alone: a setting said set up in a function that does not set it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`cfg.enabled` is set up in `deploy()`."},
+		{Name: "a user refusal said to come from the IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "a mode refusal said to come from the IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlMode), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "a user refusal said to be per IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) per IT policy."},
+		{Name: "an org refusal said to come from the IT policy", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "a knowledge claim of work with no subject named", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Typed errors added.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a merge said in the present", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The PR is merged.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a fact about the world, told in the past", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "TLS 1.3 removed RSA key exchange.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim with the session's work as its subject: This change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "This change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim with the session's work as its subject: The change added input validation.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The change added input validation.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim with the session's work as its subject: The edit removed the unused import.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The edit removed the unused import.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim with the session's work as its subject: This commit fixed the memory leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "This commit fixed the memory leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim with the session's work as its subject: The migration added an index on users.email.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The migration added an index on users.email.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a fact about a language, told in the past", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Python 3 dropped print statements.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: Both changes added input validation.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Both changes added input validation.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: All three commits dropped the flag.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "All three commits dropped the flag.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: Each change added a test.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Each change added a test.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: A change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "A change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: One commit fixed the leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "One commit fixed the leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: The very small change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The very small change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: The last two commits fixed the leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The last two commits fixed the leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: Its change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Its change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: Their patch removed the flag.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Their patch removed the flag.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: After review, the change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "After review, the change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: In the end this change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "In the end this change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: So the commit fixed the leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "So the commit fixed the leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: Overall, the edit removed the import.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Overall, the edit removed the import.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: This branch dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "This branch dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: The change set dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The change set dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: The v2 handler dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The v2 handler dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: The 2024 change dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The 2024 change dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work: It dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "It dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: The 2015 change to TLS removed RSA key exchange.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The 2015 change to TLS removed RSA key exchange.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: Python's update dropped print statements.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Python's update dropped print statements.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: The 2018 revision of HTTP removed chunked trailers.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The 2018 revision of HTTP removed chunked trailers.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: The Linux 5.0 cleanup removed old drivers.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The Linux 5.0 cleanup removed old drivers.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: Go's latest release added generics.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Go's latest release added generics.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: The C++20 update added modules.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "The C++20 update added modules.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Release 4.1 fixed the leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Release 4.1 fixed the leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Version 2 of the handler fixed the leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Version 2 of the handler fixed the leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: In 2026 the service dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "In 2026 the service dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Version 1.4.2 fixed the crash and dropped Python 3.8 support.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Version 1.4.2 fixed the crash and dropped Python 3.8 support.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Build 512 removed the deadlock.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Build 512 removed the deadlock.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Handler v2 dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Handler v2 dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: API v3 removed the deprecated endpoint.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "API v3 removed the deprecated endpoint.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Parser 2 removed the regex.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Parser 2 removed the regex.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Textutils 0.2 removed the bug.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Textutils 0.2 removed the bug.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Sprint 12 removed the flag.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Sprint 12 removed the flag.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Phase 2 added validation.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Phase 2 added validation.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Step 3 removed the import.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Step 3 removed the import.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Zephyr 2.0 dropped the flag.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Zephyr 2.0 dropped the flag.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Abhed 1.3 removed the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Abhed 1.3 removed the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the session's work with a number: Mono 2.0 dropped the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Mono 2.0 dropped the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: Go 1.22 fixed the loop variable bug.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Go 1.22 fixed the loop variable bug.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: RFC 9110 removed the 2xx body rule.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "RFC 9110 removed the 2xx body rule.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of a world fact: Kubernetes 1.24 removed dockershim.", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Claim: &Claim{Text: "Kubernetes 1.24 removed dockershim.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Go 1.22 fixed our flaky test.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Go 1.22 fixed our flaky test.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Python 3.12 removed the deadlock in worker.py.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Python 3.12 removed the deadlock in `worker.py`.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Linux 6.1 support was added.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Linux 6.1 support was added.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: The Node 20 upgrade fixed the build.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "The Node 20 upgrade fixed the build.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Upgrading to Go 1.22 fixed the flaky test.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Upgrading to Go 1.22 fixed the flaky test.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Kubernetes 1.30 removed the deprecated flag from deploy.yaml.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Kubernetes 1.30 removed the deprecated flag from deploy.yaml.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Go 1.22 dropped the retry from the handler.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Go 1.22 dropped the retry from the handler.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Redis 7 removed the race in the cache layer.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Redis 7 removed the race in the cache layer.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Docker 24 fixed the container build.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Docker 24 fixed the container build.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: PostgreSQL 16 added the missing index.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "PostgreSQL 16 added the missing index.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Git 2.40 fixed the merge conflict.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Git 2.40 fixed the merge conflict.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: npm 10 fixed the lockfile.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "npm 10 fixed the lockfile.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Chrome 120 fixed the layout bug.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Chrome 120 fixed the layout bug.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Section C 2 removed the flag.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Section C 2 removed the flag.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Option C 3 fixed the leak.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Option C 3 fixed the leak.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: C 11 removed the bug.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "C 11 removed the bug.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Go 2 removed the retry.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Go 2 removed the retry.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology about the session's work: Python 3.12 fixed lock contention in queue handling.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Python 3.12 fixed lock contention in queue handling.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology with an indefinite object: Node 20 fixed a lockfile bug.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Node 20 fixed a lockfile bug.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology with an indefinite object: Python 3.12 fixed a deadlock.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Python 3.12 fixed a deadlock.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology with an indefinite object: Docker 24 removed a flag.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Docker 24 removed a flag.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim naming a listed technology with an indefinite object: Redis 7 removed a race.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadWorker), Claim: &Claim{Text: "Redis 7 removed a race.", Kind: KindKnowledge}},
+		{Name: "a user refusal said to come from the It policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from the It policy."},
+		{Name: "an org refusal said to be per the it team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) per the it team."},
+		{Name: "an org refusal said to come from the security team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the security team."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -1947,6 +2118,10 @@ func RunCorpus() CorpusReport {
 		for _, s := range cc.Steps {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
+			if s.Denied != "" {
+				_, _ = rec.Record(EvActionDenied, ActorSystem, Trusted, map[string]any{"call_id": s.ID, "reason": s.Denied, "by": "policy", "step": "deny", "rule": s.Rule, "source": s.Source})
+				continue
+			}
 			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: corpusCwd(s),
 				ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
 		}

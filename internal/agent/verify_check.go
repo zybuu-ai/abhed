@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -64,6 +65,9 @@ type ClaimVerdict struct {
 	Checked []string `json:"checked,omitempty"`
 	// Critic is the critic's downgrade, when it made one.
 	Critic string `json:"critic,omitempty"`
+	// External marks a knowledge claim of a change read as a fact about
+	// other software ("TLS 1.3 removed RSA key exchange"), not checked.
+	External bool `json:"external,omitempty"`
 	// Explains marks an unverified claim that explains what a read showed.
 	// It is shown apart from unverified work, and changes nothing else: the
 	// claim keeps its kind and LoadBearing, so the answer's outcome and any
@@ -81,6 +85,9 @@ type Conflict struct {
 // checkEnv is what the checker reads besides the claims.
 type checkEnv struct {
 	events []Event
+	// strict: every knowledge claim of a change is work; none is read as
+	// a fact about other software.
+	strict bool
 	// mutates reports whether a recorded call could change state; nil
 	// treats every call but the known readers as one that could.
 	mutates func(tool string, args json.RawMessage) bool
@@ -165,6 +172,16 @@ type recordIndex struct {
 	prompts []string
 	// readFile reads a workspace file as it is now; nil reads none.
 	readFile func(path string) ([]byte, error)
+	// denials are this session's refused calls, newest last.
+	denials []*denialRec
+}
+
+// denialRec is a refused call: why, by which rule, from which layer.
+type denialRec struct {
+	seq                  int64
+	callID               string
+	rule, source, reason string
+	command              string
 }
 
 // readers are the built-in tools that never change anything.
@@ -222,6 +239,27 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			if json.Unmarshal(e.Payload, &a) == nil {
 				reqs[a.CallID] = req{a: a, seq: e.Seq, person: e.Actor == ActorUser}
 			}
+		case EvActionDenied:
+			// A refused call ran nothing. What it shows is the refusal itself
+			// (that the call was refused, by which rule, from where), kept
+			// apart from the results: its reason can hold text the model
+			// chose (an unknown tool's name, a hook's output), which must
+			// never stand for a value.
+			var d struct {
+				CallID string `json:"call_id"`
+				Reason string `json:"reason"`
+				Rule   string `json:"rule"`
+				Source string `json:"source"`
+			}
+			if at != nil || json.Unmarshal(e.Payload, &d) != nil || d.CallID == "" || d.Reason == "" {
+				continue
+			}
+			r := reqs[d.CallID]
+			if r.person {
+				continue
+			}
+			ix.denials = append(ix.denials, &denialRec{seq: e.Seq, callID: d.CallID, rule: d.Rule, source: d.Source,
+				reason: d.Reason, command: argMap(r.a.Args)["command"]})
 		case EvSubagentSpawned, EvSubagentReturn, EvSubagentNotice:
 			var p struct {
 				Session string `json:"session"`
@@ -511,10 +549,15 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	// A state ("healthy", "down") or a deed ("we deployed") the matched
 	// output does not itself say is not shown by its other words matching.
-	if v.Verdict == ClaimVerified && !merge {
+	// A refusal is judged whole by its own check.
+	if v.Verdict == ClaimVerified && !merge && !strings.HasPrefix(v.Reason, refusalReason) {
 		if why := unsaid(ix, c, v); why != "" {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
+	}
+	// A claim is never both read as about other software and verified.
+	if v.Verdict == ClaimVerified {
+		v.External = false
 	}
 	return v
 }
@@ -525,29 +568,47 @@ var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+
 func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	f := extractFacts(citeRe.ReplaceAllString(c.Text, " "))
 	kind := c.Kind
+	// A sentence that says something was done or changed is about the work
+	// even with nothing else in it; a participle alone ("a compiled
+	// language") is not.
+	workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean || f.presentState ||
+		len(ix.denials) > 0 && refusalWordRe.MatchString(normText(c.Text))
 	switch kind {
 	case KindObserved, KindDerived, KindKnowledge:
 	case "":
 		kind = KindObserved
-		// A sentence that says something was done or changed is about the work
-		// even with nothing else in it; a participle alone ("a compiled
-		// language") is not.
-		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean
 		if !f.any() && !workEvent && c.Quote == "" && len(c.Evidence) == 0 {
 			kind = KindStatement
 		}
 	default:
 		kind = KindObserved
 	}
-	// A "knowledge" claim about this session's own work is checked as one.
-	if kind == KindKnowledge && (f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0) {
-		kind = KindObserved
+	// A "knowledge" claim that says a change, an event or a finished state
+	// is about this session's work, and checked as one, unless its subject
+	// is plainly outside the session: a versioned or dated thing ("TLS 1.3
+	// removed RSA key exchange", "the 2018 revision of HTTP"), or a named
+	// project's release, spec or RFC that nothing this session read or
+	// changed names. A pass, a change said in the first person, a command
+	// run and a file:line are always work.
+	saysChange := workEvent || f.event != "" || f.changeAct || f.presentState
+	external := false
+	if kind == KindKnowledge {
+		switch {
+		case f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0:
+			kind = KindObserved
+		case saysChange && !env.strict && !refusalWordRe.MatchString(normText(c.Text)) && ix.externalClaim(c.Text):
+			external = true
+		case saysChange:
+			kind = KindObserved
+		}
 	}
-	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}
+	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence, External: external}
 	// "Set `DEBUG` to `true`" is advice in a session that changed nothing,
 	// with a condition or purpose ("when you're ready", "to apply it"), or
 	// with a verb no call of this session showed ("Restart the server").
-	if f.imperative && len(c.Evidence) == 0 {
+	// A noun that looks like a verb, with a past verb after it ("Release
+	// 4.1 fixed the leak"), reports something; it is no advice.
+	if f.imperative && len(c.Evidence) == 0 && !leadNounReport(c.Text) {
 		why := ""
 		low := normText(backtickRe.ReplaceAllString(c.Text, " "))
 		switch {
@@ -567,9 +628,19 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 			return v
 		}
 	}
+	// A statement about a refusal is checked against the refusal alone.
+	if d := ix.refusalShown(c); d != nil {
+		v.Kind, v.LoadBearing, v.Verdict, v.External = KindObserved, true, ClaimVerified, false
+		v.Evidence = []int64{d.seq}
+		v.Reason = fmt.Sprintf("%s#%d", refusalReason, d.seq)
+		return v
+	}
 	if kind == KindKnowledge || kind == KindStatement {
 		v.Verdict = ClaimUnverified
 		v.Reason = "general knowledge; not checked against this session"
+		if v.External {
+			v.Reason = "not checked: about other software"
+		}
 		if kind == KindStatement {
 			v.Reason = "nothing in it could be checked against this session"
 		}
@@ -1254,6 +1325,11 @@ func (ix *recordIndex) resolve(ref string) (*obsRec, string) {
 		}
 		return o, ""
 	}
+	for _, d := range ix.denials {
+		if ref == d.callID || ref == "#"+strconv.FormatInt(d.seq, 10) || ref == strconv.FormatInt(d.seq, 10) {
+			return nil, fmt.Sprintf("%s is a refused call, which shows only that it was refused", ref)
+		}
+	}
 	if m := seqRefRe.FindStringSubmatch(ref); m != nil {
 		n, _ := strconv.ParseInt(m[1], 10, 64)
 		if o, ok := ix.bySeq[n]; ok && o.usable() {
@@ -1858,4 +1934,291 @@ func personText(text string) string {
 		text = text[:j]
 	}
 	return text
+}
+
+// refusalReason opens the reason of a statement verified by a refusal.
+const refusalReason = "matches the refusal "
+
+var (
+	// refusalWordRe says a call was refused.
+	refusalWordRe = regexp.MustCompile(`\b(?:denied|refused|blocked|rejected|not allowed|disallowed)\b`)
+	// refusalLayers name the policy layers a refusal can come from, each
+	// with the source the record gives it.
+	refusalLayers = []struct {
+		source string
+		re     *regexp.Regexp
+	}{
+		{"org", regexp.MustCompile(`\b(?:the\s+)?(?:company's\s+)?org_it(?:\s+(?:policy|policies|department|team|rules?))?\b|\b(?:the\s+)?(?:security\s+team|infosec)(?:'s)?(?:\s+(?:policy|rules?))?\b|\b(?:your\s+)?(?:org|organi[sz]ation|company)(?:'s)?(?:\s+(?:policy|policies|admin|administrator|rules?|settings))*\b|\b(?:your\s+)?(?:admin|administrator)(?:'s)?(?:\s+(?:policy|rules?))?\b`)},
+		{"managed", regexp.MustCompile(`\b(?:managed|machine(?:-wide)?)\s+(?:configuration|config|policy|settings|rules?)\b`)},
+		{"workspace", regexp.MustCompile(`\b(?:workspace|project|repository|repo)(?:'s)?\s+(?:configuration|config|settings|rules?|policy)\b`)},
+		{"user", regexp.MustCompile(`\b(?:your\s+)?(?:own\s+)?(?:user|personal)\s+(?:configuration|config|settings|rules?)\b|\byour\s+own\s+(?:configuration|config|settings|rules?)\b`)},
+		{"settings", regexp.MustCompile(`\b(?:a\s+|the\s+)?settings\s+file\b|--?settings\b`)},
+		{"flag", regexp.MustCompile(`\b(?:a\s+|the\s+)?(?:command[- ]line\s+)?flags?\b|(?:^|\s)--?(?:allow|deny)\b`)},
+		{"session", regexp.MustCompile(`\b(?:a\s+|the\s+|this\s+)?session\s+(?:rule|grant|approval|permission)s?\b|\byou\s+approved\b|\bapproved\s+(?:for|in)\s+(?:this|the)\s+session\b`)},
+		{"hook", regexp.MustCompile(`\b(?:a\s+|the\s+)?(?:policy\s+)?hooks?\b`)},
+		{"mode", regexp.MustCompile(`\b(?:plan|accept-edits|auto|bypass|default)\s+mode\b|\bthe\s+(?:permission\s+)?mode\b`)},
+		{"default", regexp.MustCompile(`\bthe\s+default\s+(?:rule|step|policy)\b|\bby\s+default\b`)},
+	}
+	// refusalConnectives are the only words a statement about a refusal may
+	// hold besides the refusal itself, its rule, its layer, its reason and
+	// the refused command: any other (succeeded, ran, returned, an unknown
+	// layer) leaves it unverified.
+	refusalConnectives = wordSet(`the a an call calls command commands tool request requests attempt was were is are been
+		has had by rule rules from in under of per due to because policy permission permissions configuration config
+		which that it this its my your set so and as with there`)
+	// itWordRe is "IT" as written, the IT department.
+	itWordRe       = regexp.MustCompile(`\bIT\b`)
+	itOrgRe        = regexp.MustCompile(`(?i)\bit(\s+(?:policy|policies|team|department|rules?))\b`)
+	refusalPunctRe = regexp.MustCompile(`[.,;:!?()"'\x60]`)
+)
+
+// refusalShown is the refusal a claim states, or nil: one that quotes what
+// the agent was told ("Denied: <reason>"), or says the call was refused by
+// the rule that refused it ("the call was denied by rule bash(curl*) from
+// the org policy"). Each code span in it must be the rule, the reason or
+// the refused command; each layer it names must be the refusal's own; and
+// once all of that and the refusal's wording are taken out, nothing but a
+// few connective words may be left. With citations, only a cited refusal
+// counts.
+func (ix *recordIndex) refusalShown(c Claim) *denialRec {
+	if len(ix.denials) == 0 {
+		return nil
+	}
+	// "IT" as a word is the IT department, an org layer, never "it"; so is
+	// "it" in any case before policy, team, department or rules.
+	text := itOrgRe.ReplaceAllString(c.Text, "org_it$1")
+	low := normText(strings.ReplaceAll(itWordRe.ReplaceAllString(text, "org_it"), "`", ""))
+	var spans []string
+	for _, m := range backtickRe.FindAllStringSubmatch(c.Text, -1) {
+		spans = append(spans, normText(m[1]))
+	}
+	for i := len(ix.denials) - 1; i >= 0; i-- {
+		d := ix.denials[i]
+		if len(c.Evidence) > 0 {
+			cited := false
+			for _, ref := range c.Evidence {
+				ref = strings.TrimSpace(ref)
+				cited = cited || ref == d.callID || ref == "#"+strconv.FormatInt(d.seq, 10)
+			}
+			if !cited {
+				continue
+			}
+		}
+		quote := strings.TrimRight(normText("denied: "+d.reason), ".")
+		quoted := strings.Contains(low, quote)
+		named := d.rule != "" && refusalWordRe.MatchString(low) && strings.Contains(low, normText(d.rule))
+		if !quoted && !named {
+			continue
+		}
+		known := normText(d.reason + " " + d.rule + " " + d.command)
+		ok := true
+		for _, sp := range spans {
+			sp = strings.TrimRight(strings.TrimPrefix(sp, "denied: "), ".")
+			if sp != "" && !strings.Contains(known, sp) {
+				ok = false
+			}
+		}
+		if ok && refusalRest(low, d, quote) {
+			return d
+		}
+	}
+	return nil
+}
+
+// refusalRest reports a statement about refusal d that, with the quote,
+// the reason, the rule, the command, the refusal's wording and each layer
+// it names (which must be d's own) taken out, holds only connective words.
+func refusalRest(low string, d *denialRec, quote string) bool {
+	rest := low
+	for _, part := range []string{quote, normText(d.reason), normText(d.rule), normText(d.command)} {
+		if part = strings.TrimRight(part, "."); part != "" {
+			rest = strings.ReplaceAll(rest, part, " ")
+		}
+	}
+	for _, l := range refusalLayers {
+		if l.re.MatchString(rest) {
+			if l.source != d.source {
+				return false
+			}
+			rest = l.re.ReplaceAllString(rest, " ")
+		}
+	}
+	rest = refusalWordRe.ReplaceAllString(rest, " ")
+	rest = refusalPunctRe.ReplaceAllString(rest, " ")
+	for _, w := range strings.Fields(rest) {
+		if !refusalConnectives[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// leadNounReport reports a sentence whose first word, an imperative in
+// form, is followed by a number or version and then a past verb: "Release
+// 4.1 fixed the leak", "Build 512 removed the deadlock".
+func leadNounReport(text string) bool {
+	words := strings.Fields(text)
+	if len(words) < 3 || !leadNumberRe.MatchString(words[1]) {
+		return false
+	}
+	return saysPast(normText(strings.Trim(words[2], ".,;:!?")))
+}
+
+// leadNumberRe is a number or version said after a noun.
+var leadNumberRe = regexp.MustCompile(`^v?\d+(?:\.\d+)*[.,;:]?$`)
+
+// externalNames are the well-known technologies a knowledge claim may
+// report a change of as a fact about the world. Nothing else is external.
+var externalNames = []string{
+	"TLS", "SSL", "HTTP", "HTTP/2", "HTTP/3", "QUIC", "IPv6", "OAuth", "OpenID", "JSON", "YAML", "Unicode", "POSIX",
+	"ECMAScript", "C++", "C#", "Java", "JDK", "Rust", "Python", "Ruby", "PHP", "Node.js", "Node", "TypeScript",
+	"Kotlin", "Swift", "Scala", "Perl", "Lua",
+	"Linux", "Windows", "macOS", "iOS", "Android", "FreeBSD", "Kubernetes", "Docker", "PostgreSQL", "MySQL", "SQLite",
+	"Redis", "OpenSSL", "glibc", "LLVM", "GCC", "Git", "npm", "pip", "Chrome", "Firefox", "Safari",
+}
+
+var (
+	// externalRe is a curated name with a version or release word after
+	// it ("TLS 1.3", "C++20", "Go's latest release"), a year before it
+	// ("2018 HTTP"), or an RFC or ECMAScript edition by number.
+	externalRe = func() *regexp.Regexp {
+		var names []string
+		for _, n := range externalNames {
+			names = append(names, regexp.QuoteMeta(n))
+		}
+		alt := `(?:` + strings.Join(names, "|") + `)`
+		// Each name opens the subject (after "The" or a year at most), so a
+		// name inside another phrase ("Section C 2") never counts; C only
+		// as C89 to C23 written joined, and Go only as "Go 1.<n>" or "Go's
+		// latest release".
+		lead := `^(?:the\s+)?`
+		return regexp.MustCompile(lead + `(` + alt + `)(?:'s)?(?:\s*v?\d+(?:\.\d+)*\b|\s+(?:latest\s+|newest\s+|next\s+|first\s+|last\s+|new\s+)?(?:version|release|spec|specification|standard)\b)` +
+			`|` + lead + `(?:19|20)\d\d\s+(` + alt + `)(?:[\s'.,]|$)` +
+			`|` + lead + `(?:RFC\s*\d+|ES\d+|C(?:89|99|11|17|23)|Go\s+1\.\d+|Go's\s+(?:latest|newest|next|first|last|new)\s+(?:version|release|spec)|Go\s+(?:version|release)\s+1\.\d+)\b`)
+	}()
+	// subjectWorkRe in a subject keeps it the session's: a work noun, a
+	// pronoun, a possessive, code.
+	subjectWorkRe = regexp.MustCompile("(?i)\\b(?:changes?|change set|edits?|commits?|migrations?|diffs?|prs?|pull requests?|rewrites?|clean-?ups?|revisions?|fix(?:es)?|patch(?:es)?|refactor\\w*|updates?|branch(?:es)?|it|its|they|their|this|that|these|those|my|our|your|we|i|he|she|his|her)\\b|\x60")
+	// subjVerbRe is a word that may be a claim's verb: a past form, a change
+	// word or a form of be or have.
+	subjVerbRe = regexp.MustCompile(`^(?:[a-z]+ed|[a-z]+en|did|made|took|got|gave|went|came|now|is|are|was|were|has|have|had)$`)
+	// projectNameRe reads a project's own name from its manifest.
+	projectNameRe = regexp.MustCompile(`(?m)^\s*(?:module\s+(\S+)|"name"\s*:\s*"([^"]+)"|name\s*=\s*"([^"]+)")`)
+)
+
+// externalClaim reports a knowledge claim of a change that is a fact
+// about other software: its subject (the words before its verb; the first
+// word and capitalised words are never the verb) opens with a technology
+// from the fixed list with a version or release word, or a year before
+// it, and nothing in the whole sentence ties it to this session: no first
+// person or possessive, no code or path, no name a read, call or change of
+// this session holds, no passive, no upgrade or migration word, no "the"
+// before a noun after the verb, no word for work in the subject; and the
+// name is not the workspace's own project. Only label mode reads such a
+// claim as external; strict checks every change claim as work.
+func (ix *recordIndex) externalClaim(text string) bool {
+	words := strings.Fields(text)
+	end := len(words)
+	for k, w := range words {
+		if k == 0 || w == "" || unicode.IsUpper([]rune(w)[0]) {
+			continue
+		}
+		low := strings.ToLower(strings.Trim(w, ".,;:!?()\"'"))
+		if subjVerbRe.MatchString(low) || low == "no" && k+1 < len(words) && strings.ToLower(words[k+1]) == "longer" {
+			end = k
+			break
+		}
+	}
+	subj := strings.Join(words[:end], " ")
+	object := strings.ToLower(strings.Join(words[end:], " "))
+	low := strings.ToLower(text)
+	if strings.TrimSpace(subj) == "" || subjectWorkRe.MatchString(subj) || sessionTieRe.MatchString(low) ||
+		strings.Contains(text, "`") || pathRe.MatchString(text) || passiveTieRe.MatchString(low) ||
+		theObjectRe.MatchString(object) {
+		return false
+	}
+	m := externalRe.FindStringSubmatch(subj)
+	if m == nil {
+		return false
+	}
+	name := m[1] + m[2]
+	if name != "" && ix.ownProject(name) {
+		return false
+	}
+	return !ix.namesSessionWord(words, name)
+}
+
+var (
+	// sessionTieRe ties a sentence to the session: the first person, a
+	// possessive, an upgrade or a migration.
+	sessionTieRe = regexp.MustCompile(`\b(?:i|we|us|our|ours|my|mine|upgrad\w*|bump\w*|migrat\w*|switch\w*|port(?:ed|ing)?\s+to|moved?\s+to|moving\s+to)\b`)
+	// passiveTieRe is a passive: work with no one named as doing it.
+	passiveTieRe = regexp.MustCompile(`\b(?:is|are|was|were|be|been|being)\s+(?:\w+ly\s+|now\s+)?[a-z]+(?:ed|en|wn|ne)\b`)
+	// theObjectRe is "the", "a" or "an" before a noun, after the verb.
+	theObjectRe = regexp.MustCompile(`\b(?:the|a|an)\s+[a-z]`)
+	// claimWordRe is a word of a claim that may name something the session
+	// read or changed.
+	claimWordRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_\-]{3,}`)
+)
+
+// namesSessionWord reports a claim that holds a word, other than the
+// external name and common words, that one of this session's reads, calls
+// or changes holds.
+func (ix *recordIndex) namesSessionWord(words []string, name string) bool {
+	var hay []string
+	for _, o := range ix.obs {
+		if o.usable() {
+			hay = append(hay, strings.ToLower(o.content+"\n"+o.args+"\n"+o.path))
+		}
+	}
+	for _, m := range ix.mutations {
+		hay = append(hay, strings.ToLower(m.text+"\n"+m.path))
+	}
+	for _, w := range claimWordRe.FindAllString(strings.Join(words, " "), -1) {
+		lw := strings.ToLower(w)
+		if strings.EqualFold(w, name) || commonClaimWords[lw] || subjVerbRe.MatchString(lw) {
+			continue
+		}
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(lw) + `\b`)
+		for _, h := range hay {
+			if re.MatchString(h) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// commonClaimWords are words any read may hold that name nothing.
+var commonClaimWords = wordSet(`with from into that this then than them they were have will what when which while
+	support supports added removed dropped changed fixed made version release spec standard latest newest first last
+	also only more most some such each every other about after before over under between`)
+
+// ownProject reports a name that is the workspace's own project: its
+// folder, or the name in go.mod, package.json, pyproject.toml or
+// Cargo.toml.
+func (ix *recordIndex) ownProject(name string) bool {
+	if ix.workDir == "" {
+		return false
+	}
+	same := func(n string) bool {
+		n = strings.Trim(n, " \"'/")
+		return n != "" && (strings.EqualFold(n, name) || strings.EqualFold(filepath.Base(n), name))
+	}
+	if same(filepath.Base(ix.workDir)) {
+		return true
+	}
+	if ix.readFile == nil {
+		return false
+	}
+	for _, f := range []string{"go.mod", "package.json", "pyproject.toml", "Cargo.toml"} {
+		b, err := ix.readFile(filepath.Join(ix.workDir, f))
+		if err != nil {
+			continue
+		}
+		if m := projectNameRe.FindSubmatch(b); m != nil && same(string(m[1])+string(m[2])+string(m[3])) {
+			return true
+		}
+	}
+	return false
 }

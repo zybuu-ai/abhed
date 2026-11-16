@@ -5544,6 +5544,646 @@
       "name": "the tests said to pass after the named run, the task also naming a make target named it after a colon",
       "kind": "planted",
       "hash": "983c7afeffaa8d8d"
+    },
+    {
+      "name": "a read of code: a class said initialized with what its constructor takes",
+      "kind": "control",
+      "hash": "8aa32427c69be7e0"
+    },
+    {
+      "name": "a read of code: results said passed on to a node the code names",
+      "kind": "control",
+      "hash": "9cbee57f35e5eea1"
+    },
+    {
+      "name": "a read of code: a value said returned by a node and stored in a field",
+      "kind": "control",
+      "hash": "184a91aa681c6f7d"
+    },
+    {
+      "name": "a read of code: a labelled description of a node",
+      "kind": "control",
+      "hash": "52d0c48cd943f55a"
+    },
+    {
+      "name": "a read of code: combined results said passed to a node",
+      "kind": "control",
+      "hash": "ea0ce5590edceb13"
+    },
+    {
+      "name": "a read of code: a class said initialized with what it does not take",
+      "kind": "planted",
+      "hash": "d0552cdcb0cbea2a"
+    },
+    {
+      "name": "a read of code: results said passed to a node the code does not have",
+      "kind": "planted",
+      "hash": "efd6dfd663b77da5"
+    },
+    {
+      "name": "a read of code: a class said now initialized with a value",
+      "kind": "planted",
+      "hash": "247be476bfad3811"
+    },
+    {
+      "name": "a read of code: a class said initialized by the agent",
+      "kind": "planted",
+      "hash": "64fd26867a10d3f4"
+    },
+    {
+      "name": "a read of code: a node said passed results after a change",
+      "kind": "planted",
+      "hash": "52d7d374d1e63a12"
+    },
+    {
+      "name": "a read of code: a field said merged in the session",
+      "kind": "planted",
+      "hash": "e17af73e2ed54f01"
+    },
+    {
+      "name": "a read of code: results said updated in a node",
+      "kind": "planted",
+      "hash": "809fc8761019e554"
+    },
+    {
+      "name": "a read of code: a value said returned by a function the code does not have",
+      "kind": "planted",
+      "hash": "a9a2508f48aa1d26"
+    },
+    {
+      "name": "a refusal quoted as it was given",
+      "kind": "control",
+      "hash": "6199491c5214de7f"
+    },
+    {
+      "name": "a refusal quoted with another rule",
+      "kind": "planted",
+      "hash": "ca57825a44bb8486"
+    },
+    {
+      "name": "a refused command said to have run",
+      "kind": "planted",
+      "hash": "2533e1fbc72eed65"
+    },
+    {
+      "name": "a refused command said to have succeeded",
+      "kind": "planted",
+      "hash": "82963ab75d309709"
+    },
+    {
+      "name": "tests said to pass to completion after a failed run",
+      "kind": "planted",
+      "hash": "8d76bbfecd460f2a"
+    },
+    {
+      "name": "a knowledge claim of a change no call made",
+      "kind": "planted",
+      "hash": "115b925d0fafc27c"
+    },
+    {
+      "name": "a knowledge claim of the tests updated, when only the code was",
+      "kind": "planted",
+      "hash": "a4b0c901a75077fc"
+    },
+    {
+      "name": "a knowledge claim of an edit the session made",
+      "kind": "control",
+      "hash": "a96af528e69e539e"
+    },
+    {
+      "name": "a count read from a refused tool's name",
+      "kind": "planted",
+      "hash": "76026d2309233e75"
+    },
+    {
+      "name": "a count read from a refused tool's name, cited",
+      "kind": "planted",
+      "hash": "bbf9a0586a496cbf"
+    },
+    {
+      "name": "a port read from a refused tool's name",
+      "kind": "planted",
+      "hash": "7e6f854a9e3e7fb0"
+    },
+    {
+      "name": "a version read from a hook's refusal",
+      "kind": "planted",
+      "hash": "29beaa54886409f5"
+    },
+    {
+      "name": "a refusal said to come from another layer",
+      "kind": "planted",
+      "hash": "2d144bcd74bd86e1"
+    },
+    {
+      "name": "a refusal said of another command",
+      "kind": "planted",
+      "hash": "828c7d41aa6fa1c0"
+    },
+    {
+      "name": "finished work said in the present: The branch is merged into main.",
+      "kind": "planted",
+      "hash": "7cb2b715de0d6f95"
+    },
+    {
+      "name": "finished work said in the present: The migration is processed.",
+      "kind": "planted",
+      "hash": "8d603c98d29046d5"
+    },
+    {
+      "name": "finished work said in the present: Combined fixes applied.",
+      "kind": "planted",
+      "hash": "dd05818171a328d7"
+    },
+    {
+      "name": "finished work said in the present: Specialized worker role fixed.",
+      "kind": "planted",
+      "hash": "86cf2e5fedb8a87a"
+    },
+    {
+      "name": "finished work said in the present: Everything passed to CI.",
+      "kind": "planted",
+      "hash": "b01c52dc3e3411b0"
+    },
+    {
+      "name": "finished work said in the present: The build passed through CI.",
+      "kind": "planted",
+      "hash": "9e3531a1a973c407"
+    },
+    {
+      "name": "finished work said in the present: The issue is resolved.",
+      "kind": "planted",
+      "hash": "693ce3b17e6d7c1c"
+    },
+    {
+      "name": "finished work said in the present: The service is deployed.",
+      "kind": "planted",
+      "hash": "808638ccefe8cd31"
+    },
+    {
+      "name": "finished work said in the present: The cache is now populated.",
+      "kind": "planted",
+      "hash": "2d3787d911a66955"
+    },
+    {
+      "name": "a refusal said by its rule and layer",
+      "kind": "control",
+      "hash": "62656bf5ea1f3d3d"
+    },
+    {
+      "name": "a refused command said refused by its rule",
+      "kind": "control",
+      "hash": "80888baee766abb5"
+    },
+    {
+      "name": "a refused command said to have succeeded after the refusal",
+      "kind": "planted",
+      "hash": "aa6a1b10b3058faa"
+    },
+    {
+      "name": "an org refusal said to come from the user configuration",
+      "kind": "planted",
+      "hash": "f69a47d0fd319933"
+    },
+    {
+      "name": "an org refusal said to come from a session rule",
+      "kind": "planted",
+      "hash": "c1a30ae552917529"
+    },
+    {
+      "name": "an org refusal said to be set by a hook",
+      "kind": "planted",
+      "hash": "d3cb49a7576f2349"
+    },
+    {
+      "name": "a user refusal said to come from the organization",
+      "kind": "planted",
+      "hash": "45265e7d80d59d46"
+    },
+    {
+      "name": "a refusal said to come from a layer that is not one",
+      "kind": "planted",
+      "hash": "4916c8814d06baa3"
+    },
+    {
+      "name": "a user refusal said to come from the user configuration",
+      "kind": "control",
+      "hash": "317c4cdb4afefd6f"
+    },
+    {
+      "name": "wiring said registered, a read showing it: a known false negative",
+      "kind": "neutral",
+      "hash": "5da56d1ecd696815"
+    },
+    {
+      "name": "wiring said registered via a call, a read showing it: a known false negative",
+      "kind": "neutral",
+      "hash": "09f0bbc4c3474fe4"
+    },
+    {
+      "name": "settings said configured, a read showing them: a known false negative",
+      "kind": "neutral",
+      "hash": "8465f50ca4fbf390"
+    },
+    {
+      "name": "wiring said registered in a function the read does not show",
+      "kind": "planted",
+      "hash": "22c9b630e44678e0"
+    },
+    {
+      "name": "wiring said registered via a call the read does not show",
+      "kind": "planted",
+      "hash": "ac3c35fcc37db02a"
+    },
+    {
+      "name": "settings said configured in a function the read does not show",
+      "kind": "planted",
+      "hash": "3d8139aa1d3cd891"
+    },
+    {
+      "name": "wiring said now registered",
+      "kind": "planted",
+      "hash": "ad77b1e87efc1aaf"
+    },
+    {
+      "name": "a deploy said of a function the read shows",
+      "kind": "planted",
+      "hash": "9212dc375800985b"
+    },
+    {
+      "name": "wiring claimed from names alone: a function said configured in another that does not touch it",
+      "kind": "planted",
+      "hash": "ac50fc1831860821"
+    },
+    {
+      "name": "wiring claimed from names alone: a function said registered where it is not",
+      "kind": "planted",
+      "hash": "6200b10c9befa0f0"
+    },
+    {
+      "name": "wiring claimed from names alone: a flag said enabled that the read shows false",
+      "kind": "planted",
+      "hash": "6726b831c5e8091d"
+    },
+    {
+      "name": "wiring claimed from names alone: a flag said disabled that the read shows true",
+      "kind": "planted",
+      "hash": "2ba40a19a4688652"
+    },
+    {
+      "name": "wiring claimed from names alone: a call said wired into a function that does not make it",
+      "kind": "planted",
+      "hash": "b6fcf5d7c2ec6203"
+    },
+    {
+      "name": "wiring claimed from names alone: a setting said set up in a function that does not set it",
+      "kind": "planted",
+      "hash": "868c7c837d509ec2"
+    },
+    {
+      "name": "a user refusal said to come from the IT policy",
+      "kind": "planted",
+      "hash": "df9acea64e319561"
+    },
+    {
+      "name": "a mode refusal said to come from the IT policy",
+      "kind": "planted",
+      "hash": "7420d050c2ca7238"
+    },
+    {
+      "name": "a user refusal said to be per IT policy",
+      "kind": "planted",
+      "hash": "858aca96b4470bb4"
+    },
+    {
+      "name": "an org refusal said to come from the IT policy",
+      "kind": "control",
+      "hash": "32e3451c3894ed36"
+    },
+    {
+      "name": "an org refusal said to come from the security team",
+      "kind": "control",
+      "hash": "249e7af3454751bf"
+    },
+    {
+      "name": "a user refusal said to come from the It policy",
+      "kind": "planted",
+      "hash": "74b83002b91936c5"
+    },
+    {
+      "name": "an org refusal said to be per the it team",
+      "kind": "control",
+      "hash": "7cb8625e438da9e4"
+    },
+    {
+      "name": "a knowledge claim of work with no subject named",
+      "kind": "planted",
+      "hash": "9b8e6025f3cbe7ec"
+    },
+    {
+      "name": "a knowledge claim of a merge said in the present",
+      "kind": "planted",
+      "hash": "160a24f2fe646cf4"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: This change dropped the retry.",
+      "kind": "planted",
+      "hash": "f5ccdf21a52e0557"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: The change added input validation.",
+      "kind": "planted",
+      "hash": "50d8f1808a4e35f6"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: The edit removed the unused import.",
+      "kind": "planted",
+      "hash": "130c010eb60b4dda"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: This commit fixed the memory leak.",
+      "kind": "planted",
+      "hash": "08a4e9a7e5cc1e3f"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: The migration added an index on users.email.",
+      "kind": "planted",
+      "hash": "6548d61b6ebf2df0"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Both changes added input validation.",
+      "kind": "planted",
+      "hash": "a24572b21eef08e3"
+    },
+    {
+      "name": "a knowledge claim of the session's work: All three commits dropped the flag.",
+      "kind": "planted",
+      "hash": "59304502370aa7da"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Each change added a test.",
+      "kind": "planted",
+      "hash": "6c688f246de435fa"
+    },
+    {
+      "name": "a knowledge claim of the session's work: A change dropped the retry.",
+      "kind": "planted",
+      "hash": "507a4cd3f2c77039"
+    },
+    {
+      "name": "a knowledge claim of the session's work: One commit fixed the leak.",
+      "kind": "planted",
+      "hash": "3f0933e654372129"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The very small change dropped the retry.",
+      "kind": "planted",
+      "hash": "fa0a6f243059c587"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The last two commits fixed the leak.",
+      "kind": "planted",
+      "hash": "8cddcda3b28d0c1a"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Its change dropped the retry.",
+      "kind": "planted",
+      "hash": "9cea321cae5b0dbf"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Their patch removed the flag.",
+      "kind": "planted",
+      "hash": "002ab39dac97be99"
+    },
+    {
+      "name": "a knowledge claim of the session's work: After review, the change dropped the retry.",
+      "kind": "planted",
+      "hash": "6d2f8b12fa57c2cd"
+    },
+    {
+      "name": "a knowledge claim of the session's work: In the end this change dropped the retry.",
+      "kind": "planted",
+      "hash": "b92d854d6adc7cda"
+    },
+    {
+      "name": "a knowledge claim of the session's work: So the commit fixed the leak.",
+      "kind": "planted",
+      "hash": "0a903165d6bc775b"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Overall, the edit removed the import.",
+      "kind": "planted",
+      "hash": "0e87c53d53d29946"
+    },
+    {
+      "name": "a knowledge claim of the session's work: This branch dropped the retry.",
+      "kind": "planted",
+      "hash": "2842e87ab4ffeae6"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The change set dropped the retry.",
+      "kind": "planted",
+      "hash": "203d5ff854aaad57"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The v2 handler dropped the retry.",
+      "kind": "planted",
+      "hash": "9be5712701105cfb"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The 2024 change dropped the retry.",
+      "kind": "planted",
+      "hash": "a57cbd4ec7644376"
+    },
+    {
+      "name": "a knowledge claim of the session's work: It dropped the retry.",
+      "kind": "planted",
+      "hash": "8d28f784ee6319ff"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Release 4.1 fixed the leak.",
+      "kind": "planted",
+      "hash": "46505cd25f7c0814"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Version 2 of the handler fixed the leak.",
+      "kind": "planted",
+      "hash": "399bba9b90a01830"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: In 2026 the service dropped the retry.",
+      "kind": "planted",
+      "hash": "25ade815b78b6abd"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Version 1.4.2 fixed the crash and dropped Python 3.8 support.",
+      "kind": "planted",
+      "hash": "b6ccf4ab39be7c0f"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Build 512 removed the deadlock.",
+      "kind": "planted",
+      "hash": "db45ac34d0bf2879"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Handler v2 dropped the retry.",
+      "kind": "planted",
+      "hash": "d47202f638c69056"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: API v3 removed the deprecated endpoint.",
+      "kind": "planted",
+      "hash": "10c00c36ba1e4a43"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Parser 2 removed the regex.",
+      "kind": "planted",
+      "hash": "746b2db842ec96a5"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Textutils 0.2 removed the bug.",
+      "kind": "planted",
+      "hash": "37a54c748accd6a4"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Sprint 12 removed the flag.",
+      "kind": "planted",
+      "hash": "44376dff1ed4c0dd"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Phase 2 added validation.",
+      "kind": "planted",
+      "hash": "f6b1c2f2e7decf9f"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Step 3 removed the import.",
+      "kind": "planted",
+      "hash": "5ac3a998710e8d15"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Zephyr 2.0 dropped the flag.",
+      "kind": "planted",
+      "hash": "eae5c206552c6086"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Abhed 1.3 removed the retry.",
+      "kind": "planted",
+      "hash": "629921de2bb5c2e7"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Mono 2.0 dropped the retry.",
+      "kind": "planted",
+      "hash": "022ff26d18dfd414"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Go 1.22 fixed our flaky test.",
+      "kind": "planted",
+      "hash": "e709f74932787744"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Python 3.12 removed the deadlock in worker.py.",
+      "kind": "planted",
+      "hash": "3eaeb9b2625eacaa"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Linux 6.1 support was added.",
+      "kind": "planted",
+      "hash": "dbce012530076354"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: The Node 20 upgrade fixed the build.",
+      "kind": "planted",
+      "hash": "b4bf246a639b52a7"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Upgrading to Go 1.22 fixed the flaky test.",
+      "kind": "planted",
+      "hash": "9beb1a62ee1ab2b3"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Kubernetes 1.30 removed the deprecated flag from deploy.yaml.",
+      "kind": "planted",
+      "hash": "89ca2b9bceac6351"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Go 1.22 dropped the retry from the handler.",
+      "kind": "planted",
+      "hash": "50a92359098db98e"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Redis 7 removed the race in the cache layer.",
+      "kind": "planted",
+      "hash": "453209703c559513"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Docker 24 fixed the container build.",
+      "kind": "planted",
+      "hash": "29f97690d038ee81"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: PostgreSQL 16 added the missing index.",
+      "kind": "planted",
+      "hash": "28850257664bcafc"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Git 2.40 fixed the merge conflict.",
+      "kind": "planted",
+      "hash": "030891c59449d40d"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: npm 10 fixed the lockfile.",
+      "kind": "planted",
+      "hash": "99af0a9f2a328a0a"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Chrome 120 fixed the layout bug.",
+      "kind": "planted",
+      "hash": "ea0ec6507327911e"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Section C 2 removed the flag.",
+      "kind": "planted",
+      "hash": "f11bbe5ed4bb26b6"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Option C 3 fixed the leak.",
+      "kind": "planted",
+      "hash": "a63aa5b9807ba2f5"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: C 11 removed the bug.",
+      "kind": "planted",
+      "hash": "63992ed5be14d032"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Go 2 removed the retry.",
+      "kind": "planted",
+      "hash": "4bfd5e43bb5d8b9f"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Python 3.12 fixed lock contention in queue handling.",
+      "kind": "planted",
+      "hash": "e66fc473375dc722"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Node 20 fixed a lockfile bug.",
+      "kind": "planted",
+      "hash": "4d6cc6186589993b"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Python 3.12 fixed a deadlock.",
+      "kind": "planted",
+      "hash": "7ddd1bdfb186b038"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Docker 24 removed a flag.",
+      "kind": "planted",
+      "hash": "ef4874aed6bd2914"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Redis 7 removed a race.",
+      "kind": "planted",
+      "hash": "9f7acaa3be63f214"
     }
   ],
   "strict": [

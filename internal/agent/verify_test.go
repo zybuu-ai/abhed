@@ -1122,3 +1122,151 @@ func TestGoModuleReadsACommentedModuleLine(t *testing.T) {
 		}
 	}
 }
+
+// Strict mode checks the answer's text as well as its claims: an answer
+// that lists only general knowledge while its text says the tests now pass
+// is not verified when no test run shows it.
+func TestStrictChecksTheAnswerText(t *testing.T) {
+	answer := `{"text":"I have fixed the bugs in ` + "`src/utils/text.py`" + `. The tests now pass.","claims":[{"text":"Python is a programming language.","kind":"knowledge"}]}`
+	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'nothing ran\\n'"}`)}}},
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+		{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+	})
+	reason, _ := l.Run(context.Background(), "fix the bugs and run the tests")
+	if reason != TermUnverified {
+		t.Fatalf("strict passed an answer whose text is unverified: %s", reason)
+	}
+	vs := answerVerdicts(store)
+	found := false
+	for _, c := range vs[len(vs)-1].Claims {
+		found = found || strings.Contains(c.Text, "The tests now pass") && c.Verdict == ClaimUnverified && c.LoadBearing
+	}
+	if !found {
+		t.Fatalf("the text's statement was not checked: %+v", vs[len(vs)-1].Claims)
+	}
+}
+
+// A knowledge claim about the session's work, in any wording, is checked
+// as one; an answer with nothing about the work passes, and says why.
+func TestStrictKnowledgeOnlyAnswerSaysWhyItPasses(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(`{"text":"Go compiles to native code.","claims":[{"text":"Go compiles to native code.","kind":"knowledge"}]}`)}}},
+	})
+	if reason, _ := l.Run(context.Background(), "what does go compile to?"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	v := answerVerdicts(store)[0]
+	if v.Outcome != ClaimVerified || v.Verified != 0 || !strings.Contains(v.Note, "no statement was read as a claim about this session's work") {
+		t.Fatalf("verdict: %+v", v)
+	}
+	work := checkCited(t, newRec(t), Claim{Text: "The tests were updated by fixing the bugs in src/utils/text.py.", Kind: KindKnowledge})
+	if !work[0].LoadBearing || work[0].Verdict == ClaimVerified {
+		t.Fatalf("a knowledge claim about the work was not checked as one: %+v", work[0])
+	}
+}
+
+// Strict mode never passes finished work said in the present, or "passed
+// to/through" said of CI or a build, as an answer with nothing to check.
+func TestStrictFinishedWorkStaysWork(t *testing.T) {
+	for _, text := range []string{
+		"The branch is merged into main.", "The migration is processed.", "Combined fixes applied.",
+		"Specialized worker role fixed.", "Everything passed to CI.", "The build passed through CI.",
+		"The issue is resolved.", "The service is deployed.",
+	} {
+		t.Run(text, func(t *testing.T) {
+			l, _, _, _ := verifyHarness(t, VerifyStrict, false, []scriptedTurn{{text: text}, {text: text}})
+			if reason, _ := l.Run(context.Background(), "do it"); reason != TermUnverified {
+				t.Fatalf("strict passed %q: %s", text, reason)
+			}
+		})
+	}
+}
+
+// A knowledge claim of work stays work; a fact about the world told in the
+// past stays knowledge.
+func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
+	b := newRec(t)
+	for _, text := range []string{"Typed errors added.", "The PR is merged.", "The tests were updated by fixing the bugs in src/utils/text.py."} {
+		if v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]; !v.LoadBearing || v.Verdict == ClaimVerified {
+			t.Errorf("%q: a knowledge claim of work was not checked as work: %+v", text, v)
+		}
+	}
+	for _, text := range []string{"TLS 1.3 removed RSA key exchange.", "Go 1.22 changed loop variable scoping.", "Python 3 dropped print statements.",
+		"RFC 9110 removed the 2xx body rule.", "Go's latest release added generics."} {
+		if v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]; v.LoadBearing {
+			t.Errorf("%q: a fact about the world was counted as work: %+v", text, v)
+		}
+	}
+}
+
+// Strict mode never passes a knowledge claim whose subject is the
+// session's own work.
+func TestStrictWorkSubjectKnowledge(t *testing.T) {
+	for _, text := range []string{"This change dropped the retry.", "Its change dropped the retry.",
+		"Both changes added input validation.", "After review, the change dropped the retry.",
+		"Release 4.1 fixed the leak.", "Version 2 of the handler fixed the leak.", "In 2026 the service dropped the retry.",
+		"Go 1.22 fixed our flaky test.", "Linux 6.1 support was added.", "The Node 20 upgrade fixed the build.",
+		"TLS 1.3 removed RSA key exchange."} {
+		t.Run(text, func(t *testing.T) {
+			answer := `{"text":"` + text + `","claims":[{"text":"` + text + `","kind":"knowledge"}]}`
+			l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+				{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'ok\\n'"}`)}}},
+				{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+				{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+			})
+			if reason, _ := l.Run(context.Background(), "drop the retry"); reason != TermUnverified {
+				t.Fatalf("strict passed a knowledge claim of the session's change: %s %+v", reason, answerVerdicts(store))
+			}
+		})
+	}
+}
+
+// Label mode reads a fact about other software as not checked, says so in
+// the note and the footer, and never shows it as verified; strict mode has
+// no such exemption (TestStrictWorkSubjectKnowledge).
+func TestLabelNotesExternalFacts(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyLabel, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(`{"text":"TLS 1.3 removed RSA key exchange.","claims":[{"text":"TLS 1.3 removed RSA key exchange.","kind":"knowledge"}]}`)}}},
+	})
+	if reason, _ := l.Run(context.Background(), "what changed in TLS 1.3?"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	v := answerVerdicts(store)[0]
+	if !strings.Contains(v.Note, "1 statement(s) read as facts about other software were not checked") || !v.Claims[0].External {
+		t.Fatalf("the external fact was passed over in silence: %+v", v)
+	}
+	c := v.Claims[0]
+	if c.Verdict != ClaimUnverified || c.Reason != "not checked: about other software" || v.Verified != 0 ||
+		!strings.Contains(v.Footer(), "1 not checked: about other software") {
+		t.Fatalf("the external fact can read as verified: %+v footer %q", c, v.Footer())
+	}
+}
+
+// A claim about a refusal that names a listed technology is verified by
+// the refusal and never also marked as about other software; the footer
+// never counts below zero.
+func TestRefusalIsNeverExternal(t *testing.T) {
+	b := newRec(t)
+	if _, err := b.r.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"python 3.12"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.r.Record(EvActionDenied, ActorSystem, Trusted, map[string]any{"call_id": "c1", "reason": "denied by rule bash(python*)", "rule": "bash(python*)", "source": "user"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Python 3.12 blocked by rule bash(python*).", "Python 3.12 refused by rule bash(python*)."} {
+		v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]
+		if v.Verdict != ClaimVerified || v.External {
+			t.Fatalf("%q: %+v", text, v)
+		}
+		av := AnswerVerdict{Claims: []ClaimVerdict{v}, Verified: 1}
+		if f := av.Footer(); strings.Contains(f, "-") || strings.Contains(f, "other software") {
+			t.Fatalf("footer %q", f)
+		}
+	}
+	// Even a verdict built by hand that is both never counts below zero.
+	av := AnswerVerdict{Claims: []ClaimVerdict{{Verdict: ClaimVerified, External: true, LoadBearing: true}}, Verified: 1}
+	if f := av.Footer(); strings.Contains(f, "-1") {
+		t.Fatalf("footer %q", f)
+	}
+}

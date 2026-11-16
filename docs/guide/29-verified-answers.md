@@ -332,7 +332,34 @@ counts (`12 tests`, `replicas: 3`). Then:
     "sorted", "keyed", "scoped", "bounded", "nested", "shared",
     "required", "expected", "allowed", "supported", "meant" or "known",
     and "built-in", "hard-coded", "so-called", "well-known" and
-    "zero-based".
+    "zero-based";
+  - code described in the present, which is what a read of it shows: a
+    present passive of a verb of data flow or wiring ("is initialized
+    with", "are eventually passed to", "is stored in", "is returned"), a
+    participle that names what produced or receives a value ("the
+    documents returned by `archivist_worker`", "passed to the
+    `synthesizer` node"), and one that qualifies a noun ("the combined
+    results", a label such as "Specialized Worker Role:" with no word of
+    change in it). None of these is a verb of change or of finished work
+    (added, changed, fixed, merged, processed, resolved, handled, built,
+    deployed and the like), and none is in the past: "was initialized"
+    stays an event, and "now", "my change" or "I initialized" still make
+    it one. The names in such a sentence must still be in a current read,
+    so a class said to be initialized with a type the code never names
+    stays unverified. "Passed to" or "passed through" is no result unless
+    the sentence is about tests, CI, a build, checks, a pipeline, review,
+    lint or QA.
+
+  Finished work said in the present ("the issue is resolved", "the
+  service is deployed", "the cache is now populated") is a statement
+  about the session's work, checked as one. So is wiring or configuration
+  said in the present ("is registered", "is configured", "is enabled", "is
+  wired", "is mounted", "is set up"): the checks cannot tell from a read
+  that one thing is wired into another, or that a flag holds the value
+  said, so "the handler is registered in `init()`" and "both are
+  configured in `init()`" stay unverified even when a read shows them.
+  These are known false negatives; quote the line instead
+  ("`init()` calls `app.register(handler)`").
 
   The cost is on purpose: some sentences about code as it stands with
   another participle ("negative numbers are skipped") are events, and stay
@@ -622,10 +649,67 @@ answer through a tool rather than as text:
 `text` is what the person reads; it is shown as the agent's reply, and the call
 itself is not drawn. Each claim names the results that show it, by `call_id` or
 `#seq`, and may quote them. `knowledge` claims are labelled unverified and not
-checked; a `knowledge` claim about the session's own work (that tests pass,
-that a file changed) is checked anyway. A model that ignores the tool and
-answers in text is checked as text. The tool adds no model call: it is how the
-last turn ends.
+checked; a `knowledge` claim about the session's own work, in any wording
+(that tests pass, that a file changed, "the tests were updated by fixing
+the bugs in `src/utils/text.py`", "typed errors added", "the PR is
+merged", "this change dropped the retry", "its change dropped the
+retry"), is checked anyway. Under `strict`, every `knowledge` claim that
+says a change, an event or a finished state is checked as work, with no
+exemption: a fact about other software ("TLS 1.3 removed RSA key
+exchange") comes out unverified and gets the revision. That is the cost
+of strict, the mode that asks for everything to be shown. In `label` mode
+such a sentence is shown as "not checked: about other software" (never
+verified; the footer and the verdict's `note` count it) only when all of
+this holds: its subject (the words before its verb; the first word and
+capitalised words are never the verb) opens with a technology from a
+fixed list (TLS, SSL, HTTP, HTTP/2, HTTP/3, QUIC, IPv6, OAuth, OpenID,
+JSON, YAML, Unicode, POSIX, ECMAScript or `ES<n>`, C89 to C23 written
+joined, C++, C#, Java, JDK, Go as "Go 1.<n>" or "Go's latest release",
+Rust, Python, Ruby, PHP, Node.js, Node, TypeScript, Kotlin, Swift, Scala,
+Perl, Lua, Linux, Windows, macOS, iOS, Android, FreeBSD, Kubernetes,
+Docker, PostgreSQL, MySQL, SQLite, Redis, OpenSSL, glibc, LLVM, GCC, Git,
+npm, pip, Chrome, Firefox, Safari, or `RFC <n>`) with a version or release
+word after it or a year before it; and nothing in the whole sentence ties
+it to the session: no first person or possessive, no code or path, no
+name that one of the session's reads, calls or changes holds, no
+passive, no upgrade, bump, migration or switch, no "the" before a noun
+after the verb, and the name is not the workspace's own project. So
+"TLS 1.3 removed RSA key exchange", "Python 3 dropped print statements",
+"RFC 9110 removed the 2xx body rule" and "Go's latest release added
+generics" are not checked, while "Go 1.22 fixed our flaky test", "Linux
+6.1 support was added", "The Node 20 upgrade fixed the build", "Node 20
+fixed a lockfile bug" ("a" or "an" before a noun after the verb counts as
+"the" does) and "Release 4.1 fixed the leak" are work. A statement about
+a refusal is never read as about other software. Some world facts are checked as
+work and stay unverified ("Go 1.22 fixed the loop variable bug", "The
+C++20 update added modules"); none can be verified. `text` is checked too:
+each of its statements that no claim repeats is a claim with nothing cited,
+so an answer cannot pass strict mode by giving only `knowledge` claims while
+its text says "The tests now pass". When an answer passes with nothing
+verified, because no statement in it was read as a claim about the
+session's work, the verdict says so in `note`. A model that ignores the tool and answers in text is
+checked as text. The tool adds no model call: it is how the last turn ends.
+
+A call that policy refused shows only the refusal: that it was refused,
+by which rule, from which layer. A statement that quotes what the agent
+was told ("`Denied: denied by rule bash(curl*) from the org policy …`"),
+or says the call was denied by its rule ("the call was denied by rule
+bash(curl*) from the org policy"), is checked against the refusal's own
+fields: a code span in it must be the rule, the reason or the refused
+command, and a layer it names must be the refusal's own (the org policy
+or an admin, a managed or machine configuration, the workspace or
+project, your own user configuration, a settings file, a flag, a session
+rule you approved, a hook, the mode, or the default; "IT", "it" before
+policy, team, department or rules, the security team and infosec are the
+org). A statement that names no layer ("from the
+policy") is not checked for one. Once those and the
+refusal's wording are taken out, only a few connective words may be
+left: "`curl …` succeeded after being blocked by rule bash(curl*)", or a
+layer the checks do not know ("the team firewall"), stays unverified. The refusal is never
+evidence for anything else: its reason can hold text the model chose (an
+unknown tool's name, a hook's output), so no number, value or quote is
+read from it, and a refused command never shows that it ran or
+succeeded.
 
 ## The revision turn
 
@@ -775,14 +859,20 @@ Each check is an `answer.verdict` event: the mode, the source (`answer_tool` or
 was compared, and for a contradicted claim the conflicting entry and an
 excerpt; the counts; the contract's results; whether the critic checked; the
 revision note when one was sent; and the outcome, `verified` only when every
-statement about the session's work was verified and any contract was met. A
+statement about the session's work was verified and any contract was met.
+`verified` means nothing about the work was left unproven, not that every
+statement was checked: an answer of general knowledge, or (in `label`
+mode) of facts about other software, ends `verified` with nothing
+verified, and its `note` says so. CI should run `-verify strict`, which
+checks every change claim as work, or read the counts (`verified`,
+`unverified`, `contradicted`) and the `note` as well as `outcome`. A
 rebuilt or forked conversation includes the revision note, as the model saw it.
 
 ## Measuring it
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 868 plant a wrong claim. Some cite the result that shows them wrong
+session. 980 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -888,11 +978,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 868
+tail, a port not listening, a file not in a response). Today none of the 980
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 240 controls are verified,
-and none of the 341 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 253 controls are verified,
+and none of the 368 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim

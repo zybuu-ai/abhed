@@ -131,19 +131,26 @@ type AnswerVerdict struct {
 	// Outcome is verified when every statement about the session's work was
 	// verified and any contract was met; otherwise unverified.
 	Outcome string `json:"outcome"`
-	Turn    int    `json:"turn"`
+	// Note says why an answer with nothing verified passes: nothing in it
+	// is about this session's work, so there was nothing to check.
+	Note string `json:"note,omitempty"`
+	Turn int    `json:"turn"`
 }
 
 // Footer is the one-line summary a surface shows under the answer.
 func (v AnswerVerdict) Footer() string {
 	unv := fmt.Sprintf("%d unverified", v.Unverified)
 	var notes []string
-	k, e := v.Unchecked(), v.Explained()
+	k, e, x := v.Unchecked(), v.Explained(), v.ExternalCount()
+	k = max(k-x, 0)
 	switch {
-	case k > 0 && k == v.Unverified:
+	case k > 0 && k+x == v.Unverified:
 		notes = append(notes, "general knowledge")
 	case k > 0:
 		notes = append(notes, fmt.Sprintf("%d general knowledge", k))
+	}
+	if x > 0 {
+		notes = append(notes, fmt.Sprintf("%d not checked: about other software", x))
 	}
 	if e > 0 {
 		notes = append(notes, fmt.Sprintf("%d explanation", e))
@@ -160,6 +167,18 @@ func (v AnswerVerdict) Footer() string {
 		}
 	}
 	return s
+}
+
+// ExternalCount counts the claims read as facts about other software,
+// which are never checked and never verified.
+func (v AnswerVerdict) ExternalCount() int {
+	n := 0
+	for _, c := range v.Claims {
+		if c.External {
+			n++
+		}
+	}
+	return n
 }
 
 // Unchecked counts the unverified claims that are not about the session's
@@ -361,9 +380,10 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 			l.noteRecordErr(err)
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: text})
-		if len(claims) == 0 {
-			claims = textClaims(text)
-		}
+		// The text the person reads is checked as well: a statement in it
+		// that no claim repeats ("The tests now pass") is a claim too, so an
+		// answer cannot pass by listing only general knowledge.
+		claims = append(claims, unclaimedText(text, claims)...)
 	} else if n := len(l.messages); n > 0 && l.messages[n-1].Role == model.RoleAssistant && len(l.messages[n-1].ToolCalls) == 0 {
 		source, text = "text", l.messages[n-1].Content
 		claims = textClaims(text)
@@ -388,7 +408,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if err != nil {
 		events = nil // checked against nothing, everything stays unverified
 	}
-	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir()}
+	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir(), strict: v.Mode == VerifyStrict}
 	env.child = l.Recorder.store.Events
 	if l.Session != nil {
 		env.readFile = l.Session.ReadFile
@@ -418,6 +438,18 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if bad > 0 || unmet {
 		av.Outcome = ClaimUnverified
 	}
+	if av.Outcome == ClaimVerified && av.Verified == 0 {
+		av.Note = "no statement was read as a claim about this session's work"
+	}
+	// A statement read as a fact about other software is never passed over
+	// in silence.
+	if ext := av.ExternalCount(); ext > 0 {
+		n := fmt.Sprintf("%d statement(s) read as facts about other software were not checked", ext)
+		if av.Note != "" {
+			n = av.Note + "; " + n
+		}
+		av.Note = n
+	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
 	// In label mode a contradicted claim also earns the one revision: it is
 	// the only case label mode spends a model call on.
@@ -441,6 +473,22 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		return false, TermUnverified
 	}
 	return false, TermCompleted
+}
+
+// unclaimedText are the statements of an answer's text that none of its
+// claims repeats, as claims with nothing cited.
+func unclaimedText(text string, claims []Claim) []Claim {
+	given := map[string]bool{}
+	for _, c := range claims {
+		given[normText(c.Text)] = true
+	}
+	var out []Claim
+	for _, c := range textClaims(text) {
+		if !given[normText(c.Text)] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // textClaims are a plain reply's statements, as claims with nothing cited.
