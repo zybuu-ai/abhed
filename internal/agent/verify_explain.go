@@ -240,6 +240,10 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 		return ""
 	}
 	low := normText(text)
+	// "passed to the synthesizer" hands a value on; it is no outcome.
+	if !testRe.MatchString(low) {
+		low = passedOnRe.ReplaceAllString(low, " ")
+	}
 	words := append(stateRe.FindAllString(low, -1), outcomeRe.FindAllString(low, -1)...)
 	for _, w := range append(words, verdictRe.FindAllString(low, -1)...) {
 		if f.observe && (w == "reviewed" || w == "checked") {

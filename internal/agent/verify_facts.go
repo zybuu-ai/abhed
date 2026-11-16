@@ -433,6 +433,13 @@ func extractFacts(claim string) facts {
 		}
 	}
 	plain := noFailRe.ReplaceAllString(full, " ")
+	// "passed to the synthesizer" hands a value on: no success, unless the
+	// claim is about tests.
+	if !testRe.MatchString(plain) {
+		full = passedOnRe.ReplaceAllString(full, " ")
+		said = passedOnRe.ReplaceAllString(said, " ")
+		plain = noFailRe.ReplaceAllString(full, " ")
+	}
 	// Fail, error and broken words elsewhere do not undo a pass said of
 	// tests; not or never does.
 	testPass := successRe.MatchString(full) && testRe.MatchString(plain) && !negationRe.MatchString(plain)
@@ -558,6 +565,8 @@ var (
 	// wholeSuiteRe says every test, or the suite as a whole.
 	wholeSuiteRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|both|other|remaining|rest)\b`)
 	identRe      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// passedOnRe is "passed" said of a value handed on, not of a check.
+	passedOnRe = regexp.MustCompile(`\bpass(?:es|ed)?\s+(?:\w+ly\s+)?(?:to|into|along|through|on to|down to|back to|as an? \w+|by reference|by value)\b`)
 	// inclusiveRe names a part as one among more.
 	inclusiveRe = regexp.MustCompile(`\b(?:including|incl|such as|as well as|along with|plus|besides|in addition to|among them|among others|e\.g)\b`)
 )

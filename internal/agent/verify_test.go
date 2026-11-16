@@ -1122,3 +1122,46 @@ func TestGoModuleReadsACommentedModuleLine(t *testing.T) {
 		}
 	}
 }
+
+// Strict mode checks the answer's text as well as its claims: an answer
+// that lists only general knowledge while its text says the tests now pass
+// is not verified when no test run shows it.
+func TestStrictChecksTheAnswerText(t *testing.T) {
+	answer := `{"text":"I have fixed the bugs in ` + "`src/utils/text.py`" + `. The tests now pass.","claims":[{"text":"Python is a programming language.","kind":"knowledge"}]}`
+	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'nothing ran\\n'"}`)}}},
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+		{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+	})
+	reason, _ := l.Run(context.Background(), "fix the bugs and run the tests")
+	if reason != TermUnverified {
+		t.Fatalf("strict passed an answer whose text is unverified: %s", reason)
+	}
+	vs := answerVerdicts(store)
+	found := false
+	for _, c := range vs[len(vs)-1].Claims {
+		found = found || strings.Contains(c.Text, "The tests now pass") && c.Verdict == ClaimUnverified && c.LoadBearing
+	}
+	if !found {
+		t.Fatalf("the text's statement was not checked: %+v", vs[len(vs)-1].Claims)
+	}
+}
+
+// A knowledge claim about the session's work, in any wording, is checked
+// as one; an answer with nothing about the work passes, and says why.
+func TestStrictKnowledgeOnlyAnswerSaysWhyItPasses(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(`{"text":"Go compiles to native code.","claims":[{"text":"Go compiles to native code.","kind":"knowledge"}]}`)}}},
+	})
+	if reason, _ := l.Run(context.Background(), "what does go compile to?"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	v := answerVerdicts(store)[0]
+	if v.Outcome != ClaimVerified || v.Verified != 0 || !strings.Contains(v.Note, "nothing in the answer is about this session's work") {
+		t.Fatalf("verdict: %+v", v)
+	}
+	work := checkCited(t, newRec(t), Claim{Text: "The tests were updated by fixing the bugs in src/utils/text.py.", Kind: KindKnowledge})
+	if !work[0].LoadBearing || work[0].Verdict == ClaimVerified {
+		t.Fatalf("a knowledge claim about the work was not checked as one: %+v", work[0])
+	}
+}

@@ -222,6 +222,30 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 			if json.Unmarshal(e.Payload, &a) == nil {
 				reqs[a.CallID] = req{a: a, seq: e.Seq, person: e.Actor == ActorUser}
 			}
+		case EvActionDenied:
+			// A refused call ran nothing, but the agent was told why
+			// ("Denied: denied by rule bash(curl*) …"), and may say so: the
+			// refusal is a result it can be checked against, never a run or
+			// a change.
+			var d struct {
+				CallID string `json:"call_id"`
+				Reason string `json:"reason"`
+			}
+			if json.Unmarshal(e.Payload, &d) != nil || d.CallID == "" || d.Reason == "" {
+				continue
+			}
+			r := reqs[d.CallID]
+			seq, pos := place(e.Seq)
+			rec := &obsRec{seq: seq, pos: pos, child: session, reqSeq: r.seq, callID: d.CallID, tool: r.a.Tool,
+				content: "Denied: " + d.Reason + ".", isError: true, person: r.person, via: r.a.Via,
+				args: argText(r.a.Args), argMap: argMap(r.a.Args)}
+			ix.obs = append(ix.obs, rec)
+			if _, taken := ix.byCall[d.CallID]; !taken || at == nil {
+				ix.byCall[d.CallID] = rec
+			}
+			if at == nil {
+				ix.bySeq[e.Seq] = rec
+			}
 		case EvSubagentSpawned, EvSubagentReturn, EvSubagentNotice:
 			var p struct {
 				Session string `json:"session"`
@@ -525,22 +549,24 @@ var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+
 func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	f := extractFacts(citeRe.ReplaceAllString(c.Text, " "))
 	kind := c.Kind
+	// A sentence that says something was done or changed is about the work
+	// even with nothing else in it; a participle alone ("a compiled
+	// language") is not.
+	workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean
 	switch kind {
 	case KindObserved, KindDerived, KindKnowledge:
 	case "":
 		kind = KindObserved
-		// A sentence that says something was done or changed is about the work
-		// even with nothing else in it; a participle alone ("a compiled
-		// language") is not.
-		workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean
 		if !f.any() && !workEvent && c.Quote == "" && len(c.Evidence) == 0 {
 			kind = KindStatement
 		}
 	default:
 		kind = KindObserved
 	}
-	// A "knowledge" claim about this session's own work is checked as one.
-	if kind == KindKnowledge && (f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0) {
+	// A "knowledge" claim about this session's own work is checked as one:
+	// a pass, a change or a deed in any wording ("the tests were updated by
+	// fixing the bugs in src/utils/text.py"), a command run, a file:line.
+	if kind == KindKnowledge && (f.success || f.changed || workEvent || len(f.ran) > 0 || len(f.fileLines) > 0) {
 		kind = KindObserved
 	}
 	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}

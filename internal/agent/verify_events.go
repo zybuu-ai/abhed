@@ -38,6 +38,20 @@ var (
 	// staticPhrases are participles that describe code as it stands, not an
 	// event: the short allowlist the guide names.
 	staticPhrases = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:defined|declared|called|named|used|based|typed|exported|embedded|ordered|sorted|keyed|scoped|bounded|nested|shared|required|expected|allowed|supported|meant|known)\b|\b(?:so-called|built-in|well-known|hard-coded|zero-based)\b`)
+	// describesCodeRe is what code does, said in the present: a present
+	// passive of a verb of data flow or wiring ("is initialized with", "are
+	// eventually passed to"), a participle that names what produced or
+	// receives a value ("the documents returned by"), or one that qualifies
+	// a noun ("the combined results", "Specialized Worker Role:"). None is a
+	// verb of change (added, removed, changed, updated, fixed, created …),
+	// and none is in the past: "was initialized" stays an event.
+	describesCodeRe = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:\w+ly\s+|then\s+|also\s+|first\s+|later\s+|only\s+)?(?:initiali[sz]ed|instantiated|constructed|injected|passed|returned|stored|cached|merged|combined|wrapped|invoked|imported|registered|configured|loaded|handled|delegated|owned|consumed|provided|produced|populated|assigned|mapped|routed|forwarded|appended|accumulated|computed|derived|aggregated|filtered|ranked|retrieved|fetched|queried|indexed|validated|serialized|serialised|parsed|processed|resolved|dispatched|evaluated|annotated|composed|chained|connected|linked|bound|held|kept|given|taken|built)\b` +
+		`|\b(?:returned|produced|yielded|raised|emitted|provided|consumed|passed|retrieved|fetched|held|owned|built|created|generated)\s+(?:by|from)\b|\bpassed\s+(?:to|into|along|through|on to|down to|back to)\b` +
+		`|\b(?:the|a|an|its|their|each|every|this|that|these|those)\s+` + qualifyingParticiples + `\s+[a-z]` +
+		`|^` + qualifyingParticiples + `(?:\s+[a-z\-]+){1,4}:`)
+	// qualifyingParticiples qualify a noun; at the start of a sentence they
+	// count only in a label ("Specialized Worker Role:").
+	qualifyingParticiples = `(?:specialized|specialised|combined|cached|retrieved|derived|computed|aggregated|weighted|normalized|normalised|tokenized|tokenised|serialized|serialised|annotated|typed|nested|embedded|shared)`
 	// searchFoundRe is what a search turned up: its output, not a change.
 	searchFoundRe = regexp.MustCompile(`\b(?:search|grep|scan)\b[^.;]*?\bturned up\b`)
 
@@ -65,6 +79,28 @@ func wordSet(s string) map[string]bool {
 	return m
 }
 
+// labelRe is a short label that opens with a qualifying participle, alone
+// (a clause the label was split into): "specialized worker role".
+var labelRe = regexp.MustCompile(`^\s*` + qualifyingParticiples + `((?:\s+[a-z\-]+){1,4})\s*$`)
+
+// labelNotWords are words a label of nouns never holds; with one, the
+// participle is a verb ("combined the results").
+var labelNotWords = wordSet(`the a an it its them their all both my our your this that these those to into with`)
+
+// qualifyingLabel blanks a label made of a qualifying participle and nouns.
+func qualifyingLabel(t string) string {
+	m := labelRe.FindStringSubmatch(t)
+	if m == nil {
+		return t
+	}
+	for _, w := range strings.Fields(m[1]) {
+		if labelNotWords[w] {
+			return t
+		}
+	}
+	return " "
+}
+
 // eventWord is the first word that makes a claim's text an event, or "".
 func eventWord(text string) string {
 	if ws := eventWords(text); len(ws) > 0 {
@@ -78,6 +114,8 @@ func eventWords(text string) []string {
 	t := normText(backtickRe.ReplaceAllString(text, " "))
 	t = countOutcomeRe.ReplaceAllString(t, " ")
 	t = staticPhrases.ReplaceAllString(t, " ")
+	t = describesCodeRe.ReplaceAllString(t, " ")
+	t = qualifyingLabel(t)
 	t = outputSaysRe.ReplaceAllString(t, " ")
 	t = searchFoundRe.ReplaceAllString(t, " ")
 	t = noFailRe.ReplaceAllString(t, " ")

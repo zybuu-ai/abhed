@@ -332,7 +332,21 @@ counts (`12 tests`, `replicas: 3`). Then:
     "sorted", "keyed", "scoped", "bounded", "nested", "shared",
     "required", "expected", "allowed", "supported", "meant" or "known",
     and "built-in", "hard-coded", "so-called", "well-known" and
-    "zero-based".
+    "zero-based";
+  - code described in the present, which is what a read of it shows: a
+    present passive of a verb of data flow or wiring ("is initialized
+    with", "are eventually passed to", "is stored in", "are merged into",
+    "is returned"), a participle that names what produced or receives a
+    value ("the documents returned by `archivist_worker`", "passed to the
+    `synthesizer` node"), and one that qualifies a noun ("the combined
+    results", a label such as "Specialized Worker Role:"). None of these is
+    a verb of change (added, removed, changed, updated, fixed, created and
+    the like), and none is in the past: "was initialized" stays an event,
+    and "now", "my change" or "I initialized" still make it one. The
+    names in such a sentence must still be in a current read, so a class
+    said to be initialized with a type the code never names stays
+    unverified. "Passed to" or "passed into" is no test result unless the
+    sentence is about tests.
 
   The cost is on purpose: some sentences about code as it stands with
   another participle ("negative numbers are skipped") are events, and stay
@@ -622,10 +636,19 @@ answer through a tool rather than as text:
 `text` is what the person reads; it is shown as the agent's reply, and the call
 itself is not drawn. Each claim names the results that show it, by `call_id` or
 `#seq`, and may quote them. `knowledge` claims are labelled unverified and not
-checked; a `knowledge` claim about the session's own work (that tests pass,
-that a file changed) is checked anyway. A model that ignores the tool and
-answers in text is checked as text. The tool adds no model call: it is how the
-last turn ends.
+checked; a `knowledge` claim about the session's own work, in any wording
+(that tests pass, that a file changed, "the tests were updated by fixing
+the bugs in `src/utils/text.py`"), is checked anyway. `text` is checked too:
+each of its statements that no claim repeats is a claim with nothing cited,
+so an answer cannot pass strict mode by giving only `knowledge` claims while
+its text says "The tests now pass". When an answer passes with nothing
+verified, because nothing in it is about the session's work, the verdict
+says so in `note`. A model that ignores the tool and answers in text is
+checked as text. The tool adds no model call: it is how the last turn ends.
+
+A call that policy refused is a result too: the agent was told "Denied:
+<reason>", and a statement that quotes the refusal is checked against
+that text. A refused command never shows that it ran or succeeded.
 
 ## The revision turn
 
@@ -782,7 +805,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 868 plant a wrong claim. Some cite the result that shows them wrong
+session. 882 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -888,11 +911,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 868
+tail, a port not listening, a file not in a response). Today none of the 882
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 240 controls are verified,
-and none of the 341 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 247 controls are verified,
+and none of the 348 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim

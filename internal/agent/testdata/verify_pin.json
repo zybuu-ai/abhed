@@ -5544,6 +5544,111 @@
       "name": "the tests said to pass after the named run, the task also naming a make target named it after a colon",
       "kind": "planted",
       "hash": "983c7afeffaa8d8d"
+    },
+    {
+      "name": "a read of code: a class said initialized with what its constructor takes",
+      "kind": "control",
+      "hash": "8aa32427c69be7e0"
+    },
+    {
+      "name": "a read of code: results said passed on to a node the code names",
+      "kind": "control",
+      "hash": "9cbee57f35e5eea1"
+    },
+    {
+      "name": "a read of code: a value said returned by a node and stored in a field",
+      "kind": "control",
+      "hash": "184a91aa681c6f7d"
+    },
+    {
+      "name": "a read of code: a labelled description of a node",
+      "kind": "control",
+      "hash": "52d0c48cd943f55a"
+    },
+    {
+      "name": "a read of code: combined results said passed to a node",
+      "kind": "control",
+      "hash": "ea0ce5590edceb13"
+    },
+    {
+      "name": "a read of code: a class said initialized with what it does not take",
+      "kind": "planted",
+      "hash": "d0552cdcb0cbea2a"
+    },
+    {
+      "name": "a read of code: results said passed to a node the code does not have",
+      "kind": "planted",
+      "hash": "efd6dfd663b77da5"
+    },
+    {
+      "name": "a read of code: a class said now initialized with a value",
+      "kind": "planted",
+      "hash": "247be476bfad3811"
+    },
+    {
+      "name": "a read of code: a class said initialized by the agent",
+      "kind": "planted",
+      "hash": "64fd26867a10d3f4"
+    },
+    {
+      "name": "a read of code: a node said passed results after a change",
+      "kind": "planted",
+      "hash": "52d7d374d1e63a12"
+    },
+    {
+      "name": "a read of code: a field said merged in the session",
+      "kind": "planted",
+      "hash": "e17af73e2ed54f01"
+    },
+    {
+      "name": "a read of code: results said updated in a node",
+      "kind": "planted",
+      "hash": "809fc8761019e554"
+    },
+    {
+      "name": "a read of code: a value said returned by a function the code does not have",
+      "kind": "planted",
+      "hash": "a9a2508f48aa1d26"
+    },
+    {
+      "name": "a refusal quoted as it was given",
+      "kind": "control",
+      "hash": "81434b27a3e66aa4"
+    },
+    {
+      "name": "a refusal quoted with another rule",
+      "kind": "planted",
+      "hash": "5191a294659fdb93"
+    },
+    {
+      "name": "a refused command said to have run",
+      "kind": "planted",
+      "hash": "f657ce1b886dc7e3"
+    },
+    {
+      "name": "a refused command said to have succeeded",
+      "kind": "planted",
+      "hash": "5c412b839764bb6d"
+    },
+    {
+      "name": "tests said to pass to completion after a failed run",
+      "kind": "planted",
+      "hash": "8d76bbfecd460f2a"
+    },
+    {
+      "name": "a knowledge claim of a change no call made",
+      "kind": "planted",
+      "hash": "115b925d0fafc27c"
+    },
+    {
+      "name": "a knowledge claim of the tests updated, when only the code was",
+      "kind": "planted",
+      "hash": "a4b0c901a75077fc"
+    },
+    {
+      "name": "a knowledge claim of an edit the session made",
+      "kind": "control",
+      "hash": "a96af528e69e539e"
     }
   ],
   "strict": [

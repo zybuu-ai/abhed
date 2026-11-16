@@ -131,7 +131,10 @@ type AnswerVerdict struct {
 	// Outcome is verified when every statement about the session's work was
 	// verified and any contract was met; otherwise unverified.
 	Outcome string `json:"outcome"`
-	Turn    int    `json:"turn"`
+	// Note says why an answer with nothing verified passes: nothing in it
+	// is about this session's work, so there was nothing to check.
+	Note string `json:"note,omitempty"`
+	Turn int    `json:"turn"`
 }
 
 // Footer is the one-line summary a surface shows under the answer.
@@ -361,9 +364,10 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 			l.noteRecordErr(err)
 		}
 		l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: text})
-		if len(claims) == 0 {
-			claims = textClaims(text)
-		}
+		// The text the person reads is checked as well: a statement in it
+		// that no claim repeats ("The tests now pass") is a claim too, so an
+		// answer cannot pass by listing only general knowledge.
+		claims = append(claims, unclaimedText(text, claims)...)
 	} else if n := len(l.messages); n > 0 && l.messages[n-1].Role == model.RoleAssistant && len(l.messages[n-1].ToolCalls) == 0 {
 		source, text = "text", l.messages[n-1].Content
 		claims = textClaims(text)
@@ -418,6 +422,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if bad > 0 || unmet {
 		av.Outcome = ClaimUnverified
 	}
+	if av.Outcome == ClaimVerified && av.Verified == 0 {
+		av.Note = "nothing in the answer is about this session's work, so nothing needed checking"
+	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
 	// In label mode a contradicted claim also earns the one revision: it is
 	// the only case label mode spends a model call on.
@@ -441,6 +448,22 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		return false, TermUnverified
 	}
 	return false, TermCompleted
+}
+
+// unclaimedText are the statements of an answer's text that none of its
+// claims repeats, as claims with nothing cited.
+func unclaimedText(text string, claims []Claim) []Claim {
+	given := map[string]bool{}
+	for _, c := range claims {
+		given[normText(c.Text)] = true
+	}
+	var out []Claim
+	for _, c := range textClaims(text) {
+		if !given[normText(c.Text)] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // textClaims are a plain reply's statements, as claims with nothing cited.

@@ -79,6 +79,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- Under `-verify strict`, an answer given through the answer tool is now
+  checked by its `text` as well as its claims, so a run that 1.2.9 ended
+  verified with nothing verified (the text saying "the tests now pass", no
+  test run showing it) now ends `unverified`, exit 8.
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -498,6 +502,33 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Strict verification could pass an answer with nothing verified. Through
+  the answer tool, only the listed claims were checked, not the `text`
+  the person reads, and a `knowledge` claim about the session's work was
+  checked only when it said "I changed" or named a pass. A model that
+  wrote "The tests now pass" in `text` and gave one `knowledge` claim
+  ("The tests were updated by fixing the bugs in …") ended strict mode
+  verified with 0 verified claims. Each statement of `text` that no claim
+  repeats is now checked, a `knowledge` claim about the work in any
+  wording is checked as work, and an answer that passes with nothing
+  verified says why in the verdict's `note` (nothing in it was about the
+  session's work).
+- Label mode marked correct statements about code the session read as
+  unverified. Code described in the present ("`OmniRAGAgent` is
+  initialized with an instance of `HybridRetriever`", "the results are
+  passed to the `synthesizer` node", "Specialized Worker Role: …") was read
+  as something that happened in the session; "passed to" was read as a
+  test passing; and a refusal the agent quoted back ("Denied: denied by
+  rule bash(curl*) …") was in no tool result, because a refused call has
+  none. A present passive of a verb of data flow or wiring, a participle
+  that names what produced or receives a value, and one that qualifies a
+  noun now describe the code, so the names in the sentence are checked
+  against the read; verbs of change, the past tense, "now" and the first
+  person are still events. A refusal is now a result the agent can quote,
+  never one that shows the command ran. The false-claim corpus gains 14
+  planted cases and 7 controls; none of the 882 planted claims verifies,
+  all 247 controls do, and none of the 348 true or neutral claims is
+  contradicted.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`

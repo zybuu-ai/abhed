@@ -45,6 +45,9 @@ type CorpusStep struct {
 	Exit   *int
 	// Cwd is the folder a bash call ran in; unset is the workspace, /w.
 	Cwd string
+	// Denied, when set, is why policy refused the call: it is recorded as
+	// refused, with no result.
+	Denied string `json:",omitempty"`
 }
 
 // corpusCwd is the folder a bash step ran in, as the record holds it.
@@ -547,7 +550,11 @@ var (
 	// Round 4: a monorepo where one package's path ends another's.
 	stepGoTestMono = CorpusStep{ID: "s133a", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x ./other/pkg/x"}, Output: "?   \texample.com/mono/pkg/x\t[no test files]\nok  \texample.com/mono/other/pkg/x\t0.10s\n", Exit: code(0)}
 	stepPytestSlow = CorpusStep{ID: "s133b", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_slow.py"}, Output: "tests/test_slow.py ..                                  [100%]\n\n2 passed in 9.02s\n", Exit: code(0)}
-	stepGoTestPkg  = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
+	// A read of code, described in the present, and a
+	// refused call quoted back.
+	stepReadRagAgent = CorpusStep{ID: "s140a", Tool: "read", Args: map[string]any{"path": "/w/src/agents/rag_agent.py"}, Output: "class OmniRAGAgent:\n    def __init__(self, retriever: HybridRetriever):\n        self.retriever = retriever\n        workflow = StateGraph(AgentState)\n        workflow.add_node(\"archivist_worker\", self.archivist_worker)\n        workflow.add_node(\"scout_worker\", self.scout_worker)\n        workflow.add_node(\"synthesizer\", self.synthesizer)\n        workflow.add_edge(\"archivist_worker\", \"synthesizer\")\n\n    def archivist_worker(self, state):\n        docs = self.retriever.retrieve(state[\"query\"])\n        return {\"retrieved_docs\": docs}\n\n\nclass AgentState(TypedDict):\n    query: str\n    retrieved_docs: Annotated[list, operator.add]\n"}
+	stepDeniedCurl   = CorpusStep{ID: "s140b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) from the org policy (http://127.0.0.1:18961, version 4)"}
+	stepGoTestPkg    = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
 )
 
 // A task that names its module, and others that name their tests.
@@ -1890,6 +1897,30 @@ func CorpusCases() []CorpusCase {
 		{Name: "the tests said to pass after the named run, the task also naming symbols", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails 🔥; run ⚙️", Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "the task's tests said to pass, the task asking politely for the result", Kind: c, Want: ClaimVerified, Prompt: "Please run pytest tests/test_a.py now, then tell me the result.", Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "the task's tests said to pass, the task written with CJK punctuation", Kind: c, Want: ClaimVerified, Prompt: "pytest tests/test_a.py fails；fix it，run the tests。", Steps: steps(stepPytestA), Text: "The tests pass."},
+		// Code described in the present is what a
+		// read shows, a refusal is what the agent was told, and a knowledge
+		// claim about the work is checked as work.
+		{Name: "a read of code: a class said initialized with what its constructor takes", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The `OmniRAGAgent` class is initialized with an instance of `HybridRetriever`."},
+		{Name: "a read of code: results said passed on to a node the code names", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The results are eventually passed to the `synthesizer` node."},
+		{Name: "a read of code: a value said returned by a node and stored in a field", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The documents returned by `archivist_worker` are stored in `retrieved_docs`."},
+		{Name: "a read of code: a labelled description of a node", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "Specialized Worker Role: The `archivist_worker` node is responsible for calling `retrieve`."},
+		{Name: "a read of code: combined results said passed to a node", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent), Text: "The combined results from `archivist_worker` and `scout_worker` are passed to the `synthesizer` node."},
+		{Name: "a read of code: a class said initialized with what it does not take", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The `OmniRAGAgent` class is initialized with an instance of `VectorStore`."},
+		{Name: "a read of code: results said passed to a node the code does not have", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The results are passed to the `ranker` node."},
+		{Name: "a read of code: a class said now initialized with a value", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "`OmniRAGAgent` is now initialized with `HybridRetriever`."},
+		{Name: "a read of code: a class said initialized by the agent", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "I initialized `HybridRetriever` in `OmniRAGAgent`."},
+		{Name: "a read of code: a node said passed results after a change", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "After my change the documents are passed to the `synthesizer` node."},
+		{Name: "a read of code: a field said merged in the session", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "`retrieved_docs` was merged into `AgentState` by my edit."},
+		{Name: "a read of code: results said updated in a node", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The combined results were updated to include web search."},
+		{Name: "a read of code: a value said returned by a function the code does not have", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The documents returned by `rerank_worker` are stored in `retrieved_docs`."},
+		{Name: "a refusal quoted as it was given", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`Denied: denied by rule bash(curl*) from the org policy (http://127.0.0.1:18961, version 4).`"},
+		{Name: "a refusal quoted with another rule", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`Denied: denied by rule bash(wget*) from the org policy`"},
+		{Name: "a refused command said to have run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "I ran `curl -sI https://example.com`."},
+		{Name: "a refused command said to have succeeded", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`curl -sI https://example.com` succeeded."},
+		{Name: "tests said to pass to completion after a failed run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Text: "All tests passed to completion."},
+		{Name: "a knowledge claim of a change no call made", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy), Claim: &Claim{Text: "`src/utils/text.py` was rewritten to use a regex.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of the tests updated, when only the code was", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Claim: &Claim{Text: "The tests were updated by fixing the bugs in tests/test_text.py.", Kind: KindKnowledge}},
+		{Name: "a knowledge claim of an edit the session made", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy), Claim: &Claim{Text: "`src/utils/text.py` was edited.", Kind: KindKnowledge}},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -1947,6 +1978,10 @@ func RunCorpus() CorpusReport {
 		for _, s := range cc.Steps {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
+			if s.Denied != "" {
+				_, _ = rec.Record(EvActionDenied, ActorSystem, Trusted, map[string]any{"call_id": s.ID, "reason": s.Denied, "by": "policy", "step": "deny"})
+				continue
+			}
 			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: corpusCwd(s),
 				ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
 		}
