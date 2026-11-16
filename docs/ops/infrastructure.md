@@ -413,8 +413,9 @@ was rebuilt, or something is in the middle. Confirm the new key out of band
 before removing the old one with `ssh-keygen -R '[db.internal]:2222'`.
 
 `ssh_connect` is for a machine the user gives an address for. Called with the
-name of a host in `ssh.hosts`, it is answered at once, before any approval,
-that the host is ready for the `ssh` tool; nothing is connected. The `ssh`
+name of a host in `ssh.hosts`, it is answered at once, before any approval and
+in plan mode too, that the host is ready for the `ssh` tool; nothing is
+connected. The `ssh`
 tool's description lists the declared hosts as ready, so the model need not
 connect first.
 
@@ -452,11 +453,18 @@ you expect:
 ] }
 ```
 
-`*` matches any text, spaces included, so `tail -n * /var/log/app/app.log`
-also matches `tail -n 100 /etc/shadow /var/log/app/app.log`: each word is
-still checked as a read form of `tail`, but a content reader reads every
-file the call names. Where that matters, prefer exact entries such as the
-first one.
+In an entry, `*` and `?` stand within one argument of the call: an entry
+matches a call with the same number of arguments, each matching the entry's
+word in its place. So `tail -n * /var/log/app/app.log` matches
+`tail -n 100 /var/log/app/app.log` but not
+`tail -n 100 /etc/shadow /var/log/app/app.log`, and `grep -i * …` matches
+one pattern, quoted or not (`grep -i 'pool exhausted' …`). A word that is
+`**` alone stands for one or more whole arguments, each still checked as a
+read form: `systemctl status **` matches `systemctl status nginx --no-pager -l`.
+For a content reader such an entry reads any file the account can, so keep
+`**` to metadata programs. No wildcard stands for a `..` segment the entry
+does not write, so `cat /var/log/*` does not match
+`cat /var/log/../../etc/shadow`.
 
 A call whose command is one simple command matching an entry is a read: plan
 mode allows it, so a plan can start by inspecting the fleet, and no mode asks
@@ -494,6 +502,8 @@ it; any other is refused at load. The error names the accepted forms: an
 exact command (`df -h`), or a pattern whose `*` or `?` stands for a whole
 operand (`df -h *`) or for a value after `=` (`df --output=*`), never for
 part of an option (`df -h*`), and it lists the read options of that program.
+`*` and `?` stand within one argument; a word that is `**` alone stands for
+one or more whole arguments (`df **`).
 Every call the pattern matches is checked against the same form, so an
 option or verb that is not a read is never approved through a wildcard,
 whatever the pattern says.
@@ -592,9 +602,10 @@ Not on the list, so declared exactly or not at all: `find` (the
 [read-only classifier](#read-only-commands-on-declared-hosts) reads its read
 forms on declared hosts), `mount`, `ss`
 (the parser reads its operand as a command), `lsof`, `curl`, `wget`,
-`nginx`, `kubectl`, `git`, and every program that runs another. `*` matches
-any text, spaces included, so `ip addr *` does not match `ip addr` alone;
-write both if both are wanted.
+`nginx`, `kubectl`, `git`, and every program that runs another. A `*` stands
+within exactly one argument, so `ip addr *` matches neither `ip addr` alone
+nor `ip addr show dev eth0`; write an entry for each form you want, or
+`ip addr **` for one or more arguments.
 
 The `ssh` tool's description lists the entries, so the model knows which
 commands it may run in plan mode.

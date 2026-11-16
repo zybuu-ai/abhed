@@ -204,7 +204,7 @@ func reads(cmds []string) string {
 		return ""
 	}
 	return ", except a command the operator declared a read, which runs unasked and in plan mode, " +
-		"alone and exactly as declared (* matches any text): " + strings.Join(cmds, "; ")
+		"alone and exactly as declared (* or ? stands within one argument, a lone ** for one or more arguments): " + strings.Join(cmds, "; ")
 }
 
 // readOnly tells the model what the read-only classifier lets run unasked.
@@ -685,6 +685,10 @@ func (t ConnectTool) Precheck(_ *tools.Session, raw json.RawMessage) error {
 	}
 	return nil
 }
+
+// PrecheckInPlanMode: naming a declared host is answered in plan mode too;
+// the check connects nothing.
+func (ConnectTool) PrecheckInPlanMode() {}
 
 func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage) tools.Result {
 	var a connectArgs

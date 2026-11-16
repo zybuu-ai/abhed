@@ -32,7 +32,7 @@ func TestSSHReadEveryFormRefusesUnlistedOptions(t *testing.T) {
 		"dpkg": {"-i x", "--instal x", "-li"}, "dpkg-query": {"--admindir=/x -l", "--load-avail"}, "rpm": {"-i x", "--qf=%(id)", "-qe"},
 	}
 	for prog, opts := range unlisted {
-		e := readsEngine(t, policy.ModePlan, prog+" *")
+		e := readsEngine(t, policy.ModePlan, prog+" **")
 		for _, opt := range opts {
 			cmd := prog + " " + opt + " /var/log/x"
 			if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Deny {
@@ -45,7 +45,7 @@ func TestSSHReadEveryFormRefusesUnlistedOptions(t *testing.T) {
 // A glob that could expand to an option (one that starts the word) is not
 // read; one after a path is; ps takes only its listed BSD options.
 func TestSSHReadGlobsAndOperands(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "ls *", "cat *", "ps *", "dpkg-query -W *", "rpm *")
+	e := readsEngine(t, policy.ModePlan, "ls **", "cat **", "ps **", "dpkg-query -W **", "rpm **")
 	for _, cmd := range []string{"ls *", "ls -l *.conf", "cat -- *", "cat '-'*", "ps eww", "ps auxe", "rpm -qa --qf '%(id)'",
 		"rpm -qa --qf '%{NAME:expand}'"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Deny {
@@ -58,7 +58,7 @@ func TestSSHReadGlobsAndOperands(t *testing.T) {
 			t.Errorf("%q, a read, was refused: %+v", cmd, res)
 		}
 	}
-	h := readsEngine(t, policy.ModePlan, "hostname *", "uptime *", "whoami *")
+	h := readsEngine(t, policy.ModePlan, "hostname **", "uptime **", "whoami **")
 	for _, cmd := range []string{"hostname newname", "hostname -F /etc/x", "uptime x", "whoami x"} {
 		if res := h.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Deny {
 			t.Errorf("%q ran in plan mode: %+v", cmd, res)
@@ -75,7 +75,7 @@ func TestSSHReadGlobsAndOperands(t *testing.T) {
 // another to fish, which reads \' as a quote kept: such a call is not a read,
 // whatever the remote login shell. ps's e prints environments.
 func TestSSHReadShellNeutralQuotingAndPsEnv(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "dpkg-query -W *", "rpm *", "cat *", "ps *")
+	e := readsEngine(t, policy.ModePlan, "dpkg-query -W **", "rpm **", "cat **", "ps **")
 	for _, cmd := range []string{
 		`dpkg-query -W -f '\' 'x (id) y' '\'`,
 		`dpkg-query -W -f '${Package}\n' nginx`,

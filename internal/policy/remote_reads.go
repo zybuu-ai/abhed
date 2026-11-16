@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -81,7 +82,8 @@ func ParseRemoteRead(p string) (Rule, error) {
 // acceptedForms says what a wildcard entry may be, for an entry refused at load.
 const acceptedForms = "An entry is an exact command (\"df -h\"), or a pattern whose * or ? stands for " +
 	"a whole operand (\"df -h *\", \"tail -n 50 /var/log/*.log\") or for an option's value after = " +
-	"(\"df --output=*\"), never for part of an option (\"-h*\") or for an option itself"
+	"(\"df --output=*\"), never for part of an option (\"-h*\") or for an option itself; " +
+	"either stands within one argument, and a word that is ** alone stands for one or more whole arguments (\"systemctl status **\")"
 
 // remoteReadRule is the ssh.read_commands entry the call's command matches,
 // or "": only one simple command, whose words the text shows, that no
@@ -120,11 +122,79 @@ func (e *Engine) remoteReadRule(rr remoteRead) string {
 		if !r.pattern.MatchString(text) {
 			continue
 		}
-		if !strings.ContainsAny(r.glob, "*?") || plain && wildcardReadOK(text) {
+		if !strings.ContainsAny(r.glob, "*?") || plain && wildcardReadOK(text) && wordsMatch(r.glob, text) {
 			return r.raw
 		}
 	}
 	return ""
+}
+
+// wordsMatch reports a call whose words match a wildcard entry's in order.
+// A * or ? stands within one argument, so "tail -n * /var/log/app/app.log"
+// cannot also name /etc/shadow; a word that is ** alone stands for one or
+// more whole arguments, each still judged as a read form. No wildcard
+// stands for a .. segment the entry does not write, so "cat /var/log/*"
+// does not reach /var/log/../../etc/shadow.
+func wordsMatch(glob, text string) bool {
+	want, _, _ := shellWords(glob)
+	got, _, _ := shellWords(text)
+	var match func(i, j int) bool
+	match = func(i, j int) bool {
+		if i == len(want) {
+			return j == len(got)
+		}
+		if want[i] == "**" {
+			for k := j + 1; k <= len(got); k++ {
+				if !dotDot(got[k-1]) && match(i+1, k) {
+					return true
+				}
+			}
+			return false
+		}
+		return j < len(got) && wordMatches(want[i], got[j]) && match(i+1, j+1)
+	}
+	return match(0, 0)
+}
+
+// wordMatches reports one argument matching one word of an entry.
+func wordMatches(w, arg string) bool {
+	if !strings.ContainsAny(w, "*?") {
+		return w == arg
+	}
+	if dotDot(arg) && !dotDot(w) {
+		return false
+	}
+	re, err := wordGlob(w)
+	return err == nil && re.MatchString(arg)
+}
+
+// dotDot reports a word with a .. path segment.
+func dotDot(w string) bool {
+	for _, seg := range strings.Split(w, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// wordGlob is one word of an entry as a pattern for one argument: * is any
+// text and ? one character, within that argument.
+func wordGlob(w string) (*regexp.Regexp, error) {
+	var b strings.Builder
+	b.WriteString("(?s)^")
+	for _, c := range w {
+		switch c {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	b.WriteString("$")
+	return regexp.Compile(b.String())
 }
 
 // wildcardReadOK reports a call a wildcard entry may approve: its program

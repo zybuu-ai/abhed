@@ -21,7 +21,7 @@ func readsEngine(t *testing.T, mode policy.Mode, reads ...string) *policy.Engine
 // A declared read runs in plan mode and asks in no mode; anything else on
 // the line, or any other command, is refused in plan mode as before.
 func TestSSHReadCommandsInPlanMode(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "uptime", "systemctl status *", "openssl x509 -enddate -noout -in *")
+	e := readsEngine(t, policy.ModePlan, "uptime", "systemctl status **", "openssl x509 -enddate -noout -in **")
 	for _, cmd := range []string{"uptime", "systemctl status nginx", "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"} {
 		if res := e.Evaluate("ssh", true, sshCall("web1", cmd)); res.Decision != policy.Allow || res.Step != "mode" || !strings.Contains(res.Reason, "ssh.read_commands") {
 			t.Errorf("%q: %+v", cmd, res)
@@ -64,7 +64,7 @@ func TestSSHReadCommandsAskInNoMode(t *testing.T) {
 
 // Deny and ask rules, the destructive check and a managed bypass still come first.
 func TestSSHReadCommandsNeverLoosenRules(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "cat *", "dmesg *")
+	e := readsEngine(t, policy.ModePlan, "cat **", "dmesg **")
 	if err := e.AddDeny("ssh(db1/*)", "ssh(cat /etc/shadow)"); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestSSHReadCommandsNeverLoosenRules(t *testing.T) {
 			t.Errorf("%s %q: %+v", c.host, c.cmd, res)
 		}
 	}
-	if res := readsEngine(t, policy.ModeAuto, "cat *").Evaluate("ssh", true, sshCall("web1", "cat x && rm -rf /srv")); res.Step != "destructive" {
+	if res := readsEngine(t, policy.ModeAuto, "cat **").Evaluate("ssh", true, sshCall("web1", "cat x && rm -rf /srv")); res.Step != "destructive" {
 		t.Errorf("a destructive line matching a read pattern was approved: %+v", res)
 	}
 	m := readsEngine(t, policy.ModeBypass, "uptime")
@@ -152,7 +152,7 @@ func TestSSHReadCommandWildcardAfterARunnerRefused(t *testing.T) {
 // when a find action runs or writes something, or when it carries a secret
 // on stdin, whatever entry it matches.
 func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
-	e := readsEngine(t, policy.ModePlan, "head *", "cat *", "uptime")
+	e := readsEngine(t, policy.ModePlan, "head **", "cat **", "uptime")
 	for _, c := range []struct{ cmd, stdin string }{
 		{"su -c 'systemctl stop nginx' root", ""},
 		{"find /var/log -name x -exec id {} +", ""},

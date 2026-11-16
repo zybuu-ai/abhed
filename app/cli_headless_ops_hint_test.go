@@ -24,7 +24,7 @@ import (
 // sshHintRun runs -p against a model that makes one call, with app1 in
 // ssh.hosts, and returns stderr, the result line and what the model was
 // sent after the call.
-func sshHintRun(t *testing.T, tool, args string) (string, resultLine, string) {
+func sshHintRun(t *testing.T, tool, args string, flags ...string) (string, resultLine, string) {
 	t.Helper()
 	var n atomic.Int64
 	var mu sync.Mutex
@@ -56,7 +56,7 @@ func sshHintRun(t *testing.T, tool, args string) (string, resultLine, string) {
 	if err := os.WriteFile(filepath.Join(home, ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := mainHelper([]string{"-C", ws, "-p", "check app1", "-output-format", "json"},
+	cmd := mainHelper(append(append([]string{"-C", ws}, flags...), "-p", "check app1", "-output-format", "json"),
 		"HOME="+home, "XDG_CONFIG_HOME="+t.TempDir(), "ABHED_SECRETS_FILE=", config.TrustEnv+"=", "SSH_AUTH_SOCK=")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -91,6 +91,18 @@ func TestHeadlessSSHConnectDeclaredHost(t *testing.T) {
 	// The ssh tool's description lists the host as ready.
 	if !strings.Contains(after, "ready now with no ssh_connect needed: app1") {
 		t.Errorf("the ssh tool description does not list app1 as ready")
+	}
+}
+
+// Plan mode refuses ssh_connect anyway, but naming a declared host gets the
+// tool's answer first: the host is ready for the ssh tool.
+func TestHeadlessSSHConnectDeclaredHostInPlanMode(t *testing.T) {
+	_, _, after := sshHintRun(t, "ssh_connect", `{"addr":"app1"}`, "-mode", "plan")
+	if !strings.Contains(after, "app1 is a host the operator declared, and it is ready") {
+		t.Fatalf("plan mode hid the answer:\n%s", after)
+	}
+	if strings.Contains(after, "plan mode is read-only") {
+		t.Errorf("the model was told plan mode refused it instead")
 	}
 }
 

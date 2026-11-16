@@ -560,3 +560,52 @@ func TestRemoteContentAskNamesTheRule(t *testing.T) {
 		t.Errorf("undeclared host: %+v", res)
 	}
 }
+
+// A wildcard in ssh.read_commands stands for one argument: it never names a
+// further file, and never a .. segment the entry does not write.
+func TestReadCommandWildcardIsOneArgument(t *testing.T) {
+	e := New(ModeDefault)
+	if err := e.AllowRemoteReads("tail -n * /var/log/app/app.log", "cat /var/log/*", "grep -i * /var/log/app/app.log"); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]Decision{
+		"tail -n 100 /var/log/app/app.log":              Allow,
+		"cat /var/log/app/x.log":                        Allow,
+		"grep -i 'pool exhausted' /var/log/app/app.log": Allow,
+		"tail -n 100 /etc/shadow /var/log/app/app.log":  Ask,
+		"tail -n 100 -c 5 /var/log/app/app.log":         Ask,
+		"cat /var/log/a /etc/shadow":                    Ask,
+		"cat /var/log/../../etc/shadow":                 Ask,
+		"grep -i x /etc/passwd /var/log/app/app.log":    Ask,
+		"tail -n /var/log/app/app.log":                  Ask,
+	} {
+		if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
+			t.Errorf("%q: %s (%s), want %s", cmd, got.Decision, got.Reason, want)
+		}
+	}
+}
+
+// A word that is ** alone stands for one or more whole arguments, each still
+// judged as a read form; it loads only where * would.
+func TestReadCommandDoubleStarIsWholeArguments(t *testing.T) {
+	e := New(ModeDefault)
+	if err := e.AllowRemoteReads("systemctl status **", "cat **"); err != nil {
+		t.Fatal(err)
+	}
+	for cmd, want := range map[string]Decision{
+		"systemctl status nginx --no-pager -l": Allow,
+		"systemctl status":                     Ask,
+		"systemctl stop nginx":                 Ask,
+		"cat /etc/os-release /etc/hostname":    Allow,
+		"cat /var/log/../../etc/shadow":        Ask,
+	} {
+		if got := e.Evaluate("ssh", true, remoteCall("app1", cmd)); got.Decision != want {
+			t.Errorf("%q: %s (%s), want %s", cmd, got.Decision, got.Reason, want)
+		}
+	}
+	for _, p := range []string{"systemctl **", "sudo **", "socat **"} {
+		if _, err := ParseRemoteRead(p); err == nil {
+			t.Errorf("%q was accepted", p)
+		}
+	}
+}

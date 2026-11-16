@@ -8,6 +8,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Security
 
+- A wildcard entry in `ssh.read_commands` approved more than it named. `*`
+  matched any text, spaces included, so `tail -n * /var/log/app/app.log`
+  also ran `tail -n 100 /etc/shadow /var/log/app/app.log` without asking,
+  and `cat /var/log/*` ran `cat /var/log/../../etc/shadow`. Each word was
+  still checked as a read form of the program, but a content reader reads
+  every file a call names. A `*` or `?` now stands within one argument: an
+  entry matches only a call with the same number of arguments, each
+  matching the entry's word in its place. A word that is `**` alone stands
+  for one or more whole arguments, for entries such as
+  `systemctl status **` that mean any read form. No wildcard stands for a
+  `..` segment the entry does not write. Affected: every release with
+  wildcard `ssh.read_commands` entries, on any host, `ssh_connect`'s
+  included. Exact entries, permission rules and the read-only classifier
+  are unchanged.
 - Abhed Studio's debug setup could overwrite a file outside the workspace.
   When a person chose to run a workspace's commands in a container, Abhed
   raised `sandbox.min_tier` in `.abhed/config.json` by writing a fixed
@@ -79,6 +93,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- A `*` or `?` in an `ssh.read_commands` entry now stands within one
+  argument. An entry that relied on `*` spanning several words, such as
+  `journalctl *` for `journalctl -u app -n 50`, no longer matches such a
+  call, which asks instead. Rewrite it with one wildcard per argument
+  (`journalctl -u * -n *`), as exact entries, or, to keep any read form of
+  the program, with `**` as its own word (`journalctl **`).
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -548,9 +568,9 @@ All notable changes to Abhed are recorded here. The format follows
 - `ssh_connect` called with the name of a host in `ssh.hosts` was asked
   about, refused in `-p` as one that "can make changes", and offered
   `-allow 'ssh_connect(app1)'`, which could never help: a declared name is
-  not for `ssh_connect`. It is now answered before any approval that the
-  host is ready for the `ssh` tool, and nothing is connected; `-p` names no
-  flag for it. The `ssh` tool's description lists the declared hosts as
+  not for `ssh_connect`. It is now answered before any approval, in plan
+  mode too, that the host is ready for the `ssh` tool, and nothing is
+  connected; `-p` names no flag for it. The `ssh` tool's description lists the declared hosts as
   ready with no connect needed, and `ssh_connect`'s says it is not for them.
 - A log read on a declared host (`tail`, `grep`, `cat`, …) without
   `ssh.read_contents` was refused as "ssh can make changes". The reason now
