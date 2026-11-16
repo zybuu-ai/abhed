@@ -90,6 +90,9 @@ type Config struct {
 	Completion CompletionConfig `json:"completion,omitzero"`
 	// Monitor governs the supervisor, which may only tighten a decision.
 	Monitor MonitorConfig `json:"monitor,omitempty"`
+	// Pricing sets model prices in US dollars per million tokens, by the
+	// model's name as sent to the provider, over the built-in list.
+	Pricing map[string]PriceConfig `json:"pricing,omitempty"`
 	// Plan governs what an accepted plan may carry.
 	Plan PlanConfig `json:"plan,omitempty"`
 	// Mode is the default mode new sessions start in where permissions.mode
@@ -1727,9 +1730,12 @@ type LimitsConfig struct {
 	MaxTokens int `json:"max_tokens"`
 	// MaxBudgetTokens caps total spend across a session AND its subagents.
 	// Zero means unlimited.
-	MaxBudgetTokens int  `json:"max_budget_tokens"`
-	MaxSubagents    int  `json:"max_subagents"`
-	NestedSubagents bool `json:"nested_subagents"`
+	MaxBudgetTokens int `json:"max_budget_tokens"`
+	// MaxBudgetUSD caps a session's cost in US dollars, subagents included.
+	// Zero means unlimited. With a cap, a model with no price is refused.
+	MaxBudgetUSD    float64 `json:"max_budget_usd,omitempty"`
+	MaxSubagents    int     `json:"max_subagents"`
+	NestedSubagents bool    `json:"nested_subagents"`
 	// MaxParallelSubagents bounds how many of a `tasks` call's subagents run
 	// at once. Zero means all of them, up to the tool's own cap of eight.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
@@ -2642,4 +2648,13 @@ func ParseListenPorts(spec []string) ([]int, error) {
 	}
 	sort.Ints(out)
 	return out, nil
+}
+
+// PriceConfig is one model's price in US dollars per million tokens. Zero
+// cached_input or cache_write bills those tokens at the input price.
+type PriceConfig struct {
+	Input       float64 `json:"input"`
+	Output      float64 `json:"output"`
+	CachedInput float64 `json:"cached_input,omitempty"`
+	CacheWrite  float64 `json:"cache_write,omitempty"`
 }

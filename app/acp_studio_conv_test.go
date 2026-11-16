@@ -142,7 +142,8 @@ func textOf(ups []map[string]any) string {
 	return b.String()
 }
 
-// §3.4: usage carries the token counts; no cost is invented.
+// §3.4: usage carries the token counts; a model with no price gets no
+// cost, and is marked unpriced rather than invented.
 func TestStudioUsageMeta(t *testing.T) {
 	r := newStudioRig(t, "", say("ok"))
 	id := r.open()
@@ -152,7 +153,29 @@ func TestStudioUsageMeta(t *testing.T) {
 			continue
 		}
 		m := meta(u)
-		if m["tokensIn"] == nil || m["sessionTotalIn"] == nil || u["cost"] != nil {
+		if m["tokensIn"] == nil || m["sessionTotalIn"] == nil || u["cost"] != nil || m["unpriced"] != true {
+			t.Fatalf("usage_update: %v", u)
+		}
+		return
+	}
+	t.Fatalf("no usage_update in %v", ups)
+}
+
+// §3.4: with a configured price, usage carries the call's cost and the
+// session's, as the spec's cost in US dollars.
+func TestStudioUsageCost(t *testing.T) {
+	r := newStudioRig(t, `,"pricing":{"m-1":{"input":1000000,"output":1000000}}`, say("ok"))
+	id := r.open()
+	_, ups := r.prompt(id, "hi")
+	for _, u := range ups {
+		if u["sessionUpdate"] != "usage_update" {
+			continue
+		}
+		m := meta(u)
+		cost, _ := u["cost"].(map[string]any)
+		// A dollar a token, in and out, as the stub reported them.
+		want := m["tokensIn"].(float64) + m["tokensOut"].(float64)
+		if cost["amount"] != want || cost["currency"] != "USD" || m["costUsd"] != want || m["sessionCostUsd"] != want || m["unpriced"] != nil {
 			t.Fatalf("usage_update: %v", u)
 		}
 		return

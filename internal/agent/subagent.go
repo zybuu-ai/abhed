@@ -28,9 +28,16 @@ type Budget struct {
 	MaxTokens    int64
 	MaxSubagents int
 	AllowNested  bool
+	// MaxUSD caps the session's cost in US dollars, subagents included;
+	// zero is no cap. With a cap, a call to an unpriced model is refused.
+	MaxUSD float64
+	// Prices are the configured model prices, over the built-in list.
+	Prices map[string]model.Price
 
 	tokens  atomic.Int64
 	spawned atomic.Int32
+	// microUSD is the cost spent, in millionths of a dollar.
+	microUSD atomic.Int64
 }
 
 func NewBudget(maxTokens int64, maxSubagents int, allowNested bool) *Budget {
@@ -45,10 +52,46 @@ func (b *Budget) Spend(tokens int) {
 }
 
 func (b *Budget) Exhausted() bool {
-	if b == nil || b.MaxTokens <= 0 {
+	if b == nil {
 		return false
 	}
-	return b.tokens.Load() >= b.MaxTokens
+	return b.MaxTokens > 0 && b.tokens.Load() >= b.MaxTokens || b.USDExhausted()
+}
+
+// USDLimited reports a dollar limit in force. It is the one check of it:
+// under one, a model with no price is refused wherever a call is made.
+func (b *Budget) USDLimited() bool {
+	return b != nil && b.MaxUSD > 0
+}
+
+// USDExhausted reports the dollar cap reached.
+func (b *Budget) USDExhausted() bool {
+	return b != nil && b.MaxUSD > 0 && b.SpentUSD() >= b.MaxUSD
+}
+
+// Price is a model's price: configured, then built in. ok is false for an
+// unpriced model, whose cost is never guessed.
+func (b *Budget) Price(name string) (model.Price, bool) {
+	if b == nil {
+		return model.PriceFor(name, nil)
+	}
+	return model.PriceFor(name, b.Prices)
+}
+
+// SpendUSD adds a call's cost.
+func (b *Budget) SpendUSD(usd float64) {
+	if b == nil || usd <= 0 {
+		return
+	}
+	b.microUSD.Add(int64(math.Ceil(usd * 1e6)))
+}
+
+// SpentUSD is the cost spent so far, subagents included.
+func (b *Budget) SpentUSD() float64 {
+	if b == nil {
+		return 0
+	}
+	return float64(b.microUSD.Load()) / 1e6
 }
 
 func (b *Budget) Spent() int64 {
@@ -61,9 +104,11 @@ func (b *Budget) Spent() int64 {
 // Carry starts the counters from what a session already spent before it was
 // continued here, so continuing a session elsewhere does not reset its
 // allowance. It only raises them.
-func (b *Budget) Carry(tokens int64, spawned int) {
+func (b *Budget) Carry(tokens int64, spawned int, usd float64) {
 	if b == nil {
 		return
+	}
+	for cur, n := b.microUSD.Load(), int64(math.Ceil(usd*1e6)); n > cur && !b.microUSD.CompareAndSwap(cur, n); cur = b.microUSD.Load() {
 	}
 	for cur := b.tokens.Load(); tokens > cur && !b.tokens.CompareAndSwap(cur, tokens); cur = b.tokens.Load() {
 	}
@@ -76,6 +121,9 @@ func (b *Budget) Carry(tokens int64, spawned int) {
 func (b *Budget) TryReserveSubagent() error {
 	if b == nil {
 		return nil
+	}
+	if b.USDExhausted() {
+		return fmt.Errorf("budget limit reached ($%.4f spent of $%.2f)", b.SpentUSD(), b.MaxUSD)
 	}
 	if b.Exhausted() {
 		return fmt.Errorf("budget limit reached (%d tokens spent of %d)", b.tokens.Load(), b.MaxTokens)
@@ -804,6 +852,8 @@ func (c *child) execute(ctx context.Context) (string, TerminalReason, error) {
 		"tokens_in":   usage.InputTokens,
 		"tokens_out":  usage.OutputTokens,
 		"model":       c.adapter.Profile().Name,
+		"cost_usd":    usage.CostUSD,
+		"unpriced":    usage.Unpriced,
 		// The child's last event of this run, its end: the answer this
 		// return carries is the last one before it, whatever runs follow.
 		"end_seq": c.sub.Recorder.LastAppended(),

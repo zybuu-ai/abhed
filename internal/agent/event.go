@@ -53,6 +53,9 @@ const (
 	// EvModelCall closes one round trip to the model. The session total says
 	// what a run cost; this says where it went.
 	EvModelCall EventType = "model.call"
+	// EvBudgetStopped marks a run stopped by its budget: the dollar or token
+	// cap reached, or a dollar cap set for a model with no price.
+	EvBudgetStopped EventType = "budget.stopped"
 	// EvModelSwitched marks the session moving to another configured model;
 	// see ModelSwitched.
 	EvModelSwitched EventType = "model.switched"
@@ -314,6 +317,14 @@ type ModelCall struct {
 	TokensIn     int    `json:"tokens_in"`
 	TokensOut    int    `json:"tokens_out"`
 	TokensCached int    `json:"tokens_cached"`
+	// TokensCacheWrite are prompt tokens written to the cache, billed apart.
+	TokensCacheWrite int `json:"tokens_cache_write,omitempty"`
+	// CostUSD is the call's cost in US dollars at the model's price; nil
+	// when the model has no price.
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// Unpriced marks a call to a model with no price. A record from before
+	// costing has neither this nor cost_usd: its cost is not recorded.
+	Unpriced bool `json:"unpriced,omitempty"`
 	// CacheReported is false when the provider sent no cached-token figure,
 	// so a zero above means unknown rather than a cold cache.
 	CacheReported bool `json:"cache_reported,omitempty"`
@@ -422,6 +433,10 @@ type SessionEnded struct {
 	TokensOut    int            `json:"tokens_out"`
 	TokensCached int            `json:"tokens_cached"`
 	Compactions  int            `json:"compactions"`
+	// CostUSD is what the session's priced calls cost, in US dollars;
+	// Unpriced marks a call to a model with no price, left out of it.
+	CostUSD  float64 `json:"cost_usd,omitempty"`
+	Unpriced bool    `json:"unpriced,omitempty"`
 
 	// ContextTokens is what the NEXT turn would send: the system prompt, the
 	// conversation as it now stands, and the tool definitions. TokensIn above

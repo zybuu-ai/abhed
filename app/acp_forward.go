@@ -309,23 +309,59 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(body),
 			"_meta": map[string]any{acpMetaKey: map[string]any{"verdict": p}}})
-	case agent.EvModelCall:
-		if replay {
-			break
+	case agent.EvCompletionSummary, agent.EvNextEditSummary:
+		// Completions and next edits carry their cost in their summaries.
+		var p agent.CompletionSummary
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.mu.Lock()
+			s.totalUSD += p.CostUSD
+			s.unpriced = s.unpriced || p.Unpriced
+			s.mu.Unlock()
 		}
+	case agent.EvModelCall:
 		var p agent.ModelCall
 		_ = json.Unmarshal(ev.Payload, &p)
 		s.mu.Lock()
+		// A replayed call's cost is the session's too; one recorded before
+		// costing leaves the total partial.
+		switch {
+		case p.CostUSD != nil:
+			s.totalUSD += *p.CostUSD
+		case p.Unpriced:
+			s.unpriced = true
+		case p.TokensIn+p.TokensOut > 0:
+			s.costPartial = true
+		}
 		s.totalIn += p.TokensIn
 		s.totalOut += p.TokensOut
-		totalIn, totalOut := s.totalIn, s.totalOut
+		if replay {
+			s.mu.Unlock()
+			break
+		}
+		totalIn, totalOut, totalUSD, unpriced, partial := s.totalIn, s.totalOut, s.totalUSD, s.unpriced, s.costPartial
 		s.mu.Unlock()
 		// A suggestion's call is counted, but says nothing of the context.
 		if p.ContextWindow > 0 && p.Purpose == "" {
-			// No cost: the engine has no price table, and invents none.
-			update(map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow,
-				"_meta": map[string]any{acpMetaKey: map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
-					"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}}})
+			meta := map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
+				"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}
+			u := map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow}
+			// The session's cost only when every call was priced: a model
+			// with no price makes the total unknown, and none is invented.
+			if p.CostUSD != nil {
+				meta["costUsd"] = *p.CostUSD
+			}
+			switch {
+			case unpriced:
+				meta["unpriced"] = true
+			case partial && p.CostUSD != nil:
+				// What is known, said to be partial, never sent as the session's cost.
+				meta["sessionCostUsd"], meta["costPartial"] = totalUSD, true
+			case p.CostUSD != nil:
+				meta["sessionCostUsd"] = totalUSD
+				u["cost"] = map[string]any{"amount": totalUSD, "currency": "USD"}
+			}
+			u["_meta"] = map[string]any{acpMetaKey: meta}
+			update(u)
 		}
 	case agent.EvModelFallback:
 		// The engine changed an option itself: every option goes out again.

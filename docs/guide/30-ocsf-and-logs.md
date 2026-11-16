@@ -103,7 +103,7 @@ record withheld.
 | `plan.proposed`, `session.branched`, `conversation.forked`, `sandbox.snapshot` | API Activity (6003) | Create |
 | `memory.loaded` | API Activity (6003) | Read |
 | `model.switched`, `model.fallback`, `session.renamed`, `session.named`, `sandbox.restore` | API Activity (6003) | Update |
-| `plan.decided`, `plan.step`, `subagent.ask`, `subagent.backgrounded`, `subagent.notice`, `terminal.input`, `command.invoked`, `change.accepted`, `worktree.taken`, `task.cancelled`, `message.dropped`, `turn.continued` | API Activity (6003) | Other, named for the type |
+| `plan.decided`, `plan.step`, `subagent.ask`, `subagent.backgrounded`, `subagent.notice`, `terminal.input`, `command.invoked`, `change.accepted`, `worktree.taken`, `task.cancelled`, `message.dropped`, `turn.continued`, `budget.stopped` | API Activity (6003) | Other, named for the type |
 | `input.mention`, `memory.written`, `manual.edit`, `file.restored`, `checkpoint.saved` | File System Activity (1001) | Read, Update, Update, Create/Update/Delete by what the restore did, Other (Checkpoint); the file's SHA-256 where the line has one |
 | `process.launched`, `shell.started`, `shell.ended` | Process Activity (1007) | Launch, Launch, Terminate with `exit_code` |
 | `ollama.start`, `ollama.install` | Process Activity (1007) | Launch, with the command shown to the person as `process.cmd_line` and a started server's `pid`; a declined, refused, cancelled or failed attempt is a failure with the reason, an installer page opened for the person (`manual`) is Other |

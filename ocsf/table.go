@@ -68,6 +68,7 @@ var table = map[agent.EventType]rule{
 	agent.EvDebugStopped:         {fn: apiOther("Debug stop"), classes: []int{6003}},
 	agent.EvDebugSetup:           {fn: apiOther("Debug setup"), classes: []int{6003}},
 	agent.EvSandboxPortContested: {fn: apiOther("Port contested"), classes: []int{6003}},
+	agent.EvBudgetStopped:        {fn: apiOther("Budget stop"), classes: []int{6003}},
 	agent.EvLSPStarted:           {fn: apiOther("Language server start"), classes: []int{6003}},
 	agent.EvLSPStopped:           {fn: apiOther("Language server stop"), classes: []int{6003}},
 	agent.EvLSPDiagnostics:       {fn: apiOther("Language server diagnostics"), classes: []int{6003}},

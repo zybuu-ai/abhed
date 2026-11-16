@@ -232,6 +232,13 @@ type acpSession struct {
 	// thoughts is set once reasoning streamed as deltas, so its whole text
 	// that follows is not sent again.
 	thoughts bool
+	// totalUSD is what the session's priced calls cost, and unpriced marks
+	// a call to a model with no price, for usage_update's cost.
+	totalUSD float64
+	unpriced bool
+	// costPartial marks a replayed call from a record written before costing:
+	// the session's cost then leaves those calls out.
+	costPartial bool
 	// engineCalls are the engine's diagnostics starts, by call id, with
 	// their command line, so a refusal is told as information.
 	engineCalls map[string]string

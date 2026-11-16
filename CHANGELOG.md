@@ -381,6 +381,47 @@ All notable changes to Abhed are recorded here. The format follows
   `permission_denials`. A flag is offered only when the configuration would
   accept it and the policy would then allow the call; otherwise the hint
   says why none would, such as `denied by org policy; ask your admin`.
+- Cost in US dollars. Each model call is priced from its model's name, at
+  the Standard-tier list price Abhed carries for some hosted models
+  (checked against OpenAI's and Anthropic's pricing pages on 9 November
+  2026; models priced by prompt length are left out) or at a price set under
+  `pricing` in the configuration. The cost is recorded on each call's
+  `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
+  turns, the critic, suggestions, compaction summaries and pipeline model
+  steps alike, and on `completion.summary`, `next_edit.summary` and
+  `commit_message.generated` for Studio's editor calls (a commit message is
+  also a `model.call`, with tokens and cost only). Usage a provider did not
+  report, or reported under a quarter of the request's size, is estimated,
+  marked `estimated`, and charged. Under a dollar cap a cut call's output is
+  charged at the most the request allowed, whatever input was reported, so
+  interrupting, or a stream that fails after the provider accepted it, does
+  not save money under a cap; only a call the provider never accepted is
+  not charged. Three failed replies in a row with no usable text or tool
+  call (a malformed tool call included), whatever the error, end the run
+  `retry_exhausted`. `/usage` shows the session's cost and each turn's,
+  `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
+  turn and in all; a record written before this release shows its cost as
+  not recorded. A model with no price is shown as unpriced, and its cost is
+  never guessed. No workspace sets prices, trusted or not. For
+  `azure-openai`, prices are keyed by deployment name.
+- Prompt caching on OpenAI-shaped providers. OpenAI's own API is sent
+  `prompt_cache_key`, and OpenRouter's Anthropic and Gemini models
+  `cache_control` on the system prompt and the last message; no other
+  server gets either field unless `extra.prompt_cache` names one. Cached
+  tokens are read from DeepSeek's and Anthropic-shaped proxies' usage as
+  well as OpenAI's, and recorded with cache writes (OpenRouter's
+  `cache_write_tokens` included) on each `model.call`.
+- `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
+  subagents included. The run ends `max_budget` (exit `3`) with a message
+  and a `budget.stopped` event; with a cap set, a model with no price is
+  refused before any call, whatever makes it: a turn, the critic, a
+  suggestion, a compaction summary, a pipeline model step, a Studio
+  completion, completion warm-up, next edit or commit message (Studio is
+  told once that the feature is off and how to price its model; a local
+  address is not taken as free), or a fallback, which is not moved to. A
+  managed or org cap may only be lowered, and under one, prices come only
+  from that layer and the built-in list. A resumed session carries what it
+  had spent.
 
 ### Changed
 

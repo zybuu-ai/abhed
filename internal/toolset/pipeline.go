@@ -61,7 +61,7 @@ func PipelineRunner(adapter model.Adapter) func(context.Context, *skills.Skill, 
 				return res.Content, nil
 			},
 			Model: func(ctx context.Context, prompt string, schema json.RawMessage) (string, error) {
-				return completeOnce(ctx, stepModel, steps.Redact(prompt), schema)
+				return completeOnce(ctx, steps, stepModel, steps.Redact(prompt), schema)
 			},
 			// Each stage is recorded, so the decomposition, the sufficiency
 			// verdict and the reason for every extra hop are visible in the
@@ -99,12 +99,12 @@ func refuseUnsafe(p pipeline.Pipeline) error {
 // A pipeline's model steps classify, reformulate and judge; giving them the
 // tool set would invite them to call something instead of answering, which is
 // the failure the pipeline exists to remove.
-func completeOnce(ctx context.Context, adapter model.Adapter, prompt string, schema json.RawMessage) (string, error) {
+func completeOnce(ctx context.Context, steps *agent.Steps, adapter model.Adapter, prompt string, schema json.RawMessage) (string, error) {
 	system := "You answer exactly what is asked, with no preamble."
 	if len(schema) > 0 {
 		system += " Reply with JSON matching this schema and nothing else:\n" + string(schema)
 	}
-	stream, err := adapter.Complete(ctx, model.Request{
+	out, err := steps.Complete(ctx, adapter, model.Request{
 		System:    system,
 		Messages:  []model.Message{{Role: model.RoleUser, Content: prompt}},
 		MaxTokens: 2048,
@@ -112,19 +112,10 @@ func completeOnce(ctx context.Context, adapter model.Adapter, prompt string, sch
 	if err != nil {
 		return "", err
 	}
-	var out strings.Builder
-	for chunk := range stream {
-		switch chunk.Type {
-		case model.ChunkText:
-			out.WriteString(chunk.Text)
-		case model.ChunkError:
-			return "", chunk.Err
-		}
-	}
-	if strings.TrimSpace(out.String()) == "" {
+	if strings.TrimSpace(out) == "" {
 		return "", fmt.Errorf("the model returned nothing")
 	}
-	return out.String(), nil
+	return out, nil
 }
 
 // renderForModel turns what the pipeline gathered into the context the model

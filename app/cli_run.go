@@ -100,6 +100,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), splitLists(f.addDirs)); err != nil {
 		fail(err)
 	}
+	if cfg, err = usdBudgetFlag(cfg, f.maxBudgetUSD); err != nil {
+		fail(err)
+	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
 		fail(err)
 	}
@@ -259,6 +262,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// invisibly. No Approver: a subagent answers to the approver of the loop
 	// that spawned it, the person at the prompt or the headless refuser.
 	budget := toolset.Budget(cfg)
+	if fallback != nil {
+		fallback.SetGate(budget.Refuse)
+	}
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,

@@ -11,21 +11,24 @@ import (
 // started. A session continued elsewhere starts its budget from it. A
 // resumed subagent's return carries its tokens so far, so each subagent's
 // last return is what counts.
-func CarriedSpend(events []Event) (tokens int64, spawned int) {
+func CarriedSpend(events []Event) (tokens int64, spawned int, usd float64) {
 	events = Live(events)
 	if end, ok := LastEnd(events); ok {
 		tokens = int64(end.TokensIn + end.TokensOut)
+		usd = end.CostUSD
 	}
 	children := map[string]int64{}
+	childUSD := map[string]float64{}
 	for i, e := range events {
 		switch e.Type {
 		case EvSubagentSpawned:
 			spawned++
 		case EvSubagentReturn:
 			var r struct {
-				Session   string `json:"session"`
-				TokensIn  int    `json:"tokens_in"`
-				TokensOut int    `json:"tokens_out"`
+				Session   string  `json:"session"`
+				TokensIn  int     `json:"tokens_in"`
+				TokensOut int     `json:"tokens_out"`
+				CostUSD   float64 `json:"cost_usd"`
 			}
 			if json.Unmarshal(e.Payload, &r) != nil {
 				continue
@@ -35,12 +38,16 @@ func CarriedSpend(events []Event) (tokens int64, spawned int) {
 				key = fmt.Sprintf("#%d", i) // no session named: counted on its own
 			}
 			children[key] = int64(r.TokensIn + r.TokensOut)
+			childUSD[key] = r.CostUSD
 		}
 	}
 	for _, n := range children {
 		tokens += n
 	}
-	return tokens, spawned
+	for _, c := range childUSD {
+		usd += c
+	}
+	return tokens, spawned, usd
 }
 
 // Orphaned reports whether a record was left open by a process that went

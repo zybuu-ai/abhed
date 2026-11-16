@@ -138,7 +138,8 @@ there.
   in its place. A definition naming a provider that is not configured is
   refused when it loads.
 - **One budget.** Every model's tokens count against the session's one
-  `max_budget_tokens`. There is no weighting by price.
+  `max_budget_tokens`, and every model's cost against its one
+  `max_budget_usd`, each call priced by its own model.
 
 The model property appears on the tools only when more than one provider is
 offered, so a single-model deployment pays nothing for it in the prompt.

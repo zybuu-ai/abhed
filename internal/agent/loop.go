@@ -402,6 +402,12 @@ type Loop struct {
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
 	// is the detail the last run's end recorded.
 	stuckDetail, lastDetail string
+	// streamFails counts failed replies in a row that produced nothing, within
+	// a run, whatever their message (a transport error's text varies with its
+	// port or stream id); lastStreamErr is the latest, for the end's detail.
+	// Three end the run rather than asking again to the turn limit, each billed.
+	streamFails   int
+	lastStreamErr string
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// stopContinues counts the times stop hooks sent this run back to work.
@@ -555,6 +561,10 @@ func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail 
 		c.Hooks.Observe(ctx, event, sessionID, tool, detail)
 	}
 }
+
+// maxStreamFailures is how many failed replies in a row, each producing
+// nothing, end the run retry_exhausted.
+const maxStreamFailures = 3
 
 // TermPromptRefused is a run that never started: a hook refused the message.
 const TermPromptRefused TerminalReason = "prompt_refused"
@@ -751,6 +761,13 @@ type Usage struct {
 	// ColdPrefillTokens counts input tokens that missed the cache. This is the
 	// quantity the 17x prefix-cache claim is about, measured rather than assumed.
 	ColdPrefillTokens int
+	// CostUSD is what the priced calls cost; Unpriced marks a call to a
+	// model with no price, whose cost is in no total.
+	CostUSD  float64
+	Unpriced bool
+	// UnpricedCalls counts the calls to a model with no price, so a reader
+	// of two readings can tell whether the calls between them had one.
+	UnpricedCalls int
 }
 
 // CacheHitRate reports the fraction of input tokens served from the prefix
@@ -1119,6 +1136,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		hh.RunStarted(l.rootID())
 		defer hh.RunEnded(l.rootID())
 	}
+	l.streamFails = 0 // a failure streak is the run's own, not carried from the last
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -1141,7 +1159,8 @@ turns:
 		}
 		// At the turn boundary, not mid-turn: cutting a turn short would leave
 		// a tool result the model never sees.
-		if l.Budget.Exhausted() {
+		if l.Budget.Exhausted() || l.unpricedUnderCap() {
+			l.recordBudgetStop()
 			return l.finish(TermMaxBudget), nil
 		}
 		// Background results first, then steering, each in arrival order,
@@ -1177,6 +1196,11 @@ turns:
 			l.record(EvCompactDone, ActorSystem, map[string]string{
 				"error": err.Error(),
 			})
+		}
+		// The summary is charged too, so the gate is asked again before the call.
+		if l.Budget.Exhausted() {
+			l.recordBudgetStop()
+			return l.finish(TermMaxBudget), nil
 		}
 
 		reason, done, err := l.turn(ctx)
@@ -1274,7 +1298,7 @@ func (l *Loop) compactIfNeeded(ctx context.Context, reserve bool) error {
 	// Started is recorded only once there is something to summarise; every
 	// return after it records a completion (the caller records errors).
 	begun := false
-	compacted, info, err := l.Compactor.CompactWith(l.withCaller(ctx), "auto", l.Config.SystemPrompt, l.messages, used, func() {
+	compacted, info, err := l.Compactor.CompactWith(l.metered(l.withCaller(ctx)), "auto", l.Config.SystemPrompt, l.messages, used, func() {
 		begun = true
 		l.record(EvCompactStarted, ActorSystem, Compaction{BeforeTokens: used, Trigger: "auto"})
 	})
@@ -1319,7 +1343,7 @@ func (l *Loop) Compact(ctx context.Context) (Compaction, error) {
 	used, _ := l.Adapter.CountTokens(model.Request{
 		System: l.Config.SystemPrompt, Messages: l.messages,
 	})
-	compacted, info, err := l.Compactor.Compact(l.withCaller(ctx), "manual", l.Config.SystemPrompt, l.messages, used)
+	compacted, info, err := l.Compactor.Compact(l.metered(l.withCaller(ctx)), "manual", l.Config.SystemPrompt, l.messages, used)
 	if err != nil {
 		return Compaction{}, err
 	}
@@ -1401,13 +1425,19 @@ func (l *Loop) SetHistory(msgs []model.Message, turns int) {
 	l.usage.Turns = l.turns
 }
 
-// CarryUsage starts the token and compaction totals from a recorded end, so a
-// continued session's totals go on from it as its turn count does.
+// CarryUsage starts the token, compaction and cost totals from a recorded
+// end, so a continued session's totals go on from it as its turn count does.
 func (l *Loop) CarryUsage(end SessionEnded) {
 	l.usage.InputTokens = max(l.usage.InputTokens, end.TokensIn)
 	l.usage.OutputTokens = max(l.usage.OutputTokens, end.TokensOut)
 	l.usage.CachedTokens = max(l.usage.CachedTokens, end.TokensCached)
 	l.usage.Compactions = max(l.usage.Compactions, end.Compactions)
+	// The dollars go on too, or a resume would grant the cap again.
+	l.usage.CostUSD = max(l.usage.CostUSD, end.CostUSD)
+	if end.Unpriced && !l.usage.Unpriced {
+		l.usage.Unpriced = true
+		l.usage.UnpricedCalls = max(l.usage.UnpricedCalls, 1)
+	}
 }
 
 // LastEnd is the last session.ended in events, and whether there is one.
@@ -1545,30 +1575,32 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	mc := ModelCall{
 		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
-		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported,
+		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported, TokensCacheWrite: callUsage.CacheWriteTokens,
 		ContextWindow: l.Adapter.Profile().ContextWindow,
 		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}
-	// A reply stopped before the provider reported usage still cost tokens:
-	// they are estimated, marked so, and spent from the budget.
-	if ctx.Err() != nil && callUsage.InputTokens == 0 && callUsage.OutputTokens == 0 {
-		mc.TokensIn, _ = l.Adapter.CountTokens(req)
-		produced := text.Len() + reasoning.Len()
-		for _, c := range calls {
-			produced += len(c.Name) + len(c.Args)
-		}
-		mc.TokensOut = (produced + 3) / 4
-		if mc.TokensIn > 0 || mc.TokensOut > 0 {
-			mc.Estimated = true
-			l.Budget.Spend(mc.TokensIn + mc.TokensOut)
-			// The session's totals count them too, as the record's call does.
-			l.usage.InputTokens += mc.TokensIn
-			l.usage.OutputTokens += mc.TokensOut
-			l.usage.ColdPrefillTokens += mc.TokensIn
-		}
+	// A call whose provider reported no usage, stopped or not, still cost
+	// tokens: they are estimated, marked so, and spent from the budget.
+	produced := text.Len() + reasoning.Len()
+	for _, c := range calls {
+		produced += len(c.Name) + len(c.Args)
 	}
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil, Failed: streamErr != nil}
+	if est, ok := EstimateUsage(l.Adapter, req, callUsage, end, l.Budget.CutAtBound(l.Adapter)); ok {
+		dIn, dOut := est.InputTokens-callUsage.InputTokens, est.OutputTokens-callUsage.OutputTokens
+		mc.Estimated, mc.TokensIn, mc.TokensOut = true, est.InputTokens, est.OutputTokens
+		l.Budget.Spend(dIn + dOut)
+		// The session's totals count them too, as the record's call does.
+		l.usageMu.Lock()
+		l.usage.InputTokens += dIn
+		l.usage.OutputTokens += dOut
+		l.usage.ColdPrefillTokens += dIn
+		l.usageMu.Unlock()
+		callUsage = est
+	}
+	mc.CostUSD, mc.Unpriced = l.chargeCall(mc.Model, callUsage)
 	// A stream cut by our own cancel is an interrupt, recorded as such at
 	// session end, not a model failure.
 	if streamErr != nil && ctx.Err() == nil {
@@ -1583,6 +1615,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	if ctx.Err() != nil {
+		l.streamFails = 0
 		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 	}
 
@@ -1594,6 +1627,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	// A malformed tool call is recoverable: tell the model what was wrong and
 	// let it retry rather than aborting the session.
+	if streamErr != nil && len(calls) == 0 && text.Len() == 0 {
+		l.streamFails++
+		l.lastStreamErr = streamErr.Error()
+		if l.streamFails >= maxStreamFailures {
+			l.stuckDetail = fmt.Sprintf("the model's reply failed %d times in a row; the last: %s", l.streamFails, truncate(l.lastStreamErr, 300))
+			l.streamFails = 0
+			return TermRetryExhausted, true, nil
+		}
+	} else {
+		l.streamFails = 0
+	}
 	if streamErr != nil && len(calls) == 0 {
 		if text.Len() == 0 {
 			// No empty assistant turn: an endpoint that rejects null content
@@ -2416,6 +2460,8 @@ func (l *Loop) endPayload(reason TerminalReason) SessionEnded {
 		TokensOut:     l.usage.OutputTokens,
 		TokensCached:  l.usage.CachedTokens,
 		Compactions:   l.usage.Compactions,
+		CostUSD:       l.usage.CostUSD,
+		Unpriced:      l.usage.Unpriced,
 		ContextTokens: ctxTokens,
 		ContextWindow: window,
 		Background:    l.Background.Owed(),

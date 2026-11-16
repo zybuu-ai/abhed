@@ -158,6 +158,75 @@ invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
 
+`max_budget_usd` caps the session's cost in US dollars the same way,
+subagents included. A run that reaches it ends `max_budget` (exit `3`) and
+records `budget.stopped` with what was spent. With a dollar cap set, a model
+that has no price is refused before any call is made, rather than run at a
+guessed cost. Every model call passes that gate before its request and is
+charged after it: the turns, the critic, suggestions, the compaction summary,
+pipeline model steps, Studio's completions, next edits and commit messages,
+and a fallback model, which is not moved to while a dollar cap is set and it
+has no price. A completion model on this machine is no exception: a local
+address may front a paid model, so price it, at 0 if it is free.
+
+What a provider reports is checked before it is charged, and anything
+raised is marked `estimated` on the call:
+
+- A whole prompt (with an Anthropic cache's reads and writes) reported as
+  nothing, or under a quarter of the request's own count, is charged at that
+  count, about four characters a token. A server that reports only the part
+  of the prompt it did not have cached (Ollama reuses its KV cache) reads
+  higher in Abhed's token totals and token budget than it says on warm turns;
+  a local model priced at 0 moves no dollars.
+- Output reported under a quarter of what came back is charged at what came
+  back.
+- A cut call (cancelled, timed out, or ended by an error once its stream
+  opened) is charged at least its prompt and what came back. Under a dollar
+  cap, or for a model that reasons out of sight, it is charged at the most
+  the request allowed: the provider took the request and worked, and bills
+  what it produced whether or not it arrived, so interrupting a run, or a
+  connection that drops, does not save money under a cap.
+- Only a call the provider never accepted (an error status, a connection
+  never made) is not charged.
+- Three failed replies in a row with no usable text or tool call (a reply
+  whose tool call could not be parsed included) end the run
+  `retry_exhausted` whatever the error said (a transport error's text
+  changes with its port), rather than being asked again to the turn limit.
+  The count starts again with each run.
+
+A cap set by the managed or org configuration also fixes the prices it is
+spent by (see below).
+
+### Prices
+
+Each model call is priced from its model's name as sent to the provider,
+in US dollars per million tokens. For `azure-openai` that name is the
+deployment, so `pricing` is keyed by deployment name. Abhed carries the
+Standard-tier list prices of some hosted models, checked on 9 November 2026
+against developers.openai.com/api/docs/pricing and
+platform.claude.com/docs/en/about-claude/pricing. Models priced by prompt
+length, such as Claude Haiku 5.5 and the gpt-6 family, and retired models
+are not in the list, so they are unpriced until `pricing` names them.
+`pricing` sets other models, or overrides the list:
+
+```json
+"pricing": {
+  "gemma4:26b": {"input": 0, "output": 0},
+  "acme-large": {"input": 3, "output": 15, "cached_input": 0.3, "cache_write": 3.75}
+}
+```
+
+`cached_input` and `cache_write` default to the input price. A model with no
+price is shown as unpriced: its cost is in no total and is never guessed. A
+price with a negative figure is no price. `pricing` is an operator's
+setting: a workspace's configuration cannot set it, trusted or not, since a
+lower price would stretch a dollar budget. When the managed or org
+configuration sets `limits.max_budget_usd`, prices come only from that
+layer and the built-in list; `pricing` from the person's own file is set
+aside with a warning. The cost of each call is in its
+`model.call` event (`cost_usd`), and the session's in `session.ended`;
+`/usage`, `-p -output-format json`, HawkEYE and Studio show them.
+
 ## Background tasks
 
 ```json

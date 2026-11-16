@@ -120,6 +120,7 @@ type acpCompleter struct {
 	closed   bool               // the session has closed; nothing more is sent
 	events   [2]agent.EventType // the feature's enabled and summary events
 	sum      agent.CompletionSummary
+	noticed  bool // the budget's refusal was sent once as a notice
 	// lat are the answer times of requests sent, in milliseconds, for the summary.
 	lat        []int64
 	warmed     time.Time          // when the last warm-up was sent
@@ -492,6 +493,10 @@ func (c *acpConn) complete(msg rpcMessage) {
 	if fim {
 		mode = "fim"
 	}
+	if why := editorRefused(parts.Loop, a, "completions", "completion"); why != "" {
+		c.reply(msg.ID, k.priceNotice(map[string]any{"items": []any{}}, why), nil)
+		return
+	}
 	if why := c.completeEnabled(s, k, provider, mode); why != "" {
 		refuse(why)
 		return
@@ -528,13 +533,19 @@ func (c *acpConn) complete(msg rpcMessage) {
 		text = ""
 	}
 	cancelled := err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, err != nil && ctx.Err() != nil,
+		len(sentPrefix)+len(sentSuffix), len(res.Text), completeMaxTokens)
 	if err == nil {
 		k.took(elapsed)
 	}
 	k.mu.Lock()
+	addCost(&k.sum, usd, unpriced)
 	k.sum.Requests++
-	k.sum.TokensIn += res.InputTokens
-	k.sum.TokensOut += res.OutputTokens
+	k.sum.TokensIn += tokIn
+	k.sum.TokensOut += tokOut
+	if estimated {
+		k.sum.Estimated++
+	}
 	switch {
 	case cancelled:
 		k.sum.Cancelled++
@@ -740,6 +751,13 @@ func (c *acpConn) completeWarm(msg rpcMessage) {
 	if !ok || k.chatOnly {
 		k.mu.Unlock()
 		skip("the completion model is asked through chat, which is not warmed")
+		return
+	}
+	// The budget's gate, as for every model call: under a dollar cap a model
+	// with no price is not warmed either.
+	if why := editorRefused(parts.Loop, k.adapter, "completions", "completion"); why != "" {
+		k.mu.Unlock()
+		skip(why)
 		return
 	}
 	// Only a warm-up about to be sent is recorded, for the connection too;

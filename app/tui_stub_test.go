@@ -283,7 +283,7 @@ func (s *tuiStub) serve(w http.ResponseWriter, r *http.Request) {
 		send(map[string]any{}, "stop")
 	}
 	b, _ := json.Marshal(map[string]any{"id": "x", "object": "chat.completion.chunk", "choices": []any{},
-		"usage": map[string]any{"prompt_tokens": 1200, "completion_tokens": 80, "total_tokens": 1280}})
+		"usage": map[string]any{"prompt_tokens": 6000, "completion_tokens": 80, "total_tokens": 6080}}) // a realistic prompt: one under a quarter of its count is estimated
 	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", b)
 	if fl != nil {
 		fl.Flush()

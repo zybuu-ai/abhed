@@ -694,7 +694,15 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 // Budget is the one allowance a session's loop and its subagents share, so a
 // fan-out cannot multiply spend unseen.
 func Budget(cfg config.Config) *agent.Budget {
-	return agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
+	b := agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
+	b.MaxUSD = cfg.Limits.MaxBudgetUSD
+	if len(cfg.Pricing) > 0 {
+		b.Prices = make(map[string]model.Price, len(cfg.Pricing))
+		for name, p := range cfg.Pricing {
+			b.Prices[name] = model.Price{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
+		}
+	}
+	return b
 }
 
 // Subagents returns a copy of reg with task and tasks bound to one session's

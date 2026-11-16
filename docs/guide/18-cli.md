@@ -26,7 +26,7 @@ more often a mistyped command than a task.
 | `-mode MODE` | `default`, `accept-edits`, `plan`, `auto` or `bypass` |
 | `-allow RULES`, `-deny RULES` | rules for this run, e.g. `bash(go test*)`; repeatable |
 | `-add-dir DIRS` | more directories the agent may read and write; repeatable |
-| `-max-turns N`, `-max-budget-tokens N` | limits for this run; a managed limit may only be lowered |
+| `-max-turns N`, `-max-budget-tokens N`, `-max-budget-usd D` | limits for this run; a managed limit may only be lowered; a dollar cap refuses a model with no price |
 | `-append-system-prompt TEXT` | instructions added to the system prompt |
 | `-system-prompt TEXT` | the system prompt replaced; refused under a managed configuration |
 | `-trust-workspace` | trust the workspace's `.abhed/config.json` for this run |

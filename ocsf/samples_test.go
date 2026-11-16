@@ -148,6 +148,7 @@ var samples = []sample{
 	{agent.EvConfigChanged, agent.ActorSystem, `{"time":"2026-11-09T05:36:00Z","by":"mcp add","key":"mcp.servers","name":"pastebin","kind":"http","sha256":"0f1e2d3c","refused":"mcp.denied in /etc/abhed/config.json matches it"}`},
 	{agent.EvConfigChanged, agent.ActorSystem, `{"by":"abhed","key":"config-changes.jsonl","pending":51}`},
 	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
+	{agent.EvBudgetStopped, agent.ActorSystem, `{"reason":"usd","model":"gpt-4o","spent_usd":1.02,"max_usd":1,"message":"stopped: the budget of $1.00 is spent ($1.0200)"}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

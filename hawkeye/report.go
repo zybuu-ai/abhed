@@ -58,6 +58,10 @@ type Report struct {
 	// offTurn are the model calls outside the conversation (a suggestion):
 	// no turn, but their tokens and time count in the totals.
 	offTurn []Turn
+	// editorUSD and editorUnpriced are Studio's completions and next edits,
+	// whose cost their summaries carry rather than a model.call each.
+	editorUSD      float64
+	editorUnpriced bool
 
 	// SubagentActions are the subagents' refused or asked-about calls, as the
 	// parent's record holds them.
@@ -87,6 +91,12 @@ type Totals struct {
 	// CacheReported is false when no turn's provider gave a cached-token
 	// figure, so a zero rate means unknown, not a cold cache.
 	CacheReported bool `json:"cache_reported"`
+	// CostUSD is what the priced calls cost; Unpriced marks a call to a model
+	// with no price, left out of it.
+	CostUSD  float64 `json:"cost_usd"`
+	Unpriced bool    `json:"unpriced,omitempty"`
+	// CostNotRecorded marks calls from a record written before costing.
+	CostNotRecorded bool `json:"cost_not_recorded,omitempty"`
 	// ModelMS and ToolMS split the wall clock between waiting on the model
 	// and waiting on tools, which is the first question about a slow session.
 	ModelMS    int64 `json:"model_ms"`
@@ -112,8 +122,13 @@ type Turn struct {
 	TokensCached int    `json:"tokens_cached"`
 	// CacheReported is false when the provider gave no cached-token figure.
 	CacheReported bool `json:"cache_reported,omitempty"`
-	Window        int  `json:"context_window"`
-	CutOff        bool `json:"cut_off,omitempty"`
+	// CostUSD is the call's cost; nil when its model has no price.
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// Unpriced marks a call to a model with no price; with neither, the
+	// record predates costing.
+	Unpriced bool `json:"unpriced,omitempty"`
+	Window   int  `json:"context_window"`
+	CutOff   bool `json:"cut_off,omitempty"`
 	// Estimated marks tokens the harness estimated for a reply stopped early.
 	Estimated    bool   `json:"estimated,omitempty"`
 	FirstTokenMS int64  `json:"first_token_ms"`
