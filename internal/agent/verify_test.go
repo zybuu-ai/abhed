@@ -1205,7 +1205,9 @@ func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
 func TestStrictWorkSubjectKnowledge(t *testing.T) {
 	for _, text := range []string{"This change dropped the retry.", "Its change dropped the retry.",
 		"Both changes added input validation.", "After review, the change dropped the retry.",
-		"Release 4.1 fixed the leak.", "Version 2 of the handler fixed the leak.", "In 2026 the service dropped the retry."} {
+		"Release 4.1 fixed the leak.", "Version 2 of the handler fixed the leak.", "In 2026 the service dropped the retry.",
+		"Go 1.22 fixed our flaky test.", "Linux 6.1 support was added.", "The Node 20 upgrade fixed the build.",
+		"TLS 1.3 removed RSA key exchange."} {
 		t.Run(text, func(t *testing.T) {
 			answer := `{"text":"` + text + `","claims":[{"text":"` + text + `","kind":"knowledge"}]}`
 			l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
@@ -1220,9 +1222,11 @@ func TestStrictWorkSubjectKnowledge(t *testing.T) {
 	}
 }
 
-// A strict pass that left a fact about other software unchecked says so.
-func TestStrictNotesExternalFacts(t *testing.T) {
-	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+// Label mode reads a fact about other software as not checked, says so in
+// the note and the footer, and never shows it as verified; strict mode has
+// no such exemption (TestStrictWorkSubjectKnowledge).
+func TestLabelNotesExternalFacts(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyLabel, true, []scriptedTurn{
 		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(`{"text":"TLS 1.3 removed RSA key exchange.","claims":[{"text":"TLS 1.3 removed RSA key exchange.","kind":"knowledge"}]}`)}}},
 	})
 	if reason, _ := l.Run(context.Background(), "what changed in TLS 1.3?"); reason != TermCompleted {
@@ -1231,5 +1235,10 @@ func TestStrictNotesExternalFacts(t *testing.T) {
 	v := answerVerdicts(store)[0]
 	if !strings.Contains(v.Note, "1 statement(s) read as facts about other software were not checked") || !v.Claims[0].External {
 		t.Fatalf("the external fact was passed over in silence: %+v", v)
+	}
+	c := v.Claims[0]
+	if c.Verdict != ClaimUnverified || c.Reason != "not checked: about other software" || v.Verified != 0 ||
+		!strings.Contains(v.Footer(), "1 not checked: about other software") {
+		t.Fatalf("the external fact can read as verified: %+v footer %q", c, v.Footer())
 	}
 }

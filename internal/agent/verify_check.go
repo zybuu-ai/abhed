@@ -85,6 +85,9 @@ type Conflict struct {
 // checkEnv is what the checker reads besides the claims.
 type checkEnv struct {
 	events []Event
+	// strict: every knowledge claim of a change is work; none is read as
+	// a fact about other software.
+	strict bool
 	// mutates reports whether a recorded call could change state; nil
 	// treats every call but the known readers as one that could.
 	mutates func(tool string, args json.RawMessage) bool
@@ -589,7 +592,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		switch {
 		case f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0:
 			kind = KindObserved
-		case saysChange && ix.externalSubject(c.Text):
+		case saysChange && !env.strict && ix.externalClaim(c.Text):
 			external = true
 		case saysChange:
 			kind = KindObserved
@@ -631,6 +634,9 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	if kind == KindKnowledge || kind == KindStatement {
 		v.Verdict = ClaimUnverified
 		v.Reason = "general knowledge; not checked against this session"
+		if v.External {
+			v.Reason = "not checked: about other software"
+		}
 		if kind == KindStatement {
 			v.Reason = "nothing in it could be checked against this session"
 		}
@@ -2051,7 +2057,7 @@ func leadNounReport(text string) bool {
 	if len(words) < 3 || !leadNumberRe.MatchString(words[1]) {
 		return false
 	}
-	return saysPast(normText(strings.Join(words[2:], " ")))
+	return saysPast(normText(strings.Trim(words[2], ".,;:!?")))
 }
 
 // leadNumberRe is a number or version said after a noun.
@@ -2061,7 +2067,7 @@ var leadNumberRe = regexp.MustCompile(`^v?\d+(?:\.\d+)*[.,;:]?$`)
 // report a change of as a fact about the world. Nothing else is external.
 var externalNames = []string{
 	"TLS", "SSL", "HTTP", "HTTP/2", "HTTP/3", "QUIC", "IPv6", "OAuth", "OpenID", "JSON", "YAML", "Unicode", "POSIX",
-	"ECMAScript", "C", "C++", "C#", "Java", "JDK", "Go", "Rust", "Python", "Ruby", "PHP", "Node.js", "Node", "TypeScript",
+	"ECMAScript", "C++", "C#", "Java", "JDK", "Rust", "Python", "Ruby", "PHP", "Node.js", "Node", "TypeScript",
 	"Kotlin", "Swift", "Scala", "Perl", "Lua",
 	"Linux", "Windows", "macOS", "iOS", "Android", "FreeBSD", "Kubernetes", "Docker", "PostgreSQL", "MySQL", "SQLite",
 	"Redis", "OpenSSL", "glibc", "LLVM", "GCC", "Git", "npm", "pip", "Chrome", "Firefox", "Safari",
@@ -2077,9 +2083,14 @@ var (
 			names = append(names, regexp.QuoteMeta(n))
 		}
 		alt := `(?:` + strings.Join(names, "|") + `)`
-		return regexp.MustCompile(`(?:^|[\s(])(` + alt + `)(?:'s)?(?:\s*v?\d+(?:\.\d+)*\b|\s+(?:latest\s+|newest\s+|next\s+|first\s+|last\s+|new\s+)?(?:version|release|spec|specification|standard)\b)` +
-			`|\b(?:19|20)\d\d\s+(` + alt + `)(?:[\s'.,]|$)` +
-			`|\bRFC\s*\d+\b|\bES\d+\b`)
+		// Each name opens the subject (after "The" or a year at most), so a
+		// name inside another phrase ("Section C 2") never counts; C only
+		// as C89 to C23 written joined, and Go only as "Go 1.<n>" or "Go's
+		// latest release".
+		lead := `^(?:the\s+)?`
+		return regexp.MustCompile(lead + `(` + alt + `)(?:'s)?(?:\s*v?\d+(?:\.\d+)*\b|\s+(?:latest\s+|newest\s+|next\s+|first\s+|last\s+|new\s+)?(?:version|release|spec|specification|standard)\b)` +
+			`|` + lead + `(?:19|20)\d\d\s+(` + alt + `)(?:[\s'.,]|$)` +
+			`|` + lead + `(?:RFC\s*\d+|ES\d+|C(?:89|99|11|17|23)|Go\s+1\.\d+|Go's\s+(?:latest|newest|next|first|last|new)\s+(?:version|release|spec)|Go\s+(?:version|release)\s+1\.\d+)\b`)
 	}()
 	// subjectWorkRe in a subject keeps it the session's: a work noun, a
 	// pronoun, a possessive, code.
@@ -2091,13 +2102,17 @@ var (
 	projectNameRe = regexp.MustCompile(`(?m)^\s*(?:module\s+(\S+)|"name"\s*:\s*"([^"]+)"|name\s*=\s*"([^"]+)")`)
 )
 
-// externalSubject reports a claim whose subject, the words before its
-// verb, names a curated external technology with a version or release
-// word (or a year before it), and holds no pronoun, possessive, code or
-// word for work. A name that is the workspace's own project is not
-// external. The subject's first word and capitalised words are never the
-// verb: "Abhed 1.3 removed" has "Abhed 1.3" as its subject.
-func (ix *recordIndex) externalSubject(text string) bool {
+// externalClaim reports a knowledge claim of a change that is a fact
+// about other software: its subject (the words before its verb; the first
+// word and capitalised words are never the verb) opens with a technology
+// from the fixed list with a version or release word, or a year before
+// it, and nothing in the whole sentence ties it to this session: no first
+// person or possessive, no code or path, no name a read, call or change of
+// this session holds, no passive, no upgrade or migration word, no "the"
+// before a noun after the verb, no word for work in the subject; and the
+// name is not the workspace's own project. Only label mode reads such a
+// claim as external; strict checks every change claim as work.
+func (ix *recordIndex) externalClaim(text string) bool {
 	words := strings.Fields(text)
 	end := len(words)
 	for k, w := range words {
@@ -2111,7 +2126,11 @@ func (ix *recordIndex) externalSubject(text string) bool {
 		}
 	}
 	subj := strings.Join(words[:end], " ")
-	if strings.TrimSpace(subj) == "" || subjectWorkRe.MatchString(subj) {
+	object := strings.ToLower(strings.Join(words[end:], " "))
+	low := strings.ToLower(text)
+	if strings.TrimSpace(subj) == "" || subjectWorkRe.MatchString(subj) || sessionTieRe.MatchString(low) ||
+		strings.Contains(text, "`") || pathRe.MatchString(text) || passiveTieRe.MatchString(low) ||
+		theObjectRe.MatchString(object) {
 		return false
 	}
 	m := externalRe.FindStringSubmatch(subj)
@@ -2122,8 +2141,54 @@ func (ix *recordIndex) externalSubject(text string) bool {
 	if name != "" && ix.ownProject(name) {
 		return false
 	}
-	return true
+	return !ix.namesSessionWord(words, name)
 }
+
+var (
+	// sessionTieRe ties a sentence to the session: the first person, a
+	// possessive, an upgrade or a migration.
+	sessionTieRe = regexp.MustCompile(`\b(?:i|we|us|our|ours|my|mine|upgrad\w*|bump\w*|migrat\w*|switch\w*|port(?:ed|ing)?\s+to|moved?\s+to|moving\s+to)\b`)
+	// passiveTieRe is a passive: work with no one named as doing it.
+	passiveTieRe = regexp.MustCompile(`\b(?:is|are|was|were|be|been|being)\s+(?:\w+ly\s+|now\s+)?[a-z]+(?:ed|en|wn|ne)\b`)
+	// theObjectRe is "the" before a noun, after the verb.
+	theObjectRe = regexp.MustCompile(`\bthe\s+[a-z]`)
+	// claimWordRe is a word of a claim that may name something the session
+	// read or changed.
+	claimWordRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_\-]{3,}`)
+)
+
+// namesSessionWord reports a claim that holds a word, other than the
+// external name and common words, that one of this session's reads, calls
+// or changes holds.
+func (ix *recordIndex) namesSessionWord(words []string, name string) bool {
+	var hay []string
+	for _, o := range ix.obs {
+		if o.usable() {
+			hay = append(hay, strings.ToLower(o.content+"\n"+o.args+"\n"+o.path))
+		}
+	}
+	for _, m := range ix.mutations {
+		hay = append(hay, strings.ToLower(m.text+"\n"+m.path))
+	}
+	for _, w := range claimWordRe.FindAllString(strings.Join(words, " "), -1) {
+		lw := strings.ToLower(w)
+		if strings.EqualFold(w, name) || commonClaimWords[lw] || subjVerbRe.MatchString(lw) {
+			continue
+		}
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(lw) + `\b`)
+		for _, h := range hay {
+			if re.MatchString(h) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// commonClaimWords are words any read may hold that name nothing.
+var commonClaimWords = wordSet(`with from into that this then than them they were have will what when which while
+	support supports added removed dropped changed fixed made version release spec standard latest newest first last
+	also only more most some such each every other about after before over under between`)
 
 // ownProject reports a name that is the workspace's own project: its
 // folder, or the name in go.mod, package.json, pyproject.toml or

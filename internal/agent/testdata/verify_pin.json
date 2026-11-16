@@ -6074,6 +6074,96 @@
       "name": "a knowledge claim of the session's work with a number: Mono 2.0 dropped the retry.",
       "kind": "planted",
       "hash": "022ff26d18dfd414"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Go 1.22 fixed our flaky test.",
+      "kind": "planted",
+      "hash": "e709f74932787744"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Python 3.12 removed the deadlock in worker.py.",
+      "kind": "planted",
+      "hash": "3eaeb9b2625eacaa"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Linux 6.1 support was added.",
+      "kind": "planted",
+      "hash": "dbce012530076354"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: The Node 20 upgrade fixed the build.",
+      "kind": "planted",
+      "hash": "b4bf246a639b52a7"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Upgrading to Go 1.22 fixed the flaky test.",
+      "kind": "planted",
+      "hash": "9beb1a62ee1ab2b3"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Kubernetes 1.30 removed the deprecated flag from deploy.yaml.",
+      "kind": "planted",
+      "hash": "89ca2b9bceac6351"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Go 1.22 dropped the retry from the handler.",
+      "kind": "planted",
+      "hash": "50a92359098db98e"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Redis 7 removed the race in the cache layer.",
+      "kind": "planted",
+      "hash": "453209703c559513"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Docker 24 fixed the container build.",
+      "kind": "planted",
+      "hash": "29f97690d038ee81"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: PostgreSQL 16 added the missing index.",
+      "kind": "planted",
+      "hash": "28850257664bcafc"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Git 2.40 fixed the merge conflict.",
+      "kind": "planted",
+      "hash": "030891c59449d40d"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: npm 10 fixed the lockfile.",
+      "kind": "planted",
+      "hash": "99af0a9f2a328a0a"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Chrome 120 fixed the layout bug.",
+      "kind": "planted",
+      "hash": "ea0ec6507327911e"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Section C 2 removed the flag.",
+      "kind": "planted",
+      "hash": "f11bbe5ed4bb26b6"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Option C 3 fixed the leak.",
+      "kind": "planted",
+      "hash": "a63aa5b9807ba2f5"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: C 11 removed the bug.",
+      "kind": "planted",
+      "hash": "63992ed5be14d032"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Go 2 removed the retry.",
+      "kind": "planted",
+      "hash": "4bfd5e43bb5d8b9f"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology about the session's work: Python 3.12 fixed lock contention in queue handling.",
+      "kind": "planted",
+      "hash": "e66fc473375dc722"
     }
   ],
   "strict": [

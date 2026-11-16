@@ -653,31 +653,34 @@ checked; a `knowledge` claim about the session's own work, in any wording
 (that tests pass, that a file changed, "the tests were updated by fixing
 the bugs in `src/utils/text.py`", "typed errors added", "the PR is
 merged", "this change dropped the retry", "its change dropped the
-retry"), is checked anyway. Any `knowledge` claim that says a change, an
-event or a finished state is taken as about the session's work unless
-its subject (the words before its verb; the first word and capitalised
-words are never the verb) names a well-known external technology from a
-fixed list, with a version or release word after it or a year before it:
-protocols and formats (TLS, SSL, HTTP, HTTP/2, HTTP/3, QUIC, IPv6, OAuth,
-OpenID, JSON, YAML, Unicode, POSIX), languages and runtimes (C, C++, C#,
-Java, JDK, Go, Rust, Python, Ruby, PHP, Node.js, TypeScript, Kotlin,
-Swift, Scala, Perl, Lua, ECMAScript or `ES<n>`), systems and tools (Linux,
-Windows, macOS, iOS, Android, FreeBSD, Kubernetes, Docker, PostgreSQL,
-MySQL, SQLite, Redis, OpenSSL, glibc, LLVM, GCC, Git, npm, pip, Chrome,
-Firefox, Safari), or `RFC <n>`. So "TLS 1.3 removed RSA key exchange",
-"Python 3 dropped print statements", "RFC 9110 removed the 2xx body
-rule" and "Go's latest release added generics" stay knowledge. Nothing
-else does: "Release 4.1 fixed the leak", "Version 2 of the handler fixed
-the leak", "In 2026 the service dropped the retry" and an invented
-"Zephyr 2.0 dropped the flag" are work. A name that is the workspace's
-own project (its folder, or the name in `go.mod`, `package.json`,
-`pyproject.toml` or `Cargo.toml`) is not external, and a subject with a
-pronoun, a possessive, code or a word for work (change, commit, branch,
-update, revision and the like) never is. This errs towards checking:
-"Python's update dropped print statements" or "The C++20 update added
-modules" is checked as work, and stays unverified. When an answer passes
-with such a fact unchecked, its `note` says how many: "1 statement(s)
-read as facts about other software were not checked". `text` is checked too:
+retry"), is checked anyway. Under `strict`, every `knowledge` claim that
+says a change, an event or a finished state is checked as work, with no
+exemption: a fact about other software ("TLS 1.3 removed RSA key
+exchange") comes out unverified and gets the revision. That is the cost
+of strict, the mode that asks for everything to be shown. In `label` mode
+such a sentence is shown as "not checked: about other software" (never
+verified; the footer and the verdict's `note` count it) only when all of
+this holds: its subject (the words before its verb; the first word and
+capitalised words are never the verb) opens with a technology from a
+fixed list (TLS, SSL, HTTP, HTTP/2, HTTP/3, QUIC, IPv6, OAuth, OpenID,
+JSON, YAML, Unicode, POSIX, ECMAScript or `ES<n>`, C89 to C23 written
+joined, C++, C#, Java, JDK, Go as "Go 1.<n>" or "Go's latest release",
+Rust, Python, Ruby, PHP, Node.js, Node, TypeScript, Kotlin, Swift, Scala,
+Perl, Lua, Linux, Windows, macOS, iOS, Android, FreeBSD, Kubernetes,
+Docker, PostgreSQL, MySQL, SQLite, Redis, OpenSSL, glibc, LLVM, GCC, Git,
+npm, pip, Chrome, Firefox, Safari, or `RFC <n>`) with a version or release
+word after it or a year before it; and nothing in the whole sentence ties
+it to the session: no first person or possessive, no code or path, no
+name that one of the session's reads, calls or changes holds, no
+passive, no upgrade, bump, migration or switch, no "the" before a noun
+after the verb, and the name is not the workspace's own project. So
+"TLS 1.3 removed RSA key exchange", "Python 3 dropped print statements",
+"RFC 9110 removed the 2xx body rule" and "Go's latest release added
+generics" are not checked, while "Go 1.22 fixed our flaky test", "Linux
+6.1 support was added", "The Node 20 upgrade fixed the build" and
+"Release 4.1 fixed the leak" are work. Some world facts are checked as
+work and stay unverified ("Go 1.22 fixed the loop variable bug", "The
+C++20 update added modules"); none can be verified. `text` is checked too:
 each of its statements that no claim repeats is a claim with nothing cited,
 so an answer cannot pass strict mode by giving only `knowledge` claims while
 its text says "The tests now pass". When an answer passes with nothing
@@ -861,7 +864,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 958 plant a wrong claim. Some cite the result that shows them wrong
+session. 976 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -967,7 +970,7 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 958
+tail, a port not listening, a file not in a response). Today none of the 976
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
 shows; the rest unverified), all 253 controls are verified,

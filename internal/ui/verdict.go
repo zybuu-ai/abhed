@@ -35,7 +35,8 @@ func ClaimMark(s Style, verdict string) string {
 func VerdictRows(s Style, v agent.AnswerVerdict, hint bool) []string {
 	// Nothing checkable (no claim, or only general knowledge and plain
 	// statements) draws nothing: a greeting earns no footer.
-	if v.Contract == nil && v.Revision == "" && v.Verified == 0 && v.Contradicted == 0 && v.Unverified == v.Unchecked() {
+	// A fact about other software left unchecked is always said.
+	if v.Contract == nil && v.Revision == "" && v.Verified == 0 && v.Contradicted == 0 && v.Unverified == v.Unchecked() && v.ExternalCount() == 0 {
 		return nil
 	}
 	var rows []string

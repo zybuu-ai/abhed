@@ -141,12 +141,16 @@ type AnswerVerdict struct {
 func (v AnswerVerdict) Footer() string {
 	unv := fmt.Sprintf("%d unverified", v.Unverified)
 	var notes []string
-	k, e := v.Unchecked(), v.Explained()
+	k, e, x := v.Unchecked(), v.Explained(), v.ExternalCount()
+	k -= x
 	switch {
-	case k > 0 && k == v.Unverified:
+	case k > 0 && k+x == v.Unverified:
 		notes = append(notes, "general knowledge")
 	case k > 0:
 		notes = append(notes, fmt.Sprintf("%d general knowledge", k))
+	}
+	if x > 0 {
+		notes = append(notes, fmt.Sprintf("%d not checked: about other software", x))
 	}
 	if e > 0 {
 		notes = append(notes, fmt.Sprintf("%d explanation", e))
@@ -163,6 +167,18 @@ func (v AnswerVerdict) Footer() string {
 		}
 	}
 	return s
+}
+
+// ExternalCount counts the claims read as facts about other software,
+// which are never checked and never verified.
+func (v AnswerVerdict) ExternalCount() int {
+	n := 0
+	for _, c := range v.Claims {
+		if c.External {
+			n++
+		}
+	}
+	return n
 }
 
 // Unchecked counts the unverified claims that are not about the session's
@@ -392,7 +408,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if err != nil {
 		events = nil // checked against nothing, everything stays unverified
 	}
-	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir()}
+	env := checkEnv{events: events, mutates: l.recordedMutates, workDir: l.workDir(), strict: v.Mode == VerifyStrict}
 	env.child = l.Recorder.store.Events
 	if l.Session != nil {
 		env.readFile = l.Session.ReadFile
@@ -427,13 +443,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	}
 	// A statement read as a fact about other software is never passed over
 	// in silence.
-	ext := 0
-	for _, c := range verdicts {
-		if c.External {
-			ext++
-		}
-	}
-	if ext > 0 {
+	if ext := av.ExternalCount(); ext > 0 {
 		n := fmt.Sprintf("%d statement(s) read as facts about other software were not checked", ext)
 		if av.Note != "" {
 			n = av.Note + "; " + n
