@@ -165,6 +165,16 @@ type recordIndex struct {
 	prompts []string
 	// readFile reads a workspace file as it is now; nil reads none.
 	readFile func(path string) ([]byte, error)
+	// denials are this session's refused calls, newest last.
+	denials []*denialRec
+}
+
+// denialRec is a refused call: why, by which rule, from which layer.
+type denialRec struct {
+	seq                  int64
+	callID               string
+	rule, source, reason string
+	command              string
 }
 
 // readers are the built-in tools that never change anything.
@@ -223,29 +233,26 @@ func (ix *recordIndex) add(env checkEnv, events []Event, session string, at *int
 				reqs[a.CallID] = req{a: a, seq: e.Seq, person: e.Actor == ActorUser}
 			}
 		case EvActionDenied:
-			// A refused call ran nothing, but the agent was told why
-			// ("Denied: denied by rule bash(curl*) …"), and may say so: the
-			// refusal is a result it can be checked against, never a run or
-			// a change.
+			// A refused call ran nothing. What it shows is the refusal itself
+			// (that the call was refused, by which rule, from where), kept
+			// apart from the results: its reason can hold text the model
+			// chose (an unknown tool's name, a hook's output), which must
+			// never stand for a value.
 			var d struct {
 				CallID string `json:"call_id"`
 				Reason string `json:"reason"`
+				Rule   string `json:"rule"`
+				Source string `json:"source"`
 			}
-			if json.Unmarshal(e.Payload, &d) != nil || d.CallID == "" || d.Reason == "" {
+			if at != nil || json.Unmarshal(e.Payload, &d) != nil || d.CallID == "" || d.Reason == "" {
 				continue
 			}
 			r := reqs[d.CallID]
-			seq, pos := place(e.Seq)
-			rec := &obsRec{seq: seq, pos: pos, child: session, reqSeq: r.seq, callID: d.CallID, tool: r.a.Tool,
-				content: "Denied: " + d.Reason + ".", isError: true, person: r.person, via: r.a.Via,
-				args: argText(r.a.Args), argMap: argMap(r.a.Args)}
-			ix.obs = append(ix.obs, rec)
-			if _, taken := ix.byCall[d.CallID]; !taken || at == nil {
-				ix.byCall[d.CallID] = rec
+			if r.person {
+				continue
 			}
-			if at == nil {
-				ix.bySeq[e.Seq] = rec
-			}
+			ix.denials = append(ix.denials, &denialRec{seq: e.Seq, callID: d.CallID, rule: d.Rule, source: d.Source,
+				reason: d.Reason, command: argMap(r.a.Args)["command"]})
 		case EvSubagentSpawned, EvSubagentReturn, EvSubagentNotice:
 			var p struct {
 				Session string `json:"session"`
@@ -535,7 +542,8 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	// A state ("healthy", "down") or a deed ("we deployed") the matched
 	// output does not itself say is not shown by its other words matching.
-	if v.Verdict == ClaimVerified && !merge {
+	// A refusal is judged whole by its own check.
+	if v.Verdict == ClaimVerified && !merge && !strings.HasPrefix(v.Reason, refusalReason) {
 		if why := unsaid(ix, c, v); why != "" {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
@@ -552,7 +560,8 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	// A sentence that says something was done or changed is about the work
 	// even with nothing else in it; a participle alone ("a compiled
 	// language") is not.
-	workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean
+	workEvent := f.deed || f.observe || f.changeWord || f.changeAct && f.event != "" || f.overclaim || f.mergeClean || f.presentState ||
+		len(ix.denials) > 0 && refusalWordRe.MatchString(normText(c.Text))
 	switch kind {
 	case KindObserved, KindDerived, KindKnowledge:
 	case "":
@@ -592,6 +601,13 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 			v.Kind, v.Verdict, v.Reason = KindStatement, ClaimUnverified, why
 			return v
 		}
+	}
+	// A statement about a refusal is checked against the refusal alone.
+	if d := ix.refusalShown(c); d != nil {
+		v.Kind, v.LoadBearing, v.Verdict = KindObserved, true, ClaimVerified
+		v.Evidence = []int64{d.seq}
+		v.Reason = fmt.Sprintf("%s#%d", refusalReason, d.seq)
+		return v
 	}
 	if kind == KindKnowledge || kind == KindStatement {
 		v.Verdict = ClaimUnverified
@@ -1280,6 +1296,11 @@ func (ix *recordIndex) resolve(ref string) (*obsRec, string) {
 		}
 		return o, ""
 	}
+	for _, d := range ix.denials {
+		if ref == d.callID || ref == "#"+strconv.FormatInt(d.seq, 10) || ref == strconv.FormatInt(d.seq, 10) {
+			return nil, fmt.Sprintf("%s is a refused call, which shows only that it was refused", ref)
+		}
+	}
 	if m := seqRefRe.FindStringSubmatch(ref); m != nil {
 		n, _ := strconv.ParseInt(m[1], 10, 64)
 		if o, ok := ix.bySeq[n]; ok && o.usable() {
@@ -1884,4 +1905,78 @@ func personText(text string) string {
 		text = text[:j]
 	}
 	return text
+}
+
+// refusalReason opens the reason of a statement verified by a refusal.
+const refusalReason = "matches the refusal "
+
+var (
+	// refusalWordRe says a call was refused.
+	refusalWordRe = regexp.MustCompile(`\b(?:denied|refused|blocked|rejected|not allowed|disallowed)\b`)
+	// refusalSourceRe names where a refusal came from.
+	refusalSourceRe = regexp.MustCompile(`\b(org(?:anisation|anization)?(?:'s)? policy|managed (?:configuration|config|policy)|workspace (?:configuration|config))\b`)
+)
+
+// refusalShown is the refusal a claim states, or nil: one that quotes what
+// the agent was told ("Denied: <reason>"), or says the call was refused by
+// the rule that refused it ("the call was denied by rule bash(curl*) from
+// the org policy"). Each code span in it must be the rule, the reason or
+// the refused command, and a layer it names must be the refusal's own. With
+// citations, only a cited refusal counts.
+func (ix *recordIndex) refusalShown(c Claim) *denialRec {
+	if len(ix.denials) == 0 {
+		return nil
+	}
+	low := normText(strings.ReplaceAll(c.Text, "`", ""))
+	var spans []string
+	for _, m := range backtickRe.FindAllStringSubmatch(c.Text, -1) {
+		spans = append(spans, normText(m[1]))
+	}
+	for i := len(ix.denials) - 1; i >= 0; i-- {
+		d := ix.denials[i]
+		if len(c.Evidence) > 0 {
+			cited := false
+			for _, ref := range c.Evidence {
+				ref = strings.TrimSpace(ref)
+				cited = cited || ref == d.callID || ref == "#"+strconv.FormatInt(d.seq, 10)
+			}
+			if !cited {
+				continue
+			}
+		}
+		quote := normText("denied: " + d.reason)
+		quoted := strings.Contains(low, strings.TrimRight(quote, "."))
+		named := d.rule != "" && refusalWordRe.MatchString(low) && strings.Contains(low, normText(d.rule))
+		if !quoted && !named {
+			continue
+		}
+		known := normText(d.reason + " " + d.rule + " " + d.command)
+		ok := true
+		for _, sp := range spans {
+			sp = strings.TrimRight(strings.TrimPrefix(sp, "denied: "), ".")
+			if sp != "" && !strings.Contains(known, sp) {
+				ok = false
+			}
+		}
+		if m := refusalSourceRe.FindStringSubmatch(low); m != nil && !sourceIs(m[1], d.source) {
+			ok = false
+		}
+		if ok {
+			return d
+		}
+	}
+	return nil
+}
+
+// sourceIs reports a named layer that is the refusal's own.
+func sourceIs(named, source string) bool {
+	switch {
+	case strings.HasPrefix(named, "org"):
+		return source == "org"
+	case strings.HasPrefix(named, "managed"):
+		return source == "managed"
+	case strings.HasPrefix(named, "workspace"):
+		return source == "workspace"
+	}
+	return false
 }

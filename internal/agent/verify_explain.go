@@ -241,7 +241,7 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 	}
 	low := normText(text)
 	// "passed to the synthesizer" hands a value on; it is no outcome.
-	if !testRe.MatchString(low) {
+	if !testRe.MatchString(low) && !checkWordRe.MatchString(low) {
 		low = passedOnRe.ReplaceAllString(low, " ")
 	}
 	words := append(stateRe.FindAllString(low, -1), outcomeRe.FindAllString(low, -1)...)

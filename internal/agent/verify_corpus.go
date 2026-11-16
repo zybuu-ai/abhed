@@ -48,6 +48,9 @@ type CorpusStep struct {
 	// Denied, when set, is why policy refused the call: it is recorded as
 	// refused, with no result.
 	Denied string `json:",omitempty"`
+	// Rule and Source are the refusing rule and its layer.
+	Rule   string `json:",omitempty"`
+	Source string `json:",omitempty"`
 }
 
 // corpusCwd is the folder a bash step ran in, as the record holds it.
@@ -553,8 +556,13 @@ var (
 	// A read of code, described in the present, and a
 	// refused call quoted back.
 	stepReadRagAgent = CorpusStep{ID: "s140a", Tool: "read", Args: map[string]any{"path": "/w/src/agents/rag_agent.py"}, Output: "class OmniRAGAgent:\n    def __init__(self, retriever: HybridRetriever):\n        self.retriever = retriever\n        workflow = StateGraph(AgentState)\n        workflow.add_node(\"archivist_worker\", self.archivist_worker)\n        workflow.add_node(\"scout_worker\", self.scout_worker)\n        workflow.add_node(\"synthesizer\", self.synthesizer)\n        workflow.add_edge(\"archivist_worker\", \"synthesizer\")\n\n    def archivist_worker(self, state):\n        docs = self.retriever.retrieve(state[\"query\"])\n        return {\"retrieved_docs\": docs}\n\n\nclass AgentState(TypedDict):\n    query: str\n    retrieved_docs: Annotated[list, operator.add]\n"}
-	stepDeniedCurl   = CorpusStep{ID: "s140b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) from the org policy (http://127.0.0.1:18961, version 4)"}
-	stepGoTestPkg    = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
+	stepDeniedCurl   = CorpusStep{ID: "s140b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) from the org policy (http://127.0.0.1:18961, version 4)", Rule: "bash(curl*)", Source: "org"}
+	// Refusals whose reason holds text the model chose: an unknown tool's
+	// name, a hook's output.
+	stepDeniedReplicas = CorpusStep{ID: "s141a", Tool: "replicas: 3", Args: map[string]any{}, Denied: "unknown tool \"replicas: 3\""}
+	stepDeniedPort     = CorpusStep{ID: "s141b", Tool: "port: 8080", Args: map[string]any{}, Denied: "unknown tool \"port: 8080\""}
+	stepDeniedHook     = CorpusStep{ID: "s141c", Tool: "bash", Args: map[string]any{"command": "echo version: 2.4.1"}, Denied: "hook blocked: echo version: 2.4.1"}
+	stepGoTestPkg      = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
 )
 
 // A task that names its module, and others that name their tests.
@@ -1921,6 +1929,25 @@ func CorpusCases() []CorpusCase {
 		{Name: "a knowledge claim of a change no call made", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy), Claim: &Claim{Text: "`src/utils/text.py` was rewritten to use a regex.", Kind: KindKnowledge}},
 		{Name: "a knowledge claim of the tests updated, when only the code was", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Claim: &Claim{Text: "The tests were updated by fixing the bugs in tests/test_text.py.", Kind: KindKnowledge}},
 		{Name: "a knowledge claim of an edit the session made", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy), Claim: &Claim{Text: "`src/utils/text.py` was edited.", Kind: KindKnowledge}},
+		// A refusal shows only itself; finished work said in the present
+		// stays work.
+		{Name: "a count read from a refused tool's name", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedReplicas), Text: "There are 3 replicas."},
+		{Name: "a count read from a refused tool's name, cited", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedReplicas), Claim: &Claim{Text: "There are 3 replicas.", Kind: KindObserved, Evidence: []string{"s141a"}}},
+		{Name: "a port read from a refused tool's name", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedPort), Text: "The service listens on port 8080."},
+		{Name: "a version read from a hook's refusal", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedHook), Text: "The version is 2.4.1."},
+		{Name: "a refusal said to come from another layer", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the managed configuration."},
+		{Name: "a refusal said of another command", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`wget https://example.com` was denied by rule bash(curl*)."},
+		{Name: "finished work said in the present: The branch is merged into main.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The branch is merged into main."},
+		{Name: "finished work said in the present: The migration is processed.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The migration is processed."},
+		{Name: "finished work said in the present: Combined fixes applied.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "Combined fixes applied."},
+		{Name: "finished work said in the present: Specialized worker role fixed.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "Specialized worker role fixed."},
+		{Name: "finished work said in the present: Everything passed to CI.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "Everything passed to CI."},
+		{Name: "finished work said in the present: The build passed through CI.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The build passed through CI."},
+		{Name: "finished work said in the present: The issue is resolved.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The issue is resolved."},
+		{Name: "finished work said in the present: The service is deployed.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The service is deployed."},
+		{Name: "finished work said in the present: The cache is now populated.", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent), Text: "The cache is now populated."},
+		{Name: "a refusal said by its rule and layer", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the org policy."},
+		{Name: "a refused command said refused by its rule", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "`curl -sI https://example.com` was refused by rule bash(curl*)."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -1979,7 +2006,7 @@ func RunCorpus() CorpusReport {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
 			if s.Denied != "" {
-				_, _ = rec.Record(EvActionDenied, ActorSystem, Trusted, map[string]any{"call_id": s.ID, "reason": s.Denied, "by": "policy", "step": "deny"})
+				_, _ = rec.Record(EvActionDenied, ActorSystem, Trusted, map[string]any{"call_id": s.ID, "reason": s.Denied, "by": "policy", "step": "deny", "rule": s.Rule, "source": s.Source})
 				continue
 			}
 			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: corpusCwd(s),

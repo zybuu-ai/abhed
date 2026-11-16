@@ -5613,22 +5613,22 @@
     {
       "name": "a refusal quoted as it was given",
       "kind": "control",
-      "hash": "81434b27a3e66aa4"
+      "hash": "6199491c5214de7f"
     },
     {
       "name": "a refusal quoted with another rule",
       "kind": "planted",
-      "hash": "5191a294659fdb93"
+      "hash": "ca57825a44bb8486"
     },
     {
       "name": "a refused command said to have run",
       "kind": "planted",
-      "hash": "f657ce1b886dc7e3"
+      "hash": "2533e1fbc72eed65"
     },
     {
       "name": "a refused command said to have succeeded",
       "kind": "planted",
-      "hash": "5c412b839764bb6d"
+      "hash": "82963ab75d309709"
     },
     {
       "name": "tests said to pass to completion after a failed run",
@@ -5649,6 +5649,91 @@
       "name": "a knowledge claim of an edit the session made",
       "kind": "control",
       "hash": "a96af528e69e539e"
+    },
+    {
+      "name": "a count read from a refused tool's name",
+      "kind": "planted",
+      "hash": "76026d2309233e75"
+    },
+    {
+      "name": "a count read from a refused tool's name, cited",
+      "kind": "planted",
+      "hash": "bbf9a0586a496cbf"
+    },
+    {
+      "name": "a port read from a refused tool's name",
+      "kind": "planted",
+      "hash": "7e6f854a9e3e7fb0"
+    },
+    {
+      "name": "a version read from a hook's refusal",
+      "kind": "planted",
+      "hash": "29beaa54886409f5"
+    },
+    {
+      "name": "a refusal said to come from another layer",
+      "kind": "planted",
+      "hash": "2d144bcd74bd86e1"
+    },
+    {
+      "name": "a refusal said of another command",
+      "kind": "planted",
+      "hash": "828c7d41aa6fa1c0"
+    },
+    {
+      "name": "finished work said in the present: The branch is merged into main.",
+      "kind": "planted",
+      "hash": "7cb2b715de0d6f95"
+    },
+    {
+      "name": "finished work said in the present: The migration is processed.",
+      "kind": "planted",
+      "hash": "8d603c98d29046d5"
+    },
+    {
+      "name": "finished work said in the present: Combined fixes applied.",
+      "kind": "planted",
+      "hash": "dd05818171a328d7"
+    },
+    {
+      "name": "finished work said in the present: Specialized worker role fixed.",
+      "kind": "planted",
+      "hash": "86cf2e5fedb8a87a"
+    },
+    {
+      "name": "finished work said in the present: Everything passed to CI.",
+      "kind": "planted",
+      "hash": "b01c52dc3e3411b0"
+    },
+    {
+      "name": "finished work said in the present: The build passed through CI.",
+      "kind": "planted",
+      "hash": "9e3531a1a973c407"
+    },
+    {
+      "name": "finished work said in the present: The issue is resolved.",
+      "kind": "planted",
+      "hash": "693ce3b17e6d7c1c"
+    },
+    {
+      "name": "finished work said in the present: The service is deployed.",
+      "kind": "planted",
+      "hash": "808638ccefe8cd31"
+    },
+    {
+      "name": "finished work said in the present: The cache is now populated.",
+      "kind": "planted",
+      "hash": "2d3787d911a66955"
+    },
+    {
+      "name": "a refusal said by its rule and layer",
+      "kind": "control",
+      "hash": "62656bf5ea1f3d3d"
+    },
+    {
+      "name": "a refused command said refused by its rule",
+      "kind": "control",
+      "hash": "80888baee766abb5"
     }
   ],
   "strict": [

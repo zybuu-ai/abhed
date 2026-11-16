@@ -511,8 +511,10 @@ All notable changes to Abhed are recorded here. The format follows
   verified with 0 verified claims. Each statement of `text` that no claim
   repeats is now checked, a `knowledge` claim about the work in any
   wording is checked as work, and an answer that passes with nothing
-  verified says why in the verdict's `note` (nothing in it was about the
-  session's work).
+  verified says why in the verdict's `note` (no statement was read as a
+  claim about the session's work). Finished work said in the present ("the
+  issue is resolved", "the service is deployed", "the cache is now
+  populated") is a claim about the work too.
 - Label mode marked correct statements about code the session read as
   unverified. Code described in the present ("`OmniRAGAgent` is
   initialized with an instance of `HybridRetriever`", "the results are
@@ -523,12 +525,16 @@ All notable changes to Abhed are recorded here. The format follows
   none. A present passive of a verb of data flow or wiring, a participle
   that names what produced or receives a value, and one that qualifies a
   noun now describe the code, so the names in the sentence are checked
-  against the read; verbs of change, the past tense, "now" and the first
-  person are still events. A refusal is now a result the agent can quote,
-  never one that shows the command ran. The false-claim corpus gains 14
-  planted cases and 7 controls; none of the 882 planted claims verifies,
-  all 247 controls do, and none of the 348 true or neutral claims is
-  contradicted.
+  against the read; verbs of change and of finished work (merged,
+  processed, resolved, built), a label with a word of change in it, the
+  past tense, "now" and the first person are still events, and "passed
+  to" said of CI, a build or checks is still a result. A statement about a
+  refusal (its quoted text, or that the call was denied by its rule, from
+  its layer) is now checked against the refusal's own fields; the refusal
+  is evidence for nothing else, since its reason can hold text the model
+  chose. The false-claim corpus gains 29 planted cases and 9 controls;
+  none of the 897 planted claims verifies, all 249 controls do, and none
+  of the 350 true or neutral claims is contradicted.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`

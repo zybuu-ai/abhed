@@ -423,7 +423,7 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		av.Outcome = ClaimUnverified
 	}
 	if av.Outcome == ClaimVerified && av.Verified == 0 {
-		av.Note = "nothing in the answer is about this session's work, so nothing needed checking"
+		av.Note = "no statement was read as a claim about this session's work"
 	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
 	// In label mode a contradicted claim also earns the one revision: it is

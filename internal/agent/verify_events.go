@@ -45,10 +45,13 @@ var (
 	// a noun ("the combined results", "Specialized Worker Role:"). None is a
 	// verb of change (added, removed, changed, updated, fixed, created …),
 	// and none is in the past: "was initialized" stays an event.
-	describesCodeRe = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:\w+ly\s+|then\s+|also\s+|first\s+|later\s+|only\s+)?(?:initiali[sz]ed|instantiated|constructed|injected|passed|returned|stored|cached|merged|combined|wrapped|invoked|imported|registered|configured|loaded|handled|delegated|owned|consumed|provided|produced|populated|assigned|mapped|routed|forwarded|appended|accumulated|computed|derived|aggregated|filtered|ranked|retrieved|fetched|queried|indexed|validated|serialized|serialised|parsed|processed|resolved|dispatched|evaluated|annotated|composed|chained|connected|linked|bound|held|kept|given|taken|built)\b` +
-		`|\b(?:returned|produced|yielded|raised|emitted|provided|consumed|passed|retrieved|fetched|held|owned|built|created|generated)\s+(?:by|from)\b|\bpassed\s+(?:to|into|along|through|on to|down to|back to)\b` +
-		`|\b(?:the|a|an|its|their|each|every|this|that|these|those)\s+` + qualifyingParticiples + `\s+[a-z]` +
-		`|^` + qualifyingParticiples + `(?:\s+[a-z\-]+){1,4}:`)
+	describesCodeRe = regexp.MustCompile(`\b(?:is|are|be|being)\s+(?:\w+ly\s+|then\s+|also\s+|first\s+|later\s+|only\s+)?` + dataFlowParticiples + `\b` +
+		`|\b(?:returned|produced|yielded|raised|emitted|provided|consumed|passed|retrieved|fetched)\s+(?:by|from)\b|\bpassed\s+(?:to|into|along|through|on to|down to|back to)\b` +
+		`|\b(?:the|a|an|its|their|each|every|this|that|these|those)\s+` + qualifyingParticiples + `\s`)
+	// dataFlowParticiples say how values move through code and how it is
+	// wired; none says a piece of work is finished (merged, processed,
+	// resolved, handled, built, deployed are left out).
+	dataFlowParticiples = `(?:initiali[sz]ed|instantiated|constructed|injected|passed|returned|stored|combined|wrapped|invoked|called|delegated|consumed|provided|produced|assigned|mapped|routed|forwarded|appended|accumulated|computed|derived|aggregated|filtered|ranked|retrieved|fetched|queried|serialized|serialised|parsed|dispatched|evaluated|annotated|composed|chained|connected|linked)`
 	// qualifyingParticiples qualify a noun; at the start of a sentence they
 	// count only in a label ("Specialized Worker Role:").
 	qualifyingParticiples = `(?:specialized|specialised|combined|cached|retrieved|derived|computed|aggregated|weighted|normalized|normalised|tokenized|tokenised|serialized|serialised|annotated|typed|nested|embedded|shared)`
@@ -81,7 +84,7 @@ func wordSet(s string) map[string]bool {
 
 // labelRe is a short label that opens with a qualifying participle, alone
 // (a clause the label was split into): "specialized worker role".
-var labelRe = regexp.MustCompile(`^\s*` + qualifyingParticiples + `((?:\s+[a-z\-]+){1,4})\s*$`)
+var labelRe = regexp.MustCompile(`^\s*` + qualifyingParticiples + `((?:\s+[a-z\-]+){1,4})\s*(:|$)`)
 
 // labelNotWords are words a label of nouns never holds; with one, the
 // participle is a verb ("combined the results").
@@ -89,16 +92,19 @@ var labelNotWords = wordSet(`the a an it its them their all both my our your thi
 
 // qualifyingLabel blanks a label made of a qualifying participle and nouns.
 func qualifyingLabel(t string) string {
-	m := labelRe.FindStringSubmatch(t)
+	m := labelRe.FindStringSubmatchIndex(t)
 	if m == nil {
 		return t
 	}
-	for _, w := range strings.Fields(m[1]) {
-		if labelNotWords[w] {
+	// A word of change or event in the label keeps it: "combined fixes
+	// applied" reports work.
+	for _, w := range strings.Fields(t[m[2]:m[3]]) {
+		if labelNotWords[w] || irregularPast[w] || len(w) > 3 && strings.HasSuffix(w, "ed") && !notPastEd[w] ||
+			eventWordRe.MatchString(w) || changeActRe.MatchString(w) {
 			return t
 		}
 	}
-	return " "
+	return t[:m[0]] + strings.Repeat(" ", m[1]-m[0]) + t[m[1]:]
 }
 
 // eventWord is the first word that makes a claim's text an event, or "".

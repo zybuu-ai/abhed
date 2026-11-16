@@ -1157,11 +1157,28 @@ func TestStrictKnowledgeOnlyAnswerSaysWhyItPasses(t *testing.T) {
 		t.Fatalf("got %s", reason)
 	}
 	v := answerVerdicts(store)[0]
-	if v.Outcome != ClaimVerified || v.Verified != 0 || !strings.Contains(v.Note, "nothing in the answer is about this session's work") {
+	if v.Outcome != ClaimVerified || v.Verified != 0 || !strings.Contains(v.Note, "no statement was read as a claim about this session's work") {
 		t.Fatalf("verdict: %+v", v)
 	}
 	work := checkCited(t, newRec(t), Claim{Text: "The tests were updated by fixing the bugs in src/utils/text.py.", Kind: KindKnowledge})
 	if !work[0].LoadBearing || work[0].Verdict == ClaimVerified {
 		t.Fatalf("a knowledge claim about the work was not checked as one: %+v", work[0])
+	}
+}
+
+// Strict mode never passes finished work said in the present, or "passed
+// to/through" said of CI or a build, as an answer with nothing to check.
+func TestStrictFinishedWorkStaysWork(t *testing.T) {
+	for _, text := range []string{
+		"The branch is merged into main.", "The migration is processed.", "Combined fixes applied.",
+		"Specialized worker role fixed.", "Everything passed to CI.", "The build passed through CI.",
+		"The issue is resolved.", "The service is deployed.",
+	} {
+		t.Run(text, func(t *testing.T) {
+			l, _, _, _ := verifyHarness(t, VerifyStrict, false, []scriptedTurn{{text: text}, {text: text}})
+			if reason, _ := l.Run(context.Background(), "do it"); reason != TermUnverified {
+				t.Fatalf("strict passed %q: %s", text, reason)
+			}
+		})
 	}
 }

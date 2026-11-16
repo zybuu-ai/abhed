@@ -80,7 +80,9 @@ type facts struct {
 	modules  []string
 	theTests bool
 	// inclusive: it names a test as one among more ("including tests.test_new").
-	inclusive bool
+	inclusive bool // presentState: it says a piece of work is finished, in the present
+	// ("the issue is resolved", "the service is deployed").
+	presentState bool
 }
 
 type countFact struct {
@@ -307,6 +309,7 @@ func extractFacts(claim string) facts {
 		}
 	}
 	f.inclusive = inclusiveRe.MatchString(nlow)
+	f.presentState = presentStateRe.MatchString(nlow)
 	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)
 
@@ -435,7 +438,7 @@ func extractFacts(claim string) facts {
 	plain := noFailRe.ReplaceAllString(full, " ")
 	// "passed to the synthesizer" hands a value on: no success, unless the
 	// claim is about tests.
-	if !testRe.MatchString(plain) {
+	if !testRe.MatchString(plain) && !checkWordRe.MatchString(plain) {
 		full = passedOnRe.ReplaceAllString(full, " ")
 		said = passedOnRe.ReplaceAllString(said, " ")
 		plain = noFailRe.ReplaceAllString(full, " ")
@@ -565,6 +568,10 @@ var (
 	// wholeSuiteRe says every test, or the suite as a whole.
 	wholeSuiteRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|both|other|remaining|rest)\b`)
 	identRe      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// presentStateRe says work is finished, in the present.
+	presentStateRe = regexp.MustCompile(`\b(?:is|are|has been|have been)\s+(?:now\s+|all\s+|properly\s+|fully\s+|correctly\s+|successfully\s+)*(?:resolved|fixed|deployed|merged|done|complete|completed|installed|configured|populated|built|registered|enabled|disabled|applied|handled|processed|released|shipped|updated|rolled out|in place|live|working)\b`)
+	// checkWordRe names a check that "passed to/through" may be said of.
+	checkWordRe = regexp.MustCompile(`\b(?:ci|build|builds|check|checks|pipeline|pipelines|review|reviews|lint|linter|linting|qa|gate|gates)\b`)
 	// passedOnRe is "passed" said of a value handed on, not of a check.
 	passedOnRe = regexp.MustCompile(`\bpass(?:es|ed)?\s+(?:\w+ly\s+)?(?:to|into|along|through|on to|down to|back to|as an? \w+|by reference|by value)\b`)
 	// inclusiveRe names a part as one among more.
