@@ -92,7 +92,7 @@ server. That covers model providers and `custom_providers`, `web_search`'s
 provider, endpoint and key, the supervisor's judge (`monitor.endpoint`,
 `api_key_env`, model), `rag`, `retrieval`, `telemetry`, `network` (the proxy
 names a local CA file and secret, and the policy is fetched through it), ssh
-hosts and `ssh.read_commands`, `k8s` clusters, `sandbox.read_only_paths`,
+hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
 `verify.critic`, extensions, simple hooks (`hooks.run`), `mcp.servers`,
 statusline, the `dirs` settings, `context`, `additional_dirs`, record paths
@@ -107,7 +107,8 @@ narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
 lower limits, a stronger `sandbox.min_tier`, `allow_network` and
 `readable_home` off, stricter toolchains and listen, `monitor.enabled` on and
 `on_unavailable: deny`, more supervisor reviews and honeytokens, stricter
-syntax checks and checkpoints, and the like. A value that would loosen is set
+syntax checks and checkpoints, `ssh.listed_reads_only` on (no remote
+read-only classifier), and the like. A value that would loosen is set
 aside.
 
 **Only when the machine pins the keys**: `permissions.allow`,
@@ -203,7 +204,7 @@ owns the laptop can (`abhed policy leave`, or editing the file). Set
 
 | Key | Effect |
 |---|---|
-| `url` | the only server whose policy this machine takes; signing in to it takes the policy without asking, and `abhed login` to another does not enrol |
+| `url` | the only server whose policy this machine takes; signing in to it takes the policy without asking, and `abhed login` to another does not enrol. Keep credentials out of it, the path included: a refusal names the org policy by the URL's scheme, host and path, which reach the model and the record, and `abhed doctor` shows it whole with only the user part, query values and fragment redacted |
 | `keys` | the only keys trusted, base64 Ed25519 or PEM; statements cannot rotate them, so rotate here; also what lets the policy loosen settings |
 | `required` | with no verified policy, the fallback applies; `abhed policy leave` is refused |
 | `max_age_hours` | caps the statement's own age limit |

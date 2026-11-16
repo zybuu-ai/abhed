@@ -1,10 +1,12 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -60,6 +62,10 @@ type nextEditRequest struct {
 	} `json:"window"`
 	Language string `json:"language"`
 	Seq      int64  `json:"seq"`
+	// Rename is Studio's reading of the last edit as a rename, and Sites
+	// where its language server says the old name is used in this document.
+	Rename *renameHint `json:"rename"`
+	Sites  []editRange `json:"sites"`
 }
 
 // suggestedEdit is one edit as the answer carries it.
@@ -70,6 +76,7 @@ type suggestedEdit struct {
 }
 
 func (c *acpConn) nextEdit(msg rpcMessage) {
+	arrived := time.Now()
 	var req nextEditRequest
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
 		c.reply(msg.ID, nil, badParams("", err))
@@ -129,6 +136,10 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		empty("cancelled", "a newer request replaced it")
 		return
 	}
+	if !c.spend(k) {
+		empty("limited", "too many requests; slow down")
+		return
+	}
 
 	clean := func(text string) string {
 		text = parts.Loop.Withheld(text)
@@ -142,6 +153,22 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	raw := linediff.SplitLines(req.Window.Text)
 	if len(raw) > nextEditLines {
 		raw = raw[:nextEditLines]
+	}
+	// A rename is finished from the document itself: no model, nothing sent.
+	// A .js file holding JSX is renamed as JSX is: only at a language server's sites.
+	rreq := req
+	rreq.Language = renameLanguage(req.Language, raw)
+	if h, line, ok := renameOf(rreq, raw); ok {
+		if edits, why, notRename := renameEdit(rreq, raw, h, line); !notRename {
+			if len(edits) == 0 {
+				k.count(func(s *agent.CompletionSummary) { s.LocalDropped++ })
+				empty("dropped", why)
+				return
+			}
+			k.count(func(s *agent.CompletionSummary) { s.Local++ })
+			c.reply(msg.ID, map[string]any{"edits": edits, "rename": true}, nil)
+			return
+		}
 	}
 	cleaned := linediff.SplitLines(clean(strings.Join(raw, "")))
 	if len(cleaned) != len(raw) {
@@ -186,13 +213,16 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		return
 	}
 	rel := rootRel(path, roots)
-	res, err := model.NextEditByChat(ctx, a, model.NextEditRequest{
+	res, err := nextEditCall(ctx, a, model.NextEditRequest{
 		File: rel, Language: req.Language, Recent: recent.String(),
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
 	cancelled := err != nil && ctx.Err() != nil
 	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
 		recent.Len()+len(strings.Join(shown, "")), len(res.Window), nextEditMaxTokens)
+	if err == nil {
+		k.took(time.Since(arrived))
+	}
 	edits, dropped := []suggestedEdit{}, res.Dropped
 	if err == nil && dropped == "" {
 		edits, dropped = windowEdits(req.URI, req.Window.StartLine, raw[:len(shown)], shown, res.Window, clean)
@@ -350,4 +380,11 @@ func sameBarTrailingSpace(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// nextEditCall is next-edit's one model call (a rename finished from the
+// file makes none), kept apart so what every model call passes through sits
+// in one place.
+func nextEditCall(ctx context.Context, a model.Adapter, req model.NextEditRequest) (model.NextEditResult, error) {
+	return model.NextEditByChat(ctx, a, req)
 }

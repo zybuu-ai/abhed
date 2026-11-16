@@ -165,6 +165,9 @@ type Config struct {
 	// managedRules are the rules the managed file itself lists, by list and
 	// rule as ruleLayers keys them.
 	managedRules map[string]bool
+	// orgRules are the managed rules the org policy made and the machine's
+	// file does not list, keyed as ruleLayers is.
+	orgRules map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.
@@ -1402,16 +1405,20 @@ type RetrievalConfig struct {
 
 // SkillsConfig points at directories holding skills.
 //
-// Deliberately NOT the workspace: a skill body is instructions by
-// construction, so reading them from the repository the agent is editing would
-// let any cloned project carry its own orders to the agent reading it. Skills
-// come from where the operator put them.
+// Not the workspace: a skill body is instructions by construction, so a
+// directory here never makes the repository's skills load. A workspace's own
+// .abhed/skills loads only under a trust decision bound to its exact content
+// (see trust_skills.go).
 type SkillsConfig struct {
 	// Dirs each contain one directory per skill, holding a SKILL.md.
 	// Defaults to ~/.abhed/skills when unset.
 	Dirs []string `json:"dirs,omitempty"`
 	// Disabled turns skills off entirely, including the default directory.
 	Disabled bool `json:"disabled,omitempty"`
+	// DisableWorkspace keeps a workspace's own .abhed/skills from loading,
+	// however it is trusted. The managed configuration sets it to keep
+	// skills to the ones the organisation and the person installed.
+	DisableWorkspace bool `json:"disable_workspace,omitempty"`
 }
 
 // AgentsConfig points at directories of subagent definitions: markdown files
@@ -1501,11 +1508,29 @@ type SSHConfig struct {
 	// "uptime" or "systemctl status *", each one simple command. A matching
 	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
 	ReadCommands []string `json:"read_commands,omitempty"`
+	// ListedReadsOnly turns the read-only classifier off: on a declared
+	// host, a command whose text is provably a read (programs on the
+	// read-only list, in read forms, piped) no longer runs unasked, and only
+	// ReadCommands do.
+	ListedReadsOnly bool `json:"listed_reads_only,omitempty"`
+	// ReadContents lets the read-only classifier also run, unasked, programs
+	// that print the contents of files (cat, head, tail, grep, journalctl,
+	// docker logs, systemctl cat, …). Off by default: only metadata (ls, du,
+	// df, ps, stat, …) and lines piped from it run unasked. Only the person's
+	// own file or the managed file sets it; a workspace cannot.
+	ReadContents bool `json:"read_contents,omitempty"`
 	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
 	Transfers bool `json:"transfers,omitempty"`
 	// TransferMaxMB bounds one transfer; 0 is 16.
 	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
+	// MaxTimeoutSeconds bounds the timeout_seconds an ssh call may ask for;
+	// 0 is 120, the default a call gets when it asks for none. At most
+	// MaxSSHTimeoutSeconds.
+	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty"`
 }
+
+// MaxSSHTimeoutSeconds is the largest ssh.max_timeout_seconds, a day.
+const MaxSSHTimeoutSeconds = 86400
 
 type SSHHostConfig struct {
 	Name         string `json:"name"`
@@ -1580,6 +1605,21 @@ type MCPServerConfig struct {
 	// HostFiles runs a stdio server with the host's files rather than
 	// confined to its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// OAuth configures `abhed mcp login` for a URL server; a server needs it
+	// only for a client registered ahead of time or particular scopes.
+	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+}
+
+// MCPOAuthConfig is how `abhed mcp login` signs in to a URL server.
+type MCPOAuthConfig struct {
+	// ClientID is a client registered ahead of time; without one, Abhed
+	// registers itself where the server's authorization server offers that.
+	ClientID string `json:"client_id,omitempty"`
+	// ClientSecretEnv names the environment variable holding that client's
+	// secret, read at login only; a public client has none.
+	ClientSecretEnv string `json:"client_secret_env,omitempty"`
+	// Scopes are asked for; none asks for what the server says it supports.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // SandboxConfig controls execution isolation. Defaults deny egress, because a
@@ -1873,6 +1913,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	skillsOff(&cfg)
 	cfg.origins = nil
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)
@@ -2115,6 +2156,9 @@ func (c Config) Validate() error {
 	if err := c.validateNetwork(); err != nil {
 		return err
 	}
+	if err := c.validateMCPOAuth(); err != nil {
+		return err
+	}
 	switch c.Subagents.Wake {
 	case "", "off", "notify", "auto":
 	default:
@@ -2234,6 +2278,9 @@ func (c Config) Validate() error {
 	}
 	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
 		return err
+	}
+	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
+		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

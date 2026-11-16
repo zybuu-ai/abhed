@@ -198,7 +198,11 @@ type Options struct {
 	// Reason is unverified. Verdict reports the last check.
 	Verify string
 	// VerifyByDefault labels answers when neither Verify nor verify.mode
-	// says otherwise, as the terminal does where a person reads the answer.
+	// says otherwise, as the terminal, abhed -p, abhed rpc and the server do.
+	// Unset, the SDK checks nothing unless asked: through 1.x an embedder's
+	// Run is not given a revision turn, or a changed answer, it did not ask
+	// for. Under label, a contradicted statement gets one revision turn (one
+	// more model call), and Run returns the revised answer.
 	VerifyByDefault bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
@@ -388,6 +392,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	pol.Roots = sess.PolicyRoots
 	pol.Cwd = sess.WorkDir
 	pol.StartupBaseline = config.StartupBaseline()
+	pol.RuleSource = cfg.RuleSource
 	if err := pol.AddDeny(cfg.Permissions.Deny...); err != nil {
 		return nil, fmt.Errorf("abhed: deny rule: %w", err)
 	}
@@ -404,7 +409,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AllowGitExtensions(cfg.Permissions.GitExtensions...); err != nil {
 		return nil, fmt.Errorf("abhed: permissions.git_extensions: %w", err)
 	}
-	if err := pol.AllowRemoteReads(cfg.SSH.ReadCommands...); err != nil {
+	if err := toolset.RemoteReads(pol, cfg); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 
@@ -450,7 +455,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		parts = toolset.All
 	}
 	set := toolset.Build(ctx, cfg, toolset.Options{
-		Workspace: opts.Workspace, Bash: bash, Parts: parts, Extensions: opts.Extensions,
+		Workspace: opts.Workspace, ReadWithheld: pol.ReadWithheldFunc(), Bash: bash, Parts: parts, Extensions: opts.Extensions,
 		Vault: secrets.Default(), Warn: opts.Warn, Sandbox: sbox,
 	})
 	// What New made is released on every error from here: the tools, and

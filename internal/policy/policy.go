@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -67,6 +68,11 @@ type Result struct {
 	// Layer is the policy layer the deciding rule came from when an edition
 	// added it with AddLayer; "" for configured and session rules.
 	Layer string
+	// Source is where the decision came from, so a refusal can say whose it
+	// is: for a rule, its layer (org, managed, workspace, user, settings,
+	// flag, default, session, or an edition's layer); mode for the mode and
+	// the default step; hook for a policy hook; "" for Abhed's own checks.
+	Source string
 	// Guard, for a scope on a git command, sums what git reads in the
 	// workspace's repositories as the call is decided. A remembered scope
 	// covers a later call only with the same Guard: a hook or fsmonitor
@@ -337,6 +343,79 @@ func pathFoldsCase(subjects []string) bool {
 	return false
 }
 
+// resourceRead reports an MCP server's read_resource tool, whose subject is
+// the URI it reads.
+func resourceRead(tool string) bool {
+	return strings.HasPrefix(tool, "mcp__") && strings.HasSuffix(tool, "__read_resource")
+}
+
+// resourceForms are the spellings a server may read a resource URI as: as
+// written, its escapes decoded once and twice, each in NFC and in NFKC (a
+// fullwidth ／ is a /), and each of those with its path's dot-segments
+// resolved. Deny and ask rules on a read match any; that only adds matches.
+func resourceForms(uri string) []string {
+	out := []string{uri}
+	add := func(f string) {
+		for _, have := range out {
+			if have == f {
+				return
+			}
+		}
+		out = append(out, f)
+	}
+	decoded := []string{uri}
+	cur := uri
+	for range 2 {
+		d, err := url.PathUnescape(cur)
+		if err != nil || d == cur {
+			break
+		}
+		decoded, cur = append(decoded, d), d
+	}
+	for _, d := range decoded {
+		for _, f := range []string{norm.NFC.String(d), norm.NFKC.String(d)} {
+			add(f)
+			add(cleanURIPath(f))
+		}
+	}
+	return out
+}
+
+// cleanURIPath is a URI with its path's dot-segments and empty segments
+// resolved, as a server resolving it reads it; the URI as given when it has
+// no path to clean.
+func cleanURIPath(uri string) string {
+	scheme, rest, ok := strings.Cut(uri, ":")
+	if !ok {
+		return uri
+	}
+	prefix := scheme + ":"
+	if after, ok := strings.CutPrefix(rest, "//"); ok {
+		end := strings.IndexAny(after, "/?")
+		if end < 0 {
+			return uri
+		}
+		prefix += "//" + after[:end]
+		rest = after[end:]
+	}
+	p, query, hasQuery := strings.Cut(rest, "?")
+	if !strings.Contains(p, "/") {
+		return uri
+	}
+	trail := strings.HasSuffix(p, "/") && len(p) > 1
+	c := path.Clean("/" + p)
+	if !strings.HasPrefix(p, "/") {
+		c = strings.TrimPrefix(c, "/")
+	}
+	if trail && c != "/" {
+		c += "/"
+	}
+	if hasQuery {
+		return prefix + c + "?" + query
+	}
+	return prefix + c
+}
+
 func hasNonASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {
@@ -435,6 +514,18 @@ type Engine struct {
 	// ssh.read_commands; see AllowRemoteReads.
 	RemoteReads []Rule
 
+	// RemoteHosts reports a host the operator declared (ssh.hosts), on which
+	// the read-only classifier may approve an ssh call whose text is
+	// provably a read; nil turns the classifier off. Hosts added with
+	// ssh_connect are never among them.
+	RemoteHosts func(host string) bool
+
+	// RemoteContents lets the classifier also approve programs that print
+	// the contents of files (cat, grep, journalctl, …), the operator's
+	// ssh.read_contents; without it only metadata and the lines piped from
+	// it are read unasked.
+	RemoteContents bool
+
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
 	// does not take them as an alias or extension it cannot read. Deny and
@@ -445,6 +536,11 @@ type Engine struct {
 	// of the managed configuration's ask rules: it asks for each call, inside
 	// a runbook too.
 	KeepAsk func(Result) bool
+
+	// RuleSource names where a configured rule in list (deny, ask or allow)
+	// came from: its layer, and where that is in words, such as "the org
+	// policy (https://org.example, version 3)". Nil, or a layer "", names none.
+	RuleSource func(list, rule string) (layer, where string)
 }
 
 func New(mode Mode) *Engine { return &Engine{Mode: mode} }
@@ -919,6 +1015,17 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		remote, canon = &rr, rr.canon
 		subjects, allowSubjects, narrowAllows, complete = rr.subjects, rr.allow, rr.narrow, rr.complete
 	}
+	// The read-only classifier runs at most once a decision: the plan step
+	// and the read step both ask it.
+	var roPrograms []string
+	roWhy, roDone := "", false
+	readOnly := func() bool {
+		if !roDone {
+			roPrograms, roWhy = e.remoteReadOnly(*remote)
+			roDone = true
+		}
+		return roWhy == ""
+	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
 	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
@@ -958,6 +1065,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		if res.Step == "" {
 			res.Step = "hook"
 		}
+		if res.Source == "" {
+			res.Source = "hook"
+		}
 		if res.Decision != Ask {
 			return *res
 		}
@@ -976,6 +1086,18 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			matches = func(r Rule, tool string, subjects []string) bool {
 				return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
 			}
+		}
+	}
+	// A resource's URI is read in one spelling, but a server may fold its case
+	// or normalise it: deny and ask rules on a read also match without regard
+	// to case and in NFC. It only adds matches.
+	if resourceRead(tool) {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			var all []string
+			for _, s := range subjects {
+				all = append(all, resourceForms(s)...)
+			}
+			return r.matchesPathAny(tool, all) || r.matchesCaselessAny(tool, all)
 		}
 	}
 	// A bash rule naming flags also holds with them moved or split.
@@ -1004,7 +1126,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	denyRules, askRules, allowRules := e.rules()
 	for _, r := range denyRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw, Layer: r.layer}
+			return e.ruled(Result{Decision: Deny, Reason: "denied by " + r.named(), Scope: "", Step: "deny", Rule: r.raw, Layer: r.layer}, "deny", r)
 		}
 	}
 	// A program named by an expansion with an operator, ${x%/} or ${x//_/ },
@@ -1033,8 +1155,8 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
-	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
-		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
+	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "" && !readOnly()) {
+		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode", Source: "mode"}
 	}
 
 	// 2c. Destructive commands always confirm, in every mode. There is no
@@ -1067,7 +1189,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	// offer no scope: a remembered one would stop them asking.
 	for _, r := range askRules {
 		if matches(r, tool, subjects) {
-			return Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw, Layer: r.layer}
+			return e.ruled(Result{Decision: Ask, Reason: "matched ask " + r.named(), Scope: "", Step: "ask", Rule: r.raw, Layer: r.layer}, "ask", r)
 		}
 	}
 
@@ -1090,7 +1212,16 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			if e.Mode == ModePlan || e.Mode == ModeAuto {
 				step = "mode"
 			}
-			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step}
+			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step,
+				Rule: "ssh.read_commands: " + rule}
+		}
+		if readOnly() {
+			step := "default"
+			if e.Mode == ModePlan || e.Mode == ModeAuto {
+				step = "mode"
+			}
+			return Result{Decision: Allow, Reason: "read-only command (" + strings.Join(roPrograms, " | ") + ", each in a read form; " +
+				ReadOnlyRule + ") on " + remote.host + ", a host the operator declared", Scope: "", Step: step, Rule: ReadOnlyRule}
 		}
 	}
 
@@ -1098,31 +1229,31 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 	switch e.Mode {
 	case ModePlan:
 		if mutates {
-			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
+			return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode", Source: "mode"}
 		}
 		// A read that can carry data out is not made safe by plan mode, which
 		// any client may narrow a session to: it goes on to the allow rules and asks.
 		if e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in plan mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in plan mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 	case ModeBypass:
 		if e.Managed {
-			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy (" + managed.ConfigFile + "), so this asks as in default mode", Scope: "", Step: "mode"}
+			return Result{Decision: Ask, Reason: "bypass mode is disabled by organization policy (" + managed.ConfigFile + "), so this asks as in default mode", Scope: "", Step: "mode", Source: "mode"}
 		}
-		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode"}
+		return Result{Decision: Allow, Reason: "bypass mode", Scope: "", Step: "mode", Source: "mode"}
 	case ModeAcceptEdits:
 		if tool == "edit" || tool == "write" {
-			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: "edits auto-approved in accept-edits mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 	case ModeAuto:
 		if !mutates && e.readOnlyAsk(tool, subject) == "" {
-			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in auto mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: readOnlyReason(tool) + " in auto mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 		// Auto mode approves in-workspace file mutations; the destructive-command
 		// and deny checks above still stand, so the dangerous cases never reach
 		// here. bash keeps asking because its blast radius is unbounded.
 		if tool == "edit" || tool == "write" {
-			return Result{Decision: Allow, Reason: "file edit auto-approved in auto mode", Scope: "", Step: "mode"}
+			return Result{Decision: Allow, Reason: "file edit auto-approved in auto mode", Scope: "", Step: "mode", Source: "mode"}
 		}
 	}
 
@@ -1137,7 +1268,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			continue
 		}
 		if (narrowAllows || r.matchesEverything()) && r.matchesAny(tool, allowSubjects) {
-			return Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}
+			return e.ruled(Result{Decision: Allow, Reason: "matched allow " + r.named(), Scope: "", Step: "allow", Rule: r.raw, Layer: r.layer}, "allow", r)
 		}
 	}
 
@@ -1146,7 +1277,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		return e.defaultAsk(tool, subject, why)
 	}
 	if !mutates {
-		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default"}
+		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default", Source: "mode"}
 	}
 	why := askReason(tool, e.Mode)
 	if gitRuns != "" {
@@ -1158,13 +1289,49 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 // defaultAsk is the default step's question, with the scope it offers, or,
 // when it offers none, the rule a person could add to allow the command.
 func (e *Engine) defaultAsk(tool, subject, why string) Result {
-	res := Result{Decision: Ask, Reason: why, Scope: e.suggestScope(tool, subject), Step: "default"}
+	res := Result{Decision: Ask, Reason: why, Scope: e.suggestScope(tool, subject), Step: "default", Source: "mode"}
 	if res.Scope == "" {
 		if res.Suggest = suggestRule(tool, subject); res.Suggest != "" {
 			res.Reason += " (to always allow exactly this, add " + res.Suggest + " to permissions.allow)"
 		}
 	}
 	return e.guarded(res)
+}
+
+// ReadWithheld reports whether a read rule keeps the file at path out of
+// what a search shows the agent: a deny rule, or an ask rule (the built-in
+// ones for .env and keys included), which a search cannot put to anyone.
+// Hooks are not asked: they judge calls, and this is no call.
+func (e *Engine) ReadWithheld(path string) bool { return e.WithoutHooks().readWithheld(path) }
+
+// ReadWithheldFunc is ReadWithheld over one hook-free copy of e, for a
+// caller judging many files, such as a search walking a workspace.
+func (e *Engine) ReadWithheldFunc() func(string) bool { return e.WithoutHooks().readWithheld }
+
+func (e *Engine) readWithheld(path string) bool {
+	args, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		return true
+	}
+	r := e.Evaluate("read", false, args)
+	return r.Decision == Deny || r.Decision == Ask && r.Step == "ask"
+}
+
+// AllowRuleFor is the allow rule the approval prompt would offer for a
+// call, as a person could write it: the narrow scope, or the rule for
+// exactly this call; "" when the default step would not ask about it, such
+// as a call an ask rule or a destructive command holds. Hooks are not asked.
+func (e *Engine) AllowRuleFor(tool string, mutates bool, args json.RawMessage) string {
+	dry := e.WithoutHooks()
+	dry.Mode = ModeDefault
+	res := dry.Evaluate(tool, mutates, args)
+	if res.Decision != Ask || res.Step != "default" {
+		return ""
+	}
+	if res.Scope != "" {
+		return res.Scope
+	}
+	return res.Suggest
 }
 
 // trustWords are spellings that trust a workspace for a nested run.
@@ -1190,7 +1357,26 @@ func hookLate(ctx context.Context) Result {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		why = "the decision was cancelled before the policy hooks decided"
 	}
-	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook"}
+	return Result{Decision: Deny, Reason: why + ", so the call is refused", Step: "hook", Source: "hook"}
+}
+
+// ruled is a rule's decision, with where the rule came from: in Source, and
+// in the reason, so neither the model nor the person takes an organisation's
+// refusal for a missing capability.
+func (e *Engine) ruled(res Result, list string, r Rule) Result {
+	switch {
+	case r.session:
+		res.Source = "session"
+	case r.layer != "":
+		res.Source = r.layer
+	case e.RuleSource != nil:
+		layer, where := e.RuleSource(list, r.raw)
+		res.Source = layer
+		if where != "" {
+			res.Reason += " from " + where
+		}
+	}
+	return res
 }
 
 func firstNonEmpty(vals ...string) string {

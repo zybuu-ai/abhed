@@ -92,6 +92,20 @@ type WorkspaceTrust struct {
 	// decision: a link, a second name, too large. They never load.
 	AgentsProblems []string `json:"agents_problems,omitempty"`
 
+	// Skills are the workspace's skills (.abhed/skills/<name>/), each with
+	// its name, description and hash, that the decision below covers.
+	Skills []WorkspaceSkill `json:"skills,omitempty"`
+	// SkillsSHA256 is one hash over every skill's folder and content.
+	SkillsSHA256 string `json:"skills_sha256,omitempty"`
+	// SkillsTrusted is whether the skills load. It is decided apart from
+	// the configuration file and the definitions, against SkillsSHA256.
+	SkillsTrusted bool `json:"skills_trusted,omitempty"`
+	// SkillsReason is as Reason, for the skills; none when there are none,
+	// off when the configuration turns workspace skills off.
+	SkillsReason string `json:"skills_reason,omitempty"`
+	// SkillsProblems are skills refused before any decision. They never load.
+	SkillsProblems []string `json:"skills_problems,omitempty"`
+
 	// UsersFile is the workspace's .abhed/users.json, when there is one.
 	UsersFile string `json:"users_file,omitempty"`
 	// UsersTrusted is whether an accounts file inside the workspace is read,
@@ -100,6 +114,7 @@ type WorkspaceTrust struct {
 	UsersReason  string `json:"users_reason,omitempty"`
 
 	agentFiles []AgentFile
+	skillFiles []WorkspaceSkill
 }
 
 // IgnoredKey is one setting of an untrusted file, with its value as written
@@ -168,7 +183,7 @@ func deploymentReason(key string) string {
 // NeedsDecision reports whether the person should be asked: an untrusted file
 // that would change something, and no answer yet for this content.
 func (w WorkspaceTrust) NeedsDecision() bool {
-	return w.configNeedsDecision() || w.agentsNeedDecision()
+	return w.configNeedsDecision() || w.agentsNeedDecision() || w.skillsNeedDecision()
 }
 
 func (w WorkspaceTrust) configNeedsDecision() bool {
@@ -199,6 +214,12 @@ func (w WorkspaceTrust) Warning() string {
 		if tighten == "" {
 			what, reason = Printable(filepath.Join(w.Workspace, filepath.FromSlash(WorkspaceAgentsDir))), w.AgentsReason
 		}
+	}
+	if skills := w.IgnoredSkills(); len(skills) > 0 {
+		if len(ignored) == 0 {
+			what, reason = Printable(filepath.Join(w.Workspace, filepath.FromSlash(WorkspaceSkillsDir))), w.SkillsReason
+		}
+		ignored = append(ignored, skills...)
 	}
 	if len(ignored) == 0 {
 		return ""
@@ -266,6 +287,12 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 		st.AgentsTrusted, st.AgentsReason = len(st.Agents) > 0, "home"
 	} else {
 		st.AgentsTrusted, st.AgentsReason = decideAgents(st, o)
+	}
+	readWorkspaceSkills(workspace, &st)
+	if isHome(workspace) {
+		st.SkillsTrusted, st.SkillsReason = len(st.Skills) > 0, "home"
+	} else {
+		st.SkillsTrusted, st.SkillsReason = decideSkills(st, o)
 	}
 	path := filepath.Join(workspace, ".abhed", "config.json")
 	data, opened, err := readWorkspaceConfig(workspace, path)
@@ -666,12 +693,12 @@ func secretKey(k string) bool {
 	if strings.HasSuffix(k, "_env") || strings.HasPrefix(k, "max_") {
 		return false
 	}
-	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization"} {
+	for _, s := range []string{"api_key", "apikey", "secret", "password", "passwd", "token", "dsn", "header", "credential", "authorization", "signature"} {
 		if strings.Contains(k, s) {
 			return true
 		}
 	}
-	return k == "env" || k == "key"
+	return k == "env" || k == "key" || k == "sig"
 }
 
 // redact replaces credentials in a value about to be shown: the values of
@@ -769,8 +796,15 @@ func redactURL(s string) string {
 	if u.User != nil {
 		if _, has := u.User.Password(); has {
 			u.User = url.UserPassword(u.User.Username(), "redacted")
-			changed = true
+		} else {
+			// A user part alone is often a token (https://ghp_…@host).
+			u.User = url.User("redacted")
 		}
+		changed = true
+	}
+	if u.Fragment != "" || u.RawFragment != "" {
+		u.Fragment, u.RawFragment = "redacted", ""
+		changed = true
 	}
 	if u.RawQuery != "" {
 		q := u.Query()
@@ -830,6 +864,19 @@ func InspectWorkspace(workspace string) (WorkspaceTrust, error) {
 	}
 	if st.AgentsReason != "home" {
 		st.AgentsTrusted, st.AgentsReason = decideAgents(st, LoadOptions{})
+	}
+	if st.SkillsReason != "home" {
+		st.SkillsTrusted, st.SkillsReason = decideSkills(st, LoadOptions{})
+	}
+	// Turned off by the person's or the managed configuration, they are
+	// neither loaded nor asked about.
+	off := Default()
+	_ = mergeManaged(&off)
+	cfg.Workspace, off.Workspace = st, st
+	skillsOff(&cfg)
+	skillsOff(&off)
+	if cfg.Workspace.SkillsReason == "off" || off.Workspace.SkillsReason == "off" {
+		st.SkillsTrusted, st.SkillsReason = false, "off"
 	}
 	if st.File == "" || st.Reason == "home" {
 		noteUsers(&st, workspace, LoadOptions{})
@@ -962,27 +1009,31 @@ var workspaceRules = map[string]fieldRule{
 	"tools.diagnostics_max":       {lower(func(c *Config) *int { return &c.Tools.DiagnosticsMax }, zeroIs(20)), "only lower"},
 	"tools.diagnostics_wait_ms":   {lower(func(c *Config) *int { return &c.Tools.DiagnosticsWaitMS }, zeroIs(3000)), "only lower"},
 
-	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
-	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
-	"web_search":             {nil, "a search provider, key and endpoint receive the agent's queries"},
-	"web_fetch.enabled":      {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
-	"web_fetch.max_chars":    {lower(func(c *Config) *int { return &c.WebFetch.MaxChars }, zeroIs(20000)), "only lower"},
-	"web_fetch":              {nil, "names the hosts the agent may fetch from"},
-	"k8s.enabled":            {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
-	"k8s.allow_writes":       {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
-	"k8s":                    {nil, "names which cluster and credentials the agent reaches"},
-	"ssh.enabled":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
-	"ssh.hosts":              {nil, "names machines and keys the agent reaches"},
-	"ssh.connect_hosts":      {nil, "names machines ssh_connect may reach"},
-	"ssh.read_commands":      {nil, "lets ssh commands run without asking"},
-	"ssh.transfers":          {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
-	"ssh.transfer_max_mb":    {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
-	"skills.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
-	"skills.dirs":            {nil, "a skill is instructions to the agent"},
-	"agents.disabled":        {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
-	"agents.dirs":            {nil, "a definition is instructions and a model choice"},
-	"telemetry":              {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
-	"network":                {nil, "routes Abhed's connections through a proxy, with credentials and trusted CAs"},
+	"web_search.enabled":       {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
+	"web_search.max_results":   {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
+	"web_search":               {nil, "a search provider, key and endpoint receive the agent's queries"},
+	"web_fetch.enabled":        {onlyFalse(func(c *Config) *bool { return &c.WebFetch.Enabled }), "only false"},
+	"web_fetch.max_chars":      {lower(func(c *Config) *int { return &c.WebFetch.MaxChars }, zeroIs(20000)), "only lower"},
+	"web_fetch":                {nil, "names the hosts the agent may fetch from"},
+	"k8s.enabled":              {onlyFalse(func(c *Config) *bool { return &c.K8s.Enabled }), "only false"},
+	"k8s.allow_writes":         {onlyFalse(func(c *Config) *bool { return &c.K8s.AllowWrites }), "only false"},
+	"k8s":                      {nil, "names which cluster and credentials the agent reaches"},
+	"ssh.enabled":              {onlyFalse(func(c *Config) *bool { return &c.SSH.Enabled }), "only false"},
+	"ssh.hosts":                {nil, "names machines and keys the agent reaches"},
+	"ssh.connect_hosts":        {nil, "names machines ssh_connect may reach"},
+	"ssh.read_commands":        {nil, "lets ssh commands run without asking"},
+	"ssh.listed_reads_only":    {onlyTrue(func(c *Config) *bool { return &c.SSH.ListedReadsOnly }), "only true"},
+	"ssh.read_contents":        {nil, "lets a host's files be read without asking"},
+	"ssh.transfers":            {onlyFalse(func(c *Config) *bool { return &c.SSH.Transfers }), "only false"},
+	"ssh.transfer_max_mb":      {lower(func(c *Config) *int { return &c.SSH.TransferMaxMB }, zeroIs(16)), "only lower"},
+	"ssh.max_timeout_seconds":  {lower(func(c *Config) *int { return &c.SSH.MaxTimeoutSeconds }, zeroIs(120)), "only lower"},
+	"skills.disabled":          {onlyTrue(func(c *Config) *bool { return &c.Skills.Disabled }), "only true"},
+	"skills.dirs":              {nil, "a skill is instructions to the agent"},
+	"skills.disable_workspace": {onlyTrue(func(c *Config) *bool { return &c.Skills.DisableWorkspace }), "only true"},
+	"agents.disabled":          {onlyTrue(func(c *Config) *bool { return &c.Agents.Disabled }), "only true"},
+	"agents.dirs":              {nil, "a definition is instructions and a model choice"},
+	"telemetry":                {nil, "sends the event stream to an endpoint; turning it off removes an audit feed"},
+	"network":                  {nil, "routes Abhed's connections through a proxy, with credentials and trusted CAs"},
 
 	"commands.dirs":       {nil, "a command is instructions to the agent"},
 	"rules.dirs":          {nil, "a rule is instructions to the agent"},

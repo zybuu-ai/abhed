@@ -43,10 +43,25 @@ whether a skill is ever used. Say when to use it, not what it is.
 
 ## Where skills come from
 
-Only directories the operator configured — never the workspace the agent is
-editing. A skill body *is* instructions by construction, so a repository that
-could carry its own skills could carry its own instructions to the agent reading
-it.
+From the directories the operator configured (`skills.dirs`, by default
+`~/.abhed/skills`), and from the workspace's own `.abhed/skills/<name>/`
+once you trust them. A skill body *is* instructions by construction, so a
+repository's skills load under the same hash-pinned trust as its agent
+definitions:
+
+- `abhed trust` and the trust prompt show each workspace skill's name,
+  description and hash. `abhed trust grant` trusts exactly that content
+  (`-skills-sha256 H` pins it).
+- The hash covers every file in the skill's folder, so a change to any of
+  them asks again. An untrusted workspace loads none.
+- Only `SKILL.md` and `pipeline.json` are used: the folder sits in `.abhed`,
+  which the agent cannot read, so a workspace skill cannot point it at
+  scripts beside it. Put such a skill in an installed directory.
+- A workspace skill never replaces or sits beside an installed one of the
+  same name, compared without case and in NFKC, and its name must be ASCII.
+  The prompt lists it as `(from this workspace)`.
+- `"skills": {"disable_workspace": true}`, in the managed configuration or
+  your own, keeps workspace skills off whatever the trust.
 
 ## Writing one that works
 

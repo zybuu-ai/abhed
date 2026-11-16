@@ -224,6 +224,10 @@ func TestRuleNoSecretValueReachesStudio(t *testing.T) {
 	if err := secrets.Default().Set("API_TOKEN", value); err != nil {
 		t.Fatal(err)
 	}
+	// An MCP login's held names are never listed to Studio for a rule.
+	if err := secrets.Default().SetHeld("MCP_OAUTH_ABC_AT", "held-token-value"); err != nil {
+		t.Fatal(err)
+	}
 	file := r.write("app.env", "TOKEN="+value+"\nMODE=dev\n")
 	r.model.script(callTool("c1", "read", map[string]any{"path": file}),
 		callTool("c2", "edit", map[string]any{"path": file, "old_string": "MODE=dev", "new_string": "MODE=prod"}), say("done"))

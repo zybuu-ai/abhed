@@ -147,11 +147,12 @@ func TestOtherDecisionEventsAreCounted(t *testing.T) {
 	m.Observe(ev(agent.EvConfigRefused, map[string]any{}))
 	m.Observe(ev(agent.EvConfigNarrowed, map[string]any{}))
 	m.Observe(ev(agent.EvCompletionSummary, agent.CompletionSummary{Requests: 10, Served: 6, Failed: 1, Cancelled: 2, Refused: 3, Superseded: 4}))
-	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 3, Served: 2, TokensIn: 50}))
+	m.Observe(ev(agent.EvNextEditSummary, agent.CompletionSummary{Requests: 3, Served: 2, TokensIn: 50, Local: 4, LocalDropped: 1}))
 	m.Observe(ev(agent.EvCommitMessage, agent.CommitMessage{Outcome: "served"}))
 	m.Observe(ev(agent.EvCommitMessage, agent.CommitMessage{Outcome: "made up"}))
 	for name, ok := range map[string]bool{
-		"next edits":      m.nextEdits.Value("served") == 2 && m.nextEdits.Value("empty") == 1 && m.nextEditTokens.Value("in") == 50,
+		"next edits": m.nextEdits.Value("served") == 2 && m.nextEdits.Value("empty") == 1 && m.nextEditTokens.Value("in") == 50 &&
+			m.nextEdits.Value("local") == 4 && m.nextEdits.Value("local_dropped") == 1,
 		"commit messages": m.commitMessages.Value("served") == 1 && m.commitMessages.Value(Other) == 1,
 		"completions": m.completions.Value("served") == 6 && m.completions.Value("empty") == 1 && m.completions.Value("cancelled") == 2 &&
 			m.completions.Value("refused") == 3 && m.completions.Value("superseded") == 4,
@@ -189,6 +190,9 @@ var uncounted = []string{
 	"subagent.spawned", "suggestion.offered", "task.cancelled", "terminal.input", "todo.updated",
 	"turn.continued", "user.message", "workspace.dir_added", "worktree.taken", "debug.launched", "debug.stopped", "debug.setup", "completion.enabled", "next_edit.enabled", "commit_message.requested",
 	"sandbox.git_walk_bounded", "sandbox.git_linked", "sandbox.port_contested", "budget.stopped",
+	// A person's continuation, a hook's request to go on, and a change-log
+	// entry are settings and steps, as mode.changed and turn.continued are.
+	"turns.extended", "hook.continued", "config.changed",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {

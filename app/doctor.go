@@ -317,6 +317,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 	if servers := cfg.MCP.Servers; len(servers) > 0 {
 		gw := mcp.NewGateway()
 		gw.Admit, gw.PinProgram = toolset.MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		gw.Authorize = toolset.MCPAuthorize(openVault())
 		// The servers are started as a session starts them: their files
 		// confined, and under the allowlist their network too.
 		if own := toolset.OwnEgress(cfg); own != nil {
@@ -346,6 +347,12 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		}
 		for _, w := range unconfined {
 			fmt.Printf("            ⚠ %s\n", w)
+		}
+		// abhed serve with accounts uses no login; say so where the operator looks.
+		if accountsSignIn(cfg) {
+			for _, name := range mcpLoginsHeld(cfg, openVault()) {
+				fmt.Printf("            ⚠ %s: abhed serve does not use its OAuth login: %v\n", name, toolset.ErrMCPLoginsPerAccount)
+			}
 		}
 	}
 	fmt.Println()

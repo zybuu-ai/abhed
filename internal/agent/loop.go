@@ -1890,7 +1890,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 		if decision.Decision == policy.Ask && decision.Reason != "" {
 			why += "; " + decision.Reason
 		}
-		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer}
+		decision = policy.Result{Decision: policy.Ask, Step: "preview", Reason: why, Rule: decision.Rule, Layer: decision.Layer, Source: decision.Source}
 	}
 
 	// An Ask, or an Allow, is short-circuited: a deny is still recorded as a
@@ -1968,10 +1968,7 @@ func (l *Loop) authorizeCall(ctx context.Context, c *model.ToolCall) (bool, tool
 				return false, tools.Result{Content: "Denied. " + fix, IsError: true}, ""
 			}
 		}
-		return false, tools.Result{
-			Content: fmt.Sprintf("Denied: %s. Choose a different approach.", decision.Reason),
-			IsError: true,
-		}, ""
+		return false, tools.Result{Content: deniedBy(decision), IsError: true}, ""
 
 	case policy.Ask:
 		if requestedFrom(asked).Withheld {
@@ -2121,6 +2118,16 @@ func (l *Loop) deniedOwnerGone(callID string) (bool, tools.Result, TerminalReaso
 	return false, tools.Result{Content: "Denied: " + ownerGoneReason + ".", IsError: true}, TermOwnerInactive
 }
 
+// readWithheld reports whether a read rule keeps a file out of the results
+// of a tool that shows files' contents, such as grep or search: a deny rule,
+// or an ask rule no one can be asked through a search. Nil without a policy.
+func (l *Loop) readWithheld() func(string) bool {
+	if l.Policy == nil {
+		return nil
+	}
+	return l.Policy.ReadWithheldFunc()
+}
+
 // withRule adds the rule that decided, when one did, and the policy layer
 // it came from, so an approval or denial names what made it.
 func withRule(p map[string]string, d policy.Result) map[string]string {
@@ -2130,7 +2137,21 @@ func withRule(p map[string]string, d policy.Result) map[string]string {
 	if d.Layer != "" {
 		p["layer"] = d.Layer
 	}
+	if d.Source != "" {
+		p["source"] = d.Source
+	}
 	return p
+}
+
+// deniedBy is what the model is told of a refusal: the reason, which for a
+// rule names the layer it came from, and that a rule refused it, so the
+// model does not tell the person a capability is missing.
+func deniedBy(d policy.Result) string {
+	msg := "Denied: " + d.Reason + "."
+	if d.Rule != "" {
+		msg += " This is a permission rule, not a missing capability: tell the person which rule refused it and where it is set."
+	}
+	return msg + " Choose a different approach."
 }
 
 // WithheldLookalikeArgs stands in for the arguments of an unknown call
@@ -2267,6 +2288,7 @@ func (l *Loop) invoke(ctx context.Context, call model.ToolCall) (tools.Result, T
 		l.observe(ctx, HookSubagentStart, call.Name, string(call.Args))
 	}
 	runCtx, forget := l.withDetach(l.withShellHost(l.withLaunch(l.asParent(ctx), call.ID), call.ID))
+	runCtx = tools.WithReadCheck(runCtx, l.readWithheld())
 	result := tool.Run(runCtx, l.Session, call.Args)
 	forget()
 	l.diagnose(ctx, call, &result)

@@ -40,6 +40,9 @@ type Report struct {
 	// Toolchains are the language toolchains installed for the session's
 	// commands, as toolchain.install events recorded them.
 	Toolchains []ToolchainStep `json:"toolchains,omitempty"`
+	// Editor are the editor's completions and next-edit suggestions, as
+	// each session's summary counted them: how many, and how fast.
+	Editor []EditorStats `json:"editor,omitempty"`
 	// Network is what the egress allowlist decided; nil when the record has no decision.
 	Network     *NetworkStats `json:"network,omitempty"`
 	Compactions []Compaction  `json:"compactions,omitempty"`
@@ -148,7 +151,10 @@ type Call struct {
 	// when an edition added it.
 	Rule  string `json:"rule,omitempty"`
 	Layer string `json:"layer,omitempty"`
-	By    string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
+	// Source is where the decision came from: the rule's layer (org,
+	// managed, workspace, user, settings, flag, default, session), mode, or hook.
+	Source string `json:"source,omitempty"`
+	By     string `json:"by,omitempty"` // policy | reviewer | user | session-scope | headless | system
 	// Scope is the remembered "always allow" rule that let it through, when By is session-scope.
 	Scope string `json:"scope,omitempty"`
 	// Approver is the signed-in person who answered, when the record names one.
@@ -199,6 +205,14 @@ type PolicyStats struct {
 type ToolchainStep struct {
 	Seq int64 `json:"seq"`
 	agent.ToolchainAction
+}
+
+// EditorStats is one completion.summary or next_edit.summary: Feature is
+// completion or next_edit.
+type EditorStats struct {
+	Seq     int64  `json:"seq"`
+	Feature string `json:"feature"`
+	agent.CompletionSummary
 }
 
 // LocalModelStep is one ollama.start, ollama.install or ollama.pull.

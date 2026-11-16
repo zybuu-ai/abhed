@@ -31,49 +31,141 @@ All notable changes to Abhed are recorded here. The format follows
   the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
   wherever anything printed before bash took the terminal; known to occur in
   1.2.9 in a project with a Python venv, whose start-up notice prints first.
+- A stored secret that the model repeated in its answer could reach stdout
+  unredacted. The record, the terminal, `-p` text output and rpc's
+  `answer` were redacted, but two copies were not. `abhed -p
+  -output-format json` and `stream-json` printed the answer raw in the
+  result line's `result` and `structured_output`, in every verify mode,
+  `off` included, and a `-json-schema` run printed its JSON raw in text
+  output too. The answer verdict, with each statement's text, was printed
+  raw on `-p`'s result line, in rpc's `answer` and `error` responses, and
+  by the SDK's `Agent.Verdict()`. Both are now redacted as the record is,
+  and withheld when that fails. The model never sees a stored value, so it
+  has to rebuild or guess one first. Affected: `-p`'s `result` and
+  structured output in every release before this one; the verdict on `-p`,
+  rpc and the SDK in 1.2.9, whenever verification was on: `-verify label`
+  or `strict`, `verify.mode` set in any configuration, a
+  `verify.contract`, rpc `start` with `verify`, or SDK `Options.Verify`.
+  The server and Abhed Studio read the redacted record and were not
+  affected.
+- `grep` returned matches from files a read deny rule covers.
+  `deny: ["read(secrets/**)"]` refused the `read` tool, but a `grep` over the
+  workspace, or one whose `path` named the denied file, still printed its
+  matching lines to the model. A managed or org deny rule was bypassed the
+  same way. Affected: every release through 1.2.9, on every surface (the
+  CLI, `-p`, `abhed serve`, Studio, the SDK, skill pipelines) and every
+  sandbox tier, since `grep` runs in Abhed itself. Every `grep` result is now
+  held to the read rules: a file a deny rule covers, or an ask rule (no one
+  can be asked through a search; the built-in ones for `.env`, `*.pem`,
+  `*.key` and SSH keys included), is judged by its path before it is read
+  and never opened; the answer says only how many files were not searched.
+- The `search` tool (the retrieval index, `retrieval.enabled`) returned
+  excerpts from files a read deny rule covers, and the index build sent
+  those files' chunks to the embedding endpoint when `retrieval.embed` is
+  on. Affected: every release through 1.2.9 with retrieval enabled. A file
+  a read deny or ask rule covers is now left out before ranking, as if it
+  were not indexed, and the index is built without such files (to the
+  session's own rules in the CLI and the SDK), so they reach neither the
+  model nor the embedding endpoint. A rule added after the index was built
+  still holds for the hits.
+- An org policy URL holding a password, a token or a signature
+  (`https://u:pw@…`, `https://TOKEN@…`, `?token=…`, `#…`, a signed URL)
+  was printed whole where a refusal or a warning named the org policy, and
+  in the status line of `abhed doctor`. Affected: 1.2.9 with an org policy.
+  A refusal, a warning and a denial reason (which reach the model and the
+  record) now show only the URL's scheme, host and path; the status line
+  shows it whole with the user part, every query value and the fragment
+  redacted.
+
+### Upgrading from 1.2.9
+
+- Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
+  logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
+  secrets API answers 400), and a command or tool is never given one by
+  name. Store such a secret under another name.
+- A workspace other than your home folder whose config is your own
+  `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
+  longer trusted as your own file without asking; trust it once with
+  `abhed trust grant`. In the home folder nothing changes.
+- A workspace's `.abhed/config.json` that leads out of the workspace, by
+  its own link or through a `.abhed` that is a link, is now refused, and so
+  is one that is a link to no file (1.2.9 read that as no config). The
+  session does not start until it is a plain file or a link inside the
+  workspace. A link inside the workspace, and any link at your home
+  folder's `~/.abhed/config.json`, still work; a config above the opened
+  folder must be copied in, or the folder above opened instead.
+- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
+  stop with exit code 2 ("no task"). They now continue the run that stopped
+  at its turn limit, and stop with exit code 2, before anything is
+  recorded, only when there is nothing to continue or the bound is spent.
+- A workspace memory file that a read rule asks about is no longer loaded:
+  memory loads with nobody there to say yes, so an ask keeps it out as a
+  deny does; start-up warns about each such file, and `/memory` says why.
+- `abhed -p`, `abhed rpc` and unattended server runs now check their
+  answers by default (`verify: label`), as the terminal does; 1.2.9
+  checked nothing there unless asked. The exit code is unchanged. When a
+  statement is contradicted, the agent gets the one revision turn: one
+  more model call, and the answer returned (the result line's `result`,
+  rpc's `answer`) is the revised one. The result line's `verdict`, and
+  rpc's answer `verdict`, now appear by default: a parser that does not
+  expect the field should ignore it. `verdict.outcome` is `verified` or
+  `unverified`, and `verdict.claims` lists each statement, the unverified
+  ones included. `-verify off`, `"verify":"off"` on `rpc` or `POST
+  /v1/sessions`, or `verify.mode: off` in your own configuration keeps the
+  1.2.9 behaviour where a managed `verify.mode` allows it; a flag or a
+  session's `verify` also lowers a trusted workspace's `verify.mode`. For
+  CI that fails closed on an unverified answer, pass `-verify strict`
+  (exit 8). The SDK still checks nothing unless asked, through 1.x: set
+  `Options.Verify`, or `Options.VerifyByDefault` to label as the terminal
+  does.
+- On a host in `ssh.hosts`, an `ssh` command that only shows metadata
+  (`ls`, `du`, `df`, `ps`, `stat`, `systemctl status -n 0`, …) now runs without
+  asking and in plan mode (below). Programs that print files still ask
+  unless you set `ssh.read_contents: true`. To keep every command but
+  `ssh.read_commands` behind approval, set `ssh.listed_reads_only: true`. A
+  managed file that sets any `permissions` or `ssh` key keeps the old
+  behaviour unless it sets `ssh.listed_reads_only` itself.
 
 ### Added
 
-- Cost in US dollars. Each model call is priced from its model's name, at
-  the Standard-tier list price Abhed carries for some hosted models
-  (checked against OpenAI's and Anthropic's pricing pages on 9 November
-  2026; models priced by prompt length are left out) or at a price set under
-  `pricing` in the configuration. The cost is recorded on each call's
-  `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
-  turns, the critic, suggestions, compaction summaries and pipeline model
-  steps alike, and on `completion.summary`, `next_edit.summary` and
-  `commit_message.generated` for Studio's editor calls (a commit message is
-  also a `model.call`, with tokens and cost only). Usage a provider did not
-  report, or reported under a quarter of the request's size, is estimated,
-  marked `estimated`, and charged. Under a dollar cap a cut call's output is
-  charged at the most the request allowed, whatever input was reported, so
-  interrupting, or a stream that fails after the provider accepted it, does
-  not save money under a cap; only a call the provider never accepted is
-  not charged. Three failed replies in a row with no usable text or tool
-  call (a malformed tool call included), whatever the error, end the run
-  `retry_exhausted`. `/usage` shows the
-  session's cost and each turn's, `-p -output-format json` its
-  `usage.cost_usd`, and HawkEYE the cost per turn and in all; a record written before this release shows its cost as
-  not recorded. A model with no price is shown as unpriced, and its cost is
-  never guessed. No workspace sets prices, trusted or not. For
-  `azure-openai`, prices are keyed by deployment name.
-- Prompt caching on OpenAI-shaped providers. OpenAI's own API is sent
-  `prompt_cache_key`, and OpenRouter's Anthropic and Gemini models
-  `cache_control` on the system prompt and the last message; no other
-  server gets either field unless `extra.prompt_cache` names one. Cached
-  tokens are read from DeepSeek's and Anthropic-shaped proxies' usage as
-  well as OpenAI's, and recorded with cache writes (OpenRouter's
-  `cache_write_tokens` included) on each `model.call`.
-- `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
-  subagents included. The run ends `max_budget` (exit `3`) with a message
-  and a `budget.stopped` event; with a cap set, a model with no price is
-  refused before any call, whatever makes it: a turn, the critic, a
-  suggestion, a compaction summary, a pipeline model step, a Studio
-  completion, next edit or commit message (Studio is told once that the
-  feature is off and how to price its model; a local address is not taken
-  as free), or a fallback, which is not moved to. A managed or org cap may only be
-  lowered, and under one, prices come only from that layer and the built-in list. A
-  resumed session carries what it had spent.
+- Faster editor completions in Abhed Studio. A local completion model is
+  loaded ahead of the first completion (`_abhed/complete/warm`: an empty
+  request of one token, no code, once the editor session is open, at most
+  every two minutes per session and per connection, ended with the session
+  or the connection's input,
+  and only for a model whose address is on this machine). A suggestion is
+  one logical block, the statement at the cursor and the body of a block it
+  opens, and the model's streamed answer is ended as soon as that block is
+  whole. Studio waits briefly after a keystroke, cancels a request whose
+  place has gone (a cancel now names its `seq`), asks once more when over
+  the rate limit, and asks again after an accepted suggestion or Enter.
+  `completion.summary` and `next_edit.summary` record answer times
+  (median, 90th percentile, longest) of requests sent, and warm-ups, never
+  code, and `abhed hawkeye` shows them. The data-sent rules and
+  `completion.local_only` are unchanged.
+- A rename's next edit comes from the file, not a model: after edits that
+  turn one identifier into another, the other uses of the old name are
+  offered as one edit. They come from the language server's references when
+  one is running, or else, in Python, Go, JavaScript, TypeScript and Java
+  (not JSX, nor a .js file holding JSX, which is treated like .jsx), a
+  scan of the innermost function that skips strings, comments, members,
+  keyword arguments in calls and literal keys (a shorthand property is
+  written out as `old: new`, and so are a destructuring and an object in a
+  JSX `{{ }}`; a JSX `{name}` or a template's `${name}` is a use; a brace
+  it cannot classify leaves the edit to the model), and leaves the rename
+  to you
+  where the name is bound again in a nested scope. A one-word edit with
+  nothing to finish (a reserved or already used new name, no other use, a
+  use of a name declared elsewhere) is no rename, and the model is asked as
+  before. Nothing is sent for a rename; the summary and the metrics count
+  it as `local`, or `local_dropped` when left to you. Studio
+  parses the file with any next-edit suggestion applied (tree-sitter) and
+  drops one that adds syntax errors or cannot be checked.
+- Python language servers you already have: where `basedpyright-langserver`
+  is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
+  server is that one, and the start you are asked about names it and what
+  it loads. Not under the container tier, which always runs basedpyright.
+
 - Studio can add and remove MCP servers. Adding is never an ACP method:
   Studio has the engine check the server (`_abhed/mcp/check`, read only,
   `mcp.check` in `features`), shows it in a modal whose default is No, and
@@ -98,30 +190,6 @@ All notable changes to Abhed are recorded here. The format follows
   events show the log as read, not proof that it was complete. A log replaced by hand is read from its start. In OCSF a refused
   entry is a failure. Past 4 MiB the log no longer takes refused attempts;
   changes are still logged.
-
-### Upgrading from 1.2.9
-
-- A workspace other than your home folder whose config is your own
-  `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
-  longer trusted as your own file without asking; trust it once with
-  `abhed trust grant`. In the home folder nothing changes.
-- A workspace's `.abhed/config.json` that leads out of the workspace, by
-  its own link or through a `.abhed` that is a link, is now refused, and so
-  is one that is a link to no file (1.2.9 read that as no config). The
-  session does not start until it is a plain file or a link inside the
-  workspace. A link inside the workspace, and any link at your home
-  folder's `~/.abhed/config.json`, still work; a config above the opened
-  folder must be copied in, or the folder above opened instead.
-- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
-  stop with exit code 2 ("no task"). They now continue the run that stopped
-  at its turn limit, and stop with exit code 2, before anything is
-  recorded, only when there is nothing to continue or the bound is spent.
-- A workspace memory file that a read rule asks about is no longer loaded:
-  memory loads with nobody there to say yes, so an ask keeps it out as a
-  deny does; start-up warns about each such file, and `/memory` says why.
-
-### Added
-
 - `-tools NAMES`, the only tools a run and its subagents may use (the
   harness's own `recall`, `exit_plan` and structured answer stay), and
   `-bare`, a run without your own or the workspace's memory files,
@@ -159,9 +227,6 @@ All notable changes to Abhed are recorded here. The format follows
 - Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
   `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
   `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.
-
-### Added
-
 - Simple hooks: `hooks.run` runs one command, or POSTs to one HTTP endpoint,
   per event, with no extension process to write. A command gets the event
   as JSON on stdin and runs as the agent's own commands do: in the terminal,
@@ -208,9 +273,6 @@ All notable changes to Abhed are recorded here. The format follows
   `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
   claim named `tenant`, else `default`, so unless the identity provider
   sends a matching `tenant` claim everyone it signs in is refused.
-
-### Added
-
 - The agent is given a language server's diagnostics after each write or
   edit, in the CLI and the editor protocol. The server is the one Studio
   runs, started in the session's sandbox with the engine's safe settings,
@@ -231,9 +293,6 @@ All notable changes to Abhed are recorded here. The format follows
   `session/prompt`, so it runs under the session's policy as any prompt does.
   The editor's diagnostics on the range go with Fix and Explain as an
   attachment. A file the agent may not read gets none.
-
-### Added
-
 - Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
   in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
   A `runner` picks Node itself (TypeScript by Node's own type stripping),
@@ -249,9 +308,6 @@ All notable changes to Abhed are recorded here. The format follows
   `--inspect` in the sandbox's `NODE_OPTIONS` is not passed on, so nothing
   inherited opens a port. Node missing offers its install. See
   [Debugging](docs/guide/31-debugging.md#node).
-
-### Added
-
 - `abhed bg start|list|logs|attach|cancel`: background jobs on a server
   that serves them, run as the signed-in person and followed from the
   command line. `attach` puts each ask to the person and answers it on the
@@ -267,8 +323,157 @@ All notable changes to Abhed are recorded here. The format follows
   that starts, answers and stops sessions for people on routes of its own.
   A denial through `DenyPending` is recorded as the system's, with its
   reason, never as a person's rejection.
+- Sign-in to remote MCP servers with OAuth 2.1, as the MCP authorization
+  specification describes: `abhed mcp login NAME` finds the server's
+  protected-resource and authorization-server metadata, registers a client
+  where the server offers that (or uses `oauth.client_id`), and signs in
+  through your browser with PKCE (S256 only) and a loopback redirect;
+  `abhed mcp logout NAME` revokes and forgets the login. The tokens are kept
+  in the secret store under names Abhed holds for itself: never listed to
+  the model, never given to a command, redacted from the record. A login is
+  bound to the server's name and URL, refreshed when it ends, sent only to
+  the server's own origin (never on a redirect or to another host), and
+  every request of it, the browser's apart, goes under the egress allowlist
+  and the corporate upstream proxy. Only an `https` server and authorization
+  server are signed in to (`http` only for a server on this machine); a
+  resource or issuer that does not match is refused. A refresh holds a lock
+  across processes (one process only on Windows and with a secrets driver),
+  and a login removed while a session runs stops being used within five
+  seconds and stays removed.
+  OAuth logins aren't available per account yet: an `abhed serve` that
+  accounts sign in to uses none, and warns
+  ([MCP](docs/guide/08-mcp.md#signing-in-with-oauth)).
+- MCP resources: a server that offers them adds
+  `mcp__<server>__list_resources` and `mcp__<server>__read_resource`,
+  judged by policy as its tools are (a rule may name the URI:
+  `mcp__docs__read_resource(docs://private/*)`; a URI is read only in its
+  canonical form, a host not in ASCII is refused, and deny and ask rules
+  also match without regard to case, in NFC and NFKC, and with escapes
+  decoded once and twice), capped at 30,000
+  characters, binary content described rather than sent, and recorded.
+  `@server:uri` in the terminal or an editor's prompt attaches one, read as
+  your own call through the same tool and policy; `/mcp resources SERVER`
+  lists them ([MCP](docs/guide/08-mcp.md#resources)).
+- Workspace skills. A repository's `.abhed/skills/<name>/` folders load as
+  skills once the person trusts their exact content, under the same
+  hash-pinned trust as its agent definitions. `abhed trust` and the trust
+  prompt show each skill's name, description and hash; the hash covers every
+  file in the skill's folder, so any change asks again; an untrusted
+  workspace loads none; and a workspace skill never replaces or sits beside
+  an installed one whose name matches without case or in NFKC (its name must
+  be ASCII). Only its `SKILL.md` and `pipeline.json` are used, since the
+  agent cannot read `.abhed`. `abhed trust grant -skills-sha256 H` pins a
+  grant.
+  `skills.disable_workspace: true`, from the managed configuration or any
+  layer, keeps them off whatever the trust.
+- A denial names where its rule came from. The reason the model and the
+  person read says `denied by rule bash(curl*) from the org policy
+  (https://org.example, version 3)`, or the managed file, the workspace's
+  or your user configuration, a `-settings` file, the `-allow`/`-deny`
+  flag or the built-in rules, and the model is told a rule refused the
+  call, not that a capability is missing. `action.approved` and
+  `action.denied` record it as `source` (`org`, `managed`, `workspace`,
+  `user`, `settings`, `flag`, `default`, `session`, an edition's layer,
+  `mode` or `hook`), and HawkEYE shows it per call.
+- A `-p` run's refused call says what would allow it: the exact flag, such
+  as `-mode accept-edits` or `-allow 'bash(make deploy)'` (an MCP tool's
+  name for an MCP tool), on stderr and in the result line as
+  `permission_denials`. A flag is offered only when the configuration would
+  accept it and the policy would then allow the call; otherwise the hint
+  says why none would, such as `denied by org policy; ask your admin`.
+- Cost in US dollars. Each model call is priced from its model's name, at
+  the Standard-tier list price Abhed carries for some hosted models
+  (checked against OpenAI's and Anthropic's pricing pages on 9 November
+  2026; models priced by prompt length are left out) or at a price set under
+  `pricing` in the configuration. The cost is recorded on each call's
+  `model.call` (`cost_usd`, or `unpriced`) and the session's end, for the
+  turns, the critic, suggestions, compaction summaries and pipeline model
+  steps alike, and on `completion.summary`, `next_edit.summary` and
+  `commit_message.generated` for Studio's editor calls (a commit message is
+  also a `model.call`, with tokens and cost only). Usage a provider did not
+  report, or reported under a quarter of the request's size, is estimated,
+  marked `estimated`, and charged. Under a dollar cap a cut call's output is
+  charged at the most the request allowed, whatever input was reported, so
+  interrupting, or a stream that fails after the provider accepted it, does
+  not save money under a cap; only a call the provider never accepted is
+  not charged. Three failed replies in a row with no usable text or tool
+  call (a malformed tool call included), whatever the error, end the run
+  `retry_exhausted`. `/usage` shows the session's cost and each turn's,
+  `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
+  turn and in all; a record written before this release shows its cost as
+  not recorded. A model with no price is shown as unpriced, and its cost is
+  never guessed. No workspace sets prices, trusted or not. For
+  `azure-openai`, prices are keyed by deployment name.
+- Prompt caching on OpenAI-shaped providers. OpenAI's own API is sent
+  `prompt_cache_key`, and OpenRouter's Anthropic and Gemini models
+  `cache_control` on the system prompt and the last message; no other
+  server gets either field unless `extra.prompt_cache` names one. Cached
+  tokens are read from DeepSeek's and Anthropic-shaped proxies' usage as
+  well as OpenAI's, and recorded with cache writes (OpenRouter's
+  `cache_write_tokens` included) on each `model.call`.
+- `-max-budget-usd` and `limits.max_budget_usd` cap a session's cost,
+  subagents included. The run ends `max_budget` (exit `3`) with a message
+  and a `budget.stopped` event; with a cap set, a model with no price is
+  refused before any call, whatever makes it: a turn, the critic, a
+  suggestion, a compaction summary, a pipeline model step, a Studio
+  completion, completion warm-up, next edit or commit message (Studio is
+  told once that the feature is off and how to price its model; a local
+  address is not taken as free), or a fallback, which is not moved to. A
+  managed or org cap may only be lowered, and under one, prices come only
+  from that layer and the built-in list. A resumed session carries what it
+  had spent.
+
+### Changed
+
+- Remote reads no longer need an entry for every variant. On a host the
+  operator declared, Abhed reads an `ssh` command with the bash parser and
+  the read-only program list behind `ssh.read_commands` wildcards, and runs
+  it unasked when it only shows metadata: every program on that list in a
+  read form, joined only by `|`, with plain or single-quoted words and no
+  redirection, expansion, substitution, double quote, device, automounted
+  path or form that never ends. `ls -lah`, `du -ah … | sort -rh | head` and
+  `find … -exec ls -lh {} +` now run. Programs that print files (`cat`,
+  `grep`, `tail`, `journalctl`, `docker logs` and `inspect`, `systemctl
+  cat` and `show`, …) run unasked only under the operator's new
+  `ssh.read_contents`, and even then not on a name that may hold
+  credentials. `rm`, `find -delete`, `sort -o`, `tee`, `xargs`, `awk`,
+  `sed -i`, `less`, redirections and `$(…)` still ask; hosts added with
+  `ssh_connect`, which may no longer take a name in `ssh.hosts`, and
+  undeclared hosts are unchanged. Checksums, `findmnt -s` and
+  `systemctl status` with its journal lines count as contents; no path
+  under `/dev`, `/proc` or `/sys` is read, however it is written, and a
+  walk that opens files must stay on one file system (`find -xdev`,
+  `rg --one-file-system`; `grep -r` does not search from `/`, `~` or a
+  relative path, since the login folder may be `/`). `ssh.read_commands` stays an extra allow
+  list. The approval and the record name the rule that allowed each call:
+  `ssh.read_only`, or `ssh.read_commands: <entry>`. The classifier reads
+  text, so start-up files, `~/.ssh/rc`, `ForceCommand` and symbolic links on
+  the host are outside what it can see; the SSH guide says so.
+- An `ssh` call's `timeout_seconds` is now capped at
+  `ssh.max_timeout_seconds` (default 120, the timeout a call gets when it
+  names none; at most 86400); a workspace or org policy may only lower it.
+- An `ssh.read_commands` entry refused at load, such as `"df -h*"`, now says
+  which forms are accepted (an exact command, or `*` for a whole operand or
+  a value after `=`) and lists the program's read options.
+- `grep` is faster on a large repository. It now skips the files a
+  `.gitignore` excludes (unless `path` names them), reads the rest in
+  parallel, and, when a ripgrep owned by root, in folders only root can
+  write, is on `PATH` at start-up, lets one `rg` run narrow the files by a
+  literal every match contains. Measured
+  with `BenchmarkGrep` (`internal/tools/grep_bench_test.go`) on one
+  11.2k-file checkout on a 12-core arm64 Mac, 9 Nov 2026: 9–17 s before,
+  0.4–1 s after, with or without ripgrep; most of the gain there is the
+  gitignored build output no longer read. Path rules and redaction are the
+  same on both paths; gitignored files no longer show up unless asked for
+  by `path`.
 
 ### Fixed
+
+- Studio's ghost text could stop for good after a burst of typing. Every
+  keystroke spent the completion rate limit as it arrived, even those a
+  newer keystroke replaced before anything was sent, so the last keystroke
+  of a burst was often answered `limited` and nothing was asked again. The
+  limit is now spent only by a request about to be sent.
 
 - A debug session in Abhed Studio, in any language, no longer shows the
   editor a source path outside the workspace. Such a frame, output line or
@@ -368,6 +573,41 @@ All notable changes to Abhed are recorded here. The format follows
   last lines) before it exits: a stop signal that comes while stdin is
   open waits up to 250 ms for it to end, so a lone SIGTERM now exits
   after about a quarter of a second.
+- Answer checks failed a correct fix in strict mode, so CI saw exit 8 on
+  success. After `python3 -m unittest tests.test_text` passed, "All tests
+  in tests.test_text passed" was unverified, because only a run of the
+  whole suite was read as covering a test claim. A run of a named test
+  module, file or package (`python3 -m unittest tests.test_text`, `pytest
+  tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names it,
+  and "the tests pass" when every message the person typed names those
+  test runs and, once those runner commands are taken out, every word left
+  is exactly a connective word ("fix it and run the tests"); a word with a
+  `/`, a digit or a symbol is not one, and a runner given an argument the
+  checks do not read counts as a whole-suite run. Anything else leaves the
+  whole workspace: "all the tests", "the whole suite", another runner
+  (`npm test`, `make test`, a bare `make`), "CI", the build or lint, "the
+  api tests", a negation such as "don't run" or "skip", a message in
+  another language, and any path or file name outside a runner command,
+  the file to fix included: after "`python3 -m unittest tests.test_text`
+  fails. Fix src/utils/text.py and run the tests", "the tests pass" needs
+  a whole run. A task split over two messages, the second only "run the
+  tests", needs one too. A file attached with `@` or piped stdin never
+  names them. "All tests", "the whole suite" and "the tests, including X"
+  still need a whole run, and `pkg/x/...` a recursive one; a run of
+  another module, of one class, a failed run, an edit since the run, or a
+  run that ran no test (all skipped or expected failures, `[no test
+  files]`) still leave the claim unverified, and a go claim about one
+  package needs that package's own passing line, found by its exact import
+  path from `go.mod`. A run that ran no test no longer verifies "all tests
+  pass" either. The false-claim corpus gains 100 planted cases and 15
+  controls for it; none of the 868 planted claims verifies, all 240
+  controls do, and none of the 341 true or neutral claims is contradicted.
+- The revision note after an unverified answer now lists the session's
+  tool results the agent may cite, by their real `call_id` (or `#seq` for
+  a text answer), so a model no longer cites an id it made up. A cited id
+  that is not in the record still counts as no evidence. Commands, paths
+  and statements in the note are quoted, so text the model chose cannot
+  start a line of its own in it.
 
 ### Go API
 

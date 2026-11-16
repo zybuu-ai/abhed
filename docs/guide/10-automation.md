@@ -5,7 +5,7 @@ Three ways to run Abhed without a person at the prompt.
 ## Headless
 
 ```bash
-abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)'
+abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)' -verify strict
 abhed -p "explain what pkg/auth does" -mode plan
 cat build.log | abhed -p "why did this fail?"
 abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
@@ -108,13 +108,28 @@ With `-output-format text`, stdout is only that JSON; with `json` or
 
 ### Checked answers
 
-`-verify label` checks the answer's statements against what the run
-observed and prints the labels under it; `-verify strict` also gives the agent
+`-p` checks the answer's statements against what the run observed and
+prints the labels under it (`label`, the default unless `verify.mode` says
+otherwise); the exit code is the run's. `-verify strict` also gives the agent
 one revision turn when a statement about its work is not verified, then exits
-`8` if it still is not, so CI fails closed. Unset, `-p` checks nothing unless
-`verify.mode` says so. With `json` or `stream-json`, the check is the
-`answer.verdict` event and the result line's `verdict`. A managed
-`verify.mode` may only be made stricter. See [Verified answers](29-verified-answers.md).
+`8` if it still is not, so CI fails closed. Use it in CI:
+
+```bash
+abhed -p "fix the failing tests; run go test ./..." -mode auto \
+  -allow 'bash(go test*)' -verify strict -output-format json > run.jsonl
+```
+
+With `json` or `stream-json`, the check is the `answer.verdict` event and
+the result line's `verdict`: `verdict.outcome` is `verified` or `unverified`,
+and `verdict.claims` lists each statement with its own `verdict` and
+`reason`, the unverified ones included. Under `label` the answer itself can
+change: a contradicted statement gets the agent's one revision, and the
+revised answer is the `result`. `-verify off`, or `verify.mode: off` in
+your own configuration, turns checking off; the flag also lowers a trusted
+workspace's `verify.mode`. A managed `verify.mode` may only be made
+stricter. The Go SDK checks nothing unless asked, through 1.x: set
+`Options.Verify`, or `Options.VerifyByDefault: true` to label as `-p` does.
+See [Verified answers](29-verified-answers.md).
 
 ### Runbooks
 
@@ -207,6 +222,30 @@ There is no one to approve, so anything needing approval is refused, and
 the model is told why. Name what may run with `-allow`, and keep the list
 narrow.
 
+Each refused call says what would allow it, on stderr whatever the output
+format, and in the result line of `json` and `stream-json` as
+`permission_denials`:
+
+```text
+abhed: denied write: no approver: changing a file needs approval in default mode (rerun with -mode accept-edits to allow it)
+```
+
+```json
+"permission_denials":[{"tool":"bash","call_id":"c1","step":"default","source":"mode",
+  "reason":"no approver: running a command needs approval in default mode …",
+  "flag":"-allow 'bash(make deploy)'","hint":"rerun with -allow 'bash(make deploy)' to allow it"}]
+```
+
+`flag` is the exact flag, `-mode accept-edits` for a file change or
+`-allow` with the rule the approval prompt would offer (an MCP tool's name
+for an MCP tool), and is offered only when the configuration would accept
+it and the policy, given it, would allow the call. Otherwise `flag` is
+empty and `hint` says why: a deny rule from the org policy or the managed
+configuration (`denied by org policy; ask your admin`), your own deny rule
+and where it is set (no flag lifts a deny rule), an ask rule, a command that
+always asks, a hook or the supervisor, or a managed configuration that sets
+the permissions. It only explains; nothing is granted.
+
 ## RPC
 
 For a caller that is not Go, `abhed rpc` speaks line-delimited JSON on stdin and
@@ -226,8 +265,8 @@ send(method="prompt", prompt="fix the failing tests")
 
 | Method | |
 |---|---|
-| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
-| `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` when answers are checked |
+| `start` | open a session — `workspace`, `mode`, `allow`, `deny`, `verify` (`off`, `label` or `strict`; unset is `verify.mode`, else `label`), and `runbook` (`plan`, `runbook`, optional `sha256`), approved for the session as [Runbooks](28-runbooks.md#headless-runs) describes |
+| `prompt` | send a prompt, get the final answer — `prompt`; the answer carries `verdict` (with `outcome`) unless checking is off |
 | `steer` | redirect a run in progress — the text in `prompt` |
 | `usage` | tokens, turns, compactions, and cost (`CostUSD`; `Unpriced` when a call had no price) |
 | `export` | the HTML transcript |
@@ -585,11 +624,11 @@ A session's `state` in the list is `running`, `waiting_approval`, `idle` or
 recorded: `completed`, `user_interrupt`, `shutdown`, `deadline`, `stalled`,
 `error`, `max_turns`, `unverified` and the rest.
 
-`POST /v1/sessions` takes `verify` (`off`, `label` or `strict`). A session
-someone watches at the console or the IDE labels its answers unless the
-configuration says otherwise; an unattended one checks only when asked. A
-managed `verify.mode` may only be made stricter: a looser one is refused with
-400.
+`POST /v1/sessions` takes `verify` (`off`, `label` or `strict`). Every
+session labels its answers unless the request or the configuration says
+otherwise, an unattended one included; ask for `strict` where a run must not
+end completed on an unverified answer. A managed `verify.mode` may only be
+made stricter: a looser one is refused with 400.
 
 Sending a message to a session that is already working **steers** it rather than
 being refused.

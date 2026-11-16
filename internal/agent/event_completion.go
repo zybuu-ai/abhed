@@ -79,4 +79,20 @@ type CompletionSummary struct {
 	// budget; Unpriced marks one to a model with no price.
 	CostUSD  float64 `json:"cost_usd,omitempty"`
 	Unpriced bool    `json:"unpriced,omitempty"`
+	// Answer times of the requests sent, from Studio's request reaching the
+	// engine to its answer, in milliseconds: median, 90th percentile and
+	// longest. No code, only times.
+	LatencyP50Ms int `json:"latency_p50_ms,omitempty"`
+	LatencyP90Ms int `json:"latency_p90_ms,omitempty"`
+	LatencyMaxMs int `json:"latency_max_ms,omitempty"`
+	// Warmups are the empty requests that loaded a local model ahead of the
+	// first completion; WarmupMs the longest of them.
+	Warmups  int `json:"warmups,omitempty"`
+	WarmupMs int `json:"warmup_ms,omitempty"`
+	// Local are next-edit suggestions made from the file alone (a rename's
+	// other uses), with no request to a model, and LocalDropped renames for
+	// which none was offered (no other use, a name bound again, a new name
+	// already there). Neither is in the answer times, which are of requests sent.
+	Local        int `json:"local,omitempty"`
+	LocalDropped int `json:"local_dropped,omitempty"`
 }

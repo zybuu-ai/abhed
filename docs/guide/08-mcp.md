@@ -206,6 +206,8 @@ abhed mcp add -env TOKEN=abc -env HTTPS_PROXY -allow-tools search,read docs node
 abhed mcp add -header-env Authorization=CORPUS_TOKEN corpus https://retrieval.internal/mcp
 abhed mcp list
 abhed mcp remove docs
+abhed mcp login corpus
+abhed mcp logout corpus
 ```
 
 `add` shows the server, every value escaped and `-env` values hidden, and
@@ -241,6 +243,129 @@ them the only ones; see [The command line](18-cli.md#settings-servers-and-roles-
 When the managed configuration sets `mcp.servers`, `add` and `remove`
 are refused: its list replaces yours, and only it changes it. A workspace's
 servers still need workspace trust, as before.
+
+## Signing in with OAuth
+
+A URL server that wants a sign-in answers `401` until you sign in to it:
+
+```sh
+abhed mcp login corpus     # opens your browser; prints the address too
+abhed mcp logout corpus    # revokes the login where the server offers that, and forgets it
+```
+
+`login` follows the MCP authorization specification. It asks the server for
+its protected-resource metadata (from its `401` challenge, or the well-known
+address), then its authorization server's metadata, registers Abhed as a
+client where that server offers dynamic registration, and opens the sign-in
+page in your browser. The page comes back to a listener on `127.0.0.1` that
+Abhed opens for this sign-in alone; the code is exchanged with PKCE (S256)
+and the server's URL as the `resource`. It refuses:
+
+- a server or authorization server that is not `https`, so a token is never
+  sent in the clear; `http` is taken only on this machine, and only when the
+  MCP server itself is there, so a remote server cannot point a sign-in at a
+  local service;
+- metadata that names another resource than the server, or an issuer not
+  exactly the authorization server it was fetched from;
+- an authorization server without PKCE S256;
+- a redirect that does not carry this sign-in's state, or whose `iss`, when
+  it has one, is another issuer.
+
+For an authorization server that registers no clients, name a client
+registered ahead of time:
+
+```json
+{ "name": "corpus", "enabled": true, "url": "https://retrieval.internal/mcp",
+  "oauth": { "client_id": "abhed-cli", "client_secret_env": "CORPUS_CLIENT_SECRET", "scopes": ["read"] } }
+```
+
+`client_secret_env` is read at `login` only. `scopes` defaults to what the
+server says it supports.
+
+The tokens are kept in the secret store (`~/.abhed/secrets.json`) under
+names beginning `MCP_OAUTH_`, which Abhed holds for itself: they are not
+offered to the model, a command or tool is never given one, `abhed secret
+set` and `abhed secret rm` refuse the prefix (as does the server's
+`/v1/secrets` API, and Studio does not list them), and their values are
+redacted from the record like any stored secret. A login is bound to the server's name and URL: a server
+whose URL changes is not sent it, and asks for `login` again. Its access
+token goes on requests to the server's own origin only, never on a redirect
+or to an endpoint on another host, and a server that also has an
+`Authorization` header configured is refused. It is refreshed before it
+ends, and once more when the server refuses it. A refresh holds a lock
+beside the store, given up after the refresh's own time limit, so two Abhed
+processes never spend one refresh token: the second takes up the first's
+tokens. The lock spans processes where the store is a file on macOS or
+Linux; on Windows, and for a store a secrets driver keeps, it spans one
+process only. A running session reads the store again at most every five
+seconds as it sends: a login removed while it runs stops being used within
+that time (a request already sent completes), is never written back by its
+refresh, and the session says it was signed out; a login made again says
+that `/mcp restart` takes it up. Every request a sign-in or refresh makes, the
+browser's apart, goes under the egress allowlist (`sandbox.network:
+"allowlist"`, where the authorization server needs a rule too) and the
+corporate upstream proxy. `login` and `logout` are refused inside an
+agent's command, and `login` needs a person at a terminal; each is written
+to `~/.abhed/config-changes.jsonl`, never a token. `abhed mcp list` says
+which servers are signed in.
+
+The login is read from the operator's store, by the terminal, an editor's
+sessions, the SDK and an `abhed serve` that no accounts sign in to. OAuth
+logins aren't available per account yet: where accounts sign in
+(`auth.mode` other than `none`), the server's sessions share one gateway,
+and the operator's login would let every account act as the operator, so
+it is not used. A server with a login is not connected there, and says why;
+`abhed serve` warns at start-up and `abhed doctor` names each one.
+
+## Resources
+
+A server that offers resources adds two tools under its name:
+`mcp__<server>__list_resources` lists them (each URI, name and type; what
+the server says of them is treated as a tool description is) and
+`mcp__<server>__read_resource` reads one by URI. A read returns at most
+30,000 characters; binary content is described, not sent. Both go through
+policy as the server's tools do: `mcp__<server>__*` covers them, a rule can
+name a URI (`"deny": ["mcp__docs__read_resource(docs://private/*)"]`), and
+when `allow_tools` is set it must name them. A server's own tool of either
+name keeps it, and its resources are then not offered under that name.
+
+A URI is read only in its canonical form, the form policy judges and the
+server is sent: scheme and host in lower case, the host without a trailing
+dot, no default port for `http` and `https`, `file:///` rather than
+`file://localhost/`, an IPv6 or IPv4 address in its one spelling, no `.`
+or `..` segments and no empty ones, unreserved characters not
+percent-encoded, printable non-ASCII characters written as themselves in
+NFC rather than escaped, and other escapes in upper case. A URI written
+otherwise (`DOCS://private/a`, `docs://private./a`, `https://h:443/a`,
+`docs://private/%61`, `docs://private/caf%C3%A9`, `docs://127.1/a`) is
+refused, naming the form to write. One with a host not in ASCII (write it in its punycode, `xn--`,
+form), an escape in its host, an encoded `/` or `\`, a backslash, a
+fragment, user information or a rooted path without an authority
+(`docs:/private/a`) is refused outright, and a listing leaves those out and
+says how many. Since a server may still read paths without regard to case,
+or normalise Unicode, deny and ask rules on a read also match the URI
+without regard to case, in NFC and with its escapes decoded, as rules on
+file paths do: a deny on `docs://private/*` holds for `docs://PRIVATE/a`,
+and one on `docs://private/café/*` for `docs://private/caf%C3%A9/x`. They
+also match the URI decoded twice and in NFKC, with its dot-segments then
+resolved, as a server that decodes twice or folds compatibility characters
+reads it: a deny on `docs://h/private/*` holds for
+`docs://h/pub%252F..%252Fprivate/a`, `docs://h/pub／..／private/a` and
+`docs://h/ｐrivate/a`, while a name such as `TM™.md`, `x².md` or
+`100%25AB.md` is read as written. Allow rules match only as
+written. What one URI names on the server beyond that is the server's.
+Sessions in one process (an editor's, an SDK embedder's) each read a
+server's resources through their own connection. A server whose tools
+change across `/mcp restart` keeps its resources read as the session
+started; once a later listing in that session's gateway offers the
+server's own tool under the read's name, the session's read refuses to run.
+
+In the terminal or an editor's prompt, `@server:uri` attaches a resource:
+`@docs:file:///guide.md`, `@tickets:ticket://42` (write a space as `%20`:
+`@docs:file:///my%20notes.md`). It is read as your own call through the
+server's `read_resource` tool, so a deny rule refuses it and the message is
+not sent; the read and the attachment are recorded as an `@` file's are.
+`/mcp resources <server>` lists a server's resources.
 
 ## Allowed and denied servers
 
@@ -327,7 +452,8 @@ unreachable server costs nothing until something needs it.
 
 In a session, `/mcp` lists each enabled server, connected or with the reason
 it is not, and its tools; `/mcp restart <server>` reconnects one, and the
-tools already offered reach the new connection.
+tools already offered reach the new connection. A server that refuses the
+connection for want of a sign-in says to run `abhed mcp login <server>`.
 
 ## Many tools
 

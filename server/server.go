@@ -1952,13 +1952,14 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	}
 	// Path rules relative to the workspace; buildLive gives a session its own roots.
 	pol.Roots = func() []string { return []string{workspace} }
+	pol.RuleSource = s.opts.Config.RuleSource
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	pol.KeepAsk = toolset.KeepManagedAsks(s.opts.Config)
 	_ = pol.AddAllow(toolset.ToolchainAllows(s.opts.Config)...)
 	_ = pol.AddAllow(s.opts.Config.Permissions.Allow...)
 	_ = pol.AllowGitExtensions(s.opts.Config.Permissions.GitExtensions...)
-	_ = pol.AllowRemoteReads(s.opts.Config.SSH.ReadCommands...)
+	_ = toolset.RemoteReads(pol, s.opts.Config)
 	pol.AskReadOnly = webfetch.AskReadOnly(s.opts.Config.WebFetch.Enabled, s.opts.Config.WebFetch.AllowedHosts)
 	return pol
 }
@@ -1970,15 +1971,15 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapter model.Adapter,
 	registry *tools.Registry, skillReg *skills.Registry, vault *secrets.Store, rec *agent.Recorder) (*liveSession, *agent.Loop, error) {
 
-	// A person reads the answer at the console or the IDE, so it is labelled
-	// unless configured otherwise; an unattended run checks only when asked.
-	// Answers that cannot be checked as configured refuse the session, as
-	// the command line and the SDK refuse to start, rather than run unchecked.
+	// Every session's answer is labelled unless configured otherwise, an
+	// unattended one's too. Answers that cannot be checked as configured
+	// refuse the session, as the command line and the SDK refuse to start,
+	// rather than run unchecked.
 	vcfg, err := toolset.VerifyFlag(s.opts.Config, spec.Verify)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
 	}
-	verifier, err := toolset.Verifier(vcfg, !spec.Unattended)
+	verifier, err := toolset.Verifier(vcfg, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", errVerify, err)
 	}

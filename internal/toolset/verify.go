@@ -10,14 +10,15 @@ import (
 )
 
 // VerifyMode is the verify mode a surface runs with: the configured one, or
-// with none configured label where a person reads the answer as it is given
-// (interactive) and off elsewhere.
-func VerifyMode(cfg config.Config, interactive bool) agent.VerifyMode {
+// with none configured label where the surface labels by default (the
+// terminal, -p, rpc, the server, Studio) and off elsewhere (the SDK unless
+// it asks).
+func VerifyMode(cfg config.Config, labelByDefault bool) agent.VerifyMode {
 	m, err := agent.ParseVerifyMode(cfg.Verify.Mode)
 	if err != nil {
 		return agent.VerifyStrict // Validate refuses this; fail toward checking
 	}
-	if cfg.Verify.Mode == "" && interactive {
+	if cfg.Verify.Mode == "" && labelByDefault {
 		return agent.VerifyLabel
 	}
 	return m
@@ -26,8 +27,8 @@ func VerifyMode(cfg config.Config, interactive bool) agent.VerifyMode {
 // Verifier is the answer checker a surface gives its loop, or nil when the
 // mode is off and no contract is configured. A critic whose model cannot be
 // had is an error rather than silently no critic.
-func Verifier(cfg config.Config, interactive bool) (*agent.Verifier, error) {
-	mode := VerifyMode(cfg, interactive)
+func Verifier(cfg config.Config, labelByDefault bool) (*agent.Verifier, error) {
+	mode := VerifyMode(cfg, labelByDefault)
 	v := cfg.Verify
 	if mode == agent.VerifyOff && !v.Contract.On() {
 		return nil, nil

@@ -177,3 +177,22 @@ func TestEditorChargeReachAndBound(t *testing.T) {
 		t.Fatalf("a cancelled call: in %d out %d cost %v estimated %v", in, out, cost, est)
 	}
 }
+
+// A warm-up is a model call too: under a dollar cap an unpriced completion
+// model is not warmed, and nothing is sent.
+func TestStudioWarmUpRefusedUnpricedUnderACap(t *testing.T) {
+	fim := newFIMServer(t, "x")
+	r := completionRig(t, fim.URL, `,"limits":{"max_budget_usd":1}`+pricedMain)
+	id := r.open()
+	var warm map[string]any
+	r.cl.ok("_abhed/complete/warm", map[string]any{"sessionId": id}, &warm)
+	if warm["warmed"] != false || !strings.Contains(fmt.Sprint(warm["skipped"]), "no price") {
+		t.Fatalf("warm %v", warm)
+	}
+	fim.mu.Lock()
+	n := len(fim.paths)
+	fim.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d requests went out", n)
+	}
+}

@@ -70,6 +70,10 @@ const (
 type Options struct {
 	// Workspace is the directory the retrieval index covers.
 	Workspace string
+	// ReadWithheld, when set, is the session's own read rules, its engine's
+	// layers included, which the retrieval index is built to; nil builds it
+	// to the configured rules (a server's index, shared by sessions).
+	ReadWithheld func(path string) bool
 	// Bash is the shell tool. The surface builds it because the sandbox is the
 	// surface's to choose and to refuse to start without; nothing here weakens it.
 	Bash tools.Bash
@@ -86,6 +90,9 @@ type Options struct {
 	// by name, and web_fetch refuses a URL holding a value from. Nil offers no
 	// stored secrets, and leaves web_fetch unable to fetch.
 	Vault *secrets.Store
+	// NoMCPLogins, when set, is why the OAuth logins in Vault are not used:
+	// a URL server that has one is refused with it.
+	NoMCPLogins error
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
 	Warn func(format string, args ...any)
@@ -203,6 +210,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
 		s.Gateway.Admit, s.Gateway.PinProgram = MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		switch {
+		case o.Vault != nil && o.NoMCPLogins != nil:
+			s.Gateway.Authorize = MCPLoginsWithheld(o.Vault, o.NoMCPLogins)
+		case o.Vault != nil:
+			s.Gateway.Authorize = MCPAuthorize(o.Vault)
+		}
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {
@@ -268,7 +281,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	}
 	// Retrieval is an accelerator over grep, not a replacement.
 	if o.Parts&Retrieval != 0 && cfg.Retrieval.Enabled {
-		if ix, err := OpenIndex(ctx, cfg, o.Workspace); err != nil {
+		if ix, err := OpenIndexWithheld(ctx, cfg, o.Workspace, o.ReadWithheld); err != nil {
 			warn("index unavailable, falling back to grep: %v", err)
 		} else {
 			s.Index = ix
