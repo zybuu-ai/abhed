@@ -412,3 +412,36 @@ func TestGrepAnswerIsTheSameWhateverAWithheldFileHolds(t *testing.T) {
 		}
 	})
 }
+
+// A program named otherwise is not ripgrep, however safely it is owned: a
+// link named rg to /bin/sh resolves to sh and is not taken.
+func TestRipgrepMustBeNamedRg(t *testing.T) {
+	if ripgrepUsable("/bin/sh") {
+		t.Fatal("a root-owned program not named rg is taken")
+	}
+}
+
+// A .gitignore a read rule withholds is never read: its patterns do not
+// change what the walk counts.
+func TestGrepDoesNotReadAWithheldGitignore(t *testing.T) {
+	s, dir := setup(t)
+	for rel, content := range map[string]string{
+		"app/a.go":           "package app\n",
+		"secrets/.gitignore": "keep.txt\n",
+		"secrets/keep.txt":   "x\n",
+		"secrets/b.txt":      "y\n",
+	} {
+		p := filepath.Join(dir, rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secrets := filepath.Join(dir, "secrets")
+	ctx := WithReadCheck(context.Background(), func(p string) bool { return strings.HasPrefix(p, secrets+string(filepath.Separator)) })
+	useRipgrep(t, "")
+	got := grepCtx(t, ctx, s, grepArgs{Pattern: "package"}).Content
+	if !strings.Contains(got, "3 file(s) were not searched") {
+		t.Fatalf("the withheld .gitignore was read:\n%s", got)
+	}
+}

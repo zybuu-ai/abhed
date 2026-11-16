@@ -170,7 +170,11 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 		}
 		rel, _ := filepath.Rel(root, dir)
 		for _, e := range entries {
+			// A .gitignore a read rule withholds is not read either.
 			if e.Name() == ".gitignore" && e.Type().IsRegular() {
+				if ReadRefused(ctx, filepath.Join(dir, e.Name())) {
+					break
+				}
 				r := within.Entries()
 				if data, err := r.Read(filepath.Join(rel, e.Name()), nil, maxGrepFileSize); err == nil {
 					ignores = append(ignores[:len(ignores):len(ignores)], parseGitignore(filepath.ToSlash(dir), data))
@@ -229,7 +233,7 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 	}
 	// A folder named as the path is searched even when the repository's own
 	// ignore files exclude it; the ignore files below it still hold.
-	parents := s.parentIgnores(root)
+	parents := s.parentIgnores(ctx, root)
 	for d := root; len(parents) > 0 && strings.HasPrefix(filepath.ToSlash(d)+"/", parents[0].dir+"/") && d != parents[0].dir; d = filepath.Dir(d) {
 		if parents.ignored(filepath.ToSlash(d), true) {
 			parents = nil
@@ -245,7 +249,7 @@ func (s *Session) grepWalk(ctx context.Context, root string, within *Confined, s
 // parentIgnores are the .gitignore files from the session root holding root
 // down to root's parent, so a search of a subfolder skips what the
 // repository's own ignores. Each is read as the file tools read.
-func (s *Session) parentIgnores(root string) ignoreStack {
+func (s *Session) parentIgnores(ctx context.Context, root string) ignoreStack {
 	var top string
 	for _, r := range append([]string{s.Root}, s.allowedRoots()...) {
 		if rel, err := filepath.Rel(r, root); err == nil && filepath.IsLocal(rel) {
@@ -266,7 +270,7 @@ func (s *Session) parentIgnores(root string) ignoreStack {
 	var out ignoreStack
 	for i := len(dirs) - 1; i >= 0; i-- {
 		p := filepath.Join(dirs[i], ".gitignore")
-		if info, err := os.Lstat(p); err != nil || !info.Mode().IsRegular() || info.Size() > maxGrepFileSize {
+		if info, err := os.Lstat(p); err != nil || !info.Mode().IsRegular() || info.Size() > maxGrepFileSize || ReadRefused(ctx, p) {
 			continue
 		}
 		if data, err := s.readFile(p); err == nil {
@@ -408,10 +412,17 @@ func findRipgrep() string {
 		return ""
 	}
 	real, err := filepath.EvalSymlinks(p)
-	if err != nil || ripgrepWritable(real) {
+	if err != nil || !ripgrepUsable(real) {
 		return ""
 	}
 	return real
+}
+
+// ripgrepUsable reports whether the program at real, links resolved, may be
+// run as ripgrep: it is named rg, so a link named rg to another program is
+// not taken, and only root could replace it.
+func ripgrepUsable(real string) bool {
+	return filepath.Base(real) == "rg" && !ripgrepWritable(real)
 }
 
 // ripgrepFor is the ripgrep this session may run: none when it lies inside
