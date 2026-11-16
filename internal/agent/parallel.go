@@ -278,28 +278,44 @@ func labelFrom(prompt string) string {
 }
 
 // Which note a message gets. A denylist alone let fresh phrasings about code
-// through each round, so the strong note is now an allowlist: a parallel
-// phrase, or subagents named as the doer, with a verb for reading or
-// analysis work. Any other mention of parallel work gets only a note asking
-// the model to check which the person means. A message that names a change
-// to code, or the program's own concurrency, gets neither: a note there
-// sends the model the wrong way, and /parallel always asks outright.
+// through each round, and so did words that merely appeared together, so the
+// strong note now depends on the sentence's shape: the message must open with
+// the reading or analysis work itself, after an optional "please", "can you"
+// or "could you" — a reading verb, "fan out and" one, or subagents named as
+// the doers ("use/using/with/via … subagents") — and no "to <reading verb>"
+// or "so it/they/that <reading verb>" may follow a noun, since there the
+// reading is what a program is to be changed to do. Any other mention of
+// parallel work gets only a note asking the model to check which the person
+// means. A message that names a change to code, CI, or the program's own
+// concurrency gets neither: a note there sends the model the wrong way, and
+// /parallel always asks outright.
+const readingVerbs = `review(s|ing)?|audit(s|ing)?|check(s|ing)?|investigat(e|es|ing)|` +
+	`look(ing)? at|read(s|ing)?|summari[sz](e|es|ing)|compar(e|es|ing)|research(es|ing)?|` +
+	`analy[sz](e|es|ing)|explor(e|es|ing)|search(es|ing)?|find(s|ing)?|triag(e|es|ing)|test`
+
 var (
 	parallelPhrase = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|` +
 		`side[ -]by[ -]side|paralleli[sz]e|fan(ning)?[ -]out|en paralelo)\b|समानांतर`)
-	// subagentsDoing names subagents as the ones to do the work.
-	subagentsDoing = regexp.MustCompile(`(?i)\b(use|using|with|across|via)\s+(\w+\s+)?sub-?agents\b`)
 	subagentsNamed = regexp.MustCompile(`(?i)\bsub-?agents?\b`)
 	// readingWork is work that reads or judges rather than changes.
-	readingWork = regexp.MustCompile(`(?i)\b(review(s|ing)?|audit(s|ing)?|check(s|ing)?|investigat(e|es|ing)|` +
-		`look(ing)? at|read(s|ing)?|summari[sz](e|es|ing)|compar(e|es|ing)|research(es|ing)?|` +
-		`analy[sz](e|es|ing)|explor(e|es|ing)|search(es|ing)?|find(s|ing)?|triag(e|es|ing)|test)\b`)
+	readingWork = regexp.MustCompile(`(?i)\b(` + readingVerbs + `)\b`)
+	// readingLead is a message that opens with the reading work, or with
+	// subagents named as the ones to do it.
+	readingLead = regexp.MustCompile(`(?i)^\s*(please\s+|(can|could)\s+you\s+)?(` +
+		`(` + readingVerbs + `)\b|fan(ning)?[ -]out\s+and\s+(` + readingVerbs + `)\b|` +
+		`(use|using|with|via)\s+(\S+\s+){0,2}?sub-?agents\b)`)
+	// leadSubagents is a message that opens with subagents as the doers.
+	leadSubagents = regexp.MustCompile(`(?i)^\s*(please\s+|(can|could)\s+you\s+)?(use|using|with|via)\s+(\S+\s+){0,2}?sub-?agents\b`)
+	// programToRead is a noun followed by what it is to read: "the crawler to
+	// read", "the loader so it reads". The subagents a message opens with are
+	// the doers, not a program.
+	programToRead = regexp.MustCompile(`(?i)\b(\w[\w-]*)\s+(to|so\s+(it|they|that))\s+(` + readingVerbs + `)\b`)
 	// codeWork names a change to code, the program's own concurrency, or a
 	// library or file that does it; it suppresses both notes.
 	codeWork = regexp.MustCompile(`(?i)\b(build|builds|building|deploy|deploys|deploying|implement|implements|` +
 		`add|adds|make|makes|refactor\w*|write|rewrit\w*|code|app|apps|cluster|compose|docker|should|must|` +
 		`creat\w*|design(s|ed)?\s+(a|an|the|how|our|my|your|new)|designing|enabl\w*|switch\w*|turn on|spawn\w*|` +
-		`ci|etl|multiprocessing|` +
+		`ci|etl|multiprocessing|github actions?|workflows?|jenkins|pre-commit|xdist|pytest-xdist|makefile|tox|nox|` +
 		`race|races|racy|goroutines?|threads?|thread-?safe|threadpool|threadpoolexecutor|asyncio|async|await|` +
 		`errgroup|rayon|mutex(es)?|locks?|scheduler|worker[ -]?pools?|for[ -]loop|gpus?|connections?|connecting|` +
 		`test suite|tests in parallel|safe to (call|run|use))\b|promise\.all|` +
@@ -336,14 +352,28 @@ func parallelTier(typed string) noteTier {
 		return noNote
 	}
 	phrase := parallelPhrase.MatchString(typed)
-	if (phrase || subagentsDoing.MatchString(typed)) && readingWork.MatchString(typed) &&
-		!programRunning.MatchString(typed) && !clauseBefore.MatchString(typed) && !programSigns.MatchString(typed) {
+	lead := leadSubagents.MatchString(typed)
+	if (phrase || lead) && readingLead.MatchString(typed) && readingWork.MatchString(typed) &&
+		!readingForAProgram(typed, lead) && !programRunning.MatchString(typed) &&
+		!clauseBefore.MatchString(typed) && !programSigns.MatchString(typed) {
 		return strongNote
 	}
 	if phrase || subagentsNamed.MatchString(typed) {
 		return clarifyNote
 	}
 	return noNote
+}
+
+// readingForAProgram reports a "to <reading verb>" or "so it <reading verb>"
+// after a noun, other than the subagents a message opens with.
+func readingForAProgram(typed string, lead bool) bool {
+	for _, m := range programToRead.FindAllStringSubmatch(typed, -1) {
+		if lead && subagentsNamed.MatchString(m[1]) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // ParallelNote is what Abhed adds after a message that asks for reading or

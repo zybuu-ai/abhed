@@ -78,10 +78,10 @@ All notable changes to Abhed are recorded here. The format follows
   note after the message, recorded on its `user.message` as
   `harness_note`; on a small local model the descriptions alone did not turn
   it. The note is judged only on what the person typed, not on attached files,
-  Studio resources or piped stdin. It says to start subagents only when a
-  parallel phrase, or subagents named as the doers, goes with reading or
-  analysis work such as review, audit or investigate, and the phrase does not
-  describe how a program runs; any other mention of parallel work gets a note
+  Studio resources or piped stdin. It says to start subagents only when the
+  message opens with reading or analysis work such as review, audit or
+  investigate, or with subagents named as the doers, has a parallel phrase,
+  and does not describe a program to be changed or how a program runs; any other mention of parallel work gets a note
   telling the model to ask one short question if it is unclear which the
   person means, except in a run nobody can answer, such as `-p`. Neither is added when the message names
   creating or changing code, building agents or the program's own concurrency

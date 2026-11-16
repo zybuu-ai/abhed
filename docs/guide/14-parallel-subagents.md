@@ -36,13 +36,18 @@ project by running things in parallel", it still added a thread pool to the
 code. So when your own words speak of parallel work, Abhed puts one of two short
 notes after your message for the model.
 
-- **Start subagents.** When a parallel phrase, or subagents named as the ones to
-  do it ("use", "with", "across" or "via" subagents), goes with reading or
-  analysis work (review, audit, check, investigate, look at, read, summarise,
-  compare, research, analyse, explore, search, find, triage, test), the note
+- **Start subagents.** When the message opens with reading or analysis work
+  (review, audit, check, investigate, look at, read, summarise, compare,
+  research, analyse, explore, search, find, triage, test), with "fan out and"
+  one of those, or with subagents named as the ones to do it ("use", "using",
+  "with" or "via" … subagents), after an optional "please", "can you" or
+  "could you", and also has a parallel phrase or those subagents, the note
   says that unless you asked in so many words to change the program to run
   concurrently, the message means how the model does the work: split it into
-  independent parts and start them all at once with one `tasks` call. It is not
+  independent parts and start them all at once with one `tasks` call. So
+  "review the three open PRs in parallel" gets it, but "update the crawler to
+  read pages in parallel" does not: a "to <reading verb>" or "so it <reading
+  verb>" after a noun says what a program is to be changed to do. Nor is it
   given when the phrase seems to describe how a program runs: when it comes
   within three words after a verb for running (run, happen, execute, fire,
   process, fetch, query, dispatch, load, deadlock, in any form), after a why,
@@ -67,7 +72,8 @@ would send the model the wrong way, and a missed note costs nothing that
 `/parallel` cannot ask for outright:
 
 - a word for creating, changing or shipping code: build, deploy, implement, add,
-  make, write, code, app, cluster, compose, docker, CI, ETL, "turn on", and
+  make, write, code, app, cluster, compose, docker, CI, ETL, "turn on", CI tools
+  (GitHub Actions, workflow, Jenkins, pre-commit, xdist, Makefile, tox, nox), and
   "should" or "must" (which describe how a program behaves); and refactor,
   rewrite, create, enable, switch and spawn in any form ("refactoring",
   "rewrites", "creating", "enabled"), with design as a verb ("design a",

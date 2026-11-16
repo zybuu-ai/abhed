@@ -234,9 +234,10 @@ func TestParallelTier(t *testing.T) {
 	checkParallelCases(t, []parallelCase{
 		// Reading or analysis work asked for at once: the strong note.
 		{"review src, test pkg/store and document the server package in parallel", strong},
-		{"parallelize the review of these four modules", strong},
-		{"fan out across the services and check each", strong},
-		{"in-parallel review of pkg/a and pkg/b", strong},
+		// It must open the message, so these only ask.
+		{"parallelize the review of these four modules", clarify},
+		{"fan out across the services and check each", clarify},
+		{"in-parallel review of pkg/a and pkg/b", clarify},
 		// Parallel work with nothing said of what kind: ask.
 		{"Speed up the project by running things in parallel.", clarify},
 		{"do these three at the same time", clarify},
@@ -337,7 +338,8 @@ func TestParallelTierHeldOutThirdReview(t *testing.T) {
 		{"design how our subagents hand off work", none},
 		// Subagents named as the doer of reading work.
 		{"use subagents to review pkg/auth and pkg/store", strong},
-		{"split the audit across subagents", strong},
+		// It must open the message, so this only asks.
+		{"split the audit across subagents", clarify},
 	})
 }
 
@@ -369,6 +371,35 @@ func TestParallelTierHeldOutFourthReview(t *testing.T) {
 		{"handle the three tickets at the same time", clarify},
 		{"use two subagents: one reads the RFC, one reads the spec", strong},
 		{"with subagents, research pricing for the three vendors", strong},
+	})
+}
+
+// Held out from the fifth review: a program to be changed so that it reads
+// gets the note that asks, or none, never the strong one; reading work that
+// opens the message keeps it.
+func TestParallelTierHeldOutFifthReview(t *testing.T) {
+	checkParallelCases(t, []parallelCase{
+		{"update the crawler to read pages in parallel", clarify},
+		{"change the loader so it reads all shards at once", clarify},
+		{"fix the indexer so it searches both indexes in parallel", clarify},
+		{"convert the scanner to analyse files side by side", clarify},
+		{"set up the GitHub Action to test each package in parallel", none},
+		{"configure pytest-xdist to test modules in parallel", none},
+		{"port the summariser to summarise chapters in parallel", clarify},
+		{"let the agent framework review PRs with subagents", clarify},
+		{"modify the reviewer bot to check every file at once", clarify},
+		{"wire the linter into the pre-commit hook so it checks files in parallel", none},
+		{"give our support agent subagents that search the KB in parallel", clarify},
+		{"tune the Jenkins pipeline to test the services simultaneously", none},
+		{"upgrade the exporter to compare snapshots side by side", clarify},
+		{"review the three open PRs in parallel and leave comments", strong},
+		{"research the three libraries at the same time and recommend one", strong},
+		// The opening may be polite, and subagents named first are the doers.
+		{"please review these four modules in parallel", strong},
+		{"could you summarise the three reports at the same time", strong},
+		{"use subagents to review pkg/auth and pkg/store", strong},
+		// A reading verb that does not open the message only asks.
+		{"the three reports need someone to read them at once", clarify},
 	})
 }
 
@@ -452,7 +483,7 @@ func TestParallelNoteGoesWithTheTypedRequest(t *testing.T) {
 // its own.
 func TestParallelNoteOnAQueuedMessage(t *testing.T) {
 	l, adapter, _ := noteLoop(t, true, nil)
-	ask := "and check the docs and the tests at the same time"
+	ask := "check the docs and the tests at the same time"
 	l.QueueMessage(Message{Text: ask, Typed: ask, Steered: true})
 	if _, err := l.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
