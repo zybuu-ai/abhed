@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/bgjob"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/hawkeye"
@@ -1152,7 +1153,10 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		own := strings.HasSuffix(r.URL.Path, "/upload") || r.URL.Path == "/v1/uploads" ||
 			(r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/file")) ||
-			strings.HasSuffix(r.URL.Path, "/accept")
+			strings.HasSuffix(r.URL.Path, "/accept") ||
+			// A background job's snapshot, which its edition's handler caps
+			// at bgjob.MaxSnapshotUpload.
+			(r.Method == http.MethodPost && r.URL.Path == bgjob.PathSnapshots)
 		if r.Body != nil && !own {
 			capBody(w, r)
 		}

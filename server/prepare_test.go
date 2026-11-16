@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/zybuu-ai/abhed/bgjob"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/sessionsandbox"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -100,5 +103,23 @@ func TestPrepareNeedsAFolderOfTheSessionsOwn(t *testing.T) {
 	}
 	if ran {
 		t.Fatal("Prepare ran on a shared folder")
+	}
+}
+
+// A snapshot's upload is not clamped to the JSON size: its handler caps it.
+func TestSnapshotUploadsAreNotClampedToTheJSONSize(t *testing.T) {
+	var got int64
+	s := New(Options{Workspace: t.TempDir(), Config: config.Default(), Adapter: stubAdapter{},
+		Registry: tools.NewRegistry(tools.Read{}),
+		Mounts: []Mount{func(_ *Server, mux *http.ServeMux) {
+			mux.HandleFunc("POST "+bgjob.PathSnapshots, func(w http.ResponseWriter, r *http.Request) {
+				got, _ = io.Copy(io.Discard, r.Body)
+			})
+		}}})
+	body := strings.NewReader(strings.Repeat("x", maxJSONBody*3))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", bgjob.PathSnapshots, body))
+	if got != maxJSONBody*3 {
+		t.Fatalf("the handler read %d of %d bytes", got, maxJSONBody*3)
 	}
 }
