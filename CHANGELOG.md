@@ -813,6 +813,9 @@ All notable changes to Abhed are recorded here. The format follows
   read-only from commands", which read as if commands could not commit.
   The line now says commands cannot change git's config or hooks but can
   still commit.
+- The `task` tool no longer refuses a call without a `description`, which
+  cost the model a turn: it labels the subagent from its prompt, as `tasks`
+  does.
 
 ### Go API
 
