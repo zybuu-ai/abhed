@@ -61,6 +61,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
+- Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
+  logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
+  secrets API answers 400), and a command or tool is never given one by
+  name. Store such a secret under another name.
 - A workspace other than your home folder whose config is your own
   `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
   longer trusted as your own file without asking; trust it once with
@@ -227,6 +231,40 @@ All notable changes to Abhed are recorded here. The format follows
   that starts, answers and stops sessions for people on routes of its own.
   A denial through `DenyPending` is recorded as the system's, with its
   reason, never as a person's rejection.
+
+### Added
+
+- Sign-in to remote MCP servers with OAuth 2.1, as the MCP authorization
+  specification describes: `abhed mcp login NAME` finds the server's
+  protected-resource and authorization-server metadata, registers a client
+  where the server offers that (or uses `oauth.client_id`), and signs in
+  through your browser with PKCE (S256 only) and a loopback redirect;
+  `abhed mcp logout NAME` revokes and forgets the login. The tokens are kept
+  in the secret store under names Abhed holds for itself: never listed to
+  the model, never given to a command, redacted from the record. A login is
+  bound to the server's name and URL, refreshed when it ends, sent only to
+  the server's own origin (never on a redirect or to another host), and
+  every request of it, the browser's apart, goes under the egress allowlist
+  and the corporate upstream proxy. Only an `https` server and authorization
+  server are signed in to (`http` only for a server on this machine); a
+  resource or issuer that does not match is refused. A refresh holds a lock
+  across processes (one process only on Windows and with a secrets driver),
+  and a login removed while a session runs stops being used within five
+  seconds and stays removed.
+  OAuth logins aren't available per account yet: an `abhed serve` that
+  accounts sign in to uses none, and warns
+  ([MCP](docs/guide/08-mcp.md#signing-in-with-oauth)).
+- MCP resources: a server that offers them adds
+  `mcp__<server>__list_resources` and `mcp__<server>__read_resource`,
+  judged by policy as its tools are (a rule may name the URI:
+  `mcp__docs__read_resource(docs://private/*)`; a URI is read only in its
+  canonical form, a host not in ASCII is refused, and deny and ask rules
+  also match without regard to case, in NFC and NFKC, and with escapes
+  decoded once and twice), capped at 30,000
+  characters, binary content described rather than sent, and recorded.
+  `@server:uri` in the terminal or an editor's prompt attaches one, read as
+  your own call through the same tool and policy; `/mcp resources SERVER`
+  lists them ([MCP](docs/guide/08-mcp.md#resources)).
 
 ### Fixed
 
