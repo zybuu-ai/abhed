@@ -151,6 +151,9 @@ type cliFlags struct {
 	// is set when they came after "--".
 	words  []string
 	dashed bool
+	// stdinDash is a lone "-" among them: with -p, read stdin as the task's
+	// input even though the task is given.
+	stdinDash bool
 	// sub is the subcommand and its arguments, when there is one.
 	sub []string
 }
@@ -158,7 +161,7 @@ type cliFlags struct {
 // newFlagSet declares every flag on fs, bound to f.
 func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("abhed", flag.ContinueOnError)
-	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, stdin, or both")
+	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, or stdin when no task is given; add - to attach stdin to a task")
 	fs.Var(&f.print, "print", "same as -p")
 	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass")
 	fs.StringVar(&f.permissionMode, "permission-mode", "", "same as -mode; also takes acceptEdits and bypassPermissions")
@@ -229,7 +232,11 @@ func parseArgs(fs *flag.FlagSet, f *cliFlags, args []string, edition map[string]
 			f.words = fs.Args()
 			return nil
 		}
-		f.words = append(f.words, first)
+		if first == "-" {
+			f.stdinDash = true
+		} else {
+			f.words = append(f.words, first)
+		}
 		rest = fs.Args()[1:]
 	}
 }

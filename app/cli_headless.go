@@ -111,6 +111,23 @@ func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bo
 	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil
 }
 
+// readsStdin is whether a -p run reads stdin. With no task, stdin is the
+// task. With a task, stdin is read only when "-" asks for it: a caller whose
+// stdin is a pipe it never closes, such as a driver or a CI step, would
+// otherwise wait on it for good. Input left unread is said once.
+func readsStdin(f *cliFlags, task string, isPipe bool, waiting func() bool, warn io.Writer) bool {
+	switch {
+	case f.noStdin || !isPipe:
+		return false
+	case task == "" || f.stdinDash:
+		return true
+	}
+	if waiting() {
+		fmt.Fprintln(warn, "abhed: stdin was not read, since the task is given; add - to attach it (abhed -p \"…\" -)")
+	}
+	return false
+}
+
 // stdinHeader opens piped stdin in a -p task.
 const stdinHeader = "\n\nInput from stdin. "
 

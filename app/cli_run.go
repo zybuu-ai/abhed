@@ -378,7 +378,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		o.typed = prompt
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
-		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, !f.noStdin && stdinIsPipe(), os.Stderr); err != nil {
+		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, readsStdin(f, prompt, stdinIsPipe(), stdinWaiting, os.Stderr), os.Stderr); err != nil {
 			if code, stopped := stopCode(ctx); stopped {
 				return code
 			}
@@ -589,6 +589,12 @@ func checkHeadlessFlags(f *cliFlags) int {
 		return bad("-input-format stream-json needs -p")
 	case !f.print.on && f.noStdin:
 		return bad("-no-stdin needs -p")
+	case !f.print.on && f.stdinDash:
+		return bad("- (attach stdin) needs -p")
+	case f.noStdin && f.stdinDash:
+		return bad("-no-stdin and - disagree: - attaches stdin")
+	case f.stdinDash && f.inputFormat == "stream-json":
+		return bad("- and -input-format stream-json disagree: stream-json reads stdin as messages")
 	case f.noStdin && f.inputFormat == "stream-json":
 		return bad("-no-stdin and -input-format stream-json disagree: stream-json reads stdin")
 	case !f.print.on && f.format != "text":

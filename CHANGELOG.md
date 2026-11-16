@@ -129,6 +129,11 @@ All notable changes to Abhed are recorded here. The format follows
   checked by its `text` as well as its claims, so a run that 1.2.9 ended
   verified with nothing verified (the text saying "the tests now pass", no
   test run showing it) now ends `unverified`, exit 8.
+- `abhed -p "task"` no longer reads stdin. A caller whose stdin was a pipe
+  it never closed (a CI step, a driver) waited on it for good. To attach
+  piped input to a task, add a lone `-`: `git diff | abhed -p "review this
+  change" -`. Input left waiting unread is said once on stderr. With no
+  task, stdin is the task, as before.
 
 ### Added
 

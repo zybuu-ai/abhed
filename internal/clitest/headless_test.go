@@ -49,10 +49,10 @@ func resultOf(t *testing.T, stdout string) map[string]any {
 	return res
 }
 
-// cat log | abhed -p "summarise": the log reaches the model with the task.
+// cat log | abhed -p "summarise" -: the log reaches the model with the task.
 func TestHeadlessStdinJoinsThePrompt(t *testing.T) {
 	t.Parallel()
-	h := piped(t, Opts{Args: []string{"-p", "summarise"}, Stdin: "line one of the log\nline two\n", Script: `text "summary"`})
+	h := piped(t, Opts{Args: []string{"-p", "summarise", "-"}, Stdin: "line one of the log\nline two\n", Script: `text "summary"`})
 	req := lastRequestText(t, h)
 	if !strings.Contains(req, "summarise") || !strings.Contains(req, "line two of the log") && !strings.Contains(req, "line two") {
 		t.Fatalf("the request lacks the task or the log:\n%s", req)
@@ -62,11 +62,10 @@ func TestHeadlessStdinJoinsThePrompt(t *testing.T) {
 	}
 }
 
-// cat log | abhed -p "q": piped stdin is the question's context, as users of
-// other command lines expect.
+// cat log | abhed -p "q" -: piped stdin is the question's context.
 func TestHeadlessPipedLogIsContext(t *testing.T) {
 	t.Parallel()
-	h := piped(t, Opts{Args: []string{"-p", "why did this fail?", "-output-format", "json"}, Stdin: "error: build broke at step 3\n", Script: `text "step 3"`})
+	h := piped(t, Opts{Args: []string{"-p", "why did this fail?", "-", "-output-format", "json"}, Stdin: "error: build broke at step 3\n", Script: `text "step 3"`})
 	req := lastRequestText(t, h)
 	if !strings.Contains(req, "why did this fail?") || !strings.Contains(req, "Input from stdin") || !strings.Contains(req, "build broke at step 3") {
 		t.Fatalf("the log did not reach the model with the question:\n%s", req)
@@ -87,6 +86,11 @@ func TestHeadlessLoopLeavesTheListAlone(t *testing.T) {
 	n := piped(t, Opts{Args: []string{"-p", "fix a.go", "-no-stdin"}, Stdin: "b.go\nc.go\n", Script: `text "ok"`})
 	if req := lastRequestText(t, n); !strings.Contains(req, "fix a.go") || strings.Contains(req, "c.go") {
 		t.Fatalf("-no-stdin read the list:\n%s", req)
+	}
+	// A task without - leaves stdin alone too.
+	d := piped(t, Opts{Args: []string{"-p", "fix a.go"}, Stdin: "b.go\nc.go\n", Script: `text "ok"`})
+	if req := lastRequestText(t, d); !strings.Contains(req, "fix a.go") || strings.Contains(req, "c.go") {
+		t.Fatalf("a task read the list:\n%s", req)
 	}
 }
 
