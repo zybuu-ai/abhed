@@ -1740,9 +1740,12 @@ type LimitsConfig struct {
 	MaxBudgetTokens int `json:"max_budget_tokens"`
 	// MaxBudgetUSD caps a session's cost in US dollars, subagents included.
 	// Zero means unlimited. With a cap, a model with no price is refused.
-	MaxBudgetUSD    float64 `json:"max_budget_usd,omitempty"`
-	MaxSubagents    int     `json:"max_subagents"`
-	NestedSubagents bool    `json:"nested_subagents"`
+	MaxBudgetUSD float64 `json:"max_budget_usd,omitempty"`
+	// ReasoningStallSeconds cuts a model reply that has only reasoned, with
+	// no text or tool call, for this long. Zero is 180.
+	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
+	MaxSubagents          int  `json:"max_subagents"`
+	NestedSubagents       bool `json:"nested_subagents"`
 	// MaxParallelSubagents bounds how many of a `tasks` call's subagents run
 	// at once. Zero means all of them, up to the tool's own cap of eight.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`

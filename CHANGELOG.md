@@ -498,6 +498,13 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- A model reply that only reasons, with no text or tool call, is cut after
+  `limits.reasoning_stall_seconds` (180 by default) instead of being held to
+  the ten-minute call cap and failing the run with no answer. The cut call is
+  charged as any cut call is; the turn asks once more with thinking off and a
+  nudge, and a second such reply in a row ends the run `stalled` with the
+  reasoning kept in the record. A workspace may only lower the bound.
+
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`

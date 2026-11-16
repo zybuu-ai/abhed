@@ -257,7 +257,10 @@ type Config struct {
 	// TurnsPerMessage, else 25.
 	ContinueTurns int
 	MaxTokens     int
-	CompactAt     float64 // fraction of the context window
+	// ReasoningStall cuts a reply that has only reasoned, with no text or
+	// tool call, for this long; zero uses DefaultReasoningStall.
+	ReasoningStall time.Duration
+	CompactAt      float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -265,6 +268,10 @@ type Config struct {
 	Temperature  *float64
 	Effort       model.EffortLevel
 }
+
+// DefaultReasoningStall is how long a reply may reason with nothing else
+// before it is cut: a runaway think otherwise holds the call to its cap.
+const DefaultReasoningStall = 3 * time.Minute
 
 func DefaultConfig() Config {
 	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
@@ -411,6 +418,10 @@ type Loop struct {
 	// Three end the run rather than asking again to the turn limit, each billed.
 	streamFails   int
 	lastStreamErr string
+	// stallRetried is set once a reply cut for reasoning without output has
+	// been asked again, so a second one in a row ends the run; stallThinkOff
+	// asks that retry with thinking off where the provider takes it.
+	stallRetried, stallThinkOff bool
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// stopContinues counts the times stop hooks sent this run back to work.
@@ -1157,6 +1168,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		defer hh.RunEnded(l.rootID())
 	}
 	l.streamFails = 0 // a failure streak is the run's own, not carried from the last
+	l.stallRetried, l.stallThinkOff = false, false
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -1488,6 +1500,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		Temperature: l.Config.Temperature,
 		Effort:      l.effort(),
 	}
+	// The retry after a reply cut for reasoning without output asks with
+	// thinking off, where the provider takes it.
+	if l.stallThinkOff && l.Adapter.Profile().Sampling.Think {
+		off := false
+		req.Params.Think = &off
+	}
+	l.stallThinkOff = false
+	stallAfter := l.Config.ReasoningStall
+	if stallAfter <= 0 {
+		stallAfter = DefaultReasoningStall
+	}
 
 	callStart := time.Now()
 	// A wait for a request slot is said, and kept out of the call's timings.
@@ -1499,6 +1522,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		l.record(EvModelWaiting, ActorSystem, ModelWaiting{Model: l.Adapter.Profile().Name, Ahead: w.Ahead})
 	})
+	// A reply that only reasons for stallAfter is cut here, rather than held
+	// to the call's cap with nothing to show.
+	callCtx, cutCall := context.WithCancelCause(callCtx)
+	defer cutCall(nil)
+	var stallTimer *time.Timer
+	answered := false
+	defer func() {
+		if stallTimer != nil {
+			stallTimer.Stop()
+		}
+	}()
 	stream, err := l.Adapter.Complete(callCtx, req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
@@ -1546,6 +1580,15 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	for chunk := range stream {
 		if firstToken == 0 && chunk.Type != model.ChunkDone {
 			firstToken = time.Since(callStart) - time.Duration(queued.Load())
+		}
+		if !answered && (chunk.Type == model.ChunkText && chunk.Text != "" || chunk.Type == model.ChunkToolCall) {
+			answered = true
+			if stallTimer != nil {
+				stallTimer.Stop()
+			}
+		}
+		if !answered && stallTimer == nil && chunk.Type == model.ChunkReasoning {
+			stallTimer = time.AfterFunc(stallAfter, func() { cutCall(&ReasoningStallError{After: stallAfter}) })
 		}
 		switch chunk.Type {
 		case model.ChunkText:
@@ -1607,6 +1650,13 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		l.record(EvAgentDelta, ActorAgent, Delta{Text: out, Seq: deltaN})
 	}
 	pending.Reset()
+	// Cut for reasoning without output: that is the reply's failure, whatever
+	// the stream said as it closed.
+	var stall *ReasoningStallError
+	stalled := ctx.Err() == nil && errors.As(context.Cause(callCtx), &stall)
+	if stalled {
+		streamErr = stall
+	}
 
 	mc := ModelCall{
 		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
@@ -1623,7 +1673,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	for _, c := range calls {
 		produced += len(c.Name) + len(c.Args)
 	}
-	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil, Failed: streamErr != nil}
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil || stalled, Failed: streamErr != nil}
 	if est, ok := EstimateUsage(l.Adapter, req, callUsage, end, l.Budget.CutAtBound(l.Adapter)); ok {
 		dIn, dOut := est.InputTokens-callUsage.InputTokens, est.OutputTokens-callUsage.OutputTokens
 		mc.Estimated, mc.TokensIn, mc.TokensOut = true, est.InputTokens, est.OutputTokens
@@ -1673,6 +1723,21 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	} else {
 		l.streamFails = 0
+		l.stallRetried = false
+	}
+	// A reply cut for reasoning without output is asked once more, with
+	// thinking off and a nudge; a second in a row ends the run, its reasoning
+	// kept in the record.
+	if stalled {
+		if l.stallRetried {
+			l.stuckDetail = fmt.Sprintf("the model reasoned for %s without answering or calling a tool, twice in a row; its reasoning is in the record", stallAfter)
+			return TermStalled, true, nil
+		}
+		l.stallRetried, l.stallThinkOff = true, true
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
+			"Your previous reply reasoned for %s without answering or calling a tool, so it was stopped. "+
+				"Do not deliberate at length: reply now with the one tool call you need, or with the answer.", stallAfter)})
+		return "", false, nil
 	}
 	if streamErr != nil && len(calls) == 0 {
 		if text.Len() == 0 {
@@ -2471,7 +2536,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
-	if reason == TermRetryExhausted && l.stuckDetail != "" && l.endDetail == "" {
+	if (reason == TermRetryExhausted || reason == TermStalled) && l.stuckDetail != "" && l.endDetail == "" {
 		l.endDetail = l.stuckDetail
 		defer func() { l.endDetail = "" }()
 	}

@@ -177,6 +177,15 @@ that stopped at `max_turns` in one conversation, with `/continue` or
 `abhed -p --continue`; 0 turns continuing off. See [Turn
 limit](04-permissions.md#turn-limit).
 
+`reasoning_stall_seconds` (180 by default) cuts a model reply that has only
+reasoned, with no text or tool call, for that long, instead of holding it to
+the call's ten-minute cap. The call is charged as any cut call is (see
+below). The turn asks once more, with thinking off where the provider takes
+it and a nudge to answer or make the one tool call it needs. A second such
+reply in a row ends the run `stalled`, with the reasoning kept in the record,
+and each cut reply counts toward the three failed replies in a row that end
+a run. A workspace may only lower it.
+
 `max_budget_tokens` caps the whole session: the primary agent and every
 subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason

@@ -298,3 +298,11 @@ func (b *Budget) CutAtBound(a model.Adapter) bool {
 	p := a.Profile()
 	return b.USDLimited() || p.ReasoningTokens || p.Sampling.Think
 }
+
+// ReasoningStallError is a reply cut because it only reasoned, with no text or
+// tool call, for After.
+type ReasoningStallError struct{ After time.Duration }
+
+func (e *ReasoningStallError) Error() string {
+	return fmt.Sprintf("the model reasoned for %s without answering or calling a tool, so the call was stopped", e.After)
+}
