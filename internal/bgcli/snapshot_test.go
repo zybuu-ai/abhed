@@ -71,7 +71,7 @@ func TestStartSendsASnapshotOfTheTrackedFiles(t *testing.T) {
 	write(t, filepath.Join(repo, "pkg", "a.go"), "package pkg // committed\n")
 	write(t, filepath.Join(repo, "gone.txt"), "deleted in the working tree\n")
 	write(t, filepath.Join(repo, "private", "notes.md"), "withheld by a deny rule\n")
-	write(t, filepath.Join(repo, "deploy", "id_rsa"), "not really a key\n")
+	write(t, filepath.Join(repo, "keys", "id_rsa"), "not really a key\n")
 	write(t, filepath.Join(repo, "config.py"), "AWS_SECRET_ACCESS_KEY = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYzz\"\n")
 	write(t, filepath.Join(repo, "settings.txt"), "token=stored-value-7f3a\n")
 	if err := os.Symlink("/etc/passwd", filepath.Join(repo, "link")); err != nil {
@@ -107,7 +107,7 @@ func TestStartSendsASnapshotOfTheTrackedFiles(t *testing.T) {
 	if files["pkg/a.go"] != "package pkg // edited, not staged\n" {
 		t.Fatalf("pkg/a.go as sent: %q", files["pkg/a.go"])
 	}
-	for _, want := range []string{"read rules withhold: private/notes.md", "config.py", "deploy/id_rsa", "settings.txt", "link (a link)", "sent 2 tracked file(s)"} {
+	for _, want := range []string{"read rules withhold: private/notes.md", "config.py", "keys/id_rsa", "settings.txt", "link (a link)", "sent 2 tracked file(s)"} {
 		if !strings.Contains(res.err, want) {
 			t.Errorf("the start does not say %q:\n%s", want, res.err)
 		}
