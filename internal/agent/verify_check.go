@@ -551,19 +551,6 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	return v
 }
 
-// workSubjectRe is the session's own work named as what did something:
-// "this change", "the migration", "our PR".
-var workSubjectRe = regexp.MustCompile(`(?:^|[.;:]\s*)(?:the|this|that|these|those|my|our|your)\s+(?:[a-z\-]+\s+)?(?:changes?|edits?|commits?|migrations?|diffs?|prs?|pull requests?|rewrites?|clean-?ups?|revisions?|fix(?:es)?|patch(?:es)?|refactor(?:s|ing)?|updates?)\b`)
-
-// possessiveRe is a noun the person or the agent owns: "my handler", "our
-// config", "your tests".
-var possessiveRe = regexp.MustCompile(`\b(?:my|our|your)\s+[a-z]`)
-
-// sessionWorkRe is work said with no subject named for it: a passive
-// ("were updated", "was fixed") or a bare participle ending the sentence
-// ("typed errors added").
-var sessionWorkRe = regexp.MustCompile(`\b(?:was|were|is|are|has been|have been|got|gets)\s+(?:\w+ly\s+|now\s+|all\s+)?[a-z]+(?:ed|en|ten|wn|ne)\b|\b[a-z]+ed\s*[.!]?\s*$`)
-
 // citeRe is a citation written in a reply's text: (#12), [#12] or record #12.
 var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+)\b`)
 
@@ -585,19 +572,16 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	default:
 		kind = KindObserved
 	}
-	// A "knowledge" claim about this session's own work is checked as one:
-	// a pass, a change or a deed in any wording ("the tests were updated by
-	// fixing the bugs in src/utils/text.py", "typed errors added"), a
-	// command run, a file:line, the session's work as its subject ("this
-	// change dropped the retry", "the migration added an index"), or a
-	// possessive ("our handler"). A fact about the world told in the past
-	// ("TLS 1.3 removed RSA key exchange") names no file, no code, no work
-	// of the session, and has no passive or bare participle, and stays
-	// knowledge.
+	// A "knowledge" claim that says a change, an event or a finished state
+	// is about this session's work, and checked as one, unless its subject
+	// is plainly outside the session: a versioned or dated thing ("TLS 1.3
+	// removed RSA key exchange", "the 2018 revision of HTTP"), or a named
+	// project's release, spec or RFC that nothing this session read or
+	// changed names. A pass, a change said in the first person, a command
+	// run and a file:line are always work.
+	saysChange := workEvent || f.event != "" || f.changeAct || f.presentState
 	if kind == KindKnowledge && (f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0 ||
-		workEvent && (f.deed || f.presentState || f.changeWord || f.overclaim || f.mergeClean || f.observe ||
-			len(f.paths) > 0 || len(f.tokens) > 0 || sessionWorkRe.MatchString(normText(c.Text)) ||
-			workSubjectRe.MatchString(normText(c.Text)) || possessiveRe.MatchString(normText(c.Text)))) {
+		saysChange && !ix.externalSubject(c.Text)) {
 		kind = KindObserved
 	}
 	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}
@@ -2044,4 +2028,53 @@ func refusalRest(low string, d *denialRec, quote string) bool {
 		}
 	}
 	return true
+}
+
+var (
+	// versionedRe is a versioned or dated thing: "TLS 1.3", "Go 1.22",
+	// "Python 3", "C++20", "HTTP/2", or a year.
+	versionedRe = regexp.MustCompile(`\b[A-Z][A-Za-z+#]*(?:\s+|/|-)?v?\d+(?:\.\d+)*\b|\b(?:19|20)\d\d\b`)
+	// subjectWorkRe in a subject keeps it the session's: a work noun, a
+	// pronoun, a possessive, code.
+	subjectWorkRe = regexp.MustCompile("(?i)\\b(?:changes?|change set|edits?|commits?|migrations?|diffs?|prs?|pull requests?|rewrites?|clean-?ups?|revisions?|fix(?:es)?|patch(?:es)?|refactor\\w*|updates?|branch(?:es)?|it|its|they|their|this|that|these|those|my|our|your|we|i|he|she|his|her)\\b|\x60")
+	// releaseOfRe is a named project's release, spec or RFC, as written:
+	// "Go's latest release", "the HTTP spec".
+	releaseOfRe = regexp.MustCompile(`\b([A-Z][A-Za-z0-9+#.\-]*)(?:'s)?\s+(?:latest\s+|newest\s+|next\s+|first\s+|last\s+|new\s+)?(?:version|release|spec|specification|rfc|standard)\b`)
+	// leadWordRe is a capitalised function word.
+	leadWordRe = regexp.MustCompile(`\b(?:The|A|An|Each|Every|Some|All|Both|One|Any|No|In|On|At|After|Before|So|Overall|Then)\b`)
+	// leadEventRe finds where a claim's verb is: its first past form or
+	// change word.
+	leadEventRe = regexp.MustCompile(`\b(?:[a-z]+ed|[a-z]+en|did|made|took|got|gave|went|came|now|no longer|is|are|was|were|has|have|had)\b`)
+)
+
+// externalSubject reports a claim whose subject, the words before its
+// verb, is plainly outside the session: a versioned or dated thing, or a
+// named project's release, spec or RFC that no read or change of this
+// session names. A pronoun, a possessive or anything else is not.
+func (ix *recordIndex) externalSubject(text string) bool {
+	low := strings.ToLower(text)
+	subj := low
+	if m := leadEventRe.FindStringIndex(low); m != nil {
+		subj = low[:m[0]]
+	}
+	orig := text[:len(subj)]
+	if strings.TrimSpace(subj) == "" || subjectWorkRe.MatchString(orig) {
+		return false
+	}
+	// A sentence's first word is capitalised whatever it is: "The v2
+	// handler" names no versioned thing.
+	if versionedRe.MatchString(leadWordRe.ReplaceAllStringFunc(orig, strings.ToLower)) {
+		return true
+	}
+	if m := releaseOfRe.FindStringSubmatch(orig); m != nil {
+		name := strings.ToLower(m[1])
+		nameRe := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(name) + `\b`)
+		for _, o := range ix.obs {
+			if nameRe.MatchString(o.content) || nameRe.MatchString(o.args) || nameRe.MatchString(o.path) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

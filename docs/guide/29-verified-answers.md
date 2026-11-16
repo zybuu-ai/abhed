@@ -652,14 +652,18 @@ itself is not drawn. Each claim names the results that show it, by `call_id` or
 checked; a `knowledge` claim about the session's own work, in any wording
 (that tests pass, that a file changed, "the tests were updated by fixing
 the bugs in `src/utils/text.py`", "typed errors added", "the PR is
-merged", "this change dropped the retry", "our handler now retries"), is
-checked anyway: one that names code or a file, says a deed, a finished
-state or a change noun, has the session's work (a change, edit, commit,
-migration, diff, PR, rewrite, cleanup, revision, fix, patch, refactor or
-update) or a possessive ("my", "our", "your") as its subject, or says the
-work with no subject. A fact about the world told in the past ("TLS 1.3
-removed RSA key exchange", "Python 3 dropped print statements") stays
-knowledge. `text` is checked too:
+merged", "this change dropped the retry", "its change dropped the
+retry"), is checked anyway. Any `knowledge` claim that says a change, an
+event or a finished state is taken as about the session's work unless
+its subject (the words before its verb) is plainly outside the session:
+a versioned or dated thing ("TLS 1.3 removed RSA key exchange", "Python 3
+dropped print statements", "Go 1.22 changed loop variable scoping"), or a
+named project's release, spec or RFC that nothing this session read or
+changed names ("Go's latest release added generics"). A subject with a
+pronoun, a possessive, code or a word for work (change, commit, branch,
+update, revision and the like) is never outside the session. This errs
+towards checking: "Python's update dropped print statements" or "The
+C++20 update added modules" is checked as work, and stays unverified. `text` is checked too:
 each of its statements that no claim repeats is a claim with nothing cited,
 so an answer cannot pass strict mode by giving only `knowledge` claims while
 its text says "The tests now pass". When an answer passes with nothing
@@ -843,7 +847,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 925 plant a wrong claim. Some cite the result that shows them wrong
+session. 943 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -949,11 +953,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 925
+tail, a port not listening, a file not in a response). Today none of the 943
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
 shows; the rest unverified), all 253 controls are verified,
-and none of the 359 true or neutral claims is contradicted. 19 of the
+and none of the 365 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim

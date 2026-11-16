@@ -1202,13 +1202,18 @@ func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
 // Strict mode never passes a knowledge claim whose subject is the
 // session's own work.
 func TestStrictWorkSubjectKnowledge(t *testing.T) {
-	answer := `{"text":"This change dropped the retry.","claims":[{"text":"This change dropped the retry.","kind":"knowledge"}]}`
-	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
-		{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'ok\\n'"}`)}}},
-		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
-		{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
-	})
-	if reason, _ := l.Run(context.Background(), "drop the retry"); reason != TermUnverified {
-		t.Fatalf("strict passed a knowledge claim of the session's change: %s %+v", reason, answerVerdicts(store))
+	for _, text := range []string{"This change dropped the retry.", "Its change dropped the retry.",
+		"Both changes added input validation.", "After review, the change dropped the retry."} {
+		t.Run(text, func(t *testing.T) {
+			answer := `{"text":"` + text + `","claims":[{"text":"` + text + `","kind":"knowledge"}]}`
+			l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+				{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'ok\\n'"}`)}}},
+				{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+				{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+			})
+			if reason, _ := l.Run(context.Background(), "drop the retry"); reason != TermUnverified {
+				t.Fatalf("strict passed a knowledge claim of the session's change: %s %+v", reason, answerVerdicts(store))
+			}
+		})
 	}
 }

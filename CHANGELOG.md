@@ -727,11 +727,13 @@ All notable changes to Abhed are recorded here. The format follows
   wrote "The tests now pass" in `text` and gave one `knowledge` claim
   ("The tests were updated by fixing the bugs in …") ended strict mode
   verified with 0 verified claims. Each statement of `text` that no claim
-  repeats is now checked; a `knowledge` claim is checked as work when it
-  names code or a file, says a deed, a finished state or a change noun,
-  has the session's work as its subject ("this change dropped the retry")
-  or a possessive ("our handler"), or says the work with no subject ("the
-  tests were updated", "typed errors added"); and an answer that passes with nothing
+  repeats is now checked; a `knowledge` claim that says a change, an
+  event or a finished state is checked as work unless its subject is
+  plainly outside the session (a versioned or dated thing, as in "TLS 1.3
+  removed RSA key exchange", or a named project's release, spec or RFC
+  that nothing the session read or changed names), and one that says a
+  pass, a change in the first person, a command or a file:line always is;
+  and an answer that passes with nothing
   verified says why in the verdict's `note` (no statement was read as a
   claim about the session's work). Finished work said in the present ("the
   issue is resolved", "the service is deployed", "the cache is now
@@ -759,8 +761,8 @@ All notable changes to Abhed are recorded here. The format follows
   nothing else may be said in it ("succeeded after
   being blocked" stays unverified). The refusal is evidence for nothing
   else, since its reason can hold text the model chose. The false-claim
-  corpus gains 57 planted cases and 13 controls; none of the 925 planted
-  claims verifies, all 253 controls do, and none of the 359 true or
+  corpus gains 75 planted cases and 13 controls; none of the 943 planted
+  claims verifies, all 253 controls do, and none of the 365 true or
   neutral claims is contradicted.
 
 ### Go API

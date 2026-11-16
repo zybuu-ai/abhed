@@ -5909,6 +5909,96 @@
       "name": "a knowledge claim with the session's work as its subject: The migration added an index on users.email.",
       "kind": "planted",
       "hash": "6548d61b6ebf2df0"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Both changes added input validation.",
+      "kind": "planted",
+      "hash": "a24572b21eef08e3"
+    },
+    {
+      "name": "a knowledge claim of the session's work: All three commits dropped the flag.",
+      "kind": "planted",
+      "hash": "59304502370aa7da"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Each change added a test.",
+      "kind": "planted",
+      "hash": "6c688f246de435fa"
+    },
+    {
+      "name": "a knowledge claim of the session's work: A change dropped the retry.",
+      "kind": "planted",
+      "hash": "507a4cd3f2c77039"
+    },
+    {
+      "name": "a knowledge claim of the session's work: One commit fixed the leak.",
+      "kind": "planted",
+      "hash": "3f0933e654372129"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The very small change dropped the retry.",
+      "kind": "planted",
+      "hash": "fa0a6f243059c587"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The last two commits fixed the leak.",
+      "kind": "planted",
+      "hash": "8cddcda3b28d0c1a"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Its change dropped the retry.",
+      "kind": "planted",
+      "hash": "9cea321cae5b0dbf"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Their patch removed the flag.",
+      "kind": "planted",
+      "hash": "002ab39dac97be99"
+    },
+    {
+      "name": "a knowledge claim of the session's work: After review, the change dropped the retry.",
+      "kind": "planted",
+      "hash": "6d2f8b12fa57c2cd"
+    },
+    {
+      "name": "a knowledge claim of the session's work: In the end this change dropped the retry.",
+      "kind": "planted",
+      "hash": "b92d854d6adc7cda"
+    },
+    {
+      "name": "a knowledge claim of the session's work: So the commit fixed the leak.",
+      "kind": "planted",
+      "hash": "0a903165d6bc775b"
+    },
+    {
+      "name": "a knowledge claim of the session's work: Overall, the edit removed the import.",
+      "kind": "planted",
+      "hash": "0e87c53d53d29946"
+    },
+    {
+      "name": "a knowledge claim of the session's work: This branch dropped the retry.",
+      "kind": "planted",
+      "hash": "2842e87ab4ffeae6"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The change set dropped the retry.",
+      "kind": "planted",
+      "hash": "203d5ff854aaad57"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The v2 handler dropped the retry.",
+      "kind": "planted",
+      "hash": "9be5712701105cfb"
+    },
+    {
+      "name": "a knowledge claim of the session's work: The 2024 change dropped the retry.",
+      "kind": "planted",
+      "hash": "a57cbd4ec7644376"
+    },
+    {
+      "name": "a knowledge claim of the session's work: It dropped the retry.",
+      "kind": "planted",
+      "hash": "8d28f784ee6319ff"
     }
   ],
   "strict": [
