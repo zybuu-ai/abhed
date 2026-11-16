@@ -538,8 +538,8 @@ All notable changes to Abhed are recorded here. The format follows
   nothing else may be said in it ("succeeded after
   being blocked" stays unverified). The refusal is evidence for nothing
   else, since its reason can hold text the model chose. The false-claim
-  corpus gains 49 planted cases and 12 controls; none of the 917 planted
-  claims verifies, all 252 controls do, and none of the 356 true or
+  corpus gains 50 planted cases and 13 controls; none of the 918 planted
+  claims verifies, all 253 controls do, and none of the 357 true or
   neutral claims is contradicted.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one

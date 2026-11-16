@@ -668,8 +668,9 @@ fields: a code span in it must be the rule, the reason or the refused
 command, and a layer it names must be the refusal's own (the org policy
 or an admin, a managed or machine configuration, the workspace or
 project, your own user configuration, a settings file, a flag, a session
-rule you approved, a hook, the mode, or the default; "IT", the security
-team and infosec are the org). A statement that names no layer ("from the
+rule you approved, a hook, the mode, or the default; "IT", "it" before
+policy, team, department or rules, the security team and infosec are the
+org). A statement that names no layer ("from the
 policy") is not checked for one. Once those and the
 refusal's wording are taken out, only a few connective words may be
 left: "`curl …` succeeded after being blocked by rule bash(curl*)", or a
@@ -834,7 +835,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 917 plant a wrong claim. Some cite the result that shows them wrong
+session. 918 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -940,11 +941,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 917
+tail, a port not listening, a file not in a response). Today none of the 918
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 252 controls are verified,
-and none of the 356 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 253 controls are verified,
+and none of the 357 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim

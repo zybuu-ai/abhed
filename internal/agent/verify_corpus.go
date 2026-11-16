@@ -1983,6 +1983,8 @@ func CorpusCases() []CorpusCase {
 		{Name: "a mode refusal said to come from the IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlMode), Text: "The call was denied by rule bash(curl*) from the IT policy."},
 		{Name: "a user refusal said to be per IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) per IT policy."},
 		{Name: "an org refusal said to come from the IT policy", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "a user refusal said to come from the It policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from the It policy."},
+		{Name: "an org refusal said to be per the it team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) per the it team."},
 		{Name: "an org refusal said to come from the security team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the security team."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},

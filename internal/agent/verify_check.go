@@ -1939,6 +1939,7 @@ var (
 		which that it this its my your set so and as with there`)
 	// itWordRe is "IT" as written, the IT department.
 	itWordRe       = regexp.MustCompile(`\bIT\b`)
+	itOrgRe        = regexp.MustCompile(`(?i)\bit(\s+(?:policy|policies|team|department|rules?))\b`)
 	refusalPunctRe = regexp.MustCompile(`[.,;:!?()"'\x60]`)
 )
 
@@ -1954,8 +1955,10 @@ func (ix *recordIndex) refusalShown(c Claim) *denialRec {
 	if len(ix.denials) == 0 {
 		return nil
 	}
-	// "IT" as a word is the IT department, an org layer, never "it".
-	low := normText(strings.ReplaceAll(itWordRe.ReplaceAllString(c.Text, "org_it"), "`", ""))
+	// "IT" as a word is the IT department, an org layer, never "it"; so is
+	// "it" in any case before policy, team, department or rules.
+	text := itOrgRe.ReplaceAllString(c.Text, "org_it$1")
+	low := normText(strings.ReplaceAll(itWordRe.ReplaceAllString(text, "org_it"), "`", ""))
 	var spans []string
 	for _, m := range backtickRe.FindAllStringSubmatch(c.Text, -1) {
 		spans = append(spans, normText(m[1]))

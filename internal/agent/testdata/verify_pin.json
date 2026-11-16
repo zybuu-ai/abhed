@@ -5864,6 +5864,16 @@
       "name": "an org refusal said to come from the security team",
       "kind": "control",
       "hash": "249e7af3454751bf"
+    },
+    {
+      "name": "a user refusal said to come from the It policy",
+      "kind": "planted",
+      "hash": "74b83002b91936c5"
+    },
+    {
+      "name": "an org refusal said to be per the it team",
+      "kind": "control",
+      "hash": "7cb8625e438da9e4"
     }
   ],
   "strict": [
