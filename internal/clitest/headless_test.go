@@ -4,6 +4,7 @@ package clitest
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -306,5 +307,23 @@ func TestSchemaRunNamesTheUncheckedContract(t *testing.T) {
 		Script: `tool result {"n":1}`})
 	if !strings.Contains(h.Stderr(), "verify.contract is not checked for a -json-schema run") {
 		t.Fatalf("stderr:\n%s", h.Stderr())
+	}
+}
+
+// #22: a -p answer that seems to answer another question is noted in its
+// verdict, and only noted: the run still ends 0.
+func TestHeadlessRelevanceNote(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "why does TestFooBar fail in pkg/auth?", "-output-format", "json"}, Script: `text "The weather is fine today."`})
+	res := resultOf(t, h.Stdout())
+	v, _ := res["verdict"].(map[string]any)
+	if res["exit_code"] != float64(0) || v == nil || v["relevance"] != "off_topic" ||
+		!strings.Contains(fmt.Sprint(v["note"]), "may not address the question") {
+		t.Fatalf("result %v", res)
+	}
+	h = piped(t, Opts{Args: []string{"-p", "why does TestFooBar fail in pkg/auth?", "-output-format", "json"}, Script: `text "TestFooBar fails because pkg/auth rejects the token."`})
+	res = resultOf(t, h.Stdout())
+	if v, _ := res["verdict"].(map[string]any); v == nil || v["relevance"] != "addresses" {
+		t.Fatalf("result %v", res)
 	}
 }

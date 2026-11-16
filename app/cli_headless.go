@@ -526,6 +526,12 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// contract gates an answer, which a structured run does not give. Unset,
 	// -p labels its answer as the terminal does; -verify off still turns it off.
 	if v, err := toolset.Verifier(appCfg, true); err == nil && o.schema == nil {
+		// A -p answer is read by a script or a person who was not watching:
+		// one that seems to answer another question is noted in its verdict.
+		// With -verify off there is no verifier, and no verdict to note it in.
+		if v != nil {
+			v.Relevance = true
+		}
 		v.Install(loop)
 	} else if o.schema != nil && appCfg.Verify.Contract.On() {
 		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")

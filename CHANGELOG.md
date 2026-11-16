@@ -499,6 +499,12 @@ All notable changes to Abhed are recorded here. The format follows
   rules still applying. A server a person, a `-mcp-config` file or a
   workspace added is not believed, since the hint is the server's own
   claim; its tools ask as before.
+- `abhed -p` notes, in its verdict, an answer that seems not to address the
+  question typed: `verdict.relevance` is `addresses` or `off_topic`, and an
+  off-topic answer adds why to `verdict.note`. The check makes no model
+  call and flags only the plain case (the question names a phrase, file or
+  identifier the answer never mentions, or they share no topic word). It is
+  a note only: the outcome and the exit code are unchanged.
 
 ### Changed
 
