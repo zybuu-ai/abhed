@@ -605,6 +605,7 @@ func TestStudioNextEditRenameJSXOpeningTagsOnly(t *testing.T) {
 		`  yield <Item x={x}>`,
 		`  const el = await load(), v = f() && g() ** <Item x={x}>`,
 		`  h(1) + <Item {...p}>`,
+		"  h(1) + <Item\n    x={x}",
 	} {
 		text := "function* C(cond) {\n  const y = 1;\n  g(x);\n" + line + "\n"
 		if res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y"); !asked {

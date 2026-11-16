@@ -741,9 +741,10 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 // closing tag, a self-closing end, a fragment; a tag where an operand goes
 // (after return, yield, await, =, (, [, ,, :, ?, !, &&, ||, {, }, > or at a
 // line's start); or, anywhere, a tag shaped as one, <Name followed by an
-// attribute (name=), a spread ({...) or >, which no comparison reads as.
+// attribute (name=), a spread ({...) or >, or a capitalised <Name ending
+// its line (its attributes on the lines after), which no comparison reads as.
 // A false match only sends the edit to a language server's sites or the model.
-var jsxIn = regexp.MustCompile(`</[A-Za-z>]|/>|<>|(?:^|[=(\[,:?!&|{}>]|\b(?:return|yield|await))\s*<[A-Za-z][\w.:-]*(?:\s|>|/|$)|<[A-Za-z][\w.:-]*(?:\s+[\w$-]+\s*=|\s+\{\s*\.\.\.|>)`)
+var jsxIn = regexp.MustCompile(`</[A-Za-z>]|/>|<>|(?:^|[=(\[,:?!&|{}>]|\b(?:return|yield|await))\s*<[A-Za-z][\w.:-]*(?:\s|>|/|$)|<[A-Za-z][\w.:-]*(?:\s+[\w$-]+\s*=|\s+\{\s*\.\.\.|>)|<[A-Z][\w.:-]*\s*$`)
 
 // renameLanguage is the language a rename reads the window as: a
 // javascript window holding JSX, as editors name a .js file with JSX, is
