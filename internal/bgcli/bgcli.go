@@ -48,9 +48,10 @@ type Env struct {
 	Poll time.Duration
 	// Workspace is the folder start snapshots the repository of.
 	Workspace string
-	// Withheld reports a file the person's read rules keep from the agent,
-	// which a snapshot never carries.
-	Withheld func(abs string) bool
+	// RulesFor gives the person's read rules for a repository's root, as a
+	// session there would have them: a file they keep from the agent is
+	// never in a snapshot. Nil sends no snapshot.
+	RulesFor func(root string) (withheld func(abs string) bool, err error)
 	// HoldsStored reports content holding a value from the person's
 	// secrets store, which a snapshot never carries either.
 	HoldsStored func([]byte) bool
@@ -65,7 +66,7 @@ type command struct {
 }
 
 var commands = []command{
-	{"start", "[-name N] [-mode M] [-provider P] [-no-snapshot] [-attach] PROMPT", "start a job on the server, as you, on a snapshot of this repository", (*runner).start},
+	{"start", "[-name N] [-mode M] [-provider P] [-y | -no-snapshot] [-attach] PROMPT", "start a job on the server, as you, on a snapshot of this repository", (*runner).start},
 	{"list", "", "your jobs, newest first", (*runner).list},
 	{"logs", "ID [-patch]", "a job's record so far, or with -patch what it changed", (*runner).logs},
 	{"attach", "ID", "follow a job and answer what it asks until it ends", (*runner).attach},
@@ -284,13 +285,14 @@ func short(s string, n int) string {
 }
 
 func (r *runner) start(args []string) error {
-	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-no-snapshot] [-attach] PROMPT")
+	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-y | -no-snapshot] [-attach] PROMPT")
 	var req bgjob.StartRequest
 	fs.StringVar(&req.Name, "name", "", "a label for the job")
 	fs.StringVar(&req.Mode, "mode", "", "plan, or the server's own mode (default: the server's)")
 	fs.StringVar(&req.Provider, "provider", "", "a model provider the server offers")
 	attach := fs.Bool("attach", false, "follow the job once it starts, as attach does")
 	bare := fs.Bool("no-snapshot", false, "start in an empty folder, sending none of this repository")
+	yes := fs.Bool("y", false, "send the repository's snapshot without asking")
 	pos, err := r.parse(fs, args)
 	if err != nil {
 		return err
@@ -300,7 +302,7 @@ func (r *runner) start(args []string) error {
 		return usageError{errors.New("abhed bg start needs a prompt")}
 	}
 	if !*bare {
-		snap, err := r.snapshot()
+		snap, err := r.snapshot(*yes)
 		if err != nil {
 			return err
 		}
@@ -614,7 +616,7 @@ func argLines(raw json.RawMessage) []string {
 // snapshot packs the repository the workspace is in and uploads it. What it
 // leaves out, and why, is said by name, so the person knows what the job
 // does not have.
-func (r *runner) snapshot() (string, error) {
+func (r *runner) snapshot(yes bool) (string, error) {
 	if r.SnapshotErr != nil {
 		return "", fmt.Errorf("no snapshot was sent: %w; pass -no-snapshot to start in an empty folder", r.SnapshotErr)
 	}
@@ -622,7 +624,19 @@ func (r *runner) snapshot() (string, error) {
 	if err != nil {
 		return "", usageError{fmt.Errorf("%s is not in a git repository; run abhed bg start in one, or pass -no-snapshot to start in an empty folder", line(r.Workspace))}
 	}
-	p, err := pack(r.Ctx, root, r.Withheld, r.HoldsStored)
+	if !yes && !r.Interactive {
+		return "", usageError{errors.New("abhed bg start sends a snapshot of this repository to the server: pass -y to send it, or -no-snapshot to start in an empty folder")}
+	}
+	if r.RulesFor == nil {
+		return "", errors.New("no snapshot was sent: the read rules that say what it may carry are not known here")
+	}
+	// The repository's own rules, from its root, apply to every file packed,
+	// wherever in it the command was run.
+	withheld, err := r.RulesFor(root)
+	if err != nil {
+		return "", fmt.Errorf("no snapshot was sent: %w", err)
+	}
+	p, err := pack(r.Ctx, root, withheld, r.HoldsStored)
 	if err != nil {
 		return "", fmt.Errorf("the snapshot: %w", err)
 	}
@@ -646,6 +660,14 @@ func (r *runner) snapshot() (string, error) {
 	say("file(s) your read rules withhold", p.withheld)
 	say("file(s) named like a key or holding a secret", p.secret)
 	say("other path(s)", p.skipped)
+	if !yes {
+		fmt.Fprintf(r.Err, "Send %d tracked file(s) of %s, %d KiB, to %s for the job? [y/N] ",
+			p.files, line(root), (p.bytes+1023)/1024, line(r.cl.Profile.URL))
+		ans, err := bufio.NewReader(r.In).ReadString('\n')
+		if a := strings.TrimSpace(ans); (a != "y" && a != "Y") || (err != nil && ans == "") {
+			return "", errors.New("nothing was sent; the job was not started")
+		}
+	}
 	snap, err := r.cl.UploadSnapshot(r.Ctx, p.tgz)
 	if err != nil {
 		return "", err

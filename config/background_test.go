@@ -10,6 +10,9 @@ import (
 
 func TestServerBackgroundConfig(t *testing.T) {
 	var b ServerBackgroundConfig
+	if n, bytes := b.SnapshotsLimits(); n != 64 || bytes != 2048<<20 {
+		t.Fatalf("snapshot limits %d %d", n, bytes)
+	}
 	if b.ApprovalTimeout() != 1740*time.Second || b.Running() != 2 {
 		t.Fatalf("defaults: %v %d", b.ApprovalTimeout(), b.Running())
 	}
@@ -19,6 +22,7 @@ func TestServerBackgroundConfig(t *testing.T) {
 	}{
 		{ServerBackgroundConfig{ApprovalTimeoutSeconds: -1}, "approval_timeout_seconds"},
 		{ServerBackgroundConfig{MaxRunning: -1}, "max_running"},
+		{ServerBackgroundConfig{SnapshotsMB: -1}, "snapshots_mb"},
 		{ServerBackgroundConfig{NotifyURL: "ftp://x"}, "notify_url"},
 		{ServerBackgroundConfig{NotifyURL: "https://user:pw@hooks.example/x"}, "no credentials"},
 		{ServerBackgroundConfig{NotifyURL: "/relative"}, "notify_url"},

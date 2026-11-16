@@ -39,18 +39,21 @@ func TestPrepareFillsTheSessionsOwnFolder(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "one\n" {
 		t.Fatalf("the prepared file: %q", b)
 	}
-	if p, ok, err := r.srv.SessionPatch("default", "alice", id); err != nil || !ok || p != "" {
+	if p, ok, _, err := r.srv.SessionPatch("default", "alice", id, 1<<20); err != nil || !ok || p != "" {
 		t.Fatalf("before any change: %q %v %v", p, ok, err)
 	}
 	runTool(t, live, "read", map[string]string{"path": filepath.Join(ws, "a.txt")})
 	if res := runTool(t, live, "write", map[string]string{"path": filepath.Join(ws, "a.txt"), "content": "two\n"}); res.IsError {
 		t.Fatal(res.Content)
 	}
-	p, ok, err := r.srv.SessionPatch("default", "alice", id)
-	if err != nil || !ok || !strings.Contains(p, "-one\n+two\n") || !strings.Contains(p, "a/a.txt") {
+	p, ok, cut, err := r.srv.SessionPatch("default", "alice", id, 1<<20)
+	if err != nil || !ok || cut || !strings.Contains(p, "-one\n+two\n") || !strings.Contains(p, "a/a.txt") {
 		t.Fatalf("the patch: %q %v %v", p, ok, err)
 	}
-	if p, ok, _ := r.srv.SessionPatch("default", "bob", id); ok || p != "" {
+	if short, _, cut, _ := r.srv.SessionPatch("default", "alice", id, 10); !cut || short != p[:10] {
+		t.Fatalf("cut at 10: %q %v", short, cut)
+	}
+	if p, ok, _, _ := r.srv.SessionPatch("default", "bob", id, 1<<20); ok || p != "" {
 		t.Fatalf("bob got alice's patch: %q", p)
 	}
 	if err := r.srv.DeleteSessionSandbox(context.Background(), "default", "bob", id); err != nil {

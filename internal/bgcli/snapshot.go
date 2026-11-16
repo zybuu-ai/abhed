@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/zybuu-ai/abhed/bgjob"
 	"github.com/zybuu-ai/abhed/internal/hostgit"
-	"github.com/zybuu-ai/abhed/internal/regularfile"
 	"github.com/zybuu-ai/abhed/internal/secretfiles"
 )
 
@@ -80,7 +80,7 @@ func trackedFiles(ctx context.Context, root string) ([]snapshotEntry, error) {
 // relative, slash-separated, valid text, no "." or ".." part, and nothing
 // under .git or .abhed.
 func fit(p string) bool {
-	if p == "" || !utf8.ValidString(p) || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00") {
+	if p == "" || len(p) > bgjob.MaxSnapshotName || !utf8.ValidString(p) || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00") {
 		return false
 	}
 	for _, part := range strings.Split(p, "/") {
@@ -106,6 +106,13 @@ func pack(ctx context.Context, root string, withheld func(abs string) bool, hold
 	if err != nil {
 		return p, err
 	}
+	// Every file is read through the repository's folder as a root, so no
+	// link, there or swapped in, takes a read outside it.
+	dir, err := os.OpenRoot(realRoot)
+	if err != nil {
+		return p, err
+	}
+	defer func() { _ = dir.Close() }()
 	var raw bytes.Buffer
 	zw := gzip.NewWriter(&raw)
 	tw := tar.NewWriter(zw)
@@ -152,11 +159,13 @@ func pack(ctx context.Context, root string, withheld func(abs string) bool, hold
 			continue
 		}
 		// A folder in the path swapped for a link would read outside the repository.
-		if real, err := filepath.EvalSymlinks(abs); err != nil || !inside(realRoot, real) {
+		// A link anywhere in the path would send a file under another name
+		// than the one the read rules were asked about.
+		if real, err := filepath.EvalSymlinks(abs); err != nil || real != filepath.Join(realRoot, filepath.FromSlash(e.path)) {
 			p.skipped = append(p.skipped, e.path+" (reached through a link)")
 			continue
 		}
-		data, err := regularfile.Read(abs, bgjob.MaxSnapshotFile)
+		data, err := readIn(dir, filepath.FromSlash(e.path), fi)
 		if err != nil {
 			return p, err
 		}
@@ -199,8 +208,23 @@ func pack(ctx context.Context, root string, withheld func(abs string) bool, hold
 	return p, nil
 }
 
-// inside reports whether p is root or under it.
-func inside(root, p string) bool {
-	rel, err := filepath.Rel(root, p)
-	return err == nil && filepath.IsLocal(rel)
+// readIn reads the regular file name under dir, the one Lstat gave as fi.
+func readIn(dir *os.Root, name string, fi os.FileInfo) ([]byte, error) {
+	f, err := dir.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	now, err := f.Stat()
+	if err != nil || !now.Mode().IsRegular() || !os.SameFile(fi, now) {
+		return nil, fmt.Errorf("%s changed while it was read", name)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, bgjob.MaxSnapshotFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > bgjob.MaxSnapshotFile {
+		return nil, fmt.Errorf("%s grew while it was read", name)
+	}
+	return data, nil
 }

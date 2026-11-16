@@ -90,7 +90,7 @@ type rig struct {
 	srv       *fakeServer
 	profiles  string
 	workspace string
-	withheld  func(string) bool
+	rulesFor  func(string) (func(string) bool, error)
 	stored    func([]byte) bool
 }
 
@@ -117,7 +117,7 @@ func (r *rig) run(in string, interactive bool, inAgent string, args ...string) r
 	var out, errOut bytes.Buffer
 	env := Env{Ctx: context.Background(), ProfilesPath: r.profiles, In: strings.NewReader(in), Out: &out, Err: &errOut,
 		Interactive: interactive, Poll: 5 * time.Millisecond, InAgent: func() string { return inAgent },
-		Workspace: r.workspace, Withheld: r.withheld, HoldsStored: r.stored}
+		Workspace: r.workspace, RulesFor: r.rulesFor, HoldsStored: r.stored}
 	code := Main(env, args)
 	return result{code, out.String(), errOut.String()}
 }

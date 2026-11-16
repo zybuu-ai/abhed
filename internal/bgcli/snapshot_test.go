@@ -85,12 +85,20 @@ func TestStartSendsASnapshotOfTheTrackedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.workspace = filepath.Join(repo, "pkg") // started from a folder inside the repository
-	r.withheld = func(abs string) bool { return strings.HasSuffix(filepath.ToSlash(abs), "/private/notes.md") }
+	var askedFor string
+	r.rulesFor = func(root string) (func(string) bool, error) {
+		askedFor = root
+		return func(abs string) bool { return strings.HasSuffix(filepath.ToSlash(abs), "/private/notes.md") }, nil
+	}
 	r.stored = func(b []byte) bool { return bytes.Contains(b, []byte("stored-value-7f3a")) }
 
-	res := r.run("", false, "", "start", "fix", "it")
+	res := r.run("", false, "", "start", "-y", "fix", "it")
 	if res.code != ExitOK {
 		t.Fatalf("start: %+v", res)
+	}
+	// The rules asked for are the repository root's, though it ran in pkg/.
+	if real, _ := filepath.EvalSymlinks(repo); askedFor != real && askedFor != repo {
+		t.Fatalf("read rules for %q, not the repository's root %q", askedFor, repo)
 	}
 	if len(r.srv.snapshots) != 1 || r.srv.started[0].Workspace.Kind != bgjob.WorkspaceSnapshot || r.srv.started[0].Workspace.Snapshot != "snap_1" {
 		t.Fatalf("sent %d snapshots, started %+v", len(r.srv.snapshots), r.srv.started)
@@ -118,7 +126,7 @@ func TestStartSendsASnapshotOfTheTrackedFiles(t *testing.T) {
 // job that kept its patch is read from the job, not its session.
 func TestStartOutsideARepositoryAndTheKeptPatch(t *testing.T) {
 	r := newRig(t)
-	if res := r.run("", false, "", "start", "x"); res.code != ExitUsage || !strings.Contains(res.err, "-no-snapshot") {
+	if res := r.run("", false, "", "start", "-y", "x"); res.code != ExitUsage || !strings.Contains(res.err, "-no-snapshot") {
 		t.Fatalf("outside a repository: %+v", res)
 	}
 	if len(r.srv.started) != 0 || len(r.srv.snapshots) != 0 {
@@ -141,11 +149,42 @@ func TestAnUncheckedSnapshotIsNotSent(t *testing.T) {
 	git(t, repo, "commit", "-q", "-m", "x")
 	var out, errOut bytes.Buffer
 	code := Main(Env{ProfilesPath: r.profiles, Out: &out, Err: &errOut, Workspace: repo,
-		SnapshotErr: errors.New("the secrets store cannot be loaded")}, []string{"start", "x"})
+		SnapshotErr: errors.New("the secrets store cannot be loaded")}, []string{"start", "-y", "x"})
 	if code != ExitFailed || !strings.Contains(errOut.String(), "no snapshot was sent") {
 		t.Fatalf("start: %d %s", code, errOut.String())
 	}
 	if len(r.srv.snapshots) != 0 || len(r.srv.started) != 0 {
 		t.Fatal("something was sent")
+	}
+}
+
+// Sending the person's code is their explicit choice: a terminal asks with
+// the count and size, only y sends, and a run with no terminal needs -y.
+func TestTheSnapshotIsSentOnlyWhenTheyAgree(t *testing.T) {
+	r := newRig(t)
+	repo := t.TempDir()
+	git(t, repo, "init", "-q")
+	write(t, filepath.Join(repo, "a.go"), "package a\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-q", "-m", "x")
+	r.workspace = repo
+	r.rulesFor = func(string) (func(string) bool, error) { return func(string) bool { return false }, nil }
+	if res := r.run("", false, "", "start", "x"); res.code != ExitUsage || !strings.Contains(res.err, "pass -y") {
+		t.Fatalf("no terminal, no -y: %+v", res)
+	}
+	for _, in := range []string{"\n", "n\n", "yes\n"} {
+		if res := r.run(in, true, "", "start", "x"); res.code != ExitFailed || !strings.Contains(res.err, "Send 1 tracked file(s)") || !strings.Contains(res.err, "nothing was sent") {
+			t.Fatalf("answered %q: %+v", in, res)
+		}
+	}
+	if len(r.srv.snapshots) != 0 || len(r.srv.started) != 0 {
+		t.Fatal("sent without a yes")
+	}
+	if res := r.run("y\n", true, "", "start", "x"); res.code != ExitOK || len(r.srv.snapshots) != 1 {
+		t.Fatalf("answered y: %+v", res)
+	}
+	r.rulesFor = nil
+	if res := r.run("", false, "", "start", "-y", "x"); res.code != ExitFailed || !strings.Contains(res.err, "read rules") {
+		t.Fatalf("no rules: %+v", res)
 	}
 }

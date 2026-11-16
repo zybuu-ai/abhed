@@ -29,13 +29,19 @@ const (
 
 // A snapshot is a gzip-compressed tar of regular files only: no links,
 // devices or folders of their own, each name relative, slash-separated,
-// with no "." or ".." part and nothing under .git or .abhed, each mode 0644
-// or 0755. These bound it; the server refuses one past any of them.
+// with no "." or ".." part and nothing under .git or .abhed, at most
+// MaxSnapshotName bytes, each mode 0644 or 0755. Its headers are USTAR, or
+// PAX with only the path, size and mtime records; no GNU long names or
+// sparse files. These bound it; the server refuses one past any of them.
 const (
 	MaxSnapshotUpload = 64 << 20  // the compressed upload
 	MaxSnapshotTotal  = 512 << 20 // all its files together
 	MaxSnapshotFile   = 16 << 20  // any one file
 	MaxSnapshotFiles  = 50000
+	MaxSnapshotName   = 1024
+	// MaxSnapshotUnpacked bounds every byte the archive decompresses to,
+	// headers and padding included: the files, and 4 KiB a file for the rest.
+	MaxSnapshotUnpacked = MaxSnapshotTotal + 4<<10*MaxSnapshotFiles
 )
 
 // Snapshot is an uploaded snapshot, which one job of its uploader's may

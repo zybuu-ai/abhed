@@ -22,7 +22,7 @@ takes `-profile NAME` or `-server URL` (default: the current profile) and
 ## Commands
 
 ```
-abhed bg start [-name N] [-mode plan] [-provider P] [-no-snapshot] [-attach] PROMPT
+abhed bg start [-name N] [-mode plan] [-provider P] [-y | -no-snapshot] [-attach] PROMPT
 abhed bg list
 abhed bg logs ID [-patch]
 abhed bg attach ID
@@ -36,9 +36,14 @@ abhed bg cancel ID
 - `start` also sends a snapshot of the repository you run it in: its
   tracked files as they are in your working tree, staged and unstaged edits
   included, untracked files not. The job starts with them in a folder of
-  its own, which the server removes when the job ends. Left out, and named
+  its own, which the server removes when the job ends. In a terminal
+  `start` first says how many files and how much it would send, and to
+  which server, and sends them only on `y`; `-y` sends without asking, and
+  without a terminal `-y` or `-no-snapshot` is required. Left out, and named
   as `start` runs: a file your read rules withhold from the agent (deny
-  rules, and the ask rules such as the built-in ones for `.env` and keys); a
+  rules, and the ask rules such as the built-in ones for `.env` and keys),
+  the rules as a session at the repository's root has them, from whichever
+  folder in it you run `start`; a
   file named like a key, holding one by its shape, or holding a value from
   your secrets store; links, submodules and any file over 16 MiB. A
   snapshot is at most 50,000 files, 512 MiB, 64 MiB compressed. When the
