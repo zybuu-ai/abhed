@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
 )
 
@@ -21,5 +22,21 @@ func TestThinkingBudgetThroughTheSessionAdapter(t *testing.T) {
 	f := newFallbackAdapter("a", a, []string{"b"}, func(string) (model.Adapter, error) { return &fakeAdapter{name: "B"}, nil })
 	if got := model.ThinkingBudget(f, model.Request{}); got != 32000 {
 		t.Fatalf("through fallbackAdapter %d", got)
+	}
+}
+
+// -p's result is a continued reply whole: the part cut and its continuation.
+func TestRunAnswerJoinsAContinuedReply(t *testing.T) {
+	msgs := []model.Message{
+		{Role: model.RoleUser, Content: "go"},
+		{Role: model.RoleAssistant, Content: "The answer is"},
+		{Role: model.RoleUser, Content: agent.ContinueCutReply},
+		{Role: model.RoleAssistant, Content: " 42."},
+	}
+	if got := runAnswer(msgs, nil, "s", 0); got != "The answer is 42." {
+		t.Fatalf("result %q", got)
+	}
+	if got := runAnswer(msgs[:2], nil, "s", 0); got != "The answer is" {
+		t.Fatalf("an uncontinued reply %q", got)
 	}
 }

@@ -255,3 +255,16 @@ func TestTextCutAtTheBackstopIsContinued(t *testing.T) {
 		t.Fatalf("%d agent messages, want the cut one and its continuation", n)
 	}
 }
+
+// A second reply cut part way before a full reply ends the run stalled,
+// rather than asking again to the turn limit.
+func TestSecondCutReplyEndsStalled(t *testing.T) {
+	l, store, th := stallLoop(t, "late-text", "late-text", "done")
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermStalled || len(th.reqs) != 2 {
+		t.Fatalf("ended %s after %d calls", reason, len(th.reqs))
+	}
+	if end, _ := LastEnd(sessEvents(t, store)); !strings.Contains(end.Detail, "a second time before a full reply") {
+		t.Fatalf("detail %q", end.Detail)
+	}
+}

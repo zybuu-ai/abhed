@@ -197,7 +197,8 @@ A cut reply is charged as any cut call is (see below), and the turn asks once
 more, with thinking off (no effort, and no thinking budget sent) and a nudge
 to answer or make the one tool call it needs. If an answer arrives just as
 the cut comes, it is kept; a text answer cut part way is kept and the model
-asked to finish it. A second cut reply before the model next answers ends the run
+asked to finish it (`-p` returns the two parts as one answer), and a second
+cut before a full reply ends the run `stalled`. A second cut reply before the model next answers ends the run
 `stalled`, with the reasoning kept in the record, and each cut reply counts
 toward the three failed replies in a row that end a run. A workspace may only
 lower either bound.

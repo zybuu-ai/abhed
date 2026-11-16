@@ -273,6 +273,10 @@ type Config struct {
 	Effort       model.EffortLevel
 }
 
+// ContinueCutReply asks the model to finish a text reply cut part way; a
+// reader joins the cut part and the reply that follows it.
+const ContinueCutReply = "Your reply was cut off before it finished. Continue it from where it stopped."
+
 // The reasoning-only bounds: a runaway think otherwise holds the call to its
 // cap. The floors keep a lower layer from cutting every thinking reply.
 const (
@@ -1780,7 +1784,10 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	} else {
 		l.streamFails = 0
-		l.stallRetried = false
+		// A text answer cut part way is no full reply: it counts as a cut.
+		if !(cutByStall && answered && len(calls) == 0) {
+			l.stallRetried = false
+		}
 	}
 	// A reply cut for reasoning without output is asked once more, with
 	// thinking off and a nudge; a second in a row ends the run, its reasoning
@@ -1808,13 +1815,18 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	// Text-only, cut as it arrived: the rest never came, so it is not the
 	// final answer. It is kept, and the model asked to finish it.
+	// A second cut before a full reply ends the run, as a second stall does.
 	if cutByStall && answered && len(calls) == 0 && text.Len() > 0 {
 		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: text.String()}); err != nil {
 			return TermError, true, err
 		}
-		l.messages = append(l.messages,
-			model.Message{Role: model.RoleAssistant, Content: text.String()},
-			model.Message{Role: model.RoleUser, Content: "Your reply was cut off before it finished. Continue it from where it stopped."})
+		l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: text.String()})
+		if l.stallRetried {
+			l.stuckDetail = "the model " + stall.Reason() + " and its reply was cut, a second time before a full reply; what it wrote is in the record"
+			return TermStalled, true, nil
+		}
+		l.stallRetried = true
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: ContinueCutReply})
 		return "", false, nil
 	}
 	if body := text.String(); body != "" {

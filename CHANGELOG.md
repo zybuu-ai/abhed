@@ -506,8 +506,16 @@ All notable changes to Abhed are recorded here. The format follows
   apply. The cut call is charged as any cut call is; an answer that arrives
   as the cut comes is kept; otherwise the turn asks once more with thinking
   off and a nudge, and a second cut reply before the model next answers ends
-  the run `stalled` with the reasoning kept in the record. A workspace may
-  only lower the bounds.
+  the run `stalled` with the reasoning kept in the record. A text reply cut
+  part way is kept and finished, and `-p` returns it whole; a second cut
+  before a full reply also ends the run `stalled`. A workspace may only
+  lower the bounds.
+
+- "Thinking off" is now off on Anthropic and Gemini when a `thinking_budget`
+  is configured. Before, the budget won, so the critic, next-prompt
+  suggestion and commit-message calls, which ask with thinking off, thought
+  anyway (on Anthropic, a budget with thinking off made an invalid request),
+  and a provider set to `think: false` with a budget still thought.
 
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
