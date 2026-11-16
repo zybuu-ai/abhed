@@ -853,6 +853,24 @@ behaves as the sections above describe.
   with `409`. `PolicyLayer.Decide(tool, args)`
   applies a layer's deny and ask rules to one call outside a session, such
   as a guard checking an exec's command.
+- **SessionAllowance.** `server.Options.SessionAllowance(ctx, req)` says
+  what the owner of a session (`req.User` in `req.Tenant`, session
+  `req.Session`) may still spend under limits an edition keeps, such as
+  periodic budgets. It is asked before every turn of the session and of its
+  subagents, the first included, so a spent allowance stops a run before
+  any call. `Allowance.Stop` ends the run `max_budget` with a
+  `budget.stopped` event of reason `allowance`, carrying `Allowance.Scope`
+  and `Allowance.Reason` as its `scope` and `message`. `Allowance.USD`
+  marks a dollar limit in force: a model with no price then ends the run
+  with reason `unpriced`, as a dollar cap of the session's own does. It is
+  asked at turn boundaries; every other model call (a suggestion, the
+  critic, a compaction summary, a pipeline model step, a fallback) passes
+  the budget's gate, `Budget.Refuse`, which reads its last answer: under a
+  dollar limit an unpriced model is refused, and after a stop no call goes
+  out until an answer allows again. An error, a panic in the hook, or no answer within 10
+  seconds stops the run with scope `unavailable`: a limit that cannot be
+  read is not taken as none. A run interrupted while the hook is asked
+  ends as interrupted, not over budget.
 - **Credential sources.** `secretstore.OpenSource(name, src)` is a secrets
   store whose values a driver keeps (load whole, set and remove by name)
   instead of a file. It hands out and redacts values as a file store does;

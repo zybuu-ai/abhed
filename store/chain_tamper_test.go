@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 	"github.com/zybuu-ai/abhed/store/chain"
 )
 
@@ -332,7 +332,7 @@ func TestAuditChainIsASource(t *testing.T) {
 func TestRuntimeRoleThatCanMarkPreChainRowsIsRefused(t *testing.T) {
 	runtimeStore(t, "t-premark-grant") // provisions the runtime role
 	owner := openStore(t, "t-premark-grant")
-	rt := os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	rt := testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	rc, err := pgx.ParseConfig(rt)
 	if err != nil {
 		t.Fatal(err)

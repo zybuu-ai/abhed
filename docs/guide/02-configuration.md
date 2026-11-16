@@ -197,6 +197,11 @@ raised is marked `estimated` on the call:
 A cap set by the managed or org configuration also fixes the prices it is
 spent by (see below).
 
+A server can also hold a session to limits kept outside it, such as an
+organisation's periodic budgets. Those are asked before every turn, and a
+spent one ends the run `max_budget` with a `budget.stopped` of reason
+`allowance`, whose `scope` and `message` name the limit.
+
 ### Prices
 
 Each model call is priced from its model's name as sent to the provider,

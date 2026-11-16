@@ -2,14 +2,15 @@ package store
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 func routingStore(t *testing.T) (*Postgres, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run routing tests")
 	}
@@ -111,7 +112,7 @@ func TestUnclaimedSessionHasNoNode(t *testing.T) {
 // does not. This is the difference between a healthy node holding a long turn
 // and a node that died.
 func TestRefreshedClaimSurvivesTheStalenessWindow(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run routing tests")
 	}

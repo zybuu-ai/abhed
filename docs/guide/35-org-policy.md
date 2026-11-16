@@ -72,7 +72,11 @@ From lowest to highest:
 
 Where the org policy and `/etc/abhed/config.json` both make a setting, the
 machine's file wins, setting by setting. `permissions.deny` and
-`permissions.ask` are joined, so a rule from either stays.
+`permissions.ask` are joined, so a rule from either stays. For
+`limits.max_budget_tokens` and `limits.max_budget_usd` the lower of the two
+applies (zero meaning none), so a cap in the machine's file never lifts a
+lower one the org policy sets, such as what is left of an organisation's
+budget.
 
 `model.allowed`, `mcp.allowed` and `mcp.denied` are kept as a layer of their
 own rather than merged: a model or MCP server must pass the machine file's

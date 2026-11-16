@@ -427,6 +427,38 @@ func (j orgStrip) extra(p string, v any) string {
 var unionLists = map[string]bool{"permissions.deny": true, "permissions.ask": true,
 	"monitor.honeytokens": true, "verify.contract.protect": true}
 
+// lowerOfLimits are the caps where the machine's managed file and the org
+// policy both hold: the lower applies, zero meaning none, so a generic cap in
+// the machine's file never lifts an org budget's.
+var lowerOfLimits = map[string]bool{"limits.max_budget_tokens": true, "limits.max_budget_usd": true}
+
+// capValue reads a cap as written in a managed document; ok is false for
+// anything that is not a number.
+func capValue(v any) (float64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
+// lowerCap is the lower of two caps, zero meaning none; when either is not
+// a number the machine's stands.
+func lowerCap(org, local any) any {
+	o, ook := capValue(org)
+	l, lok := capValue(local)
+	if !ook || !lok || o <= 0 {
+		return local
+	}
+	if l <= 0 || o < l {
+		return org
+	}
+	return local
+}
+
 // orgBelowLists are the union-ruled lists joinManagedLists joins back; deny
 // and ask join in applyManaged, honeytokens in monitorBelow.
 // TestUnionRuledListsOnlyGrow checks every union-ruled list does.
@@ -480,6 +512,9 @@ func mergeDocs(org, local any, t reflect.Type, path string) any {
 		out := maps.Clone(oo)
 		maps.Copy(out, lo)
 		return out
+	}
+	if lowerOfLimits[path] {
+		return lowerCap(org, local)
 	}
 	ol, oListed := org.([]any)
 	ll, lListed := local.([]any)
@@ -622,7 +657,20 @@ func orgKeysOf(cfg *Config, org map[string]any, local []byte) {
 		return
 	}
 	mine := managedKeys(local)
+	var localDoc map[string]any
+	if local != nil {
+		localDoc, _ = decodeDoc(local)
+	}
 	for _, k := range managedKeys(b) {
+		if lowerOfLimits[k] {
+			o, l := valueAt(org, k), valueAt(localDoc, k)
+			if l == nil || lowerCap(o, l) == o {
+				cfg.OrgPolicy.Keys = append(cfg.OrgPolicy.Keys, k)
+			} else {
+				cfg.OrgPolicy.Shadowed = append(cfg.OrgPolicy.Shadowed, k)
+			}
+			continue
+		}
 		shadowed := false
 		for _, l := range mine {
 			if !unionLists[k] && (l == k || strings.HasPrefix(k, l+".") || strings.HasPrefix(l, k+".")) {
@@ -638,6 +686,19 @@ func orgKeysOf(cfg *Config, org map[string]any, local []byte) {
 	}
 	sort.Strings(cfg.OrgPolicy.Keys)
 	sort.Strings(cfg.OrgPolicy.Shadowed)
+}
+
+// valueAt is the value at a dotted path of a managed document, or nil.
+func valueAt(doc map[string]any, path string) any {
+	var cur any = doc
+	for _, part := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = m[part]
+	}
+	return cur
 }
 
 // FromOrg reports whether the org policy, not the machine's managed file,

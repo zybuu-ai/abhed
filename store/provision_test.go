@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // singleRoleConfig is the setup the older tests were written for: one role
@@ -26,7 +26,7 @@ func singleRoleConfig(dsn string) Config {
 // runtime role (ABHED_TEST_RUNTIME_DSN), which is how a deployment should run.
 func runtimeStore(t *testing.T, tenant string) *Postgres {
 	t.Helper()
-	owner, runtime := testDSN(t), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtime := testDSN(t), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if runtime == "" {
 		t.Skip("set ABHED_TEST_RUNTIME_DSN to a second, unprivileged role to run the privilege-separation tests")
 	}
@@ -254,7 +254,7 @@ func TestValidPrivileges(t *testing.T) {
 // An edition's own tables are provisioned by the same command, and the
 // runtime role gets on them exactly the privileges the edition named.
 func TestProvisionAppliesExtensions(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}
@@ -286,7 +286,7 @@ func TestProvisionAppliesExtensions(t *testing.T) {
 // A column grant holds the runtime role to the columns it names, and it
 // replaces a table-wide grant an earlier migrate gave.
 func TestProvisionNarrowsToAColumnGrant(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}
@@ -324,7 +324,7 @@ func TestProvisionNarrowsToAColumnGrant(t *testing.T) {
 // A runtime role on a users table without revocations is refused at start,
 // and the owner's migrate adds the column to the rows already there.
 func TestOpenRefusesUsersWithoutRevocations(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}
@@ -376,7 +376,7 @@ func TestOpenRefusesUsersWithoutRevocations(t *testing.T) {
 // A runtime role on a sessions table without title is refused at start, not
 // left to fail every session query, and the owner's migrate adds it back.
 func TestOpenRefusesSessionsWithoutTitle(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}
@@ -419,7 +419,7 @@ func TestOpenRefusesSessionsWithoutTitle(t *testing.T) {
 // An extension cannot replace a core table's grant, and an UPDATE held on
 // one column of events still counts as a way to alter the record.
 func TestExtensionCannotWidenACoreGrant(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}
@@ -480,7 +480,7 @@ func TestInsertedAtIsTheDatabasesClock(t *testing.T) {
 // could rewrite it is refused as one that could rewrite the events.
 func TestOpenRefusesARoleThatCanAlterTheSandboxAudit(t *testing.T) {
 	runtimeStore(t, "t-sbx-audit") // provisions the runtime role
-	owner, runtime := testDSN(t), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtime := testDSN(t), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	rc, err := pgx.ParseConfig(runtime)
 	if err != nil {
 		t.Fatal(err)
@@ -505,7 +505,7 @@ func TestOpenRefusesARoleThatCanAlterTheSandboxAudit(t *testing.T) {
 // Provisions run at once (two migrates, or replicas starting together) all
 // succeed, and leave the runtime role its grants.
 func TestConcurrentProvisionsSucceed(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}
@@ -545,7 +545,7 @@ func TestConcurrentProvisionsSucceed(t *testing.T) {
 // A provision's grants and a schema change made at the same time, as a
 // server applies schema.sql at start, both succeed.
 func TestProvisionAlongsideASchemaChange(t *testing.T) {
-	owner, runtimeDSN := os.Getenv("ABHED_TEST_DSN"), os.Getenv("ABHED_TEST_RUNTIME_DSN")
+	owner, runtimeDSN := testdb.DSN(t, "ABHED_TEST_DSN"), testdb.DSN(t, "ABHED_TEST_RUNTIME_DSN")
 	if owner == "" || runtimeDSN == "" {
 		t.Skip("needs ABHED_TEST_DSN (owner) and ABHED_TEST_RUNTIME_DSN")
 	}

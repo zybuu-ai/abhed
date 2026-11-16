@@ -422,6 +422,20 @@ All notable changes to Abhed are recorded here. The format follows
   managed or org cap may only be lowered, and under one, prices come only
   from that layer and the built-in list. A resumed session carries what it
   had spent.
+- `server.Options.SessionAllowance`: an edition's limits on what a
+  session's owner may spend, asked before every turn of the session and its
+  subagents. A spent allowance ends the run `max_budget` with a
+  `budget.stopped` of reason `allowance` naming the limit (`scope`); under a
+  dollar limit a model with no price is refused; a limit that cannot be
+  read, or a hook that panics or does not answer within 10 seconds, stops
+  the run. It is asked at turn boundaries; every other call (a suggestion,
+  the critic, a compaction, a pipeline step, a fallback) passes the same
+  gate, which refuses an unpriced model under a dollar limit and any call
+  once the allowance last said stop.
+- Where a machine's managed file and the org policy both set
+  `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
+  (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
+  longer lifts the org's lower cap.
 
 ### Changed
 

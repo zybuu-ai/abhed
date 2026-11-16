@@ -5,19 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 )
 
 // Integration tests run against a real Postgres. Set ABHED_TEST_DSN to enable;
 // they are skipped otherwise so `go test ./...` works without a database.
 func testDSN(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run store integration tests")
 	}

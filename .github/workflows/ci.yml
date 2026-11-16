@@ -24,7 +24,7 @@ jobs:
           POSTGRES_PASSWORD: abhed
           POSTGRES_DB: abhed_test
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U abhed"
           --health-interval 5s
@@ -89,7 +89,7 @@ jobs:
         env:
           PGPASSWORD: abhed
         run: |
-          psql -h localhost -U abhed -d abhed_test \
+          psql -h localhost -p 55432 -U abhed -d abhed_test \
             -c "CREATE ROLE abhed_app LOGIN PASSWORD 'abhed';" \
             -c "GRANT ALL ON SCHEMA public TO abhed_app;" \
             -c "ALTER SCHEMA public OWNER TO abhed_app;" \
@@ -97,8 +97,8 @@ jobs:
 
       - name: go test
         env:
-          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
-          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
           # The page tests need node and python3; here a missing one fails, not skips.
           ABHED_REQUIRE_PAGE_TESTS: "1"
         run: go test ./... -count=1 -timeout 30m -coverprofile=coverage.out
@@ -111,10 +111,10 @@ jobs:
       # as a pass.
       - name: The audit record's privilege separation was actually tested
         env:
-          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
-          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
           # Recreates Postgres 13 and 14's default rights in a database of its own.
-          ABHED_TEST_SUPERUSER_DSN: postgres://abhed:abhed@localhost:5432/postgres?sslmode=disable
+          ABHED_TEST_SUPERUSER_DSN: postgres://abhed:abhed@localhost:55432/postgres?sslmode=disable
         run: |
           set -euo pipefail
           go test ./store/ -count=1 -v -run 'TestRuntimeRole|TestOpenRefusesARole|TestTruncateIsRefused|TestSandbox|TestOwnerTamper|TestPreChain|TestGoVerifier|TestAnUnchainedRow|TestARowAtATaken|TestNoSubagentSession|TestOCSFCommitPos|TestMigrateClosesCreateOnPublic|TestMigrateOnPostgres14DefaultRights|TestTemporaryTablesDoNotStandIn|TestCommitOrderSurvives' > record.log 2>&1 || { cat record.log; exit 1; }
@@ -165,8 +165,8 @@ jobs:
       # race-clean, so this gates the lot rather than a chosen few.
       - name: Race detector
         env:
-          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:5432/abhed_test?sslmode=disable
-          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:5432/abhed_test?sslmode=disable
+          ABHED_TEST_DSN: postgres://abhed_app:abhed@localhost:55432/abhed_test?sslmode=disable
+          ABHED_TEST_RUNTIME_DSN: postgres://abhed_runtime:abhed@localhost:55432/abhed_test?sslmode=disable
         run: go test ./... -race -count=1 -timeout 30m
 
       # The end-to-end CLI tests are evidence only if they ran. A test may

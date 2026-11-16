@@ -11,13 +11,14 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/testdb"
 	"github.com/zybuu-ai/abhed/store"
 )
 
 // A branch on Postgres: every copied event gets its own id, since event
 // ids are the events table's primary key, and the copy is whole.
 func TestBranchCopyOnPostgres(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run the Postgres branch test")
 	}
@@ -61,7 +62,7 @@ func TestBranchCopyOnPostgres(t *testing.T) {
 // the vault's redactor before they are stored, since Postgres does not
 // redact on append, and its events come in untrusted.
 func TestBranchFromAFileIsRedactedOnPostgres(t *testing.T) {
-	dsn := os.Getenv("ABHED_TEST_DSN")
+	dsn := testdb.DSN(t, "ABHED_TEST_DSN")
 	if dsn == "" {
 		t.Skip("set ABHED_TEST_DSN to run the Postgres branch test")
 	}
