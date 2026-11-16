@@ -81,7 +81,9 @@ func (t *SearchTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	if limit <= 0 {
 		limit = 8
 	}
-	hits, err := t.Index.Search(ctx, a.Query, limit*3)
+	// A file a read rule withholds is left out before scoring, as if it were
+	// not indexed, so neither the hits nor their order say what it holds.
+	hits, err := t.Index.SearchKept(ctx, a.Query, limit*3, func(p string) bool { return !tools.ReadRefused(ctx, p) })
 	if err != nil {
 		return tools.Result{Content: fmt.Sprintf("Search failed: %v", err), IsError: true}
 	}

@@ -198,6 +198,14 @@ the workspace, give a secret only to the command that needs it
 print them in your own or the managed rules. Your own `permissions.ask` list
 replaces the built-in one, so copy these rules into it if you set one.
 
+Read rules hold for `read`, `grep` and `search` alike: a file a deny rule
+covers, or an ask rule, is left out of what a search shows. They are path
+rules, so a second name for the same file, a hard link such as `hard.txt`
+made to `secrets/prod.env`, is judged by its own path and is read and
+searched; `bash` (`cat secrets/prod.env`, under the built-in
+`bash(cat *)`) is judged by the command's rules, not the read rules. Keep
+secrets out of the workspace, or deny the commands that print them.
+
 The tool name of a built-in tool, or of an action such as `secret`, `delete`
 or `forge_pr`, may be written in any case: `Bash(curl *)`, `BASH(curl *)` and
 `bash(curl *)` are the same rule, as are `Read(**/.env)` and `read(**/.env)`,
@@ -801,6 +809,26 @@ sandbox cannot.
 A malformed rule is **refused at startup** rather than silently matching
 nothing — for a deny rule, quietly accepting one that can never fire tells you
 that you are protected when you are not.
+
+### Where a refusal came from
+
+A decision made by a configured rule names the layer the rule came from,
+in the reason the model and the person read and in the record:
+`denied by rule bash(curl*) from the org policy (https://org.example,
+version 3)`. The layers are the org policy, the machine's managed file
+(`the managed configuration /etc/abhed/config.json`), the workspace's
+configuration, your user configuration, a `-settings` file, the `-allow` or
+`-deny` flag, and Abhed's built-in rules; a session rule says `session
+rule`, and an edition's layer its name. The model is also told that a rule
+refused the call, not that something is unavailable, so it does not tell
+you "no network" when the organisation denied `curl`.
+
+`action.approved` and `action.denied` carry the layer as `source`: `org`,
+`managed`, `workspace`, `user`, `settings`, `flag`, `default`, `session` or
+an edition's layer for a rule; `mode` when the permission mode or its
+default decided; `hook` for a policy hook. Abhed's own checks (a
+destructive command, a command no rule can read) carry none. HawkEYE shows
+it per call.
 
 ### Policy layers from an edition
 

@@ -192,6 +192,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Cwd = sess.WorkDir
 	pol.StartupBaseline = config.StartupBaseline()
 	pol.Session = &policy.Overlay{}
+	pol.RuleSource = cfg.RuleSource
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
@@ -231,7 +232,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// The tool set every surface builds the same way; the CLI takes all of it.
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace,
+		Workspace:    workspace,
+		ReadWithheld: pol.ReadWithheldFunc(),
 		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),

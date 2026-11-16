@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"reflect"
 	"slices"
 	"sort"
@@ -71,10 +72,40 @@ const LayerOrg = "org"
 
 // orgSource names the org policy in messages.
 func orgSource(url string) string {
-	if url == "" {
+	// The reason it goes into reaches the model, the record and stderr.
+	shown := orgServer(url)
+	if shown == "" {
 		return "the org policy"
 	}
-	return "the org policy from " + url
+	return "the org policy from " + shown
+}
+
+// orgStatusURL is the org policy URL for the status line: whole, with its
+// user part, every query value and its fragment redacted.
+func orgStatusURL(raw string) string {
+	u, err := url.Parse(redactURL(raw))
+	if err != nil || u.Scheme == "" {
+		return orgServer(raw)
+	}
+	if u.RawQuery != "" {
+		q := u.Query()
+		for name := range q {
+			q.Set(name, "redacted")
+		}
+		u.RawQuery = q.Encode()
+	}
+	return Printable(u.String())
+}
+
+// orgServer is the org policy URL as a reason may show it: its scheme, host
+// and path only, never what a user part, query or fragment may carry. ""
+// when it does not read as a URL.
+func orgServer(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return Printable((&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String())
 }
 
 // orgKind is what an org policy may do with a setting.
@@ -162,30 +193,31 @@ var orgRules = map[string]orgRule{
 	"tools.diagnostics_max":       {orgTighten, ""},
 	"tools.diagnostics_wait_ms":   {orgTighten, ""},
 
-	"web_search.enabled":      {orgTighten, ""},
-	"web_search.max_results":  {orgTighten, ""},
-	"web_search":              {orgRefuse, "a search provider, key and endpoint receive the agent's queries"},
-	"web_fetch.enabled":       {orgTighten, ""},
-	"web_fetch.max_chars":     {orgTighten, ""},
-	"web_fetch":               {orgRefuse, "names hosts fetched without asking"},
-	"k8s.enabled":             {orgTighten, ""},
-	"k8s.allow_writes":        {orgTighten, ""},
-	"k8s":                     {orgRefuse, "names this machine's clusters and their files"},
-	"ssh.enabled":             {orgTighten, ""},
-	"ssh.transfers":           {orgTighten, ""},
-	"ssh.transfer_max_mb":     {orgTighten, ""},
-	"ssh.max_timeout_seconds": {orgTighten, ""},
-	"ssh.hosts":               {orgRefuse, "names machines, keys, files and environment variables"},
-	"ssh.connect_hosts":       {orgRefuse, "names machines the agent may reach"},
-	"ssh.read_commands":       {orgRefuse, "lets commands run on a host without asking"},
-	"ssh.listed_reads_only":   {orgTighten, ""},
-	"ssh.read_contents":       {orgRefuse, "lets a host's files be read into the session without asking"},
-	"skills.disabled":         {orgTighten, ""},
-	"skills.dirs":             {orgRefuse, "names folders on this machine"},
-	"agents.disabled":         {orgTighten, ""},
-	"agents.dirs":             {orgRefuse, "names folders on this machine"},
-	"telemetry":               {orgRefuse, "names an endpoint and headers that receive the event stream"},
-	"network":                 {orgRefuse, "names this machine's proxy, its files and secrets, and carries the policy's own fetch"},
+	"web_search.enabled":       {orgTighten, ""},
+	"web_search.max_results":   {orgTighten, ""},
+	"web_search":               {orgRefuse, "a search provider, key and endpoint receive the agent's queries"},
+	"web_fetch.enabled":        {orgTighten, ""},
+	"web_fetch.max_chars":      {orgTighten, ""},
+	"web_fetch":                {orgRefuse, "names hosts fetched without asking"},
+	"k8s.enabled":              {orgTighten, ""},
+	"k8s.allow_writes":         {orgTighten, ""},
+	"k8s":                      {orgRefuse, "names this machine's clusters and their files"},
+	"ssh.enabled":              {orgTighten, ""},
+	"ssh.transfers":            {orgTighten, ""},
+	"ssh.transfer_max_mb":      {orgTighten, ""},
+	"ssh.max_timeout_seconds":  {orgTighten, ""},
+	"ssh.hosts":                {orgRefuse, "names machines, keys, files and environment variables"},
+	"ssh.connect_hosts":        {orgRefuse, "names machines the agent may reach"},
+	"ssh.read_commands":        {orgRefuse, "lets commands run on a host without asking"},
+	"ssh.listed_reads_only":    {orgTighten, ""},
+	"ssh.read_contents":        {orgRefuse, "lets a host's files be read into the session without asking"},
+	"skills.disabled":          {orgTighten, ""},
+	"skills.disable_workspace": {orgTighten, ""},
+	"skills.dirs":              {orgRefuse, "names folders on this machine"},
+	"agents.disabled":          {orgTighten, ""},
+	"agents.dirs":              {orgRefuse, "names folders on this machine"},
+	"telemetry":                {orgRefuse, "names an endpoint and headers that receive the event stream"},
+	"network":                  {orgRefuse, "names this machine's proxy, its files and secrets, and carries the policy's own fetch"},
 
 	"commands.dirs":                {orgRefuse, "names folders on this machine"},
 	"rules.dirs":                   {orgRefuse, "names folders on this machine"},
@@ -632,7 +664,7 @@ func (c Config) managedSourceOf(key string) string {
 func (s OrgPolicyStatus) OrgPolicyLine() string {
 	switch s.Status {
 	case orgpolicy.StatusApplied:
-		return fmt.Sprintf("%s %q version %d from %s, signed %s by %s", s.Status, s.Name, s.Version, s.URL,
+		return fmt.Sprintf("%s %q version %d from %s, signed %s by %s", s.Status, s.Name, s.Version, orgStatusURL(s.URL),
 			s.Issued.Local().Format("2 Jan 15:04"), s.KeyID)
 	case orgpolicy.StatusFallback:
 		return "fallback (plan mode, no allow rules, no web tools): " + s.Reason

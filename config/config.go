@@ -162,6 +162,9 @@ type Config struct {
 	// managedRules are the rules the managed file itself lists, by list and
 	// rule as ruleLayers keys them.
 	managedRules map[string]bool
+	// orgRules are the managed rules the org policy made and the machine's
+	// file does not list, keyed as ruleLayers is.
+	orgRules map[string]bool
 }
 
 // SettingsSource names a -settings file and the hash of what was merged.
@@ -1399,16 +1402,20 @@ type RetrievalConfig struct {
 
 // SkillsConfig points at directories holding skills.
 //
-// Deliberately NOT the workspace: a skill body is instructions by
-// construction, so reading them from the repository the agent is editing would
-// let any cloned project carry its own orders to the agent reading it. Skills
-// come from where the operator put them.
+// Not the workspace: a skill body is instructions by construction, so a
+// directory here never makes the repository's skills load. A workspace's own
+// .abhed/skills loads only under a trust decision bound to its exact content
+// (see trust_skills.go).
 type SkillsConfig struct {
 	// Dirs each contain one directory per skill, holding a SKILL.md.
 	// Defaults to ~/.abhed/skills when unset.
 	Dirs []string `json:"dirs,omitempty"`
 	// Disabled turns skills off entirely, including the default directory.
 	Disabled bool `json:"disabled,omitempty"`
+	// DisableWorkspace keeps a workspace's own .abhed/skills from loading,
+	// however it is trusted. The managed configuration sets it to keep
+	// skills to the ones the organisation and the person installed.
+	DisableWorkspace bool `json:"disable_workspace,omitempty"`
 }
 
 // AgentsConfig points at directories of subagent definitions: markdown files
@@ -1900,6 +1907,7 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		return cfg, err
 	}
 	cfg.noteRuleLayer(LayerManaged)
+	skillsOff(&cfg)
 	cfg.origins = nil
 	applyWebIntents(&cfg)
 	dropLockedAllow(&cfg, userFile, cfg.Workspace.File, o.SettingsName)

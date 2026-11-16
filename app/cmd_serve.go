@@ -317,7 +317,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Gateway:       set.Gateway,
 		Egress:        set.Guard(),
 		Index:         set.Index,
-		IndexOptions:  toolset.IndexOptions(cfg),
+		IndexOptions:  toolset.IndexOptions(cfg, workspace),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.

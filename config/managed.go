@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 )
 
 // LoadManaged is the built-in defaults with only the managed configuration
@@ -71,6 +72,15 @@ func mergeManaged(cfg *Config) error {
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)
+		if b, err := json.Marshal(org); err == nil {
+			mine := managedRuleSet(local)
+			cfg.orgRules = map[string]bool{}
+			for k := range managedRuleSet(b) {
+				if !mine[k] {
+					cfg.orgRules[k] = true
+				}
+			}
+		}
 	}
 	data, label := local, path
 	if org != nil {
@@ -764,6 +774,50 @@ func (c Config) RuleLayer(list, rule string) string {
 		return l
 	}
 	return "config"
+}
+
+// RuleSource names where a configured rule in list (allow, ask or deny) came
+// from, for a refusal to say whose it is: its layer, with the org policy told
+// apart from the machine's managed file, and that layer in words. A rule
+// loading did not see has the layer "config" and no words.
+func (c Config) RuleSource(list, rule string) (layer, where string) {
+	layer = c.RuleLayer(list, rule)
+	if layer == LayerManaged && c.orgRules[list+"\x00"+strings.TrimSpace(rule)] {
+		layer = LayerOrg
+	}
+	switch layer {
+	case LayerOrg:
+		where = "the org policy"
+		switch {
+		case c.OrgPolicy.Status == orgpolicy.StatusFallback:
+			where = "the org policy fallback"
+		case orgServer(c.OrgPolicy.URL) != "" && c.OrgPolicy.Version > 0:
+			where = fmt.Sprintf("the org policy (%s, version %d)", orgServer(c.OrgPolicy.URL), c.OrgPolicy.Version)
+		case orgServer(c.OrgPolicy.URL) != "":
+			where = fmt.Sprintf("the org policy (%s)", orgServer(c.OrgPolicy.URL))
+		case c.OrgPolicy.Version > 0:
+			where = fmt.Sprintf("the org policy (version %d)", c.OrgPolicy.Version)
+		}
+	case LayerManaged:
+		where = "the managed configuration " + managed.ConfigFile
+	case LayerWorkspace:
+		where = "the workspace configuration"
+		if c.Workspace.File != "" {
+			where += " " + Printable(c.Workspace.File)
+		}
+	case LayerUser:
+		where = "your user configuration ~/.abhed/config.json"
+	case LayerSettings:
+		where = "the -settings file"
+		if c.Settings.Name != "" {
+			where += " " + Printable(c.Settings.Name)
+		}
+	case LayerFlag:
+		where = "the -" + list + " flag"
+	case LayerDefault:
+		where = "Abhed's built-in rules"
+	}
+	return layer, where
 }
 
 // ManagedAskRule reports whether rule, as written, is an ask rule the

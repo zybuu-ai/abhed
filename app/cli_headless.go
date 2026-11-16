@@ -418,6 +418,9 @@ type resultLine struct {
 	DurationMS int64                `json:"duration_ms"`
 	ExitCode   int                  `json:"exit_code"`
 	Usage      resultUsage          `json:"usage"`
+	// PermissionDenials are the calls refused for want of an answer or by a
+	// rule, each with the flag that would allow it, or why none would.
+	PermissionDenials []permissionDenial `json:"permission_denials,omitempty"`
 	// Omitted names the event types this output left out, so a reader of the
 	// capture can tell a gap where they sat from a missing event.
 	Omitted []agent.EventType `json:"omitted,omitempty"`
@@ -453,9 +456,14 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
+	hints := newDenialHints(pol, appCfg, registry)
 	go func() {
 		defer close(done)
 		for ev := range events {
+			// Each refusal says on stderr what would allow it, whatever the format.
+			if d, ok := hints.observe(ev); ok {
+				fmt.Fprintf(os.Stderr, "abhed: %s\n", config.PrintableText(d.String()))
+			}
 			if o.verbose && ev.Type == agent.EvModelCall {
 				fmt.Fprintf(os.Stderr, "abhed: model call %s\n", ev.Payload)
 			}
@@ -619,7 +627,8 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
 			Result: agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter)), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
-			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict()}
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict(),
+			PermissionDenials: hints.denials}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
 		}

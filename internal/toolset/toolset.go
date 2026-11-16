@@ -70,6 +70,10 @@ const (
 type Options struct {
 	// Workspace is the directory the retrieval index covers.
 	Workspace string
+	// ReadWithheld, when set, is the session's own read rules, its engine's
+	// layers included, which the retrieval index is built to; nil builds it
+	// to the configured rules (a server's index, shared by sessions).
+	ReadWithheld func(path string) bool
 	// Bash is the shell tool. The surface builds it because the sandbox is the
 	// surface's to choose and to refuse to start without; nothing here weakens it.
 	Bash tools.Bash
@@ -277,7 +281,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	}
 	// Retrieval is an accelerator over grep, not a replacement.
 	if o.Parts&Retrieval != 0 && cfg.Retrieval.Enabled {
-		if ix, err := OpenIndex(ctx, cfg, o.Workspace); err != nil {
+		if ix, err := OpenIndexWithheld(ctx, cfg, o.Workspace, o.ReadWithheld); err != nil {
 			warn("index unavailable, falling back to grep: %v", err)
 		} else {
 			s.Index = ix

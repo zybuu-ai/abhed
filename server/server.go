@@ -1952,6 +1952,7 @@ func (s *Server) newPolicyIn(mode policy.Mode, workspace string) *policy.Engine 
 	}
 	// Path rules relative to the workspace; buildLive gives a session its own roots.
 	pol.Roots = func() []string { return []string{workspace} }
+	pol.RuleSource = s.opts.Config.RuleSource
 	_ = pol.AddDeny(s.opts.Config.Permissions.Deny...)
 	_ = pol.AddAsk(s.opts.Config.Permissions.Ask...)
 	pol.KeepAsk = toolset.KeepManagedAsks(s.opts.Config)

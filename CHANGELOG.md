@@ -48,6 +48,34 @@ All notable changes to Abhed are recorded here. The format follows
   `verify.contract`, rpc `start` with `verify`, or SDK `Options.Verify`.
   The server and Abhed Studio read the redacted record and were not
   affected.
+- `grep` returned matches from files a read deny rule covers.
+  `deny: ["read(secrets/**)"]` refused the `read` tool, but a `grep` over the
+  workspace, or one whose `path` named the denied file, still printed its
+  matching lines to the model. A managed or org deny rule was bypassed the
+  same way. Affected: every release through 1.2.9, on every surface (the
+  CLI, `-p`, `abhed serve`, Studio, the SDK, skill pipelines) and every
+  sandbox tier, since `grep` runs in Abhed itself. Every `grep` result is now
+  held to the read rules: a file a deny rule covers, or an ask rule (no one
+  can be asked through a search; the built-in ones for `.env`, `*.pem`,
+  `*.key` and SSH keys included), is judged by its path before it is read
+  and never opened; the answer says only how many files were not searched.
+- The `search` tool (the retrieval index, `retrieval.enabled`) returned
+  excerpts from files a read deny rule covers, and the index build sent
+  those files' chunks to the embedding endpoint when `retrieval.embed` is
+  on. Affected: every release through 1.2.9 with retrieval enabled. A file
+  a read deny or ask rule covers is now left out before ranking, as if it
+  were not indexed, and the index is built without such files (to the
+  session's own rules in the CLI and the SDK), so they reach neither the
+  model nor the embedding endpoint. A rule added after the index was built
+  still holds for the hits.
+- An org policy URL holding a password, a token or a signature
+  (`https://u:pw@…`, `https://TOKEN@…`, `?token=…`, `#…`, a signed URL)
+  was printed whole where a refusal or a warning named the org policy, and
+  in the status line of `abhed doctor`. Affected: 1.2.9 with an org policy.
+  A refusal, a warning and a denial reason (which reach the model and the
+  record) now show only the URL's scheme, host and path; the status line
+  shows it whole with the user part, every query value and the fragment
+  redacted.
 
 ### Upgrading from 1.2.9
 
@@ -326,6 +354,33 @@ All notable changes to Abhed are recorded here. The format follows
   `@server:uri` in the terminal or an editor's prompt attaches one, read as
   your own call through the same tool and policy; `/mcp resources SERVER`
   lists them ([MCP](docs/guide/08-mcp.md#resources)).
+- Workspace skills. A repository's `.abhed/skills/<name>/` folders load as
+  skills once the person trusts their exact content, under the same
+  hash-pinned trust as its agent definitions. `abhed trust` and the trust
+  prompt show each skill's name, description and hash; the hash covers every
+  file in the skill's folder, so any change asks again; an untrusted
+  workspace loads none; and a workspace skill never replaces or sits beside
+  an installed one whose name matches without case or in NFKC (its name must
+  be ASCII). Only its `SKILL.md` and `pipeline.json` are used, since the
+  agent cannot read `.abhed`. `abhed trust grant -skills-sha256 H` pins a
+  grant.
+  `skills.disable_workspace: true`, from the managed configuration or any
+  layer, keeps them off whatever the trust.
+- A denial names where its rule came from. The reason the model and the
+  person read says `denied by rule bash(curl*) from the org policy
+  (https://org.example, version 3)`, or the managed file, the workspace's
+  or your user configuration, a `-settings` file, the `-allow`/`-deny`
+  flag or the built-in rules, and the model is told a rule refused the
+  call, not that a capability is missing. `action.approved` and
+  `action.denied` record it as `source` (`org`, `managed`, `workspace`,
+  `user`, `settings`, `flag`, `default`, `session`, an edition's layer,
+  `mode` or `hook`), and HawkEYE shows it per call.
+- A `-p` run's refused call says what would allow it: the exact flag, such
+  as `-mode accept-edits` or `-allow 'bash(make deploy)'` (an MCP tool's
+  name for an MCP tool), on stderr and in the result line as
+  `permission_denials`. A flag is offered only when the configuration would
+  accept it and the policy would then allow the call; otherwise the hint
+  says why none would, such as `denied by org policy; ask your admin`.
 
 ### Changed
 
@@ -359,6 +414,17 @@ All notable changes to Abhed are recorded here. The format follows
 - An `ssh.read_commands` entry refused at load, such as `"df -h*"`, now says
   which forms are accepted (an exact command, or `*` for a whole operand or
   a value after `=`) and lists the program's read options.
+- `grep` is faster on a large repository. It now skips the files a
+  `.gitignore` excludes (unless `path` names them), reads the rest in
+  parallel, and, when a ripgrep owned by root, in folders only root can
+  write, is on `PATH` at start-up, lets one `rg` run narrow the files by a
+  literal every match contains. Measured
+  with `BenchmarkGrep` (`internal/tools/grep_bench_test.go`) on one
+  11.2k-file checkout on a 12-core arm64 Mac, 9 Nov 2026: 9–17 s before,
+  0.4–1 s after, with or without ripgrep; most of the gain there is the
+  gitignored build output no longer read. Path rules and redaction are the
+  same on both paths; gitignored files no longer show up unless asked for
+  by `path`.
 
 ### Fixed
 
