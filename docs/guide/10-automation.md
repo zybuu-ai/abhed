@@ -123,6 +123,8 @@ abhed -p "fix the failing tests; run go test ./..." -mode auto \
   -allow 'bash(go test*)' -verify strict -output-format json > run.jsonl
 ```
 
+The [GitHub Action](38-github-action.md) runs it this way in a GitHub Actions job.
+
 With `json` or `stream-json`, the check is the `answer.verdict` event and
 the result line's `verdict`: `verdict.outcome` is `verified` or `unverified`,
 and `verdict.claims` lists each statement with its own `verdict` and
@@ -259,7 +261,7 @@ the permissions. It only explains; nothing is granted.
 
 For a caller that is not Go, `abhed rpc` speaks line-delimited JSON on stdin and
 stdout — no server, no port, no auth for what is one process talking to its own
-child.
+child. The [TypeScript and Python SDKs](40-sdk-typescript-python.md) wrap it.
 
 ```python
 p = subprocess.Popen(["abhed", "rpc"], stdin=PIPE, stdout=PIPE, text=True, bufsize=1)
@@ -471,7 +473,9 @@ the branch stays. `abhed eval` stopped the same way prints no summary, writes
 no `-json` report, and exits the same way.
 
 Not here: the bot that reacts to labels and comments. That is a multi-user
-feature and lives with the server.
+feature and lives with the server. In a GitHub Actions job, the
+[GitHub Action](38-github-action.md) runs a task and
+[reviews pull requests](39-pr-review.md).
 
 ## Editors
 

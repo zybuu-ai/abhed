@@ -238,6 +238,57 @@ jobs:
           python3 scripts/ci/edition-boundary.py --self-test
           python3 scripts/ci/edition-boundary.py
 
+  # The GitHub Action and the TypeScript and Python SDKs: their own tests,
+  # then each against the abhed this commit builds, on a scripted model served
+  # from 127.0.0.1. No workflow, release or model outside the runner is used,
+  # and nothing here may skip.
+  integrations:
+    name: GitHub Action and SDKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.10"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install bubblewrap and let it make its namespaces
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+              "profile abhed-ci-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+              sudo tee /etc/apparmor.d/abhed-ci-bwrap > /dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/abhed-ci-bwrap
+          fi
+      - name: Build abhed
+        run: go build -o "$RUNNER_TEMP/abhed" ./cmd/abhed
+      - name: The action's scripts, composite steps and real runs
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --only-binary :all: --require-hashes -r scripts/ci/workflow-rules.requirements.txt
+          python scripts/ci/workflow-rules.py integrations/github-action/action.yml
+          cd integrations/github-action
+          ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/action.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/action.log"
+      - name: Python SDK
+        working-directory: sdk/python
+        run: |
+          set -euo pipefail
+          ABHED_BIN="$RUNNER_TEMP/abhed" python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/py.log"
+          ! grep -E "skipped '" "$RUNNER_TEMP/py.log"
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          ABHED_BIN="$RUNNER_TEMP/abhed" npm test 2>&1 | tee "$RUNNER_TEMP/ts.log"
+          grep -q "^# skipped 0" "$RUNNER_TEMP/ts.log" || grep -qE "ℹ skipped 0" "$RUNNER_TEMP/ts.log"
+
   # The process tier on Linux is bubblewrap, and denying network needs a
   # namespace the hosted runner will not grant. A privileged container can, so
   # this is where the egress, credential and state boundaries are actually

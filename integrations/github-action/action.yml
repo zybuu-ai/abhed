@@ -31,7 +31,7 @@ inputs:
     description: Also check the release's Sigstore signature over SHA256SUMS with cosign (releases from v1.2.8).
     default: "true"
   install-sandbox:
-    description: On a Linux runner without bubblewrap, install it with apt so commands run in the process sandbox.
+    description: On a Linux runner where sudo needs no password, install bubblewrap and let it make user namespaces under Ubuntu's AppArmor restriction, so commands run in the process sandbox.
     default: "true"
 
   model-provider:
@@ -179,8 +179,19 @@ runs:
       if: ${{ steps.prep.outputs.skip != 'true' && runner.os == 'Linux' && inputs.install-sandbox == 'true' }}
       shell: bash
       run: |
-        if ! command -v bwrap >/dev/null && sudo -n true 2>/dev/null; then
+        set -euo pipefail
+        sudo -n true 2>/dev/null || exit 0
+        if ! command -v bwrap >/dev/null; then
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap
+        fi
+        # Ubuntu 24.04 grants user namespaces only to profiled programs, and
+        # bubblewrap needs one: profile bwrap alone, as Abhed's own CI does,
+        # rather than lift the restriction for every process.
+        if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = 1 ]; then
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+            "profile abhed-action-bwrap $(command -v bwrap) flags=(unconfined) {" '  userns,' '}' |
+            sudo tee /etc/apparmor.d/abhed-action-bwrap > /dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/abhed-action-bwrap
         fi
 
     - name: Install Abhed
@@ -279,7 +290,8 @@ runs:
         bash "$GITHUB_ACTION_PATH/lib/run.sh"
 
     - name: Post the review
-      if: ${{ !cancelled() && steps.prep.outputs.skip != 'true' && inputs.mode == 'review' && inputs.post-review == 'true' && steps.run.outcome == 'success' }}
+      id: post
+      if: ${{ !cancelled() && steps.prep.outcome == 'success' && steps.prep.outputs.skip != 'true' && inputs.mode == 'review' && inputs.post-review == 'true' && steps.run.outcome == 'success' }}
       shell: bash
       env:
         ABHED_REVIEW_TOKEN: ${{ inputs.github-token }}
@@ -297,7 +309,8 @@ runs:
           --request-changes-on "$REQUEST_CHANGES_ON" --run-url "$RUN_URL"
 
     - name: Upload the evidence
-      if: ${{ !cancelled() && steps.prep.outputs.skip != 'true' && inputs.upload-evidence == 'true' }}
+      id: upload
+      if: ${{ !cancelled() && steps.prep.outcome == 'success' && steps.prep.outputs.skip != 'true' && inputs.upload-evidence == 'true' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.evidence-name }}
@@ -306,7 +319,8 @@ runs:
         if-no-files-found: warn
 
     - name: Fail on a non-zero exit
-      if: ${{ !cancelled() && steps.prep.outputs.skip != 'true' && inputs.fail-on-error == 'true' && steps.run.outputs.exit-code != '0' }}
+      id: fail
+      if: ${{ !cancelled() && steps.prep.outcome == 'success' && steps.prep.outputs.skip != 'true' && inputs.fail-on-error == 'true' && steps.run.outputs.exit-code != '0' }}
       shell: bash
       env:
         CODE: ${{ steps.run.outputs.exit-code }}

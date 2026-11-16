@@ -2,7 +2,9 @@
 
 Abhed's internals live under `internal/`, which Go refuses to let another module
 import. The `sdk` package is the supported surface across that wall, kept small
-so the internals stay free to change.
+so the internals stay free to change. For a program in TypeScript or Python,
+see [TypeScript and Python SDKs](40-sdk-typescript-python.md), which drive
+`abhed rpc`.
 
 ```go
 import abhed "github.com/zybuu-ai/abhed/sdk"

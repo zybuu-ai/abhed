@@ -497,6 +497,36 @@ All notable changes to Abhed are recorded here. The format follows
   keep the offered scope for the session. An ask still open when stdin ends
   or its run stops is refused. Without `approvals`, a call needing approval
   is refused as before.
+- A GitHub Action, `integrations/github-action`. It installs a pinned
+  Abhed release, checked against the SHA-256 the action pins and, by
+  default, the release's Sigstore signature, before it runs; runs `abhed -p`
+  with `-verify strict` by default; uploads the run's output, its exported
+  record (verifiable with `abhed record verify`) and a transcript as an
+  artifact; and fails the job on a non-zero exit. Inputs take the task, the
+  model provider (its key from a secret, masked, in one variable), a policy
+  file passed as `-settings` from a copy outside the workspace, allow and
+  deny rules, limits, and the variables to pass through. The agent runs
+  under `env -i`: no GitHub token reaches it, and a checkout that kept its
+  token in `.git/config` is refused. `pull_request_target` is refused.
+  See [The GitHub Action](docs/guide/38-github-action.md).
+- Pull request review, the action's `mode: review`. It takes the diff
+  between the pull request's base and head with hooks and textconv off,
+  reviews it read-only (`plan`, the `read`, `glob` and `grep` tools only,
+  `-bare`, the workspace's configuration untrusted, a JSON schema for the
+  findings) and posts one review: `COMMENT`, or `REQUEST_CHANGES` at a
+  severity you set, never `APPROVE`, with an inline comment on each finding
+  whose line is in the diff. Only the posting step holds the token. On
+  `pull_request` a fork's pull request has no model key and is skipped with
+  a notice; a maintainer reviews it with `workflow_dispatch`. See
+  [Pull request review](docs/guide/39-pr-review.md), with its threat model.
+- TypeScript and Python SDKs, `sdk/typescript` (`abhed-sdk` on npm) and
+  `sdk/python` (`abhed-sdk`, imported as `abhed_sdk`). Each drives
+  `abhed rpc` as a child process: start a session, prompt or stream its
+  events, steer, answer approvals with a handler or from the stream,
+  verdicts and `RunError` with the terminal reason, usage, export,
+  background tasks and wake. No runtime dependencies and no network call of
+  their own. Not yet published. See
+  [TypeScript and Python SDKs](docs/guide/40-sdk-typescript-python.md).
 
 ### Changed
 

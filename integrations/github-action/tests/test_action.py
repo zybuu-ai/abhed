@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 LIB = os.path.join(ROOT, "lib")
 sys.path.insert(0, LIB)
+sys.path.insert(0, HERE)
 
 import abhed_action as aa  # noqa: E402
 
@@ -424,6 +425,169 @@ class RunTest(Tmp):
         self.assertEqual(a[a.index("-tools") + 1], "read,glob,grep")
         self.assertIn("-bare", a)
         self.assertEqual(a[a.index("-mode") + 1], "plan")
+
+
+# ---------------------------------------------------------------------------
+
+try:
+    import composite
+except ImportError:  # PyYAML is not installed
+    composite = None
+
+FAKE_REVIEW_ABHED = FAKE_ABHED.replace(
+    """echo '{"type":"result","subtype":"unverified","session_id":"s-fake","num_turns":1,"exit_code":8,"verdict":{"outcome":"unverified"}}'
+echo "abhed: a note on stderr" >&2
+exit 8""",
+    """cat > /dev/null
+echo '{"type":"result","subtype":"completed","session_id":"s-rev","num_turns":2,"exit_code":0,"verdict":{"outcome":"verified"},"structured_output":{"summary":"ok","findings":[{"path":"a.txt","line":2,"severity":"major","title":"t","body":"b @someone"}]}}'
+exit 0""")
+
+
+class FakeGitHub:
+    """The GitHub API endpoints the review uses, on 127.0.0.1."""
+
+    def __init__(self, status=200):
+        self.posts, self.status = [], status
+        gh = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = json.dumps({"number": 5, "base": {"sha": gh.base}, "head": {"sha": gh.head}}).encode()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                gh.posts.append((self.path, self.headers.get("Authorization"), json.loads(data)))
+                self.send_response(gh.status)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        self.base = self.head = ""
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+@unittest.skipIf(composite is None, "the composite runner needs PyYAML")
+class CompositeTest(Tmp):
+    """The whole action.yml, step by step, with abhed-path set."""
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.path("ws")
+        os.makedirs(self.ws)
+        self.temp = self.path("runner-temp")
+        os.makedirs(self.temp)
+
+    def git_repo(self):
+        g = lambda *a: subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                                      cwd=self.ws, check=True, capture_output=True, text=True).stdout.strip()
+        g("init", "-q")
+        self.write("ws/a.txt", "one\n")
+        g("add", ".")
+        g("commit", "-qm", "base")
+        base = g("rev-parse", "HEAD")
+        self.write("ws/a.txt", "one\ntwo\n")
+        g("commit", "-qam", "head")
+        return base, g("rev-parse", "HEAD")
+
+    def test_run_mode(self):
+        fake = self.write("bin/abhed", FAKE_ABHED, 0o755)
+        steps, uses, outputs, failed, summary = composite.run_action(
+            {"task": "do it", "abhed-path": fake, "allow": "bash(make)", "model-provider": "openai",
+             "model": "m", "model-api-key": "sk-xyz"}, workspace=self.ws, temp=self.temp)
+        self.assertEqual(steps["run"]["outcome"], "success", steps["run"].get("stderr"))
+        a = open(self.path("bin", "report.args")).read().split("\n")
+        self.assertEqual(a[a.index("-verify") + 1], "strict")
+        self.assertEqual(a[a.index("-mode") + 1], "default")
+        settings = json.load(open(a[a.index("-settings") + 1]))
+        self.assertEqual(settings["model"]["providers"]["github-action"]["api_key_env"], "ABHED_ACTION_MODEL_KEY")
+        self.assertNotIn("sk-xyz", json.dumps(settings))
+        self.assertIn("::add-mask::sk-xyz", steps["prep"]["stdout"])
+        env = open(self.path("bin", "report.env")).read()
+        self.assertIn("ABHED_ACTION_MODEL_KEY=sk-xyz", env)
+        self.assertNotIn("ghs_job_token", env)
+        self.assertEqual((outputs["exit-code"], outputs["verdict"], outputs["session-id"]), ("8", "unverified", "s-fake"))
+        # abhed-path skips cosign; the upload is the only action used.
+        self.assertEqual([u.split("@")[0] for u, _ in uses], ["actions/upload-artifact"])
+        upload = [w for u, w in uses if u.startswith("actions/upload-artifact@")]
+        self.assertEqual(upload[0]["path"], outputs["evidence-dir"])
+        self.assertTrue(os.path.exists(os.path.join(outputs["evidence-dir"], "run.jsonl")))
+        # The job fails on exit 8, after the upload.
+        self.assertTrue(failed)
+        self.assertEqual(steps["fail"]["outcome"], "failure")
+        self.assertIn("Exit code | `8`", summary)
+
+    def test_run_mode_passes_on_zero(self):
+        fake = self.write("bin/abhed", FAKE_REVIEW_ABHED, 0o755)
+        steps, uses, outputs, failed, _ = composite.run_action({"task": "x", "abhed-path": fake}, workspace=self.ws, temp=self.temp)
+        self.assertFalse(failed, {k: v.get("stderr") for k, v in steps.items()})
+        self.assertEqual(outputs["exit-code"], "0")
+
+    def test_pull_request_target_is_refused(self):
+        fake = self.write("bin/abhed", FAKE_ABHED, 0o755)
+        steps, uses, outputs, failed, _ = composite.run_action({"task": "x", "abhed-path": fake}, workspace=self.ws,
+                                                               temp=self.temp, github={"event_name": "pull_request_target"})
+        self.assertTrue(failed)
+        self.assertIn("refusing to run on pull_request_target", steps["prep"]["stdout"] + steps["prep"]["stderr"])
+        self.assertEqual(uses, [])
+        self.assertFalse(os.path.exists(self.path("bin", "report.args")))
+
+    def test_fork_review_without_a_key_is_skipped(self):
+        steps, uses, outputs, failed, _ = composite.run_action(
+            {"mode": "review", "model-provider": "anthropic", "model": "m", "model-api-key": ""},
+            workspace=self.ws, temp=self.temp, github={"event_name": "pull_request"})
+        self.assertFalse(failed)
+        self.assertIn("review skipped", steps["prep"]["stdout"])
+        self.assertEqual(uses, [])
+        self.assertEqual(steps["install"]["outcome"], "skipped")
+
+    def review(self, fake_body, status=200):
+        base, head = self.git_repo()
+        gh = FakeGitHub(status)
+        gh.base, gh.head = base, head
+        self.addCleanup(gh.close)
+        event = self.write("event.json", json.dumps({"pull_request": {"number": 5, "base": {"sha": base}, "head": {"sha": head}}}))
+        fake = self.write("bin/abhed", fake_body, 0o755)
+        res = composite.run_action(
+            {"mode": "review", "abhed-path": fake, "model-provider": "openai", "model": "m", "model-api-key": "sk-r"},
+            workspace=self.ws, temp=self.temp, github={"event_name": "pull_request", "api_url": gh.url},
+            env={"GITHUB_EVENT_PATH": event})
+        return gh, head, res
+
+    def test_review_posts_one_review(self):
+        gh, head, (steps, uses, outputs, failed, _) = self.review(FAKE_REVIEW_ABHED)
+        self.assertFalse(failed, {k: v.get("stderr") for k, v in steps.items()})
+        a = open(self.path("bin", "report.args")).read().split("\n")
+        self.assertEqual(a[a.index("-mode") + 1], "plan")
+        self.assertEqual(a[a.index("-tools") + 1], "read,glob,grep")
+        self.assertEqual(a[a.index("-verify") + 1], "label")
+        self.assertIn("-bare", a)
+        self.assertIn("-json-schema", a)
+        self.assertNotIn("ghs_job_token", open(self.path("bin", "report.env")).read())
+        self.assertEqual(len(gh.posts), 1)
+        path, auth, payload = gh.posts[0]
+        self.assertEqual(path, "/repos/acme/widgets/pulls/5/reviews")
+        self.assertEqual(auth, "Bearer ghs_job_token")
+        self.assertEqual((payload["event"], payload["commit_id"]), ("COMMENT", head))
+        self.assertEqual([(c["path"], c["line"]) for c in payload["comments"]], [("a.txt", 2)])
+        self.assertIn("`@someone`", payload["comments"][0]["body"])
+
+    def test_review_post_refused_fails_the_job(self):
+        gh, head, (steps, uses, outputs, failed, _) = self.review(FAKE_REVIEW_ABHED, status=403)
+        self.assertTrue(failed)
+        self.assertIn("read-only token", steps["post"]["stderr"])
+        # The evidence is still uploaded.
+        self.assertTrue(any(u.startswith("actions/upload-artifact@") for u, _ in uses))
 
 
 # ---------------------------------------------------------------------------
