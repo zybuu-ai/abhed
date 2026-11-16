@@ -595,3 +595,20 @@ func TestStudioNextEditRenameJavaScriptWithJSX(t *testing.T) {
 		t.Fatalf("plain: %+v (asked %v)", res, asked)
 	}
 }
+
+// A tag whose closing part is past the window's end is still JSX: after [,
+// ! or yield, or shaped as a tag with an attribute anywhere.
+func TestStudioNextEditRenameJSXOpeningTagsOnly(t *testing.T) {
+	for _, line := range []string{
+		`  return [<Item x={x} key="a">`,
+		`  return cond ? null : !<Item x={x}>`,
+		`  yield <Item x={x}>`,
+		`  const el = await load(), v = f() && g() ** <Item x={x}>`,
+		`  h(1) + <Item {...p}>`,
+	} {
+		text := "function* C(cond) {\n  const y = 1;\n  g(x);\n" + line + "\n"
+		if res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y"); !asked {
+			t.Errorf("%s: scanned: %+v", line, res)
+		}
+	}
+}
