@@ -188,7 +188,8 @@ raised is marked `estimated` on the call:
   connection that drops, does not save money under a cap.
 - Only a call the provider never accepted (an error status, a connection
   never made) is not charged.
-- Three failed replies in a row, each producing nothing, end the run
+- Three failed replies in a row with no usable text or tool call (a reply
+  whose tool call could not be parsed included) end the run
   `retry_exhausted` whatever the error said (a transport error's text
   changes with its port), rather than being asked again to the turn limit.
   The count starts again with each run.
