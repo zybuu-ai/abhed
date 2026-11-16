@@ -508,6 +508,7 @@ func TestConnectRequiresApproval(t *testing.T) {
 }
 
 // The refusal must tell the model what to do, or it retries identically.
+// accept_host_key is ssh_connect's, so only a host it added is offered it.
 func TestUnknownHostKeyErrorNamesTheRetry(t *testing.T) {
 	srv := startSSHServer(t, "pw")
 	defer srv.stop()
@@ -516,7 +517,7 @@ func TestUnknownHostKeyErrorNamesTheRetry(t *testing.T) {
 	empty := filepath.Join(t.TempDir(), "known_hosts")
 	_ = os.WriteFile(empty, []byte(""), 0o600)
 	h, _ := NewHost(HostConfig{Name: "vm1", Addr: srv.addr, User: "tester",
-		PasswordEnv: "TEST_SSH_PW", KnownHostsFile: empty})
+		PasswordEnv: "TEST_SSH_PW", KnownHostsFile: empty, connected: true})
 	defer func() { _ = h.Close() }()
 
 	_, err := h.Run(context.Background(), "hostname", 5*time.Second)

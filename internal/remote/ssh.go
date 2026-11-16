@@ -15,11 +15,15 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -151,31 +155,109 @@ func (h *Host) authMethods() ([]ssh.AuthMethod, error) {
 	return methods, nil
 }
 
-// hostKeyCallback verifies the server against known_hosts.
+// hostKeyCallback verifies the server against known_hosts, and returns the
+// host key algorithms to offer: those known_hosts holds for this host first,
+// as OpenSSH orders them, or nil for the library's default order.
 //
-// Skipping this is what makes SSH vulnerable to a machine-in-the-middle, and
-// an agent connecting to a host it cannot authenticate will happily run
+// Skipping verification is what makes SSH vulnerable to a machine-in-the-middle,
+// and an agent connecting to a host it cannot authenticate will happily run
 // commands on whatever answered.
-func (h *Host) hostKeyCallback() (ssh.HostKeyCallback, error) {
+func (h *Host) hostKeyCallback() (ssh.HostKeyCallback, []string, error) {
 	if h.cfg.InsecureSkipHostKeyCheck {
-		return ssh.InsecureIgnoreHostKey(), nil
+		return ssh.InsecureIgnoreHostKey(), nil, nil
 	}
 	path := h.cfg.KnownHostsFile
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, fmt.Errorf("no known_hosts configured and no home directory")
+			return nil, nil, fmt.Errorf("no known_hosts configured and no home directory")
 		}
 		path = filepath.Join(home, ".ssh", "known_hosts")
 	}
 	path = expandHome(path)
 	cb, err := knownhosts.New(path)
 	if err != nil {
-		return nil, fmt.Errorf("host %s: read %s: %w. "+
+		return nil, nil, fmt.Errorf("host %s: read %s: %w. "+
 			"Connect once with ssh to record the host key, or set "+
 			"insecure_skip_host_key_check for a throwaway VM", h.cfg.Name, path, err)
 	}
-	return cb, nil
+	return cb, knownAlgorithms(cb, h.cfg.Addr), nil
+}
+
+// probeKey is a key no known_hosts holds, asked of the callback to learn
+// which keys it does hold for a host.
+var probeKey = sync.OnceValue(func() ssh.PublicKey {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil
+	}
+	k, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return nil
+	}
+	return k
+})
+
+// knownAlgorithms is the host key algorithm list with the types known_hosts
+// holds for addr first, then the rest of the library's list; nil when it
+// holds none. Without it a server with several keys may show one not on
+// file (the library prefers ecdsa to ed25519) and be refused, where OpenSSH,
+// asking for the type it knows, connects. Only the order changes: the
+// callback still accepts nothing but a key on file.
+func knownAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
+	probe := probeKey()
+	_, port, err := net.SplitHostPort(addr)
+	if probe == nil || err != nil {
+		return nil
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return nil
+	}
+	var keyErr *knownhosts.KeyError
+	if err := cb(addr, &net.TCPAddr{IP: net.IPv4zero, Port: p}, probe); !errors.As(err, &keyErr) || len(keyErr.Want) == 0 {
+		return nil
+	}
+	all := append(ssh.SupportedAlgorithms().HostKeys, ssh.InsecureAlgorithms().HostKeys...)
+	var first []string
+	for _, k := range keyErr.Want {
+		algos := []string{k.Key.Type()}
+		if algos[0] == ssh.KeyAlgoRSA {
+			algos = []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+		}
+		for _, a := range algos {
+			if slices.Contains(all, a) && !slices.Contains(first, a) {
+				first = append(first, a)
+			}
+		}
+	}
+	if len(first) == 0 {
+		return nil
+	}
+	rest := slices.DeleteFunc(slices.Clone(all), func(a string) bool { return slices.Contains(first, a) })
+	return append(first, rest...)
+}
+
+// sshCommand is the ssh command line that reaches addr as user, with -p for
+// a port other than 22: user@host:port is not ssh syntax.
+func sshCommand(user, addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "ssh " + user + "@" + addr
+	}
+	if port == "22" {
+		return "ssh " + user + "@" + host
+	}
+	return "ssh -p " + port + " " + user + "@" + host
+}
+
+// knownHostsName is addr as known_hosts and ssh-keygen -R name it.
+func knownHostsName(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "22" {
+		return strings.TrimSuffix(addr, ":22")
+	}
+	return "[" + host + "]:" + port
 }
 
 // connect dials the host, reusing an open connection.
@@ -196,7 +278,7 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	hostKey, err := h.hostKeyCallback()
+	hostKey, algorithms, err := h.hostKeyCallback()
 	if err != nil {
 		return nil, err
 	}
@@ -214,27 +296,47 @@ func (h *Host) connect(ctx context.Context) (*ssh.Client, error) {
 	}
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, h.cfg.Addr, &ssh.ClientConfig{
-		User:            h.cfg.User,
-		Auth:            methods,
-		HostKeyCallback: hostKey,
-		Timeout:         h.cfg.Timeout,
+		User:              h.cfg.User,
+		Auth:              methods,
+		HostKeyCallback:   hostKey,
+		HostKeyAlgorithms: algorithms,
+		Timeout:           h.cfg.Timeout,
 	})
 	if err != nil {
 		_ = conn.Close()
+		record := sshCommand(h.cfg.User, h.cfg.Addr)
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) && len(keyErr.Want) > 0 {
+			// A key of a type on file that is not the one on file: the
+			// machine was rebuilt, or something is in the middle.
+			return nil, fmt.Errorf("the host key %s offered does not match the one known_hosts "+
+				"holds for it, so Abhed will not connect: the machine may have been rebuilt, or "+
+				"something may be in the middle. Ask the user to confirm the new key out of band; "+
+				"if it is right, they can remove the old one with `ssh-keygen -R '%s'` and run `%s` "+
+				"once to record the new one: %w",
+				h.cfg.Name, knownHostsName(h.cfg.Addr), record, err)
+		}
 		if (strings.Contains(err.Error(), "knownhosts") ||
 			strings.Contains(err.Error(), "key is unknown")) && h.cfg.password != "" {
 			return nil, fmt.Errorf("the host key for %s is not in known_hosts, and a stored "+
-				"password is sent only to a host whose key is. Ask the user to run `ssh %s@%s` "+
+				"password is sent only to a host whose key is. Ask the user to run `%s` "+
 				"once to record the key, or to connect with a key file: %w",
-				h.cfg.Name, h.cfg.User, h.cfg.Addr, err)
+				h.cfg.Name, record, err)
 		}
 		if strings.Contains(err.Error(), "knownhosts") ||
 			strings.Contains(err.Error(), "key is unknown") {
+			retry := ""
+			if h.cfg.connected {
+				// accept_host_key is ssh_connect's; a declared host has none.
+				retry = "If the user has said this host is new or ephemeral, retry with " +
+					"accept_host_key: true. Otherwise ask "
+			} else {
+				retry = "Ask "
+			}
 			return nil, fmt.Errorf("the host key for %s is not in known_hosts, so Abhed "+
-				"cannot confirm this is the machine you meant. If the user has said this "+
-				"host is new or ephemeral, retry with accept_host_key: true. Otherwise ask "+
-				"them to run `ssh %s@%s` once to record the key: %w",
-				h.cfg.Name, h.cfg.User, h.cfg.Addr, err)
+				"cannot confirm this is the machine you meant. %sthe user to run `%s` "+
+				"once to record the key: %w",
+				h.cfg.Name, retry, record, err)
 		}
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			return nil, fmt.Errorf("authentication to %s@%s failed: %w",

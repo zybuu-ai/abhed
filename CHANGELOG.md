@@ -539,6 +539,16 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- The SSH client refused a host that OpenSSH accepts when `known_hosts` held
+  one key type for it, as `ssh` itself writes it. The client offered the
+  library's own order of host key types (ecdsa before ed25519), so a server
+  with several keys showed one not on file. It now offers the types on file
+  for that host first, as OpenSSH does. Verification is unchanged: only a
+  key on file is accepted. A key of a known type that does not match is now
+  reported as a mismatch, with no advice to accept it, and the advice to
+  record a key is a command ssh accepts (`ssh -p 12222 root@127.0.0.1`, not
+  `ssh root@127.0.0.1:12222`). A host in `ssh.hosts` is no longer told to
+  retry with `ssh_connect`'s `accept_host_key`.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`
