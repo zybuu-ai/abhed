@@ -109,7 +109,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 	// Checked here so a critic whose model cannot be had stops the start,
 	// rather than leaving answers unchecked.
-	if _, err := toolset.Verifier(cfg, !headless); err != nil {
+	if _, err := toolset.Verifier(cfg, true); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
 	}

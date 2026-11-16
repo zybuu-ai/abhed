@@ -168,7 +168,9 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			opts := abhed.Options{
 				Workspace: ws, ConfigDir: ws, Mode: req.Mode, WorkspaceTrust: config.GrantFor(trust, workspace, ws), AllowDefaultModel: true,
 				Allow: req.Allow, Deny: req.Deny, Verify: req.Verify,
-				Runbook: req.Runbook,
+				// Unset, answers are labelled as the terminal labels them.
+				VerifyByDefault: true,
+				Runbook:         req.Runbook,
 				// bash runs in the configured tier, as it would from the terminal.
 				Sandbox: true,
 				// The agent the terminal runs, subagents and configured tools included.
@@ -402,7 +404,7 @@ type rpcRequest struct {
 	Wake   string `json:"wake,omitempty"`
 	TaskID string `json:"task_id,omitempty"`
 	// Verify, on start, is off, label or strict: how each answer is checked
-	// against the record. Unset takes verify.mode, off when that is unset.
+	// against the record. Unset takes verify.mode, label when that is unset.
 	Verify string `json:"verify,omitempty"`
 	// Runbook, on start, is a runbook the host approves for the session.
 	Runbook *abhed.Runbook `json:"runbook,omitempty"`

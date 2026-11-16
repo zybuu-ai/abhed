@@ -125,20 +125,24 @@ func TestACPSendsNoStoredSecret(t *testing.T) {
 	}
 }
 
-// abhed rpc writes no stored value, in an event or in the answer.
+// abhed rpc writes no stored value, in an event, in the answer or in its
+// verdict, whatever the verify mode.
 func TestRPCWritesNoStoredSecret(t *testing.T) {
-	fakeVault(t)
-	ws := credsWorkspace(t, leakingModel(t))
-	out := runRPC(t, ws,
-		`{"id":"1","method":"start"}`,
-		`{"id":"2","method":"prompt","prompt":"read creds.txt"}`,
-		`{"id":"3","method":"export"}`,
-		`{"id":"4","method":"quit"}`)
-	if !strings.Contains(out, `"type":"answer"`) || !strings.Contains(out, "[secret:FAKE_TOKEN]") {
-		t.Fatalf("the run did not answer with the output redacted:\n%s", out)
-	}
-	if strings.Contains(out, fakeVaultValue) {
-		t.Fatalf("rpc wrote the stored value:\n%s", out)
+	for _, start := range []string{`{"id":"1","method":"start"}`, `{"id":"1","method":"start","verify":"label"}`, `{"id":"1","method":"start","verify":"strict"}`} {
+		t.Run(start, func(t *testing.T) {
+			fakeVault(t)
+			ws := credsWorkspace(t, leakingModel(t))
+			out := runRPC(t, ws, start,
+				`{"id":"2","method":"prompt","prompt":"read creds.txt"}`,
+				`{"id":"3","method":"export"}`,
+				`{"id":"4","method":"quit"}`)
+			if !strings.Contains(out, `"id":"2"`) || !strings.Contains(out, "[secret:FAKE_TOKEN]") {
+				t.Fatalf("the run did not answer with the output redacted:\n%s", out)
+			}
+			if strings.Contains(out, fakeVaultValue) {
+				t.Fatalf("rpc wrote the stored value:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -392,5 +396,36 @@ func TestSecretCommandsNameTheFixForABrokenStore(t *testing.T) {
 	code, msg := resolveStderr(t, func() int { return secretCmd([]string{"set", "FAKE_TOKEN"}) })
 	if code == 0 || !strings.Contains(msg, "remove it and add the secrets again") {
 		t.Fatalf("secret set (%d) did not name the fix: %s", code, msg)
+	}
+}
+
+// abhed -p writes no stored value on stdout, in any output format or verify
+// mode: not in the result line's result, nor in its verdict, nor in an event.
+func TestPrintWritesNoStoredSecret(t *testing.T) {
+	for _, format := range []string{"json", "stream-json", "text"} {
+		for _, mode := range []string{"off", "label", "strict"} {
+			t.Run(format+"/"+mode, func(t *testing.T) {
+				fakeVault(t)
+				url, _ := textModel(t, "The token is "+fakeVaultValue+".")
+				cfg := `{"sandbox":{"min_tier":"none"},"model":{"default":"stub","providers":{"stub":{"type":"openai-compatible","base_url":"` +
+					url + `","model":"m","context_window":8192}}}}`
+				if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".abhed", "config.json"), []byte(cfg), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cmd := mainHelper([]string{"-C", t.TempDir(), "-output-format", format, "-verify", mode, "-p", "what is the token?"})
+				var out, errOut strings.Builder
+				cmd.Stdout, cmd.Stderr = &out, &errOut
+				_ = cmd.Run()
+				if !strings.Contains(out.String(), "[secret:FAKE_TOKEN]") {
+					t.Fatalf("the answer did not come out redacted:\n%s\n%s", out.String(), errOut.String())
+				}
+				if strings.Contains(out.String(), fakeVaultValue) || strings.Contains(errOut.String(), fakeVaultValue) {
+					t.Fatalf("-p wrote the stored value:\n%s\n%s", out.String(), errOut.String())
+				}
+				if format != "text" && mode != "off" && !strings.Contains(out.String(), `"verdict":{`) {
+					t.Fatalf("no verdict to check:\n%s", out.String())
+				}
+			})
+		}
 	}
 }

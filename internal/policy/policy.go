@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -335,6 +336,79 @@ func pathFoldsCase(subjects []string) bool {
 		}
 	}
 	return false
+}
+
+// resourceRead reports an MCP server's read_resource tool, whose subject is
+// the URI it reads.
+func resourceRead(tool string) bool {
+	return strings.HasPrefix(tool, "mcp__") && strings.HasSuffix(tool, "__read_resource")
+}
+
+// resourceForms are the spellings a server may read a resource URI as: as
+// written, its escapes decoded once and twice, each in NFC and in NFKC (a
+// fullwidth ／ is a /), and each of those with its path's dot-segments
+// resolved. Deny and ask rules on a read match any; that only adds matches.
+func resourceForms(uri string) []string {
+	out := []string{uri}
+	add := func(f string) {
+		for _, have := range out {
+			if have == f {
+				return
+			}
+		}
+		out = append(out, f)
+	}
+	decoded := []string{uri}
+	cur := uri
+	for range 2 {
+		d, err := url.PathUnescape(cur)
+		if err != nil || d == cur {
+			break
+		}
+		decoded, cur = append(decoded, d), d
+	}
+	for _, d := range decoded {
+		for _, f := range []string{norm.NFC.String(d), norm.NFKC.String(d)} {
+			add(f)
+			add(cleanURIPath(f))
+		}
+	}
+	return out
+}
+
+// cleanURIPath is a URI with its path's dot-segments and empty segments
+// resolved, as a server resolving it reads it; the URI as given when it has
+// no path to clean.
+func cleanURIPath(uri string) string {
+	scheme, rest, ok := strings.Cut(uri, ":")
+	if !ok {
+		return uri
+	}
+	prefix := scheme + ":"
+	if after, ok := strings.CutPrefix(rest, "//"); ok {
+		end := strings.IndexAny(after, "/?")
+		if end < 0 {
+			return uri
+		}
+		prefix += "//" + after[:end]
+		rest = after[end:]
+	}
+	p, query, hasQuery := strings.Cut(rest, "?")
+	if !strings.Contains(p, "/") {
+		return uri
+	}
+	trail := strings.HasSuffix(p, "/") && len(p) > 1
+	c := path.Clean("/" + p)
+	if !strings.HasPrefix(p, "/") {
+		c = strings.TrimPrefix(c, "/")
+	}
+	if trail && c != "/" {
+		c += "/"
+	}
+	if hasQuery {
+		return prefix + c + "?" + query
+	}
+	return prefix + c
 }
 
 func hasNonASCII(s string) bool {
@@ -999,6 +1073,18 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			matches = func(r Rule, tool string, subjects []string) bool {
 				return r.matchesPathAny(tool, subjects) || r.matchesCaselessAny(tool, subjects)
 			}
+		}
+	}
+	// A resource's URI is read in one spelling, but a server may fold its case
+	// or normalise it: deny and ask rules on a read also match without regard
+	// to case and in NFC. It only adds matches.
+	if resourceRead(tool) {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			var all []string
+			for _, s := range subjects {
+				all = append(all, resourceForms(s)...)
+			}
+			return r.matchesPathAny(tool, all) || r.matchesCaselessAny(tool, all)
 		}
 	}
 	// A bash rule naming flags also holds with them moved or split.

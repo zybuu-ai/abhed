@@ -1595,6 +1595,21 @@ type MCPServerConfig struct {
 	// HostFiles runs a stdio server with the host's files rather than
 	// confined to its own home and the workspace on the process tier.
 	HostFiles bool `json:"host_files,omitempty"`
+	// OAuth configures `abhed mcp login` for a URL server; a server needs it
+	// only for a client registered ahead of time or particular scopes.
+	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
+}
+
+// MCPOAuthConfig is how `abhed mcp login` signs in to a URL server.
+type MCPOAuthConfig struct {
+	// ClientID is a client registered ahead of time; without one, Abhed
+	// registers itself where the server's authorization server offers that.
+	ClientID string `json:"client_id,omitempty"`
+	// ClientSecretEnv names the environment variable holding that client's
+	// secret, read at login only; a public client has none.
+	ClientSecretEnv string `json:"client_secret_env,omitempty"`
+	// Scopes are asked for; none asks for what the server says it supports.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // SandboxConfig controls execution isolation. Defaults deny egress, because a
@@ -2125,6 +2140,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.validateNetwork(); err != nil {
+		return err
+	}
+	if err := c.validateMCPOAuth(); err != nil {
 		return err
 	}
 	switch c.Subagents.Wake {

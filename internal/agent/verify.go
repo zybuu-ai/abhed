@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -185,7 +187,8 @@ func (v AnswerVerdict) Explained() int {
 	return n
 }
 
-// LastVerdict is the latest answer.verdict this loop recorded, or nil.
+// LastVerdict is the latest answer.verdict this loop recorded, or nil, with
+// stored secrets redacted as the record holds it.
 func (l *Loop) LastVerdict() *AnswerVerdict {
 	v := l.Verify
 	if v == nil {
@@ -420,14 +423,15 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	// the only case label mode spends a model call on.
 	revise := (gated && av.Outcome != ClaimVerified) || (v.Mode == VerifyLabel && av.Contradicted > 0)
 	if revise && !revised && l.turns < l.Config.MaxTurns && !l.Budget.Exhausted() {
-		av.Revision = revisionNote(av, v.AnswerTool)
+		av.Revision = revisionNote(av, v.AnswerTool, ix)
 		v.mu.Lock()
 		v.revised = true
 		v.mu.Unlock()
 	}
 	l.record(EvAnswerVerdict, ActorSystem, av)
+	shown := l.Recorder.redactedVerdict(av)
 	v.mu.Lock()
-	v.last = &av
+	v.last = &shown
 	v.mu.Unlock()
 	if av.Revision != "" {
 		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: av.Revision})
@@ -478,8 +482,10 @@ func (l *Loop) workDir() string {
 	return l.Session.WorkDir()
 }
 
-// revisionNote is what the agent is told for its one revision turn.
-func revisionNote(av AnswerVerdict, tool bool) string {
+// revisionNote is what the agent is told for its one revision turn: what
+// was not confirmed, and the results it may cite, by their real ids, so it
+// cites none it made up. A cited id not in the record still shows nothing.
+func revisionNote(av AnswerVerdict, tool bool, ix *recordIndex) string {
 	var b strings.Builder
 	b.WriteString("Abhed checked your answer against this session's record before showing it, and could not confirm all of it.\n")
 	n := 0
@@ -492,12 +498,12 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 			b.WriteString("…and more.\n")
 			break
 		}
-		fmt.Fprintf(&b, "- %s: %q — %s\n", c.Verdict, clipRunes(c.Text, 200), c.Reason)
+		fmt.Fprintf(&b, "- %s: %s — %s\n", c.Verdict, noteData(c.Text, 200), noteData(c.Reason, 400))
 	}
 	if c := av.Contract; c != nil && !c.OK {
 		for _, r := range c.Require {
 			if !r.OK {
-				fmt.Fprintf(&b, "- the completion check `%s` did not pass: %s\n", clipRunes(r.Command, 120), r.Reason)
+				fmt.Fprintf(&b, "- the completion check %s did not pass: %s\n", noteData(r.Command, 120), noteData(r.Reason, 400))
 			}
 		}
 		if len(c.Protected) > 0 {
@@ -507,6 +513,7 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 			b.WriteString("- the protected files are too many to check; this is the operator's to narrow, not yours to fix\n")
 		}
 	}
+	b.WriteString(citable(ix, tool))
 	b.WriteString("Check what you can with a tool, then give your answer again")
 	if tool {
 		b.WriteString(" through `answer`, citing the call_id of each result")
@@ -514,4 +521,91 @@ func revisionNote(av AnswerVerdict, tool bool) string {
 	b.WriteString(". Correct or remove anything the record contradicts, and say plainly what you could not verify. " +
 		"This is your one revision.")
 	return b.String()
+}
+
+// noteData is text for the revision note, quoted: clipped, every control
+// character escaped, and backticks written as \x60.
+func noteData(s string, n int) string {
+	return strings.ReplaceAll(strconv.Quote(clipRunes(s, n)), "`", `\x60`)
+}
+
+// toolNameRe is a tool name shown as it is.
+var toolNameRe = regexp.MustCompile(`^[A-Za-z0-9_.:\-]{1,64}$`)
+
+// maxCitable bounds the results a revision note lists.
+const maxCitable = 20
+
+// citable lists this session's own tool results, newest last, as the answer
+// cites them: by call_id through the answer tool, by #seq in a text reply.
+func citable(ix *recordIndex, tool bool) string {
+	if ix == nil {
+		return ""
+	}
+	var own []*obsRec
+	for _, o := range ix.obs {
+		if o.child == "" && o.usable() && o.callID != "" {
+			own = append(own, o)
+		}
+	}
+	if len(own) == 0 {
+		return "This session's record holds no tool result to cite.\n"
+	}
+	var b strings.Builder
+	if tool {
+		b.WriteString("The results you may cite, by call_id (only these exist; any other id shows nothing):\n")
+	} else {
+		b.WriteString("The results you may cite, as (#seq) (only these exist; any other shows nothing):\n")
+	}
+	if len(own) > maxCitable {
+		fmt.Fprintf(&b, "…%d earlier results not listed.\n", len(own)-maxCitable)
+		own = own[len(own)-maxCitable:]
+	}
+	for _, o := range own {
+		// The command and path are the model's own text, shown as quoted
+		// data: no newline or backtick of theirs starts a line or a code
+		// span in a message sent with the person's role.
+		what := o.tool
+		if !toolNameRe.MatchString(what) {
+			what = noteData(what, 40)
+		}
+		switch {
+		case o.command != "":
+			what += " " + noteData(o.command, 80)
+		case o.path != "":
+			what += " " + noteData(o.path, 80)
+		}
+		if o.exit != nil {
+			what += fmt.Sprintf(", exit %d", *o.exit)
+		}
+		if tool {
+			fmt.Fprintf(&b, "- %q (#%d): %s\n", o.callID, o.seq, what)
+		} else {
+			fmt.Fprintf(&b, "- #%d: %s\n", o.seq, what)
+		}
+	}
+	return b.String()
+}
+
+// redactedVerdict is av as the record holds it: a stored secret a statement
+// repeats is redacted, so a surface that prints the verdict (the -p result
+// line, rpc's answer, the SDK's Verdict) writes no more than the record does.
+// When redacting leaves no valid verdict, the statements and the note are
+// left out.
+func (r *Recorder) redactedVerdict(av AnswerVerdict) AnswerVerdict {
+	red := r.redactor()
+	if red == nil {
+		return av
+	}
+	raw, err := json.Marshal(av)
+	if err == nil {
+		var out AnswerVerdict
+		if raw = red.Redact(raw); json.Valid(raw) && json.Unmarshal(raw, &out) == nil {
+			return out
+		}
+	}
+	av.Claims, av.Revision = nil, ""
+	if av.Contract != nil {
+		av.Contract = &ContractResult{OK: av.Contract.OK}
+	}
+	return av
 }

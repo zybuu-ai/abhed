@@ -62,12 +62,19 @@ func TestVerifyFlagUnderManagedMode(t *testing.T) {
 	if _, err := toolset.VerifyFlag(config.Default(), "maybe"); err == nil {
 		t.Fatal("an unknown mode is refused")
 	}
-	// Unset, the terminal labels and -p does not check.
+	// Unset, the terminal, -p, rpc and the server label; the SDK does not check.
 	if toolset.VerifyMode(config.Default(), true) != agent.VerifyLabel || toolset.VerifyMode(config.Default(), false) != agent.VerifyOff {
 		t.Fatal("surface defaults")
 	}
 	if v, _ := toolset.Verifier(config.Default(), false); v != nil {
-		t.Fatal("-p checks nothing unless asked")
+		t.Fatal("the SDK checks nothing unless asked")
+	}
+	if v, _ := toolset.Verifier(config.Default(), true); v == nil || v.Mode != agent.VerifyLabel {
+		t.Fatal("a surface that labels by default does not")
+	}
+	off, _ := toolset.VerifyFlag(config.Default(), "off")
+	if v, _ := toolset.Verifier(off, true); v != nil {
+		t.Fatal("-verify off is not honoured")
 	}
 	strict := config.Default()
 	strict.Verify.Mode = "strict"

@@ -106,6 +106,8 @@ type Client struct {
 	// refused are the names of the tools left out for their names.
 	refused []string
 	prompts []PromptDef
+	// resources is whether the server offers resources.
+	resources bool
 }
 
 func NewClient(name string, t Transport) *Client {
@@ -135,11 +137,15 @@ func (c *Client) Initialize(ctx context.Context) error {
 	}
 	var init struct {
 		Capabilities struct {
-			Prompts json.RawMessage `json:"prompts"`
+			Prompts   json.RawMessage `json:"prompts"`
+			Resources json.RawMessage `json:"resources"`
 		} `json:"capabilities"`
 	}
 	// A server's prompts are optional: one that cannot list them still offers its tools.
-	if json.Unmarshal(raw, &init) == nil && len(init.Capabilities.Prompts) > 0 && string(init.Capabilities.Prompts) != "null" {
+	read := json.Unmarshal(raw, &init) == nil
+	offers := func(cap json.RawMessage) bool { return read && len(cap) > 0 && string(cap) != "null" }
+	c.resources = offers(init.Capabilities.Resources)
+	if offers(init.Capabilities.Prompts) {
 		if err := c.refreshPrompts(ctx); err != nil {
 			fmt.Fprintf(WarnOut, "abhed: warning: mcp server %q: %v\n", c.name, err)
 		}

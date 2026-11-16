@@ -21,9 +21,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 	"weak"
 )
@@ -35,6 +37,14 @@ var validName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 
 // ValidName reports whether name is one a secret can be stored under.
 func ValidName(name string) bool { return validName.MatchString(name) }
+
+// HeldPrefix begins the names of values Abhed keeps for itself, such as an
+// MCP server's OAuth tokens: never offered to the model, never given to a
+// command or tool by name, and set only by Abhed (SetHeld), never by a person.
+const HeldPrefix = "MCP_OAUTH_"
+
+// Held reports whether name is one Abhed keeps for itself.
+func Held(name string) bool { return strings.HasPrefix(name, HeldPrefix) }
 
 // Store is a file of named values, readable by its owner only. Every Store
 // opened on one path in this process shares one lock, so a server that opens
@@ -230,6 +240,129 @@ func (s *Store) Set(name, value string) error {
 	if !validName.MatchString(name) {
 		return fmt.Errorf("secret names are upper-case identifiers such as GITHUB_TOKEN, not %q", name)
 	}
+	if Held(name) {
+		return fmt.Errorf("names beginning %s are kept by Abhed itself (abhed mcp login); choose another", HeldPrefix)
+	}
+	return s.set(name, value)
+}
+
+// SetHeld stores a value Abhed keeps for itself, under a name Held reports.
+func (s *Store) SetHeld(name, value string) error {
+	if !validName.MatchString(name) || !Held(name) {
+		return fmt.Errorf("%q is not a name Abhed keeps for itself", name)
+	}
+	return s.set(name, value)
+}
+
+// HeldValue is a value Abhed keeps for itself, and whether it is stored.
+func (s *Store) HeldValue(name string) (string, bool, error) {
+	if !Held(name) {
+		return "", false, fmt.Errorf("%q is not a name Abhed keeps for itself", name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := s.loadFixable()
+	if err != nil {
+		return "", false, err
+	}
+	v, ok := m[name]
+	return v, ok, nil
+}
+
+// UpdateHeld changes values Abhed keeps for itself in one step under the
+// store's locks: fn sees what is stored now and returns what to set and
+// what to remove, every name one Held reports. An error from fn changes nothing.
+func (s *Store) UpdateHeld(fn func(get func(string) (string, bool)) (set map[string]string, remove []string, err error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock := func() {}
+	if s.src == nil {
+		u, err := fileLock(s.path)
+		if err != nil {
+			return err
+		}
+		unlock = u
+	}
+	defer unlock()
+	m, err := s.loadFixable()
+	if err != nil {
+		return err
+	}
+	set, remove, err := fn(func(name string) (string, bool) {
+		if !Held(name) {
+			return "", false
+		}
+		v, ok := m[name]
+		return v, ok
+	})
+	if err != nil {
+		return err
+	}
+	for name, v := range set {
+		if !validName.MatchString(name) || !Held(name) || strings.TrimSpace(v) == "" {
+			return fmt.Errorf("%q is not a name Abhed keeps for itself, or its value is empty", name)
+		}
+	}
+	for _, name := range remove {
+		if !Held(name) {
+			return fmt.Errorf("%q is not a name Abhed keeps for itself", name)
+		}
+	}
+	if s.src != nil {
+		for name, v := range set {
+			if err := s.srcCall(func(ctx context.Context) error { return s.src.Set(ctx, name, v) }); err != nil {
+				return err
+			}
+		}
+		for _, name := range remove {
+			if err := s.srcCall(func(ctx context.Context) error { return s.src.Remove(ctx, name) }); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for name, v := range set {
+		m[name] = v
+	}
+	for _, name := range remove {
+		delete(m, name)
+	}
+	return s.save(m)
+}
+
+// HeldLock takes a lock that one of Abhed's own values is changed under,
+// such as an MCP login being refreshed; nothing else takes it. It is held
+// until the returned function is called, and given up on when ctx ends. It
+// spans processes where the store is a file on a system with flock; on
+// Windows, and for a store a secrets driver keeps, it spans this process only.
+func (s *Store) HeldLock(ctx context.Context, name string) (func(), error) {
+	if !Held(name) {
+		return nil, fmt.Errorf("%q is not a name Abhed keeps for itself", name)
+	}
+	key := s.path + "." + name
+	if s.src != nil {
+		key = s.name + "\x00" + name
+	}
+	mu := lockFor(key)
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if s.src != nil {
+		return mu.Unlock, nil
+	}
+	unlock, err := fileLockContext(ctx, s.path+"."+strings.ToLower(name))
+	if err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	return func() { unlock(); mu.Unlock() }, nil
+}
+
+func (s *Store) set(name, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return errors.New("the value is empty")
 	}
@@ -252,7 +385,11 @@ func (s *Store) Set(name, value string) error {
 }
 
 // Remove forgets a secret. Removing a name that is not there is not an error.
+// A name Abhed keeps for itself goes only with the rest of its login.
 func (s *Store) Remove(name string) error {
+	if Held(name) {
+		return fmt.Errorf("%s is kept by Abhed itself; abhed mcp logout removes the login it belongs to", name)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.src != nil {
@@ -314,7 +451,7 @@ func (s *Store) Offered() []string {
 	if err != nil {
 		return nil
 	}
-	return names
+	return slices.DeleteFunc(names, Held)
 }
 
 // Env returns NAME=value pairs for the named secrets, for one command's
@@ -329,6 +466,9 @@ func (s *Store) Env(names []string) ([]string, error) {
 	}
 	out := make([]string, 0, len(names))
 	for _, n := range names {
+		if Held(n) {
+			return nil, fmt.Errorf("%s is kept by Abhed itself and is never given to a command or tool", n)
+		}
 		v, found := m[n]
 		if !found {
 			if s.addHint != "" {

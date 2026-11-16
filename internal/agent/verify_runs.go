@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -178,11 +182,20 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 		return pats, true
 	case "python", "python3":
 		if len(words) > 2 && words[1] == "-m" && words[2] == "unittest" {
-			// A pattern or test names select; a start folder other than the
-			// workspace narrows it.
+			// A pattern selects; a start folder other than the workspace
+			// narrows it; test names cover only themselves.
 			u, ok := parseUnittest(words)
-			if !ok || u.pattern != "" || len(u.names) > 0 {
+			if !ok || u.pattern != "" {
 				return nil, false
+			}
+			if len(u.names) > 0 {
+				for _, n := range u.names {
+					if !insidePath(n) || !testName(n) {
+						return nil, false
+					}
+					pats = append(pats, scopePat{dir: filepath.Join(dir, unittestPath(n))})
+				}
+				return pats, true
 			}
 			if u.start != "" && filepath.Clean(u.start) != "." {
 				return []scopePat{{dir: filepath.Join(dir, u.start), rec: true}}, true
@@ -270,28 +283,62 @@ func runScope(words []string, dir string) (pats []scopePat, ok bool) {
 	return nil, false
 }
 
+// unittestPath is the file a unittest name stands for: a dotted module
+// (tests.test_text) as its file (tests/test_text.py), a path as it is. A
+// name of a class or a test in a module is a path of its own
+// (tests/test_text/TextTest.py), so it covers only a claim that names it.
+func unittestPath(n string) string {
+	n = strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(n), "./"), "/")
+	if strings.Contains(n, "/") || strings.HasSuffix(n, ".py") {
+		return n
+	}
+	return strings.ReplaceAll(n, ".", "/") + ".py"
+}
+
 // claimScope is where a claim's named packages or folders are, in the
-// workspace; none names the whole of it.
+// workspace; none names the whole of it. One named with "/..." (pkg/x/...)
+// keeps it: it is that folder and everything beneath.
 func claimScope(scope []string, workDir string) []string {
 	var out []string
 	for _, s := range scope {
-		s = strings.TrimSuffix(strings.TrimSuffix(slashes(s), "..."), "/")
+		s = slashes(s)
+		rec := strings.HasSuffix(s, "...")
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "..."), "/")
 		if s == "" || s == "." {
 			continue
 		}
 		if !filepath.IsAbs(s) {
 			s = filepath.Join(workDir, strings.TrimPrefix(s, "./"))
 		}
-		out = append(out, filepath.Clean(s))
+		s = filepath.Clean(s)
+		if rec {
+			s += "/..."
+		}
+		out = append(out, s)
 	}
 	return out
+}
+
+// recursiveScope splits a claim's scope entry into its folder and whether
+// it names everything beneath.
+func recursiveScope(c string) (string, bool) {
+	if d, ok := strings.CutSuffix(c, "/..."); ok {
+		return d, true
+	}
+	return c, false
 }
 
 // coversScope reports a run that covers every folder a claim names, by path,
 // or the whole workspace when it names none.
 func coversScope(pats []scopePat, scope []string, workDir string) bool {
+	// A claim of everything beneath a folder needs a run of everything
+	// beneath it, or beneath a folder above it.
 	covered := func(c string) bool {
+		c, rec := recursiveScope(c)
 		for _, p := range pats {
+			if rec && !p.rec {
+				continue
+			}
 			if c == p.dir || p.rec && strings.HasPrefix(c, p.dir+"/") {
 				return true
 			}
@@ -324,9 +371,418 @@ func sameScope(pats []scopePat, scope []string, workDir string) bool {
 		return false
 	}
 	for i, p := range pats {
-		if p.dir != scope[i] {
+		c, rec := recursiveScope(scope[i])
+		if p.dir != c || rec && !p.rec {
 			return false
 		}
 	}
 	return true
+}
+
+// testScope is what a test claim is judged against: the folders, packages,
+// modules and files it names; or, for "the tests" with none named, the test
+// runs the person asked for; or the whole workspace. A claim that names a
+// test as one among more ("including tests.test_new") names the whole.
+func (ix *recordIndex) testScope(f facts) []string {
+	if f.inclusive {
+		return nil
+	}
+	scope := append(slices.Clone(f.scope), f.modules...)
+	if len(scope) == 0 && f.theTests && f.testish == "test" {
+		return promptTests(ix.prompts)
+	}
+	return scope
+}
+
+var (
+	// The test runs a person's message asks for, by command: go test's,
+	// unittest's and pytest's arguments, and "run tests/test_x.py".
+	goTestArgsRe   = regexp.MustCompile("\\bgo\\s+test((?:\\s+[^\\s;&|`'\"]+)*)")
+	unittestArgsRe = regexp.MustCompile("\\bpython3?\\s+-m\\s+unittest((?:\\s+[^\\s;&|`'\"]+)*)")
+	pytestArgsRe   = regexp.MustCompile("\\bpytest((?:\\s+[^\\s;&|`'\"]+)*)")
+	runTargetRe    = regexp.MustCompile("(?i)\\brun\\s+([^\\s;&|`'\"]+)")
+	// promptWholeRe asks for more than the runs named: every test, the
+	// suite, the rest, or that nothing else break.
+	promptWholeRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|anything|nothing|both|other|others|remaining|rest|keep|keeps|stay|stays|green)\b|\bbreak\w*|\bregress\w*`)
+)
+
+// promptTests are the test runs the person asked for, across every message
+// they typed: test modules and files given to unittest, pytest or "run",
+// and go test's folders. None, so "the tests" means them all, when any
+// message names no test run, asks for more than it names (every test, the
+// suite, everything else), or names a filter or a whole-suite run. A later
+// message never narrows what an earlier one asked: the runs are unioned,
+// and one that names none widens to the whole.
+func promptTests(prompts []string) []string {
+	var out []string
+	for _, p := range prompts {
+		names, ok := messageTests(p)
+		if !ok {
+			return nil
+		}
+		for _, n := range names {
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// messageTests reads one message's test runs; ok false when it asks for the
+// whole, or names none. It narrows only when every mention of tests in the
+// message is a runner command read here: whatever is left once those
+// commands are taken out may say "the tests" or "run the tests" and nothing
+// else about tests. Another runner or target (npm test, make test, tox),
+// CI, a test file outside a command, "the api tests", "integration" or
+// "e2e", or "also" and "too" leave the whole suite.
+func messageTests(p string) (names []string, ok bool) {
+	if promptWholeRe.MatchString(strings.ToLower(p)) {
+		return nil, false
+	}
+	arg := func(a string) string {
+		a = strings.TrimRight(a, ",:;)!?")
+		if !strings.HasSuffix(a, "...") {
+			a = strings.TrimRight(a, ".")
+		}
+		return a
+	}
+	rest := []byte(p)
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			rest[k] = ' '
+		}
+	}
+	// args walks a command's arguments from the end of its program words,
+	// keeping each one take accepts and blanking what was read. The command
+	// ends at a plain word ("fails"); anything else take does not accept
+	// (./a, a flag, a pattern) is an argument this reading does not know, so
+	// the command is taken as a whole-suite run.
+	args := func(start, from, to int, take func(a string) (stop, whole bool)) (whole bool) {
+		end, n := from, 0
+		for _, f := range fieldsAt(p[from:to]) {
+			stop, w := take(arg(f.s))
+			if w {
+				return true
+			}
+			if stop {
+				if !proseWordRe.MatchString(strings.Trim(f.s, sentencePunct)) {
+					return true
+				}
+				break
+			}
+			end, n = from+f.end, n+1
+		}
+		if n == 0 {
+			return true
+		}
+		blank(start, end)
+		return false
+	}
+	whole := false
+	for _, m := range goTestArgsRe.FindAllStringSubmatchIndex(p, -1) {
+		whole = whole || args(m[0], m[2], m[3], func(a string) (bool, bool) {
+			if strings.HasPrefix(a, "-") || a == "./..." || a == "..." || a == "." || a == "./" {
+				return false, true
+			}
+			if !strings.HasPrefix(a, "./") || !insidePath(a) {
+				return true, false
+			}
+			names = append(names, strings.TrimSuffix(a, "/"))
+			return false, false
+		})
+	}
+	for _, re := range []*regexp.Regexp{unittestArgsRe, pytestArgsRe} {
+		for _, m := range re.FindAllStringSubmatchIndex(p, -1) {
+			whole = whole || args(m[0], m[2], m[3], func(a string) (bool, bool) {
+				if strings.HasPrefix(a, "-") || a == "discover" {
+					return false, true
+				}
+				t := promptTestName(a)
+				if t == "" {
+					return true, false
+				}
+				names = append(names, t)
+				return false, false
+			})
+		}
+	}
+	for _, m := range runTargetRe.FindAllStringSubmatchIndex(p, -1) {
+		if t := promptTestName(arg(p[m[2]:m[3]])); t != "" {
+			names = append(names, t)
+			blank(m[0], m[3])
+		}
+	}
+	if whole || len(names) == 0 {
+		return nil, false
+	}
+	// What is left may say "the tests", "run the tests", "make sure" or
+	// "make it", and otherwise hold only connective words. A path or file
+	// name outside a runner command, even one to edit, is not one: it may
+	// be something else to run, so it leaves the whole suite.
+	left := plainTestsRe.ReplaceAllString(strings.ToLower(string(rest)), " ")
+	left = makePhrases(left)
+	// Each word left, its sentence punctuation trimmed, must be exactly a
+	// connective: a path, a digit, a symbol, a backtick or a letter outside
+	// ASCII is not one.
+	for _, w := range strings.FieldsFunc(left, wordBreak) {
+		if w = strings.Trim(w, sentencePunct); w != "" && !connectives[w] {
+			return nil, false
+		}
+	}
+	return names, true
+}
+
+var (
+	// plainTestsRe is "the tests" with nothing qualifying it.
+	plainTestsRe = regexp.MustCompile(`(?:\b(?:run|rerun|re-run)\s+)?\bthe\s+tests?\b`)
+	// makePhraseRe is "make sure" and "make it"; a bare "make" runs a target.
+	makePhraseRe = regexp.MustCompile(`\bmake\s+(?:sure|it)\b`)
+	// proseWordRe is a plain word, which ends a runner command's arguments.
+	proseWordRe = regexp.MustCompile(`^[A-Za-z]+$`)
+	// runVerbRe ends with a word that runs what follows it.
+	runVerbRe = regexp.MustCompile(`\b(?:run|rerun|re-run|execute|exec)[\s:,]*$`)
+)
+
+// sentencePunct is trimmed from the ends of a word left in a message.
+const sentencePunct = ".,;:!?" + cjkPunct
+
+// cjkPunct is CJK sentence punctuation, written with no space after it, so
+// it also separates words.
+const cjkPunct = "；。，、：！？"
+
+// wordBreak separates the words of a message: white space, or CJK
+// sentence punctuation.
+func wordBreak(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || strings.ContainsRune(cjkPunct, r)
+}
+
+// makePhrases blanks "make sure" and "make it", except where they follow
+// "run" ("run make it" runs a make target).
+func makePhrases(s string) string {
+	b := []byte(s)
+	for _, m := range makePhraseRe.FindAllStringIndex(s, -1) {
+		if runVerbRe.MatchString(s[:m[0]]) {
+			continue
+		}
+		for k := m[0]; k < m[1]; k++ {
+			b[k] = ' '
+		}
+	}
+	return string(b)
+}
+
+// connectives are the only words a message may hold beside the runner
+// commands it names, "the tests", "make sure" and "make it" for those
+// commands to be what "the tests" means. Any other word (a negation, a
+// contrast, another check, the build, lint, CI, a bare "make", a file name)
+// leaves the whole suite.
+var connectives = map[string]bool{
+	"fix": true, "it": true, "fails": true, "failing": true, "failed": true, "and": true, "then": true,
+	"please": true, "run": true, "tell": true, "me": true, "the": true, "a": true, "result": true,
+	"so": true, "that": true, "pass": true, "passes": true, "sure": true, "now": true,
+	"test's": true, "its": true, "error": true, "broken": true,
+}
+
+// wordAt is a whitespace-separated word and where it ends in its text.
+type wordAt struct {
+	s   string
+	end int
+}
+
+func fieldsAt(s string) []wordAt {
+	var out []wordAt
+	start := -1
+	for k, r := range s {
+		space := wordBreak(r)
+		switch {
+		case !space && start < 0:
+			start = k
+		case space && start >= 0:
+			out = append(out, wordAt{s[start:k], k})
+			start = -1
+		}
+	}
+	if start >= 0 {
+		out = append(out, wordAt{s[start:], len(s)})
+	}
+	return out
+}
+
+// promptTestName is a test module or file a message gives a runner, as a
+// workspace path; "" for any other word.
+func promptTestName(a string) string {
+	if m := testModule(a); m != "" {
+		return m
+	}
+	a = strings.TrimSuffix(strings.TrimPrefix(a, "./"), "/")
+	if insidePath(a) && testName(a) && (strings.Contains(a, "/") || strings.HasSuffix(a, ".py")) {
+		return a
+	}
+	return ""
+}
+
+var (
+	goNoTestsRe  = regexp.MustCompile(`\[no test files\]|\[no tests to run\]|testing: warning: no tests to run`)
+	goRanTestsRe = regexp.MustCompile(`(?m)^(?:ok\s+\S+\s+(?:[\d.]+s|\(cached\))(?:\s+coverage:[^\n]*)?\s*$|--- PASS|PASS$)|"Action":"pass","Package":"[^"]*","Test":"`)
+	utNoTestsRe  = regexp.MustCompile(`\bRan 0 tests?\b|\bNO TESTS RAN\b`)
+	utSummaryRe  = regexp.MustCompile(`\bRan (\d+) tests? in [^\n]*\n+\s*OK \(([^)\n]*)\)`)
+	utNotRunRe   = regexp.MustCompile(`\b(?:skipped|expected failures)=(\d+)`)
+	pyPassedRe   = regexp.MustCompile(`\b\d+ passed\b`)
+	pyNoneRe     = regexp.MustCompile(`\bno tests ran\b|\b\d+ (?:skipped|deselected|xfailed|xpassed)\b`)
+	cargoOKRe    = regexp.MustCompile(`test result: ok\. [1-9]\d* passed`)
+)
+
+// ranNothing reports a test run that passed without running a test: go
+// test with no test files or none matched, unittest's "Ran 0 tests" or every
+// test skipped, pytest with only skipped or deselected tests, cargo with
+// none passed. It shows no test passing.
+func ranNothing(o *obsRec) bool {
+	if len(o.line.final) == 0 {
+		return false
+	}
+	out := o.content
+	switch prog := filepath.Base(o.line.final[0]); {
+	case prog == "go":
+		return goNoTestsRe.MatchString(out) && !goRanTestsRe.MatchString(out)
+	case prog == "cargo":
+		return strings.Contains(out, "test result:") && !cargoOKRe.MatchString(out)
+	case prog == "pytest" || len(o.line.final) > 2 && o.line.final[2] == "pytest":
+		return !pyPassedRe.MatchString(out) && pyNoneRe.MatchString(out)
+	case len(o.line.final) > 2 && o.line.final[2] == "unittest":
+		if utNoTestsRe.MatchString(out) {
+			return true
+		}
+		// Every test skipped or an expected failure: none passed.
+		m := utSummaryRe.FindStringSubmatch(out)
+		if m == nil {
+			return false
+		}
+		notRun := 0
+		for _, n := range utNotRunRe.FindAllStringSubmatch(m[2], -1) {
+			k, _ := strconv.Atoi(n[1])
+			notRun += k
+		}
+		ran, _ := strconv.Atoi(m[1])
+		return notRun > 0 && notRun >= ran
+	}
+	return false
+}
+
+// packageShadows reports a unittest run given a dotted name part of which
+// is a package (tests.test_api, with tests/test_api/__init__.py): Python
+// imports the package, not tests/test_api.py, so the run is not read as
+// covering the file.
+func (ix *recordIndex) packageShadows(words []string, dir string) bool {
+	u, ok := parseUnittest(words)
+	if !ok || ix.readFile == nil {
+		return false
+	}
+	for _, n := range u.names {
+		if strings.Contains(n, "/") || strings.HasSuffix(n, ".py") {
+			continue
+		}
+		// Any part past the first that is a package (tests.test_api, with
+		// tests/test_api/__init__.py), or a lone name that is one, is what
+		// Python imports.
+		parts := strings.Split(n, ".")
+		for i := min(2, len(parts)); i <= len(parts); i++ {
+			if _, err := ix.readFile(filepath.Join(dir, filepath.Join(parts[:i]...), "__init__.py")); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// goPackageUntested is the first folder a scoped claim names whose own
+// package a go test run does not show passing a test, or "". The package
+// is the folder's exact import path, from the module path in the nearest
+// go.mod at or above the run's folder, inside the workspace: no line for
+// it, a "?" ([no test files]) or [no tests to run] line, or no passing test
+// in -json output, and it shows nothing. A claim of everything beneath a
+// folder needs one such package at or under its path. With no go.mod to
+// read, the package cannot be told, and the claim is left unverified.
+func (ix *recordIndex) goPackageUntested(o *obsRec, scope []string) string {
+	if len(o.line.final) < 2 || filepath.Base(o.line.final[0]) != "go" || len(scope) == 0 {
+		return ""
+	}
+	dir := filepath.Clean(o.line.finalCwd)
+	root, module := ix.goModule(dir)
+	passed := goPassedPackages(o.content)
+	for _, c := range scope {
+		c, rec := recursiveScope(c)
+		if rel, err := filepath.Rel(dir, c); err != nil || rel == "." && !rec || strings.HasPrefix(rel, "..") {
+			continue // the run's own folder: judged as the whole run
+		}
+		if module == "" {
+			return filepath.ToSlash(c)
+		}
+		rel, err := filepath.Rel(root, c)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(c)
+		}
+		want := module
+		if rel != "." {
+			want += "/" + filepath.ToSlash(rel)
+		}
+		found := false
+		for _, pkg := range passed {
+			if pkg == want || rec && strings.HasPrefix(pkg, want+"/") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return filepath.ToSlash(c)
+		}
+	}
+	return ""
+}
+
+// goModuleRe is a go.mod's module line.
+var goModuleRe = regexp.MustCompile(`(?m)^module\s+"?([^\s"/][^\s"]*)"?\s*(?://.*)?$`)
+
+// goModule is the folder and module path of the nearest go.mod at or above
+// dir and inside the workspace; "" when none can be read.
+func (ix *recordIndex) goModule(dir string) (string, string) {
+	if ix.readFile == nil || ix.workDir == "" {
+		return "", ""
+	}
+	top := filepath.Clean(ix.workDir)
+	for d := dir; ; d = filepath.Dir(d) {
+		if d != top && !strings.HasPrefix(d, top+"/") {
+			return "", ""
+		}
+		if b, err := ix.readFile(filepath.Join(d, "go.mod")); err == nil {
+			if m := goModuleRe.FindSubmatch(b); m != nil {
+				return d, string(m[1])
+			}
+			return "", ""
+		}
+		if d == top {
+			return "", ""
+		}
+	}
+}
+
+// goPassedPackages are the packages a go test run's output shows passing
+// at least one test: an "ok" line without [no tests to run], or in -json
+// output a test's pass.
+func goPassedPackages(out string) []string {
+	var pkgs []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "{") {
+			var ev struct{ Action, Package, Test string }
+			if json.Unmarshal([]byte(line), &ev) == nil && ev.Action == "pass" && ev.Test != "" && ev.Package != "" {
+				pkgs = append(pkgs, ev.Package)
+			}
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "ok" && !strings.Contains(line, "[no tests to run]") {
+			pkgs = append(pkgs, f[1])
+		}
+	}
+	return pkgs
 }
