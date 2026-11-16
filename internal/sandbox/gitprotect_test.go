@@ -124,8 +124,10 @@ func TestProcessSandboxGitWorksWithProtectGit(t *testing.T) {
 	p.ProtectGit = true
 	s := NewProcess(p)
 	available(t, s)
-	g := "git -c user.name=a -c user.email=a@b "
-	out, err := runIn(t, s, filepath.Join(ws, "repo"), "set -e; echo hi > f; "+g+"add f; "+g+"commit -q -m one; "+
+	// The sandbox does not pass the test's GIT_CONFIG_NOSYSTEM on, so the
+	// command sets it: this machine's /etc/gitconfig and its hooks stay out.
+	g := "git -c user.name=a -c user.email=a@b -c core.hooksPath=/dev/null "
+	out, err := runIn(t, s, filepath.Join(ws, "repo"), "set -e; export GIT_CONFIG_NOSYSTEM=1; echo hi > f; "+g+"add f; "+g+"commit -q -m one; "+
 		g+"branch b; "+g+"checkout -q b; echo two >> f; "+g+"commit -q -am two; "+g+"checkout -q main; "+
 		g+"fetch -q ../other main:other; "+g+"log --oneline other | grep -q other; git status --short")
 	if err != nil {

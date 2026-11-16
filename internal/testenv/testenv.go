@@ -214,8 +214,10 @@ func Isolate() *Guard {
 		panic("testenv: " + err.Error())
 	}
 	g.home = home
+	// GIT_CONFIG_NOSYSTEM: this machine's /etc/gitconfig (its hooks, its
+	// helpers) is not the test's; a git the tests run reads only their own.
 	for k, v := range map[string]string{"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config"),
-		"XDG_STATE_HOME": filepath.Join(home, ".local", "state"), Marker: "1"} {
+		"XDG_STATE_HOME": filepath.Join(home, ".local", "state"), Marker: "1", "GIT_CONFIG_NOSYSTEM": "1"} {
 		_ = os.Setenv(k, v)
 	}
 	for _, k := range scrubbed {
