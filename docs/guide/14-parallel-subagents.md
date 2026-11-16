@@ -53,8 +53,13 @@ notes after your message for the model.
   process, fetch, query, dispatch, load, deadlock, in any form), after a why,
   whether, that, how or if clause, or with a sign of the program's own
   concurrency (deadlock, workers, jobs, requests, "instead of", "rather than",
-  "one by one", "one after another", serially, sequentially). Those messages get
-  the note that asks.
+  "one by one", "one after another", serially, sequentially). Nor is it given
+  when the message also asks for a change to a program: the phrase is
+  "parallelize" (or "parallelise"), "it", "its", "them" or "they" stands right
+  before a reading verb or the phrase ("have it read", "parallelize its
+  reads"), or it speaks of performance ("speed up", "faster", "slow",
+  "slower", "performance", or "by" with a verb ending in "-ing"). Those
+  messages get the note that asks.
 - **Ask.** Any other parallel phrase, or a mention of subagents, gets a note
   telling the model that if it is unclear whether you want independent pieces
   of work started as subagents or the program itself changed to run

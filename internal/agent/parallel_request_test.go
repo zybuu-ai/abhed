@@ -403,6 +403,23 @@ func TestParallelTierHeldOutFifthReview(t *testing.T) {
 	})
 }
 
+// Held out from the sixth review: a reading verb that opens a compound
+// request no longer carries a code change behind it to the strong note.
+func TestParallelTierHeldOutSixthReview(t *testing.T) {
+	checkParallelCases(t, []parallelCase{
+		{"can you analyse and speed up the importer by reading files in parallel", clarify},
+		{"review the loader and parallelize its reads", clarify},
+		{"check the crawler and then have it read pages in parallel", clarify},
+		{"look at making the crawler fetch pages in parallel", clarify},
+		{"please check and update the crawler to read pages in parallel", clarify},
+		{"use subagents to update the crawler so it reads pages in parallel", clarify},
+		{"investigate the slow importer and get it reading the CSVs side by side", clarify},
+		{"read the RFC and change our client to search both regions at once", clarify},
+		{"with subagents, set up the agent framework to triage tickets in parallel", clarify},
+		{"explore how to let the retriever search both indexes simultaneously", clarify},
+	})
+}
+
 // noteLoop is a top-level loop on a scripted model, with tasks when withTasks.
 func noteLoop(t *testing.T, withTasks bool, budget *Budget) (*Loop, *scriptedAdapter, *MemStore) {
 	t.Helper()

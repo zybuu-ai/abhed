@@ -330,6 +330,12 @@ var (
 		`queried|querying|dispatch|dispatches|dispatched|dispatching|load|loads|loaded|loading|deadlock|deadlocks)` +
 		`(\s+\S+){0,3}\s+(` + phraseWords + `)`)
 	clauseBefore = regexp.MustCompile(`(?i)\b(why|whether|that|how|if)\b.*\b(` + phraseWords + `)`)
+	// changeSigns say the message also asks for a change to a program: the
+	// phrase is "parallelize", a pronoun for the program stands right before
+	// a reading verb or the phrase ("have it read", "parallelize its reads"),
+	// or it speaks of performance ("speed up", "by reading").
+	changeSigns = regexp.MustCompile(`(?i)paralleli[sz]|\b(it|its|them|they)\s+(` + readingVerbs + `|` + phraseWords + `)\b|` +
+		`\b(speed(s|ing)? up|faster|slow|slower|performance)\b|\bby\s+\w+ing\b`)
 	programSigns = regexp.MustCompile(`(?i)\b(deadlocks?|workers|jobs|requests|instead of|rather than|one by one|one after another|serially|sequentially)\b`)
 )
 
@@ -355,7 +361,7 @@ func parallelTier(typed string) noteTier {
 	lead := leadSubagents.MatchString(typed)
 	if (phrase || lead) && readingLead.MatchString(typed) && readingWork.MatchString(typed) &&
 		!readingForAProgram(typed, lead) && !programRunning.MatchString(typed) &&
-		!clauseBefore.MatchString(typed) && !programSigns.MatchString(typed) {
+		!clauseBefore.MatchString(typed) && !programSigns.MatchString(typed) && !changeSigns.MatchString(typed) {
 		return strongNote
 	}
 	if phrase || subagentsNamed.MatchString(typed) {
