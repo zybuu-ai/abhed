@@ -1,0 +1,52 @@
+# Reviews each pull request with Abhed and posts one review: a comment, with
+# inline comments where a finding has a file and line. It never approves
+# and never pushes.
+#
+# pull_request, never pull_request_target: the pull request's code is only
+# ever read here, with the permissions below. A pull request from a fork
+# gets no secrets and a read-only token, so its review is skipped with a
+# notice; a maintainer reviews it with "Run workflow" and its number, which
+# reads the fork's code but runs none of it.
+# Copy to .github/workflows/ and pin the action to a full commit.
+name: Abhed review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The pull request to review (for one from a fork)
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: abhed-review-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # On workflow_dispatch, the pull request's head; it is read, never run.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', inputs.pr) || '' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: zybuu-ai/abhed/integrations/github-action@COMMIT_SHA # pin to a full commit
+        with:
+          mode: review
+          pr-number: ${{ inputs.pr }}
+          model-provider: anthropic
+          model: claude-opus-5
+          model-api-key: ${{ secrets.ABHED_MODEL_KEY }}
+          max-budget-usd: "1"
+          request-changes-on: never
+          review-instructions: |
+            Pay attention to error handling and to tests for changed behaviour.
