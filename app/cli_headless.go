@@ -495,8 +495,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	loop.SubdirMemory = subdirMemory(appCfg, pol, sess.Root)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
-	// contract gates an answer, which a structured run does not give.
-	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
+	// contract gates an answer, which a structured run does not give. Unset,
+	// -p labels its answer as the terminal does; -verify off still turns it off.
+	if v, err := toolset.Verifier(appCfg, true); err == nil && o.schema == nil {
 		v.Install(loop)
 	} else if o.schema != nil && appCfg.Verify.Contract.On() {
 		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")
@@ -618,10 +619,13 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 
 	u := loop.Usage()
+	// The conversation holds the model's own words; what stdout carries of
+	// them is redacted as the record is, a stored secret withheld.
+	structured = withheldJSON(rec.Redact, structured)
 	switch {
 	case streaming:
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
-			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
+			Result: agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter)), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
 			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens}, Verdict: loop.LastVerdict(),
 			PermissionDenials: hints.denials}
@@ -664,6 +668,20 @@ func runAnswer(msgs []model.Message, es server.EventStore, id string, after int6
 		}
 	}
 	return lastAssistantText(msgs)
+}
+
+// withheldJSON is raw with stored secrets redacted, or the withheld marker
+// when redacting leaves no valid JSON.
+func withheldJSON(red agent.Redactor, raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	out := json.RawMessage(agent.WithheldText(red, string(raw)))
+	if !json.Valid(out) {
+		b, _ := json.Marshal(agent.Withheld)
+		return b
+	}
+	return out
 }
 
 func lastAssistantText(msgs []model.Message) string {

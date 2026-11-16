@@ -593,6 +593,26 @@ func TestSessionHostCannotPassForAnOperatorHost(t *testing.T) {
 	}
 }
 
+// A name in ssh.hosts whose entry did not load (no user) still belongs to the
+// operator: ssh_connect may not put a machine of its own behind it, where the
+// read-only classifier would trust it.
+func TestSessionHostCannotTakeAnUnloadedOperatorName(t *testing.T) {
+	srv := startSSHServer(t, "pw")
+	defer srv.stop()
+	pinHome(t, srv)
+	reg, errs := NewRegistry([]HostConfig{{Name: "app1", Addr: "10.0.0.1"}})
+	if len(errs) != 1 || reg.Len() != 0 {
+		t.Fatalf("a host with no user loaded: %v", errs)
+	}
+	connect := ConnectTool{R: reg, Declared: []string{"app1"}, Secret: stored(map[string]string{"VM_PASSWORD": "pw"})}
+	for _, name := range []string{"app1", "APP1", "app-1", "appl"} {
+		args, _ := json.Marshal(map[string]any{"addr": srv.addr, "user": "tester", "name": name, "password_secret": "VM_PASSWORD"})
+		if res := connect.Run(context.Background(), newSession(t), args); !res.IsError || !strings.Contains(res.Content, "operator declared") {
+			t.Errorf("a session host named %q took the operator's app1: %s", name, res.Content)
+		}
+	}
+}
+
 // A password connect to a host that is not pinned says how to pin it, not to
 // accept any key, which ssh_connect refuses for a password.
 func TestUnpinnedPasswordHostErrorNamesTheWayForward(t *testing.T) {

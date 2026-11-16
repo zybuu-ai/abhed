@@ -189,6 +189,9 @@ var uncounted = []string{
 	"subagent.spawned", "suggestion.offered", "task.cancelled", "terminal.input", "todo.updated",
 	"turn.continued", "user.message", "workspace.dir_added", "worktree.taken", "debug.launched", "debug.stopped", "debug.setup", "completion.enabled", "next_edit.enabled", "commit_message.requested",
 	"sandbox.git_walk_bounded", "sandbox.git_linked", "sandbox.port_contested",
+	// A person's continuation, a hook's request to go on, and a change-log
+	// entry are settings and steps, as mode.changed and turn.continued are.
+	"turns.extended", "hook.continued", "config.changed",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {

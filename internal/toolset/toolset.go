@@ -90,6 +90,9 @@ type Options struct {
 	// by name, and web_fetch refuses a URL holding a value from. Nil offers no
 	// stored secrets, and leaves web_fetch unable to fetch.
 	Vault *secrets.Store
+	// NoMCPLogins, when set, is why the OAuth logins in Vault are not used:
+	// a URL server that has one is refused with it.
+	NoMCPLogins error
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
 	Warn func(format string, args ...any)
@@ -207,6 +210,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
 		s.Gateway.Admit, s.Gateway.PinProgram = MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		switch {
+		case o.Vault != nil && o.NoMCPLogins != nil:
+			s.Gateway.Authorize = MCPLoginsWithheld(o.Vault, o.NoMCPLogins)
+		case o.Vault != nil:
+			s.Gateway.Authorize = MCPAuthorize(o.Vault)
+		}
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {

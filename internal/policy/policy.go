@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -342,6 +343,79 @@ func pathFoldsCase(subjects []string) bool {
 	return false
 }
 
+// resourceRead reports an MCP server's read_resource tool, whose subject is
+// the URI it reads.
+func resourceRead(tool string) bool {
+	return strings.HasPrefix(tool, "mcp__") && strings.HasSuffix(tool, "__read_resource")
+}
+
+// resourceForms are the spellings a server may read a resource URI as: as
+// written, its escapes decoded once and twice, each in NFC and in NFKC (a
+// fullwidth ／ is a /), and each of those with its path's dot-segments
+// resolved. Deny and ask rules on a read match any; that only adds matches.
+func resourceForms(uri string) []string {
+	out := []string{uri}
+	add := func(f string) {
+		for _, have := range out {
+			if have == f {
+				return
+			}
+		}
+		out = append(out, f)
+	}
+	decoded := []string{uri}
+	cur := uri
+	for range 2 {
+		d, err := url.PathUnescape(cur)
+		if err != nil || d == cur {
+			break
+		}
+		decoded, cur = append(decoded, d), d
+	}
+	for _, d := range decoded {
+		for _, f := range []string{norm.NFC.String(d), norm.NFKC.String(d)} {
+			add(f)
+			add(cleanURIPath(f))
+		}
+	}
+	return out
+}
+
+// cleanURIPath is a URI with its path's dot-segments and empty segments
+// resolved, as a server resolving it reads it; the URI as given when it has
+// no path to clean.
+func cleanURIPath(uri string) string {
+	scheme, rest, ok := strings.Cut(uri, ":")
+	if !ok {
+		return uri
+	}
+	prefix := scheme + ":"
+	if after, ok := strings.CutPrefix(rest, "//"); ok {
+		end := strings.IndexAny(after, "/?")
+		if end < 0 {
+			return uri
+		}
+		prefix += "//" + after[:end]
+		rest = after[end:]
+	}
+	p, query, hasQuery := strings.Cut(rest, "?")
+	if !strings.Contains(p, "/") {
+		return uri
+	}
+	trail := strings.HasSuffix(p, "/") && len(p) > 1
+	c := path.Clean("/" + p)
+	if !strings.HasPrefix(p, "/") {
+		c = strings.TrimPrefix(c, "/")
+	}
+	if trail && c != "/" {
+		c += "/"
+	}
+	if hasQuery {
+		return prefix + c + "?" + query
+	}
+	return prefix + c
+}
+
 func hasNonASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {
@@ -439,6 +513,18 @@ type Engine struct {
 	// RemoteReads are the commands an ssh call may run as a read, from
 	// ssh.read_commands; see AllowRemoteReads.
 	RemoteReads []Rule
+
+	// RemoteHosts reports a host the operator declared (ssh.hosts), on which
+	// the read-only classifier may approve an ssh call whose text is
+	// provably a read; nil turns the classifier off. Hosts added with
+	// ssh_connect are never among them.
+	RemoteHosts func(host string) bool
+
+	// RemoteContents lets the classifier also approve programs that print
+	// the contents of files (cat, grep, journalctl, …), the operator's
+	// ssh.read_contents; without it only metadata and the lines piped from
+	// it are read unasked.
+	RemoteContents bool
 
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
@@ -929,6 +1015,17 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		remote, canon = &rr, rr.canon
 		subjects, allowSubjects, narrowAllows, complete = rr.subjects, rr.allow, rr.narrow, rr.complete
 	}
+	// The read-only classifier runs at most once a decision: the plan step
+	// and the read step both ask it.
+	var roPrograms []string
+	roWhy, roDone := "", false
+	readOnly := func() bool {
+		if !roDone {
+			roPrograms, roWhy = e.remoteReadOnly(*remote)
+			roDone = true
+		}
+		return roWhy == ""
+	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
 	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
@@ -991,6 +1088,18 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			}
 		}
 	}
+	// A resource's URI is read in one spelling, but a server may fold its case
+	// or normalise it: deny and ask rules on a read also match without regard
+	// to case and in NFC. It only adds matches.
+	if resourceRead(tool) {
+		matches = func(r Rule, tool string, subjects []string) bool {
+			var all []string
+			for _, s := range subjects {
+				all = append(all, resourceForms(s)...)
+			}
+			return r.matchesPathAny(tool, all) || r.matchesCaselessAny(tool, all)
+		}
+	}
 	// A bash rule naming flags also holds with them moved or split.
 	if tool == "bash" {
 		matches = func(r Rule, tool string, subjects []string) bool {
@@ -1046,7 +1155,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
-	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
+	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "" && !readOnly()) {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode", Source: "mode"}
 	}
 
@@ -1103,7 +1212,16 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			if e.Mode == ModePlan || e.Mode == ModeAuto {
 				step = "mode"
 			}
-			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step}
+			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step,
+				Rule: "ssh.read_commands: " + rule}
+		}
+		if readOnly() {
+			step := "default"
+			if e.Mode == ModePlan || e.Mode == ModeAuto {
+				step = "mode"
+			}
+			return Result{Decision: Allow, Reason: "read-only command (" + strings.Join(roPrograms, " | ") + ", each in a read form; " +
+				ReadOnlyRule + ") on " + remote.host + ", a host the operator declared", Scope: "", Step: step, Rule: ReadOnlyRule}
 		}
 	}
 

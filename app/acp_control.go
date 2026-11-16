@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -706,7 +707,8 @@ func (c *acpConn) capabilities(msg rpcMessage) {
 	out["infra"] = map[string]any{"clusters": clusters, "ssh_hosts": hosts}
 	secretNames := []any{}
 	if names, err := openVault().Names(); err == nil {
-		for _, n := range names {
+		// Abhed's own values (an MCP login) are never offered for a rule.
+		for _, n := range slices.DeleteFunc(names, secrets.Held) {
 			secretNames = append(secretNames, map[string]any{"name": n})
 		}
 	}

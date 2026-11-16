@@ -19,6 +19,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
 	"golang.org/x/term"
 )
 
@@ -52,6 +53,7 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			"       abhed mcp add [-header-env HEADER=VAR]... [-allow-tools a,b] NAME https://URL\n"+
 			"         either add also takes -sha256 HEX (only that entry) and -confirm-fd N (the yes from an inherited descriptor, for an editor)\n"+
 			"       abhed mcp remove NAME\n"+
+			"       abhed mcp login NAME | logout NAME\n"+
 			"  Servers are added to ~/.abhed/config.json, enabled, after a confirmation at a terminal.")
 		return 2
 	}
@@ -70,6 +72,14 @@ func mcpCmd(workspace string, args []string, trust config.TrustChoice, cio mcpIO
 			return usage()
 		}
 		return fail0(mcpRemove(args[1], cio.out), fail)
+	case "login", "logout":
+		if len(args) != 2 {
+			return usage()
+		}
+		if args[0] == "login" {
+			return fail0(mcpLogin(workspace, trust, args[1], cio), fail)
+		}
+		return fail0(mcpLogout(workspace, trust, args[1], cio), fail)
 	case "add":
 		s, o, err := parseMCPAddOpts(args[1:], cio.err)
 		if errors.Is(err, errUsage) {
@@ -425,6 +435,12 @@ func mcpList(workspace string, trust config.TrustChoice, out io.Writer) error {
 		where := config.Printable(s.Command)
 		if s.URL != "" {
 			where = config.PrintableURL(s.URL)
+			switch in, _, _, err := mcpauth.Status(openVault(), s.Name, s.URL); {
+			case err != nil:
+				where += " (login for another URL; abhed mcp login " + config.Printable(s.Name) + ")"
+			case in:
+				where += " (signed in)"
+			}
 		}
 		fmt.Fprintf(out, "%-20s %-9s %-8s %s\n", config.Printable(s.Name), source, state, where)
 	}
