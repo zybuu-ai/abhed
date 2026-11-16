@@ -239,6 +239,9 @@ type acpSession struct {
 	// costPartial marks a replayed call from a record written before costing:
 	// the session's cost then leaves those calls out.
 	costPartial bool
+	// engineCalls are the engine's diagnostics starts, by call id, with
+	// their command line, so a refusal is told as information.
+	engineCalls map[string]string
 	// totalIn and totalOut are the session's tokens, for usage_update.
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.

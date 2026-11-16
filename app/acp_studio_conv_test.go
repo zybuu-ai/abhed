@@ -207,6 +207,16 @@ func TestRuleUnknownMetaFieldsAreRefused(t *testing.T) {
 	for _, method := range []string{"_abhed/trust/grant", "_abhed/policy/set", "_abhed/tool/run", "_abhed/mcp/add"} {
 		r.cl.refused(errNoMethod, method, map[string]any{"cwd": r.ws})
 	}
+	// §2.1: an MCP server is never added over ACP. The read-only check answers
+	// and writes nothing; adding is the engine's command line, after a modal.
+	id := r.open()
+	r.cl.ok("_abhed/mcp/check", map[string]any{"sessionId": id, "name": "evil", "command": "/bin/sh"}, nil)
+	if _, err := os.Stat(filepath.Join(r.home, ".abhed", "config-changes.jsonl")); err == nil {
+		t.Fatal("a check logged a change")
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.home, ".abhed", "config.json")); strings.Contains(string(b), "evil") {
+		t.Fatalf("a check wrote the server: %s", b)
+	}
 	// MCP servers a client names are not started; the reply says which.
 	var res map[string]any
 	r.cl.ok("session/new", map[string]any{"cwd": r.ws, "mcpServers": []any{map[string]any{"name": "evil", "command": "/bin/sh"}}}, &res)

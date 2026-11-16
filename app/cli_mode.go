@@ -15,6 +15,7 @@ import (
 
 func init() {
 	registerSlash(slashCmd{Name: "/mode", Args: "<name>", Help: "default | accept-edits | plan | auto", Group: "mode", Order: 10, Run: slashMode})
+	registerSlash(slashCmd{Name: "/continue", Help: "go on with a run that stopped at its turn limit; recorded, and bounded by limits.max_continues", Group: "session", Order: 58, Run: slashContinue})
 }
 
 // switchMode checks a mode against the managed configuration, as -mode is
@@ -281,10 +282,28 @@ func turnLimitSummary(cfg config.Config, maxTurns int) string {
 	return fmt.Sprintf("turn limit: %d for the whole conversation, set by the managed configuration", maxTurns)
 }
 
-// turnLimitNote is said when a run stops at the turn limit.
-func turnLimitNote(cfg config.Config, maxTurns int) string {
+// slashContinue answers /continue reached through the command dispatch, as
+// when typed during a run: the prompt itself runs it once the run has ended.
+func slashContinue(_ context.Context, e *cmdEnv, _ []string) (bool, error) {
+	e.ui.Append(ui.Block{Kind: ui.BlockNotice, Text: "/continue goes on with a run that stopped at its turn limit; type it at the prompt once the run has ended"})
+	return false, nil
+}
+
+// turnLimitNote is said when a run stops at the turn limit; left is how many
+// more times the conversation may be continued.
+func turnLimitNote(cfg config.Config, maxTurns, left int) string {
+	more := ""
+	if left > 0 {
+		more = fmt.Sprintf("; /continue lets it go on (%d more time%s in this conversation)", left, plural(left))
+	}
 	if turnsPerMessage(cfg, maxTurns) > 0 {
-		return fmt.Sprintf("stopped after %d turns for this message; send \"continue\" to let it go on", maxTurns)
+		if more != "" {
+			return fmt.Sprintf("stopped after %d turns for this message%s", maxTurns, more)
+		}
+		return fmt.Sprintf("stopped after %d turns for this message; send another message to go on", maxTurns)
+	}
+	if more != "" {
+		return fmt.Sprintf("the managed configuration allows %d turns for the whole conversation%s", maxTurns, more)
 	}
 	return fmt.Sprintf("the managed configuration allows %d turns for the whole conversation; /clear starts a new one", maxTurns)
 }

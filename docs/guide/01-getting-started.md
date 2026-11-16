@@ -304,6 +304,7 @@ running turn, and at an empty prompt pressed twice exits. Every key is in
 | `/clear [name]` | end this session and start a new one; `/cost`, `/diff` and `/undo` start over, the workspace is kept |
 | `/resume [id]` | continue a recorded session; with no id, pick one |
 | `/rename <name>` | name the session, for `/resume` and `-r` |
+| `/continue` | go on with a run that stopped at its turn limit; recorded, at most `limits.max_continues` times a conversation |
 | `/branch` | go on in a copy of this session, leaving it as it was |
 | `/export [path]` | write the transcript, HTML in `~/.abhed/exports` by default |
 | `/model [name]` | show or switch the model, keeping the conversation |

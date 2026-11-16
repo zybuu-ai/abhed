@@ -229,7 +229,8 @@ func hashOf(b []byte) string {
 // events from seq first on: the conversation as it stands through step
 // through (0 for all of it), forks applied, and every checkpoint and
 // restore up to that step, abandoned branches included, since the files
-// they changed are still as they left them. Streamed fragments stay behind.
+// they changed are still as they left them, and every turns.extended.
+// Streamed fragments stay behind.
 // Each copy gets a new id and seq, and a restore's checkpoint is renumbered
 // to match, so the branch's undo log is the source's.
 func BranchCopy(events []Event, through int64, sessionID string, first int64) []Event {
@@ -239,6 +240,12 @@ func BranchCopy(events []Event, through int64, sessionID string, first int64) []
 	}
 	var picked []Event
 	for _, ev := range events {
+		// Every continuation past the turn limit is copied, wherever the
+		// branch is cut, so a branch cannot reset limits.max_continues.
+		if ev.Type == EvTurnsExtended {
+			picked = append(picked, ev)
+			continue
+		}
 		if through > 0 && ev.Seq > through {
 			continue
 		}

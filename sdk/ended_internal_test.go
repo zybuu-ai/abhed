@@ -102,3 +102,31 @@ func TestRefusedPromptReturnsNoEarlierAnswer(t *testing.T) {
 		t.Fatalf("RunQueued, every message refused: %q %v", got, err)
 	}
 }
+
+// A hook that fires in an embedded session is recorded there as hook.fired,
+// as the CLI records it.
+func TestSDKRecordsHookFired(t *testing.T) {
+	a, err := New(context.Background(), Options{
+		Workspace: t.TempDir(),
+		Provider:  &Provider{Type: "ollama", BaseURL: "http://127.0.0.1:1", Model: "m"}, // never reached
+		Extensions: []ExtensionConfig{{Name: "gatekeeper", Command: "bash",
+			Args:   []string{filepath.Join("..", "internal", "extension", "testdata", "gatekeeper.sh")},
+			Events: []extension.Event{extension.EvUserPromptSubmit}, Timeout: 5 * time.Second}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	_, _ = a.Run(context.Background(), "the forbidden thing")
+	for _, ev := range a.Events() {
+		if ev.Type != agent.EvHookFired {
+			continue
+		}
+		var h agent.HookFired
+		if err := json.Unmarshal(ev.Payload, &h); err != nil || h.Extension != "gatekeeper" || h.Verdict != "block" {
+			t.Fatalf("recorded %s", ev.Payload)
+		}
+		return
+	}
+	t.Fatal("the hook that refused the prompt was not recorded")
+}
