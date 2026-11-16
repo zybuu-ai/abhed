@@ -874,6 +874,8 @@ func orgZeroBelow(cfg *Config, below map[string]PriceConfig) {
 		delete(cfg.PricingLoopbackOnly, name)
 		if cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0 {
 			delete(cfg.Pricing, name)
+			// The person's own price is set aside too, as managedPricing does.
+			cfg.SetAside = append(cfg.SetAside, pricingSetAside(cfg.origins["pricing."+name], name))
 		} else {
 			cfg.Pricing[name] = p
 		}

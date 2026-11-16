@@ -125,21 +125,29 @@ of band (`org_policy.keys`); a key pinned on first use is not enough. So
 does `pricing`, with one exception, so an org dollar budget can admit models
 the laptop runs itself without pinned keys: an org whose keys are not
 pinned may price a model at exactly 0 (every figure 0). The laptop takes
-that 0 only for a model that has no price of its own (not on the built-in
-list, and not priced by the machine's file or the person's), and only when
-every provider it configures for that model is a local model server: a
-local server type (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang`) at its
-own endpoint or a loopback `base_url`, or `openai-compatible` at a loopback
-`base_url`. A hosted API's type (`openai`, `anthropic`, the `bedrock` and
-`vertex` types, `azure-openai`, `watsonx`, the hosted gateways) never counts,
-even at a loopback address, since a gateway or signing proxy there fronts a
-paid model; nor does a custom provider type. So an unpinned org cannot lower
-any price a model has, and the hosted models on the list keep their list
-price behind any gateway. What remains trusted is that a local server the
-laptop runs under an unlisted name is the local model the org meant; a
-person who points such a server at a paid API spends their own key, as they
-could outside Abhed. The check is made as each session's budget is built,
-so a provider changed later applies to the sessions started after it.
+that 0 only when both hold:
+
+- the model has no price of its own: it is not on the built-in list, is not
+  a name that may stand for one there (a dated or tagged variant such as
+  `gpt-4o-2024-08-06`, a `provider/` prefix such as `openai/gpt-4o`, other
+  letter case, or surrounding spaces), and the machine's file and the
+  person's do not price it;
+- every provider the laptop configures for that model is a local model
+  server type, `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, at its own
+  endpoint or a loopback `base_url`.
+
+No other provider type counts, even at a loopback address: not
+`openai-compatible` (the usual shape of a gateway such as LiteLLM, which
+may hold a company key), not a hosted API's type, not a custom type. So an
+unpinned org cannot lower any price a model has, and cannot price a model
+served through a gateway. A local model served by LM Studio or another
+`openai-compatible` server is priced in the machine's managed file, or by
+an org whose keys the machine pins. What remains trusted is the label: a
+provider written as one of the five local types is taken to be a local
+model server. Ollama's `*-cloud` models are an exception to "local": Ollama
+runs them on ollama.com and bills the person's own Ollama account. The
+check is made as each session's budget is built, so a provider changed
+later applies to the sessions started after it.
 `auto` and `bypass` modes are never set by an org policy.
 
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records

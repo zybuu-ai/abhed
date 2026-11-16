@@ -17,7 +17,7 @@ func TestOrgZeroPriceHoldsOnlyOnThisMachine(t *testing.T) {
 	cfg.PricingLoopbackOnly = map[string]bool{"gemma4:26b": true, "qwen3:8b": true, "llama": true}
 	cfg.Model.Providers = map[string]config.ProviderConfig{
 		"local":  {Type: "ollama", Model: "gemma4:26b"},
-		"vllm":   {Type: "openai-compatible", BaseURL: "http://127.0.0.1:8000/v1", Model: "gemma4:26b"},
+		"vllm":   {Type: "vllm", BaseURL: "http://127.0.0.1:8000/v1", Model: "gemma4:26b"},
 		"lan":    {Type: "openai-compatible", BaseURL: "http://10.0.0.5:11434/v1", Model: "qwen3:8b"},
 		"ollama": {Type: "ollama", Model: "qwen3:8b"},
 		"mine":   {Type: "openai-compatible", BaseURL: "https://api.example.com/v1", Model: "own"},
@@ -88,5 +88,41 @@ func TestOrgZeroNeverPricesAHostedModel(t *testing.T) {
 				t.Fatal("an unpriced hosted model ran under the dollar budget")
 			}
 		})
+	}
+}
+
+// Only the local model server types count, and never for a name that may
+// stand for a listed model: an openai-compatible endpoint on loopback is
+// the shape of a gateway holding a paid key, so its names stay unpriced;
+// a dated variant, a provider/ prefix or surrounding spaces of a listed name
+// is never 0, whoever serves it.
+func TestOrgZeroAliasesAndGateways(t *testing.T) {
+	for _, c := range []struct {
+		typ, base, model string
+		zero             bool
+	}{
+		{"openai-compatible", "http://127.0.0.1:4000/v1", "gpt-4o-2024-08-06", false},
+		{"openai-compatible", "http://127.0.0.1:4000/v1", "openai/gpt-4o", false},
+		{"openai-compatible", "http://127.0.0.1:4000/v1", "gpt-4o ", false},
+		{"openai-compatible", "http://127.0.0.1:4000/v1", "claude-sonnet-4-6", false},
+		{"openai-compatible", "http://127.0.0.1:4000/v1", "my-gpt", false},
+		{"ollama", "", "gpt-4o-2024-08-06", false},
+		{"ollama", "", "openai/gpt-4o", false},
+		{"vllm", "http://127.0.0.1:8000/v1", "Claude-Sonnet-4-5@20250929", false},
+		{"ollama", "", "gemma4:26b", true},
+		{"llamacpp", "http://localhost:8080/v1", "my-gpt", true},
+		{"ollama", "", "gpt-oss:120b-cloud", true}, // billed to the person's own Ollama account
+	} {
+		cfg := config.Default()
+		cfg.Limits.MaxBudgetUSD = 1
+		cfg.Pricing = map[string]config.PriceConfig{c.model: {}}
+		cfg.PricingLoopbackOnly = map[string]bool{c.model: true}
+		cfg.Model.Providers = map[string]config.ProviderConfig{"p": {Type: c.typ, BaseURL: c.base, Model: c.model}}
+		b := Budget(cfg)
+		p, ok := b.Price(c.model)
+		zero := ok && p.Input == 0 && p.Output == 0
+		if zero != c.zero {
+			t.Errorf("%s %q: zero %v (price %+v %v), want %v", c.typ, c.model, zero, p, ok, c.zero)
+		}
 	}
 }

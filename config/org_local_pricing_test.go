@@ -86,4 +86,14 @@ func TestUnpinnedOrgZeroNeverReplacesAPrice(t *testing.T) {
 	if _, ok := cfg.Pricing["house-model"]; ok {
 		t.Fatalf("under the cap the org's 0 replaced the person's price: %v", cfg.Pricing)
 	}
+	var org, mine bool
+	for _, a := range cfg.SetAside {
+		if a.Key == "pricing.house-model" {
+			org = org || a.Layer == LayerOrg
+			mine = mine || a.Layer != LayerOrg
+		}
+	}
+	if !org || !mine {
+		t.Fatalf("both prices are not recorded set aside: %+v", cfg.SetAside)
+	}
 }

@@ -80,3 +80,30 @@ func PriceFor(model string, configured map[string]Price) (Price, bool) {
 	p, ok := builtinPrices[strings.ToLower(model)]
 	return p, ok
 }
+
+// ListedOrAlias reports a model name that is, or may stand for, a model on
+// the built-in list: once surrounding spaces, letter case and a provider/
+// prefix are set aside, a listed name itself or one of its dated or tagged
+// variants (gpt-4o-2024-08-06, openai/gpt-4o, claude-sonnet-4-5@20250929).
+// A name with surrounding spaces is ambiguous and counts as listed.
+func ListedOrAlias(name string) bool {
+	n := strings.TrimSpace(name)
+	if n != name || n == "" {
+		return true
+	}
+	n = strings.ToLower(n)
+	if i := strings.LastIndex(n, "/"); i >= 0 {
+		n = n[i+1:]
+	}
+	for k := range builtinPrices {
+		if n == k {
+			return true
+		}
+		for _, sep := range []string{"-", ":", "@", "_", "."} {
+			if strings.HasPrefix(n, k+sep) {
+				return true
+			}
+		}
+	}
+	return false
+}

@@ -723,24 +723,24 @@ func Budget(cfg config.Config) *agent.Budget {
 }
 
 // orgZeroHolds reports whether an unpinned org's 0 for a model name is
-// taken: only for a model with no price of its own (the built-in list
-// prices the hosted models, which a 0 never replaces), served only by local
-// model servers on this machine. It is decided as the session's budget is
-// built; a provider changed later applies to sessions started after it.
+// taken: only for a model with no price of its own, nor one that may stand
+// for a model on the built-in list (a dated variant, a provider/ prefix,
+// surrounding spaces), served only by local model servers on this machine.
+// It is decided as the session's budget is built; a provider changed later
+// applies to sessions started after it.
 func orgZeroHolds(cfg config.Config, name string) bool {
-	if _, listed := model.PriceFor(name, nil); listed {
+	if model.ListedOrAlias(name) {
 		return false
 	}
 	return servedOnThisMachine(cfg, name)
 }
 
 // servedOnThisMachine reports a model name that at least one configured
-// provider sends, and every provider sending it is a local model server on
-// this machine: a local server type (ollama, vllm, llamacpp, tgi, sglang)
-// at its own endpoint or a loopback base_url, or openai-compatible at a
-// loopback base_url. A hosted API's type (openai, anthropic, bedrock,
-// vertex, azure, watsonx, a gateway) never counts, even at a loopback
-// address, where a proxy may front it; nor does a custom provider type.
+// provider sends, and every provider sending it is a local model server
+// type (ollama, vllm, llamacpp, tgi, sglang) at its own endpoint or at a
+// loopback base_url. Any other type never counts, even at a loopback
+// address, where a gateway may front a paid model: openai-compatible, a
+// hosted API's type, or a custom provider type.
 func servedOnThisMachine(cfg config.Config, name string) bool {
 	found := false
 	for _, p := range cfg.Model.Providers {
@@ -748,10 +748,7 @@ func servedOnThisMachine(cfg config.Config, name string) bool {
 			continue
 		}
 		found = true
-		switch {
-		case model.LocalByDefault(p.Type) && (p.BaseURL == "" || loopbackEndpoint(p.BaseURL)):
-		case p.Type == "openai-compatible" && p.BaseURL != "" && loopbackEndpoint(p.BaseURL):
-		default:
+		if !model.LocalByDefault(p.Type) || p.BaseURL != "" && !loopbackEndpoint(p.BaseURL) {
 			return false
 		}
 	}
