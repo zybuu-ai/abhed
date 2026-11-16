@@ -92,7 +92,7 @@ server. That covers model providers and `custom_providers`, `web_search`'s
 provider, endpoint and key, the supervisor's judge (`monitor.endpoint`,
 `api_key_env`, model), `rag`, `retrieval`, `telemetry`, `network` (the proxy
 names a local CA file and secret, and the policy is fetched through it), ssh
-hosts and `ssh.read_commands`, `k8s` clusters, `sandbox.read_only_paths`,
+hosts, `ssh.read_commands` and `ssh.read_contents`, `k8s` clusters, `sandbox.read_only_paths`,
 `sandbox.language_servers`, `sandbox.image`, `verify.contract.require`,
 `verify.critic`, extensions, simple hooks (`hooks.run`), `mcp.servers`,
 statusline, the `dirs` settings, `context`, `additional_dirs`, record paths
@@ -107,7 +107,8 @@ narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
 lower limits, a stronger `sandbox.min_tier`, `allow_network` and
 `readable_home` off, stricter toolchains and listen, `monitor.enabled` on and
 `on_unavailable: deny`, more supervisor reviews and honeytokens, stricter
-syntax checks and checkpoints, and the like. A value that would loosen is set
+syntax checks and checkpoints, `ssh.listed_reads_only` on (no remote
+read-only classifier), and the like. A value that would loosen is set
 aside.
 
 **Only when the machine pins the keys**: `permissions.allow`,

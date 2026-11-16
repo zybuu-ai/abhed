@@ -1498,11 +1498,29 @@ type SSHConfig struct {
 	// "uptime" or "systemctl status *", each one simple command. A matching
 	// call is allowed in plan mode and asks in no mode; deny and ask rules hold.
 	ReadCommands []string `json:"read_commands,omitempty"`
+	// ListedReadsOnly turns the read-only classifier off: on a declared
+	// host, a command whose text is provably a read (programs on the
+	// read-only list, in read forms, piped) no longer runs unasked, and only
+	// ReadCommands do.
+	ListedReadsOnly bool `json:"listed_reads_only,omitempty"`
+	// ReadContents lets the read-only classifier also run, unasked, programs
+	// that print the contents of files (cat, head, tail, grep, journalctl,
+	// docker logs, systemctl cat, …). Off by default: only metadata (ls, du,
+	// df, ps, stat, …) and lines piped from it run unasked. Only the person's
+	// own file or the managed file sets it; a workspace cannot.
+	ReadContents bool `json:"read_contents,omitempty"`
 	// Transfers offers ssh_put and ssh_get, which move files over SFTP.
 	Transfers bool `json:"transfers,omitempty"`
 	// TransferMaxMB bounds one transfer; 0 is 16.
 	TransferMaxMB int `json:"transfer_max_mb,omitempty"`
+	// MaxTimeoutSeconds bounds the timeout_seconds an ssh call may ask for;
+	// 0 is 120, the default a call gets when it asks for none. At most
+	// MaxSSHTimeoutSeconds.
+	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty"`
 }
+
+// MaxSSHTimeoutSeconds is the largest ssh.max_timeout_seconds, a day.
+const MaxSSHTimeoutSeconds = 86400
 
 type SSHHostConfig struct {
 	Name         string `json:"name"`
@@ -2246,6 +2264,9 @@ func (c Config) Validate() error {
 	}
 	if err := new(policy.Engine).AllowRemoteReads(c.SSH.ReadCommands...); err != nil {
 		return err
+	}
+	if t := c.SSH.MaxTimeoutSeconds; t < 0 || t > MaxSSHTimeoutSeconds {
+		return fmt.Errorf("ssh.max_timeout_seconds is %d; use a number of seconds up to %d (a day), or 0 for the default (120)", t, MaxSSHTimeoutSeconds)
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt > 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)

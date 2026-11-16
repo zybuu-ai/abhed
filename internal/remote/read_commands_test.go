@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/policy"
 )
@@ -173,5 +174,44 @@ func TestSSHReadCommandsNeverRunAnother(t *testing.T) {
 	}
 	if res := e.Evaluate("ssh", true, sshCall("web1", "uptime")); res.Decision != policy.Allow {
 		t.Errorf("an exact entry was not a read: %+v", res)
+	}
+}
+
+// The tool tells the model which commands run unasked on a declared host
+// only when the read-only classifier is on.
+func TestSSHDescriptionNamesReadOnlyClassifier(t *testing.T) {
+	if d := (Tool{}).Description(); strings.Contains(d, "read-only command") {
+		t.Errorf("classifier off, yet described: %s", d)
+	}
+	d := (Tool{ReadOnly: true}).Description()
+	if !strings.Contains(d, "read-only command also runs unasked") || !strings.Contains(d, "metadata") || strings.Contains(d, "cat,") {
+		t.Errorf("classifier on, not described: %s", d)
+	}
+	if d := (Tool{ReadOnly: true, ReadContents: true}).Description(); !strings.Contains(d, "cat, head") {
+		t.Errorf("read_contents on, not described: %s", d)
+	}
+}
+
+// The model chooses how long a call waits, never past the operator's
+// maximum, which is the default timeout unless ssh.max_timeout_seconds says.
+func TestSSHTimeoutIsCapped(t *testing.T) {
+	for _, c := range []struct {
+		max  time.Duration
+		ask  int
+		want time.Duration
+	}{
+		{0, 0, DefaultTimeout},
+		{0, 30, 30 * time.Second},
+		{0, 100000, DefaultTimeout},
+		{0, -5, DefaultTimeout},
+		{10 * time.Minute, 300, 300 * time.Second},
+		{10 * time.Minute, 100000, 10 * time.Minute},
+		{30 * time.Second, 0, 30 * time.Second},
+		{30 * time.Second, 60, 30 * time.Second},
+		{0, 1 << 62, DefaultTimeout},
+	} {
+		if got := (Tool{MaxTimeout: c.max}).timeout(c.ask); got != c.want {
+			t.Errorf("max %v, asked %ds: %v, want %v", c.max, c.ask, got, c.want)
+		}
 	}
 }

@@ -509,6 +509,18 @@ type Engine struct {
 	// ssh.read_commands; see AllowRemoteReads.
 	RemoteReads []Rule
 
+	// RemoteHosts reports a host the operator declared (ssh.hosts), on which
+	// the read-only classifier may approve an ssh call whose text is
+	// provably a read; nil turns the classifier off. Hosts added with
+	// ssh_connect are never among them.
+	RemoteHosts func(host string) bool
+
+	// RemoteContents lets the classifier also approve programs that print
+	// the contents of files (cat, grep, journalctl, …), the operator's
+	// ssh.read_contents; without it only metadata and the lines piped from
+	// it are read unasked.
+	RemoteContents bool
+
 	// GitExtensions are git subcommands outside git itself, such as lfs, the
 	// person opted in to (permissions.git_extensions): the destructive step
 	// does not take them as an alias or extension it cannot read. Deny and
@@ -993,6 +1005,17 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		remote, canon = &rr, rr.canon
 		subjects, allowSubjects, narrowAllows, complete = rr.subjects, rr.allow, rr.narrow, rr.complete
 	}
+	// The read-only classifier runs at most once a decision: the plan step
+	// and the read step both ask it.
+	var roPrograms []string
+	roWhy, roDone := "", false
+	readOnly := func() bool {
+		if !roDone {
+			roPrograms, roWhy = e.remoteReadOnly(*remote)
+			roDone = true
+		}
+		return roWhy == ""
+	}
 
 	// 1. Hooks — arbitrary operator logic, evaluated first so it can veto. A
 	// hook's refusal is final; its ask waits for the deny, plan-mode and ask
@@ -1119,7 +1142,7 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 
 	// 2b. Plan mode changes nothing, so a mutating call is refused before
 	// anything could put it to a person who might accept it.
-	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "") {
+	if e.Mode == ModePlan && mutates && (remote == nil || e.remoteReadRule(*remote) == "" && !readOnly()) {
 		return Result{Decision: Deny, Reason: "plan mode is read-only; no changes are applied", Scope: "", Step: "mode"}
 	}
 
@@ -1176,7 +1199,16 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 			if e.Mode == ModePlan || e.Mode == ModeAuto {
 				step = "mode"
 			}
-			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step}
+			return Result{Decision: Allow, Reason: "read command " + rule + " (ssh.read_commands) on " + remote.host, Scope: "", Step: step,
+				Rule: "ssh.read_commands: " + rule}
+		}
+		if readOnly() {
+			step := "default"
+			if e.Mode == ModePlan || e.Mode == ModeAuto {
+				step = "mode"
+			}
+			return Result{Decision: Allow, Reason: "read-only command (" + strings.Join(roPrograms, " | ") + ", each in a read form; " +
+				ReadOnlyRule + ") on " + remote.host + ", a host the operator declared", Scope: "", Step: step, Rule: ReadOnlyRule}
 		}
 	}
 
