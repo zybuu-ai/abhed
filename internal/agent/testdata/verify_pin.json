@@ -5999,6 +5999,81 @@
       "name": "a knowledge claim of the session's work: It dropped the retry.",
       "kind": "planted",
       "hash": "8d28f784ee6319ff"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Release 4.1 fixed the leak.",
+      "kind": "planted",
+      "hash": "46505cd25f7c0814"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Version 2 of the handler fixed the leak.",
+      "kind": "planted",
+      "hash": "399bba9b90a01830"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: In 2026 the service dropped the retry.",
+      "kind": "planted",
+      "hash": "25ade815b78b6abd"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Version 1.4.2 fixed the crash and dropped Python 3.8 support.",
+      "kind": "planted",
+      "hash": "b6ccf4ab39be7c0f"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Build 512 removed the deadlock.",
+      "kind": "planted",
+      "hash": "db45ac34d0bf2879"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Handler v2 dropped the retry.",
+      "kind": "planted",
+      "hash": "d47202f638c69056"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: API v3 removed the deprecated endpoint.",
+      "kind": "planted",
+      "hash": "10c00c36ba1e4a43"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Parser 2 removed the regex.",
+      "kind": "planted",
+      "hash": "746b2db842ec96a5"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Textutils 0.2 removed the bug.",
+      "kind": "planted",
+      "hash": "37a54c748accd6a4"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Sprint 12 removed the flag.",
+      "kind": "planted",
+      "hash": "44376dff1ed4c0dd"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Phase 2 added validation.",
+      "kind": "planted",
+      "hash": "f6b1c2f2e7decf9f"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Step 3 removed the import.",
+      "kind": "planted",
+      "hash": "5ac3a998710e8d15"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Zephyr 2.0 dropped the flag.",
+      "kind": "planted",
+      "hash": "eae5c206552c6086"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Abhed 1.3 removed the retry.",
+      "kind": "planted",
+      "hash": "629921de2bb5c2e7"
+    },
+    {
+      "name": "a knowledge claim of the session's work with a number: Mono 2.0 dropped the retry.",
+      "kind": "planted",
+      "hash": "022ff26d18dfd414"
     }
   ],
   "strict": [

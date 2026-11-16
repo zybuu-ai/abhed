@@ -728,12 +728,15 @@ All notable changes to Abhed are recorded here. The format follows
   ("The tests were updated by fixing the bugs in …") ended strict mode
   verified with 0 verified claims. Each statement of `text` that no claim
   repeats is now checked; a `knowledge` claim that says a change, an
-  event or a finished state is checked as work unless its subject is
-  plainly outside the session (a versioned or dated thing, as in "TLS 1.3
-  removed RSA key exchange", or a named project's release, spec or RFC
-  that nothing the session read or changed names), and one that says a
-  pass, a change in the first person, a command or a file:line always is;
-  and an answer that passes with nothing
+  event or a finished state is checked as work unless its subject names a
+  well-known external technology from a fixed list (TLS, HTTP, Python, Go,
+  Linux, Kubernetes, PostgreSQL and so on) with a version or release word
+  after it or a year before it, or an RFC or ECMAScript edition ("TLS 1.3
+  removed RSA key exchange"), and is not the workspace's own project;
+  "Release 4.1 fixed the leak" and "Version 2 of the handler fixed the
+  leak" are work. One that says a pass, a change in the first person, a
+  command or a file:line always is. A strict pass that left such a fact
+  unchecked says so in its `note`; and an answer that passes with nothing
   verified says why in the verdict's `note` (no statement was read as a
   claim about the session's work). Finished work said in the present ("the
   issue is resolved", "the service is deployed", "the cache is now
@@ -761,8 +764,8 @@ All notable changes to Abhed are recorded here. The format follows
   nothing else may be said in it ("succeeded after
   being blocked" stays unverified). The refusal is evidence for nothing
   else, since its reason can hold text the model chose. The false-claim
-  corpus gains 75 planted cases and 13 controls; none of the 943 planted
-  claims verifies, all 253 controls do, and none of the 365 true or
+  corpus gains 90 planted cases and 13 controls; none of the 958 planted
+  claims verifies, all 253 controls do, and none of the 368 true or
   neutral claims is contradicted.
 
 ### Go API

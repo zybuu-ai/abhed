@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/tools"
 )
@@ -64,6 +65,9 @@ type ClaimVerdict struct {
 	Checked []string `json:"checked,omitempty"`
 	// Critic is the critic's downgrade, when it made one.
 	Critic string `json:"critic,omitempty"`
+	// External marks a knowledge claim of a change read as a fact about
+	// other software ("TLS 1.3 removed RSA key exchange"), not checked.
+	External bool `json:"external,omitempty"`
 	// Explains marks an unverified claim that explains what a read showed.
 	// It is shown apart from unverified work, and changes nothing else: the
 	// claim keeps its kind and LoadBearing, so the answer's outcome and any
@@ -580,15 +584,24 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	// changed names. A pass, a change said in the first person, a command
 	// run and a file:line are always work.
 	saysChange := workEvent || f.event != "" || f.changeAct || f.presentState
-	if kind == KindKnowledge && (f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0 ||
-		saysChange && !ix.externalSubject(c.Text)) {
-		kind = KindObserved
+	external := false
+	if kind == KindKnowledge {
+		switch {
+		case f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0:
+			kind = KindObserved
+		case saysChange && ix.externalSubject(c.Text):
+			external = true
+		case saysChange:
+			kind = KindObserved
+		}
 	}
-	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}
+	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence, External: external}
 	// "Set `DEBUG` to `true`" is advice in a session that changed nothing,
 	// with a condition or purpose ("when you're ready", "to apply it"), or
 	// with a verb no call of this session showed ("Restart the server").
-	if f.imperative && len(c.Evidence) == 0 {
+	// A noun that looks like a verb, with a past verb after it ("Release
+	// 4.1 fixed the leak"), reports something; it is no advice.
+	if f.imperative && len(c.Evidence) == 0 && !leadNounReport(c.Text) {
 		why := ""
 		low := normText(backtickRe.ReplaceAllString(c.Text, " "))
 		switch {
@@ -2030,51 +2043,113 @@ func refusalRest(low string, d *denialRec, quote string) bool {
 	return true
 }
 
+// leadNounReport reports a sentence whose first word, an imperative in
+// form, is followed by a number or version and then a past verb: "Release
+// 4.1 fixed the leak", "Build 512 removed the deadlock".
+func leadNounReport(text string) bool {
+	words := strings.Fields(text)
+	if len(words) < 3 || !leadNumberRe.MatchString(words[1]) {
+		return false
+	}
+	return saysPast(normText(strings.Join(words[2:], " ")))
+}
+
+// leadNumberRe is a number or version said after a noun.
+var leadNumberRe = regexp.MustCompile(`^v?\d+(?:\.\d+)*[.,;:]?$`)
+
+// externalNames are the well-known technologies a knowledge claim may
+// report a change of as a fact about the world. Nothing else is external.
+var externalNames = []string{
+	"TLS", "SSL", "HTTP", "HTTP/2", "HTTP/3", "QUIC", "IPv6", "OAuth", "OpenID", "JSON", "YAML", "Unicode", "POSIX",
+	"ECMAScript", "C", "C++", "C#", "Java", "JDK", "Go", "Rust", "Python", "Ruby", "PHP", "Node.js", "Node", "TypeScript",
+	"Kotlin", "Swift", "Scala", "Perl", "Lua",
+	"Linux", "Windows", "macOS", "iOS", "Android", "FreeBSD", "Kubernetes", "Docker", "PostgreSQL", "MySQL", "SQLite",
+	"Redis", "OpenSSL", "glibc", "LLVM", "GCC", "Git", "npm", "pip", "Chrome", "Firefox", "Safari",
+}
+
 var (
-	// versionedRe is a versioned or dated thing: "TLS 1.3", "Go 1.22",
-	// "Python 3", "C++20", "HTTP/2", or a year.
-	versionedRe = regexp.MustCompile(`\b[A-Z][A-Za-z+#]*(?:\s+|/|-)?v?\d+(?:\.\d+)*\b|\b(?:19|20)\d\d\b`)
+	// externalRe is a curated name with a version or release word after
+	// it ("TLS 1.3", "C++20", "Go's latest release"), a year before it
+	// ("2018 HTTP"), or an RFC or ECMAScript edition by number.
+	externalRe = func() *regexp.Regexp {
+		var names []string
+		for _, n := range externalNames {
+			names = append(names, regexp.QuoteMeta(n))
+		}
+		alt := `(?:` + strings.Join(names, "|") + `)`
+		return regexp.MustCompile(`(?:^|[\s(])(` + alt + `)(?:'s)?(?:\s*v?\d+(?:\.\d+)*\b|\s+(?:latest\s+|newest\s+|next\s+|first\s+|last\s+|new\s+)?(?:version|release|spec|specification|standard)\b)` +
+			`|\b(?:19|20)\d\d\s+(` + alt + `)(?:[\s'.,]|$)` +
+			`|\bRFC\s*\d+\b|\bES\d+\b`)
+	}()
 	// subjectWorkRe in a subject keeps it the session's: a work noun, a
 	// pronoun, a possessive, code.
 	subjectWorkRe = regexp.MustCompile("(?i)\\b(?:changes?|change set|edits?|commits?|migrations?|diffs?|prs?|pull requests?|rewrites?|clean-?ups?|revisions?|fix(?:es)?|patch(?:es)?|refactor\\w*|updates?|branch(?:es)?|it|its|they|their|this|that|these|those|my|our|your|we|i|he|she|his|her)\\b|\x60")
-	// releaseOfRe is a named project's release, spec or RFC, as written:
-	// "Go's latest release", "the HTTP spec".
-	releaseOfRe = regexp.MustCompile(`\b([A-Z][A-Za-z0-9+#.\-]*)(?:'s)?\s+(?:latest\s+|newest\s+|next\s+|first\s+|last\s+|new\s+)?(?:version|release|spec|specification|rfc|standard)\b`)
-	// leadWordRe is a capitalised function word.
-	leadWordRe = regexp.MustCompile(`\b(?:The|A|An|Each|Every|Some|All|Both|One|Any|No|In|On|At|After|Before|So|Overall|Then)\b`)
-	// leadEventRe finds where a claim's verb is: its first past form or
-	// change word.
-	leadEventRe = regexp.MustCompile(`\b(?:[a-z]+ed|[a-z]+en|did|made|took|got|gave|went|came|now|no longer|is|are|was|were|has|have|had)\b`)
+	// subjVerbRe is a word that may be a claim's verb: a past form, a change
+	// word or a form of be or have.
+	subjVerbRe = regexp.MustCompile(`^(?:[a-z]+ed|[a-z]+en|did|made|took|got|gave|went|came|now|is|are|was|were|has|have|had)$`)
+	// projectNameRe reads a project's own name from its manifest.
+	projectNameRe = regexp.MustCompile(`(?m)^\s*(?:module\s+(\S+)|"name"\s*:\s*"([^"]+)"|name\s*=\s*"([^"]+)")`)
 )
 
 // externalSubject reports a claim whose subject, the words before its
-// verb, is plainly outside the session: a versioned or dated thing, or a
-// named project's release, spec or RFC that no read or change of this
-// session names. A pronoun, a possessive or anything else is not.
+// verb, names a curated external technology with a version or release
+// word (or a year before it), and holds no pronoun, possessive, code or
+// word for work. A name that is the workspace's own project is not
+// external. The subject's first word and capitalised words are never the
+// verb: "Abhed 1.3 removed" has "Abhed 1.3" as its subject.
 func (ix *recordIndex) externalSubject(text string) bool {
-	low := strings.ToLower(text)
-	subj := low
-	if m := leadEventRe.FindStringIndex(low); m != nil {
-		subj = low[:m[0]]
+	words := strings.Fields(text)
+	end := len(words)
+	for k, w := range words {
+		if k == 0 || w == "" || unicode.IsUpper([]rune(w)[0]) {
+			continue
+		}
+		low := strings.ToLower(strings.Trim(w, ".,;:!?()\"'"))
+		if subjVerbRe.MatchString(low) || low == "no" && k+1 < len(words) && strings.ToLower(words[k+1]) == "longer" {
+			end = k
+			break
+		}
 	}
-	orig := text[:len(subj)]
-	if strings.TrimSpace(subj) == "" || subjectWorkRe.MatchString(orig) {
+	subj := strings.Join(words[:end], " ")
+	if strings.TrimSpace(subj) == "" || subjectWorkRe.MatchString(subj) {
 		return false
 	}
-	// A sentence's first word is capitalised whatever it is: "The v2
-	// handler" names no versioned thing.
-	if versionedRe.MatchString(leadWordRe.ReplaceAllStringFunc(orig, strings.ToLower)) {
+	m := externalRe.FindStringSubmatch(subj)
+	if m == nil {
+		return false
+	}
+	name := m[1] + m[2]
+	if name != "" && ix.ownProject(name) {
+		return false
+	}
+	return true
+}
+
+// ownProject reports a name that is the workspace's own project: its
+// folder, or the name in go.mod, package.json, pyproject.toml or
+// Cargo.toml.
+func (ix *recordIndex) ownProject(name string) bool {
+	if ix.workDir == "" {
+		return false
+	}
+	same := func(n string) bool {
+		n = strings.Trim(n, " \"'/")
+		return n != "" && (strings.EqualFold(n, name) || strings.EqualFold(filepath.Base(n), name))
+	}
+	if same(filepath.Base(ix.workDir)) {
 		return true
 	}
-	if m := releaseOfRe.FindStringSubmatch(orig); m != nil {
-		name := strings.ToLower(m[1])
-		nameRe := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(name) + `\b`)
-		for _, o := range ix.obs {
-			if nameRe.MatchString(o.content) || nameRe.MatchString(o.args) || nameRe.MatchString(o.path) {
-				return false
-			}
+	if ix.readFile == nil {
+		return false
+	}
+	for _, f := range []string{"go.mod", "package.json", "pyproject.toml", "Cargo.toml"} {
+		b, err := ix.readFile(filepath.Join(ix.workDir, f))
+		if err != nil {
+			continue
 		}
-		return true
+		if m := projectNameRe.FindSubmatch(b); m != nil && same(string(m[1])+string(m[2])+string(m[3])) {
+			return true
+		}
 	}
 	return false
 }

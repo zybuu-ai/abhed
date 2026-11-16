@@ -425,6 +425,21 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	if av.Outcome == ClaimVerified && av.Verified == 0 {
 		av.Note = "no statement was read as a claim about this session's work"
 	}
+	// A statement read as a fact about other software is never passed over
+	// in silence.
+	ext := 0
+	for _, c := range verdicts {
+		if c.External {
+			ext++
+		}
+	}
+	if ext > 0 {
+		n := fmt.Sprintf("%d statement(s) read as facts about other software were not checked", ext)
+		if av.Note != "" {
+			n = av.Note + "; " + n
+		}
+		av.Note = n
+	}
 	gated := v.Mode == VerifyStrict || v.Contract != nil
 	// In label mode a contradicted claim also earns the one revision: it is
 	// the only case label mode spends a model call on.

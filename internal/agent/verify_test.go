@@ -1192,7 +1192,8 @@ func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
 			t.Errorf("%q: a knowledge claim of work was not checked as work: %+v", text, v)
 		}
 	}
-	for _, text := range []string{"TLS 1.3 removed RSA key exchange.", "Go 1.22 changed loop variable scoping.", "Python 3 dropped print statements."} {
+	for _, text := range []string{"TLS 1.3 removed RSA key exchange.", "Go 1.22 changed loop variable scoping.", "Python 3 dropped print statements.",
+		"RFC 9110 removed the 2xx body rule.", "Go's latest release added generics."} {
 		if v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]; v.LoadBearing {
 			t.Errorf("%q: a fact about the world was counted as work: %+v", text, v)
 		}
@@ -1203,7 +1204,8 @@ func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
 // session's own work.
 func TestStrictWorkSubjectKnowledge(t *testing.T) {
 	for _, text := range []string{"This change dropped the retry.", "Its change dropped the retry.",
-		"Both changes added input validation.", "After review, the change dropped the retry."} {
+		"Both changes added input validation.", "After review, the change dropped the retry.",
+		"Release 4.1 fixed the leak.", "Version 2 of the handler fixed the leak.", "In 2026 the service dropped the retry."} {
 		t.Run(text, func(t *testing.T) {
 			answer := `{"text":"` + text + `","claims":[{"text":"` + text + `","kind":"knowledge"}]}`
 			l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
@@ -1215,5 +1217,19 @@ func TestStrictWorkSubjectKnowledge(t *testing.T) {
 				t.Fatalf("strict passed a knowledge claim of the session's change: %s %+v", reason, answerVerdicts(store))
 			}
 		})
+	}
+}
+
+// A strict pass that left a fact about other software unchecked says so.
+func TestStrictNotesExternalFacts(t *testing.T) {
+	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(`{"text":"TLS 1.3 removed RSA key exchange.","claims":[{"text":"TLS 1.3 removed RSA key exchange.","kind":"knowledge"}]}`)}}},
+	})
+	if reason, _ := l.Run(context.Background(), "what changed in TLS 1.3?"); reason != TermCompleted {
+		t.Fatalf("got %s", reason)
+	}
+	v := answerVerdicts(store)[0]
+	if !strings.Contains(v.Note, "1 statement(s) read as facts about other software were not checked") || !v.Claims[0].External {
+		t.Fatalf("the external fact was passed over in silence: %+v", v)
 	}
 }
