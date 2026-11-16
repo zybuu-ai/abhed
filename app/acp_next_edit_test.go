@@ -183,3 +183,433 @@ func TestStudioNextEditBlanksAndBlocks(t *testing.T) {
 		t.Fatal("the block scalar's value reached the model")
 	}
 }
+
+// chunkText is the file the parity review renamed step to stride in, at
+// line 8 (index 7); the uses of step on later lines are what is left.
+const chunkText = `def chunk_text(text, size, overlap=0):
+    """Split text into chunks of at most size characters, each starting
+    a step after the previous one."""
+    if size <= 0:
+        raise ValueError("size must be positive")
+    if overlap >= size:
+        raise ValueError("overlap must be smaller than size")
+    stride = size - overlap
+    chunks = []
+    for start in range(0, len(text) - size, step):  # each step
+        chunks.append(text[start:start + size])
+    print("step", step)
+    return chunks
+
+
+def other(step):
+    return step * 2
+`
+
+// A rename is finished from the file: the other uses of the old name in its
+// definition become one edit, with no model asked; uses in strings,
+// comments, docstrings and another definition are left as they are.
+func TestStudioNextEditRename(t *testing.T) {
+	model := newFIMServer(t, "never asked")
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	uri := "file://" + r.ws + "/text.py"
+	ask := func(extra map[string]any) nextEdits {
+		p := map[string]any{"sessionId": id, "uri": uri, "language": "python",
+			"recentEdits": []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 17, "character": 4}, "end": map[string]int{"line": 17, "character": 8}}, "oldText": "step", "newText": "stride"}},
+			"cursor":      map[string]int{"line": 17, "character": 10}, "window": map[string]any{"startLine": 10, "text": chunkText}}
+		for k, v := range extra {
+			p[k] = v
+		}
+		var res nextEdits
+		r.cl.ok("_abhed/nextEdit", p, &res)
+		return res
+	}
+	res := ask(nil)
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 19 || res.Edits[0].Range.End.Line != 22 ||
+		res.Edits[0].Text != "    for start in range(0, len(text) - size, stride):  # each step\n        chunks.append(text[start:start + size])\n    print(\"step\", stride)\n" {
+		t.Fatalf("%+v", res)
+	}
+	// The language server's sites, when Studio sends them, are taken instead of a scan.
+	res = ask(map[string]any{"sites": []map[string]any{{"start": map[string]int{"line": 21, "character": 18}, "end": map[string]int{"line": 21, "character": 22}},
+		{"start": map[string]int{"line": 26, "character": 0}, "end": map[string]int{"line": 26, "character": 4}}}})
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 21 || res.Edits[0].Text != "    print(\"step\", stride)\n" {
+		t.Fatalf("with sites: %+v", res)
+	}
+	// Studio's own reading of the rename, for edits that were not one replacement.
+	res = ask(map[string]any{"recentEdits": []any{}, "rename": map[string]any{"from": "step", "to": "stride", "at": map[string]int{"line": 17, "character": 4}}})
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 19 {
+		t.Fatalf("with a hint: %+v", res)
+	}
+	// A rename the file cannot finish safely (the name bound again in a nested
+	// function) offers nothing, and asks no model.
+	at10 := []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 10, "character": 4}, "end": map[string]int{"line": 10, "character": 8}}, "oldText": "step", "newText": "stride"}}
+	res = ask(map[string]any{"window": map[string]any{"startLine": 9, "text": "def f(size):\n    stride = size\n    def g(step):\n        return step\n    return step\n"}, "recentEdits": at10})
+	if len(res.Edits) != 0 || !strings.Contains(res.Dropped, "bound again") {
+		t.Fatalf("shadowed: %+v", res)
+	}
+	paths := func() int { model.mu.Lock(); defer model.mu.Unlock(); return len(model.paths) }
+	if n := paths(); n != 0 {
+		t.Fatalf("a rename asked the model %d time(s)", n)
+	}
+	// No other use: a one-word edit is no rename, and the model is asked as for any edit.
+	ask(map[string]any{"window": map[string]any{"startLine": 9, "text": "def f(size, overlap):\n    stride = size - overlap\n    return 1\n"}, "recentEdits": at10})
+	if n := paths(); n != 1 {
+		t.Fatalf("no other use: the model was asked %d time(s); want 1", n)
+	}
+	r.cl.call("session/close", map[string]any{"sessionId": id})
+	sum, _ := r.recorded(id, agent.EvNextEditSummary)
+	if len(sum) != 1 || sum[0]["local"] != float64(3) || sum[0]["local_dropped"] != float64(1) || sum[0]["requests"] != float64(1) {
+		t.Fatalf("next_edit.summary %v", sum)
+	}
+}
+
+// What is not a rename goes to the model as before: a new name that is a
+// keyword, an edit that is not a whole identifier, or one in another file.
+func TestStudioNextEditNotARename(t *testing.T) {
+	for _, tc := range []struct {
+		name, old, new, written string
+		uri                     string
+	}{
+		{"a keyword", "step", "class", "class", ""},
+		{"part of a word", "ste", "stride", "stridep", ""},
+		{"another file", "step", "stride", "stride", "/other.py"},
+	} {
+		model := newFIMServer(t, chunkText)
+		r := completionRig(t, model.URL, "")
+		noHold(t)
+		id := r.open()
+		uri := "file://" + r.ws + "/text.py"
+		window := strings.Replace(chunkText, "stride =", tc.written+" =", 1)
+		editURI := uri
+		if tc.uri != "" {
+			editURI = "file://" + r.ws + tc.uri
+		}
+		var res nextEdits
+		r.cl.ok("_abhed/nextEdit", map[string]any{"sessionId": id, "uri": uri, "language": "python",
+			"recentEdits": []map[string]any{{"uri": editURI, "range": map[string]any{"start": map[string]int{"line": 7, "character": 4}, "end": map[string]int{"line": 7, "character": 8}}, "oldText": tc.old, "newText": tc.new}},
+			"cursor":      map[string]int{"line": 7}, "window": map[string]any{"startLine": 0, "text": window}}, &res)
+		model.mu.Lock()
+		paths := len(model.paths)
+		model.mu.Unlock()
+		if paths != 1 {
+			t.Fatalf("%s: the model was asked %d time(s); want 1", tc.name, paths)
+		}
+	}
+}
+
+func TestRenameScopeAndCode(t *testing.T) {
+	lines := linediffSplit(chunkText)
+	code := codeOnly(lines, "python")
+	if from, to, ok := scopeOf(lines, code, 7, "python"); !ok || from != 0 || to != 15 {
+		t.Fatalf("scope of line 8: [%d, %d) %v", from, to, ok)
+	}
+	if from, to, ok := scopeOf(lines, code, 15, "python"); !ok || from != 15 || to != len(lines) {
+		t.Fatalf("scope of a header: [%d, %d) %v", from, to, ok)
+	}
+	got := codeOnly([]string{"x = 'a # b' # c\n", "s = \"\"\"one\n", "two\"\"\" + y\n"}, "python")
+	if got[0] != "x ="+strings.Repeat(" ", 12)+"\n" || got[1] != "s =       \n" || got[2] != "       + y\n" {
+		t.Fatalf("%q", got)
+	}
+	got = codeOnly([]string{"a := `x` // y\n", "/* z\n", "*/ b\n"}, "go")
+	if got[0] != "a :=         \n" || got[2] != "   b\n" {
+		t.Fatalf("%q", got)
+	}
+	for _, tc := range []struct {
+		name, language string
+		ok             bool
+	}{
+		{"class", "python", false}, {"stride", "python", true}, {"1x", "go", false}, {"größe", "go", true},
+		{"nil", "go", false}, {"null", "java", false}, {"true", "java", false}, {"int", "c", false}, {"nullptr", "cpp", false},
+	} {
+		if isIdent(tc.name, tc.language) != tc.ok {
+			t.Errorf("isIdent(%q, %s) = %v", tc.name, tc.language, !tc.ok)
+		}
+	}
+}
+
+func linediffSplit(s string) []string { return strings.SplitAfter(strings.TrimSuffix(s, "\n"), "\n") }
+
+// renameCase asks for the next edit after the person renamed from to to at
+// line (0-based) of text, in language; the answer, and whether a model was asked.
+func renameCase(t *testing.T, language, text string, line, char int, from, to string, sites ...map[string]any) (nextEdits, bool) {
+	t.Helper()
+	model := newFIMServer(t, text)
+	r := completionRig(t, model.URL, "")
+	noHold(t)
+	id := r.open()
+	uri := "file://" + r.ws + "/f"
+	p := map[string]any{"sessionId": id, "uri": uri, "language": language,
+		"rename": map[string]any{"from": from, "to": to, "at": map[string]int{"line": line, "character": char}},
+		"cursor": map[string]int{"line": line}, "window": map[string]any{"startLine": 0, "text": text}}
+	if len(sites) > 0 {
+		p["sites"] = sites
+	}
+	var res nextEdits
+	r.cl.ok("_abhed/nextEdit", p, &res)
+	model.mu.Lock()
+	asked := len(model.paths) > 0
+	model.mu.Unlock()
+	return res, asked
+}
+
+// The scan leaves members, keyword arguments and object keys alone: they are
+// other names that happen to be spelt the same.
+func TestStudioNextEditRenameSkipsMembersAndKeywordArguments(t *testing.T) {
+	py := "def f(user):\n    title = user.name\n    print(name, key=name)\n    g(name=1)\n    return name\n"
+	res, asked := renameCase(t, "python", py, 1, 4, "name", "title")
+	if asked || len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 2 || res.Edits[0].Range.End.Line != 5 ||
+		res.Edits[0].Text != "    print(title, key=title)\n    g(name=1)\n    return title\n" {
+		t.Fatalf("python: %+v", res)
+	}
+	js := "function f(o) {\n  const key = 1;\n  return o.id + id + {id: 2}.id;\n}\n"
+	res, asked = renameCase(t, "javascript", js, 1, 8, "id", "key")
+	if asked || len(res.Edits) != 1 || res.Edits[0].Text != "  return o.id + key + {id: 2}.id;\n" {
+		t.Fatalf("javascript: %+v", res)
+	}
+}
+
+// The scope is the innermost function: a sibling method's variable of the
+// same name is not touched, and a name bound again in a nested function,
+// lambda or comprehension leaves the rename to the person.
+func TestStudioNextEditRenameScopes(t *testing.T) {
+	sib := "class C:\n    def a(self):\n        y = 1\n        return x\n\n    def b(self):\n        x = 2\n        return x\n"
+	res, _ := renameCase(t, "python", sib, 2, 8, "x", "y")
+	if len(res.Edits) != 1 || res.Edits[0].Range.Start.Line != 3 || res.Edits[0].Text != "        return y\n" {
+		t.Fatalf("sibling method: %+v", res)
+	}
+	for name, text := range map[string]string{
+		"nested def":    "def f():\n    y = 1\n    def g(x):\n        return x\n    return g(x)\n",
+		"comprehension": "def f(xs):\n    y = 1\n    return [x for x in xs] + [x]\n",
+		"lambda":        "def f():\n    y = 1\n    h = lambda x: x\n    return h(x)\n",
+	} {
+		res, asked := renameCase(t, "python", text, 1, 4, "x", "y")
+		if asked || len(res.Edits) != 0 || !strings.Contains(res.Dropped, "bound again") {
+			t.Fatalf("%s: %+v asked=%v", name, res, asked)
+		}
+	}
+	goShadow := "func f() int {\n\ty := 1\n\tif true {\n\t\tx := 2\n\t\t_ = x\n\t}\n\treturn x\n}\n"
+	if res, _ := renameCase(t, "go", goShadow, 1, 1, "x", "y"); len(res.Edits) != 0 || !strings.Contains(res.Dropped, "bound again") {
+		t.Fatalf("go inner block: %+v", res)
+	}
+	java := "class A {\n    int f() {\n        int total = 1;\n        return sum * 2 + this.sum;\n    }\n\n    int g() {\n        return sum;\n    }\n}\n"
+	if res, _ := renameCase(t, "java", java, 2, 12, "sum", "total"); len(res.Edits) != 1 || res.Edits[0].Text != "        return total * 2 + this.sum;\n" {
+		t.Fatalf("java: %+v", res)
+	}
+}
+
+// Only languages whose reserved words and comments the scan knows are
+// scanned; C takes a language server's sites, Ruby nothing; a reserved word
+// is never a new name; a new name already in use is no rename, and the
+// model is asked as before.
+func TestStudioNextEditRenameLanguages(t *testing.T) {
+	c := "int f(void) {\n    int y = 1;\n    return x; // x\n}\n"
+	if _, asked := renameCase(t, "c", c, 1, 8, "x", "y"); !asked {
+		t.Fatal("c without sites was scanned")
+	}
+	site := map[string]any{"start": map[string]int{"line": 2, "character": 11}, "end": map[string]int{"line": 2, "character": 12}}
+	if res, asked := renameCase(t, "c", c, 1, 8, "x", "y", site); asked || len(res.Edits) != 1 || res.Edits[0].Text != "    return y; // x\n" {
+		t.Fatalf("c with sites: %+v", res)
+	}
+	cInt := strings.Replace(c, "int y", "int int", 1)
+	if _, asked := renameCase(t, "c", cInt, 1, 8, "x", "int", site); !asked {
+		t.Fatal("c: x renamed to int")
+	}
+	javaNull := "class A {\n    void f() {\n        Object null = 1;\n        g(x);\n    }\n}\n"
+	if _, asked := renameCase(t, "java", javaNull, 2, 15, "x", "null"); !asked {
+		t.Fatal("java: x renamed to null")
+	}
+	ruby := "def f\n  y = 1\n  # x is here\n  x\nend\n"
+	if _, asked := renameCase(t, "ruby", ruby, 1, 2, "x", "y"); !asked {
+		t.Fatal("ruby was scanned")
+	}
+	used := "def f(x, y):\n    z = y\n    return x\n"
+	if _, asked := renameCase(t, "python", used, 1, 8, "x", "y"); !asked {
+		t.Fatal("a swap to a name already used was taken for a rename")
+	}
+}
+
+// What follows a name decides whether it is the variable: a ternary's and a
+// case's colon, a typed declaration and a parameter's default all are; an
+// object key is not.
+func TestStudioNextEditRenameNotAVariableTable(t *testing.T) {
+	for _, tc := range []struct {
+		name, language, text string
+		line, char           int
+		want                 string // the edit's text; "" for the model asked
+	}{
+		{"js ternary", "javascript", "function f(c, other) {\n  const y = 1;\n  return c ? x : other;\n}\n", 1, 8, "  return c ? y : other;\n"},
+		{"java ternary", "java", "class A {\n    int f(boolean c) {\n        int y = 1;\n        return c ? x : 0;\n    }\n}\n", 2, 12, "        return c ? y : 0;\n"},
+		{"js case", "javascript", "function f(v) {\n  const y = 1;\n  switch (v) {\n    case x: return 1;\n  }\n}\n", 1, 8, "    case y: return 1;\n"},
+		{"go case", "go", "func f(v int) int {\n\ty := 1\n\tswitch v {\n\tcase x:\n\t\treturn 1\n\t}\n\treturn 0\n}\n", 1, 1, "\tcase y:\n"},
+		{"ts typed use", "typescript", "function f(): number {\n  const y: number = 1;\n  const z: number = x;\n  return z;\n}\n", 1, 8, "  const z: number = y;\n"},
+		{"object key kept", "javascript", "function f() {\n  const y = 1;\n  return {x: x, k: 2};\n}\n", 1, 8, "  return {x: y, k: 2};\n"},
+		{"go literal key kept", "go", "func f() T {\n\ty := 1\n\treturn T{x: x}\n}\n", 1, 1, "\treturn T{x: y}\n"},
+		{"python default", "python", "def f(x=1):\n    return y + x\n", 1, 11, "def f(y=1):\n    return y + y\n"},
+		{"js default", "javascript", "function f(x = 1) {\n  return y + x;\n}\n", 1, 9, "function f(y = 1) {\n  return y + y;\n"},
+		{"ts typed declaration elsewhere", "typescript", "function f() {\n  let x: number = 1;\n  return y;\n}\n", 2, 9, ""},
+		{"js shorthand", "javascript", "function f() {\n  const y = 1;\n  return { x, age: 1 };\n}\n", 1, 8, "  return { x: y, age: 1 };\n"},
+		{"ts shorthand over lines", "typescript", "function f() {\n  const y = 1;\n  return {\n    age: 1,\n    x\n  };\n}\n", 1, 8, "    x: y\n"},
+		{"jsx attribute", "javascriptreact", "function C() {\n  const y = 1;\n  return <Item x={x} />;\n}\n", 1, 8, ""},
+		{"jsx text", "javascriptreact", "function C() {\n  const y = 1;\n  return <p>x: {x}</p>;\n}\n", 1, 8, ""},
+		{"tsx", "typescriptreact", "function C() {\n  const y = 1;\n  return <p>{x}</p>;\n}\n", 1, 8, ""},
+		{"go map key is a use", "go", "func f() map[string]int {\n\ty := \"k\"\n\treturn map[string]int{x: 1}\n}\n", 1, 1, "\treturn map[string]int{y: 1}\n"},
+	} {
+		res, asked := renameCase(t, tc.language, tc.text, tc.line, tc.char, "x", "y")
+		if tc.want == "" {
+			if !asked {
+				t.Errorf("%s: the model was not asked: %+v", tc.name, res)
+			}
+			continue
+		}
+		if asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want {
+			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
+		}
+	}
+}
+
+// A language server's site at a shorthand property, in JSX too, keeps the
+// key: the rename writes it out as name: newName.
+func TestStudioNextEditRenameShorthandSite(t *testing.T) {
+	jsx := "function C() {\n  const y = 1;\n  const p = { x };\n  return <p>x: {p.x}</p>;\n}\n"
+	site := map[string]any{"start": map[string]int{"line": 2, "character": 14}, "end": map[string]int{"line": 2, "character": 15}}
+	res, asked := renameCase(t, "javascriptreact", jsx, 1, 8, "x", "y", site)
+	if asked || len(res.Edits) != 1 || res.Edits[0].Text != "  const p = { x: y };\n" {
+		t.Fatalf("%+v (asked %v)", res, asked)
+	}
+}
+
+// At a language server's site, only a name in an object literal or a
+// destructuring is shorthand: a JSX child or attribute value, a template's
+// ${…} and a block or arrow body are plain uses, renamed in place.
+func TestStudioNextEditRenameSitesInExpressionContainers(t *testing.T) {
+	at := func(line, char int) map[string]any {
+		return map[string]any{"start": map[string]int{"line": line, "character": char}, "end": map[string]int{"line": line, "character": char + 1}}
+	}
+	for _, tc := range []struct {
+		name, language, text string
+		sites                []map[string]any
+		want                 string
+	}{
+		{"jsx child", "javascriptreact", "function C() {\n  const y = 1;\n  return <p>{x}</p>;\n}\n", []map[string]any{at(2, 13)}, "  return <p>{y}</p>;\n"},
+		{"tsx child", "typescriptreact", "function C() {\n  const y = 1;\n  return <p>{x}</p>;\n}\n", []map[string]any{at(2, 13)}, "  return <p>{y}</p>;\n"},
+		{"jsx attribute", "javascriptreact", "function C() {\n  const y = 1;\n  return <Item x={x} />;\n}\n", []map[string]any{at(2, 18)}, "  return <Item x={y} />;\n"},
+		{"template", "javascript", "function f(a, b) {\n  const y = 1;\n  return g(a, `${x}`, b);\n}\n", []map[string]any{at(2, 17)}, "  return g(a, `${y}`, b);\n"},
+		{"block and arrow body", "javascript", "function f(c) {\n  const y = 1;\n  if (c) { x }\n  const h = () => { x };\n}\n", []map[string]any{at(2, 11), at(3, 20)}, "  if (c) { y }\n  const h = () => { y };\n"},
+		{"jsx object shorthand still written out", "javascriptreact", "function C() {\n  const y = 1;\n  const p = { x, a: 1 };\n}\n", []map[string]any{at(2, 14)}, "  const p = { x: y, a: 1 };\n"},
+	} {
+		res, asked := renameCase(t, tc.language, tc.text, 1, 8, "x", "y", tc.sites...)
+		if asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want {
+			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
+		}
+	}
+	// A map of maps' inner literal, its type left out, has expressions for keys too.
+	goMaps := "func f() map[string]map[string]int {\n\ty := \"k\"\n\treturn map[string]map[string]int{x: {x: 1}}\n}\n"
+	if res, _ := renameCase(t, "go", goMaps, 1, 1, "x", "y"); len(res.Edits) != 1 || res.Edits[0].Text != "\treturn map[string]map[string]int{y: {y: 1}}\n" {
+		t.Errorf("go map of maps: %+v", res)
+	}
+}
+
+// sitesOfX are a language server's sites: every whole-word x from line from on.
+func sitesOfX(text string, from int) []map[string]any {
+	var out []map[string]any
+	for l, line := range strings.Split(text, "\n") {
+		if l < from {
+			continue
+		}
+		for _, at := range wordsIn(line, "x") {
+			out = append(out, map[string]any{"start": map[string]int{"line": l, "character": at}, "end": map[string]int{"line": l, "character": at + 1}})
+		}
+	}
+	return out
+}
+
+// Destructuring in a declaration, and an object inside a JSX expression
+// container, are shorthand and written out, in .js, .jsx, .ts and .tsx; a
+// brace the rename cannot classify leaves the edit to the model.
+func TestStudioNextEditRenameDestructuringAndContainers(t *testing.T) {
+	wrap := func(line string) string { return "function C(o, xs) {\n  const y = 1;\n" + line + "\n}\n" }
+	langs := []string{"javascript", "javascriptreact", "typescript", "typescriptreact"}
+	for _, tc := range []struct {
+		name, line string
+		want       map[string]string // by language; "" for the model asked
+	}{
+		{"const", "  const { x } = o;", map[string]string{"*": "  const { x: y } = o;\n"}},
+		{"let", "  let { x, a } = o;", map[string]string{"*": "  let { x: y, a } = o;\n"}},
+		{"for const", "  for (const { x } of xs) {}", map[string]string{"*": "  for (const { x: y } of xs) {}\n"}},
+		{"object in a container", "  return <Item style={{ x }} />;", map[string]string{"javascript": "  return <Item style={{ x: y }} />;\n", "javascriptreact": "  return <Item style={{ x: y }} />;\n", "typescriptreact": "  return <Item style={{ x: y }} />;\n", "*": ""}},
+		{"object with a key in a container", "  return <Item style={{ a: 1, x }} />;", map[string]string{"javascript": "  return <Item style={{ a: 1, x: y }} />;\n", "javascriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "typescriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "*": ""}},
+	} {
+		for _, lang := range langs {
+			want, ok := tc.want[lang]
+			if !ok {
+				want = tc.want["*"]
+			}
+			text := wrap(tc.line)
+			res, asked := renameCase(t, lang, text, 1, 8, "x", "y", sitesOfX(text, 2)...)
+			switch {
+			case want == "" && !asked:
+				t.Errorf("%s in %s: the model was not asked: %+v", tc.name, lang, res)
+			case want != "" && (asked || len(res.Edits) != 1 || res.Edits[0].Text != want):
+				t.Errorf("%s in %s: %+v (asked %v)", tc.name, lang, res, asked)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name, language, text, want string
+	}{
+		{"attribute with spaces", "javascriptreact", wrap("  return <Item value = {x} />;"), "  return <Item value = {y} />;\n"},
+		{"attribute with spaces over lines", "typescriptreact", "function C() {\n  const y = 1;\n  return <Item\n    value = {x}\n  />;\n}\n", ""},
+		{"object in a template", "javascript", wrap("  return `${ {x} }`;"), ""},
+		{"template use", "typescript", wrap("  return `${x}`;"), "  return `${y}`;\n"},
+	} {
+		res, asked := renameCase(t, tc.language, tc.text, 1, 8, "x", "y", sitesOfX(tc.text, 2)...)
+		switch {
+		case tc.want == "" && !asked:
+			t.Errorf("%s: the model was not asked: %+v", tc.name, res)
+		case tc.want != "" && (asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want):
+			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
+		}
+	}
+}
+
+// A .js file holding JSX is renamed as a .jsx file is: never scanned (the
+// text between tags and attribute names read as names), only at a language
+// server's sites with the JSX rules.
+func TestStudioNextEditRenameJavaScriptWithJSX(t *testing.T) {
+	text := "function C() {\n  const y = 1;\n  g(x);\n  return <div><p>Your x</p><Item x={x} /></div>;\n}\n"
+	if res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y"); !asked {
+		t.Fatalf("scanned: %+v", res)
+	}
+	sites := []map[string]any{
+		{"start": map[string]int{"line": 2, "character": 4}, "end": map[string]int{"line": 2, "character": 5}},
+		{"start": map[string]int{"line": 3, "character": 36}, "end": map[string]int{"line": 3, "character": 37}},
+	}
+	res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y", sites...)
+	if asked || len(res.Edits) != 1 || res.Edits[0].Text != "  g(y);\n  return <div><p>Your x</p><Item x={y} /></div>;\n" {
+		t.Fatalf("with sites: %+v (asked %v)", res, asked)
+	}
+	// Plain JavaScript, comparisons and all, is still scanned.
+	plain := "function f(n) {\n  const y = 1;\n  return x < n && x > 0;\n}\n"
+	if res, asked := renameCase(t, "javascript", plain, 1, 8, "x", "y"); asked || len(res.Edits) != 1 || res.Edits[0].Text != "  return y < n && y > 0;\n" {
+		t.Fatalf("plain: %+v (asked %v)", res, asked)
+	}
+}
+
+// A tag whose closing part is past the window's end is still JSX: after [,
+// ! or yield, or shaped as a tag with an attribute anywhere.
+func TestStudioNextEditRenameJSXOpeningTagsOnly(t *testing.T) {
+	for _, line := range []string{
+		`  return [<Item x={x} key="a">`,
+		`  return cond ? null : !<Item x={x}>`,
+		`  yield <Item x={x}>`,
+		`  const el = await load(), v = f() && g() ** <Item x={x}>`,
+		`  h(1) + <Item {...p}>`,
+		"  h(1) + <Item\n    x={x}",
+	} {
+		text := "function* C(cond) {\n  const y = 1;\n  g(x);\n" + line + "\n"
+		if res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y"); !asked {
+			t.Errorf("%s: scanned: %+v", line, res)
+		}
+	}
+}

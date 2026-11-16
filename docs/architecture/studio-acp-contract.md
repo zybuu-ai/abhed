@@ -1627,7 +1627,8 @@ _abhed/complete { sessionId, uri, position: { line, character }, prefix: string,
                   context?: { uri, text }[] }        // other open files, optional
   → { items: { text: string, range?: Range }[], disabled?: string, refused?: string, limited?: string, cancelled?: string,
       dropped?: string }  // why the model's answer was not used as code, such as prose
-_abhed/complete/cancel { sessionId } → {}
+_abhed/complete/cancel { sessionId, seq?: number } → {}
+_abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: boolean, skipped?: string, failed?: string }
 ```
 
 - Listed under the `complete` feature; whether completions are on is in each
@@ -1649,9 +1650,29 @@ _abhed/complete/cancel { sessionId } → {}
 - One request in flight per session: a newer one cancels it (`cancelled`).
   `seq`, increasing per session, orders requests; one at or below the newest
   seen is dropped (`cancelled`). Without it, arrival order. A short debounce;
-  at most five a second per session and ten per connection (`limited`). A
-  model error is `-32000`; a closed session's request is refused with
-  `-32602`.
+  a request replaced during it is not sent and spends no rate; at most five
+  requests sent a second per session and ten per connection (`limited`). A
+  cancel with `seq` ends that request only, never a newer one; without it,
+  whatever is in flight. A model error is `-32000`; a closed session's
+  request is refused with `-32602`.
+- One logical block: the statement at the cursor and the body of a block it
+  opens (deeper lines, then one closing line), ending at a blank line or a
+  line back at its indentation (a blank line inside a string, such as a
+  docstring, does not end it), at most 12 lines. Fill-in-the-middle asks
+  with `stream: true` and the stops `<|endoftext|>`, `<|file_sep|>`,
+  `<|fim_pad|>` and `<|fim_prefix|>`; the stream is ended as soon as the
+  block is whole, so the model stops writing, and anything after an
+  end-of-text or next-file marker is cut. A server that answers the streamed request with
+  one JSON body is read as before.
+- `_abhed/complete/warm` (feature `completeWarm`) loads a local completion
+  model before the first completion needs it: one fill-in-the-middle request
+  with an empty prompt and suffix and `max_tokens: 1`, so no code is sent,
+  with its own 60-second deadline, ended when the session closes or the
+  connection's input ends, at most once in two minutes per session and per
+  connection for a provider (`recent`). A model whose URL is not on this
+  machine (as `local_only` decides it: a loopback proxy to a remote model
+  counts as local), a chat-only provider, or completions that are off are
+  `skipped`, and nothing is sent.
 - Fill-in-the-middle on the completions endpoint for local server types and
   `openai-compatible`, else a chat turn; a 404, 405 or 501 from the
   completions endpoint, or a 400 saying it or `suffix` is not supported,
@@ -1666,7 +1687,12 @@ _abhed/complete/cancel { sessionId } → {}
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
   the session closes, which counts `superseded` (replaced before sending)
-  apart from `cancelled` (after); single completions are not recorded.
+  apart from `cancelled` (after), the answer times of requests answered
+  (`latency_p50_ms`, `latency_p90_ms`, `latency_max_ms`, from the request
+  reaching the engine, of requests sent to the model only), and `warmups`
+  with the longest (`warmup_ms`); single
+  completions are not recorded, and no code is. HawkEYE shows the counts and
+  times.
 
 ### 7.11 Next-edit suggestions
 
@@ -1674,8 +1700,10 @@ _abhed/complete/cancel { sessionId } → {}
 _abhed/nextEdit { sessionId, uri, cursor: { line, character },
                   window: { startLine: number, text: string },   // the document's lines around the cursor
                   recentEdits?: { uri, range: Range, oldText: string, newText: string }[],
-                  language?: string, seq?: number }
-  → { edits: { uri, range: Range, newText: string }[], disabled?: string, refused?: string,
+                  language?: string, seq?: number,
+                  rename?: { from: string, to: string, at: Position },  // Studio's reading of a rename
+                  sites?: Range[] }                                     // the old name's uses, from a language server
+  → { edits: { uri, range: Range, newText: string }[], rename?: true, disabled?: string, refused?: string,
       limited?: string, cancelled?: string, dropped?: string }
 ```
 
@@ -1691,9 +1719,47 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   edits by whole lines in `uri` only. A changed line that held a withheld
   secret, a suggestion carrying one, prose, or a rewrite of more than half the
   window is `dropped` with the reason.
+- A rename is finished from the window, with no model asked and nothing
+  sent: `rename`, or else the last recent edit in `uri` on one line, turns
+  an identifier into another that reads whole at its place in `window`,
+  in a language with reserved words here (Python, Go, JavaScript,
+  TypeScript, Java, Rust, C, C++). The other uses of the old name are the
+  `sites` inside the window that read it whole, when Studio sends any (a
+  language server's references). Without sites, Python, Go, JavaScript,
+  TypeScript and Java are scanned: the innermost function the rename is in
+  (the window at a file's top level), skipping strings, comments, members
+  after `.`, `->` or `::`, keyword arguments in a call (not a parameter's
+  default on the function's own header), and in JavaScript, TypeScript and
+  Go a key right after `{` or `,` in a brace that opens an expression (not
+  a Go map literal, whose keys are uses, nested ones with their type left
+  out included). A JavaScript or TypeScript shorthand property, a
+  destructuring (after `const`, `let`, `var`, `using`, `import`, `export`,
+  `(`, `[` or `,`) or an object directly inside a JSX expression container
+  (`{{ … }}`), at a scanned use or a site, is written out as `old: new`;
+  the brace is read as the scan reads it, so a name in a block or arrow
+  body, a template's `${…}` or a JSX expression container is a use,
+  renamed in place. A shorthand-shaped use in a brace that cannot be
+  classified with confidence (an `= {` in JSX with no tag or declaration on
+  its line, a brace alone on its line after anything but `(`, `[`, `,` or
+  `)`, an object inside a template's `${ }`) makes the edit no rename: the
+  model is asked. Rust, C, C++, `javascriptreact` and `typescriptreact` need
+  sites. A `javascript` window holding JSX (a tag in an operand position, after
+  `[`, `!`, `yield` or `await` too; `<Name` with an attribute, a spread or
+  `>`, anywhere; `</`, `/>` or `<>`) is read as `javascriptreact`. The uses come back as one edit over
+  the lines from the first to the last, with `rename: true`. Only a name bound again
+  in a nested function, lambda, comprehension or inner block is `dropped`
+  (left to the person). Otherwise, an edit is no rename, and the model is
+  asked as for any edit, when the new name is a reserved word or already
+  used in the scope, when the old name has no other use, when the edit was
+  at a use of a name declared elsewhere in the scope, or when it is outside
+  any function the window shows and no sites were sent.
+  Studio re-parses the document with any suggestion applied before showing
+  it, and drops it when the parse fails or is cut short.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
-  the session closes.
+  the session closes, which counts renames finished from the file as
+  `local` and those that offered nothing as `local_dropped` (neither in the
+  answer times), and the answer times as §7.10.
 
 ### 7.12 Commit messages
 

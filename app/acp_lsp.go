@@ -44,6 +44,28 @@ func init() {
 // a language: each from its language's toolchain extras.
 var defaultLanguageServers = lsprelay.DefaultServers
 
+// otherLanguageServers are taken, in order, where a language's default is
+// not on the PATH commands get and one of these is: a Python server the
+// person already has.
+var otherLanguageServers = map[string][][]string{
+	"python": {{"pyright-langserver", "--stdio"}, {"pylsp"}},
+}
+
+// pickLanguageServer is language's default server, or the first of its
+// others that find says is installed when the default is not.
+func pickLanguageServer(language string, find func(string) bool) []string {
+	argv := defaultLanguageServers[language]
+	if find == nil || len(argv) == 0 || find(argv[0]) {
+		return argv
+	}
+	for _, other := range otherLanguageServers[language] {
+		if find(other[0]) {
+			return other
+		}
+	}
+	return argv
+}
+
 // defaultClientCapabilities are what the server is told an editor can do
 // when Studio names none.
 const defaultClientCapabilities = `{"workspace":{"applyEdit":true,"workspaceEdit":{"documentChanges":true},"configuration":true,"workspaceFolders":true,"executeCommand":{}},` +
@@ -143,7 +165,7 @@ func (c *acpConn) lspStart(msg rpcMessage) {
 	}
 	argv := parts.Config.Sandbox.LanguageServers[p.Language]
 	if len(argv) == 0 {
-		argv = defaultLanguageServers[p.Language]
+		argv = pickLanguageServer(p.Language, lspProgramFinder(parts.Loop.Tools))
 	}
 	if len(argv) == 0 {
 		c.reply(msg.ID, nil, refusal(errParams, "no language server for %q: name one in sandbox.language_servers", p.Language))
@@ -223,7 +245,7 @@ func (c *acpConn) lspRun(s *acpSession, l *acpLSP, b tools.Bash, restart int) (j
 	command := lsprelay.CommandLine(l.argv)
 	callID := "u" + acpID()
 	args, _ := json.Marshal(map[string]any{"command": command, "description": "language server for " + l.language + " in the session sandbox, run with " +
-		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language)})
+		strings.TrimSpace(lsprelay.Env) + "; " + lspRuns(l.language, l.argv)})
 	ctx, cancel := context.WithTimeout(context.Background(), lspLife)
 	// A server that is not on the PATH commands get (the toolchains' folders
 	// first) cannot start: the person is offered the install, and nothing is
@@ -769,7 +791,19 @@ func lspWriter(stdin io.WriteCloser, out <-chan []byte, queued *atomic.Int64, ca
 
 // lspRuns says, for the judged call and the record, what a server may still
 // run inside the sandbox with the engine's settings.
-func lspRuns(language string) string {
+func lspRuns(language string, argv []string) string {
+	if language == "python" && len(argv) > 0 {
+		// The server actually chosen: the default, or the person's own pyright or pylsp.
+		switch filepath.Base(argv[0]) {
+		case "pyright-langserver":
+			return "pyright runs the Python interpreter it finds, the sandbox's or one a pyrightconfig.json names, to read its import paths"
+		case "pylsp":
+			return "pylsp runs in the Python it was installed with, loads every plugin installed beside it and its Jedi or Rope back end, and reads the workspace's setup.cfg, tox.ini, .flake8 and pyproject.toml; with linting plugins it runs those linters on the files"
+		case "basedpyright-langserver":
+		default:
+			return "the server may run programs of its own"
+		}
+	}
 	switch language {
 	case "go":
 		return "gopls runs go list (and, for packages that use cgo, the cgo tool and the C compiler) to load packages, but no project code"

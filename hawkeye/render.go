@@ -103,6 +103,22 @@ func Text(r Report) string {
 		}
 		b.WriteString("\n")
 	}
+	for _, e := range r.Editor {
+		fmt.Fprintf(&b, "  editor    #%d %s %s: %d sent, %d served", e.Seq, e.Feature, e.Model, e.Requests, e.Served)
+		if e.Local > 0 {
+			fmt.Fprintf(&b, ", %d from the file", e.Local)
+		}
+		if e.LocalDropped > 0 {
+			fmt.Fprintf(&b, ", %d rename(s) left to the person", e.LocalDropped)
+		}
+		if e.LatencyMaxMs > 0 {
+			fmt.Fprintf(&b, "; answered in %d ms median, %d ms p90, %d ms longest", e.LatencyP50Ms, e.LatencyP90Ms, e.LatencyMaxMs)
+		}
+		if e.Warmups > 0 {
+			fmt.Fprintf(&b, "; %d warm-up(s), longest %d ms", e.Warmups, e.WarmupMs)
+		}
+		b.WriteString("\n")
+	}
 	for _, l := range r.LocalModel {
 		fmt.Fprintf(&b, "  ollama    #%d %s %s: %s", l.Seq, l.Op, l.Model, l.Outcome)
 		if l.Command != "" {

@@ -100,6 +100,44 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- Faster editor completions in Abhed Studio. A local completion model is
+  loaded ahead of the first completion (`_abhed/complete/warm`: an empty
+  request of one token, no code, once the editor session is open, at most
+  every two minutes per session and per connection, ended with the session
+  or the connection's input,
+  and only for a model whose address is on this machine). A suggestion is
+  one logical block, the statement at the cursor and the body of a block it
+  opens, and the model's streamed answer is ended as soon as that block is
+  whole. Studio waits briefly after a keystroke, cancels a request whose
+  place has gone (a cancel now names its `seq`), asks once more when over
+  the rate limit, and asks again after an accepted suggestion or Enter.
+  `completion.summary` and `next_edit.summary` record answer times
+  (median, 90th percentile, longest) of requests sent, and warm-ups, never
+  code, and `abhed hawkeye` shows them. The data-sent rules and
+  `completion.local_only` are unchanged.
+- A rename's next edit comes from the file, not a model: after edits that
+  turn one identifier into another, the other uses of the old name are
+  offered as one edit. They come from the language server's references when
+  one is running, or else, in Python, Go, JavaScript, TypeScript and Java
+  (not JSX, nor a .js file holding JSX, which is treated like .jsx), a
+  scan of the innermost function that skips strings, comments, members,
+  keyword arguments in calls and literal keys (a shorthand property is
+  written out as `old: new`, and so are a destructuring and an object in a
+  JSX `{{ }}`; a JSX `{name}` or a template's `${name}` is a use; a brace
+  it cannot classify leaves the edit to the model), and leaves the rename
+  to you
+  where the name is bound again in a nested scope. A one-word edit with
+  nothing to finish (a reserved or already used new name, no other use, a
+  use of a name declared elsewhere) is no rename, and the model is asked as
+  before. Nothing is sent for a rename; the summary and the metrics count
+  it as `local`, or `local_dropped` when left to you. Studio
+  parses the file with any next-edit suggestion applied (tree-sitter) and
+  drops one that adds syntax errors or cannot be checked.
+- Python language servers you already have: where `basedpyright-langserver`
+  is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
+  server is that one, and the start you are asked about names it and what
+  it loads. Not under the container tier, which always runs basedpyright.
+
 - Studio can add and remove MCP servers. Adding is never an ACP method:
   Studio has the engine check the server (`_abhed/mcp/check`, read only,
   `mcp.check` in `features`), shows it in a modal whose default is No, and
@@ -323,6 +361,12 @@ All notable changes to Abhed are recorded here. The format follows
   a value after `=`) and lists the program's read options.
 
 ### Fixed
+
+- Studio's ghost text could stop for good after a burst of typing. Every
+  keystroke spent the completion rate limit as it arrived, even those a
+  newer keystroke replaced before anything was sent, so the last keystroke
+  of a burst was often answered `limited` and nothing was asked again. The
+  limit is now spent only by a request about to be sent.
 
 - A debug session in Abhed Studio, in any language, no longer shows the
   editor a source path outside the workspace. Such a frame, output line or
