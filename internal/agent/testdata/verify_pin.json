@@ -5734,6 +5734,81 @@
       "name": "a refused command said refused by its rule",
       "kind": "control",
       "hash": "80888baee766abb5"
+    },
+    {
+      "name": "a refused command said to have succeeded after the refusal",
+      "kind": "planted",
+      "hash": "aa6a1b10b3058faa"
+    },
+    {
+      "name": "an org refusal said to come from the user configuration",
+      "kind": "planted",
+      "hash": "f69a47d0fd319933"
+    },
+    {
+      "name": "an org refusal said to come from a session rule",
+      "kind": "planted",
+      "hash": "c1a30ae552917529"
+    },
+    {
+      "name": "an org refusal said to be set by a hook",
+      "kind": "planted",
+      "hash": "d3cb49a7576f2349"
+    },
+    {
+      "name": "a user refusal said to come from the organization",
+      "kind": "planted",
+      "hash": "45265e7d80d59d46"
+    },
+    {
+      "name": "a refusal said to come from a layer that is not one",
+      "kind": "planted",
+      "hash": "4916c8814d06baa3"
+    },
+    {
+      "name": "a user refusal said to come from the user configuration",
+      "kind": "control",
+      "hash": "317c4cdb4afefd6f"
+    },
+    {
+      "name": "wiring said registered, a read showing it",
+      "kind": "control",
+      "hash": "7b665d4408beb262"
+    },
+    {
+      "name": "wiring said registered via a call, a read showing it",
+      "kind": "control",
+      "hash": "baa3e93b407f0e3c"
+    },
+    {
+      "name": "settings said configured, a read showing them",
+      "kind": "control",
+      "hash": "3abd8acebd49d49e"
+    },
+    {
+      "name": "wiring said registered in a function the read does not show",
+      "kind": "planted",
+      "hash": "22c9b630e44678e0"
+    },
+    {
+      "name": "wiring said registered via a call the read does not show",
+      "kind": "planted",
+      "hash": "ac3c35fcc37db02a"
+    },
+    {
+      "name": "settings said configured in a function the read does not show",
+      "kind": "planted",
+      "hash": "3d8139aa1d3cd891"
+    },
+    {
+      "name": "wiring said now registered",
+      "kind": "planted",
+      "hash": "ad77b1e87efc1aaf"
+    },
+    {
+      "name": "a deploy said of a function the read shows",
+      "kind": "planted",
+      "hash": "9212dc375800985b"
     }
   ],
   "strict": [

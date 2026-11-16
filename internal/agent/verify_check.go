@@ -534,6 +534,17 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 // checkWhole checks a claim as one statement.
 func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	v := checkClaim(env, ix, c)
+	// "The handler is registered in `init()`" may describe code a read
+	// shows: with code named in it, it is judged as a description first,
+	// and as work only when that fails. Finished work ("is deployed", "is
+	// resolved") and "now" are never descriptions.
+	if v.Verdict != ClaimVerified && backtickRe.MatchString(c.Text) && codeStateRe.MatchString(c.Text) {
+		d := c
+		d.Text = codeStateRe.ReplaceAllString(c.Text, "$1 defined")
+		if dv := checkClaim(env, ix, d); dv.Verdict == ClaimVerified {
+			dv.Text, v = c.Text, dv
+		}
+	}
 	// A resolved merge is judged whole by its own check, its "no" included.
 	merge := extractFacts(citeRe.ReplaceAllString(c.Text, " ")).mergeClean
 	if v.Verdict == ClaimVerified && !merge && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
@@ -550,6 +561,10 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	return v
 }
+
+// codeStateRe is a present state that wiring or configuration in code can
+// show: "is registered", "are configured", "is enabled".
+var codeStateRe = regexp.MustCompile(`(?i)\b(is|are)\s+(?:registered|configured|enabled|disabled|wired|mounted|set up)\b`)
 
 // citeRe is a citation written in a reply's text: (#12), [#12] or record #12.
 var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+)\b`)
@@ -1913,16 +1928,41 @@ const refusalReason = "matches the refusal "
 var (
 	// refusalWordRe says a call was refused.
 	refusalWordRe = regexp.MustCompile(`\b(?:denied|refused|blocked|rejected|not allowed|disallowed)\b`)
-	// refusalSourceRe names where a refusal came from.
-	refusalSourceRe = regexp.MustCompile(`\b(org(?:anisation|anization)?(?:'s)? policy|managed (?:configuration|config|policy)|workspace (?:configuration|config))\b`)
+	// refusalLayers name the policy layers a refusal can come from, each
+	// with the source the record gives it.
+	refusalLayers = []struct {
+		source string
+		re     *regexp.Regexp
+	}{
+		{"org", regexp.MustCompile(`\b(?:your\s+)?(?:org|organi[sz]ation|company)(?:'s)?(?:\s+(?:policy|policies|admin|administrator|rules?|settings))*\b|\b(?:your\s+)?(?:admin|administrator)(?:'s)?(?:\s+(?:policy|rules?))?\b`)},
+		{"managed", regexp.MustCompile(`\b(?:managed|machine(?:-wide)?)\s+(?:configuration|config|policy|settings|rules?)\b`)},
+		{"workspace", regexp.MustCompile(`\b(?:workspace|project|repository|repo)(?:'s)?\s+(?:configuration|config|settings|rules?|policy)\b`)},
+		{"user", regexp.MustCompile(`\b(?:your\s+)?(?:own\s+)?(?:user|personal)\s+(?:configuration|config|settings|rules?)\b|\byour\s+own\s+(?:configuration|config|settings|rules?)\b`)},
+		{"settings", regexp.MustCompile(`\b(?:a\s+|the\s+)?settings\s+file\b|--?settings\b`)},
+		{"flag", regexp.MustCompile(`\b(?:a\s+|the\s+)?(?:command[- ]line\s+)?flags?\b|(?:^|\s)--?(?:allow|deny)\b`)},
+		{"session", regexp.MustCompile(`\b(?:a\s+|the\s+|this\s+)?session\s+(?:rule|grant|approval|permission)s?\b|\byou\s+approved\b|\bapproved\s+(?:for|in)\s+(?:this|the)\s+session\b`)},
+		{"hook", regexp.MustCompile(`\b(?:a\s+|the\s+)?(?:policy\s+)?hooks?\b`)},
+		{"mode", regexp.MustCompile(`\b(?:plan|accept-edits|auto|bypass|default)\s+mode\b|\bthe\s+(?:permission\s+)?mode\b`)},
+		{"default", regexp.MustCompile(`\bthe\s+default\s+(?:rule|step|policy)\b|\bby\s+default\b`)},
+	}
+	// refusalConnectives are the only words a statement about a refusal may
+	// hold besides the refusal itself, its rule, its layer, its reason and
+	// the refused command: any other (succeeded, ran, returned, an unknown
+	// layer) leaves it unverified.
+	refusalConnectives = wordSet(`the a an call calls command commands tool request requests attempt was were is are been
+		has had by rule rules from in under of per due to because policy permission permissions configuration config
+		which that it this its my your set so and as with there`)
+	refusalPunctRe = regexp.MustCompile(`[.,;:!?()"'\x60]`)
 )
 
 // refusalShown is the refusal a claim states, or nil: one that quotes what
 // the agent was told ("Denied: <reason>"), or says the call was refused by
 // the rule that refused it ("the call was denied by rule bash(curl*) from
 // the org policy"). Each code span in it must be the rule, the reason or
-// the refused command, and a layer it names must be the refusal's own. With
-// citations, only a cited refusal counts.
+// the refused command; each layer it names must be the refusal's own; and
+// once all of that and the refusal's wording are taken out, nothing but a
+// few connective words may be left. With citations, only a cited refusal
+// counts.
 func (ix *recordIndex) refusalShown(c Claim) *denialRec {
 	if len(ix.denials) == 0 {
 		return nil
@@ -1944,8 +1984,8 @@ func (ix *recordIndex) refusalShown(c Claim) *denialRec {
 				continue
 			}
 		}
-		quote := normText("denied: " + d.reason)
-		quoted := strings.Contains(low, strings.TrimRight(quote, "."))
+		quote := strings.TrimRight(normText("denied: "+d.reason), ".")
+		quoted := strings.Contains(low, quote)
 		named := d.rule != "" && refusalWordRe.MatchString(low) && strings.Contains(low, normText(d.rule))
 		if !quoted && !named {
 			continue
@@ -1958,25 +1998,37 @@ func (ix *recordIndex) refusalShown(c Claim) *denialRec {
 				ok = false
 			}
 		}
-		if m := refusalSourceRe.FindStringSubmatch(low); m != nil && !sourceIs(m[1], d.source) {
-			ok = false
-		}
-		if ok {
+		if ok && refusalRest(low, d, quote) {
 			return d
 		}
 	}
 	return nil
 }
 
-// sourceIs reports a named layer that is the refusal's own.
-func sourceIs(named, source string) bool {
-	switch {
-	case strings.HasPrefix(named, "org"):
-		return source == "org"
-	case strings.HasPrefix(named, "managed"):
-		return source == "managed"
-	case strings.HasPrefix(named, "workspace"):
-		return source == "workspace"
+// refusalRest reports a statement about refusal d that, with the quote,
+// the reason, the rule, the command, the refusal's wording and each layer
+// it names (which must be d's own) taken out, holds only connective words.
+func refusalRest(low string, d *denialRec, quote string) bool {
+	rest := low
+	for _, part := range []string{quote, normText(d.reason), normText(d.rule), normText(d.command)} {
+		if part = strings.TrimRight(part, "."); part != "" {
+			rest = strings.ReplaceAll(rest, part, " ")
+		}
 	}
-	return false
+	for _, l := range refusalLayers {
+		if l.re.MatchString(rest) {
+			if l.source != d.source {
+				return false
+			}
+			rest = l.re.ReplaceAllString(rest, " ")
+		}
+	}
+	rest = refusalWordRe.ReplaceAllString(rest, " ")
+	rest = refusalPunctRe.ReplaceAllString(rest, " ")
+	for _, w := range strings.Fields(rest) {
+		if !refusalConnectives[w] {
+			return false
+		}
+	}
+	return true
 }

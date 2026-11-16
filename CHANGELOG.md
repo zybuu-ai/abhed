@@ -528,13 +528,17 @@ All notable changes to Abhed are recorded here. The format follows
   against the read; verbs of change and of finished work (merged,
   processed, resolved, built), a label with a word of change in it, the
   past tense, "now" and the first person are still events, and "passed
-  to" said of CI, a build or checks is still a result. A statement about a
-  refusal (its quoted text, or that the call was denied by its rule, from
-  its layer) is now checked against the refusal's own fields; the refusal
-  is evidence for nothing else, since its reason can hold text the model
-  chose. The false-claim corpus gains 29 planted cases and 9 controls;
-  none of the 897 planted claims verifies, all 249 controls do, and none
-  of the 350 true or neutral claims is contradicted.
+  to" said of CI, a build or checks is still a result; wiring said in the
+  present ("the handler is registered in `init()`") is a description when
+  a read shows the code it names. A statement about a refusal (its quoted
+  text, or that the call was denied by its rule, from its layer) is now
+  checked against the refusal's own fields: the layer it names must be
+  the refusal's own, and nothing else may be said in it ("succeeded after
+  being blocked" stays unverified). The refusal is evidence for nothing
+  else, since its reason can hold text the model chose. The false-claim
+  corpus gains 40 planted cases and 13 controls; none of the 908 planted
+  claims verifies, all 253 controls do, and none of the 354 true or
+  neutral claims is contradicted.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`

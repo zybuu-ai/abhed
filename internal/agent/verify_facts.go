@@ -80,7 +80,8 @@ type facts struct {
 	modules  []string
 	theTests bool
 	// inclusive: it names a test as one among more ("including tests.test_new").
-	inclusive bool // presentState: it says a piece of work is finished, in the present
+	inclusive bool
+	// presentState: it says a piece of work is finished, in the present
 	// ("the issue is resolved", "the service is deployed").
 	presentState bool
 }
