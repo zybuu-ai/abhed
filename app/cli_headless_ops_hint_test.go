@@ -16,6 +16,9 @@ import (
 	"testing"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/policy"
+	"github.com/zybuu-ai/abhed/internal/tools"
 )
 
 // sshHintRun runs -p against a model that makes one call, with app1 in
@@ -104,5 +107,31 @@ func TestHeadlessSSHContentReadNamesTheRule(t *testing.T) {
 	}
 	if d.Flag != "-allow 'ssh(app1/tail -n 100 /var/log/app/app.log)'" {
 		t.Errorf("flag %q", d.Flag)
+	}
+}
+
+// With a runbook bound, a change it does not list asks whatever an allow
+// rule says, so no flag is offered for one; a read is hinted as before.
+func TestHeadlessHintUnderRunbookOffersNoFlag(t *testing.T) {
+	ask := func(tool, args string) agent.Event {
+		b, _ := json.Marshal(agent.ActionRequested{CallID: "c1", Tool: tool, Args: json.RawMessage(args)})
+		return agent.Event{Type: agent.EvActionRequested, Payload: b}
+	}
+	denied, _ := json.Marshal(map[string]string{"call_id": "c1", "step": "default", "source": "mode", "by": "headless",
+		"reason": "no approver: not in the approved plan (the plan's steps have all run); bash can make changes"})
+	for _, bound := range []bool{false, true} {
+		h := newDenialHints(policy.New(policy.ModeDefault), config.Default(), tools.NewRegistry(tools.Bash{}))
+		h.runbook = bound
+		h.observe(ask("bash", `{"command":"make deploy"}`))
+		got, ok := h.observe(agent.Event{Type: agent.EvActionDenied, Payload: denied})
+		if !ok {
+			t.Fatal("no denial reported")
+		}
+		switch {
+		case bound && (got.Flag != "" || !strings.Contains(got.Hint, "runbook")):
+			t.Errorf("under a runbook: %+v", got)
+		case !bound && got.Flag != "-allow 'bash(make deploy)'":
+			t.Errorf("without a runbook: %+v", got)
+		}
 	}
 }

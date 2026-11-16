@@ -946,3 +946,12 @@ kubernetes  reads + writes (every write needs approval)
 ssh host    build1 → ci@10.0.0.5
 rag corpus  runbooks → https://rag.internal/v1/search
 ```
+
+To try the Kubernetes tools and a runbook end to end without a real cluster,
+`scripts/dev/k8s-kind-runbook/run.sh` creates a throwaway
+[kind](https://kind.sigs.k8s.io/) cluster with its own kubeconfig, runs a
+scripted incident flow through `abhed -p -runbook` (`k8s_get` of the pods, the
+deployment and a pod's logs, then the one approved `scale`, while a change the
+runbook does not list is refused), checks each result, and deletes the
+cluster. It needs kind, kubectl, node, Go and docker or podman; no existing
+kube context is read or changed, and nothing reaches a model provider.

@@ -539,6 +539,12 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- In `abhed -p -runbook`, a change the runbook does not list was refused
+  with the hint "rerun with -allow '…'", which could not help: under a bound
+  runbook such a change asks whatever an allow rule says. The hint now says
+  no flag allows it, and to add the call to the runbook or run it
+  interactively. Found with the new `scripts/dev/k8s-kind-runbook/run.sh`,
+  which runs a runbook flow against a throwaway kind cluster.
 - `ssh_connect` called with the name of a host in `ssh.hosts` was asked
   about, refused in `-p` as one that "can make changes", and offered
   `-allow 'ssh_connect(app1)'`, which could never help: a declared name is

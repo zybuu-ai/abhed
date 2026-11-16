@@ -38,6 +38,9 @@ type denialHints struct {
 	registry *tools.Registry
 	asked    map[string]agent.ActionRequested
 	denials  []permissionDenial
+	// runbook says -runbook bound one: a change it does not list asks
+	// whatever an allow rule says, so no flag can allow one.
+	runbook bool
 }
 
 func newDenialHints(pol *policy.Engine, cfg config.Config, registry *tools.Registry) *denialHints {
@@ -103,6 +106,9 @@ func (h *denialHints) hint(a agent.ActionRequested, d map[string]string) (flag, 
 	case d["by"] != agent.ByHeadless && step != "mode":
 		return "", ""
 	}
+	if h.runbook && h.mutates(a) {
+		return "", "a runbook is bound, so a change it does not list as the next step asks even where an allow rule matches, and no flag allows it; add the call to the runbook, or run it interactively"
+	}
 	if f := h.allowingFlag(a); f != "" {
 		return f, "rerun with " + f + " to allow it"
 	}
@@ -138,6 +144,12 @@ func orgWords(source string) string {
 func (h *denialHints) where(list, rule string) string {
 	_, where := h.cfg.RuleSource(list, rule)
 	return where
+}
+
+// mutates reports whether the refused call is a change.
+func (h *denialHints) mutates(a agent.ActionRequested) bool {
+	tool, ok := h.registry.Get(a.Tool)
+	return !ok || tools.MutatesCall(tool, a.Args)
 }
 
 // allowingFlag is the first flag that would allow the call on a rerun: one
