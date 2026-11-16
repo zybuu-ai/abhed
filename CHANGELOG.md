@@ -132,8 +132,11 @@ All notable changes to Abhed are recorded here. The format follows
   background job works on your code: the tracked files as they are in the
   working tree, without anything your read rules withhold, anything named
   like a key or holding one or a stored secret, links or submodules, each
-  left-out file named. The read rules are the repository root's, wherever
-  in it `start` runs. In a terminal it asks before sending, with the count
+  left-out file named. A file is left out when any rules a session in the
+  repository would follow withhold it: the root's, the folder `start` runs
+  in and those between, and any other folder with a `.abhed` of its own.
+  Every file is read by opening each folder on its path without following
+  a link. In a terminal it asks before sending, with the count
   and size; `-y` sends without asking, and without a terminal `-y` or
   `-no-snapshot` is required. `-no-snapshot` starts in an empty folder. `abhed bg
   logs -patch` reads the patch a job kept when it ended. For editions, a

@@ -4,14 +4,18 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zybuu-ai/abhed/bgjob"
 )
@@ -186,5 +190,144 @@ func TestTheSnapshotIsSentOnlyWhenTheyAgree(t *testing.T) {
 	r.rulesFor = nil
 	if res := r.run("", false, "", "start", "-y", "x"); res.code != ExitFailed || !strings.Contains(res.err, "read rules") {
 		t.Fatalf("no rules: %+v", res)
+	}
+}
+
+// A folder swapped for a link to a withheld one, after the rules passed its
+// file and before the read, does not send the withheld file under the
+// allowed name: the read refuses the link.
+func TestAFolderSwappedForALinkIsNotFollowed(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	git(t, root, "init", "-q")
+	write(t, filepath.Join(root, "docs", "x.md"), "public\n")
+	write(t, filepath.Join(root, "deep", "a", "b", "y.md"), "public\n")
+	write(t, filepath.Join(root, "private", "x.md"), "TOPSECRET\n")
+	write(t, filepath.Join(root, "private", "b", "y.md"), "TOPSECRET\n")
+	git(t, root, "add", "-A")
+	git(t, root, "commit", "-q", "-m", "x")
+	swap := func(dir, target string) {
+		if err := os.Rename(dir, dir+".real"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { afterRuleCheck = func(string) {} }()
+	afterRuleCheck = func(rel string) {
+		switch rel {
+		case "docs/x.md":
+			swap(filepath.Join(root, "docs"), "private")
+		case "deep/a/b/y.md":
+			swap(filepath.Join(root, "deep", "a"), filepath.Join(root, "private"))
+		}
+	}
+	withheld := func(abs string) bool {
+		return strings.HasPrefix(abs, filepath.Join(root, "private")+string(filepath.Separator))
+	}
+	p, err := pack(context.Background(), root, withheld, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range untar(t, p.tgz) {
+		if strings.Contains(body, "TOPSECRET") {
+			t.Fatalf("%s carried a withheld file's content", name)
+		}
+	}
+	got := strings.Join(p.skipped, ",")
+	if !strings.Contains(got, "docs/x.md (reached through a link)") || !strings.Contains(got, "deep/a/b/y.md (reached through a link)") {
+		t.Fatalf("skipped %v", p.skipped)
+	}
+}
+
+// The reviewer's race, bounded: a loop swaps docs/ for a link to private/
+// and back while snapshots are packed. No pack carries a withheld file.
+func TestAFolderSwappedInALoopIsNotFollowed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("a timed race")
+	}
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	git(t, root, "init", "-q")
+	for i := 0; i < 300; i++ {
+		n := fmt.Sprintf("f%04d.md", i)
+		write(t, filepath.Join(root, "docs", n), "public\n")
+		write(t, filepath.Join(root, "private", n), "TOPSECRET\n")
+	}
+	git(t, root, "add", "-A")
+	git(t, root, "commit", "-q", "-m", "x")
+	withheld := func(abs string) bool {
+		return strings.HasPrefix(abs, filepath.Join(root, "private")+string(filepath.Separator))
+	}
+	var stop atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d := filepath.Join(root, "docs")
+		for !stop.Load() {
+			_ = os.Rename(d, d+".real")
+			_ = os.Symlink("private", d)
+			_ = os.Remove(d)
+			_ = os.Rename(d+".real", d)
+		}
+	}()
+	defer func() { stop.Store(true); <-done }()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); {
+		p, err := pack(context.Background(), root, withheld, nil)
+		if err != nil {
+			continue
+		}
+		for name, body := range untar(t, p.tgz) {
+			if strings.Contains(body, "TOPSECRET") {
+				t.Fatalf("%s carried a withheld file's content", name)
+			}
+		}
+	}
+}
+
+// One reader serves every question: under -attach the line after the
+// snapshot's y answers the job's first ask. Ctrl-C at the snapshot's
+// question sends nothing.
+func TestQuestionsShareTheirInput(t *testing.T) {
+	r := newRig(t)
+	repo := t.TempDir()
+	git(t, repo, "init", "-q")
+	write(t, filepath.Join(repo, "a.go"), "package a\n")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-q", "-m", "x")
+	r.workspace = repo
+	r.rulesFor = func(string) (func(string) bool, error) { return func(string) bool { return false }, nil }
+	r.srv.job.Waiting = &bgjob.Approval{JobID: "bg_1", SessionID: "sess_1", RequestID: "req_1", Tool: "bash"}
+	res := r.run("y\ny\n", true, "", "start", "-attach", "x")
+	if res.code != ExitOK || len(r.srv.snapshots) != 1 || len(r.srv.answers) != 1 || r.srv.answers[0]["approved"] != true {
+		t.Fatalf("start -attach: %+v answers %v", res, r.srv.answers)
+	}
+
+	r2 := newRig(t)
+	r2.workspace, r2.rulesFor = repo, r.rulesFor
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	var errOut syncBuf
+	done := make(chan int, 1)
+	go func() {
+		done <- Main(Env{Ctx: ctx, ProfilesPath: r2.profiles, In: pr, Out: io.Discard, Err: &errOut, Interactive: true,
+			Workspace: repo, RulesFor: r2.rulesFor}, []string{"start", "x"})
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(errOut.String(), "[y/N]"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no question: %q", errOut.String())
+		}
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code == ExitOK || !strings.Contains(errOut.String(), "nothing was sent") {
+			t.Fatalf("Ctrl-C at the question: %d %q", code, errOut.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl-C at the question did not leave it")
+	}
+	if len(r2.srv.snapshots) != 0 {
+		t.Fatal("sent after Ctrl-C")
 	}
 }

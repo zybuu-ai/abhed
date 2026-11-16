@@ -146,6 +146,47 @@ type runner struct {
 	Env
 	out, profile, server string
 	cl                   *bgjob.Client
+	// lines are the person's answers, read by one reader for every
+	// question, so a line typed ahead is the next question's, not lost.
+	lines   chan lineRead
+	linesAt error // the read's end, once it has ended
+}
+
+type lineRead struct {
+	text string
+	err  error
+}
+
+// readLine is the person's next line, or the context's end: Ctrl-C leaves a
+// question as it leaves anything else.
+func (r *runner) readLine() (string, error) {
+	if r.linesAt != nil {
+		return "", r.linesAt
+	}
+	if r.lines == nil {
+		r.lines = make(chan lineRead)
+		go func(in *bufio.Reader, out chan<- lineRead) {
+			for {
+				text, err := in.ReadString('\n')
+				out <- lineRead{text, err}
+				if err != nil {
+					return
+				}
+			}
+		}(bufio.NewReader(r.In), r.lines)
+	}
+	select {
+	case <-r.Ctx.Done():
+		return "", r.Ctx.Err()
+	case l := <-r.lines:
+		if l.err != nil {
+			r.linesAt = l.err
+		}
+		if l.err != nil && l.text == "" {
+			return "", l.err
+		}
+		return l.text, nil
+	}
 }
 
 type usageError struct{ error }
@@ -460,10 +501,7 @@ func (r *runner) attach(args []string) error {
 // follow prints a job's record as it grows and puts each ask it waits on to
 // the person, until the job ends. It exits 0 only for a job that ended done.
 func (r *runner) follow(id string) error {
-	var in *bufio.Reader
-	if r.Interactive && r.In != nil {
-		in = bufio.NewReader(r.In)
-	}
+	interactive := r.Interactive && r.In != nil
 	seen := int64(-1)
 	asked := ""
 	detached := func() error {
@@ -511,7 +549,7 @@ func (r *runner) follow(id string) error {
 		}
 		if w := j.Waiting; w != nil && w.RequestID+w.SessionID != asked {
 			asked = w.RequestID + w.SessionID
-			if err := r.ask(in, *w); err != nil {
+			if err := r.ask(interactive, *w); err != nil {
 				if errors.Is(err, errDetached) {
 					return detached()
 				}
@@ -532,12 +570,12 @@ var errDetached = errors.New("detached")
 // ask puts one ask to the person: the tool, the reason and the call's
 // arguments, each escaped. Without a terminal it only says what waits and
 // until when. Only y allows; anything else, and an empty line, is a no.
-func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
+func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 	what := short(w.Tool, 60)
 	if w.Reason != "" {
 		what += " — " + short(w.Reason, 160)
 	}
-	if in == nil {
+	if !interactive {
 		fmt.Fprintf(r.Err, "abhed: the job waits on you: %s; answer by %s with abhed bg attach in a terminal\n",
 			what, w.Deadline.Local().Format("15:04"))
 		return nil
@@ -553,20 +591,13 @@ func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
 		fmt.Fprintf(r.Err, "  %s\n", l)
 	}
 	fmt.Fprint(r.Err, "Allow it? [y/N] ")
-	got := make(chan string, 1)
-	go func() {
-		ans, err := in.ReadString('\n')
-		if err != nil && ans == "" {
-			ans = "" // no answer is a no
-		}
-		got <- ans
-	}()
-	var ans string
-	select {
-	case <-r.Ctx.Done():
+	ans, err := r.readLine()
+	if r.Ctx.Err() != nil {
 		fmt.Fprintln(r.Err)
 		return errDetached
-	case ans = <-got:
+	}
+	if err != nil {
+		ans = "" // no answer is a no
 	}
 	ok := strings.TrimSpace(ans) == "y" || strings.TrimSpace(ans) == "Y"
 	if err := r.cl.Answer(r.Ctx, w, ok); err != nil {
@@ -663,8 +694,11 @@ func (r *runner) snapshot(yes bool) (string, error) {
 	if !yes {
 		fmt.Fprintf(r.Err, "Send %d tracked file(s) of %s, %d KiB, to %s for the job? [y/N] ",
 			p.files, line(root), (p.bytes+1023)/1024, line(r.cl.Profile.URL))
-		ans, err := bufio.NewReader(r.In).ReadString('\n')
-		if a := strings.TrimSpace(ans); (a != "y" && a != "Y") || (err != nil && ans == "") {
+		ans, err := r.readLine()
+		if a := strings.TrimSpace(ans); err != nil || (a != "y" && a != "Y") {
+			if r.Ctx.Err() != nil {
+				fmt.Fprintln(r.Err)
+			}
 			return "", errors.New("nothing was sent; the job was not started")
 		}
 	}

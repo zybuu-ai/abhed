@@ -33,7 +33,7 @@ func TestBackgroundSnapshotRulesAreTheRepositoryRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, trust := range []config.TrustChoice{config.TrustGranted, config.TrustRefused, ""} {
-		withheld, err := bgRulesFor(trust)(root)
+		withheld, err := bgRulesFor(trust, root)(root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +96,7 @@ func TestBackgroundSnapshotFromASubfolderFollowsTheRootsRules(t *testing.T) {
 	}
 	var out, errOut bytes.Buffer
 	code := bgcli.Main(bgcli.Env{ProfilesPath: prof, Out: &out, Err: &errOut, Workspace: filepath.Join(root, "sub"),
-		RulesFor: bgRulesFor("")}, []string{"start", "-y", "go"})
+		RulesFor: bgRulesFor("", filepath.Join(root, "sub"))}, []string{"start", "-y", "go"})
 	if code != 0 {
 		t.Fatalf("start: %d %s", code, errOut.String())
 	}
@@ -115,5 +115,42 @@ func TestBackgroundSnapshotFromASubfolderFollowsTheRootsRules(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "sub/a.go" || !strings.Contains(errOut.String(), "private/notes.md") {
 		t.Fatalf("sent %v; start said %s", names, errOut.String())
+	}
+}
+
+// A rule in the folder bg runs in, or in any folder of the repository with a
+// .abhed of its own, withholds its file as the root's rules do: the reviewer's
+// sub/keys case, and a nested folder elsewhere.
+func TestBackgroundSnapshotRulesAreEveryFoldersInTheRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	for name, body := range map[string]string{
+		".abhed/config.json":       `{"permissions":{"deny":["read(private/**)"]}}`,
+		"sub/.abhed/config.json":   `{"permissions":{"deny":["read(keys/**)"]}}`,
+		"other/.abhed/config.json": `{"permissions":{"deny":["read(*.pem.txt)"]}}`,
+	} {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		_ = os.MkdirAll(filepath.Dir(p), 0o700)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ws := range []string{root, filepath.Join(root, "sub"), filepath.Join(root, "unrelated")} {
+		_ = os.MkdirAll(ws, 0o700)
+		for _, trust := range []config.TrustChoice{config.TrustGranted, ""} {
+			withheld, err := bgRulesFor(trust, ws)(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for path, want := range map[string]bool{
+				"private/notes.md": true, "sub/keys/deploy.txt": true, "other/a.pem.txt": true,
+				"keys/top.txt": false, "sub/a.go": false, "other/a.go": false,
+			} {
+				if got := withheld(filepath.Join(root, filepath.FromSlash(path))); got != want {
+					t.Errorf("from %s, trust %q: %s withheld = %v, want %v", ws, trust, path, got, want)
+				}
+			}
+		}
 	}
 }

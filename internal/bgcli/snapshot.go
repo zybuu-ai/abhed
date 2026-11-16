@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -106,13 +105,13 @@ func pack(ctx context.Context, root string, withheld func(abs string) bool, hold
 	if err != nil {
 		return p, err
 	}
-	// Every file is read through the repository's folder as a root, so no
-	// link, there or swapped in, takes a read outside it.
-	dir, err := os.OpenRoot(realRoot)
+	// Every file is opened from the repository's folder down, one name at a
+	// time, so no link, there or swapped in, leads a read elsewhere.
+	rootDir, err := os.Open(realRoot)
 	if err != nil {
 		return p, err
 	}
-	defer func() { _ = dir.Close() }()
+	defer func() { _ = rootDir.Close() }()
 	var raw bytes.Buffer
 	zw := gzip.NewWriter(&raw)
 	tw := tar.NewWriter(zw)
@@ -145,29 +144,24 @@ func pack(ctx context.Context, root string, withheld func(abs string) bool, hold
 			p.secret = append(p.secret, e.path)
 			continue
 		}
-		fi, err := os.Lstat(abs)
+		// Between the rules and the read, nothing may change which file
+		// the name leads to: every folder on the way and the file itself are
+		// opened without following a link, and what is read is that file.
+		afterRuleCheck(e.path)
+		data, fi, skip, err := readNoFollow(rootDir, e.path)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			continue // deleted in the working tree
 		case err != nil:
 			return p, err
-		case !fi.Mode().IsRegular():
-			p.skipped = append(p.skipped, e.path+" (not a regular file now)")
-			continue
-		case fi.Size() > bgjob.MaxSnapshotFile:
-			p.skipped = append(p.skipped, fmt.Sprintf("%s (over %d MiB)", e.path, bgjob.MaxSnapshotFile>>20))
+		case skip != "":
+			p.skipped = append(p.skipped, e.path+" ("+skip+")")
 			continue
 		}
-		// A folder in the path swapped for a link would read outside the repository.
-		// A link anywhere in the path would send a file under another name
-		// than the one the read rules were asked about.
-		if real, err := filepath.EvalSymlinks(abs); err != nil || real != filepath.Join(realRoot, filepath.FromSlash(e.path)) {
-			p.skipped = append(p.skipped, e.path+" (reached through a link)")
+		// And the name still leads to that file now.
+		if now, err := os.Lstat(abs); err != nil || !os.SameFile(fi, now) {
+			p.skipped = append(p.skipped, e.path+" (changed while it was read)")
 			continue
-		}
-		data, err := readIn(dir, filepath.FromSlash(e.path), fi)
-		if err != nil {
-			return p, err
 		}
 		if secretfiles.HasKeyMaterial(string(data)) || (holdsStored != nil && holdsStored(data)) {
 			p.secret = append(p.secret, e.path)
@@ -208,23 +202,6 @@ func pack(ctx context.Context, root string, withheld func(abs string) bool, hold
 	return p, nil
 }
 
-// readIn reads the regular file name under dir, the one Lstat gave as fi.
-func readIn(dir *os.Root, name string, fi os.FileInfo) ([]byte, error) {
-	f, err := dir.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	now, err := f.Stat()
-	if err != nil || !now.Mode().IsRegular() || !os.SameFile(fi, now) {
-		return nil, fmt.Errorf("%s changed while it was read", name)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, bgjob.MaxSnapshotFile+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > bgjob.MaxSnapshotFile {
-		return nil, fmt.Errorf("%s grew while it was read", name)
-	}
-	return data, nil
-}
+// afterRuleCheck runs between a file's rules and its read; tests swap a
+// folder for a link there.
+var afterRuleCheck = func(string) {}

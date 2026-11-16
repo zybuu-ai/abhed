@@ -42,8 +42,10 @@ abhed bg cancel ID
   without a terminal `-y` or `-no-snapshot` is required. Left out, and named
   as `start` runs: a file your read rules withhold from the agent (deny
   rules, and the ask rules such as the built-in ones for `.env` and keys),
-  the rules as a session at the repository's root has them, from whichever
-  folder in it you run `start`; a
+  by every set of rules a session in the repository would follow: the
+  root's, those of the folder you run `start` in and every folder between,
+  and those of any other folder in the repository with a `.abhed` of its
+  own, each loaded with its own folder's trust; a
   file named like a key, holding one by its shape, or holding a value from
   your secrets store; links, submodules and any file over 16 MiB. A
   snapshot is at most 50,000 files, 512 MiB, 64 MiB compressed. When the
