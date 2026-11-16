@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/zybuu-ai/abhed/auth"
+	"github.com/zybuu-ai/abhed/bgjob"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/controlplane"
 	"github.com/zybuu-ai/abhed/hawkeye"
@@ -1152,7 +1153,10 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		own := strings.HasSuffix(r.URL.Path, "/upload") || r.URL.Path == "/v1/uploads" ||
 			(r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/file")) ||
-			strings.HasSuffix(r.URL.Path, "/accept")
+			strings.HasSuffix(r.URL.Path, "/accept") ||
+			// A background job's snapshot, which its edition's handler caps
+			// at bgjob.MaxSnapshotUpload.
+			(r.Method == http.MethodPost && r.URL.Path == bgjob.PathSnapshots)
 		if r.Body != nil && !own {
 			capBody(w, r)
 		}
@@ -1537,6 +1541,13 @@ type StartSpec struct {
 	// answered within ApprovalDeadline, with its request id and tool. It
 	// runs on the turn's goroutine and must not block.
 	OnAskTimeout func(requestID, tool string)
+	// Prepare, when set, fills the session's folder before anything else
+	// sees it, such as with files a person uploaded. It is given the folder
+	// of the session's own sandbox, which no other session shares, and runs
+	// before the folder's starting snapshot is taken, so what it writes is
+	// where the session starts, not a change. Without such a folder the
+	// session is refused with ErrNoOwnWorkspace.
+	Prepare func(ctx context.Context, root string) error
 	// admin is whether the person starting it is a server administrator,
 	// which an edition's SandboxCaller is told for the session's sandbox.
 	admin bool
@@ -1664,6 +1675,10 @@ func StartRefusal(err error) (status int, msg string, retry bool) {
 		return http.StatusForbidden, err.Error(), false
 	case errors.Is(err, controlplane.ErrUnavailable):
 		return http.StatusServiceUnavailable, err.Error(), true
+	case errors.Is(err, ErrNoOwnWorkspace):
+		return http.StatusConflict, err.Error(), false
+	case errors.Is(err, errPrepare):
+		return http.StatusServiceUnavailable, "the session was not started: its folder could not be prepared", true
 	case errors.Is(err, errSecretsUnreadable):
 		return http.StatusServiceUnavailable, "the session was not started: " + err.Error(), true
 	}
@@ -2008,6 +2023,12 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	if err != nil {
 		release()
 		return nil, nil, err
+	}
+	if spec.Prepare != nil {
+		if err := s.prepareWorkspace(sessionID, spec, bound != nil, sess.Root); err != nil {
+			release()
+			return nil, nil, err
+		}
 	}
 	if sess.Syntax, err = tools.ParseSyntaxMode(s.opts.Config.Tools.SyntaxCheck); err != nil {
 		release()

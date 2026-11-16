@@ -486,6 +486,10 @@ func (m *Manager) wake(ctx context.Context, who controlplane.Caller, sb controlp
 	return sb, nil
 }
 
+// SessionScoped reports whether each session's sandbox, and so its folder,
+// is its own rather than shared by its user's sessions.
+func (m *Manager) SessionScoped() bool { return m.cfg.Scope == ScopeSession }
+
 // Release is told a session left this process. Its sandbox stays as it is;
 // Close and SessionDeleted decide what becomes of it.
 func (m *Manager) Release(sessionID string) {

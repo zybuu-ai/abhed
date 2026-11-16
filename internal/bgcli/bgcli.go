@@ -46,6 +46,18 @@ type Env struct {
 	InAgent func() string
 	// Poll is how often attach looks again; zero is two seconds.
 	Poll time.Duration
+	// Workspace is the folder start snapshots the repository of.
+	Workspace string
+	// RulesFor gives the person's read rules for a repository's root, as a
+	// session there would have them: a file they keep from the agent is
+	// never in a snapshot. Nil sends no snapshot.
+	RulesFor func(root string) (withheld func(abs string) bool, err error)
+	// HoldsStored reports content holding a value from the person's
+	// secrets store, which a snapshot never carries either.
+	HoldsStored func([]byte) bool
+	// SnapshotErr, when set, is why a snapshot cannot be checked, which
+	// refuses one rather than send it unchecked.
+	SnapshotErr error
 }
 
 type command struct {
@@ -54,7 +66,7 @@ type command struct {
 }
 
 var commands = []command{
-	{"start", "[-name N] [-mode M] [-provider P] [-attach] PROMPT", "start a job on the server, as you", (*runner).start},
+	{"start", "[-name N] [-mode M] [-provider P] [-y | -no-snapshot] [-attach] PROMPT", "start a job on the server, as you, on a snapshot of this repository", (*runner).start},
 	{"list", "", "your jobs, newest first", (*runner).list},
 	{"logs", "ID [-patch]", "a job's record so far, or with -patch what it changed", (*runner).logs},
 	{"attach", "ID", "follow a job and answer what it asks until it ends", (*runner).attach},
@@ -134,6 +146,47 @@ type runner struct {
 	Env
 	out, profile, server string
 	cl                   *bgjob.Client
+	// lines are the person's answers, read by one reader for every
+	// question, so a line typed ahead is the next question's, not lost.
+	lines   chan lineRead
+	linesAt error // the read's end, once it has ended
+}
+
+type lineRead struct {
+	text string
+	err  error
+}
+
+// readLine is the person's next line, or the context's end: Ctrl-C leaves a
+// question as it leaves anything else.
+func (r *runner) readLine() (string, error) {
+	if r.linesAt != nil {
+		return "", r.linesAt
+	}
+	if r.lines == nil {
+		r.lines = make(chan lineRead)
+		go func(in *bufio.Reader, out chan<- lineRead) {
+			for {
+				text, err := in.ReadString('\n')
+				out <- lineRead{text, err}
+				if err != nil {
+					return
+				}
+			}
+		}(bufio.NewReader(r.In), r.lines)
+	}
+	select {
+	case <-r.Ctx.Done():
+		return "", r.Ctx.Err()
+	case l := <-r.lines:
+		if l.err != nil {
+			r.linesAt = l.err
+		}
+		if l.err != nil && l.text == "" {
+			return "", l.err
+		}
+		return l.text, nil
+	}
 }
 
 type usageError struct{ error }
@@ -273,12 +326,14 @@ func short(s string, n int) string {
 }
 
 func (r *runner) start(args []string) error {
-	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-attach] PROMPT")
+	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-y | -no-snapshot] [-attach] PROMPT")
 	var req bgjob.StartRequest
 	fs.StringVar(&req.Name, "name", "", "a label for the job")
 	fs.StringVar(&req.Mode, "mode", "", "plan, or the server's own mode (default: the server's)")
 	fs.StringVar(&req.Provider, "provider", "", "a model provider the server offers")
 	attach := fs.Bool("attach", false, "follow the job once it starts, as attach does")
+	bare := fs.Bool("no-snapshot", false, "start in an empty folder, sending none of this repository")
+	yes := fs.Bool("y", false, "send the repository's snapshot without asking")
 	pos, err := r.parse(fs, args)
 	if err != nil {
 		return err
@@ -286,6 +341,13 @@ func (r *runner) start(args []string) error {
 	req.Prompt = strings.TrimSpace(strings.Join(pos, " "))
 	if req.Prompt == "" {
 		return usageError{errors.New("abhed bg start needs a prompt")}
+	}
+	if !*bare {
+		snap, err := r.snapshot(*yes)
+		if err != nil {
+			return err
+		}
+		req.Workspace = bgjob.Workspace{Kind: bgjob.WorkspaceSnapshot, Snapshot: snap}
 	}
 	j, err := r.cl.Start(r.Ctx, req)
 	if err != nil {
@@ -357,7 +419,14 @@ func (r *runner) logs(args []string) error {
 		return err
 	}
 	if *patch {
-		p, ok, err := r.cl.Patch(r.Ctx, j.SessionID)
+		var p string
+		ok := true
+		if j.Result != nil {
+			// Kept when the job ended; its folder is gone.
+			p, err = r.cl.JobPatch(r.Ctx, j.ID)
+		} else {
+			p, ok, err = r.cl.Patch(r.Ctx, j.SessionID)
+		}
 		if err != nil {
 			return err
 		}
@@ -432,10 +501,7 @@ func (r *runner) attach(args []string) error {
 // follow prints a job's record as it grows and puts each ask it waits on to
 // the person, until the job ends. It exits 0 only for a job that ended done.
 func (r *runner) follow(id string) error {
-	var in *bufio.Reader
-	if r.Interactive && r.In != nil {
-		in = bufio.NewReader(r.In)
-	}
+	interactive := r.Interactive && r.In != nil
 	seen := int64(-1)
 	asked := ""
 	detached := func() error {
@@ -483,7 +549,7 @@ func (r *runner) follow(id string) error {
 		}
 		if w := j.Waiting; w != nil && w.RequestID+w.SessionID != asked {
 			asked = w.RequestID + w.SessionID
-			if err := r.ask(in, *w); err != nil {
+			if err := r.ask(interactive, *w); err != nil {
 				if errors.Is(err, errDetached) {
 					return detached()
 				}
@@ -504,12 +570,12 @@ var errDetached = errors.New("detached")
 // ask puts one ask to the person: the tool, the reason and the call's
 // arguments, each escaped. Without a terminal it only says what waits and
 // until when. Only y allows; anything else, and an empty line, is a no.
-func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
+func (r *runner) ask(interactive bool, w bgjob.Approval) error {
 	what := short(w.Tool, 60)
 	if w.Reason != "" {
 		what += " — " + short(w.Reason, 160)
 	}
-	if in == nil {
+	if !interactive {
 		fmt.Fprintf(r.Err, "abhed: the job waits on you: %s; answer by %s with abhed bg attach in a terminal\n",
 			what, w.Deadline.Local().Format("15:04"))
 		return nil
@@ -525,20 +591,13 @@ func (r *runner) ask(in *bufio.Reader, w bgjob.Approval) error {
 		fmt.Fprintf(r.Err, "  %s\n", l)
 	}
 	fmt.Fprint(r.Err, "Allow it? [y/N] ")
-	got := make(chan string, 1)
-	go func() {
-		ans, err := in.ReadString('\n')
-		if err != nil && ans == "" {
-			ans = "" // no answer is a no
-		}
-		got <- ans
-	}()
-	var ans string
-	select {
-	case <-r.Ctx.Done():
+	ans, err := r.readLine()
+	if r.Ctx.Err() != nil {
 		fmt.Fprintln(r.Err)
 		return errDetached
-	case ans = <-got:
+	}
+	if err != nil {
+		ans = "" // no answer is a no
 	}
 	ok := strings.TrimSpace(ans) == "y" || strings.TrimSpace(ans) == "Y"
 	if err := r.cl.Answer(r.Ctx, w, ok); err != nil {
@@ -583,4 +642,71 @@ func argLines(raw json.RawMessage) []string {
 		out = append(out, short(k, 40)+": "+short(v, maxArg))
 	}
 	return out
+}
+
+// snapshot packs the repository the workspace is in and uploads it. What it
+// leaves out, and why, is said by name, so the person knows what the job
+// does not have.
+func (r *runner) snapshot(yes bool) (string, error) {
+	if r.SnapshotErr != nil {
+		return "", fmt.Errorf("no snapshot was sent: %w; pass -no-snapshot to start in an empty folder", r.SnapshotErr)
+	}
+	root, err := repoRoot(r.Ctx, r.Workspace)
+	if err != nil {
+		return "", usageError{fmt.Errorf("%s is not in a git repository; run abhed bg start in one, or pass -no-snapshot to start in an empty folder", line(r.Workspace))}
+	}
+	if !yes && !r.Interactive {
+		return "", usageError{errors.New("abhed bg start sends a snapshot of this repository to the server: pass -y to send it, or -no-snapshot to start in an empty folder")}
+	}
+	if r.RulesFor == nil {
+		return "", errors.New("no snapshot was sent: the read rules that say what it may carry are not known here")
+	}
+	// The repository's own rules, from its root, apply to every file packed,
+	// wherever in it the command was run.
+	withheld, err := r.RulesFor(root)
+	if err != nil {
+		return "", fmt.Errorf("no snapshot was sent: %w", err)
+	}
+	p, err := pack(r.Ctx, root, withheld, r.HoldsStored)
+	if err != nil {
+		return "", fmt.Errorf("the snapshot: %w", err)
+	}
+	say := func(what string, names []string) {
+		if len(names) == 0 {
+			return
+		}
+		shown := names
+		if len(shown) > 10 {
+			shown = shown[:10]
+		}
+		for i := range shown {
+			shown[i] = line(shown[i])
+		}
+		more := ""
+		if len(names) > len(shown) {
+			more = fmt.Sprintf(" and %d more", len(names)-len(shown))
+		}
+		fmt.Fprintf(r.Err, "abhed: left out %d %s: %s%s\n", len(names), what, strings.Join(shown, ", "), more)
+	}
+	say("file(s) your read rules withhold", p.withheld)
+	say("file(s) named like a key or holding a secret", p.secret)
+	say("other path(s)", p.skipped)
+	if !yes {
+		fmt.Fprintf(r.Err, "Send %d tracked file(s) of %s, %d KiB, to %s for the job? [y/N] ",
+			p.files, line(root), (p.bytes+1023)/1024, line(r.cl.Profile.URL))
+		ans, err := r.readLine()
+		if a := strings.TrimSpace(ans); err != nil || (a != "y" && a != "Y") {
+			if r.Ctx.Err() != nil {
+				fmt.Fprintln(r.Err)
+			}
+			return "", errors.New("nothing was sent; the job was not started")
+		}
+	}
+	snap, err := r.cl.UploadSnapshot(r.Ctx, p.tgz)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(r.Err, "abhed: sent %d tracked file(s) of %s, %d KiB, as they are in the working tree\n",
+		p.files, line(root), (p.bytes+1023)/1024)
+	return snap.ID, nil
 }

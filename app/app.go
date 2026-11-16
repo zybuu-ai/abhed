@@ -215,7 +215,7 @@ var subcommands = []subcommand{
 	{name: "policy", about: "the signed org policy this machine takes: status, show, refresh, leave"},
 	{name: "sandbox", about: "a server's sandboxes: " + strings.Join(sandboxcli.Commands(), ", ")},
 	{name: "pki", about: "a private CA for serve's TLS: init, server, client"},
-	{name: "bg", about: "background jobs on a server, as your own account: " + strings.Join(bgcli.Commands(), ", ")},
+	{name: "bg", about: "background jobs on a server, as your own account: " + strings.Join(bgcli.Commands(), ", "), trust: true},
 	{name: "egress-proxy", about: "serve the egress allowlist on its own, for a sandbox's egress pod (-listen, -config)"},
 	{name: "admin", about: "change the managed configuration, as root: web-search on|off"},
 	{name: "mcp", about: "MCP servers in your own configuration: add, list, remove", trust: true},

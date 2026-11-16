@@ -47,6 +47,12 @@ func newPerSessionRig(t *testing.T) *perSessionRig {
 // server's options, given the control plane it serves.
 func newPerSessionRigWith(t *testing.T, edition func(*Options)) *perSessionRig {
 	t.Helper()
+	return newPerSessionRigScoped(t, "", edition)
+}
+
+// newPerSessionRigScoped is newPerSessionRigWith with the sandboxes' scope.
+func newPerSessionRigScoped(t *testing.T, scope string, edition func(*Options)) *perSessionRig {
+	t.Helper()
 	st, err := controlplane.NewSettings(nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +73,7 @@ func newPerSessionRigWith(t *testing.T, edition func(*Options)) *perSessionRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mc := sessionsandbox.Config{Service: svc, Tenant: "default", Workspace: folder, Ready: 10 * time.Second,
+	mc := sessionsandbox.Config{Service: svc, Tenant: "default", Workspace: folder, Ready: 10 * time.Second, Scope: scope,
 		Isolation: func(sb controlplane.Sandbox) tools.Isolation { return tools.Isolation{Tier: sb.Tier} }}
 	mgr, err := sessionsandbox.New(mc)
 	if err != nil {
