@@ -551,6 +551,14 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	return v
 }
 
+// workSubjectRe is the session's own work named as what did something:
+// "this change", "the migration", "our PR".
+var workSubjectRe = regexp.MustCompile(`(?:^|[.;:]\s*)(?:the|this|that|these|those|my|our|your)\s+(?:[a-z\-]+\s+)?(?:changes?|edits?|commits?|migrations?|diffs?|prs?|pull requests?|rewrites?|clean-?ups?|revisions?|fix(?:es)?|patch(?:es)?|refactor(?:s|ing)?|updates?)\b`)
+
+// possessiveRe is a noun the person or the agent owns: "my handler", "our
+// config", "your tests".
+var possessiveRe = regexp.MustCompile(`\b(?:my|our|your)\s+[a-z]`)
+
 // sessionWorkRe is work said with no subject named for it: a passive
 // ("were updated", "was fixed") or a bare participle ending the sentence
 // ("typed errors added").
@@ -580,12 +588,16 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	// A "knowledge" claim about this session's own work is checked as one:
 	// a pass, a change or a deed in any wording ("the tests were updated by
 	// fixing the bugs in src/utils/text.py", "typed errors added"), a
-	// command run, a file:line. A fact about the world told in the past
-	// ("TLS 1.3 removed RSA key exchange") names no file, no code, and has
-	// no passive or bare participle, and stays knowledge.
+	// command run, a file:line, the session's work as its subject ("this
+	// change dropped the retry", "the migration added an index"), or a
+	// possessive ("our handler"). A fact about the world told in the past
+	// ("TLS 1.3 removed RSA key exchange") names no file, no code, no work
+	// of the session, and has no passive or bare participle, and stays
+	// knowledge.
 	if kind == KindKnowledge && (f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0 ||
 		workEvent && (f.deed || f.presentState || f.changeWord || f.overclaim || f.mergeClean || f.observe ||
-			len(f.paths) > 0 || len(f.tokens) > 0 || sessionWorkRe.MatchString(normText(c.Text)))) {
+			len(f.paths) > 0 || len(f.tokens) > 0 || sessionWorkRe.MatchString(normText(c.Text)) ||
+			workSubjectRe.MatchString(normText(c.Text)) || possessiveRe.MatchString(normText(c.Text)))) {
 		kind = KindObserved
 	}
 	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}

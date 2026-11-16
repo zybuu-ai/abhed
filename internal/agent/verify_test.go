@@ -1192,9 +1192,23 @@ func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
 			t.Errorf("%q: a knowledge claim of work was not checked as work: %+v", text, v)
 		}
 	}
-	for _, text := range []string{"TLS 1.3 removed RSA key exchange.", "Go 1.22 changed loop variable scoping."} {
+	for _, text := range []string{"TLS 1.3 removed RSA key exchange.", "Go 1.22 changed loop variable scoping.", "Python 3 dropped print statements."} {
 		if v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]; v.LoadBearing {
 			t.Errorf("%q: a fact about the world was counted as work: %+v", text, v)
 		}
+	}
+}
+
+// Strict mode never passes a knowledge claim whose subject is the
+// session's own work.
+func TestStrictWorkSubjectKnowledge(t *testing.T) {
+	answer := `{"text":"This change dropped the retry.","claims":[{"text":"This change dropped the retry.","kind":"knowledge"}]}`
+	l, store, _, _ := verifyHarness(t, VerifyStrict, true, []scriptedTurn{
+		{calls: []model.ToolCall{{ID: "c1", Name: "bash", Args: json.RawMessage(`{"command":"printf 'ok\\n'"}`)}}},
+		{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+		{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+	})
+	if reason, _ := l.Run(context.Background(), "drop the retry"); reason != TermUnverified {
+		t.Fatalf("strict passed a knowledge claim of the session's change: %s %+v", reason, answerVerdicts(store))
 	}
 }

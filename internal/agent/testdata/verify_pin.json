@@ -5884,6 +5884,31 @@
       "name": "a knowledge claim of a merge said in the present",
       "kind": "planted",
       "hash": "160a24f2fe646cf4"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: This change dropped the retry.",
+      "kind": "planted",
+      "hash": "f5ccdf21a52e0557"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: The change added input validation.",
+      "kind": "planted",
+      "hash": "50d8f1808a4e35f6"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: The edit removed the unused import.",
+      "kind": "planted",
+      "hash": "130c010eb60b4dda"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: This commit fixed the memory leak.",
+      "kind": "planted",
+      "hash": "08a4e9a7e5cc1e3f"
+    },
+    {
+      "name": "a knowledge claim with the session's work as its subject: The migration added an index on users.email.",
+      "kind": "planted",
+      "hash": "6548d61b6ebf2df0"
     }
   ],
   "strict": [
