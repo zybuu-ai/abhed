@@ -551,6 +551,11 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	return v
 }
 
+// sessionWorkRe is work said with no subject named for it: a passive
+// ("were updated", "was fixed") or a bare participle ending the sentence
+// ("typed errors added").
+var sessionWorkRe = regexp.MustCompile(`\b(?:was|were|is|are|has been|have been|got|gets)\s+(?:\w+ly\s+|now\s+|all\s+)?[a-z]+(?:ed|en|ten|wn|ne)\b|\b[a-z]+ed\s*[.!]?\s*$`)
+
 // citeRe is a citation written in a reply's text: (#12), [#12] or record #12.
 var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+)\b`)
 
@@ -574,8 +579,13 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	// A "knowledge" claim about this session's own work is checked as one:
 	// a pass, a change or a deed in any wording ("the tests were updated by
-	// fixing the bugs in src/utils/text.py"), a command run, a file:line.
-	if kind == KindKnowledge && (f.success || f.changed || workEvent || len(f.ran) > 0 || len(f.fileLines) > 0) {
+	// fixing the bugs in src/utils/text.py", "typed errors added"), a
+	// command run, a file:line. A fact about the world told in the past
+	// ("TLS 1.3 removed RSA key exchange") names no file, no code, and has
+	// no passive or bare participle, and stays knowledge.
+	if kind == KindKnowledge && (f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0 ||
+		workEvent && (f.deed || f.presentState || f.changeWord || f.overclaim || f.mergeClean || f.observe ||
+			len(f.paths) > 0 || len(f.tokens) > 0 || sessionWorkRe.MatchString(normText(c.Text)))) {
 		kind = KindObserved
 	}
 	v := ClaimVerdict{Text: c.Text, Kind: kind, Cited: c.Evidence}

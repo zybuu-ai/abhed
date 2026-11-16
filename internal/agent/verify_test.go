@@ -1182,3 +1182,19 @@ func TestStrictFinishedWorkStaysWork(t *testing.T) {
 		})
 	}
 }
+
+// A knowledge claim of work stays work; a fact about the world told in the
+// past stays knowledge.
+func TestKnowledgeOfWorkAndOfTheWorld(t *testing.T) {
+	b := newRec(t)
+	for _, text := range []string{"Typed errors added.", "The PR is merged.", "The tests were updated by fixing the bugs in src/utils/text.py."} {
+		if v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]; !v.LoadBearing || v.Verdict == ClaimVerified {
+			t.Errorf("%q: a knowledge claim of work was not checked as work: %+v", text, v)
+		}
+	}
+	for _, text := range []string{"TLS 1.3 removed RSA key exchange.", "Go 1.22 changed loop variable scoping."} {
+		if v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]; v.LoadBearing {
+			t.Errorf("%q: a fact about the world was counted as work: %+v", text, v)
+		}
+	}
+}
