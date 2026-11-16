@@ -1,11 +1,16 @@
 package app
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
 )
 
 const pricedMain = `,"pricing":{"m-1":{"input":0,"output":0}}`
@@ -55,7 +60,7 @@ func TestStudioCompletionsCharged(t *testing.T) {
 	}
 	r.cl.call("session/close", map[string]any{"sessionId": id})
 	sum, _ := r.recorded(id, agent.EvCompletionSummary)
-	if len(sum) != 1 || sum[0]["cost_usd"] != 34.0 || sum[0]["unpriced"] != nil {
+	if len(sum) != 1 || sum[0]["cost_usd"] != sum[0]["tokens_in"].(float64)+sum[0]["tokens_out"].(float64) || sum[0]["unpriced"] != nil {
 		t.Fatalf("completion.summary %v", sum)
 	}
 }
@@ -108,8 +113,8 @@ func TestStudioNextEditChargedWithoutUsage(t *testing.T) {
 	if len(sum) != 1 || sum[0]["served"] != float64(1) {
 		t.Fatalf("summary %v", sum)
 	}
-	if usd, _ := sum[0]["cost_usd"].(float64); usd <= 0 {
-		t.Fatalf("a served next edit was not charged: %v", sum[0])
+	if usd, _ := sum[0]["cost_usd"].(float64); usd <= 0 || sum[0]["tokens_in"].(float64) <= 0 || sum[0]["estimated"] != float64(1) {
+		t.Fatalf("a served next edit was not charged its estimated tokens: %v", sum[0])
 	}
 }
 
@@ -177,5 +182,49 @@ func TestStudioCommitMessageIsOneSpendEvent(t *testing.T) {
 	}
 	if got, _ := r.recorded(id, agent.EvCommitMessage); len(got) != 1 {
 		t.Fatalf("commit_message.generated %v", got)
+	}
+}
+
+// An editor call the provider never accepted is not charged; one that failed
+// after it did is; one cancelled under a cap is charged at its output bound,
+// whatever input was reported.
+func TestEditorChargeReachAndBound(t *testing.T) {
+	l := agent.NewLoop(&fakeAdapter{name: "gpt-4o"}, nil, nil, nil, nil, nil, agent.DefaultConfig())
+	l.Budget = agent.NewBudget(0, 0, false)
+	l.Budget.MaxUSD = 100
+	a := &fakeAdapter{name: "gpt-4o"}
+	refused := &model.StatusError{Status: 500}
+	if in, out, cost, _, est := editorCharge(l, a, 0, 0, refused, false, 4000, 0, 64); in != 0 || out != 0 || cost != nil || est {
+		t.Fatalf("an unreached call was charged: %d %d %v", in, out, cost)
+	}
+	dial := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	if _, _, cost, _, _ := editorCharge(l, a, 0, 0, fmt.Errorf("post: %w", dial), false, 4000, 0, 64); cost != nil {
+		t.Fatalf("a refused connection was charged: %v", *cost)
+	}
+	if in, out, cost, _, est := editorCharge(l, a, 0, 0, errors.New("stream reset"), false, 4000, 0, 64); in != 1000 || out != 64 || cost == nil || !est {
+		t.Fatalf("a failure after acceptance: in %d out %d cost %v", in, out, cost)
+	}
+	in, out, cost, _, est := editorCharge(l, a, 500, 0, context.Canceled, true, 4000, 8, 64)
+	if in != 500 || out != 64 || cost == nil || !est {
+		t.Fatalf("a cancelled call: in %d out %d cost %v estimated %v", in, out, cost, est)
+	}
+}
+
+// A warm-up is a model call too: under a dollar cap an unpriced completion
+// model is not warmed, and nothing is sent.
+func TestStudioWarmUpRefusedUnpricedUnderACap(t *testing.T) {
+	fim := newFIMServer(t, "x")
+	r := completionRig(t, fim.URL, `,"limits":{"max_budget_usd":1}`+pricedMain)
+	id := r.open()
+	var warm map[string]any
+	r.cl.ok("_abhed/complete/warm", map[string]any{"sessionId": id}, &warm)
+	if warm["warmed"] != false || !strings.Contains(fmt.Sprint(warm["skipped"]), "no price") {
+		t.Fatalf("warm %v", warm)
+	}
+	fim.mu.Lock()
+	n := len(fim.paths)
+	fim.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d requests went out", n)
 	}
 }

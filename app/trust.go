@@ -44,8 +44,11 @@ func loadSession(workspace string, trust config.TrustChoice, interactive bool, s
 		// Declining keeps whichever part was already trusted for this content:
 		// new definitions do not cost a trusted file, nor a changed file
 		// trusted definitions.
-		if err := config.RecordDecision(workspace, st.Reviewed(), st.Trusted && st.Reason == "stored",
-			st.AgentsTrusted && st.AgentsReason == "stored"); err != nil {
+		if err := config.RecordDecision(workspace, st.Reviewed(), config.Decisions{
+			Config: st.Trusted && st.Reason == "stored",
+			Agents: st.AgentsTrusted && st.AgentsReason == "stored",
+			Skills: st.SkillsTrusted && st.SkillsReason == "stored",
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "abhed: could not record the decision: %v\n", err)
 		}
 		if !st.Trusted {
@@ -53,6 +56,9 @@ func loadSession(workspace string, trust config.TrustChoice, interactive bool, s
 		}
 		if len(st.Agents) > 0 && !st.AgentsTrusted {
 			st.AgentsReason = "declined"
+		}
+		if len(st.Skills) > 0 && !st.SkillsTrusted && st.SkillsReason != "off" {
+			st.SkillsReason = "declined"
 		}
 		cfg.Workspace = st
 		warnTrust(st)
@@ -85,10 +91,16 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 	if st.File != "" {
 		fmt.Fprintf(out, "  %s\n", config.Printable(st.File))
 	}
+	if st.LocalFile != "" && st.LocalFile != st.File {
+		fmt.Fprintf(out, "  %s\n", config.Printable(st.LocalFile))
+	}
 	if len(st.Agents) > 0 {
 		fmt.Fprintf(out, "  %s (%d agent definition(s))\n", config.Printable(filepath.Join(st.Workspace, filepath.FromSlash(config.WorkspaceAgentsDir))), len(st.Agents))
 	}
-	if st.Reason == "changed" || st.AgentsReason == "changed" {
+	if len(st.Skills) > 0 && st.SkillsReason != "off" {
+		fmt.Fprintf(out, "  %s (%d skill(s))\n", config.Printable(filepath.Join(st.Workspace, filepath.FromSlash(config.WorkspaceSkillsDir))), len(st.Skills))
+	}
+	if st.Reason == "changed" || st.AgentsReason == "changed" || st.SkillsReason == "changed" {
 		fmt.Fprintln(out, "It has changed since you trusted it.")
 	} else {
 		fmt.Fprintln(out, "You have not trusted it yet. A file that came with a repository can widen what the agent may do.")
@@ -101,13 +113,24 @@ func askTrust(in io.Reader, out io.Writer, st config.WorkspaceTrust) (bool, erro
 		warnUsersTracked(out, st.Workspace)
 	}
 	// Ask about what is not yet trusted, never about what already is.
+	var parts []string
+	if st.File != "" && !st.Trusted {
+		parts = append(parts, "this file")
+	}
+	if len(st.Agents) > 0 && !st.AgentsTrusted {
+		parts = append(parts, "these definitions")
+	}
+	if len(st.Skills) > 0 && !st.SkillsTrusted && st.SkillsReason != "off" {
+		parts = append(parts, "these skills")
+	}
 	question := "Trust this file?"
-	agentsPending := len(st.Agents) > 0 && !st.AgentsTrusted
-	switch {
-	case agentsPending && st.File != "" && !st.Trusted:
-		question = "Trust this file and these definitions?"
-	case agentsPending:
-		question = "Trust these definitions?"
+	switch len(parts) {
+	case 1:
+		question = "Trust " + parts[0] + "?"
+	case 2:
+		question = "Trust " + parts[0] + " and " + parts[1] + "?"
+	case 3:
+		question = "Trust " + parts[0] + ", " + parts[1] + " and " + parts[2] + "?"
 	}
 	// Numbered answers only, checked as every dialog is: nothing is chosen
 	// for an empty line, and no letter trusts the file.
@@ -152,6 +175,26 @@ func describeTrust(out io.Writer, st config.WorkspaceTrust) {
 	}
 	if !st.AgentsTrusted {
 		describeAgents(out, st, "Trusting them would let these agent definitions load:")
+	}
+	if !st.SkillsTrusted && st.SkillsReason != "off" {
+		describeSkills(out, st, "Trusting them would let these skills load (a skill is instructions to the agent; a pipeline runs tool steps):")
+	}
+}
+
+// describeSkills lists the workspace's skills: the name the model would
+// call, the description it would choose by, and each skill's hash, read
+// from the content the decision covers.
+func describeSkills(out io.Writer, st config.WorkspaceTrust, heading string) {
+	if len(st.Skills) == 0 && len(st.SkillsProblems) == 0 {
+		return
+	}
+	fmt.Fprintln(out, heading)
+	for _, s := range st.Skills {
+		fmt.Fprintf(out, "  %s  sha256 %s  (%s)\n    %s\n", config.Printable(s.Name), s.SHA256[:12],
+			config.Printable(s.Dir), config.Printable(s.Description))
+	}
+	for _, p := range st.SkillsProblems {
+		fmt.Fprintf(out, "  never loaded: %s\n", p)
 	}
 }
 
@@ -209,19 +252,29 @@ func showFile(out io.Writer, st config.WorkspaceTrust) {
 	for _, f := range st.AgentFiles() {
 		fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(f.Path), config.PrintableText(string(bytes.TrimRight(f.Data, "\n"))))
 	}
+	if st.SkillsReason != "off" {
+		for _, s := range st.SkillFiles() {
+			for _, f := range s.Files {
+				fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(filepath.Join(s.Path, filepath.FromSlash(f.Rel))),
+					config.PrintableText(string(bytes.TrimRight(f.Data, "\n"))))
+			}
+		}
+	}
 	if st.File == "" {
 		return
 	}
-	data, err := os.ReadFile(st.File)
+	paths, contents, unchanged, err := st.WorkspaceFiles()
 	if err != nil {
 		fmt.Fprintf(out, "cannot read it: %v\n", err)
 		return
 	}
-	if config.HashOf(data) != st.SHA256 {
+	if !unchanged {
 		fmt.Fprintln(out, "The file changed while you were being asked. Answer 1 (No), and run abhed again to review the new version.")
 		return
 	}
-	fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(st.File), config.PrintableText(string(bytes.TrimRight(data, "\n"))))
+	for i, p := range paths {
+		fmt.Fprintf(out, "\n--- %s\n%s\n---\n", config.Printable(p), config.PrintableText(string(bytes.TrimRight(contents[i], "\n"))))
+	}
 }
 
 // askNumbered asks until a line names one of the numbered labels and returns
@@ -316,16 +369,17 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		return trustStartupFilesCmd(args, out)
 	}
 	// -sha256 pins a grant to the content that was reviewed.
-	var want, wantAgents string
+	var want, wantAgents, wantSkills string
 	if verb == "grant" {
 		fs := flag.NewFlagSet("abhed trust grant", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
 		sum := fs.String("sha256", "", "grant only if the file still has this hash")
 		agentsSum := fs.String("agents-sha256", "", "grant only if the agent definitions still have this hash")
+		skillsSum := fs.String("skills-sha256", "", "grant only if the skills still have this hash")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		want, wantAgents, args = strings.ToLower(*sum), strings.ToLower(*agentsSum), fs.Args()
+		want, wantAgents, wantSkills, args = strings.ToLower(*sum), strings.ToLower(*agentsSum), strings.ToLower(*skillsSum), fs.Args()
 	}
 	dir := workspace
 	if len(args) > 0 {
@@ -351,11 +405,12 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 			fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 			return 1
 		}
-		if st.File == "" && len(st.Agents) == 0 && st.UsersFile == "" {
-			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json, .abhed/agents or .abhed/users.json to trust\n", st.Workspace)
+		skills := len(st.Skills) > 0 && st.SkillsReason != "off"
+		if st.File == "" && len(st.Agents) == 0 && !skills && st.UsersFile == "" {
+			fmt.Fprintf(os.Stderr, "abhed: trust: %s has no .abhed/config.json, .abhed/agents, .abhed/skills or .abhed/users.json to trust\n", st.Workspace)
 			return 1
 		}
-		if st.Reason == "home" || st.AgentsReason == "home" {
+		if st.Reason == "home" || st.AgentsReason == "home" || st.SkillsReason == "home" {
 			fmt.Fprintf(out, "%s is your own configuration and is always trusted.\n", config.Printable(filepath.Join(st.Workspace, ".abhed")))
 			return 0
 		}
@@ -369,8 +424,13 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 				"Nothing was trusted; review them again with `abhed trust`\n", st.AgentsSHA256, config.Printable(wantAgents))
 			return 1
 		}
+		if wantSkills != "" && wantSkills != st.SkillsSHA256 {
+			fmt.Fprintf(os.Stderr, "abhed: trust: the skills have changed: their sha256 is %s, not the %s you reviewed. "+
+				"Nothing was trusted; review them again with `abhed trust`\n", st.SkillsSHA256, config.Printable(wantSkills))
+			return 1
+		}
 		// The hashes are of the content just classified, not of a second read.
-		if st.File != "" || len(st.Agents) > 0 {
+		if st.File != "" || len(st.Agents) > 0 || skills {
 			if err := config.GrantReviewed(dir, st.Reviewed()); err != nil {
 				fmt.Fprintf(os.Stderr, "abhed: trust: %v\n", err)
 				return 1
@@ -392,9 +452,12 @@ func trustCmd(workspace string, args []string, out io.Writer) int {
 		if len(st.Agents) > 0 {
 			fmt.Fprintf(out, "Trusted %d agent definition(s) (sha256 %s).\n", len(st.Agents), st.AgentsSHA256[:12])
 		}
-		// Accounts trust is not tied to a hash, so only the config and definitions re-ask.
-		if st.File != "" || len(st.Agents) > 0 {
-			fmt.Fprintln(out, "A later change to the file or a definition makes it untrusted again.")
+		if skills {
+			fmt.Fprintf(out, "Trusted %d skill(s) (sha256 %s).\n", len(st.Skills), st.SkillsSHA256[:12])
+		}
+		// Accounts trust is not tied to a hash, so only the config, definitions and skills re-ask.
+		if st.File != "" || len(st.Agents) > 0 || skills {
+			fmt.Fprintln(out, "A later change to the file, a definition or a skill makes it untrusted again.")
 		}
 		return 0
 	case "revoke":
@@ -455,11 +518,15 @@ func printTrust(out io.Writer, st config.WorkspaceTrust) {
 	fmt.Fprintf(out, "workspace   %s\n", config.Printable(st.Workspace))
 	printUsersTrust(out, st)
 	printAgentsTrust(out, st)
+	printSkillsTrust(out, st)
 	if st.File == "" {
 		fmt.Fprintln(out, "config      none")
 		return
 	}
 	fmt.Fprintf(out, "config      %s\n", config.Printable(st.File))
+	if st.LocalFile != "" && st.LocalFile != st.File {
+		fmt.Fprintf(out, "local       %s\n", config.Printable(st.LocalFile))
+	}
 	fmt.Fprintf(out, "sha256      %s\n", st.SHA256)
 	fmt.Fprintf(out, "trust       %s\n", trustLabel(st))
 	if st.Reason == "home" {
@@ -533,6 +600,46 @@ func printAgentsTrust(out io.Writer, st config.WorkspaceTrust) {
 	fmt.Fprintln(out)
 }
 
+// skillsLabel is the one-line state of the workspace's skills.
+func skillsLabel(st config.WorkspaceTrust) string {
+	switch {
+	case st.SkillsReason == "home":
+		return "your own skills"
+	case st.SkillsReason == "off":
+		return "OFF: skills.disable_workspace or skills.disabled is set, so none load"
+	case st.SkillsTrusted:
+		return map[string]string{"stored": "trusted", "flag": "trusted for this run (-trust-workspace)",
+			"env": "trusted for this run (" + config.TrustEnv + ")"}[st.SkillsReason]
+	case st.SkillsReason == "changed":
+		return "NOT TRUSTED: changed since they were trusted"
+	case st.SkillsReason == "declined":
+		return "NOT TRUSTED: you chose not to trust them"
+	}
+	return "NOT TRUSTED"
+}
+
+// printSkillsTrust is abhed trust's section on the workspace's skills: each
+// one's name, description and hash.
+func printSkillsTrust(out io.Writer, st config.WorkspaceTrust) {
+	if len(st.Skills) == 0 && len(st.SkillsProblems) == 0 {
+		return
+	}
+	if len(st.Skills) > 0 {
+		fmt.Fprintf(out, "skills      %d skill(s) in %s\n", len(st.Skills), config.WorkspaceSkillsDir)
+		fmt.Fprintf(out, "sha256      %s\n", st.SkillsSHA256)
+		fmt.Fprintf(out, "trust       %s\n", skillsLabel(st))
+	}
+	heading := "Not loaded until you trust them (`abhed trust grant`):"
+	switch {
+	case st.SkillsReason == "off":
+		heading = "Not loaded, whatever the trust:"
+	case st.SkillsTrusted:
+		heading = "Loaded:"
+	}
+	describeSkills(out, st, heading)
+	fmt.Fprintln(out)
+}
+
 // printDoctorTrust is doctor's line on the workspace file, naming each
 // setting an untrusted one had ignored.
 func printDoctorTrust(out io.Writer, st config.WorkspaceTrust) {
@@ -543,6 +650,15 @@ func printDoctorTrust(out io.Writer, st config.WorkspaceTrust) {
 		}
 	}
 	for _, p := range st.AgentsProblems {
+		fmt.Fprintf(out, "            ⚠ never loaded: %s\n", p)
+	}
+	if len(st.Skills) > 0 {
+		fmt.Fprintf(out, "skills      %s — %d skill(s) in %s\n", skillsLabel(st), len(st.Skills), config.WorkspaceSkillsDir)
+		for _, s := range st.IgnoredSkills() {
+			fmt.Fprintf(out, "            ⚠ ignored %s\n", s)
+		}
+	}
+	for _, p := range st.SkillsProblems {
 		fmt.Fprintf(out, "            ⚠ never loaded: %s\n", p)
 	}
 	if st.File == "" {

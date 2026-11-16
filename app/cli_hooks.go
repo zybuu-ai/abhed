@@ -21,12 +21,16 @@ func init() {
 // attachHooks gives a conversation's loop the session's hooks, and has each
 // hook that fires recorded in that conversation as hook.fired.
 func (c *cliState) attachHooks(loop *agent.Loop) {
-	c.hookRecorder.Store(loop.Recorder)
+	prev := c.hookRecorder.Swap(loop.Recorder)
 	if c.hooks == nil || c.hooks.Len() == 0 {
 		return
 	}
+	if prev != nil && loop.Recorder != nil && prev.Root() != loop.Recorder.Root() {
+		// The conversation left behind is over: its halt and its async hook runs end with it.
+		c.hooks.EndSession(prev.Root())
+	}
 	// A refusal is said as an error, a message gone unscreened as a notice.
-	loop.Hooks = toolset.HostHooks{Host: c.hooks, Note: func(text string, refused bool) {
+	loop.Hooks = toolset.HostHooks{Host: c.hooks, Redact: toolset.NoteRedactor(loop), Note: func(text string, refused bool) {
 		kind := ui.BlockNotice
 		if refused {
 			kind = ui.BlockError
@@ -44,9 +48,7 @@ func recordFired(host *extension.Host, rec func() *agent.Recorder) {
 		if r == nil {
 			return
 		}
-		if _, err := r.Record(agent.EvHookFired, agent.ActorSystem, agent.Trusted, agent.HookFired{
-			Extension: f.Extension, Event: string(f.Event), Verdict: f.Verdict,
-		}); err != nil {
+		if err := toolset.RecordFired(r, f); err != nil {
 			warnf("could not record %s: %v", agent.EvHookFired, err)
 		}
 	})
@@ -65,7 +67,7 @@ func (c *cliState) say(b ui.Block) {
 // from, the events it takes, what it matches, and whether it still runs.
 func slashHooks(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 	cfg := e.st.appCfg
-	rows := [][]string{{"extension", "layer", "events", "match", "status"}}
+	rows := [][]string{{"hook", "layer", "events", "match", "status"}}
 	running := map[string]*extension.Extension{}
 	for _, x := range e.st.hooks.Extensions() {
 		running[x.Name()] = x
@@ -98,6 +100,24 @@ func slashHooks(ctx context.Context, e *cmdEnv, _ []string) (bool, error) {
 			status = "off: only the managed configuration's extensions take hooks"
 		}
 		rows = append(rows, []string{x.Name, layer, events, strings.Join(x.Match, ", "), status})
+	}
+	// Simple hooks run once per event, so each is ready rather than running.
+	for _, x := range cfg.Hooks.Run {
+		layer := orDefault(x.Layer, "config")
+		if layer == config.LayerManaged {
+			layer = "managed (locked)"
+		}
+		status := "command, in the sandbox"
+		if x.URL != "" {
+			status = "http, under the egress rules"
+		}
+		switch {
+		case cfg.Hooks.Disabled:
+			status = "off: hooks are disabled"
+		case cfg.Hooks.ManagedOnly && x.Layer != config.LayerManaged:
+			status = "off: only the managed configuration's hooks run"
+		}
+		rows = append(rows, []string{x.Name, layer, strings.Join(x.Events, ", "), strings.Join(x.Match, ", "), status})
 	}
 	body := []ui.Block{{Kind: ui.BlockTable, Rows: rows}}
 	if len(rows) == 1 {

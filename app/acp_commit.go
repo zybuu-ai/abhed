@@ -200,7 +200,7 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		return
 	}
 	res, err := model.CommitMessageByChat(ctx, a, diff.text, commitMaxTokens)
-	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err != nil && ctx.Err() != nil,
+	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, err != nil && ctx.Err() != nil,
 		len(diff.text), len(res.Text), commitMaxTokens)
 	text := res.Text
 	if clean(text) != text {
@@ -214,7 +214,7 @@ func (c *acpConn) commitMessage(msg rpcMessage) {
 		recorded = "empty"
 	}
 	if _, rerr := parts.Loop.Recorder.Record(agent.EvCommitMessage, agent.ActorSystem, agent.Trusted,
-		agent.CommitMessage{Outcome: recorded, TokensIn: res.InputTokens, TokensOut: res.OutputTokens,
+		agent.CommitMessage{Outcome: recorded, TokensIn: tokIn, TokensOut: tokOut,
 			CostUSD: usd, Unpriced: unpriced, Estimated: estimated}); rerr != nil {
 		warnf("the record did not take %s: %v", agent.EvCommitMessage, rerr)
 	}

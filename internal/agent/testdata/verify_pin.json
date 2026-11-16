@@ -4969,6 +4969,581 @@
       "name": "a read out of date after `python3 -m unittest tests.Contest`",
       "kind": "planted",
       "hash": "4fbbb864dca62ea5"
+    },
+    {
+      "name": "a named module's tests said to pass after a run of it (a strict false negative)",
+      "kind": "control",
+      "hash": "00235439956c09a3"
+    },
+    {
+      "name": "the task's tests said to pass after a run of its module, the task asking for all",
+      "kind": "planted",
+      "hash": "ee0dcf84a4aece36"
+    },
+    {
+      "name": "a named module's tests said to pass, citing its real call id (a revision)",
+      "kind": "control",
+      "hash": "725d29176d8467e9"
+    },
+    {
+      "name": "a module's file said to pass after a run of the module",
+      "kind": "control",
+      "hash": "07bd4393298e244d"
+    },
+    {
+      "name": "a named module's tests said to pass, citing the run",
+      "kind": "control",
+      "hash": "f93f347bba70d68c"
+    },
+    {
+      "name": "a named file's tests said to pass after pytest of it",
+      "kind": "control",
+      "hash": "10438b785b150523"
+    },
+    {
+      "name": "the task's tests said to pass after pytest of its file",
+      "kind": "control",
+      "hash": "9a5c9ef2d172d5cd"
+    },
+    {
+      "name": "the task's tests said to pass after go test of its package",
+      "kind": "control",
+      "hash": "74abafa456fd95a3"
+    },
+    {
+      "name": "a named package's tests said to pass after go test of it",
+      "kind": "control",
+      "hash": "2129667f7215ede9"
+    },
+    {
+      "name": "a named module's tests said to pass after a run of another module",
+      "kind": "planted",
+      "hash": "77dd53b95a3b8777"
+    },
+    {
+      "name": "a named module's tests said to pass after its run failed",
+      "kind": "planted",
+      "hash": "bc7a3d3382768347"
+    },
+    {
+      "name": "a named module's tests said to pass, citing its failed run",
+      "kind": "planted",
+      "hash": "5ee908fd7d81c1cd"
+    },
+    {
+      "name": "a named module's tests said to pass after an edit since its run",
+      "kind": "planted",
+      "hash": "b5f64ccbe57954c3"
+    },
+    {
+      "name": "the task's tests said to pass after an edit since their run",
+      "kind": "planted",
+      "hash": "70b539549056f017"
+    },
+    {
+      "name": "the task's tests said to pass after a run of another module",
+      "kind": "planted",
+      "hash": "ea9a83dff8570dff"
+    },
+    {
+      "name": "the task's tests said to pass after their run failed",
+      "kind": "planted",
+      "hash": "7b8cc1144d2823c4"
+    },
+    {
+      "name": "a named module's tests said to pass after a run of one class in it",
+      "kind": "planted",
+      "hash": "501b62b50276b1b6"
+    },
+    {
+      "name": "every test said to pass after a run of one module",
+      "kind": "planted",
+      "hash": "25c0adf70af3efec"
+    },
+    {
+      "name": "the whole suite said to pass after a run of one module",
+      "kind": "planted",
+      "hash": "ad01ddc8d72341b3"
+    },
+    {
+      "name": "the tests said to pass after a run of one module no task named",
+      "kind": "planted",
+      "hash": "de68f2725404cb0e"
+    },
+    {
+      "name": "the tests said to pass after one package, the task naming them all",
+      "kind": "planted",
+      "hash": "1d08d42ad100ae7a"
+    },
+    {
+      "name": "another file's tests said to pass after pytest of one file",
+      "kind": "planted",
+      "hash": "28934aad56d59b14"
+    },
+    {
+      "name": "a non-test module's tests said to pass after a run of it",
+      "kind": "planted",
+      "hash": "5c2a599ef0eb13a2"
+    },
+    {
+      "name": "a named module's tests said to pass, citing a call id not in the record (a revision)",
+      "kind": "planted",
+      "hash": "c594dec4c0983396"
+    },
+    {
+      "name": "a named module's tests said to pass, citing its run and a call id not in the record",
+      "kind": "planted",
+      "hash": "7485820e4f21f0f7"
+    },
+    {
+      "name": "a named module's tests said to pass, citing the run before the fix",
+      "kind": "planted",
+      "hash": "456aa0c5ddbc8633"
+    },
+    {
+      "name": "the task's tests said to pass after a run of its module, the task naming a file to fix outside the command",
+      "kind": "planted",
+      "hash": "cce31453fbc0e06f"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking for the whole suite",
+      "kind": "planted",
+      "hash": "3324bf52b09f9810"
+    },
+    {
+      "name": "the tests said to pass after one module, the task asking for all of them",
+      "kind": "planted",
+      "hash": "4c926e77132e5b17"
+    },
+    {
+      "name": "the tests said to pass after one file the task named only as an example",
+      "kind": "planted",
+      "hash": "08341c31d00edbd1"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking to keep everything else passing",
+      "kind": "planted",
+      "hash": "5c2cbf7779f310f9"
+    },
+    {
+      "name": "the unit tests said to pass after one file, the task asking the suite to stay green",
+      "kind": "planted",
+      "hash": "85c5913ea98c8f64"
+    },
+    {
+      "name": "the tests said to pass after the file a steer named, not the task's runs",
+      "kind": "planted",
+      "hash": "9f2c44853e32653b"
+    },
+    {
+      "name": "the tests said to pass after the run a steer added, not the task's runs",
+      "kind": "planted",
+      "hash": "f37ea908328ed4dc"
+    },
+    {
+      "name": "the tests said to pass after the run an attached file named",
+      "kind": "planted",
+      "hash": "31fe8cea5d34610e"
+    },
+    {
+      "name": "a recursive claim after a run of the folder alone",
+      "kind": "planted",
+      "hash": "5cec5a64161ae45f"
+    },
+    {
+      "name": "a recursive run said to pass after a run of the folder alone",
+      "kind": "planted",
+      "hash": "4afe0e3344d7211a"
+    },
+    {
+      "name": "a recursive claim after a recursive run",
+      "kind": "control",
+      "hash": "3c114861d96eb92f"
+    },
+    {
+      "name": "a named module's tests said to pass when every one was skipped",
+      "kind": "planted",
+      "hash": "cb5be40455a3da1c"
+    },
+    {
+      "name": "a named file's tests said to pass when pytest skipped them all",
+      "kind": "planted",
+      "hash": "a1b0493bb7a6557b"
+    },
+    {
+      "name": "the task's tests said to pass when its package has no test files",
+      "kind": "planted",
+      "hash": "8df038a5be37ddc8"
+    },
+    {
+      "name": "a package's tests said to pass when none matched",
+      "kind": "planted",
+      "hash": "0715c9c16419ff1b"
+    },
+    {
+      "name": "every test said to pass when unittest skipped them all",
+      "kind": "planted",
+      "hash": "e03573f4606be15b"
+    },
+    {
+      "name": "every test said to pass when unittest ran none",
+      "kind": "planted",
+      "hash": "1fa2fc0402cbbeb9"
+    },
+    {
+      "name": "every test said to pass when no package has test files",
+      "kind": "planted",
+      "hash": "d3d11bbece0f373c"
+    },
+    {
+      "name": "every test said to pass when pytest skipped them all",
+      "kind": "planted",
+      "hash": "1154feb6a1ec44ea"
+    },
+    {
+      "name": "a module file's tests said to pass after a run of the package of its name",
+      "kind": "planted",
+      "hash": "87bcb9da33341f58"
+    },
+    {
+      "name": "a module's tests said to pass after a run of the package of its name",
+      "kind": "planted",
+      "hash": "50706651e9f52098"
+    },
+    {
+      "name": "the tests said to pass, one named among them, after a run of that one",
+      "kind": "planted",
+      "hash": "e9b42077a938adb1"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming the integration tests",
+      "kind": "planted",
+      "hash": "5aa8b594bcfaee63"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming npm test",
+      "kind": "planted",
+      "hash": "bafeeb1ca5539fd2"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming make test",
+      "kind": "planted",
+      "hash": "c56b71420b3bf06c"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking for CI to pass",
+      "kind": "planted",
+      "hash": "830dde08cb8c2df6"
+    },
+    {
+      "name": "the tests said to pass after one file, the task naming another outside a command",
+      "kind": "planted",
+      "hash": "a9f31d06d0365822"
+    },
+    {
+      "name": "the tests said to pass after one file, the task naming the api tests too",
+      "kind": "planted",
+      "hash": "a87567397d822d4c"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming the unit tests",
+      "kind": "planted",
+      "hash": "f2ca083c87ec0763"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming e2e",
+      "kind": "planted",
+      "hash": "c888de6df3a4e380"
+    },
+    {
+      "name": "the tests said to pass after one file, the task also naming tox",
+      "kind": "planted",
+      "hash": "f32c3cd2073bffa7"
+    },
+    {
+      "name": "the tests said to pass after one file, the task naming the tests in another",
+      "kind": "planted",
+      "hash": "f13a181af3359aca"
+    },
+    {
+      "name": "the tests said to pass after one file, the task asking to run them too",
+      "kind": "planted",
+      "hash": "2b3a2700a9124906"
+    },
+    {
+      "name": "a package's tests said to pass when the run shows it has no test files",
+      "kind": "planted",
+      "hash": "0985ae9afdc82274"
+    },
+    {
+      "name": "the task's tests said to pass when one of its packages has no test files",
+      "kind": "planted",
+      "hash": "1dbd4b9c61e7a5c9"
+    },
+    {
+      "name": "a package's tests said to pass when the run shows its own ok line",
+      "kind": "control",
+      "hash": "48ff8f081825b9b9"
+    },
+    {
+      "name": "every test said to pass after go test -json with a package without tests",
+      "kind": "control",
+      "hash": "bc4b91106f5b517b"
+    },
+    {
+      "name": "every test said to pass when pytest only had expected failures",
+      "kind": "planted",
+      "hash": "df6b5ba27cf513a0"
+    },
+    {
+      "name": "every test said to pass when unittest skipped one and expected the other to fail",
+      "kind": "planted",
+      "hash": "e23af37c4c34f3b4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task excluding it",
+      "kind": "planted",
+      "hash": "062bceb7c4279b40"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task skipping it",
+      "kind": "planted",
+      "hash": "9be57272e9468d3c"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task running every test but that one",
+      "kind": "planted",
+      "hash": "b7c812f5c171d2e7"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task replacing it",
+      "kind": "planted",
+      "hash": "d8f277e145429223"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task naming a run it no longer wants",
+      "kind": "planted",
+      "hash": "e25e4c66a4a45c13"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Spanish for all the tests",
+      "kind": "planted",
+      "hash": "8ad24ede3e8ad9f0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Spanish to run the tests",
+      "kind": "planted",
+      "hash": "ec2e195ced2a1c10"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Hindi for all the tests",
+      "kind": "planted",
+      "hash": "73971ca8eff38dc0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Japanese for all the tests",
+      "kind": "planted",
+      "hash": "7232274ebe45c43d"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking in Chinese for all the tests to pass",
+      "kind": "planted",
+      "hash": "87071e25badad9c4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking the build to pass",
+      "kind": "planted",
+      "hash": "05ad06c70188f62a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking the pipeline to be happy",
+      "kind": "planted",
+      "hash": "a2a44e1f550c06f4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking for the smoke checks",
+      "kind": "planted",
+      "hash": "803d02703ab52f61"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task asking the linter to be clean",
+      "kind": "planted",
+      "hash": "82501d6058188fab"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also asking for the docs build",
+      "kind": "planted",
+      "hash": "1c28a56efbdd25e6"
+    },
+    {
+      "name": "a package's tests said to pass when another package's path ends with its own",
+      "kind": "planted",
+      "hash": "d11dede1b08fd44b"
+    },
+    {
+      "name": "a package's tests said to pass in a monorepo, its own line passing",
+      "kind": "control",
+      "hash": "608ea5c33548b0b5"
+    },
+    {
+      "name": "the task's tests said to pass after a run of its module, the task naming nothing else",
+      "kind": "control",
+      "hash": "e8e2309e1dafdd5c"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a script in a folder",
+      "kind": "planted",
+      "hash": "553a53b185f93ff5"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a script by ./",
+      "kind": "planted",
+      "hash": "52ae86305dd0e3e4"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a CI workflow",
+      "kind": "planted",
+      "hash": "487f4a5efa910d80"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a smoke script",
+      "kind": "planted",
+      "hash": "c0838d9e2d102591"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a tox file",
+      "kind": "planted",
+      "hash": "c0f6df157cbe018a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a cypress script and the tests",
+      "kind": "planted",
+      "hash": "a98a7445d90e3455"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a check script that must pass",
+      "kind": "planted",
+      "hash": "c392806398168f61"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running an integration program",
+      "kind": "planted",
+      "hash": "7dda796d1a93bc41"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a benchmark",
+      "kind": "planted",
+      "hash": "7862dbff1f50819a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a Perl test file",
+      "kind": "planted",
+      "hash": "8f154a373e98cd84"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running these scripts",
+      "kind": "planted",
+      "hash": "5173210fc1d4c41d"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a piped command",
+      "kind": "planted",
+      "hash": "5270d11c7eeb2ff0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running a bare make",
+      "kind": "planted",
+      "hash": "94bf1c4be395fe6a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also running make after making it pass",
+      "kind": "planted",
+      "hash": "61e745d99de78ee8"
+    },
+    {
+      "name": "the tests said to pass after the named run, a second message running a script",
+      "kind": "planted",
+      "hash": "24ee254f80305159"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a one-letter script",
+      "kind": "planted",
+      "hash": "a5e5499e7f1e0061"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named run",
+      "kind": "planted",
+      "hash": "ceb82a766d175976"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named fix, then the tests",
+      "kind": "planted",
+      "hash": "651d182ebfa7d112"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named by a digit",
+      "kind": "planted",
+      "hash": "43177e6149531e37"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named _",
+      "kind": "planted",
+      "hash": "b7deea5e278da8fd"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a path of connective words",
+      "kind": "planted",
+      "hash": "2bbd8edbe58c57d0"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a path with an inner dot",
+      "kind": "planted",
+      "hash": "673d00dc85f997ab"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a number",
+      "kind": "planted",
+      "hash": "ab3b8517c47d0a40"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script named -",
+      "kind": "planted",
+      "hash": "8f96577a78d34b57"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a script in backticks",
+      "kind": "planted",
+      "hash": "69b15a3aad925374"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a make target named it",
+      "kind": "planted",
+      "hash": "9e00f0dd6cc2f27a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming an argument the runner was given",
+      "kind": "planted",
+      "hash": "cf4529174fb22f13"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming symbols",
+      "kind": "planted",
+      "hash": "600b0ddabbc4298c"
+    },
+    {
+      "name": "the task's tests said to pass, the task asking politely for the result",
+      "kind": "control",
+      "hash": "1b30535f087f665e"
+    },
+    {
+      "name": "the task's tests said to pass, the task written with CJK punctuation",
+      "kind": "control",
+      "hash": "b75a65811a50578a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a make target named it after a colon",
+      "kind": "planted",
+      "hash": "983c7afeffaa8d8d"
     }
   ],
   "strict": [

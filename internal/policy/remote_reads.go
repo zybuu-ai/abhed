@@ -56,9 +56,11 @@ func ParseRemoteRead(p string) (Rule, error) {
 	case wildcard && !known:
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q has a wildcard, and %s is not on the list of programs a wildcard may name; declare the exact command instead", p, name)
 	case wildcard && !readCallOK(spec, words[1:], func(w string) bool { return strings.ContainsAny(w, "*?") }):
-		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s (see docs/ops/infrastructure.md#ssh); declare the exact command instead", p, name)
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s. %s; %s "+
+			"(see docs/ops/infrastructure.md#ssh); or declare the exact command instead", p, name, acceptedForms, readFormSummary(name, spec))
 	case !wildcard && known && !readCallOK(spec, words[1:], func(string) bool { return false }):
-		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s: it uses a verb or option the list does not hold as a read (see docs/ops/infrastructure.md#ssh)", p, name)
+		return Rule{}, fmt.Errorf("ssh.read_commands: %q is not a read form of %s: it uses a verb or option the list does not hold as a read; %s "+
+			"(see docs/ops/infrastructure.md#ssh)", p, name, readFormSummary(name, spec))
 	case !wildcard && !known && runsCommandsIn(s):
 		return Rule{}, fmt.Errorf("ssh.read_commands: %q runs %s, which runs what it is given, so it is not a read", p, name)
 	}
@@ -75,6 +77,11 @@ func ParseRemoteRead(p string) (Rule, error) {
 	}
 	return Rule{raw: s, tool: "ssh", pattern: re, glob: s}, nil
 }
+
+// acceptedForms says what a wildcard entry may be, for an entry refused at load.
+const acceptedForms = "An entry is an exact command (\"df -h\"), or a pattern whose * or ? stands for " +
+	"a whole operand (\"df -h *\", \"tail -n 50 /var/log/*.log\") or for an option's value after = " +
+	"(\"df --output=*\"), never for part of an option (\"-h*\") or for an option itself"
 
 // remoteReadRule is the ssh.read_commands entry the call's command matches,
 // or "": only one simple command, whose words the text shows, that no
@@ -226,8 +233,9 @@ var commandRunners = map[string]bool{
 	"tini": true, "dumb-init": true, "catatonit": true, "s6-svscan": true, "virsh": true, "incus": true, "ctr": true, "nerdctl": true, "runc": true, "crun": true, "oc": true, "helm": true,
 }
 
-// RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read, or
-// "" for a call that is not one.
+// RemoteReadOf is the ssh.read_commands entry an ssh call runs as a read,
+// ReadOnlyRule when the read-only classifier finds it one on a host the
+// operator declared, or "" for a call that is not a read.
 func (e *Engine) RemoteReadOf(tool string, args json.RawMessage) string {
 	host, command, ok := remoteCommand(tool, args)
 	if !ok {
@@ -235,5 +243,17 @@ func (e *Engine) RemoteReadOf(tool string, args json.RawMessage) string {
 	}
 	rr := readRemote(host, command)
 	rr.stdin = carriesStdinSecret(args)
-	return e.remoteReadRule(rr)
+	if rule := e.remoteReadRule(rr); rule != "" {
+		return rule
+	}
+	if e.remoteIsReadOnly(rr) {
+		return ReadOnlyRule
+	}
+	return ""
+}
+
+// remoteIsReadOnly reports an ssh call the read-only classifier approves.
+func (e *Engine) remoteIsReadOnly(rr remoteRead) bool {
+	_, why := e.remoteReadOnly(rr)
+	return why == ""
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -120,8 +121,20 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		if ev.Actor == agent.ActorUser {
 			meta["by"] = "user"
 		}
-		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": toolTitle(p.Tool, p.Args),
-			"kind": toolKind(p.Tool), "status": "pending", "rawInput": p.Args, "_meta": map[string]any{acpMetaKey: meta}})
+		title, kind := toolTitle(p.Tool, p.Args), toolKind(p.Tool)
+		if p.Via == agent.DiagnosticsVia && ev.Actor == agent.ActorSystem {
+			// The engine's start of a language server, not a command of the agent's.
+			title, kind = "Language server: "+diagnosticsServer(p.Args), "other"
+			meta["tool"] = "language_server"
+			s.mu.Lock()
+			if s.engineCalls == nil {
+				s.engineCalls = map[string]string{}
+			}
+			s.engineCalls[p.CallID] = diagnosticsCommand(p.Args)
+			s.mu.Unlock()
+		}
+		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": title,
+			"kind": kind, "status": "pending", "rawInput": p.Args, "_meta": map[string]any{acpMetaKey: meta}})
 	case agent.EvActionApproved:
 		var p struct {
 			CallID string `json:"call_id"`
@@ -155,6 +168,21 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			// A record from before every call had an id: a card of its own.
 			u["sessionUpdate"], u["toolCallId"], u["title"] = "tool_call", ev.ID, "denied call"
 		}
+		s.mu.Lock()
+		command, engine := s.engineCalls[p.CallID]
+		delete(s.engineCalls, p.CallID)
+		s.mu.Unlock()
+		if engine && p.CallID != "" {
+			// Nothing the person did failed: diagnostics are not on for this
+			// language, and the card says what would turn them on.
+			why := "Not started: " + redacted(p.Reason)
+			if p.Step == "default" || p.Step == "mode" {
+				why += ". To have it start, add an allow rule for its command, such as bash(" + redacted(command) +
+					"), or set tools.diagnostics to on"
+			}
+			denied["info"] = true
+			u["status"], u["content"] = "completed", []any{map[string]any{"type": "content", "content": text(why)}}
+		}
 		update(u)
 	case agent.EvObservation:
 		var p agent.Observation
@@ -162,6 +190,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		if p.Tool == agent.AnswerToolName {
 			break
 		}
+		s.mu.Lock()
+		delete(s.engineCalls, p.CallID)
+		s.mu.Unlock()
 		status := "completed"
 		if p.IsError {
 			status = "failed"
@@ -434,4 +465,26 @@ func wokenLine(s *acpSession, w agent.SessionWoken) string {
 		return "Continuing with background results."
 	}
 	return "Continuing with results from " + strings.Join(names, ", ") + "."
+}
+
+// diagnosticsServer names the program a diagnostics start runs.
+func diagnosticsServer(args json.RawMessage) string {
+	var a struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(args, &a)
+	f := strings.Fields(a.Command)
+	if len(f) == 0 {
+		return "unknown"
+	}
+	return redacted(filepath.Base(f[0]))
+}
+
+// diagnosticsCommand is the command line a diagnostics start runs.
+func diagnosticsCommand(args json.RawMessage) string {
+	var a struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(args, &a)
+	return a.Command
 }

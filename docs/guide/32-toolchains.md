@@ -241,6 +241,9 @@ Debug offers when a debug session ends `adapter-missing`
 | Go 1.25 or later | Delve 1.27.2 (`dlv`) | built by Abhed itself, not in the sandbox: `go install github.com/go-delve/delve/cmd/dlv@v1.27.2` with the cached Go of the same version for this host (installed first, and offered, when the sandbox is Linux and this host is not), built for the platform the session's commands run on (cross-built for a Linux sandbox) with cgo off, from `proxy.golang.org` only, every module checked by `sum.golang.org`, with `GOFLAGS=-mod=mod`, `GOTOOLCHAIN=local` and none of your own Go settings (`GOPRIVATE`, `GOFLAGS`, `GOPROXY`…). Linux and macOS on amd64 and arm64, where the debugger runs (macOS: the process tier, with the Xcode command line tools' debugserver) |
 | Python 3.10 or later | debugpy 1.8.22 | its universal wheel from PyPI (`files.pythonhosted.org`), refused unless PyPI's listed sha256 is the one Abhed pins, unpacked where `PYTHONPATH` finds it |
 
+Node needs none: its debugger is part of Node, driven by an adapter built
+into Abhed, so a Node launch only needs `node` itself.
+
 Each is kept read-only in the cache beside the toolchains
 (`<cache>/<platform>/extras/<name>/<version>`) and is on `PATH` (Delve) or
 `PYTHONPATH` (debugpy) whenever its language is, for the agent's commands,

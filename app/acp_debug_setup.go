@@ -41,6 +41,9 @@ type debugSetup struct {
 	Tier string `json:"tier"`
 	// Ready is set when a debug session can start as things are.
 	Ready bool `json:"ready"`
+	// NodeReady is set where a Node session can start: on any sandbox
+	// tier, as it opens no port.
+	NodeReady bool `json:"nodeReady"`
 	// Engine is the podman (or docker) program found, "" when none is.
 	Engine string `json:"engine,omitempty"`
 	// Brew is Homebrew, for installing podman, "" when none is.
@@ -159,7 +162,7 @@ func debugProcessTierPossibleOn(goos, tier string, iso tools.Isolation) bool {
 
 // debugSetupFor is what the session at workspace needs to debug.
 func debugSetupFor(ctx context.Context, tier string, iso tools.Isolation, workspace string) debugSetup {
-	st := debugSetup{OS: runtime.GOOS, Tier: tier, Ready: debugTierProblem(tier, iso) == nil}
+	st := debugSetup{OS: runtime.GOOS, Tier: tier, Ready: debugTierProblem(tier, iso) == nil, NodeReady: nodeTierProblem(tier) == nil}
 	st.ProcessTier = debugProcessTier{Available: debugProcessTierPossible(tier, iso)}
 	if st.ProcessTier.Available {
 		st.ProcessTier.Consented = debugConsented(workspace)

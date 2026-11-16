@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -511,5 +512,204 @@ func TestCutCallUnderACapIsChargedAtItsBound(t *testing.T) {
 	calls := modelCalls(t, store)
 	if len(calls) != 1 || !calls[0].Estimated || calls[0].TokensOut != 2048 {
 		t.Fatalf("cut call %+v", calls)
+	}
+}
+
+// anthropicCut streams some text, then on cancel ends as the Anthropic adapter
+// does: the input message_start counted, no output, since message_delta never came.
+type anthropicCut struct {
+	name    string
+	started chan struct{}
+}
+
+func (c *anthropicCut) Name() string { return c.name }
+func (c *anthropicCut) Profile() model.Profile {
+	return model.Profile{Name: c.name, ContextWindow: 100000, ReasoningTokens: true}
+}
+func (c *anthropicCut) CountTokens(model.Request) (int, error) { return 0, nil }
+func (c *anthropicCut) Complete(ctx context.Context, _ model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 3)
+	go func() {
+		defer close(ch)
+		ch <- model.Chunk{Type: model.ChunkText, Text: "partial"}
+		close(c.started)
+		<-ctx.Done()
+		ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+		ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 500, CacheExcluded: true}}
+	}()
+	return ch, nil
+}
+
+// A cut call whose input was reported, as Anthropic's are, is still charged
+// its output bound when the model reasons: on the turn path and a side call.
+func TestAnthropicShapedCutIsChargedAtItsBound(t *testing.T) {
+	check := func(t *testing.T, calls []ModelCall) {
+		t.Helper()
+		if len(calls) != 1 || !calls[0].Estimated || calls[0].TokensIn != 500 || calls[0].TokensOut != 2048 {
+			t.Fatalf("cut call %+v", calls)
+		}
+	}
+	t.Run("turn", func(t *testing.T) {
+		l, store := costHarness(t, "claude-sonnet-4-5", nil)
+		cut := &anthropicCut{name: "claude-sonnet-4-5", started: make(chan struct{})}
+		l.Adapter = cut
+		l.Config.MaxTokens = 2048
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-cut.started; cancel() }()
+		_, _ = l.Run(ctx, "go")
+		check(t, modelCalls(t, store))
+	})
+	t.Run("side call", func(t *testing.T) {
+		l, store := costHarness(t, "gpt-4o", nil)
+		cut := &anthropicCut{name: "claude-sonnet-4-5", started: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-cut.started; cancel() }()
+		_, _ = (&Steps{loop: l}).Complete(ctx, cut, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}, MaxTokens: 2048})
+		check(t, modelCalls(t, store))
+	})
+}
+
+// A stream that fails once it opened was accepted by the provider, which
+// worked: it is charged its input and, under a cap, its output bound, even
+// when nothing came back and nothing was reported.
+func TestFailureAfterTheStreamOpenedIsCharged(t *testing.T) {
+	l, _ := costHarness(t, "gpt-4o", nil)
+	l.Budget.MaxUSD = 10
+	u, est := EstimateUsage(counted{namedAdapter: named("gpt-4o", 1000), n: 1000}, model.Request{MaxTokens: 2048},
+		model.Usage{}, CallEnd{Failed: true}, l.Budget.CutAtBound(l.Adapter))
+	if !est || u.InputTokens != 1000 || u.OutputTokens != 2048 {
+		t.Fatalf("a failed stream: %+v", u)
+	}
+}
+
+// A whole prompt reported under a quarter of the counted size is implausible,
+// and raised; a warm Anthropic cache's reads count in the whole prompt.
+func TestReportedPromptFloor(t *testing.T) {
+	a := counted{namedAdapter: named("gpt-4o", 100000), n: 1000}
+	if u, est := EstimateUsage(a, model.Request{}, model.Usage{InputTokens: 1, OutputTokens: 1}, CallEnd{}, false); !est || u.InputTokens != 1000 {
+		t.Fatalf("a 1-token report: %+v", u)
+	}
+	warm := model.Usage{InputTokens: 3, CachedInputTokens: 990, CacheExcluded: true, OutputTokens: 5}
+	if u, est := EstimateUsage(a, model.Request{}, warm, CallEnd{}, false); est || u != warm {
+		t.Fatalf("a warm cache was raised: %+v", u)
+	}
+}
+
+// resetAdapter's every stream opens, then fails after the model worked, with
+// no usage: a proxy's idle timeout or a dropped connection.
+type resetAdapter struct {
+	name  string
+	calls int
+}
+
+func (r *resetAdapter) Name() string { return r.name }
+func (r *resetAdapter) Profile() model.Profile {
+	return model.Profile{Name: r.name, ContextWindow: 100000, ReasoningTokens: true, MaxOutputTokens: 4096}
+}
+func (r *resetAdapter) CountTokens(model.Request) (int, error) { return 1000, nil }
+func (r *resetAdapter) Complete(context.Context, model.Request) (<-chan model.Chunk, error) {
+	r.calls++
+	ch := make(chan model.Chunk, 1)
+	ch <- model.Chunk{Type: model.ChunkError, Err: errors.New("stream reset after the model worked")}
+	close(ch)
+	return ch, nil
+}
+
+// A call that fails after the provider accepted it is charged, its input and
+// its output bound, so failing streams stop at the cap instead of running free.
+func TestFailedStreamsAreChargedAndStopAtTheCap(t *testing.T) {
+	l, store := costHarness(t, "gpt-4o", nil)
+	r := &resetAdapter{name: "gpt-4o"}
+	l.Adapter = r
+	l.Budget.MaxUSD = 0.0001
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermMaxBudget || r.calls > 2 {
+		t.Fatalf("ended %s after %d calls", reason, r.calls)
+	}
+	calls := modelCalls(t, store)
+	if len(calls) == 0 || !calls[0].Estimated || calls[0].TokensIn != 1000 || calls[0].CostUSD == nil || *calls[0].CostUSD <= 0 {
+		t.Fatalf("calls %+v", calls)
+	}
+}
+
+// With no cap, the same failure three times in a row ends the run.
+func TestRepeatedStreamFailureEndsTheRun(t *testing.T) {
+	l, _ := costHarness(t, "gpt-4o", nil)
+	r := &resetAdapter{name: "gpt-4o"}
+	l.Adapter = r
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermRetryExhausted || r.calls != maxStreamFailures {
+		t.Fatalf("ended %s after %d calls", reason, r.calls)
+	}
+}
+
+// flakyStep is one reply of flakyAdapter: a failed stream after acceptance, or a turn.
+type flakyStep struct {
+	fail string
+	turn scriptedTurn
+}
+
+// flakyAdapter answers each call with the next step.
+type flakyAdapter struct {
+	steps []flakyStep
+	calls int
+}
+
+func (s *flakyAdapter) Name() string { return "steps" }
+func (s *flakyAdapter) Profile() model.Profile {
+	return model.Profile{Name: "local-model", ContextWindow: 100000}
+}
+func (s *flakyAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
+func (s *flakyAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	st := flakyStep{turn: scriptedTurn{text: "done"}}
+	if s.calls < len(s.steps) {
+		st = s.steps[s.calls]
+	}
+	s.calls++
+	if st.fail != "" {
+		ch := make(chan model.Chunk, 1)
+		ch <- model.Chunk{Type: model.ChunkError, Err: errors.New(st.fail)}
+		close(ch)
+		return ch, nil
+	}
+	sa := &scriptedAdapter{turns: []scriptedTurn{st.turn}}
+	return sa.Complete(ctx, req)
+}
+
+// A failure streak is the run's own: a run that ended during one does not
+// make the next run stop on its first transient failure.
+func TestStreamFailuresResetEachRun(t *testing.T) {
+	l, _ := costHarness(t, "local-model", nil)
+	reset := "read tcp 127.0.0.1:50000->10.0.0.1:443: connection reset by peer"
+	a := &flakyAdapter{steps: []flakyStep{{fail: reset}, {fail: reset},
+		{fail: reset}, {turn: scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": "true"})}}}, {turn: scriptedTurn{text: "done"}}}}
+	l.Adapter = a
+	l.Config.MaxTurns = 2
+	if reason, _ := l.Run(context.Background(), "one"); reason != TermMaxTurns {
+		t.Fatalf("run 1 ended %s", reason)
+	}
+	l.Config.MaxTurns = 100
+	if reason, _ := l.Run(context.Background(), "two"); reason != TermCompleted || a.calls != 5 {
+		t.Fatalf("run 2 ended %s after %d calls in all", reason, a.calls)
+	}
+}
+
+// Failed replies count whatever their message: a reset's text changes with
+// its local port every time, and three in a row still end the run.
+func TestStreamFailuresCountWhateverTheMessage(t *testing.T) {
+	l, store := costHarness(t, "local-model", nil)
+	var steps []flakyStep
+	for i := range 10 {
+		steps = append(steps, flakyStep{fail: fmt.Sprintf("read tcp 127.0.0.1:%d->10.0.0.1:443: connection reset by peer", 50000+i)})
+	}
+	a := &flakyAdapter{steps: steps}
+	l.Adapter = a
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermRetryExhausted || a.calls != maxStreamFailures {
+		t.Fatalf("ended %s after %d calls", reason, a.calls)
+	}
+	end, _ := LastEnd(sessEvents(t, store))
+	if !strings.Contains(end.Detail, "failed 3 times in a row") || !strings.Contains(end.Detail, "127.0.0.1:50002") {
+		t.Fatalf("detail %q", end.Detail)
 	}
 }

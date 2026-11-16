@@ -243,29 +243,53 @@ func (l *Loop) ChargeEditorCall(name string, u model.Usage) (cost *float64, unpr
 	return l.chargeCall(name, u)
 }
 
-// EstimateUnreported fills in a call's usage when the provider reported
-// none: a real request always has prompt tokens, so zero input means not
-// reported, and a gateway that drops usage would otherwise make calls free.
-// Input is counted from the request; output is what came back, about four
-// characters a token, except that a cut call is charged at the request's
-// output bound when bounded (a dollar cap is set, or the model reasons out of
-// sight), since cutting a call does not stop its bill. estimated is true
-// when anything was filled in.
-func EstimateUnreported(a model.Adapter, req model.Request, u model.Usage, produced int, cut, bounded bool) (model.Usage, bool) {
-	if u.InputTokens > 0 {
-		return u, false
+// CallEnd is how a model call ended, for what it is charged.
+type CallEnd struct {
+	Produced  int  // characters that came back: text, reasoning, tool calls
+	Cancelled bool // cut by our own cancel or a timeout
+	Failed    bool // the stream ended in an error
+}
+
+// EstimateUsage fills in what a provider did not report, or reported
+// implausibly low, so a gateway that drops or shrinks usage does not make
+// calls free. The whole prompt (with an Anthropic-shaped cache's reads and
+// writes) under a quarter of CountTokens counts as unreported and is raised
+// to it; output under a quarter of what came back, about four characters a
+// token, is raised to that. A cut call (cancelled, or failed once its stream
+// opened) is charged at least what came back, and when bounded (a dollar cap,
+// or reasoning billed unseen) at the request's output bound: the provider
+// accepted it and worked, and cutting a call does not stop its bill. Only a
+// call Complete refused (no stream, so this is never asked) goes uncharged.
+// estimated is true when anything was raised.
+func EstimateUsage(a model.Adapter, req model.Request, u model.Usage, end CallEnd, bounded bool) (model.Usage, bool) {
+	whole := u.InputTokens
+	if u.CacheExcluded {
+		whole += u.CachedInputTokens + u.CacheWriteTokens
 	}
-	u.InputTokens, _ = a.CountTokens(req)
-	out := max(u.OutputTokens, (produced+3)/4)
-	if cut && bounded {
+	estimated := false
+	if counted, _ := a.CountTokens(req); whole == 0 || whole*4 < counted {
+		if add := counted - whole; add > 0 {
+			u.InputTokens += add
+			estimated = true
+		}
+	}
+	cut := end.Cancelled || end.Failed
+	visible := (end.Produced + 3) / 4
+	out := u.OutputTokens
+	if cut || out*4 < visible {
+		out = max(out, visible)
+	}
+	if bounded && cut {
 		limit := req.MaxTokens
 		if limit <= 0 {
 			limit = a.Profile().MaxOutputTokens
 		}
 		out = max(out, limit)
 	}
-	u.OutputTokens = out
-	return u, u.InputTokens > 0 || u.OutputTokens > 0
+	if out > u.OutputTokens {
+		u.OutputTokens, estimated = out, true
+	}
+	return u, estimated
 }
 
 // CutAtBound reports whether a cut call to a is charged at its output bound:

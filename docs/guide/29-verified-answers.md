@@ -41,10 +41,24 @@ model as well as a strong one.
 | `strict` | as `label`, and the agent is given the `answer` tool. When a statement about the session's work is not verified, the agent gets **one** revision turn with the findings; if it is still not verified, the run ends `unverified` |
 
 Unset, the surface chooses. The interactive terminal, the workbench and
-console, and Abhed Studio use `label`, because a person reads the answer there
-and labelling costs nothing unless the answer contradicts the record. `abhed -p`, `abhed rpc`, unattended server runs
-and the SDK check nothing unless asked, so a script's output does not change
-under it.
+console, Abhed Studio, `abhed -p`, `abhed rpc` and unattended server runs use
+`label`: labelling costs nothing unless the answer contradicts the record, and
+a headless run's result then says whether its answer was verified. The SDK
+checks nothing unless asked, through 1.x: set `Options.Verify`, or
+`Options.VerifyByDefault: true` to label as the terminal does (what `abhed
+rpc` and Studio do). `label` never changes an exit code, but when a statement
+is contradicted the agent's one revision can change the answer returned.
+For CI that fails closed, use `strict`:
+
+```bash
+abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)' -verify strict
+```
+
+`-verify off` (or `"verify":"off"` on `rpc` and `POST /v1/sessions`, or
+`verify.mode: off` in your own configuration) still turns checking off, where
+a managed `verify.mode` allows it. A flag or a session's `verify` also
+lowers a trusted workspace's `verify.mode: strict`: the workspace sets the
+default, not a floor. Only a managed `verify.mode` binds every run.
 
 Per run or session:
 
@@ -429,11 +443,72 @@ counts (`12 tests`, `replicas: 3`). Then:
     `.env`), `hatch run` (its environment's variables), and `uv run
     --env-file`, `dotenv` and `direnv exec`, which are not taken off, so the
     run is not one of a known kind;
-  - covers, by path, the packages or folders the statement names, or the
-    whole workspace (`./...` from the workspace) when it names none.
+  - covers, by path, what the statement names: packages or folders
+    (`internal/auth`), test files (`tests/test_x.py`, `test_tip.py`) or
+    test modules (`tests.test_text`, read as `tests/test_text.py`).
+    A folder named with `/...` (`pkg/x/...`) needs a run of everything
+    beneath it (`go test ./pkg/x/...`), not of the folder alone.
+    "The tests pass" with nothing named means the test runs the person
+    asked for: test modules and files given to `python -m unittest`,
+    `pytest` or "run" (`run tests/test_x.py`), and `go test` folders
+    (`go test ./pkg/x`). Only what the person typed counts, in every
+    message they sent in the session: a file attached with `@`, piped
+    stdin or a linked resource never names the tests, and a later message
+    never narrows what an earlier one asked (each message must name test
+    runs; their union is the scope, and a message that names none means
+    the whole workspace). A message narrows only when, once its runner
+    commands, "the tests", "make sure" and "make it" are taken out (not
+    "run make it" or "run: make it", which run a target), every word left, split on white
+    space and CJK sentence punctuation and trimmed of sentence
+    punctuation at its ends, is exactly one of a few connective words:
+    fix, it, fails, failing, failed, and, then, please, run, tell, me,
+    the, a, result, so, that, pass, passes, sure, now, its, test's, error,
+    broken. A word with a `/`, an inner `.`, a digit, `$`, a backtick or
+    any symbol or letter outside ASCII is none of them. A runner command
+    given an argument this reading does not know (`pytest tests/test_a.py
+    ./a`) counts as a whole-suite run. Any other word leaves the whole
+    workspace: a path or file name outside a runner command (`./run`,
+    `./a`, even the file to fix, as in "fix src/utils/text.py and run the tests": it
+    could as well be a script to run), a bare "make", another runner or
+    target (`npm test`, `make test`, `tox`), "CI", the build, lint, the
+    pipeline, smoke checks, "the api tests", "also" or "too", a negation
+    or a contrast ("don't run", "skip", "except", "instead of", "I used to
+    run"), a runner given a flag or `./...`, or a request for more ("all",
+    "the whole suite"). So does any letter outside ASCII: a message in
+    another language is not read, so it never narrows. This errs towards
+    "unverified": a task split over two messages, "`pytest
+    tests/test_a.py` fails; fix it" and then "run the tests", leaves the
+    whole workspace, because the second message names no run. A statement of every test or the suite ("all tests
+    pass", "the whole suite passes", "every test"), or one that names a
+    test as one among more ("the tests pass, including tests.test_new"),
+    still needs a run of the whole workspace (`./...` from the
+    workspace), whatever the task named. So after `python3 -m unittest
+    tests.test_text` passes, "All tests in tests.test_text passed" is
+    verified, and so is "The tests pass" when the task was "`python3 -m
+    unittest tests.test_text` fails; fix it and run the tests"; "All
+    tests pass" is not, and neither is "The tests pass" when the task
+    said "so all the tests pass". A run of another module, of one class
+    in it, a run that failed, or a change after the run leaves them
+    unverified, and so does a run that ran no test: go's `[no test
+    files]` or `[no tests to run]`, unittest's `Ran 0 tests` or every
+    test skipped or an expected failure, pytest with only skipped,
+    deselected, xfailed or xpassed tests, and cargo with none passed (a
+    whole-workspace run included). A go statement about one package needs
+    that package's own line to show a test passing (`ok`, or a passing
+    test in `-json` output): after `go test ./pkg/x ./pkg/y` where `pkg/y`
+    has no test files, "the tests in pkg/y pass" is unverified. The
+    package is found by its exact import path, from the module path in the
+    nearest `go.mod` at or above the run's folder, so `other/pkg/x`
+    passing never shows `pkg/x`; with no `go.mod` to read, such a
+    statement stays unverified. A dotted name part
+    of which is a package (`tests.test_api`, with
+    `tests/test_api/__init__.py`) is what Python imports, so its run is not
+    read as covering `tests/test_api.py`.
     A cached run (`ok … (cached)`) counts like any other. For `python -m
-    unittest`, a pattern (`-p`, or discover's second word) selects, and a
-    start folder other than the workspace narrows; its summary, "Ran 3
+    unittest`, a pattern (`-p`, or discover's second word) selects, a
+    start folder other than the workspace narrows, and test names cover
+    only themselves (`tests.test_text.TextTest` covers that class, not
+    the module); its summary, "Ran 3
     tests … OK", counts 3 passed when it is the only one in the output
     (not "OK (skipped=1)");
   - exited 0 after the last call that may have changed anything.
@@ -558,7 +633,15 @@ When a statement comes out contradicted (from what it cites), in `label` or `str
 a statement about the session's work comes out unverified in `strict` mode or
 under a contract, the agent is sent one note, recorded in the `answer.verdict`
 event, listing each one and why: "Check what you can with a tool, then give
-your answer again… say plainly what you could not verify." Its next answer is
+your answer again… say plainly what you could not verify." The note also
+lists the session's own tool results the agent may cite, newest last (up to
+20): by `call_id` when it answers through the `answer` tool, by `#seq` when it
+answers in text, each with its tool, command or path and exit code. The
+command, the path and each statement are shown as quoted data, with any
+newline escaped and backticks written as `\x60`, so text the model chose
+cannot start a line or a code span of its own in the note. A cited
+id that is not in the record still counts as no evidence, and leaves the
+statement unverified. Its next answer is
 checked the same way. There is only one revision per run. "I could not verify
 X" is an answer the checks accept. In `label` mode the run then ends as it
 would have, with the second answer labelled; a statement still contradicted
@@ -699,7 +782,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 768 plant a wrong claim. Some cite the result that shows them wrong
+session. 868 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -780,7 +863,21 @@ named as what was read, a block or a route deleted with its function named,
 a change said of the line it was, values set under their YAML key, nested
 key and TOML section, a change placed by its function header or an anchor
 line, a decorator added under a route decorator, "Tested:" and "I tested
-it:" over a passing run, and "Added:" and "Changed:" over a real change. 96
+it:" over a passing run, "Added:" and "Changed:" over a real change, a
+test module's pass against a run of another module, of one class in it, a
+failed run or an edit since, "all tests" or "the whole suite" against one
+module's run, "the tests" when the task named none or `./...`, asked for
+more than it named, named a test only in passing, or when a steer or an
+attached file named the run, a `/...` claim against a run of the folder
+alone, a message that also names another runner, CI, the api or
+integration tests or a test file outside a command, a message that
+excludes the run it names, is in another language or asks for the build,
+lint or the pipeline, a package with no test files in a run of several, a
+package whose import path only ends like the one named, a message that
+also runs a script, a config file or a bare `make`, a run that ran no test or only expected
+failures, a dotted name that is a package, "the tests,
+including X" against a run of X, and a pass citing a call id the record
+does not hold. 96
 are neutral: general knowledge, and true claims the checks cannot stand
 behind, such as a build claim against a failed test run, a filtered or
 timed-out run, a run of another or a wider scope, a count of the same thing
@@ -791,11 +888,11 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 768
-planted claims is shown as verified (32 are contradicted: 30 from cited,
+tail, a port not listening, a file not in a response). Today none of the 868
+planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 225 controls are verified,
-and none of the 325 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 240 controls are verified,
+and none of the 341 true or neutral claims is contradicted. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
@@ -909,4 +1006,8 @@ makes them.
   scoped to one folder (`cd services/orders && go test ./...`), an
   unscoped "all tests passed" is unverified, even when that folder is
   what the person asked about: say "the services/orders tests pass", which
-  that run verifies, or run the whole suite.
+  that run verifies, or run the whole suite. "The tests pass" means the
+  person's test runs only when every message they typed names them as
+  runner arguments and asks for nothing more; a folder named in prose
+  ("fix services/orders") is not read as one, and a test run named in two
+  messages needs one run covering both.

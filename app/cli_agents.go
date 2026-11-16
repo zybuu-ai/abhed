@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -15,7 +16,7 @@ import (
 func init() {
 	registerSlash(slashCmd{Name: "/agents", Help: "the subagent types the task tool can start, by source", Group: "status", Order: 140, ReadOnly: true, Run: slashAgents})
 	registerSlash(slashCmd{Name: "/skills", Help: "the skills the agent can load", Group: "status", Order: 141, ReadOnly: true, Run: slashSkills})
-	registerSlash(slashCmd{Name: "/mcp", Args: "[restart <server>]", Help: "MCP servers, their state and tools; restart reconnects one", Group: "status", Order: 142, Run: slashMCP})
+	registerSlash(slashCmd{Name: "/mcp", Args: "[restart <server> | resources <server>]", Help: "MCP servers, their state and tools; restart reconnects one; resources lists one's resources", Group: "status", Order: 142, Run: slashMCP})
 	registerSlash(slashCmd{Name: "/tools", Help: "every tool the agent has, and where it came from", Group: "status", Order: 143, ReadOnly: true, Run: slashTools})
 }
 
@@ -80,9 +81,12 @@ func slashMCP(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 		return false, nil
 	}
 	gw := st.set.Gateway
+	if len(args) == 2 && args[0] == "resources" {
+		return false, mcpResources(ctx, e, args[1])
+	}
 	if len(args) > 0 {
 		if args[0] != "restart" || len(args) != 2 {
-			return false, fmt.Errorf("usage: /mcp, or /mcp restart <server>")
+			return false, fmt.Errorf("usage: /mcp, /mcp restart <server> or /mcp resources <server>")
 		}
 		if err := gw.Restart(ctx, args[1]); err != nil {
 			return false, fmt.Errorf("mcp server %s did not reconnect: %w", args[1], err)
@@ -107,7 +111,11 @@ func slashMCP(ctx context.Context, e *cmdEnv, args []string) (bool, error) {
 				state += ": " + oneLine(s.Err.Error(), 60)
 			}
 		}
-		rows = append(rows, []string{s.Name, s.Transport, state, oneLine(strings.Join(s.Tools, ", "), 70)})
+		offered := strings.Join(s.Tools, ", ")
+		if s.Resources {
+			offered = strings.TrimPrefix(offered+", resources (@"+s.Name+":URI)", ", ")
+		}
+		rows = append(rows, []string{s.Name, s.Transport, state, oneLine(offered, 70)})
 	}
 	body := []ui.Block{{Kind: ui.BlockTable, Rows: rows},
 		{Kind: ui.BlockNotice, Text: "every MCP call goes through policy and asks unless a rule allows it; its output is treated as untrusted"}}
@@ -191,4 +199,28 @@ func oneLine(s string, n int) string {
 		return string(r[:n-1]) + "…"
 	}
 	return s
+}
+
+// mcpResources is /mcp resources <server>: the server's resources, listed
+// through its list_resources tool as the person's call, so policy decides
+// and the record keeps it.
+func mcpResources(ctx context.Context, e *cmdEnv, server string) error {
+	st := e.st
+	tool := "mcp__" + server + "__" + mcp.ListResourcesTool
+	if st.loop == nil || st.loop.Session == nil {
+		return fmt.Errorf("there is no conversation to list resources in")
+	}
+	if _, ok := st.loop.Tools.Get(tool); !ok {
+		return fmt.Errorf("MCP server %s offers no resources in this session", ui.VisibleLine(server))
+	}
+	res, err := st.loop.Manual(ctx, st.loop.Session, tool, personCallID("mcp"), argsJSON(map[string]string{}))
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", strings.TrimSpace(res.Content))
+	}
+	body := []ui.Block{{Kind: ui.BlockNotice, Text: "attach one with @" + server + ":URI; what the server says of them is untrusted"},
+		{Kind: ui.BlockNotice, Text: ui.Visible(res.Content)}}
+	return e.ui.Panel(ctx, ui.PanelSpec{Title: "MCP resources: " + ui.VisibleLine(server), Body: body})
 }

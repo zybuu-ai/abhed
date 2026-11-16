@@ -74,13 +74,6 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				r.Prompt = clip(m.Text, 400)
 			}
 
-		case agent.EvCompletionSummary, agent.EvNextEditSummary:
-			var s agent.CompletionSummary
-			if json.Unmarshal(e.Payload, &s) == nil {
-				r.editorUSD += s.CostUSD
-				r.editorUnpriced = r.editorUnpriced || s.Unpriced
-			}
-
 		case agent.EvModelCall:
 			var m agent.ModelCall
 			_ = json.Unmarshal(e.Payload, &m)
@@ -123,6 +116,19 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				r.Toolchains = append(r.Toolchains, ToolchainStep{Seq: e.Seq, ToolchainAction: a})
 			}
 
+		case agent.EvCompletionSummary, agent.EvNextEditSummary:
+			var a agent.CompletionSummary
+			if json.Unmarshal(e.Payload, &a) == nil {
+				feature := "completion"
+				if e.Type == agent.EvNextEditSummary {
+					feature = "next_edit"
+				}
+				r.Editor = append(r.Editor, EditorStats{Seq: e.Seq, Feature: feature, CompletionSummary: a})
+				// Their cost is the session's too, carried here rather than a model.call each.
+				r.editorUSD += a.CostUSD
+				r.editorUnpriced = r.editorUnpriced || a.Unpriced
+			}
+
 		case agent.EvOllamaStart, agent.EvOllamaInstall, agent.EvOllamaPull:
 			var a agent.OllamaAction
 			if json.Unmarshal(e.Payload, &a) == nil {
@@ -144,7 +150,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
-			c.Rule, c.Layer = d["rule"], d["layer"]
+			c.Rule, c.Layer, c.Source = d["rule"], d["layer"], d["source"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.PlanHash = d["plan_hash"]
 			c.PlanStep, _ = strconv.Atoi(d["plan_step"])

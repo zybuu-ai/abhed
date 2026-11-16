@@ -105,6 +105,55 @@ The report (`WorkspaceTrust`, on ACP, rpc and the SDK) gains `agents`,
 `agents_reason` takes the values in the table below, and `none` when there are
 no definitions.
 
+## Workspace skills
+
+A workspace can carry skills in `.abhed/skills/<name>/`, each a `SKILL.md`
+and the files beside it ([Skills](../guide/06-skills.md)). A skill's body is
+instructions to the agent and a `pipeline.json` beside it runs tool steps, so
+the skills load under the same kind of decision as the definitions, bound to
+the exact content of every file in them.
+
+- **One hash per skill, one over them all.** Each skill's `sha256` covers
+  every file in its folder by path and content, scripts and references too,
+  so a changed script asks again. `skills_sha256` is the SHA-256 over each
+  skill's folder and hash. Editing, adding or removing any file changes it,
+  and the skills are asked about again with the reason `changed`.
+- **They are decided apart** from the file and the definitions, with
+  `skills_sha256` and, when the answer differs, `skills_decision` in the
+  stored record, kept the way the definitions' are. A record from before
+  skills were covered asks about them alone (`new`).
+- **What loads is what was hashed.** A skill folder is read once: regular
+  files with one name each, at most 256 KiB each, 1 MiB and 64 files in all,
+  four folders deep; at most 64 skills. A link anywhere in it, a second hard
+  link, a `SKILL.md` without a description, or more than the bounds refuses
+  that skill whole, named in `skills_problems`. The loader takes the
+  `SKILL.md` and `pipeline.json` bytes that were hashed.
+- **Only `SKILL.md` and `pipeline.json` are used.** The skill's folder is
+  under `.abhed`, which the agent can neither read nor run anything from, so
+  the skill tool gives no directory for a workspace skill and its other
+  files (scripts, references) are hashed but never reached. A skill that
+  needs them belongs in an installed skills directory.
+- **An installed skill keeps its name.** A workspace skill whose name, in
+  NFKC and without case, is an installed skill's (from the managed, operator
+  or `~/.abhed/skills` directories) is not loaded, and a warning says so. A
+  workspace skill's name must be ASCII letters, digits, `-`, `_` and `.`, so
+  no look-alike letter passes for an installed name. The prompt's listing
+  marks workspace skills `(from this workspace)`.
+- **The prompt and `abhed trust` show each skill's name, description and
+  hash.** Untrusted skills are listed as ignored (`skills/<name>`) in the
+  warning and by `abhed doctor`.
+- **The configuration can turn them off.** `skills.disable_workspace: true`,
+  from the managed file or any layer (a workspace file may only set it to
+  true), or `skills.disabled`, keeps them off whatever the trust: they are
+  neither loaded nor asked about, and `skills_reason` is `off`.
+- `-trust-workspace` and `ABHED_TRUST_WORKSPACE` trust them for one run; a
+  caller's refusal refuses them. The home directory's `.abhed/skills` is the
+  user's own, `~/.abhed/skills`, and loads once, as an installed directory.
+
+The report gains `skills` (each with `name`, `description`, `dir` and
+`sha256`), `skills_sha256`, `skills_trusted`, `skills_reason` and
+`skills_problems`.
+
 ## Untrusted: what applies
 
 Each setting in the file resolves to a rule, found by its dotted path or the
@@ -135,6 +184,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
+| `tools.diagnostics` | **applied** only when `off`; a trusted workspace may also choose `auto` over `on`, never `on` |
+| `tools.diagnostics_max`, `tools.diagnostics_wait_ms` | **applied** only when lower, trusted or not |
 | `verify.mode` | **applied** only when stricter (off < label < strict), and unset counts as `label`, so a workspace never turns labels off |
 | `verify.answer_tool` | **applied** only when true |
 | `verify.contract.protect` | **applied**, added to the protected files already there |
@@ -145,6 +196,9 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
+| `ssh.max_timeout_seconds` | **applied** only when lower; zero means the default (120) |
+| `ssh.listed_reads_only` | **applied** only when true: it turns the remote read-only classifier off, so only `ssh.read_commands` run unasked |
+| `ssh.read_contents` | ignored: it lets programs that print a host's files run unasked |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `plan.runbooks` | **applied** only when false |
@@ -160,9 +214,11 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `completion.local_only` | **applied** only when true |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
+| `hooks.run` | ignored: each simple hook is a command or an endpoint sent the events it takes. Trusted, a workspace's hooks are added to the user's, and none replaces a managed hook |
 | `mcp.allowed`, `mcp.denied` | **applied** as a narrowing: an allow list must also admit a server, and a deny entry only stops one; a list with a malformed entry is ignored |
 | `mcp` (other keys) | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |
+| `skills.disable_workspace` | **applied** only when true |
 | `agents.disabled` | **applied** only when true |
 | `agents.dirs` | ignored: a definition is instructions and a model choice |
 | `additional_dirs` | ignored: it widens the directories the agent may reach |
@@ -335,7 +391,7 @@ line per ignored setting.
 | Command | What it does |
 |---|---|
 | `abhed trust [show] [dir]` | shows the file, its hash, the decision, and what it sets beyond tightening |
-| `abhed trust grant [-sha256 H] [-agents-sha256 H] [dir]` | trusts the current content, the file and the agent definitions, and the workspace's `.abhed/users.json` when there is one; with `-sha256` or `-agents-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
+| `abhed trust grant [-sha256 H] [-agents-sha256 H] [-skills-sha256 H] [dir]` | trusts the current content, the file, the agent definitions and the skills, and the workspace's `.abhed/users.json` when there is one; with `-sha256`, `-agents-sha256` or `-skills-sha256`, only if each is still the content with that hash, as `show` or ACP reported it |
 | `abhed trust revoke [dir]` | forgets the decision |
 | `abhed trust list` | lists every stored decision |
 

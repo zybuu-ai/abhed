@@ -31,10 +31,13 @@ import (
 
 // headlessOpts are how a -p run reads and writes.
 type headlessOpts struct {
-	format  string // text, json or stream-json
-	partial bool   // stream-json: include agent.delta and reasoning deltas
-	verbose bool
-	schema  json.RawMessage
+	// continueLimit continues the resumed session's run that stopped at its
+	// turn limit, for -p --continue (or -r) with no task.
+	continueLimit bool
+	format        string // text, json or stream-json
+	partial       bool   // stream-json: include agent.delta and reasoning deltas
+	verbose       bool
+	schema        json.RawMessage
 	// inputs are the user messages after the first, from -input-format
 	// stream-json; nil for a single task.
 	inputs <-chan string
@@ -379,6 +382,8 @@ func recordStart(rec *agent.Recorder, start map[string]any, attempts []agent.Con
 	if err == nil {
 		if e := toolset.RecordConfigAttempts(rec, attempts); e != nil {
 			err = fmt.Errorf("recording the configuration attempts: %w", e)
+		} else if e := toolset.RecordConfigChanges(rec); e != nil {
+			err = fmt.Errorf("recording the configuration changes: %w", e)
 		}
 	}
 	// What qualified the fence for this run's commands, after the start.
@@ -413,6 +418,9 @@ type resultLine struct {
 	DurationMS int64                `json:"duration_ms"`
 	ExitCode   int                  `json:"exit_code"`
 	Usage      resultUsage          `json:"usage"`
+	// PermissionDenials are the calls refused for want of an answer or by a
+	// rule, each with the flag that would allow it, or why none would.
+	PermissionDenials []permissionDenial `json:"permission_denials,omitempty"`
 	// Omitted names the event types this output left out, so a reader of the
 	// capture can tell a gap where they sat from a missing event.
 	Omitted []agent.EventType `json:"omitted,omitempty"`
@@ -435,7 +443,11 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	began := time.Now()
 	// A new session, or with -c or -r the recorded one it goes on with.
-	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter})
+	sessionID, seed, err := headlessSession(ctx, &cliState{store: store, appCfg: appCfg, workspace: sess.Root, adapter: adapter}, o.continueLimit)
+	if errors.Is(err, agent.ErrNothingToContinue) || errors.Is(err, agent.ErrContinueRefused) {
+		fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+		return 2
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 1 // a run with no session row would write into another's record
@@ -448,9 +460,14 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 
 	events := store.Subscribe(sessionID)
 	done := make(chan struct{})
+	hints := newDenialHints(pol, appCfg, registry)
 	go func() {
 		defer close(done)
 		for ev := range events {
+			// Each refusal says on stderr what would allow it, whatever the format.
+			if d, ok := hints.observe(ev); ok {
+				fmt.Fprintf(os.Stderr, "abhed: %s\n", config.PrintableText(d.String()))
+			}
 			if o.verbose && ev.Type == agent.EvModelCall {
 				fmt.Fprintf(os.Stderr, "abhed: model call %s\n", ev.Payload)
 			}
@@ -475,11 +492,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 		o.fallback.SetRecord(recordFallback(rec))
 	}
 
+	if cfg.ContinueTurns == 0 {
+		cfg.ContinueTurns = cfg.MaxTurns // a continuation gets the run's own allowance again
+	}
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, cfg)
+	loop.SubdirMemory = subdirMemory(appCfg, pol, sess.Root)
 	loop.Provider = appCfg.Model.Default
 	// A structured result is checked by its schema, not as prose, and the
-	// contract gates an answer, which a structured run does not give.
-	if v, err := toolset.Verifier(appCfg, false); err == nil && o.schema == nil {
+	// contract gates an answer, which a structured run does not give. Unset,
+	// -p labels its answer as the terminal does; -verify off still turns it off.
+	if v, err := toolset.Verifier(appCfg, true); err == nil && o.schema == nil {
 		v.Install(loop)
 	} else if o.schema != nil && appCfg.Verify.Contract.On() {
 		fmt.Fprintln(os.Stderr, "abhed: note: verify.contract is not checked for a -json-schema run: its result is checked by the schema, and its required commands do not run")
@@ -492,6 +514,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	var before []agent.Event
 	if resumedAfter > 0 {
 		before, _ = store.Events(sessionID)
+	}
+	if o.continueLimit {
+		// Checked before the start is recorded: nothing to continue leaves no trace.
+		loop.NoteContinues(before)
+		if err := loop.CanContinue(); err != nil {
+			store.Unsubscribe(sessionID, events)
+			<-done
+			fmt.Fprintf(os.Stderr, "abhed: -p --continue with no task: %v; give a task to go on\n", err)
+			return 2
+		}
 	}
 	if err := recordStart(rec, resumedStart(o.start, resumedAfter), o.attempts, o.grants, o.fence); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
@@ -507,6 +539,9 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	// run, and the exit code, wait for them.
 	agent.NewBackground(loop, toolset.BackgroundPolicy(appCfg, agent.WakeOff))
 	defer loop.Background.Close(agent.TermSessionClosed)
+	if loop.Diagnostics = toolset.Diagnostics(appCfg, registry); loop.Diagnostics != nil {
+		defer loop.Diagnostics.Close()
+	}
 	if appCfg.Sets("subagents.wake") && appCfg.Subagents.Wake != "off" {
 		fmt.Fprintf(os.Stderr, "abhed: note: subagents.wake is %s, but -p runs background tasks joined: it waits for them\n", config.Printable(appCfg.Subagents.Wake))
 	}
@@ -550,6 +585,10 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	if prompt != "" {
 		runOne(prompt)
 	}
+	if o.continueLimit {
+		ran = true
+		reason, err = loop.ContinueAfterLimit(ctx, "print")
+	}
 	// The next message is awaited alongside a stop signal: stdin may stay
 	// open for as long as the caller likes. Reading stops after a failure.
 	for o.inputs != nil && err == nil && (!ran || reason.ExitCode() == 0) && ctx.Err() == nil {
@@ -584,12 +623,16 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 	}
 
 	u := loop.Usage()
+	// The conversation holds the model's own words; what stdout carries of
+	// them is redacted as the record is, a stored secret withheld.
+	structured = withheldJSON(rec.Redact, structured)
 	switch {
 	case streaming:
 		res := resultLine{Type: "result", Subtype: string(reason), IsError: code != 0,
-			Result: runAnswer(loop.Messages(), store, sessionID, resumedAfter), Structured: structured,
+			Result: agent.WithheldText(rec.Redact, runAnswer(loop.Messages(), store, sessionID, resumedAfter)), Structured: structured,
 			SessionID: sessionID, NumTurns: u.Turns, DurationMS: time.Since(began).Milliseconds(), ExitCode: code,
-			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens, u.CostUSD, u.Unpriced}, Verdict: loop.LastVerdict()}
+			Usage: resultUsage{u.InputTokens, u.OutputTokens, u.CachedTokens, u.CostUSD, u.Unpriced}, Verdict: loop.LastVerdict(),
+			PermissionDenials: hints.denials}
 		if res.Subtype == "" {
 			res.Subtype = string(agent.TermError)
 		}
@@ -632,6 +675,20 @@ func runAnswer(msgs []model.Message, es server.EventStore, id string, after int6
 		}
 	}
 	return lastAssistantText(msgs)
+}
+
+// withheldJSON is raw with stored secrets redacted, or the withheld marker
+// when redacting leaves no valid JSON.
+func withheldJSON(red agent.Redactor, raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	out := json.RawMessage(agent.WithheldText(red, string(raw)))
+	if !json.Valid(out) {
+		b, _ := json.Marshal(agent.Withheld)
+		return b
+	}
+	return out
 }
 
 func lastAssistantText(msgs []model.Message) string {

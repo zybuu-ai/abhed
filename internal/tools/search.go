@@ -347,108 +347,51 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		mode = "files_with_matches"
 	}
 
-	type fileHit struct {
-		path  string
-		count int
-		lines []string
-	}
-	var results []fileHit
-	total := 0
-
-	state := s.stateSet()
-	// Files are read under the searched folder held open as a root, so a
-	// folder swapped for a link during the walk cannot lead the read out.
-	var within *Confined
-	if info, err := os.Stat(root); err == nil && info.IsDir() {
-		if within, err = state.Confine(root); err != nil {
-			return errf("Cannot search %s: %v", root, err)
-		}
-		defer within.Close()
-	}
-	walk := func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if d.IsDir() {
-			if path != root && (skipDirs[d.Name()] || state.HasEntry(d)) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if globMatch != nil {
-			rel, rerr := filepath.Rel(root, path)
-			if rerr != nil || !globMatch(filepath.ToSlash(rel)) {
-				return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
-			}
-		}
-		// Links are not followed: one could lead out of the workspace or into
-		// Abhed's state. A file that is a state file by another name (a
-		// hardlink) is refused by ReadEntry, which judges what it opened. A
-		// link named as the path was already resolved.
-		if path != root && d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		info, ierr := d.Info()
-		if ierr != nil || info.Size() > maxGrepFileSize {
-			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
-		}
-		var data []byte
-		var rerr error
-		if within != nil {
-			rel, _ := filepath.Rel(root, path)
-			data, rerr = within.ReadEntry(rel, info)
-		} else {
-			data, rerr = s.readFile(path)
-		}
-		if rerr != nil || IsBinary(data) {
-			return nil //nolint:nilerr // an unreadable entry is skipped, not fatal to the search
-		}
-
-		hit := fileHit{path: path}
-		lines := strings.Split(string(data), "\n")
-
-		if a.Multiline {
-			if ms := re.FindAllStringIndex(string(data), -1); len(ms) > 0 {
-				hit.count = len(ms)
-				if mode == "content" {
-					for _, m := range ms {
-						ln := strings.Count(string(data[:m[0]]), "\n") + 1
-						hit.lines = append(hit.lines, formatMatch(lines, ln, a.Context))
-						if len(hit.lines) >= maxGrepPerFile {
-							break
-						}
-					}
-				}
-			}
-		} else {
-			for i, line := range lines {
-				if re.MatchString(line) {
-					hit.count++
-					if mode == "content" && len(hit.lines) < maxGrepPerFile {
-						hit.lines = append(hit.lines, formatMatch(lines, i+1, a.Context))
-					}
-				}
-			}
-		}
-
-		if hit.count > 0 {
-			results = append(results, hit)
-			total += hit.count
-		}
-		return nil
-	}
-
+	sp := newGrepSpec(re, expr, a.Multiline, mode == "content", a.Context)
 	info, statErr := os.Stat(root)
 	if statErr != nil {
 		return errf("Cannot access %s: %v", a.Path, statErr)
 	}
+	var hits []grepHit
+	withheld := 0
 	if info.IsDir() {
-		_ = filepath.WalkDir(root, walk)
-	} else {
-		_ = walk(root, fs.FileInfoToDirEntry(info), nil)
+		state := s.stateSet()
+		// Files are read under the searched folder held open as a root, so a
+		// folder swapped for a link during the walk cannot lead the read out.
+		within, err := state.Confine(root)
+		if err != nil {
+			return errf("Cannot search %s: %v", root, err)
+		}
+		defer within.Close()
+		rg := startRipgrep(ctx, s.ripgrepFor(), root, sp)
+		var files []grepFile
+		files, withheld, _ = s.grepWalk(ctx, root, within, state, globMatch)
+		hits = grepFiles(ctx, within, rg.narrow(files), sp)
+	} else if ReadRefused(ctx, root) {
+		// Named outright, a withheld file is answered as read answers it.
+		return errf("%s is withheld by a read rule, so grep does not search it.", a.Path)
+	} else if globMatch == nil || globMatch(filepath.Base(root)) {
+		// A file named as the path is searched as named; a link there was
+		// already resolved.
+		if data, err := s.readFile(root); err == nil && info.Size() <= maxGrepFileSize && !IsBinary(data) {
+			hits = []grepHit{sp.match(root, data)}
+		}
+	}
+
+	var results []grepHit
+	total := 0
+	for _, h := range hits {
+		if h.count == 0 {
+			continue
+		}
+		results = append(results, h)
+		total += h.count
+	}
+	// Counted from paths in the walk, before any read: the same whatever the
+	// pattern, so it says nothing of what those files hold.
+	note := ""
+	if withheld > 0 {
+		note = fmt.Sprintf("\n[%d file(s) were not searched because a read rule withholds them]", withheld)
 	}
 
 	if ctx.Err() != nil {
@@ -459,10 +402,16 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		if a.Path != "" {
 			where = " in " + a.Path
 		}
-		return ok("No matches for %s%s. Try a broader pattern, or check the path.", a.Pattern, where)
+		return ok("No matches for %s%s. Try a broader pattern, or check the path.%s", a.Pattern, where, note)
 	}
 
-	sort.Slice(results, func(i, j int) bool { return results[i].count > results[j].count })
+	// Most matches first; the path breaks ties, so a parallel search reads the same each time.
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].count != results[j].count {
+			return results[i].count > results[j].count
+		}
+		return results[i].path < results[j].path
+	})
 
 	var b strings.Builder
 	truncated := false
@@ -499,7 +448,7 @@ func (Grep) Run(ctx context.Context, s *Session, raw json.RawMessage) Result {
 		fmt.Fprintf(&b, "\n%d files, %d matches. Use output_mode:\"content\" to see them.", len(results), total)
 	}
 
-	return Result{Content: strings.TrimSpace(b.String()), Truncated: truncated}
+	return Result{Content: strings.TrimSpace(b.String()) + note, Truncated: truncated}
 }
 
 func formatMatch(lines []string, lineNo, ctxLines int) string {

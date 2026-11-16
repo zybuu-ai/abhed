@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,7 +74,13 @@ type HTTPConfig struct {
 	Egress *egress.Guard
 	// CheckRedirect, when set, judges each redirect the default client would follow.
 	CheckRedirect func(*http.Request, []*http.Request) error
+	// Auth, when set, is the server's OAuth login: its token goes on every
+	// request to the URL's own origin, and on no other.
+	Auth Authorizer
 }
+
+// ErrUnauthorized is a server that refused the request for want of a sign-in.
+var ErrUnauthorized = errors.New("the server refused the request: it wants a sign-in")
 
 // NewHTTPTransport connects to a remote MCP server.
 func NewHTTPTransport(ctx context.Context, cfg HTTPConfig) (*HTTPTransport, error) {
@@ -93,6 +100,19 @@ func NewHTTPTransport(ctx context.Context, cfg HTTPConfig) (*HTTPTransport, erro
 		}
 		// Judged and recorded by the egress guard under the allowlist.
 		client = &http.Client{Timeout: timeout, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: cfg.Egress}, CheckRedirect: cfg.CheckRedirect}
+	}
+	if cfg.Auth != nil {
+		u, err := url.Parse(cfg.URL)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: url %q: %w", cfg.URL, err)
+		}
+		base := client.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		c := *client
+		c.Transport = &authTransport{base: base, origin: requestOrigin(u), auth: cfg.Auth}
+		client = &c
 	}
 
 	// Detached from ctx's end, but not its values: the stream keeps its set's guard.
@@ -296,6 +316,9 @@ func (t *HTTPTransport) Send(ctx context.Context, payload []byte) error {
 		// Notification accepted; the reply, if any, arrives on the stream.
 		_ = resp.Body.Close()
 		return nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		_ = resp.Body.Close()
+		return fmt.Errorf("mcp: server returned %s: %w", resp.Status, ErrUnauthorized)
 	case resp.StatusCode >= 400:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		resp.Body.Close()

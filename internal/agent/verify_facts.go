@@ -73,6 +73,14 @@ type facts struct {
 	eventKinds                   []string // the kinds of call its events need
 	scope                        []string // packages or folders a test claim names, such as internal/auth
 	ran                          []string // commands the claim says were run
+	// modules are the test modules and files a claim names without a folder
+	// (tests.test_text, test_tip.py), as files; theTests: it says "the
+	// tests" and names neither a scope nor every test, so it means the tests
+	// the task named.
+	modules  []string
+	theTests bool
+	// inclusive: it names a test as one among more ("including tests.test_new").
+	inclusive bool
 }
 
 type countFact struct {
@@ -285,10 +293,21 @@ func extractFacts(claim string) facts {
 		f.changed, f.negated = true, true
 	}
 	for _, w := range strings.Fields(text) {
-		if w = rawPath(strings.Trim(w, "`")); strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
+		if m := testModule(w); m != "" {
+			f.modules = append(f.modules, m)
+		}
+		// "pkg/x/..." keeps its dots: it names everything beneath.
+		if t := strings.TrimRight(strings.Trim(w, "`"), ",;:!?)]}'\""); strings.HasSuffix(t, "/...") {
+			w = strings.TrimLeft(t, "(['\"")
+		} else {
+			w = rawPath(strings.Trim(w, "`"))
+		}
+		if strings.Contains(w, "/") && !strings.Contains(w, "://") && strings.IndexFunc(w, unicode.IsLetter) >= 0 {
 			f.scope = append(f.scope, w)
 		}
 	}
+	f.inclusive = inclusiveRe.MatchString(nlow)
+	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)
 
 	cut(backtickRe, func(m []string) bool {
@@ -532,6 +551,40 @@ var (
 	offRe       = regexp.MustCompile(`\b(disabl\w*|turn(?:ed|s|ing)? (?:it )?off|switch(?:ed|es|ing)? (?:it )?off|shut off)\b`)
 	onRe        = regexp.MustCompile(`\b(enabl\w*|turn(?:ed|s|ing)? (?:it )?on|switch(?:ed|es|ing)? (?:it )?on)\b`)
 )
+
+var (
+	// theTestsRe says "the tests", "the unit tests", "the new test".
+	theTestsRe = regexp.MustCompile(`\bthe\s+(?:[a-z][a-z_\-]*\s+){0,2}?tests?\b`)
+	// wholeSuiteRe says every test, or the suite as a whole.
+	wholeSuiteRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|both|other|remaining|rest)\b`)
+	identRe      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// inclusiveRe names a part as one among more.
+	inclusiveRe = regexp.MustCompile(`\b(?:including|incl|such as|as well as|along with|plus|besides|in addition to|among them|among others|e\.g)\b`)
+)
+
+// testModule is a test module or file a word names without a folder, as
+// its file in the workspace: tests.test_text as tests/test_text.py,
+// test_tip.py as it is; "" for any other word. A name with a folder is read
+// as a path, by the scope.
+func testModule(w string) string {
+	w = strings.Trim(w, "`'\"()[]{},;:!?.")
+	if strings.Contains(w, "/") || !insidePath(w) || !testName(w) {
+		return ""
+	}
+	if strings.HasSuffix(w, ".py") {
+		return w
+	}
+	parts := strings.Split(w, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	for _, p := range parts {
+		if !identRe.MatchString(p) {
+			return ""
+		}
+	}
+	return unittestPath(w)
+}
 
 // wholeRunCount reports a counted pass said of every test: "all 12 tests
 // passed", "12/12", "12 of 12". It is a claim the run passed, judged against

@@ -240,7 +240,16 @@ a dead-end into a recoverable turn. Compute it with a similarity pass over candi
 - Default `files_with_matches` keeps output small; the model escalates to `content` when it
   needs detail. This ordering is a context-budget decision (P2).
 - Content mode caps at 100 matches and 50 lines per file, with truncation notes.
-- Backed by ripgrep where available, with a pure-Go fallback for the air-gapped bundle.
+- A parallel Go walk chooses the files: vendored folders, Abhed's state, links and files a
+  `.gitignore` excludes are passed over before anything is read. When ripgrep is on `PATH`
+  at start-up (never one inside a session root, and only one owned by root, as is every
+  folder above it, none writable by group or others), one run beside the walk narrows the files
+  to those holding a literal every match contains, passed as a fixed string with
+  `--no-config` and an empty environment. Matching is always Go's RE2 over the confined
+  read, so both paths return the same lines, and every result is held to the read deny
+  rules before redaction. A file under a read ask rule is withheld too. Each walked file is
+  judged by path before it is read, and the answer says how many were not searched, a count
+  independent of the pattern.
 
 **Errors**
 | Condition | Message |

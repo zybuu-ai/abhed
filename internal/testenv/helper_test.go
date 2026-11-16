@@ -11,6 +11,15 @@ import (
 	"github.com/zybuu-ai/abhed/internal/managed"
 )
 
+// needsOwnership skips where checkPrivate cannot read ownership, so a
+// helper never reuses a folder.
+func needsOwnership(t *testing.T) {
+	t.Helper()
+	if !ownFolderChecked {
+		t.Skip("folder ownership is not checked on this system")
+	}
+}
+
 // copyBinary copies this test binary into a folder of the test's own.
 func copyBinary(t *testing.T) (dir, bin string) {
 	t.Helper()
@@ -41,16 +50,18 @@ func run(t *testing.T, bin, role string, env []string) string {
 	return string(out)
 }
 
-// cleanEnv is this process's environment without the marker and the
-// parent folder.
-func cleanEnv() []string {
+// cleanEnv is this process's environment without the marker, the parent
+// folder and this process's isolated home, which would name its parent; the
+// home is a plain folder of the test's own.
+func cleanEnv(t *testing.T) []string {
+	t.Helper()
 	var env []string
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, privateEnv+"=") && !strings.HasPrefix(e, Marker+"=") {
+		if !strings.HasPrefix(e, privateEnv+"=") && !strings.HasPrefix(e, Marker+"=") && !strings.HasPrefix(e, "HOME=") {
 			env = append(env, e)
 		}
 	}
-	return env
+	return append(env, "HOME="+t.TempDir())
 }
 
 // TestProbeRole is the probe's side: it says where its paths lead and what
@@ -70,6 +81,7 @@ func TestProbeRole(t *testing.T) {
 // A helper with the marker reuses the private folder its parent names and
 // makes none of its own.
 func TestHelperReusesTheParentsFolder(t *testing.T) {
+	needsOwnership(t)
 	parent := filepath.Join(t.TempDir(), "private")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatal(err)
@@ -79,7 +91,7 @@ func TestHelperReusesTheParentsFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, bin := copyBinary(t)
-	out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+parent))
+	out := run(t, bin, "helper", append(cleanEnv(t), Marker+"=1", privateEnv+"="+parent))
 	if !strings.Contains(out, "config="+filepath.Join(resolved, "none", "config.json")+"\n") || !strings.Contains(out, "private=\n") {
 		t.Fatalf("the helper did not reuse its parent's folder:\n%s", out)
 	}
@@ -91,6 +103,7 @@ func TestHelperReusesTheParentsFolder(t *testing.T) {
 // refused, and the helper makes a folder of its own. A link is followed once
 // and the folder it leads to used, so repointing it later changes nothing.
 func TestHelperRefusesAParentFolderThatIsNotPrivate(t *testing.T) {
+	needsOwnership(t)
 	base := t.TempDir()
 	mk := func(path string, mode os.FileMode) {
 		t.Helper()
@@ -103,6 +116,8 @@ func TestHelperRefusesAParentFolderThatIsNotPrivate(t *testing.T) {
 	}
 	open := filepath.Join(base, "open")
 	mk(open, 0o777)
+	readable := filepath.Join(base, "readable")
+	mk(readable, 0o755)
 	shared := filepath.Join(base, "shared")
 	mk(shared, 0o777)
 	under := filepath.Join(shared, "mine")
@@ -114,8 +129,9 @@ func TestHelperRefusesAParentFolderThatIsNotPrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, bin := copyBinary(t)
-	for name, parent := range map[string]string{"world-writable": open, "under a writable folder": under, "relative": "private"} {
-		out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+parent))
+	for name, parent := range map[string]string{"world-writable": open, "0755, not 0700": readable,
+		"under a writable folder": under, "relative": "private"} {
+		out := run(t, bin, "helper", append(cleanEnv(t), Marker+"=1", privateEnv+"="+parent))
 		if strings.Contains(out, "none/config.json\nprivate=\n") || !strings.Contains(out, "private=/") {
 			t.Fatalf("%s: the helper used %s rather than a folder of its own:\n%s", name, parent, out)
 		}
@@ -124,7 +140,7 @@ func TestHelperRefusesAParentFolderThatIsNotPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := run(t, bin, "helper", append(cleanEnv(), Marker+"=1", privateEnv+"="+link))
+	out := run(t, bin, "helper", append(cleanEnv(t), Marker+"=1", privateEnv+"="+link))
 	if !strings.Contains(out, "config="+filepath.Join(resolved, "none", "config.json")+"\n") {
 		t.Fatalf("a link to a private folder: the paths do not lead to the folder it resolves to:\n%s", out)
 	}
@@ -146,7 +162,7 @@ func TestPlantedFolderBesideTheBinaryIsNotUsed(t *testing.T) {
 		if err := os.Chmod(dir, mode); err != nil {
 			t.Fatal(err)
 		}
-		out := run(t, bin, "top", cleanEnv())
+		out := run(t, bin, "top", cleanEnv(t))
 		if strings.Contains(out, ".no-managed") || !strings.Contains(out, "private=/") {
 			t.Fatalf("mode %o: the managed paths lead beside the binary:\n%s", mode, out)
 		}
@@ -186,4 +202,67 @@ func TestFallbackDialIsAHit(t *testing.T) {
 	g.mu.Lock()
 	g.hits = g.hits[:n]
 	g.mu.Unlock()
+}
+
+// A helper a sandbox runs keeps HOME but loses this package's variables. Its
+// HOME, the home Isolate made inside its parent's private folder, names that
+// folder, and the helper reuses it, making neither a folder nor a home of its
+// own. A HOME of any other shape, or in a folder that is not private, does
+// not count.
+func TestSandboxedHelperFindsItsParentByHome(t *testing.T) {
+	needsOwnership(t)
+	base := t.TempDir()
+	parent := filepath.Join(base, privatePrefix+"x")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(parent, homeName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := func(home string) []string {
+		var out []string
+		for _, e := range cleanEnv(t) {
+			if !strings.HasPrefix(e, "HOME=") {
+				out = append(out, e)
+			}
+		}
+		return append(out, "HOME="+home)
+	}
+	_, bin := copyBinary(t)
+	out := run(t, bin, "sandboxed", env(filepath.Join(parent, homeName)))
+	if !strings.Contains(out, "config="+filepath.Join(resolved, "none", "config.json")+"\n") || !strings.Contains(out, "private=\n") {
+		t.Fatalf("the helper did not find its parent by its home:\n%s", out)
+	}
+	other := filepath.Join(base, "other")
+	if err := os.MkdirAll(filepath.Join(other, homeName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	open := filepath.Join(base, privatePrefix+"open")
+	if err := os.MkdirAll(filepath.Join(open, homeName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, home := range map[string]string{"another folder": filepath.Join(other, homeName),
+		"a folder that is not private": filepath.Join(open, homeName)} {
+		if out := run(t, bin, "top", env(home)); !strings.Contains(out, "private=/") {
+			t.Fatalf("%s: the binary took %s for its parent's:\n%s", name, home, out)
+		}
+	}
+}
+
+// A top-level binary's home is inside its private folder, so Close removes
+// both and nothing is left in the temporary folder.
+func TestIsolateHomeIsInsideThePrivateFolder(t *testing.T) {
+	if g.home == "" || filepath.Dir(g.home) != g.resolved {
+		t.Fatalf("home %q is not inside the private folder %q", g.home, g.resolved)
+	}
+	if h, _ := os.UserHomeDir(); h != g.home {
+		t.Fatalf("HOME is %q, want %q", h, g.home)
+	}
 }

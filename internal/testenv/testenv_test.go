@@ -127,6 +127,9 @@ func TestDialControlJudgesTheResolvedAddress(t *testing.T) {
 	if got := judged.Load() - before; got < 2 {
 		t.Fatalf("a dial was judged %d time(s); the resolved address is not judged in Control", got)
 	}
+	// The loopback case calls the guard directly: a name that resolves to
+	// loopback would need an /etc/hosts entry, so no such name goes through
+	// the dialer end to end here.
 	n := len(g.Hits())
 	if err := g.judge("127.0.0.1:11434"); err == nil || !strings.Contains(err.Error(), "testenv") {
 		t.Fatalf("the resolved address 127.0.0.1:11434 was let through: %v", err)
@@ -140,4 +143,24 @@ func TestDialControlJudgesTheResolvedAddress(t *testing.T) {
 	g.mu.Lock()
 	g.hits = g.hits[:n]
 	g.mu.Unlock()
+}
+
+// checkPrivate accepts root-owned folders above a private one, and refuses
+// a folder that is not this user's own 0700 one, here / itself. The branch
+// for a folder above owned by another, non-root user needs a second user,
+// so it has no test here.
+func TestCheckPrivateWalksToTheRoot(t *testing.T) {
+	if !ownFolderChecked {
+		t.Skip("folder ownership is not checked on this system")
+	}
+	if _, err := checkPrivate("/"); err == nil || !strings.Contains(err.Error(), "not a 0700 folder") {
+		t.Fatalf("checkPrivate(/) = %v; want the refusal of a folder not this user's 0700 one", err)
+	}
+	dir := filepath.Join(t.TempDir(), "mine")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkPrivate(dir); err != nil {
+		t.Fatalf("a 0700 folder under root-owned ones: %v", err)
+	}
 }

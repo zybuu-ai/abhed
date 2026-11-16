@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"net"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -23,25 +25,40 @@ func editorRefused(l *agent.Loop, a model.Adapter, off, what string) string {
 	return ""
 }
 
-// editorCharge charges an editor call to the session's budget. A call with
-// no prompt tokens reported, cut or not, is estimated as a turn is: input
-// from the characters sent, about four to a token, output from those received,
-// or at maxTokens for a cut call the budget charges at its bound.
-// It returns the tokens charged with the cost.
-func editorCharge(l *agent.Loop, a model.Adapter, in, out int, cut bool, sentChars, gotChars, maxTokens int) (tokIn, tokOut int, cost *float64, unpriced, estimated bool) {
-	if in == 0 {
-		in, out = (sentChars+3)/4, max(out, (gotChars+3)/4)
-		if cut && l.Budget.CutAtBound(a) {
-			if maxTokens <= 0 {
-				maxTokens = a.Profile().MaxOutputTokens
-			}
-			out = max(out, maxTokens)
-		}
-		estimated = in > 0 || out > 0
+// editorCharge charges an editor call to the session's budget, by the rules
+// a turn's call is charged by (agent.EstimateUsage), counting from the
+// characters sent and received at about four to a token. Only a call the
+// provider never accepted (an error status, a connection never made) is not
+// charged; any other failure came after it took the request. It returns the
+// tokens charged with the cost.
+func editorCharge(l *agent.Loop, a model.Adapter, in, out int, err error, cancelled bool, sentChars, gotChars, maxTokens int) (tokIn, tokOut int, cost *float64, unpriced, estimated bool) {
+	if neverAccepted(err) {
+		return 0, 0, nil, false, false
 	}
-	cost, unpriced = l.ChargeEditorCall(a.Profile().Name, model.Usage{InputTokens: in, OutputTokens: out})
-	return in, out, cost, unpriced, estimated
+	u, estimated := agent.EstimateUsage(charsAdapter{a, sentChars}, model.Request{MaxTokens: maxTokens},
+		model.Usage{InputTokens: in, OutputTokens: out}, agent.CallEnd{Produced: gotChars, Cancelled: cancelled, Failed: err != nil},
+		l.Budget.CutAtBound(a))
+	cost, unpriced = l.ChargeEditorCall(a.Profile().Name, u)
+	return u.InputTokens, u.OutputTokens, cost, unpriced, estimated
 }
+
+// neverAccepted reports an error from before the provider took the request:
+// an error status, or a connection that was never made.
+func neverAccepted(err error) bool {
+	var se *model.StatusError
+	var op *net.OpError
+	var dns *net.DNSError
+	return errors.As(err, &se) || errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial"
+}
+
+// charsAdapter counts an editor request by the characters it sent, which is
+// all an editor call knows of its prompt once it has gone.
+type charsAdapter struct {
+	model.Adapter
+	sent int
+}
+
+func (c charsAdapter) CountTokens(model.Request) (int, error) { return (c.sent + 3) / 4, nil }
 
 // priceNotice is the field a refusal by the budget's gate is sent under: the
 // first time per feature as "notice" too, so Studio shows it once.

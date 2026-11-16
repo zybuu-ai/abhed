@@ -631,9 +631,9 @@ jobs:
         run: go build ./... && go vet ./...
       - name: golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
-      # NTFS keeps Unicode forms apart and its link count is not read, so
-      # those two tests may skip; these must run and pass. The push test's
-      # repository plants shell programs, so the macOS job requires it.
+      # NTFS keeps Unicode forms apart, so those tests may skip; these must
+      # run and pass. The push test's repository plants shell programs, so
+      # the macOS job requires it.
       - name: Path rules hold on a disk that folds case
         run: |
           set -euo pipefail

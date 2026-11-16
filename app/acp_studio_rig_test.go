@@ -233,7 +233,8 @@ func newScriptModel(t *testing.T, frames ...string) *scriptModel {
 		m.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\n", frame)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n")
+		// The prompt's size as a server counts it, about four characters a token.
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":3}}\n\n", len(body)/4)
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(m.Close)

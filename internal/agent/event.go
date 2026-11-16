@@ -140,8 +140,9 @@ const (
 	TermCompleted TerminalReason = "completed"
 	TermMaxTurns  TerminalReason = "max_turns"
 	TermMaxBudget TerminalReason = "max_budget"
-	// Reserved, not emitted: a denial is fed back to the model as a recoverable
-	// error so it can choose another approach, rather than ending the session.
+	// TermPolicyDenied: a hook ended the run (its reply's continue was
+	// false). A policy denial is not one: it is fed back to the model as a
+	// recoverable error so it can choose another approach.
 	TermPolicyDenied   TerminalReason = "policy_denied"
 	TermUserInterrupt  TerminalReason = "user_interrupt"
 	TermError          TerminalReason = "error"

@@ -91,6 +91,9 @@ type cliState struct {
 	// labelID and label are what the footer calls session labelID, kept
 	// where the store is a database rather than asked after every turn.
 	labelID, label string
+	// continueOnly is a -p run with no task: a conversation that cannot be
+	// continued is refused before any branch of it is written.
+	continueOnly bool
 	// copiedID is the session a record from elsewhere, or one that failed
 	// verification, was copied into, with the events copied.
 	copiedID     string

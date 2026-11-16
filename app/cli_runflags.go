@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/agentdefs"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 )
 
@@ -285,4 +286,45 @@ func recordRunFlags(start map[string]any, cfg config.Config, mcp []flagSource, s
 	if role != nil {
 		start["agent"] = map[string]any{"name": role.Name, "source": role.Source, "sha256": role.SHA256}
 	}
+}
+
+// bareConfig is cfg for -bare: of extensions, rule and skill directories
+// and auto memory, only what the managed configuration sets stays. It only
+// takes away; the organisation's are kept.
+func bareConfig(cfg config.Config) config.Config {
+	cfg.Bare = true
+	var kept []config.ExtensionConfig
+	for _, e := range cfg.Extensions {
+		if cfg.ExtensionLayer(e.Name) == config.LayerManaged {
+			kept = append(kept, e)
+		}
+	}
+	cfg.Extensions = kept
+	if !cfg.ManagedSets("memory.auto") {
+		cfg.Memory.Auto = false
+	}
+	// The organisation's rule and skill directories stay; nothing else does.
+	if !cfg.ManagedSets("rules.dirs") {
+		cfg.Rules.Dirs = nil
+	}
+	if !cfg.ManagedSets("skills.dirs") {
+		cfg.Skills.Dirs, cfg.Skills.Disabled = nil, true
+	}
+	return cfg
+}
+
+// harnessTools are the loop's own tools, which every session keeps whatever
+// -tools names: recall reads the session's own record, exit_plan ends plan
+// mode, and result is how a -json-schema run answers.
+var harnessTools = []string{"recall", "exit_plan", agent.ResultToolName}
+
+// toolsOnly keeps the named tools and no others; a name the session lacks
+// refuses. The harness's own tools may be named and are kept anyway.
+func toolsOnly(reg *tools.Registry, names []string) (*tools.Registry, error) {
+	names = slices.DeleteFunc(slices.Clone(names), func(n string) bool { return slices.Contains(harnessTools, n) })
+	sub, missing := reg.SubsetStrict(names)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("this session has no tool %s; it has %s", strings.Join(missing, ", "), strings.Join(reg.Names(), ", "))
+	}
+	return sub, nil
 }

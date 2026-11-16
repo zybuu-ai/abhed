@@ -281,14 +281,14 @@ func (l *Loop) suggestionText(sg *Suggester, text string) string {
 
 // suggestCall runs one request and returns its text and usage. A request
 // whose usage was not reported (cut, or a server that sends none) still cost
-// tokens: they are estimated by EstimateUnreported, and estimated is true.
+// tokens: they are estimated by EstimateUsage, and estimated is true.
 func suggestCall(ctx context.Context, a model.Adapter, req model.Request, bounded bool) (text string, usage model.Usage, estimated bool, err error) {
 	stream, err := a.Complete(ctx, req)
 	if err != nil {
 		return "", model.Usage{}, false, err
 	}
 	var out strings.Builder
-	var streamErr error
+	var streamErr, failed error
 	produced := 0
 	for chunk := range stream {
 		switch chunk.Type {
@@ -303,17 +303,18 @@ func suggestCall(ctx context.Context, a model.Adapter, req model.Request, bounde
 				produced += len(c.Name) + len(c.Args)
 			}
 		case model.ChunkError:
-			streamErr = chunk.Err
+			streamErr, failed = chunk.Err, chunk.Err
 		case model.ChunkDone:
 			if chunk.Usage != nil {
 				usage = *chunk.Usage
 			}
 		}
 	}
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil, Failed: failed != nil}
 	if streamErr == nil && ctx.Err() != nil {
 		streamErr = ctx.Err()
 	}
-	usage, estimated = EstimateUnreported(a, req, usage, produced, streamErr != nil, bounded)
+	usage, estimated = EstimateUsage(a, req, usage, end, bounded)
 	return out.String(), usage, estimated, streamErr
 }
 

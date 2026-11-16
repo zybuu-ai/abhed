@@ -249,3 +249,44 @@ func (c *acpConn) fetchLinked(ctx context.Context, s *acpSession, uri string) (s
 	}
 	return res.Content, "", nil
 }
+
+// resourceMentions reads the @server:uri mentions in a prompt's text as the
+// terminal reads them: each through the server's read_resource tool as the
+// person's call, within room bytes; one that may not be read refuses the prompt.
+func (c *acpConn) resourceMentions(ctx context.Context, s *acpSession, text string, room int) (promptLinks, error) {
+	var out promptLinks
+	if !s.inner || s.parts.Loop == nil || s.parts.Session == nil {
+		return out, nil
+	}
+	loop := s.parts.Loop
+	var parts, refused []string
+	for _, ref := range parseMentions(text) {
+		server, uri, tool, ok := resourceMention(loop, ref.Raw)
+		if !ok {
+			continue
+		}
+		if room <= 0 {
+			refused = append(refused, fmt.Sprintf("@%s: the prompt's attachments are over the %d KB cap", ref.Raw, mentionMaxBytes>>10))
+			continue
+		}
+		block, att, why, err := attachResource(ctx, loop, s.parts.Session, server, uri, tool, room)
+		if err != nil {
+			return out, err
+		}
+		if why != "" {
+			refused = append(refused, "@"+ref.Raw+": "+why)
+			continue
+		}
+		room = max(0, room-int(att.Bytes))
+		parts = append(parts, block)
+		out.mentions = append(out.mentions, att.Mention())
+	}
+	if len(refused) > 0 {
+		out.why = strings.Join(refused, "\n")
+		return out, nil
+	}
+	if len(parts) > 0 {
+		out.text = "\n\nWhat the person attached with @, read through the session's policy. " + untrustedNote + "\n" + strings.Join(parts, "\n")
+	}
+	return out, nil
+}

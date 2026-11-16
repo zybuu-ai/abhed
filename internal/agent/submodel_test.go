@@ -166,7 +166,9 @@ func TestBudgetSharedAcrossModels(t *testing.T) {
 	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y"}); err != nil {
 		t.Fatal(err)
 	}
-	if b.Spent() != 200 || len(fast.gotRequests) != 1 || len(parent.gotRequests) != 1 {
+	// 100 in each; the replies' output, reported as 0, is raised to what came
+	// back at about four characters a token: 3 for "fast answer", 1 for "a".
+	if b.Spent() != 204 || len(fast.gotRequests) != 1 || len(parent.gotRequests) != 1 {
 		t.Fatalf("spent %d across fast %d and parent %d calls", b.Spent(), len(fast.gotRequests), len(parent.gotRequests))
 	}
 	if _, err := f.Spawn(context.Background(), SubagentRequest{Prompt: "x", Description: "y", Model: "fast"}); err == nil ||

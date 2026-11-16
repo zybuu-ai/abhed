@@ -15,10 +15,9 @@
 // body is paid only when used.
 //
 // Skills are also the most direct route for untrusted instructions to reach
-// the model, since a skill body IS instructions by construction. So they come
-// only from directories the operator configured — never from the workspace the
-// agent is editing, which would let a repository carry its own instructions to
-// the agent reading it.
+// the model, since a skill body IS instructions by construction. So Load
+// reads only directories the operator configured. A workspace's own skills
+// come in through FromContent, from the content a trust decision covered.
 package skills
 
 import (
@@ -33,6 +32,7 @@ import (
 	"unicode"
 
 	"github.com/zybuu-ai/abhed/internal/frontmatter"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Skill is one loaded instruction set.
@@ -54,6 +54,10 @@ type Skill struct {
 	// asking the model to follow it. Loaded from pipeline.json beside the
 	// SKILL.md.
 	Pipeline json.RawMessage
+	// Workspace marks a skill that came with the workspace, under its trust
+	// decision. The listing says so, and it has no Dir: its folder is in
+	// .abhed, which the agent cannot read.
+	Workspace bool
 }
 
 // Registry holds the discovered skills.
@@ -141,7 +145,11 @@ func (r *Registry) Listing() string {
 		"call the `skill` tool with its name to read the full instructions, then follow them. " +
 		"Do not guess at a skill's contents from its description.\n\n")
 	for _, s := range all {
-		fmt.Fprintf(&b, "- `%s` — %s\n", s.Name, s.Description)
+		from := ""
+		if s.Workspace {
+			from = " (from this workspace)"
+		}
+		fmt.Fprintf(&b, "- `%s`%s — %s\n", s.Name, from, s.Description)
 	}
 	return b.String()
 }
@@ -271,6 +279,11 @@ func Parse(content string) (*Skill, error) {
 	return s, nil
 }
 
+// FoldName is a skill name as compared for a collision: in NFKC, without case.
+func FoldName(name string) string {
+	return strings.ToLower(norm.NFKC.String(strings.ToLower(name)))
+}
+
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -278,4 +291,47 @@ func expandHome(path string) string {
 		}
 	}
 	return path
+}
+
+// FromContent makes a skill from content already read, such as a
+// workspace's skill read once for its trust decision: SKILL.md, and
+// pipeline.json when there is one (nil when not). dir is the skill's folder,
+// whose base name it takes when the frontmatter names none.
+func FromContent(dir string, skillMD, pipeline []byte) (*Skill, error) {
+	s, err := Parse(string(skillMD))
+	if err != nil {
+		return nil, err
+	}
+	if s.Name == "" {
+		s.Name = filepath.Base(dir)
+	}
+	if strings.IndexFunc(s.Name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+		return nil, fmt.Errorf("the name %q holds a character that does not print as itself", s.Name)
+	}
+	s.Dir = dir
+	if pipeline != nil {
+		if !json.Valid(pipeline) {
+			return nil, fmt.Errorf("%s is not valid JSON", pipelineFile)
+		}
+		s.Pipeline = pipeline
+	}
+	return s, nil
+}
+
+// AddNew adds s unless a skill of its name is already held, and reports
+// whether it did: a later source never replaces an earlier one's skill, nor
+// sits beside it under a name that differs only in case or in a compatibility
+// form (a fullwidth letter, a ligature).
+func (r *Registry) AddNew(s *Skill) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := FoldName(s.Name)
+	for name := range r.byName {
+		if FoldName(name) == key {
+			return false
+		}
+	}
+	r.order = append(r.order, s.Name)
+	r.byName[s.Name] = s
+	return true
 }

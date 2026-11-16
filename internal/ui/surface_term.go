@@ -151,3 +151,47 @@ func (l *LineReader) Send(line string) {
 	l.d.push(readResult{line, nil})
 	l.d.mu.Unlock()
 }
+
+// ErrNoEditor is an edit asked of a terminal that cannot hand itself to an
+// editor: not a terminal, or one whose input cannot be polled.
+var ErrNoEditor = errors.New("this terminal cannot open an editor here")
+
+// EditText opens text in $VISUAL or $EDITOR, as Ctrl-G does for the input,
+// and returns what was saved.
+func (l *LineReader) EditText(ctx context.Context, text string) (string, error) {
+	d := l.d
+	d.mu.Lock()
+	canEdit := d.extEdit != nil
+	d.mu.Unlock()
+	if !l.raw || !canEdit || d.wake == nil {
+		return "", ErrNoEditor
+	}
+	d.openKeys()
+	select {
+	case <-d.keysDone: // the reader has stopped: nothing would take the request
+		return "", ErrNoEditor
+	default:
+	}
+	req := editRequest{text: text, reply: make(chan editResult, 1)}
+	select {
+	case d.edits <- req:
+		d.wake()
+	case <-d.keysDone:
+		return "", ErrNoEditor
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	// Once the editor is open it is the person's to close; a reader that
+	// stops before taking the request answers nothing, so that ends the wait.
+	select {
+	case r := <-req.reply:
+		return r.text, r.err
+	case <-d.keysDone:
+		select {
+		case r := <-req.reply:
+			return r.text, r.err
+		default:
+			return "", ErrNoEditor
+		}
+	}
+}
