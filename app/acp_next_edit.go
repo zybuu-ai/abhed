@@ -191,7 +191,7 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
 	})
 	cancelled := err != nil && ctx.Err() != nil
-	_, _, usd, unpriced, _ := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, cancelled,
+	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
 		recent.Len()+len(strings.Join(shown, "")), len(res.Window), nextEditMaxTokens)
 	edits, dropped := []suggestedEdit{}, res.Dropped
 	if err == nil && dropped == "" {
@@ -200,8 +200,11 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 	k.count(func(sum *agent.CompletionSummary) {
 		addCost(sum, usd, unpriced)
 		sum.Requests++
-		sum.TokensIn += res.InputTokens
-		sum.TokensOut += res.OutputTokens
+		sum.TokensIn += tokIn
+		sum.TokensOut += tokOut
+		if estimated {
+			sum.Estimated++
+		}
 		switch {
 		case cancelled:
 			sum.Cancelled++

@@ -1615,8 +1615,9 @@ _abhed/complete/cancel { sessionId } → {}
   the session closes, which counts `superseded` (replaced before sending)
   apart from `cancelled` (after); single completions are not recorded.
   Each request's cost is charged to the session's budget and summed in the
-  summary's `cost_usd` (`unpriced` when the model has none); a request cut
-  before usage came back is estimated.
+  summary's `cost_usd` (`unpriced` when the model has none), with the tokens
+  charged; `estimated` counts the requests whose tokens were estimated, as
+  a turn's are (configuration guide, budgets).
 
 ### 7.11 Next-edit suggestions
 

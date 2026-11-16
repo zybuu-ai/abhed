@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/model"
 )
 
 const pricedMain = `,"pricing":{"m-1":{"input":0,"output":0}}`
@@ -55,7 +57,7 @@ func TestStudioCompletionsCharged(t *testing.T) {
 	}
 	r.cl.call("session/close", map[string]any{"sessionId": id})
 	sum, _ := r.recorded(id, agent.EvCompletionSummary)
-	if len(sum) != 1 || sum[0]["cost_usd"] != 34.0 || sum[0]["unpriced"] != nil {
+	if len(sum) != 1 || sum[0]["cost_usd"] != sum[0]["tokens_in"].(float64)+sum[0]["tokens_out"].(float64) || sum[0]["unpriced"] != nil {
 		t.Fatalf("completion.summary %v", sum)
 	}
 }
@@ -108,8 +110,8 @@ func TestStudioNextEditChargedWithoutUsage(t *testing.T) {
 	if len(sum) != 1 || sum[0]["served"] != float64(1) {
 		t.Fatalf("summary %v", sum)
 	}
-	if usd, _ := sum[0]["cost_usd"].(float64); usd <= 0 {
-		t.Fatalf("a served next edit was not charged: %v", sum[0])
+	if usd, _ := sum[0]["cost_usd"].(float64); usd <= 0 || sum[0]["tokens_in"].(float64) <= 0 || sum[0]["estimated"] != float64(1) {
+		t.Fatalf("a served next edit was not charged its estimated tokens: %v", sum[0])
 	}
 }
 
@@ -145,5 +147,22 @@ func TestStudioCommitMessageIsAModelCall(t *testing.T) {
 		if k == "text" || k == "content" || k == "message" {
 			t.Fatalf("content in the model.call: %v", mc)
 		}
+	}
+}
+
+// An editor call that never reached the model is not charged; one cancelled
+// under a cap is charged at its output bound, whatever input was reported.
+func TestEditorChargeReachAndBound(t *testing.T) {
+	l := agent.NewLoop(&fakeAdapter{name: "gpt-4o"}, nil, nil, nil, nil, nil, agent.DefaultConfig())
+	l.Budget = agent.NewBudget(0, 0, false)
+	l.Budget.MaxUSD = 100
+	a := &fakeAdapter{name: "gpt-4o"}
+	refused := &model.StatusError{Status: 500}
+	if in, out, cost, _, est := editorCharge(l, a, 0, 0, refused, false, 4000, 0, 64); in != 0 || out != 0 || cost != nil || est {
+		t.Fatalf("an unreached call was charged: %d %d %v", in, out, cost)
+	}
+	in, out, cost, _, est := editorCharge(l, a, 500, 0, context.Canceled, true, 4000, 8, 64)
+	if in != 500 || out != 64 || cost == nil || !est {
+		t.Fatalf("a cancelled call: in %d out %d cost %v estimated %v", in, out, cost, est)
 	}
 }

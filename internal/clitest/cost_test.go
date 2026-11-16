@@ -15,9 +15,9 @@ const costConfig = `{"sandbox":{"min_tier":"none"},"pricing":{"stub-model":{"inp
 func TestHeadlessReportsCost(t *testing.T) {
 	t.Parallel()
 	h := piped(t, Opts{Args: []string{"-p", "hi", "-output-format", "json"}, UserConfig: costConfig,
-		Script: "text \"hello\"\nusage in=1000 out=100"})
+		Script: "text \"hello\"\nusage in=6000 out=100"})
 	usage, _ := resultOf(t, h.Stdout())["usage"].(map[string]any)
-	if got, want := usage["cost_usd"], (1000*2.0+100*10.0)/1e6; got != want {
+	if got, want := usage["cost_usd"], (6000*2.0+100*10.0)/1e6; got != want {
 		t.Fatalf("cost_usd %v, want %v; stdout:\n%s", got, want, h.Stdout())
 	}
 	if usage["unpriced"] == true {
@@ -28,7 +28,7 @@ func TestHeadlessReportsCost(t *testing.T) {
 // A model with no price is reported unpriced, with no cost guessed.
 func TestHeadlessUnpricedModel(t *testing.T) {
 	t.Parallel()
-	h := piped(t, Opts{Args: []string{"-p", "hi", "-output-format", "json"}, Script: "text \"hello\"\nusage in=1000 out=100"})
+	h := piped(t, Opts{Args: []string{"-p", "hi", "-output-format", "json"}, Script: "text \"hello\"\nusage in=6000 out=100"})
 	usage, _ := resultOf(t, h.Stdout())["usage"].(map[string]any)
 	if usage["cost_usd"] != 0.0 || usage["unpriced"] != true {
 		t.Fatalf("usage %v", usage)

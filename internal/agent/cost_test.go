@@ -513,3 +513,82 @@ func TestCutCallUnderACapIsChargedAtItsBound(t *testing.T) {
 		t.Fatalf("cut call %+v", calls)
 	}
 }
+
+// anthropicCut streams some text, then on cancel ends as the Anthropic adapter
+// does: the input message_start counted, no output, since message_delta never came.
+type anthropicCut struct {
+	name    string
+	started chan struct{}
+}
+
+func (c *anthropicCut) Name() string { return c.name }
+func (c *anthropicCut) Profile() model.Profile {
+	return model.Profile{Name: c.name, ContextWindow: 100000, ReasoningTokens: true}
+}
+func (c *anthropicCut) CountTokens(model.Request) (int, error) { return 0, nil }
+func (c *anthropicCut) Complete(ctx context.Context, _ model.Request) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 3)
+	go func() {
+		defer close(ch)
+		ch <- model.Chunk{Type: model.ChunkText, Text: "partial"}
+		close(c.started)
+		<-ctx.Done()
+		ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+		ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 500, CacheExcluded: true}}
+	}()
+	return ch, nil
+}
+
+// A cut call whose input was reported, as Anthropic's are, is still charged
+// its output bound when the model reasons: on the turn path and a side call.
+func TestAnthropicShapedCutIsChargedAtItsBound(t *testing.T) {
+	check := func(t *testing.T, calls []ModelCall) {
+		t.Helper()
+		if len(calls) != 1 || !calls[0].Estimated || calls[0].TokensIn != 500 || calls[0].TokensOut != 2048 {
+			t.Fatalf("cut call %+v", calls)
+		}
+	}
+	t.Run("turn", func(t *testing.T) {
+		l, store := costHarness(t, "claude-sonnet-4-5", nil)
+		cut := &anthropicCut{name: "claude-sonnet-4-5", started: make(chan struct{})}
+		l.Adapter = cut
+		l.Config.MaxTokens = 2048
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-cut.started; cancel() }()
+		_, _ = l.Run(ctx, "go")
+		check(t, modelCalls(t, store))
+	})
+	t.Run("side call", func(t *testing.T) {
+		l, store := costHarness(t, "gpt-4o", nil)
+		cut := &anthropicCut{name: "claude-sonnet-4-5", started: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-cut.started; cancel() }()
+		_, _ = (&Steps{loop: l}).Complete(ctx, cut, model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "q"}}, MaxTokens: 2048})
+		check(t, modelCalls(t, store))
+	})
+}
+
+// A stream that fails before anything came back and reported nothing was not
+// billed, so it is not charged, even under a cap.
+func TestPreTokenFailureIsNotCharged(t *testing.T) {
+	l, _ := costHarness(t, "gpt-4o", nil)
+	l.Budget.MaxUSD = 10
+	u, est := EstimateUsage(counted{namedAdapter: named("gpt-4o", 1000), n: 1000}, model.Request{MaxTokens: 2048},
+		model.Usage{}, CallEnd{Failed: true}, l.Budget.CutAtBound(l.Adapter))
+	if est || u.InputTokens != 0 || u.OutputTokens != 0 {
+		t.Fatalf("a pre-token failure was charged: %+v", u)
+	}
+}
+
+// A whole prompt reported under a quarter of the counted size is implausible,
+// and raised; a warm Anthropic cache's reads count in the whole prompt.
+func TestReportedPromptFloor(t *testing.T) {
+	a := counted{namedAdapter: named("gpt-4o", 100000), n: 1000}
+	if u, est := EstimateUsage(a, model.Request{}, model.Usage{InputTokens: 1, OutputTokens: 1}, CallEnd{}, false); !est || u.InputTokens != 1000 {
+		t.Fatalf("a 1-token report: %+v", u)
+	}
+	warm := model.Usage{InputTokens: 3, CachedInputTokens: 990, CacheExcluded: true, OutputTokens: 5}
+	if u, est := EstimateUsage(a, model.Request{}, warm, CallEnd{}, false); est || u != warm {
+		t.Fatalf("a warm cache was raised: %+v", u)
+	}
+}

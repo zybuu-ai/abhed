@@ -1463,8 +1463,8 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	for _, c := range calls {
 		produced += len(c.Name) + len(c.Args)
 	}
-	cut := ctx.Err() != nil || streamErr != nil
-	if est, ok := EstimateUnreported(l.Adapter, req, callUsage, produced, cut, l.Budget.CutAtBound(l.Adapter)); ok {
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil, Failed: streamErr != nil}
+	if est, ok := EstimateUsage(l.Adapter, req, callUsage, end, l.Budget.CutAtBound(l.Adapter)); ok {
 		dIn, dOut := est.InputTokens-callUsage.InputTokens, est.OutputTokens-callUsage.OutputTokens
 		mc.Estimated, mc.TokensIn, mc.TokensOut = true, est.InputTokens, est.OutputTokens
 		l.Budget.Spend(dIn + dOut)

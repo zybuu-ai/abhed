@@ -70,10 +70,11 @@ type CompletionSummary struct {
 	Failed     int `json:"failed"`
 	Cancelled  int `json:"cancelled"`
 	Superseded int `json:"superseded"`
-	// TokensIn and TokensOut are what the provider reported; a request
-	// cancelled after it went may cost tokens it never reported.
+	// TokensIn and TokensOut are the tokens charged: what the provider
+	// reported, or, for the Estimated requests, what was estimated.
 	TokensIn  int `json:"tokens_in"`
 	TokensOut int `json:"tokens_out"`
+	Estimated int `json:"estimated,omitempty"`
 	// CostUSD is what the priced requests cost, charged to the session's
 	// budget; Unpriced marks one to a model with no price.
 	CostUSD  float64 `json:"cost_usd,omitempty"`
