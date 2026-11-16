@@ -642,6 +642,21 @@ counts (`12 tests`, `replicas: 3`). Then:
   shown by a change to that file and a test run that passed after the last
   change; "after the changes" or "following the fix" needs the session to
   have changed something.
+- **An explanation of code is not checked, and never fails an answer.** A
+  statement that only says how or why code the session read or changed
+  behaves ("This correctly handles multiple whitespace…", "The previous
+  implementation skipped the tail if it didn't fit", "The new logic
+  ensures that chunks continue to be added…") is shown as "explanation:
+  not checked", counted in the footer and in the verdict's `note`, and
+  never verified. It qualifies only when it holds no pass, count, number,
+  change, deed, run, `file:line`, state, outcome, judgement or citation,
+  says no event but what code does ("skipped", "to be added", "is
+  covered", "the new logic"), and names something one of the session's
+  reads or edits holds. So strict mode passes a correct fix whose
+  answer explains it, and still fails on any unverified claim about the
+  work: "This ensures all 12 tests pass", "…, so the deploy succeeded",
+  "This handles retries, which I added" and an invented citation all
+  stay unverified work.
 - **Evidence may be given as objects.** A claim's `evidence` may list
   `{"call_id": …, "quote": …}` as well as ids; such a quote is used only
   when the cited output holds it. A later clause that opens with its verb
@@ -897,7 +912,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 986 plant a wrong claim. Some cite the result that shows them wrong
+session. 992 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -1003,10 +1018,10 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 986
+tail, a port not listening, a file not in a response). Today none of the 992
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 268 controls are verified,
+shows; the rest unverified), all 271 controls are verified,
 and none of the 391 true or neutral claims is contradicted. Among the
 controls are the claims of two real sessions on a local model, recorded as
 they were given: a review that cited `file:line` and a fix checked in

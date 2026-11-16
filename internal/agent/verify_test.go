@@ -1291,3 +1291,64 @@ func TestEvidenceObjects(t *testing.T) {
 		t.Fatalf("a quote of the claim's own that the output lacks was ignored: %+v", bad)
 	}
 }
+
+// The recorded strict fix, replayed through strict mode: with its two
+// invented citations it ends unverified on those two alone; without them
+// the correct fix ends completed. Its explanations are shown apart.
+func TestStrictRecordedFix(t *testing.T) {
+	run := func(t *testing.T, answer string) (TerminalReason, []AnswerVerdict) {
+		l, store, _, dir := verifyHarness(t, VerifyStrict, true, nil)
+		for _, s := range []CorpusStep{realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3} {
+			raw, _ := json.Marshal(s.Args)
+			cwd := ""
+			if s.Tool == "bash" {
+				cwd = dir
+			}
+			_, _ = l.Recorder.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
+			_, _ = l.Recorder.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: cwd, ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
+		}
+		l.Adapter.(*scriptedAdapter).turns = []scriptedTurn{
+			{calls: []model.ToolCall{{ID: "a1", Name: "answer", Args: json.RawMessage(answer)}}},
+			{calls: []model.ToolCall{{ID: "a2", Name: "answer", Args: json.RawMessage(answer)}}},
+		}
+		reason, _ := l.Run(context.Background(), realStrictFixPrompt)
+		return reason, answerVerdicts(store)
+	}
+	t.Run("as given", func(t *testing.T) {
+		reason, vs := run(t, realStrictFixAnswers[0])
+		if reason != TermUnverified || len(vs) == 0 {
+			t.Fatalf("got %s", reason)
+		}
+		var bad []string
+		for _, c := range vs[len(vs)-1].Claims {
+			if c.LoadBearing && c.Verdict != ClaimVerified && !c.Explains {
+				bad = append(bad, c.Reason)
+			}
+		}
+		if len(bad) != 2 || !strings.Contains(bad[0], `"bash_0"`) || !strings.Contains(bad[1], `"bash_2"`) {
+			t.Fatalf("want only the two invented citations unverified: %q", bad)
+		}
+	})
+	t.Run("without the invented citations", func(t *testing.T) {
+		var a map[string]any
+		_ = json.Unmarshal([]byte(realStrictFixAnswers[0]), &a)
+		var kept []any
+		for _, c := range a["claims"].([]any) {
+			ev, _ := json.Marshal(c.(map[string]any)["evidence"])
+			if !strings.Contains(string(ev), "bash_0") && !strings.Contains(string(ev), "bash_2") {
+				kept = append(kept, c)
+			}
+		}
+		a["claims"] = kept
+		raw, _ := json.Marshal(a)
+		reason, vs := run(t, string(raw))
+		if reason != TermCompleted || vs[0].Outcome != ClaimVerified || vs[0].Explained() == 0 {
+			t.Fatalf("the correct fix did not pass strict: %s %+v", reason, vs)
+		}
+	})
+	t.Run("the second answer", func(t *testing.T) {
+		if reason, vs := run(t, realStrictFixAnswers[1]); reason != TermCompleted {
+			t.Fatalf("got %s %+v", reason, vs)
+		}
+	})
+}

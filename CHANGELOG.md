@@ -551,17 +551,18 @@ All notable changes to Abhed are recorded here. The format follows
   call that ran it, an edit claim by the session's own edit (what it took
   away and put in), a `file:line` cite by the read's numbered lines within
   three lines of the cite, "I fixed X" by the change to X and a test run
-  that passed after it, and evidence objects are read. Of the two real
-  answers' 24 statements, 12 now verify (2 did); the review's two
-  accurate cites with code at the cited lines verify, and the rest are
-  explanations or loose cites that stay unverified. Strict mode on these
-  two recorded answers still ends `unverified`, because each holds an
-  explanation the record cannot show ("the previous implementation
-  skipped the tail"). The false-claim corpus gains the two sessions'
-  statements (12 controls, 2 planted, 10 neutral), 4 more planted cases
-  and 1 control; none of the 986 planted claims verifies, all 268
-  controls do, and none of the 391 true or neutral claims is
-  contradicted.
+  that passed after it, and evidence objects are read. An explanation of
+  code the session read or changed, with no event, count, result, change,
+  run or citation of its own, is shown as "explanation: not checked" and
+  no longer fails strict mode. Of the two real answers' 24 statements, 14
+  now verify (2 did), 3 are explanations, and the review's loose cites
+  stay unverified; the recorded correct fix now passes strict mode, and
+  fails it only on its two citations of call ids the record never held.
+  The false-claim corpus gains the two sessions' statements (14
+  controls, 2 planted, 8 neutral), 10 more planted cases and 1 control,
+  and 3 true statements that were neutral now verify;
+  none of the 992 planted claims verifies, all 271 controls do, and none
+  of the 391 true or neutral claims is contradicted.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

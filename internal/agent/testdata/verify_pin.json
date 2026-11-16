@@ -6289,13 +6289,58 @@
       "name": "a real answer, review 3: The agent triggers the retrieval process by calling `self.retriever.retrieve(state[\"query\"…",
       "kind": "control",
       "hash": "59872ba36985c284"
+    },
+    {
+      "name": "a state after an of in its clause",
+      "kind": "control",
+      "hash": "7aa48aad6204d088"
+    },
+    {
+      "name": "explanation-shaped: a pass said as a rationale",
+      "kind": "planted",
+      "hash": "2335c663171f8250"
+    },
+    {
+      "name": "explanation-shaped: a deploy said after a rationale",
+      "kind": "planted",
+      "hash": "242906fb55ec992f"
+    },
+    {
+      "name": "explanation-shaped: a change said inside a rationale",
+      "kind": "planted",
+      "hash": "e85a35a485536f39"
+    },
+    {
+      "name": "explanation-shaped: a fix said after a rationale",
+      "kind": "planted",
+      "hash": "c42e229947ab7fca"
+    },
+    {
+      "name": "explanation-shaped: a build said as a rationale",
+      "kind": "planted",
+      "hash": "983961d380974694"
+    },
+    {
+      "name": "explanation-shaped: a change denied before a condition",
+      "kind": "planted",
+      "hash": "d6c8811ec909c49c"
+    },
+    {
+      "name": "a real answer, strict fix 2.1: The initial execution of `python3 -m unittest tests.test_text` resulted in 5 failures.",
+      "kind": "control",
+      "hash": "a218790012257ddf"
+    },
+    {
+      "name": "a real answer, strict fix 2.7: Replaced the `for` loop (which used `range(0, len(text) - size, step)`) with a `while` loo…",
+      "kind": "control",
+      "hash": "a48709a1827676f9"
     }
   ],
   "strict": [
     {
       "scenario": "explain-sum",
       "reply": "`Sum` adds the numbers in `nums`. Before we start, the running total is 0 because nothing has been added yet.",
-      "want": "unverified"
+      "want": "completed"
     },
     {
       "scenario": "run-12",

@@ -279,3 +279,79 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 
 // fixWords say a fault is gone.
 var fixWords = wordSet(`fixed resolved solved addressed corrected patched`)
+
+var (
+	// rationaleRe says why or how code behaves.
+	rationaleRe = regexp.MustCompile(`\b(?:ensures?|handles?|allows?|lets|so that|which means|because|instead of|correctly|incorrectly|naturally|by (?:splitting|using|calling|checking|keeping|adding|discarding|collapsing)|the (?:previous|old|original|new) (?:implementation|code|logic|version|loop|function))\b`)
+	// rationaleSubjectRe is code named by its age, which is no event.
+	rationaleSubjectRe = regexp.MustCompile(`\b(?:new|previous|old|original)\s+(?:implementation|code|logic|version|loop|function)\b`)
+	// passiveInfinitiveRe is what code does said as "to be added".
+	passiveInfinitiveRe = regexp.MustCompile(`\b(?:to be|be|being|is|are)\s+([a-z]+)\b`)
+	// rationaleCondRe is a condition in a rationale ("if it didn't fit"):
+	// its "not" is the condition's.
+	rationaleCondRe = regexp.MustCompile(`\b(?:if|unless|when|even if|even when|even though)\b[^.;]*`)
+	// rationaleJudgeRe are rationale words that are not judgements of work.
+	rationaleJudgeRe = regexp.MustCompile(`\b(?:correctly|incorrectly)\b`)
+)
+
+// rationale reports an unverified, uncited claim that only explains how or
+// why code the session read or changed behaves: a rationale word, no pass,
+// count, number, change, deed, run, file:line, state, outcome, judgement or
+// citation, no event but a few that say what code does, and a code span or
+// word of its own in one of the session's reads or edits.
+func rationale(ix *recordIndex, c Claim) bool {
+	if len(c.Evidence) > 0 || c.Quote != "" {
+		return false
+	}
+	text := citeRe.ReplaceAllString(c.Text, " ")
+	f := extractFacts(text)
+	plain := normText(backtickRe.ReplaceAllString(text, " "))
+	if f.success || f.changed || f.deed || f.proof || f.changeWord || len(f.ran) > 0 || len(f.fileLines) > 0 ||
+		len(f.counted) > 0 || len(f.numbers) > 0 || len(f.hosts) > 0 || f.presentState || f.mergeClean || f.overclaim ||
+		f.observe || !rationaleRe.MatchString(plain) || stateRe.MatchString(plain) || outcomeRe.MatchString(plain) ||
+		judgeRe.MatchString(rationaleJudgeRe.ReplaceAllString(plain, " ")) || negationRe.MatchString(rationaleCondRe.ReplaceAllString(plain, " ")) {
+		return false
+	}
+	// Events may only be what code does: a participle code does, "to be
+	// added", or code named by its age.
+	allowed := map[string]bool{}
+	for _, m := range passiveInfinitiveRe.FindAllStringSubmatch(plain, -1) {
+		allowed[m[1]] = true
+	}
+	ev := eventWords(rationaleSubjectRe.ReplaceAllString(normText(text), " "))
+	for _, w := range ev {
+		if !codeParticiple[w] && !allowed[w] && !strings.HasSuffix(w, "ing") {
+			return false
+		}
+	}
+	// It must be about something the session read or changed.
+	var hay []string
+	for _, o := range ix.obs {
+		if o.usable() && (shownTools[o.tool] || o.tool == "edit" || o.tool == "write") {
+			hay = append(hay, strings.ToLower(o.content))
+		}
+	}
+	for _, m := range ix.mutations {
+		if m.tool == "edit" || m.tool == "write" {
+			hay = append(hay, strings.ToLower(m.text))
+		}
+	}
+	for _, sp := range codeSpans(c.Text) {
+		for _, h := range hay {
+			if strings.Contains(h, strings.ToLower(strings.TrimSpace(sp))) {
+				return true
+			}
+		}
+	}
+	for _, w := range wordRe.FindAllString(plain, -1) {
+		if len(w) < 4 || rationaleRe.MatchString(w) || notUnits[w] || qualStop[w] || commonClaimWords[w] {
+			continue
+		}
+		for _, h := range hay {
+			if strings.Contains(h, w) {
+				return true
+			}
+		}
+	}
+	return false
+}

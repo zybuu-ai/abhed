@@ -293,7 +293,9 @@ func extractFacts(claim string) facts {
 			f.tokens = append(f.tokens, t)
 		}
 	}
-	f.negated = negationRe.MatchString(noFailRe.ReplaceAllString(lower, " "))
+	// A "not" inside a condition ("even if it doesn't match") negates the
+	// condition, not what the sentence says happened.
+	f.negated = negationRe.MatchString(noFailRe.ReplaceAllString(conditionRe.ReplaceAllString(lower, " "), " "))
 
 	if notChangedRe.MatchString(lower) {
 		f.changed, f.negated = true, true
@@ -515,7 +517,12 @@ func extractFacts(claim string) facts {
 	}
 	f.oldNamed, f.inNamed, f.toolNamed = map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, m := range oldNamedRe.FindAllStringSubmatch(claim, -1) {
-		f.oldNamed[normText(m[1]+m[2]+m[3])] = true
+		f.oldNamed[normText(m[1]+m[2]+m[4])] = true
+		// "Replaced the `for` loop (which used `range(…)`) with": code said
+		// of what was replaced is what was replaced too.
+		for _, sp := range backtickRe.FindAllStringSubmatch(m[3], -1) {
+			f.oldNamed[normText(strings.TrimSpace(sp[1]))] = true
+		}
 	}
 	f.anchorNamed = map[string]string{}
 	for _, m := range anchorNamedRe.FindAllStringSubmatch(claim, -1) {
@@ -559,7 +566,7 @@ var (
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
-	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replace[ds]?|swap(?:ped|s)?|rename[ds]?|change[ds]?|switch(?:ed|es)?|convert(?:ed|s)?|turn(?:ed|s)?|move[ds]?)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+[a-z]+){0,2}\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
+	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replace[ds]?|swap(?:ped|s)?|rename[ds]?|change[ds]?|switch(?:ed|es)?|convert(?:ed|s)?|turn(?:ed|s)?|move[ds]?)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+[a-z]+){0,2}(\\s*\\((?:[^()`]|`[^`]*`)*\\))?\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
 	anchorNamedRe = regexp.MustCompile("(?i)\\b(after|before|above|below|beneath|under|next to|beside|following)\\s+(?:the\\s+)?`([^`]+)`")
 	// inNamedRe is code named as where a change was made: "in `Sum`".
 	inNamedRe = regexp.MustCompile("(?i)\\b(?:in|inside|within|into|to)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+(?:function|method|file|type|struct|package))?(?:[.,;:]|\\s+(?:so|to|with|because|and|for|which)\\b|$)")
@@ -579,6 +586,8 @@ var (
 	presentStateRe = regexp.MustCompile(`\b(?:is|are|has been|have been)\s+(?:now\s+|all\s+|properly\s+|fully\s+|correctly\s+|successfully\s+)*(?:resolved|fixed|deployed|merged|done|complete|completed|installed|configured|populated|built|registered|enabled|disabled|applied|handled|processed|released|shipped|updated|rolled out|in place|live|working|set up|wired|mounted)\b`)
 	// checkWordRe names a check that "passed to/through" may be said of.
 	checkWordRe = regexp.MustCompile(`\b(?:ci|build|builds|check|checks|pipeline|pipelines|review|reviews|lint|linter|linting|qa|gate|gates)\b`)
+	// conditionRe is a condition clause, to the end of its sentence.
+	conditionRe = regexp.MustCompile(`\b(?:even if|even when|even though)\b[^.;]*`)
 	// listNumberRe is a numbered list's marker after a colon or a sentence.
 	listNumberRe = regexp.MustCompile(`(?:^|[:.]\s+)\d{1,2}[.)]\s`)
 	// passedOnRe is "passed" said of a value handed on, not of a check.
@@ -820,6 +829,9 @@ func readCount(s string, m []int) countFact {
 // clause ("2 of 5", "2 of all the 5", "2 out of a total of 5"). part is N,
 // normalised, or "" when it is not a number. "12 of 12" and "12/12" are
 // all of them, not a part.
+// ofLinkWords may stand between the "of" of "N of M" and M.
+var ofLinkWords = wordSet(`the a an all total of out these those its their our`)
+
 func partOf(s string, at int, head string) (part string, ok bool) {
 	i := at
 	for i > 0 && s[i-1] == ' ' {
@@ -843,6 +855,16 @@ func partOf(s string, at int, head string) (part string, ok bool) {
 	for k := len(f) - 1; k >= 0; k-- {
 		if f[k] != "of" {
 			continue
+		}
+		// The "of" of "N of M" is near M: "3 of the 12", "2 out of a total
+		// of 5"; one far before it ("the execution of `x` resulted in 5")
+		// is not.
+		near := len(f)-1-k <= 4
+		for _, w := range f[k+1:] {
+			near = near && ofLinkWords[w]
+		}
+		if !near {
+			break
 		}
 		j := k - 1
 		if j >= 0 && f[j] == "out" {

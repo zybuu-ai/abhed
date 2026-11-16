@@ -82,6 +82,9 @@ func wordSet(s string) map[string]bool {
 	return m
 }
 
+// resultedInRe is a run's outcome said with its count.
+var resultedInRe = regexp.MustCompile(`\b(?:resulted|ended|finished|exited)\s+(?:in|with)\s+(?:\d|a\s|an\s|no\s)`)
+
 // afterChangeRe refers to the session's change as a time: "following the
 // changes", "after the fix". It is judged apart: a change must have been
 // made.
@@ -130,6 +133,9 @@ func eventWords(text string) []string {
 	t = staticPhrases.ReplaceAllString(t, " ")
 	t = describesCodeRe.ReplaceAllString(t, " ")
 	t = afterChangeRe.ReplaceAllString(t, " ")
+	// "the run resulted in 5 failures": what a run showed, which the count
+	// is compared with.
+	t = resultedInRe.ReplaceAllString(t, " ")
 	t = qualifyingLabel(t)
 	t = outputSaysRe.ReplaceAllString(t, " ")
 	t = searchFoundRe.ReplaceAllString(t, " ")

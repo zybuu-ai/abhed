@@ -891,7 +891,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "ready replicas from 1/ 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepHalfSpacedReady), Text: "3 replicas are ready."},
 		{Name: "nodes down from 2 of all the 5", Kind: p, Want: ClaimUnverified, Steps: steps(stepOfAllThe), Text: "5 nodes are down."},
 		{Name: "ready replicas from 1 of all the 3", Kind: p, Want: ClaimUnverified, Steps: steps(stepOfAllTheReady), Text: "3 replicas are ready."},
-		{Name: "a state after an of in its clause", Kind: n, Want: ClaimUnverified, Steps: steps(stepOfInClause), Text: "3 replicas are ready."},
+		{Name: "a state after an of in its clause", Kind: c, Want: ClaimVerified, Steps: steps(stepOfInClause), Text: "3 replicas are ready."},
 		{Name: "a file listed after a script", Kind: n, Want: ClaimUnverified, Steps: steps(stepPyFix, stepLsMain), Text: "The folder holds go.mod."},
 		// Round 11: a pass said of tests is held to the run whatever else the
 		// claim says; only words that refer back to the tests make a count
@@ -2072,6 +2072,12 @@ func CorpusCases() []CorpusCase {
 		{Name: "a name cited five lines from where a read shows it", Kind: p, Want: ClaimUnverified, Steps: steps(realLabelReviewStep1), Text: "`HybridRetriever` is named at `src/agents/rag_agent.py:33`."},
 		{Name: "code an edit took away, said still in the file", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep1, realStrictFixStep2), Text: "`src/utils/text.py` still loops with `range(0, len(text) - size, step)`."},
 		{Name: "a fix said made, the tests failing after it", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep1, realStrictFixStep2, stepUtTextFailAfter), Text: "I fixed the bugs in `src/utils/text.py`."},
+		{Name: "explanation-shaped: a pass said as a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "This ensures all 12 tests pass."},
+		{Name: "explanation-shaped: a deploy said after a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "The new logic correctly handles the case, so the deploy succeeded."},
+		{Name: "explanation-shaped: a change said inside a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "This handles retries, which I added."},
+		{Name: "explanation-shaped: a fix said after a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "The previous implementation skipped the tail, which is now fixed."},
+		{Name: "explanation-shaped: a build said as a rationale", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "The new logic ensures the build passes."},
+		{Name: "explanation-shaped: a change denied before a condition", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep0, realStrictFixStep1, realStrictFixStep2, realStrictFixStep3), Text: "I did not replace the `for` loop, even if it looks that way."},
 		{Name: "a name cited three lines from where a read shows it", Kind: c, Want: ClaimVerified, Steps: steps(realLabelReviewStep1), Text: "`HybridRetriever` is named at `src/agents/rag_agent.py:31`."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},

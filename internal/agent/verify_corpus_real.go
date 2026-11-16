@@ -57,8 +57,8 @@ var realKinds = map[string]string{
 	"fix0:0": "control", "fix0:1": "planted", "fix0:2": "planted", "fix0:3": "control", "fix0:4": "control",
 	"fix0:5": "neutral", "fix0:6": "neutral", "fix0:7": "control", "fix0:8": "neutral", "fix0:9": "neutral",
 	"fix0:10": "control",
-	"fix1:0":  "neutral", "fix1:1": "control", "fix1:2": "control", "fix1:3": "control", "fix1:4": "control",
-	"fix1:5": "neutral", "fix1:6": "neutral", "fix1:7": "control",
+	"fix1:0":  "control", "fix1:1": "control", "fix1:2": "control", "fix1:3": "control", "fix1:4": "control",
+	"fix1:5": "neutral", "fix1:6": "control", "fix1:7": "control",
 	"review:0": "control", "review:1": "neutral", "review:2": "control", "review:3": "neutral", "review:4": "neutral",
 }
 

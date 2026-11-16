@@ -553,6 +553,16 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && explains(ix, c) {
 		v.Explains = true
 	}
+	// So is a rationale for code the session read or changed ("this
+	// correctly handles tabs", "the previous implementation skipped the
+	// tail"): it is not checked, and it holds no event, count, result,
+	// change, run or citation of its own.
+	if explainsOn && v.Verdict == ClaimUnverified && v.LoadBearing && !v.Explains && rationale(ix, c) {
+		v.Explains = true
+	}
+	if v.Explains {
+		v.Reason = "explanation: not checked (" + v.Reason + ")"
+	}
 	return v
 }
 

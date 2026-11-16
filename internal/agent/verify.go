@@ -454,7 +454,9 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 		default:
 			av.Unverified++
 		}
-		if c.LoadBearing && c.Verdict != ClaimVerified {
+		// An explanation of code the session read or changed is shown
+		// apart and not checked; it never fails the answer.
+		if c.LoadBearing && c.Verdict != ClaimVerified && !c.Explains {
 			bad++
 		}
 	}
@@ -468,6 +470,13 @@ func (l *Loop) checkAnswer(ctx context.Context) (again bool, reason TerminalReas
 	}
 	// A statement read as a fact about other software is never passed over
 	// in silence.
+	if n := av.Explained(); n > 0 {
+		note := fmt.Sprintf("%d explanation(s) not checked", n)
+		if av.Note != "" {
+			note = av.Note + "; " + note
+		}
+		av.Note = note
+	}
 	if ext := av.ExternalCount(); ext > 0 {
 		n := fmt.Sprintf("%d statement(s) read as facts about other software were not checked", ext)
 		if av.Note != "" {
