@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os/exec"
 	"slices"
 	"strings"
@@ -683,6 +685,12 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	if n := cfg.Limits.MaxTokens; n > 0 {
 		c.MaxTokens = n
 	}
+	if n := cfg.Limits.ReasoningStallTokens; n > 0 {
+		c.ReasoningStallTokens = n
+	}
+	if n := cfg.Limits.ReasoningStallSeconds; n > 0 {
+		c.ReasoningStall = time.Duration(n) * time.Second
+	}
 	if at := cfg.Context.CompactAt; at > 0 {
 		c.CompactAt = at
 	}
@@ -696,13 +704,81 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 func Budget(cfg config.Config) *agent.Budget {
 	b := agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
 	b.MaxUSD = cfg.Limits.MaxBudgetUSD
+	b.ManagedPrices = cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
+	if cfg.Limits.BudgetSpent {
+		// Spent before it starts: the first turn's check stops the run, and
+		// every other call (a completion, a suggestion) is refused.
+		const spent = "stopped: your budget is spent; an administrator can change it"
+		b.Hold(spent)
+		b.Allowance = func(context.Context) agent.Allowance {
+			return agent.Allowance{Stop: true, Scope: "spent", Message: spent}
+		}
+	}
 	if len(cfg.Pricing) > 0 {
 		b.Prices = make(map[string]model.Price, len(cfg.Pricing))
 		for name, p := range cfg.Pricing {
+			// An unpinned org's 0 holds only where nothing is spent: a model
+			// every configured provider of which runs on this machine.
+			if cfg.PricingLoopbackOnly[name] && !orgZeroHolds(cfg, name) {
+				continue
+			}
 			b.Prices[name] = model.Price{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
 		}
 	}
 	return b
+}
+
+// orgZeroHolds reports whether an unpinned org's 0 for a model name is
+// taken: only for a model with no price of its own, nor one that may stand
+// for a model on the built-in list (a dated variant, a provider/ prefix,
+// surrounding spaces), served only by local model servers on this machine.
+// It is decided as the session's budget is built; a provider changed later
+// applies to sessions started after it.
+func orgZeroHolds(cfg config.Config, name string) bool {
+	if model.ListedOrAlias(name) {
+		return false
+	}
+	return servedOnThisMachine(cfg, name)
+}
+
+// servedOnThisMachine reports a model name that at least one configured
+// provider sends, and every provider sending it is a local model server
+// type (ollama, vllm, llamacpp, tgi, sglang) at its own endpoint or at a
+// loopback base_url. Any other type never counts, even at a loopback
+// address, where a gateway may front a paid model: openai-compatible, a
+// hosted API's type, or a custom provider type.
+func servedOnThisMachine(cfg config.Config, name string) bool {
+	managedCap := cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
+	found := false
+	for id, p := range cfg.Model.Providers {
+		if p.Model != name {
+			continue
+		}
+		found = true
+		// Under a managed cap a workspace's file is not trusted to label a
+		// provider local: one it defined serving the name drops the 0.
+		if managedCap && cfg.WorkspaceProviders[id] {
+			return false
+		}
+		if !model.LocalByDefault(p.Type) || p.BaseURL != "" && !loopbackEndpoint(p.BaseURL) {
+			return false
+		}
+	}
+	return found
+}
+
+// loopbackEndpoint reports a URL whose host is this machine.
+func loopbackEndpoint(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Subagents returns a copy of reg with task and tasks bound to one session's

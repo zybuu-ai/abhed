@@ -363,6 +363,12 @@ func (f *fallbackAdapter) Current() string {
 
 func (f *fallbackAdapter) Name() string           { return f.current().Name() }
 func (f *fallbackAdapter) Profile() model.Profile { return f.current().Profile() }
+
+// SamplingDefaults are the model now answering's, as its Profile is: the next
+// request goes to it, with its budget.
+func (f *fallbackAdapter) SamplingDefaults() model.Params {
+	return model.SamplingDefaultsOf(f.current())
+}
 func (f *fallbackAdapter) CountTokens(req model.Request) (int, error) {
 	return f.current().CountTokens(req)
 }

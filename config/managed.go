@@ -69,6 +69,16 @@ func mergeManaged(cfg *Config) error {
 	if local == nil && org == nil {
 		return nil
 	}
+	// A price the machine's own file sets is the machine's, wherever it sends.
+	if len(cfg.PricingLoopbackOnly) > 0 && local != nil {
+		var mine struct {
+			Pricing map[string]json.RawMessage `json:"pricing"`
+		}
+		_ = json.Unmarshal(local, &mine)
+		for name := range mine.Pricing {
+			delete(cfg.PricingLoopbackOnly, name)
+		}
+	}
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)
@@ -171,6 +181,13 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	}
 	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
 	managedPricing(cfg, data, belowPricing)
+	orgZeroBelow(cfg, belowPricing)
+	// A provider the managed layer sets is the managed layer's.
+	for name := range cfg.WorkspaceProviders {
+		if cfg.ManagedSets("model.providers." + name) {
+			delete(cfg.WorkspaceProviders, name)
+		}
+	}
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == label
@@ -848,6 +865,29 @@ func managedPricing(cfg *Config, data []byte, below map[string]PriceConfig) {
 		cfg.SetAside = append(cfg.SetAside, pricingSetAside(o, name))
 	}
 	cfg.Pricing = doc.Pricing
+}
+
+// orgZeroBelow keeps an unpinned org's 0 from replacing a price a lower
+// layer set: the model keeps that price, or, under a managed dollar cap
+// that sets lower prices aside, stays unpriced. A 0 only prices a model that
+// has no price of its own.
+func orgZeroBelow(cfg *Config, below map[string]PriceConfig) {
+	for name := range cfg.PricingLoopbackOnly {
+		p, ok := below[name]
+		if !ok {
+			continue
+		}
+		delete(cfg.PricingLoopbackOnly, name)
+		if cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0 {
+			delete(cfg.Pricing, name)
+			// The person's own price is set aside too, as managedPricing does.
+			cfg.SetAside = append(cfg.SetAside, pricingSetAside(cfg.origins["pricing."+name], name))
+		} else {
+			cfg.Pricing[name] = p
+		}
+		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: orgSource(cfg.OrgPolicy.URL), Layer: LayerOrg, Key: "pricing." + name,
+			Reason: "an org policy whose keys this machine does not pin prices only a model that has no price of its own"})
+	}
 }
 
 // pricingSetAside is the set-aside record of a lower layer's price for name.

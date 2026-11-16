@@ -79,10 +79,6 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Upgrading from 1.2.9
 
-- Under `-verify strict`, an answer given through the answer tool is now
-  checked by its `text` as well as its claims, so a run that 1.2.9 ended
-  verified with nothing verified (the text saying "the tests now pass", no
-  test run showing it) now ends `unverified`, exit 8.
 - Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
   logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
   secrets API answers 400), and a command or tool is never given one by
@@ -129,6 +125,10 @@ All notable changes to Abhed are recorded here. The format follows
   `ssh.read_commands` behind approval, set `ssh.listed_reads_only: true`. A
   managed file that sets any `permissions` or `ssh` key keeps the old
   behaviour unless it sets `ssh.listed_reads_only` itself.
+- Under `-verify strict`, an answer given through the answer tool is now
+  checked by its `text` as well as its claims, so a run that 1.2.9 ended
+  verified with nothing verified (the text saying "the tests now pass", no
+  test run showing it) now ends `unverified`, exit 8.
 
 ### Added
 
@@ -180,7 +180,6 @@ All notable changes to Abhed are recorded here. The format follows
   is not installed but `pyright-langserver` or `pylsp` is, Studio's Python
   server is that one, and the start you are asked about names it and what
   it loads. Not under the container tier, which always runs basedpyright.
-
 - Studio can add and remove MCP servers. Adding is never an ACP method:
   Studio has the engine check the server (`_abhed/mcp/check`, read only,
   `mcp.check` in `features`), shows it in a modal whose default is No, and
@@ -451,6 +450,26 @@ All notable changes to Abhed are recorded here. The format follows
   `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
   (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
   longer lifts the org's lower cap.
+- `limits.budget_spent`: a run stops before its first model call, with a
+  `budget.stopped` of reason `allowance`, and every other call is refused.
+  An org policy turns it on once a person's budget is spent, so a laptop
+  under it no longer runs a turn per session past the budget. Only a lower
+  layer's on is taken.
+- An org policy whose keys the machine does not pin may price a model at
+  exactly 0, so an org dollar budget admits a model the laptop runs itself.
+  The laptop takes the 0 only for a model with no price of its own (not on
+  the built-in list or a list of current hosted models Abhed names without
+  a price, not a variant of either once case, prefixes, padding, full-width
+  and zero-width characters and Unicode dashes are normalised, and not
+  priced in the machine's file or the person's), and only when every
+  provider it configures for the model is a local model server type:
+  `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, and, under a managed
+  dollar cap, not one a workspace's file defined. No other type
+  counts, `openai-compatible` and hosted API types included, even at a
+  loopback address; a model served that way is priced in the managed file
+  or by an org with pinned keys. Any other price from such an org is set
+  aside, as before. Under a managed or org dollar cap, an unpriced model's
+  refusal says an administrator sets the price.
 
 ### Changed
 
@@ -502,45 +521,23 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
-- Strict verification could pass an answer with nothing verified. Through
-  the answer tool, only the listed claims were checked, not the `text`
-  the person reads, and a `knowledge` claim about the session's work was
-  checked only when it said "I changed" or named a pass. A model that
-  wrote "The tests now pass" in `text` and gave one `knowledge` claim
-  ("The tests were updated by fixing the bugs in …") ended strict mode
-  verified with 0 verified claims. Each statement of `text` that no claim
-  repeats is now checked, a `knowledge` claim about the work in any
-  wording is checked as work, and an answer that passes with nothing
-  verified says why in the verdict's `note` (no statement was read as a
-  claim about the session's work). Finished work said in the present ("the
-  issue is resolved", "the service is deployed", "the cache is now
-  populated") is a claim about the work too.
-- Label mode marked correct statements about code the session read as
-  unverified. Code described in the present ("`OmniRAGAgent` is
-  initialized with an instance of `HybridRetriever`", "the results are
-  passed to the `synthesizer` node", "Specialized Worker Role: …") was read
-  as something that happened in the session; "passed to" was read as a
-  test passing; and a refusal the agent quoted back ("Denied: denied by
-  rule bash(curl*) …") was in no tool result, because a refused call has
-  none. A present passive of a verb of data flow or wiring, a participle
-  that names what produced or receives a value, and one that qualifies a
-  noun now describe the code, so the names in the sentence are checked
-  against the read; verbs of change and of finished work (merged,
-  processed, resolved, built), a label with a word of change in it, the
-  past tense, "now" and the first person are still events, and "passed
-  to" said of CI, a build or checks is still a result; wiring or a flag
-  said in the present ("is registered", "is enabled", "is set up") is a
-  claim about the work, since a read cannot show that one thing is wired
-  into another. A statement about a refusal (its quoted
-  text, or that the call was denied by its rule, from its layer) is now
-  checked against the refusal's own fields: the layer it names ("IT"
-  and the security team being the org) must be the refusal's own, and
-  nothing else may be said in it ("succeeded after
-  being blocked" stays unverified). The refusal is evidence for nothing
-  else, since its reason can hold text the model chose. The false-claim
-  corpus gains 50 planted cases and 13 controls; none of the 918 planted
-  claims verifies, all 253 controls do, and none of the 357 true or
-  neutral claims is contradicted.
+- A model reply that only reasons, with no text or tool call, is cut past
+  `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
+  request's thinking budget if larger), with `limits.reasoning_stall_seconds`
+  (600) as a time backstop, instead of being held to the ten-minute call cap
+  and failing the run with no answer. Floors of 1000 tokens and 30 seconds
+  apply. The cut call is charged as any cut call is; an answer that arrives
+  as the cut comes is kept; otherwise the turn asks once more with thinking
+  off and a nudge, and a second cut reply before the model next answers ends
+  the run `stalled` with the reasoning kept in the record. A text reply cut
+  part way is kept and finished, and `-p` returns it whole; a second cut
+  before a full reply also ends the run `stalled`. A workspace may only
+  lower the bounds.
+- "Thinking off" is now off on Anthropic and Gemini when a `thinking_budget`
+  is configured. Before, the budget won, so the critic, next-prompt
+  suggestion and commit-message calls, which ask with thinking off, thought
+  anyway (on Anthropic, a budget with thinking off made an invalid request),
+  and a provider set to `think: false` with a budget still thought.
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one
   after another: neither subagent tool said what such a request means. `tasks`
@@ -572,7 +569,6 @@ All notable changes to Abhed are recorded here. The format follows
   newer keystroke replaced before anything was sent, so the last keystroke
   of a burst was often answered `limited` and nothing was asked again. The
   limit is now spent only by a request about to be sent.
-
 - A debug session in Abhed Studio, in any language, no longer shows the
   editor a source path outside the workspace. Such a frame, output line or
   breakpoint now carries only its name. Studio opens a frame's file on your
@@ -706,6 +702,45 @@ All notable changes to Abhed are recorded here. The format follows
   that is not in the record still counts as no evidence. Commands, paths
   and statements in the note are quoted, so text the model chose cannot
   start a line of its own in it.
+- Strict verification could pass an answer with nothing verified. Through
+  the answer tool, only the listed claims were checked, not the `text`
+  the person reads, and a `knowledge` claim about the session's work was
+  checked only when it said "I changed" or named a pass. A model that
+  wrote "The tests now pass" in `text` and gave one `knowledge` claim
+  ("The tests were updated by fixing the bugs in …") ended strict mode
+  verified with 0 verified claims. Each statement of `text` that no claim
+  repeats is now checked, a `knowledge` claim about the work in any
+  wording is checked as work, and an answer that passes with nothing
+  verified says why in the verdict's `note` (no statement was read as a
+  claim about the session's work). Finished work said in the present ("the
+  issue is resolved", "the service is deployed", "the cache is now
+  populated") is a claim about the work too.
+- Label mode marked correct statements about code the session read as
+  unverified. Code described in the present ("`OmniRAGAgent` is
+  initialized with an instance of `HybridRetriever`", "the results are
+  passed to the `synthesizer` node", "Specialized Worker Role: …") was read
+  as something that happened in the session; "passed to" was read as a
+  test passing; and a refusal the agent quoted back ("Denied: denied by
+  rule bash(curl*) …") was in no tool result, because a refused call has
+  none. A present passive of a verb of data flow or wiring, a participle
+  that names what produced or receives a value, and one that qualifies a
+  noun now describe the code, so the names in the sentence are checked
+  against the read; verbs of change and of finished work (merged,
+  processed, resolved, built), a label with a word of change in it, the
+  past tense, "now" and the first person are still events, and "passed
+  to" said of CI, a build or checks is still a result; wiring or a flag
+  said in the present ("is registered", "is enabled", "is set up") is a
+  claim about the work, since a read cannot show that one thing is wired
+  into another. A statement about a refusal (its quoted
+  text, or that the call was denied by its rule, from its layer) is now
+  checked against the refusal's own fields: the layer it names ("IT"
+  and the security team being the org) must be the refusal's own, and
+  nothing else may be said in it ("succeeded after
+  being blocked" stays unverified). The refusal is evidence for nothing
+  else, since its reason can hold text the model chose. The false-claim
+  corpus gains 50 planted cases and 13 controls; none of the 918 planted
+  claims verifies, all 253 controls do, and none of the 357 true or
+  neutral claims is contradicted.
 
 ### Go API
 
