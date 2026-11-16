@@ -257,7 +257,14 @@ type Config struct {
 	// TurnsPerMessage, else 25.
 	ContinueTurns int
 	MaxTokens     int
-	CompactAt     float64 // fraction of the context window
+	// ReasoningStallTokens cuts a reply that has only reasoned, with no text
+	// or tool call, past this many reasoning tokens, or past the request's
+	// thinking budget if larger; ReasoningStall past this long, a backstop
+	// that never cuts within that budget. Zero uses the defaults; values
+	// under the floors, 1000 tokens and 30 s, are raised to them.
+	ReasoningStallTokens int
+	ReasoningStall       time.Duration
+	CompactAt            float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -265,6 +272,23 @@ type Config struct {
 	Temperature  *float64
 	Effort       model.EffortLevel
 }
+
+// ContinueCutReply asks the model to finish a text reply cut part way; a
+// reader joins the cut part and the reply that follows it.
+const ContinueCutReply = "Your reply was cut off before it finished. Continue it from where it stopped."
+
+// The reasoning-only bounds: a runaway think otherwise holds the call to its
+// cap. The floors keep a lower layer from cutting every thinking reply.
+const (
+	DefaultReasoningStallTokens = 8000
+	DefaultReasoningStall       = 10 * time.Minute
+)
+
+// The floors of the reasoning bounds, vars so tests can lower them.
+var (
+	minReasoningStallTokens = 1000
+	minReasoningStall       = 30 * time.Second
+)
 
 func DefaultConfig() Config {
 	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
@@ -411,6 +435,10 @@ type Loop struct {
 	// Three end the run rather than asking again to the turn limit, each billed.
 	streamFails   int
 	lastStreamErr string
+	// stallRetried is set once a reply cut for reasoning without output has
+	// been asked again, so a second one in a row ends the run; stallThinkOff
+	// asks that retry with thinking off where the provider takes it.
+	stallRetried, stallThinkOff bool
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// stopContinues counts the times stop hooks sent this run back to work.
@@ -1157,6 +1185,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		defer hh.RunEnded(l.rootID())
 	}
 	l.streamFails = 0 // a failure streak is the run's own, not carried from the last
+	l.stallRetried, l.stallThinkOff = false, false
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -1488,6 +1517,29 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		Temperature: l.Config.Temperature,
 		Effort:      l.effort(),
 	}
+	// The retry after a reply cut for reasoning without output asks with
+	// thinking off, where the provider takes it.
+	// Thinking off: the effort cleared too, and no budget sent (the adapters
+	// send none when asked with thinking off).
+	if l.stallThinkOff {
+		req.Effort = model.EffortNone
+		if l.Adapter.Profile().Sampling.Think {
+			off := false
+			req.Params.Think = &off
+		}
+	}
+	l.stallThinkOff = false
+	stallAfter, stallTokens := l.Config.ReasoningStall, l.Config.ReasoningStallTokens
+	if stallAfter <= 0 {
+		stallAfter = DefaultReasoningStall
+	}
+	if stallTokens <= 0 {
+		stallTokens = DefaultReasoningStallTokens
+	}
+	stallAfter, stallTokens = max(stallAfter, minReasoningStall), max(stallTokens, minReasoningStallTokens)
+	// Never cut within the thinking the request itself allows.
+	budget := model.ThinkingBudget(l.Adapter, req)
+	stallTokens = max(stallTokens, budget)
 
 	callStart := time.Now()
 	// A wait for a request slot is said, and kept out of the call's timings.
@@ -1499,6 +1551,41 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		l.record(EvModelWaiting, ActorSystem, ModelWaiting{Model: l.Adapter.Profile().Name, Ahead: w.Ahead})
 	})
+	// A reply that only reasons for stallAfter is cut here, rather than held
+	// to the call's cap with nothing to show.
+	callCtx, cutCall := context.WithCancelCause(callCtx)
+	defer cutCall(nil)
+	var thought atomic.Int64 // reasoning characters so far, read by the backstop
+	var stallOff atomic.Bool // set once the reply answers or the turn ends
+	armed, answered := false, false
+	// The time backstop: it waits on while the reasoning is within the
+	// request's thinking budget, and is stopped when the reply answers or
+	// the turn ends.
+	var backstopMu sync.Mutex
+	var backstop *time.Timer
+	stopBackstop := func() {
+		stallOff.Store(true)
+		backstopMu.Lock()
+		if backstop != nil {
+			backstop.Stop()
+		}
+		backstopMu.Unlock()
+	}
+	defer stopBackstop()
+	var fire func()
+	fire = func() {
+		switch {
+		case stallOff.Load():
+		case budget > 0 && int(thought.Load()/4) <= budget:
+			backstopMu.Lock()
+			if !stallOff.Load() {
+				backstop = time.AfterFunc(stallAfter, fire)
+			}
+			backstopMu.Unlock()
+		default:
+			cutCall(&ReasoningStallError{After: stallAfter})
+		}
+	}
 	stream, err := l.Adapter.Complete(callCtx, req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
@@ -1546,6 +1633,21 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	for chunk := range stream {
 		if firstToken == 0 && chunk.Type != model.ChunkDone {
 			firstToken = time.Since(callStart) - time.Duration(queued.Load())
+		}
+		if !answered && (chunk.Type == model.ChunkText && chunk.Text != "" || chunk.Type == model.ChunkToolCall) {
+			answered = true
+			stopBackstop()
+		}
+		if !answered && chunk.Type == model.ChunkReasoning {
+			if n := thought.Add(int64(len(chunk.Text))); int(n/4) > stallTokens {
+				cutCall(&ReasoningStallError{Tokens: stallTokens})
+			}
+			if !armed {
+				armed = true
+				backstopMu.Lock()
+				backstop = time.AfterFunc(stallAfter, fire)
+				backstopMu.Unlock()
+			}
 		}
 		switch chunk.Type {
 		case model.ChunkText:
@@ -1607,6 +1709,15 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		l.record(EvAgentDelta, ActorAgent, Delta{Text: out, Seq: deltaN})
 	}
 	pending.Reset()
+	// Cut for reasoning without output: that is the reply's failure, whatever
+	// the stream said as it closed.
+	var stall *ReasoningStallError
+	// A reply that answered as the cut came keeps what arrived, as any cut call.
+	cutByStall := ctx.Err() == nil && errors.As(context.Cause(callCtx), &stall)
+	stalled := cutByStall && !answered
+	if stalled {
+		streamErr = stall
+	}
 
 	mc := ModelCall{
 		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
@@ -1623,7 +1734,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	for _, c := range calls {
 		produced += len(c.Name) + len(c.Args)
 	}
-	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil, Failed: streamErr != nil}
+	end := CallEnd{Produced: produced, Cancelled: ctx.Err() != nil || stalled, Failed: streamErr != nil}
 	if est, ok := EstimateUsage(l.Adapter, req, callUsage, end, l.Budget.CutAtBound(l.Adapter)); ok {
 		dIn, dOut := est.InputTokens-callUsage.InputTokens, est.OutputTokens-callUsage.OutputTokens
 		mc.Estimated, mc.TokensIn, mc.TokensOut = true, est.InputTokens, est.OutputTokens
@@ -1673,6 +1784,23 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	} else {
 		l.streamFails = 0
+		// A text answer cut part way is no full reply: it counts as a cut.
+		if !(cutByStall && answered && len(calls) == 0) {
+			l.stallRetried = false
+		}
+	}
+	// A reply cut for reasoning without output is asked once more, with
+	// thinking off and a nudge; a second in a row ends the run, its reasoning
+	// kept in the record.
+	if stalled {
+		if l.stallRetried {
+			l.stuckDetail = "the model " + stall.Reason() + ", a second time before it answered; its reasoning is in the record"
+			return TermStalled, true, nil
+		}
+		l.stallRetried, l.stallThinkOff = true, true
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: "Your previous reply " + stall.Reason() +
+			", so it was stopped. Do not deliberate at length: reply now with the one tool call you need, or with the answer."})
+		return "", false, nil
 	}
 	if streamErr != nil && len(calls) == 0 {
 		if text.Len() == 0 {
@@ -1685,6 +1813,22 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	}
 
+	// Text-only, cut as it arrived: the rest never came, so it is not the
+	// final answer. It is kept, and the model asked to finish it.
+	// A second cut before a full reply ends the run, as a second stall does.
+	if cutByStall && answered && len(calls) == 0 && text.Len() > 0 {
+		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: text.String()}); err != nil {
+			return TermError, true, err
+		}
+		l.messages = append(l.messages, model.Message{Role: model.RoleAssistant, Content: text.String()})
+		if l.stallRetried {
+			l.stuckDetail = "the model " + stall.Reason() + " and its reply was cut, a second time before a full reply; what it wrote is in the record"
+			return TermStalled, true, nil
+		}
+		l.stallRetried = true
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: ContinueCutReply})
+		return "", false, nil
+	}
 	if body := text.String(); body != "" {
 		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: body}); err != nil {
 			return TermError, true, err
@@ -2471,7 +2615,7 @@ func (l *Loop) finish(reason TerminalReason) TerminalReason {
 	// Children the end takes with it are stopped before it is recorded, so
 	// the end says how many live on.
 	l.Background.onRunEnd(reason)
-	if reason == TermRetryExhausted && l.stuckDetail != "" && l.endDetail == "" {
+	if (reason == TermRetryExhausted || reason == TermStalled) && l.stuckDetail != "" && l.endDetail == "" {
 		l.endDetail = l.stuckDetail
 		defer func() { l.endDetail = "" }()
 	}

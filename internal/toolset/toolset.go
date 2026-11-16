@@ -683,6 +683,12 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 	if n := cfg.Limits.MaxTokens; n > 0 {
 		c.MaxTokens = n
 	}
+	if n := cfg.Limits.ReasoningStallTokens; n > 0 {
+		c.ReasoningStallTokens = n
+	}
+	if n := cfg.Limits.ReasoningStallSeconds; n > 0 {
+		c.ReasoningStall = time.Duration(n) * time.Second
+	}
 	if at := cfg.Context.CompactAt; at > 0 {
 		c.CompactAt = at
 	}
