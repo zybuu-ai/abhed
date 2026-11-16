@@ -455,10 +455,13 @@ All notable changes to Abhed are recorded here. The format follows
 - An org policy whose keys the machine does not pin may price a model at
   exactly 0, so an org dollar budget admits a model the laptop runs itself.
   The laptop takes the 0 only for a model with no price of its own (not on
-  the built-in list, not a dated, prefixed, re-cased or space-padded name
-  for one there, and not priced in the machine's file or the person's), and
-  only when every provider it configures for the model is a local model
-  server type: `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`. No other type
+  the built-in list or a list of current hosted models Abhed names without
+  a price, not a variant of either once case, prefixes, padding, full-width
+  and zero-width characters and Unicode dashes are normalised, and not
+  priced in the machine's file or the person's), and only when every
+  provider it configures for the model is a local model server type:
+  `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, and, under a managed
+  dollar cap, not one a workspace's file defined. No other type
   counts, `openai-compatible` and hosted API types included, even at a
   loopback address; a model served that way is priced in the managed file
   or by an org with pinned keys. Any other price from such an org is set

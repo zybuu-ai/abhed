@@ -126,3 +126,30 @@ func TestOrgZeroAliasesAndGateways(t *testing.T) {
 		}
 	}
 }
+
+// Under a managed dollar cap, a provider a workspace's file defined is not
+// trusted to label a gateway local: its name keeps no org 0. Without a
+// managed cap, or for the person's own provider, the label is taken.
+func TestWorkspaceProviderIsNotLocalUnderAManagedCap(t *testing.T) {
+	build := func(managedCap, fromWorkspace bool) bool {
+		cfg := config.Default()
+		cfg.Limits.MaxBudgetUSD = 1
+		if managedCap {
+			cfg.ManagedKeys = []string{"limits.max_budget_usd"}
+		}
+		cfg.Pricing = map[string]config.PriceConfig{"house-model": {}}
+		cfg.PricingLoopbackOnly = map[string]bool{"house-model": true}
+		cfg.Model.Providers = map[string]config.ProviderConfig{"gw": {Type: "vllm", BaseURL: "http://127.0.0.1:4000/v1", Model: "house-model"}}
+		if fromWorkspace {
+			cfg.WorkspaceProviders = map[string]bool{"gw": true}
+		}
+		_, ok := Budget(cfg).Price("house-model")
+		return ok
+	}
+	if build(true, true) {
+		t.Error("a workspace's provider took the org's 0 under a managed cap")
+	}
+	if !build(true, false) || !build(false, true) {
+		t.Error("the label was refused where it is trusted")
+	}
+}

@@ -97,3 +97,22 @@ func TestUnpinnedOrgZeroNeverReplacesAPrice(t *testing.T) {
 		t.Fatalf("both prices are not recorded set aside: %+v", cfg.SetAside)
 	}
 }
+
+// A provider a workspace's file defines is noted as the workspace's, unless
+// the managed layer sets it; the person's own are not.
+func TestWorkspaceProvidersAreNoted(t *testing.T) {
+	_, ws := trustHome(t, `{"model":{"providers":{"mine":{"type":"ollama","model":"house-model"}}}}`,
+		`{"model":{"providers":{"gw":{"type":"vllm","base_url":"http://127.0.0.1:4000/v1","model":"house-model"}}}}`)
+	t.Setenv(TrustEnv, "1")
+	withManaged(t, `{"limits":{"max_budget_usd":1}}`)
+	cfg, err := Load(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Model.Providers["gw"]; !ok {
+		t.Skip("the workspace's provider did not load (workspace not trusted here)")
+	}
+	if !cfg.WorkspaceProviders["gw"] || cfg.WorkspaceProviders["mine"] {
+		t.Fatalf("workspace providers %v", cfg.WorkspaceProviders)
+	}
+}

@@ -742,12 +742,18 @@ func orgZeroHolds(cfg config.Config, name string) bool {
 // address, where a gateway may front a paid model: openai-compatible, a
 // hosted API's type, or a custom provider type.
 func servedOnThisMachine(cfg config.Config, name string) bool {
+	managedCap := cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
 	found := false
-	for _, p := range cfg.Model.Providers {
+	for id, p := range cfg.Model.Providers {
 		if p.Model != name {
 			continue
 		}
 		found = true
+		// Under a managed cap a workspace's file is not trusted to label a
+		// provider local: one it defined serving the name drops the 0.
+		if managedCap && cfg.WorkspaceProviders[id] {
+			return false
+		}
 		if !model.LocalByDefault(p.Type) || p.BaseURL != "" && !loopbackEndpoint(p.BaseURL) {
 			return false
 		}

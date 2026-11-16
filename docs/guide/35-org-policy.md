@@ -127,11 +127,18 @@ the laptop runs itself without pinned keys: an org whose keys are not
 pinned may price a model at exactly 0 (every figure 0). The laptop takes
 that 0 only when both hold:
 
-- the model has no price of its own: it is not on the built-in list, is not
-  a name that may stand for one there (a dated or tagged variant such as
+- the model has no price of its own: it is not on the built-in list, nor a
+  current hosted model Abhed knows by name but carries no price for (such as
+  `claude-sonnet-4-6`, `gpt-4.5`, `o1`, `o4-mini`, which stay unpriced, and
+  so refused under a dollar cap, until an operator prices them), nor a name
+  that may stand for either (a dated or tagged variant such as
   `gpt-4o-2024-08-06`, a `provider/` prefix such as `openai/gpt-4o`, other
-  letter case, or surrounding spaces), and the machine's file and the
-  person's do not price it;
+  letter case, surrounding spaces, full-width letters, zero-width
+  characters or Unicode dashes, which are normalised before the lookup),
+  and the machine's file and the person's do not price it. The variants
+  match by prefix, so a local model named after a listed family (anything
+  `o3-…`, `gpt-5-nano-…`) is refused too: it fails closed, and is priced in
+  the managed file instead;
 - every provider the laptop configures for that model is a local model
   server type, `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, at its own
   endpoint or a loopback `base_url`.
@@ -144,7 +151,10 @@ served through a gateway. A local model served by LM Studio or another
 `openai-compatible` server is priced in the machine's managed file, or by
 an org whose keys the machine pins. What remains trusted is the label: a
 provider written as one of the five local types is taken to be a local
-model server. Ollama's `*-cloud` models are an exception to "local": Ollama
+model server. The machine's managed file and the person's own file can
+write that label; under a managed dollar cap a workspace's file cannot (a
+provider a workspace defines or changes, trusted or not, keeps no org 0
+for the model it serves). Ollama's `*-cloud` models are an exception to "local": Ollama
 runs them on ollama.com and bills the person's own Ollama account. The
 check is made as each session's budget is built, so a provider changed
 later applies to the sessions started after it.

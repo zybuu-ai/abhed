@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
@@ -97,6 +98,9 @@ type Config struct {
 	// its keys set, which are 0: each holds only for a model every
 	// configured provider of which is a server on this machine.
 	PricingLoopbackOnly map[string]bool `json:"-"`
+	// WorkspaceProviders names the providers a workspace's file defined or
+	// changed, which a managed dollar cap does not trust as local servers.
+	WorkspaceProviders map[string]bool `json:"-"`
 	// Plan governs what an accepted plan may carry.
 	Plan PlanConfig `json:"plan,omitempty"`
 	// Mode is the default mode new sessions start in where permissions.mode
@@ -1914,7 +1918,16 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		sum := sha256.Sum256(o.Settings)
 		cfg.Settings = SettingsSource{Name: o.SettingsName, SHA256: hex.EncodeToString(sum[:])}
 	}
+	beforeWS := maps.Clone(cfg.Model.Providers)
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	for name, p := range cfg.Model.Providers {
+		if was, ok := beforeWS[name]; !ok || !reflect.DeepEqual(was, p) {
+			if cfg.WorkspaceProviders == nil {
+				cfg.WorkspaceProviders = map[string]bool{}
+			}
+			cfg.WorkspaceProviders[name] = true
+		}
+	}
 	noteUsers(&st, workspace, o)
 	cfg.Workspace = st
 	if err != nil {

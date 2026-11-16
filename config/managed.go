@@ -182,6 +182,12 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
 	managedPricing(cfg, data, belowPricing)
 	orgZeroBelow(cfg, belowPricing)
+	// A provider the managed layer sets is the managed layer's.
+	for name := range cfg.WorkspaceProviders {
+		if cfg.ManagedSets("model.providers." + name) {
+			delete(cfg.WorkspaceProviders, name)
+		}
+	}
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == label
