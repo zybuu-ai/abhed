@@ -22,7 +22,6 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/defaults"
 	"github.com/zybuu-ai/abhed/internal/egress"
-	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
 	"github.com/zybuu-ai/abhed/internal/sandboxconfig"
@@ -393,12 +392,33 @@ func friendlyCause(err error, name string, p config.ProviderConfig, where, next 
 
 // ---- first run ----
 
+// onboardManaged is the managed layer first-run setup works within: the
+// machine's managed file and the org policy, if any; a variable for tests.
+var onboardManaged = func() (config.Config, error) {
+	return config.LoadManagedWith(config.LoadOptions{Warn: func(string) {}})
+}
+
+// managedChoosesModel reports whether the managed layer itself says which
+// model to use, leaving first-run setup nothing to choose.
+func managedChoosesModel(m config.Config) bool {
+	return m.ManagedSets("model.providers") || m.ManagedSets("model.default")
+}
+
 // firstRunNeeded reports whether this is a first run: a terminal, and no
-// configuration anywhere to say which model to use.
+// configuration anywhere to say which model to use. A managed file that
+// sets other things, such as rules or the allowed models, leaves the model
+// to the person, so setup is still offered, within what it allows.
 func firstRunNeeded(workspace string) bool {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
 		return false
 	}
+	return nothingChoosesModel(workspace)
+}
+
+// nothingChoosesModel reports whether no configuration says which model to
+// use: no environment variable, no file of the person's or the workspace's,
+// and no managed setting of the model.
+func nothingChoosesModel(workspace string) bool {
 	if os.Getenv("ABHED_BASE_URL") != "" || os.Getenv("ABHED_MODEL") != "" {
 		return false
 	}
@@ -407,12 +427,13 @@ func firstRunNeeded(workspace string) bool {
 		return false
 	}
 	for _, p := range []string{filepath.Join(home, ".abhed", "config.json"),
-		filepath.Join(workspace, ".abhed", "config.json"), managed.ConfigFile} {
+		filepath.Join(workspace, ".abhed", "config.json")} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 			return false
 		}
 	}
-	return true
+	m, err := onboardManaged()
+	return err == nil && !managedChoosesModel(m)
 }
 
 // ollamaBase is where a local Ollama answers: OLLAMA_HOST, as Ollama itself
@@ -538,8 +559,15 @@ func (o onboarding) ask(q, def string) (string, error) {
 // It writes only ~/.abhed/config.json, and only when asked to.
 func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 	o := onboarding{in: in, out: out, ctx: ctx}
+	m, err := onboardManaged()
+	if err != nil {
+		return fmt.Errorf("the managed configuration does not load: %w", err)
+	}
 	fmt.Fprintln(out, "\nWelcome to Abhed. There is no configuration yet, so first choose the model it talks to.")
 	fmt.Fprintln(out, "Nothing is written unless you confirm; `abhed init` writes a workspace configuration instead.")
+	if m.Managed {
+		fmt.Fprintln(out, "Your organisation's managed configuration applies: only the models it allows are offered, and what it sets is not asked.")
+	}
 
 	base := ollamaBase()
 	fmt.Fprintf(out, "\nLooking for Ollama at %s … ", strings.TrimSuffix(base, "/v1"))
@@ -554,12 +582,20 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	fmt.Fprintln(out)
 	var choices []string
-	for i, m := range models {
-		if i == 9 {
+	refused := 0
+	for _, name := range models {
+		if len(choices) == 9 {
 			break
 		}
-		choices = append(choices, m)
-		fmt.Fprintf(out, "  %d) Ollama: %s\n", i+1, config.Printable(m))
+		if m.EndpointRefused(config.ProviderConfig{Type: "ollama", BaseURL: base, Model: name}) != nil {
+			refused++
+			continue
+		}
+		choices = append(choices, name)
+		fmt.Fprintf(out, "  %d) Ollama: %s\n", len(choices), config.Printable(name))
+	}
+	if refused > 0 {
+		fmt.Fprintf(out, "  (%d more Ollama model(s) not offered: the managed configuration does not allow them)\n", refused)
 	}
 	fmt.Fprintln(out, "  e) an OpenAI-compatible endpoint: its URL, and the name of the variable holding its key")
 	fmt.Fprintln(out, "  s) skip: start with the defaults and write nothing")
@@ -583,6 +619,10 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		case "e":
 			if name, p, err = o.endpoint(); err != nil {
 				return err
+			}
+			if rerr := m.EndpointRefused(p); rerr != nil {
+				fmt.Fprintf(out, "  %s is not allowed: %v\n", config.Printable(p.Model), rerr)
+				p = config.ProviderConfig{}
 			}
 		default:
 			n, convErr := strconv.Atoi(pick)
@@ -609,9 +649,12 @@ func firstRun(ctx context.Context, in io.Reader, out io.Writer) error {
 		fmt.Fprintln(out, "it answered without calling the tool. Abhed works through tools, so this model will do little; a larger or tool-trained one is better.")
 	}
 
-	auto, err := o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes")
-	if err != nil {
-		return err
+	// What the managed layer decides is not asked.
+	auto := false
+	if !m.ManagedSets("memory.auto") {
+		if auto, err = o.confirm("Let the agent keep memory notes of its own between sessions? They are recorded, and text a file planted could persist in them.", "Yes, keep notes"); err != nil {
+			return err
+		}
 	}
 
 	// Nothing is chosen for Enter; input that ends writes nothing.

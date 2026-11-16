@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcpauth/mcpauthtest"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/profiles"
@@ -424,5 +427,72 @@ func TestDoctorProbesHaveTheirOwnTimeouts(t *testing.T) {
 	out.Reset()
 	if doctorModelProbes(slow, 200*time.Millisecond, &out) {
 		t.Fatal("a model that never answered passed")
+	}
+}
+
+// managedFile points the managed configuration at body for this test.
+func managedFile(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := managed.ConfigFile
+	managed.ConfigFile = path
+	t.Cleanup(func() { managed.ConfigFile = old })
+}
+
+// #17: a managed file that does not choose the model leaves first-run setup
+// on; one that does turns it off.
+func TestFirstRunUnderAManagedFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ABHED_BASE_URL", "")
+	t.Setenv("ABHED_MODEL", "")
+	ws := t.TempDir()
+	managedFile(t, `{"permissions":{"deny":["bash(curl*)"]}}`)
+	if !nothingChoosesModel(ws) {
+		t.Fatal("a managed file of rules alone turned first-run setup off")
+	}
+	managedFile(t, `{"model":{"default":"corp","providers":{"corp":{"type":"openai-compatible","base_url":"https://llm.corp.example/v1","model":"m"}}}}`)
+	if nothingChoosesModel(ws) {
+		t.Fatal("first-run setup was offered though the managed file chooses the model")
+	}
+}
+
+// #17: under a managed file, setup offers only the models it allows, does
+// not ask what it sets, and refuses an endpoint model it does not allow.
+func TestFirstRunOffersOnlyWhatTheManagedFileAllows(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			_, _ = w.Write([]byte(`{"data":[{"id":"llama3:8b"},{"id":"qwen2.5-coder:7b"}]}`))
+			return
+		}
+		http.Error(w, "no", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	t.Setenv("OLLAMA_HOST", srv.URL)
+	managedFile(t, `{"model":{"allowed":["ollama/qwen*"]},"memory":{"auto":false}}`)
+	var out strings.Builder
+	// 1 picks the one model offered; then no to writing.
+	if err := firstRun(context.Background(), strings.NewReader("1\n1\n"), &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "managed configuration applies") || !strings.Contains(got, "1) Ollama: qwen2.5-coder:7b") ||
+		strings.Contains(got, "Ollama: llama3:8b") || !strings.Contains(got, "1 more Ollama model(s) not offered") {
+		t.Fatalf("offered:\n%s", got)
+	}
+	if strings.Contains(got, "memory notes") {
+		t.Fatalf("asked what the managed file sets:\n%s", got)
+	}
+	// An endpoint model the list does not admit is refused and asked again.
+	out.Reset()
+	if err := firstRun(context.Background(), strings.NewReader("e\nhttp://127.0.0.1:9/v1\n\nother-model\ns\n"), &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "other-model is not allowed") {
+		t.Fatalf("an endpoint model outside the list was taken:\n%s", out.String())
 	}
 }

@@ -153,8 +153,13 @@ started when it exits. `abhed ollama check` does the same from a shell, and
 `abhed ollama models` lists the models it suggests — [A local Ollama
 model](03-providers.md#a-local-ollama-model).
 
-The first time you run `abhed` on a terminal with no configuration
-anywhere, it offers to set one up:
+The first time you run `abhed` on a terminal with no configuration of
+your own or the workspace's, it offers to set one up. A managed file
+(`/etc/abhed/config.json`) or an org policy that chooses the model
+(`model.default` or `model.providers`) leaves nothing to set up; one that
+does not is worked within: only the models its `model.allowed` admits are
+offered, an endpoint model it does not admit is refused and asked again,
+and a setting it makes, such as `memory.auto`, is not asked.
 
 - It looks for Ollama (at `OLLAMA_HOST`, or `localhost:11434`) and lists
   its models. A model chosen from that list is written as `"type":

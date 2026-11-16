@@ -822,6 +822,11 @@ All notable changes to Abhed are recorded here. The format follows
 - The `task` tool no longer refuses a call without a `description`, which
   cost the model a turn: it labels the subagent from its prompt, as `tasks`
   does.
+- First-run setup is offered under a managed file or org policy that does
+  not choose the model; it used to be skipped whenever a managed file
+  existed, so a new laptop under one started with no model set. It offers
+  only the models `model.allowed` admits, refuses an endpoint model it does
+  not, and does not ask what the managed layer sets.
 
 ### Go API
 
