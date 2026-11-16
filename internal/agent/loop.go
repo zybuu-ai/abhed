@@ -1515,9 +1515,14 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 	// The retry after a reply cut for reasoning without output asks with
 	// thinking off, where the provider takes it.
-	if l.stallThinkOff && l.Adapter.Profile().Sampling.Think {
-		off := false
-		req.Params.Think = &off
+	// Thinking off: the effort cleared too, and no budget sent (the adapters
+	// send none when asked with thinking off).
+	if l.stallThinkOff {
+		req.Effort = model.EffortNone
+		if l.Adapter.Profile().Sampling.Think {
+			off := false
+			req.Params.Think = &off
+		}
 	}
 	l.stallThinkOff = false
 	stallAfter, stallTokens := l.Config.ReasoningStall, l.Config.ReasoningStallTokens
@@ -1549,20 +1554,33 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	var thought atomic.Int64 // reasoning characters so far, read by the backstop
 	var stallOff atomic.Bool // set once the reply answers or the turn ends
 	armed, answered := false, false
-	defer stallOff.Store(true)
 	// The time backstop: it waits on while the reasoning is within the
-	// request's thinking budget, and does nothing once stallOff is set.
-	var arm func()
-	arm = func() {
-		time.AfterFunc(stallAfter, func() {
-			switch {
-			case stallOff.Load():
-			case budget > 0 && int(thought.Load()/4) <= budget:
-				arm()
-			default:
-				cutCall(&ReasoningStallError{After: stallAfter})
+	// request's thinking budget, and is stopped when the reply answers or
+	// the turn ends.
+	var backstopMu sync.Mutex
+	var backstop *time.Timer
+	stopBackstop := func() {
+		stallOff.Store(true)
+		backstopMu.Lock()
+		if backstop != nil {
+			backstop.Stop()
+		}
+		backstopMu.Unlock()
+	}
+	defer stopBackstop()
+	var fire func()
+	fire = func() {
+		switch {
+		case stallOff.Load():
+		case budget > 0 && int(thought.Load()/4) <= budget:
+			backstopMu.Lock()
+			if !stallOff.Load() {
+				backstop = time.AfterFunc(stallAfter, fire)
 			}
-		})
+			backstopMu.Unlock()
+		default:
+			cutCall(&ReasoningStallError{After: stallAfter})
+		}
 	}
 	stream, err := l.Adapter.Complete(callCtx, req)
 	if err != nil {
@@ -1614,7 +1632,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		if !answered && (chunk.Type == model.ChunkText && chunk.Text != "" || chunk.Type == model.ChunkToolCall) {
 			answered = true
-			stallOff.Store(true)
+			stopBackstop()
 		}
 		if !answered && chunk.Type == model.ChunkReasoning {
 			if n := thought.Add(int64(len(chunk.Text))); int(n/4) > stallTokens {
@@ -1622,7 +1640,9 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 			}
 			if !armed {
 				armed = true
-				arm()
+				backstopMu.Lock()
+				backstop = time.AfterFunc(stallAfter, fire)
+				backstopMu.Unlock()
 			}
 		}
 		switch chunk.Type {
@@ -1689,7 +1709,8 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// the stream said as it closed.
 	var stall *ReasoningStallError
 	// A reply that answered as the cut came keeps what arrived, as any cut call.
-	stalled := ctx.Err() == nil && !answered && errors.As(context.Cause(callCtx), &stall)
+	cutByStall := ctx.Err() == nil && errors.As(context.Cause(callCtx), &stall)
+	stalled := cutByStall && !answered
 	if stalled {
 		streamErr = stall
 	}
@@ -1785,6 +1806,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 	}
 
+	// Text-only, cut as it arrived: the rest never came, so it is not the
+	// final answer. It is kept, and the model asked to finish it.
+	if cutByStall && answered && len(calls) == 0 && text.Len() > 0 {
+		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: text.String()}); err != nil {
+			return TermError, true, err
+		}
+		l.messages = append(l.messages,
+			model.Message{Role: model.RoleAssistant, Content: text.String()},
+			model.Message{Role: model.RoleUser, Content: "Your reply was cut off before it finished. Continue it from where it stopped."})
+		return "", false, nil
+	}
 	if body := text.String(); body != "" {
 		if _, err := l.Recorder.Record(EvAgentMessage, ActorAgent, Trusted, Message{Text: body}); err != nil {
 			return TermError, true, err

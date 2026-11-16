@@ -28,7 +28,7 @@ func (t *thinker) SamplingDefaults() model.Params {
 
 func (t *thinker) Name() string { return "thinker" }
 func (t *thinker) Profile() model.Profile {
-	return model.Profile{Name: "gpt-4o", ContextWindow: 100000, Sampling: model.Sampling{Think: true}}
+	return model.Profile{Name: "gpt-4o", ContextWindow: 100000, Sampling: model.Sampling{Think: true, ThinkingBudget: t.budget > 0}}
 }
 func (t *thinker) CountTokens(model.Request) (int, error) { return 100, nil }
 func (t *thinker) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
@@ -78,6 +78,12 @@ func (t *thinker) Complete(ctx context.Context, req model.Request) (<-chan model
 				return
 			}
 			ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 100, OutputTokens: 5}}
+		case "late-text":
+			// Text arrives after the backstop fired; the adapter then stops.
+			ch <- model.Chunk{Type: model.ChunkReasoning, Text: "thinking"}
+			time.Sleep(90 * time.Millisecond)
+			ch <- model.Chunk{Type: model.ChunkText, Text: "The answer is"}
+			ch <- model.Chunk{Type: model.ChunkError, Err: context.Canceled}
 		case "fail":
 			ch <- model.Chunk{Type: model.ChunkError, Err: errors.New("stream reset")}
 		default:
@@ -117,8 +123,8 @@ func TestRunawayReasoningIsCutAndRetriedOnce(t *testing.T) {
 		t.Fatalf("the cut call %+v", calls[0])
 	}
 	retry := th.reqs[1]
-	if retry.Params.Think == nil || *retry.Params.Think {
-		t.Fatalf("the retry asked with thinking %v", retry.Params.Think)
+	if retry.Params.Think == nil || *retry.Params.Think || retry.Effort != model.EffortNone {
+		t.Fatalf("the retry asked with thinking %v, effort %q", retry.Params.Think, retry.Effort)
 	}
 	last := retry.Messages[len(retry.Messages)-1]
 	if last.Role != model.RoleUser || !strings.Contains(last.Content, "reasoned for 60ms without answering") {
@@ -224,5 +230,28 @@ func TestAnswerArrivingAtTheCutIsKept(t *testing.T) {
 		if strings.Contains(m.Content, "without answering") {
 			t.Fatalf("a reply that answered was nudged: %q", m.Content)
 		}
+	}
+}
+
+// A text answer cut as it arrived is not taken as the final answer: it is
+// kept, and the model asked to finish it.
+func TestTextCutAtTheBackstopIsContinued(t *testing.T) {
+	l, store, th := stallLoop(t, "late-text", "42.")
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermCompleted || len(th.reqs) != 2 {
+		t.Fatalf("ended %s after %d calls", reason, len(th.reqs))
+	}
+	msgs := th.reqs[1].Messages
+	if n := len(msgs); n < 2 || msgs[n-2].Content != "The answer is" || !strings.Contains(msgs[n-1].Content, "cut off") {
+		t.Fatalf("the continuation request %+v", msgs)
+	}
+	n := 0
+	for _, e := range sessEvents(t, store) {
+		if e.Type == EvAgentMessage {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("%d agent messages, want the cut one and its continuation", n)
 	}
 }
