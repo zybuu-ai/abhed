@@ -191,8 +191,10 @@ raised is marked `estimated` on the call:
 - Three failed replies in a row, each producing nothing, end the run
   `retry_exhausted` whatever the error said (a transport error's text
   changes with its port), rather than being asked again to the turn limit.
-  The count starts again with each run. A cap set by the managed or org
-configuration also fixes the prices it is spent by (see below).
+  The count starts again with each run.
+
+A cap set by the managed or org configuration also fixes the prices it is
+spent by (see below).
 
 ### Prices
 

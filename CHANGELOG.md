@@ -50,9 +50,9 @@ All notable changes to Abhed are recorded here. The format follows
   interrupting, or a stream that fails after the provider accepted it, does
   not save money under a cap; only a call the provider never accepted is
   not charged. Three failed replies in a row, each producing nothing,
-  whatever the error, end the run `retry_exhausted`. `/usage` shows the session's cost and
-  each turn's, `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
-  turn and in all; a record written before this release shows its cost as
+  whatever the error, end the run `retry_exhausted`. `/usage` shows the
+  session's cost and each turn's, `-p -output-format json` its
+  `usage.cost_usd`, and HawkEYE the cost per turn and in all; a record written before this release shows its cost as
   not recorded. A model with no price is shown as unpriced, and its cost is
   never guessed. No workspace sets prices, trusted or not. For
   `azure-openai`, prices are keyed by deployment name.
