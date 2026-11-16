@@ -206,100 +206,138 @@ func TestParallelPrompt(t *testing.T) {
 
 var _ tools.Tool = Tasks{}
 
-// parallelCase is one phrasing and whether it should raise the note.
+// parallelCase is one phrasing and the note it should get.
 type parallelCase struct {
 	text string
-	want bool
+	want noteTier
 }
+
+const (
+	none    = noNote
+	clarify = clarifyNote
+	strong  = strongNote
+)
 
 func checkParallelCases(t *testing.T, cases []parallelCase) {
 	t.Helper()
+	names := map[noteTier]string{noNote: "none", clarifyNote: "clarify", strongNote: "strong"}
 	for _, tc := range cases {
-		if got := asksForParallelWork(tc.text); got != tc.want {
-			t.Errorf("%q: %v, want %v", tc.text, got, tc.want)
+		if got := parallelTier(tc.text); got != tc.want {
+			t.Errorf("%q: %s, want %s", tc.text, names[got], names[tc.want])
 		}
 	}
 }
 
-// The trigger: work asked for in parallel, or by subagents, and not a
-// message about changing code. These are the phrasings the veto was written
+// The phrasings of the first review, which the trigger was first written
 // against.
-func TestAsksForParallelWork(t *testing.T) {
+func TestParallelTier(t *testing.T) {
 	checkParallelCases(t, []parallelCase{
-		// Work the person wants done at once.
-		{"Speed up the project by running things in parallel.", true},
-		{"review src, test pkg/store and document the server package in parallel", true},
-		{"do these three at the same time", true},
-		{"spin up multiple subagents for this", true},
-		{"run parallel subagents over each service", true},
-		{"split this up and work on the parts simultaneously", true},
-		{"parallelize the review of these four modules", true},
-		{"fan out across the services and check each", true},
-		{"do these in parallel please", true},
-		{"run them side by side", true},
-		{"work on all of them at once", true},
-		{"यह काम समानांतर में करो", true},
-		{"en paralelo, revisa los tres módulos", true},
-		{"in-parallel review of pkg/a and pkg/b", true},
+		// Reading or analysis work asked for at once: the strong note.
+		{"review src, test pkg/store and document the server package in parallel", strong},
+		{"parallelize the review of these four modules", strong},
+		{"fan out across the services and check each", strong},
+		{"in-parallel review of pkg/a and pkg/b", strong},
+		// Parallel work with nothing said of what kind: ask.
+		{"Speed up the project by running things in parallel.", clarify},
+		{"do these three at the same time", clarify},
+		{"spin up multiple subagents for this", clarify},
+		{"run parallel subagents over each service", clarify},
+		{"split this up and work on the parts simultaneously", clarify},
+		{"do these in parallel please", clarify},
+		{"run them side by side", clarify},
+		{"work on all of them at once", clarify},
+		{"यह काम समानांतर में करो", clarify},
+		{"en paralelo, revisa los tres módulos", clarify},
 		// Missed on purpose: a count of agents, "concurrently", or a
 		// code-change verb leaves the note out; /parallel asks outright.
-		{"use several agents to audit the packages", false},
-		{"use 3 agents to look at auth, store and server", false},
-		{"handle these concurrently", false},
-		{"The three parts all need work. Make it faster, do it in parallel.", false},
+		{"use several agents to audit the packages", none},
+		{"use 3 agents to look at auth, store and server", none},
+		{"handle these concurrently", none},
+		{"The three parts all need work. Make it faster, do it in parallel.", none},
 		// The program's own concurrency, or no request for parallel work.
-		{"make the ingestion pipeline process files concurrently", false},
-		{"parallelize the for loop in walk.go", false},
-		{"run the test suite in parallel with -p 8", false},
-		{"why does the parallel test fail?", false},
-		{"add a worker pool so requests are handled at the same time", false},
-		{"the server must handle multiple agents connecting simultaneously", false},
-		{"fix the race when two goroutines write the map at the same time", false},
-		{"explain how the scheduler runs jobs concurrently", false},
-		{"document that the API supports multiple agents", false},
-		{"use asyncio.gather so the HTTP calls run concurrently", false},
-		{"rename ParallelRunner to Runner", false},
-		{"wire the GPUs in parallel for training", false},
-		{"is it safe to call this in parallel?", false},
-		{"make this function thread-safe so it can run concurrently", false},
-		{"go test -parallel 4 keeps timing out", false},
-		{"add a mutex so both writers can run at once", false},
-		{"summarise the notes", false},
+		{"make the ingestion pipeline process files concurrently", none},
+		{"parallelize the for loop in walk.go", none},
+		{"run the test suite in parallel with -p 8", none},
+		{"why does the parallel test fail?", none},
+		{"add a worker pool so requests are handled at the same time", none},
+		{"the server must handle multiple agents connecting simultaneously", none},
+		{"fix the race when two goroutines write the map at the same time", none},
+		{"explain how the scheduler runs jobs concurrently", none},
+		{"document that the API supports multiple agents", none},
+		{"use asyncio.gather so the HTTP calls run concurrently", none},
+		{"rename ParallelRunner to Runner", none},
+		{"wire the GPUs in parallel for training", none},
+		{"is it safe to call this in parallel?", none},
+		{"make this function thread-safe so it can run concurrently", none},
+		{"go test -parallel 4 keeps timing out", none},
+		{"add a mutex so both writers can run at once", none},
+		{"summarise the notes", none},
 	})
 }
 
-// Held out: phrasings the veto was not written against, kept apart so a
-// change to the trigger is judged on words it was not fitted to.
-func TestAsksForParallelWorkHeldOut(t *testing.T) {
+// Held out from the second review: phrasings the trigger was not written
+// against when they were added.
+func TestParallelTierHeldOutSecondReview(t *testing.T) {
 	checkParallelCases(t, []parallelCase{
-		// From the second review.
-		{"run the test suite in parallel", false},
-		{"make the downloads happen at once instead of one by one", false},
-		{"build a LangGraph app with multiple agents that talk to each other", false},
-		{"deploy two agents to the staging cluster", false},
-		{"start 4 agents in docker compose for the load test", false},
-		{"make the indexer process documents concurrently", false},
-		{"the crawler should fetch pages simultaneously", false},
-		{"parallelise the image resize in resize.py", false},
-		{"add Promise.all so the fetches run at the same time", false},
-		{"use errgroup so the uploads run concurrently", false},
-		{"make each shard parallel", false},
-		{"review the ingestion pipeline and the retriever in parallel", true},
-		{"check every request handler in parallel", true},
-		// "code" vetoes: precision over recall, so this one is missed.
-		{"audit the locking code and the auth code at the same time", false},
-		{"look at the training and eval scripts in parallel", true},
-		// Written for this table.
-		{"review pkg/auth, pkg/store and pkg/server in parallel", true},
-		{"audit these three repos at the same time", true},
-		{"summarise the five design docs side by side", true},
-		{"fan out over the services and report what each one does", true},
-		{"spin up subagents to read each module", true},
-		{"investigate the three failing CI jobs simultaneously", true},
-		{"implement a worker that processes jobs in parallel", false},
-		{"refactor the scheduler so jobs run at once", false},
-		{"write a script that downloads the files at once", false},
-		{"use rayon to sort the chunks in parallel", false},
+		{"run the test suite in parallel", none},
+		{"make the downloads happen at once instead of one by one", none},
+		{"build a LangGraph app with multiple agents that talk to each other", none},
+		{"deploy two agents to the staging cluster", none},
+		{"start 4 agents in docker compose for the load test", none},
+		{"make the indexer process documents concurrently", none},
+		{"the crawler should fetch pages simultaneously", none},
+		{"parallelise the image resize in resize.py", none},
+		{"add Promise.all so the fetches run at the same time", none},
+		{"use errgroup so the uploads run concurrently", none},
+		{"make each shard parallel", none},
+		{"review the ingestion pipeline and the retriever in parallel", strong},
+		{"check every request handler in parallel", strong},
+		// "code" suppresses both notes: precision over recall.
+		{"audit the locking code and the auth code at the same time", none},
+		{"look at the training and eval scripts in parallel", strong},
+		{"review pkg/auth, pkg/store and pkg/server in parallel", strong},
+		{"audit these three repos at the same time", strong},
+		{"summarise the five design docs side by side", strong},
+		{"fan out over the services and report what each one does", clarify},
+		{"spin up subagents to read each module", clarify},
+		// "CI" now suppresses both notes.
+		{"investigate the three failing CI jobs simultaneously", none},
+		{"implement a worker that processes jobs in parallel", none},
+		{"refactor the scheduler so jobs run at once", none},
+		{"write a script that downloads the files at once", none},
+		{"use rayon to sort the chunks in parallel", none},
+	})
+}
+
+// Held out from the third review: the eight false notes now get none, or
+// only the note that asks where nothing names code; agent-building requests
+// get none.
+func TestParallelTierHeldOutThirdReview(t *testing.T) {
+	checkParallelCases(t, []parallelCase{
+		{"let the CI jobs run in parallel", none},
+		{"have the ETL steps happen at once rather than serially", none},
+		{"turn on parallel builds in the Makefile", none},
+		{"switch the uploader to a subagent-style worker that fans out requests", none},
+		{"create a supervisor with three subagents in our agent framework", none},
+		{"design a multi-agent system where subagents run side by side", none},
+		// Nothing names code, so it may only ask.
+		{"the importer needs to parse the CSV files simultaneously", clarify},
+		{"spawn the shards side by side with multiprocessing", none},
+		{"rewrite the batch job so records are processed in parallel", none},
+		{"enable parallel tool calls for the OpenAI client", none},
+		// "code" suppresses both notes: precision over recall.
+		{"split the code review of auth, store and server across subagents", none},
+		{"investigate the three failing tests at the same time", strong},
+		{"summarise these five docs in parallel", strong},
+		{"compare the two designs side by side and give me a verdict", strong},
+		{"fan out and read every README under docs/", strong},
+		// Agent-building requests get no note.
+		{"build three subagents for the support bot", none},
+		{"create subagents that run side by side in our framework", none},
+		{"design how our subagents hand off work", none},
+		// Subagents named as the doer of reading work.
+		{"use subagents to review pkg/auth and pkg/store", strong},
+		{"split the audit across subagents", strong},
 	})
 }
 
@@ -504,5 +542,24 @@ func TestModelWaitIsRecordedAndLeftOutOfLatency(t *testing.T) {
 	}
 	if call.QueueMS < 120 || call.LatencyMS >= 120 {
 		t.Fatalf("model.call queue %dms, latency %dms: the wait is not kept apart", call.QueueMS, call.LatencyMS)
+	}
+}
+
+// A mention of parallel work that names no reading or analysis work gets
+// the note that asks, recorded as the strong one is.
+func TestClarifyNoteGoesWithAnUnclearRequest(t *testing.T) {
+	l, adapter, store := noteLoop(t, true, nil)
+	ask := "Speed up the project by running things in parallel."
+	if _, err := l.RunMessage(context.Background(), Message{Text: ask, Typed: ask}); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastSent(adapter); got != ask+"\n\n"+ClarifyNote {
+		t.Fatalf("sent %q", got)
+	}
+	evs, _ := store.Events("s")
+	for _, e := range evs {
+		if e.Type == EvUserMessage && !strings.Contains(string(e.Payload), "ask one short question") {
+			t.Fatalf("the record lacks the note: %s", e.Payload)
+		}
 	}
 }

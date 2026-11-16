@@ -203,3 +203,23 @@ func TestMaxConcurrentRefusedWhereIgnored(t *testing.T) {
 		t.Fatalf("got %v, want a refusal naming where it applies", err)
 	}
 }
+
+// The flag set at registration matches the adapter each type builds, so a
+// type is never refused max_concurrent_requests it would honour, or the
+// reverse.
+func TestHonoursMaxConcurrentMatchesTheAdapter(t *testing.T) {
+	for _, typ := range Providers() {
+		a, err := providers[typ].build(Spec{Type: typ, BaseURL: "https://flag.test/v1", Model: "m", APIKey: "k", NoAmbientKey: true,
+			Region: "us-east-1", Project: "p", Extra: map[string]string{"project_id": "p"}})
+		if err != nil {
+			continue // a type that needs more than this spec is checked by its own tests
+		}
+		_, isOpenAI := a.(*OpenAICompatible)
+		if HonoursMaxConcurrent(typ) != isOpenAI {
+			t.Errorf("%s: flagged %v, builds an OpenAI-compatible adapter %v", typ, HonoursMaxConcurrent(typ), isOpenAI)
+		}
+	}
+	if !HonoursMaxConcurrent("ollama") || HonoursMaxConcurrent("anthropic") || HonoursMaxConcurrent("no-such-type") {
+		t.Fatal("the flag is wrong for a known type")
+	}
+}

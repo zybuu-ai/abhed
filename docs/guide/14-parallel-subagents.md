@@ -33,36 +33,50 @@ or did the parts one after another.
 
 The descriptions alone did not turn a small local model: asked to "speed up the
 project by running things in parallel", it still added a thread pool to the
-code. So when your own words ask for work in parallel, Abhed puts a short note
-after your message for the model: unless you asked in so many words to change the
-program to run concurrently, the message means how it does the work, so it splits
-it into independent parts and starts them all at once with one `tasks` call.
+code. So when your own words speak of parallel work, Abhed puts one of two short
+notes after your message for the model.
 
-The note favours being right over being frequent: a note on a request to build
-or change code would send the model the wrong way, while a missed note costs
-nothing that `/parallel` cannot ask for outright. It is added when your message
-says "subagent" or "subagents", or one of "in parallel", "at the same time", "at
-once", "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan
-out", "en paralelo" or "समानांतर", and none of these:
+- **Start subagents.** When a parallel phrase, or subagents named as the ones to
+  do it ("use", "with", "across" or "via" subagents), goes with reading or
+  analysis work (review, audit, check, investigate, look at, read, summarise,
+  compare, research, analyse, explore, search, find, triage, test), the note
+  says that unless you asked in so many words to change the program to run
+  concurrently, the message means how the model does the work: split it into
+  independent parts and start them all at once with one `tasks` call.
+- **Ask.** Any other parallel phrase, or a mention of subagents, gets a note
+  telling the model that if it is unclear whether you want independent pieces
+  of work started as subagents or the program itself changed to run
+  concurrently, it should ask one short question before acting.
 
-- a word for changing or shipping code: build, deploy, implement, add, make,
-  refactor, write, code, app, cluster, compose, docker, and "should" or "must"
-  (which describe how a program behaves);
+The parallel phrases are "in parallel", "at the same time", "at once",
+"simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",
+"en paralelo" and "समानांतर".
+
+Neither note is added when the message names any of these, since a note there
+would send the model the wrong way, and a missed note costs nothing that
+`/parallel` cannot ask for outright:
+
+- a word for creating, changing or shipping code: build, deploy, implement, add,
+  make, refactor, write, rewrite, code, create, design (as in "design a" or
+  "design how"), switch, enable, "turn on", spawn, app, cluster, compose,
+  docker, CI, ETL, and "should" or "must" (which describe how a program
+  behaves);
 - the program's own concurrency: race, racy, goroutine, thread, thread-safe,
-  threadpool, ThreadPoolExecutor, async, asyncio, await, errgroup, rayon,
-  `Promise.all`, mutex, lock, scheduler, worker pool, for loop, GPU,
-  connection or connecting, "test suite", "tests in parallel", "safe to call"
-  (or run, or use), `-p` with a number, `-parallel` or `--parallel`;
+  threadpool, ThreadPoolExecutor, multiprocessing, async, asyncio, await,
+  errgroup, rayon, `Promise.all`, mutex, lock, scheduler, worker pool, for loop,
+  GPU, connection or connecting, "test suite", "tests in parallel", "safe to
+  call" (or run, or use), `-p` with a number, `-parallel` or `--parallel`;
 - a source file name such as `resize.py` or `walk.go`.
 
-So "use three agents", "handle these concurrently" and "make it faster, do it in
-parallel" get no note; use `/parallel` for those. The note is judged only on what
-you typed, never on files you attach with `@`, resources attached in Studio or
-input piped into `-p`. It is added only in the session itself, never to a
-subagent's task, and only while a subagent could still start. The record keeps it
-on the `user.message`, as `harness_note`, beside your own text, so a fork or a
-resume sends what the model was sent. A message queued or steered while a turn
-runs is treated the same way.
+So a request to build agents ("create a supervisor with three subagents") gets
+no note, and neither do "use three agents", "handle these concurrently" or "make
+it faster, do it in parallel"; use `/parallel` for those. The notes are judged
+only on what you typed, never on files you attach with `@`, resources attached
+in Studio or input piped into `-p`. They are added only in the session itself,
+never to a subagent's task, and only while a subagent could still start. The
+record keeps the note on the `user.message`, as `harness_note`, beside your own
+text, so a fork or a resume sends what the model was sent. A message queued or
+steered while a turn runs is treated the same way.
 
 `/parallel <work>` says it outright, in the terminal, in Studio and after
 `abhed -p` (as the task, or as a line of `-input-format stream-json`): the work

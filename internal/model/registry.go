@@ -55,6 +55,9 @@ type provider struct {
 	name    string
 	summary string
 	build   Factory
+	// openAI marks a type whose adapter speaks the OpenAI-compatible
+	// protocol, and so honours max_concurrent_requests.
+	openAI bool
 }
 
 var providers = map[string]provider{}
@@ -65,6 +68,11 @@ var providers = map[string]provider{}
 // factory.
 func Register(name, summary string, build Factory) {
 	providers[name] = provider{name: name, summary: summary, build: build}
+}
+
+// registerOpenAI registers a type whose adapter is OpenAICompatible.
+func registerOpenAI(name, summary string, build Factory) {
+	providers[name] = provider{name: name, summary: summary, build: build, openAI: true}
 }
 
 // New builds the adapter for a spec, validating its parameters against what the

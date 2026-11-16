@@ -78,11 +78,14 @@ All notable changes to Abhed are recorded here. The format follows
   note after the message, recorded on its `user.message` as
   `harness_note`; on a small local model the descriptions alone did not turn
   it. The note is judged only on what the person typed, not on attached files,
-  Studio resources or piped stdin; it needs "subagents" or a phrase such as
-  "in parallel" or "at the same time", and is left out when the message also
-  names a change to code or the program's own concurrency (the whole list is
-  in the parallel-subagents guide), in a subagent's task and when no subagent
-  could start. A `tasks` start now shows as one line naming each part (`3 in
+  Studio resources or piped stdin. It says to start subagents only when a
+  parallel phrase, or subagents named as the doers, goes with reading or
+  analysis work such as review, audit or investigate; any other mention of
+  parallel work gets a note telling the model to ask one short question if it
+  is unclear which the person means. Neither is added when the message names
+  creating or changing code, building agents or the program's own concurrency
+  (the whole list is in the parallel-subagents guide), in a subagent's task,
+  or when no subagent could start. A `tasks` start now shows as one line naming each part (`3 in
   parallel: …`) in the terminal and on Studio's card, and `task` cards name
   their description; a task given no description is labelled from its
   prompt. Outside a git repository `tasks` no longer offers worktree

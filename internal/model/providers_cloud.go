@@ -13,7 +13,7 @@ import "fmt"
 // Being explicit about that beats pretending: an adapter that silently cannot
 // authenticate is worse than one that says what it needs.
 func init() {
-	Register("azure-openai", "Azure OpenAI (deployment endpoint)",
+	registerOpenAI("azure-openai", "Azure OpenAI (deployment endpoint)",
 		func(s Spec) (Adapter, error) {
 			if s.BaseURL == "" {
 				return nil, fmt.Errorf("azure-openai needs base_url, " +

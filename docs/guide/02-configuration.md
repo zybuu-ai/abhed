@@ -142,7 +142,11 @@ hung endpoint. The bound belongs to the server and model, not to one provider
 entry: every adapter in one Abhed process that reaches the same model at the
 same base URL (the session's, a subagent's on a named model, Studio's
 completions, and providers of different types naming that endpoint) shares it,
-and the smallest bound any of them sets applies to all. Base URLs that differ
+and the smallest bound any of them sets applies to all. The bound only goes
+down within one Abhed process: a long-running `abhed serve` or Studio keeps the
+smallest bound it has seen for a server and model, even after the configuration
+raises it, until it is restarted. Two providers that reach the same hosted model
+with different accounts share it too. Base URLs that differ
 only by case, a default port or a trailing slash are one server. 0 (the
 default) is 1 for type `ollama` and no bound of its own for every other type.
 Ollama's FAQ gives `OLLAMA_NUM_PARALLEL`, the requests each model serves at

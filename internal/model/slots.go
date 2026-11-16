@@ -47,7 +47,8 @@ func endpointKey(baseURL, model string) string {
 }
 
 // poolFor is the shared pool for a model on a server; n above 0 bounds it,
-// lowering any larger bound it had.
+// lowering any larger bound it had. The bound never rises within the
+// process: a configuration that raises it takes effect at the next start.
 func poolFor(baseURL, model string, n int) *slotPool {
 	key := endpointKey(baseURL, model)
 	poolsMu.Lock()
@@ -161,26 +162,7 @@ func (p *slotPool) waiting() int {
 	return len(p.waiters)
 }
 
-var (
-	boundableMu sync.Mutex
-	boundable   = map[string]bool{}
-)
-
 // HonoursMaxConcurrent reports whether a provider type takes
-// max_concurrent_requests: one whose adapter speaks the OpenAI-compatible
-// protocol. A type it cannot tell is reported as not.
-func HonoursMaxConcurrent(typ string) bool {
-	boundableMu.Lock()
-	defer boundableMu.Unlock()
-	if ok, seen := boundable[typ]; seen {
-		return ok
-	}
-	ok := false
-	if p, found := providers[typ]; found {
-		a, err := p.build(Spec{Type: typ, BaseURL: "http://boundable.invalid/v1", Model: "m", APIKey: "k", NoAmbientKey: true})
-		_, ok = a.(*OpenAICompatible)
-		ok = ok && err == nil
-	}
-	boundable[typ] = ok
-	return ok
-}
+// max_concurrent_requests: one registered as speaking the OpenAI-compatible
+// protocol.
+func HonoursMaxConcurrent(typ string) bool { return providers[typ].openAI }

@@ -277,54 +277,91 @@ func labelFrom(prompt string) string {
 	return strings.Join(words, " ")
 }
 
-// A message asks for work in parallel when the person names subagents, or
-// asks for the work at once in so many words, and says nothing of changing
-// code. Precision is worth more than recall here: a note on a request to
-// build, fix or make code concurrent sends the model the wrong way, while a
-// miss costs only the note, and /parallel always asks outright.
+// Which note a message gets. A denylist alone let fresh phrasings about code
+// through each round, so the strong note is now an allowlist: a parallel
+// phrase, or subagents named as the doer, with a verb for reading or
+// analysis work. Any other mention of parallel work gets only a note asking
+// the model to check which the person means. A message that names a change
+// to code, or the program's own concurrency, gets neither: a note there
+// sends the model the wrong way, and /parallel always asks outright.
 var (
-	parallelSubagents = regexp.MustCompile(`(?i)\bsub-?agents?\b`)
-	parallelWork      = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|` +
+	parallelPhrase = regexp.MustCompile(`(?i)\b(in[ -]parallel|at the same time|at once|simultaneously|` +
 		`side[ -]by[ -]side|paralleli[sz]e|fan(ning)?[ -]out|en paralelo)\b|समानांतर`)
+	// subagentsDoing names subagents as the ones to do the work.
+	subagentsDoing = regexp.MustCompile(`(?i)\b(use|using|with|across|via)\s+(\w+\s+)?sub-?agents\b`)
+	subagentsNamed = regexp.MustCompile(`(?i)\bsub-?agents?\b`)
+	// readingWork is work that reads or judges rather than changes.
+	readingWork = regexp.MustCompile(`(?i)\b(review(s|ing)?|audit(s|ing)?|check(s|ing)?|investigat(e|es|ing)|` +
+		`look(ing)? at|read(s|ing)?|summari[sz](e|es|ing)|compar(e|es|ing)|research(es|ing)?|` +
+		`analy[sz](e|es|ing)|explor(e|es|ing)|search(es|ing)?|find(s|ing)?|triag(e|es|ing)|test)\b`)
 	// codeWork names a change to code, the program's own concurrency, or a
-	// library or file that does it.
+	// library or file that does it; it suppresses both notes.
 	codeWork = regexp.MustCompile(`(?i)\b(build|builds|building|deploy|deploys|deploying|implement|implements|` +
-		`add|adds|make|makes|refactor|write|code|app|apps|cluster|compose|docker|should|must|` +
+		`add|adds|make|makes|refactor|write|rewrite|code|app|apps|cluster|compose|docker|should|must|` +
+		`create|creates|design\s+(a|an|the|how|our|my|your|new)|switch|enable|enables|turn on|spawn|spawns|ci|etl|multiprocessing|` +
 		`race|races|racy|goroutines?|threads?|thread-?safe|threadpool|threadpoolexecutor|asyncio|async|await|` +
 		`errgroup|rayon|mutex(es)?|locks?|scheduler|worker[ -]?pools?|for[ -]loop|gpus?|connections?|connecting|` +
 		`test suite|tests in parallel|safe to (call|run|use))\b|promise\.all|` +
 		`\b[\w-]+\.(py|go|js|ts|tsx|jsx|rs|java|rb|c|cc|cpp|h|cs|kt|swift)\b|(^|\s)(-p\s*\d|-{1,2}parallel\b)`)
 )
 
-// asksForParallelWork reports whether the person's own words ask for work to
-// be done in parallel, rather than for a change to the program.
-func asksForParallelWork(typed string) bool {
-	return (parallelSubagents.MatchString(typed) || parallelWork.MatchString(typed)) && !codeWork.MatchString(typed)
+// noteTier is which note the person's own words get.
+type noteTier int
+
+const (
+	noNote noteTier = iota
+	clarifyNote
+	strongNote
+)
+
+// parallelTier judges the person's own words.
+func parallelTier(typed string) noteTier {
+	if codeWork.MatchString(typed) {
+		return noNote
+	}
+	phrase := parallelPhrase.MatchString(typed)
+	if (phrase || subagentsDoing.MatchString(typed)) && readingWork.MatchString(typed) {
+		return strongNote
+	}
+	if phrase || subagentsNamed.MatchString(typed) {
+		return clarifyNote
+	}
+	return noNote
 }
 
-// ParallelNote is what Abhed adds after a message that asks for work in
-// parallel. The tool descriptions say what such a request means, and a small
-// local model still made the project's code concurrent; these words beside
-// the message turned it to subagents, where conditional or softer wordings
-// did not. The trigger's veto keeps out messages that name the program's own
-// concurrency, so the note can say plainly what the request means.
+// ParallelNote is what Abhed adds after a message that asks for reading or
+// analysis work in parallel. The tool descriptions say what such a request
+// means, and a small local model still made the project's code concurrent;
+// these words beside the message turned it to subagents, where conditional
+// or softer wordings did not.
 const ParallelNote = "[Abhed: this message asks for work in parallel. Unless it asks in so many words " +
 	"to change the program to run concurrently, it means how you do the work: split it into " +
 	"independent parts and start them all at once as subagents with one tasks call.]"
+
+// ClarifyNote is what Abhed adds after any other mention of parallel work,
+// where the words alone do not say which the person means.
+const ClarifyNote = "[Abhed: this message mentions parallel work. If it is unclear whether the person " +
+	"wants independent pieces of work started as subagents, or the program itself changed to run " +
+	"concurrently, ask one short question before acting.]"
 
 // parallelNote is the note for the person's own words, typed, or "". Only a
 // top-level loop that can still start a subagent with tasks adds it: a
 // subagent's prompt is the model's writing, and a nested spawn is refused by
 // default.
 func (l *Loop) parallelNote(typed string) string {
-	if typed == "" || l.depth != 0 || l.Tools == nil || strings.HasPrefix(typed, parallelLead) ||
-		!asksForParallelWork(typed) || !l.Budget.CanSpawn() {
+	if typed == "" || l.depth != 0 || l.Tools == nil || strings.HasPrefix(typed, parallelLead) || !l.Budget.CanSpawn() {
 		return ""
 	}
 	if _, ok := l.Tools.Get("tasks"); !ok {
 		return ""
 	}
-	return ParallelNote
+	switch parallelTier(typed) {
+	case strongNote:
+		return ParallelNote
+	case clarifyNote:
+		return ClarifyNote
+	}
+	return ""
 }
 
 type typedKey struct{}
