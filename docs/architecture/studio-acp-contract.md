@@ -1698,11 +1698,28 @@ _abhed/complete/warm { sessionId } → { warmed: boolean, ms?: number, recent?: 
   completions endpoint, or a 400 saying it or `suffix` is not supported,
   switches the session to chat. Each request is sent once, no retries; under
   `local_only` no provider follows a redirect off the machine. Text only, no
-  tools. The answer is cleaned before it is offered: reasoning a model wrote
+  tools. The suffix sent is never empty: at the end of a file it is a
+  newline, since Ollama applies a model's fill-in-the-middle template only
+  to a request with a suffix, and without one a coder model answers the
+  prefix in prose. The answer is cleaned before it is offered: reasoning a model wrote
   into its text (`<think>`, `analysis…final` channels) is removed, a fenced
   block gives its code, code repeated from either side of the cursor is
-  trimmed, and an answer that reads as prose is dropped, with `dropped`
-  saying so.
+  trimmed (a one-line answer that ends with the rest of the cursor's line
+  loses that rest, so it is not inserted twice), and an answer that reads as
+  prose is dropped, with `dropped` saying so: one that opens as an English
+  sentence ("It looks like you're working on…"), unless the cursor is in a
+  comment, a docstring or a string, or the language is written in sentences
+  (Markdown, plain text, YAML and the like). Studio also re-parses the
+  document with the suggestion inserted, where it has the language's
+  grammar, and drops one that leaves more syntax errors than there were.
+- Completions go first on a model server they share with next edits and
+  agent turns: a completion waiting for one of the server's request slots
+  (`max_concurrent_requests`, one for `ollama`) is given the next free one
+  ahead of requests that waited without the mark, and fill-in-the-middle
+  requests now take a slot too, rather than waiting in the server's own
+  queue. While a completion is asked for, from its arrival to its answer,
+  next-edit model calls to that server wait, and one in flight is cancelled
+  (§7.11).
 - Recorded as `completion.enabled` just before the first request is sent,
   and again with `mode: "chat"` before a fallback's first chat request (if
   it cannot be recorded, nothing is sent) and `completion.summary` when
@@ -1780,6 +1797,15 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   any function the window shows and no sites were sent.
   Studio re-parses the document with any suggestion applied before showing
   it, and drops it when the parse fails or is cut short.
+- Completions go first (§7.10): a model call waits while a completion to
+  the same server is asked for, and is cancelled when one arrives while it
+  runs, answered `cancelled: "a completion went first"`. A rename finished
+  from the file asks no model and never waits. The answer is bounded by the
+  window it rewrites: `max_tokens` is a third of the window's bytes plus 32,
+  at least 64 and at most 1,024.
+- `_abhed/nextEdit/cancel { sessionId, seq? }` → `{}` (feature
+  `nextEditCancel`) ends the request in flight, as Studio sends on each
+  keystroke: with `seq`, only that one.
 - Rate limits, `seq` ordering, supersede and cancel as §7.10. Recorded as
   `next_edit.enabled` before the first request and `next_edit.summary` when
   the session closes, which counts renames finished from the file as

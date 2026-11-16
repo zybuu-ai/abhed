@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -21,10 +22,22 @@ import (
 // that into edits inside the document. No tools, no side effects.
 
 func init() {
-	liveFeatures = append(liveFeatures, "nextEdit")
+	liveFeatures = append(liveFeatures, "nextEdit", "nextEditCancel")
 	handle(map[string]func(*acpConn, rpcMessage){
-		"_abhed/nextEdit": (*acpConn).nextEdit,
+		"_abhed/nextEdit":        (*acpConn).nextEdit,
+		"_abhed/nextEdit/cancel": (*acpConn).nextEditCancel,
 	})
+}
+
+// nextEditCancel ends the session's next-edit request in flight, as Studio
+// asks on each keystroke: its window is stale.
+func (c *acpConn) nextEditCancel(msg rpcMessage) { c.featureCancel(msg, "next_edit") }
+
+// nextEditTokens bounds the answer by the window sent: the model writes the
+// window back with one edit, so much more than the window (code runs near
+// four bytes a token) is a model that has run on.
+func nextEditTokens(window string) int {
+	return min(nextEditMaxTokens, max(64, len(window)/3+32))
 }
 
 // Next-edit bounds: the window sent, the recent edits, and the answer.
@@ -213,13 +226,25 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		return
 	}
 	rel := rootRel(path, roots)
-	res, err := nextEditCall(ctx, a, model.NextEditRequest{
+	// Completions go first on a shared server: this call waits for them, and
+	// one asked for while it runs cancels it.
+	mctx, release, werr := c.pool.nextEditTurn(ctx, editorServer(provider))
+	if werr != nil {
+		k.count(func(s *agent.CompletionSummary) { s.Superseded++ })
+		empty("cancelled", "a newer request replaced it")
+		return
+	}
+	defer release()
+	window := strings.Join(shown, "")
+	capTokens := nextEditTokens(window)
+	res, err := nextEditCall(mctx, a, model.NextEditRequest{
 		File: rel, Language: req.Language, Recent: recent.String(),
-		Window: strings.Join(shown, ""), CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: nextEditMaxTokens,
+		Window: window, CursorLine: req.Cursor.Line - req.Window.StartLine, MaxTokens: capTokens,
 	})
-	cancelled := err != nil && ctx.Err() != nil
+	cancelled := err != nil && mctx.Err() != nil
+	preempted := cancelled && errors.Is(context.Cause(mctx), errCompletionFirst)
 	tokIn, tokOut, usd, unpriced, estimated := editorCharge(parts.Loop, a, res.InputTokens, res.OutputTokens, err, cancelled,
-		recent.Len()+len(strings.Join(shown, "")), len(res.Window), nextEditMaxTokens)
+		recent.Len()+len(window), len(res.Window), capTokens)
 	if err == nil {
 		k.took(time.Since(arrived))
 	}
@@ -245,6 +270,8 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		}
 	})
 	switch {
+	case preempted:
+		empty("cancelled", "a completion went first")
 	case cancelled:
 		empty("cancelled", "a newer request replaced it")
 	case err != nil:

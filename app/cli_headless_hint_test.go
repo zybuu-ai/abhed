@@ -189,3 +189,30 @@ func (fakeTool) Mutates() bool           { return true }
 func (fakeTool) Run(context.Context, *tools.Session, json.RawMessage) tools.Result {
 	return tools.Result{}
 }
+
+// The engine's own start of a language server for diagnostics is no call of
+// the agent's: refused, it is not a permission denial, and the -p run says
+// once why there are no diagnostics, as a note.
+func TestHeadlessDiagnosticsStartIsNoDenial(t *testing.T) {
+	req, _ := json.Marshal(agent.ActionRequested{CallID: "diag-python-1", Tool: "bash", Via: agent.DiagnosticsVia,
+		Args: json.RawMessage(`{"command":"basedpyright-langserver --stdio"}`)})
+	den, _ := json.Marshal(map[string]string{"call_id": "diag-python-1", "step": "default", "by": "policy", "reason": "nobody is asked for it: can make changes"})
+	h := newDenialHints(policy.New(policy.ModeAcceptEdits), config.Default(), tools.NewRegistry(tools.Bash{}))
+	h.observe(agent.Event{Type: agent.EvActionRequested, Payload: req})
+	if d, ok := h.observe(agent.Event{Type: agent.EvActionDenied, Payload: den}); ok || len(h.denials) != 0 {
+		t.Fatalf("an engine start was reported as a denial: %+v", d)
+	}
+	skipped, _ := json.Marshal(agent.LSPDiagnostics{Language: "python", Path: "a.py",
+		Skipped: "no python diagnostics: basedpyright-langserver is not installed where commands run; install it with: abhed toolchain install -lsp python"})
+	if got := diagnosticsNote(agent.Event{Type: agent.EvLSPDiagnostics, Payload: skipped}); got != "note: no python diagnostics: basedpyright-langserver is not installed where commands run; install it with: abhed toolchain install -lsp python" {
+		t.Fatalf("note %q", got)
+	}
+	refused, _ := json.Marshal(agent.LSPDiagnostics{Language: "python", Skipped: "not started: deny at deny (denied by rule bash(basedpyright*))"})
+	if got := diagnosticsNote(agent.Event{Type: agent.EvLSPDiagnostics, Payload: refused}); got != "note: no python diagnostics: not started: deny at deny (denied by rule bash(basedpyright*))" {
+		t.Fatalf("note %q", got)
+	}
+	ran, _ := json.Marshal(agent.LSPDiagnostics{Language: "python", Total: 2})
+	if got := diagnosticsNote(agent.Event{Type: agent.EvLSPDiagnostics, Payload: ran}); got != "" {
+		t.Fatalf("note for diagnostics given: %q", got)
+	}
+}

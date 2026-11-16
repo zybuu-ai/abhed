@@ -223,3 +223,51 @@ func TestHonoursMaxConcurrentMatchesTheAdapter(t *testing.T) {
 		t.Fatal("the flag is wrong for a known type")
 	}
 }
+
+// An editor's completion waiting for a one-slot server is given the next
+// free slot ahead of next-edit calls and turns that waited longer; among
+// completions, and among the rest, first come is first served.
+func TestCompletionsGoFirstForASlot(t *testing.T) {
+	p := &slotPool{limit: 1}
+	held, err := p.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var order []string
+	var wg sync.WaitGroup
+	wait := func(name string, ctx context.Context) {
+		defer wg.Done()
+		release, err := p.acquire(ctx)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		mu.Lock()
+		order = append(order, name)
+		mu.Unlock()
+		release()
+	}
+	for i, w := range []struct {
+		name  string
+		first bool
+	}{{"next-edit-1", false}, {"turn", false}, {"completion-1", true}, {"next-edit-2", false}, {"completion-2", true}} {
+		wg.Add(1)
+		ctx := context.Background()
+		if w.first {
+			ctx = First(ctx)
+		}
+		go wait(w.name, ctx)
+		for deadline := time.Now().Add(5 * time.Second); p.waiting() < i+1; {
+			if time.Now().After(deadline) {
+				t.Fatal("no waiter")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	held()
+	wg.Wait()
+	if got := strings.Join(order, " "); got != "completion-1 completion-2 next-edit-1 turn next-edit-2" {
+		t.Fatalf("served %s", got)
+	}
+}

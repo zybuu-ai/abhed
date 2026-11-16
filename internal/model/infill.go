@@ -50,7 +50,7 @@ const maxInfillAnswer = 1 << 20
 // what Ollama, vLLM, llama.cpp and others serve for code models. With
 // req.Enough the answer is streamed and cut short once it is enough.
 func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (InfillResult, error) {
-	body := map[string]any{"model": c.Model, "prompt": req.Prefix, "suffix": req.Suffix,
+	body := map[string]any{"model": c.Model, "prompt": req.Prefix, "suffix": fimSuffix(req.Prefix, req.Suffix),
 		"max_tokens": orInt(req.MaxTokens, 128), "temperature": 0.2, "stream": req.Enough != nil}
 	if len(req.Stop) > 0 {
 		body["stop"] = req.Stop
@@ -61,6 +61,13 @@ func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (Infil
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// The server's shared bound holds completions too: a request sent past it
+	// would only wait in the server's own queue, behind whatever came first.
+	release, err := c.acquire(ctx)
+	if err != nil {
+		return InfillResult{}, err
+	}
+	defer release()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/completions", bytes.NewReader(raw))
 	if err != nil {
 		return InfillResult{}, err
@@ -100,8 +107,20 @@ func (c *OpenAICompatible) Infill(ctx context.Context, req InfillRequest) (Infil
 		return InfillResult{}, errors.New("the endpoint answered no completion")
 	}
 	res := InfillResult{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens}
-	res.Text, res.Dropped = CleanInfill(out.Choices[0].Text, req.Prefix, req.Suffix, true)
+	res.Text, res.Dropped = cleanFor(out.Choices[0].Text, req, true)
 	return res, nil
+}
+
+// fimSuffix is the suffix sent: never empty. Ollama applies a model's
+// fill-in-the-middle template only when the suffix is not empty; with none
+// it sends the prefix as a plain prompt, and a coder model answers it in
+// prose. At the end of a file the suffix is a newline; a warm-up, with no
+// prompt, sends none.
+func fimSuffix(prefix, s string) string {
+	if s == "" && prefix != "" {
+		return "\n"
+	}
+	return s
 }
 
 // infillStream reads a streamed completion until it ends or req.Enough says
@@ -158,7 +177,7 @@ func infillStream(body io.Reader, req InfillRequest) (InfillResult, error) {
 	if !usage {
 		res.OutputTokens = chunks
 	}
-	res.Text, res.Dropped = CleanInfill(text.String(), req.Prefix, req.Suffix, true)
+	res.Text, res.Dropped = cleanFor(text.String(), req, true)
 	return res, nil
 }
 
@@ -212,7 +231,7 @@ func InfillByChat(ctx context.Context, a Adapter, req InfillRequest) (InfillResu
 			break
 		}
 	}
-	res.Text, res.Dropped = CleanInfill(b.String(), req.Prefix, req.Suffix, false)
+	res.Text, res.Dropped = cleanFor(b.String(), req, false)
 	return res, nil
 }
 
@@ -235,6 +254,85 @@ func prose(text string, fim bool) bool {
 		return opener && markdown
 	}
 	return opener || markdown
+}
+
+// sentence matches a line that opens as English: a capitalised word, then
+// at least three more words of letters only, the first in lower case.
+// Code rarely reads so; "It looks like you're working on…" does.
+var sentence = regexp.MustCompile(`^(?:[A-Z][a-z]+|I)(?:'[a-z]+)?,?\s+(?:[a-z]+(?:'[a-z]+)?|I)(?:,?\s+[A-Za-z]+(?:'[a-z]+)?){2,}(?:[\s,.:;!?]|$)`)
+
+// chatOpener is how a chat answer starts, capitalised as a sentence is.
+var chatOpener = regexp.MustCompile(`^(?:Here(?:'s| is| are)|Sure|Certainly|Of course|It (?:looks|seems|appears))[\s,!.:]`)
+
+// proseLanguages are written in sentences, or apply functions by juxtaposition
+// (Just x y z): a suggestion there may read as one.
+var proseLanguages = map[string]bool{"markdown": true, "plaintext": true, "latex": true, "tex": true, "restructuredtext": true,
+	"asciidoc": true, "git-commit": true, "git-rebase": true, "html": true, "xml": true, "yaml": true, "toml": true, "ini": true,
+	"properties": true, "dotenv": true, "haskell": true, "elm": true, "ocaml": true, "fsharp": true}
+
+// inWords reports a cursor inside a comment, a docstring or a string, where
+// a sentence belongs: prefix is the text before it.
+func inWords(prefix string) bool {
+	line := prefix[strings.LastIndexByte(prefix, '\n')+1:]
+	code := strings.TrimLeft(line, " \t")
+	for _, c := range []string{"#", "//", "--", "/*", "*", "<!--", ";", "%"} {
+		if strings.HasPrefix(code, c) {
+			return true
+		}
+	}
+	if strings.Contains(line, " #") || strings.Contains(line, "//") {
+		return true
+	}
+	if strings.Count(prefix, `"""`)%2 == 1 || strings.Count(prefix, `'''`)%2 == 1 {
+		return true
+	}
+	if open := strings.LastIndex(prefix, "/*"); open >= 0 && open > strings.LastIndex(prefix, "*/") {
+		return true
+	}
+	// An open string on the cursor's line.
+	stripped := strings.NewReplacer(`\\`, "", `\"`, "", `\'`, "", "\\`", "").Replace(line)
+	return strings.Count(stripped, `"`)%2 == 1 || strings.Count(stripped, "`")%2 == 1 ||
+		strings.Count(stripped, "'")%2 == 1
+}
+
+// ReadsAsProse reports a suggestion for code whose first line is an English
+// sentence: a chat answer, not code. In a comment, a docstring, a string or a
+// language written in sentences it is taken as it is.
+func ReadsAsProse(text, prefix, language string) bool {
+	if proseLanguages[strings.ToLower(language)] || inWords(prefix) {
+		return false
+	}
+	for _, l := range strings.Split(text, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return sentence.MatchString(l) || chatOpener.MatchString(l)
+		}
+	}
+	return false
+}
+
+// cleanFor is CleanInfill for req, with an answer that reads as prose where
+// code is written dropped as well.
+func cleanFor(text string, req InfillRequest, fim bool) (string, string) {
+	out, why := CleanInfill(text, req.Prefix, req.Suffix, fim)
+	if out != "" && ReadsAsProse(out, req.Prefix, req.Language) {
+		return "", "the model answered in prose, not code"
+	}
+	return out, why
+}
+
+// DropLineRest takes off the end of a one-line suggestion what already
+// follows the cursor on its line: the model wrote it again, and inserted it
+// would be there twice ("stride = size - overlap = size - overlap").
+func DropLineRest(text, suffix string) string {
+	rest, _, _ := strings.Cut(suffix, "\n")
+	rest = strings.TrimRight(rest, " \t\r")
+	if strings.TrimSpace(rest) == "" || strings.Contains(text, "\n") {
+		return text
+	}
+	if t := strings.TrimRight(text, " \t"); strings.HasSuffix(t, rest) {
+		return strings.TrimSuffix(t, rest)
+	}
+	return text
 }
 
 // maxInfillLines bounds a suggestion; an inline completion is a few lines.

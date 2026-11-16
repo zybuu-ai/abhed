@@ -27,10 +27,21 @@ Ollama for this; it uses it only when it is configured and running. Any other
 provider, a hosted one included, is asked through a chat turn with the cursor
 marked, at a low temperature, and only the text of its reply is used.
 
+The request always carries a suffix, a newline at the end of a file:
+Ollama applies a coder model's fill-in-the-middle template only when there
+is one, and without it the model answers the code before the cursor as a
+chat ("It looks like you're working on…").
+
 A chat or reasoning model often answers in prose, so the reply is cleaned
 first: reasoning written into the text is removed, a fenced block gives its
-code, and code repeated from around the cursor is trimmed. A reply that still
-reads as an explanation is not offered; Studio is told why (`dropped`). For
+code, and code repeated from around the cursor is trimmed, including the
+rest of the cursor's line written again at the end of a one-line answer. A
+reply that still reads as an explanation, or opens as an English sentence
+where code is written (not in a comment, a docstring or a string, nor in
+Markdown, plain text or a configuration file), is not offered; Studio is
+told why (`dropped`). Studio then parses the file with the suggestion in
+place, for the languages it has a grammar for (as for next edits, below),
+and does not show one that leaves more syntax errors than the file had. For
 dependable ghost text, use a coding model with fill-in-the-middle.
 
 | Setting | Default | |
@@ -120,6 +131,12 @@ with the latest one:
   elsewhere counts as local, so its model is warmed through it (still with
   no code). Opening a file never starts the engine or opens a session for
   a warm-up alone.
+- **Completions first.** A local server often answers one request at a
+  time. A completion waiting for the server goes ahead of next-edit calls
+  and agent turns that wait for it, and while one is asked for, next-edit
+  calls to that server wait and one already sent is cancelled. A rename
+  finished from the file needs no model and is shown at once; on the
+  renamed line Studio shows it instead of asking for ghost text.
 - **Debounce and cancel.** Studio waits briefly after a keystroke before
   asking and sends its `seq`; a newer keystroke supersedes the older
   request, and Studio cancels a request whose place in the file has gone,
@@ -172,7 +189,9 @@ cover it, a managed model pin binds it, the same files are never sent, and
 stored secrets and key-shaped text are withheld. A line that held a withheld
 secret is never edited, since the model did not see what is there; a
 suggestion that rewrites most of the window, carries a secret or reads as
-prose is dropped and Studio is told why. The record holds
+prose is dropped and Studio is told why. The answer is bounded by the window
+it rewrites (about a third of its bytes in tokens, at most 1,024), and
+Studio cancels the request in flight on each keystroke. The record holds
 `next_edit.enabled` and `next_edit.summary` as it does for completions, and
 the metrics count them as `abhed_next_edits_total` and
 `abhed_next_edit_tokens_total`.
