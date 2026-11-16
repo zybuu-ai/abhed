@@ -1676,8 +1676,9 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   its line, a brace alone on its line after anything but `(`, `[`, `,` or
   `)`, an object inside a template's `${ }`) makes the edit no rename: the
   model is asked. Rust, C, C++, `javascriptreact` and `typescriptreact` need
-  sites. The uses come back as one edit over the lines
-  from the first to the last, with `rename: true`. Only a name bound again
+  sites. A `javascript` window holding JSX (a tag, `</`, `/>` or `<>` in its
+  code) is read as `javascriptreact`. The uses come back as one edit over
+  the lines from the first to the last, with `rename: true`. Only a name bound again
   in a nested function, lambda, comprehension or inner block is `dropped`
   (left to the person). Otherwise, an edit is no rename, and the model is
   asked as for any edit, when the new name is a reserved word or already

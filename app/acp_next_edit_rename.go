@@ -736,3 +736,26 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 		NewText: strings.Join(changed, ""),
 	}}, "", false
 }
+
+// jsxIn matches JSX in JavaScript code (strings and comments blanked): a
+// closing tag, a self-closing end, a fragment, or a tag where an operand
+// goes (after return, =, (, ,, :, ?, &&, ||, {, }, > or at a line's start).
+var jsxIn = regexp.MustCompile(`</[A-Za-z>]|/>|<>|(?:^|[=(,:?&|{}>]|\breturn)\s*<[A-Za-z][\w.:-]*(?:\s|>|/|$)`)
+
+// renameLanguage is the language a rename reads the window as: a
+// javascript window holding JSX, as editors name a .js file with JSX, is
+// javascriptreact, so it is not scanned (JSX text and attribute names read
+// as names) and a language server's sites follow the JSX rules. TypeScript
+// cannot hold JSX outside .tsx, and its generics (Array<T>) read like tags,
+// so it is left as it is.
+func renameLanguage(language string, lines []string) string {
+	if language != "javascript" {
+		return language
+	}
+	for _, c := range codeOnly(lines, language) {
+		if jsxIn.MatchString(c) {
+			return "javascriptreact"
+		}
+	}
+	return language
+}

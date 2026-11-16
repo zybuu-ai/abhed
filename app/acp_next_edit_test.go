@@ -537,8 +537,8 @@ func TestStudioNextEditRenameDestructuringAndContainers(t *testing.T) {
 		{"const", "  const { x } = o;", map[string]string{"*": "  const { x: y } = o;\n"}},
 		{"let", "  let { x, a } = o;", map[string]string{"*": "  let { x: y, a } = o;\n"}},
 		{"for const", "  for (const { x } of xs) {}", map[string]string{"*": "  for (const { x: y } of xs) {}\n"}},
-		{"object in a container", "  return <Item style={{ x }} />;", map[string]string{"javascriptreact": "  return <Item style={{ x: y }} />;\n", "typescriptreact": "  return <Item style={{ x: y }} />;\n", "*": ""}},
-		{"object with a key in a container", "  return <Item style={{ a: 1, x }} />;", map[string]string{"javascriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "typescriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "*": ""}},
+		{"object in a container", "  return <Item style={{ x }} />;", map[string]string{"javascript": "  return <Item style={{ x: y }} />;\n", "javascriptreact": "  return <Item style={{ x: y }} />;\n", "typescriptreact": "  return <Item style={{ x: y }} />;\n", "*": ""}},
+		{"object with a key in a container", "  return <Item style={{ a: 1, x }} />;", map[string]string{"javascript": "  return <Item style={{ a: 1, x: y }} />;\n", "javascriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "typescriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "*": ""}},
 	} {
 		for _, lang := range langs {
 			want, ok := tc.want[lang]
@@ -570,5 +570,28 @@ func TestStudioNextEditRenameDestructuringAndContainers(t *testing.T) {
 		case tc.want != "" && (asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want):
 			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
 		}
+	}
+}
+
+// A .js file holding JSX is renamed as a .jsx file is: never scanned (the
+// text between tags and attribute names read as names), only at a language
+// server's sites with the JSX rules.
+func TestStudioNextEditRenameJavaScriptWithJSX(t *testing.T) {
+	text := "function C() {\n  const y = 1;\n  g(x);\n  return <div><p>Your x</p><Item x={x} /></div>;\n}\n"
+	if res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y"); !asked {
+		t.Fatalf("scanned: %+v", res)
+	}
+	sites := []map[string]any{
+		{"start": map[string]int{"line": 2, "character": 4}, "end": map[string]int{"line": 2, "character": 5}},
+		{"start": map[string]int{"line": 3, "character": 36}, "end": map[string]int{"line": 3, "character": 37}},
+	}
+	res, asked := renameCase(t, "javascript", text, 1, 8, "x", "y", sites...)
+	if asked || len(res.Edits) != 1 || res.Edits[0].Text != "  g(y);\n  return <div><p>Your x</p><Item x={y} /></div>;\n" {
+		t.Fatalf("with sites: %+v (asked %v)", res, asked)
+	}
+	// Plain JavaScript, comparisons and all, is still scanned.
+	plain := "function f(n) {\n  const y = 1;\n  return x < n && x > 0;\n}\n"
+	if res, asked := renameCase(t, "javascript", plain, 1, 8, "x", "y"); asked || len(res.Edits) != 1 || res.Edits[0].Text != "  return y < n && y > 0;\n" {
+		t.Fatalf("plain: %+v (asked %v)", res, asked)
 	}
 }

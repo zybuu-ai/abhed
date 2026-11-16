@@ -209,7 +209,9 @@ for it:
   textual rename would change another variable, so it is left to you.
   Rust, C, C++ and JSX files (`.jsx`, `.tsx`, where attribute names and
   the text between tags read like names) take only a language server's
-  uses; other languages get no rename from the file.
+  uses; other languages get no rename from the file. A `.js` file that
+  holds JSX (a tag, `</`, `/>` or `<>` in its code) is treated like `.jsx`:
+  only a language server's uses, read with the JSX rules, else the model.
 - Not every one-word edit is a rename. A new name that is a reserved word
   of the language (`class`, `null`, `int`) or already used in that
   function, an old name with no other use (a typo fixed on its only use),

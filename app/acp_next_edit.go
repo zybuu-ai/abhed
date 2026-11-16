@@ -155,8 +155,11 @@ func (c *acpConn) nextEdit(msg rpcMessage) {
 		raw = raw[:nextEditLines]
 	}
 	// A rename is finished from the document itself: no model, nothing sent.
-	if h, line, ok := renameOf(req, raw); ok {
-		if edits, why, notRename := renameEdit(req, raw, h, line); !notRename {
+	// A .js file holding JSX is renamed as JSX is: only at a language server's sites.
+	rreq := req
+	rreq.Language = renameLanguage(req.Language, raw)
+	if h, line, ok := renameOf(rreq, raw); ok {
+		if edits, why, notRename := renameEdit(rreq, raw, h, line); !notRename {
 			if len(edits) == 0 {
 				k.count(func(s *agent.CompletionSummary) { s.LocalDropped++ })
 				empty("dropped", why)

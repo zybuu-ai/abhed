@@ -67,7 +67,7 @@ All notable changes to Abhed are recorded here. The format follows
   turn one identifier into another, the other uses of the old name are
   offered as one edit. They come from the language server's references when
   one is running, or else, in Python, Go, JavaScript, TypeScript and Java
-  (not JSX), a
+  (not JSX, nor a .js file holding JSX, which is treated like .jsx), a
   scan of the innermost function that skips strings, comments, members,
   keyword arguments in calls and literal keys (a shorthand property is
   written out as `old: new`, and so are a destructuring and an object in a
