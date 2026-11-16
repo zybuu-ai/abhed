@@ -488,6 +488,15 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
+- `abhed rpc` can put approvals to its caller. `start` with
+  `"approvals": true` sends each call that needs approval as an `approval`
+  line (the recorded request id, tool, arguments, reason, policy step and
+  rule, the scope offered, and whether the command is destructive or its
+  arguments hide characters), answered by an `approve` request with
+  `decision` `allow` or `deny`, an optional `approver`, and `remember` to
+  keep the offered scope for the session. An ask still open when stdin ends
+  or its run stops is refused. Without `approvals`, a call needing approval
+  is refused as before.
 
 ### Changed
 

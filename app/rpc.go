@@ -59,6 +59,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		// latest is the session the last start read will make; a steer goes there.
 		latest *rpcSession
 	)
+	// Asks put to the caller, answered by approve requests as they arrive.
+	approvals := newRPCApprovals()
 	wake := make(chan struct{}, 1)
 	signal := func() {
 		select {
@@ -76,6 +78,10 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 			if err := json.Unmarshal(line, &req); err != nil {
 				emit(rpcResponse{ID: req.ID, Type: "error",
 					Error: "request is not JSON: " + err.Error()})
+				continue
+			}
+			if req.Method == "approve" {
+				emit(approvals.approve(req))
 				continue
 			}
 			mu.Lock()
@@ -108,6 +114,8 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 		mu.Lock()
 		eof, readErr = true, in.Err()
 		mu.Unlock()
+		// No answer can arrive now, so every ask still open is refused.
+		approvals.end()
 		signal()
 	}()
 
@@ -208,6 +216,10 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 				OnEvent: func(ev agent.Event) {
 					emit(rpcResponse{Type: "event", Event: &ev})
 				},
+			}
+			// Without approvals nobody is asked, so a call needing approval is refused.
+			if req.Approvals {
+				opts.Approve = rpcApprover(approvals, emit)
 			}
 			na, err := abhed.New(embedded.With(ctx, embedded.Settings{Surface: "rpc"}), opts)
 			made = na
@@ -332,7 +344,7 @@ func rpcCmd(workspace string, trust config.TrustChoice) int {
 
 		default:
 			emit(rpcResponse{ID: req.ID, Type: "error",
-				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, "+
+				Error: fmt.Sprintf("unknown method %q; want start, prompt, steer, approve, "+
 					"usage, export, providers, tasks, cancel_task, wake or quit", req.Method)})
 		}
 	}
@@ -408,6 +420,15 @@ type rpcRequest struct {
 	Verify string `json:"verify,omitempty"`
 	// Runbook, on start, is a runbook the host approves for the session.
 	Runbook *abhed.Runbook `json:"runbook,omitempty"`
+	// Approvals, on start, puts each call needing approval to the caller as
+	// an approval line instead of refusing it.
+	Approvals bool `json:"approvals,omitempty"`
+	// RequestID, Decision (allow or deny), Remember and Approver answer an
+	// approval; Remember keeps the offered scope for the session.
+	RequestID string `json:"request_id,omitempty"`
+	Decision  string `json:"decision,omitempty"`
+	Remember  bool   `json:"remember,omitempty"`
+	Approver  string `json:"approver,omitempty"`
 }
 
 type rpcResponse struct {
@@ -425,6 +446,8 @@ type rpcResponse struct {
 	// Verdict, on a prompt's answer or error, is the check of that answer
 	// when answers are checked.
 	Verdict *abhed.AnswerVerdict `json:"verdict,omitempty"`
+	// Approval is a call put to the caller for an answer.
+	Approval *rpcApproval `json:"approval,omitempty"`
 }
 
 // rpcRunsOn reports whether a prompt's run goes on for messages queued as it
