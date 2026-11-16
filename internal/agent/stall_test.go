@@ -16,6 +16,14 @@ import (
 type thinker struct {
 	script []string
 	reqs   []model.Request
+	budget int // the operator's thinking budget, 0 for none
+}
+
+func (t *thinker) SamplingDefaults() model.Params {
+	if t.budget == 0 {
+		return model.Params{}
+	}
+	return model.Params{ThinkingBudget: &t.budget}
 }
 
 func (t *thinker) Name() string { return "thinker" }
@@ -48,6 +56,28 @@ func (t *thinker) Complete(ctx context.Context, req model.Request) (<-chan model
 			time.Sleep(20 * time.Millisecond)
 			ch <- model.Chunk{Type: model.ChunkText, Text: "answer"}
 			ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 100, OutputTokens: 5}}
+		case "think-long-then-answer":
+			// About 250 reasoning tokens over 150 ms, then the answer.
+			for range 30 {
+				if ctx.Err() != nil {
+					ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+					return
+				}
+				ch <- model.Chunk{Type: model.ChunkReasoning, Text: strings.Repeat("r", 33)}
+				time.Sleep(5 * time.Millisecond)
+			}
+			ch <- model.Chunk{Type: model.ChunkText, Text: "answer"}
+			ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 100, OutputTokens: 300}}
+		case "late-call":
+			// The tool call arrives after the cut came, as a reply already in flight does.
+			ch <- model.Chunk{Type: model.ChunkReasoning, Text: "thinking"}
+			time.Sleep(90 * time.Millisecond)
+			ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &model.ToolCall{ID: "c1", Name: "bash", Args: []byte(`{"command":"true"}`)}}
+			if ctx.Err() != nil {
+				ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+				return
+			}
+			ch <- model.Chunk{Type: model.ChunkDone, Usage: &model.Usage{InputTokens: 100, OutputTokens: 5}}
 		case "fail":
 			ch <- model.Chunk{Type: model.ChunkError, Err: errors.New("stream reset")}
 		default:
@@ -64,6 +94,9 @@ func stallLoop(t *testing.T, script ...string) (*Loop, *MemStore, *thinker) {
 	th := &thinker{script: script}
 	l.Adapter = th
 	l.Config.ReasoningStall = 60 * time.Millisecond
+	floorS, floorT := minReasoningStall, minReasoningStallTokens
+	minReasoningStall, minReasoningStallTokens = time.Millisecond, 1
+	t.Cleanup(func() { minReasoningStall, minReasoningStallTokens = floorS, floorT })
 	return l, store, th
 }
 
@@ -103,7 +136,7 @@ func TestRunawayReasoningTwiceEndsStalled(t *testing.T) {
 	}
 	evs := sessEvents(t, store)
 	end, _ := LastEnd(evs)
-	if !strings.Contains(end.Detail, "twice in a row") {
+	if !strings.Contains(end.Detail, "a second time before it answered") {
 		t.Fatalf("detail %q", end.Detail)
 	}
 	if !hasEvent(evs, EvAgentReasoning) {
@@ -139,5 +172,57 @@ func TestRunawayReasoningIsChargedAtItsBoundUnderACap(t *testing.T) {
 	_, _ = l.Run(context.Background(), "go")
 	if c := modelCalls(t, store); c[0].TokensOut != 2048 || c[0].CostUSD == nil {
 		t.Fatalf("cut call %+v", c[0])
+	}
+}
+
+// The primary bound is a size: a reply that reasons past it is cut, long
+// before the time backstop.
+func TestRunawayReasoningIsCutBySize(t *testing.T) {
+	l, store, th := stallLoop(t, "runaway", "done")
+	l.Config.ReasoningStall = time.Minute
+	l.Config.ReasoningStallTokens = 50
+	if reason, _ := l.Run(context.Background(), "go"); reason != TermCompleted || len(th.reqs) != 2 {
+		t.Fatalf("ended %s after %d calls", reason, len(th.reqs))
+	}
+	if c := modelCalls(t, store); !strings.Contains(c[0].Error, "reasoned past 50 tokens") {
+		t.Fatalf("the cut call %+v", c[0])
+	}
+}
+
+// Within the request's thinking budget nothing is cut, by size or by time.
+func TestReasoningWithinTheThinkingBudgetIsNotCut(t *testing.T) {
+	l, store, th := stallLoop(t, "think-long-then-answer")
+	l.Config.ReasoningStallTokens = 50
+	th.budget = 1000
+	if reason, _ := l.Run(context.Background(), "go"); reason != TermCompleted || len(th.reqs) != 1 {
+		t.Fatalf("ended %s after %d calls", reason, len(th.reqs))
+	}
+	if c := modelCalls(t, store); c[0].Error != "" {
+		t.Fatalf("a reply within its budget was cut: %+v", c[0])
+	}
+	// Without the budget, the same reply is cut by size.
+	l2, store2, _ := stallLoop(t, "think-long-then-answer", "done")
+	l2.Config.ReasoningStallTokens = 50
+	_, _ = l2.Run(context.Background(), "go")
+	if c := modelCalls(t, store2); !strings.Contains(c[0].Error, "reasoned past 50 tokens") {
+		t.Fatalf("without a budget: %+v", c[0])
+	}
+}
+
+// A reply whose tool call arrives as the cut comes keeps it: the tool runs,
+// and no nudge is sent.
+func TestAnswerArrivingAtTheCutIsKept(t *testing.T) {
+	l, store, th := stallLoop(t, "late-call", "done")
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermCompleted || len(th.reqs) != 2 {
+		t.Fatalf("ended %s after %d calls", reason, len(th.reqs))
+	}
+	if !hasEvent(sessEvents(t, store), EvActionRequested) {
+		t.Fatal("the tool call that arrived was dropped")
+	}
+	for _, m := range th.reqs[1].Messages {
+		if strings.Contains(m.Content, "without answering") {
+			t.Fatalf("a reply that answered was nudged: %q", m.Content)
+		}
 	}
 }

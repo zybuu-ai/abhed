@@ -257,10 +257,14 @@ type Config struct {
 	// TurnsPerMessage, else 25.
 	ContinueTurns int
 	MaxTokens     int
-	// ReasoningStall cuts a reply that has only reasoned, with no text or
-	// tool call, for this long; zero uses DefaultReasoningStall.
-	ReasoningStall time.Duration
-	CompactAt      float64 // fraction of the context window
+	// ReasoningStallTokens cuts a reply that has only reasoned, with no text
+	// or tool call, past this many reasoning tokens, or past the request's
+	// thinking budget if larger; ReasoningStall past this long, a backstop
+	// that never cuts within that budget. Zero uses the defaults; values
+	// under the floors, 1000 tokens and 30 s, are raised to them.
+	ReasoningStallTokens int
+	ReasoningStall       time.Duration
+	CompactAt            float64 // fraction of the context window
 	// OffloadAt is the fraction of the window at which old tool results move
 	// out to the record. Zero turns offloading off.
 	OffloadAt    float64
@@ -269,9 +273,18 @@ type Config struct {
 	Effort       model.EffortLevel
 }
 
-// DefaultReasoningStall is how long a reply may reason with nothing else
-// before it is cut: a runaway think otherwise holds the call to its cap.
-const DefaultReasoningStall = 3 * time.Minute
+// The reasoning-only bounds: a runaway think otherwise holds the call to its
+// cap. The floors keep a lower layer from cutting every thinking reply.
+const (
+	DefaultReasoningStallTokens = 8000
+	DefaultReasoningStall       = 10 * time.Minute
+)
+
+// The floors of the reasoning bounds, vars so tests can lower them.
+var (
+	minReasoningStallTokens = 1000
+	minReasoningStall       = 30 * time.Second
+)
 
 func DefaultConfig() Config {
 	return Config{MaxTurns: 100, MaxTokens: 8192, CompactAt: 0.90, OffloadAt: 0.60}
@@ -1507,10 +1520,17 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		req.Params.Think = &off
 	}
 	l.stallThinkOff = false
-	stallAfter := l.Config.ReasoningStall
+	stallAfter, stallTokens := l.Config.ReasoningStall, l.Config.ReasoningStallTokens
 	if stallAfter <= 0 {
 		stallAfter = DefaultReasoningStall
 	}
+	if stallTokens <= 0 {
+		stallTokens = DefaultReasoningStallTokens
+	}
+	stallAfter, stallTokens = max(stallAfter, minReasoningStall), max(stallTokens, minReasoningStallTokens)
+	// Never cut within the thinking the request itself allows.
+	budget := model.ThinkingBudget(l.Adapter, req)
+	stallTokens = max(stallTokens, budget)
 
 	callStart := time.Now()
 	// A wait for a request slot is said, and kept out of the call's timings.
@@ -1526,13 +1546,24 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// to the call's cap with nothing to show.
 	callCtx, cutCall := context.WithCancelCause(callCtx)
 	defer cutCall(nil)
-	var stallTimer *time.Timer
-	answered := false
-	defer func() {
-		if stallTimer != nil {
-			stallTimer.Stop()
-		}
-	}()
+	var thought atomic.Int64 // reasoning characters so far, read by the backstop
+	var stallOff atomic.Bool // set once the reply answers or the turn ends
+	armed, answered := false, false
+	defer stallOff.Store(true)
+	// The time backstop: it waits on while the reasoning is within the
+	// request's thinking budget, and does nothing once stallOff is set.
+	var arm func()
+	arm = func() {
+		time.AfterFunc(stallAfter, func() {
+			switch {
+			case stallOff.Load():
+			case budget > 0 && int(thought.Load()/4) <= budget:
+				arm()
+			default:
+				cutCall(&ReasoningStallError{After: stallAfter})
+			}
+		})
+	}
 	stream, err := l.Adapter.Complete(callCtx, req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
@@ -1583,12 +1614,16 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		}
 		if !answered && (chunk.Type == model.ChunkText && chunk.Text != "" || chunk.Type == model.ChunkToolCall) {
 			answered = true
-			if stallTimer != nil {
-				stallTimer.Stop()
-			}
+			stallOff.Store(true)
 		}
-		if !answered && stallTimer == nil && chunk.Type == model.ChunkReasoning {
-			stallTimer = time.AfterFunc(stallAfter, func() { cutCall(&ReasoningStallError{After: stallAfter}) })
+		if !answered && chunk.Type == model.ChunkReasoning {
+			if n := thought.Add(int64(len(chunk.Text))); int(n/4) > stallTokens {
+				cutCall(&ReasoningStallError{Tokens: stallTokens})
+			}
+			if !armed {
+				armed = true
+				arm()
+			}
 		}
 		switch chunk.Type {
 		case model.ChunkText:
@@ -1653,7 +1688,8 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// Cut for reasoning without output: that is the reply's failure, whatever
 	// the stream said as it closed.
 	var stall *ReasoningStallError
-	stalled := ctx.Err() == nil && errors.As(context.Cause(callCtx), &stall)
+	// A reply that answered as the cut came keeps what arrived, as any cut call.
+	stalled := ctx.Err() == nil && !answered && errors.As(context.Cause(callCtx), &stall)
 	if stalled {
 		streamErr = stall
 	}
@@ -1730,13 +1766,12 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// kept in the record.
 	if stalled {
 		if l.stallRetried {
-			l.stuckDetail = fmt.Sprintf("the model reasoned for %s without answering or calling a tool, twice in a row; its reasoning is in the record", stallAfter)
+			l.stuckDetail = "the model " + stall.Reason() + ", a second time before it answered; its reasoning is in the record"
 			return TermStalled, true, nil
 		}
 		l.stallRetried, l.stallThinkOff = true, true
-		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
-			"Your previous reply reasoned for %s without answering or calling a tool, so it was stopped. "+
-				"Do not deliberate at length: reply now with the one tool call you need, or with the answer.", stallAfter)})
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: "Your previous reply " + stall.Reason() +
+			", so it was stopped. Do not deliberate at length: reply now with the one tool call you need, or with the answer."})
 		return "", false, nil
 	}
 	if streamErr != nil && len(calls) == 0 {

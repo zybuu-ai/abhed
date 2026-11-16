@@ -228,3 +228,23 @@ func (p Params) Merge(other Params) Params {
 	}
 	return out
 }
+
+// ThinkingBudget is the thinking budget a request to a will carry: the
+// request's own, else the operator's configured one; 0 when there is none.
+func ThinkingBudget(a Adapter, req Request) int {
+	var d Params
+	switch c := a.(type) {
+	case *Anthropic:
+		d = c.Defaults
+	case *Gemini:
+		d = c.Defaults
+	case *OpenAICompatible:
+		d = c.Defaults
+	case interface{ SamplingDefaults() Params }:
+		d = c.SamplingDefaults()
+	}
+	if p := d.Merge(req.Sampling()).ThinkingBudget; p != nil {
+		return *p
+	}
+	return 0
+}

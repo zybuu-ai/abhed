@@ -1741,8 +1741,11 @@ type LimitsConfig struct {
 	// MaxBudgetUSD caps a session's cost in US dollars, subagents included.
 	// Zero means unlimited. With a cap, a model with no price is refused.
 	MaxBudgetUSD float64 `json:"max_budget_usd,omitempty"`
-	// ReasoningStallSeconds cuts a model reply that has only reasoned, with
-	// no text or tool call, for this long. Zero is 180.
+	// ReasoningStallTokens cuts a model reply that has only reasoned, with no
+	// text or tool call, past this many reasoning tokens (or its thinking
+	// budget, if larger); ReasoningStallSeconds past this long, as a backstop.
+	// Zero is 8000 and 600; below 1000 and 30 the floors apply.
+	ReasoningStallTokens  int  `json:"reasoning_stall_tokens,omitempty"`
 	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
 	MaxSubagents          int  `json:"max_subagents"`
 	NestedSubagents       bool `json:"nested_subagents"`
