@@ -551,6 +551,12 @@ All notable changes to Abhed are recorded here. The format follows
   grant` trusts them along with the rest (`-commands-sha256` pins the
   grant), and `abhed trust revoke` forgets them too, so a workspace's
   commands no longer need `/commands trust` in the terminal.
+- `abhed login` and `abhed profile list` say who you are signed in as by
+  the account's email, or its name, instead of the identity provider's
+  subject (such as `u-bob`); the profile keeps the subject as the
+  account's key.
+- `abhed login` and `abhed mcp login` honour `BROWSER`, and take
+  `-no-browser` to only print the sign-in address.
 
 ### Fixed
 

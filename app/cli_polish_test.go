@@ -4,14 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/zybuu-ai/abhed/auth"
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
+	"github.com/zybuu-ai/abhed/internal/mcpauth/mcpauthtest"
+	"github.com/zybuu-ai/abhed/profiles"
 )
 
 // headlessRun runs -p with stream-json output and the given stdin, killed
@@ -213,4 +220,137 @@ func TestHeadlessCustomRefusals(t *testing.T) {
 	if _, _, err := headlessCustom(refused, "/w", "/x"); err == nil || !strings.Contains(err.Error(), "started untrusted") {
 		t.Errorf("refused: %v", err)
 	}
+}
+
+// #14: login says who the person is by email (or name), not the subject,
+// and keeps the subject as the account's key.
+func TestLoginShowsTheEmail(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(profiles.EnvFile, "")
+	ls := newLoginServerFor(t, auth.User{Username: "u-bob", Email: "bob@corp.example", Name: "Bob"})
+	ws := t.TempDir()
+	var out bytes.Buffer
+	ap := &approver{ls: ls}
+	if code := loginCmd(ws, []string{"-device", "-ca", ls.ca, "-profile", "lab", ls.ts.URL}, &out, ap); code != 0 {
+		t.Fatalf("login = %d\n%s%s", code, out.String(), ap.String())
+	}
+	if !strings.Contains(out.String(), "as bob@corp.example (profile lab") {
+		t.Fatalf("login said %q", out.String())
+	}
+	reg, _ := profiles.Load(filepath.Join(home, ".abhed", "profiles.json"))
+	if p := reg.Profiles["lab"]; p == nil || p.Username != "u-bob" || p.Display != "bob@corp.example" {
+		t.Fatalf("profile %+v", p)
+	}
+	out.Reset()
+	if code := profileCmd(ws, []string{"list"}, &out, io.Discard); code != 0 || !strings.Contains(out.String(), "signed in as bob@corp.example") {
+		t.Fatalf("profile list %q", out.String())
+	}
+	if got := signedInAs(&profiles.Profile{Username: "u-x"}); got != "u-x" {
+		t.Errorf("no display: %q", got)
+	}
+}
+
+// #14: BROWSER is read as other programs read it, and opens the address;
+// over SSH it does not make a browser count as local.
+func TestBrowserEnv(t *testing.T) {
+	got := browserCommands("firefox --new-tab:open -a Safari %s", "https://x/y")
+	want := [][]string{{"firefox", "--new-tab", "https://x/y"}, {"open", "-a", "Safari", "https://x/y"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("%q", got)
+	}
+	if browserCommands("", "u") != nil || browserCommands(" : ", "u") != nil {
+		t.Fatal("an empty BROWSER gave commands")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for the browser")
+	}
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "seen")
+	script := filepath.Join(dir, "browser.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' \"$1\" > "+seen+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BROWSER", filepath.Join(dir, "missing")+string(os.PathListSeparator)+script)
+	if err := openBrowser("https://sign.in/approve?x=1"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if b, _ := os.ReadFile(seen); string(b) == "https://sign.in/approve?x=1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("BROWSER was not run with the address")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Setenv("SSH_CONNECTION", "")
+	t.Setenv("SSH_TTY", "")
+	if !canOpenBrowser() {
+		t.Error("a BROWSER set did not count")
+	}
+	t.Setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22")
+	if canOpenBrowser() {
+		t.Error("over SSH a BROWSER counted as a local browser")
+	}
+}
+
+// #14: -no-browser prints the address and opens nothing, for login and for
+// mcp login.
+func TestNoBrowser(t *testing.T) {
+	old := openBrowser
+	t.Cleanup(func() { openBrowser = old })
+	openBrowser = func(string) error { t.Error("a browser was opened"); return nil }
+	var errOut bytes.Buffer
+	_ = signInOpener(true, &errOut)("https://srv/approve")
+	if !strings.Contains(errOut.String(), "  https://srv/approve") {
+		t.Fatalf("%q", errOut.String())
+	}
+
+	s := mcpauthtest.New(t)
+	ws := loginHome(t, s, "")
+	follow := mcpauthtest.Browser(t)
+	openBrowser = func(string) error { t.Error("mcp login opened a browser"); return nil }
+	var out, errw bytes.Buffer
+	pw := &urlFollower{follow: follow}
+	cio := mcpIO{in: strings.NewReader(""), out: pw, err: &errw, terminal: true}
+	if code := mcpCmd(ws, []string{"login", "-no-browser", "corp"}, config.TrustRefused, cio); code != 0 {
+		t.Fatalf("mcp login -no-browser: %d %s %s", code, pw.String(), errw.String())
+	}
+	if !strings.Contains(pw.String(), "Sign in to MCP server corp in your browser:") {
+		t.Fatalf("no address printed: %s", pw.String())
+	}
+	if code := mcpCmd(ws, []string{"logout", "-no-browser", "corp"}, config.TrustRefused, mcpIO{in: strings.NewReader(""), out: &out, err: &errw, terminal: true}); code != 2 {
+		t.Fatalf("logout took -no-browser: %d", code)
+	}
+}
+
+// urlFollower is a person reading the printed address and opening it.
+type urlFollower struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	follow func(string) error
+	done   bool
+}
+
+func (f *urlFollower) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.buf.Write(p)
+	if !f.done {
+		for _, line := range strings.Split(f.buf.String(), "\n") {
+			if l := strings.TrimSpace(line); strings.HasPrefix(l, "http") {
+				f.done = true
+				_ = f.follow(l)
+			}
+		}
+	}
+	return len(p), nil
+}
+
+func (f *urlFollower) String() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.buf.String()
 }

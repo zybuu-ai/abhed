@@ -77,7 +77,8 @@ func mcpLogin(workspace string, trust config.TrustChoice, name string, cio mcpIO
 		defer egress.Install(guard)()
 	}
 	o.HTTP = mcpOAuthHTTP(guard)
-	if canOpenBrowser() {
+	// With -no-browser, or no browser here, the address is only printed.
+	if !cio.noBrowser && canOpenBrowser() {
 		o.Open = openBrowser
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -250,8 +250,14 @@ A URL server that wants a sign-in answers `401` until you sign in to it:
 
 ```sh
 abhed mcp login corpus     # opens your browser; prints the address too
+abhed mcp login -no-browser corpus  # only prints the address
 abhed mcp logout corpus    # revokes the login where the server offers that, and forgets it
 ```
+
+The browser is the one `BROWSER` names when it is set (commands separated
+by `:`, each given the address in place of `%s` or at the end, run without
+a shell), else the system's. Over SSH no browser is opened, since the
+sign-in returns to a listener on this machine.
 
 `login` follows the MCP authorization specification. It asks the server for
 its protected-resource metadata (from its `401` challenge, or the well-known
