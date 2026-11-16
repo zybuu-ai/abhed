@@ -7,20 +7,26 @@ Three ways to run Abhed without a person at the prompt.
 ```bash
 abhed -p "fix the failing tests" -mode auto -allow 'bash(go test*)' -verify strict
 abhed -p "explain what pkg/auth does" -mode plan
-cat build.log | abhed -p "why did this fail?" -
+cat build.log | abhed -p "why did this fail?"
 abhed -p "add a test for Valid" -output-format stream-json > events.jsonl
 ```
 
 `-p` (or `--print`) runs one task and exits. The task is the text after
-`-p`, or stdin when no task is given. With a task, stdin is read only when a
-lone `-` asks for it: then stdin is added below the task as its input, so
-`cat build.log | abhed -p "summarise" -` sends the log with the question.
-Without `-`, a task never waits on stdin, so a caller whose stdin is a pipe
-it never closes (a CI step, a driver) does not hang; input already waiting
-there is left unread, and stderr says so once. Stdin that is read is read to
-its end, up to 10 MiB; after three seconds with the pipe still open Abhed
-says it is waiting. Flags may come before or after the task, and after `--`
-a lone `-` is a word of the task.
+`-p`, stdin, or both: with both, stdin is added below the task as its
+input, so `cat build.log | abhed -p "summarise"` sends the log with the
+question. Stdin is read to its end, up to 10 MiB; after three seconds with
+the pipe still open Abhed says it is waiting. Flags may come before or after
+the task.
+
+With a task given, Abhed waits for piped input to start for
+`-stdin-wait` (1.5 s by default). Input that starts, or a pipe that ends,
+in that time is handled as above, however long the input then takes. A
+pipe left open with nothing written to it, as some CI steps and drivers
+leave stdin, is ignored after the wait, with one note on stderr: "stdin
+left open with no input; ignored. Pass - to wait for it, or -no-stdin to
+silence this". A lone `-` reads stdin to its end however late its input
+starts (`slow-producer | abhed -p "summarise" -`); after `--`, `-` is a word
+of the task. `-stdin-wait 0` never waits.
 
 A command the agent starts with `bash` and `run_in_background` is allowed
 under `-p` wherever `bash` is: the same rules and approver decide. `-p` waits
@@ -30,13 +36,12 @@ background shell has ended and the agent has seen how (up to its lifetime,
 the run ends any other way (an error, a stop signal, `max_turns`) is killed
 with its process group before Abhed exits.
 
-With no task, or with `-`, any stdin that is a pipe or a file is read,
-including one a script inherited. A loop that reads a list on stdin and
-gives each run a task needs nothing more; one that also passes `-` should
-give each run its own stdin, or the first run takes the rest of the list:
+Any stdin that is a pipe or a file is read, including one a script
+inherited. In a loop that reads a list on stdin, give each run its own
+stdin, or the first run takes the rest of the list:
 
 ```bash
-while read f; do git diff -- "$f" | abhed -p "review this change to $f" -; done < files.txt
+while read f; do abhed -p "fix the lint errors in $f" < /dev/null; done < files.txt
 ```
 
 `-no-stdin` does the same as `< /dev/null`. It cannot be combined with `-`,

@@ -129,11 +129,6 @@ All notable changes to Abhed are recorded here. The format follows
   checked by its `text` as well as its claims, so a run that 1.2.9 ended
   verified with nothing verified (the text saying "the tests now pass", no
   test run showing it) now ends `unverified`, exit 8.
-- `abhed -p "task"` no longer reads stdin. A caller whose stdin was a pipe
-  it never closed (a CI step, a driver) waited on it for good. To attach
-  piped input to a task, add a lone `-`: `git diff | abhed -p "review this
-  change" -`. Input left waiting unread is said once on stderr. With no
-  task, stdin is the task, as before.
 
 ### Added
 
@@ -833,6 +828,14 @@ All notable changes to Abhed are recorded here. The format follows
   existed, so a new laptop under one started with no model set. It offers
   only the models `model.allowed` admits, refuses an endpoint model it does
   not, and does not ask what the managed layer sets.
+- `abhed -p "task"` run with a stdin pipe nobody writes or closes, as some
+  CI steps and drivers leave it, waited on it for good. With a task, it now
+  waits for piped input to start for `-stdin-wait` (1.5 s by default):
+  input that starts in that time is attached as before, so `git diff |
+  abhed -p "review"` is unchanged; a pipe still idle is ignored with one
+  note on stderr ("stdin left open with no input; ignored. Pass - to wait
+  for it, or -no-stdin to silence this"). A lone `-` waits for stdin to end
+  however late its input starts.
 
 ### Go API
 

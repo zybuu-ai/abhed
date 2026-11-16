@@ -146,7 +146,7 @@ func TestHeadlessParallelCommand(t *testing.T) {
 
 // The note is judged on the task given after -p, never on piped stdin.
 func TestHeadlessNoteOnlyOnTheTypedTask(t *testing.T) {
-	evs, err, stderr := headlessEvents(t, "the workers run in parallel\n", "-p", "summarise this", "-")
+	evs, err, stderr := headlessEvents(t, "the workers run in parallel\n", "-p", "summarise this")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, stderr)
 	}

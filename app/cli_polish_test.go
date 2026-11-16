@@ -63,9 +63,10 @@ func headlessRun(t *testing.T, ws string, stdin *os.File, limit time.Duration, a
 	return evs, errOut.String(), timedOut
 }
 
-// #11: with a task given, -p does not wait on a stdin pipe nobody closes;
-// "-" attaches stdin; input left unread is said once.
-func TestPrintTaskDoesNotWaitOnStdin(t *testing.T) {
+// #11: with a task given, -p waits only briefly on a stdin pipe nobody
+// writes or closes, says so once, and goes on; piped input still attaches
+// without -, and - attaches input that starts late.
+func TestPrintTaskDoesNotWaitOnAnIdleStdin(t *testing.T) {
 	m := &bgModelServer{}
 	ws := bgWorkspace(t, m.start(t), "")
 
@@ -74,38 +75,60 @@ func TestPrintTaskDoesNotWaitOnStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close(); _ = w.Close() }()
+	began := time.Now()
 	evs, stderr, timedOut := headlessRun(t, ws, r, 20*time.Second, "-p", "say hi")
-	if timedOut || len(evs["user.message"]) != 1 {
+	if timedOut || len(evs["user.message"]) != 1 || time.Since(began) > 15*time.Second {
 		t.Fatalf("-p with a task waited on an open stdin pipe (timed out %v): %v\n%s", timedOut, evs["user.message"], stderr)
 	}
-	if strings.Contains(stderr, "stdin was not read") {
-		t.Errorf("an empty pipe was reported as unread input: %s", stderr)
+	if strings.Count(stderr, stdinIdleNote) != 1 {
+		t.Errorf("the idle pipe was not said once: %s", stderr)
 	}
 
-	// Input already waiting is left out, and said so.
-	r2, w2, _ := os.Pipe()
-	_, _ = w2.WriteString("THE-LOG-LINE\n")
-	evs, stderr, timedOut = headlessRun(t, ws, r2, 20*time.Second, "-p", "summarise")
-	_ = r2.Close()
-	_ = w2.Close()
-	if timedOut || len(evs["user.message"]) != 1 || strings.Contains(stringOf(evs["user.message"][0]["text"]), "THE-LOG-LINE") {
-		t.Fatalf("waiting input was read without -: %v", evs["user.message"])
-	}
-	if !strings.Contains(stderr, "stdin was not read, since the task is given; add - to attach it") {
-		t.Errorf("no note about the unread input: %s", stderr)
-	}
-
-	// "-" attaches it.
+	// git diff | abhed -p "review": input already there attaches, as in 1.2.9.
 	f, err := os.CreateTemp(t.TempDir(), "in")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = f.WriteString("THE-LOG-LINE\n")
+	_, _ = f.WriteString("THE-DIFF-LINE\n")
 	_, _ = f.Seek(0, 0)
 	defer func() { _ = f.Close() }()
-	evs, stderr, _ = headlessRun(t, ws, f, 20*time.Second, "-p", "summarise", "-")
-	if u := evs["user.message"]; len(u) != 1 || !strings.Contains(stringOf(u[0]["text"]), "THE-LOG-LINE") {
-		t.Fatalf("- did not attach stdin: %v\n%s", u, stderr)
+	evs, stderr, _ = headlessRun(t, ws, f, 20*time.Second, "-p", "review")
+	if u := evs["user.message"]; len(u) != 1 || !strings.Contains(stringOf(u[0]["text"]), "THE-DIFF-LINE") || strings.Contains(stderr, stdinIdleNote) {
+		t.Fatalf("piped input was not attached without -: %v\n%s", u, stderr)
+	}
+}
+
+// The window: input or its end within it is read to the end; nothing within
+// it is left alone with the note; - (no window) waits however late it comes.
+func TestStdinWindow(t *testing.T) {
+	ctx := context.Background()
+	late := func(after time.Duration, chunks ...string) io.Reader {
+		pr, pw := io.Pipe()
+		go func() {
+			time.Sleep(after)
+			for _, c := range chunks {
+				_, _ = pw.Write([]byte(c))
+				time.Sleep(300 * time.Millisecond)
+			}
+			_ = pw.Close()
+		}()
+		return pr
+	}
+	var warn bytes.Buffer
+	if got, _ := headlessTask(ctx, "review", late(800*time.Millisecond, "LATE"), 200*time.Millisecond, &warn); got != "review" || !strings.Contains(warn.String(), stdinIdleNote) {
+		t.Fatalf("input after the window was waited for: %q %q", got, warn.String())
+	}
+	warn.Reset()
+	if got, _ := headlessTask(ctx, "review", late(800*time.Millisecond, "LATE"), stdinToEOF, &warn); !strings.Contains(got, "LATE") {
+		t.Fatalf("- did not wait for late input: %q", got)
+	}
+	// Started inside the window, it is read to its end however long that takes.
+	if got, _ := headlessTask(ctx, "review", late(20*time.Millisecond, "ONE ", "TWO", " THREE"), 200*time.Millisecond, &warn); !strings.Contains(got, "ONE TWO THREE") || warn.Len() != 0 {
+		t.Fatalf("input that started in the window was cut: %q %q", got, warn.String())
+	}
+	// Ended empty inside the window: no input, and nothing to say.
+	if got, _ := headlessTask(ctx, "review", late(20*time.Millisecond), 200*time.Millisecond, &warn); got != "review" || warn.Len() != 0 {
+		t.Fatalf("an empty pipe: %q %q", got, warn.String())
 	}
 }
 
@@ -129,18 +152,26 @@ func TestStdinDashFlag(t *testing.T) {
 	if f := parse(t, "-p", "--", "a", "-", "b"); f.stdinDash || f.task() != "a - b" {
 		t.Errorf("%+v", f)
 	}
-	var warn bytes.Buffer
-	if readsStdin(&cliFlags{}, "task", true, func() bool { return false }, &warn) || warn.Len() != 0 {
-		t.Error("a task read stdin")
+	if w := stdinWindow(&cliFlags{stdinWait: time.Second}, "task", true); w != time.Second {
+		t.Errorf("a task's window %v", w)
 	}
-	if !readsStdin(&cliFlags{}, "", true, func() bool { return false }, &warn) {
-		t.Error("no task did not read stdin")
+	if w := stdinWindow(&cliFlags{stdinWait: time.Second}, "", true); w != stdinToEOF {
+		t.Errorf("no task: %v", w)
 	}
-	if !readsStdin(&cliFlags{stdinDash: true}, "task", true, func() bool { return false }, &warn) {
-		t.Error("- did not read stdin")
+	if w := stdinWindow(&cliFlags{stdinDash: true, stdinWait: time.Second}, "task", true); w != stdinToEOF {
+		t.Errorf("-: %v", w)
 	}
-	if readsStdin(&cliFlags{stdinDash: true}, "task", false, func() bool { return true }, &warn) {
-		t.Error("a terminal was read")
+	if w := stdinWindow(&cliFlags{noStdin: true}, "task", true); w != stdinSkip {
+		t.Errorf("-no-stdin: %v", w)
+	}
+	if w := stdinWindow(&cliFlags{stdinDash: true}, "task", false); w != stdinSkip {
+		t.Errorf("a terminal: %v", w)
+	}
+	if f := parse(t, "-p", "x", "-stdin-wait", "3s"); f.stdinWait != 3*time.Second {
+		t.Errorf("-stdin-wait %v", f.stdinWait)
+	}
+	if f := parse(t, "-p", "x"); f.stdinWait != defaultStdinWait {
+		t.Errorf("default %v", f.stdinWait)
 	}
 }
 

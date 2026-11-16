@@ -153,16 +153,16 @@ func TestWithRunbook(t *testing.T) {
 func TestHeadlessTask(t *testing.T) {
 	ctx := context.Background()
 	var warn strings.Builder
-	if got, _ := headlessTask(ctx, "summarise", strings.NewReader("the log\n"), true, &warn); !strings.HasPrefix(got, "summarise\n\nInput from stdin. "+agent.AttachedNote) || !strings.Contains(got, "\nthe log\n") {
+	if got, _ := headlessTask(ctx, "summarise", strings.NewReader("the log\n"), stdinToEOF, &warn); !strings.HasPrefix(got, "summarise\n\nInput from stdin. "+agent.AttachedNote) || !strings.Contains(got, "\nthe log\n") {
 		t.Errorf("%q", got)
 	}
-	if got, _ := headlessTask(ctx, "", strings.NewReader("do this"), true, &warn); got != "do this" {
+	if got, _ := headlessTask(ctx, "", strings.NewReader("do this"), stdinToEOF, &warn); got != "do this" {
 		t.Errorf("%q", got)
 	}
-	if got, _ := headlessTask(ctx, "only", strings.NewReader(""), true, &warn); got != "only" {
+	if got, _ := headlessTask(ctx, "only", strings.NewReader(""), stdinToEOF, &warn); got != "only" {
 		t.Errorf("%q", got)
 	}
-	if _, err := headlessTask(ctx, "x", strings.NewReader(strings.Repeat("a", maxStdin+1)), true, &warn); err == nil {
+	if _, err := headlessTask(ctx, "x", strings.NewReader(strings.Repeat("a", maxStdin+1)), stdinToEOF, &warn); err == nil {
 		t.Error("oversized stdin accepted")
 	}
 }

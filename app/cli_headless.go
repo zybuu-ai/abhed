@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zybuu-ai/abhed/config"
@@ -67,36 +68,68 @@ type headlessOpts struct {
 // maxStdin bounds the stdin a -p run takes as context.
 const maxStdin = 10 << 20
 
+// How a -p run reads stdin: not at all, to its end, or, with a task given,
+// to its end only once input or its end comes within a short window.
+const (
+	stdinSkip  time.Duration = -1
+	stdinToEOF time.Duration = 0
+)
+
+// defaultStdinWait is how long a -p run with a task waits for piped input
+// to start before going on without it (-stdin-wait changes it).
+const defaultStdinWait = 1500 * time.Millisecond
+
+// stdinIdleNote is said when a task's stdin was left open with nothing in it.
+const stdinIdleNote = "abhed: stdin left open with no input; ignored. Pass - to wait for it, or -no-stdin to silence this"
+
 // headlessTask is the task a -p run is given: the command line's, with
 // piped stdin added as its input. With stdin alone, stdin is the task. A
-// stop signal ends the wait for stdin.
-func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bool, wait io.Writer) (string, error) {
-	if !isPipe {
+// stop signal ends the wait for stdin. window is how stdin is read: skipped,
+// read to its end, or, when positive, read to its end only if input or its
+// end comes within window; an open pipe nobody writes is then left alone,
+// with a note, so a caller that leaves stdin open does not hang the run.
+func headlessTask(ctx context.Context, prompt string, stdin io.Reader, window time.Duration, wait io.Writer) (string, error) {
+	if window < 0 {
 		return prompt, nil
 	}
 	type read struct {
 		data []byte
 		err  error
 	}
+	started := make(chan struct{})
 	got := make(chan read, 1)
 	go func() {
-		data, err := io.ReadAll(io.LimitReader(stdin, maxStdin+1))
+		data, err := io.ReadAll(io.LimitReader(&firstRead{r: stdin, started: started}, maxStdin+1))
 		got <- read{data, err}
 	}()
 	var r read
-	// A pipe whose writer is slow, or never closes, would otherwise look
-	// like a hang.
-	select {
-	case r = <-got:
-	case <-time.After(3 * time.Second):
-		fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+	if window > 0 {
+		// The reader is left behind on a pipe nobody writes; the run does not wait for it.
 		select {
+		case <-started:
 		case r = <-got:
+		case <-time.After(window):
+			fmt.Fprintln(wait, stdinIdleNote)
+			return prompt, nil
 		case <-ctx.Done():
 			return "", context.Cause(ctx)
 		}
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
+	}
+	if r.data == nil && r.err == nil {
+		// A pipe whose writer is slow, or never closes, would otherwise look
+		// like a hang.
+		select {
+		case r = <-got:
+		case <-time.After(3 * time.Second):
+			fmt.Fprintln(wait, "abhed: reading the task's input from stdin until it ends (redirect from /dev/null to skip it)")
+			select {
+			case r = <-got:
+			case <-ctx.Done():
+				return "", context.Cause(ctx)
+			}
+		case <-ctx.Done():
+			return "", context.Cause(ctx)
+		}
 	}
 	if r.err != nil {
 		return "", fmt.Errorf("reading stdin: %w", r.err)
@@ -115,21 +148,37 @@ func headlessTask(ctx context.Context, prompt string, stdin io.Reader, isPipe bo
 	return prompt + stdinHeader + untrustedNote + "\n" + fenced("stdin", "", in), nil
 }
 
-// readsStdin is whether a -p run reads stdin. With no task, stdin is the
-// task. With a task, stdin is read only when "-" asks for it: a caller whose
-// stdin is a pipe it never closes, such as a driver or a CI step, would
-// otherwise wait on it for good. Input left unread is said once.
-func readsStdin(f *cliFlags, task string, isPipe bool, waiting func() bool, warn io.Writer) bool {
+// firstRead closes started at its first read that returns: input, or the
+// input's end.
+type firstRead struct {
+	r       io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (f *firstRead) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 || err != nil {
+		f.once.Do(func() { close(f.started) })
+	}
+	return n, err
+}
+
+// stdinWindow is how a -p run reads stdin. With no task, stdin is the task,
+// read to its end; "-" asks for that with a task too. With a task, piped
+// input is attached when it starts within -stdin-wait, as in
+// `git diff | abhed -p "review"`; a pipe left open with nothing in it is
+// ignored, so a CI step or driver that never closes stdin does not hang.
+func stdinWindow(f *cliFlags, task string, isPipe bool) time.Duration {
 	switch {
 	case f.noStdin || !isPipe:
-		return false
+		return stdinSkip
 	case task == "" || f.stdinDash:
-		return true
+		return stdinToEOF
+	case f.stdinWait <= 0:
+		return stdinSkip
 	}
-	if waiting() {
-		fmt.Fprintln(warn, "abhed: stdin was not read, since the task is given; add - to attach it (abhed -p \"…\" -)")
-	}
-	return false
+	return f.stdinWait
 }
 
 // stdinHeader opens piped stdin in a -p task.

@@ -378,7 +378,7 @@ func run(a *App, workspace string, f *cliFlags) int {
 		o.typed = prompt
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
-		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, readsStdin(f, prompt, stdinIsPipe(), stdinWaiting, os.Stderr), os.Stderr); err != nil {
+		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, stdinWindow(f, prompt, stdinIsPipe()), os.Stderr); err != nil {
 			if code, stopped := stopCode(ctx); stopped {
 				return code
 			}

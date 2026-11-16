@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
@@ -135,6 +136,7 @@ type cliFlags struct {
 	runbook         string
 	runbookHash     string
 	noStdin         bool
+	stdinWait       time.Duration
 	skipPerms       bool
 	showVer         bool
 	listenAddr      string
@@ -161,7 +163,8 @@ type cliFlags struct {
 // newFlagSet declares every flag on fs, bound to f.
 func newFlagSet(f *cliFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("abhed", flag.ContinueOnError)
-	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, or stdin when no task is given; add - to attach stdin to a task")
+	fs.Var(&f.print, "p", "run headless and exit; the task is the argument after it, stdin, or both")
+	fs.DurationVar(&f.stdinWait, "stdin-wait", defaultStdinWait, "with -p and a task, how long to wait for piped input to start before going on without it; - waits for it to end")
 	fs.Var(&f.print, "print", "same as -p")
 	fs.StringVar(&f.mode, "mode", "", "permission mode: default|accept-edits|plan|auto|bypass")
 	fs.StringVar(&f.permissionMode, "permission-mode", "", "same as -mode; also takes acceptEdits and bypassPermissions")
