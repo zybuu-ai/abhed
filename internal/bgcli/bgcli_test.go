@@ -21,12 +21,13 @@ const token = "tok-bg-3c1f9a"
 
 // fakeServer serves the background-job protocol for one job.
 type fakeServer struct {
-	mu       sync.Mutex
-	job      bgjob.Job
-	started  []bgjob.StartRequest
-	answers  []map[string]any
-	canceled int
-	requests int
+	mu        sync.Mutex
+	job       bgjob.Job
+	started   []bgjob.StartRequest
+	answers   []map[string]any
+	canceled  int
+	requests  int
+	snapshots [][]byte
 	// noBG answers every /v1/bg path as a server without jobs does.
 	noBG bool
 }
@@ -45,6 +46,13 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := func(v any) { w.Header().Set("Content-Type", "application/json"); _ = json.NewEncoder(w).Encode(v) }
 	switch {
+	case r.Method == "POST" && r.URL.Path == bgjob.PathSnapshots:
+		b, _ := io.ReadAll(r.Body)
+		f.snapshots = append(f.snapshots, b)
+		w.WriteHeader(http.StatusCreated)
+		reply(bgjob.Snapshot{ID: "snap_1", Files: 1})
+	case r.Method == "GET" && r.URL.Path == bgjob.PatchPath(f.job.ID):
+		_, _ = io.WriteString(w, "--- a/kept.txt\n+++ b/kept.txt\n")
 	case r.Method == "POST" && r.URL.Path == bgjob.PathJobs:
 		var req bgjob.StartRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -79,8 +87,11 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type rig struct {
-	srv      *fakeServer
-	profiles string
+	srv       *fakeServer
+	profiles  string
+	workspace string
+	withheld  func(string) bool
+	stored    func([]byte) bool
 }
 
 func newRig(t *testing.T) *rig {
@@ -94,7 +105,7 @@ func newRig(t *testing.T) *rig {
 		"alice": {URL: hs.URL, Token: token, TokenType: "Bearer"}}}); err != nil {
 		t.Fatal(err)
 	}
-	return &rig{srv: f, profiles: path}
+	return &rig{srv: f, profiles: path, workspace: t.TempDir()}
 }
 
 type result struct {
@@ -105,19 +116,20 @@ type result struct {
 func (r *rig) run(in string, interactive bool, inAgent string, args ...string) result {
 	var out, errOut bytes.Buffer
 	env := Env{Ctx: context.Background(), ProfilesPath: r.profiles, In: strings.NewReader(in), Out: &out, Err: &errOut,
-		Interactive: interactive, Poll: 5 * time.Millisecond, InAgent: func() string { return inAgent }}
+		Interactive: interactive, Poll: 5 * time.Millisecond, InAgent: func() string { return inAgent },
+		Workspace: r.workspace, Withheld: r.withheld, HoldsStored: r.stored}
 	code := Main(env, args)
 	return result{code, out.String(), errOut.String()}
 }
 
 func TestStartSendsThePromptAndNoIdentity(t *testing.T) {
 	r := newRig(t)
-	res := r.run("", false, "", "start", "-mode", "plan", "-name", "n", "fix", "the", "tests")
+	res := r.run("", false, "", "start", "-no-snapshot", "-mode", "plan", "-name", "n", "fix", "the", "tests")
 	if res.code != ExitOK || !strings.Contains(res.out, "started bg_1") || !strings.Contains(res.out, "abhed bg attach bg_1") {
 		t.Fatalf("start: %+v", res)
 	}
 	got := r.srv.started[0]
-	if got.Prompt != "fix the tests" || got.Mode != "plan" || got.Name != "n" {
+	if got.Prompt != "fix the tests" || got.Mode != "plan" || got.Name != "n" || got.Workspace.Kind != "" {
 		t.Fatalf("sent %+v", got)
 	}
 	if res := r.run("", false, "", "start"); res.code != ExitUsage {

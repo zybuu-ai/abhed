@@ -46,6 +46,17 @@ type Env struct {
 	InAgent func() string
 	// Poll is how often attach looks again; zero is two seconds.
 	Poll time.Duration
+	// Workspace is the folder start snapshots the repository of.
+	Workspace string
+	// Withheld reports a file the person's read rules keep from the agent,
+	// which a snapshot never carries.
+	Withheld func(abs string) bool
+	// HoldsStored reports content holding a value from the person's
+	// secrets store, which a snapshot never carries either.
+	HoldsStored func([]byte) bool
+	// SnapshotErr, when set, is why a snapshot cannot be checked, which
+	// refuses one rather than send it unchecked.
+	SnapshotErr error
 }
 
 type command struct {
@@ -54,7 +65,7 @@ type command struct {
 }
 
 var commands = []command{
-	{"start", "[-name N] [-mode M] [-provider P] [-attach] PROMPT", "start a job on the server, as you", (*runner).start},
+	{"start", "[-name N] [-mode M] [-provider P] [-no-snapshot] [-attach] PROMPT", "start a job on the server, as you, on a snapshot of this repository", (*runner).start},
 	{"list", "", "your jobs, newest first", (*runner).list},
 	{"logs", "ID [-patch]", "a job's record so far, or with -patch what it changed", (*runner).logs},
 	{"attach", "ID", "follow a job and answer what it asks until it ends", (*runner).attach},
@@ -273,12 +284,13 @@ func short(s string, n int) string {
 }
 
 func (r *runner) start(args []string) error {
-	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-attach] PROMPT")
+	fs := r.flags("start", "[-name N] [-mode M] [-provider P] [-no-snapshot] [-attach] PROMPT")
 	var req bgjob.StartRequest
 	fs.StringVar(&req.Name, "name", "", "a label for the job")
 	fs.StringVar(&req.Mode, "mode", "", "plan, or the server's own mode (default: the server's)")
 	fs.StringVar(&req.Provider, "provider", "", "a model provider the server offers")
 	attach := fs.Bool("attach", false, "follow the job once it starts, as attach does")
+	bare := fs.Bool("no-snapshot", false, "start in an empty folder, sending none of this repository")
 	pos, err := r.parse(fs, args)
 	if err != nil {
 		return err
@@ -286,6 +298,13 @@ func (r *runner) start(args []string) error {
 	req.Prompt = strings.TrimSpace(strings.Join(pos, " "))
 	if req.Prompt == "" {
 		return usageError{errors.New("abhed bg start needs a prompt")}
+	}
+	if !*bare {
+		snap, err := r.snapshot()
+		if err != nil {
+			return err
+		}
+		req.Workspace = bgjob.Workspace{Kind: bgjob.WorkspaceSnapshot, Snapshot: snap}
 	}
 	j, err := r.cl.Start(r.Ctx, req)
 	if err != nil {
@@ -357,7 +376,14 @@ func (r *runner) logs(args []string) error {
 		return err
 	}
 	if *patch {
-		p, ok, err := r.cl.Patch(r.Ctx, j.SessionID)
+		var p string
+		ok := true
+		if j.Result != nil {
+			// Kept when the job ended; its folder is gone.
+			p, err = r.cl.JobPatch(r.Ctx, j.ID)
+		} else {
+			p, ok, err = r.cl.Patch(r.Ctx, j.SessionID)
+		}
 		if err != nil {
 			return err
 		}
@@ -583,4 +609,48 @@ func argLines(raw json.RawMessage) []string {
 		out = append(out, short(k, 40)+": "+short(v, maxArg))
 	}
 	return out
+}
+
+// snapshot packs the repository the workspace is in and uploads it. What it
+// leaves out, and why, is said by name, so the person knows what the job
+// does not have.
+func (r *runner) snapshot() (string, error) {
+	if r.SnapshotErr != nil {
+		return "", fmt.Errorf("no snapshot was sent: %w; pass -no-snapshot to start in an empty folder", r.SnapshotErr)
+	}
+	root, err := repoRoot(r.Ctx, r.Workspace)
+	if err != nil {
+		return "", usageError{fmt.Errorf("%s is not in a git repository; run abhed bg start in one, or pass -no-snapshot to start in an empty folder", line(r.Workspace))}
+	}
+	p, err := pack(r.Ctx, root, r.Withheld, r.HoldsStored)
+	if err != nil {
+		return "", fmt.Errorf("the snapshot: %w", err)
+	}
+	say := func(what string, names []string) {
+		if len(names) == 0 {
+			return
+		}
+		shown := names
+		if len(shown) > 10 {
+			shown = shown[:10]
+		}
+		for i := range shown {
+			shown[i] = line(shown[i])
+		}
+		more := ""
+		if len(names) > len(shown) {
+			more = fmt.Sprintf(" and %d more", len(names)-len(shown))
+		}
+		fmt.Fprintf(r.Err, "abhed: left out %d %s: %s%s\n", len(names), what, strings.Join(shown, ", "), more)
+	}
+	say("file(s) your read rules withhold", p.withheld)
+	say("file(s) named like a key or holding a secret", p.secret)
+	say("other path(s)", p.skipped)
+	snap, err := r.cl.UploadSnapshot(r.Ctx, p.tgz)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(r.Err, "abhed: sent %d tracked file(s) of %s, %d KiB, as they are in the working tree\n",
+		p.files, line(root), (p.bytes+1023)/1024)
+	return snap.ID, nil
 }

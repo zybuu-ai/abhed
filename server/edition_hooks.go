@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/zybuu-ai/abhed/auth"
@@ -70,3 +73,81 @@ const systemApprover = auth.NobodyPrefix + "system-timeout"
 // configured (network.upstream_proxy), read at each request; with none,
 // directly.
 func UpstreamTransport() http.RoundTripper { return egress.UpstreamRoundTripper{} }
+
+// ErrNoOwnWorkspace refuses a StartSpec.Prepare for a session with no folder
+// of its own: one that shares the server's workspace, or its user's.
+var ErrNoOwnWorkspace = errors.New("this server gives sessions no folder of their own " +
+	"(per-session sandboxes with control_plane.sessions.scope \"session\"), so nothing can be put in one")
+
+// errPrepare is a StartSpec.Prepare that failed; its cause goes to the log.
+var errPrepare = errors.New("the session's folder could not be prepared")
+
+// prepareWait bounds a StartSpec.Prepare.
+const prepareWait = 5 * time.Minute
+
+// prepareWorkspace runs spec.Prepare on root, the folder of the session's
+// own sandbox, and removes that sandbox when it fails, so a half-filled
+// folder is not left behind.
+func (s *Server) prepareWorkspace(sessionID string, spec StartSpec, bound bool, root string) error {
+	if !bound || !s.opts.SessionSandboxes.SessionScoped() {
+		return ErrNoOwnWorkspace
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), prepareWait)
+	defer cancel()
+	if err := spec.Prepare(ctx, root); err != nil {
+		s.log.Error("a session's folder was not prepared", "session", sessionID, "err", err)
+		dctx, dcancel := context.WithTimeout(context.Background(), time.Minute)
+		defer dcancel()
+		if derr := s.opts.SessionSandboxes.SessionDeleted(dctx, sessionID, spec.User, storeTenant(s.opts.Config, spec.Tenant)); derr != nil {
+			s.log.Warn("removing the sandbox of a session not prepared", "session", sessionID, "err", derr)
+		}
+		return errPrepare
+	}
+	return nil
+}
+
+// SessionPatch is what session id, run here for owner in tenant, changed in
+// its folder, as one unified diff with each file's diff as GET .../changes
+// gives it. available is false when this process does not hold the
+// session's originals. Files the server's read rules keep from a viewer
+// are named, not shown.
+func (s *Server) SessionPatch(tenant, owner, id string) (patch string, available bool, err error) {
+	s.mu.RLock()
+	live, ok := s.running[id]
+	mine := ok && owner != "" && live.Tenant == tenant && live.User == owner
+	s.mu.RUnlock()
+	if !mine || live.undo == nil {
+		return "", false, nil
+	}
+	v, err := s.openView(s.workspaceOf(live))
+	if err != nil {
+		return "", false, err
+	}
+	defer v.Close()
+	var b strings.Builder
+	for _, f := range s.changesOf(live, v).Files {
+		if f.Diff == "" {
+			fmt.Fprintf(&b, "# %s: %s, no diff (%s)\n", f.Path, f.Status, orDefaultStr(f.Note, "unchanged text"))
+			continue
+		}
+		b.WriteString(f.Diff)
+		if !strings.HasSuffix(f.Diff, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String(), true, nil
+}
+
+// DeleteSessionSandbox removes the sandbox, and with it the folder, of
+// session id, when the session runs here for owner in tenant and the
+// sandbox is its own. The session can do no more work after it.
+func (s *Server) DeleteSessionSandbox(ctx context.Context, tenant, owner, id string) error {
+	s.mu.RLock()
+	live, ok := s.running[id]
+	mine := ok && owner != "" && live.Tenant == tenant && live.User == owner
+	s.mu.RUnlock()
+	if !mine || s.opts.SessionSandboxes == nil || !s.opts.SessionSandboxes.SessionScoped() {
+		return nil
+	}
+	return s.opts.SessionSandboxes.SessionDeleted(ctx, id, owner, storeTenant(s.opts.Config, tenant))
+}

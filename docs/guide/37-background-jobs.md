@@ -22,7 +22,7 @@ takes `-profile NAME` or `-server URL` (default: the current profile) and
 ## Commands
 
 ```
-abhed bg start [-name N] [-mode plan] [-provider P] [-attach] PROMPT
+abhed bg start [-name N] [-mode plan] [-provider P] [-no-snapshot] [-attach] PROMPT
 abhed bg list
 abhed bg logs ID [-patch]
 abhed bg attach ID
@@ -30,13 +30,26 @@ abhed bg cancel ID
 ```
 
 - `start` sends the prompt and, if given, a name, a mode and a provider.
-  Nothing else: who the job runs as is your sign-in, and its sandbox,
-  secrets and network are the server's. A mode wider than the server's is
-  refused as it is for a session.
+  Who the job runs as is your sign-in, and its sandbox, secrets and network
+  are the server's. A mode wider than the server's is refused as it is for
+  a session.
+- `start` also sends a snapshot of the repository you run it in: its
+  tracked files as they are in your working tree, staged and unstaged edits
+  included, untracked files not. The job starts with them in a folder of
+  its own, which the server removes when the job ends. Left out, and named
+  as `start` runs: a file your read rules withhold from the agent (deny
+  rules, and the ask rules such as the built-in ones for `.env` and keys); a
+  file named like a key, holding one by its shape, or holding a value from
+  your secrets store; links, submodules and any file over 16 MiB. A
+  snapshot is at most 50,000 files, 512 MiB, 64 MiB compressed. When the
+  rules or your secrets store cannot be read, no snapshot is sent.
+  `-no-snapshot` starts in an empty folder; outside a repository `start`
+  asks for it.
 - `list` shows your jobs, newest first, with the tool a waiting job asks for.
 - `logs` prints the job's record so far; `-patch` prints what it changed
-  as one unified diff, while the server that ran it still holds the
-  originals.
+  as one unified diff. A job that started from a snapshot keeps its patch
+  when it ends; otherwise the patch is there while the server that ran it
+  still holds the originals.
 - `attach` prints the record as it grows. When the job waits on you it
   shows the tool, the reason and the call's arguments (a command in full,
   each value cut at 2,000 characters, secrets withheld as the record keeps
@@ -62,7 +75,9 @@ session's own routes.
 
 | Route | |
 |---|---|
-| `POST /v1/bg/jobs` | start: `{"prompt", "name", "mode", "provider", "workspace": {"kind": "session"}}`; 202 with the job |
+| `POST /v1/bg/snapshots` | a snapshot, `application/gzip`: a tar of regular files only, relative slash-separated names with nothing under `.git` or `.abhed`, modes 0644 or 0755, within the limits above; 201 with `{"id", "files", "bytes", "expires"}` |
+| `POST /v1/bg/jobs` | start: `{"prompt", "name", "mode", "provider", "workspace": {"kind": "session"}}`, or `"workspace": {"kind": "snapshot", "snapshot": ID}`; 202 with the job |
+| `GET /v1/bg/jobs/{id}/patch` | the patch a job kept when it ended (its `result`), as text |
 | `GET /v1/bg/jobs` | your jobs: `{"jobs": [...]}` |
 | `GET /v1/bg/jobs/{id}` | one job; `waiting` holds the ask it waits on: tool, reason, the redacted `args`, `request_id` and `deadline` |
 | `POST /v1/bg/jobs/{id}/cancel` | stop it |
