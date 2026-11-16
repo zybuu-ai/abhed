@@ -402,11 +402,12 @@ type Loop struct {
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
 	// is the detail the last run's end recorded.
 	stuckDetail, lastDetail string
-	// streamFailKey and streamFails count the same failed reply in a row, so a
-	// stream that keeps failing the same way ends the run instead of being
-	// asked again to the turn limit, each time billed.
-	streamFailKey string
+	// streamFails counts failed replies in a row that produced nothing, within
+	// a run, whatever their message (a transport error's text varies with its
+	// port or stream id); lastStreamErr is the latest, for the end's detail.
+	// Three end the run rather than asking again to the turn limit, each billed.
 	streamFails   int
+	lastStreamErr string
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// stopContinues counts the times stop hooks sent this run back to work.
@@ -561,8 +562,8 @@ func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail 
 	}
 }
 
-// maxStreamFailures is how many replies in a row may fail the same way
-// before the run ends retry_exhausted.
+// maxStreamFailures is how many failed replies in a row, each producing
+// nothing, end the run retry_exhausted.
 const maxStreamFailures = 3
 
 // TermPromptRefused is a run that never started: a hook refused the message.
@@ -1135,6 +1136,7 @@ func (l *Loop) run(ctx context.Context) (TerminalReason, error) {
 		hh.RunStarted(l.rootID())
 		defer hh.RunEnded(l.rootID())
 	}
+	l.streamFails = 0 // a failure streak is the run's own, not carried from the last
 turns:
 	for {
 		if ctx.Err() != nil {
@@ -1613,6 +1615,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	if ctx.Err() != nil {
+		l.streamFails = 0
 		return terminalForCancel(ctx), true, nil //nolint:nilerr // an interrupt is a terminal reason, not a failure
 	}
 
@@ -1625,18 +1628,15 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	// A malformed tool call is recoverable: tell the model what was wrong and
 	// let it retry rather than aborting the session.
 	if streamErr != nil && len(calls) == 0 && text.Len() == 0 {
-		if key := streamErr.Error(); key == l.streamFailKey {
-			l.streamFails++
-		} else {
-			l.streamFailKey, l.streamFails = key, 1
-		}
+		l.streamFails++
+		l.lastStreamErr = streamErr.Error()
 		if l.streamFails >= maxStreamFailures {
-			l.stuckDetail = fmt.Sprintf("the model's reply failed the same way %d times in a row: %s", l.streamFails, truncateKey(l.streamFailKey))
-			l.streamFailKey, l.streamFails = "", 0
+			l.stuckDetail = fmt.Sprintf("the model's reply failed %d times in a row; the last: %s", l.streamFails, truncate(l.lastStreamErr, 300))
+			l.streamFails = 0
 			return TermRetryExhausted, true, nil
 		}
 	} else {
-		l.streamFailKey, l.streamFails = "", 0
+		l.streamFails = 0
 	}
 	if streamErr != nil && len(calls) == 0 {
 		if text.Len() == 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -639,5 +640,76 @@ func TestRepeatedStreamFailureEndsTheRun(t *testing.T) {
 	reason, _ := l.Run(context.Background(), "go")
 	if reason != TermRetryExhausted || r.calls != maxStreamFailures {
 		t.Fatalf("ended %s after %d calls", reason, r.calls)
+	}
+}
+
+// flakyStep is one reply of flakyAdapter: a failed stream after acceptance, or a turn.
+type flakyStep struct {
+	fail string
+	turn scriptedTurn
+}
+
+// flakyAdapter answers each call with the next step.
+type flakyAdapter struct {
+	steps []flakyStep
+	calls int
+}
+
+func (s *flakyAdapter) Name() string { return "steps" }
+func (s *flakyAdapter) Profile() model.Profile {
+	return model.Profile{Name: "local-model", ContextWindow: 100000}
+}
+func (s *flakyAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
+func (s *flakyAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	st := flakyStep{turn: scriptedTurn{text: "done"}}
+	if s.calls < len(s.steps) {
+		st = s.steps[s.calls]
+	}
+	s.calls++
+	if st.fail != "" {
+		ch := make(chan model.Chunk, 1)
+		ch <- model.Chunk{Type: model.ChunkError, Err: errors.New(st.fail)}
+		close(ch)
+		return ch, nil
+	}
+	sa := &scriptedAdapter{turns: []scriptedTurn{st.turn}}
+	return sa.Complete(ctx, req)
+}
+
+// A failure streak is the run's own: a run that ended during one does not
+// make the next run stop on its first transient failure.
+func TestStreamFailuresResetEachRun(t *testing.T) {
+	l, _ := costHarness(t, "local-model", nil)
+	reset := "read tcp 127.0.0.1:50000->10.0.0.1:443: connection reset by peer"
+	a := &flakyAdapter{steps: []flakyStep{{fail: reset}, {fail: reset},
+		{fail: reset}, {turn: scriptedTurn{calls: []model.ToolCall{call("bash", map[string]string{"command": "true"})}}}, {turn: scriptedTurn{text: "done"}}}}
+	l.Adapter = a
+	l.Config.MaxTurns = 2
+	if reason, _ := l.Run(context.Background(), "one"); reason != TermMaxTurns {
+		t.Fatalf("run 1 ended %s", reason)
+	}
+	l.Config.MaxTurns = 100
+	if reason, _ := l.Run(context.Background(), "two"); reason != TermCompleted || a.calls != 5 {
+		t.Fatalf("run 2 ended %s after %d calls in all", reason, a.calls)
+	}
+}
+
+// Failed replies count whatever their message: a reset's text changes with
+// its local port every time, and three in a row still end the run.
+func TestStreamFailuresCountWhateverTheMessage(t *testing.T) {
+	l, store := costHarness(t, "local-model", nil)
+	var steps []flakyStep
+	for i := range 10 {
+		steps = append(steps, flakyStep{fail: fmt.Sprintf("read tcp 127.0.0.1:%d->10.0.0.1:443: connection reset by peer", 50000+i)})
+	}
+	a := &flakyAdapter{steps: steps}
+	l.Adapter = a
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermRetryExhausted || a.calls != maxStreamFailures {
+		t.Fatalf("ended %s after %d calls", reason, a.calls)
+	}
+	end, _ := LastEnd(sessEvents(t, store))
+	if !strings.Contains(end.Detail, "failed 3 times in a row") || !strings.Contains(end.Detail, "127.0.0.1:50002") {
+		t.Fatalf("detail %q", end.Detail)
 	}
 }
