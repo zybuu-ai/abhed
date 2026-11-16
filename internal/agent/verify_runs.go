@@ -387,7 +387,16 @@ func (ix *recordIndex) testScope(f facts) []string {
 	if f.inclusive {
 		return nil
 	}
-	scope := append(slices.Clone(f.scope), f.modules...)
+	// A source file a claim also names ("I fixed src/a.py so the tests in
+	// tests.test_a pass") is what changed, not where the tests ran.
+	var scope []string
+	for _, s := range f.scope {
+		if b := filepath.Base(strings.TrimSuffix(s, "/")); strings.Contains(b, ".") && !strings.HasSuffix(s, "...") && !testName(s) {
+			continue
+		}
+		scope = append(scope, s)
+	}
+	scope = append(scope, f.modules...)
 	if len(scope) == 0 && f.theTests && f.testish == "test" {
 		return promptTests(ix.prompts)
 	}

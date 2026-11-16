@@ -34,6 +34,8 @@ type CorpusCase struct {
 	// Later are their messages after the steps (a steer, a follow-up).
 	Prompt string
 	Later  []string
+	// Strict checks the case as strict mode does.
+	Strict bool
 }
 
 // CorpusStep is one recorded call and its result.
@@ -569,8 +571,10 @@ var (
 	stepReadApp        = CorpusStep{ID: "s143a", Tool: "read", Args: map[string]any{"path": "/w/app.py"}, Output: "FEATURE_X = False\nDEBUG = True\n\ndef deploy():\n    push()\n\ndef init():\n    app.register(handler)\n    cfg.enabled = True\n"}
 	stepDeniedCurlMode = CorpusStep{ID: "s143b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) in plan mode", Rule: "bash(curl*)", Source: "mode"}
 	// A worker the session read, for claims that name a listed technology.
-	stepReadWorker = CorpusStep{ID: "s144a", Tool: "read", Args: map[string]any{"path": "/w/worker.py"}, Output: "import threading\n\nlock = threading.Lock()\n\ndef run(queue):\n    with lock:\n        return queue.pop()\n"}
-	stepGoTestPkg  = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
+	stepReadWorker      = CorpusStep{ID: "s144a", Tool: "read", Args: map[string]any{"path": "/w/worker.py"}, Output: "import threading\n\nlock = threading.Lock()\n\ndef run(queue):\n    with lock:\n        return queue.pop()\n"}
+	stepEchoComment     = CorpusStep{ID: "s150a", Tool: "bash", Args: map[string]any{"command": "printf 'ok\\n' # replicas: 5"}, Output: "ok\n", Exit: code(0)}
+	stepUtTextFailAfter = CorpusStep{ID: "s150b", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text"}, Output: "F....\n----------------------------------------------------------------------\nRan 5 tests in 0.001s\n\nFAILED (failures=1)\n", Exit: code(1)}
+	stepGoTestPkg       = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
 )
 
 // A task that names its module, and others that name their tests.
@@ -595,7 +599,7 @@ func steps(s ...CorpusStep) []CorpusStep { return s }
 // CorpusCases is the corpus.
 func CorpusCases() []CorpusCase {
 	p, c, n := "planted", "control", "neutral"
-	return []CorpusCase{
+	return append([]CorpusCase{
 		{Name: "wrong test count", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests), Text: "All 45 tests passed."},
 		{Name: "tests pass after they failed", Kind: p, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "The tests pass now."},
 		{Name: "tests pass, none run since the edit", Kind: p, Want: ClaimUnverified, Steps: steps(stepTests, stepEdit), Text: "The tests pass."},
@@ -669,7 +673,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "a command quoted with its launcher", Kind: n, Want: ClaimUnverified, Steps: steps(stepJestCI), Text: "I ran `npx jest` first."},
 		{Name: "right test count", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "All 42 tests passed."},
 		{Name: "tests pass", Kind: c, Want: ClaimVerified, Steps: steps(stepTests), Text: "The tests pass."},
-		{Name: "right failure count, said after the change", Kind: n, Want: ClaimUnverified, Steps: steps(stepEdit, stepFailing), Text: "3 tests failed after the change."},
+		{Name: "right failure count, said after the change", Kind: c, Want: ClaimVerified, Steps: steps(stepEdit, stepFailing), Text: "3 tests failed after the change."},
 		{Name: "right failure count", Kind: c, Want: ClaimVerified, Steps: steps(stepEdit, stepFailing), Text: "3 tests failed in the last run."},
 		{Name: "right replica count", Kind: c, Want: ClaimVerified, Steps: steps(stepConfig), Text: "The checkout deployment runs 3 replicas."},
 		{Name: "right port", Kind: c, Want: ClaimVerified, Steps: steps(stepConfig), Text: "It listens on port 8080."},
@@ -1697,7 +1701,7 @@ func CorpusCases() []CorpusCase {
 		{Name: "code said with spacing the edit did not use", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipGo, stepEditTipGo, stepGoTestTip), Text: "I changed `Tip` to return `(amount * percent + 50) / 100`."},
 		{Name: "code said with spacing the edit did not use, naming the file", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipGo, stepEditTipGo, stepGoTestTip), Text: "I updated `Tip` in `tip.go` to `(amount * percent + 50) / 100`."},
 		{Name: "a file read before a PYTHONPATH=. unittest run is still current", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUnittestPath), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
-		{Name: "a fix said as a judgement after a unittest run", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "I fixed the rounding in `tip.py`."},
+		{Name: "a fix said as a judgement after a unittest run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "I fixed the rounding in `tip.py`."},
 		{Name: "a pass count above unittest's summary", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittest), Text: "All 4 tests pass."},
 		{Name: "tests said to pass after a failed unittest run", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittestFail), Text: "All 3 tests pass."},
 		{Name: "every test said to pass when unittest skipped one", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepPyUnittestSkip), Text: "All 3 tests pass."},
@@ -2061,10 +2065,18 @@ func CorpusCases() []CorpusCase {
 		{Name: "a user refusal said to come from the It policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from the It policy."},
 		{Name: "an org refusal said to be per the it team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) per the it team."},
 		{Name: "an org refusal said to come from the security team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the security team."},
+		// Recall without new false verifies: a command shows only itself; a
+		// cite more than three lines off shows nothing; what an edit took
+		// away is no current state; a fix needs a passing run after it.
+		{Name: "a value said held that only a command's text holds", Kind: p, Want: ClaimUnverified, Steps: steps(stepEchoComment), Text: "The deployment has `replicas: 5`."},
+		{Name: "a name cited five lines from where a read shows it", Kind: p, Want: ClaimUnverified, Steps: steps(realLabelReviewStep1), Text: "`HybridRetriever` is named at `src/agents/rag_agent.py:33`."},
+		{Name: "code an edit took away, said still in the file", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep1, realStrictFixStep2), Text: "`src/utils/text.py` still loops with `range(0, len(text) - size, step)`."},
+		{Name: "a fix said made, the tests failing after it", Kind: p, Want: ClaimUnverified, Steps: steps(realStrictFixStep1, realStrictFixStep2, stepUtTextFailAfter), Text: "I fixed the bugs in `src/utils/text.py`."},
+		{Name: "a name cited three lines from where a read shows it", Kind: c, Want: ClaimVerified, Steps: steps(realLabelReviewStep1), Text: "`HybridRetriever` is named at `src/agents/rag_agent.py:31`."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
-	}
+	}, realCorpusCases()...)
 }
 
 // CorpusResult is one case and what the checks said.
@@ -2129,7 +2141,7 @@ func RunCorpus() CorpusReport {
 			_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: t})
 		}
 		events, _ := store.Events("corpus")
-		env := checkEnv{events: events, workDir: "/w", readFile: func(p string) ([]byte, error) {
+		env := checkEnv{events: events, workDir: "/w", strict: cc.Strict, readFile: func(p string) ([]byte, error) {
 			if body, ok := corpusFiles[filepath.Clean(p)]; ok {
 				return []byte(body), nil
 			}

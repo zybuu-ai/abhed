@@ -43,6 +43,9 @@ type Claim struct {
 	Evidence []string `json:"evidence,omitempty"`
 	// Quote is the exact text in the cited output the claim rests on.
 	Quote string `json:"quote,omitempty"`
+	// hintQuote is a quote given beside a citation ({"call_id", "quote"}):
+	// used as the quote only when the cited output holds it.
+	hintQuote string
 }
 
 // ClaimVerdict is what the checks found for one claim.
@@ -516,7 +519,22 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	// read and the change.
 	if v.Verdict == ClaimVerified && c.Quote == "" {
 		if parts := clauses(c.Text); len(parts) > 1 {
-			for _, p := range parts {
+			subj := clauseSubject(parts[0])
+			// The first clause's code goes with its subject: "The tests were
+			// run using `cmd` and passed" names what passed.
+			var spans []string
+			for _, m := range backtickRe.FindAllString(parts[0], -1) {
+				spans = append(spans, m)
+			}
+			if subj != "" && len(spans) > 0 {
+				subj += " (" + strings.Join(spans, ", ") + ")"
+			}
+			for k, p := range parts {
+				// "The tests were run using `x` and passed": a later clause
+				// that opens with its verb keeps the first clause's subject.
+				if k > 0 && subj != "" && opensWithVerb(p) {
+					p = subj + " " + p
+				}
 				// A clause that says nothing about the work has nothing to show.
 				if !saysWork(p) {
 					continue
@@ -660,7 +678,9 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 				findings = append(findings, finding{out: missing, why: why})
 				continue
 			}
-			if m := ix.staleBy(o); m != nil {
+			// A claim about what an earlier run showed ("the initial run
+			// failed") may rest on it after a change; any other may not.
+			if m := ix.staleBy(o); m != nil && !(o.tool == "bash" && earlierRunRe.MatchString(normText(c.Text))) {
 				findings = append(findings, finding{out: missing,
 					why: fmt.Sprintf("#%d predates a later change (#%d, %s)", o.seq, m.seq, mutationLabel(*m))})
 				continue
@@ -670,6 +690,12 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		// Every citation failed: the claim stands on nothing.
 		if len(pool) == 0 {
 			return settle(v, findings, "none of its cited evidence is a current result in this session")
+		}
+		if c.Quote == "" && c.hintQuote != "" {
+			q := normText(c.hintQuote)
+			if firstWith(pool, func(e *evidenceText) bool { return strings.Contains(e.norm, q) }) != nil {
+				c.Quote = c.hintQuote
+			}
 		}
 	} else {
 		for _, o := range ix.obs {
@@ -720,10 +746,12 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	// needs no tool result as well.
 	atLine := map[string]bool{} // literals found other than in a tool result
 	for _, fl := range f.fileLines {
-		fd, lit := checkFileLine(env, fl, f.literals)
+		fd, lit := ix.checkFileLine(env, fl, f.literals)
 		findings = append(findings, fd)
 		if fd.out == matched {
 			atLine[lit] = true
+			// The cite itself ("src/a.py:28") is shown by the line it names.
+			atLine[normText(fmt.Sprintf("%s:%d", fl.path, fl.line))] = true
 		}
 	}
 	var changedText *evidenceText // what a matched change put in
@@ -749,7 +777,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		}
 		code := false
 		for _, t := range f.tokens {
-			code = code || !pathTok[normText(t)] && !pathTok[normText(rawPath(t))]
+			code = code || !pathTok[normText(t)] && !pathTok[normText(rawPath(t))] && !nameNotCode(f, t)
 		}
 		for _, p := range f.paths {
 			fd := ix.changedPath(p)
@@ -773,7 +801,7 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		}
 		if len(f.paths) == 0 {
 			fd, put := ix.changeNamed(f, "")
-			fd.kind = "change"
+			fd.kind, fd.call = "change", fd.out == matched
 			findings = append(findings, fd)
 			if fd.out == matched {
 				for _, t := range f.tokens {
@@ -824,6 +852,14 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 		findings = append(findings, fd)
 		if fd.out == matched {
 			atLine[normText(cmd)] = true
+		}
+	}
+	// "Following the changes": some change of this session is needed.
+	if f.afterChange {
+		if ix.changedAny() {
+			findings = append(findings, finding{out: matched, what: "a change of this session", call: true, kind: "change"})
+		} else {
+			findings = append(findings, finding{out: missing, why: "it refers to changes, and this session made none"})
 		}
 	}
 	// A test or build run said to pass is read from the runs. One that
@@ -877,6 +913,11 @@ func judgeFacts(env checkEnv, ix *recordIndex, f facts, quote string, pool []*ob
 	for _, lit := range f.literals {
 		switch {
 		case atLine[lit]:
+		case (f.changeAct || f.changed || f.changeWord) && ix.changeTookAway(lit) != nil:
+			// What a change replaced is shown by what that change was given
+			// to take away, as a read before it showed it.
+			m := ix.changeTookAway(lit)
+			findings = append(findings, finding{out: matched, what: fmt.Sprintf("%q taken away by #%d", lit, m.seq), seq: m.seq})
 		case changedLit[lit] != "":
 			findings = append(findings, finding{out: missing, why: changedLit[lit] + ", and output naming it does not show what it holds"})
 		case pathLit[lit] && len(notFileTools) < len(pool):
@@ -1357,6 +1398,13 @@ func (ix *recordIndex) literal(pool []*obsRec, lit string, cited bool) finding {
 	if o := firstWith(pool, func(e *evidenceText) bool { return e.hasLiteral(lit) }); o != nil {
 		return finding{out: matched, what: fmt.Sprintf("%q in #%d", lit, o.seq), seq: o.seq, pooled: true}
 	}
+	// A command said as it was run is shown by the call that ran it: the
+	// whole command, or a test name a test run was given.
+	for i := len(pool) - 1; i >= 0; i-- {
+		if o := pool[i]; o.tool == "bash" && o.command != "" && commandShows(o, lit) {
+			return finding{out: matched, what: fmt.Sprintf("%q is the command of #%d", lit, o.seq), seq: o.seq, pooled: true}
+		}
+	}
 	if cited {
 		return citedMiss(pool, fmt.Sprintf("%q", clipRunes(lit, 60)))
 	}
@@ -1794,37 +1842,84 @@ func (ix *recordIndex) ranCommand(cmd string) finding {
 
 // checkFileLine checks a path:line cite against the file as it is now, and,
 // where the claim quotes something, that the line or its neighbours hold it.
-func checkFileLine(env checkEnv, fl fileLine, literals []string) (finding, string) {
-	if env.readFile == nil {
-		return finding{}, ""
-	}
-	p := fl.path
-	if !filepath.IsAbs(p) && env.workDir != "" {
-		p = filepath.Join(env.workDir, p)
-	}
-	data, err := env.readFile(p)
+func (ix *recordIndex) checkFileLine(env checkEnv, fl fileLine, literals []string) (finding, string) {
 	label := fmt.Sprintf("%s:%d", fl.path, fl.line)
-	if err != nil {
-		return finding{out: missing, why: label + " cites a file that cannot be read now: " + firstLine(err.Error()),
-			conflict: &Conflict{Excerpt: fl.path + ": " + firstLine(err.Error())}}, ""
+	// The lines a current read of the file showed come first: what the
+	// session saw, numbered as the read numbered them.
+	lines, ok := ix.readLines(env, fl.path)
+	if !ok {
+		if env.readFile == nil {
+			return finding{}, ""
+		}
+		p := fl.path
+		if !filepath.IsAbs(p) && env.workDir != "" {
+			p = filepath.Join(env.workDir, p)
+		}
+		data, err := env.readFile(p)
+		if err != nil {
+			return finding{out: missing, why: label + " cites a file that cannot be read now: " + firstLine(err.Error()),
+				conflict: &Conflict{Excerpt: fl.path + ": " + firstLine(err.Error())}}, ""
+		}
+		lines = map[int]string{}
+		for k, l := range strings.Split(string(data), "\n") {
+			lines[k+1] = l
+		}
 	}
-	lines := strings.Split(string(data), "\n")
-	if fl.line < 1 || fl.line > len(lines) {
+	if _, at := lines[fl.line]; !at && fl.line > len(lines) {
 		return finding{out: missing, why: fmt.Sprintf("%s cites line %d; the file has %d", label, fl.line, len(lines)),
 			conflict: &Conflict{Excerpt: fmt.Sprintf("%s has %d lines", fl.path, len(lines))}}, ""
 	}
-	from, to := max(0, fl.line-3), min(len(lines), fl.line+2)
-	window := prepareEvidence(strings.Join(lines[from:to], "\n"), false)
+	// A cite within three lines of what it names counts: models cite the
+	// line of a method for its class, or the call for its result.
+	var window []string
+	for n := fl.line - 3; n <= fl.line+3; n++ {
+		if l, at := lines[n]; at {
+			window = append(window, l)
+		}
+	}
+	ev := prepareEvidence(strings.Join(window, "\n"), false)
+	var first string
 	for _, lit := range literals {
 		if strings.Contains(lit, normText(fl.path)) || strings.Contains(normText(fl.path), lit) {
 			continue
 		}
-		if window.hasLiteral(lit) {
+		if first == "" {
+			first = lit
+		}
+		if ev.hasLiteral(lit) {
 			return finding{out: matched, what: fmt.Sprintf("%q at %s", lit, label)}, lit
 		}
-		return finding{out: missing, why: fmt.Sprintf("%s does not show %q now", label, clipRunes(lit, 60))}, lit
+	}
+	if first != "" {
+		return finding{out: missing, why: fmt.Sprintf("%s does not show %q within three lines", label, clipRunes(first, 60))}, first
 	}
 	return finding{}, "" // the line exists; with nothing quoted there is nothing more to compare
+}
+
+// numberedLineRe is a line of a read's output: its number, a tab, the line.
+var numberedLineRe = regexp.MustCompile(`^\s*(\d+)\t(.*)$`)
+
+// readLines are the lines of path a current read of this session showed, by
+// number; ok false when no current read of it shows numbered lines.
+func (ix *recordIndex) readLines(env checkEnv, path string) (map[int]string, bool) {
+	want := path
+	if !filepath.IsAbs(want) && env.workDir != "" {
+		want = filepath.Join(env.workDir, want)
+	}
+	want = filepath.Clean(want)
+	out := map[int]string{}
+	for _, o := range ix.obs {
+		if o.tool != "read" || !o.usable() || o.path == "" || filepath.Clean(o.path) != want || ix.staleBy(o) != nil {
+			continue
+		}
+		for _, l := range strings.Split(o.content, "\n") {
+			if m := numberedLineRe.FindStringSubmatch(l); m != nil {
+				n, _ := strconv.Atoi(m[1])
+				out[n] = m[2]
+			}
+		}
+	}
+	return out, len(out) > 0
 }
 
 func poolName(cited bool) string {
@@ -2218,6 +2313,90 @@ func (ix *recordIndex) ownProject(name string) bool {
 		}
 		if m := projectNameRe.FindSubmatch(b); m != nil && same(string(m[1])+string(m[2])+string(m[3])) {
 			return true
+		}
+	}
+	return false
+}
+
+// commandShows reports a literal that is a bash call's whole command, or,
+// for a test run, one of the test names it was given.
+func commandShows(o *obsRec, lit string) bool {
+	if lit == "" {
+		return false
+	}
+	if normText(o.command) == lit {
+		return true
+	}
+	if commandKind(o.line.final) != "test" {
+		return false
+	}
+	if normText(strings.Join(o.line.final, " ")) == lit {
+		return true
+	}
+	for _, w := range o.line.final[1:] {
+		if !strings.HasPrefix(w, "-") && normText(w) == lit && (testModule(w) != "" || testName(w)) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// earlierRunRe says a claim is about a run before the change.
+	earlierRunRe = regexp.MustCompile(`\b(?:initial|initially|first|original|originally|earlier|before (?:the|my|any) (?:change|changes|fix|fixes|edit|edits)|previous|previously|at first)\b`)
+	// clauseVerbRe opens a clause that has no subject of its own.
+	clauseVerbRe = regexp.MustCompile(`^(?:and\s+|then\s+|but\s+)?(?:[a-z]+ed|passed|failed|succeeded|ran|returned|showed|printed|exited|pass|passes|fail|fails|succeeds|returns|shows|prints)\b`)
+)
+
+// clauseSubject is a first clause's subject: the words before its first
+// verb ("The tests" in "The tests were run …"); "" when it has none.
+func clauseSubject(p string) string {
+	words := strings.Fields(p)
+	for k, w := range words {
+		if k == 0 {
+			continue
+		}
+		lw := strings.ToLower(strings.Trim(w, ".,;:!?()"))
+		if subjVerbRe.MatchString(lw) {
+			return strings.Join(words[:k], " ")
+		}
+	}
+	return ""
+}
+
+// opensWithVerb reports a clause that starts with its verb.
+func opensWithVerb(p string) bool {
+	return clauseVerbRe.MatchString(normText(p))
+}
+
+// changeTookAway is the session's own edit whose old text held lit, or nil.
+func (ix *recordIndex) changeTookAway(lit string) *mutation {
+	for i := len(ix.mutations) - 1; i >= 0; i-- {
+		m := &ix.mutations[i]
+		if m.tool != "edit" || m.failed || m.person || m.child != "" {
+			continue
+		}
+		var a struct {
+			Old string `json:"old_string"`
+		}
+		if json.Unmarshal([]byte(m.text), &a) == nil && a.Old != "" && prepareEvidence(a.Old, false).hasLiteral(lit) {
+			return m
+		}
+	}
+	return nil
+}
+
+// passedAfterLastChange reports a test run of this session's own that
+// exited 0, and ran tests, after its last change.
+func (ix *recordIndex) passedAfterLastChange() bool {
+	last := ix.lastChange()
+	for i := len(ix.obs) - 1; i >= 0; i-- {
+		o := ix.obs[i]
+		if last != nil && o.pos < last.pos {
+			return false
+		}
+		if o.tool == "bash" && o.child == "" && o.usable() && o.exit != nil && o.line.shape && commandKind(o.line.final) == "test" {
+			return *o.exit == 0 && !ranNothing(o)
 		}
 	}
 	return false

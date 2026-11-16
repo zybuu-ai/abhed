@@ -539,6 +539,29 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Answer checks refused correct claims on a real model. A command named in
+  a claim ("the tests were run using `python3 -m unittest tests.test_text`
+  and passed") was looked for only in tool output, never in the call that
+  ran it; an edit claim's file name was read as code that should have
+  changed; a `file:line` cite had to match the line almost exactly, and
+  was read from the file on disk rather than from the read the session
+  made; evidence given as `{"call_id", "quote"}` objects was dropped. On a
+  recorded review, 0 of 5 accurate, line-cited claims verified; on a
+  recorded correct fix, strict mode exited 8. A command is now shown by the
+  call that ran it, an edit claim by the session's own edit (what it took
+  away and put in), a `file:line` cite by the read's numbered lines within
+  three lines of the cite, "I fixed X" by the change to X and a test run
+  that passed after it, and evidence objects are read. Of the two real
+  answers' 24 statements, 12 now verify (2 did); the review's two
+  accurate cites with code at the cited lines verify, and the rest are
+  explanations or loose cites that stay unverified. Strict mode on these
+  two recorded answers still ends `unverified`, because each holds an
+  explanation the record cannot show ("the previous implementation
+  skipped the tail"). The false-claim corpus gains the two sessions'
+  statements (12 controls, 2 planted, 10 neutral), 4 more planted cases
+  and 1 control; none of the 986 planted claims verifies, all 268
+  controls do, and none of the 391 true or neutral claims is
+  contradicted.
 - A model reply that only reasons, with no text or tool call, is cut past
   `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
   request's thinking budget if larger), with `limits.reasoning_stall_seconds`

@@ -1270,3 +1270,24 @@ func TestRefusalIsNeverExternal(t *testing.T) {
 		t.Fatalf("footer %q", f)
 	}
 }
+
+// Evidence given as objects ({"call_id", "quote"}), as models often give
+// it, is read: the call id is cited, and the quote is used only when the
+// cited output holds it.
+func TestEvidenceObjects(t *testing.T) {
+	cs := parseClaims(json.RawMessage(`[{"text":"a","evidence":[{"call_id":"c1","quote":"OK"},{"seq":12}]},{"text":"b","evidence":{"id":"c2"}}]`))
+	if len(cs) != 2 || strings.Join(cs[0].Evidence, ",") != "c1,#12" || cs[0].hintQuote != "OK" || cs[0].Quote != "" ||
+		strings.Join(cs[1].Evidence, ",") != "c2" {
+		t.Fatalf("claims %+v", cs)
+	}
+	b := newRec(t)
+	b.call("c1", "bash", map[string]string{"command": "printf 'replicas: 3\\n'"}, "replicas: 3\n", exit(0))
+	ok := checkCited(t, b, Claim{Text: "There are 3 replicas.", Kind: KindObserved, Evidence: []string{"c1"}, hintQuote: "not in the output"})[0]
+	if ok.Verdict != ClaimVerified {
+		t.Fatalf("a quote the output lacks, given beside a citation, sank the claim: %+v", ok)
+	}
+	bad := checkCited(t, b, Claim{Text: "There are 3 replicas.", Kind: KindObserved, Evidence: []string{"c1"}, Quote: "not in the output"})[0]
+	if bad.Verdict == ClaimVerified {
+		t.Fatalf("a quote of the claim's own that the output lacks was ignored: %+v", bad)
+	}
+}

@@ -81,6 +81,9 @@ type facts struct {
 	theTests bool
 	// inclusive: it names a test as one among more ("including tests.test_new").
 	inclusive bool
+	// afterChange: it refers to the session's change as a time ("after the
+	// fix", "following the changes").
+	afterChange bool
 	// presentState: it says a piece of work is finished, in the present
 	// ("the issue is resolved", "the service is deployed").
 	presentState bool
@@ -311,6 +314,7 @@ func extractFacts(claim string) facts {
 	}
 	f.inclusive = inclusiveRe.MatchString(nlow)
 	f.presentState = presentStateRe.MatchString(nlow)
+	f.afterChange = afterChangeRe.MatchString(normText(backtickRe.ReplaceAllString(claim, " ")))
 	f.theTests = len(f.scope) == 0 && len(f.modules) == 0 && theTestsRe.MatchString(nlow) && !wholeSuiteRe.MatchString(nlow)
 	ranCmd := ranRe.MatchString(lower)
 
@@ -408,6 +412,8 @@ func extractFacts(claim string) facts {
 		}
 	}
 	nums := map[string]bool{}
+	// A list's own numbering ("to: 1. Change …. 2. Replace …") says nothing.
+	low = listNumberRe.ReplaceAllStringFunc(low, func(m string) string { return strings.Repeat(" ", len(m)) })
 	for _, m := range numberRe.FindAllStringIndex(low, -1) {
 		// A digit inside a word, as in sha256 or utf8, is not a number said.
 		if m[0] > 0 && isWordRune(rune(low[m[0]-1])) {
@@ -553,7 +559,7 @@ var (
 	// repoWideRe says the whole workspace.
 	repoWideRe = regexp.MustCompile(`\b(whole|entire|full) (repo|repository|codebase|project|workspace|tree)\b|\beverywhere\b|\ball files\b|\bacross the (repo|repository|codebase|project|workspace)\b|\brepo-wide\b`)
 	// oldNamedRe is code named as what a change replaced.
-	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replaced|swapped|renamed|changed|switched|converted|turned|moved)\\s+`([^`]+)`\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
+	oldNamedRe    = regexp.MustCompile("(?i)\\bfrom\\s+`([^`]+)`|\\b(?:replace[ds]?|swap(?:ped|s)?|rename[ds]?|change[ds]?|switch(?:ed|es)?|convert(?:ed|s)?|turn(?:ed|s)?|move[ds]?)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+[a-z]+){0,2}\\s+(?:to|with|for|into)\\b|\\binstead of\\s+`([^`]+)`")
 	anchorNamedRe = regexp.MustCompile("(?i)\\b(after|before|above|below|beneath|under|next to|beside|following)\\s+(?:the\\s+)?`([^`]+)`")
 	// inNamedRe is code named as where a change was made: "in `Sum`".
 	inNamedRe = regexp.MustCompile("(?i)\\b(?:in|inside|within|into|to)\\s+(?:the\\s+)?`([^`]+)`(?:\\s+(?:function|method|file|type|struct|package))?(?:[.,;:]|\\s+(?:so|to|with|because|and|for|which)\\b|$)")
@@ -573,8 +579,10 @@ var (
 	presentStateRe = regexp.MustCompile(`\b(?:is|are|has been|have been)\s+(?:now\s+|all\s+|properly\s+|fully\s+|correctly\s+|successfully\s+)*(?:resolved|fixed|deployed|merged|done|complete|completed|installed|configured|populated|built|registered|enabled|disabled|applied|handled|processed|released|shipped|updated|rolled out|in place|live|working|set up|wired|mounted)\b`)
 	// checkWordRe names a check that "passed to/through" may be said of.
 	checkWordRe = regexp.MustCompile(`\b(?:ci|build|builds|check|checks|pipeline|pipelines|review|reviews|lint|linter|linting|qa|gate|gates)\b`)
+	// listNumberRe is a numbered list's marker after a colon or a sentence.
+	listNumberRe = regexp.MustCompile(`(?:^|[:.]\s+)\d{1,2}[.)]\s`)
 	// passedOnRe is "passed" said of a value handed on, not of a check.
-	passedOnRe = regexp.MustCompile(`\bpass(?:es|ed)?\s+(?:\w+ly\s+)?(?:to|into|along|through|on to|down to|back to|as an? \w+|by reference|by value)\b`)
+	passedOnRe = regexp.MustCompile(`\bpass(?:es|ed|ing)?\s+(?:\w+ly\s+)?(?:the\s+(?:\w+\s+){0,3}?\w+\s+(?:to|into|from)\b|to|into|along|through|on to|down to|back to|in|as an? \w+|as (?:the|its|a) \w+|by reference|by value)\b`)
 	// inclusiveRe names a part as one among more.
 	inclusiveRe = regexp.MustCompile(`\b(?:including|incl|such as|as well as|along with|plus|besides|in addition to|among them|among others|e\.g)\b`)
 )

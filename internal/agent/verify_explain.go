@@ -253,6 +253,17 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 			continue // a time, not a thing an output says
 		}
 		w = w[strings.LastIndexByte(w, ' ')+1:]
+		// "I fixed the bugs in src/a.py": a fix is shown by the change to the
+		// file it names and a test run that passed after the last change.
+		if fixWords[w] && len(f.paths) > 0 && ix.passedAfterLastChange() {
+			allChanged := true
+			for _, p := range f.paths {
+				allChanged = allChanged && ix.changedPath(p).out == matched
+			}
+			if allChanged {
+				continue
+			}
+		}
 		said := false
 		for _, seq := range v.Evidence {
 			if o := ix.bySeq[seq]; o != nil && o.evidence().hasLiteral(w) {
@@ -265,3 +276,6 @@ func unsaid(ix *recordIndex, c Claim, v ClaimVerdict) string {
 	}
 	return ""
 }
+
+// fixWords say a fault is gone.
+var fixWords = wordSet(`fixed resolved solved addressed corrected patched`)

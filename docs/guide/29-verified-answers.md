@@ -618,9 +618,34 @@ counts (`12 tests`, `replicas: 3`). Then:
   deep): its results are evidence and its calls are changes, placed at the
   parent's entry for its return. Its runs do not show the workspace's tests
   passing, and its folder is not known.
-- **`file:line` cites are checked against the file now.** Text a cite quotes
-  must be on that line or the two either side; a cite the file does not hold
-  now leaves the statement unverified.
+- **`file:line` cites are checked against what a read showed.** The lines
+  of a current read of that file, as the read numbered them, come first; the
+  file as it is now is read only when no read of it is current. Code the
+  statement names must be within three lines of the cited one (models cite
+  a method's line for its class, a call's line for its result); one code
+  span there is enough, and the others are checked as any code is. A cite
+  further off, or of a file that cannot be read, leaves the statement
+  unverified.
+- **A command is shown by the call that ran it.** "The tests were run
+  using `python3 -m unittest tests.test_text` and passed" is matched to the
+  bash call whose command that is (or, for a test run, to the test names it
+  was given), and to that run's exit and output for the pass; text that only
+  appears inside a command's arguments ("`printf ok # replicas: 5`") shows
+  no value.
+- **Edits are read from the session's own edits.** A change claim that
+  names its file and the code it changed ("Changed `text.split(" ")` to
+  `text.split()`", "Replaced the `range` loop with a `while` loop") is
+  matched to the edit of that file, by what it took away and put in; code
+  the claim says was replaced is found in what the edit took away, not in
+  output after it. The file's own name and the tests a claim names are not
+  read as code that changed. "I fixed the bugs in `src/utils/text.py`" is
+  shown by a change to that file and a test run that passed after the last
+  change; "after the changes" or "following the fix" needs the session to
+  have changed something.
+- **Evidence may be given as objects.** A claim's `evidence` may list
+  `{"call_id": …, "quote": …}` as well as ids; such a quote is used only
+  when the cited output holds it. A later clause that opens with its verb
+  ("… and passed successfully") keeps the first clause's subject and code.
 
 A statement with nothing in it to compare ("the design is sound") is
 unverified, and so is general knowledge. These are not counted as about the
@@ -872,7 +897,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 980 plant a wrong claim. Some cite the result that shows them wrong
+session. 986 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -978,11 +1003,14 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 980
+tail, a port not listening, a file not in a response). Today none of the 986
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
-shows; the rest unverified), all 253 controls are verified,
-and none of the 368 true or neutral claims is contradicted. 19 of the
+shows; the rest unverified), all 268 controls are verified,
+and none of the 391 true or neutral claims is contradicted. Among the
+controls are the claims of two real sessions on a local model, recorded as
+they were given: a review that cited `file:line` and a fix checked in
+strict mode. 19 of the
 neutral ones are a line-by-line explanation of a function the session read,
 with an analogy; one of them counts as unverified work, an analogy that
 shares no word with the read (5 did before the rule), and no planted claim
