@@ -80,9 +80,10 @@ All notable changes to Abhed are recorded here. The format follows
   it. The note is judged only on what the person typed, not on attached files,
   Studio resources or piped stdin. It says to start subagents only when a
   parallel phrase, or subagents named as the doers, goes with reading or
-  analysis work such as review, audit or investigate; any other mention of
-  parallel work gets a note telling the model to ask one short question if it
-  is unclear which the person means. Neither is added when the message names
+  analysis work such as review, audit or investigate, and the phrase does not
+  describe how a program runs; any other mention of parallel work gets a note
+  telling the model to ask one short question if it is unclear which the
+  person means, except in a run nobody can answer, such as `-p`. Neither is added when the message names
   creating or changing code, building agents or the program's own concurrency
   (the whole list is in the parallel-subagents guide), in a subagent's task,
   or when no subagent could start. A `tasks` start now shows as one line naming each part (`3 in

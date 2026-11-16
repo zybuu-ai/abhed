@@ -318,6 +318,9 @@ type Loop struct {
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
 	Budget *Budget
+	// Unattended is set for a run nobody can answer, such as -p or a
+	// script: a note asking the model to ask the person is left out there.
+	Unattended bool
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu

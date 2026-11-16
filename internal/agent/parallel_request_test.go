@@ -341,6 +341,37 @@ func TestParallelTierHeldOutThirdReview(t *testing.T) {
 	})
 }
 
+// Held out from the fourth review: a parallel phrase that describes how a
+// program runs gets the note that asks, or none, never the strong one.
+func TestParallelTierHeldOutFourthReview(t *testing.T) {
+	checkParallelCases(t, []parallelCase{
+		{"check that the workers really run in parallel", clarify},
+		{"find out why the jobs no longer run at the same time", clarify},
+		{"read the files in parallel instead of one after another", clarify},
+		{"review whether the uploads can safely happen at once", clarify},
+		{"test the API with 50 requests at the same time", clarify},
+		{"look at how the orchestrator dispatches subagents and simplify it", clarify},
+		{"analyse why our subagents deadlock when they run side by side", clarify},
+		{"update the orchestrator to launch subagents in parallel", clarify},
+		{"have the retriever query both indexes in parallel", clarify},
+		{"our subagents keep timing out, investigate", clarify},
+		{"search the logs for when both cron jobs fired at once", clarify},
+		// The veto matches by stem.
+		{"do the three refactors at the same time", none},
+		{"keep refactoring these in parallel", none},
+		{"rewriting the three modules at once", none},
+		{"creating the reports side by side", none},
+		{"designing both screens at the same time", none},
+		{"enabled the fetches in parallel", none},
+		{"switching both services at once", none},
+		{"spawning the workers in parallel", none},
+		// Work the person wants done at once.
+		{"handle the three tickets at the same time", clarify},
+		{"use two subagents: one reads the RFC, one reads the spec", strong},
+		{"with subagents, research pricing for the three vendors", strong},
+	})
+}
+
 // noteLoop is a top-level loop on a scripted model, with tasks when withTasks.
 func noteLoop(t *testing.T, withTasks bool, budget *Budget) (*Loop, *scriptedAdapter, *MemStore) {
 	t.Helper()
@@ -560,6 +591,31 @@ func TestClarifyNoteGoesWithAnUnclearRequest(t *testing.T) {
 	for _, e := range evs {
 		if e.Type == EvUserMessage && !strings.Contains(string(e.Payload), "ask one short question") {
 			t.Fatalf("the record lacks the note: %s", e.Payload)
+		}
+	}
+}
+
+// A run nobody can answer gets no note asking a question; the strong note
+// still goes.
+func TestUnattendedRunGetsNoClarifyNote(t *testing.T) {
+	for _, tc := range []struct {
+		ask  string
+		want string
+	}{
+		{"do these three at the same time", ""},
+		{"review the three packages in parallel", ParallelNote},
+	} {
+		l, adapter, _ := noteLoop(t, true, nil)
+		l.Unattended = true
+		if _, err := l.RunMessage(context.Background(), Message{Text: tc.ask, Typed: tc.ask}); err != nil {
+			t.Fatal(err)
+		}
+		want := tc.ask
+		if tc.want != "" {
+			want += "\n\n" + tc.want
+		}
+		if got := lastSent(adapter); got != want {
+			t.Errorf("%q: sent %q", tc.ask, got)
 		}
 	}
 }

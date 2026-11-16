@@ -1011,6 +1011,8 @@ func (c *acpConn) buildAgent(s *acpSession, o openOptions) *rpcError {
 		ConfiguredTools: true,
 		// The configuration's turn limit binds, as it does from the terminal.
 		ConfiguredLimits: true,
+		// The person reads each answer in the editor and can reply.
+		Attended: true,
 		// Stdout is the protocol; what the tool set skipped goes to stderr.
 		Warn: warnf,
 		// Background tasks outlive a turn; a result that arrives between

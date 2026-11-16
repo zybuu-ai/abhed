@@ -42,11 +42,21 @@ notes after your message for the model.
   compare, research, analyse, explore, search, find, triage, test), the note
   says that unless you asked in so many words to change the program to run
   concurrently, the message means how the model does the work: split it into
-  independent parts and start them all at once with one `tasks` call.
+  independent parts and start them all at once with one `tasks` call. It is not
+  given when the phrase seems to describe how a program runs: when it comes
+  within three words after a verb for running (run, happen, execute, fire,
+  process, fetch, query, dispatch, load, deadlock, in any form), after a why,
+  whether, that, how or if clause, or with a sign of the program's own
+  concurrency (deadlock, workers, jobs, requests, "instead of", "rather than",
+  "one by one", "one after another", serially, sequentially). Those messages get
+  the note that asks.
 - **Ask.** Any other parallel phrase, or a mention of subagents, gets a note
   telling the model that if it is unclear whether you want independent pieces
   of work started as subagents or the program itself changed to run
-  concurrently, it should ask one short question before acting.
+  concurrently, it should ask one short question before acting. A run nobody
+  can answer, such as `abhed -p`, a script through the SDK or rpc, or an
+  unattended server run, never gets this note, since its question would only
+  end the run; the terminal, Studio and the console get it.
 
 The parallel phrases are "in parallel", "at the same time", "at once",
 "simultaneously", "side by side", "parallelize" (or "parallelise"), "fan out",
@@ -57,10 +67,11 @@ would send the model the wrong way, and a missed note costs nothing that
 `/parallel` cannot ask for outright:
 
 - a word for creating, changing or shipping code: build, deploy, implement, add,
-  make, refactor, write, rewrite, code, create, design (as in "design a" or
-  "design how"), switch, enable, "turn on", spawn, app, cluster, compose,
-  docker, CI, ETL, and "should" or "must" (which describe how a program
-  behaves);
+  make, write, code, app, cluster, compose, docker, CI, ETL, "turn on", and
+  "should" or "must" (which describe how a program behaves); and refactor,
+  rewrite, create, enable, switch and spawn in any form ("refactoring",
+  "rewrites", "creating", "enabled"), with design as a verb ("design a",
+  "designing");
 - the program's own concurrency: race, racy, goroutine, thread, thread-safe,
   threadpool, ThreadPoolExecutor, multiprocessing, async, asyncio, await,
   errgroup, rayon, `Promise.all`, mutex, lock, scheduler, worker pool, for loop,
@@ -75,7 +86,8 @@ only on what you typed, never on files you attach with `@`, resources attached
 in Studio or input piped into `-p`. They are added only in the session itself,
 never to a subagent's task, and only while a subagent could still start. The
 record keeps the note on the `user.message`, as `harness_note`, beside your own
-text, so a fork or a resume sends what the model was sent. A message queued or
+text (whichever of the two it was), so a fork or a resume sends what the
+model was sent. A message queued or
 steered while a turn runs is treated the same way.
 
 `/parallel <work>` says it outright, in the terminal, in Studio and after

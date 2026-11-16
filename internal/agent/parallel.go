@@ -297,13 +297,29 @@ var (
 	// codeWork names a change to code, the program's own concurrency, or a
 	// library or file that does it; it suppresses both notes.
 	codeWork = regexp.MustCompile(`(?i)\b(build|builds|building|deploy|deploys|deploying|implement|implements|` +
-		`add|adds|make|makes|refactor|write|rewrite|code|app|apps|cluster|compose|docker|should|must|` +
-		`create|creates|design\s+(a|an|the|how|our|my|your|new)|switch|enable|enables|turn on|spawn|spawns|ci|etl|multiprocessing|` +
+		`add|adds|make|makes|refactor\w*|write|rewrit\w*|code|app|apps|cluster|compose|docker|should|must|` +
+		`creat\w*|design(s|ed)?\s+(a|an|the|how|our|my|your|new)|designing|enabl\w*|switch\w*|turn on|spawn\w*|` +
+		`ci|etl|multiprocessing|` +
 		`race|races|racy|goroutines?|threads?|thread-?safe|threadpool|threadpoolexecutor|asyncio|async|await|` +
 		`errgroup|rayon|mutex(es)?|locks?|scheduler|worker[ -]?pools?|for[ -]loop|gpus?|connections?|connecting|` +
 		`test suite|tests in parallel|safe to (call|run|use))\b|promise\.all|` +
 		`\b[\w-]+\.(py|go|js|ts|tsx|jsx|rs|java|rb|c|cc|cpp|h|cs|kt|swift)\b|(^|\s)(-p\s*\d|-{1,2}parallel\b)`)
+	// programRunning says the parallel phrase describes how a program runs,
+	// not how the work is to be done: it comes within three words of a verb
+	// for running, after a why/whether/that/how/if clause, or with a sign of
+	// the program's own concurrency. It turns the strong note into the one
+	// that asks.
+	programRunning = regexp.MustCompile(`(?i)\b(run|runs|running|ran|happen|happens|happening|execute|executes|executing|` +
+		`fire|fires|fired|process|processes|processed|processing|fetch|fetches|fetched|fetching|query|queries|` +
+		`queried|querying|dispatch|dispatches|dispatched|dispatching|load|loads|loaded|loading|deadlock|deadlocks)` +
+		`(\s+\S+){0,3}\s+(` + phraseWords + `)`)
+	clauseBefore = regexp.MustCompile(`(?i)\b(why|whether|that|how|if)\b.*\b(` + phraseWords + `)`)
+	programSigns = regexp.MustCompile(`(?i)\b(deadlocks?|workers|jobs|requests|instead of|rather than|one by one|one after another|serially|sequentially)\b`)
 )
+
+// phraseWords are the parallel phrases, for the patterns that look at what
+// comes before one.
+const phraseWords = `in[ -]parallel|at the same time|at once|simultaneously|side[ -]by[ -]side`
 
 // noteTier is which note the person's own words get.
 type noteTier int
@@ -320,7 +336,8 @@ func parallelTier(typed string) noteTier {
 		return noNote
 	}
 	phrase := parallelPhrase.MatchString(typed)
-	if (phrase || subagentsDoing.MatchString(typed)) && readingWork.MatchString(typed) {
+	if (phrase || subagentsDoing.MatchString(typed)) && readingWork.MatchString(typed) &&
+		!programRunning.MatchString(typed) && !clauseBefore.MatchString(typed) && !programSigns.MatchString(typed) {
 		return strongNote
 	}
 	if phrase || subagentsNamed.MatchString(typed) {
@@ -359,7 +376,10 @@ func (l *Loop) parallelNote(typed string) string {
 	case strongNote:
 		return ParallelNote
 	case clarifyNote:
-		return ClarifyNote
+		// A question nobody can answer would end the run with it.
+		if !l.Unattended {
+			return ClarifyNote
+		}
 	}
 	return ""
 }

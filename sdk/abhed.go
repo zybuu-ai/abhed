@@ -171,6 +171,11 @@ type Options struct {
 	// trusted adds none of it.
 	ConfiguredTools bool
 
+	// Attended says a person reads each answer and can reply to it, as in an
+	// editor. Off, a note that asks the model to ask the person a question
+	// is left out, since nobody would answer it.
+	Attended bool
+
 	// Background is what background tasks do, with ConfiguredTools: "off"
 	// (the default) joins them, so Run returns when the work is done, as it
 	// always has; "notify" lets them outlive a Run, their results recorded
@@ -543,6 +548,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 
 	loop := agent.NewLoop(adapter, registry, pol, approver, sess, rec, loopCfg)
 	loop.Provider = cfg.Model.Default
+	loop.Unattended = !opts.Attended
 	if x.PlanExit {
 		loop.EnablePlanExit()
 	}

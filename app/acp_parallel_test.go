@@ -160,12 +160,20 @@ func TestHeadlessNoteOnlyOnTheTypedTask(t *testing.T) {
 	if u := evs["user.message"]; len(u) != 1 || u[0]["harness_note"] != agent.ParallelNote {
 		t.Fatalf("the typed request went without the note: %v", u)
 	}
+	// A -p run cannot answer a question, so the note asking one is left out.
+	evs, err, stderr = headlessEvents(t, "", "-p", "handle the three tickets at the same time")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, stderr)
+	}
+	if u := evs["user.message"]; len(u) != 1 || u[0]["harness_note"] != nil {
+		t.Fatalf("a -p run got the note that asks: %v", u)
+	}
 }
 
 // In Studio, an attached resource that speaks of parallel work raises no
 // note; the person's own words do.
 func TestStudioNoteOnlyOnTheTypedPrompt(t *testing.T) {
-	r := newStudioRig(t, "", say("ok"), say("ok"))
+	r := newStudioRig(t, "", say("ok"), say("ok"), say("ok"))
 	r.write("notes.md", "The workers run in parallel.")
 	id := r.open()
 	if res := r.promptBlocks(id, map[string]any{"type": "resource_link", "name": "notes.md",
@@ -179,8 +187,11 @@ func TestStudioNoteOnlyOnTheTypedPrompt(t *testing.T) {
 		t.Fatal("the attached file did not reach the model, so nothing was tried")
 	}
 	r.prompt(id, "review pkg/auth and pkg/store in parallel")
+	// In Studio the person can answer, so an unclear request gets the note that asks.
+	r.prompt(id, "handle the three tickets at the same time")
 	msgs, _ := r.recorded(id, agent.EvUserMessage)
-	if len(msgs) != 2 || msgs[0]["harness_note"] != nil || msgs[1]["harness_note"] != agent.ParallelNote {
+	if len(msgs) != 3 || msgs[0]["harness_note"] != nil || msgs[1]["harness_note"] != agent.ParallelNote ||
+		msgs[2]["harness_note"] != agent.ClarifyNote {
 		t.Fatalf("user.message notes: %v", msgs)
 	}
 }

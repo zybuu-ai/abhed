@@ -1719,7 +1719,7 @@ them.
 |---|---|---|
 | `session.started`, `session.ended` | system | reason on end |
 | `session.resumed` | system | `via`, `through_seq`, `workspace_trust` |
-| `user.message` | user | text; `steered?`; `harness_note?`, a note Abhed sent after the text |
+| `user.message` | user | text; `steered?`; `harness_note?`, a note Abhed sent after the text: the note to start subagents, or the note to ask first |
 | `agent.message`, `agent.delta` | agent | text |
 | `agent.reasoning`, `agent.reasoning.delta` | agent | text |
 | `action.requested` | agent | call_id, tool, args, subject, `rule?` |
