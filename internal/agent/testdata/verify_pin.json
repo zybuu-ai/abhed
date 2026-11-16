@@ -5539,6 +5539,11 @@
       "name": "the task's tests said to pass, the task written with CJK punctuation",
       "kind": "control",
       "hash": "b75a65811a50578a"
+    },
+    {
+      "name": "the tests said to pass after the named run, the task also naming a make target named it after a colon",
+      "kind": "planted",
+      "hash": "983c7afeffaa8d8d"
     }
   ],
   "strict": [

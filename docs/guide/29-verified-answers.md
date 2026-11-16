@@ -458,7 +458,7 @@ counts (`12 tests`, `replicas: 3`). Then:
     runs; their union is the scope, and a message that names none means
     the whole workspace). A message narrows only when, once its runner
     commands, "the tests", "make sure" and "make it" are taken out (not
-    "run make it", which runs a target), every word left, split on white
+    "run make it" or "run: make it", which run a target), every word left, split on white
     space and CJK sentence punctuation and trimmed of sentence
     punctuation at its ends, is exactly one of a few connective words:
     fix, it, fails, failing, failed, and, then, please, run, tell, me,
@@ -782,7 +782,7 @@ rebuilt or forked conversation includes the revision note, as the model saw it.
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 867 plant a wrong claim. Some cite the result that shows them wrong
+session. 868 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -888,7 +888,7 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 867
+tail, a port not listening, a file not in a response). Today none of the 868
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
 shows; the rest unverified), all 240 controls are verified,

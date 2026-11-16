@@ -39,6 +39,9 @@ type DebugLaunched struct {
 	// Loopback is set for a session on the process tier with loopback open
 	// to the debug command, on the person's agreement for the workspace.
 	Loopback bool `json:"loopback,omitempty"`
+	// Runner is the Node runner package the session ran (tsx, Vitest…), as
+	// found in the workspace.
+	Runner string `json:"runner,omitempty"`
 }
 
 // DebugStopped is the payload of debug.stopped.

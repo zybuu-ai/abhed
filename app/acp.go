@@ -232,6 +232,9 @@ type acpSession struct {
 	// thoughts is set once reasoning streamed as deltas, so its whole text
 	// that follows is not sent again.
 	thoughts bool
+	// engineCalls are the engine's diagnostics starts, by call id, with
+	// their command line, so a refusal is told as information.
+	engineCalls map[string]string
 	// totalIn and totalOut are the session's tokens, for usage_update.
 	totalIn, totalOut int
 	// dirty are the files with unsaved changes in the editor, by real path.
@@ -1324,6 +1327,21 @@ func (c *acpConn) prompt(msg rpcMessage) {
 	}
 	mentions = append(mentions, links.mentions...)
 	attached += links.text
+	used = 0
+	for _, m := range mentions {
+		used += int(m.Bytes)
+	}
+	resLinks, err := c.resourceMentions(ctx, s, text, mentionMaxBytes-used)
+	if err == nil && resLinks.why != "" {
+		err = errors.New(resLinks.why)
+	}
+	if err != nil {
+		end()
+		c.reply(msg.ID, nil, refusal(errPolicy, "%s", err.Error()))
+		return
+	}
+	mentions = append(mentions, resLinks.mentions...)
+	attached += resLinks.text
 	// What the person attached is recorded where it reaches the model.
 	withAttached := func(prompt string) string {
 		for _, m := range mentions {

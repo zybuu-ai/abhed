@@ -43,9 +43,27 @@ type pendingApproval struct {
 	approved bool
 	scope    string // the "always allow" scope sent with the answer
 	approver string // who sent the answer, when they signed in
+	// system, when set, is why the system answered rather than a person:
+	// the answer is recorded as the system's, with this reason.
+	system string
 	// ready is closed once DurableID is settled, answer when an answer is
 	// held, and final when the request is taken or ended.
 	ready, answer, final chan struct{}
+}
+
+// approvalDeadline is how long an ask waits for any answer before the
+// system denies it.
+var approvalDeadline = newTunable(ApprovalDeadline)
+
+// ApprovalDeadline is how long a session's ask waits for an answer before
+// the system denies it, whoever waits on it.
+const ApprovalDeadline = 30 * time.Minute
+
+func deadlineReason() string {
+	if d := approvalDeadline.Get(); d != ApprovalDeadline {
+		return "no answer within " + d.String()
+	}
+	return "no answer within 30 minutes"
 }
 
 // approvalReadyWait bounds how long an answer waits for its request's row.
@@ -391,7 +409,7 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 
 	// Started once, outside the loop: time.After inside it would restart the
 	// deadline on every poll tick and never fire.
-	deadline := time.NewTimer(30 * time.Minute)
+	deadline := time.NewTimer(approvalDeadline.Get())
 	defer deadline.Stop()
 
 	for {
@@ -410,11 +428,15 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			}
 			l.mu.Lock()
 			took := l.move(p, askTaken, false, "")
-			approved, scope, approver := p.approved, p.scope, p.approver
+			approved, scope, approver, system := p.approved, p.scope, p.approver, p.system
 			l.mu.Unlock()
 			if !took {
 				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
+			}
+			if system != "" {
+				agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: system})
+				return false, nil
 			}
 			// "Always allow" carries the scope back; remember it so the next call
 			// matching the same rule is not re-prompted.
@@ -439,10 +461,15 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			}
 			l.mu.Lock()
 			took := l.move(p, askTaken, approved, scope)
+			system := p.system
 			l.mu.Unlock()
 			if !took {
 				agent.NoteAnswer(ctx, agent.Answer{Held: true})
 				return false, ctx.Err()
+			}
+			if system != "" {
+				agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: system})
+				return false, nil
 			}
 			// Only an answer that chose "always allow" widens the session, and
 			// only to the scope this request offered.
@@ -461,12 +488,21 @@ func (l *liveSession) Approve(ctx context.Context, tool string, args json.RawMes
 			if approver == "anonymous" {
 				approver = ""
 			}
+			// DenyPending wrote the row, and the turn read it before the
+			// request was marked as the system's: it is the system's all the same.
+			if approver == systemApprover {
+				agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: "no answer within the job's approval timeout"})
+				return false, nil
+			}
 			agent.NoteAnswer(ctx, agent.Answer{By: agent.ByReviewer, Approver: approver, Granted: scope})
 			return approved, nil
 
 		case <-deadline.C:
 			// Fail closed: an unanswered approval must not become an approval.
-			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: "no answer within 30 minutes"})
+			agent.NoteAnswer(ctx, agent.Answer{By: agent.BySystem, Reason: deadlineReason()})
+			if l.onAskTimeout != nil {
+				l.onAskTimeout(p.RequestID, tool)
+			}
 			return false, nil
 		}
 	}

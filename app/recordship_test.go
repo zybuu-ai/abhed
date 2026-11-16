@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +27,8 @@ type fakeIntake struct {
 	auth []string
 	// slow, when set, delays the answer to the first batch after keeping it.
 	slow time.Duration
+	// removed answers every request as a server whose organisation removed the person.
+	removed bool
 }
 
 func (f *fakeIntake) head(id string) (int64, string) {
@@ -46,6 +49,13 @@ func prevHash(raw []byte) string {
 func (f *fakeIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.auth = append(f.auth, r.Header.Get("Authorization"))
+	if f.removed {
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized","reason":"your access to this deployment was revoked","access_removed":true}`))
+		return
+	}
 	if r.URL.Path == recordship.EventsPath {
 		f.mu.Unlock()
 		return
@@ -151,4 +161,60 @@ func TestRecordShipsToTheOrgServer(t *testing.T) {
 // left the session short when a pass happened to be in flight at close.
 func TestRecordShipsAfterAnAnswerLostAtClose(t *testing.T) {
 	shipThroughRecord(t, &fakeIntake{slow: 300 * time.Millisecond}, 50*time.Millisecond, "one", "two")
+}
+
+// When the org server says the person's access was removed, the session's run says so
+// once, plainly; the next session says so again as it starts; doctor fails on it; and
+// the record stays on this machine, unshipped.
+func TestRemovedAccessIsToldAndTheRecordKept(t *testing.T) {
+	srv := newOrgServer(t)
+	srv.policy = `{"record":{"ship":{"enabled":true}}}`
+	intake := &fakeIntake{held: map[string][][]byte{}, removed: true}
+	srv.records = intake
+	pf, p := orgClient(t, srv)
+	var out, errOut bytes.Buffer
+	if err := enrollOrgPolicy(context.Background(), pf, "org", p, enrolOptions{accept: true}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadOrg(t)
+	cfg.Record.Dir = filepath.Join(t.TempDir(), "records")
+	if _, _, ok := shipCheck(cfg); !ok {
+		t.Fatal("record.ship is not on")
+	}
+	const banner = "Your organisation access was removed"
+	first := captureStderr(t, func() {
+		rec, err := openRecord(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.CreateSession(context.Background(), store.SessionRecord{ID: "s-gone", User: "alice", Workspace: t.TempDir()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agent.NewRecorder(rec, "s-gone", "").Record(agent.EvUserMessage, agent.ActorUser, agent.Trusted, agent.Message{Text: "one"}); err != nil {
+			t.Fatal(err)
+		}
+		_ = rec.Close()
+	})
+	if strings.Count(first, banner) != 1 || !strings.Contains(first, "your access to this deployment was revoked") ||
+		strings.Contains(first, "shipped next time") {
+		t.Errorf("as it happened:\n%s", first)
+	}
+	next := captureStderr(t, func() {
+		rec, err := openRecord(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rec.Close()
+	})
+	if !strings.Contains(next, banner) {
+		t.Errorf("at the next session's start:\n%s", next)
+	}
+	if status, detail, _ := shipCheck(cfg); status != "fail" || !strings.Contains(detail, banner) {
+		t.Errorf("doctor: %s %s", status, detail)
+	}
+	intake.mu.Lock()
+	defer intake.mu.Unlock()
+	if len(intake.held["s-gone"]) != 0 {
+		t.Error("lines were shipped to a server that refused the person")
+	}
 }

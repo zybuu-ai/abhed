@@ -29,6 +29,7 @@ const (
 	KindK8s       = "k8s"
 	KindRAG       = "rag"
 	KindForge     = "forge"
+	KindHook      = "hook"
 )
 
 // RuleModel is the rule that allows the model client's own endpoint.

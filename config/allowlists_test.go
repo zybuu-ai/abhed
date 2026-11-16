@@ -310,3 +310,24 @@ func TestUntrustedWorkspaceListsOnlyNarrow(t *testing.T) {
 	refusedBy(t, cfg.ModelAllowed("gpt"), "model.allowed")
 	refusedBy(t, cfg.ModelAllowed("qwen"), "model.allowed")
 }
+
+// Continuing past the turn limit is allowed by limits.max_continues, but a
+// managed limits.max_turns binds the whole conversation unless the managed
+// file sets max_continues too.
+func TestContinuesAllowed(t *testing.T) {
+	if n := Default().ContinuesAllowed(); n != 3 {
+		t.Fatalf("default: %d", n)
+	}
+	withManaged(t, `{"limits": {"max_turns": 40}}`)
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := cfg.ContinuesAllowed(); n != 0 {
+		t.Fatalf("under a managed max_turns: %d", n)
+	}
+	withManaged(t, `{"limits": {"max_turns": 40, "max_continues": 1}}`)
+	if cfg, err = Load(t.TempDir()); err != nil || cfg.ContinuesAllowed() != 1 {
+		t.Fatalf("a managed max_continues: %v %d", err, cfg.ContinuesAllowed())
+	}
+}

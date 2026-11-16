@@ -541,7 +541,7 @@ var (
 	// proseWordRe is a plain word, which ends a runner command's arguments.
 	proseWordRe = regexp.MustCompile(`^[A-Za-z]+$`)
 	// runVerbRe ends with a word that runs what follows it.
-	runVerbRe = regexp.MustCompile(`\b(?:run|rerun|re-run|execute|exec)\s*$`)
+	runVerbRe = regexp.MustCompile(`\b(?:run|rerun|re-run|execute|exec)[\s:,]*$`)
 )
 
 // sentencePunct is trimmed from the ends of a word left in a message.

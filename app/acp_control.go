@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/secrets"
 	"github.com/zybuu-ai/abhed/internal/tools"
 	"github.com/zybuu-ai/abhed/internal/toolset"
 	"github.com/zybuu-ai/abhed/internal/ui"
@@ -706,7 +707,8 @@ func (c *acpConn) capabilities(msg rpcMessage) {
 	out["infra"] = map[string]any{"clusters": clusters, "ssh_hosts": hosts}
 	secretNames := []any{}
 	if names, err := openVault().Names(); err == nil {
-		for _, n := range names {
+		// Abhed's own values (an MCP login) are never offered for a rule.
+		for _, n := range slices.DeleteFunc(names, secrets.Held) {
 			secretNames = append(secretNames, map[string]any{"name": n})
 		}
 	}
@@ -997,44 +999,51 @@ func (c *acpConn) trustInspect(msg rpcMessage) {
 	}
 	out["commands"] = cmds
 	skills, servers := []any{}, []any{}
-	if st.File != "" {
-		if data, err := os.ReadFile(st.File); err == nil { // #nosec G304 -- the workspace file InspectWorkspace found
-			var f struct {
-				Skills struct {
-					Dirs []string `json:"dirs"`
-				} `json:"skills"`
-				MCP struct {
-					Servers []struct {
-						Name    string `json:"name"`
-						Command string `json:"command"`
-						URL     string `json:"url"`
-					} `json:"servers"`
-				} `json:"mcp"`
+	// Listed only from the content trust was decided on; a file changed since
+	// is flagged and its skills and servers are not shown.
+	_, contents, unchanged, _ := st.WorkspaceFiles()
+	if !unchanged {
+		contents = nil
+		if st.File != "" {
+			out["content_changed"] = true
+		}
+	}
+	for _, data := range contents {
+		var f struct {
+			Skills struct {
+				Dirs []string `json:"dirs"`
+			} `json:"skills"`
+			MCP struct {
+				Servers []struct {
+					Name    string `json:"name"`
+					Command string `json:"command"`
+					URL     string `json:"url"`
+				} `json:"servers"`
+			} `json:"mcp"`
+		}
+		if json.Unmarshal(data, &f) == nil {
+			for _, d := range f.Skills.Dirs {
+				dir := d
+				if !filepath.IsAbs(dir) {
+					dir = filepath.Join(p.Cwd, dir)
+				}
+				found, _ := filepath.Glob(filepath.Join(dir, "*", "SKILL.md"))
+				for _, sk := range found {
+					skills = append(skills, map[string]any{"name": filepath.Base(filepath.Dir(sk)), "dir": filepath.Dir(sk)})
+				}
 			}
-			if json.Unmarshal(data, &f) == nil {
-				for _, d := range f.Skills.Dirs {
-					dir := d
-					if !filepath.IsAbs(dir) {
-						dir = filepath.Join(p.Cwd, dir)
-					}
-					found, _ := filepath.Glob(filepath.Join(dir, "*", "SKILL.md"))
-					for _, sk := range found {
-						skills = append(skills, map[string]any{"name": filepath.Base(filepath.Dir(sk)), "dir": filepath.Dir(sk)})
-					}
+			for _, m := range f.MCP.Servers {
+				if !mcp.ValidServerName(m.Name) {
+					continue
 				}
-				for _, m := range f.MCP.Servers {
-					if !mcp.ValidServerName(m.Name) {
-						continue
-					}
-					v := map[string]any{"name": m.Name}
-					if m.Command != "" {
-						v["command"] = m.Command
-					}
-					if m.URL != "" {
-						v["url"] = m.URL
-					}
-					servers = append(servers, v)
+				v := map[string]any{"name": m.Name}
+				if m.Command != "" {
+					v["command"] = m.Command
 				}
+				if m.URL != "" {
+					v["url"] = m.URL
+				}
+				servers = append(servers, v)
 			}
 		}
 	}

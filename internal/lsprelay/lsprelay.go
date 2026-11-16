@@ -25,6 +25,16 @@ import (
 	"github.com/zybuu-ai/abhed/internal/foldkey"
 )
 
+// DefaultServers run where sandbox.language_servers names none for a
+// language: each from its language's toolchain extras.
+var DefaultServers = map[string][]string{
+	"go":         {"gopls"},
+	"python":     {"basedpyright-langserver", "--stdio"},
+	"typescript": {"typescript-language-server", "--stdio"},
+	"javascript": {"typescript-language-server", "--stdio"},
+	"rust":       {"rust-analyzer"},
+}
+
 // Bounds on what a server or an editor may send.
 const (
 	MaxMessage = 8 << 20

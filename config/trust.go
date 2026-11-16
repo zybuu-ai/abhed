@@ -64,6 +64,9 @@ type LoadOptions struct {
 type WorkspaceTrust struct {
 	Workspace string `json:"workspace"`
 	File      string `json:"file,omitempty"`
+	// LocalFile is the workspace's .abhed/config.local.json, when there is
+	// one; SHA256 then covers both files.
+	LocalFile string `json:"local_file,omitempty"`
 	SHA256    string `json:"sha256,omitempty"`
 	Trusted   bool   `json:"trusted"`
 	// Reason is none (no file), home (it is the user's own config), stored,
@@ -265,33 +268,95 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 	}
 	path := filepath.Join(workspace, ".abhed", "config.json")
 	data, opened, err := readWorkspaceConfig(workspace, path)
-	if errors.Is(err, os.ErrNotExist) {
-		return st, nil
-	}
-	if err != nil {
+	hasMain := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return st, err // it names the file and what to do
 	}
-	st.File, st.SHA256 = path, hashOf(data)
-	afterWorkspaceRead(path)
+	localPath := filepath.Join(workspace, ".abhed", LocalConfigName)
+	local, _, err := readWorkspaceConfig(workspace, localPath)
+	hasLocal := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return st, err
+	}
+	if !hasMain && !hasLocal {
+		return st, nil
+	}
+	var files []workspaceFile
+	if hasMain {
+		files = append(files, workspaceFile{path, data})
+		st.File = path
+		afterWorkspaceRead(path)
+	}
+	if hasLocal {
+		files = append(files, workspaceFile{localPath, local})
+		st.LocalFile = localPath
+		if !hasMain {
+			st.File = localPath
+		}
+	}
+	st.SHA256 = workspaceHash(files)
 	// The workspace is the home folder and the file read is the user's own:
 	// decided on the file opened, never by looking the name up again, which a
 	// swapped folder could redirect. Elsewhere the bytes are judged by hash.
-	if userFile != "" && isHome(workspace) && isUserFile(opened, userFile) {
+	if hasMain && userFile != "" && isHome(workspace) && isUserFile(opened, userFile) {
 		st.Trusted, st.Reason = true, "home"
+		if hasLocal {
+			return st, mergeTrustedWorkspace(cfg, files[1:])
+		}
 		return st, nil
 	}
 	st.Trusted, st.Reason = decide(st, o)
 	if st.Trusted {
-		auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
-		ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
-		servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
-		listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
-		network := cfg.Network.clone()
-		if _, err := mergeData(cfg, path, data); err != nil {
+		return st, mergeTrustedWorkspace(cfg, files)
+	}
+	for _, f := range files {
+		if err := tighten(cfg, f.path, f.data, &st); err != nil {
 			return st, err
 		}
-		// Trust does not reach these: a workspace never makes a managed-only
-		// setting, may only turn auto memory off, and may only import less deep.
+	}
+	return st, nil
+}
+
+// LocalConfigName is the workspace's own, uncommitted layer beside
+// .abhed/config.json, merged over it under the same trust.
+const LocalConfigName = "config.local.json"
+
+// workspaceFile is one of the workspace's configuration files as read.
+type workspaceFile struct {
+	path string
+	data []byte
+}
+
+// workspaceHash is what trust is keyed by: the one file's hash as before, or,
+// with a local layer, one hash over both, so neither changes unseen.
+func workspaceHash(files []workspaceFile) string {
+	if len(files) == 1 && filepath.Base(files[0].path) == "config.json" {
+		return hashOf(files[0].data)
+	}
+	var b []byte
+	for _, f := range files {
+		b = fmt.Appendf(b, "%s\x00%d\x00", filepath.Base(f.path), len(f.data))
+		b = append(b, f.data...)
+	}
+	return hashOf(b)
+}
+
+// mergeTrustedWorkspace merges trusted workspace files in order. Trust does
+// not reach these: a workspace never makes a managed-only setting, may only
+// turn auto memory off, and may only import less deep.
+func mergeTrustedWorkspace(cfg *Config, files []workspaceFile) error {
+	auto, depth, depthKey := cfg.Memory.Auto, cfg.Memory.ImportDepth, cfg.MemoryImportDepth()
+	ha, before, prior := cfg.ControlPlane.HA, slices.Clone(cfg.SetKeys), maps.Clone(cfg.origins)
+	servers, image := maps.Clone(cfg.Sandbox.LanguageServers), cfg.Sandbox.Image
+	listen, listenPorts := cfg.Sandbox.Listen, slices.Clone(cfg.Sandbox.ListenPorts)
+	diagnostics, diagMax, diagWait := cfg.Tools.Diagnostics, cfg.Tools.DiagnosticsMax, cfg.Tools.DiagnosticsWaitMS
+	network := cfg.Network.clone()
+	background := cfg.Server.Background
+	for _, f := range files {
+		path, data := f.path, f.data
+		if _, err := mergeData(cfg, path, data); err != nil {
+			return err
+		}
 		setAside(cfg, path, LayerWorkspace, data)
 		noteOrigins(cfg, path, LayerWorkspace, data)
 		keepHA(cfg, path, data, ha, before, prior)
@@ -300,7 +365,21 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 			func() { cfg.Network = network })
 		keepOperatorOnly(cfg, path, data, before, prior, "sandbox.image", "a workspace never names the image its commands run in",
 			func() { cfg.Sandbox.Image = image })
+		keepOperatorOnly(cfg, path, data, before, prior, "server.background", "a workspace never turns on background jobs or names where their notices go",
+			func() { cfg.Server.Background = background })
 		keepListen(cfg, path, data, before, prior, listen, listenPorts)
+		if orDefaultInt(cfg.Tools.DiagnosticsMax, 20) > orDefaultInt(diagMax, 20) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_max", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsMax = diagMax })
+		}
+		if orDefaultInt(cfg.Tools.DiagnosticsWaitMS, 3000) > orDefaultInt(diagWait, 3000) {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics_wait_ms", "a workspace may only lower the diagnostics bounds",
+				func() { cfg.Tools.DiagnosticsWaitMS = diagWait })
+		}
+		if diagnosticsRank[cfg.Tools.Diagnostics] < diagnosticsRank[diagnostics] {
+			keepOperatorOnly(cfg, path, data, before, prior, "tools.diagnostics", "a workspace may only turn diagnostics off",
+				func() { cfg.Tools.Diagnostics = diagnostics })
+		}
 		if cfg.Memory.Auto && !auto {
 			cfg.Memory.Auto = false
 			cfg.SetKeys = slices.DeleteFunc(cfg.SetKeys, func(k string) bool { return k == "memory.auto" })
@@ -313,9 +392,26 @@ func mergeWorkspace(cfg *Config, workspace, userFile string, o LoadOptions) (Wor
 			cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: path, Layer: LayerWorkspace, Key: "memory.import_depth",
 				Reason: "a workspace may only make imports shallower"})
 		}
-		return st, nil
 	}
-	return st, tighten(cfg, path, data, &st)
+	return nil
+}
+
+// WorkspaceFiles reads the workspace's configuration files again for a
+// person to review, and reports whether they still hold what was decided.
+func (st WorkspaceTrust) WorkspaceFiles() (paths []string, contents [][]byte, unchanged bool, err error) {
+	var files []workspaceFile
+	for _, p := range []string{st.File, st.LocalFile} {
+		if p == "" || (len(files) > 0 && p == files[0].path) {
+			continue
+		}
+		data, err := os.ReadFile(p) // #nosec G304 -- the workspace file loading found
+		if err != nil {
+			return nil, nil, false, err
+		}
+		files = append(files, workspaceFile{p, data})
+		paths, contents = append(paths, p), append(contents, data)
+	}
+	return paths, contents, len(files) > 0 && workspaceHash(files) == st.SHA256, nil
 }
 
 // MaxWorkspaceConfig bounds a workspace's .abhed/config.json, wherever it is read.
@@ -341,7 +437,7 @@ func readWorkspaceConfig(workspace, path string) ([]byte, os.FileInfo, error) {
 		return nil, nil, err
 	}
 	defer func() { _ = root.Close() }()
-	rel := filepath.Join(".abhed", "config.json")
+	rel := filepath.Join(".abhed", filepath.Base(path))
 	if fi, err := root.Lstat(rel); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		if _, err := root.Stat(rel); errors.Is(err, os.ErrNotExist) {
 			return nil, nil, fmt.Errorf("%s is a link that leads to no file; make it a plain JSON file, or remove it", path)
@@ -846,6 +942,7 @@ var workspaceRules = map[string]fieldRule{
 	"limits.nested_subagents":         {onlyFalse(func(c *Config) *bool { return &c.Limits.NestedSubagents }), "only false"},
 	"limits.max_background_subagents": {lowerOrZero(func(c *Config) *int { return &c.Limits.MaxBackgroundSubagents }), "only lower; zero allows none"},
 	"limits.background_shells":        {lowerOrZero(func(c *Config) *int { return &c.Limits.BackgroundShells }), "only lower; zero allows none"},
+	"limits.max_continues":            {lowerOrZero(func(c *Config) *int { return &c.Limits.MaxContinues }), "only lower; zero allows none"},
 	"limits.background_max_minutes":   {lower(func(c *Config) *int { return &c.Limits.BackgroundMaxMinutes }, zeroIs(60)), "only lower"},
 	"subagents.wake":                  {tighterWake, "only tighter: off < notify < auto"},
 	"subagents.max_wakes_per_hour":    {lowerOrZero(func(c *Config) *int { return &c.Subagents.MaxWakesPerHour }), "only lower; zero never wakes"},
@@ -855,6 +952,9 @@ var workspaceRules = map[string]fieldRule{
 	"tools.bash_checkpoints":      {onlyRequired, "only required"},
 	"tools.bash_checkpoint_mb":    {nil, "sets how much of the workspace is held in memory"},
 	"tools.bash_checkpoint_files": {nil, "sets how much of the workspace is held in memory"},
+	"tools.diagnostics":           {onlyDiagnosticsOff, "only off"},
+	"tools.diagnostics_max":       {lower(func(c *Config) *int { return &c.Tools.DiagnosticsMax }, zeroIs(20)), "only lower"},
+	"tools.diagnostics_wait_ms":   {lower(func(c *Config) *int { return &c.Tools.DiagnosticsWaitMS }, zeroIs(3000)), "only lower"},
 
 	"web_search.enabled":     {onlyFalse(func(c *Config) *bool { return &c.WebSearch.Enabled }), "only false"},
 	"web_search.max_results": {lower(func(c *Config) *int { return &c.WebSearch.MaxResults }, zeroIs(5)), "only lower"},
@@ -886,6 +986,7 @@ var workspaceRules = map[string]fieldRule{
 	"cli":                 {nil, "only the managed configuration sets it"},
 	"record":              {nil, "only the managed configuration sets it"},
 	"org_policy":          {nil, "only the managed configuration says where the org policy comes from"},
+	"hooks.run":           {nil, "a hook is a command or an endpoint that sees each event it takes"},
 	"hooks":               {nil, "only the managed configuration sets it"},
 	"studio":              {nil, "only the managed configuration sets it"},
 	"suggest.enabled":     {onlyFalse(func(c *Config) *bool { return &c.Suggest.Enabled }), "only false"},
@@ -1050,6 +1151,27 @@ func onlyRegistriesOff(dst, ws *Config) bool {
 	dst.Sandbox.ToolchainsRegistries = "off"
 	return true
 }
+
+// onlyDiagnosticsOff applies a workspace's tools.diagnostics only when it
+// turns diagnostics off: a server is a process started after an edit.
+func onlyDiagnosticsOff(dst, ws *Config) bool {
+	if ws.Tools.Diagnostics != "off" {
+		return false
+	}
+	dst.Tools.Diagnostics = "off"
+	return true
+}
+
+// orDefaultInt is n, or def when n is zero.
+func orDefaultInt(n, def int) int {
+	if n == 0 {
+		return def
+	}
+	return n
+}
+
+// diagnosticsRank orders tools.diagnostics from loosest to strictest.
+var diagnosticsRank = map[string]int{"on": 0, "": 1, "auto": 1, "off": 2}
 
 // listenRank orders sandbox.listen from loosest to strictest.
 var listenRank = map[string]int{"allow": 0, "": 1, "ask": 1, "off": 2}

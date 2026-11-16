@@ -17,6 +17,9 @@ var subjectors sync.Map // tool name -> Subjector
 // RegisterSubjector makes s name the policy subject of the tool called name.
 func RegisterSubjector(name string, s Subjector) { subjectors.Store(name, s) }
 
+// UnregisterSubjector forgets the Subjector of the tool called name.
+func UnregisterSubjector(name string) { subjectors.Delete(name) }
+
 // SubjectorFor is the Subjector registered for the tool called name, or nil.
 func SubjectorFor(name string) Subjector {
 	if s, ok := subjectors.Load(name); ok {

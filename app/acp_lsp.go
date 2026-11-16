@@ -42,13 +42,7 @@ func init() {
 
 // defaultLanguageServers run where sandbox.language_servers names none for
 // a language: each from its language's toolchain extras.
-var defaultLanguageServers = map[string][]string{
-	"go":         {"gopls"},
-	"python":     {"basedpyright-langserver", "--stdio"},
-	"typescript": {"typescript-language-server", "--stdio"},
-	"javascript": {"typescript-language-server", "--stdio"},
-	"rust":       {"rust-analyzer"},
-}
+var defaultLanguageServers = lsprelay.DefaultServers
 
 // defaultClientCapabilities are what the server is told an editor can do
 // when Studio names none.
