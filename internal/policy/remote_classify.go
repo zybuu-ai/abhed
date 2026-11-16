@@ -120,7 +120,8 @@ func judgeCall(words []string, piped, contents, findOK bool) string {
 		return ""
 	}
 	if !contents {
-		return name + " prints the contents of files, which runs unasked only where the operator sets ssh.read_contents"
+		return name + " prints the contents of files, which runs unasked on a declared host only where the operator sets " +
+			"ssh.read_contents: true (in the user or managed configuration) or lists the command in ssh.read_commands"
 	}
 	if name == "rg" && !slices.Contains(args, "--one-file-system") {
 		return "rg walks into any mount, a /proc among them; add --one-file-system"

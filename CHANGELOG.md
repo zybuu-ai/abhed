@@ -539,6 +539,20 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- `ssh_connect` called with the name of a host in `ssh.hosts` was asked
+  about, refused in `-p` as one that "can make changes", and offered
+  `-allow 'ssh_connect(app1)'`, which could never help: a declared name is
+  not for `ssh_connect`. It is now answered before any approval that the
+  host is ready for the `ssh` tool, and nothing is connected; `-p` names no
+  flag for it. The `ssh` tool's description lists the declared hosts as
+  ready with no connect needed, and `ssh_connect`'s says it is not for them.
+- A log read on a declared host (`tail`, `grep`, `cat`, …) without
+  `ssh.read_contents` was refused as "ssh can make changes". The reason now
+  says the program prints the contents of files, which runs unasked only
+  where the operator sets `ssh.read_contents: true` or lists the command in
+  `ssh.read_commands`; any other command a declared host asks for gives the
+  classifier's reason too. What runs unasked is unchanged. The SSH guide
+  shows `read_commands` entries for log reads, with what a `*` matches.
 - The SSH client refused a host that OpenSSH accepts when `known_hosts` held
   one key type for it, as `ssh` itself writes it. The client offered the
   library's own order of host key types (ecdsa before ed25519), so a server

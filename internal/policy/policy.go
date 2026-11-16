@@ -1280,6 +1280,9 @@ func (e *Engine) evaluate(ctx context.Context, tool string, mutates bool, args j
 		return Result{Decision: Allow, Reason: readOnlyReason(tool), Scope: "", Step: "default", Source: "mode"}
 	}
 	why := askReason(tool, e.Mode)
+	if remote != nil && !readOnly() && e.RemoteHosts != nil && e.RemoteHosts(remote.host) {
+		why = remoteAskReason(roWhy, e.Mode)
+	}
 	if gitRuns != "" {
 		why += " (" + gitRuns + ", so no allow rule with a wildcard approves it)"
 	}
@@ -1428,6 +1431,19 @@ func askReason(tool string, mode Mode) string {
 		what = "changing a file"
 	}
 	return fmt.Sprintf("%s needs approval in %s mode", what, mode)
+}
+
+// remoteAskReason is why an ssh call on a declared host asks: the reason the
+// read-only classifier gave, so a read refused for want of ssh.read_contents
+// says so instead of that it can make changes.
+func remoteAskReason(notRead string, mode Mode) string {
+	if mode == "" {
+		mode = ModeDefault
+	}
+	if strings.Contains(notRead, "ssh.read_contents") {
+		return fmt.Sprintf("%s, so it needs approval in %s mode", notRead, mode)
+	}
+	return fmt.Sprintf("ssh can make changes, so it needs approval in %s mode (not a read Abhed can prove: %s)", mode, notRead)
 }
 
 // suggestScope proposes a narrow "always allow" rule for the approval prompt.

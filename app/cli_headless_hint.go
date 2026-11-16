@@ -79,6 +79,9 @@ func (h *denialHints) hint(a agent.ActionRequested, d map[string]string) (flag, 
 		return "", "refused by a policy hook; no flag lifts it"
 	case step == "monitor":
 		return "", "refused by the supervisor; no flag lifts it"
+	case step == "precheck":
+		// The tool answered before anyone was asked; an allow would not change that.
+		return "", "the tool answered this call before it ran, as the reason says; it was not a permission question, and no flag changes it"
 	case step == "destructive":
 		return "", "this always asks for confirmation; run it interactively"
 	case step == "ask" && rule != "":

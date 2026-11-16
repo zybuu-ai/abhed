@@ -531,3 +531,32 @@ func TestReadCommandsLoadErrorNamesForms(t *testing.T) {
 		t.Errorf("sort -o: %v", err)
 	}
 }
+
+// A content read refused for want of ssh.read_contents says so, and how the
+// operator turns it on, instead of that it can make changes. What is allowed
+// does not move: it still asks, and a write still names the change.
+func TestRemoteContentAskNamesTheRule(t *testing.T) {
+	for _, mode := range []Mode{ModeDefault, ModeAcceptEdits} {
+		res := declared(mode).Evaluate("ssh", true, remoteCall("app1", "tail -n 100 /var/log/app/app.log"))
+		if res.Decision != Ask {
+			t.Fatalf("%s: a content read is no longer asked: %+v", mode, res)
+		}
+		for _, want := range []string{"tail prints the contents of files", "ssh.read_contents: true", "ssh.read_commands", string(mode) + " mode"} {
+			if !strings.Contains(res.Reason, want) {
+				t.Errorf("%s: reason %q lacks %q", mode, res.Reason, want)
+			}
+		}
+		if strings.Contains(res.Reason, "can make changes") {
+			t.Errorf("%s: a read is said to make changes: %q", mode, res.Reason)
+		}
+	}
+	res := declared(ModeDefault).Evaluate("ssh", true, remoteCall("app1", "systemctl restart app"))
+	if res.Decision != Ask || !strings.Contains(res.Reason, "can make changes") || !strings.Contains(res.Reason, "its read verbs are") {
+		t.Errorf("a change is not explained as one: %+v", res)
+	}
+	// An undeclared host is not judged by the classifier, so its reason is unchanged.
+	res = declared(ModeDefault).Evaluate("ssh", true, remoteCall("other", "tail -n 1 /x"))
+	if res.Decision != Ask || strings.Contains(res.Reason, "read_contents") {
+		t.Errorf("undeclared host: %+v", res)
+	}
+}

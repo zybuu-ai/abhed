@@ -396,10 +396,27 @@ missing slash, misspelled directory, space in the name — resolves correctly,
 because a path pasted into a chat is approximate and sending the agent hunting
 with `glob` through denied directories is worse than trying the obvious places.
 
-A host whose key is not in `known_hosts` is refused, and the refusal says to
-retry with `accept_host_key: true` **only if the user has said the host is new
-or ephemeral**. That is a deliberate line: the agent should not decide on its
-own to stop verifying the identity of a machine it is about to run commands on.
+A host whose key is not in `known_hosts` is refused. For a host
+`ssh_connect` added, the refusal says to retry with `accept_host_key: true`
+**only if the user has said the host is new or ephemeral**. That is a
+deliberate line: the agent should not decide on its own to stop verifying the
+identity of a machine it is about to run commands on. For a host in
+`ssh.hosts`, which has no such option, it gives the command that records the
+key, such as `ssh -p 2222 ops@db.internal`.
+
+Abhed asks the server for the key types `known_hosts` holds for that host and
+port first, as OpenSSH does, so a file holding only the ed25519 key `ssh`
+recorded is enough; it does not need every key type `ssh-keyscan` would
+list. Only a key on file is accepted. A key of a type on file that is not the
+key on file is refused as a mismatch, with no offer to accept it: the machine
+was rebuilt, or something is in the middle. Confirm the new key out of band
+before removing the old one with `ssh-keygen -R '[db.internal]:2222'`.
+
+`ssh_connect` is for a machine the user gives an address for. Called with the
+name of a host in `ssh.hosts`, it is answered at once, before any approval,
+that the host is ready for the `ssh` tool; nothing is connected. The `ssh`
+tool's description lists the declared hosts as ready, so the model need not
+connect first.
 
 **Every remote command requires approval unless it is provably a read.**
 A local `bash` call runs inside a sandbox with a workspace boundary and a
@@ -423,6 +440,23 @@ patterns for one simple command, matched on every host.
   "openssl x509 -enddate -noout -in /etc/nginx/tls/site.crt"
 ] }
 ```
+
+For incident triage on a host without `ssh.read_contents`, name the log reads
+you expect:
+
+```json
+"ssh": { "enabled": true, "read_commands": [
+  "tail -n 200 /var/log/app/app.log",
+  "tail -n * /var/log/app/app.log",
+  "grep -i * /var/log/app/app.log"
+] }
+```
+
+`*` matches any text, spaces included, so `tail -n * /var/log/app/app.log`
+also matches `tail -n 100 /etc/shadow /var/log/app/app.log`: each word is
+still checked as a read form of `tail`, but a content reader reads every
+file the call names. Where that matters, prefer exact entries such as the
+first one.
 
 A call whose command is one simple command matching an entry is a read: plan
 mode allows it, so a plan can start by inspecting the fleet, and no mode asks
@@ -621,6 +655,12 @@ it, keys included, into the session and so to the model's provider. Set
 `read_contents` only for hosts and accounts whose files may be read that
 way. Only the person's own file or the managed file sets it; a workspace and
 an org policy cannot.
+
+Without it, a content read on a declared host asks, and the reason says why:
+`tail prints the contents of files, which runs unasked on a declared host only
+where the operator sets ssh.read_contents: true (in the user or managed
+configuration) or lists the command in ssh.read_commands`. Nothing else
+changes: what runs unasked is the same either way.
 
 A command is a read only when all of these hold:
 
