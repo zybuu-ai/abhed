@@ -33,6 +33,7 @@ func TestEditionRefusesKeysItCannotHonour(t *testing.T) {
 		{"schedules", func(c *config.Config) {
 			c.Schedules = []config.ScheduleConfig{{Name: "n", Cron: "@daily", Prompt: "p"}}
 		}, "schedules", "Team"},
+		{"background", func(c *config.Config) { c.Server.Background.Enabled = true }, "server.background.enabled", "Team"},
 		{"ha", func(c *config.Config) { c.ControlPlane.HA.Enabled = true }, "control_plane.ha.enabled", "Enterprise"},
 		{"interceptors", func(c *config.Config) {
 			c.ControlPlane.Interceptors = []config.InterceptorConfig{{Name: "opa", Phase: "validate", URL: "https://opa"}}
@@ -63,8 +64,9 @@ func TestEditionRefusesKeysItCannotHonour(t *testing.T) {
 		WithAuthMode("oidc", func(context.Context, config.Config, string, auth.UserStore) (auth.Provider, auth.TokenVerifier, error) {
 			return nil, nil, nil
 		}),
-		WithFeature("schedules"), WithFeature("telemetry"), WithFeature("ha"), WithFeature("interceptors"), WithFeature("workload"), WithFeature("kubernetes"))
+		WithFeature("schedules"), WithFeature("telemetry"), WithFeature("ha"), WithFeature("interceptors"), WithFeature("workload"), WithFeature("kubernetes"), WithFeature("background"))
 	cfg := config.Default()
+	cfg.Server.Background.Enabled = true
 	cfg.ControlPlane.HA.Enabled = true
 	cfg.ControlPlane.Interceptors = []config.InterceptorConfig{{Name: "opa", Phase: "validate", URL: "https://opa"}}
 	cfg.Auth.Mode = "oidc"

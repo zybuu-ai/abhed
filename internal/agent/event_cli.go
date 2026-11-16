@@ -35,6 +35,9 @@ const (
 	EvModelFallback EventType = "model.fallback"
 	// EvHookFired is an extension hook's verdict; see HookFired.
 	EvHookFired EventType = "hook.fired"
+	// EvHookContinued is a stop hook's instruction, as the model was given
+	// it when the hook sent it back to work; see HookContinued.
+	EvHookContinued EventType = "hook.continued"
 	// EvRecordRepaired is a record whose torn end was cut off on open; see RecordRepaired.
 	EvRecordRepaired EventType = "record.repaired"
 	// EvConfigRefused is a setting that did not take effect as written, or a
@@ -43,7 +46,28 @@ const (
 	// EvConfigNarrowed is a web setting a layer below the managed
 	// configuration narrowed, as it may; see ConfigAttempt.
 	EvConfigNarrowed EventType = "config.narrowed"
+	// EvConfigChanged is an entry of ~/.abhed/config-changes.jsonl made since
+	// the last session recorded them, such as an MCP server added from Studio
+	// or a terminal; see ConfigChanged.
+	EvConfigChanged EventType = "config.changed"
 )
+
+// ConfigChanged is the payload of config.changed, as the change log has it.
+// The log is a file in the person's home, so its lines are recorded as
+// untrusted.
+type ConfigChanged struct {
+	Time    string `json:"time,omitempty"`
+	By      string `json:"by"`
+	Key     string `json:"key"`
+	Name    string `json:"name,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+	Refused string `json:"refused,omitempty"`
+	// Pending, on an entry of its own, is at least how many more lines wait
+	// in the log for the next session, when this one recorded as many as it
+	// takes (it counts only within the part of the log it read).
+	Pending int `json:"pending,omitempty"`
+}
 
 // ConfigAttempt is the payload of config.refused and config.narrowed: who
 // tried to change which setting, from where, to what, and what was decided.
@@ -93,8 +117,12 @@ const (
 // server's connection, and how it ended.
 type MCPStatus struct {
 	Server string `json:"server"`
-	Op     string `json:"op"`     // restart
-	Status string `json:"status"` // connected or error
+	Op     string `json:"op"`     // restart or remove
+	Status string `json:"status"` // connected or error; removed
+	// Kind and SHA256 are a removed server's transport and the hash of its
+	// entry, as the config change log has them.
+	Kind   string `json:"kind,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 	Error  string `json:"error,omitempty"`
 	By     string `json:"by"`
 }
@@ -193,11 +221,18 @@ type MemoryFile struct {
 	Path   string `json:"path"`
 	Scope  string `json:"scope"` // managed, user, project, local, subdirectory or rule
 	SHA256 string `json:"sha256"`
+	// Skipped is why a folder's file was not loaded: a read rule, say.
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // MemoryLoaded is the payload of memory.loaded.
 type MemoryLoaded struct {
 	Files []MemoryFile `json:"files"`
+	// Note says when folder memory stopped loading at its bound.
+	Note string `json:"note,omitempty"`
+	// Fence is the session's folder memory tag, so a resumed conversation
+	// keeps reading the blocks it holds as fenced.
+	Fence string `json:"fence,omitempty"`
 }
 
 // MemoryWritten is the payload of memory.written.
@@ -265,7 +300,24 @@ type ModelFallback struct {
 type HookFired struct {
 	Extension string `json:"extension"`
 	Event     string `json:"event"`
-	Verdict   string `json:"verdict"` // block, ask or annotate; never allow
+	// Verdict is block, ask, annotate or continue; a simple hook's run is
+	// also none (no objection) or error. Never allow.
+	Verdict string `json:"verdict"`
+	// The rest are a simple hook's: command or http, the layer it came
+	// from, why it decided or failed, its exit status, and how long it ran.
+	Kind       string `json:"kind,omitempty"`
+	Layer      string `json:"layer,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+}
+
+// HookContinued is the payload of hook.continued: the hook, and the exact
+// text the model read next, with the secrets withheld from it named.
+type HookContinued struct {
+	Hook            string `json:"hook"`
+	Text            string `json:"text"`
+	SecretsWithheld string `json:"secrets_withheld,omitempty"`
 }
 
 // RecordRepaired is the payload of record.repaired.

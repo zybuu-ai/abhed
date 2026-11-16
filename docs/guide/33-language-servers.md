@@ -200,6 +200,77 @@ messages are refused as "restarting" rather than lost. After the fifth, or
 when a restart is refused, Studio gets `status: ended`. Closing the session
 records `closed`.
 
+## Diagnostics after the agent's edits
+
+The agent gets a language server's diagnostics for each file its `write` or
+`edit` changed, in the CLI and in Studio alike, appended to the tool's
+result:
+
+```
+Created a.go (23 bytes, 3 lines).
+
+[gopls diagnostics for a.go: 1 errors, 0 warnings, 1 in all]
+a.go:3:9: error: undefined: y (compiler)
+```
+
+This is the server above, run by the engine rather than an editor: one per
+language per session, started on the first change to a file of that
+language, in the session's sandbox, with the engine's settings and
+`sandbox.language_servers` over the defaults. Its own requests are answered
+by the engine: settings are the engine's, an edit it asks for is not
+applied, nothing is opened. The engine sends the file's content as it is on
+disk after the change and takes the server's next report for it.
+
+| Setting | Default | |
+|---|---|---|
+| `tools.diagnostics` | `auto` | `auto` starts a server only where policy and the supervisor allow its command line outright, as a `bash` call (an allow rule such as `bash(gopls)`, or bypass mode); `on` also takes the setting as the answer to the plain ask a mode gives an unlisted command; `off` never |
+| `tools.diagnostics_max` | 20 | diagnostics given per file, most severe first (at most 200); the rest are counted |
+| `tools.diagnostics_wait_ms` | 3000 | how long an edit waits for them (at most 30000); a server not ready by then gives none for that edit |
+
+Nobody is asked: under `auto` in the default mode the start is an ask, so
+no server runs until an allow rule names it. Under `on`, only the plain ask
+a mode or the default gives an unlisted command is answered, and the
+PermissionRequest hooks (the managed file's too) hear it first and may
+refuse it; a deny rule, a rule's ask, a destructive or screening ask and the
+supervisor's word all hold. The supervisor reviews the start without
+counting it against `monitor.max_per_turn`; when it cannot answer in time,
+the start is refused for that edit only and the next edit asks again, three
+times at most before diagnostics for the language are off for the session. The
+start is recorded as the engine's call (`action.requested` with
+`via: diagnostics`, then `action.approved` with `by: policy` or
+`by: setting`, or `action.denied`), with its outcome as soon as the server
+is up; the server's end is `lsp.stopped`. A start a hard kill left open is
+closed when the session is next opened. The CLI shows it as a dim
+`· diagnostics: language server gopls started …` note, not as a call of the
+agent's; Studio shows a card titled `Language server: gopls` that completes
+when the server is up. A start that was not allowed completes as
+information, naming the allow rule (`bash(gopls)`) that would start it. It never enters the agent's conversation, and the
+answer checker does not count it as a change. Diagnostics are off, with nothing
+recorded, where commands have no sandbox, the server is not installed, or
+the file is not Go, Python, TypeScript, JavaScript or Rust. A
+`rust-analyzer.toml` in the workspace keeps rust-analyzer from starting
+(nobody is there to be asked), and one written while it runs stops it. A
+server that fails to start, or ends on its own three times, is off for the
+session. A workspace file, trusted or not, may only lower the bounds and
+turn diagnostics off (a trusted one may also choose `auto` over `on`).
+
+What the server reads is what the sandbox lets commands read: paths a `read`
+deny rule names are not hidden from it, and a compiler message can quote a
+value from such a file (a constant's text, a literal type), which then
+reaches the agent. That is no wider than an allowed `bash(go build *)`, but
+keep diagnostics `off`, or the server's command unallowed, where read rules
+guard values the sandbox does not hide. Likewise, what the server writes in
+the workspace (rust-analyzer's `cargo metadata` can update `Cargo.lock`) is
+not kept by bash checkpoints, so `/undo` does not take it back. Sessions of
+the server's web console get no diagnostics.
+
+Recorded: `lsp.started` (with `allowed_by`, `step`, and the `rule` and
+`layer` that allowed it) and `lsp.stopped`, both with `purpose: diagnostics` (not
+counted in `abhed_lsp_starts_total`), and `lsp.diagnostics` per change with
+the counts, `timed_out`, or `skipped` and why, counted in
+`abhed_lsp_diagnostics_total` by language and outcome. Subagents do not get
+diagnostics.
+
 ## Network
 
 A server works with what the sandbox can reach. With the network off,

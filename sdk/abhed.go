@@ -198,7 +198,11 @@ type Options struct {
 	// Reason is unverified. Verdict reports the last check.
 	Verify string
 	// VerifyByDefault labels answers when neither Verify nor verify.mode
-	// says otherwise, as the terminal does where a person reads the answer.
+	// says otherwise, as the terminal, abhed -p, abhed rpc and the server do.
+	// Unset, the SDK checks nothing unless asked: through 1.x an embedder's
+	// Run is not given a revision turn, or a changed answer, it did not ask
+	// for. Under label, a contradicted statement gets one revision turn (one
+	// more model call), and Run returns the revised answer.
 	VerifyByDefault bool
 
 	// Sandbox runs bash in the tier the configuration's sandbox section asks
@@ -404,7 +408,7 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 	if err := pol.AllowGitExtensions(cfg.Permissions.GitExtensions...); err != nil {
 		return nil, fmt.Errorf("abhed: permissions.git_extensions: %w", err)
 	}
-	if err := pol.AllowRemoteReads(cfg.SSH.ReadCommands...); err != nil {
+	if err := toolset.RemoteReads(pol, cfg); err != nil {
 		return nil, fmt.Errorf("abhed: %w", err)
 	}
 
@@ -557,9 +561,18 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 			opts.Warn("%s", s)
 		}
 	})
+	if set.Extensions != nil && rec != nil {
+		// Each hook that fires is recorded, as the CLI and the server record it.
+		set.Extensions.SetOnFired(func(f extension.Fired) {
+			if err := toolset.RecordFired(rec, f); err != nil && opts.Warn != nil {
+				opts.Warn("could not record a hook: %v", err)
+			}
+		})
+	}
 	loop.Budget = budget
 	// With no approver nobody answers an ask, so the supervisor's are denials.
 	loop.Monitor = toolset.Supervisor(cfg, registry, opts.Approve == nil)
+	loop.Diagnostics = toolset.Diagnostics(cfg, registry)
 	if opts.Suggest {
 		loop.Suggest = toolset.Suggester(cfg)
 	}
@@ -588,6 +601,9 @@ func New(ctx context.Context, opts Options) (*Agent, error) {
 		attempts := toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(sandbox.InAgentCommand()))
 		if err := toolset.RecordConfigAttempts(rec, attempts); err != nil {
 			return fail(fmt.Errorf("abhed: recording the configuration attempts: %w", err))
+		}
+		if err := toolset.RecordConfigChanges(rec); err != nil {
+			return fail(fmt.Errorf("abhed: recording the configuration changes: %w", err))
 		}
 		for _, g := range toolset.StartupRegistries(cfg, x.Surface) {
 			if _, err := rec.Record(agent.EvToolchainRegistry, agent.ActorSystem, agent.Trusted, g); err != nil {
@@ -959,6 +975,9 @@ func (a *Agent) Close() {
 	a.fwd.close()
 	a.set.Close()
 	a.loop.Session.CloseScoped()
+	if a.loop.Diagnostics != nil {
+		a.loop.Diagnostics.Close()
+	}
 	if a.unconfine != nil {
 		a.unconfine()
 	}

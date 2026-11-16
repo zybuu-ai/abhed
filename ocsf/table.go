@@ -49,6 +49,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSubagentBackgrounded: {fn: apiOther("Background"), classes: []int{6003}},
 	agent.EvSubagentNotice:       {fn: apiOther("Notice"), classes: []int{6003}},
 	agent.EvHookFired:            {fn: mapHook, classes: []int{6003}},
+	agent.EvHookContinued:        {fn: mapHookContinued, classes: []int{6003}},
 	agent.EvMCPStatus:            {fn: mapMCPStatus, classes: []int{6003}},
 	agent.EvOllamaPull:           {fn: mapOllama, classes: []int{6003}},
 	agent.EvToolchainInstall:     {fn: mapToolchain, classes: []int{6003}},
@@ -69,6 +70,7 @@ var table = map[agent.EventType]rule{
 	agent.EvSandboxPortContested: {fn: apiOther("Port contested"), classes: []int{6003}},
 	agent.EvLSPStarted:           {fn: apiOther("Language server start"), classes: []int{6003}},
 	agent.EvLSPStopped:           {fn: apiOther("Language server stop"), classes: []int{6003}},
+	agent.EvLSPDiagnostics:       {fn: apiOther("Language server diagnostics"), classes: []int{6003}},
 	agent.EvCompletionEnabled:    {fn: apiOther("Completion enabled"), classes: []int{6003}},
 	agent.EvCompletionSummary:    {fn: apiOther("Completion summary"), classes: []int{6003}},
 	agent.EvNextEditEnabled:      {fn: apiOther("Next edit enabled"), classes: []int{6003}},
@@ -112,11 +114,13 @@ var table = map[agent.EventType]rule{
 	agent.EvStartupTrusted:       {fn: configChange, classes: []int{5019}},
 	agent.EvConfigRefused:        {fn: mapConfigAttempt, classes: []int{5019}},
 	agent.EvConfigNarrowed:       {fn: mapConfigAttempt, classes: []int{5019}},
+	agent.EvConfigChanged:        {fn: mapConfigChanged, classes: []int{5019}},
 	agent.EvApprovalScopeGranted: {fn: configChange, classes: []int{5019}},
 	agent.EvWorkspaceDirAdded:    {fn: configChange, classes: []int{5019}},
 	agent.EvSandboxBound:         {fn: configChange, classes: []int{5019}},
 	agent.EvFenceQualified:       {fn: configChange, classes: []int{5019}},
 	agent.EvWakeSet:              {fn: configChange, classes: []int{5019}},
+	agent.EvTurnsExtended:        {fn: mapTurnsExtended, classes: []int{5019}},
 
 	// Judgements and integrity: Detection Finding.
 	agent.EvMonitorVerdict:       {fn: mapMonitor, classes: []int{2004}},
@@ -377,15 +381,28 @@ func mapHook(b *builder) {
 	b.actor(b.str("extension"))
 	b.api(b.str("event"), "")
 	switch b.str("verdict") {
-	case "block":
+	case "block", "halt":
 		b.decision(false, 2)
 		b.severity(3)
-	case "annotate", "ask":
+	case "annotate", "ask", "continue", "none":
 		b.profile("security_control")
 		b.set("action_id", 3)
 		b.set("action", "Observed")
+	case "error":
+		b.status(2, "", b.str("reason"))
 	}
 	b.set("message", "hook "+b.str("extension")+": "+b.str("verdict"))
+}
+
+// mapHookContinued is a stop hook sending the agent back to work.
+func mapHookContinued(b *builder) {
+	b.classify(6003, 99, "Hook")
+	b.actor(b.str("hook"))
+	b.api("stop", "")
+	b.profile("security_control")
+	b.set("action_id", 3)
+	b.set("action", "Observed")
+	b.set("message", "hook "+b.str("hook")+": continue")
 }
 
 func mapMCPStatus(b *builder) {
@@ -651,6 +668,24 @@ func configChange(b *builder) {
 	b.set("message", strings.TrimSpace(string(b.l.Type)+" "+b.str("to")))
 }
 
+// mapTurnsExtended is a person raising a run's turn limit: who, the old and
+// new limit, which continuation of how many it was, and where it was asked.
+func mapTurnsExtended(b *builder) {
+	b.classify(5019, 1, "Log")
+	b.device()
+	b.actor(b.str("by"))
+	from, _ := b.num("from")
+	to, _ := b.num("to")
+	n, _ := b.num("count")
+	most, _ := b.num("max")
+	msg := "turns.extended " + strconv.FormatInt(from, 10) + " to " + strconv.FormatInt(to, 10) +
+		" (" + strconv.FormatInt(n, 10) + " of " + strconv.FormatInt(most, 10) + ")"
+	if surface := b.str("surface"); surface != "" {
+		msg += " via " + surface
+	}
+	b.set("message", msg)
+}
+
 func mapConfigAttempt(b *builder) {
 	configChange(b)
 	if b.l.Type == agent.EvConfigRefused {
@@ -660,6 +695,28 @@ func mapConfigAttempt(b *builder) {
 		b.status(1, "", b.str("reason"))
 	}
 	b.set("message", string(b.l.Type)+" "+b.str("key")+": "+b.str("decision"))
+}
+
+// mapConfigChanged is an entry of the person's change log: the key, server
+// and who changed it in the message, and a refused attempt as a failure. The
+// entry's hash stays in the payload: Device Config State Change has no
+// resources.
+func mapConfigChanged(b *builder) {
+	configChange(b)
+	msg := strings.TrimSpace(string(b.l.Type) + " " + b.str("key") + " " + b.str("name"))
+	if by := b.str("by"); by != "" {
+		msg += " (" + by + ")"
+	}
+	if n, ok := b.num("pending"); ok && n > 0 {
+		msg += ": at least " + strconv.FormatInt(n, 10) + " pending"
+	}
+	b.set("message", msg)
+	if r := b.str("refused"); r != "" {
+		b.status(2, "", r)
+		b.severity(2)
+	} else {
+		b.status(1, "", "")
+	}
 }
 
 // finding is a Detection Finding at severity sev, titled title.

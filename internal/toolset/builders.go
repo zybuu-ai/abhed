@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -20,6 +22,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
@@ -41,6 +44,35 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 		})
 	}
 	return out
+}
+
+// MCPAuthorize gives each URL server the login abhed mcp login kept in
+// store, bound to the server's name and URL; nil for a server with none.
+func MCPAuthorize(store *secrets.Store) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, hc *http.Client) (mcp.Authorizer, error) {
+		a, err := mcpauth.Load(store, cfg.Name, cfg.URL, hc)
+		if a == nil || err != nil {
+			return nil, err
+		}
+		return a, nil
+	}
+}
+
+// ErrMCPLoginsPerAccount is a server whose accounts each have their own
+// secrets: an MCP server's OAuth login is the operator's, and a gateway its
+// sessions share would have every account act as the operator.
+var ErrMCPLoginsPerAccount = errors.New("OAuth logins aren't available per account yet: on a server where accounts sign in, " +
+	"a login would let every account act as the operator, so it is not used")
+
+// MCPLoginsWithheld uses no login: a URL server that has one in store is
+// refused, with why, rather than reached without it or with the operator's.
+func MCPLoginsWithheld(store *secrets.Store, why error) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, _ *http.Client) (mcp.Authorizer, error) {
+		if in, _, _, err := mcpauth.Status(store, cfg.Name, cfg.URL); in || err != nil {
+			return nil, fmt.Errorf("it has an OAuth login (abhed mcp login): %w", why)
+		}
+		return nil, nil
+	}
 }
 
 // MCPAdmit is the gateway's check of every server against the
@@ -271,11 +303,20 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 				warn("ssh host %q skips host key verification — it cannot detect a machine-in-the-middle", h.Name)
 			}
 		}
+		// Every name in ssh.hosts stays the operator's, loaded or not:
+		// ssh_connect may not put a machine of its own behind one.
+		declared := make([]string, 0, len(cfg.SSH.Hosts))
+		for _, h := range cfg.SSH.Hosts {
+			declared = append(declared, h.Name)
+		}
 		reg, errs := remote.NewRegistry(hosts)
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil,
+			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(),
+			MaxTimeout:   time.Duration(cfg.SSH.MaxTimeoutSeconds) * time.Second, Secret: secret},
+			remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts, Declared: declared})
 		if cfg.SSH.Transfers {
 			// Held in memory whole, so bounded at 1 GiB whatever is configured.
 			limit := int64(min(max(cfg.SSH.TransferMaxMB, 0), 1024)) << 20

@@ -104,6 +104,55 @@ order:
 | Auto | the agent's own notes, when auto memory is on (below) |
 | Managed | `/etc/abhed/ABHED.md`, last, so nothing after it overrides it |
 
+### A folder's own ABHED.md
+
+An `ABHED.md` in a folder below the workspace root is not in the system
+prompt. It is loaded the first time the agent works in that folder: the
+first read, edit, write or search of a path there brings in that folder's
+`ABHED.md` and those of the folders between it and the root. Paths are taken
+from the tool's `path`, `file_path`, `dir`, `directory` and `cwd` arguments;
+a `cd` inside a shell command does not count.
+
+The file is added to the end of that tool result between `<folder-memory-…>`
+tags whose name ends in a random fence drawn for the conversation, which no
+file or command can know, and its text is redacted as any tool result is.
+Once a folder's file has loaded, the system prompt gains a short paragraph
+naming that fence and saying what such a block is: project memory for that
+folder, with the standing of the workspace's `ABHED.md`, below you, the
+managed memory and every rule, and never a permission. Anything in tool
+output that imitates the tag, in any case, with up to 64 separators between
+the words, zero-width, full-width or combining characters, look-alike
+Cyrillic or Greek letters, digits for letters, or another angle bracket
+(`‹`, `〈`, `⟨`, `＜`), is escaped with a backslash, in every session and
+subagent and in background results too, whatever comes before the `<` and
+with any punctuation after it. Code is told apart only where the two words
+touch, as in an identifier: a generic type such as `List<FolderMemory>` or
+Go's `<-folderMemory` is left as it is, and so is an HTML comment's `<!--`.
+A tag after an odd number of backslashes is escaped already, so a subagent's
+result passed on is not escaped twice; after an even number it is escaped. A
+file that really contains `<folder-memory-` is shown with a `\` before the
+`<`: an edit copied from that view must leave the backslash out of its old
+text. Adding the paragraph changes the system prompt once, so the model
+provider's prompt cache starts again from that turn.
+
+Each folder's file is loaded once per conversation, and at most 32 files in
+all; when that bound stops one, the result and the record say so. The
+conversation records `memory.loaded` with scope `subdirectory`, the path and
+its SHA-256, and the text is part of the recorded tool result, so a resumed
+or branched conversation has it and does not load it twice. After a
+compaction, which may summarise it away, each folder's file loads again the
+next time the folder is used.
+
+The same read rules hold as for the root's files, and a read rule that asks
+keeps a memory file out as a deny does: nobody is there to say yes while
+memory loads, so the file is not read, and the result and the record name it
+and why. `.abhed` and `.git` are never searched. The default configuration
+asks before the agent writes or edits any `ABHED.md` (`write(**/ABHED.md)`,
+`edit(**/ABHED.md)`). A shell command the session allows (`cp`, `git
+checkout`, `git pull`) can still create one, and it is loaded the next time
+its folder is used. The interactive CLI and `-p` load these files; subagents
+do not, and `-bare` turns them off.
+
 `AGENTS.md` is read only in a directory that has no `ABHED.md`, and
 `/memory` labels it so. No other tool's files are read. To bring one in, use
 `/import <path>`: it shows the file and appends it to `ABHED.md` only if you
@@ -120,7 +169,9 @@ case, `agents.md` is not `AGENTS.md`.
 
 A workspace memory file came with the repository, so it is read as the file
 tools read: never through a link out of the workspace or into Abhed's state,
-and not where a read deny rule forbids it. A file over 4 MiB is skipped.
+and not where a read deny rule forbids it, or a read rule asks about it
+(nobody is there to say yes while memory loads; start-up warns about each
+such file). A file over 4 MiB is skipped.
 
 ### Imports
 
@@ -167,7 +218,13 @@ scoped rule when it works on matching files.
 ### /memory
 
 `/memory` lists every file, its scope, size and hash, and why any file was
-not loaded. `/memory show <n>` prints one. Each conversation records
+not loaded. `/memory show <n>` prints one. `/memory edit <project|local|user>` opens that
+file in `$VISUAL` or `$EDITOR` (vi if neither is set) and saves what you
+write: a workspace file as your write, under the same rules and `/undo` as a
+note, `~/.abhed/ABHED.md` under your home. The text is redacted, and a saved
+edit is recorded as `memory.written` with kind `edit`. It needs the terminal;
+on one whose input cannot be polled (Windows) use `# <note>` or edit the file
+yourself. Each conversation records
 `memory.loaded` with the path, scope and SHA-256 of every file its prompt
 carries.
 

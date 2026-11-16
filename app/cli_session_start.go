@@ -221,6 +221,9 @@ func findSession(ctx context.Context, st *cliState, f sessionFlags, say func(str
 		return "", nil, fmt.Errorf("session %s has no events", id)
 	}
 	if unverified != "" {
+		if err := st.mayBranch(events); err != nil {
+			return "", nil, err
+		}
 		// Nothing more is written into a record that fails: going on from it
 		// is a fork into a new session, which names it and why.
 		newID, err := copyBranch(ctx, st.store, st.appCfg, id, events, 0, unverified, true)
@@ -300,6 +303,9 @@ func fromFile(ctx context.Context, st *cliState, path string, say func(string, .
 	}
 	if len(events) == 0 {
 		return "", nil, fmt.Errorf("%s holds no events", path)
+	}
+	if err := st.mayBranch(events); err != nil {
+		return "", nil, err
 	}
 	newID, err := copyBranch(ctx, st.store, st.appCfg, events[0].SessionID, events, 0, unverified, true)
 	if err != nil {
@@ -605,10 +611,12 @@ func (c *cliState) ui() ui.Surface {
 // headlessSession is the session a -p run writes: a new one, or with -c or
 // -r the one it names, claimed and rebuilt; with --fork-session, or from a
 // file outside the record, a branch of it. seed puts the rebuilt
-// conversation on the run's loop.
-func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loop), error) {
+// conversation on the run's loop. continueOnly is a run with no task: a
+// conversation that cannot be continued is refused before a branch is made.
+func headlessSession(ctx context.Context, st *cliState, continueOnly bool) (string, func(*agent.Loop), error) {
 	f := startFlags
 	sessionWorkspace = st.workspace
+	st.continueOnly = continueOnly
 	none := func(*agent.Loop) {}
 	if !f.resuming() {
 		id := newConversationID()
@@ -628,6 +636,9 @@ func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loo
 	case copied:
 		return seeded(st.store, from)
 	case f.Fork:
+		if err := st.mayBranch(events); err != nil {
+			return "", nil, err
+		}
 		id, err := copyBranch(ctx, st.store, st.appCfg, from, events, 0, "", false)
 		if err != nil {
 			return "", nil, err
@@ -649,6 +660,15 @@ func headlessSession(ctx context.Context, st *cliState) (string, func(*agent.Loo
 	return seeded(st.store, from)
 }
 
+// mayBranch is nil unless this run only continues and events cannot be
+// continued: then nothing is branched, and the refusal says why.
+func (st *cliState) mayBranch(events []agent.Event) error {
+	if !st.continueOnly {
+		return nil
+	}
+	return agent.ContinueRefusal(events, st.appCfg.ContinuesAllowed())
+}
+
 // seeded reads session id and rebuilds it on the run's loop, as a resume does.
 func seeded(es server.EventStore, id string) (string, func(*agent.Loop), error) {
 	events, err := es.Events(id)
@@ -661,6 +681,8 @@ func seeded(es server.EventStore, id string) (string, func(*agent.Loop), error) 
 		loop.Recorder.Advance(events[len(events)-1].Seq)
 		loop.SetHistory(msgs, end.Turns)
 		loop.CarryUsage(end)
+		loop.NoteContinues(events) // the bound on continuing holds across processes
+		loop.NoteFolderMemory(events)
 		loop.Budget.Carry(agent.CarriedSpend(events))
 	}, nil
 }

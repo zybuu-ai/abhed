@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/tools"
@@ -115,11 +116,18 @@ type Gateway struct {
 	// program Admit was shown, resolved once on its own PATH, rather than
 	// letting the launch look the command up again.
 	PinProgram bool
-	calls      serverCallers
+	// Authorize, when set, gives a URL server's OAuth login, or nil when it
+	// has none; hc reaches its token endpoint under this gateway's egress.
+	Authorize func(cfg ServerConfig, hc *http.Client) (Authorizer, error)
+	calls     serverCallers
+	// reads are the read_resource tools offered, by server; under mu.
+	reads map[string]*resourceTool
 }
 
+// NewGateway makes a gateway; Close must be called when it is done with, or
+// the read_resource names it offered stay judged for the process's life.
 func NewGateway() *Gateway {
-	return &Gateway{clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
+	return &Gateway{reads: map[string]*resourceTool{}, clients: make(map[string]*Client), configs: make(map[string]ServerConfig), failed: map[string]error{}, overlaps: map[string]string{}, refused: map[string]refusal{}, pending: map[string]bool{}, policyRefused: map[string]bool{}}
 }
 
 // ErrNotAdmitted wraps Admit's refusal of a server.
@@ -250,6 +258,19 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 		if g.Admit != nil {
 			hc.CheckRedirect = g.redirectCheck(cfg)
 		}
+		if g.Authorize != nil {
+			// The token endpoint is reached as the server is, and never by a redirect.
+			tc := &http.Client{Timeout: 30 * time.Second, Transport: &egress.Transport{Kind: egress.KindMCP, Guard: g.Egress},
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			auth, err := g.Authorize(cfg, tc)
+			if err != nil {
+				return err
+			}
+			if auth != nil && hasAuthorization(headers) {
+				return ErrBothAuth
+			}
+			hc.Auth = auth
+		}
 		transport, err = NewHTTPTransport(life, hc)
 	} else {
 		transport, err = g.startStdio(life, cfg)
@@ -260,6 +281,9 @@ func (g *Gateway) connectOne(life, ctx context.Context, cfg ServerConfig) error 
 	client := NewClient(cfg.Name, transport)
 	if err := client.Initialize(ctx); err != nil {
 		_ = client.Close()
+		if errors.Is(err, ErrUnauthorized) {
+			return fmt.Errorf("%w; if it signs in with OAuth, run abhed mcp login %s", err, cfg.Name)
+		}
 		return err
 	}
 
@@ -318,6 +342,8 @@ type ServerStatus struct {
 	Connected bool
 	Err       error
 	Tools     []string // the tools it offers that are allowed, by remote name
+	// Resources is set for a connected server that offers resources.
+	Resources bool
 	// Refused are the tools it offers that were left out for their names, as
 	// it sent them: untrusted text, for showing escaped.
 	Refused []string
@@ -361,6 +387,7 @@ func (g *Gateway) Servers() []ServerStatus {
 		}
 		if c, ok := g.clients[name]; ok {
 			st.Connected = true
+			st.Resources = c.Resources()
 			st.Refused = slices.Clone(c.Refused())
 			for _, d := range c.Tools() {
 				if allowed(cfg, d.Name) {
@@ -469,6 +496,7 @@ func (g *Gateway) Tools() []tools.Tool {
 				schema:      def.InputSchema,
 			})
 		}
+		out = append(out, g.resourceTools(server, cfg, client)...)
 	}
 	return out
 }
@@ -493,6 +521,10 @@ func (g *Gateway) Close() {
 		_ = c.Close()
 	}
 	g.clients = map[string]*Client{}
+	for server, t := range g.reads {
+		delete(g.reads, server)
+		withdrawRead(t.Name(), g)
+	}
 }
 
 // Status reports connected servers and their tool counts, for `abhed doctor`.

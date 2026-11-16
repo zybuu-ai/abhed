@@ -134,6 +134,8 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `limits.background_max_minutes`, `subagents.wake_max_turns` | **applied** only when lower; zero means the default (60 and 8) |
 | `subagents.wake` | **applied** only when tighter (off < notify < auto) |
 | `tools.syntax_check` | **applied** only when stricter (off < report < refuse) |
+| `tools.diagnostics` | **applied** only when `off`; a trusted workspace may also choose `auto` over `on`, never `on` |
+| `tools.diagnostics_max`, `tools.diagnostics_wait_ms` | **applied** only when lower, trusted or not |
 | `verify.mode` | **applied** only when stricter (off < label < strict), and unset counts as `label`, so a workspace never turns labels off |
 | `verify.answer_tool` | **applied** only when true |
 | `verify.contract.protect` | **applied**, added to the protected files already there |
@@ -144,6 +146,9 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `web_search.enabled`, `web_fetch.enabled`, `k8s.enabled`, `k8s.allow_writes`, `ssh.enabled`, `ssh.transfers` | **applied** only when false; the web ones are managed only, so trust never turns them on (below) |
 | `web_search.max_results`, `web_fetch.max_chars` | **applied** only when lower |
 | `ssh.transfer_max_mb` | **applied** only when lower; zero means the default (16) |
+| `ssh.max_timeout_seconds` | **applied** only when lower; zero means the default (120) |
+| `ssh.listed_reads_only` | **applied** only when true: it turns the remote read-only classifier off, so only `ssh.read_commands` run unasked |
+| `ssh.read_contents` | ignored: it lets programs that print a host's files run unasked |
 | `telemetry` (all of it, `enabled` too) | ignored: turning the user's export off removes an audit feed |
 | `skills.disabled` | **applied** only when true |
 | `plan.runbooks` | **applied** only when false |
@@ -159,6 +164,7 @@ for any field of `Config` that has none. An applied setting counts as set for
 | `completion.local_only` | **applied** only when true |
 | `custom_providers` | ignored: the same |
 | `extensions` | ignored: each one is a process |
+| `hooks.run` | ignored: each simple hook is a command or an endpoint sent the events it takes. Trusted, a workspace's hooks are added to the user's, and none replaces a managed hook |
 | `mcp.allowed`, `mcp.denied` | **applied** as a narrowing: an allow list must also admit a server, and a deny entry only stops one; a list with a malformed entry is ignored |
 | `mcp` (other keys) | ignored: a server is a process or an endpoint |
 | `skills.dirs` | ignored: a skill is instructions to the agent |

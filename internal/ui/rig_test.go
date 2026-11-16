@@ -52,7 +52,6 @@ func newRig(t *testing.T, cols, rows int) *rig {
 	term := vt.New(cols, rows)
 	m := &meter{term: term}
 	lr := NewLineReaderOn(r, m, cols, rows)
-	lr.d.kr.ready = readyFunc(r)
 	g := &rig{t: t, in: w, term: term, lr: lr, out: m}
 	t.Cleanup(func() {
 		lr.Close()

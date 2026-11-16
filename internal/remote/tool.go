@@ -127,6 +127,14 @@ type Tool struct {
 	// Reads are the operator's ssh.read_commands, named to the model so it
 	// can inspect a host in plan mode; the policy decides what they allow.
 	Reads []string
+	// ReadOnly says the policy's read-only classifier is on for the declared
+	// hosts, so the description can tell the model which commands run unasked.
+	ReadOnly bool
+	// ReadContents says the classifier also runs programs that print files.
+	ReadContents bool
+	// MaxTimeout bounds the timeout a call may ask for (ssh.max_timeout_seconds);
+	// 0 is DefaultTimeout.
+	MaxTimeout time.Duration
 	// Secret returns a stored secret's value, for stdin_secret; nil means no store.
 	Secret func(name string) (string, error)
 }
@@ -168,8 +176,9 @@ func (Tool) Name() string { return "ssh" }
 // over SSH: the command runs with the remote account's full authority, and
 // there is no undo. Classifying `cat` as safe would be judging the string, not
 // the consequence — on a remote host Abhed cannot see, the two are not the
-// same thing. So every remote command asks, unless the operator declared it
-// a read in ssh.read_commands, which the policy judges.
+// same thing. So every remote command asks, unless the policy finds it a
+// read: an entry of ssh.read_commands, or, on a host the operator declared,
+// a command its read-only classifier proves changes nothing.
 func (Tool) Mutates() bool { return true }
 
 func (t Tool) Description() string {
@@ -180,7 +189,7 @@ func (t Tool) Description() string {
 	return "Run a shell command on a remote machine over SSH." + hosts +
 		" Hosts added with ssh_connect in this session can be named too." +
 		" Every call requires approval, because a remote command runs outside " +
-		"the sandbox with no undo" + reads(t.Reads) + ". Prefer one command that answers the question " +
+		"the sandbox with no undo" + reads(t.Reads) + readOnly(t.ReadOnly, t.ReadContents) + ". Prefer one command that answers the question " +
 		"over several exploratory ones. To give a command a password or key, have the " +
 		"user store it with `abhed secret set NAME` and pass the NAME as stdin_secret; " +
 		"never put a secret in the command."
@@ -195,13 +204,29 @@ func reads(cmds []string) string {
 		"alone and exactly as declared (* matches any text): " + strings.Join(cmds, "; ")
 }
 
+// readOnly tells the model what the read-only classifier lets run unasked.
+func readOnly(on, contents bool) string {
+	if !on {
+		return ""
+	}
+	what := "programs that show metadata (ls, stat, du, df, ps, free, uptime, wc, systemctl status -n 0, find " +
+		"without -exec of a reader, and find -exec of a program that opens files only with -type f -xdev, …), and head, tail, sort, cut, grep or wc reading what such a program pipes " +
+		"to them; never a path under /dev, /proc or /sys"
+	if contents {
+		what = "common read programs (ls, cat, head, tail, grep, du, df, ps, journalctl, find -type f -exec of a read, …)"
+	}
+	return ". On a declared host, a read-only command also runs unasked and in plan mode: " + what +
+		", with read options, joined only by |, words plain or in single quotes, with no redirection, $, " +
+		"backquote, double quote, ; or &&, and no follow (-f) form; anything else asks"
+}
+
 func (Tool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type":"object",
   "properties":{
     "host":{"type":"string","description":"Name of a configured host."},
     "command":{"type":"string","description":"The shell command to run."},
-    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120."},
+    "timeout_seconds":{"type":"integer","description":"How long to wait. Default 120, and never more than the operator's maximum (120 unless set)."},
     "stdin_secret":{"type":"string","description":"NAME of a stored secret to write to the command's stdin, such as a password for sudo -S or a key for a file. Never the value, and never put a secret in command."}
   },
   "required":["host","command"]
@@ -249,7 +274,7 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 	if err != nil {
 		return errf("%v", err)
 	}
-	timeout := time.Duration(a.Timeout) * time.Second
+	timeout := t.timeout(a.Timeout)
 	out, err := h.RunInput(ctx, a.Command, timeout, stdin)
 	if out != nil && stdin != nil {
 		// The command may echo what it read; the model never sees it.
@@ -273,6 +298,26 @@ func (t Tool) Run(ctx context.Context, sess *tools.Session, raw json.RawMessage)
 		IsError:  code != 0,
 		ExitCode: &code,
 	}
+}
+
+// DefaultTimeout is how long a command runs when the call names no timeout,
+// and the most a call may ask for unless the operator sets another bound.
+const DefaultTimeout = 2 * time.Minute
+
+// timeout is the call's timeout in seconds, bounded by the operator's
+// maximum: the model chooses how long it waits, never past that.
+func (t Tool) timeout(seconds int) time.Duration {
+	limit := t.MaxTimeout
+	if limit <= 0 {
+		limit = DefaultTimeout
+	}
+	if seconds <= 0 {
+		return min(DefaultTimeout, limit)
+	}
+	if seconds >= int(limit/time.Second) {
+		return limit // and no overflow from a huge number
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // Target shows the account and address a command runs on: an approval that
@@ -485,6 +530,9 @@ type ConnectTool struct {
 	Secret func(name string) (string, error)
 	// Allowed, when set, are the only addresses it may reach (ssh.connect_hosts).
 	Allowed []string
+	// Declared are the names in ssh.hosts, whether or not each loaded: a
+	// session host may never take one.
+	Declared []string
 }
 
 // addrAllowed reports whether addr matches one of patterns: the address as
@@ -591,11 +639,18 @@ func (t ConnectTool) Run(ctx context.Context, sess *tools.Session, raw json.RawM
 	}
 	// An operator's host keeps its name: a session cannot put another machine
 	// behind it.
+	taken := ""
 	if t.R != nil {
-		if taken := t.R.resembles(a.Name); taken != "" {
-			return errf("%q is, or reads like, %q, a host the operator declared; use that "+
-				"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
+		taken = t.R.resembles(a.Name)
+	}
+	for _, d := range t.Declared {
+		if taken == "" && foldName(d) == foldName(a.Name) {
+			taken = d
 		}
+	}
+	if taken != "" {
+		return errf("%q is, or reads like, %q, a host the operator declared; use that "+
+			"with the ssh tool, or choose a name unlike it for this one.", a.Name, taken)
 	}
 
 	var password string
