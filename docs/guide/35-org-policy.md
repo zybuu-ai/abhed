@@ -108,7 +108,8 @@ an untrusted workspace's file follows: deny and ask rules, honeytokens and `veri
 person's own, never replacing them),
 `permissions.mode` and `mode.default` (only plan or default, and only
 narrower), `model.allowed` and the `mcp` lists, the web tools turned off,
-lower limits, a stronger `sandbox.min_tier`, `allow_network` and
+lower limits, `limits.budget_spent` on (every run stops before its first
+model call, as a server does once a person's budget is spent), a stronger `sandbox.min_tier`, `allow_network` and
 `readable_home` off, stricter toolchains and listen, `monitor.enabled` on and
 `on_unavailable: deny`, more supervisor reviews and honeytokens, stricter
 syntax checks and checkpoints, `ssh.listed_reads_only` on (no remote
@@ -120,7 +121,43 @@ aside.
 `listen_ports`, preapproved toolchains, `fence`, `egress` and `hooks.disabled`, and the
 loosening values of the tighten-only settings above. These change what runs
 or reaches out unasked, so they need keys `/etc/abhed/config.json` pins out
-of band (`org_policy.keys`); a key pinned on first use is not enough.
+of band (`org_policy.keys`); a key pinned on first use is not enough. So
+does `pricing`, with one exception, so an org dollar budget can admit models
+the laptop runs itself without pinned keys: an org whose keys are not
+pinned may price a model at exactly 0 (every figure 0). The laptop takes
+that 0 only when both hold:
+
+- the model has no price of its own: it is not on the built-in list, nor a
+  current hosted model Abhed knows by name but carries no price for (such as
+  `claude-sonnet-4-6`, `gpt-4.5`, `o1`, `o4-mini`, which stay unpriced, and
+  so refused under a dollar cap, until an operator prices them), nor a name
+  that may stand for either (a dated or tagged variant such as
+  `gpt-4o-2024-08-06`, a `provider/` prefix such as `openai/gpt-4o`, other
+  letter case, surrounding spaces, full-width letters, zero-width
+  characters or Unicode dashes, which are normalised before the lookup),
+  and the machine's file and the person's do not price it. The variants
+  match by prefix, so a local model named after a listed family (anything
+  `o3-…`, `gpt-5-nano-…`) is refused too: it fails closed, and is priced in
+  the managed file instead;
+- every provider the laptop configures for that model is a local model
+  server type, `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, at its own
+  endpoint or a loopback `base_url`.
+
+No other provider type counts, even at a loopback address: not
+`openai-compatible` (the usual shape of a gateway such as LiteLLM, which
+may hold a company key), not a hosted API's type, not a custom type. So an
+unpinned org cannot lower any price a model has, and cannot price a model
+served through a gateway. A local model served by LM Studio or another
+`openai-compatible` server is priced in the machine's managed file, or by
+an org whose keys the machine pins. What remains trusted is the label: a
+provider written as one of the five local types is taken to be a local
+model server. The machine's managed file and the person's own file can
+write that label; under a managed dollar cap a workspace's file cannot (a
+provider a workspace defines or changes, trusted or not, keeps no org 0
+for the model it serves). Ollama's `*-cloud` models are an exception to "local": Ollama
+runs them on ollama.com and bills the person's own Ollama account. The
+check is made as each session's budget is built, so a provider changed
+later applies to the sessions started after it.
 `auto` and `bypass` modes are never set by an org policy.
 
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records

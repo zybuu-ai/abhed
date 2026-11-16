@@ -290,6 +290,8 @@ func (c *Anthropic) buildRequest(req Request) anthropicRequest {
 	// configured: current models removed budget_tokens and reject it, while
 	// adaptive thinking takes no budget at all.
 	switch {
+	case sp.Think != nil && !*sp.Think:
+		// Asked with thinking off: none at all, whatever budget is configured.
 	case sp.ThinkingBudget != nil:
 		out.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: sp.ThinkingBudget}
 	case sp.Think != nil && *sp.Think, sp.Effort != EffortNone:

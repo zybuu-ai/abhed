@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
@@ -93,6 +94,13 @@ type Config struct {
 	// Pricing sets model prices in US dollars per million tokens, by the
 	// model's name as sent to the provider, over the built-in list.
 	Pricing map[string]PriceConfig `json:"pricing,omitempty"`
+	// PricingLoopbackOnly names the prices an org policy that does not pin
+	// its keys set, which are 0: each holds only for a model every
+	// configured provider of which is a server on this machine.
+	PricingLoopbackOnly map[string]bool `json:"-"`
+	// WorkspaceProviders names the providers a workspace's file defined or
+	// changed, which a managed dollar cap does not trust as local servers.
+	WorkspaceProviders map[string]bool `json:"-"`
 	// Plan governs what an accepted plan may carry.
 	Plan PlanConfig `json:"plan,omitempty"`
 	// Mode is the default mode new sessions start in where permissions.mode
@@ -1740,9 +1748,18 @@ type LimitsConfig struct {
 	MaxBudgetTokens int `json:"max_budget_tokens"`
 	// MaxBudgetUSD caps a session's cost in US dollars, subagents included.
 	// Zero means unlimited. With a cap, a model with no price is refused.
-	MaxBudgetUSD    float64 `json:"max_budget_usd,omitempty"`
-	MaxSubagents    int     `json:"max_subagents"`
-	NestedSubagents bool    `json:"nested_subagents"`
+	MaxBudgetUSD float64 `json:"max_budget_usd,omitempty"`
+	// BudgetSpent stops every run before its first model call, as an org
+	// policy says once what is left of a person's budget is nothing.
+	BudgetSpent bool `json:"budget_spent,omitempty"`
+	// ReasoningStallTokens cuts a model reply that has only reasoned, with no
+	// text or tool call, past this many reasoning tokens (or its thinking
+	// budget, if larger); ReasoningStallSeconds past this long, as a backstop.
+	// Zero is 8000 and 600; below 1000 and 30 the floors apply.
+	ReasoningStallTokens  int  `json:"reasoning_stall_tokens,omitempty"`
+	ReasoningStallSeconds int  `json:"reasoning_stall_seconds,omitempty"`
+	MaxSubagents          int  `json:"max_subagents"`
+	NestedSubagents       bool `json:"nested_subagents"`
 	// MaxParallelSubagents bounds how many of a `tasks` call's subagents run
 	// at once. Zero means all of them, up to the tool's own cap of eight.
 	MaxParallelSubagents int `json:"max_parallel_subagents,omitempty"`
@@ -1907,7 +1924,16 @@ func LoadWith(workspace string, o LoadOptions) (Config, error) {
 		sum := sha256.Sum256(o.Settings)
 		cfg.Settings = SettingsSource{Name: o.SettingsName, SHA256: hex.EncodeToString(sum[:])}
 	}
+	beforeWS := maps.Clone(cfg.Model.Providers)
 	st, err := mergeWorkspace(&cfg, workspace, userFile, o)
+	for name, p := range cfg.Model.Providers {
+		if was, ok := beforeWS[name]; !ok || !reflect.DeepEqual(was, p) {
+			if cfg.WorkspaceProviders == nil {
+				cfg.WorkspaceProviders = map[string]bool{}
+			}
+			cfg.WorkspaceProviders[name] = true
+		}
+	}
 	noteUsers(&st, workspace, o)
 	cfg.Workspace = st
 	if err != nil {

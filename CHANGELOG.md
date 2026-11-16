@@ -465,6 +465,26 @@ All notable changes to Abhed are recorded here. The format follows
   `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
   (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
   longer lifts the org's lower cap.
+- `limits.budget_spent`: a run stops before its first model call, with a
+  `budget.stopped` of reason `allowance`, and every other call is refused.
+  An org policy turns it on once a person's budget is spent, so a laptop
+  under it no longer runs a turn per session past the budget. Only a lower
+  layer's on is taken.
+- An org policy whose keys the machine does not pin may price a model at
+  exactly 0, so an org dollar budget admits a model the laptop runs itself.
+  The laptop takes the 0 only for a model with no price of its own (not on
+  the built-in list or a list of current hosted models Abhed names without
+  a price, not a variant of either once case, prefixes, padding, full-width
+  and zero-width characters and Unicode dashes are normalised, and not
+  priced in the machine's file or the person's), and only when every
+  provider it configures for the model is a local model server type:
+  `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, and, under a managed
+  dollar cap, not one a workspace's file defined. No other type
+  counts, `openai-compatible` and hosted API types included, even at a
+  loopback address; a model served that way is priced in the managed file
+  or by an org with pinned keys. Any other price from such an org is set
+  aside, as before. Under a managed or org dollar cap, an unpriced model's
+  refusal says an administrator sets the price.
 
 ### Changed
 
@@ -515,6 +535,25 @@ All notable changes to Abhed are recorded here. The format follows
   by `path`.
 
 ### Fixed
+
+- A model reply that only reasons, with no text or tool call, is cut past
+  `limits.reasoning_stall_tokens` reasoning tokens (8000 by default, or the
+  request's thinking budget if larger), with `limits.reasoning_stall_seconds`
+  (600) as a time backstop, instead of being held to the ten-minute call cap
+  and failing the run with no answer. Floors of 1000 tokens and 30 seconds
+  apply. The cut call is charged as any cut call is; an answer that arrives
+  as the cut comes is kept; otherwise the turn asks once more with thinking
+  off and a nudge, and a second cut reply before the model next answers ends
+  the run `stalled` with the reasoning kept in the record. A text reply cut
+  part way is kept and finished, and `-p` returns it whole; a second cut
+  before a full reply also ends the run `stalled`. A workspace may only
+  lower the bounds.
+
+- "Thinking off" is now off on Anthropic and Gemini when a `thinking_budget`
+  is configured. Before, the budget won, so the critic, next-prompt
+  suggestion and commit-message calls, which ask with thinking off, thought
+  anyway (on Anthropic, a budget with thinking off made an invalid request),
+  and a provider set to `think: false` with a budget still thought.
 
 - Asking for work "in parallel" started no parallel subagents. The model read
   it as a request to make the project's code concurrent, or did the parts one

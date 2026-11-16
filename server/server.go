@@ -2164,7 +2164,18 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	toolset.Summarize(loop.Compactor, s.opts.Extensions, sessionID)
 	toolset.Hook(loop, s.opts.Extensions, func(msg string, _ bool) { s.log.Warn("extension hook", "session", sessionID, "note", msg) })
 	loop.Monitor = toolset.Supervisor(s.opts.Config, own, spec.Unattended)
-	budget.Allowance = s.allowance(spec, sessionID)
+	if edition := s.allowance(spec, sessionID); edition != nil {
+		budget.Allowance = edition
+		// A budget the configuration already holds spent stays spent.
+		if held := toolset.Budget(s.opts.Config).Allowance; held != nil {
+			budget.Allowance = func(ctx context.Context) agent.Allowance {
+				if got := held(ctx); got.Stop {
+					return got
+				}
+				return edition(ctx)
+			}
+		}
+	}
 	loop.Budget = budget
 	loop.Provider = live.provider
 	// A person at the console or the IDE is offered a next prompt; an unattended run is not.

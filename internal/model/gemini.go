@@ -229,11 +229,14 @@ func (g *Gemini) buildRequest(req Request) geminiRequest {
 		StopSequences:   sp.Stop,
 		Seed:            sp.Seed,
 	}
-	if sp.ThinkingBudget != nil {
+	switch {
+	case sp.Think != nil && !*sp.Think:
+		// Asked with thinking off: no budget sent, whatever is configured.
+	case sp.ThinkingBudget != nil:
 		cfg.ThinkingConfig = &geminiThinking{
 			ThinkingBudget: sp.ThinkingBudget, IncludeThoughts: true,
 		}
-	} else if sp.Think != nil && *sp.Think {
+	case sp.Think != nil && *sp.Think:
 		cfg.ThinkingConfig = &geminiThinking{IncludeThoughts: true}
 	}
 	out.GenerationConfig = &cfg

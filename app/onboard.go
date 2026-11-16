@@ -323,6 +323,10 @@ type gatedAdapter struct {
 	probe *endpointProbe
 }
 
+// SamplingDefaults passes the wrapped adapter's through, so its thinking
+// budget is seen.
+func (g gatedAdapter) SamplingDefaults() model.Params { return model.SamplingDefaultsOf(g.Adapter) }
+
 func (g gatedAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
 	if err := g.probe.check(ctx); err != nil {
 		return nil, err
