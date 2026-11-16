@@ -222,6 +222,8 @@ func runCustom(ctx context.Context, e *cmdEnv, c *customcmd.Command, args []stri
 			undo[i]()
 		}
 	}
+	// The command's body is not the person's own words.
+	msg.Typed = ""
 	if err := st.sendTurn(msg, restore); err != nil {
 		restore()
 		return err

@@ -84,6 +84,11 @@ carry the agent's own record, where `subagent.spawned`, `subagent.ask`,
 `subagent.action` and `subagent.returned` stand for them, as the CLI's JSON
 output does.
 
+`Options.Attended` says a person reads each answer and can reply, as in an
+editor. Off, the default, Abhed never adds its note asking the model to put a
+short question to the person about parallel work, since nobody would answer
+it; see [Parallel subagents](14-parallel-subagents.md#asking-for-parallel-work).
+
 ### Background tasks
 
 With `ConfiguredTools`, `Options.Background` says what a background task

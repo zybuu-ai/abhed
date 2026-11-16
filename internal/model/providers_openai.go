@@ -19,40 +19,40 @@ import (
 // user who wrote it in a config deserves to be told at startup rather than to
 // wonder why the setting had no effect.
 func init() {
-	Register("openai", "OpenAI (api.openai.com) or any drop-in replacement",
+	registerOpenAI("openai", "OpenAI (api.openai.com) or any drop-in replacement",
 		parallelCalls(openAIStyle("https://api.openai.com/v1", SamplingOpenAI())))
 
 	// The local servers accept the OpenAI body plus top_k, min_p and
 	// repetition_penalty, which hosted APIs do not define.
-	Register("vllm", "vLLM server (OpenAI-compatible, /v1)",
+	registerOpenAI("vllm", "vLLM server (OpenAI-compatible, /v1)",
 		parallelCalls(openAIStyle("http://127.0.0.1:8000/v1", SamplingLocal())))
-	Register("ollama", "Ollama (OpenAI-compatible endpoint, /v1)", func(sp Spec) (Adapter, error) {
+	registerOpenAI("ollama", "Ollama (OpenAI-compatible endpoint, /v1)", func(sp Spec) (Adapter, error) {
 		return openAIStyle(defaults.OllamaURL, SamplingLocal())(sp)
 	})
-	Register("llamacpp", "llama.cpp server (OpenAI-compatible, /v1)",
+	registerOpenAI("llamacpp", "llama.cpp server (OpenAI-compatible, /v1)",
 		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
-	Register("tgi", "Hugging Face Text Generation Inference (/v1)",
+	registerOpenAI("tgi", "Hugging Face Text Generation Inference (/v1)",
 		openAIStyle("http://127.0.0.1:8080/v1", SamplingLocal()))
-	Register("sglang", "SGLang server (OpenAI-compatible, /v1)",
+	registerOpenAI("sglang", "SGLang server (OpenAI-compatible, /v1)",
 		openAIStyle("http://127.0.0.1:30000/v1", SamplingLocal()))
 
 	// Hosted OpenAI-compatible gateways.
-	Register("groq", "Groq (OpenAI-compatible)",
+	registerOpenAI("groq", "Groq (OpenAI-compatible)",
 		openAIStyle("https://api.groq.com/openai/v1", SamplingOpenAI()))
-	Register("together", "Together AI (OpenAI-compatible)",
+	registerOpenAI("together", "Together AI (OpenAI-compatible)",
 		openAIStyle("https://api.together.xyz/v1", SamplingLocal()))
-	Register("openrouter", "OpenRouter (OpenAI-compatible, many upstreams)",
+	registerOpenAI("openrouter", "OpenRouter (OpenAI-compatible, many upstreams)",
 		openAIStyle("https://openrouter.ai/api/v1", SamplingOpenAI()))
-	Register("mistral", "Mistral La Plateforme (OpenAI-compatible)",
+	registerOpenAI("mistral", "Mistral La Plateforme (OpenAI-compatible)",
 		openAIStyle("https://api.mistral.ai/v1", SamplingOpenAI()))
-	Register("deepseek", "DeepSeek (OpenAI-compatible)",
+	registerOpenAI("deepseek", "DeepSeek (OpenAI-compatible)",
 		openAIStyle("https://api.deepseek.com/v1", SamplingOpenAI()))
-	Register("xai", "xAI Grok (OpenAI-compatible)",
+	registerOpenAI("xai", "xAI Grok (OpenAI-compatible)",
 		openAIStyle("https://api.x.ai/v1", SamplingOpenAI()))
 
 	// The original name, kept so existing configs keep working. It assumes the
 	// permissive local sampling set because that is what it was used for.
-	Register("openai-compatible", "any OpenAI-compatible endpoint (generic)",
+	registerOpenAI("openai-compatible", "any OpenAI-compatible endpoint (generic)",
 		parallelCalls(openAIStyle("", SamplingLocal())))
 }
 

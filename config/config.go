@@ -853,6 +853,13 @@ type ProviderConfig struct {
 	CallTimeoutSeconds  int `json:"call_timeout_seconds,omitempty"`
 	StallTimeoutSeconds int `json:"stall_timeout_seconds,omitempty"`
 
+	// MaxConcurrentRequests bounds the requests sent to this provider at
+	// once, shared by every adapter built from it in the process; requests
+	// past it wait in Abhed, before their timeouts start. 0 is 1 for type
+	// ollama (its FAQ gives OLLAMA_NUM_PARALLEL "default 1", read 2026-11-09)
+	// and no bound for other types. OpenAI-compatible types only.
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
+
 	// Extra passes provider-specific settings through without this struct
 	// growing a field per vendor.
 	Extra map[string]string `json:"extra,omitempty"`
@@ -2236,6 +2243,22 @@ func (c Config) Validate() error {
 	}
 	if c.Limits.BackgroundMaxMinutes > 480 {
 		return fmt.Errorf("limits.background_max_minutes is %d; at most 480", c.Limits.BackgroundMaxMinutes)
+	}
+	// max_concurrent_requests is checked on every provider, not only the
+	// default: another is built when first used, which is too late to say so.
+	names := make([]string, 0, len(c.Model.Providers))
+	for name := range c.Model.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		pc := c.Model.Providers[name]
+		switch {
+		case pc.MaxConcurrentRequests < 0:
+			return fmt.Errorf("provider %q: max_concurrent_requests may not be negative", name)
+		case pc.MaxConcurrentRequests > 0 && model.Known(pc.Type) && !model.HonoursMaxConcurrent(pc.Type):
+			return fmt.Errorf("provider %q: max_concurrent_requests is honoured only by OpenAI-compatible types, not %q", name, pc.Type)
+		}
 	}
 	p, err := c.providerNamed(c.Model.Default)
 	if err != nil {

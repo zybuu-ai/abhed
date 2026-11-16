@@ -193,6 +193,8 @@ var uncounted = []string{
 	// A person's continuation, a hook's request to go on, and a change-log
 	// entry are settings and steps, as mode.changed and turn.continued are.
 	"turns.extended", "hook.continued", "config.changed",
+	// A wait for a model slot is kept on its model.call, as queue_ms.
+	"model.waiting",
 }
 
 func TestEveryEventTypeIsPlaced(t *testing.T) {

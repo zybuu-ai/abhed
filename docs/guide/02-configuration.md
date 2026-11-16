@@ -133,6 +133,31 @@ Raise `stall_timeout_seconds` for a local model whose prefill of a long prompt
 takes longer than five minutes. 0 keeps the default; a negative value is
 refused.
 
+**`max_concurrent_requests` bounds the requests sent to a provider at once.**
+Requests past it wait in Abhed, their timeouts start only when they are sent,
+and the wait is shown and recorded as `model.waiting`. Parallel subagents each
+call the model; a server that serves one request at a time queues the rest and
+sends them nothing until their turn, which the stall timeout used to end as a
+hung endpoint. The bound belongs to the server and model, not to one provider
+entry: every adapter in one Abhed process that reaches the same model at the
+same base URL (the session's, a subagent's on a named model, Studio's
+completions, and providers of different types naming that endpoint) shares it,
+and the smallest bound any of them sets applies to all. The bound only goes
+down within one Abhed process: a long-running `abhed serve` or Studio keeps the
+smallest bound it has seen for a server and model, even after the configuration
+raises it, until it is restarted. Two providers that reach the same hosted model
+with different accounts share it too. Base URLs that differ
+only by case, a default port or a trailing slash are one server. 0 (the
+default) is 1 for type `ollama` and no bound of its own for every other type.
+Ollama's FAQ gives `OLLAMA_NUM_PARALLEL`, the requests each model serves at
+once, as "default 1" (docs.ollama.com/faq, read 9 November 2026); some earlier
+Ollama releases chose 1 or 4 from the memory free. Set the key to the server's
+parallel slots (`OLLAMA_NUM_PARALLEL`, llama.cpp's `--parallel`, vLLM's batch)
+to let that many through. It applies to the OpenAI-compatible types (`ollama`,
+`vllm`, `llamacpp`, `tgi`, `sglang`, `openai-compatible` and the hosted
+gateways); a value above 0 on any other type, or a negative one, is refused at
+startup on every provider, not only the default.
+
 ## Limits
 
 ```json

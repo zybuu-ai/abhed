@@ -99,7 +99,7 @@ func (l *Loop) ContinueAfterLimit(ctx context.Context, surface string) (_ Termin
 	}
 	l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
 	l.noteSaid(text, false)
-	l.setPrompt(text)
+	l.setPrompt(text, text)
 	l.startMessage()
 	l.Config.MaxTurns = ext.To
 	return l.run(ctx)

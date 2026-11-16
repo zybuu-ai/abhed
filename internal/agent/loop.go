@@ -335,6 +335,9 @@ type Loop struct {
 	// Budget caps total token spend across the parent and its subagents.
 	// Nil means no cap.
 	Budget *Budget
+	// Unattended is set for a run nobody can answer, such as -p or a
+	// script: a note asking the model to ask the person is left out there.
+	Unattended bool
 	// Suggest, when set, offers a next prompt after a completed run.
 	Suggest *Suggester
 	// sug is the suggestion call running after the last run ended; sugMu
@@ -452,6 +455,8 @@ type Loop struct {
 	// prompt is the last message a person sent, which a skill's pipeline takes
 	// as its input; guarded by steerMu.
 	prompt string
+	// promptSent is prompt as the model got it, with any harness note.
+	promptSent string
 
 	// steer carries messages sent while the agent is working. Reading them at
 	// a turn boundary is what lets a user redirect a run instead of killing it.
@@ -578,6 +583,8 @@ type QueuedMessage struct {
 	ClientID string    `json:"client_id,omitempty"`
 	At       time.Time `json:"queued_at"`
 	Steered  bool      `json:"steered,omitempty"`
+	// typed is the person's own words, for the parallel note.
+	typed string
 }
 
 // Steer delivers a message to a running agent, applied at the next turn
@@ -603,7 +610,7 @@ func (l *Loop) QueueMessage(m Message) string {
 	if strings.TrimSpace(m.Text) == "" {
 		return ""
 	}
-	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC(), Steered: m.Steered}
+	q := QueuedMessage{ID: "q_" + newID(), Text: m.Text, ClientID: m.ClientID, At: time.Now().UTC(), Steered: m.Steered, typed: m.Typed}
 	l.steerMu.Lock()
 	l.steer = append(l.steer, q)
 	l.steerMu.Unlock()
@@ -664,13 +671,14 @@ func (l *Loop) deliverQueuedCount() (int, error) {
 		// session, and a message the model saw but the log did not would
 		// make a replay diverge from what happened.
 		text, withheld := l.withholdSecrets(q.Text)
-		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld}); err != nil {
+		said := Message{Text: text, QueueID: q.ID, ClientID: q.ClientID, Steered: q.Steered, SecretsWithheld: withheld, Note: l.parallelNote(q.typed)}
+		if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 			return n, err
 		}
 		n++
-		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: text})
+		l.messages = append(l.messages, model.Message{Role: model.RoleUser, Content: said.ModelText()})
 		l.noteSaid(text, true)
-		l.setPrompt(text)
+		l.setPrompt(text, said.ModelText())
 		// A wake run that takes a person's message is theirs from now on,
 		// with a prompted run's turns, not the wake's cap.
 		l.wakeCap = 0
@@ -719,10 +727,17 @@ func (l *Loop) Withheld(text string) string {
 	return out
 }
 
-func (l *Loop) setPrompt(text string) {
+func (l *Loop) setPrompt(text, sent string) {
 	l.steerMu.Lock()
-	l.prompt = text
+	l.prompt, l.promptSent = text, sent
 	l.steerMu.Unlock()
+}
+
+// promptSentAs is the last prompt as the model got it, any note included.
+func (l *Loop) promptSentAs() string {
+	l.steerMu.Lock()
+	defer l.steerMu.Unlock()
+	return l.promptSent
 }
 
 // Prompt is the last message a person sent this loop, or a subagent's task.
@@ -874,17 +889,22 @@ func (l *Loop) RunMessage(ctx context.Context, m Message) (_ TerminalReason, err
 		return TermError, err
 	}
 	text, withheld := l.withholdSecrets(m.Text)
-	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld}); err != nil {
+	typed := m.Typed
+	if typed == "" {
+		typed = typedFrom(ctx)
+	}
+	said := Message{Text: text, ClientID: m.ClientID, SecretsWithheld: withheld, Note: l.parallelNote(typed)}
+	if _, err := l.Recorder.Record(EvUserMessage, ActorUser, Trusted, said); err != nil {
 		return TermError, err
 	}
-	um := model.Message{Role: model.RoleUser, Content: text}
+	um := model.Message{Role: model.RoleUser, Content: said.ModelText()}
 	if len(imgs) > 0 {
 		// The images reach the model with this message only; the record keeps what the text says of them.
-		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: text}}, imgs...)
+		um.Blocks = append([]model.ContentBlock{{Kind: model.BlockText, Text: said.ModelText()}}, imgs...)
 	}
 	l.messages = append(l.messages, um)
 	l.noteSaid(text, false)
-	l.setPrompt(text)
+	l.setPrompt(text, said.ModelText())
 	l.startMessage()
 	return l.run(ctx)
 }
@@ -1470,7 +1490,16 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 	}
 
 	callStart := time.Now()
-	stream, err := l.Adapter.Complete(l.withCaller(ctx), req)
+	// A wait for a request slot is said, and kept out of the call's timings.
+	var queued atomic.Int64
+	callCtx := model.WithSlotWait(l.withCaller(ctx), func(w model.SlotWait, done bool) {
+		if done {
+			queued.Store(int64(w.Waited))
+			return
+		}
+		l.record(EvModelWaiting, ActorSystem, ModelWaiting{Model: l.Adapter.Profile().Name, Ahead: w.Ahead})
+	})
+	stream, err := l.Adapter.Complete(callCtx, req)
 	if err != nil {
 		// Stopped before the first reply: an interrupt or a shutdown, not a
 		// model failure, just as for a stream cut part way.
@@ -1516,7 +1545,7 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	for chunk := range stream {
 		if firstToken == 0 && chunk.Type != model.ChunkDone {
-			firstToken = time.Since(callStart)
+			firstToken = time.Since(callStart) - time.Duration(queued.Load())
 		}
 		switch chunk.Type {
 		case model.ChunkText:
@@ -1583,7 +1612,8 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 		Turn: l.turns, Model: l.Adapter.Profile().Name, TokensIn: callUsage.InputTokens, TokensOut: callUsage.OutputTokens,
 		TokensCached: callUsage.CachedInputTokens, CacheReported: callUsage.CacheReported, TokensCacheWrite: callUsage.CacheWriteTokens,
 		ContextWindow: l.Adapter.Profile().ContextWindow,
-		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: time.Since(callStart).Milliseconds(),
+		FirstTokenMS:  firstToken.Milliseconds(), LatencyMS: (time.Since(callStart) - time.Duration(queued.Load())).Milliseconds(),
+		QueueMS:   time.Duration(queued.Load()).Milliseconds(),
 		ToolCalls: len(calls),
 		CutOff:    l.Config.MaxTokens > 0 && callUsage.OutputTokens >= l.Config.MaxTokens,
 	}

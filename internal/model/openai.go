@@ -41,6 +41,11 @@ type OpenAICompatible struct {
 	// extra.parallel_tool_calls ("true" or "false") overrides it.
 	ParallelToolCalls bool
 
+	// slots, when set, bounds the requests in flight to this provider: a
+	// request waits for one before it is sent and holds it until its reply
+	// has been read. Every adapter built from the same spec shares it.
+	slots *slotPool
+
 	// PromptCache is how the request asks the provider to cache its prompt
 	// prefix: "" sends nothing (the server caches on its own, or not at all),
 	// CacheKey sends OpenAI's prompt_cache_key, and CacheControl marks the
@@ -362,8 +367,13 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		return httpReq, nil
 	}
 
+	release, err := c.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := send(ctx, c.HTTP, c.Retry, newRequest, c.Notify, c.fatalStatus)
 	if err != nil {
+		release()
 		se := &StatusError{}
 		if errors.As(err, &se) {
 			return nil, fmt.Errorf("endpoint returned %w", se)
@@ -371,15 +381,31 @@ func (c *OpenAICompatible) Complete(ctx context.Context, req Request) (<-chan Ch
 		return nil, fmt.Errorf("call %s: %w", c.BaseURL, err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		defer release()
 		defer resp.Body.Close()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("endpoint returned %w", &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg)), Attempts: 1})
 	}
 
 	out := make(chan Chunk, 64)
-	go c.stream(ctx, resp.Body, out, req.Tools)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.stream(ctx, resp.Body, out, req.Tools)
+	}()
+	// The slot is free once the reply is read, or the call is given up.
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+		release()
+	}()
 	return out, nil
 }
+
+// acquire waits for a request slot, when requests are bounded.
+func (c *OpenAICompatible) acquire(ctx context.Context) (func(), error) { return c.slots.acquire(ctx) }
 
 // offered is the tool set from the request, used only to validate a tool
 // call recovered from prose — see salvage.go.

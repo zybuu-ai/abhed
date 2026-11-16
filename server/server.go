@@ -2108,6 +2108,7 @@ func (s *Server) buildLive(sessionID string, spec StartSpec, mode string, adapte
 	own := s.sessionTools(sessionID, spec, mode, adapter, registry, skillReg, pol, sess, budget, cfg, rec)
 	cfg.SystemPrompt = toolset.SystemPrompt(workspace, adapter, s.skillListing(skillReg), own.Names())
 	loop := agent.NewLoop(adapter, own, pol, approver, sess, rec, cfg)
+	loop.Unattended = spec.Unattended
 	// Plan mode's exit_plan; the person answers with POST /v1/sessions/{id}/plan.
 	loop.EnablePlanExit()
 	if !s.opts.Config.Plan.Runbooks {
@@ -3347,7 +3348,7 @@ func (s *Server) postMessage(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "client_id is up to 64 letters, digits, - and _")
 		return
 	}
-	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID}
+	msg := agent.Message{Text: req.Prompt, ClientID: req.ClientID, Typed: req.Prompt}
 
 	live, ok := s.session(r.Context(), id, TenantOf(r.Context()), UserOf(r.Context()))
 	resumedHere := false

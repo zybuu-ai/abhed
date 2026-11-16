@@ -128,6 +128,17 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Added
 
+- `/parallel <work>` in the terminal, in Studio and as an `abhed -p` task or
+  `-input-format stream-json` line: the work, its `@` mentions attached, goes
+  to the model with the instruction to start its independent parts at once
+  in one `tasks` call. It is recorded as `command.invoked`.
+- `max_concurrent_requests` on a provider of an OpenAI-compatible type: the
+  requests sent at once to its model on its server, shared by every adapter
+  in the process that reaches them, the smallest bound winning. Requests past
+  it wait in Abhed before their timeouts start; the wait is shown in the
+  terminal and in Studio and recorded as `model.waiting`, and `model.call`
+  keeps it apart as `queue_ms`. A value above 0 on another type is refused at
+  startup, on every provider.
 - Faster editor completions in Abhed Studio. A local completion model is
   loaded ahead of the first completion (`_abhed/complete/warm`: an empty
   request of one token, no code, once the editor session is open, at most
@@ -439,6 +450,10 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Changed
 
+- Providers of type `ollama` now send one request at a time unless
+  `max_concurrent_requests` says more, matching Ollama's documented
+  `OLLAMA_NUM_PARALLEL` default of 1; the rest wait in Abhed. Set the key to
+  the server's `OLLAMA_NUM_PARALLEL` where that is higher.
 - Remote reads no longer need an entry for every variant. On a host the
   operator declared, Abhed reads an `ssh` command with the bash parser and
   the read-only program list behind `ssh.read_commands` wildcards, and runs
@@ -483,6 +498,32 @@ All notable changes to Abhed are recorded here. The format follows
 
 ### Fixed
 
+- Asking for work "in parallel" started no parallel subagents. The model read
+  it as a request to make the project's code concurrent, or did the parts one
+  after another: neither subagent tool said what such a request means. `tasks`
+  now says that work asked for in parallel or by several agents means starting
+  subagents, and `task` that several calls in one response run at once. When
+  the person's own words ask for parallel work, the model also gets a short
+  note after the message, recorded on its `user.message` as
+  `harness_note`; on a small local model the descriptions alone did not turn
+  it. The note is judged only on what the person typed, not on attached files,
+  Studio resources or piped stdin. It says to start subagents only when the
+  message opens with reading or analysis work such as review, audit or
+  investigate, or with subagents named as the doers, has a parallel phrase,
+  and does not describe a program to be changed or how a program runs; any other mention of parallel work gets a note
+  telling the model to ask one short question if it is unclear which the
+  person means, except in a run nobody can answer, such as `-p`. Neither is added when the message names
+  creating or changing code, building agents or the program's own concurrency
+  (the whole list is in the parallel-subagents guide), in a subagent's task,
+  or when no subagent could start. A `tasks` start now shows as one line naming each part (`3 in
+  parallel: …`) in the terminal and on Studio's card, and `task` cards name
+  their description; a task given no description is labelled from its
+  prompt. Outside a git repository `tasks` no longer offers worktree
+  isolation, which was only refused there.
+- Parallel subagents on Ollama all failed with "the model sent nothing for
+  5m0s". Ollama serves one request at a time and queues the rest without a
+  byte, so the stall timeout ended every queued request. Requests now wait in
+  Abhed for the provider's slot (see `max_concurrent_requests` under Added).
 - Studio's ghost text could stop for good after a burst of typing. Every
   keystroke spent the completion rate limit as it arrived, even those a
   newer keystroke replaced before anything was sent, so the last keystroke

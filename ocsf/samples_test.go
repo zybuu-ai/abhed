@@ -149,6 +149,7 @@ var samples = []sample{
 	{agent.EvConfigChanged, agent.ActorSystem, `{"by":"abhed","key":"config-changes.jsonl","pending":51}`},
 	{agent.EvTurnsExtended, agent.ActorUser, `{"from":25,"to":50,"count":1,"max":3,"by":"user","surface":"tui"}`},
 	{agent.EvBudgetStopped, agent.ActorSystem, `{"reason":"usd","model":"gpt-4o","spent_usd":1.02,"max_usd":1,"message":"stopped: the budget of $1.00 is spent ($1.0200)"}`},
+	{agent.EvModelWaiting, agent.ActorSystem, `{"session":"s-child","model":"m","ahead":2}`},
 }
 
 // sampleLines are the samples as one session's lines, seq from 1.

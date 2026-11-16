@@ -138,6 +138,7 @@ var table = map[agent.EventType]rule{
 
 	// The harness's own bookkeeping: Base Event.
 	agent.EvCompactStarted:    {fn: mapBase, classes: []int{0}},
+	agent.EvModelWaiting:      {fn: mapBase, classes: []int{0}},
 	agent.EvCompactDone:       {fn: mapBase, classes: []int{0}},
 	agent.EvContextOffloaded:  {fn: mapBase, classes: []int{0}},
 	agent.EvPlanUpdated:       {fn: mapBase, classes: []int{0}},

@@ -110,6 +110,10 @@ const (
 	// EvStartupTrusted names the shell start-up files left unjudged this run
 	// because they match the person's baseline (path and sha256).
 	EvStartupTrusted EventType = "policy.startup_trusted"
+	// EvModelWaiting is a model request held back because its provider's
+	// request slots are taken, as on a local server that serves one at a
+	// time; a subagent's is passed up to its parent with its session.
+	EvModelWaiting EventType = "model.waiting"
 )
 
 type Actor string
@@ -284,6 +288,22 @@ type Message struct {
 	// the message held: the model got [secret:NAME] in their place. A string
 	// keeps Message comparable.
 	SecretsWithheld string `json:"secrets_withheld,omitempty"`
+	// Note is what Abhed added after the person's text for the model, such
+	// as what a request for parallel work means; recorded so a replay sends
+	// what the model was sent.
+	Note string `json:"harness_note,omitempty"`
+	// Typed is the person's own words, without what they attached: the only
+	// text the parallel note is judged on. Empty means none, so a message
+	// that is not the person's, or one that only attaches, gets no note.
+	Typed string `json:"-"`
+}
+
+// ModelText is the message as the model got it: the text, then any note.
+func (m Message) ModelText() string {
+	if m.Note == "" {
+		return m.Text
+	}
+	return m.Text + "\n\n" + m.Note
 }
 
 // DroppedMessage is a queued message the model never saw. It is not a
@@ -335,7 +355,10 @@ type ModelCall struct {
 	// prefill — and prefill is what a cache miss costs.
 	FirstTokenMS int64 `json:"first_token_ms"`
 	LatencyMS    int64 `json:"latency_ms"`
-	ToolCalls    int   `json:"tool_calls"`
+	// QueueMS is how long the request waited for a slot before it was sent,
+	// left out of the two above.
+	QueueMS   int64 `json:"queue_ms,omitempty"`
+	ToolCalls int   `json:"tool_calls"`
 	// CutOff marks a turn that spent the whole output budget: the model was
 	// still writing when the limit ended it, so what it said is not an answer.
 	CutOff bool `json:"cut_off,omitempty"`
@@ -840,4 +863,13 @@ type MonitorVerdict struct {
 	// Skipped says why the judge was not asked, as when the turn's budget of
 	// judgements was spent; the decision stands as policy made it.
 	Skipped string `json:"skipped,omitempty"`
+}
+
+// ModelWaiting is a model.waiting payload.
+type ModelWaiting struct {
+	// Session is the subagent whose request waits, in a parent's record.
+	Session string `json:"session,omitempty"`
+	Model   string `json:"model,omitempty"`
+	// Ahead is how many requests to the same provider were waiting before it.
+	Ahead int `json:"ahead"`
 }

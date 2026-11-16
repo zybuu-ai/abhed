@@ -380,7 +380,7 @@ func interactive(ctx context.Context, a *App, store server.EventStore, r *ui.Ren
 					}
 					continue
 				}
-				loop.Steer(msg)
+				loop.QueueMessage(agent.Message{Text: msg, Typed: msg})
 				if !editor.Raw() { // on a terminal the dock shows it, queued
 					fmt.Printf("  %s\n", s.Dim("steering — applied at the next step"))
 				}

@@ -74,7 +74,11 @@ decisions are events like any other, so a script sees each refusal and its
 reason. A message that held a stored secret's value is recorded with
 `[secret:NAME]` in its place, and its `user.message` event carries
 `secrets_withheld`, the names comma-separated; the same note the terminal
-prints goes to stderr, so stdout stays events alone.
+prints goes to stderr, so stdout stays events alone. A message that asks for
+work in parallel carries `harness_note`, the note Abhed sent after it, which is
+either one: the note to start subagents or the note to ask first. A `-p` run
+never gets the second; see
+[Parallel subagents](14-parallel-subagents.md#asking-for-parallel-work).
 
 `-verbose` shows reasoning in full and writes each model call's token counts
 to stderr.

@@ -23,20 +23,24 @@ import (
 type acpBuiltin struct {
 	name, description, hint string
 	run                     func(c *acpConn, ctx context.Context, s *acpSession, args string) (string, error)
+	// prompt, set in place of run, turns the arguments into a prompt the
+	// agent runs, as a custom command's body is.
+	prompt func(args string) (string, error)
 }
 
 var acpBuiltins = []acpBuiltin{
-	{"/compact", "Summarise the conversation so far to free context", "", runCompact},
-	{"/fork", "Go on in a new session from here (Studio's Fork action)", "", studioAction("Fork")},
-	{"/undo", "Put back the files the last turn with changes changed", "", runUndo},
-	{"/diff", "List the files this session changed", "", runDiff},
-	{"/hawkeye", "Summarise this session's record", "", runHawkeye},
-	{"/tasks", "List the background tasks", "", runTasks},
-	{"/memory", "List the memory files in effect", "", runMemory},
-	{"/mode", "Change the permission mode", "default | accept-edits | plan", runMode},
-	{"/model", "Change the model", "a configured model's name", runModel},
-	{"/clear", "Start a new conversation (Studio's New Chat action)", "", studioAction("New Chat")},
-	{"/export", "Export this session's record to ~/.abhed/exports", "jsonl | html", runExport},
+	{"/compact", "Summarise the conversation so far to free context", "", runCompact, nil},
+	{"/fork", "Go on in a new session from here (Studio's Fork action)", "", studioAction("Fork"), nil},
+	{"/undo", "Put back the files the last turn with changes changed", "", runUndo, nil},
+	{"/diff", "List the files this session changed", "", runDiff, nil},
+	{"/hawkeye", "Summarise this session's record", "", runHawkeye, nil},
+	{"/tasks", "List the background tasks", "", runTasks, nil},
+	{"/parallel", "Split the work into subagents that run at the same time", "the work, such as: review pkg/auth, test pkg/store, document pkg/server", nil, parallelPrompt},
+	{"/memory", "List the memory files in effect", "", runMemory, nil},
+	{"/mode", "Change the permission mode", "default | accept-edits | plan", runMode, nil},
+	{"/model", "Change the model", "a configured model's name", runModel, nil},
+	{"/clear", "Start a new conversation (Studio's New Chat action)", "", studioAction("New Chat"), nil},
+	{"/export", "Export this session's record to ~/.abhed/exports", "jsonl | html", runExport, nil},
 }
 
 // sessionCommand is one command a session lists, with what it runs.
@@ -135,6 +139,15 @@ func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string, 
 	}
 	invoked := agent.CommandInvoked{Name: cmd.name, Source: cmd.source, SHA256: cmd.sha256, Args: args}
 	switch {
+	case cmd.builtin != nil && cmd.builtin.prompt != nil:
+		prompt, perr := cmd.builtin.prompt(args)
+		if perr != nil {
+			say(cmd.name + ": " + perr.Error() + "\n")
+			return nil, true
+		}
+		s.record(agent.EvCommandInvoked, invoked)
+		_, err := s.agent.Run(ctx, withAttached(prompt))
+		return err, true
 	case cmd.builtin != nil:
 		s.record(agent.EvCommandInvoked, invoked)
 		// A built-in's refusal is its answer to the person, not the turn's failure.
@@ -163,6 +176,14 @@ func (c *acpConn) slashCommand(ctx context.Context, s *acpSession, text string, 
 		_, err := s.agent.Run(ctx, withAttached(prompt))
 		return err, true
 	}
+}
+
+// parallelPrompt is /parallel's prompt: the work, to start as subagents at once.
+func parallelPrompt(args string) (string, error) {
+	if strings.TrimSpace(args) == "" {
+		return "", errors.New("give the work to split, such as /parallel review pkg/auth, test pkg/store, document pkg/server")
+	}
+	return agent.ParallelPrompt(args), nil
 }
 
 func studioAction(action string) func(*acpConn, context.Context, *acpSession, string) (string, error) {

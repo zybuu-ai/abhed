@@ -86,6 +86,20 @@ func (r *Renderer) activityRows(ev agent.Event) []string {
 		return []string{"  " + s.Dim("└ ") + s.Accent(field(who, 30)) + s.Dim(" returned · ") + status +
 			s.Dim(fmt.Sprintf(" · %s · %s tokens · %s", turns, formatCount(p.TokensIn+p.TokensOut), field(p.Description, 60)))}
 
+	case agent.EvModelWaiting:
+		var w agent.ModelWaiting
+		if json.Unmarshal(ev.Payload, &w) != nil {
+			return nil
+		}
+		who := "waiting for the model"
+		if w.Session != "" {
+			who = orStr(r.agentTypes[w.Session], "subagent") + " waiting for the model"
+		}
+		if w.Ahead > 0 {
+			who += fmt.Sprintf(" · %d ahead", w.Ahead)
+		}
+		return note(field(who, 80) + " · its provider's request slots are in use")
+
 	case agent.EvCompactStarted:
 		var c agent.Compaction
 		_ = json.Unmarshal(ev.Payload, &c)

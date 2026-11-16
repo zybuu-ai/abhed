@@ -374,6 +374,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 			}
 		}
 		prompt := f.task()
+		// The person's own words: the task given after -p, or stdin when that is the whole task.
+		o.typed = prompt
 		if f.inputFormat == "stream-json" {
 			o.inputs = streamInputs(os.Stdin, os.Stderr)
 		} else if prompt, err = headlessTask(ctx, prompt, os.Stdin, !f.noStdin && stdinIsPipe(), os.Stderr); err != nil {
@@ -382,6 +384,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 			}
 			fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 			return 2
+		}
+		if o.typed == "" {
+			o.typed = prompt
 		}
 		if prompt == "" && o.inputs == nil {
 			if !startFlags.resuming() {

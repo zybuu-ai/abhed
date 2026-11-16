@@ -116,7 +116,7 @@ var _ InputExpander = mentionExpander{}
 func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw string) (agent.Message, []Attachment, error) {
 	refs := parseMentions(raw)
 	if len(refs) == 0 {
-		return agent.Message{Text: raw}, nil, nil
+		return agent.Message{Text: raw, Typed: raw}, nil, nil
 	}
 	if loop == nil || loop.Session == nil {
 		return agent.Message{}, nil, errors.New("there is no conversation to attach files to")
@@ -179,10 +179,10 @@ func (m mentionExpander) Expand(ctx context.Context, loop *agent.Loop, raw strin
 		}
 	}
 	if len(blocks) == 0 {
-		return agent.Message{Text: raw}, nil, nil
+		return agent.Message{Text: raw, Typed: raw}, nil, nil
 	}
 	text := raw + "\n\nWhat the person attached with @, read through the session's policy. " + untrustedNote + "\n" + strings.Join(blocks, "\n")
-	return agent.Message{Text: text}, atts, nil
+	return agent.Message{Text: text, Typed: raw}, atts, nil
 }
 
 // mentionPath is the absolute path a mention names: ~/ is the home
