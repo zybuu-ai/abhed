@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"testing"
@@ -150,8 +153,9 @@ func TestStudioCommitMessageIsAModelCall(t *testing.T) {
 	}
 }
 
-// An editor call that never reached the model is not charged; one cancelled
-// under a cap is charged at its output bound, whatever input was reported.
+// An editor call the provider never accepted is not charged; one that failed
+// after it did is; one cancelled under a cap is charged at its output bound,
+// whatever input was reported.
 func TestEditorChargeReachAndBound(t *testing.T) {
 	l := agent.NewLoop(&fakeAdapter{name: "gpt-4o"}, nil, nil, nil, nil, nil, agent.DefaultConfig())
 	l.Budget = agent.NewBudget(0, 0, false)
@@ -160,6 +164,13 @@ func TestEditorChargeReachAndBound(t *testing.T) {
 	refused := &model.StatusError{Status: 500}
 	if in, out, cost, _, est := editorCharge(l, a, 0, 0, refused, false, 4000, 0, 64); in != 0 || out != 0 || cost != nil || est {
 		t.Fatalf("an unreached call was charged: %d %d %v", in, out, cost)
+	}
+	dial := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	if _, _, cost, _, _ := editorCharge(l, a, 0, 0, fmt.Errorf("post: %w", dial), false, 4000, 0, 64); cost != nil {
+		t.Fatalf("a refused connection was charged: %v", *cost)
+	}
+	if in, out, cost, _, est := editorCharge(l, a, 0, 0, errors.New("stream reset"), false, 4000, 0, 64); in != 1000 || out != 64 || cost == nil || !est {
+		t.Fatalf("a failure after acceptance: in %d out %d cost %v", in, out, cost)
 	}
 	in, out, cost, _, est := editorCharge(l, a, 500, 0, context.Canceled, true, 4000, 8, 64)
 	if in != 500 || out != 64 || cost == nil || !est {

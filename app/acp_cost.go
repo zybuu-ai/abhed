@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"net"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
 	"github.com/zybuu-ai/abhed/internal/model"
@@ -25,11 +27,12 @@ func editorRefused(l *agent.Loop, a model.Adapter, off, what string) string {
 
 // editorCharge charges an editor call to the session's budget, by the rules
 // a turn's call is charged by (agent.EstimateUsage), counting from the
-// characters sent and received at about four to a token. A call that failed
-// before it reached the model (a refused connection, an error status) and
-// reported nothing is not charged. It returns the tokens charged with the cost.
+// characters sent and received at about four to a token. Only a call the
+// provider never accepted (an error status, a connection never made) is not
+// charged; any other failure came after it took the request. It returns the
+// tokens charged with the cost.
 func editorCharge(l *agent.Loop, a model.Adapter, in, out int, err error, cancelled bool, sentChars, gotChars, maxTokens int) (tokIn, tokOut int, cost *float64, unpriced, estimated bool) {
-	if err != nil && !cancelled && gotChars == 0 && in == 0 && out == 0 {
+	if neverAccepted(err) {
 		return 0, 0, nil, false, false
 	}
 	u, estimated := agent.EstimateUsage(charsAdapter{a, sentChars}, model.Request{MaxTokens: maxTokens},
@@ -37,6 +40,15 @@ func editorCharge(l *agent.Loop, a model.Adapter, in, out int, err error, cancel
 		l.Budget.CutAtBound(a))
 	cost, unpriced = l.ChargeEditorCall(a.Profile().Name, u)
 	return u.InputTokens, u.OutputTokens, cost, unpriced, estimated
+}
+
+// neverAccepted reports an error from before the provider took the request:
+// an error status, or a connection that was never made.
+func neverAccepted(err error) bool {
+	var se *model.StatusError
+	var op *net.OpError
+	var dns *net.DNSError
+	return errors.As(err, &se) || errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial"
 }
 
 // charsAdapter counts an editor request by the characters it sent, which is

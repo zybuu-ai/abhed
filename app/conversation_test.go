@@ -382,15 +382,23 @@ func TestCLIResumeCarriesTokenTotals(t *testing.T) {
 	c.command("/clear", "context cleared")
 	c.command("/resume "+first, "resumed")
 	c.task("What is the codeword?")
-	end, ok := agent.LastEnd(c.export())
+	after := c.export()
+	end, ok := agent.LastEnd(after)
 	if !ok {
 		t.Fatal("no session.ended in the record")
 	}
-	// Each model call reports its prompt's size in and 2 out: the resumed
-	// end goes on from the first's.
-	if end.Turns != 2 || before.TokensIn <= 0 || end.TokensIn <= before.TokensIn || end.TokensOut != 4 {
-		t.Fatalf("resumed end has turns %d, tokens %d in / %d out, after %d in; want 2 turns, more in, 4 out",
-			end.Turns, end.TokensIn, end.TokensOut, before.TokensIn)
+	// The resumed end is exactly the first end plus the resumed run's own calls.
+	var since int
+	for _, ev := range after[len(events):] {
+		if ev.Type == agent.EvModelCall {
+			var mc agent.ModelCall
+			_ = json.Unmarshal(ev.Payload, &mc)
+			since += mc.TokensIn
+		}
+	}
+	if end.Turns != 2 || before.TokensIn <= 0 || since <= 0 || end.TokensIn != before.TokensIn+since || end.TokensOut != 4 {
+		t.Fatalf("resumed end has turns %d, tokens %d in / %d out; want 2 turns, %d+%d in, 4 out",
+			end.Turns, end.TokensIn, end.TokensOut, before.TokensIn, since)
 	}
 }
 

@@ -47,8 +47,10 @@ All notable changes to Abhed are recorded here. The format follows
   report, or reported under a quarter of the request's size, is estimated,
   marked `estimated`, and charged. Under a dollar cap a cut call's output is
   charged at the most the request allowed, whatever input was reported, so
-  interrupting does not save money under a cap; a call that failed before
-  anything came back is not charged. `/usage` shows the session's cost and
+  interrupting, or a stream that fails after the provider accepted it, does
+  not save money under a cap; only a call the provider never accepted is
+  not charged. A reply that fails the same way three times in a row ends
+  the run `retry_exhausted`. `/usage` shows the session's cost and
   each turn's, `-p -output-format json` its `usage.cost_usd`, and HawkEYE the cost per
   turn and in all; a record written before this release shows its cost as
   not recorded. A model with no price is shown as unpriced, and its cost is

@@ -174,17 +174,22 @@ raised is marked `estimated` on the call:
 
 - A whole prompt (with an Anthropic cache's reads and writes) reported as
   nothing, or under a quarter of the request's own count, is charged at that
-  count, about four characters a token.
+  count, about four characters a token. A server that reports only the part
+  of the prompt it did not have cached (Ollama reuses its KV cache) reads
+  higher in Abhed's token totals and token budget than it says on warm turns;
+  a local model priced at 0 moves no dollars.
 - Output reported under a quarter of what came back is charged at what came
   back.
-- A cut call (cancelled, timed out, or ended by an error) is charged at
-  least what came back. Under a dollar cap, or for a model that reasons out
-  of sight, it is charged at the most the request allowed, if it was
-  cancelled or anything had come back: the provider bills what it produced
-  whether or not it arrived, so interrupting a run does not save money
-  under a cap.
-- A call that failed before anything came back and reported nothing (a
-  refused connection, an error status) was not billed, and is not charged. A cap set by the managed or org
+- A cut call (cancelled, timed out, or ended by an error once its stream
+  opened) is charged at least its prompt and what came back. Under a dollar
+  cap, or for a model that reasons out of sight, it is charged at the most
+  the request allowed: the provider took the request and worked, and bills
+  what it produced whether or not it arrived, so interrupting a run, or a
+  connection that drops, does not save money under a cap.
+- Only a call the provider never accepted (an error status, a connection
+  never made) is not charged.
+- A reply that fails the same way three times in a row ends the run
+  `retry_exhausted`, rather than being asked again to the turn limit. A cap set by the managed or org
 configuration also fixes the prices it is spent by (see below).
 
 ### Prices

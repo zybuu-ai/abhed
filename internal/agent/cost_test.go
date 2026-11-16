@@ -568,15 +568,16 @@ func TestAnthropicShapedCutIsChargedAtItsBound(t *testing.T) {
 	})
 }
 
-// A stream that fails before anything came back and reported nothing was not
-// billed, so it is not charged, even under a cap.
-func TestPreTokenFailureIsNotCharged(t *testing.T) {
+// A stream that fails once it opened was accepted by the provider, which
+// worked: it is charged its input and, under a cap, its output bound, even
+// when nothing came back and nothing was reported.
+func TestFailureAfterTheStreamOpenedIsCharged(t *testing.T) {
 	l, _ := costHarness(t, "gpt-4o", nil)
 	l.Budget.MaxUSD = 10
 	u, est := EstimateUsage(counted{namedAdapter: named("gpt-4o", 1000), n: 1000}, model.Request{MaxTokens: 2048},
 		model.Usage{}, CallEnd{Failed: true}, l.Budget.CutAtBound(l.Adapter))
-	if est || u.InputTokens != 0 || u.OutputTokens != 0 {
-		t.Fatalf("a pre-token failure was charged: %+v", u)
+	if !est || u.InputTokens != 1000 || u.OutputTokens != 2048 {
+		t.Fatalf("a failed stream: %+v", u)
 	}
 }
 
@@ -590,5 +591,53 @@ func TestReportedPromptFloor(t *testing.T) {
 	warm := model.Usage{InputTokens: 3, CachedInputTokens: 990, CacheExcluded: true, OutputTokens: 5}
 	if u, est := EstimateUsage(a, model.Request{}, warm, CallEnd{}, false); est || u != warm {
 		t.Fatalf("a warm cache was raised: %+v", u)
+	}
+}
+
+// resetAdapter's every stream opens, then fails after the model worked, with
+// no usage: a proxy's idle timeout or a dropped connection.
+type resetAdapter struct {
+	name  string
+	calls int
+}
+
+func (r *resetAdapter) Name() string { return r.name }
+func (r *resetAdapter) Profile() model.Profile {
+	return model.Profile{Name: r.name, ContextWindow: 100000, ReasoningTokens: true, MaxOutputTokens: 4096}
+}
+func (r *resetAdapter) CountTokens(model.Request) (int, error) { return 1000, nil }
+func (r *resetAdapter) Complete(context.Context, model.Request) (<-chan model.Chunk, error) {
+	r.calls++
+	ch := make(chan model.Chunk, 1)
+	ch <- model.Chunk{Type: model.ChunkError, Err: errors.New("stream reset after the model worked")}
+	close(ch)
+	return ch, nil
+}
+
+// A call that fails after the provider accepted it is charged, its input and
+// its output bound, so failing streams stop at the cap instead of running free.
+func TestFailedStreamsAreChargedAndStopAtTheCap(t *testing.T) {
+	l, store := costHarness(t, "gpt-4o", nil)
+	r := &resetAdapter{name: "gpt-4o"}
+	l.Adapter = r
+	l.Budget.MaxUSD = 0.0001
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermMaxBudget || r.calls > 2 {
+		t.Fatalf("ended %s after %d calls", reason, r.calls)
+	}
+	calls := modelCalls(t, store)
+	if len(calls) == 0 || !calls[0].Estimated || calls[0].TokensIn != 1000 || calls[0].CostUSD == nil || *calls[0].CostUSD <= 0 {
+		t.Fatalf("calls %+v", calls)
+	}
+}
+
+// With no cap, the same failure three times in a row ends the run.
+func TestRepeatedStreamFailureEndsTheRun(t *testing.T) {
+	l, _ := costHarness(t, "gpt-4o", nil)
+	r := &resetAdapter{name: "gpt-4o"}
+	l.Adapter = r
+	reason, _ := l.Run(context.Background(), "go")
+	if reason != TermRetryExhausted || r.calls != maxStreamFailures {
+		t.Fatalf("ended %s after %d calls", reason, r.calls)
 	}
 }

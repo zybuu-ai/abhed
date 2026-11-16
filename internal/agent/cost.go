@@ -187,19 +187,16 @@ type CallEnd struct {
 // calls free. The whole prompt (with an Anthropic-shaped cache's reads and
 // writes) under a quarter of CountTokens counts as unreported and is raised
 // to it; output under a quarter of what came back, about four characters a
-// token, is raised to that. A cut call is charged at least what came back,
-// and when bounded (a dollar cap, or reasoning billed unseen) at the
-// request's output bound, if it was cancelled or produced anything: cutting
-// a call does not stop its bill. A call that failed before anything came back
-// and reported nothing was not billed, and is not charged. estimated is true
-// when anything was raised.
+// token, is raised to that. A cut call (cancelled, or failed once its stream
+// opened) is charged at least what came back, and when bounded (a dollar cap,
+// or reasoning billed unseen) at the request's output bound: the provider
+// accepted it and worked, and cutting a call does not stop its bill. Only a
+// call Complete refused (no stream, so this is never asked) goes uncharged.
+// estimated is true when anything was raised.
 func EstimateUsage(a model.Adapter, req model.Request, u model.Usage, end CallEnd, bounded bool) (model.Usage, bool) {
 	whole := u.InputTokens
 	if u.CacheExcluded {
 		whole += u.CachedInputTokens + u.CacheWriteTokens
-	}
-	if end.Failed && !end.Cancelled && end.Produced == 0 && whole == 0 {
-		return u, false
 	}
 	estimated := false
 	if counted, _ := a.CountTokens(req); whole == 0 || whole*4 < counted {
@@ -214,7 +211,7 @@ func EstimateUsage(a model.Adapter, req model.Request, u model.Usage, end CallEn
 	if cut || out*4 < visible {
 		out = max(out, visible)
 	}
-	if bounded && cut && (end.Cancelled || end.Produced > 0) {
+	if bounded && cut {
 		limit := req.MaxTokens
 		if limit <= 0 {
 			limit = a.Profile().MaxOutputTokens

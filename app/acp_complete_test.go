@@ -166,8 +166,11 @@ func TestStudioCompletes(t *testing.T) {
 		t.Fatalf("completion.enabled %v", enabled)
 	}
 	sum, _ := r.recorded(id, agent.EvCompletionSummary)
+	// The tokens in are what the server reported for the request it saw.
+	suffix, _ := seen[0]["suffix"].(string)
+	reported := float64(30 + (len(prompt)+len(suffix))/4)
 	if len(sum) != 1 || sum[0]["requests"] != float64(1) || sum[0]["served"] != float64(1) || sum[0]["refused"] != float64(2) ||
-		sum[0]["tokens_in"].(float64) < 30 || sum[0]["estimated"] != nil {
+		sum[0]["tokens_in"] != reported || sum[0]["estimated"] != nil {
 		t.Fatalf("completion.summary %v", sum)
 	}
 }

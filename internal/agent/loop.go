@@ -402,6 +402,11 @@ type Loop struct {
 	// stuckDetail says which call a retry_exhausted end gave up on; lastDetail
 	// is the detail the last run's end recorded.
 	stuckDetail, lastDetail string
+	// streamFailKey and streamFails count the same failed reply in a row, so a
+	// stream that keeps failing the same way ends the run instead of being
+	// asked again to the turn limit, each time billed.
+	streamFailKey string
+	streamFails   int
 	// justCompacted is set by a compaction and cleared by the next check.
 	justCompacted bool
 	// stopContinues counts the times stop hooks sent this run back to work.
@@ -555,6 +560,10 @@ func (c childHooks) Observe(ctx context.Context, event, sessionID, tool, detail 
 		c.Hooks.Observe(ctx, event, sessionID, tool, detail)
 	}
 }
+
+// maxStreamFailures is how many replies in a row may fail the same way
+// before the run ends retry_exhausted.
+const maxStreamFailures = 3
 
 // TermPromptRefused is a run that never started: a hook refused the message.
 const TermPromptRefused TerminalReason = "prompt_refused"
@@ -1615,6 +1624,20 @@ func (l *Loop) turn(ctx context.Context) (TerminalReason, bool, error) {
 
 	// A malformed tool call is recoverable: tell the model what was wrong and
 	// let it retry rather than aborting the session.
+	if streamErr != nil && len(calls) == 0 && text.Len() == 0 {
+		if key := streamErr.Error(); key == l.streamFailKey {
+			l.streamFails++
+		} else {
+			l.streamFailKey, l.streamFails = key, 1
+		}
+		if l.streamFails >= maxStreamFailures {
+			l.stuckDetail = fmt.Sprintf("the model's reply failed the same way %d times in a row: %s", l.streamFails, truncateKey(l.streamFailKey))
+			l.streamFailKey, l.streamFails = "", 0
+			return TermRetryExhausted, true, nil
+		}
+	} else {
+		l.streamFailKey, l.streamFails = "", 0
+	}
 	if streamErr != nil && len(calls) == 0 {
 		if text.Len() == 0 {
 			// No empty assistant turn: an endpoint that rejects null content
