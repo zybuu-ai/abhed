@@ -40,7 +40,7 @@ func TestTUIFooterShowsTheSession(t *testing.T) {
 	r.send("hello\r")
 	r.waitText("You said: hello")
 	r.waitFor("context and tokens in the footer", false, func(s string) bool {
-		return strings.Contains(s, "% context") && strings.Contains(s, "1.3k tokens")
+		return strings.Contains(s, "% context") && strings.Contains(s, "6.1k tokens")
 	})
 	t.Log(r.capture("the footer after one reply"))
 	r.send("/model stub2\r")

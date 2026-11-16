@@ -63,9 +63,10 @@ type cliSession struct {
 
 func startCLI(t *testing.T) *cliSession {
 	t.Helper()
-	return startCLIWith(t, func(w io.Writer, n int, _ string) {
+	return startCLIWith(t, func(w io.Writer, n int, body string) {
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"noted %d\"}}]}\n\n", n)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+		// The prompt's size as a server counts it, about four characters a token.
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n", len(body)/4)
 	})
 }
 
@@ -375,7 +376,9 @@ func TestCLIResumeAfterForkKeepsTheBranchAbandoned(t *testing.T) {
 func TestCLIResumeCarriesTokenTotals(t *testing.T) {
 	c := startCLI(t)
 	c.task("Remember the codeword ZEBRA-41.")
-	first := checkRecord(t, c.export(), 1)
+	events := c.export()
+	first := checkRecord(t, events, 1)
+	before, _ := agent.LastEnd(events)
 	c.command("/clear", "context cleared")
 	c.command("/resume "+first, "resumed")
 	c.task("What is the codeword?")
@@ -383,9 +386,11 @@ func TestCLIResumeCarriesTokenTotals(t *testing.T) {
 	if !ok {
 		t.Fatal("no session.ended in the record")
 	}
-	// Each model call reports 10 in and 2 out.
-	if end.Turns != 2 || end.TokensIn != 20 || end.TokensOut != 4 {
-		t.Fatalf("resumed end has turns %d, tokens %d in / %d out; want 2, 20 / 4", end.Turns, end.TokensIn, end.TokensOut)
+	// Each model call reports its prompt's size in and 2 out: the resumed
+	// end goes on from the first's.
+	if end.Turns != 2 || before.TokensIn <= 0 || end.TokensIn <= before.TokensIn || end.TokensOut != 4 {
+		t.Fatalf("resumed end has turns %d, tokens %d in / %d out, after %d in; want 2 turns, more in, 4 out",
+			end.Turns, end.TokensIn, end.TokensOut, before.TokensIn)
 	}
 }
 

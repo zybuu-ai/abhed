@@ -173,7 +173,9 @@ func TestStudioUsageCost(t *testing.T) {
 		}
 		m := meta(u)
 		cost, _ := u["cost"].(map[string]any)
-		if cost["amount"] != 15.0 || cost["currency"] != "USD" || m["costUsd"] != 15.0 || m["sessionCostUsd"] != 15.0 || m["unpriced"] != nil {
+		// A dollar a token, in and out, as the stub reported them.
+		want := m["tokensIn"].(float64) + m["tokensOut"].(float64)
+		if cost["amount"] != want || cost["currency"] != "USD" || m["costUsd"] != want || m["sessionCostUsd"] != want || m["unpriced"] != nil {
 			t.Fatalf("usage_update: %v", u)
 		}
 		return
