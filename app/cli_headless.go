@@ -18,6 +18,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
+	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/internal/policy"
@@ -58,6 +59,9 @@ type headlessOpts struct {
 	fallback *fallbackAdapter
 	// runbook is the runbook -runbook approved for this run, nil without one.
 	runbook *runbookSpec
+	// commands are the custom commands a task may name: read once, when a
+	// task starts with "/" or messages come on stdin.
+	commands *customState
 }
 
 // maxStdin bounds the stdin a -p run takes as context.
@@ -609,6 +613,34 @@ func runOnce(ctx context.Context, store server.EventStore, r *ui.Renderer, o hea
 				rest = task[len(typed):] // piped stdin, kept as the input it was
 			}
 			task, typed = agent.ParallelPrompt(work)+rest, ""
+		}
+		c, args, cerr := headlessCustom(o.commands, sess.Root, typed)
+		if cerr != nil {
+			ran, err = true, cerr
+			return
+		}
+		if c != nil {
+			if _, err = loop.Recorder.Record(agent.EvCommandInvoked, agent.ActorUser, agent.Trusted,
+				agent.CommandInvoked{Name: c.Name, Source: c.Source, SHA256: c.SHA256, Args: args}); err != nil {
+				ran = true
+				return
+			}
+			if len(c.AllowedTools) > 0 {
+				sub, missing := loop.Tools.SubsetStrict(c.AllowedTools)
+				if len(missing) > 0 {
+					ran, err = true, fmt.Errorf("%s names tools this run does not have: %s", c.Name, strings.Join(missing, ", "))
+					return
+				}
+				prev := loop.Tools
+				loop.Tools = sub
+				defer func() { loop.Tools = prev }()
+			}
+			rest := ""
+			if strings.HasPrefix(task, typed) {
+				rest = task[len(typed):] // piped stdin, kept as the input it was
+			}
+			// The command's body is not the person's own words.
+			task, typed = customcmd.Expand(c.Body, args)+rest, ""
 		}
 		if o.runbook != nil && !ran {
 			task = withRunbook(task, o.runbook.prompt)

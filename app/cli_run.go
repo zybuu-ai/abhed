@@ -388,6 +388,15 @@ func run(a *App, workspace string, f *cliFlags) int {
 		if o.typed == "" {
 			o.typed = prompt
 		}
+		// A custom command runs as the terminal runs it; one the workspace
+		// brought and nobody trusted is refused before anything is recorded.
+		if strings.HasPrefix(o.typed, "/") || o.inputs != nil {
+			o.commands = readCustomCommands(cfg, sess.Root)
+			if _, _, err := headlessCustom(o.commands, sess.Root, o.typed); err != nil {
+				fmt.Fprintf(os.Stderr, "abhed: %v\n", config.PrintableText(err.Error()))
+				return 2
+			}
+		}
 		if prompt == "" && o.inputs == nil {
 			if !startFlags.resuming() {
 				fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")

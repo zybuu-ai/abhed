@@ -541,6 +541,16 @@ All notable changes to Abhed are recorded here. The format follows
   gitignored build output no longer read. Path rules and redaction are the
   same on both paths; gitignored files no longer show up unless asked for
   by `path`.
+- `abhed -p "/name args"` runs a custom command as the terminal does,
+  recorded as `command.invoked`; it used to send the text to the model as
+  it was. A workspace command nobody trusted is refused with exit code 2,
+  before anything is recorded, and the message gives the exact `abhed trust
+  grant -commands-sha256 …` line. A command with shell lines or its own
+  `model` is refused in `-p`, which cannot ask.
+- `abhed trust` shows the workspace's commands and their hash, `abhed trust
+  grant` trusts them along with the rest (`-commands-sha256` pins the
+  grant), and `abhed trust revoke` forgets them too, so a workspace's
+  commands no longer need `/commands trust` in the terminal.
 
 ### Fixed
 

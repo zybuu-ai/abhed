@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zybuu-ai/abhed/config"
+	"github.com/zybuu-ai/abhed/internal/customcmd"
 )
 
 // headlessRun runs -p with stream-json output and the given stdin, killed
@@ -17,7 +21,9 @@ func headlessRun(t *testing.T, ws string, stdin *os.File, limit time.Duration, a
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := mainHelper(append([]string{"-C", ws, "-output-format", "stream-json"}, args...))
-	cmd.Stdin = stdin
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Start(); err != nil {
@@ -124,5 +130,87 @@ func TestStdinDashFlag(t *testing.T) {
 	}
 	if readsStdin(&cliFlags{stdinDash: true}, "task", false, func() bool { return true }, &warn) {
 		t.Error("a terminal was read")
+	}
+}
+
+// #12: in -p, a workspace command nobody trusted is refused with the exact
+// command that trusts it, before anything is recorded; `abhed trust grant`
+// trusts it, after which -p runs it as the terminal does; revoke forgets it.
+func TestPrintWorkspaceCommandTrust(t *testing.T) {
+	m := &bgModelServer{}
+	ws := bgWorkspace(t, m.start(t), "")
+	t.Setenv(config.TrustEnv, "")
+	write(t, filepath.Join(ws, ".abhed", "commands", "explain.md"), "---\ndescription: explain a file\n---\nEXPLAIN-BODY for $ARGUMENTS in five bullets")
+	_, files, sum, _ := workspaceCommands(config.Config{}, ws)
+	if len(files) != 1 || sum == "" {
+		t.Fatalf("files %v", files)
+	}
+
+	evs, stderr, _ := headlessRun(t, ws, nil, 20*time.Second, "-p", "/explain src/text.py")
+	real, _ := filepath.EvalSymlinks(ws)
+	want := "abhed trust grant -commands-sha256 " + sum + " " + shellQuote(real)
+	if len(evs["user.message"]) != 0 || len(evs["session.started"]) != 0 || !strings.Contains(stderr, "workspace command /explain is not trusted (new)") || !strings.Contains(stderr, want) {
+		t.Fatalf("an untrusted command was not refused with the command to trust it: %v\n%s", evs["user.message"], stderr)
+	}
+
+	var out bytes.Buffer
+	if code := trustCmd(ws, []string{"show"}, &out); code != 0 || !strings.Contains(out.String(), "commands    1 file(s)") || !strings.Contains(out.String(), "NOT TRUSTED") {
+		t.Fatalf("show: %d\n%s", code, out.String())
+	}
+	out.Reset()
+	if code := trustCmd(ws, []string{"grant", "-commands-sha256", strings.Repeat("0", 64)}, &out); code != 1 {
+		t.Fatalf("a stale pin granted: %d %s", code, out.String())
+	}
+	if code := trustCmd(ws, []string{"grant", "-commands-sha256", sum}, &out); code != 0 || !strings.Contains(out.String(), "Trusted 1 workspace command(s)") {
+		t.Fatalf("grant: %d\n%s", code, out.String())
+	}
+
+	evs, stderr, _ = headlessRun(t, ws, nil, 20*time.Second, "-p", "/explain src/text.py")
+	if c := evs["command.invoked"]; len(c) != 1 || c[0]["name"] != "/explain" || c[0]["source"] != "workspace" || c[0]["sha256"] == nil {
+		t.Fatalf("the trusted command was not invoked: %v\n%s", c, stderr)
+	}
+	if u := evs["user.message"]; len(u) != 1 || !strings.Contains(stringOf(u[0]["text"]), "EXPLAIN-BODY for src/text.py in five bullets") {
+		t.Fatalf("the command's body was not the turn: %v", u)
+	}
+
+	// A change makes it untrusted again; revoke forgets the decision.
+	write(t, filepath.Join(ws, ".abhed", "commands", "explain.md"), "CHANGED")
+	_, stderr, _ = headlessRun(t, ws, nil, 20*time.Second, "-p", "/explain x")
+	if !strings.Contains(stderr, "is not trusted (changed)") {
+		t.Fatalf("a changed command ran: %s", stderr)
+	}
+	write(t, filepath.Join(ws, ".abhed", "commands", "explain.md"), "---\ndescription: explain a file\n---\nEXPLAIN-BODY for $ARGUMENTS in five bullets")
+	out.Reset()
+	if code := trustCmd(ws, []string{"revoke"}, &out); code != 0 {
+		t.Fatal(out.String())
+	}
+	if store, _ := commandTrustStore(); func() bool { ok, _ := store.Decide(ws, sum); return ok }() {
+		t.Fatal("revoke kept the commands trusted")
+	}
+}
+
+// A trusted command that runs shell lines, or picks a model, is refused in
+// -p, which cannot ask; one the run cannot find is sent as typed.
+func TestHeadlessCustomRefusals(t *testing.T) {
+	cs := &customState{cmds: []*customcmd.Command{
+		{Name: "/sh", Body: "run !`ls`", Source: "user"},
+		{Name: "/m", Body: "x", Model: "big", Source: "user"},
+		{Name: "/ok", Body: "OK $ARGUMENTS", Source: "user"},
+	}}
+	if _, _, err := headlessCustom(cs, "/w", "/sh"); err == nil || !strings.Contains(err.Error(), "shell lines") {
+		t.Errorf("shell: %v", err)
+	}
+	if _, _, err := headlessCustom(cs, "/w", "/m"); err == nil || !strings.Contains(err.Error(), "-model") {
+		t.Errorf("model: %v", err)
+	}
+	if c, args, err := headlessCustom(cs, "/w", "/ok a b"); err != nil || c == nil || args != "a b" {
+		t.Errorf("ok: %v %v %q", c, err, args)
+	}
+	if c, _, err := headlessCustom(cs, "/w", "/other thing"); c != nil || err != nil {
+		t.Errorf("unknown: %v %v", c, err)
+	}
+	refused := &customState{untrusted: []*customcmd.Command{{Name: "/x"}}, wsReason: "refused"}
+	if _, _, err := headlessCustom(refused, "/w", "/x"); err == nil || !strings.Contains(err.Error(), "started untrusted") {
+		t.Errorf("refused: %v", err)
 	}
 }
