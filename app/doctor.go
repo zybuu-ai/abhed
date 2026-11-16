@@ -368,71 +368,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Println("\nReview the workspace configuration with `abhed trust`, then run `abhed doctor` again.")
 		return 1
 	}
-	adapter := buildAdapter(provider)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	fmt.Print("checking endpoint... ")
-	stream, err := adapter.Complete(ctx, model.Request{
-		Messages: []model.Message{{Role: model.RoleUser, Content: "Reply with the single word: ok"}},
-		// Generous for a one-word answer, because a hybrid-reasoning model
-		// spends this budget on its thinking phase FIRST. gemma4:26b returned
-		// empty content and finish_reason=length at 32 tokens — a healthy
-		// model reported as broken.
-		MaxTokens: 512,
-	})
-	if err != nil {
-		fmt.Printf("FAILED\n  %v\n", err)
-		fmt.Println("\nCheck that the endpoint is reachable and the model name is correct.")
-		return 1
-	}
-	var got strings.Builder
-	for c := range stream {
-		if c.Type == model.ChunkText {
-			got.WriteString(c.Text)
-		}
-		if c.Type == model.ChunkError {
-			fmt.Printf("FAILED\n  %v\n", c.Err)
-			return 1
-		}
-	}
-	answer := strings.TrimSpace(got.String())
-	if answer == "" {
-		// Distinguish "said nothing" from "said something unexpected": the
-		// first usually means the token budget went to reasoning, which is a
-		// configuration problem, not a broken endpoint.
-		fmt.Printf("ok\n  response was empty — if this model reasons before " +
-			"answering, raise context.max_tokens\n")
-	} else {
-		fmt.Printf("ok\n  response: %q\n", answer)
-	}
-
-	// Tool calling is the capability the agent actually depends on.
-	fmt.Print("checking tool calling... ")
-	stream, err = adapter.Complete(ctx, model.Request{
-		Messages: []model.Message{{Role: model.RoleUser, Content: "List files matching *.go using the glob tool."}},
-		Tools: []model.ToolDef{{
-			Name:        "glob",
-			Description: "Find files matching a glob pattern.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`),
-		}},
-		MaxTokens: 256,
-	})
-	if err != nil {
-		fmt.Printf("FAILED\n  %v\n", err)
-		return 1
-	}
-	calls := 0
-	for c := range stream {
-		if c.Type == model.ChunkToolCall {
-			calls++
-			fmt.Printf("ok\n  called %s with %s\n", c.ToolCall.Name, c.ToolCall.Args)
-		}
-	}
-	if calls == 0 {
-		fmt.Println("FAILED")
-		fmt.Println("  The model did not emit a tool call. Abhed requires tool-calling support.")
-		fmt.Println("  Check that the serving stack has a tool-call parser enabled for this model.")
+	if !doctorModelProbes(buildAdapter(provider), timeout, os.Stdout) {
 		return 1
 	}
 
@@ -446,7 +382,7 @@ func (a *App) doctor(workspace string, set flagSettings, timeout time.Duration) 
 		fmt.Printf("FAILED\n  %v\n", err)
 		return 1
 	} else {
-		sctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		sctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		out, err := sb.Command(sctx, workspace, "echo abhed-sandbox-ok").CombinedOutput()
 		cancel()
 		if cerr := sandbox.Close(sb); cerr != nil {
@@ -981,4 +917,104 @@ func allowListLines(cfg config.Config) []string {
 		}
 	}
 	return out
+}
+
+// doctorProbeRequests are the endpoint and tool-calling probes. A
+// hybrid-reasoning model spends its output budget on thinking first, so
+// thinking is off where the provider takes it, and the tool probe, whose call
+// is longer than a word, gets more room.
+func doctorProbeRequests(p model.Profile) (endpoint, toolCall model.Request) {
+	endpoint = model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "Reply with the single word: ok"}},
+		// gemma4:26b returned empty content and finish_reason=length at 32
+		// tokens with thinking on: a healthy model reported as broken.
+		MaxTokens: 512,
+	}
+	toolCall = model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, Content: "List files matching *.go using the glob tool."}},
+		Tools: []model.ToolDef{{
+			Name:        "glob",
+			Description: "Find files matching a glob pattern.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`),
+		}},
+		MaxTokens: 1024,
+	}
+	if p.Sampling.Think {
+		off := false
+		endpoint.Params.Think, toolCall.Params.Think = &off, &off
+	}
+	return endpoint, toolCall
+}
+
+// doctorModelProbes asks the model for a word, then for a tool call, each
+// with a timeout of its own, and says how each went. It reports whether both
+// worked.
+func doctorModelProbes(adapter model.Adapter, timeout time.Duration, w io.Writer) bool {
+	endpointReq, toolReq := doctorProbeRequests(adapter.Profile())
+
+	fmt.Fprint(w, "checking endpoint... ")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	stream, err := adapter.Complete(ctx, endpointReq)
+	if err != nil {
+		fmt.Fprintf(w, "FAILED\n  %v\n", err)
+		fmt.Fprintln(w, "\nCheck that the endpoint is reachable and the model name is correct.")
+		return false
+	}
+	var got strings.Builder
+	for c := range stream {
+		if c.Type == model.ChunkText {
+			got.WriteString(c.Text)
+		}
+		if c.Type == model.ChunkError {
+			fmt.Fprintf(w, "FAILED\n  %v\n", c.Err)
+			return false
+		}
+	}
+	answer := strings.TrimSpace(got.String())
+	if answer == "" {
+		// Distinguish "said nothing" from "said something unexpected": the
+		// first usually means the token budget went to reasoning, which is a
+		// configuration problem, not a broken endpoint.
+		fmt.Fprintf(w, "ok\n  response was empty — if this model reasons before "+
+			"answering, raise context.max_tokens\n")
+	} else {
+		fmt.Fprintf(w, "ok\n  response: %q\n", answer)
+	}
+
+	// Tool calling is the capability the agent actually depends on. It gets
+	// a timeout of its own: a slow first answer must not eat into it.
+	fmt.Fprint(w, "checking tool calling... ")
+	tctx, tcancel := context.WithTimeout(context.Background(), timeout)
+	defer tcancel()
+	stream, err = adapter.Complete(tctx, toolReq)
+	if err != nil {
+		fmt.Fprintf(w, "FAILED\n  %v\n", err)
+		return false
+	}
+	calls := 0
+	var streamErr error
+	for c := range stream {
+		switch c.Type {
+		case model.ChunkToolCall:
+			calls++
+			fmt.Fprintf(w, "ok\n  called %s with %s\n", c.ToolCall.Name, c.ToolCall.Args)
+		case model.ChunkError:
+			streamErr = c.Err
+		}
+	}
+	if calls == 0 {
+		fmt.Fprintln(w, "FAILED")
+		if streamErr != nil {
+			fmt.Fprintf(w, "  %v\n", streamErr)
+			if errors.Is(streamErr, context.DeadlineExceeded) || errors.Is(tctx.Err(), context.DeadlineExceeded) {
+				fmt.Fprintf(w, "  No call within %s; a slow local model may need a longer -timeout.\n", timeout)
+			}
+			return false
+		}
+		fmt.Fprintln(w, "  The model did not emit a tool call. Abhed requires tool-calling support.")
+		fmt.Fprintln(w, "  Check that the serving stack has a tool-call parser enabled for this model.")
+		return false
+	}
+	return true
 }

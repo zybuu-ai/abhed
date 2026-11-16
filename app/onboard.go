@@ -477,13 +477,19 @@ func probeToolCalling(ctx context.Context, p config.ProviderConfig) (bool, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	ch, err := a.Complete(ctx, model.Request{
+	req := model.Request{
 		System:   "You are testing tool calling. Call the tool you are given; do not answer in text.",
 		Messages: []model.Message{{Role: model.RoleUser, Content: "Call get_time with zone UTC."}},
 		Tools: []model.ToolDef{{Name: "get_time", Description: "Returns the current time in a zone.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"zone":{"type":"string"}},"required":["zone"]}`)}},
-		MaxTokens: 256,
-	})
+		// Room for the call; a reasoning model would spend 256 on thinking.
+		MaxTokens: 1024,
+	}
+	if a.Profile().Sampling.Think {
+		off := false
+		req.Params.Think = &off
+	}
+	ch, err := a.Complete(ctx, req)
 	if err != nil {
 		return false, err
 	}

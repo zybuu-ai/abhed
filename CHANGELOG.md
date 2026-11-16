@@ -803,6 +803,12 @@ All notable changes to Abhed are recorded here. The format follows
   was refused, and two contradictory warnings printed. The person's entry
   is now set aside once and the org's 0 applies, still only for a model
   served by a local model server on this machine.
+- `abhed doctor` reported a healthy reasoning model, such as gemma4:26b, as
+  "tool calling FAILED": both probes shared one 60-second timeout and the
+  tool probe had 256 tokens, which thinking used up. Each probe now has the
+  whole timeout to itself, both ask with thinking off where the provider
+  takes it, and the tool probe has 1,024 tokens; `/doctor` and first-run
+  setup probe the same way.
 
 ### Go API
 

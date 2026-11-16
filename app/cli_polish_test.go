@@ -18,6 +18,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/customcmd"
 	"github.com/zybuu-ai/abhed/internal/mcpauth/mcpauthtest"
+	"github.com/zybuu-ai/abhed/internal/model"
 	"github.com/zybuu-ai/abhed/profiles"
 )
 
@@ -353,4 +354,75 @@ func (f *urlFollower) String() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.buf.String()
+}
+
+// probeAdapter answers each probe after delay: a word, then a tool call.
+type probeAdapter struct {
+	think bool
+	delay time.Duration
+	mu    sync.Mutex
+	reqs  []model.Request
+}
+
+func (p *probeAdapter) Name() string { return "probe" }
+func (p *probeAdapter) Profile() model.Profile {
+	return model.Profile{Name: "probe", Sampling: model.Sampling{Think: p.think}}
+}
+func (p *probeAdapter) CountTokens(model.Request) (int, error) { return 0, nil }
+func (p *probeAdapter) Complete(ctx context.Context, req model.Request) (<-chan model.Chunk, error) {
+	p.mu.Lock()
+	p.reqs = append(p.reqs, req)
+	p.mu.Unlock()
+	ch := make(chan model.Chunk, 1)
+	go func() {
+		defer close(ch)
+		select {
+		case <-time.After(p.delay):
+		case <-ctx.Done():
+			ch <- model.Chunk{Type: model.ChunkError, Err: ctx.Err()}
+			return
+		}
+		if len(req.Tools) > 0 {
+			ch <- model.Chunk{Type: model.ChunkToolCall, ToolCall: &model.ToolCall{Name: "glob", Args: json.RawMessage(`{"pattern":"*.go"}`)}}
+			return
+		}
+		ch <- model.Chunk{Type: model.ChunkText, Text: "ok"}
+	}()
+	return ch, nil
+}
+
+// #16: doctor's two probes each get the whole timeout, with thinking off
+// where the provider takes it and room for a tool call; together they may
+// take longer than one timeout.
+func TestDoctorProbesHaveTheirOwnTimeouts(t *testing.T) {
+	a := &probeAdapter{think: true, delay: 700 * time.Millisecond}
+	var out bytes.Buffer
+	if !doctorModelProbes(a, time.Second, &out) {
+		t.Fatalf("a model answering each probe within its own timeout failed:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "checking tool calling... ok") {
+		t.Fatal(out.String())
+	}
+	if len(a.reqs) != 2 {
+		t.Fatalf("%d requests", len(a.reqs))
+	}
+	for _, r := range a.reqs {
+		if r.Params.Think == nil || *r.Params.Think {
+			t.Errorf("a probe asked with thinking on: %+v", r.Params)
+		}
+	}
+	if a.reqs[1].MaxTokens < 1024 {
+		t.Errorf("the tool probe's cap is %d", a.reqs[1].MaxTokens)
+	}
+	// A provider that takes no think setting is sent none.
+	e, tc := doctorProbeRequests(model.Profile{})
+	if e.Params.Think != nil || tc.Params.Think != nil {
+		t.Error("think sent to a provider that does not take it")
+	}
+	// A probe that runs out of time says so.
+	slow := &probeAdapter{delay: time.Minute}
+	out.Reset()
+	if doctorModelProbes(slow, 200*time.Millisecond, &out) {
+		t.Fatal("a model that never answered passed")
+	}
 }
