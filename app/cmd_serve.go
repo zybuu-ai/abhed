@@ -94,9 +94,9 @@ func (a *App) serveCmd(workspace, addr string) int {
 	}
 	// The CLI's tool set. The server shares its registry across sessions and
 	// binds each session's own subagents, todo list and skill tool to it.
-	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb,
-	})
+	tsOpts := toolset.Options{Workspace: workspace, Bash: bash, Parts: toolset.All, Vault: vault, Warn: warnf, Sandbox: sb}
+	tsOpts.NoMCPLogins = serveMCPLogins(cfg, vault, os.Stderr)
+	set := toolset.Build(context.Background(), cfg, tsOpts)
 	defer set.Close()
 
 	// Identity first: a provider that cannot reach its issuer is a startup
@@ -317,7 +317,7 @@ func (a *App) serveCmd(workspace, addr string) int {
 		Gateway:       set.Gateway,
 		Egress:        set.Guard(),
 		Index:         set.Index,
-		IndexOptions:  toolset.IndexOptions(cfg),
+		IndexOptions:  toolset.IndexOptions(cfg, workspace),
 		DrainTimeout:  time.Duration(cfg.Server.DrainSeconds) * time.Second,
 		CLILogin:      cliLogin,
 		// Nil unless control_plane.per_session: sessions then share sb as before.

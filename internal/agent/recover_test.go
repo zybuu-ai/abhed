@@ -87,16 +87,16 @@ func TestCarriedSpend(t *testing.T) {
 	_, _ = p.Record(EvSubagentSpawned, ActorAgent, Trusted, map[string]any{"session": "b"})
 	_, _ = p.Record(EvSessionEnded, ActorSystem, Trusted, SessionEnded{Reason: TermCompleted, TokensIn: 300, TokensOut: 30})
 	evs, _ := st.Events("p")
-	tokens, spawned := CarriedSpend(evs)
+	tokens, spawned, _ := CarriedSpend(evs)
 	if tokens != 450 || spawned != 2 {
 		t.Fatalf("carried %d tokens, %d spawns", tokens, spawned)
 	}
 	b := NewBudget(500, 3, false)
-	b.Carry(tokens, spawned)
+	b.Carry(tokens, spawned, 0)
 	if b.Spent() != 450 || b.spawned.Load() != 2 {
 		t.Fatalf("budget %d %d", b.Spent(), b.spawned.Load())
 	}
-	b.Carry(10, 0)
+	b.Carry(10, 0, 0)
 	if b.Spent() != 450 {
 		t.Fatal("Carry lowered the counter")
 	}

@@ -100,6 +100,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	if cfg, err = applyFlags(cfg, f.mode, f.maxTurns, joinRules(f.allow, f.allowedTools), joinDenyRules(f.deny, f.disallowedTools), splitLists(f.addDirs)); err != nil {
 		fail(err)
 	}
+	if cfg, err = usdBudgetFlag(cfg, f.maxBudgetUSD); err != nil {
+		fail(err)
+	}
 	if cfg, err = budgetFlag(cfg, f.maxBudget); err != nil {
 		fail(err)
 	}
@@ -109,9 +112,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 	}
 	// Checked here so a critic whose model cannot be had stops the start,
 	// rather than leaving answers unchecked.
-	if _, err := toolset.Verifier(cfg, !headless); err != nil {
+	if _, err := toolset.Verifier(cfg, true); err != nil {
 		fmt.Fprintf(os.Stderr, "abhed: %v\n", err)
 		return 2
+	}
+	if f.bare {
+		cfg = bareConfig(cfg)
 	}
 	cfg, mcpSrc, err := mcpFlags(cfg, ff, f.mcpConfig, f.strictMCP)
 	if err != nil {
@@ -189,13 +195,14 @@ func run(a *App, workspace string, f *cliFlags) int {
 	pol.Cwd = sess.WorkDir
 	pol.StartupBaseline = config.StartupBaseline()
 	pol.Session = &policy.Overlay{}
+	pol.RuleSource = cfg.RuleSource
 	must(pol.AddDeny(cfg.Permissions.Deny...))
 	must(pol.AddAsk(cfg.Permissions.Ask...))
 	pol.KeepAsk = toolset.KeepManagedAsks(cfg)
 	must(pol.AddAllow(toolset.ToolchainAllows(cfg)...))
 	must(pol.AddAllow(cfg.Permissions.Allow...))
 	must(pol.AllowGitExtensions(cfg.Permissions.GitExtensions...))
-	must(pol.AllowRemoteReads(cfg.SSH.ReadCommands...))
+	must(toolset.RemoteReads(pol, cfg))
 
 	sb, err := startSandbox(cfg, workspace, !headless)
 	if err != nil {
@@ -228,7 +235,8 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// The tool set every surface builds the same way; the CLI takes all of it.
 	vault := openVault()
 	set := toolset.Build(context.Background(), cfg, toolset.Options{
-		Workspace: workspace,
+		Workspace:    workspace,
+		ReadWithheld: pol.ReadWithheldFunc(),
 		Bash: tools.Bash{Sandbox: hostgit.Broker(workspace, sb.Tier, sandboxconfig.NetworkOpen(cfg), sb.Command),
 			Home:      sandbox.HomeFunc(sb),
 			Isolation: sandboxconfig.Isolation(cfg, tier),
@@ -254,6 +262,9 @@ func run(a *App, workspace string, f *cliFlags) int {
 	// invisibly. No Approver: a subagent answers to the approver of the loop
 	// that spawned it, the person at the prompt or the headless refuser.
 	budget := toolset.Budget(cfg)
+	if fallback != nil {
+		fallback.SetGate(budget.Refuse)
+	}
 	factory := &agent.SubagentFactory{
 		Adapter: adapter, Policy: pol,
 		Session: sess, Budget: budget, Config: loopCfg, Workspace: workspace,
@@ -284,12 +295,27 @@ func run(a *App, workspace string, f *cliFlags) int {
 		}
 		factory.Config.Effort, factory.Config.MaxTurns = loopCfg.Effort, loopCfg.MaxTurns
 	}
+	if only := splitLists(f.toolsOnly); len(only) > 0 {
+		// -tools keeps these tools and no others, for the session and its subagents.
+		if registry, err = toolsOnly(registry, only); err != nil {
+			fmt.Fprintf(os.Stderr, "abhed: -tools: %v\n", err)
+			return 2
+		}
+		factory.Tools = agent.RoleToolsFor(factory.Tools, &agent.Definition{Name: "-tools", Tools: only})
+	}
 	// The memory in it follows the configuration and the read rules (input track).
 	loopCfg.SystemPrompt = sysPrompt.apply(cliSystemPrompt(cfg, pol, workspace, adapter, set.SkillListing, registry.Names()))
 	loopCfg.SystemPrompt += roleSection(role)
 	start := startPayload(cfg, f, headless, provider.Model)
 	sysPrompt.record(start)
 	recordRunFlags(start, cfg, mcpSrc, f.strictMCP, agentsSrc, role)
+	if only := splitLists(f.toolsOnly); len(only) > 0 {
+		start["tools_only"] = registry.Names()
+		start["tools_harness"] = harnessTools // the loop's own, kept whatever -tools names
+	}
+	if f.bare {
+		start["bare"] = true
+	}
 	start["web"] = toolset.WebState(cfg)
 	if org := toolset.OrgPolicyState(cfg); org != nil {
 		start["org_policy"] = org
@@ -363,8 +389,12 @@ func run(a *App, workspace string, f *cliFlags) int {
 			o.typed = prompt
 		}
 		if prompt == "" && o.inputs == nil {
-			fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
-			return 2
+			if !startFlags.resuming() {
+				fmt.Fprintln(os.Stderr, "abhed: -p has no task: give it after -p, or on stdin")
+				return 2
+			}
+			// -p --continue with no task goes on with a run that stopped at its turn limit.
+			o.continueLimit = true
 		}
 		return headlessExit(runOnce(ctx, store, renderer, o, adapter, registry, pol, approver, sess, loopCfg, cfg, prompt, budget, set.Extensions), closeAll)
 	}

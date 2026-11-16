@@ -570,7 +570,7 @@ func TestBudgetCarriedOnResume(t *testing.T) {
 	a := newBGServer(t, st)
 	id := a.start("hello", false)
 	<-a.ended
-	want, _ := agent.CarriedSpend(a.events(id))
+	want, _, _ := agent.CarriedSpend(a.events(id))
 	b := newBGServer(t, st)
 	live, err := b.s.resumeSession(context.Background(), id, "", "alice", "acme", true)
 	if err != nil {

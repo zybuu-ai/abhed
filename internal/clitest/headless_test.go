@@ -121,7 +121,7 @@ func TestHeadlessNoTask(t *testing.T) {
 // records a system prompt's digest, never its text.
 func TestHeadlessStreamJSON(t *testing.T) {
 	t.Parallel()
-	script := "text \"Hel\"\ntext \"lo\"\nusage in=10 out=2"
+	script := "text \"Hel\"\ntext \"lo\"\nusage in=6000 out=2"
 	h := piped(t, Opts{Args: []string{"-p", "hi", "-output-format", "stream-json", "-append-system-prompt", "Be terse."}, Script: Script(script)})
 	evs := ParseEvents(h.Stdout())
 	var types []agent.EventType
@@ -144,7 +144,7 @@ func TestHeadlessStreamJSON(t *testing.T) {
 		t.Fatal("the appended instructions did not reach the model")
 	}
 	res := resultOf(t, h.Stdout())
-	if res["result"] != "Hello" || res["usage"].(map[string]any)["input_tokens"] != float64(10) {
+	if res["result"] != "Hello" || res["usage"].(map[string]any)["input_tokens"] != float64(6000) {
 		t.Fatalf("result %v", res)
 	}
 	Golden(t, "stream-json", "record.golden", RecordGolden(evs))

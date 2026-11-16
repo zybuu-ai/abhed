@@ -44,7 +44,7 @@ configuration](#trusting-the-workspace-configuration).
 | `storage` | in-memory or Postgres |
 | `control_plane` | `enabled` serves `/v1/sandboxes` from `abhed serve` (off); its limits and restart policy; `per_session` gives each session a sandbox of its own (off, but on by itself for an `abhed serve` with more than one account); `docker` and `podman` register the container drivers — [Sandboxes over the API](22-sandboxes.md) |
 | `auth` | who may use a server deployment; `cli`: `abhed login` for local accounts — [TLS and command-line sign-in](26-tls-and-cli-login.md) |
-| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in the server's one workspace instead of the sandbox per session a multi-account server gets by default (off) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
+| `server` | how `abhed serve` is reached: `tls` (certificates, client certificates, reload), origins, drain; `shared_sessions` keeps every account in the server's one workspace instead of the sandbox per session a multi-account server gets by default (off); `background` turns on background jobs, a Team feature ([Background jobs](37-background-jobs.md)) — [TLS and command-line sign-in](26-tls-and-cli-login.md), [below](#stopping-the-server), [what accounts share](../ops/enabling-auth.md#what-accounts-share) |
 | `skills` | where skills are loaded from — [Skills](06-skills.md) |
 | `agents` | where subagent definitions are loaded from, or `disabled` — [Agent definitions](17-agent-definitions.md) |
 | `subagents` | what a background task's result does while the session is idle — [Parallel subagents](14-parallel-subagents.md#background-tasks) |
@@ -54,12 +54,12 @@ configuration](#trusting-the-workspace-configuration).
 | `network` | `upstream_proxy`: a corporate HTTP proxy all of Abhed's connections, and the allowlisted commands' traffic, go out through, with a CA bundle, credentials by secret name, a `no_proxy` list and `resolve_via_proxy` (off); never from a workspace, and the managed file can force it — [Network policy](21-network-policy.md#a-corporate-upstream-proxy) |
 | `web_search` | whether the agent can search the web, with which provider — managed only, [below](#web-search) |
 | `web_fetch` | whether the agent can read a web page, and from which hosts — managed only, [below](#web-fetch) |
-| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session |
+| `retrieval`, `rag` | the local index, and external corpora. Each session builds the index at start; with `retrieval.embed`, the embeddings are kept in `~/.abhed/index`, so a start embeds only chunks that changed, and `abhed index` builds them ahead of a session. A file a read deny or ask rule covers is never indexed or embedded, and the `search` tool leaves it out before ranking, as if it were not indexed. The CLI and the SDK build the index to the session's own rules; `abhed serve` builds one index for every session from the configured rules, so a rule an edition's layer or a session adds keeps a file out of the hits but not out of that index or the embedding endpoint |
 | `k8s`, `ssh` | infrastructure tools, off by default; `k8s.clusters` names the only servers `k8s_login` sends a token to — [Clusters and machines](../ops/infrastructure.md) |
 | `additional_dirs` | directories outside the workspace the agent may reach |
 | `memory` | `auto`: whether the agent may keep notes (off); `import_depth`: how deep `@` imports go (5, at most 10) — [Memory](19-input-and-memory.md#memory) |
 | `rules`, `commands` | `dirs`: directories of rule files and of custom commands — [Input, memory and commands](19-input-and-memory.md) |
-| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash) |
+| `tools` | `syntax_check`: whether an edit that breaks a file is refused, reported or allowed — [Tools](05-tools.md#an-edit-that-would-break-the-file); `bash_checkpoints` (`on`, `off` or `required`), `bash_checkpoint_mb` (32) and `bash_checkpoint_files` (20000): what is kept before each `bash` command so `/undo` takes its changes back — [Records](12-records.md#changes-made-through-bash); `diagnostics` (`auto`, `on` or `off`), `diagnostics_max` (20) and `diagnostics_wait_ms` (3000): a language server's diagnostics after the agent's edits — [Language servers](33-language-servers.md#diagnostics-after-the-agents-edits) |
 | `suggest` | the next prompt suggested after a turn in the terminal, the workbench, the console and Abhed Studio — [below](#suggestions) |
 | `verify` | whether each answer is checked against the session's record (`off`, `label`, `strict`), the critic, and the completion contract — [below](#verified-answers), [Verified answers](29-verified-answers.md) |
 | `monitor` | the supervisor, which reviews each call after policy and may only tighten the decision: on with the rules judge by default; `judge: "model"` adds a model judge — [The supervisor](04-permissions.md#the-supervisor) |
@@ -172,11 +172,85 @@ startup on every provider, not only the default.
 `nested_subagents` is a boolean, off by default: while it is off, a subagent
 cannot start one of its own, and its `task` or `tasks` call is refused.
 
+`max_continues` (3 by default) is how many times a person may continue a run
+that stopped at `max_turns` in one conversation, with `/continue` or
+`abhed -p --continue`; 0 turns continuing off. See [Turn
+limit](04-permissions.md#turn-limit).
+
 `max_budget_tokens` caps the whole session: the primary agent and every
 subagent it spawns draw on one allowance, so a fan-out cannot multiply spend
 invisibly. A session that exhausts it ends with the terminal reason
 `max_budget`, checked at a turn boundary so a turn already in flight
 finishes. Zero means no cap.
+
+`max_budget_usd` caps the session's cost in US dollars the same way,
+subagents included. A run that reaches it ends `max_budget` (exit `3`) and
+records `budget.stopped` with what was spent. With a dollar cap set, a model
+that has no price is refused before any call is made, rather than run at a
+guessed cost. Every model call passes that gate before its request and is
+charged after it: the turns, the critic, suggestions, the compaction summary,
+pipeline model steps, Studio's completions, next edits and commit messages,
+and a fallback model, which is not moved to while a dollar cap is set and it
+has no price. A completion model on this machine is no exception: a local
+address may front a paid model, so price it, at 0 if it is free.
+
+What a provider reports is checked before it is charged, and anything
+raised is marked `estimated` on the call:
+
+- A whole prompt (with an Anthropic cache's reads and writes) reported as
+  nothing, or under a quarter of the request's own count, is charged at that
+  count, about four characters a token. A server that reports only the part
+  of the prompt it did not have cached (Ollama reuses its KV cache) reads
+  higher in Abhed's token totals and token budget than it says on warm turns;
+  a local model priced at 0 moves no dollars.
+- Output reported under a quarter of what came back is charged at what came
+  back.
+- A cut call (cancelled, timed out, or ended by an error once its stream
+  opened) is charged at least its prompt and what came back. Under a dollar
+  cap, or for a model that reasons out of sight, it is charged at the most
+  the request allowed: the provider took the request and worked, and bills
+  what it produced whether or not it arrived, so interrupting a run, or a
+  connection that drops, does not save money under a cap.
+- Only a call the provider never accepted (an error status, a connection
+  never made) is not charged.
+- Three failed replies in a row with no usable text or tool call (a reply
+  whose tool call could not be parsed included) end the run
+  `retry_exhausted` whatever the error said (a transport error's text
+  changes with its port), rather than being asked again to the turn limit.
+  The count starts again with each run.
+
+A cap set by the managed or org configuration also fixes the prices it is
+spent by (see below).
+
+### Prices
+
+Each model call is priced from its model's name as sent to the provider,
+in US dollars per million tokens. For `azure-openai` that name is the
+deployment, so `pricing` is keyed by deployment name. Abhed carries the
+Standard-tier list prices of some hosted models, checked on 9 November 2026
+against developers.openai.com/api/docs/pricing and
+platform.claude.com/docs/en/about-claude/pricing. Models priced by prompt
+length, such as Claude Haiku 5.5 and the gpt-6 family, and retired models
+are not in the list, so they are unpriced until `pricing` names them.
+`pricing` sets other models, or overrides the list:
+
+```json
+"pricing": {
+  "gemma4:26b": {"input": 0, "output": 0},
+  "acme-large": {"input": 3, "output": 15, "cached_input": 0.3, "cache_write": 3.75}
+}
+```
+
+`cached_input` and `cache_write` default to the input price. A model with no
+price is shown as unpriced: its cost is in no total and is never guessed. A
+price with a negative figure is no price. `pricing` is an operator's
+setting: a workspace's configuration cannot set it, trusted or not, since a
+lower price would stretch a dollar budget. When the managed or org
+configuration sets `limits.max_budget_usd`, prices come only from that
+layer and the built-in list; `pricing` from the person's own file is set
+aside with a warning. The cost of each call is in its
+`model.call` event (`cost_usd`), and the session's in `session.ended`;
+`/usage`, `-p -output-format json`, HawkEYE and Studio show them.
 
 ## Background tasks
 
@@ -1378,6 +1452,7 @@ wrote:
 | `abhed_fence_limits_total`, `abhed_sandbox_planted_total` | `limit`; `what` |
 | `abhed_fence_denied_total` | `source` (the fence tier's system-call profile, as its `fence.denied` names it), `call` (a system call that profile refuses) |
 | `abhed_lsp_starts_total` | `language` (`go`, `python`, `typescript`, `javascript`, `rust`, or `other`): language servers started for editors; a restart after a crash counts again — [Language servers](33-language-servers.md) |
+| `abhed_lsp_diagnostics_total` | `language`, `outcome` (`found`, `clean`, `timed_out`, `skipped`): language server diagnostics after the agent's edits — [Language servers](33-language-servers.md#diagnostics-after-the-agents-edits) |
 | `abhed_lsp_messages_total` | `language`, `outcome` (`passed`, `refused`): editors' messages to language servers, counted when each server ends |
 | `abhed_ollama_actions_total` | `op` (`start`, `install`, `pull`), `outcome` (`ok`, `failed`, `declined`, `refused`, `cancelled`, `manual`): a person's attempts to get a local Ollama model working — [A local Ollama model](03-providers.md#a-local-ollama-model) |
 | `abhed_record_write_seconds`, `abhed_record_write_errors_total`, `abhed_record_repairs_total` | `record` (events, audit) |
@@ -1522,9 +1597,10 @@ Later sources win, except that an org-managed file cannot be overridden:
 2. `~/.abhed/config.json`
 3. a `-settings` file or inline JSON, for one run
 4. `.abhed/config.json` in the workspace (whole only when trusted)
-5. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
-6. command-line flags and the SDK's `Options`
-7. **managed settings**, which nothing below can loosen
+5. `.abhed/config.local.json` in the workspace, your own settings for it, under the same trust ([below](#the-local-file))
+6. environment (`ABHED_DATABASE_URL` and similar), except for a key the managed file sets
+7. command-line flags and the SDK's `Options`
+8. **managed settings**, which nothing below can loosen
 
 ### The workspace file
 
@@ -1559,6 +1635,26 @@ Studio's debug setup, which raises `sandbox.min_tier` in this file, does not
 write through a link: when the file is a link it asks you to set the tier in
 the file the link points to. `abhed init` writes a fresh file and renames it
 into place, so a link at that name is replaced, not written through.
+
+### The local file
+
+`.abhed/config.local.json` is for settings that are yours in one workspace
+and not the team's: a model, a limit, a rule while you work there. It is
+merged over `.abhed/config.json` and read the same way (inside the
+workspace, a plain file of at most 4 MiB). `abhed init` writes
+`.abhed/.gitignore` naming it; in a workspace set up otherwise, add it to
+the repository's ignore file yourself.
+
+A repository could still ship one, so it gets no more trust than the
+workspace file: the trust decision covers both files, one hash over the
+two, and the review shows both. Adding or changing the local file asks
+again. Untrusted, it applies only what tightens; trusted, it is merged like
+the workspace file, so a managed-only setting is set aside, the managed file
+still binds, and every managed deny rule still applies. `abhed trust`
+names it as `local`. Agent tools cannot write it: it is Abhed's state.
+`abhed init` trusts only the `config.json` it writes: a local file already
+in the workspace, which a cloned repository could have shipped, is shown
+with it and asked about on the next run.
 
 Some settings are **managed only**: a lower layer's value is set aside with a
 warning and a record event. They are `record.dir`, `record.retention_days`,
@@ -1982,7 +2078,7 @@ A workspace's `.abhed/users.json` is read only when the workspace is trusted;
 sign in (see [Accounts](#accounts)).
 
 Trust is for the file's exact contents: after an edit it is asked about again.
-`abhed init` trusts the file it writes. Your own `~/.abhed/config.json` and
+`abhed init` trusts the file it writes, and nothing else already there. Your own `~/.abhed/config.json` and
 the managed `/etc/abhed/config.json` are not affected, and the managed file
 still wins. The full classification of every setting is in [Workspace
 trust](../architecture/workspace-trust.md).

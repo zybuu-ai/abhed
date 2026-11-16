@@ -56,6 +56,9 @@ func (c *cliState) endBackground() {
 		c.unfollow()
 		c.unfollow = nil
 	}
+	if c.loop != nil && c.loop.Diagnostics != nil {
+		c.loop.Diagnostics.Close()
+	}
 }
 
 // tasksCommand is /tasks: the conversation's subagents and background jobs,

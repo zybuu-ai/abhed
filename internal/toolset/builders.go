@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -20,7 +22,9 @@ import (
 	"github.com/zybuu-ai/abhed/internal/k8s"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/mcp"
+	"github.com/zybuu-ai/abhed/internal/mcpauth"
 	"github.com/zybuu-ai/abhed/internal/model"
+	"github.com/zybuu-ai/abhed/internal/policy"
 	"github.com/zybuu-ai/abhed/internal/rag"
 	"github.com/zybuu-ai/abhed/internal/remote"
 	"github.com/zybuu-ai/abhed/internal/secrets"
@@ -41,6 +45,35 @@ func MCPConfigs(cfg config.Config) []mcp.ServerConfig {
 		})
 	}
 	return out
+}
+
+// MCPAuthorize gives each URL server the login abhed mcp login kept in
+// store, bound to the server's name and URL; nil for a server with none.
+func MCPAuthorize(store *secrets.Store) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, hc *http.Client) (mcp.Authorizer, error) {
+		a, err := mcpauth.Load(store, cfg.Name, cfg.URL, hc)
+		if a == nil || err != nil {
+			return nil, err
+		}
+		return a, nil
+	}
+}
+
+// ErrMCPLoginsPerAccount is a server whose accounts each have their own
+// secrets: an MCP server's OAuth login is the operator's, and a gateway its
+// sessions share would have every account act as the operator.
+var ErrMCPLoginsPerAccount = errors.New("OAuth logins aren't available per account yet: on a server where accounts sign in, " +
+	"a login would let every account act as the operator, so it is not used")
+
+// MCPLoginsWithheld uses no login: a URL server that has one in store is
+// refused, with why, rather than reached without it or with the operator's.
+func MCPLoginsWithheld(store *secrets.Store, why error) func(mcp.ServerConfig, *http.Client) (mcp.Authorizer, error) {
+	return func(cfg mcp.ServerConfig, _ *http.Client) (mcp.Authorizer, error) {
+		if in, _, _, err := mcpauth.Status(store, cfg.Name, cfg.URL); in || err != nil {
+			return nil, fmt.Errorf("it has an OAuth login (abhed mcp login): %w", why)
+		}
+		return nil, nil
+	}
 }
 
 // MCPAdmit is the gateway's check of every server against the
@@ -120,8 +153,10 @@ func SkillRoots(cfg config.Config) []string {
 	return []string{"~/.abhed/skills"}
 }
 
-// LoadSkills loads the configured skill directories and returns the registry
-// plus its prompt listing. One malformed SKILL.md is reported, not fatal.
+// LoadSkills loads the configured skill directories, then the workspace's
+// own skills when the person trusted their exact content and nothing turned
+// them off, and returns the registry plus its prompt listing. One malformed
+// SKILL.md is reported, not fatal.
 func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry, string) {
 	if cfg.Skills.Disabled {
 		return skills.NewRegistry(), ""
@@ -130,7 +165,53 @@ func LoadSkills(cfg config.Config, warn func(string, ...any)) (*skills.Registry,
 	for _, err := range errs {
 		warn("%v", err)
 	}
+	// At home, .abhed/skills is ~/.abhed/skills, loaded above already.
+	if ws := cfg.Workspace; ws.SkillsTrusted && ws.SkillsReason != "home" && !cfg.Skills.DisableWorkspace {
+		for _, w := range ws.SkillFiles() {
+			var md, pipeline []byte
+			for _, f := range w.Files {
+				switch f.Rel {
+				case "SKILL.md":
+					md = f.Data
+				case "pipeline.json":
+					pipeline = f.Data
+				}
+			}
+			s, err := skills.FromContent(w.Path, md, pipeline)
+			if err != nil {
+				warn("skills: %s: %v", config.Printable(w.Dir), err)
+				continue
+			}
+			s.Source = filepath.Join(ws.Workspace, filepath.FromSlash(config.WorkspaceSkillsDir))
+			// Only SKILL.md and pipeline.json are used: the folder is in .abhed,
+			// which the agent can neither read nor run anything from.
+			s.Dir, s.Workspace = "", true
+			// A name is plain ASCII, so no look-alike letter can pass for an
+			// installed skill's.
+			if !asciiName(s.Name) {
+				warn("skills: the workspace skill %s is not loaded: a workspace skill's name is ASCII letters, digits, '-', '_' and '.'", config.Printable(s.Name))
+				continue
+			}
+			// An installed skill keeps its name: a repository's cannot stand in for it.
+			if !reg.AddNew(s) {
+				warn("skills: the workspace skill %s is not loaded: a skill the organisation or you installed has that name", config.Printable(s.Name))
+			}
+		}
+	}
 	return reg, reg.Listing()
+}
+
+// asciiName reports a skill name of ASCII letters, digits, '-', '_' and '.'.
+func asciiName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // AgentRoots are the operator's definition directories: agents.dirs, or
@@ -271,11 +352,20 @@ func InfraTools(cfg config.Config, vault *secrets.Store, warn func(string, ...an
 				warn("ssh host %q skips host key verification — it cannot detect a machine-in-the-middle", h.Name)
 			}
 		}
+		// Every name in ssh.hosts stays the operator's, loaded or not:
+		// ssh_connect may not put a machine of its own behind one.
+		declared := make([]string, 0, len(cfg.SSH.Hosts))
+		for _, h := range cfg.SSH.Hosts {
+			declared = append(declared, h.Name)
+		}
 		reg, errs := remote.NewRegistry(hosts)
 		for _, err := range errs {
 			warn("ssh: %v", err)
 		}
-		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, Secret: secret}, remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts})
+		out = append(out, remote.Tool{R: reg, Reads: cfg.SSH.ReadCommands, ReadOnly: cfg.SSHReadOnlyHosts() != nil,
+			ReadContents: cfg.SSHReadOnlyHosts() != nil && cfg.SSHReadContents(),
+			MaxTimeout:   time.Duration(cfg.SSH.MaxTimeoutSeconds) * time.Second, Secret: secret},
+			remote.ConnectTool{R: reg, Secret: secret, Allowed: cfg.SSH.ConnectHosts, Declared: declared})
 		if cfg.SSH.Transfers {
 			// Held in memory whole, so bounded at 1 GiB whatever is configured.
 			limit := int64(min(max(cfg.SSH.TransferMaxMB, 0), 1024)) << 20
@@ -338,20 +428,42 @@ func RAGTools(cfg config.Config, warn func(string, ...any)) []tools.Tool {
 
 // IndexOptions mirrors what OpenIndex uses, so a reindex triggered from the
 // settings surface rebuilds on the same terms as the startup build rather than
-// quietly dropping the vector tier.
-func IndexOptions(cfg config.Config) index.BuildOptions {
+// quietly dropping the vector tier, or the read rules.
+func IndexOptions(cfg config.Config, workspace string) index.BuildOptions {
 	opts := index.DefaultBuildOptions()
 	opts.Embed = cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != ""
+	opts.Withheld = ReadWithheld(cfg, workspace)
 	return opts
+}
+
+// ReadWithheld is the configured read rules over a workspace: whether a deny
+// rule, or an ask rule such as the built-in ones for .env and keys, keeps a
+// file from the agent. The index is built with it, before any session.
+func ReadWithheld(cfg config.Config, workspace string) func(string) bool {
+	pol := policy.New(policy.ModeDefault)
+	pol.Roots = func() []string { return []string{workspace} }
+	_ = pol.AddDeny(cfg.Permissions.Deny...)
+	_ = pol.AddAsk(cfg.Permissions.Ask...)
+	return pol.ReadWithheldFunc()
 }
 
 // OpenIndex builds the retrieval index for a workspace.
 func OpenIndex(ctx context.Context, cfg config.Config, workspace string) (*index.Index, error) {
+	return OpenIndexWithheld(ctx, cfg, workspace, nil)
+}
+
+// OpenIndexWithheld is OpenIndex built to the read rules withheld gives, nil
+// for the configured ones.
+func OpenIndexWithheld(ctx context.Context, cfg config.Config, workspace string, withheld func(string) bool) (*index.Index, error) {
 	if workspace == "" {
 		return nil, fmt.Errorf("no workspace to index")
 	}
 	ix := index.New(workspace)
 	opts := index.DefaultBuildOptions()
+	opts.Withheld = withheld
+	if withheld == nil {
+		opts.Withheld = ReadWithheld(cfg, workspace)
+	}
 
 	var cache *index.FileVectorCache
 	if cfg.Retrieval.Embed && cfg.Retrieval.EmbedBaseURL != "" {

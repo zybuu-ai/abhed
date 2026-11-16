@@ -469,6 +469,8 @@ func rebuildFrom(st *cliState, id string, events []agent.Event) error {
 	loop.Recorder.Advance(events[len(events)-1].Seq)
 	loop.SetHistory(msgs, end.Turns)
 	loop.CarryUsage(end)
+	loop.NoteContinues(events) // the bound on continuing holds across processes
+	loop.NoteFolderMemory(events)
 	// The allowance goes on from what the session spent, and results the
 	// record owes the conversation arrive at the next task's first boundary.
 	loop.Budget.Carry(agent.CarriedSpend(events))

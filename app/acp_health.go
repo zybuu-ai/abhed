@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"github.com/zybuu-ai/abhed/config"
 	"github.com/zybuu-ai/abhed/internal/managed"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/recordship"
 	"github.com/zybuu-ai/abhed/store/local"
 )
 
@@ -130,6 +132,12 @@ func doctorChecks(ctx context.Context, cfg config.Config, cfgErr error, workspac
 	} else {
 		add("index", "Code index", "ok", "off")
 	}
+	if w := tenantClaimWarning(cfg); w != "" {
+		add("tenant", "Tenant", "warn", w)
+	}
+	if status, detail, ok := shipCheck(cfg); ok {
+		add("record_ship", "Record shipping", status, detail)
+	}
 	if cfg.Managed {
 		add("managed", "Managed policy", "ok", fmt.Sprintf("in force from %s; it sets %d setting(s)", managed.ConfigFile, len(cfg.ManagedKeys)))
 	} else {
@@ -236,3 +244,56 @@ func (a *App) doctorJSON(w io.Writer, workspace string, set flagSettings) int {
 	}
 	return 0
 }
+
+// shipCheck is the record shipping's state as a check, when record.ship is on: failing
+// when the org server said the person's access was removed, warning when more waits than
+// the limit or the last pass failed. It reads only the shipper's state file.
+func shipCheck(cfg config.Config) (status, detail string, ok bool) {
+	t, err := shipTargetFor(cfg)
+	switch {
+	case errors.Is(err, errShipOff):
+		return "", "", false
+	case err != nil:
+		return "warn", err.Error(), true
+	}
+	path, err := shipStatePath()
+	if err != nil {
+		return "warn", err.Error(), true
+	}
+	st, err := recordship.LoadState(path)
+	switch {
+	case err != nil:
+		return "warn", err.Error(), true
+	case st == nil || st.URL != t.url:
+		return "ok", "on, to " + t.url + "; nothing shipped yet", true
+	case st.AccessRemoved != nil:
+		return "fail", strings.Join(st.Notices(0), "\n"), true
+	}
+	if n := st.Notices(cfg.Record.Ship.MaxBacklog()); len(n) > 0 {
+		return "warn", strings.Join(n, "\n"), true
+	}
+	if st.LastError != "" {
+		return "warn", "the last pass failed: " + st.LastError, true
+	}
+	return "ok", "on, to " + t.url, true
+}
+
+// tenantClaimWarning is set when sign-in is through an identity provider (auth.mode oidc,
+// no provider whose preset picks the claim), storage.tenant is not default and
+// auth.tenant_claim is unset: a sign-in's tenant is then the claim named "tenant", else
+// "default", so unless the provider sends a matching "tenant" claim the server refuses
+// everyone it signs in at its tenant-scoped routes.
+func tenantClaimWarning(cfg config.Config) string {
+	t := cfg.Storage.Tenant
+	if cfg.Auth.Mode != "oidc" || tenantPreset[strings.ToLower(cfg.Auth.Provider)] || cfg.Auth.TenantClaim != "" || t == "" || t == "default" {
+		return ""
+	}
+	return fmt.Sprintf("storage.tenant is %q but auth.tenant_claim is not set: a sign-in's tenant is read from the claim "+
+		"named \"tenant\", else \"default\", so unless the identity provider sends \"tenant\": %q everyone it signs in "+
+		"is refused; set auth.tenant_claim (\"tenant\" to keep this), or leave storage.tenant unset", t, t)
+}
+
+// tenantPreset are the auth.provider values whose sign-in sets the tenant itself, as the
+// Enterprise server's start-up warning reads them: google and microsoft name a tenant claim
+// (hd, tid), and github takes auth.default_tenant. Any other name warns as no name does.
+var tenantPreset = map[string]bool{"google": true, "microsoft": true, "github": true}

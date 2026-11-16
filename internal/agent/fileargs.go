@@ -27,10 +27,10 @@ func (l *Loop) filesJudged(tool tools.Tool, call model.ToolCall, d policy.Result
 		r := pol.Evaluate(as, mutates, args)
 		switch {
 		case r.Decision == policy.Deny && r.Step != "mode":
-			return policy.Result{Decision: policy.Deny, Step: "deny", Rule: r.Rule, Layer: r.Layer,
+			return policy.Result{Decision: policy.Deny, Step: "deny", Rule: r.Rule, Layer: r.Layer, Source: r.Source,
 				Reason: fmt.Sprintf("the file %s it would %s: %s", path, as, r.Reason)}, true
 		case r.Decision == policy.Ask && (r.Step == "ask" || r.Step == "destructive") && d.Decision == policy.Allow:
-			return policy.Result{Decision: policy.Ask, Step: r.Step, Rule: r.Rule, Layer: r.Layer,
+			return policy.Result{Decision: policy.Ask, Step: r.Step, Rule: r.Rule, Layer: r.Layer, Source: r.Source,
 				Reason: fmt.Sprintf("the file %s it would %s: %s", path, as, r.Reason)}, true
 		}
 		return policy.Result{}, false

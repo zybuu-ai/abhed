@@ -52,6 +52,34 @@ and `/undo` of the new file removes them while they are empty.
 the first glob segment is searched, held to the workspace as any path, with
 the rest as its `glob`.
 
+`grep` also passes over the files a `.gitignore` excludes, the workspace's
+own and those below it, as git reads them (`!` takes a file back), unless
+`path` names the file or a folder inside an ignored one. It reads the files
+left in parallel. When ripgrep (`rg`) is on `PATH` as Abhed starts, one
+`rg` run beside the walk narrows which files are read: it is given only a
+literal that every match must contain, as a fixed string, and no
+configuration or environment of its own. An `rg` inside the workspace or an
+added directory is never run, nor one any account but root could replace:
+the program and every folder above it must be owned by root and writable by
+neither their group nor anyone else, so an `rg` from Homebrew (whose folders
+are yours) is not used. Install one from the system's packages for `grep`
+to use it; there is no setting to take another. Either way, what reaches the model is
+Abhed's own read and match: each file is read inside the workspace, never
+through a link or into Abhed's state, a file a read deny rule covers is
+left out with its matches (`deny: ["read(secrets/**)"]` keeps `secrets/`
+out of `grep` too), and secret values are redacted. A file an ask rule
+covers, such as the built-in ones for `.env` and keys, is left out too: no
+one can be asked through a search. Each file is judged by its path before
+it is read, so a withheld file is never opened or matched; the answer says
+how many files were not searched for that reason, a count that is the same
+whatever the pattern, and a `path` that names a withheld file is answered
+`withheld by a read rule`. `search` leaves such files out before ranking,
+as if they were not indexed, and says nothing of them. A pattern with no such literal, or one matched
+without case beyond ASCII, is searched without ripgrep. The two searches
+read `.gitignore` files with separate parsers, so on an unusual pattern they
+can differ in which ignored files they skip; the read rules hold the same
+on both.
+
 `glob` and `grep` pass over vendored and build folders (`node_modules`,
 `vendor`, `dist`, `.git` and others) unless `path` points into one. A glob that
 names such a folder anywhere in its pattern, such as

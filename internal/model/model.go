@@ -196,6 +196,13 @@ type Usage struct {
 	// included; some endpoints send none, and absence is not a cold cache.
 	CacheReported   bool
 	ReasoningTokens int
+	// CacheWriteTokens are prompt tokens written to the provider's cache,
+	// which some providers bill above the input price.
+	CacheWriteTokens int
+	// CacheExcluded marks InputTokens that leave out the cached and
+	// cache-written tokens (Anthropic counts them apart); otherwise the
+	// cached tokens are part of InputTokens.
+	CacheExcluded bool
 }
 
 // Profile describes what a model can do. Populated by the conformance suite

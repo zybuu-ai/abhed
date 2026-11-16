@@ -81,7 +81,7 @@ func TestManagedModelBindsTheFlags(t *testing.T) {
 // name; /status and /usage show the session.
 func TestModelStatusUsageOnPty(t *testing.T) {
 	t.Parallel()
-	h := StartRun(t, Opts{UserConfig: twoModels, Cols: 120, Rows: 40, Script: "text \"one\"\nusage in=1000 cached=800 out=5\n\ntext \"two\""})
+	h := StartRun(t, Opts{UserConfig: twoModels, Cols: 120, Rows: 40, Script: "text \"one\"\nusage in=6000 cached=800 out=5\n\ntext \"two\""})
 	h.WaitText("Type a task")
 	h.Settle()
 	h.Type("/model\r")

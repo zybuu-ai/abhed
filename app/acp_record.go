@@ -280,7 +280,10 @@ func (c *acpConn) recordContinued(s *acpSession, events []agent.Event, via strin
 	if err := recordResumed(loop.Recorder, resumed); err != nil {
 		return err
 	}
-	return toolset.RecordConfigAttempts(loop.Recorder, toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand())))
+	if err := toolset.RecordConfigAttempts(loop.Recorder, toolset.ConfigAttempts(cfg, toolset.LocalPrincipal(inAgentCommand()))); err != nil {
+		return err
+	}
+	return toolset.RecordConfigChanges(loop.Recorder)
 }
 
 // recordResumed writes a session.resumed; a test makes it fail.

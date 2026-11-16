@@ -162,10 +162,13 @@ func (s *Stub) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// The next-prompt call after a turn takes no turn of the script.
+	// The next-prompt call after a turn takes no turn of the script. It
+	// reports usage, as a real server does, at a fixed size a real request of
+	// its kind has (a figure under a quarter of the prompt would be estimated),
+	// so the totals tests read do not move with the request's exact length.
 	if bytes.Contains(body, []byte("predict the next message")) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, `data: {"id":"stub-s","object":"chat.completion.chunk","model":"stub-model","choices":[{"index":0,"delta":{"content":"NONE"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+		fmt.Fprint(w, `data: {"id":"stub-s","object":"chat.completion.chunk","model":"stub-model","choices":[{"index":0,"delta":{"content":"NONE"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2500,"completion_tokens":1}}`+"\n\ndata: [DONE]\n\n")
 		return
 	}
 	s.mu.Lock()

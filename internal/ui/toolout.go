@@ -477,7 +477,10 @@ func (b *resultBlock) lines(width int, s Style, expanded bool) []string {
 
 func (r *Renderer) toolDenied(d *dock, m map[string]string) {
 	s := r.s
-	if c := r.tools.calls[m["call_id"]]; c != nil && c.asked && m["by"] != agent.BySystem && m["by"] != agent.ByPolicy {
+	c := r.tools.calls[m["call_id"]]
+	// A denied call is over: nothing waits for its result.
+	delete(r.tools.calls, m["call_id"])
+	if c != nil && c.asked && m["by"] != agent.BySystem && m["by"] != agent.ByPolicy {
 		return // the dialog's record already says who declined it
 	}
 	d.commit(&rawBlock{text: "  " + s.Red("⎿  ✕ ") + s.Dim(sanitize(m["reason"], false))})

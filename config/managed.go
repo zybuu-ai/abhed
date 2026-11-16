@@ -17,6 +17,7 @@ import (
 
 	"github.com/zybuu-ai/abhed/internal/extension"
 	"github.com/zybuu-ai/abhed/internal/managed"
+	"github.com/zybuu-ai/abhed/orgpolicy"
 )
 
 // LoadManaged is the built-in defaults with only the managed configuration
@@ -71,6 +72,15 @@ func mergeManaged(cfg *Config) error {
 	var orgLists map[string]any
 	if org != nil {
 		orgLists = takeOrgLists(org)
+		if b, err := json.Marshal(org); err == nil {
+			mine := managedRuleSet(local)
+			cfg.orgRules = map[string]bool{}
+			for k := range managedRuleSet(b) {
+				if !mine[k] {
+					cfg.orgRules[k] = true
+				}
+			}
+		}
 	}
 	data, label := local, path
 	if org != nil {
@@ -131,11 +141,15 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	below, belowAsk := slices.Clone(cfg.Permissions.Deny), slices.Clone(cfg.Permissions.Ask)
 	belowMon, belowKeys := cfg.Monitor, slices.Clone(cfg.SetKeys)
 	belowMon.Honeytokens = slices.Clone(belowMon.Honeytokens)
+	belowPricing := maps.Clone(cfg.Pricing)
 	belowLists := map[string][]string{}
 	for _, k := range orgBelowLists {
 		belowLists[k] = slices.Clone(*unionFields[k](cfg))
 	}
-	if _, err := mergeData(cfg, label, data); err != nil {
+	cfg.mergingManaged = true
+	_, err := mergeData(cfg, label, data)
+	cfg.mergingManaged = false
+	if err != nil {
 		return err
 	}
 	cfg.Managed = true
@@ -156,6 +170,7 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 		delete(cfg.origins, "permissions.ask")
 	}
 	monitorBelow(cfg, belowMon, func(k string) bool { return slices.Contains(belowKeys, k) })
+	managedPricing(cfg, data, belowPricing)
 	noteOverrides(cfg, data)
 	for i := range cfg.Unknown {
 		cfg.Unknown[i].Managed = cfg.Unknown[i].File == label
@@ -315,6 +330,39 @@ func (c Config) ManagedWebFetchOff() bool { return c.managedFetchOff }
 // configuration sets a permissions key, whichever one. Every surface asks this.
 func (c Config) AllowLocked() bool { return c.ManagedSets("permissions") }
 
+// SSHReadOnlyHosts reports the hosts on which the read-only classifier may
+// approve an ssh command by its text: those in ssh.hosts that load, with a
+// name, an address and a user. It is nil, the classifier off, when ssh is
+// off, when ssh.listed_reads_only is set, or when the managed file sets the
+// permissions or any ssh key without setting ssh.listed_reads_only itself,
+// since only it then decides what runs on a host unasked.
+func (c Config) SSHReadOnlyHosts() func(host string) bool {
+	if !c.SSH.Enabled || c.SSH.ListedReadsOnly || c.sshLocked() && !c.ManagedSets("ssh.listed_reads_only") {
+		return nil
+	}
+	hosts := map[string]bool{}
+	for _, h := range c.SSH.Hosts {
+		if h.Name != "" && h.Addr != "" && h.User != "" {
+			hosts[h.Name] = true
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	return func(host string) bool { return hosts[host] }
+}
+
+// SSHReadContents reports whether the read-only classifier also approves
+// programs that print files (ssh.read_contents). Where the managed file
+// sets the permissions or any ssh key, only its own ssh.read_contents counts.
+func (c Config) SSHReadContents() bool {
+	return c.SSH.ReadContents && (!c.sshLocked() || c.ManagedSets("ssh.read_contents"))
+}
+
+// sshLocked reports a managed file that decides what runs on a host
+// unasked: it sets the permissions or an ssh key.
+func (c Config) sshLocked() bool { return c.AllowLocked() || c.ManagedSets("ssh") }
+
 // ManagedScreens reports whether the managed file itself sets the deny rules
 // or the extensions, so a refusal they make is the organisation's to hold.
 // A managed Config with no ManagedKeys at all, such as one built by hand,
@@ -324,7 +372,17 @@ func (c Config) ManagedScreens() bool {
 		// Nothing is known of what the file set, so assume it set the rules.
 		return true
 	}
-	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun())
+	return c.Managed && (c.ManagedSets("permissions.deny") || c.ManagedSets("extensions") && c.extensionHooksRun() ||
+		c.managedHooksScreen())
+}
+
+// managedHooksScreen reports whether a simple hook of the managed file's
+// own runs on calls: one that takes tool_call or permission_request.
+func (c Config) managedHooksScreen() bool {
+	return slices.ContainsFunc(c.HookSpecs(), func(h extension.HookConfig) bool {
+		return h.Layer == LayerManaged && (slices.Contains(h.Events, extension.EvToolCall) ||
+			slices.Contains(h.Events, extension.EvPermissionRequest))
+	})
 }
 
 // extensionHooksRun reports whether an extension is sent a hook event, not
@@ -662,6 +720,12 @@ func (c *Config) noteRuleLayer(layer string) {
 			}
 		}
 	}
+	// A simple hook not yet credited is one this layer's file added.
+	for i := range c.Hooks.Run {
+		if c.Hooks.Run[i].Layer == "" {
+			c.Hooks.Run[i].Layer = layer
+		}
+	}
 	replaced := layer == LayerManaged && c.ManagedSets("extensions")
 	for _, e := range c.Extensions {
 		k := "extension\x00" + e.Name
@@ -714,9 +778,80 @@ func (c Config) RuleLayer(list, rule string) string {
 	return "config"
 }
 
+// RuleSource names where a configured rule in list (allow, ask or deny) came
+// from, for a refusal to say whose it is: its layer, with the org policy told
+// apart from the machine's managed file, and that layer in words. A rule
+// loading did not see has the layer "config" and no words.
+func (c Config) RuleSource(list, rule string) (layer, where string) {
+	layer = c.RuleLayer(list, rule)
+	if layer == LayerManaged && c.orgRules[list+"\x00"+strings.TrimSpace(rule)] {
+		layer = LayerOrg
+	}
+	switch layer {
+	case LayerOrg:
+		where = "the org policy"
+		switch {
+		case c.OrgPolicy.Status == orgpolicy.StatusFallback:
+			where = "the org policy fallback"
+		case orgServer(c.OrgPolicy.URL) != "" && c.OrgPolicy.Version > 0:
+			where = fmt.Sprintf("the org policy (%s, version %d)", orgServer(c.OrgPolicy.URL), c.OrgPolicy.Version)
+		case orgServer(c.OrgPolicy.URL) != "":
+			where = fmt.Sprintf("the org policy (%s)", orgServer(c.OrgPolicy.URL))
+		case c.OrgPolicy.Version > 0:
+			where = fmt.Sprintf("the org policy (version %d)", c.OrgPolicy.Version)
+		}
+	case LayerManaged:
+		where = "the managed configuration " + managed.ConfigFile
+	case LayerWorkspace:
+		where = "the workspace configuration"
+		if c.Workspace.File != "" {
+			where += " " + Printable(c.Workspace.File)
+		}
+	case LayerUser:
+		where = "your user configuration ~/.abhed/config.json"
+	case LayerSettings:
+		where = "the -settings file"
+		if c.Settings.Name != "" {
+			where += " " + Printable(c.Settings.Name)
+		}
+	case LayerFlag:
+		where = "the -" + list + " flag"
+	case LayerDefault:
+		where = "Abhed's built-in rules"
+	}
+	return layer, where
+}
+
 // ManagedAskRule reports whether rule, as written, is an ask rule the
 // managed configuration lists: one that asks for each call, inside an
 // approved runbook too (the engine's KeepAsk is set from it).
 func (c Config) ManagedAskRule(rule string) bool {
 	return rule != "" && c.RuleLayer("ask", rule) == LayerManaged
+}
+
+// managedPricing keeps a managed or org dollar cap the managed layer's: under
+// one, calls are priced only by the managed configuration and the built-in
+// list, so a lower layer's price cannot stretch it. Lower prices are set aside.
+func managedPricing(cfg *Config, data []byte, below map[string]PriceConfig) {
+	if !cfg.ManagedSets("limits.max_budget_usd") || cfg.Limits.MaxBudgetUSD <= 0 {
+		return
+	}
+	var doc struct {
+		Pricing map[string]PriceConfig `json:"pricing"`
+	}
+	_ = json.Unmarshal(data, &doc)
+	for name := range below {
+		if _, ok := doc.Pricing[name]; ok {
+			continue
+		}
+		o := cfg.origins["pricing."+name]
+		cfg.SetAside = append(cfg.SetAside, pricingSetAside(o, name))
+	}
+	cfg.Pricing = doc.Pricing
+}
+
+// pricingSetAside is the set-aside record of a lower layer's price for name.
+func pricingSetAside(o origin, name string) SetAsideKey {
+	return SetAsideKey{File: o.file, Layer: o.layer, Key: "pricing." + name,
+		Reason: "a managed dollar budget prices calls only by the managed configuration and the built-in list"}
 }

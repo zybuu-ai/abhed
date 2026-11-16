@@ -91,7 +91,7 @@ func TestCompactPreservesRecentTurns(t *testing.T) {
 		{Role: model.RoleAssistant, Content: "did third"},
 	}
 
-	out, info, err := c.Compact(context.Background(), "auto", "sys", msgs, 900)
+	out, info, err := c.Compact(unmetered(), "auto", "sys", msgs, 900)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestCompactKeepsToolCallsWithResults(t *testing.T) {
 		{Role: model.RoleTool, ToolCallID: "c1", Content: "exit 0"},
 	}
 
-	out, _, err := c.Compact(context.Background(), "auto", "", msgs, 900)
+	out, _, err := c.Compact(unmetered(), "auto", "", msgs, 900)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestPreCompactHookRuns(t *testing.T) {
 	}
 
 	msgs := longMessages(10, 100)
-	if _, _, err := c.Compact(context.Background(), "manual", "", msgs, 500); err != nil {
+	if _, _, err := c.Compact(unmetered(), "manual", "", msgs, 500); err != nil {
 		t.Fatal(err)
 	}
 	if gotTrigger != "manual" {
@@ -175,7 +175,7 @@ func TestSummarizerNotGivenTools(t *testing.T) {
 	// summarize and Compact correctly returns early.
 	msgs := longMessages(12, 100)
 
-	if _, _, err := c.Compact(context.Background(), "auto", "", msgs, 500); err != nil {
+	if _, _, err := c.Compact(unmetered(), "auto", "", msgs, 500); err != nil {
 		t.Fatal(err)
 	}
 	if a.calls == 0 {
@@ -193,7 +193,7 @@ func TestCompactionSurfacesTokenReduction(t *testing.T) {
 	c := NewCompactor(a, 0.90)
 	msgs := longMessages(20, 400)
 
-	_, info, err := c.Compact(context.Background(), "auto", "sys", msgs, 2000)
+	_, info, err := c.Compact(unmetered(), "auto", "sys", msgs, 2000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,19 +233,19 @@ func TestCompactFocusReachesTheSummarizer(t *testing.T) {
 	a := &summarizerAdapter{window: 100000, summary: "s"}
 	c := NewCompactor(a, 0.90)
 	c.SetFocus("keep the API names")
-	if _, _, err := c.Compact(context.Background(), "auto", "", longMessages(20, 10), 0); err != nil {
+	if _, _, err := c.Compact(unmetered(), "auto", "", longMessages(20, 10), 0); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(a.sawPrompt, "keep the API names") {
 		t.Fatal("an automatic compaction took the person's focus")
 	}
-	if _, _, err := c.Compact(context.Background(), "manual", "", longMessages(20, 10), 0); err != nil {
+	if _, _, err := c.Compact(unmetered(), "manual", "", longMessages(20, 10), 0); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(a.sawPrompt, "keep, above all else: keep the API names") {
 		t.Fatalf("the focus did not reach the summarizer:\n%s", a.sawPrompt)
 	}
-	if _, _, err := c.Compact(context.Background(), "manual", "", longMessages(20, 10), 0); err != nil {
+	if _, _, err := c.Compact(unmetered(), "manual", "", longMessages(20, 10), 0); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(a.sawPrompt, "keep the API names") {
@@ -273,11 +273,11 @@ func TestCompactionKeepsTheFirstMessage(t *testing.T) {
 	c := NewCompactor(a, 0.5)
 	c.KeepRecentTurns = 1
 	msgs := append([]model.Message{{Role: model.RoleUser, Content: "Remember the codeword ZEBRA-41."}}, longMessages(8, 200)...)
-	once, _, err := c.Compact(context.Background(), "auto", "", msgs, 0)
+	once, _, err := c.Compact(unmetered(), "auto", "", msgs, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	twice, _, err := c.Compact(context.Background(), "auto", "", append(once, longMessages(6, 200)...), 0)
+	twice, _, err := c.Compact(unmetered(), "auto", "", append(once, longMessages(6, 200)...), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

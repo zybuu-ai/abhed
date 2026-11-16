@@ -127,7 +127,7 @@ func TestRecordDecisionKeepsUsers(t *testing.T) {
 	if err := GrantUsers(ws); err != nil {
 		t.Fatal(err)
 	}
-	if err := RecordDecision(ws, Reviewed{SHA256: "abc"}, false, false); err != nil {
+	if err := RecordDecision(ws, Reviewed{SHA256: "abc"}, Decisions{}); err != nil {
 		t.Fatal(err)
 	}
 	if ok, why := decideUsers(WorkspaceTrust{Workspace: canonical(ws)}, LoadOptions{}); !ok || why != "stored" {

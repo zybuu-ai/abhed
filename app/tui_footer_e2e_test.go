@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ func footerRows(r *tuiRun) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// footerTokens is the session's tokens after one reply of 6,080.
+var footerTokens = regexp.MustCompile(`\b6\.[1-9]k tokens`)
 
 // The footer shows the model, the mode, how full the context is, the
 // session's tokens and where the session is; /model changes it at once.
@@ -40,7 +44,8 @@ func TestTUIFooterShowsTheSession(t *testing.T) {
 	r.send("hello\r")
 	r.waitText("You said: hello")
 	r.waitFor("context and tokens in the footer", false, func(s string) bool {
-		return strings.Contains(s, "% context") && strings.Contains(s, "1.3k tokens")
+		// The reply's 6,080 tokens, and the next-prompt suggestion's once it lands.
+		return strings.Contains(s, "% context") && footerTokens.MatchString(s)
 	})
 	t.Log(r.capture("the footer after one reply"))
 	r.send("/model stub2\r")

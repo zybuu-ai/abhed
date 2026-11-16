@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/zybuu-ai/abhed/internal/agent"
@@ -120,8 +121,20 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		if ev.Actor == agent.ActorUser {
 			meta["by"] = "user"
 		}
-		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": toolTitle(p.Tool, p.Args),
-			"kind": toolKind(p.Tool), "status": "pending", "rawInput": p.Args, "_meta": map[string]any{acpMetaKey: meta}})
+		title, kind := toolTitle(p.Tool, p.Args), toolKind(p.Tool)
+		if p.Via == agent.DiagnosticsVia && ev.Actor == agent.ActorSystem {
+			// The engine's start of a language server, not a command of the agent's.
+			title, kind = "Language server: "+diagnosticsServer(p.Args), "other"
+			meta["tool"] = "language_server"
+			s.mu.Lock()
+			if s.engineCalls == nil {
+				s.engineCalls = map[string]string{}
+			}
+			s.engineCalls[p.CallID] = diagnosticsCommand(p.Args)
+			s.mu.Unlock()
+		}
+		update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": p.CallID, "title": title,
+			"kind": kind, "status": "pending", "rawInput": p.Args, "_meta": map[string]any{acpMetaKey: meta}})
 	case agent.EvActionApproved:
 		var p struct {
 			CallID string `json:"call_id"`
@@ -155,6 +168,21 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 			// A record from before every call had an id: a card of its own.
 			u["sessionUpdate"], u["toolCallId"], u["title"] = "tool_call", ev.ID, "denied call"
 		}
+		s.mu.Lock()
+		command, engine := s.engineCalls[p.CallID]
+		delete(s.engineCalls, p.CallID)
+		s.mu.Unlock()
+		if engine && p.CallID != "" {
+			// Nothing the person did failed: diagnostics are not on for this
+			// language, and the card says what would turn them on.
+			why := "Not started: " + redacted(p.Reason)
+			if p.Step == "default" || p.Step == "mode" {
+				why += ". To have it start, add an allow rule for its command, such as bash(" + redacted(command) +
+					"), or set tools.diagnostics to on"
+			}
+			denied["info"] = true
+			u["status"], u["content"] = "completed", []any{map[string]any{"type": "content", "content": text(why)}}
+		}
 		update(u)
 	case agent.EvObservation:
 		var p agent.Observation
@@ -162,6 +190,9 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		if p.Tool == agent.AnswerToolName {
 			break
 		}
+		s.mu.Lock()
+		delete(s.engineCalls, p.CallID)
+		s.mu.Unlock()
 		status := "completed"
 		if p.IsError {
 			status = "failed"
@@ -278,23 +309,59 @@ func (c *acpConn) updates(s *acpSession, ev abhed.Event, replay bool) []map[stri
 		}
 		update(map[string]any{"sessionUpdate": "agent_message_chunk", "content": text(body),
 			"_meta": map[string]any{acpMetaKey: map[string]any{"verdict": p}}})
-	case agent.EvModelCall:
-		if replay {
-			break
+	case agent.EvCompletionSummary, agent.EvNextEditSummary:
+		// Completions and next edits carry their cost in their summaries.
+		var p agent.CompletionSummary
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			s.mu.Lock()
+			s.totalUSD += p.CostUSD
+			s.unpriced = s.unpriced || p.Unpriced
+			s.mu.Unlock()
 		}
+	case agent.EvModelCall:
 		var p agent.ModelCall
 		_ = json.Unmarshal(ev.Payload, &p)
 		s.mu.Lock()
+		// A replayed call's cost is the session's too; one recorded before
+		// costing leaves the total partial.
+		switch {
+		case p.CostUSD != nil:
+			s.totalUSD += *p.CostUSD
+		case p.Unpriced:
+			s.unpriced = true
+		case p.TokensIn+p.TokensOut > 0:
+			s.costPartial = true
+		}
 		s.totalIn += p.TokensIn
 		s.totalOut += p.TokensOut
-		totalIn, totalOut := s.totalIn, s.totalOut
+		if replay {
+			s.mu.Unlock()
+			break
+		}
+		totalIn, totalOut, totalUSD, unpriced, partial := s.totalIn, s.totalOut, s.totalUSD, s.unpriced, s.costPartial
 		s.mu.Unlock()
 		// A suggestion's call is counted, but says nothing of the context.
 		if p.ContextWindow > 0 && p.Purpose == "" {
-			// No cost: the engine has no price table, and invents none.
-			update(map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow,
-				"_meta": map[string]any{acpMetaKey: map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
-					"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}}})
+			meta := map[string]any{"tokensIn": p.TokensIn, "tokensOut": p.TokensOut,
+				"tokensCached": p.TokensCached, "sessionTotalIn": totalIn, "sessionTotalOut": totalOut}
+			u := map[string]any{"sessionUpdate": "usage_update", "used": p.TokensIn, "size": p.ContextWindow}
+			// The session's cost only when every call was priced: a model
+			// with no price makes the total unknown, and none is invented.
+			if p.CostUSD != nil {
+				meta["costUsd"] = *p.CostUSD
+			}
+			switch {
+			case unpriced:
+				meta["unpriced"] = true
+			case partial && p.CostUSD != nil:
+				// What is known, said to be partial, never sent as the session's cost.
+				meta["sessionCostUsd"], meta["costPartial"] = totalUSD, true
+			case p.CostUSD != nil:
+				meta["sessionCostUsd"] = totalUSD
+				u["cost"] = map[string]any{"amount": totalUSD, "currency": "USD"}
+			}
+			u["_meta"] = map[string]any{acpMetaKey: meta}
+			update(u)
 		}
 	case agent.EvModelWaiting:
 		// A subagent waiting for the model says so on its card; the session's
@@ -415,4 +482,26 @@ func wokenLine(s *acpSession, w agent.SessionWoken) string {
 		return "Continuing with background results."
 	}
 	return "Continuing with results from " + strings.Join(names, ", ") + "."
+}
+
+// diagnosticsServer names the program a diagnostics start runs.
+func diagnosticsServer(args json.RawMessage) string {
+	var a struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(args, &a)
+	f := strings.Fields(a.Command)
+	if len(f) == 0 {
+		return "unknown"
+	}
+	return redacted(filepath.Base(f[0]))
+}
+
+// diagnosticsCommand is the command line a diagnostics start runs.
+func diagnosticsCommand(args json.RawMessage) string {
+	var a struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(args, &a)
+	return a.Command
 }

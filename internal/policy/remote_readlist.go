@@ -135,7 +135,7 @@ var knownReads = func() map[string]readSpec {
 	// getent without -s, which loads an NSS module named by the call.
 	m["getent"] = readSpec{opts: o("-i --no-idn", "")}
 	m["vmstat"] = readSpec{opts: o("-a --active -f --forks -m --slabs -n --one-header -s --stats -d --disk -D --disk-sum "+
-		"-t --timestamp -w --wide", "-S --unit -p --partition -c --count")}
+		"-t --timestamp -w --wide", "-S --unit -p --partition")}
 	m["basename"] = readSpec{opts: o("-a --multiple -z --zero", "-s --suffix")}
 	m["dirname"] = readSpec{opts: o("-z --zero", "")}
 	m["realpath"] = readSpec{opts: o("-e --canonicalize-existing -m --canonicalize-missing -L --logical -P --physical "+
@@ -166,7 +166,7 @@ var knownReads = func() map[string]readSpec {
 		"-w --word-regexp -x --line-regexp -v --invert-match -l --files-with-matches --files-without-match -c --count "+
 		"--count-matches -F --fixed-strings -H --with-filename --no-filename --no-heading --heading --hidden --no-ignore "+
 		"-u -uu -L --follow --files -o --only-matching --json --column --vimgrep -U --multiline -P --pcre2 -q --quiet "+
-		"--sort-files --stats --trim -a --text",
+		"--sort-files --stats --trim -a --text --one-file-system",
 		"-e --regexp -g --glob --iglob -t --type -T --type-not -A --after-context -B --before-context -C --context "+
 			"-m --max-count -d --max-depth --max-filesize -E --encoding --sort --sortr")}
 	m["sort"] = readSpec{opts: o("-n --numeric-sort -r --reverse -u --unique -h --human-numeric-sort -V --version-sort "+

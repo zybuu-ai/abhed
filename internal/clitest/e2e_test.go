@@ -29,7 +29,10 @@ func TestHelloOnPty(t *testing.T) {
 // The golden transcript of a short session holds.
 func TestGoldenHello(t *testing.T) {
 	t.Parallel()
-	h := StartRun(t, Opts{Script: "text \"Hello from the stub.\"\nusage in=1200 cached=900 out=8"})
+	// No next-prompt suggestion: its tokens land after the turn, at a time the
+	// status line's total would show or not.
+	h := StartRun(t, Opts{UserConfig: strings.Replace(DefaultUserConfig, `{"sandbox"`, `{"suggest":{"enabled":false},"sandbox"`, 1),
+		Script: "text \"Hello from the stub.\"\nusage in=6000 cached=900 out=8"})
 	h.WaitText("Type a task")
 	h.Type("hi")
 	h.Key(Enter)

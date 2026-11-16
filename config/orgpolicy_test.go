@@ -134,6 +134,7 @@ func TestOrgPolicyMayNotReachIntoTheMachine(t *testing.T) {
 	f := newOrg(t)
 	f.write(t, `{
 		"extensions":[{"name":"x","command":"/bin/sh"}],
+		"hooks":{"run":[{"name":"h","events":["tool_call"],"command":"/bin/sh"}]},
 		"mcp":{"servers":[{"name":"m","command":"/bin/sh"}]},
 		"statusline":{"command":"/bin/sh"},
 		"additional_dirs":["/"],
@@ -146,7 +147,7 @@ func TestOrgPolicyMayNotReachIntoTheMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Extensions) > 0 || len(cfg.MCP.Servers) > 0 || cfg.Statusline.Command != "" || len(cfg.AdditionalDirs) > 0 ||
+	if len(cfg.Extensions) > 0 || len(cfg.Hooks.Run) > 0 || len(cfg.MCP.Servers) > 0 || cfg.Statusline.Command != "" || len(cfg.AdditionalDirs) > 0 ||
 		!slices.Equal(cfg.Context.MemoryFiles, Default().Context.MemoryFiles) || cfg.Record.Dir != "" || cfg.Org.URL != "" {
 		t.Fatalf("a refused setting took effect: ext %v mcp %v dirs %v memory %v record %q org %q",
 			cfg.Extensions, cfg.MCP.Servers, cfg.AdditionalDirs, cfg.Context.MemoryFiles, cfg.Record.Dir, cfg.Org.URL)
@@ -163,7 +164,7 @@ func TestOrgPolicyMayNotReachIntoTheMachine(t *testing.T) {
 			refused = append(refused, k.Key)
 		}
 	}
-	for _, want := range []string{"extensions", "mcp.servers", "statusline", "additional_dirs", "context",
+	for _, want := range []string{"extensions", "hooks.run", "mcp.servers", "statusline", "additional_dirs", "context",
 		"model.providers", "org_policy", "record.dir"} {
 		if !slices.Contains(refused, want) {
 			t.Errorf("%s not set aside (set aside: %v)", want, refused)

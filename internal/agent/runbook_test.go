@@ -544,3 +544,32 @@ func TestRunbookLetGoByANewPlan(t *testing.T) {
 		t.Fatal("an accepted plan without a runbook kept the old one")
 	}
 }
+
+// A remote read the classifier allows is recorded with the rule that
+// allowed it, ssh.read_only, as a read_commands entry is with its own.
+func TestRecordedRemoteReadNamesTheClassifier(t *testing.T) {
+	l, store, _ := harness(t, []scriptedTurn{
+		{calls: []model.ToolCall{sshCall("a", "app1", "ls -lah /var/log/app"), sshCall("b", "app1", "uptime -p")}},
+		{text: "done"},
+	}, policy.ModeDefault, false)
+	ran := &[]string{}
+	l.Tools.Add(fakeSSH{ran: ran})
+	l.Policy.RemoteHosts = func(h string) bool { return h == "app1" }
+	if err := l.Policy.AllowRemoteReads("uptime -p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), "look at app1"); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := store.Events("sess1")
+	got := approvals(t, evs)
+	if a := got["a"]; a["event"] != string(EvActionApproved) || a["rule"] != policy.ReadOnlyRule {
+		t.Errorf("classified read recorded as %v", a)
+	}
+	if b := got["b"]; b["event"] != string(EvActionApproved) || b["rule"] != "ssh.read_commands: uptime -p" {
+		t.Errorf("declared read recorded as %v", b)
+	}
+	if len(*ran) != 2 {
+		t.Errorf("ran %v", *ran)
+	}
+}

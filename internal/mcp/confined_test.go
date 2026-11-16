@@ -19,6 +19,7 @@ import (
 	"github.com/zybuu-ai/abhed/internal/egress"
 	"github.com/zybuu-ai/abhed/internal/mcp"
 	"github.com/zybuu-ai/abhed/internal/sandbox"
+	"github.com/zybuu-ai/abhed/internal/testenv"
 )
 
 // TestMain lets this binary act as a stdio MCP server whose one tool
@@ -28,7 +29,8 @@ func TestMain(m *testing.M) {
 		fakeServer()
 		return
 	}
-	os.Exit(m.Run())
+	// The binary links the managed paths: its tests run isolated from this machine's.
+	testenv.Main(m)
 }
 
 func fakeServer() {

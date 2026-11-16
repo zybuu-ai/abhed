@@ -70,6 +70,10 @@ const (
 type Options struct {
 	// Workspace is the directory the retrieval index covers.
 	Workspace string
+	// ReadWithheld, when set, is the session's own read rules, its engine's
+	// layers included, which the retrieval index is built to; nil builds it
+	// to the configured rules (a server's index, shared by sessions).
+	ReadWithheld func(path string) bool
 	// Bash is the shell tool. The surface builds it because the sandbox is the
 	// surface's to choose and to refuse to start without; nothing here weakens it.
 	Bash tools.Bash
@@ -86,6 +90,9 @@ type Options struct {
 	// by name, and web_fetch refuses a URL holding a value from. Nil offers no
 	// stored secrets, and leaves web_fetch unable to fetch.
 	Vault *secrets.Store
+	// NoMCPLogins, when set, is why the OAuth logins in Vault are not used:
+	// a URL server that has one is refused with it.
+	NoMCPLogins error
 	// Warn receives what failed and was skipped: an MCP server, an extension,
 	// a skill, a corpus. Nil discards them.
 	Warn func(format string, args ...any)
@@ -186,6 +193,16 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		for _, err := range s.Extensions.Load(ctx, specs) {
 			warn("%v", err)
 		}
+		if o.Vault != nil {
+			red := o.Vault.Redactor()
+			s.Extensions.SetRedact(func(t string) string { return agent.WithheldText(red, t) })
+		}
+		// Simple hooks run per event: commands in bash's sandbox, requests under the egress guard.
+		if o.Parts&Vetoes != 0 {
+			for _, err := range s.Extensions.LoadHooks(cfg.HookSpecs(), HookEnv(o.Bash, o.Workspace, s.Guard())) {
+				warn("%v", err)
+			}
+		}
 	}
 	// MCP servers extend the tool surface. Every remote tool is namespaced and
 	// routes through the policy engine, since Abhed cannot know what it does.
@@ -193,6 +210,12 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 		s.Gateway = mcp.NewGateway()
 		s.Gateway.Egress = s.Guard()
 		s.Gateway.Admit, s.Gateway.PinProgram = MCPAdmit(cfg), cfg.MCPListsMatchCommands()
+		switch {
+		case o.Vault != nil && o.NoMCPLogins != nil:
+			s.Gateway.Authorize = MCPLoginsWithheld(o.Vault, o.NoMCPLogins)
+		case o.Vault != nil:
+			s.Gateway.Authorize = MCPAuthorize(o.Vault)
+		}
 		ConfineMCP(s.Gateway, cfg, o.Sandbox, warn)
 		// The servers' life: their start-up and streams are this set's requests.
 		for _, err := range s.Gateway.Connect(egress.WithGuard(ctx, s.Guard()), MCPConfigs(cfg)) {
@@ -258,7 +281,7 @@ func Build(ctx context.Context, cfg config.Config, o Options) *Set {
 	}
 	// Retrieval is an accelerator over grep, not a replacement.
 	if o.Parts&Retrieval != 0 && cfg.Retrieval.Enabled {
-		if ix, err := OpenIndex(ctx, cfg, o.Workspace); err != nil {
+		if ix, err := OpenIndexWithheld(ctx, cfg, o.Workspace, o.ReadWithheld); err != nil {
 			warn("index unavailable, falling back to grep: %v", err)
 		} else {
 			s.Index = ix
@@ -350,6 +373,9 @@ func (s *Set) Guard() *egress.Guard {
 
 // EndSession records what the egress guard still counts for session id.
 func (s *Set) EndSession(id string) {
+	if s != nil && s.Extensions != nil {
+		s.Extensions.EndSession(id) // its halt, and its async hook runs
+	}
 	if s != nil && s.Egress != nil {
 		s.Egress.EndSession(id)
 	}
@@ -523,23 +549,53 @@ func Police(h *extension.Host, pol *policy.Engine, sessionID string) {
 type HostHooks struct {
 	Host *extension.Host
 	Note func(text string, refused bool)
+	// Redact takes stored secrets out of what Note is told; nil leaves it.
+	Redact func(string) string
 }
 
-var _ agent.Hooks = HostHooks{}
+var (
+	_ agent.Hooks       = HostHooks{}
+	_ agent.StopHooks   = HostHooks{}
+	_ agent.ResultHooks = HostHooks{}
+)
 
 func (h HostHooks) note(s string, refused bool) {
-	if h.Note != nil {
-		h.Note(s, refused)
+	if h.Note == nil {
+		return
+	}
+	if h.Redact != nil {
+		s = h.Redact(s) // a hook's reason may hold a secret
+	}
+	h.Note(s, refused)
+}
+
+// NoteRedactor redacts what the person is told of hooks as loop's record
+// redacts what it keeps.
+func NoteRedactor(loop *agent.Loop) func(string) string {
+	return func(s string) string {
+		if loop == nil || loop.Recorder == nil {
+			return s
+		}
+		return agent.WithheldText(loop.Recorder.Redact, s)
 	}
 }
 
+// RunStarted and RunEnded mark the session tree rooted at rootID as having
+// a run going, whose halt is kept until it is taken.
+func (h HostHooks) RunStarted(rootID string) { h.Host.Own(rootID, true) }
+
+func (h HostHooks) RunEnded(rootID string) { h.Host.Own(rootID, false) }
+
 func (h HostHooks) PromptSubmitted(ctx context.Context, sessionID, text string) string {
-	why := h.Host.Veto(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
-	if why != "" {
+	why, failed := h.Host.VetoReport(ctx, extension.EvUserPromptSubmit, extension.Request{SessionID: sessionID, Content: text})
+	switch down := h.Host.NotRunning(extension.EvUserPromptSubmit); {
+	case why != "":
 		h.note("your message was not sent: "+why, true)
-	} else if down := h.Host.NotRunning(extension.EvUserPromptSubmit); len(down) > 0 {
+	case len(down) > 0:
 		// A prompt hook fails open; the person is told it did not look.
 		h.note("not screened: the user_prompt_submit hook "+strings.Join(down, ", ")+" is not running", false)
+	case len(failed) > 0:
+		h.note("not screened: the user_prompt_submit hook "+strings.Join(failed, ", ")+" failed", false)
 	}
 	return why
 }
@@ -554,12 +610,35 @@ func (h HostHooks) Observe(ctx context.Context, event, sessionID, tool, detail s
 	h.Host.Observe(ctx, extension.Event(event), extension.Request{SessionID: sessionID, Tool: tool, Content: detail})
 }
 
+// Stop asks the stop hooks whether the run may end, and names the hook that
+// sent the agent back, with what it is told.
+func (h HostHooks) Stop(ctx context.Context, sessionID, answer string) (hook, instruction string) {
+	name, why := h.Host.OnStop(ctx, sessionID, answer)
+	if why == "" {
+		return "", ""
+	}
+	h.note("the "+name+" hook asked the agent to continue", false)
+	return name, "The " + name + " hook asks you to continue before finishing: " + why
+}
+
+// Halted is why a hook ended the session tree's run, once, or "";
+// HaltPending says so without taking it.
+func (h HostHooks) Halted(rootID string) string { return h.Host.Halted(rootID) }
+
+func (h HostHooks) HaltPending(rootID string) string { return h.Host.HaltPending(rootID) }
+
+// ToolResult lets the hooks that take tool_result see, and extensions
+// rewrite, a result before the model reads it.
+func (h HostHooks) ToolResult(ctx context.Context, sessionID, tool, content string, isErr bool) (string, bool) {
+	return h.Host.OnToolResult(ctx, sessionID, tool, content, isErr)
+}
+
 // Hook gives loop the extensions' hooks at its own points, when any are loaded.
 func Hook(loop *agent.Loop, h *extension.Host, note func(text string, refused bool)) {
 	if loop == nil || h == nil || h.Len() == 0 {
 		return
 	}
-	loop.Hooks = HostHooks{Host: h, Note: note}
+	loop.Hooks = HostHooks{Host: h, Note: note, Redact: NoteRedactor(loop)}
 }
 
 // Summarize lets an extension supply or refuse a compaction summary: the
@@ -608,13 +687,22 @@ func LoopConfig(cfg config.Config, system string) agent.Config {
 		c.CompactAt = at
 	}
 	c.OffloadAt = cfg.Context.OffloadFraction()
+	c.MaxContinues = cfg.ContinuesAllowed()
 	return c
 }
 
 // Budget is the one allowance a session's loop and its subagents share, so a
 // fan-out cannot multiply spend unseen.
 func Budget(cfg config.Config) *agent.Budget {
-	return agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
+	b := agent.NewBudget(int64(cfg.Limits.MaxBudgetTokens), cfg.Limits.MaxSubagents, cfg.Limits.NestedSubagents)
+	b.MaxUSD = cfg.Limits.MaxBudgetUSD
+	if len(cfg.Pricing) > 0 {
+		b.Prices = make(map[string]model.Price, len(cfg.Pricing))
+		for name, p := range cfg.Pricing {
+			b.Prices[name] = model.Price{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
+		}
+	}
+	return b
 }
 
 // Subagents returns a copy of reg with task and tasks bound to one session's

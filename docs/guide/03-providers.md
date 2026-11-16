@@ -13,7 +13,7 @@ install reports honestly.
 | Type | Notes |
 |---|---|
 | `anthropic` | Messages API; explicit prompt caching (the system prompt and tools, and a rolling marker on the last two user turns so a long session reads its history from the cache), thinking blocks |
-| `openai` | chat completions |
+| `openai` | chat completions; at OpenAI's own API, `prompt_cache_key` for prompt caching |
 | `gemini` | generateContent; thought parts |
 | `watsonx` | project- or space-scoped |
 | `vllm`, `sglang`, `llamacpp`, `tgi`, `ollama` | local servers; accept `top_k`, `min_p`, `repetition_penalty` |
@@ -30,6 +30,34 @@ With tools offered, `openai`, `vllm` and `openai-compatible` also send
 `"parallel_tool_calls": true`, so the model may ask for several calls in one
 turn. Set `"extra": {"parallel_tool_calls": "false"}` on the provider for a
 server that refuses the field, or `"true"` to send it to another type.
+
+### Prompt caching on OpenAI-shaped providers
+
+The system prompt stays byte-identical across turns, so a server that
+caches prompt prefixes on its own (OpenAI, DeepSeek, vLLM and SGLang with
+prefix caching on) can reuse it. Abhed also asks for caching where a
+provider documents a field for it, and sends that field to no other server:
+
+- `openai` at OpenAI's own API sends `prompt_cache_key`, a hash of the model
+  and the system prompt that groups a session's requests without saying
+  what the prompt holds;
+- `openrouter` with an Anthropic or Gemini model (`anthropic/…`,
+  `google/gemini…`) marks the system prompt and the last user or tool
+  message with `cache_control`.
+
+`"extra": {"prompt_cache": "…"}` overrides it per provider: `off`,
+`prompt_cache_key`, `cache_control` (for a gateway such as a LiteLLM proxy
+in front of an Anthropic model), or `auto`, the default. Cached tokens are
+read as each server reports them (`prompt_tokens_details.cached_tokens`,
+DeepSeek's `prompt_cache_hit_tokens`, or an Anthropic-shaped proxy's
+`cache_read_input_tokens` and `cache_creation_input_tokens`, or
+OpenRouter's `prompt_tokens_details.cache_write_tokens`) and recorded
+on each `model.call` as `tokens_cached` and `tokens_cache_write`, which the
+cost uses. Both are taken to be counted inside `prompt_tokens`, as OpenAI,
+LiteLLM and OpenRouter count reads; a gateway that leaves writes out of
+`prompt_tokens` is under-billed by the input price of its writes. The official
+API is matched by its address with the host's case and a `:443` port
+ignored; any other address is a different server.
 
 ## Sampling
 

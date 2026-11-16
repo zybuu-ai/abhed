@@ -115,6 +115,14 @@ func Fork(events []Event, throughSeq int64) ([]model.Message, error) {
 				lastAssistant = nil
 			}
 
+		case EvHookContinued:
+			// So was a stop hook's instruction.
+			var c HookContinued
+			if json.Unmarshal(ev.Payload, &c) == nil && c.Text != "" {
+				msgs = append(msgs, model.Message{Role: model.RoleUser, Content: c.Text})
+				lastAssistant = nil
+			}
+
 		case EvSubagentNotice:
 			// A background result: the task_status call and its result, as the
 			// live conversation received them.

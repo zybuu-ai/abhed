@@ -81,7 +81,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				// A call outside the conversation, as a suggestion, is no turn,
 				// but its tokens are spent: the session's own totals count them.
 				r.offTurn = append(r.offTurn, Turn{TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS})
+					TokensCached: m.TokensCached, LatencyMS: m.LatencyMS, CostUSD: m.CostUSD, Unpriced: m.Unpriced})
 				break
 			}
 			if m.Model != "" && (len(r.Models) == 0 || r.Models[len(r.Models)-1] != m.Model) {
@@ -89,7 +89,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 			}
 			r.Turns = append(r.Turns, Turn{
 				N: len(r.Turns) + 1, Seq: e.Seq, Model: m.Model, TokensIn: m.TokensIn, TokensOut: m.TokensOut,
-				TokensCached: m.TokensCached, CacheReported: m.CacheReported,
+				TokensCached: m.TokensCached, CacheReported: m.CacheReported, CostUSD: m.CostUSD, Unpriced: m.Unpriced,
 				Window: m.ContextWindow, FirstTokenMS: m.FirstTokenMS,
 				LatencyMS: m.LatencyMS, ToolCalls: m.ToolCalls, Error: m.Error, CutOff: m.CutOff, Estimated: m.Estimated,
 			})
@@ -116,6 +116,19 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				r.Toolchains = append(r.Toolchains, ToolchainStep{Seq: e.Seq, ToolchainAction: a})
 			}
 
+		case agent.EvCompletionSummary, agent.EvNextEditSummary:
+			var a agent.CompletionSummary
+			if json.Unmarshal(e.Payload, &a) == nil {
+				feature := "completion"
+				if e.Type == agent.EvNextEditSummary {
+					feature = "next_edit"
+				}
+				r.Editor = append(r.Editor, EditorStats{Seq: e.Seq, Feature: feature, CompletionSummary: a})
+				// Their cost is the session's too, carried here rather than a model.call each.
+				r.editorUSD += a.CostUSD
+				r.editorUnpriced = r.editorUnpriced || a.Unpriced
+			}
+
 		case agent.EvOllamaStart, agent.EvOllamaInstall, agent.EvOllamaPull:
 			var a agent.OllamaAction
 			if json.Unmarshal(e.Payload, &a) == nil {
@@ -137,7 +150,7 @@ func AnalyzeWith(sessionID string, events []agent.Event, opt Options) Report {
 				continue
 			}
 			c.Step, c.Reason, c.By, c.Scope = d["step"], d["reason"], d["by"], d["scope"]
-			c.Rule, c.Layer = d["rule"], d["layer"]
+			c.Rule, c.Layer, c.Source = d["rule"], d["layer"], d["source"]
 			c.Approver, c.GrantedScope = d["approver"], d["granted_scope"]
 			c.PlanHash = d["plan_hash"]
 			c.PlanStep, _ = strconv.Atoi(d["plan_step"])
@@ -352,6 +365,17 @@ func (r *Report) totals(ended agent.SessionEnded) {
 				r.Policy.ByLayer = map[string]int{}
 			}
 			r.Policy.ByLayer[c.Layer]++
+		}
+	}
+	t.CostUSD, t.Unpriced = r.editorUSD, r.editorUnpriced
+	for _, turn := range append(append([]Turn(nil), r.Turns...), r.offTurn...) {
+		switch {
+		case turn.CostUSD != nil:
+			t.CostUSD += *turn.CostUSD
+		case turn.Unpriced:
+			t.Unpriced = true
+		case turn.TokensIn+turn.TokensOut > 0:
+			t.CostNotRecorded = true
 		}
 	}
 	for _, turn := range r.Turns {
