@@ -555,6 +555,10 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 			v.Verdict, v.Reason = ClaimUnverified, why
 		}
 	}
+	// A claim is never both read as about other software and verified.
+	if v.Verdict == ClaimVerified {
+		v.External = false
+	}
 	return v
 }
 
@@ -592,7 +596,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 		switch {
 		case f.success || f.changed || len(f.ran) > 0 || len(f.fileLines) > 0:
 			kind = KindObserved
-		case saysChange && !env.strict && ix.externalClaim(c.Text):
+		case saysChange && !env.strict && !refusalWordRe.MatchString(normText(c.Text)) && ix.externalClaim(c.Text):
 			external = true
 		case saysChange:
 			kind = KindObserved
@@ -626,7 +630,7 @@ func checkClaim(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	// A statement about a refusal is checked against the refusal alone.
 	if d := ix.refusalShown(c); d != nil {
-		v.Kind, v.LoadBearing, v.Verdict = KindObserved, true, ClaimVerified
+		v.Kind, v.LoadBearing, v.Verdict, v.External = KindObserved, true, ClaimVerified, false
 		v.Evidence = []int64{d.seq}
 		v.Reason = fmt.Sprintf("%s#%d", refusalReason, d.seq)
 		return v
@@ -2150,8 +2154,8 @@ var (
 	sessionTieRe = regexp.MustCompile(`\b(?:i|we|us|our|ours|my|mine|upgrad\w*|bump\w*|migrat\w*|switch\w*|port(?:ed|ing)?\s+to|moved?\s+to|moving\s+to)\b`)
 	// passiveTieRe is a passive: work with no one named as doing it.
 	passiveTieRe = regexp.MustCompile(`\b(?:is|are|was|were|be|been|being)\s+(?:\w+ly\s+|now\s+)?[a-z]+(?:ed|en|wn|ne)\b`)
-	// theObjectRe is "the" before a noun, after the verb.
-	theObjectRe = regexp.MustCompile(`\bthe\s+[a-z]`)
+	// theObjectRe is "the", "a" or "an" before a noun, after the verb.
+	theObjectRe = regexp.MustCompile(`\b(?:the|a|an)\s+[a-z]`)
 	// claimWordRe is a word of a claim that may name something the session
 	// read or changed.
 	claimWordRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_\-]{3,}`)

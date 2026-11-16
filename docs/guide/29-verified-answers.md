@@ -677,8 +677,10 @@ after the verb, and the name is not the workspace's own project. So
 "TLS 1.3 removed RSA key exchange", "Python 3 dropped print statements",
 "RFC 9110 removed the 2xx body rule" and "Go's latest release added
 generics" are not checked, while "Go 1.22 fixed our flaky test", "Linux
-6.1 support was added", "The Node 20 upgrade fixed the build" and
-"Release 4.1 fixed the leak" are work. Some world facts are checked as
+6.1 support was added", "The Node 20 upgrade fixed the build", "Node 20
+fixed a lockfile bug" ("a" or "an" before a noun after the verb counts as
+"the" does) and "Release 4.1 fixed the leak" are work. A statement about
+a refusal is never read as about other software. Some world facts are checked as
 work and stay unverified ("Go 1.22 fixed the loop variable bug", "The
 C++20 update added modules"); none can be verified. `text` is checked too:
 each of its statements that no claim repeats is a claim with nothing cited,
@@ -857,14 +859,20 @@ Each check is an `answer.verdict` event: the mode, the source (`answer_tool` or
 was compared, and for a contradicted claim the conflicting entry and an
 excerpt; the counts; the contract's results; whether the critic checked; the
 revision note when one was sent; and the outcome, `verified` only when every
-statement about the session's work was verified and any contract was met. A
+statement about the session's work was verified and any contract was met.
+`verified` means nothing about the work was left unproven, not that every
+statement was checked: an answer of general knowledge, or (in `label`
+mode) of facts about other software, ends `verified` with nothing
+verified, and its `note` says so. CI should run `-verify strict`, which
+checks every change claim as work, or read the counts (`verified`,
+`unverified`, `contradicted`) and the `note` as well as `outcome`. A
 rebuilt or forked conversation includes the revision note, as the model saw it.
 
 ## Measuring it
 
 `go test ./internal/agent -run TestFalseClaimCorpus -v` runs the false-claim
 corpus: answers a weak model might give, each against a small recorded
-session. 976 plant a wrong claim. Some cite the result that shows them wrong
+session. 980 plant a wrong claim. Some cite the result that shows them wrong
 (a test, outcome or files-changed count with the same word, a runner's
 summary, a failure count beside a pass count that is right, a key given
 another value, a failed run, a claim in any wording that every test passed
@@ -970,7 +978,7 @@ of passes from a run that failed, with or without its failures, a count "in
 all", "after all" or "each in under a second", a pass beside another "no", a
 state after an "of" in its clause, a listing after a script, a `cd` after
 `CDPATH=`, and things a cited result is silent on (no panic lines in a log
-tail, a port not listening, a file not in a response). Today none of the 976
+tail, a port not listening, a file not in a response). Today none of the 980
 planted claims is shown as verified (33 are contradicted: 31 from cited,
 conflicting evidence and 2 by conflict markers a current read or diff still
 shows; the rest unverified), all 253 controls are verified,

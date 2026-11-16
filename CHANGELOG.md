@@ -768,7 +768,7 @@ All notable changes to Abhed are recorded here. The format follows
   nothing else may be said in it ("succeeded after
   being blocked" stays unverified). The refusal is evidence for nothing
   else, since its reason can hold text the model chose. The false-claim
-  corpus gains 108 planted cases and 13 controls; none of the 976 planted
+  corpus gains 112 planted cases and 13 controls; none of the 980 planted
   claims verifies, all 253 controls do, and none of the 368 true or
   neutral claims is contradicted.
 

@@ -1242,3 +1242,31 @@ func TestLabelNotesExternalFacts(t *testing.T) {
 		t.Fatalf("the external fact can read as verified: %+v footer %q", c, v.Footer())
 	}
 }
+
+// A claim about a refusal that names a listed technology is verified by
+// the refusal and never also marked as about other software; the footer
+// never counts below zero.
+func TestRefusalIsNeverExternal(t *testing.T) {
+	b := newRec(t)
+	if _, err := b.r.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: "c1", Tool: "bash", Args: json.RawMessage(`{"command":"python 3.12"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.r.Record(EvActionDenied, ActorSystem, Trusted, map[string]any{"call_id": "c1", "reason": "denied by rule bash(python*)", "rule": "bash(python*)", "source": "user"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Python 3.12 blocked by rule bash(python*).", "Python 3.12 refused by rule bash(python*)."} {
+		v := checkCited(t, b, Claim{Text: text, Kind: KindKnowledge})[0]
+		if v.Verdict != ClaimVerified || v.External {
+			t.Fatalf("%q: %+v", text, v)
+		}
+		av := AnswerVerdict{Claims: []ClaimVerdict{v}, Verified: 1}
+		if f := av.Footer(); strings.Contains(f, "-") || strings.Contains(f, "other software") {
+			t.Fatalf("footer %q", f)
+		}
+	}
+	// Even a verdict built by hand that is both never counts below zero.
+	av := AnswerVerdict{Claims: []ClaimVerdict{{Verdict: ClaimVerified, External: true, LoadBearing: true}}, Verified: 1}
+	if f := av.Footer(); strings.Contains(f, "-1") {
+		t.Fatalf("footer %q", f)
+	}
+}

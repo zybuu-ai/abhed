@@ -142,7 +142,7 @@ func (v AnswerVerdict) Footer() string {
 	unv := fmt.Sprintf("%d unverified", v.Unverified)
 	var notes []string
 	k, e, x := v.Unchecked(), v.Explained(), v.ExternalCount()
-	k -= x
+	k = max(k-x, 0)
 	switch {
 	case k > 0 && k+x == v.Unverified:
 		notes = append(notes, "general knowledge")

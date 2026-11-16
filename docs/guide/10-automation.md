@@ -126,7 +126,12 @@ abhed -p "fix the failing tests; run go test ./..." -mode auto \
 With `json` or `stream-json`, the check is the `answer.verdict` event and
 the result line's `verdict`: `verdict.outcome` is `verified` or `unverified`,
 and `verdict.claims` lists each statement with its own `verdict` and
-`reason`, the unverified ones included. Under `label` the answer itself can
+`reason`, the unverified ones included. `verified` means nothing about the
+work was left unproven, not that every statement was checked: an answer of
+general knowledge ends `verified` with nothing verified, and
+`verdict.note` says so. In CI, run `-verify strict` (exit 8 on an
+unverified answer), or read `verdict.verified`, `verdict.unverified` and
+`verdict.note` as well as `outcome`. Under `label` the answer itself can
 change: a contradicted statement gets the agent's one revision, and the
 revised answer is the `result`. `-verify off`, or `verify.mode: off` in
 your own configuration, turns checking off; the flag also lowers a trusted

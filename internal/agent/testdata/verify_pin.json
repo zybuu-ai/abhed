@@ -6164,6 +6164,26 @@
       "name": "a knowledge claim naming a listed technology about the session's work: Python 3.12 fixed lock contention in queue handling.",
       "kind": "planted",
       "hash": "e66fc473375dc722"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Node 20 fixed a lockfile bug.",
+      "kind": "planted",
+      "hash": "4d6cc6186589993b"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Python 3.12 fixed a deadlock.",
+      "kind": "planted",
+      "hash": "7ddd1bdfb186b038"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Docker 24 removed a flag.",
+      "kind": "planted",
+      "hash": "ef4874aed6bd2914"
+    },
+    {
+      "name": "a knowledge claim naming a listed technology with an indefinite object: Redis 7 removed a race.",
+      "kind": "planted",
+      "hash": "9f7acaa3be63f214"
     }
   ],
   "strict": [
