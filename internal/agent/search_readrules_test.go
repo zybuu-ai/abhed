@@ -20,7 +20,7 @@ func TestSearchResultsKeepReadRules(t *testing.T) {
 	for rel, content := range map[string]string{
 		"app/config.go":     "package app\n\n// api_key setting name\nconst apiKey = \"api_key\"\n",
 		"secrets/keys.yaml": "api_key: s3cr3t-SEARCHLEAK\n",
-		"deploy/.env.yaml":  "api_key: s3cr3t-ASKLEAK\n",
+		"conf/.env.yaml":  "api_key: s3cr3t-ASKLEAK\n",
 	} {
 		p := filepath.Join(dir, rel)
 		_ = os.MkdirAll(filepath.Dir(p), 0o755)
