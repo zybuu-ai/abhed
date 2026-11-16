@@ -31,9 +31,9 @@ func (b *Budget) Refuse(name string) error {
 	if b.USDLimited() {
 		if _, ok := b.Price(name); !ok {
 			if b.MaxUSD <= 0 {
-				return fmt.Errorf("a dollar budget applies and %s has no price; set one under pricing in the configuration", name)
+				return fmt.Errorf("a dollar budget applies and %s has no price; %s", name, b.pricingHint())
 			}
-			return fmt.Errorf("a budget of $%.2f is set and %s has no price; set one under pricing in the configuration", b.MaxUSD, name)
+			return fmt.Errorf("a budget of $%.2f is set and %s has no price; %s", b.MaxUSD, name, b.pricingHint())
 		}
 	}
 	if b.USDExhausted() {
@@ -166,9 +166,9 @@ func (l *Loop) recordBudgetStop() {
 	switch {
 	case l.unpricedUnderCap():
 		stop.Reason = "unpriced"
-		stop.Message = fmt.Sprintf("stopped: a budget of $%.2f is set and %s has no price; set one under pricing in the configuration", b.MaxUSD, stop.Model)
+		stop.Message = fmt.Sprintf("stopped: a budget of $%.2f is set and %s has no price; %s", b.MaxUSD, stop.Model, b.pricingHint())
 		if b.MaxUSD <= 0 {
-			stop.Message = fmt.Sprintf("stopped: a dollar budget applies and %s has no price; set one under pricing in the configuration", stop.Model)
+			stop.Message = fmt.Sprintf("stopped: a dollar budget applies and %s has no price; %s", stop.Model, b.pricingHint())
 		}
 	case b.USDExhausted():
 		stop.Reason = "usd"
@@ -227,7 +227,7 @@ func (l *Loop) allowanceStop(ctx context.Context) bool {
 			return false
 		}
 		stop.Reason = "unpriced"
-		stop.Message = fmt.Sprintf("stopped: a dollar budget applies (%s) and %s has no price; set one under pricing in the configuration", a.Scope, name)
+		stop.Message = fmt.Sprintf("stopped: a dollar budget applies (%s) and %s has no price; %s", a.Scope, name, l.Budget.pricingHint())
 	default:
 		return false
 	}
@@ -297,6 +297,24 @@ func EstimateUsage(a model.Adapter, req model.Request, u model.Usage, end CallEn
 func (b *Budget) CutAtBound(a model.Adapter) bool {
 	p := a.Profile()
 	return b.USDLimited() || p.ReasoningTokens || p.Sampling.Think
+}
+
+// pricingHint says where a missing price is set: the person's own
+// configuration, or, under a dollar cap an administrator set, theirs.
+func (b *Budget) pricingHint() string {
+	if b != nil && b.ManagedPrices {
+		return "an administrator sets it: in the machine's managed configuration, or, for a model served on this machine, at 0 in the org policy"
+	}
+	return "set one under pricing in the configuration"
+}
+
+// Hold stops every call through the budget's gate with message, as a spent
+// allowance does, before any turn has asked: for a budget known to be spent
+// when the session starts.
+func (b *Budget) Hold(message string) {
+	if b != nil {
+		b.allowanceStop.Store(&message)
+	}
 }
 
 // ReasoningStallError is a reply cut because it only reasoned, with no text or

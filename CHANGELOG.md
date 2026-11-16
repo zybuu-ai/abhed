@@ -447,6 +447,26 @@ All notable changes to Abhed are recorded here. The format follows
   `limits.max_budget_tokens` or `limits.max_budget_usd`, the lower applies
   (zero meaning none), so a generic cap in `/etc/abhed/config.json` no
   longer lifts the org's lower cap.
+- `limits.budget_spent`: a run stops before its first model call, with a
+  `budget.stopped` of reason `allowance`, and every other call is refused.
+  An org policy turns it on once a person's budget is spent, so a laptop
+  under it no longer runs a turn per session past the budget. Only a lower
+  layer's on is taken.
+- An org policy whose keys the machine does not pin may price a model at
+  exactly 0, so an org dollar budget admits a model the laptop runs itself.
+  The laptop takes the 0 only for a model with no price of its own (not on
+  the built-in list or a list of current hosted models Abhed names without
+  a price, not a variant of either once case, prefixes, padding, full-width
+  and zero-width characters and Unicode dashes are normalised, and not
+  priced in the machine's file or the person's), and only when every
+  provider it configures for the model is a local model server type:
+  `ollama`, `vllm`, `llamacpp`, `tgi` or `sglang`, and, under a managed
+  dollar cap, not one a workspace's file defined. No other type
+  counts, `openai-compatible` and hosted API types included, even at a
+  loopback address; a model served that way is priced in the managed file
+  or by an org with pinned keys. Any other price from such an org is set
+  aside, as before. Under a managed or org dollar cap, an unpriced model's
+  refusal says an administrator sets the price.
 
 ### Changed
 

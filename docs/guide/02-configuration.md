@@ -218,7 +218,16 @@ charged after it: the turns, the critic, suggestions, the compaction summary,
 pipeline model steps, Studio's completions, next edits and commit messages,
 and a fallback model, which is not moved to while a dollar cap is set and it
 has no price. A completion model on this machine is no exception: a local
-address may front a paid model, so price it, at 0 if it is free.
+address may front a paid model, so price it, at 0 if it is free. Under a
+managed or org dollar cap the refusal says an administrator sets the price:
+in the machine's managed file, or, for a model served on this machine, at 0
+in the org policy ([Signed org policy](35-org-policy.md)).
+
+`budget_spent: true` stops every run before its first model call with a
+`budget.stopped` of reason `allowance` (exit `3` under `-p`), and refuses
+every other call, a Studio completion included. An org server sets it in
+the policy it serves once what is left of a person's budget is nothing; a
+lower layer can only turn it on.
 
 What a provider reports is checked before it is charged, and anything
 raised is marked `estimated` on the call:

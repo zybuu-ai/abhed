@@ -175,6 +175,7 @@ var orgRules = map[string]orgRule{
 	"limits.max_tokens":               {orgTighten, ""},
 	"limits.max_budget_tokens":        {orgTighten, ""},
 	"limits.max_budget_usd":           {orgTighten, ""},
+	"limits.budget_spent":             {orgTighten, ""},
 	"pricing":                         {orgPinned, "sets what a model's calls cost"},
 	"limits.max_subagents":            {orgTighten, ""},
 	"limits.max_parallel_subagents":   {orgTighten, ""},
@@ -362,9 +363,37 @@ func hasOrgRuleUnder(p string) bool {
 	return false
 }
 
+// zeroPricesOnly lets an org that does not pin its keys price models at 0
+// and no more: a price can only send a budget's spend down, so an unpinned
+// org may say a model costs nothing only where nothing is spent, a server on
+// this machine, which the laptop checks before it uses the price.
+func zeroPricesOnly(v any, pinNote string) string {
+	why := "a model's price other than 0; " + pinNote
+	prices, ok := v.(map[string]any)
+	if !ok {
+		return why
+	}
+	for _, e := range prices {
+		fields, ok := e.(map[string]any)
+		if !ok {
+			return why
+		}
+		for _, f := range fields {
+			n, ok := capValue(f)
+			if !ok || n != 0 {
+				return why
+			}
+		}
+	}
+	return ""
+}
+
 // judge says why the org policy may not set p to v, "" when it may.
 func (j orgStrip) judge(p string, r orgRule, v any) string {
 	pinNote := "the org policy may set it only when this machine's managed file pins org_policy.keys"
+	if p == "pricing" && !j.pinned {
+		return zeroPricesOnly(v, pinNote)
+	}
 	switch r.kind {
 	case orgRefuse:
 		return "an org policy " + orRefuseWhy(r.why)
@@ -639,6 +668,14 @@ func orgLayer(cfg *Config, local []byte) (map[string]any, string) {
 	j := orgStrip{below: cfg, ws: &ws, pinned: len(mc.Keys) > 0, machineProviders: machineProviders(local)}
 	for _, s := range stripOrg(doc, j) {
 		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: source, Layer: LayerOrg, Key: s.key, Reason: s.why})
+	}
+	// An org that does not pin its keys may price a model only at 0, and
+	// only for calls to a server on this machine: see PricingLoopbackOnly.
+	if prices, ok := doc["pricing"].(map[string]any); ok && !j.pinned && !e.Fallback {
+		cfg.PricingLoopbackOnly = map[string]bool{}
+		for name := range prices {
+			cfg.PricingLoopbackOnly[name] = true
+		}
 	}
 	if e.Fallback {
 		// Of a stale or refused policy only what tightens stays: its deny and

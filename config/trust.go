@@ -989,6 +989,7 @@ var workspaceRules = map[string]fieldRule{
 	"limits.max_tokens":               {lower(func(c *Config) *int { return &c.Limits.MaxTokens }, zeroUnlimited), "only lower"},
 	"limits.max_budget_tokens":        {lower(func(c *Config) *int { return &c.Limits.MaxBudgetTokens }, zeroUnlimited), "only lower"},
 	"limits.max_budget_usd":           {lowerFloat(func(c *Config) *float64 { return &c.Limits.MaxBudgetUSD }), "only lower"},
+	"limits.budget_spent":             {onlyTrue(func(c *Config) *bool { return &c.Limits.BudgetSpent }), "only true"},
 	"limits.reasoning_stall_tokens":   {lower(func(c *Config) *int { return &c.Limits.ReasoningStallTokens }, zeroIs(8000)), "only lower"},
 	"limits.reasoning_stall_seconds":  {lower(func(c *Config) *int { return &c.Limits.ReasoningStallSeconds }, zeroIs(600)), "only lower"},
 	"pricing":                         {nil, "sets what a model's calls cost, which a dollar budget is spent by (an operator's setting: not from a workspace, trusted or not)"},
