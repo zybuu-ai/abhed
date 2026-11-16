@@ -31,6 +31,65 @@ All notable changes to Abhed are recorded here. The format follows
   the shell's. Affected: the Linux process tier (bubblewrap) since 1.2.3,
   wherever anything printed before bash took the terminal; known to occur in
   1.2.9 in a project with a Python venv, whose start-up notice prints first.
+- A stored secret that the model repeated in its answer could reach stdout
+  unredacted. The record, the terminal, `-p` text output and rpc's
+  `answer` were redacted, but two copies were not. `abhed -p
+  -output-format json` and `stream-json` printed the answer raw in the
+  result line's `result` and `structured_output`, in every verify mode,
+  `off` included, and a `-json-schema` run printed its JSON raw in text
+  output too. The answer verdict, with each statement's text, was printed
+  raw on `-p`'s result line, in rpc's `answer` and `error` responses, and
+  by the SDK's `Agent.Verdict()`. Both are now redacted as the record is,
+  and withheld when that fails. The model never sees a stored value, so it
+  has to rebuild or guess one first. Affected: `-p`'s `result` and
+  structured output in every release before this one; the verdict on `-p`,
+  rpc and the SDK in 1.2.9, whenever verification was on: `-verify label`
+  or `strict`, `verify.mode` set in any configuration, a
+  `verify.contract`, rpc `start` with `verify`, or SDK `Options.Verify`.
+  The server and Abhed Studio read the redacted record and were not
+  affected.
+
+### Upgrading from 1.2.9
+
+- Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
+  logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
+  secrets API answers 400), and a command or tool is never given one by
+  name. Store such a secret under another name.
+- A workspace other than your home folder whose config is your own
+  `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
+  longer trusted as your own file without asking; trust it once with
+  `abhed trust grant`. In the home folder nothing changes.
+- A workspace's `.abhed/config.json` that leads out of the workspace, by
+  its own link or through a `.abhed` that is a link, is now refused, and so
+  is one that is a link to no file (1.2.9 read that as no config). The
+  session does not start until it is a plain file or a link inside the
+  workspace. A link inside the workspace, and any link at your home
+  folder's `~/.abhed/config.json`, still work; a config above the opened
+  folder must be copied in, or the folder above opened instead.
+- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
+  stop with exit code 2 ("no task"). They now continue the run that stopped
+  at its turn limit, and stop with exit code 2, before anything is
+  recorded, only when there is nothing to continue or the bound is spent.
+- A workspace memory file that a read rule asks about is no longer loaded:
+  memory loads with nobody there to say yes, so an ask keeps it out as a
+  deny does; start-up warns about each such file, and `/memory` says why.
+- `abhed -p`, `abhed rpc` and unattended server runs now check their
+  answers by default (`verify: label`), as the terminal does; 1.2.9
+  checked nothing there unless asked. The exit code is unchanged. When a
+  statement is contradicted, the agent gets the one revision turn: one
+  more model call, and the answer returned (the result line's `result`,
+  rpc's `answer`) is the revised one. The result line's `verdict`, and
+  rpc's answer `verdict`, now appear by default: a parser that does not
+  expect the field should ignore it. `verdict.outcome` is `verified` or
+  `unverified`, and `verdict.claims` lists each statement, the unverified
+  ones included. `-verify off`, `"verify":"off"` on `rpc` or `POST
+  /v1/sessions`, or `verify.mode: off` in your own configuration keeps the
+  1.2.9 behaviour where a managed `verify.mode` allows it; a flag or a
+  session's `verify` also lowers a trusted workspace's `verify.mode`. For
+  CI that fails closed on an unverified answer, pass `-verify strict`
+  (exit 8). The SDK still checks nothing unless asked, through 1.x: set
+  `Options.Verify`, or `Options.VerifyByDefault` to label as the terminal
+  does.
 
 ### Added
 
@@ -58,34 +117,6 @@ All notable changes to Abhed are recorded here. The format follows
   events show the log as read, not proof that it was complete. A log replaced by hand is read from its start. In OCSF a refused
   entry is a failure. Past 4 MiB the log no longer takes refused attempts;
   changes are still logged.
-
-### Upgrading from 1.2.9
-
-- Secret names beginning `MCP_OAUTH_` are now kept for Abhed's own MCP
-  logins: `abhed secret set` and `abhed secret rm` refuse them (the server's
-  secrets API answers 400), and a command or tool is never given one by
-  name. Store such a secret under another name.
-- A workspace other than your home folder whose config is your own
-  `~/.abhed/config.json`, such as a dotfiles folder linking to it, is no
-  longer trusted as your own file without asking; trust it once with
-  `abhed trust grant`. In the home folder nothing changes.
-- A workspace's `.abhed/config.json` that leads out of the workspace, by
-  its own link or through a `.abhed` that is a link, is now refused, and so
-  is one that is a link to no file (1.2.9 read that as no config). The
-  session does not start until it is a plain file or a link inside the
-  workspace. A link inside the workspace, and any link at your home
-  folder's `~/.abhed/config.json`, still work; a config above the opened
-  folder must be copied in, or the folder above opened instead.
-- `abhed -p --continue` and `abhed -p -r <session>` with no task used to
-  stop with exit code 2 ("no task"). They now continue the run that stopped
-  at its turn limit, and stop with exit code 2, before anything is
-  recorded, only when there is nothing to continue or the bound is spent.
-- A workspace memory file that a read rule asks about is no longer loaded:
-  memory loads with nobody there to say yes, so an ask keeps it out as a
-  deny does; start-up warns about each such file, and `/memory` says why.
-
-### Added
-
 - `-tools NAMES`, the only tools a run and its subagents may use (the
   harness's own `recall`, `exit_plan` and structured answer stay), and
   `-bare`, a run without your own or the workspace's memory files,
@@ -123,9 +154,6 @@ All notable changes to Abhed are recorded here. The format follows
 - Go API, `config` package (additive): `LimitsConfig.MaxContinues`,
   `Config.ContinuesAllowed`, `Config.Bare`, `LocalConfigName`,
   `WorkspaceTrust.LocalFile` and `WorkspaceTrust.WorkspaceFiles`.
-
-### Added
-
 - Simple hooks: `hooks.run` runs one command, or POSTs to one HTTP endpoint,
   per event, with no extension process to write. A command gets the event
   as JSON on stdin and runs as the agent's own commands do: in the terminal,
@@ -172,9 +200,6 @@ All notable changes to Abhed are recorded here. The format follows
   `default` and `auth.tenant_claim` is unset: a sign-in's tenant is then the
   claim named `tenant`, else `default`, so unless the identity provider
   sends a matching `tenant` claim everyone it signs in is refused.
-
-### Added
-
 - The agent is given a language server's diagnostics after each write or
   edit, in the CLI and the editor protocol. The server is the one Studio
   runs, started in the session's sandbox with the engine's safe settings,
@@ -195,9 +220,6 @@ All notable changes to Abhed are recorded here. The format follows
   `session/prompt`, so it runs under the session's policy as any prompt does.
   The editor's diagnostics on the range go with Fix and Explain as an
   attachment. A file the agent may not read gets none.
-
-### Added
-
 - Abhed Studio debugs Node programs and tests, JavaScript and TypeScript,
   in the session's sandbox (`_abhed/debug/launch` with `language: "node"`).
   A `runner` picks Node itself (TypeScript by Node's own type stripping),
@@ -213,9 +235,6 @@ All notable changes to Abhed are recorded here. The format follows
   `--inspect` in the sandbox's `NODE_OPTIONS` is not passed on, so nothing
   inherited opens a port. Node missing offers its install. See
   [Debugging](docs/guide/31-debugging.md#node).
-
-### Added
-
 - `abhed bg start|list|logs|attach|cancel`: background jobs on a server
   that serves them, run as the signed-in person and followed from the
   command line. `attach` puts each ask to the person and answers it on the
@@ -231,9 +250,6 @@ All notable changes to Abhed are recorded here. The format follows
   that starts, answers and stops sessions for people on routes of its own.
   A denial through `DenyPending` is recorded as the system's, with its
   reason, never as a person's rejection.
-
-### Added
-
 - Sign-in to remote MCP servers with OAuth 2.1, as the MCP authorization
   specification describes: `abhed mcp login NAME` finds the server's
   protected-resource and authorization-server metadata, registers a client
@@ -366,6 +382,41 @@ All notable changes to Abhed are recorded here. The format follows
   last lines) before it exits: a stop signal that comes while stdin is
   open waits up to 250 ms for it to end, so a lone SIGTERM now exits
   after about a quarter of a second.
+- Answer checks failed a correct fix in strict mode, so CI saw exit 8 on
+  success. After `python3 -m unittest tests.test_text` passed, "All tests
+  in tests.test_text passed" was unverified, because only a run of the
+  whole suite was read as covering a test claim. A run of a named test
+  module, file or package (`python3 -m unittest tests.test_text`, `pytest
+  tests/test_x.py`, `go test ./pkg/x`) now verifies a claim that names it,
+  and "the tests pass" when every message the person typed names those
+  test runs and, once those runner commands are taken out, every word left
+  is exactly a connective word ("fix it and run the tests"); a word with a
+  `/`, a digit or a symbol is not one, and a runner given an argument the
+  checks do not read counts as a whole-suite run. Anything else leaves the
+  whole workspace: "all the tests", "the whole suite", another runner
+  (`npm test`, `make test`, a bare `make`), "CI", the build or lint, "the
+  api tests", a negation such as "don't run" or "skip", a message in
+  another language, and any path or file name outside a runner command,
+  the file to fix included: after "`python3 -m unittest tests.test_text`
+  fails. Fix src/utils/text.py and run the tests", "the tests pass" needs
+  a whole run. A task split over two messages, the second only "run the
+  tests", needs one too. A file attached with `@` or piped stdin never
+  names them. "All tests", "the whole suite" and "the tests, including X"
+  still need a whole run, and `pkg/x/...` a recursive one; a run of
+  another module, of one class, a failed run, an edit since the run, or a
+  run that ran no test (all skipped or expected failures, `[no test
+  files]`) still leave the claim unverified, and a go claim about one
+  package needs that package's own passing line, found by its exact import
+  path from `go.mod`. A run that ran no test no longer verifies "all tests
+  pass" either. The false-claim corpus gains 100 planted cases and 15
+  controls for it; none of the 868 planted claims verifies, all 240
+  controls do, and none of the 341 true or neutral claims is contradicted.
+- The revision note after an unverified answer now lists the session's
+  tool results the agent may cite, by their real `call_id` (or `#seq` for
+  a text answer), so a model no longer cites an id it made up. A cited id
+  that is not in the record still counts as no evidence. Commands, paths
+  and statements in the note are quoted, so text the model chose cannot
+  start a line of its own in it.
 
 ### Go API
 

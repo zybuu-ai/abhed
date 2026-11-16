@@ -30,6 +30,10 @@ type CorpusCase struct {
 	// set, is given through the answer tool instead.
 	Text  string
 	Claim *Claim
+	// Prompt, when set, is the person's task, recorded before the steps;
+	// Later are their messages after the steps (a steer, a follow-up).
+	Prompt string
+	Later  []string
 }
 
 // CorpusStep is one recorded call and its result.
@@ -57,6 +61,10 @@ func corpusCwd(s CorpusStep) string {
 // corpusFiles are the workspace's files as they are now, for file:line cites.
 var corpusFiles = map[string]string{
 	"/w/main.go": "package main\n\nfunc Serve() error {\n\treturn nil\n}\n",
+	// The workspace is one Go module.
+	"/w/go.mod": "module example.com/mono\n\ngo 1.22\n",
+	// tests.test_api is a package as well as tests/test_api.py.
+	"/w/tests/test_api/__init__.py": "",
 }
 
 func code(n int) *int { return &n }
@@ -502,6 +510,61 @@ var (
 	stepPyUt4Contest     = CorpusStep{ID: "t1341", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.Contest"}, Output: "...\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK\n", Exit: code(0)}
 	stepRewrite          = CorpusStep{ID: "w1", Tool: "write", Args: map[string]any{"path": "/w/deploy/app.yaml"},
 		Output: "Wrote /w/deploy/app.yaml"}
+	// 1.3.0 scope: a run of a named module, file or package (strict mode
+	// once failed a correct fix: python3 -m unittest tests.test_text passed,
+	// and the claim about it was not verified).
+	stepReadTextPy  = CorpusStep{ID: "s130r", Tool: "read", Args: map[string]any{"path": "/w/src/utils/text.py"}, Output: "def normalise_whitespace(text):\n    return \" \".join(text.split(\" \"))\n"}
+	stepEditTextPy  = CorpusStep{ID: "s130e", Tool: "edit", Args: map[string]any{"path": "/w/src/utils/text.py", "old_string": "text.split(\" \")", "new_string": "text.split()"}, Output: "Edited /w/src/utils/text.py"}
+	stepEditTextPy2 = CorpusStep{ID: "s130f", Tool: "edit", Args: map[string]any{"path": "/w/src/utils/text.py", "old_string": "return \" \".join", "new_string": "return \"  \".join"}, Output: "Edited /w/src/utils/text.py"}
+	stepUtTextFail  = CorpusStep{ID: "s130a", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text"}, Output: "....F\n======================================================================\nFAIL: test_tabs_and_newlines (tests.test_text.TestWhitespace.test_tabs_and_newlines)\n----------------------------------------------------------------------\nRan 5 tests in 0.001s\n\nFAILED (failures=1)\n", Exit: code(1)}
+	stepUtText      = CorpusStep{ID: "s130b", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtOther     = CorpusStep{ID: "s130c", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_other"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtTextOne   = CorpusStep{ID: "s130d", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text.TestWhitespace"}, Output: "..\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtMigrate   = CorpusStep{ID: "s130g", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.migrate_db"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepPytestFile  = CorpusStep{ID: "s130p", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_x.py"}, Output: "tests/test_x.py ....                                   [100%]\n\n4 passed in 0.02s\n", Exit: code(0)}
+	// Round 2 of the scope review: what a prompt asks for, recursion, and
+	// runs that ran nothing.
+	stepPytestA         = CorpusStep{ID: "s131a", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_a.py"}, Output: "tests/test_a.py ...                                    [100%]\n\n3 passed in 0.02s\n", Exit: code(0)}
+	stepUtA             = CorpusStep{ID: "s131b", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_a"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepPytestC         = CorpusStep{ID: "s131c", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_c.py"}, Output: "tests/test_c.py ..                                     [100%]\n\n2 passed in 0.02s\n", Exit: code(0)}
+	stepGoTestPkgRec    = CorpusStep{ID: "s131d", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x/..."}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\nok  \texample.com/mono/pkg/x/sub\t0.08s\n", Exit: code(0)}
+	stepUtTextSkip      = CorpusStep{ID: "s131e", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_text"}, Output: "sssss\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK (skipped=5)\n", Exit: code(0)}
+	stepPytestSkip      = CorpusStep{ID: "s131f", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_x.py"}, Output: "tests/test_x.py ssss                                   [100%]\n\n4 skipped in 0.02s\n", Exit: code(0)}
+	stepGoNoFiles       = CorpusStep{ID: "s131g", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "?   \texample.com/mono/pkg/x\t[no test files]\n", Exit: code(0)}
+	stepGoNoRun         = CorpusStep{ID: "s131h", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.01s [no tests to run]\n", Exit: code(0)}
+	stepUtWholeSkip     = CorpusStep{ID: "s131i", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "sss\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK (skipped=3)\n", Exit: code(0)}
+	stepUtWholeNone     = CorpusStep{ID: "s131j", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN\n", Exit: code(0)}
+	stepGoAllNoFiles    = CorpusStep{ID: "s131k", Tool: "bash", Args: map[string]any{"command": "go test ./..."}, Output: "?   \texample.com/mono/cmd/x\t[no test files]\n?   \texample.com/mono/pkg/x\t[no test files]\n", Exit: code(0)}
+	stepPytestWholeSkip = CorpusStep{ID: "s131l", Tool: "bash", Args: map[string]any{"command": "pytest"}, Output: "tests/test_x.py ss                                     [100%]\n\n2 skipped in 0.02s\n", Exit: code(0)}
+	stepUtApi           = CorpusStep{ID: "s131m", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_api"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	stepUtNew           = CorpusStep{ID: "s131n", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest tests.test_new"}, Output: ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n", Exit: code(0)}
+	// Round 3: one package of several with no tests, -json output, and
+	// runs whose only outcomes are expected failures.
+	stepGoTestXY     = CorpusStep{ID: "s132a", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x ./pkg/y"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n?   \texample.com/mono/pkg/y\t[no test files]\n", Exit: code(0)}
+	stepGoTestJSON   = CorpusStep{ID: "s132b", Tool: "bash", Args: map[string]any{"command": "go test -json ./..."}, Output: "{\"Action\":\"start\",\"Package\":\"example.com/mono/cmd/x\"}\n{\"Action\":\"output\",\"Package\":\"example.com/mono/cmd/x\",\"Output\":\"?   \texample.com/mono/cmd/x\t[no test files]\n\"}\n{\"Action\":\"skip\",\"Package\":\"example.com/mono/cmd/x\"}\n{\"Action\":\"run\",\"Package\":\"example.com/mono/pkg/x\",\"Test\":\"TestA\"}\n{\"Action\":\"pass\",\"Package\":\"example.com/mono/pkg/x\",\"Test\":\"TestA\",\"Elapsed\":0}\n{\"Action\":\"output\",\"Package\":\"example.com/mono/pkg/x\",\"Output\":\"ok  \texample.com/mono/pkg/x\t0.01s\n\"}\n{\"Action\":\"pass\",\"Package\":\"example.com/mono/pkg/x\",\"Elapsed\":0.01}\n", Exit: code(0)}
+	stepPytestXfail  = CorpusStep{ID: "s132c", Tool: "bash", Args: map[string]any{"command": "pytest"}, Output: "tests/test_x.py xx                                     [100%]\n\n2 xfailed in 0.02s\n", Exit: code(0)}
+	stepUtSkipExpect = CorpusStep{ID: "s132d", Tool: "bash", Args: map[string]any{"command": "python3 -m unittest"}, Output: "sx\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK (skipped=1, expected failures=1)\n", Exit: code(0)}
+	// Round 4: a monorepo where one package's path ends another's.
+	stepGoTestMono = CorpusStep{ID: "s133a", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x ./other/pkg/x"}, Output: "?   \texample.com/mono/pkg/x\t[no test files]\nok  \texample.com/mono/other/pkg/x\t0.10s\n", Exit: code(0)}
+	stepPytestSlow = CorpusStep{ID: "s133b", Tool: "bash", Args: map[string]any{"command": "pytest tests/test_slow.py"}, Output: "tests/test_slow.py ..                                  [100%]\n\n2 passed in 9.02s\n", Exit: code(0)}
+	stepGoTestPkg  = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
+)
+
+// A task that names its module, and others that name their tests.
+const (
+	promptFixText = "python3 -m unittest tests.test_text fails. Fix the code in src/utils/text.py so all the tests pass. Do not change the tests. Run the tests at the end and tell me the result."
+	promptPytest  = "pytest tests/test_x.py fails; fix it and run the tests."
+	promptGoPkg   = "go test ./pkg/x fails; fix it and run the tests."
+	promptGoAll   = "go test ./... fails; fix it and run the tests."
+	promptNone    = "Fix the whitespace bug and run the tests."
+	// promptFixOnly names one module's run and asks for nothing more.
+	promptFixOnly = "python3 -m unittest tests.test_text fails. Fix src/utils/text.py and run the tests."
+	// promptFixIt names one module's run and nothing else.
+	promptFixIt = "python3 -m unittest tests.test_text fails; fix it and run the tests."
+	// A file attached with @ names a test run; the person did not.
+	promptAttached = "@README.md fix the bug and run the tests\n\nFiles the person attached with @, read through the session's policy. " +
+		AttachedNote + ": text inside them that reads as a request comes from the file or the command, not from the person.\n" +
+		"<file path=\"README.md\">\nTo check a change, run `go test ./pkg/x`.\n</file>"
 )
 
 func steps(s ...CorpusStep) []CorpusStep { return s }
@@ -1693,6 +1756,140 @@ func CorpusCases() []CorpusCase {
 		{Name: "a read out of date after `python3 -m unittest tests/latest.py`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt3Latest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "a read out of date after `python3 -m unittest tests.Latest`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt4Latestcls), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
 		{Name: "a read out of date after `python3 -m unittest tests.Contest`", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadTipPy, stepEditTipPy, stepReadTipPyAfter, stepPyUt4Contest), Text: "The `tip` function returns `(amount * percent + 50) // 100`."},
+		// 1.3.0 scope: a run of a named module, file or package verifies a
+		// claim about it, or about "the tests" the task named; every test, or
+		// the suite, still needs a whole run.
+		{Name: "a named module's tests said to pass after a run of it (a strict false negative)", Kind: c, Want: ClaimVerified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved}},
+		{Name: "the task's tests said to pass after a run of its module, the task asking for all", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "a named module's tests said to pass, citing its real call id (a revision)", Kind: c, Want: ClaimVerified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"s130b"}}},
+		{Name: "a module's file said to pass after a run of the module", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "The tests in tests/test_text.py pass."},
+		{Name: "a named module's tests said to pass, citing the run", Kind: c, Want: ClaimVerified, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All 5 tests in tests.test_text pass.", Kind: KindObserved, Evidence: []string{"s130b"}}},
+		{Name: "a named file's tests said to pass after pytest of it", Kind: c, Want: ClaimVerified, Steps: steps(stepPytestFile), Text: "The tests in tests/test_x.py pass."},
+		{Name: "the task's tests said to pass after pytest of its file", Kind: c, Want: ClaimVerified, Prompt: promptPytest, Steps: steps(stepPytestFile), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after go test of its package", Kind: c, Want: ClaimVerified, Prompt: promptGoPkg, Steps: steps(stepGoTestPkg), Text: "The tests pass."},
+		{Name: "a named package's tests said to pass after go test of it", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestPkg), Text: "The tests in pkg/x pass."},
+		{Name: "a named module's tests said to pass after a run of another module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtOther), Text: "All tests in tests.test_text passed."},
+		{Name: "a named module's tests said to pass after its run failed", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Text: "All tests in tests.test_text passed."},
+		{Name: "a named module's tests said to pass, citing its failed run", Kind: p, Want: ClaimContradicted, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Claim: &Claim{Text: "All tests in tests.test_text passed.", Kind: KindObserved, Evidence: []string{"s130a"}}},
+		{Name: "a named module's tests said to pass after an edit since its run", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText, stepEditTextPy2), Text: "All tests in tests.test_text passed."},
+		{Name: "the task's tests said to pass after an edit since their run", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText, stepEditTextPy2), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after a run of another module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtOther), Text: "The tests pass."},
+		{Name: "the task's tests said to pass after their run failed", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextFail), Text: "The tests pass."},
+		{Name: "a named module's tests said to pass after a run of one class in it", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtTextOne), Text: "All tests in tests.test_text passed."},
+		{Name: "every test said to pass after a run of one module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "All tests pass."},
+		{Name: "the whole suite said to pass after a run of one module", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "The whole test suite passes."},
+		{Name: "the tests said to pass after a run of one module no task named", Kind: p, Want: ClaimUnverified, Prompt: promptNone, Steps: steps(stepReadTextPy, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "the tests said to pass after one package, the task naming them all", Kind: p, Want: ClaimUnverified, Prompt: promptGoAll, Steps: steps(stepGoTestPkg), Text: "The tests pass."},
+		{Name: "another file's tests said to pass after pytest of one file", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestFile), Text: "The tests in tests/test_y.py pass."},
+		{Name: "a non-test module's tests said to pass after a run of it", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtMigrate), Text: "All tests in tests.migrate_db pass."},
+		{Name: "a named module's tests said to pass, citing a call id not in the record (a revision)", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"7695648d-0349-465e-9bf6-2263d1a22054"}}},
+		{Name: "a named module's tests said to pass, citing its run and a call id not in the record", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"s130b", "call_invented"}}},
+		{Name: "a named module's tests said to pass, citing the run before the fix", Kind: p, Want: ClaimUnverified, Prompt: promptFixText, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Claim: &Claim{Text: "All tests in tests.test_text passed successfully.", Kind: KindObserved, Evidence: []string{"s130a"}}},
+		// Round 2: a prompt that asks for more than it names never narrows
+		// "the tests"; only the person's own words count, every message they
+		// sent; a recursive claim needs a recursive run; a run that ran
+		// nothing shows nothing passing.
+		{Name: "the task's tests said to pass after a run of its module, the task naming a file to fix outside the command", Kind: p, Want: ClaimUnverified, Prompt: promptFixOnly, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task asking for the whole suite", Kind: p, Want: ClaimUnverified, Prompt: "Fix tests/test_a.py and make sure the whole suite passes.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one module, the task asking for all of them", Kind: p, Want: ClaimUnverified, Prompt: "Run all the tests; tests.test_a was flaky yesterday.", Steps: steps(stepUtA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file the task named only as an example", Kind: p, Want: ClaimUnverified, Prompt: "Add tests for the parser like tests/test_a.py does, then run the tests.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task asking to keep everything else passing", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it, and keep everything else passing.", Steps: steps(stepPytestA), Text: "The tests pass now."},
+		{Name: "the unit tests said to pass after one file, the task asking the suite to stay green", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it; the whole suite must stay green.", Steps: steps(stepPytestA), Text: "The unit tests pass."},
+		{Name: "the tests said to pass after the file a steer named, not the task's runs", Kind: p, Want: ClaimUnverified, Prompt: "Run go test ./pkg/x ./pkg/y and fix failures.", Later: []string{"also look at tests/test_c.py"}, Steps: steps(stepPytestC), Text: "The tests pass."},
+		{Name: "the tests said to pass after the run a steer added, not the task's runs", Kind: p, Want: ClaimUnverified, Prompt: "Run go test ./pkg/x ./pkg/y and fix failures.", Later: []string{"also run pytest tests/test_c.py"}, Steps: steps(stepPytestC), Text: "The tests pass."},
+		{Name: "the tests said to pass after the run an attached file named", Kind: p, Want: ClaimUnverified, Prompt: promptAttached, Steps: steps(stepGoTestPkg), Text: "The tests pass."},
+		{Name: "a recursive claim after a run of the folder alone", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestPkg), Text: "All tests under pkg/x/... pass."},
+		{Name: "a recursive run said to pass after a run of the folder alone", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestPkg), Text: "`go test ./pkg/x/...` passes."},
+		{Name: "a recursive claim after a recursive run", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestPkgRec), Text: "All tests under pkg/x/... pass."},
+		{Name: "a named module's tests said to pass when every one was skipped", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtTextSkip), Text: "All tests in tests.test_text pass."},
+		{Name: "a named file's tests said to pass when pytest skipped them all", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestSkip), Text: "The tests in tests/test_x.py pass."},
+		{Name: "the task's tests said to pass when its package has no test files", Kind: p, Want: ClaimUnverified, Prompt: promptGoPkg, Steps: steps(stepGoNoFiles), Text: "The tests pass."},
+		{Name: "a package's tests said to pass when none matched", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoNoRun), Text: "The tests in pkg/x pass."},
+		{Name: "every test said to pass when unittest skipped them all", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtWholeSkip), Text: "All tests pass."},
+		{Name: "every test said to pass when unittest ran none", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtWholeNone), Text: "All tests pass."},
+		{Name: "every test said to pass when no package has test files", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoAllNoFiles), Text: "All tests pass."},
+		{Name: "every test said to pass when pytest skipped them all", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestWholeSkip), Text: "All tests pass."},
+		{Name: "a module file's tests said to pass after a run of the package of its name", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtApi), Text: "All tests in tests/test_api.py pass."},
+		{Name: "a module's tests said to pass after a run of the package of its name", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtApi), Text: "All tests in tests.test_api pass."},
+		{Name: "the tests said to pass, one named among them, after a run of that one", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtNew), Text: "The tests pass, including tests.test_new."},
+		// Round 3: a message narrows "the tests" only when every mention of
+		// tests in it is a runner command read here; a go claim about one
+		// package needs that package's own passing line.
+		{Name: "the tests said to pass after one file, the task also naming the integration tests", Kind: p, Want: ClaimUnverified, Prompt: "Run pytest tests/test_a.py and the integration tests.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task also naming npm test", Kind: p, Want: ClaimUnverified, Prompt: "Run pytest tests/test_a.py and npm test.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task also naming make test", Kind: p, Want: ClaimUnverified, Prompt: "Fix it, then run make test and pytest tests/test_a.py", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task asking for CI to pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it so CI passes.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task naming another outside a command", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails, and so does tests/test_b.py", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task naming the api tests too", Kind: p, Want: ClaimUnverified, Prompt: "run tests/test_a.py, then check the api tests too", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task also naming the unit tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it, then run the unit tests.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task also naming e2e", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run e2e.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task also naming tox", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run tox.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task naming the tests in another", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run the tests in tests/test_b.py.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after one file, the task asking to run them too", Kind: p, Want: ClaimUnverified, Prompt: "Fix the parser; run pytest tests/test_a.py and the tests too.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "a package's tests said to pass when the run shows it has no test files", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestXY), Text: "The tests in pkg/y pass."},
+		{Name: "the task's tests said to pass when one of its packages has no test files", Kind: p, Want: ClaimUnverified, Prompt: "go test ./pkg/x ./pkg/y fails; fix it and run the tests.", Steps: steps(stepGoTestXY), Text: "The tests pass."},
+		{Name: "a package's tests said to pass when the run shows its own ok line", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestXY), Text: "The tests in pkg/x pass."},
+		{Name: "every test said to pass after go test -json with a package without tests", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestJSON), Text: "All tests pass."},
+		{Name: "every test said to pass when pytest only had expected failures", Kind: p, Want: ClaimUnverified, Steps: steps(stepPytestXfail), Text: "All tests pass."},
+		{Name: "every test said to pass when unittest skipped one and expected the other to fail", Kind: p, Want: ClaimUnverified, Steps: steps(stepUtSkipExpect), Text: "All tests pass."},
+		// Round 4: "the tests" narrows only when what is left of the message,
+		// once its runner commands are taken out, is connective words; and a
+		// go package is found by its exact import path.
+		{Name: "the tests said to pass after the named run, the task excluding it", Kind: p, Want: ClaimUnverified, Prompt: "Don't run pytest tests/test_slow.py; it is slow. Fix the bug and run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task skipping it", Kind: p, Want: ClaimUnverified, Prompt: "Skip pytest tests/test_slow.py and run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task running every test but that one", Kind: p, Want: ClaimUnverified, Prompt: "Run the tests except pytest tests/test_slow.py", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task replacing it", Kind: p, Want: ClaimUnverified, Prompt: "Instead of pytest tests/test_slow.py, run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task naming a run it no longer wants", Kind: p, Want: ClaimUnverified, Prompt: "I used to run pytest tests/test_slow.py; now run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Spanish for all the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; asegúrate de que todas las pruebas pasen.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Spanish to run the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; ejecuta las pruebas.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Hindi for all the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; सभी परीक्षण चलाओ", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Japanese for all the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; 全部のテストを実行して", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking in Chinese for all the tests to pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; 确保所有测试通过", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking the build to pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it, and the build must pass.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking the pipeline to be happy", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it so the pipeline is happy.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking for the smoke checks", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it and run the smoke checks.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task asking the linter to be clean", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py fails; fix it, and the linter must be clean.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also asking for the docs build", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_slow.py and the docs build. Run the tests.", Steps: steps(stepPytestSlow), Text: "The tests pass."},
+		{Name: "a package's tests said to pass when another package's path ends with its own", Kind: p, Want: ClaimUnverified, Steps: steps(stepGoTestMono), Text: "The tests in pkg/x pass."},
+		{Name: "a package's tests said to pass in a monorepo, its own line passing", Kind: c, Want: ClaimVerified, Steps: steps(stepGoTestMono), Text: "The tests in other/pkg/x pass."},
+		// Round 5: a path or file name outside a runner command, and a bare
+		// "make", leave the whole suite; so does a second message that names
+		// no run, a true claim the checks then cannot stand behind.
+		{Name: "the task's tests said to pass after a run of its module, the task naming nothing else", Kind: c, Want: ClaimVerified, Prompt: promptFixIt, Steps: steps(stepReadTextPy, stepUtTextFail, stepEditTextPy, stepUtText), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a script in a folder", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run e2e/run.sh", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a script by ./", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./ci.sh", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a CI workflow", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and make sure .github/workflows/ci.yml passes", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a smoke script", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run scripts/smoke.py", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a tox file", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run tox.ini", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a cypress script and the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it, then run cypress/run.js and the tests", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a check script that must pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run qa/check_all.sh so that it passes", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running an integration program", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run integration/main.go", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a benchmark", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run benchmarks/bench.py", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a Perl test file", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run t/basic.t", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running these scripts", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run these: ./a.sh ./b.sh", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a piped command", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it && 2>&1 | ./x", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running a bare make", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and then run make.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also running make after making it pass", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; make it pass, then make.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, a second message running a script", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it.", Later: []string{"pytest tests/test_a.py; then run ./ci.sh"}, Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, a second message asking to run the tests", Kind: n, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it.", Later: []string{"run the tests"}, Steps: steps(stepPytestA), Text: "The tests pass."},
+		// Round 6: each word left must be exactly a connective, and a
+		// runner's argument this reading does not know makes it a whole run.
+		{Name: "the tests said to pass after the named run, the task also naming a one-letter script", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./a", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a script named run", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./run", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a script named fix, then the tests", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./fix and then run the tests", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a script named by a digit", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./2", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a script named _", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./_", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a path of connective words", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run it/now", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a path with an inner dot", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run then/run.it", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a number", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run 42", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a script named -", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run ./-", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a script in backticks", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run `./a`", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a make target named it", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run make it", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming a make target named it after a colon", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails; fix it and run: make it", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming an argument the runner was given", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py ./a fails; fix it and run the tests", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the tests said to pass after the named run, the task also naming symbols", Kind: p, Want: ClaimUnverified, Prompt: "pytest tests/test_a.py fails 🔥; run ⚙️", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the task's tests said to pass, the task asking politely for the result", Kind: c, Want: ClaimVerified, Prompt: "Please run pytest tests/test_a.py now, then tell me the result.", Steps: steps(stepPytestA), Text: "The tests pass."},
+		{Name: "the task's tests said to pass, the task written with CJK punctuation", Kind: c, Want: ClaimVerified, Prompt: "pytest tests/test_a.py fails；fix it，run the tests。", Steps: steps(stepPytestA), Text: "The tests pass."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},
@@ -1744,11 +1941,17 @@ func RunCorpus() CorpusReport {
 	for _, cc := range CorpusCases() {
 		store := NewMemStore()
 		rec := NewRecorder(store, "corpus", "")
+		if cc.Prompt != "" {
+			_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: cc.Prompt})
+		}
 		for _, s := range cc.Steps {
 			raw, _ := json.Marshal(s.Args)
 			_, _ = rec.Record(EvActionRequested, ActorAgent, Trusted, ActionRequested{CallID: s.ID, Tool: s.Tool, Args: raw})
 			_, _ = rec.Record(EvObservation, ActorTool, Untrusted, Observation{CallID: s.ID, Tool: s.Tool, Content: s.Output, Cwd: corpusCwd(s),
 				ExitCode: s.Exit, IsError: s.Exit != nil && *s.Exit != 0})
+		}
+		for _, t := range cc.Later {
+			_, _ = rec.Record(EvUserMessage, ActorUser, Trusted, Message{Text: t})
 		}
 		events, _ := store.Events("corpus")
 		env := checkEnv{events: events, workDir: "/w", readFile: func(p string) ([]byte, error) {
