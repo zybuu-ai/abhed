@@ -122,15 +122,24 @@ aside.
 loosening values of the tighten-only settings above. These change what runs
 or reaches out unasked, so they need keys `/etc/abhed/config.json` pins out
 of band (`org_policy.keys`); a key pinned on first use is not enough. So
-does `pricing`, with one exception: an org whose keys are not pinned may
-price a model at exactly 0 (every figure 0), and the laptop holds that 0
-only for a model every provider it configures sends to a server on this
-machine (a loopback `base_url`, or a local server type such as `ollama`
-with none set). This lets an org dollar budget admit local models without
-pinned keys. A price can only lower what a budget counts, so an unpinned org
-never prices a model above 0, and its 0 never reaches a model served from
-anywhere else: that model stays unpriced and a dollar budget refuses it. A
-price the machine's own file sets for the same model is the machine's.
+does `pricing`, with one exception, so an org dollar budget can admit models
+the laptop runs itself without pinned keys: an org whose keys are not
+pinned may price a model at exactly 0 (every figure 0). The laptop takes
+that 0 only for a model that has no price of its own (not on the built-in
+list, and not priced by the machine's file or the person's), and only when
+every provider it configures for that model is a local model server: a
+local server type (`ollama`, `vllm`, `llamacpp`, `tgi`, `sglang`) at its
+own endpoint or a loopback `base_url`, or `openai-compatible` at a loopback
+`base_url`. A hosted API's type (`openai`, `anthropic`, the `bedrock` and
+`vertex` types, `azure-openai`, `watsonx`, the hosted gateways) never counts,
+even at a loopback address, since a gateway or signing proxy there fronts a
+paid model; nor does a custom provider type. So an unpinned org cannot lower
+any price a model has, and the hosted models on the list keep their list
+price behind any gateway. What remains trusted is that a local server the
+laptop runs under an unlisted name is the local model the org meant; a
+person who points such a server at a paid API spends their own key, as they
+could outside Abhed. The check is made as each session's budget is built,
+so a provider changed later applies to the sessions started after it.
 `auto` and `bypass` modes are never set by an org policy.
 
 **Always**: `record.ship.enabled` and `record.ship.max_backlog_mb` (records

@@ -713,7 +713,7 @@ func Budget(cfg config.Config) *agent.Budget {
 		for name, p := range cfg.Pricing {
 			// An unpinned org's 0 holds only where nothing is spent: a model
 			// every configured provider of which runs on this machine.
-			if cfg.PricingLoopbackOnly[name] && !servedOnThisMachine(cfg, name) {
+			if cfg.PricingLoopbackOnly[name] && !orgZeroHolds(cfg, name) {
 				continue
 			}
 			b.Prices[name] = model.Price{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
@@ -722,10 +722,25 @@ func Budget(cfg config.Config) *agent.Budget {
 	return b
 }
 
+// orgZeroHolds reports whether an unpinned org's 0 for a model name is
+// taken: only for a model with no price of its own (the built-in list
+// prices the hosted models, which a 0 never replaces), served only by local
+// model servers on this machine. It is decided as the session's budget is
+// built; a provider changed later applies to sessions started after it.
+func orgZeroHolds(cfg config.Config, name string) bool {
+	if _, listed := model.PriceFor(name, nil); listed {
+		return false
+	}
+	return servedOnThisMachine(cfg, name)
+}
+
 // servedOnThisMachine reports a model name that at least one configured
-// provider sends, and every provider sending it is a server on this
-// machine: its base_url, or its custom type's, or its type's own endpoint
-// when it sets none, is loopback.
+// provider sends, and every provider sending it is a local model server on
+// this machine: a local server type (ollama, vllm, llamacpp, tgi, sglang)
+// at its own endpoint or a loopback base_url, or openai-compatible at a
+// loopback base_url. A hosted API's type (openai, anthropic, bedrock,
+// vertex, azure, watsonx, a gateway) never counts, even at a loopback
+// address, where a proxy may front it; nor does a custom provider type.
 func servedOnThisMachine(cfg config.Config, name string) bool {
 	found := false
 	for _, p := range cfg.Model.Providers {
@@ -733,15 +748,10 @@ func servedOnThisMachine(cfg config.Config, name string) bool {
 			continue
 		}
 		found = true
-		base := p.BaseURL
-		if base == "" {
-			for _, d := range cfg.CustomProviders {
-				if d.Name == p.Type {
-					base = d.BaseURL
-				}
-			}
-		}
-		if base == "" && !model.LocalByDefault(p.Type) || base != "" && !loopbackEndpoint(base) {
+		switch {
+		case model.LocalByDefault(p.Type) && (p.BaseURL == "" || loopbackEndpoint(p.BaseURL)):
+		case p.Type == "openai-compatible" && p.BaseURL != "" && loopbackEndpoint(p.BaseURL):
+		default:
 			return false
 		}
 	}

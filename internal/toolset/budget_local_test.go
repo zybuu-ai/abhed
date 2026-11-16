@@ -50,3 +50,43 @@ func TestSpentBudgetStopsBeforeAnyCall(t *testing.T) {
 		t.Fatalf("allowance %+v", a)
 	}
 }
+
+// A loopback address is no proof of a local model: a gateway or signing
+// proxy may front a hosted one. An unpinned org's 0 never prices a hosted
+// API's type, wherever it sends, and never replaces a built-in list price,
+// so gpt-4o and claude stay at list price behind a loopback gateway.
+func TestOrgZeroNeverPricesAHostedModel(t *testing.T) {
+	for _, c := range []struct {
+		name, typ, base, model string
+		wantListed             bool // the built-in list price stands
+	}{
+		{"openai gateway", "openai", "http://127.0.0.1:4000/v1", "gpt-4o", true},
+		{"anthropic proxy", "anthropic", "http://localhost:4000", "claude-sonnet-4-5", true},
+		{"bedrock signing proxy", "bedrock-anthropic", "http://127.0.0.1:8080", "claude-sonnet-4-5-20250929", true},
+		{"openai-compatible gateway, listed name", "openai-compatible", "http://127.0.0.1:4000/v1", "gpt-4o", true},
+		{"openai type, unlisted name", "openai", "http://127.0.0.1:4000/v1", "house-model", false},
+		{"custom type", "acme-gw", "http://127.0.0.1:4000/v1", "house-model", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Limits.MaxBudgetUSD = 1
+			cfg.Pricing = map[string]config.PriceConfig{c.model: {}}
+			cfg.PricingLoopbackOnly = map[string]bool{c.model: true}
+			cfg.Model.Providers = map[string]config.ProviderConfig{"gw": {Type: c.typ, BaseURL: c.base, Model: c.model}}
+			b := Budget(cfg)
+			p, ok := b.Price(c.model)
+			if c.wantListed {
+				if !ok || p.Input == 0 {
+					t.Fatalf("the list price was replaced: %+v %v", p, ok)
+				}
+				return
+			}
+			if ok {
+				t.Fatalf("priced at %+v", p)
+			}
+			if b.Refuse(c.model) == nil {
+				t.Fatal("an unpriced hosted model ran under the dollar budget")
+			}
+		})
+	}
+}

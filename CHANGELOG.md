@@ -453,11 +453,15 @@ All notable changes to Abhed are recorded here. The format follows
   under it no longer runs a turn per session past the budget. Only a lower
   layer's on is taken.
 - An org policy whose keys the machine does not pin may price a model at
-  exactly 0, held only for a model every configured provider of which runs
-  on this machine (a loopback `base_url`, or a local server type with none),
-  so an org dollar budget admits local models without pinned keys; any other
-  price from it is set aside, as before. Under a managed or org dollar cap,
-  an unpriced model's refusal says an administrator sets the price.
+  exactly 0, so an org dollar budget admits a model the laptop runs itself.
+  The laptop takes the 0 only for a model with no price of its own (none on
+  the built-in list, in the machine's file or the person's), served only by
+  local model servers: `ollama`, `vllm`, `llamacpp`, `tgi`, `sglang`, or
+  `openai-compatible` at a loopback address. A hosted API's type never
+  counts, even behind a loopback gateway, so no price a model has is lowered.
+  Any other price from such an org is set aside, as before. Under a managed
+  or org dollar cap, an unpriced model's refusal says an administrator sets
+  the price.
 
 ### Changed
 
