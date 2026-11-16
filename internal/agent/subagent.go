@@ -144,7 +144,7 @@ func (b *Budget) TryReserveSubagent() error {
 		return nil
 	}
 	if b.USDExhausted() {
-		return fmt.Errorf("budget limit reached ($%.4f spent of $%.2f)", b.SpentUSD(), b.MaxUSD)
+		return fmt.Errorf("budget limit reached ($%.4f spent of %s)", b.SpentUSD(), usd(b.MaxUSD))
 	}
 	if b.Exhausted() {
 		return fmt.Errorf("budget limit reached (%d tokens spent of %d)", b.tokens.Load(), b.MaxTokens)

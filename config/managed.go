@@ -868,23 +868,24 @@ func managedPricing(cfg *Config, data []byte, below map[string]PriceConfig) {
 }
 
 // orgZeroBelow keeps an unpinned org's 0 from replacing a price a lower
-// layer set: the model keeps that price, or, under a managed dollar cap
-// that sets lower prices aside, stays unpriced. A 0 only prices a model that
-// has no price of its own.
+// layer set: the model keeps that price. A 0 only prices a model that has no
+// price of its own. Under a managed dollar cap a lower layer's price does not
+// count at all, so it cannot stand in the way of the org's 0 either: it is
+// set aside, said once, and the org's 0 holds where it would for a model
+// nobody priced.
 func orgZeroBelow(cfg *Config, below map[string]PriceConfig) {
+	capped := cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0
 	for name := range cfg.PricingLoopbackOnly {
 		p, ok := below[name]
 		if !ok {
 			continue
 		}
-		delete(cfg.PricingLoopbackOnly, name)
-		if cfg.ManagedSets("limits.max_budget_usd") && cfg.Limits.MaxBudgetUSD > 0 {
-			delete(cfg.Pricing, name)
-			// The person's own price is set aside too, as managedPricing does.
+		if capped {
 			cfg.SetAside = append(cfg.SetAside, pricingSetAside(cfg.origins["pricing."+name], name))
-		} else {
-			cfg.Pricing[name] = p
+			continue
 		}
+		delete(cfg.PricingLoopbackOnly, name)
+		cfg.Pricing[name] = p
 		cfg.SetAside = append(cfg.SetAside, SetAsideKey{File: orgSource(cfg.OrgPolicy.URL), Layer: LayerOrg, Key: "pricing." + name,
 			Reason: "an org policy whose keys this machine does not pin prices only a model that has no price of its own"})
 	}

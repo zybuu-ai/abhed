@@ -786,6 +786,17 @@ All notable changes to Abhed are recorded here. The format follows
   corpus gains 112 planted cases and 13 controls; none of the 980 planted
   claims verifies, all 253 controls do, and none of the 368 true or
   neutral claims is contradicted.
+- A spent budget says so. An org server marks one with `budget_spent` and a
+  least dollar cap beside it; the run then stopped with "a budget of $0.00
+  is set and … has no price". It now stops with the spent budget's own
+  message, and a dollar cap under a cent is written in full ($0.000001),
+  never as $0.00.
+- Under a managed or org dollar cap, a person's own `pricing` entry for a
+  model kept an unpinned org's price of 0 for it from applying, though the
+  cap already set the person's entry aside: the model stayed unpriced and
+  was refused, and two contradictory warnings printed. The person's entry
+  is now set aside once and the org's 0 applies, still only for a model
+  served by a local model server on this machine.
 
 ### Go API
 

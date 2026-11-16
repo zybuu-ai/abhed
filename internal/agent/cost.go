@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,11 +34,11 @@ func (b *Budget) Refuse(name string) error {
 			if b.MaxUSD <= 0 {
 				return fmt.Errorf("a dollar budget applies and %s has no price; %s", name, b.pricingHint())
 			}
-			return fmt.Errorf("a budget of $%.2f is set and %s has no price; %s", b.MaxUSD, name, b.pricingHint())
+			return fmt.Errorf("a budget of %s is set and %s has no price; %s", usd(b.MaxUSD), name, b.pricingHint())
 		}
 	}
 	if b.USDExhausted() {
-		return fmt.Errorf("the budget of $%.2f is spent ($%.4f)", b.MaxUSD, b.SpentUSD())
+		return fmt.Errorf("the budget of %s is spent ($%.4f)", usd(b.MaxUSD), b.SpentUSD())
 	}
 	if b.Exhausted() {
 		return fmt.Errorf("the budget of %d tokens is spent (%d)", b.MaxTokens, b.Spent())
@@ -163,16 +164,24 @@ func (l *Loop) recordBudgetStop() {
 	b := l.Budget
 	stop := BudgetStopped{Model: l.Adapter.Profile().Name, SpentUSD: b.SpentUSD(), MaxUSD: b.MaxUSD,
 		SpentTokens: b.Spent(), MaxTokens: b.MaxTokens}
+	held := ""
+	if m := b.allowanceStop.Load(); m != nil {
+		held = *m
+	}
 	switch {
+	case held != "":
+		// A budget known to be spent says so, whatever else would stop the
+		// run: a spent budget is not a missing price.
+		stop.Reason, stop.Scope, stop.Message = "allowance", "spent", held
 	case l.unpricedUnderCap():
 		stop.Reason = "unpriced"
-		stop.Message = fmt.Sprintf("stopped: a budget of $%.2f is set and %s has no price; %s", b.MaxUSD, stop.Model, b.pricingHint())
+		stop.Message = fmt.Sprintf("stopped: a budget of %s is set and %s has no price; %s", usd(b.MaxUSD), stop.Model, b.pricingHint())
 		if b.MaxUSD <= 0 {
 			stop.Message = fmt.Sprintf("stopped: a dollar budget applies and %s has no price; %s", stop.Model, b.pricingHint())
 		}
 	case b.USDExhausted():
 		stop.Reason = "usd"
-		stop.Message = fmt.Sprintf("stopped: the budget of $%.2f is spent ($%.4f)", b.MaxUSD, b.SpentUSD())
+		stop.Message = fmt.Sprintf("stopped: the budget of %s is spent ($%.4f)", usd(b.MaxUSD), b.SpentUSD())
 	default:
 		stop.Reason = "tokens"
 		stop.Message = fmt.Sprintf("stopped: the budget of %d tokens is spent (%d)", b.MaxTokens, b.Spent())
@@ -301,6 +310,15 @@ func (b *Budget) CutAtBound(a model.Adapter) bool {
 
 // pricingHint says where a missing price is set: the person's own
 // configuration, or, under a dollar cap an administrator set, theirs.
+// usd is a dollar cap as a person reads it: cents, or every digit below a
+// cent, so a cap of a millionth never reads as $0.00.
+func usd(v float64) string {
+	if v > 0 && v < 0.01 {
+		return "$" + strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	return fmt.Sprintf("$%.2f", v)
+}
+
 func (b *Budget) pricingHint() string {
 	if b != nil && b.ManagedPrices {
 		return "an administrator sets it: in the machine's managed configuration, or, for a model served on this machine, at 0 in the org policy"

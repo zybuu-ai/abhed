@@ -52,6 +52,23 @@ func TestHeadlessDollarBudgetRefusesUnpriced(t *testing.T) {
 	}
 }
 
+// An org server marks a spent budget with budget_spent and a least dollar
+// cap beside it, for laptops too old to read the flag. The stop says the
+// budget is spent, not that a "$0.00" budget meets a model with no price.
+func TestHeadlessSpentBudgetSaysSpentUnderALeastCap(t *testing.T) {
+	t.Parallel()
+	h := piped(t, Opts{Args: []string{"-p", "say hi", "-output-format", "json"}, Managed: `{"limits":{"budget_spent":true,"max_budget_usd":0.000001}}`,
+		Script: `text "hello"`})
+	res := resultOf(t, h.Stdout())
+	msg, _ := res["error"].(string)
+	if res["exit_code"] != 3.0 || !strings.Contains(msg, "budget is spent") || strings.Contains(msg, "no price") || strings.Contains(msg, "$0.00") {
+		t.Fatalf("result %v", res)
+	}
+	if n := len(h.Requests()); n != 0 {
+		t.Fatalf("%d requests reached the model", n)
+	}
+}
+
 // Past the dollar cap the run stops at the next turn.
 func TestHeadlessDollarBudgetStops(t *testing.T) {
 	t.Parallel()
