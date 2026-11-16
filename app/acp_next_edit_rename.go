@@ -404,16 +404,6 @@ func jsxLanguage(language string) bool {
 // name elsewhere).
 func braceKind(code, language string) byte {
 	t := strings.TrimRight(code, " \t")
-	if strings.HasSuffix(code, "$") {
-		return 'x' // ${ in a template
-	}
-	if jsxLanguage(language) && t != "" && !strings.HasSuffix(t, "=>") {
-		last := t[len(t)-1]
-		attr := last == '=' && len(code) >= 2 && code[len(code)-1] == '=' && identPart(rune(code[len(code)-2]))
-		if last == '>' || last == '}' || attr {
-			return 'x'
-		}
-	}
 	if t == "" || strings.HasSuffix(t, "=>") {
 		return '{' // a block, or an arrow function's body
 	}
@@ -454,11 +444,41 @@ func nextCode(code []string, l, at, end int) byte {
 // in a block, a template's ${ or a JSX expression container. It is both the
 // key and the variable, so a rename writes it out as name: newName.
 func shorthand(code []string, l, at, first, end int, name string, open byte, language string) bool {
-	if open != 'o' || !(strings.HasPrefix(language, "javascript") || strings.HasPrefix(language, "typescript")) ||
-		!strings.HasPrefix(code[l][at:], name) {
+	return open == 'o' && shorthandShape(code, l, at, first, end, name, language)
+}
+
+// shorthandShape is a JavaScript or TypeScript name, in code, that reads
+// as shorthand or a key wherever it is: right after { or , and before , }
+// or :.
+func shorthandShape(code []string, l, at, first, end int, name string, language string) bool {
+	if !jsFamily(language) || !strings.HasPrefix(code[l][at:], name) {
 		return false
 	}
 	p, n := prevCode(code, l, at, first), nextCode(code, l, at+len(name), end)
+	return (p == '{' || p == ',') && (n == ',' || n == '}')
+}
+
+// unsure reports a use the rename cannot classify: shorthand-shaped in a
+// brace jsBraceKind could not tell ('u'), or, in a template's ${ … } that
+// the scan reads as text, after { or , other than the ${ itself and before
+// , or }. The rename is then left to the model.
+func unsure(lines, code []string, l, at, first, end int, name string, open byte, language string) bool {
+	if !jsFamily(language) {
+		return false
+	}
+	if strings.HasPrefix(code[l][at:], name) {
+		return open == 'u' && shorthandShape(code, l, at, first, end, name, language)
+	}
+	// Blanked: in a string or template. Read the raw line around it.
+	before := strings.TrimRight(lines[l][:at], " \t")
+	after := strings.TrimLeft(lines[l][at+len(name):], " \t")
+	if before == "" || after == "" {
+		return false
+	}
+	p, n := before[len(before)-1], after[0]
+	if p == '{' && strings.HasSuffix(before, "${") {
+		return false // `${name}`: a plain use
+	}
 	return (p == '{' || p == ',') && (n == ',' || n == '}')
 }
 
@@ -499,6 +519,77 @@ func notAVariable(code []string, l, at, first int, name string, open byte, langu
 	return false
 }
 
+func jsFamily(language string) bool {
+	return strings.HasPrefix(language, "javascript") || strings.HasPrefix(language, "typescript")
+}
+
+// JavaScript and TypeScript brace contexts.
+var (
+	jsDeclEnd    = regexp.MustCompile(`(?:^|[^\w$.])(?:const|let|var|using|import|export)$`)
+	jsBlockWord  = regexp.MustCompile(`(?:^|[^\w$.])(?:else|try|finally|do)$`)
+	jsTypeHeader = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?(?:declare\s+)?(?:class|interface|enum|namespace|module)\b`)
+	jsCaseLine   = regexp.MustCompile(`^\s*(?:case\b.*|default\s*):$`)
+	jsxTagOpen   = regexp.MustCompile(`<[A-Za-z][\w.:-]*(?:\s[^<>]*)?$`)
+	jsxAttrEq    = regexp.MustCompile(`[\w$-]=$`)
+)
+
+// jsBraceKind is braceKind for JavaScript and TypeScript, where a brace
+// decides whether a name is shorthand, so it answers only when it is sure:
+// 'o' an object literal or destructuring, 'x' an expression container (a
+// template's ${, a JSX child or attribute value), '{' a block, a body or a
+// type's members, and 'u' when it cannot tell, which leaves a shorthand-
+// shaped use there to the model. before is the line up to the brace, prev
+// the last character of code before it (across lines), top the innermost
+// bracket already open.
+func jsBraceKind(before string, prev, top byte, language string) byte {
+	t := strings.TrimRight(before, " \t")
+	jsx := jsxLanguage(language)
+	switch {
+	case strings.HasSuffix(before, "$"):
+		return 'x' // ${ in a template
+	case top == 'x' && prev == '{':
+		return 'o' // {{ … }}: an object inside a JSX expression container
+	case strings.HasSuffix(t, "=>"):
+		return '{' // an arrow function's body
+	case t == "":
+		// The brace starts its line: the line before decides.
+		switch {
+		case prev != 0 && strings.ContainsRune("([,", rune(prev)):
+			return 'o'
+		case prev == ')':
+			return '{'
+		}
+		return 'u'
+	}
+	last := t[len(t)-1]
+	switch {
+	case jsx && (last == '>' || last == '}'):
+		return 'x' // a JSX child
+	case jsx && last == '=' && jsxTagOpen.MatchString(t):
+		return 'x' // an attribute's value: <Item name = {
+	case jsx && last == '=' && jsxAttrEq.MatchString(t) && !strings.HasSuffix(t, " =") && !jsDeclLine.MatchString(t):
+		return 'x' // name={ in a tag begun on an earlier line
+	case jsx && last == '=' && !jsDeclLine.MatchString(t):
+		return 'u' // = { in JSX with no tag or declaration in sight: an attribute or an assignment
+	case strings.ContainsRune("([,", rune(last)):
+		return 'o' // an argument, element or parameter: an object or destructuring
+	case last == ':' && jsCaseLine.MatchString(t):
+		return '{' // case x: { … }
+	case strings.ContainsRune("=:?+-*/%&|^!<~", rune(last)) || strings.HasSuffix(t, "return") || strings.HasSuffix(t, "yield") || strings.HasSuffix(t, "await"):
+		return 'o' // an operand: an object literal
+	case jsDeclEnd.MatchString(t):
+		return 'o' // const { … } = o: a destructuring
+	case last == ')' || jsBlockWord.MatchString(t):
+		return '{' // a block: if (…) {, function f() {, else {, try {
+	case jsTypeHeader.MatchString(t):
+		return '{' // a class's, interface's or enum's members
+	}
+	return 'u'
+}
+
+// jsDeclLine is a line declaring a name before an =, so its = { is an object.
+var jsDeclLine = regexp.MustCompile(`(?:^|[^\w$.])(?:const|let|var|using|type)\s[^=]*=$|(?:^|[^\w$.])(?:readonly|private|public|protected|static)\s[^=]*=$`)
+
 // bracketPass walks code over lines [from, to) with a stack of open
 // brackets, a { by its braceKind, and calls visit at every byte with the
 // innermost one open there (0 for none).
@@ -516,7 +607,12 @@ func bracketPass(code []string, from, to int, language string, visit func(l, i i
 			visit(l, i, top())
 			switch c[i] {
 			case '{':
-				kind := braceKind(c[:i], language)
+				var kind byte
+				if jsFamily(language) {
+					kind = jsBraceKind(c[:i], prevCode(code, l, i, from), top(), language)
+				} else {
+					kind = braceKind(c[:i], language)
+				}
 				// A map of maps' value with its type left out is a map literal too.
 				if top() == 'M' && kind == 'o' && prevCode(code, l, i, from) == ':' {
 					kind = 'm'
@@ -573,8 +669,12 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 			}
 			at := byteAt(lines[l], r.Start.Character)
 			if at >= 0 && byteAt(lines[l], r.End.Character) == at+len(h.From) && wordAt(lines[l], at, h.From) {
+				open := opens[[2]int{l, at}]
+				if unsure(lines, code, l, at, 0, len(lines), h.From, open, req.Language) {
+					return nil, "a use of " + h.From + " may be an object's key, so this is left to the model", true
+				}
 				// A shorthand property the server names is written out too, so its key stays.
-				sites = append(sites, site{l, at, shorthand(code, l, at, 0, len(lines), h.From, opens[[2]int{l, at}], req.Language)})
+				sites = append(sites, site{l, at, shorthand(code, l, at, 0, len(lines), h.From, open, req.Language)})
 			}
 		}
 	} else {
@@ -590,11 +690,20 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 				uses[[2]int{l, i}] = true
 			}
 		}
+		unsureUse := false
 		bracketPass(code, from, to, req.Language, func(l, i int, open byte) {
-			if uses[[2]int{l, i}] && !notAVariable(code, l, i, from, h.From, open, req.Language) {
+			if !uses[[2]int{l, i}] {
+				return
+			}
+			if unsure(lines, code, l, i, from, to, h.From, open, req.Language) {
+				unsureUse = true
+			} else if !notAVariable(code, l, i, from, h.From, open, req.Language) {
 				sites = append(sites, site{l, i, shorthand(code, l, i, from, to, h.From, open, req.Language)})
 			}
 		})
+		if unsureUse {
+			return nil, "a use of " + h.From + " may be an object's key, so this is left to the model", true
+		}
 	}
 	slices.SortFunc(sites, func(a, b site) int { return cmp.Or(a.line-b.line, a.at-b.at) })
 	sites = slices.Compact(sites)

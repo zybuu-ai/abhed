@@ -1665,11 +1665,17 @@ _abhed/nextEdit { sessionId, uri, cursor: { line, character },
   default on the function's own header), and in JavaScript, TypeScript and
   Go a key right after `{` or `,` in a brace that opens an expression (not
   a Go map literal, whose keys are uses, nested ones with their type left
-  out included). A JavaScript or TypeScript shorthand property or
-  destructuring, at a scanned use or a site, is written out as `old: new`;
+  out included). A JavaScript or TypeScript shorthand property, a
+  destructuring (after `const`, `let`, `var`, `using`, `import`, `export`,
+  `(`, `[` or `,`) or an object directly inside a JSX expression container
+  (`{{ … }}`), at a scanned use or a site, is written out as `old: new`;
   the brace is read as the scan reads it, so a name in a block or arrow
   body, a template's `${…}` or a JSX expression container is a use,
-  renamed in place. Rust, C, C++, `javascriptreact` and `typescriptreact` need
+  renamed in place. A shorthand-shaped use in a brace that cannot be
+  classified with confidence (an `= {` in JSX with no tag or declaration on
+  its line, a brace alone on its line after anything but `(`, `[`, `,` or
+  `)`, an object inside a template's `${ }`) makes the edit no rename: the
+  model is asked. Rust, C, C++, `javascriptreact` and `typescriptreact` need
   sites. The uses come back as one edit over the lines
   from the first to the last, with `rename: true`. Only a name bound again
   in a nested function, lambda, comprehension or inner block is `dropped`

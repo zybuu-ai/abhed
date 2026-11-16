@@ -194,12 +194,17 @@ for it:
   (`{name: 1}`, `T{name: 1}`). A ternary's `? name :`, a `case name:`, a
   typed declaration and a Go map literal's key (`map[string]int{name: 1}`)
   are uses, and so are a nested map literal's keys with its type left out.
-  A shorthand property (`{ name, age }`) or destructuring (`const { name } =
-  o`) is both key and variable, so it is written out (`{ name: title, age }`)
-  and the object keeps its key, whether the scan or a language server found
-  it. A name in a block or arrow body (`{ name }`), a template's
-  `${name}` or a JSX expression container (`<p>{name}</p>`,
-  `<Item value={name} />`) is a use, renamed in place. Where the old name is bound again in a nested
+  A shorthand property (`{ name, age }`), a destructuring (`const { name }
+  = o`, `for (const { name } of xs)`, a parameter's `({ name })`) or an
+  object inside a JSX expression container (`style={{ name }}`) is both key
+  and variable, so it is written out (`{ name: title, age }`) and the
+  object keeps its key, whether the scan or a language server found it. A
+  name in a block or arrow body (`{ name }`), a template's `${name}` or a
+  JSX expression container (`<p>{name}</p>`, `<Item value = {name} />`) is
+  a use, renamed in place. Where Abhed cannot tell which a brace is (an
+  `= {` in JSX with no tag or declaration on its line, an object inside a
+  template's `${ }`), the rename is left to the next-edit model rather
+  than guessed. Where the old name is bound again in a nested
   function, lambda, comprehension or inner block, nothing is offered: a
   textual rename would change another variable, so it is left to you.
   Rust, C, C++ and JSX files (`.jsx`, `.tsx`, where attribute names and

@@ -509,3 +509,66 @@ func TestStudioNextEditRenameSitesInExpressionContainers(t *testing.T) {
 		t.Errorf("go map of maps: %+v", res)
 	}
 }
+
+// sitesOfX are a language server's sites: every whole-word x from line from on.
+func sitesOfX(text string, from int) []map[string]any {
+	var out []map[string]any
+	for l, line := range strings.Split(text, "\n") {
+		if l < from {
+			continue
+		}
+		for _, at := range wordsIn(line, "x") {
+			out = append(out, map[string]any{"start": map[string]int{"line": l, "character": at}, "end": map[string]int{"line": l, "character": at + 1}})
+		}
+	}
+	return out
+}
+
+// Destructuring in a declaration, and an object inside a JSX expression
+// container, are shorthand and written out, in .js, .jsx, .ts and .tsx; a
+// brace the rename cannot classify leaves the edit to the model.
+func TestStudioNextEditRenameDestructuringAndContainers(t *testing.T) {
+	wrap := func(line string) string { return "function C(o, xs) {\n  const y = 1;\n" + line + "\n}\n" }
+	langs := []string{"javascript", "javascriptreact", "typescript", "typescriptreact"}
+	for _, tc := range []struct {
+		name, line string
+		want       map[string]string // by language; "" for the model asked
+	}{
+		{"const", "  const { x } = o;", map[string]string{"*": "  const { x: y } = o;\n"}},
+		{"let", "  let { x, a } = o;", map[string]string{"*": "  let { x: y, a } = o;\n"}},
+		{"for const", "  for (const { x } of xs) {}", map[string]string{"*": "  for (const { x: y } of xs) {}\n"}},
+		{"object in a container", "  return <Item style={{ x }} />;", map[string]string{"javascriptreact": "  return <Item style={{ x: y }} />;\n", "typescriptreact": "  return <Item style={{ x: y }} />;\n", "*": ""}},
+		{"object with a key in a container", "  return <Item style={{ a: 1, x }} />;", map[string]string{"javascriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "typescriptreact": "  return <Item style={{ a: 1, x: y }} />;\n", "*": ""}},
+	} {
+		for _, lang := range langs {
+			want, ok := tc.want[lang]
+			if !ok {
+				want = tc.want["*"]
+			}
+			text := wrap(tc.line)
+			res, asked := renameCase(t, lang, text, 1, 8, "x", "y", sitesOfX(text, 2)...)
+			switch {
+			case want == "" && !asked:
+				t.Errorf("%s in %s: the model was not asked: %+v", tc.name, lang, res)
+			case want != "" && (asked || len(res.Edits) != 1 || res.Edits[0].Text != want):
+				t.Errorf("%s in %s: %+v (asked %v)", tc.name, lang, res, asked)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name, language, text, want string
+	}{
+		{"attribute with spaces", "javascriptreact", wrap("  return <Item value = {x} />;"), "  return <Item value = {y} />;\n"},
+		{"attribute with spaces over lines", "typescriptreact", "function C() {\n  const y = 1;\n  return <Item\n    value = {x}\n  />;\n}\n", ""},
+		{"object in a template", "javascript", wrap("  return `${ {x} }`;"), ""},
+		{"template use", "typescript", wrap("  return `${x}`;"), "  return `${y}`;\n"},
+	} {
+		res, asked := renameCase(t, tc.language, tc.text, 1, 8, "x", "y", sitesOfX(tc.text, 2)...)
+		switch {
+		case tc.want == "" && !asked:
+			t.Errorf("%s: the model was not asked: %+v", tc.name, res)
+		case tc.want != "" && (asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want):
+			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
+		}
+	}
+}
