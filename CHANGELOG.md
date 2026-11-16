@@ -70,7 +70,8 @@ All notable changes to Abhed are recorded here. The format follows
   (not JSX), a
   scan of the innermost function that skips strings, comments, members,
   keyword arguments in calls and literal keys (a shorthand property is
-  written out as `old: new`), and leaves the rename to you
+  written out as `old: new`; a JSX `{name}` or a template's `${name}` is a
+  use), and leaves the rename to you
   where the name is bound again in a nested scope. A one-word edit with
   nothing to finish (a reserved or already used new name, no other use, a
   use of a name declared elsewhere) is no rename, and the model is asked as

@@ -193,8 +193,13 @@ for it:
   JavaScript, TypeScript and Go, the keys of an object or composite literal
   (`{name: 1}`, `T{name: 1}`). A ternary's `? name :`, a `case name:`, a
   typed declaration and a Go map literal's key (`map[string]int{name: 1}`)
-  are uses. A shorthand property (`{ name, age }`) is both, so it is written
-  out (`{ name: title, age }`) and the object keeps its key. Where the old name is bound again in a nested
+  are uses, and so are a nested map literal's keys with its type left out.
+  A shorthand property (`{ name, age }`) or destructuring (`const { name } =
+  o`) is both key and variable, so it is written out (`{ name: title, age }`)
+  and the object keeps its key, whether the scan or a language server found
+  it. A name in a block or arrow body (`{ name }`), a template's
+  `${name}` or a JSX expression container (`<p>{name}</p>`,
+  `<Item value={name} />`) is a use, renamed in place. Where the old name is bound again in a nested
   function, lambda, comprehension or inner block, nothing is offered: a
   textual rename would change another variable, so it is left to you.
   Rust, C, C++ and JSX files (`.jsx`, `.tsx`, where attribute names and

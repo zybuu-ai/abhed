@@ -478,3 +478,34 @@ func TestStudioNextEditRenameShorthandSite(t *testing.T) {
 		t.Fatalf("%+v (asked %v)", res, asked)
 	}
 }
+
+// At a language server's site, only a name in an object literal or a
+// destructuring is shorthand: a JSX child or attribute value, a template's
+// ${…} and a block or arrow body are plain uses, renamed in place.
+func TestStudioNextEditRenameSitesInExpressionContainers(t *testing.T) {
+	at := func(line, char int) map[string]any {
+		return map[string]any{"start": map[string]int{"line": line, "character": char}, "end": map[string]int{"line": line, "character": char + 1}}
+	}
+	for _, tc := range []struct {
+		name, language, text string
+		sites                []map[string]any
+		want                 string
+	}{
+		{"jsx child", "javascriptreact", "function C() {\n  const y = 1;\n  return <p>{x}</p>;\n}\n", []map[string]any{at(2, 13)}, "  return <p>{y}</p>;\n"},
+		{"tsx child", "typescriptreact", "function C() {\n  const y = 1;\n  return <p>{x}</p>;\n}\n", []map[string]any{at(2, 13)}, "  return <p>{y}</p>;\n"},
+		{"jsx attribute", "javascriptreact", "function C() {\n  const y = 1;\n  return <Item x={x} />;\n}\n", []map[string]any{at(2, 18)}, "  return <Item x={y} />;\n"},
+		{"template", "javascript", "function f(a, b) {\n  const y = 1;\n  return g(a, `${x}`, b);\n}\n", []map[string]any{at(2, 17)}, "  return g(a, `${y}`, b);\n"},
+		{"block and arrow body", "javascript", "function f(c) {\n  const y = 1;\n  if (c) { x }\n  const h = () => { x };\n}\n", []map[string]any{at(2, 11), at(3, 20)}, "  if (c) { y }\n  const h = () => { y };\n"},
+		{"jsx object shorthand still written out", "javascriptreact", "function C() {\n  const y = 1;\n  const p = { x, a: 1 };\n}\n", []map[string]any{at(2, 14)}, "  const p = { x: y, a: 1 };\n"},
+	} {
+		res, asked := renameCase(t, tc.language, tc.text, 1, 8, "x", "y", tc.sites...)
+		if asked || len(res.Edits) != 1 || res.Edits[0].Text != tc.want {
+			t.Errorf("%s: %+v (asked %v)", tc.name, res, asked)
+		}
+	}
+	// A map of maps' inner literal, its type left out, has expressions for keys too.
+	goMaps := "func f() map[string]map[string]int {\n\ty := \"k\"\n\treturn map[string]map[string]int{x: {x: 1}}\n}\n"
+	if res, _ := renameCase(t, "go", goMaps, 1, 1, "x", "y"); len(res.Edits) != 1 || res.Edits[0].Text != "\treturn map[string]map[string]int{y: {y: 1}}\n" {
+		t.Errorf("go map of maps: %+v", res)
+	}
+}

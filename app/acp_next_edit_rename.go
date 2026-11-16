@@ -383,18 +383,42 @@ func bindingOf(lines, code []string, from, to, line int, name, language string) 
 // blockWords open a statement whose brace is a block, not an object literal.
 var blockWords = regexp.MustCompile(`^\s*(?:\}\s*)?(?:if|else|for|while|do|switch|select|case|default|try|catch|finally|func|function|class|interface|struct|enum|namespace|go|defer|with)\b`)
 
-// goMapType ends a Go map literal's type, whose keys are expressions, not field names.
-var goMapType = regexp.MustCompile(`\bmap\[[^\]]*\][\w.*\[\]]*$`)
+// goMapType ends a Go map literal's type, whose keys are expressions, not
+// field names; goMapOfMaps one whose values are maps too.
+var (
+	goMapType   = regexp.MustCompile(`\bmap\[[^\]]*\][\w.*\[\]]*$`)
+	goMapOfMaps = regexp.MustCompile(`\bmap\[[^\]]*\]map\[[^\]]*\][\w.*\[\]]*$`)
+)
+
+func jsxLanguage(language string) bool {
+	return language == "javascriptreact" || language == "typescriptreact"
+}
 
 // braceKind is what a { at the end of code opens: 'o' an object or
 // composite literal, whose keys are names (after an operator or opening
 // punctuation, after return, or in Go after a type name on a line that is
 // not a statement keyword's); 'm' a Go map literal, whose keys are
-// expressions; '{' a block (after ), => or a name elsewhere).
+// expressions ('M' one whose values are maps too); 'x' an expression
+// container, a template's ${ or, in JSX, the { of an attribute's value
+// (name={), a child (after > or }) or text; '{' a block (after ), => or a
+// name elsewhere).
 func braceKind(code, language string) byte {
 	t := strings.TrimRight(code, " \t")
+	if strings.HasSuffix(code, "$") {
+		return 'x' // ${ in a template
+	}
+	if jsxLanguage(language) && t != "" && !strings.HasSuffix(t, "=>") {
+		last := t[len(t)-1]
+		attr := last == '=' && len(code) >= 2 && code[len(code)-1] == '=' && identPart(rune(code[len(code)-2]))
+		if last == '>' || last == '}' || attr {
+			return 'x'
+		}
+	}
 	if t == "" || strings.HasSuffix(t, "=>") {
 		return '{' // a block, or an arrow function's body
+	}
+	if language == "go" && goMapOfMaps.MatchString(t) {
+		return 'M'
 	}
 	if language == "go" && goMapType.MatchString(t) {
 		return 'm'
@@ -425,11 +449,13 @@ func nextCode(code []string, l, at, end int) byte {
 }
 
 // shorthand reports a JavaScript or TypeScript shorthand property, { name }
-// or { a, name }: a name right after { or , and before , or } in an object
-// literal. It is both the key and the variable, so a rename writes it out
-// as name: newName, keeping the key.
+// or { a, name }: a name, in code (not in a string or template), right after
+// { or , and before , or } in an object literal or destructuring ('o'), not
+// in a block, a template's ${ or a JSX expression container. It is both the
+// key and the variable, so a rename writes it out as name: newName.
 func shorthand(code []string, l, at, first, end int, name string, open byte, language string) bool {
-	if open != 'o' || (language != "javascript" && language != "typescript") {
+	if open != 'o' || !(strings.HasPrefix(language, "javascript") || strings.HasPrefix(language, "typescript")) ||
+		!strings.HasPrefix(code[l][at:], name) {
 		return false
 	}
 	p, n := prevCode(code, l, at, first), nextCode(code, l, at+len(name), end)
@@ -473,6 +499,40 @@ func notAVariable(code []string, l, at, first int, name string, open byte, langu
 	return false
 }
 
+// bracketPass walks code over lines [from, to) with a stack of open
+// brackets, a { by its braceKind, and calls visit at every byte with the
+// innermost one open there (0 for none).
+func bracketPass(code []string, from, to int, language string, visit func(l, i int, open byte)) {
+	var stack []byte
+	top := func() byte {
+		if len(stack) == 0 {
+			return 0
+		}
+		return stack[len(stack)-1]
+	}
+	for l := from; l < to; l++ {
+		c := code[l]
+		for i := 0; i < len(c); i++ {
+			visit(l, i, top())
+			switch c[i] {
+			case '{':
+				kind := braceKind(c[:i], language)
+				// A map of maps' value with its type left out is a map literal too.
+				if top() == 'M' && kind == 'o' && prevCode(code, l, i, from) == ':' {
+					kind = 'm'
+				}
+				stack = append(stack, kind)
+			case '(', '[':
+				stack = append(stack, c[i])
+			case ')', ']', '}':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
+	}
+}
+
 // renameEdit is the one edit that finishes a rename in the window: every
 // other use of h.From, at the sites the language server named when it named
 // any here, else as found by a scan of the rename's scope. Lines are the
@@ -503,6 +563,9 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 		}
 	}
 	if len(req.Sites) > 0 {
+		// The brackets open at each site, read as the scan reads them.
+		opens := map[[2]int]byte{}
+		bracketPass(code, 0, len(lines), req.Language, func(l, i int, open byte) { opens[[2]int{l, i}] = open })
 		for _, r := range req.Sites {
 			l := r.Start.Line - req.Window.StartLine
 			if r.Start.Line != r.End.Line || l < 0 || l >= len(lines) {
@@ -511,9 +574,7 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 			at := byteAt(lines[l], r.Start.Character)
 			if at >= 0 && byteAt(lines[l], r.End.Character) == at+len(h.From) && wordAt(lines[l], at, h.From) {
 				// A shorthand property the server names is written out too, so its key stays.
-				js := strings.HasPrefix(req.Language, "javascript") || strings.HasPrefix(req.Language, "typescript")
-				p, n := prevCode(code, l, at, 0), nextCode(code, l, at+len(h.From), len(lines))
-				sites = append(sites, site{l, at, js && (p == '{' || p == ',') && (n == ',' || n == '}')})
+				sites = append(sites, site{l, at, shorthand(code, l, at, 0, len(lines), h.From, opens[[2]int{l, at}], req.Language)})
 			}
 		}
 	} else {
@@ -523,34 +584,17 @@ func renameEdit(req nextEditRequest, lines []string, h renameHint, line int) (ed
 		case boundHere:
 			return nil, h.From + " is declared elsewhere in this function: the edit was at a use, not a rename", true
 		}
-		var stack []byte
+		uses := map[[2]int]bool{}
 		for l := from; l < to; l++ {
-			c := code[l]
-			uses := wordsIn(c, h.From)
-			k := 0
-			for i := 0; i < len(c); i++ {
-				if k < len(uses) && uses[k] == i {
-					open := byte(0)
-					if len(stack) > 0 {
-						open = stack[len(stack)-1]
-					}
-					if !notAVariable(code, l, i, from, h.From, open, req.Language) {
-						sites = append(sites, site{l, i, shorthand(code, l, i, from, to, h.From, open, req.Language)})
-					}
-					k++
-				}
-				switch c[i] {
-				case '{':
-					stack = append(stack, braceKind(c[:i], req.Language))
-				case '(', '[':
-					stack = append(stack, c[i])
-				case ')', ']', '}':
-					if len(stack) > 0 {
-						stack = stack[:len(stack)-1]
-					}
-				}
+			for _, i := range wordsIn(code[l], h.From) {
+				uses[[2]int{l, i}] = true
 			}
 		}
+		bracketPass(code, from, to, req.Language, func(l, i int, open byte) {
+			if uses[[2]int{l, i}] && !notAVariable(code, l, i, from, h.From, open, req.Language) {
+				sites = append(sites, site{l, i, shorthand(code, l, i, from, to, h.From, open, req.Language)})
+			}
+		})
 	}
 	slices.SortFunc(sites, func(a, b site) int { return cmp.Or(a.line-b.line, a.at-b.at) })
 	sites = slices.Compact(sites)
