@@ -493,6 +493,12 @@ All notable changes to Abhed are recorded here. The format follows
   or by an org with pinned keys. Any other price from such an org is set
   aside, as before. Under a managed or org dollar cap, an unpriced model's
   refusal says an administrator sets the price.
+- MCP `readOnlyHint` is honoured for servers the operator configured in the
+  managed file, exactly as it is in force: a tool such a server marks
+  read-only runs without asking in the default and plan modes, deny and ask
+  rules still applying. A server a person, a `-mcp-config` file or a
+  workspace added is not believed, since the hint is the server's own
+  claim; its tools ask as before.
 
 ### Changed
 

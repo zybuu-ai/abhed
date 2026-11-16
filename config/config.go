@@ -98,6 +98,8 @@ type Config struct {
 	// its keys set, which are 0: each holds only for a model every
 	// configured provider of which is a server on this machine.
 	PricingLoopbackOnly map[string]bool `json:"-"`
+	// managedMCP are the MCP servers the managed file defines, by name.
+	managedMCP map[string]MCPServerConfig
 	// WorkspaceProviders names the providers a workspace's file defined or
 	// changed, which a managed dollar cap does not trust as local servers.
 	WorkspaceProviders map[string]bool `json:"-"`

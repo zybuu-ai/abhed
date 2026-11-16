@@ -69,6 +69,16 @@ type ToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations are the server's hints about the tool. They are the
+	// server's own claims, so only a server the operator configured is
+	// believed (ServerConfig.ReadOnlyHints).
+	Annotations ToolAnnotations `json:"annotations"`
+}
+
+// ToolAnnotations are the MCP tool annotations Abhed reads.
+type ToolAnnotations struct {
+	// ReadOnlyHint claims the tool changes nothing.
+	ReadOnlyHint *bool `json:"readOnlyHint,omitempty"`
 }
 
 type toolsListResult struct {

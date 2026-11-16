@@ -164,6 +164,7 @@ func applyManaged(cfg *Config, label string, data []byte) error {
 	}
 	cfg.Managed = true
 	cfg.ManagedKeys = managedKeys(data)
+	cfg.managedMCP = managedMCPServers(data)
 	joinManagedLists(cfg, belowLists)
 	// As the managed file says it, before a lower layer's narrowing applies.
 	cfg.managedFetchOff = cfg.ManagedSets("web_fetch.enabled") && !cfg.WebFetch.Enabled
@@ -895,4 +896,32 @@ func orgZeroBelow(cfg *Config, below map[string]PriceConfig) {
 func pricingSetAside(o origin, name string) SetAsideKey {
 	return SetAsideKey{File: o.file, Layer: o.layer, Key: "pricing." + name,
 		Reason: "a managed dollar budget prices calls only by the managed configuration and the built-in list"}
+}
+
+// managedMCPServers are the MCP servers the managed document defines, by
+// name, as it defines them. An org policy never sets mcp.servers, so these
+// are the machine's own file's.
+func managedMCPServers(data []byte) map[string]MCPServerConfig {
+	var doc struct {
+		MCP struct {
+			Servers []MCPServerConfig `json:"servers"`
+		} `json:"mcp"`
+	}
+	if json.Unmarshal(data, &doc) != nil || len(doc.MCP.Servers) == 0 {
+		return nil
+	}
+	out := make(map[string]MCPServerConfig, len(doc.MCP.Servers))
+	for _, s := range doc.MCP.Servers {
+		out[s.Name] = s
+	}
+	return out
+}
+
+// OperatorMCPServer reports whether s is a server the operator configured:
+// the managed file defines it, exactly as it is in force. Only such a
+// server's own claims about its tools (readOnlyHint) are believed; a server
+// a person or a workspace added, or changed, describes itself.
+func (c Config) OperatorMCPServer(s MCPServerConfig) bool {
+	m, ok := c.managedMCP[s.Name]
+	return ok && reflect.DeepEqual(m, s)
 }
