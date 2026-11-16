@@ -16,7 +16,7 @@ func TestGitHeldLabelFollowsTheTier(t *testing.T) {
 		t.Errorf("none: %q", got)
 	}
 	for _, tier := range []sandbox.Tier{sandbox.TierProcess, ""} {
-		if got := gitHeldLabel(cfg, tier); !strings.HasPrefix(got, "held read-only from commands") {
+		if got := gitHeldLabel(cfg, tier); !strings.HasPrefix(got, "config and hooks protected: commands cannot change git's config or hooks, but can still commit") || strings.Contains(got, "read-only") {
 			t.Errorf("%q: %q", tier, got)
 		}
 	}

@@ -777,9 +777,9 @@ func gitHeldLabel(cfg config.Config, tier sandbox.Tier) string {
 	case tier == sandbox.TierNone:
 		return "not held: the sandbox tier is none, so commands can write git's config and hooks; make a stronger tier available (sandbox.protect_git)"
 	case required:
-		return "held read-only from commands; a tier that cannot hold them is refused"
+		return "config and hooks protected: commands cannot change git's config or hooks, but can still commit; a tier that cannot protect them is refused (sandbox.protect_git)"
 	}
-	return "held read-only from commands on every tier but none (sandbox.protect_git)"
+	return "config and hooks protected: commands cannot change git's config or hooks, but can still commit, on every tier that can protect them (sandbox.protect_git)"
 }
 
 // confinedStdioServers reports whether an enabled stdio MCP server runs in

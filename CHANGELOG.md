@@ -809,6 +809,10 @@ All notable changes to Abhed are recorded here. The format follows
   whole timeout to itself, both ask with thinking off where the provider
   takes it, and the tool probe has 1,024 tokens; `/doctor` and first-run
   setup probe the same way.
+- `abhed doctor` and the `abhed serve` banner no longer say git is "held
+  read-only from commands", which read as if commands could not commit.
+  The line now says commands cannot change git's config or hooks but can
+  still commit.
 
 ### Go API
 
