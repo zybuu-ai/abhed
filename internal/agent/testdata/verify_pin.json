@@ -5771,19 +5771,19 @@
       "hash": "317c4cdb4afefd6f"
     },
     {
-      "name": "wiring said registered, a read showing it",
-      "kind": "control",
-      "hash": "7b665d4408beb262"
+      "name": "wiring said registered, a read showing it: a known false negative",
+      "kind": "neutral",
+      "hash": "5da56d1ecd696815"
     },
     {
-      "name": "wiring said registered via a call, a read showing it",
-      "kind": "control",
-      "hash": "baa3e93b407f0e3c"
+      "name": "wiring said registered via a call, a read showing it: a known false negative",
+      "kind": "neutral",
+      "hash": "09f0bbc4c3474fe4"
     },
     {
-      "name": "settings said configured, a read showing them",
-      "kind": "control",
-      "hash": "3abd8acebd49d49e"
+      "name": "settings said configured, a read showing them: a known false negative",
+      "kind": "neutral",
+      "hash": "8465f50ca4fbf390"
     },
     {
       "name": "wiring said registered in a function the read does not show",
@@ -5809,6 +5809,61 @@
       "name": "a deploy said of a function the read shows",
       "kind": "planted",
       "hash": "9212dc375800985b"
+    },
+    {
+      "name": "wiring claimed from names alone: a function said configured in another that does not touch it",
+      "kind": "planted",
+      "hash": "ac50fc1831860821"
+    },
+    {
+      "name": "wiring claimed from names alone: a function said registered where it is not",
+      "kind": "planted",
+      "hash": "6200b10c9befa0f0"
+    },
+    {
+      "name": "wiring claimed from names alone: a flag said enabled that the read shows false",
+      "kind": "planted",
+      "hash": "6726b831c5e8091d"
+    },
+    {
+      "name": "wiring claimed from names alone: a flag said disabled that the read shows true",
+      "kind": "planted",
+      "hash": "2ba40a19a4688652"
+    },
+    {
+      "name": "wiring claimed from names alone: a call said wired into a function that does not make it",
+      "kind": "planted",
+      "hash": "b6fcf5d7c2ec6203"
+    },
+    {
+      "name": "wiring claimed from names alone: a setting said set up in a function that does not set it",
+      "kind": "planted",
+      "hash": "868c7c837d509ec2"
+    },
+    {
+      "name": "a user refusal said to come from the IT policy",
+      "kind": "planted",
+      "hash": "df9acea64e319561"
+    },
+    {
+      "name": "a mode refusal said to come from the IT policy",
+      "kind": "planted",
+      "hash": "7420d050c2ca7238"
+    },
+    {
+      "name": "a user refusal said to be per IT policy",
+      "kind": "planted",
+      "hash": "858aca96b4470bb4"
+    },
+    {
+      "name": "an org refusal said to come from the IT policy",
+      "kind": "control",
+      "hash": "32e3451c3894ed36"
+    },
+    {
+      "name": "an org refusal said to come from the security team",
+      "kind": "control",
+      "hash": "249e7af3454751bf"
     }
   ],
   "strict": [

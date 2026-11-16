@@ -534,17 +534,6 @@ func checkOne(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 // checkWhole checks a claim as one statement.
 func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	v := checkClaim(env, ix, c)
-	// "The handler is registered in `init()`" may describe code a read
-	// shows: with code named in it, it is judged as a description first,
-	// and as work only when that fails. Finished work ("is deployed", "is
-	// resolved") and "now" are never descriptions.
-	if v.Verdict != ClaimVerified && backtickRe.MatchString(c.Text) && codeStateRe.MatchString(c.Text) {
-		d := c
-		d.Text = codeStateRe.ReplaceAllString(c.Text, "$1 defined")
-		if dv := checkClaim(env, ix, d); dv.Verdict == ClaimVerified {
-			dv.Text, v = c.Text, dv
-		}
-	}
 	// A resolved merge is judged whole by its own check, its "no" included.
 	merge := extractFacts(citeRe.ReplaceAllString(c.Text, " ")).mergeClean
 	if v.Verdict == ClaimVerified && !merge && extractFacts(citeRe.ReplaceAllString(c.Text, " ")).negated {
@@ -561,10 +550,6 @@ func checkWhole(env checkEnv, ix *recordIndex, c Claim) ClaimVerdict {
 	}
 	return v
 }
-
-// codeStateRe is a present state that wiring or configuration in code can
-// show: "is registered", "are configured", "is enabled".
-var codeStateRe = regexp.MustCompile(`(?i)\b(is|are)\s+(?:registered|configured|enabled|disabled|wired|mounted|set up)\b`)
 
 // citeRe is a citation written in a reply's text: (#12), [#12] or record #12.
 var citeRe = regexp.MustCompile(`\((?:see\s+)?#(\d+)\)|\[#(\d+)\]|\brecord #(\d+)\b`)
@@ -1934,7 +1919,7 @@ var (
 		source string
 		re     *regexp.Regexp
 	}{
-		{"org", regexp.MustCompile(`\b(?:your\s+)?(?:org|organi[sz]ation|company)(?:'s)?(?:\s+(?:policy|policies|admin|administrator|rules?|settings))*\b|\b(?:your\s+)?(?:admin|administrator)(?:'s)?(?:\s+(?:policy|rules?))?\b`)},
+		{"org", regexp.MustCompile(`\b(?:the\s+)?(?:company's\s+)?org_it(?:\s+(?:policy|policies|department|team|rules?))?\b|\b(?:the\s+)?(?:security\s+team|infosec)(?:'s)?(?:\s+(?:policy|rules?))?\b|\b(?:your\s+)?(?:org|organi[sz]ation|company)(?:'s)?(?:\s+(?:policy|policies|admin|administrator|rules?|settings))*\b|\b(?:your\s+)?(?:admin|administrator)(?:'s)?(?:\s+(?:policy|rules?))?\b`)},
 		{"managed", regexp.MustCompile(`\b(?:managed|machine(?:-wide)?)\s+(?:configuration|config|policy|settings|rules?)\b`)},
 		{"workspace", regexp.MustCompile(`\b(?:workspace|project|repository|repo)(?:'s)?\s+(?:configuration|config|settings|rules?|policy)\b`)},
 		{"user", regexp.MustCompile(`\b(?:your\s+)?(?:own\s+)?(?:user|personal)\s+(?:configuration|config|settings|rules?)\b|\byour\s+own\s+(?:configuration|config|settings|rules?)\b`)},
@@ -1952,6 +1937,8 @@ var (
 	refusalConnectives = wordSet(`the a an call calls command commands tool request requests attempt was were is are been
 		has had by rule rules from in under of per due to because policy permission permissions configuration config
 		which that it this its my your set so and as with there`)
+	// itWordRe is "IT" as written, the IT department.
+	itWordRe       = regexp.MustCompile(`\bIT\b`)
 	refusalPunctRe = regexp.MustCompile(`[.,;:!?()"'\x60]`)
 )
 
@@ -1967,7 +1954,8 @@ func (ix *recordIndex) refusalShown(c Claim) *denialRec {
 	if len(ix.denials) == 0 {
 		return nil
 	}
-	low := normText(strings.ReplaceAll(c.Text, "`", ""))
+	// "IT" as a word is the IT department, an org layer, never "it".
+	low := normText(strings.ReplaceAll(itWordRe.ReplaceAllString(c.Text, "org_it"), "`", ""))
 	var spans []string
 	for _, m := range backtickRe.FindAllStringSubmatch(c.Text, -1) {
 		spans = append(spans, normText(m[1]))

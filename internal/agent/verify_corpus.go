@@ -565,6 +565,9 @@ var (
 	// A refusal from the person's own configuration, and a read of wiring.
 	stepDeniedCurlUser = CorpusStep{ID: "s142a", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) from your configuration (~/.abhed/config.json)", Rule: "bash(curl*)", Source: "user"}
 	stepReadInit       = CorpusStep{ID: "s142b", Tool: "read", Args: map[string]any{"path": "/w/app.py"}, Output: "def init():\n    app.register(handler)\n    cfg.enabled = True\n"}
+	// A read with flags and two functions, and a refusal decided by the mode.
+	stepReadApp        = CorpusStep{ID: "s143a", Tool: "read", Args: map[string]any{"path": "/w/app.py"}, Output: "FEATURE_X = False\nDEBUG = True\n\ndef deploy():\n    push()\n\ndef init():\n    app.register(handler)\n    cfg.enabled = True\n"}
+	stepDeniedCurlMode = CorpusStep{ID: "s143b", Tool: "bash", Args: map[string]any{"command": "curl -sI https://example.com"}, Denied: "denied by rule bash(curl*) in plan mode", Rule: "bash(curl*)", Source: "mode"}
 	stepGoTestPkg      = CorpusStep{ID: "s130o", Tool: "bash", Args: map[string]any{"command": "go test ./pkg/x"}, Output: "ok  \texample.com/mono/pkg/x\t0.12s\n", Exit: code(0)}
 )
 
@@ -1961,14 +1964,26 @@ func CorpusCases() []CorpusCase {
 		{Name: "a user refusal said to come from the organization", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from your organization's admin."},
 		{Name: "a refusal said to come from a layer that is not one", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the team firewall."},
 		{Name: "a user refusal said to come from the user configuration", Kind: c, Want: ClaimVerified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from your own user configuration."},
-		{Name: "wiring said registered, a read showing it", Kind: c, Want: ClaimVerified, Steps: steps(stepReadInit), Text: "The handler is registered in `init()`."},
-		{Name: "wiring said registered via a call, a read showing it", Kind: c, Want: ClaimVerified, Steps: steps(stepReadInit), Text: "`handler` is registered via `app.register` in `init`."},
-		{Name: "settings said configured, a read showing them", Kind: c, Want: ClaimVerified, Steps: steps(stepReadInit), Text: "Both are configured in `init()`."},
+		{Name: "wiring said registered, a read showing it: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The handler is registered in `init()`."},
+		{Name: "wiring said registered via a call, a read showing it: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "`handler` is registered via `app.register` in `init`."},
+		{Name: "settings said configured, a read showing them: a known false negative", Kind: n, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "Both are configured in `init()`."},
 		{Name: "wiring said registered in a function the read does not show", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The handler is registered in `setup()`."},
 		{Name: "wiring said registered via a call the read does not show", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "`router` is registered via `app.mount` in `init`."},
 		{Name: "settings said configured in a function the read does not show", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "Both are configured in `main()`."},
 		{Name: "wiring said now registered", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The handler is now registered in `init()`."},
 		{Name: "a deploy said of a function the read shows", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadInit), Text: "The service is deployed in `init()`."},
+		// Wiring is never read from names alone; "IT" is an org layer.
+		{Name: "wiring claimed from names alone: a function said configured in another that does not touch it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`deploy()` is configured in `init()`."},
+		{Name: "wiring claimed from names alone: a function said registered where it is not", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`deploy` is registered in `init`."},
+		{Name: "wiring claimed from names alone: a flag said enabled that the read shows false", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`FEATURE_X` is enabled."},
+		{Name: "wiring claimed from names alone: a flag said disabled that the read shows true", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`DEBUG` is disabled."},
+		{Name: "wiring claimed from names alone: a call said wired into a function that does not make it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`push` is wired into `init()`."},
+		{Name: "wiring claimed from names alone: a setting said set up in a function that does not set it", Kind: p, Want: ClaimUnverified, Steps: steps(stepReadApp), Text: "`cfg.enabled` is set up in `deploy()`."},
+		{Name: "a user refusal said to come from the IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "a mode refusal said to come from the IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlMode), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "a user refusal said to be per IT policy", Kind: p, Want: ClaimUnverified, Steps: steps(stepDeniedCurlUser), Text: "The call was denied by rule bash(curl*) per IT policy."},
+		{Name: "an org refusal said to come from the IT policy", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the IT policy."},
+		{Name: "an org refusal said to come from the security team", Kind: c, Want: ClaimVerified, Steps: steps(stepReadRagAgent, stepDeniedCurl), Text: "The call was denied by rule bash(curl*) from the security team."},
 		{Name: "general knowledge", Kind: n, Want: ClaimUnverified, Steps: steps(stepTests), Text: "Go compiles to native code."},
 		{Name: "knowledge with a number", Kind: n, Want: ClaimUnverified, Steps: steps(stepConfig), Text: "Kubernetes keeps 10 old ReplicaSets by default."},
 		{Name: "a plain statement", Kind: n, Want: ClaimUnverified, Steps: steps(stepPods), Text: "The rollout strategy looks reasonable."},

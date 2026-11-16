@@ -82,6 +82,9 @@ func wordSet(s string) map[string]bool {
 	return m
 }
 
+// setUpRe is "set up" said as a state.
+var setUpRe = regexp.MustCompile(`\b(?:is|are|was|were|been|being)\s+(?:\w+ly\s+|now\s+|all\s+)?set\s+up\b`)
+
 // labelRe is a short label that opens with a qualifying participle, alone
 // (a clause the label was split into): "specialized worker role".
 var labelRe = regexp.MustCompile(`^\s*` + qualifyingParticiples + `((?:\s+[a-z\-]+){1,4})\s*(:|$)`)
@@ -126,6 +129,8 @@ func eventWords(text string) []string {
 	t = searchFoundRe.ReplaceAllString(t, " ")
 	t = noFailRe.ReplaceAllString(t, " ")
 	out := eventWordRe.FindAllString(t, -1)
+	// "is set up" says work is in place: "set" alone is not read as past.
+	out = append(out, setUpRe.FindAllString(t, -1)...)
 	// "after moving `total := 0` up": a change said as what came before.
 	for _, m := range afterDoingRe.FindAllStringSubmatch(t, -1) {
 		if changeActRe.MatchString(m[1]) {

@@ -570,7 +570,7 @@ var (
 	wholeSuiteRe = regexp.MustCompile(`\b(?:all|every|each|whole|entire|full|complete|suites?|everything|everywhere|both|other|remaining|rest)\b`)
 	identRe      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	// presentStateRe says work is finished, in the present.
-	presentStateRe = regexp.MustCompile(`\b(?:is|are|has been|have been)\s+(?:now\s+|all\s+|properly\s+|fully\s+|correctly\s+|successfully\s+)*(?:resolved|fixed|deployed|merged|done|complete|completed|installed|configured|populated|built|registered|enabled|disabled|applied|handled|processed|released|shipped|updated|rolled out|in place|live|working)\b`)
+	presentStateRe = regexp.MustCompile(`\b(?:is|are|has been|have been)\s+(?:now\s+|all\s+|properly\s+|fully\s+|correctly\s+|successfully\s+)*(?:resolved|fixed|deployed|merged|done|complete|completed|installed|configured|populated|built|registered|enabled|disabled|applied|handled|processed|released|shipped|updated|rolled out|in place|live|working|set up|wired|mounted)\b`)
 	// checkWordRe names a check that "passed to/through" may be said of.
 	checkWordRe = regexp.MustCompile(`\b(?:ci|build|builds|check|checks|pipeline|pipelines|review|reviews|lint|linter|linting|qa|gate|gates)\b`)
 	// passedOnRe is "passed" said of a value handed on, not of a check.
